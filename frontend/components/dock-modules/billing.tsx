@@ -52,7 +52,7 @@ function PieChart({ data }: { data: ProviderUsage[] }) {
           `A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`,
           "Z",
         ].join(" ");
-        return <path key={i} d={pathData} fill={s.color} stroke="#161b22" strokeWidth="1.5" />;
+        return <path key={i} d={pathData} fill={s.color} stroke="var(--card, #161b22)" strokeWidth="1.5" />;
       })}
     </svg>
   );
@@ -698,6 +698,102 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
           color: #06b6d4;
         }
         .bp-note p { margin: 0; }
+
+        /* Light mode overrides */
+        html:not(.dark) .bp-panel {
+          background: radial-gradient(circle at top right, rgba(6, 182, 212, 0.08), transparent 28%), linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+          color: var(--foreground);
+        }
+        html:not(.dark) .bp-head {
+          border-color: var(--border);
+          background: linear-gradient(135deg, var(--card) 0%, var(--paper) 100%);
+          box-shadow: 0 18px 40px rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .bp-kicker {
+          background: rgba(6, 182, 212, 0.06);
+          color: var(--accent);
+        }
+        html:not(.dark) .bp-head h2 { color: var(--foreground); }
+        html:not(.dark) .bp-head p { color: var(--muted-foreground); }
+        html:not(.dark) .bp-range-card {
+          background: linear-gradient(160deg, rgba(6, 182, 212, 0.06) 0%, rgba(6, 182, 212, 0.1) 100%);
+          border-color: rgba(6, 182, 212, 0.5);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+        }
+        html:not(.dark) .bp-range-label { color: var(--accent); }
+        html:not(.dark) .bp-days {
+          border-color: rgba(6, 182, 212, 0.2);
+          background: var(--card);
+          color: var(--foreground);
+        }
+        html:not(.dark) .bp-days:focus {
+          border-color: var(--accent);
+          box-shadow: 0 0 0 4px rgba(8, 145, 178, 0.12);
+          background: var(--card);
+        }
+        html:not(.dark) .bp-loading,
+        html:not(.dark) .bp-empty {
+          color: var(--muted-foreground);
+          border-color: var(--border);
+          background: radial-gradient(circle at top, rgba(6, 182, 212, 0.04), transparent 42%), var(--paper);
+        }
+        html:not(.dark) .bp-empty strong { color: var(--foreground); }
+        html:not(.dark) .bp-empty span { color: var(--muted-foreground); }
+        html:not(.dark) .bp-card {
+          border-color: var(--border);
+          background: linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+          box-shadow: 0 14px 32px rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .bp-card-kicker { color: var(--accent); }
+        html:not(.dark) .bp-card-val { color: var(--foreground); }
+        html:not(.dark) .bp-card-label { color: var(--muted-foreground); }
+        html:not(.dark) .bp-section {
+          border-color: var(--border);
+          background: var(--card);
+          box-shadow: 0 14px 34px rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .bp-section h3 { color: var(--foreground); }
+        html:not(.dark) .bp-section-meta {
+          background: rgba(6, 182, 212, 0.06);
+          border-color: rgba(6, 182, 212, 0.2);
+          color: var(--accent);
+        }
+        html:not(.dark) .bp-chart { filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.04)); }
+        html:not(.dark) .bp-legend-item {
+          background: var(--paper);
+          border-color: var(--border);
+        }
+        html:not(.dark) .bp-legend-name { color: var(--foreground); }
+        html:not(.dark) .bp-legend-pct { color: var(--foreground); }
+        html:not(.dark) .bp-hist-value { color: var(--foreground); }
+        html:not(.dark) .bp-hist-track {
+          background: linear-gradient(180deg, var(--paper) 0%, var(--paper-3) 100%);
+          border-color: var(--border);
+        }
+        html:not(.dark) .bp-hist-fill { box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.06); }
+        html:not(.dark) .bp-hist-name { color: var(--muted-foreground); }
+        html:not(.dark) .bp-sub-empty {
+          border-color: var(--border);
+          background: var(--paper);
+          color: var(--muted-foreground);
+        }
+        html:not(.dark) .bp-bar-group {
+          background: var(--paper);
+          border-color: var(--border);
+        }
+        html:not(.dark) .bp-bar-provider { color: var(--foreground); }
+        html:not(.dark) .bp-bar-total { color: var(--muted-foreground); }
+        html:not(.dark) .bp-bar-name { color: var(--muted-foreground); }
+        html:not(.dark) .bp-bar-track { background: var(--paper-3); }
+        html:not(.dark) .bp-bar-fill { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) inset; }
+        html:not(.dark) .bp-bar-val { color: var(--muted-foreground); }
+        html:not(.dark) .bp-note {
+          color: var(--muted-foreground);
+          background: linear-gradient(180deg, var(--paper) 0%, rgba(6, 182, 212, 0.06) 100%);
+          border-color: rgba(6, 182, 212, 0.5);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+        }
+        html:not(.dark) .bp-note-icon { color: var(--accent); }
 
         @media (max-width: 760px) {
           .bp-head,
