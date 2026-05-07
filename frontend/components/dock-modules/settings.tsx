@@ -1199,6 +1199,214 @@ export default function SettingsPanel({ isOpen }: DockPanelProps) {
         }
         .sk-note p:last-child { margin-bottom: 0; }
 
+        /* Light mode overrides */
+        html:not(.dark) .sk-panel {
+          background: radial-gradient(circle at top right, rgba(6, 182, 212, 0.08), transparent 28%), linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+          color: var(--foreground);
+        }
+        html:not(.dark) .sk-toast.success {
+          background: rgba(34, 197, 94, 0.08);
+          color: #16a34a;
+          border-color: rgba(34, 197, 94, 0.15);
+          box-shadow: 0 10px 32px rgba(34, 197, 94, 0.06);
+        }
+        html:not(.dark) .sk-toast.error {
+          background: rgba(248, 113, 113, 0.08);
+          color: #dc2626;
+          border-color: rgba(248, 113, 113, 0.15);
+          box-shadow: 0 10px 32px rgba(248, 113, 113, 0.06);
+        }
+        html:not(.dark) .sk-head {
+          border-color: var(--border);
+          background: linear-gradient(135deg, var(--card) 0%, var(--paper) 100%);
+          box-shadow: 0 18px 40px rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .sk-kicker {
+          background: rgba(6, 182, 212, 0.06);
+          color: var(--accent);
+        }
+        html:not(.dark) .sk-head h2 { color: var(--foreground); }
+        html:not(.dark) .sk-head p { color: var(--muted-foreground); }
+        html:not(.dark) .sk-head-stat {
+          background: linear-gradient(160deg, rgba(6, 182, 212, 0.06) 0%, rgba(6, 182, 212, 0.1) 100%);
+          border-color: rgba(6, 182, 212, 0.5);
+          color: var(--accent);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+        }
+        html:not(.dark) .sk-overview-card {
+          border-color: var(--border);
+          background: linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+          box-shadow: 0 14px 32px rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .sk-overview-icon {
+          color: var(--accent);
+          background: rgba(6, 182, 212, 0.06);
+          border-color: rgba(6, 182, 212, 0.4);
+        }
+        html:not(.dark) .sk-overview-card strong { color: var(--foreground); }
+        html:not(.dark) .sk-overview-card p { color: var(--muted-foreground); }
+        html:not(.dark) .sk-section {
+          border-color: var(--border);
+          background: var(--card);
+          box-shadow: 0 14px 34px rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .sk-section-head {
+          border-bottom-color: var(--border);
+          background: linear-gradient(180deg, var(--paper) 0%, var(--card) 100%);
+        }
+        html:not(.dark) .sk-section-head h3 { color: var(--foreground); }
+        html:not(.dark) .sk-section-titlebox p { color: var(--muted-foreground); }
+        html:not(.dark) .sk-section-icon {
+          color: var(--accent);
+          background: rgba(6, 182, 212, 0.06);
+          border-color: rgba(6, 182, 212, 0.3);
+        }
+        html:not(.dark) .sk-config-aside {
+          background: linear-gradient(180deg, rgba(6, 182, 212, 0.04) 0%, var(--paper) 100%);
+          border-right-color: var(--border);
+        }
+        html:not(.dark) .sk-config-badge {
+          background: var(--card);
+          border-color: var(--accent);
+        }
+        html:not(.dark) .sk-config-badge-icon {
+          color: var(--accent);
+          background: rgba(6, 182, 212, 0.08);
+          border-color: rgba(6, 182, 212, 0.4);
+        }
+        html:not(.dark) .sk-config-badge strong { color: var(--foreground); }
+        html:not(.dark) .sk-config-badge span { color: var(--muted-foreground); }
+        html:not(.dark) .sk-config-copy { color: var(--muted-foreground); }
+        html:not(.dark) .sk-config-point { color: var(--muted-foreground); }
+        html:not(.dark) .sk-config-point-dot {
+          background: var(--accent);
+          box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.1);
+        }
+        html:not(.dark) .sk-add-btn {
+          border-color: var(--accent);
+          background: linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+          color: var(--foreground);
+        }
+        html:not(.dark) .sk-add-btn:hover {
+          background: rgba(6, 182, 212, 0.06);
+          border-color: var(--accent);
+        }
+        html:not(.dark) .sk-loading { color: var(--muted-foreground); }
+        html:not(.dark) .sk-empty {
+          background: radial-gradient(circle at top, rgba(6, 182, 212, 0.04), transparent 40%), transparent;
+        }
+        html:not(.dark) .sk-empty p { color: var(--muted-foreground); }
+        html:not(.dark) .sk-empty-sub { color: var(--muted-foreground) !important; }
+        html:not(.dark) .sk-cred-card {
+          border-color: var(--border);
+          background: linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+        }
+        html:not(.dark) .sk-cred-card.is-default {
+          background: radial-gradient(circle at top right, rgba(34, 197, 94, 0.08), transparent 34%), linear-gradient(180deg, var(--card) 0%, var(--paper) 100%);
+          border-color: rgba(34, 197, 94, 0.2);
+        }
+        html:not(.dark) .sk-cred-card:hover {
+          border-color: rgba(6, 182, 212, 0.12);
+          box-shadow: 0 14px 32px rgba(6, 182, 212, 0.06);
+        }
+        html:not(.dark) .sk-cred-card.is-default:hover {
+          box-shadow: 0 16px 34px rgba(34, 197, 94, 0.08);
+        }
+        html:not(.dark) .sk-cred-icon {
+          color: var(--accent);
+          background: rgba(6, 182, 212, 0.06);
+          border-color: rgba(6, 182, 212, 0.4);
+        }
+        html:not(.dark) .sk-cred-name { color: var(--foreground); }
+        html:not(.dark) .sk-default-badge {
+          color: #16a34a;
+          background: rgba(34, 197, 94, 0.1);
+          border-color: rgba(34, 197, 94, 0.15);
+        }
+        html:not(.dark) .sk-cred-meta { color: var(--muted-foreground); }
+        html:not(.dark) .sk-provider-tag {
+          color: var(--accent);
+          background: rgba(6, 182, 212, 0.06);
+        }
+        html:not(.dark) .sk-masked {
+          background: var(--paper);
+          border-color: var(--border);
+        }
+        html:not(.dark) .sk-model {
+          background: var(--paper);
+          border-color: var(--border);
+          color: var(--muted-foreground);
+        }
+        html:not(.dark) .sk-act-btn {
+          background: var(--card);
+          border-color: var(--border);
+          color: var(--muted-foreground);
+        }
+        html:not(.dark) .sk-act-btn:hover {
+          color: var(--foreground);
+          background: rgba(6, 182, 212, 0.06);
+          border-color: rgba(6, 182, 212, 0.12);
+        }
+        html:not(.dark) .sk-act-star:hover {
+          color: #d97706;
+          border-color: rgba(251, 191, 36, 0.2);
+          background: rgba(251, 191, 36, 0.08);
+        }
+        html:not(.dark) .sk-act-del:hover {
+          color: #dc2626;
+          border-color: rgba(248, 113, 113, 0.2);
+          background: rgba(248, 113, 113, 0.08);
+        }
+        html:not(.dark) .sk-chip.on {
+          background: rgba(34, 197, 94, 0.08);
+          color: #16a34a;
+          border-color: rgba(34, 197, 94, 0.15);
+        }
+        html:not(.dark) .sk-chip.off {
+          background: rgba(251, 191, 36, 0.08);
+          color: #d97706;
+          border-color: rgba(251, 191, 36, 0.15);
+        }
+        html:not(.dark) .sk-emb-fields { background: var(--card); }
+        html:not(.dark) .sk-field label { color: var(--muted-foreground); }
+        html:not(.dark) .sk-label-tag {
+          color: #16a34a;
+          background: rgba(34, 197, 94, 0.08);
+        }
+        html:not(.dark) .sk-input {
+          border-color: var(--border);
+          background: var(--paper);
+          color: var(--foreground);
+        }
+        html:not(.dark) .sk-input::placeholder { color: var(--muted-foreground); }
+        html:not(.dark) .sk-input:focus {
+          border-color: var(--accent);
+          background: var(--card);
+          box-shadow: 0 0 0 4px rgba(8, 145, 178, 0.12);
+        }
+        html:not(.dark) .sk-eye { color: var(--muted-foreground); }
+        html:not(.dark) .sk-eye:hover {
+          color: var(--foreground);
+          background: rgba(0, 0, 0, 0.06);
+        }
+        html:not(.dark) .sk-btn-primary {
+          background: linear-gradient(180deg, rgba(6, 182, 212, 0.12) 0%, rgba(6, 182, 212, 0.06) 100%);
+          color: var(--accent);
+          border-color: rgba(6, 182, 212, 0.2);
+          box-shadow: 0 8px 18px rgba(6, 182, 212, 0.08);
+        }
+        html:not(.dark) .sk-btn-primary:hover {
+          background: linear-gradient(180deg, rgba(6, 182, 212, 0.16) 0%, rgba(6, 182, 212, 0.08) 100%);
+          box-shadow: 0 10px 20px rgba(6, 182, 212, 0.1);
+        }
+        html:not(.dark) .sk-note {
+          color: var(--muted-foreground);
+          background: linear-gradient(180deg, var(--paper) 0%, rgba(6, 182, 212, 0.06) 100%);
+          border-color: rgba(6, 182, 212, 0.5);
+          box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.04);
+        }
+        html:not(.dark) .sk-note-icon { color: var(--accent); }
+
         @media (max-width: 760px) {
           .sk-head {
             flex-direction: column;
@@ -1218,6 +1426,9 @@ export default function SettingsPanel({ isOpen }: DockPanelProps) {
           .sk-config-aside {
             border-right: none;
             border-bottom: 1px solid rgba(48, 54, 61, 0.88);
+          }
+          html:not(.dark) .sk-config-aside {
+            border-bottom: 1px solid var(--border);
           }
         }
       `}</style>
