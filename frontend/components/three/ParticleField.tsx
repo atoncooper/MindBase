@@ -6,7 +6,7 @@ import * as THREE from "three";
 
 const PARTICLE_COUNT = 800;
 
-export default function ParticleField() {
+export default function ParticleField({ opacity = 0.7 }: { opacity?: number }) {
   const pointsRef = useRef<THREE.Points>(null);
 
   const { positions, colors } = useMemo(() => {
@@ -77,7 +77,7 @@ export default function ParticleField() {
         size={0.025}
         vertexColors
         transparent
-        opacity={0.7}
+        opacity={opacity}
         depthWrite={false}
         blending={THREE.AdditiveBlending}
       />
