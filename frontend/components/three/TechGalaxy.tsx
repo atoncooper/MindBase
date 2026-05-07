@@ -22,7 +22,7 @@ const TECH_STACK = [
   { name: "Whisper ASR", angle: 5.8, radius: 4.3 },
 ];
 
-export default function TechGalaxy({ dimmed = false }: { dimmed?: boolean }) {
+export default function TechGalaxy({ dimmed = false, opacity = 0.75 }: { dimmed?: boolean; opacity?: number }) {
   const groupRef = useRef<THREE.Group>(null);
   const pointsRef = useRef<THREE.Points>(null);
 
@@ -51,11 +51,11 @@ export default function TechGalaxy({ dimmed = false }: { dimmed?: boolean }) {
         pos[idx + 1] = y;
         pos[idx + 2] = Math.sin(angle) * r;
 
-        // Color: core = white/gold, outer = warm gold, dimmer
-        const brightness = 0.5 + (1 - t) * 0.5;
-        col[idx] = brightness;
-        col[idx + 1] = brightness * (0.6 + (1 - t) * 0.25);
-        col[idx + 2] = brightness * (0.3 + (1 - t) * 0.15);
+        // Color: core = bright white/gold, outer = saturated warm gold
+        const brightness = 0.65 + (1 - t) * 0.6;
+        col[idx] = Math.min(1.0, brightness * 1.05);
+        col[idx + 1] = brightness * (0.65 + (1 - t) * 0.35);
+        col[idx + 2] = brightness * (0.15 + (1 - t) * 0.18);
       }
     }
 
@@ -78,10 +78,10 @@ export default function TechGalaxy({ dimmed = false }: { dimmed?: boolean }) {
           <bufferAttribute attach="attributes-color" args={[colors, 3]} />
         </bufferGeometry>
         <pointsMaterial
-          size={0.03}
+          size={0.045}
           vertexColors
           transparent
-          opacity={0.75}
+          opacity={opacity}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
@@ -108,8 +108,8 @@ export default function TechGalaxy({ dimmed = false }: { dimmed?: boolean }) {
                 whiteSpace: "nowrap",
                 padding: "2px 8px",
                 borderRadius: "6px",
-                background: "#1a1a08",
-                border: "1px solid rgba(245, 158, 11, 0.3)",
+                background: "#2a1a00",
+                border: "1px solid rgba(251, 191, 36, 0.5)",
                 fontFamily: "system-ui, -apple-system, sans-serif",
               }}
             >
