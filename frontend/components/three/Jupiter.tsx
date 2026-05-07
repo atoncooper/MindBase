@@ -4,7 +4,13 @@ import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
-export default function Jupiter() {
+import type { PlanetLighting } from "@/lib/three-constants";
+
+interface JupiterProps {
+  lighting?: PlanetLighting;
+}
+
+export default function Jupiter({ lighting }: JupiterProps) {
   const groupRef = useRef<THREE.Group>(null);
   const jupiterRef = useRef<THREE.Mesh>(null);
 
@@ -27,19 +33,32 @@ export default function Jupiter() {
       <mesh ref={jupiterRef}>
         <sphereGeometry args={[1.0, 64, 64]} />
         <shaderMaterial
-          uniforms={{}}
+          uniforms={{
+            uSunPos: { value: lighting?.sunPos ?? new THREE.Vector3(-7.5, 0.8, -2) },
+            uAmbient: { value: lighting?.ambient ?? 0.25 },
+            uSunStrength: { value: lighting?.sunStrength ?? 0.85 },
+          }}
           vertexShader={/* glsl */ `
             varying vec3 vPos;
             varying vec3 vNormal;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
             void main() {
               vPos = position;
               vNormal = normalize(normalMatrix * normal);
-              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+              vWorldNormal = normalize(mat3(modelMatrix) * normal);
+              vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+              gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
             }
           `}
           fragmentShader={/* glsl */ `
             varying vec3 vPos;
             varying vec3 vNormal;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
+            uniform vec3 uSunPos;
+            uniform float uAmbient;
+            uniform float uSunStrength;
 
             float hash(vec2 p) {
               return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -83,6 +102,12 @@ export default function Jupiter() {
 
               float fresnel = 1.0 - abs(dot(vNormal, vec3(0,0,1)));
               col += vec3(0.4, 0.3, 0.15) * fresnel * 0.1;
+
+              // Per-fragment lambert from sun
+              vec3 lightDir = normalize(uSunPos - vWorldPos);
+              float ndl = dot(vWorldNormal, lightDir);
+              float lit = uAmbient + uSunStrength * (ndl * 0.5 + 0.5);
+              col *= lit;
 
               gl_FragColor = vec4(col, 1.0);
             }
