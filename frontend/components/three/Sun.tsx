@@ -7,7 +7,11 @@ import * as THREE from "three";
 const FLARE_COUNT = 12;
 const ORBIT_PARTICLE_COUNT = 30;
 
-export default function Sun() {
+interface SunProps {
+  emissiveScale?: number;
+}
+
+export default function Sun({ emissiveScale = 1 }: SunProps) {
   const groupRef = useRef<THREE.Group>(null);
   const coreRef = useRef<THREE.Mesh>(null);
   const glowOuterRef = useRef<THREE.Mesh>(null);
@@ -65,9 +69,9 @@ export default function Sun() {
         <shaderMaterial
           uniforms={{
             uTime: { value: 0 },
-            uColor1: { value: new THREE.Color("#ffcc00") },
-            uColor2: { value: new THREE.Color("#ff6600") },
-            uColor3: { value: new THREE.Color("#ff4400") },
+            uColor1: { value: new THREE.Color("#ffdd33") },
+            uColor2: { value: new THREE.Color("#ff7700") },
+            uColor3: { value: new THREE.Color("#ff5500") },
           }}
           vertexShader={/* glsl */ `
             varying vec3 vPos;
@@ -134,6 +138,7 @@ export default function Sun() {
           blending={THREE.AdditiveBlending}
           uniforms={{
             uColor: { value: new THREE.Color("#ff8c00") },
+            uScale: { value: emissiveScale },
           }}
           vertexShader={/* glsl */ `
             varying vec3 vNormal;
@@ -145,10 +150,11 @@ export default function Sun() {
           fragmentShader={/* glsl */ `
             varying vec3 vNormal;
             uniform vec3 uColor;
+            uniform float uScale;
             void main() {
               float fresnel = 1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0)));
               fresnel = pow(fresnel, 2.0);
-              float alpha = fresnel * 0.5;
+              float alpha = fresnel * 0.8 * uScale;
               gl_FragColor = vec4(uColor, alpha);
             }
           `}
@@ -164,6 +170,7 @@ export default function Sun() {
           blending={THREE.AdditiveBlending}
           uniforms={{
             uColor: { value: new THREE.Color("#ff6600") },
+            uScale: { value: emissiveScale },
           }}
           vertexShader={/* glsl */ `
             varying vec3 vNormal;
@@ -175,10 +182,11 @@ export default function Sun() {
           fragmentShader={/* glsl */ `
             varying vec3 vNormal;
             uniform vec3 uColor;
+            uniform float uScale;
             void main() {
               float fresnel = 1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0)));
               fresnel = pow(fresnel, 3.0);
-              float alpha = fresnel * 0.35;
+              float alpha = fresnel * 0.6 * uScale;
               gl_FragColor = vec4(uColor, alpha);
             }
           `}
@@ -187,13 +195,14 @@ export default function Sun() {
 
       {/* ── Corona / wide aura ── */}
       <mesh ref={coronaRef}>
-        <sphereGeometry args={[1.8, 48, 48]} />
+        <sphereGeometry args={[2.2, 48, 48]} />
         <shaderMaterial
           transparent
           depthWrite={false}
           blending={THREE.AdditiveBlending}
           uniforms={{
             uColor: { value: new THREE.Color("#ffaa33") },
+            uScale: { value: emissiveScale },
           }}
           vertexShader={/* glsl */ `
             varying vec3 vNormal;
@@ -205,10 +214,11 @@ export default function Sun() {
           fragmentShader={/* glsl */ `
             varying vec3 vNormal;
             uniform vec3 uColor;
+            uniform float uScale;
             void main() {
               float fresnel = 1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0)));
               fresnel = pow(fresnel, 5.0);
-              float alpha = fresnel * 0.18;
+              float alpha = fresnel * 0.45 * uScale;
               gl_FragColor = vec4(uColor, alpha);
             }
           `}
@@ -232,11 +242,11 @@ export default function Sun() {
 
         return (
           <mesh key={i} position={mid}>
-            <capsuleGeometry args={[0.015 * strength, f.length * strength, 4, 8]} />
+            <capsuleGeometry args={[0.025 * strength, f.length * strength, 4, 8]} />
             <meshBasicMaterial
               color="#ffcc44"
               transparent
-              opacity={0.7 * strength}
+              opacity={0.95 * strength}
               depthWrite={false}
               blending={THREE.AdditiveBlending}
             />
@@ -258,7 +268,7 @@ export default function Sun() {
           <meshBasicMaterial
             color="#ffbb55"
             transparent
-            opacity={0.7}
+            opacity={0.95}
             depthWrite={false}
             blending={THREE.AdditiveBlending}
           />
@@ -271,7 +281,7 @@ export default function Sun() {
         <meshBasicMaterial
           color="#ffaa33"
           transparent
-          opacity={0.2}
+          opacity={0.4}
           side={THREE.DoubleSide}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
