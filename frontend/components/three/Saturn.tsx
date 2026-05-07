@@ -4,7 +4,13 @@ import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
-export default function Saturn() {
+import type { PlanetLighting } from "@/lib/three-constants";
+
+interface SaturnProps {
+  lighting?: PlanetLighting;
+}
+
+export default function Saturn({ lighting }: SaturnProps) {
   const groupRef = useRef<THREE.Group>(null);
   const saturnRef = useRef<THREE.Mesh>(null);
 
@@ -28,19 +34,32 @@ export default function Saturn() {
       <mesh ref={saturnRef}>
         <sphereGeometry args={[0.72, 56, 56]} />
         <shaderMaterial
-          uniforms={{}}
+          uniforms={{
+            uSunPos: { value: lighting?.sunPos ?? new THREE.Vector3(-7.5, 0.8, -2) },
+            uAmbient: { value: lighting?.ambient ?? 0.25 },
+            uSunStrength: { value: lighting?.sunStrength ?? 0.85 },
+          }}
           vertexShader={/* glsl */ `
             varying vec3 vPos;
             varying vec3 vNormal;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
             void main() {
               vPos = position;
               vNormal = normalize(normalMatrix * normal);
-              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+              vWorldNormal = normalize(mat3(modelMatrix) * normal);
+              vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+              gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
             }
           `}
           fragmentShader={/* glsl */ `
             varying vec3 vPos;
             varying vec3 vNormal;
+            varying vec3 vWorldNormal;
+            varying vec3 vWorldPos;
+            uniform vec3 uSunPos;
+            uniform float uAmbient;
+            uniform float uSunStrength;
 
             float hash(vec2 p) {
               return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -65,15 +84,21 @@ export default function Saturn() {
               float turb = noise(vec2(longitude * 8.0, latitude * 20.0)) * 0.2;
               bands += turb;
 
-              vec3 paleYellow = vec3(0.9, 0.82, 0.55);
-              vec3 midYellow = vec3(0.78, 0.7, 0.4);
-              vec3 darkYellow = vec3(0.6, 0.52, 0.3);
+              vec3 paleYellow = vec3(1.0, 0.92, 0.35);
+              vec3 midYellow = vec3(0.95, 0.8, 0.2);
+              vec3 darkYellow = vec3(0.8, 0.6, 0.08);
 
               vec3 col = mix(darkYellow, paleYellow, bands);
               col = mix(col, midYellow, smoothstep(0.4, 0.6, bands));
 
               float fresnel = 1.0 - abs(dot(vNormal, vec3(0,0,1)));
-              col += vec3(0.3, 0.25, 0.1) * fresnel * 0.12;
+              col += vec3(0.6, 0.45, 0.08) * fresnel * 0.25;
+
+              // Per-fragment lambert from sun
+              vec3 lightDir = normalize(uSunPos - vWorldPos);
+              float ndl = dot(vWorldNormal, lightDir);
+              float lit = uAmbient + uSunStrength * (ndl * 0.5 + 0.5);
+              col *= lit;
 
               gl_FragColor = vec4(col, 1.0);
             }
@@ -85,10 +110,10 @@ export default function Saturn() {
       <mesh rotation={[Math.PI * 0.42, 0.05, 0]}>
         <ringGeometry args={[1.1, 1.65, 128]} />
         <meshBasicMaterial
-          color="#d4b896"
+          color="#f0d878"
           side={THREE.DoubleSide}
           transparent
-          opacity={0.65}
+          opacity={0.85}
           depthWrite={false}
         />
       </mesh>
@@ -97,10 +122,10 @@ export default function Saturn() {
       <mesh rotation={[Math.PI * 0.42, 0.05, 0]}>
         <ringGeometry args={[0.9, 1.08, 96]} />
         <meshBasicMaterial
-          color="#c4a882"
+          color="#e0c868"
           side={THREE.DoubleSide}
           transparent
-          opacity={0.5}
+          opacity={0.75}
           depthWrite={false}
         />
       </mesh>
@@ -109,10 +134,10 @@ export default function Saturn() {
       <mesh rotation={[Math.PI * 0.42, 0.05, 0]}>
         <ringGeometry args={[1.67, 1.75, 96]} />
         <meshBasicMaterial
-          color="#b8a080"
+          color="#d4b868"
           side={THREE.DoubleSide}
           transparent
-          opacity={0.35}
+          opacity={0.6}
           depthWrite={false}
         />
       </mesh>
@@ -129,7 +154,7 @@ export default function Saturn() {
           ]}
         >
           <sphereGeometry args={[p.size, 4, 4]} />
-          <meshBasicMaterial color="#d4c8a0" transparent opacity={0.6} depthWrite={false} />
+          <meshBasicMaterial color="#eedd88" transparent opacity={0.85} depthWrite={false} />
         </mesh>
       ))}
 
@@ -139,7 +164,7 @@ export default function Saturn() {
         <shaderMaterial
           transparent depthWrite={false}
           blending={THREE.AdditiveBlending}
-          uniforms={{ uColor: { value: new THREE.Color("#ccaa66") } }}
+          uniforms={{ uColor: { value: new THREE.Color("#ffcc44") } }}
           vertexShader={/* glsl */ `
             varying vec3 vNormal;
             void main() {
@@ -153,7 +178,7 @@ export default function Saturn() {
             void main() {
               float fresnel = 1.0 - abs(dot(vNormal, vec3(0,0,1)));
               fresnel = pow(fresnel, 4.0);
-              gl_FragColor = vec4(uColor, fresnel * 0.2);
+              gl_FragColor = vec4(uColor, fresnel * 0.45);
             }
           `}
         />
