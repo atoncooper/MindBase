@@ -2,7 +2,7 @@
  * API 客户端
  */
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (typeof window !== "undefined" ? "" : "http://backend:8000");
 
 // 获取当前 session token 的 Authorization header
 function getAuthHeaders(): Record<string, string> {
