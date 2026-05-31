@@ -3,9 +3,10 @@ version: "3.9"
 # ================================================================
 # Bilibili RAG — full-stack development / deployment
 # ================================================================
-# Start minimal stack:  docker compose up -d
-# With optional svc:    docker compose --profile storage up -d
-# With everything:      docker compose --profile full up -d
+# App only (external DB): docker compose --profile standalone up -d
+# App + infra:             docker compose up -d
+# App + infra + Milvus:    docker compose --profile storage up -d
+# Everything:              docker compose --profile full up -d
 
 services:
   # ==============================================================
@@ -13,6 +14,7 @@ services:
   # ==============================================================
 
   backend:
+    profiles: ["", "standalone", "storage", "full"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -56,17 +58,11 @@ services:
       # Security
       - SECURITY__API_KEY_ENCRYPTION_KEY=${API_KEY_ENCRYPTION_KEY}
     restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
     networks:
       - bilirag-net
 
   frontend:
+    profiles: ["", "standalone", "storage", "full"]
     build:
       context: ./frontend
       dockerfile: Dockerfile
