@@ -65,12 +65,37 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: bilirag-frontend
-    ports:
-      - "3000:3000"
+    # Port exposed only for direct debugging; in production nginx handles all traffic
+    # ports:
+    #   - "3000:3000"
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://backend:8000}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - bilirag-net
+
+  # ==============================================================
+  # Reverse Proxy (Nginx) — SSL termination + routing
+  # ==============================================================
+
+  nginx:
+    profiles: ["", "standalone", "storage", "full"]
+    image: nginx:alpine
+    container_name: bilirag-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - certbot_www:/var/www/certbot
+    depends_on:
+      frontend:
+        condition: service_started
       backend:
         condition: service_healthy
     restart: unless-stopped
@@ -254,6 +279,7 @@ volumes:
   milvus_data:
   etcd_data:
   minio_data:
+  certbot_www:
 
 networks:
   bilirag-net:

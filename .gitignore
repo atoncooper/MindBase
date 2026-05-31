@@ -61,6 +61,11 @@ logs/
 # Node
 node_modules/
 
+# Nginx SSL certs (sensitive)
+nginx/certs/*
+!nginx/certs/.gitkeep
+certbot_www/
+
 
 # CLAUDE
 .claude/

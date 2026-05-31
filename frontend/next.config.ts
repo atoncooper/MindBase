@@ -21,7 +21,9 @@ const nextConfig: NextConfig = {
   },
   // 环境变量
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+    // Empty default = same-origin (reverse-proxy friendly).
+    // SSR requests still reach backend via Docker network (api.ts fallback).
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "",
   },
 };
 
