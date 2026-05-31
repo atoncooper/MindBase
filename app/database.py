@@ -95,6 +95,10 @@ async def _migrate_add_columns():
         ("user_asr_configs", "last_test_status", "VARCHAR(20)"),
         ("user_asr_configs", "last_test_error", "TEXT"),
         ("user_asr_configs", "last_test_at", "TIMESTAMP"),
+        # Plan 0033: content_source / outline_json for video and video_cache
+        ("video", "content_source", "VARCHAR(20)"),
+        ("video_cache", "content_source", "VARCHAR(20)"),
+        ("video_cache", "outline_json", "JSON"),
     ]
 
     # Plan 0024/0025/0026: drop deprecated content columns & session_id columns
