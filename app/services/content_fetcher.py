@@ -3,7 +3,7 @@ Bilibili RAG 知识库系统
 
 视频内容获取服务 - 二级降级策略
 """
-from typing import Optional, List, TypedDict
+from typing import Optional, TypedDict
 from urllib.parse import urlparse
 import asyncio
 import math
@@ -560,7 +560,6 @@ class ContentFetcher:
         Returns:
             VideoContent 列表
         """
-        import asyncio
         
         results = []
         total = len(videos)

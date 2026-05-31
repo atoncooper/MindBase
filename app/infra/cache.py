@@ -408,7 +408,7 @@ class CacheManager:
 
     async def _listen_invalidation(self) -> None:
         """Listen for cross-worker cache invalidation messages."""
-        from app.infra.redis import pubsub as _pubsub, is_enabled as _redis_ok
+        from app.infra.redis import pubsub as _pubsub
         try:
             ps = _pubsub()
             await ps.subscribe(MULTILEVEL_INVALIDATE_CHANNEL)

@@ -1,9 +1,7 @@
 import asyncio
 import os
-import sys
 from app.config import settings
 from app.services.rag import RAGService
-from langchain_chroma import Chroma
 from sqlalchemy import select
 from app.models import VideoCache
 from app.database import get_db_context

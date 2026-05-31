@@ -12,8 +12,6 @@ from app.services.query.step_back import StepBackStrategy
 from app.services.query.sub_query_splitter import SubQuerySplitterStrategy
 from app.services.query.types import (
     RewriteResult,
-    RewrittenQuery,
-    RewriteType,
     CONFIDENCE_THRESHOLD,
 )
 from loguru import logger

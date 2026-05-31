@@ -137,7 +137,7 @@ async def create_credential(
             is_default=req.is_default,
             db=db,
         )
-    except Exception as e:
+    except Exception:
         logger.exception("[CREDENTIALS] create failed")
         raise HTTPException(status_code=500, detail="Credential 创建失败")
 

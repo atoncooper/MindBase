@@ -17,7 +17,7 @@ from app.response.vector import (
     VectorPageStatusResponse, VectorPageTaskStatus,
     VectorPageCreateRequest, VectorPageReVectorRequest,
 )
-from app.routers.auth import get_current_uid, get_session_token
+from app.routers.auth import get_session_token
 from app.services.auth import validate_token as _validate_token
 from app.services.async_task.tracker import TaskTracker
 from app.services.vector_page_service import VectorPageService

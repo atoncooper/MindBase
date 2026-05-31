@@ -5,7 +5,6 @@ Before: self-contained LocalMemoryCache / CredentialCacheBackend ABC
 After:  delegates to cache_manager.namespace("credential", ttl=300)
 """
 
-import asyncio
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field

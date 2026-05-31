@@ -415,7 +415,7 @@ class RAGService:
             docs = self.search(question, k=k, bvids=bvids if bvids else None)
         except Exception as e:
             logger.error(f"检索失败: {e}")
-            return await self._fallback_answer(question, f"检索时遇到问题")
+            return await self._fallback_answer(question, "检索时遇到问题")
 
         if not docs:
             # 没检索到内容时，也让 AI 自然回复

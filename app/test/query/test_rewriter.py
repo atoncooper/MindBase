@@ -8,14 +8,10 @@ test_rewriter.py - QueryRewriter 主入口单元测试
 - 路由推断
 """
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from app.services.query.rewriter import QueryRewriter, CONFIDENCE_THRESHOLD
+from unittest.mock import MagicMock, patch
+from app.services.query.rewriter import QueryRewriter
 from app.services.query.types import (
-    RewriteResult,
     RewriteType,
-    RewrittenQuery,
-    StepBackMetadata,
-    SubQueryMetadata,
 )
 
 

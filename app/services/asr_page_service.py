@@ -111,7 +111,6 @@ class ASRPageService:
             video_id = bv_to_av(bvid)
 
             # Write ASR content to MongoDB (primary store for full text)
-            mongo_ok = False
             if mongo_enabled():
                 try:
                     from app.repository.mongo_asr_repository import save_asr
@@ -125,7 +124,6 @@ class ASRPageService:
                         content_source="asr",
                         version=1,
                     )
-                    mongo_ok = True
                 except Exception as e:
                     logger.warning(f"[ASR] MongoDB write failed, falling back to MySQL: {e}")
 

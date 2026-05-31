@@ -7,9 +7,9 @@ test_step_back.py - 后退提示词策略单元测试
 - JSON 解析容错
 """
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 from app.services.query.step_back import StepBackStrategy
-from app.services.query.types import RewriteType, RewrittenQuery, StepBackMetadata
+from app.services.query.types import RewriteType, StepBackMetadata
 
 
 class TestStepBackStrategyShouldApply:

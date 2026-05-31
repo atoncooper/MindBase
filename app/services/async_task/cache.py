@@ -16,10 +16,7 @@ Cache structure:
 
 from __future__ import annotations
 
-import asyncio
-import json
 import multiprocessing
-import os
 import time
 from typing import Any
 
@@ -64,7 +61,7 @@ def _refresh_from_db(shared_dict: Any, database_url: str) -> None:
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with factory() as db:
-            repo = AsyncTaskRepository()
+            AsyncTaskRepository()
             # Query all tasks, newest first (no uid filter — subprocess reads all)
             from sqlalchemy import select
             from app.models import AsyncTask

@@ -30,7 +30,7 @@ async def test_full_flow__cache_miss_then_hit():
             assert data1["page_count"] == len(data1["pages"])
 
             # 验证缓存已写入
-            cache_key = f"video:pages:BV1GJ411x7h7"
+            cache_key = "video:pages:BV1GJ411x7h7"
             cached = cache.get(cache_key)
             assert cached is not None
             assert cached["bvid"] == "BV1GJ411x7h7"

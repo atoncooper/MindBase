@@ -109,8 +109,10 @@ from app.response.vector import (
 
 __all__ = [
     # auth
+    "DeviceInfo",
     "QRCodeResponse",
     "LoginStatusResponse",
+    "LoginRequest",
     "UserInfoResponse",
     "TokenResponse",
     "ProfileUpdateRequest",
@@ -165,6 +167,7 @@ __all__ = [
     "CredentialResponse",
     "CredentialCreate",
     "CredentialUpdate",
+    "TestResultResponse",
     "EmbeddingConfigResponse",
     "EmbeddingConfigCreate",
     "EmbeddingConfigUpdate",

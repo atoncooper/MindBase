@@ -1,7 +1,6 @@
 # app/utils/cache.py
 
-from typing import Optional, Any, Callable, TypeVar, Union
-from functools import wraps
+from typing import Optional, Any, Callable, TypeVar
 from cachetools import TTLCache
 
 T = TypeVar("T")
@@ -148,8 +147,6 @@ def get_cache_service() -> CacheService:
 
 # ── FastAPI 依赖注入 ─────────────────────────────────────────
 
-from functools import partial
-from fastapi import Depends
 
 
 def cache_dependency(

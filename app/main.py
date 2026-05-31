@@ -11,7 +11,6 @@ from loguru import logger
 import sys
 import os
 import uuid
-import traceback
 
 from app.config import settings, ensure_directories
 
@@ -147,7 +146,7 @@ async def lifespan(app: FastAPI):
 
     # Init Redis (before cache_manager so L2 can be activated)
     if settings.redis_enabled:
-        from app.infra.redis import init as redis_init, ping as redis_ping, client as redis_client
+        from app.infra.redis import init as redis_init, ping as redis_ping
         await redis_init()
         result = await redis_ping()
         if not result["ok"]:

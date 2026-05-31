@@ -5,7 +5,7 @@ AsyncTask CRUD repository — typed operations for async_tasks table.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AsyncTask

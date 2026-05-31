@@ -27,7 +27,6 @@ from app.response.favorites import (
     FavoriteFolderResponse,
     FavoriteVideoPageResponse,
     SyncFoldersResponse,
-    SyncVideosResponse,
     UpdateSelectedResponse,
     DeleteFolderResponse,
     VideoPageListResponse,

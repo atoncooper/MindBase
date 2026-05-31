@@ -10,7 +10,6 @@ from typing import Optional
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.models import Video, VideoMetadata
 from app.repository.video_metadata_repository import (

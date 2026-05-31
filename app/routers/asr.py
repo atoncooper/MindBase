@@ -5,7 +5,6 @@ ASR 路由 - 分P视频语音转文本
 """
 import uuid
 from datetime import datetime
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from sqlalchemy import select

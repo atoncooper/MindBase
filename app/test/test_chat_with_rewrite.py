@@ -16,7 +16,6 @@ from app.services.query.types import (
     RewrittenQuery,
     StepBackMetadata,
     SubQueryMetadata,
-    CONFIDENCE_THRESHOLD,
 )
 
 
@@ -226,7 +225,6 @@ class TestVectorSearchWithRewrites:
         await _vector_search_with_rewrites("王德峰和哲学", rewrite_result, bvids=None, k=5)
 
         # 验证所有子 query 都被调用，不是只取 [0]
-        calls = mock_get_rag.search.call_args_list
         assert mock_get_rag.search.call_count == 2  # 不能是 1
 
     @pytest.mark.asyncio
@@ -318,7 +316,7 @@ class TestRewriteResultInSseSourcesEvent:
         from app.routers.chat import SSEEvent
 
         # 验证 SSEEvent 能正确构造包含 rewrite_info 的 sources 事件
-        rewrite_result = RewriteResult(
+        RewriteResult(
             rewrites=[
                 RewrittenQuery(
                     type=RewriteType.EXPAND,

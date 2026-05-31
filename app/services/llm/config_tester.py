@@ -60,7 +60,7 @@ class ConfigTester:
 
         except asyncio.TimeoutError:
             return TestResult(status="error", error="连接超时，请检查 API 地址或网络", latency_ms=(time.time() - t0) * 1000)
-        except AuthenticationError as e:
+        except AuthenticationError:
             return TestResult(status="error", error="API Key 无效，请检查密钥是否正确", latency_ms=(time.time() - t0) * 1000)
         except Exception as e:
             msg = str(e)
@@ -103,7 +103,7 @@ class ConfigTester:
 
         except asyncio.TimeoutError:
             return TestResult(status="error", error="连接超时，请检查 API 地址或网络", latency_ms=(time.time() - t0) * 1000)
-        except AuthenticationError as e:
+        except AuthenticationError:
             return TestResult(status="error", error="API Key 无效，请检查密钥是否正确", latency_ms=(time.time() - t0) * 1000)
         except Exception as e:
             msg = str(e)

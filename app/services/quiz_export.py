@@ -6,7 +6,6 @@ import io
 import json
 from typing import AsyncGenerator, Optional
 
-from loguru import logger
 
 from app.database import get_db_context
 

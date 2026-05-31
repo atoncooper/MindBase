@@ -13,7 +13,6 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from loguru import logger
 
-from app.config import settings
 from app.infra.config import ChromaSection
 
 

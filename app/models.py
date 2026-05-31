@@ -5,12 +5,11 @@ Bilibili RAG 知识库系统
 """
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, DateTime, Date,
-    Boolean, JSON, Float, DECIMAL, UniqueConstraint, ForeignKey, Index,
+    Boolean, JSON, Float, UniqueConstraint, ForeignKey, Index,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from datetime import datetime, date
-from typing import Optional
+from datetime import datetime
 
 Base = declarative_base()
 

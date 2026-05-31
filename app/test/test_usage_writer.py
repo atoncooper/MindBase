@@ -58,7 +58,7 @@ class TestEnqueueImmediateWrite:
     @pytest.mark.asyncio
     async def test_multiple_enqueues_each_write(self, test_db):
         """多次 enqueue，每次单独写入"""
-        from sqlalchemy import select, func
+        from sqlalchemy import select
         from app.models import CredentialUsage
 
         repo = UsageRepository()

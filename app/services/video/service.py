@@ -16,7 +16,6 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from app.models import Video
 from app.services.bilibili import BilibiliService
 from app.repository.video_repository import get_video_repository, VideoRepository
 from app.utils.bvid import bv_to_av

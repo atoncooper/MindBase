@@ -3,7 +3,6 @@
 
 import pytest
 import pytest_asyncio
-import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
 from httpx import AsyncClient, ASGITransport
 from app.main import app
@@ -234,7 +233,7 @@ class TestReASR:
     @pytest.mark.asyncio
     async def test_reasr_creates_new_version(self, client, test_db):
         """重新 ASR 新建版本"""
-        from app.models import Video, VideoVersion
+        from app.models import Video
 
         # 先写入记录
         page = Video(

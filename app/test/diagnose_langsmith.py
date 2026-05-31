@@ -83,12 +83,12 @@ try:
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     # 这个调用应该自动被 LangSmith 追踪
     response = llm.invoke([HumanMessage(content="Say 'LangSmith tracing works!'")])
-    print(f"  ✅ LangChain 调用成功")
+    print("  ✅ LangChain 调用成功")
     print(f"     响应: {response.content[:50]}...")
-    print(f"     请检查 LangSmith 平台是否有新 trace")
+    print("     请检查 LangSmith 平台是否有新 trace")
 except Exception as e:
     print(f"  ⚠️  LangChain 调用失败 (但追踪应该已记录): {e}")
-    print(f"     请检查 LangSmith 平台是否有带错误的 trace")
+    print("     请检查 LangSmith 平台是否有带错误的 trace")
 
 print("\n" + "=" * 60)
 print("诊断完成!")

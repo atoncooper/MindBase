@@ -67,7 +67,7 @@ async def set_credentials(
             asr_key=req.asr_api_key, asr_base_url=req.asr_base_url, asr_model=req.asr_model,
         )
         return {"message": "API Key 配置已保存"}
-    except Exception as e:
+    except Exception:
         logger.exception("[SETTINGS] save failed")
         raise HTTPException(status_code=500, detail="配置保存失败")
 

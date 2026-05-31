@@ -3,7 +3,7 @@ Query Rewriter - Type Definitions
 
 核心数据类型定义，包含类型分层建模的 metadata 结构。
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Union
 

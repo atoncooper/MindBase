@@ -181,7 +181,7 @@ async def task_stream(
 
     except WebSocketDisconnect:
         logger.info(f"[TaskWS] disconnected uid={uid}")
-    except Exception as e:
+    except Exception:
         logger.exception("[TaskWS] error uid={}", uid)
     finally:
         _active_connections.get(uid, set()).discard(websocket)

@@ -6,7 +6,7 @@ Namespaces:
   user    = user:uid            → user info dict
 """
 
-from app.infra.cache import cache_manager
+from app.infra.cache import NamespaceCache, cache_manager
 
 # Shortcuts — created lazily on first access via cache_manager.namespace()
 
@@ -14,13 +14,11 @@ _TOKEN_TTL = 300   # 5 min — token → uid mapping
 _USER_TTL = 300    # 5 min — uid → user info
 
 
-def _token() -> "NamespaceCache":
-    from app.infra.cache import NamespaceCache
+def _token() -> NamespaceCache:
     return cache_manager.namespace("token", ttl=_TOKEN_TTL)
 
 
-def _user() -> "NamespaceCache":
-    from app.infra.cache import NamespaceCache
+def _user() -> NamespaceCache:
     return cache_manager.namespace("user", ttl=_USER_TTL)
 
 

@@ -6,9 +6,8 @@
 - 按 Provider 分布（饼图数据）
 - 按 Credential 分布（树状图数据）
 """
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, Query, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.database import get_db
 from app.response.credentials import UsageSummary

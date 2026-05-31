@@ -21,7 +21,6 @@ supported as fallbacks when the new-style name is not set.
 """
 
 import os
-from typing import Optional
 
 from app.config.loader import get_config
 

@@ -7,9 +7,9 @@ test_sub_query_splitter.py - 子查询拆分策略单元测试
 - 所有 sub_queries 都必须被返回（关键验证）
 """
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from app.services.query.sub_query_splitter import SubQuerySplitterStrategy
-from app.services.query.types import RewriteType, RewrittenQuery, SubQueryMetadata
+from app.services.query.types import RewriteType, SubQueryMetadata
 
 
 class TestSubQuerySplitterShouldApply:

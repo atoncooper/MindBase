@@ -5,7 +5,6 @@
 """
 
 from datetime import datetime
-from typing import Optional
 
 
 def _get_current_date() -> str:

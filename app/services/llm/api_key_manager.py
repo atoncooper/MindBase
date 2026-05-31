@@ -238,7 +238,7 @@ class ApiKeyManager:
         self, uid: int, db: AsyncSession
     ) -> Optional[UserCredentials]:
         """异步获取用户默认 LLM credential"""
-        cache_key = str(uid)
+        str(uid)
         entry = await self._get_cache_entry(uid, db)
         entry = self._normalize_entry(entry)
         if entry is None or entry.default_credential_id is None:

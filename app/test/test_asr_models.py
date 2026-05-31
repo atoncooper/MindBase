@@ -2,7 +2,6 @@
 # ASR 分P模型测试
 
 import pytest
-import pytest_asyncio
 from datetime import datetime
 
 
@@ -298,7 +297,6 @@ class TestASRPydanticSchemas:
     def test_video_page_version_info(self):
         """VideoVersionInfo"""
         from app.response.asr import VideoVersionInfo
-        from datetime import datetime
 
         now = datetime.utcnow()
         info = VideoVersionInfo(

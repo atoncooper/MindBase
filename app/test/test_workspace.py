@@ -400,7 +400,7 @@ class TestFrontendApiTypes:
 
     def test_chat_request_payload_workspace_pages_field(self):
         """验证 ChatRequest 能正确接收 workspace_pages"""
-        from app.response.chat import ChatRequest, WorkspacePage
+        from app.response.chat import ChatRequest
 
         payload = {
             "question": "测试问题",

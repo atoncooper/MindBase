@@ -294,7 +294,6 @@ async def get_quiz(quiz_uuid: str, include_answers: bool = Query(False)):
             f"but MongoDB returned 0 questions — check MongoDB connection and data"
         )
 
-    import json as _json
     return {
         "quiz_uuid": quiz_set.quiz_uuid,
         "title": quiz_set.title,

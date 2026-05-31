@@ -4,7 +4,7 @@ Bilibili RAG 知识库系统
 知识库路由 - 构建和管理知识库
 """
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Depends
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from loguru import logger
 from typing import List, Optional, Callable
 from pydantic import BaseModel
@@ -14,13 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db, get_db_context
 from app.models import FavoriteFolder, FavoriteVideo, VideoCache, Video
 from app.response.knowledge import ContentSource, VideoContent, VideoInfo, VideosResponse
+from app.services.async_task.tracker import TaskTracker
 from app.services.bilibili import BilibiliService
 from app.services.content_fetcher import ContentFetcher
 from app.services.asr import ASRService
 from app.services.rag import RAGService, get_rag_service
 from app.routers.auth import get_current_uid, _get_bili_cookies_by_uid
 from app.utils.bvid import bv_to_av
-from app.utils.cache import get_cache_service, cache_dependency_singleton
+from app.utils.cache import cache_dependency_singleton
 import re
 
 router = APIRouter(prefix="/knowledge", tags=["知识库"])
@@ -402,7 +403,7 @@ async def _sync_folder(
             processed_targets += 1
             if progress_callback:
                 progress_callback(meta["title"], processed_targets, total_targets)
-        except Exception as e:
+        except Exception:
             logger.exception("DB write failed bvid={}", bvid)
 
     # 删除无效向量

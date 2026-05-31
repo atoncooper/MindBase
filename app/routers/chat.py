@@ -30,14 +30,11 @@ from app.response import (
     ChatSessionResponse,
     ChatSessionListResponse,
     ChatHistoryResponse,
-    ChatHistoryQueryParams,
-    WorkspacePage,
 )
 from app.config import settings
 from app.routers.knowledge import get_rag_service
 from app.routers.auth import get_current_uid
 from app.services import chat_history as chat_history_service
-from app.services.auth import validate_token as _validate_token
 from app.services.query import RewriteResult, RewriteType, CONFIDENCE_THRESHOLD
 from app.services.rag import get_agentic_rag_service
 from app.services.rag.prompts import (
@@ -651,7 +648,7 @@ async def _get_video_titles_context(db: AsyncSession, folder_ids: List[int], lim
 async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optional[int] = None, rewrite_result: Optional[RewriteResult] = None) -> tuple[list, List[dict], str, Optional[RewriteResult]]:
     """准备 LLM 消息与来源信息"""
     question = request.question.strip()
-    rag = get_rag_service()
+    get_rag_service()
     folder_ids = []
     if uid:
         folder_ids = await _get_folder_ids_for_uid(db, uid, request.folder_ids)
@@ -980,11 +977,9 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
         async def generate():
             """标准 SSE 流式生成器（data: 前缀 + event type），完成后写历史"""
             full_content = ""
-            last_chunk = None
             start_time = time.time()
             try:
                 async for chunk in llm.astream(messages):
-                    last_chunk = chunk
                     chunk_text = chunk.content or ""
                     full_content += chunk_text
                     data = json.dumps({"type": "chunk", "content": chunk_text}, ensure_ascii=False)
@@ -1063,7 +1058,8 @@ async def search_videos(query: str, k: int = 5):
         results, seen_bvids = [], set()
         for doc in docs:
             bvid = doc.metadata.get("bvid", "")
-            if bvid in seen_bvids: continue
+            if bvid in seen_bvids:
+                continue
             seen_bvids.add(bvid)
             results.append({
                 "bvid": bvid,

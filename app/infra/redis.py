@@ -23,7 +23,6 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import json as _json
 import secrets
 import time

@@ -41,7 +41,7 @@ class VideoRepository:
         await db.execute(sa_delete(Video).where(Video.bvid == bvid))
         await db.commit()
 
-        now = datetime.utcnow()
+        datetime.utcnow()
         for p in pages:
             db.add(Video(
                 video_id=video_id,

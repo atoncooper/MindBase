@@ -2,7 +2,6 @@
 # 分P向量化模型测试
 
 import pytest
-import pytest_asyncio
 from datetime import datetime
 
 
@@ -163,7 +162,6 @@ class TestVideoVectorFields:
     async def test_video_page_vectorized_done(self, test_db):
         """测试向量化完成状态"""
         from app.models import Video
-        from datetime import datetime
 
         now = datetime.utcnow()
         page = Video(
@@ -224,7 +222,6 @@ class TestVectorPydanticSchemas:
     def test_vector_page_status_response__exists(self):
         """VectorPageStatusResponse exists=true"""
         from app.response.vector import VectorPageStatusResponse
-        from datetime import datetime
 
         now = datetime.utcnow()
         resp = VectorPageStatusResponse(

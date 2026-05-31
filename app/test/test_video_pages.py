@@ -155,7 +155,7 @@ async def test_get_video__bvid_case_insensitive():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 小写 bvid 会被正则拒绝（^[Bb][Vv] 要求 B/V），实际只有大写 BV 或小写 bv 通过
         # 小写 bv 应该也是合法的
-        response = await client.get("/api/knowledge/video/bv1gj411x7h7/pages")
+        await client.get("/api/knowledge/video/bv1gj411x7h7/pages")
         # 这个 bvid 格式正确但长度是 11，实际有效格式是 10 位
         # bv1gj411x7h7 有 11 个字符，应该是 400
 

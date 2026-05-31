@@ -204,7 +204,7 @@ class BilibiliService:
 
         try:
             data = response.json()
-        except Exception as e:
+        except Exception:
             body_preview = response.text[:500] if hasattr(response, "text") else "N/A"
             logger.warning(f"[BILIBILI] 收藏夹接口返回非 JSON: status={response.status_code} body={body_preview}")
             raise Exception(f"收藏夹接口返回异常: HTTP {response.status_code}")

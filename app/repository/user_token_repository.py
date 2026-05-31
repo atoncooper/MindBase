@@ -7,7 +7,7 @@ Handles token create, validate, and revoke operations at the data layer.
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 

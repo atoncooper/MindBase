@@ -129,6 +129,6 @@ class StepBackStrategy(RewriteStrategy):
                     specific_query=result.specific_query or result.step_back_query,
                 ),
             )
-        except Exception as e:
+        except Exception:
             # 结构化输出失败时返回 None，由 QueryRewriter 降级为直接检索
             return None
