@@ -7,7 +7,8 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.database import get_db_context
-from app.models import VideoCache, ContentSource, VideoContent
+from app.models import VideoCache
+from app.response.knowledge import ContentSource, VideoContent
 from app.services.rag import RAGService
 
 

@@ -6,12 +6,12 @@ UsageRepository — credential_usage 表的数据库操作
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, func, delete, insert, text
+from sqlalchemy import select, func, delete, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from app.models import CredentialUsage, UsageSummary, ProviderUsage, CredentialUsageItem
-from app.models import UserCredential
+from app.models import CredentialUsage, UserCredential
+from app.response.credentials import UsageSummary, ProviderUsage, CredentialUsageItem
 
 
 class UsageRepository:
@@ -19,7 +19,7 @@ class UsageRepository:
 
     async def record(
         self,
-        session_id: str,
+        uid: int,
         credential_id: Optional[int],
         provider: Optional[str],
         model: Optional[str],
@@ -30,7 +30,7 @@ class UsageRepository:
         """记录一次 LLM 调用的 token 用量"""
         total = prompt_tokens + completion_tokens
         entry = CredentialUsage(
-            session_id=session_id,
+            uid=uid,
             credential_id=credential_id,
             provider=provider,
             model=model,
@@ -43,29 +43,28 @@ class UsageRepository:
         await db.commit()
         logger.debug(
             f"[USAGE_REPO] recorded provider={provider} tokens={total} "
-            f"credential_id={credential_id} session={session_id[:8]}..."
+            f"credential_id={credential_id} uid={uid}"
         )
 
     async def get_summary(
-        self, session_id: str, db: AsyncSession, days: int = 30
+        self, uid: int, db: AsyncSession, days: int = 30
     ) -> UsageSummary:
         """获取用户用量汇总（总 token + 调用次数 + 按 provider/credential 分布）"""
         since = datetime.utcnow() - timedelta(days=days)
 
-        # 总 token + 调用次数
         total_result = await db.execute(
             select(
                 func.coalesce(func.sum(CredentialUsage.total_tokens), 0),
                 func.coalesce(func.sum(CredentialUsage.api_calls), 0),
             ).where(
-                CredentialUsage.session_id == session_id,
+                CredentialUsage.uid == uid,
                 CredentialUsage.created_at >= since,
             )
         )
         total_tokens, total_api_calls = total_result.one()
 
-        by_provider = await self.get_by_provider(session_id, db, days)
-        by_credential = await self.get_by_credential(session_id, db, days)
+        by_provider = await self.get_by_provider(uid, db, days)
+        by_credential = await self.get_by_credential(uid, db, days)
 
         return UsageSummary(
             total_tokens=total_tokens,
@@ -75,7 +74,7 @@ class UsageRepository:
         )
 
     async def get_by_provider(
-        self, session_id: str, db: AsyncSession, days: int = 30
+        self, uid: int, db: AsyncSession, days: int = 30
     ) -> list[ProviderUsage]:
         """按 provider 聚合用量（饼图数据）"""
         since = datetime.utcnow() - timedelta(days=days)
@@ -87,7 +86,7 @@ class UsageRepository:
                 func.sum(CredentialUsage.api_calls).label("api_calls"),
             )
             .where(
-                CredentialUsage.session_id == session_id,
+                CredentialUsage.uid == uid,
                 CredentialUsage.created_at >= since,
             )
             .group_by(CredentialUsage.provider)
@@ -105,7 +104,7 @@ class UsageRepository:
         ]
 
     async def get_by_credential(
-        self, session_id: str, db: AsyncSession, days: int = 30
+        self, uid: int, db: AsyncSession, days: int = 30
     ) -> list[CredentialUsageItem]:
         """按 credential 聚合用量（树状图数据），NULL credential_id = 系统默认"""
         since = datetime.utcnow() - timedelta(days=days)
@@ -118,7 +117,7 @@ class UsageRepository:
                 func.sum(CredentialUsage.api_calls).label("api_calls"),
             )
             .where(
-                CredentialUsage.session_id == session_id,
+                CredentialUsage.uid == uid,
                 CredentialUsage.created_at >= since,
             )
             .group_by(CredentialUsage.credential_id, CredentialUsage.provider)
@@ -126,7 +125,6 @@ class UsageRepository:
         )
         rows = result.all()
 
-        # 查询 credential 名称
         cred_ids = [r.credential_id for r in rows if r.credential_id is not None]
         name_map: dict[int, str] = {}
         if cred_ids:

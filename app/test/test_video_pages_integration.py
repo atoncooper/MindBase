@@ -1,4 +1,4 @@
-# app/test/test_video_pages_integration.py
+# app/test/test_video_integration.py
 
 import pytest
 from httpx import AsyncClient, ASGITransport

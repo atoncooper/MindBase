@@ -12,32 +12,21 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, get_db_context
-from app.models import FavoriteFolder, FavoriteVideo, VideoCache, UserSession, ContentSource, VideoContent, VideoPageInfo, VideoPagesResponse, VideoPage
+from app.models import FavoriteFolder, FavoriteVideo, VideoCache, Video
+from app.response.knowledge import ContentSource, VideoContent, VideoInfo, VideosResponse
 from app.services.bilibili import BilibiliService
 from app.services.content_fetcher import ContentFetcher
 from app.services.asr import ASRService
-from app.services.rag import RAGService
-from app.routers.auth import get_session
+from app.services.rag import RAGService, get_rag_service
+from app.routers.auth import get_current_uid, _get_bili_cookies_by_uid
+from app.utils.bvid import bv_to_av
 from app.utils.cache import get_cache_service, cache_dependency_singleton
 import re
 
 router = APIRouter(prefix="/knowledge", tags=["知识库"])
 
-# 全局 RAG 服务实例
-_rag_service: Optional[RAGService] = None
-
-# 构建任务状态
+# Build task state (legacy in-memory)
 build_tasks = {}
-
-
-def get_rag_service() -> RAGService:
-    """获取 RAG 服务实例（支持用户自定义 API Key）"""
-    global _rag_service
-    if _rag_service is None:
-        from app.main import app
-        manager = getattr(app.state, "api_key_manager", None)
-        _rag_service = RAGService(api_key_manager=manager)
-    return _rag_service
 
 
 class BuildRequest(BaseModel):
@@ -83,15 +72,15 @@ class SyncResult(BaseModel):
 
 async def _get_or_create_folder(
     db: AsyncSession,
-    session_id: str,
+    uid: int,
     media_id: int,
     title: Optional[str] = None,
     media_count: Optional[int] = None,
 ) -> FavoriteFolder:
-    """获取或创建收藏夹记录"""
+    """获取或创建收藏夹记录 (uid-based)"""
     result = await db.execute(
         select(FavoriteFolder).where(
-            FavoriteFolder.session_id == session_id,
+            FavoriteFolder.uid == uid,
             FavoriteFolder.media_id == media_id,
         )
     )
@@ -99,7 +88,7 @@ async def _get_or_create_folder(
 
     if folder is None:
         folder = FavoriteFolder(
-            session_id=session_id,
+            uid=uid,
             media_id=media_id,
             title=title or "",
             media_count=media_count or 0,
@@ -166,7 +155,7 @@ async def _sync_folder(
     bili: BilibiliService,
     rag: RAGService,
     content_fetcher: ContentFetcher,
-    session_id: str,
+    uid: int,
     folder_id: int,
     exclude_bvids: Optional[set[str]] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
@@ -237,7 +226,7 @@ async def _sync_folder(
 
     folder = await _get_or_create_folder(
         db,
-        session_id=session_id,
+        uid=uid,
         media_id=folder_id,
         title=info.get("title"),
         media_count=valid_count,
@@ -265,116 +254,140 @@ async def _sync_folder(
     def _is_better_source(new_source: str, old_source: Optional[str]) -> bool:
         return source_priority.get(new_source, 0) > source_priority.get(old_source or "", 0)
 
-    def _should_refresh_cache(cache: Optional[VideoCache]) -> bool:
-        if not cache:
-            return True
-        text = (cache.content or "").strip()
-        if len(text) < 50:
-            return True
-        if cache.content_source in (None, "", ContentSource.BASIC_INFO.value):
-            return True
-        return False
+    async def _get_content_text(bvid: str, cid: int, title: str, content_fetcher, meta: dict) -> tuple[str, str]:
+        """Get ASR text for a video. Tries MongoDB → fetch → save to MongoDB.
+        Returns (text, source).
+        MySQL video_cache.content is NEVER written — full text lives in MongoDB only.
+        """
+        from app.infra.mongo import is_enabled as _mongo_ok
+        from app.repository.mongo_asr_repository import get_latest, save_asr
+        # 1. Try MongoDB (shared across users — deduplication)
+        if _mongo_ok():
+            try:
+                doc = await get_latest(bvid, cid)
+                if doc and doc.get("content") and len(doc["content"].strip()) >= 50:
+                    logger.info(f"[{bvid}] content found in MongoDB (shared)")
+                    return doc["content"], doc.get("content_source", "asr")
+            except Exception as e:
+                logger.warning(f"[{bvid}] MongoDB read failed: {e}")
 
-    def _is_asr_cache_usable(cache: Optional[VideoCache]) -> bool:
-        if not cache:
-            return False
-        if cache.content_source != ContentSource.ASR.value:
-            return False
-        text = (cache.content or "").strip()
-        return len(text) >= 50
+        # 2. Fetch from Bilibili (ASR / subtitle / AI summary)
+        content = await content_fetcher.fetch_content(bvid, cid=cid, title=title)
+        text = (content.content or "").strip() if content else ""
+        source = content.source.value if content else ContentSource.BASIC_INFO.value
 
-    # 需要更新的已存在视频（缓存过少或来源较弱）
+        if not text or len(text) < 50:
+            logger.warning(f"[{bvid}] fetched content too short ({len(text)} chars)")
+            return text, source
+
+        # 3. Save to MongoDB (shared — future users skip ASR)
+        if _mongo_ok():
+            try:
+                await save_asr(
+                    video_id=bv_to_av(bvid),
+                    bvid=bvid, cid=cid or 0, page_index=0,
+                    page_title=meta.get("title", title),
+                    content=text, content_source=source,
+                )
+                logger.info(f"[{bvid}] content saved to MongoDB (shared)")
+            except Exception as e:
+                logger.warning(f"[{bvid}] MongoDB save failed: {e}")
+
+        return text, source
+
+    # Mark cache rows that need content refresh (legacy check)
     update_candidates: set[str] = set()
     for bvid in current_bvids & existing_bvids:
         if bvid in added:
             continue
         result = await db.execute(select(VideoCache).where(VideoCache.bvid == bvid))
         cache = result.scalar_one_or_none()
-        if _should_refresh_cache(cache):
+        if not cache or not cache.is_processed:
             update_candidates.add(bvid)
 
-    # 新增/更新向量与关联
+    # Process each video: get content → vectorize
     targets = list(added) + list(update_candidates)
     total_targets = len(targets)
     processed_targets = 0
     if progress_callback:
         progress_callback("准备处理", processed_targets, total_targets)
+
     for bvid in targets:
         meta = video_map[bvid]
-        
-        # 尝试添加到向量库（可能失败，但不影响记录入库）
+        cid = meta.get("cid", 0)
+
         try:
-            global_count = await db.scalar(
-                select(func.count()).select_from(FavoriteVideo).where(FavoriteVideo.bvid == bvid)
+            # ── Dedup: check if already vectorized ──
+            from sqlalchemy import select as sa_select
+            vec_result = await db.execute(
+                sa_select(Video).where(Video.bvid == bvid, Video.cid == cid)
             )
-            # 检查缓存内容是否缺失
+            video_page = vec_result.scalar_one_or_none()
+            if video_page and video_page.is_vectorized == "done":
+                logger.info(f"[{bvid}] already vectorized (shared), skipping")
+                processed_targets += 1
+                if progress_callback:
+                    progress_callback(meta["title"], processed_targets, total_targets)
+                continue
+
+            # ── Get content (MongoDB → fetch ASR → save to MongoDB) ──
+            text, source = await _get_content_text(bvid, cid, meta["title"], content_fetcher, meta)
+
+            if not text or len(text) < 50:
+                logger.warning(f"[{bvid}] insufficient content, skipping vectorization")
+                processed_targets += 1
+                if progress_callback:
+                    progress_callback(meta["title"], processed_targets, total_targets)
+                continue
+
+            # ── Update video_cache metadata (MySQL, no content stored) ──
             result = await db.execute(select(VideoCache).where(VideoCache.bvid == bvid))
             cache = result.scalar_one_or_none()
-            old_content = (cache.content or "").strip() if cache else ""
-            old_source = cache.content_source if cache else None
-
-            needs_fetch = _should_refresh_cache(cache)
-            content = None
-            should_update_cache = False
-            should_reindex = False
-
-            if needs_fetch:
-                content = await content_fetcher.fetch_content(
-                    bvid, cid=meta["cid"], title=meta["title"]
-                )
-                new_text = (content.content or "").strip() if content else ""
-                new_source = content.source.value if content else None
-
-                if not old_content:
-                    should_update_cache = True
-                    should_reindex = True
-                elif new_source and _is_better_source(new_source, old_source):
-                    should_update_cache = True
-                    should_reindex = True
-                elif new_text and new_text != old_content:
-                    should_update_cache = True
-                    should_reindex = True
-
-                if cache and should_update_cache:
-                    cache.content = content.content
-                    cache.content_source = content.source.value
-                    cache.outline_json = content.outline
-                    cache.is_processed = True
-                    logger.info(f"[{bvid}] 已写入缓存: source={cache.content_source}")
-
-            # 需要重建向量：新增/升级/内容变化 或 向量缺失
-            if (global_count == 0) or should_reindex:
-                if not content:
-                    if _is_asr_cache_usable(cache):
-                        content = VideoContent(
-                            bvid=bvid,
-                            title=meta["title"],
-                            content=(cache.content or "").strip(),
-                            source=ContentSource.ASR,
-                            outline=cache.outline_json,
-                        )
-                        cache.is_processed = True
-                        logger.info(f"[{bvid}] 使用缓存 ASR 内容重建向量")
-                    else:
-                        content = await content_fetcher.fetch_content(
-                            bvid, cid=meta["cid"], title=meta["title"]
-                        )
-                        if cache:
-                            cache.content = content.content
-                            cache.content_source = content.source.value
-                            cache.outline_json = content.outline
-                            cache.is_processed = True
-                            logger.info(f"[{bvid}] 已写入缓存: source={cache.content_source}")
-                try:
-                    rag.delete_video(bvid)
-                except Exception as e:
-                    logger.warning(f"删除旧向量失败 [{bvid}]: {e}")
-                chunks = rag.add_video_content(content)
-                logger.info(f"[{bvid}] 向量化完成，块数={chunks}")
+            if cache:
+                cache.is_processed = True
+                cache.content_source = source
+                cache.content = None  # Full text in MongoDB, MySQL stores only metadata
             else:
-                logger.info(f"[{bvid}] 内容未变化或无需升级，跳过向量化")
+                cache = VideoCache(
+                    id=bv_to_av(bvid),
+                    bvid=bvid, title=meta["title"],
+                    is_processed=True, content_source=source,
+                )
+                db.add(cache)
+
+            # ── Vectorize ──
+            try:
+                rag.delete_video(bvid)
+            except Exception as e:
+                logger.warning(f"[{bvid}] delete old vectors failed: {e}")
+
+            content_obj = VideoContent(
+                bvid=bvid,
+                title=meta["title"],
+                content=text,
+                source=ContentSource.ASR,
+                outline=cache.outline_json if cache else None,
+            )
+            chunks = rag.add_video_content(content_obj)
+            logger.info(f"[{bvid}] vectorized: {chunks} chunks")
+
+            # Mark video page as vectorized
+            if not video_page:
+                video_page = Video(
+                    bvid=bvid, cid=cid, page_index=0,
+                    page_title=meta["title"],
+                    is_processed=True, is_vectorized="done",
+                    vector_chunk_count=chunks,
+                )
+                db.add(video_page)
+            else:
+                video_page.is_vectorized = "done"
+                video_page.vector_chunk_count = chunks
+
+            await db.commit()
+
         except Exception as e:
-            logger.warning(f"添加向量失败 [{bvid}]: {e} (仍会记录到数据库)")
+            logger.warning(f"[{bvid}] vectorization failed: {e} (recorded in DB anyway)")
         
         # 无论向量是否添加成功，都写入 FavoriteVideo 记录
         try:
@@ -390,7 +403,7 @@ async def _sync_folder(
             if progress_callback:
                 progress_callback(meta["title"], processed_targets, total_targets)
         except Exception as e:
-            logger.error(f"写入数据库失败 [{bvid}]: {e}")
+            logger.exception("DB write failed bvid={}", bvid)
 
     # 删除无效向量
     if removed:
@@ -445,76 +458,65 @@ async def get_knowledge_stats():
         stats = rag.get_collection_stats()
         return stats
     except Exception as e:
-        logger.error(f"获取统计信息失败: {e}")
+        logger.exception("Failed to get knowledge stats")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/folders/status", response_model=List[FolderStatus])
 async def get_folder_status(
-    session_id: str = Query(..., description="会话ID"),
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取收藏夹入库状态（跨 Session 查找同一用户的数据）"""
-    
-    # 1. 先查当前 Session 对应的用户 MID
-    result = await db.execute(
-        select(UserSession.bili_mid).where(UserSession.session_id == session_id)
-    )
-    mid = result.scalar()
-    
-    target_session_ids = [session_id]
-    
-    if mid:
-        # 2. 如果有 MID，查找该用户所有的 Session ID
-        result = await db.execute(
-            select(UserSession.session_id).where(UserSession.bili_mid == mid)
+    """获取收藏夹入库状态 — 按实际向量化页数统计"""
+
+    # 1. 查该用户所有有效收藏夹
+    folders_result = await db.execute(
+        select(
+            FavoriteFolder.id,
+            FavoriteFolder.media_id,
+            FavoriteFolder.media_count,
+            FavoriteFolder.last_sync_at,
+        ).where(
+            FavoriteFolder.uid == uid,
+            FavoriteFolder.deleted_at.is_(None),
         )
-        target_session_ids = [row[0] for row in result.fetchall()]
-    
-    # 3. 查询所有关联 Session 的收藏夹状态
-    # 使用 group_by media_id 来去重，取最新的那个
-    rows = await db.execute(
-        select(FavoriteFolder.id, FavoriteFolder.media_id, FavoriteFolder.last_sync_at)
-        .where(FavoriteFolder.session_id.in_(target_session_ids))
-        .order_by(FavoriteFolder.updated_at.desc())
     )
-    
-    # 手动按 media_id 去重，保留最新的
-    folders_map = {}
-    for row in rows.fetchall():
-        fid, media_id, last_sync = row
-        if media_id not in folders_map:
-            folders_map[media_id] = (fid, last_sync)
-            
-    if not folders_map:
+    folders = folders_result.all()
+    if not folders:
         return []
 
-    folder_ids = [v[0] for v in folders_map.values()]
-    
-    # 4. 统计视频数量
-    counts = await db.execute(
-        select(FavoriteVideo.folder_id, func.count(func.distinct(FavoriteVideo.bvid)))
-        .where(FavoriteVideo.folder_id.in_(folder_ids))
-        .group_by(FavoriteVideo.folder_id)
-    )
-    count_map = {row[0]: row[1] for row in counts.fetchall()}
+    # {folder_id: (media_id, media_count, last_sync_at)}
+    folder_meta = {
+        row.id: (row.media_id, row.media_count, row.last_sync_at)
+        for row in folders
+    }
+    folder_ids = list(folder_meta.keys())
 
-    result = []
-    for media_id, (folder_id, last_sync_at) in folders_map.items():
-        # 读取有效视频数（过滤失效后的口径）
-        folder_row = await db.execute(
-            select(FavoriteFolder.media_count).where(FavoriteFolder.id == folder_id)
+    # 2. 按每个收藏夹统计已向量化的分P数
+    counts_result = await db.execute(
+        select(
+            FavoriteVideo.folder_id,
+            func.count(Video.id),
+        ).select_from(FavoriteVideo).join(
+            Video,
+            Video.bvid == FavoriteVideo.bvid,
+        ).where(
+            FavoriteVideo.folder_id.in_(folder_ids),
+            Video.is_vectorized == "done",
+        ).group_by(FavoriteVideo.folder_id)
+    )
+    count_map = {row[0]: row[1] for row in counts_result.all()}
+
+    # 3. 组装返回
+    return [
+        FolderStatus(
+            media_id=meta[0],
+            indexed_count=count_map.get(folder_id, 0),
+            media_count=meta[1],
+            last_sync_at=meta[2],
         )
-        media_count = folder_row.scalar()
-        result.append(
-            FolderStatus(
-                media_id=media_id,
-                indexed_count=count_map.get(folder_id, 0),
-                media_count=media_count,
-                last_sync_at=last_sync_at,
-            )
-        )
-    return result
+        for folder_id, meta in folder_meta.items()
+    ]
 
 
 class VectorizedPageItem(BaseModel):
@@ -530,60 +532,43 @@ class VectorizedPageItem(BaseModel):
 
 @router.get("/pages/vectorized", response_model=List[VectorizedPageItem])
 async def get_vectorized_pages(
-    session_id: str = Query(..., description="会话ID"),
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取已向量化的分P列表（跨 Session 查找同一用户的数据）"""
-    # 1. 跨 Session 查找
-    result = await db.execute(
-        select(UserSession.bili_mid).where(UserSession.session_id == session_id)
+    """Get vectorized pages for the current user (uid-scoped)."""
+    # 1. Get all folder ids for this user
+    folders_result = await db.execute(
+        select(FavoriteFolder.id)
+        .where(FavoriteFolder.uid == uid, FavoriteFolder.deleted_at.is_(None))
     )
-    mid = result.scalar()
-    target_session_ids = [session_id]
-    if mid:
-        result = await db.execute(
-            select(UserSession.session_id).where(UserSession.bili_mid == mid)
-        )
-        target_session_ids = [row[0] for row in result.fetchall()]
-
-    # 2. 获取这些 session 的所有收藏夹
-    result = await db.execute(
-        select(FavoriteFolder.id, FavoriteFolder.media_id)
-        .where(FavoriteFolder.session_id.in_(target_session_ids))
-    )
-    folder_rows = result.fetchall()
-    if not folder_rows:
+    folder_ids = [row[0] for row in folders_result.all()]
+    if not folder_ids:
         return []
 
-    folder_ids = [row[0] for row in folder_rows]
-
-    # 3. 获取收藏夹中的所有 bvid
-    result = await db.execute(
+    # 2. Get all bvids belonging to those folders
+    bvids_result = await db.execute(
         select(FavoriteVideo.bvid)
         .where(FavoriteVideo.folder_id.in_(folder_ids))
     )
-    bvids = list(set(row[0] for row in result.fetchall()))
+    bvids = list(set(row[0] for row in bvids_result.all() if row[0]))
     if not bvids:
         return []
 
-    # 4. 获取已向量化的分P
-    result = await db.execute(
-        select(VideoPage)
-        .where(
-            VideoPage.bvid.in_(bvids),
-            VideoPage.is_vectorized == "done",
-        )
-        .order_by(VideoPage.bvid, VideoPage.page_index)
+    # 3. Get vectorized pages from video table
+    pages_result = await db.execute(
+        select(Video)
+        .where(Video.bvid.in_(bvids), Video.is_vectorized == "done")
+        .order_by(Video.bvid, Video.page_index)
     )
-    pages = result.scalars().all()
+    pages = pages_result.scalars().all()
 
-    # 5. 获取视频标题（从 VideoCache）
+    # 4. Resolve video titles from VideoCache
     bvid_set = {p.bvid for p in pages}
-    result = await db.execute(
+    titles_result = await db.execute(
         select(VideoCache.bvid, VideoCache.title)
         .where(VideoCache.bvid.in_(bvid_set))
     )
-    title_map = {row[0]: row[1] for row in result.fetchall()}
+    title_map = {row[0]: row[1] for row in titles_result.all()}
 
     return [
         VectorizedPageItem(
@@ -602,22 +587,12 @@ async def get_vectorized_pages(
 @router.post("/folders/sync", response_model=List[SyncResult])
 async def sync_folders(
     request: SyncRequest,
-    session_id: str = Query(..., description="会话ID"),
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """同步收藏夹到向量库"""
-    session = await get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=401, detail="未登录或会话已过期")
+    bili, bili_mid = await _get_bili_cookies_by_uid(uid, db)
 
-    cookies = session.get("cookies", {})
-    user_info = session.get("user_info", {})
-
-    bili = BilibiliService(
-        sessdata=cookies.get("SESSDATA"),
-        bili_jct=cookies.get("bili_jct"),
-        dedeuserid=cookies.get("DedeUserID"),
-    )
     rag = get_rag_service()
     asr_service = ASRService()
     content_fetcher = ContentFetcher(bili, asr_service)
@@ -625,10 +600,7 @@ async def sync_folders(
     try:
         folder_ids = request.folder_ids or []
         if not folder_ids:
-            mid = user_info.get("mid") or cookies.get("DedeUserID")
-            if not mid:
-                raise HTTPException(status_code=400, detail="无法获取用户信息")
-            folders = await bili.get_user_favorites(mid=mid)
+            folders = await bili.get_user_favorites(mid=bili_mid)
             folder_ids = [folder.get("id") for folder in folders if folder.get("id")]
 
         results: List[SyncResult] = []
@@ -639,12 +611,12 @@ async def sync_folders(
                     bili,
                     rag,
                     content_fetcher,
-                    session_id,
+                    uid,
                     folder_id,
                 )
                 results.append(SyncResult(**result))
             except Exception as e:
-                logger.error(f"同步收藏夹失败 [{folder_id}]: {e}")
+                logger.exception("Folder sync failed folder_id={}", folder_id)
                 results.append(
                     SyncResult(
                         folder_id=folder_id,
@@ -666,30 +638,30 @@ async def sync_folders(
 async def build_knowledge_base(
     request: BuildRequest,
     background_tasks: BackgroundTasks,
-    session_id: str = Query(..., description="会话ID"),
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
 ):
-    """构建知识库（后台任务）"""
-    session = await get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=401, detail="未登录或会话已过期")
+    """构建知识库（后台任务，写入 async_tasks 表）"""
+    bili, _bili_mid = await _get_bili_cookies_by_uid(uid, db)
+    sessdata = bili.sessdata
 
-    import uuid
-    task_id = str(uuid.uuid4())
-
-    build_tasks[task_id] = {
-        "status": "pending",
-        "progress": 0,
-        "current_step": "初始化中...",
-        "total_videos": 0,
-        "processed_videos": 0,
-        "message": "",
+    tracker = TaskTracker()
+    task_id = await tracker.create(
+        uid=uid,
+        task_type="build",
+        target={"folder_ids": request.folder_ids},
+    )
+    # Legacy in-memory compat (existing polling endpoint still reads build_tasks)
+    build_tasks[task_id] = build_tasks.get(task_id) or {
+        "status": "pending", "progress": 0, "current_step": "初始化中...",
+        "total_videos": 0, "processed_videos": 0, "message": "",
     }
 
     background_tasks.add_task(
         _build_knowledge_base_task,
         task_id,
-        session_id,
-        session,
+        uid,
+        sessdata,
         request.folder_ids,
         request.exclude_bvids or [],
     )
@@ -699,23 +671,35 @@ async def build_knowledge_base(
 
 async def _build_knowledge_base_task(
     task_id: str,
-    session_id: str,
-    session: dict,
+    uid: int,
+    sessdata: str,
     folder_ids: List[int],
     exclude_bvids: List[str],
 ):
-    """后台构建任务"""
-    cookies = session.get("cookies", {})
+    """后台构建任务 — 通过 TaskTracker 写入 async_tasks 表，完成后广播 WebSocket。"""
+    from app.services.async_task.tracker import TaskTracker
+
+    def _notify(status: str, **kwargs) -> None:
+        """Update legacy state + broadcast to WebSocket clients."""
+        legacy_state(task_id, status, **kwargs)
+        try:
+            from app.routers.tasks_ws import broadcast_task_update
+            import asyncio
+            task_info = {
+                "task_id": task_id, "task_type": "build", "uid": uid,
+                "status": status, **kwargs,
+            }
+            asyncio.ensure_future(broadcast_task_update(uid, task_info))
+        except Exception:
+            pass
+
+    tracker = TaskTracker()
 
     try:
-        build_tasks[task_id]["status"] = "running"
-        build_tasks[task_id]["current_step"] = "同步收藏夹..."
+        await tracker.start(task_id)
+        legacy_state(task_id, "running", "同步收藏夹...")
 
-        bili = BilibiliService(
-            sessdata=cookies.get("SESSDATA"),
-            bili_jct=cookies.get("bili_jct"),
-            dedeuserid=cookies.get("DedeUserID"),
-        )
+        bili = BilibiliService(sessdata=sessdata, bili_jct="")
         asr_service = ASRService()
         content_fetcher = ContentFetcher(bili, asr_service)
         rag = get_rag_service()
@@ -723,64 +707,113 @@ async def _build_knowledge_base_task(
         try:
             total_folders = len(folder_ids)
             if total_folders == 0:
-                build_tasks[task_id]["status"] = "completed"
-                build_tasks[task_id]["progress"] = 100
-                build_tasks[task_id]["message"] = "没有需要处理的收藏夹"
+                await tracker.complete(task_id, {"message": "没有需要处理的收藏夹"})
+                _notify("done", progress=100, current_step="完成")
                 return
 
-            processed = 0
+            total_videos_processed = 0
             total_added = 0
             total_removed = 0
 
             async with get_db_context() as db:
                 for idx, folder_id in enumerate(folder_ids, start=1):
-                    build_tasks[task_id]["current_step"] = f"同步收藏夹 {folder_id}"
+                    folder_progress = int((idx / total_folders) * 100)
+                    await tracker.step(
+                        task_id,
+                        name=f"folder:{folder_id}",
+                        status="processing",
+                        progress=folder_progress,
+                    )
+                    legacy_state(task_id, f"同步收藏夹 {folder_id}", progress=folder_progress)
 
-                    def progress_cb(title: str, processed_count: int = 0, total_count: int = 0):
-                        build_tasks[task_id]["current_step"] = f"处理: {title}"
-                        if total_count:
-                            build_tasks[task_id]["total_videos"] = total_count
-                        if processed_count:
-                            build_tasks[task_id]["processed_videos"] = processed_count
-                            if build_tasks[task_id]["total_videos"]:
-                                build_tasks[task_id]["progress"] = int(
-                                    (processed_count / build_tasks[task_id]["total_videos"]) * 100
-                                )
+                    def progress_cb(title: str, count: int = 0, total: int = 0):
+                        legacy_state(task_id, f"处理: {title}",
+                                     processed=count, total_videos=total)
 
                     result = await _sync_folder(
-                        db,
-                        bili,
-                        rag,
-                        content_fetcher,
-                        session_id,
-                        folder_id,
+                        db, bili, rag, content_fetcher,
+                        uid, folder_id,
                         exclude_bvids=set(exclude_bvids),
                         progress_callback=progress_cb,
                     )
 
-                    processed = idx
+                    total_videos_processed += result.get("added", 0) + result.get("indexed", 0)
                     total_added += result["added"]
                     total_removed += result["removed"]
 
-            build_tasks[task_id]["status"] = "completed"
-            build_tasks[task_id]["progress"] = 100
-            build_tasks[task_id]["processed_videos"] = total_folders
-            build_tasks[task_id]["current_step"] = "完成"
-            build_tasks[task_id]["message"] = f"同步完成：新增 {total_added}，移除 {total_removed}"
+            await tracker.complete(
+                task_id,
+                result={
+                    "folders_processed": total_folders,
+                    "videos_added": total_added,
+                    "videos_removed": total_removed,
+                },
+            )
+            _notify("done", progress=100,
+                    current_step="完成",
+                    message=f"同步完成：新增 {total_added}，移除 {total_removed}")
 
             logger.info(f"知识库构建完成: 新增 {total_added}，移除 {total_removed}")
         finally:
             await bili.close()
 
     except Exception as e:
-        logger.error(f"构建任务失败: {e}")
-        build_tasks[task_id]["status"] = "failed"
-        build_tasks[task_id]["message"] = str(e)
+        logger.exception("Build task failed")
+        await tracker.fail(task_id, str(e))
+        _notify("failed", message=str(e))
+
+
+def legacy_state(task_id: str, status: str, step: str = "",
+                 progress: int = 0, processed: int = 0, total_videos: int = 0,
+                 message: str = "") -> None:
+    """Update legacy in-memory build_tasks dict for backward compat."""
+    t = build_tasks.setdefault(task_id, {})
+    if status:
+        t["status"] = status
+    if step:
+        t["current_step"] = step
+    if progress is not None:
+        t["progress"] = progress
+    if processed:
+        t["processed_videos"] = processed
+    if total_videos:
+        t["total_videos"] = total_videos
+    if message:
+        t["message"] = message
 
 
 @router.get("/build/status/{task_id}", response_model=BuildStatus)
 async def get_build_status(task_id: str):
-    """获取构建任务状态"""
+    """获取构建任务状态 — async_tasks 表优先，build_tasks 内存兜底"""
+    # 1. Try async_tasks table (persisted)
+    try:
+        from app.database import get_db_context
+        from sqlalchemy import select
+        from app.models import AsyncTask
+
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(AsyncTask).where(AsyncTask.task_id == task_id)
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                current_step = ""
+                if row.steps:
+                    last = row.steps[-1] if row.steps else {}
+                    current_step = last.get("name", "")
+                return BuildStatus(
+                    task_id=task_id,
+                    status=row.status or "pending",
+                    progress=row.progress or 0,
+                    current_step=current_step,
+                    total_videos=row.target.get("folder_ids", []) if row.target else [],
+                    processed_videos=len(row.steps or []),
+                    message=row.error or "",
+                )
+    except Exception as e:
+        logger.warning(f"[BuildStatus] async_tasks read failed: {e}")
+
+    # 2. Fallback: in-memory build_tasks (legacy)
     if task_id not in build_tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -804,7 +837,7 @@ async def clear_knowledge_base():
         rag.clear_collection()
         return {"message": "知识库已清空"}
     except Exception as e:
-        logger.error(f"清空知识库失败: {e}")
+        logger.exception("Failed to clear knowledge base")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -816,7 +849,7 @@ async def delete_video_from_knowledge(bvid: str):
         rag.delete_video(bvid)
         return {"message": f"已删除视频 {bvid}"}
     except Exception as e:
-        logger.error(f"删除视频失败: {e}")
+        logger.exception("Failed to delete video")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -826,8 +859,8 @@ PAGES_CACHE_KEY = "video:pages:{bvid}"
 PAGES_CACHE_TTL = 86400  # 24小时
 
 
-@router.get("/video/{bvid}/pages", response_model=VideoPagesResponse)
-async def get_video_pages(
+@router.get("/video/{bvid}/pages", response_model=VideosResponse, deprecated=True)
+async def get_video(
     bvid: str,
     cache=Depends(cache_dependency_singleton()),
 ):
@@ -846,14 +879,14 @@ async def get_video_pages(
     # 2. 查缓存
     cached = cache.get(cache_key)
     if cached:
-        return VideoPagesResponse(**cached)
+        return VideosResponse(**cached)
 
     # 3. 缓存未命中，调 B站 API
     bili = BilibiliService()
     try:
         video_info = await bili.get_video_info(bvid)
     except Exception as e:
-        logger.error(f"[PAGES] B站 API 调用失败 bvid={bvid}: {e}")
+        logger.exception("[PAGES] Bilibili API call failed bvid={}", bvid)
         raise HTTPException(status_code=502, detail=f"B站 API 调用失败: {e}")
     finally:
         await bili.close()
@@ -866,7 +899,7 @@ async def get_video_pages(
         "bvid": bvid,
         "title": video_info.get("title", ""),
         "pages": [
-            VideoPageInfo(
+            VideoInfo(
                 cid=p.get("cid"),
                 page=p.get("page"),
                 title=p.get("part", ""),
@@ -883,5 +916,5 @@ async def get_video_pages(
     except Exception as e:
         logger.warning(f"[PAGES] 缓存写入失败 bvid={bvid}: {e}")
 
-    return VideoPagesResponse(**data)
+    return VideosResponse(**data)
 

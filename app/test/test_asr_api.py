@@ -71,10 +71,10 @@ class TestGetASRContent:
     @pytest.mark.asyncio
     async def test_content_exists(self, client, test_db):
         """存在返回完整内容"""
-        from app.models import VideoPage
+        from app.models import Video
 
         # 写入数据
-        page = VideoPage(
+        page = Video(
             bvid="BV1exist123",
             cid=888,
             page_index=0,
@@ -130,10 +130,10 @@ class TestCreateASR:
     @pytest.mark.asyncio
     async def test_create_idempotent_existing(self, client, test_db):
         """已存在的跳过（幂等）"""
-        from app.models import VideoPage
+        from app.models import Video
 
         # 先写入已完成记录
-        page = VideoPage(
+        page = Video(
             bvid="BV1idempotent",
             cid=222,
             page_index=0,
@@ -170,10 +170,10 @@ class TestUpdateASR:
     @pytest.mark.asyncio
     async def test_update_success(self, client, test_db):
         """手动编辑更新成功"""
-        from app.models import VideoPage
+        from app.models import Video
 
         # 先写入记录
-        page = VideoPage(
+        page = Video(
             bvid="BV1updateTest",
             cid=333,
             page_index=0,
@@ -201,9 +201,9 @@ class TestUpdateASR:
 
         # 验证更新
         result = await test_db.execute(
-            __import__('sqlalchemy').select(VideoPage).where(
-                VideoPage.bvid == "BV1updateTest",
-                VideoPage.cid == 333
+            __import__('sqlalchemy').select(Video).where(
+                Video.bvid == "BV1updateTest",
+                Video.cid == 333
             )
         )
         updated = result.scalar_one()
@@ -234,10 +234,10 @@ class TestReASR:
     @pytest.mark.asyncio
     async def test_reasr_creates_new_version(self, client, test_db):
         """重新 ASR 新建版本"""
-        from app.models import VideoPage, VideoPageVersion
+        from app.models import Video, VideoVersion
 
         # 先写入记录
-        page = VideoPage(
+        page = Video(
             bvid="BV1reasrTest",
             cid=444,
             page_index=0,
@@ -269,9 +269,9 @@ class TestReASR:
 
             # 验证 version 已更新
             result = await test_db.execute(
-                __import__('sqlalchemy').select(VideoPage).where(
-                    VideoPage.bvid == "BV1reasrTest",
-                    VideoPage.cid == 444
+                __import__('sqlalchemy').select(Video).where(
+                    Video.bvid == "BV1reasrTest",
+                    Video.cid == 444
                 )
             )
             updated = result.scalar_one()
@@ -338,12 +338,12 @@ class TestGetVersions:
     @pytest.mark.asyncio
     async def test_versions_multiple(self, client, test_db):
         """多个版本"""
-        from app.models import VideoPageVersion
+        from app.models import VideoVersion
         from datetime import datetime
 
         # 写入多个版本
         for v in [1, 2, 3]:
-            version = VideoPageVersion(
+            version = VideoVersion(
                 bvid="BV1multiVer",
                 cid=666,
                 page_index=0,

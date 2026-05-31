@@ -1,9 +1,10 @@
 """
-Bilibili RAG 知识库系统
+Per-page vectorization router — 4 API endpoints.
 
-分P向量化路由 - 4 个 API 接口
+Granularity: single page (bvid + cid).
+For folder-level batch vectorization, use POST /knowledge/build.
 """
-import uuid
+
 import asyncio
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,34 +12,34 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import (
-    VideoPage,
+from app.models import Video
+from app.response.vector import (
     VectorPageStatusResponse, VectorPageTaskStatus,
-    VectorPageCreateRequest, VectorPageReVectorRequest
+    VectorPageCreateRequest, VectorPageReVectorRequest,
 )
-from app.services.task_store import SQLiteTaskPersistence
+from app.routers.auth import get_current_uid, get_session_token
+from app.services.auth import validate_token as _validate_token
+from app.services.async_task.tracker import TaskTracker
 from app.services.vector_page_service import VectorPageService
-from app.services.rag import RAGService
+from app.services.rag import get_rag_service
 
 router = APIRouter(prefix="/vec/page", tags=["VectorPage"])
 
-# 全局单例
-_task_store = SQLiteTaskPersistence()
+# Global singletons
+_tracker = TaskTracker()
 _vector_service: Optional[VectorPageService] = None
 
 
 def get_vector_service() -> VectorPageService:
     global _vector_service
     if _vector_service is None:
-        _vector_service = VectorPageService(_task_store)
+        _vector_service = VectorPageService(_tracker)
     return _vector_service
 
 
-def _build_task_id() -> str:
-    return str(uuid.uuid4())
-
-
-# ==================== API 接口 ====================
+# ══════════════════════════════════════════════════════════════════
+# API endpoints
+# ══════════════════════════════════════════════════════════════════
 
 @router.get("/status")
 async def get_vec_status(
@@ -46,12 +47,9 @@ async def get_vec_status(
     cid: int,
     db: AsyncSession = Depends(get_db)
 ) -> VectorPageStatusResponse:
-    """
-    查询分P向量状态（含 ChromaDB 校验 + steps）
-    """
-    # 1. 查 video_pages
+    """Query per-page vectorization status with ChromaDB consistency check."""
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == bvid, VideoPage.cid == cid)
+        select(Video).where(Video.bvid == bvid, Video.cid == cid)
     )
     page = result.scalar_one_or_none()
 
@@ -64,34 +62,29 @@ async def get_vec_status(
             chroma_exists=False,
         )
 
-    # 2. 查 ChromaDB 实际数量
-    rag = RAGService()
-    chroma_count = rag.get_page_vector_count(bvid, page.page_index)
+    from app.infra.config import config as _cfg
+    rag = get_rag_service()
+    actual_count = rag.get_page_vector_count(bvid, page.page_index)
 
-    # 3. ChromaDB 一致性修复
-    chroma_exists = chroma_count > 0
+    vector_exists = actual_count > 0
     fixed_vectorized = page.is_vectorized
 
-    if page.is_vectorized == "done" and chroma_count == 0:
-        # DB says done but ChromaDB is empty → degrade to failed
+    if page.is_vectorized == "done" and actual_count == 0:
+        backend_name = "Milvus" if _cfg.milvus.enabled else "ChromaDB"
         page.is_vectorized = "failed"
-        page.vector_error = "ChromaDB 实际向量为空，数据可能损坏"
+        page.vector_error = f"{backend_name} vector count is 0 — data may be corrupted"
         await db.commit()
         fixed_vectorized = "failed"
-        chroma_exists = False
+        vector_exists = False
 
-    elif page.is_vectorized == "pending" and chroma_count > 0:
-        # DB says pending but ChromaDB has data → upgrade to done
+    elif page.is_vectorized == "pending" and actual_count > 0:
         page.is_vectorized = "done"
         from datetime import datetime
         page.vectorized_at = datetime.utcnow()
-        page.vector_chunk_count = chroma_count
+        page.vector_chunk_count = actual_count
         await db.commit()
         fixed_vectorized = "done"
-        chroma_exists = True
-
-    # 4. 查 async_tasks.steps（如有）
-    steps = None
+        vector_exists = True
 
     return VectorPageStatusResponse(
         exists=True,
@@ -100,32 +93,43 @@ async def get_vec_status(
         page_index=page.page_index,
         page_title=page.page_title,
         is_processed=page.is_processed,
-        content_preview=(page.content or "")[:200] if page.content else None,
+        content_preview=None,
         is_vectorized=fixed_vectorized,
         vectorized_at=page.vectorized_at,
-        vector_chunk_count=page.vector_chunk_count or chroma_count,
+        vector_chunk_count=page.vector_chunk_count or actual_count,
         vector_error=page.vector_error,
-        chroma_exists=chroma_exists,
-        steps=steps,
+        chroma_exists=vector_exists,
+        steps=None,
     )
+
+
+async def _resolve_optional_uid(
+    token_str: Optional[str] = Depends(get_session_token),
+    db: AsyncSession = Depends(get_db),
+) -> int:
+    """Resolve uid from token. Raises 401 if not authenticated (mandatory for create)."""
+    if not token_str:
+        raise HTTPException(status_code=401, detail="未登录")
+    uid = await _validate_token(db, token_str)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="token 无效或已过期")
+    return uid
 
 
 @router.post("/create")
 async def create_vec(
     req: VectorPageCreateRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    uid: int = Depends(_resolve_optional_uid),
 ):
-    """
-    幂等向量化（ASR 未完成则先 ASR）
-    """
-    # 1. 查 video_pages
+    """Idempotent vectorization — runs ASR first if needed, then vectors."""
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == req.bvid, VideoPage.cid == req.cid)
+        select(Video).where(Video.bvid == req.bvid, Video.cid == req.cid)
     )
     page = result.scalar_one_or_none()
 
     if not page:
-        page = VideoPage(
+        page = Video(
             bvid=req.bvid,
             cid=req.cid,
             page_index=req.page_index,
@@ -139,26 +143,20 @@ async def create_vec(
         await db.commit()
         await db.refresh(page)
 
-    # 2. 幂等检查
-    if page.is_vectorized == "done" and page.content:
-        # 检查 content 是否变化（future: hash 比对）
-        # 目前简单跳过
-        return {"task_id": None, "message": "已是最新向量"}
+    if page.is_vectorized == "done":
+        return {"task_id": None, "message": "Already up to date"}
 
-    # 3. 创建 async_tasks → 后台执行
-    task_id = _build_task_id()
-    await _task_store.create(
-        task_id=task_id,
+    task_id = await _tracker.create(
+        uid=uid,
         task_type="vec_page",
         target={
             "bvid": req.bvid,
             "cid": req.cid,
             "page_index": req.page_index,
             "page_title": req.page_title or page.page_title,
-        }
+        },
     )
 
-    # 启动后台任务
     asyncio.create_task(
         get_vector_service().process_page_vectorization(
             task_id=task_id,
@@ -169,47 +167,42 @@ async def create_vec(
         )
     )
 
-    return {"task_id": task_id, "message": "向量化任务已创建"}
+    return {"task_id": task_id, "message": "Vectorization task created"}
 
 
 @router.post("/revector")
 async def revector_vec(
     req: VectorPageReVectorRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    uid: int = Depends(_resolve_optional_uid),
 ):
-    """
-    强制重建（删旧向量 + 新建）
-    """
+    """Force re-vectorization — deletes old vectors, creates new ones."""
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == req.bvid, VideoPage.cid == req.cid)
+        select(Video).where(Video.bvid == req.bvid, Video.cid == req.cid)
     )
     page = result.scalar_one_or_none()
 
     if not page:
-        raise HTTPException(status_code=404, detail="VideoPage not found")
+        raise HTTPException(status_code=404, detail="Video page not found")
 
-    if not page.is_processed or not page.content:
-        raise HTTPException(status_code=400, detail="ASR 未完成，无法向量化")
+    if not page.is_processed:
+        raise HTTPException(status_code=400, detail="ASR not completed — cannot vectorize")
 
-    # 标记 is_vectorized = pending（前置保护）
     page.is_vectorized = "pending"
     page.vector_error = None
     await db.commit()
 
-    # 创建任务
-    task_id = _build_task_id()
-    await _task_store.create(
-        task_id=task_id,
+    task_id = await _tracker.create(
+        uid=uid,
         task_type="vec_page",
         target={
             "bvid": req.bvid,
             "cid": req.cid,
             "page_index": page.page_index,
             "page_title": page.page_title,
-        }
+        },
     )
 
-    # 启动后台任务
     asyncio.create_task(
         get_vector_service().process_page_vectorization(
             task_id=task_id,
@@ -220,19 +213,17 @@ async def revector_vec(
         )
     )
 
-    return {"task_id": task_id, "message": "重建任务已创建"}
+    return {"task_id": task_id, "message": "Re-vectorization task created"}
 
 
 @router.get("/status/{task_id}")
 async def get_vec_task_status(task_id: str) -> VectorPageTaskStatus:
-    """
-    轮询任务状态（含 steps 透传）
-    """
-    # 先查 async_tasks
-    task = await _task_store.get(task_id)
+    """Poll task status with step-level progress."""
+    from app.database import get_db_context
+    async with get_db_context() as db:
+        task = await _tracker._repo.get_by_task_id(task_id, db)
 
     if not task:
-        # 可能是 ASR 任务（存储在 asr_tasks 内存中）
         from app.routers.asr import asr_tasks
         asr_task = asr_tasks.get(task_id)
         if asr_task:
@@ -243,67 +234,66 @@ async def get_vec_task_status(task_id: str) -> VectorPageTaskStatus:
                 message=asr_task["message"],
                 steps=[{"name": "asr", "status": asr_task["status"], "progress": asr_task["progress"]}],
             )
-        raise HTTPException(status_code=404, detail="任务不存在")
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    # 构建 message
-    status = task["status"]
+    status = task.status
     if status == "done":
-        message = "完成"
+        message = "Complete"
     elif status == "failed":
-        message = f"失败: {task.get('error', 'unknown')}"
+        message = f"Failed: {task.error or 'unknown'}"
     elif status == "processing":
-        message = "处理中..."
+        message = "Processing..."
     else:
-        message = "等待中"
+        message = "Pending"
 
     return VectorPageTaskStatus(
-        task_id=task["task_id"],
-        status=task["status"],
-        progress=task.get("progress", 0),
+        task_id=task.task_id,
+        status=status,
+        progress=task.progress or 0,
         message=message,
-        steps=task.get("steps"),
-        result=task.get("result"),
-        error=task.get("error"),
+        steps=task.steps,
+        result=task.result,
+        error=task.error,
     )
 
 
-# ==================== 内部函数 ====================
+# ══════════════════════════════════════════════════════════════════
+# Internal — ASR completion triggers vectorization automatically
+# ══════════════════════════════════════════════════════════════════
 
 async def _trigger_asr_then_vec(
     asr_task_id: str,
     bvid: str,
     cid: int,
     page_index: int,
-    page_title: str
+    page_title: str,
+    uid: int = 0,
 ):
-    """ASR 完成后自动触发向量化"""
+    """Chain: wait for ASR → then start vectorization."""
     from app.routers.asr import asr_tasks
 
-    # 等待 ASR 完成（最多 5 分钟）
     for _ in range(300):
         task = asr_tasks.get(asr_task_id)
         if task and task["status"] in ("done", "failed"):
             break
         await asyncio.sleep(1)
 
-    # ASR 成功后触发向量化
-    vec_task_id = _build_task_id()
-    await _task_store.create(
-        task_id=vec_task_id,
+    task_id = await _tracker.create(
+        uid=uid,
         task_type="vec_page",
         target={
             "bvid": bvid,
             "cid": cid,
             "page_index": page_index,
             "page_title": page_title,
-        }
+        },
     )
 
-    await asyncio.sleep(1)  # 等待一点时间让 ASR 状态稳定
+    await asyncio.sleep(1)
 
     asyncio.create_task(
         get_vector_service().process_page_vectorization(
-            task_id=vec_task_id,
+            task_id=task_id,
             bvid=bvid,
             cid=cid,
             page_index=page_index,

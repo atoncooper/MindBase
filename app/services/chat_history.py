@@ -1,69 +1,76 @@
 """
-Bilibili RAG 知识库系统
+Chat history service — hybrid MySQL + MongoDB storage.
 
-聊天历史服务模块
+MySQL ``chat_sessions`` stores session metadata (uid, title, status, timestamps)
+keyed by a public ``chat_session_id`` (UUID4).
 
-职责：
-- 会话 CRUD（chat_sessions 表）
-- 消息状态流管理（chat_messages 表）
-- 只操作 chat_sessions / chat_messages 表，不碰其他表
+MongoDB ``chat_messages`` stores individual message documents keyed by ``msg_id``
+(UUID4), scoped to a session via ``chat_session_id`` and to a user via ``uid``.
 
-状态流转：
-    user 消息: 直接 completed
-    assistant 消息: pending → completed / failed
+This mirrors the OpenAI approach: lightweight metadata in a relational database,
+message content in a document store for flexible schema and efficient pagination.
+
+Lifecycle of a message round-trip
+----------------------------------
+1. ``save_user_message()``       — inserts a completed user message in MongoDB
+2. ``create_pending_assistant_message()`` — inserts a placeholder (status=pending)
+3. ``complete_assistant_message()``       — fills content after LLM response
+   (or ``fail_assistant_message()`` on error)
+4. ``get_history()``             — paginated read, newest last
+5. ``clear_history()``           — delete messages, keep session
+6. ``delete_chat_session()``     — delete session + all messages
 """
 import uuid
-import time
 from datetime import datetime
 from typing import Optional
 
 from loguru import logger
-from sqlalchemy import select, func, desc, delete
+from sqlalchemy import select, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import (
-    ChatSession,
-    ChatMessage,
-    ChatSessionResponse,
-    ChatMessageResponse,
-)
+from app.models import ChatSession
+from app.response.chat import ChatSessionResponse, ChatMessageResponse
+from app.repository import mongo_chat_repository as mongo_chat
 
 
-# ============================================================================
-# 会话管理
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════
+# Session management — MySQL chat_sessions table
+# ═══════════════════════════════════════════════════════════════════
 
 async def create_chat_session(
     db: AsyncSession,
-    session_id: str,
+    uid: int,
     title: Optional[str] = None,
 ) -> ChatSessionResponse:
-    """创建新会话，生成 chat_session_id（UUID4）"""
+    """Create a new chat session for *uid*.
+
+    Generates a UUID4 ``chat_session_id`` which serves as the public
+    identifier and the MongoDB lookup key for messages.
+    """
     chat_session_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
-    chat_session = ChatSession(
+    session = ChatSession(
         chat_session_id=chat_session_id,
-        session_id=session_id,
+        uid=uid,
         title=title,
         status="active",
         created_at=now,
         updated_at=now,
-        last_message_at=None,
     )
-    db.add(chat_session)
+    db.add(session)
     await db.commit()
-    await db.refresh(chat_session)
+    await db.refresh(session)
 
-    logger.info(f"[CHAT_HISTORY] created session chat_session_id={chat_session_id} session_id={session_id}")
-    return ChatSessionResponse.model_validate(chat_session)
+    logger.info(f"[CHAT_HISTORY] created session {chat_session_id} uid={uid}")
+    return ChatSessionResponse.model_validate(session)
 
 
 async def get_chat_session(
     db: AsyncSession,
     chat_session_id: str,
 ) -> Optional[ChatSessionResponse]:
-    """获取单条会话"""
+    """Return a single session by its public *chat_session_id*, or None."""
     result = await db.execute(
         select(ChatSession).where(ChatSession.chat_session_id == chat_session_id)
     )
@@ -75,13 +82,12 @@ async def get_chat_session(
 
 async def list_chat_sessions(
     db: AsyncSession,
-    session_id: str,
+    uid: int,
 ) -> list[ChatSessionResponse]:
-    """获取某登录 session 下的所有活跃会话，按 updated_at 降序"""
+    """Return all active sessions for a user, newest first."""
     result = await db.execute(
         select(ChatSession)
-        .where(ChatSession.session_id == session_id)
-        .where(ChatSession.status == "active")
+        .where(ChatSession.uid == uid, ChatSession.status == "active")
         .order_by(desc(ChatSession.updated_at))
     )
     sessions = result.scalars().all()
@@ -93,34 +99,38 @@ async def update_chat_session_title(
     chat_session_id: str,
     title: str,
 ) -> None:
-    """更新会话标题（可用于首条消息自动生成标题）"""
+    """Update the session title.
+
+    Typically called after the first user message to auto-generate
+    a human-readable title from the question text.
+    """
     result = await db.execute(
         select(ChatSession).where(ChatSession.chat_session_id == chat_session_id)
     )
     session = result.scalar_one_or_none()
     if session is None:
-        logger.warning(f"[CHAT_HISTORY] update_title: session not found chat_session_id={chat_session_id}")
+        logger.warning(f"[CHAT_HISTORY] update_title: not found {chat_session_id}")
         return
-
     session.title = title
     session.updated_at = datetime.utcnow()
     await db.commit()
-    logger.info(f"[CHAT_HISTORY] updated title chat_session_id={chat_session_id} title={title}")
+    logger.info(f"[CHAT_HISTORY] updated title {chat_session_id}")
 
 
 async def touch_chat_session(
     db: AsyncSession,
     chat_session_id: str,
 ) -> None:
-    """更新 updated_at 和 last_message_at"""
+    """Bump ``updated_at`` and ``last_message_at`` to now.
+
+    Called after every message to keep the session list sorted correctly.
+    """
     result = await db.execute(
         select(ChatSession).where(ChatSession.chat_session_id == chat_session_id)
     )
     session = result.scalar_one_or_none()
     if session is None:
-        logger.warning(f"[CHAT_HISTORY] touch: session not found chat_session_id={chat_session_id}")
         return
-
     now = datetime.utcnow()
     session.updated_at = now
     session.last_message_at = now
@@ -131,31 +141,42 @@ async def delete_chat_session(
     db: AsyncSession,
     chat_session_id: str,
 ) -> None:
-    """删除会话及其所有消息（级联）"""
-    # 先删除消息
+    """Delete a session row from MySQL and all its messages from MongoDB."""
+    await mongo_chat.delete_session_messages(chat_session_id)
     await db.execute(
-        delete(ChatMessage).where(ChatMessage.chat_session_id == chat_session_id)
-    )
-    # 再删除会话
-    result = await db.execute(
         delete(ChatSession).where(ChatSession.chat_session_id == chat_session_id)
     )
     await db.commit()
-    logger.info(f"[CHAT_HISTORY] deleted session chat_session_id={chat_session_id} rows={result.rowcount}")
+    logger.info(f"[CHAT_HISTORY] deleted session {chat_session_id}")
 
 
-# ============================================================================
-# 消息管理
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════
+# Message management — MongoDB chat_messages collection
+# ═══════════════════════════════════════════════════════════════════
 
 async def save_user_message(
     db: AsyncSession,
     chat_session_id: str,
+    uid: int,
     content: str,
     sources: Optional[list[dict]] = None,
 ) -> ChatMessageResponse:
-    """保存用户消息，status=completed，返回带 id 的消息"""
-    msg = ChatMessage(
+    """Persist a completed user message in MongoDB.
+
+    Returns a ``ChatMessageResponse`` carrying the generated ``msg_id``
+    so the caller can reference it later (e.g. for the pending assistant
+    counterpart).
+    """
+    msg_id = await mongo_chat.insert_message(
+        chat_session_id=chat_session_id,
+        uid=uid,
+        role="user",
+        content=content,
+        status="completed",
+        sources=sources,
+    )
+    return ChatMessageResponse(
+        msg_id=msg_id,
         chat_session_id=chat_session_id,
         role="user",
         content=content,
@@ -163,21 +184,27 @@ async def save_user_message(
         sources=sources,
         created_at=datetime.utcnow(),
     )
-    db.add(msg)
-    await db.commit()
-    await db.refresh(msg)
-
-    logger.info(f"[CHAT_HISTORY] saved user_message id={msg.id} chat_session_id={chat_session_id}")
-    return ChatMessageResponse.model_validate(msg)
 
 
 async def create_pending_assistant_message(
     db: AsyncSession,
     chat_session_id: str,
+    uid: int,
     model: Optional[str] = None,
 ) -> ChatMessageResponse:
-    """创建 assistant 占位消息，status=pending，content=''，返回带 id 的消息"""
-    msg = ChatMessage(
+    """Insert a placeholder assistant message (status=pending, content="")
+    and return its ``msg_id`` for the streaming completion callback.
+    """
+    msg_id = await mongo_chat.insert_message(
+        chat_session_id=chat_session_id,
+        uid=uid,
+        role="assistant",
+        content="",
+        status="pending",
+        model=model,
+    )
+    return ChatMessageResponse(
+        msg_id=msg_id,
         chat_session_id=chat_session_id,
         role="assistant",
         content="",
@@ -185,58 +212,39 @@ async def create_pending_assistant_message(
         model=model,
         created_at=datetime.utcnow(),
     )
-    db.add(msg)
-    await db.commit()
-    await db.refresh(msg)
-
-    logger.info(f"[CHAT_HISTORY] created pending assistant_message id={msg.id} chat_session_id={chat_session_id}")
-    return ChatMessageResponse.model_validate(msg)
 
 
 async def complete_assistant_message(
     db: AsyncSession,
-    message_id: int,
+    msg_id: str,
     content: str,
     sources: Optional[list[dict]] = None,
     tokens_used: Optional[int] = None,
     latency_ms: Optional[int] = None,
 ) -> None:
-    """SSE 完成后更新 assistant 消息"""
-    result = await db.execute(
-        select(ChatMessage).where(ChatMessage.id == message_id)
-    )
-    msg = result.scalar_one_or_none()
-    if msg is None:
-        logger.warning(f"[CHAT_HISTORY] complete: message not found message_id={message_id}")
-        return
+    """Finalise a pending assistant message after the LLM response arrives.
 
-    msg.content = content
-    msg.status = "completed"
-    msg.sources = sources
-    msg.tokens_used = tokens_used
-    msg.latency_ms = latency_ms
-    await db.commit()
-    logger.info(f"[CHAT_HISTORY] completed assistant_message id={message_id} len={len(content)}")
+    Updates the MongoDB document in-place: sets status=completed, fills
+    content / sources / tokens_used / latency_ms.
+    """
+    await mongo_chat.update_message_content(
+        msg_id,
+        content=content,
+        sources=sources,
+        tokens_used=tokens_used,
+        latency_ms=latency_ms,
+    )
+    logger.info(f"[CHAT_HISTORY] completed assistant msg_id={msg_id} len={len(content)}")
 
 
 async def fail_assistant_message(
     db: AsyncSession,
-    message_id: int,
+    msg_id: str,
     error: str,
 ) -> None:
-    """SSE 失败后标记 assistant 消息"""
-    result = await db.execute(
-        select(ChatMessage).where(ChatMessage.id == message_id)
-    )
-    msg = result.scalar_one_or_none()
-    if msg is None:
-        logger.warning(f"[CHAT_HISTORY] fail: message not found message_id={message_id}")
-        return
-
-    msg.status = "failed"
-    msg.error = error
-    await db.commit()
-    logger.warning(f"[CHAT_HISTORY] failed assistant_message id={message_id} error={error[:100]}")
+    """Mark a pending assistant message as failed with *error* text."""
+    await mongo_chat.fail_message(msg_id, error)
+    logger.warning(f"[CHAT_HISTORY] failed assistant msg_id={msg_id}")
 
 
 async def get_history(
@@ -245,64 +253,63 @@ async def get_history(
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[ChatMessageResponse], int]:
-    """分页查询历史消息，返回 (messages, total_count)"""
-    # 总数
-    count_result = await db.execute(
-        select(func.count())
-        .select_from(ChatMessage)
-        .where(ChatMessage.chat_session_id == chat_session_id)
-    )
-    total = count_result.scalar() or 0
+    """Return paginated messages for a session from MongoDB.
 
-    # 分页查询，按 created_at 升序（时间线顺序）
-    offset = (page - 1) * page_size
-    result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.chat_session_id == chat_session_id)
-        .order_by(ChatMessage.created_at.asc())
-        .offset(offset)
-        .limit(page_size)
+    Messages are sorted by ``created_at`` ascending (chronological order).
+    Returns ``(messages, total_count)``.
+    """
+    rows, total = await mongo_chat.get_messages(
+        chat_session_id, page=page, page_size=page_size
     )
-    messages = result.scalars().all()
-
-    return (
-        [ChatMessageResponse.model_validate(m) for m in messages],
-        total,
-    )
+    messages = [
+        ChatMessageResponse(
+            msg_id=r.get("msg_id", ""),
+            chat_session_id=r.get("chat_session_id", ""),
+            role=r.get("role", ""),
+            content=r.get("content", ""),
+            status=r.get("status", "completed"),
+            sources=r.get("sources"),
+            tokens_used=r.get("tokens_used"),
+            model=r.get("model"),
+            latency_ms=r.get("latency_ms"),
+            error=r.get("error"),
+            created_at=r.get("created_at", datetime.utcnow()),
+        )
+        for r in rows
+    ]
+    return messages, total
 
 
 async def clear_history(
     db: AsyncSession,
     chat_session_id: str,
 ) -> None:
-    """清空某会话的所有消息"""
-    result = await db.execute(
-        delete(ChatMessage).where(ChatMessage.chat_session_id == chat_session_id)
-    )
-    await db.commit()
-    logger.info(f"[CHAT_HISTORY] cleared messages chat_session_id={chat_session_id} rows={result.rowcount}")
+    """Delete all messages belonging to *chat_session_id* from MongoDB.
+
+    The session row in MySQL is kept intact — only messages are removed.
+    """
+    deleted = await mongo_chat.delete_session_messages(chat_session_id)
+    logger.info(f"[CHAT_HISTORY] cleared {deleted} messages from {chat_session_id}")
 
 
-# ============================================================================
-# 便捷函数：获取或创建会话（用于 SSE 接口）
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════
+# Convenience
+# ═══════════════════════════════════════════════════════════════════
 
 async def get_or_create_chat_session(
     db: AsyncSession,
-    session_id: str,
+    uid: int,
     chat_session_id: Optional[str] = None,
     title: Optional[str] = None,
 ) -> ChatSessionResponse:
-    """
-    获取或创建聊天会话。
+    """Return an existing session by *chat_session_id*, or create a new one.
 
-    - 如果 chat_session_id 提供且存在，直接返回
-    - 如果 chat_session_id 为空或不存在，创建新会话
+    Used by the chat endpoints to transparently reuse an ongoing
+    conversation or start a fresh one on the first message.
     """
     if chat_session_id:
         existing = await get_chat_session(db, chat_session_id)
         if existing:
             return existing
-        logger.warning(f"[CHAT_HISTORY] chat_session_id={chat_session_id} not found, creating new")
 
-    return await create_chat_session(db, session_id, title)
+    return await create_chat_session(db, uid=uid, title=title)

@@ -132,22 +132,27 @@ class BilibiliService:
             "message": msg
         }
         
-        # 登录成功时，从响应头中提取 cookies
+        # On confirmed, extract cookies from multiple sources
         if status == "confirmed":
-            cookies = {}
+            cookies: dict = {}
+
+            # 1. Accumulated cookies from the shared httpx client cookie jar
+            for cookie in self.client.cookies.jar:
+                cookies[cookie.name] = cookie.value
+
+            # 2. Response Set-Cookie headers (may duplicate #1, that's fine)
             for cookie in response.cookies.jar:
                 cookies[cookie.name] = cookie.value
-            
-            # 也可能在 URL 中
+
+            # 3. Cookies embedded in the redirect URL query string
             url_str = data["data"].get("url", "")
-            if "SESSDATA=" in url_str:
-                # 从 URL 解析 cookies
+            if url_str:
                 import urllib.parse
                 parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url_str).query)
                 for key in ["SESSDATA", "bili_jct", "DedeUserID"]:
                     if key in parsed:
                         cookies[key] = parsed[key][0]
-            
+
             result["cookies"] = cookies
             result["refresh_token"] = data["data"].get("refresh_token", "")
         

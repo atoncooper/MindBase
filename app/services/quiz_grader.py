@@ -14,6 +14,18 @@ from app.database import get_db_context
 from app.services.quiz_generator import get_quiz_set, get_quiz_questions_full
 
 
+def _safe_json(value):
+    """Parse JSON string, fall back to raw value on failure."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
 ESSAY_GRADING_SYSTEM = "你是一个严格的评分老师。根据评分标准对答案进行客观评分。"
 
 ESSAY_GRADING_PROMPT = """请根据评分标准对学生的答案进行评分。
@@ -51,14 +63,14 @@ class QuizGraderService:
     async def submit_and_grade(
         self,
         quiz_uuid: str,
-        session_id: str,
+        uid: int,
         answers: list[dict],
         time_spent_seconds: Optional[int] = None,
     ) -> dict:
-        """提交并批改"""
+        """Submit and grade answers."""
         submission_uuid = str(uuid.uuid4())
 
-        # 1. 获取题目集和题目
+        # 1. Get quiz set and questions
         quiz_set = await get_quiz_set(quiz_uuid)
         if not quiz_set:
             raise ValueError("题目集不存在")
@@ -71,7 +83,7 @@ class QuizGraderService:
 
         # 2. 创建提交记录
         await self._create_submission(
-            submission_uuid, quiz_uuid, session_id, total_question_count, passing_score, time_spent_seconds
+            submission_uuid, quiz_uuid, uid, total_question_count, passing_score, time_spent_seconds
         )
 
         # 3. 逐题批改
@@ -86,7 +98,7 @@ class QuizGraderService:
             if not question:
                 continue
 
-            correct_answer = json.loads(question["correct_answer"]) if isinstance(question["correct_answer"], str) else question["correct_answer"]
+            correct_answer = _safe_json(question["correct_answer"])
             qtype = question["question_type"]
             grading_note = None
 
@@ -95,11 +107,11 @@ class QuizGraderService:
             elif qtype == "multi_choice":
                 result = self._grade_multi_choice(user_answer, correct_answer)
             elif qtype == "short_answer":
-                keywords = json.loads(question["keywords"]) if isinstance(question.get("keywords"), str) else (question.get("keywords") or [])
+                keywords = _safe_json(question.get("keywords")) or []
                 result = self._grade_short_answer(user_answer, str(correct_answer), keywords)
                 grading_note = "关键词自动评分，仅供参考"
             elif qtype == "essay":
-                rubric = json.loads(question["scoring_rubric"]) if isinstance(question.get("scoring_rubric"), str) else (question.get("scoring_rubric") or [])
+                rubric = _safe_json(question.get("scoring_rubric")) or []
                 try:
                     result = await self._grade_essay(
                         question["question_text"], str(user_answer),
@@ -264,7 +276,7 @@ class QuizGraderService:
         self,
         submission_uuid: str,
         quiz_uuid: str,
-        session_id: str,
+        uid: int,
         total_question_count: int,
         passing_score: int,
         time_spent_seconds: Optional[int],
@@ -274,16 +286,16 @@ class QuizGraderService:
             await db.execute(
                 text(
                     """INSERT INTO quiz_submissions
-                       (submission_uuid, quiz_uuid, session_id, total_question_count,
+                       (submission_uuid, quiz_uuid, uid, total_question_count,
                         passing_score, is_complete, time_spent_seconds, started_at, submitted_at)
                        VALUES
-                       (:submission_uuid, :quiz_uuid, :session_id, :total_question_count,
+                       (:submission_uuid, :quiz_uuid, :uid, :total_question_count,
                         :passing_score, :is_complete, :time_spent_seconds, :started_at, :submitted_at)"""
                 ),
                 {
                     "submission_uuid": submission_uuid,
                     "quiz_uuid": quiz_uuid,
-                    "session_id": session_id,
+                    "uid": uid,
                     "total_question_count": total_question_count,
                     "passing_score": passing_score,
                     "is_complete": False,
@@ -325,11 +337,11 @@ class QuizGraderService:
                     "submission_uuid": submission_uuid,
                     "question_uuid": question_uuid,
                     "question_type": question_type,
-                    "user_answer": json.dumps(user_answer) if isinstance(user_answer, (list, dict)) else str(user_answer),
+                    "user_answer": json.dumps(user_answer, ensure_ascii=False),
                     "user_answer_text": str(user_answer) if not isinstance(user_answer, str) else user_answer,
                     "is_correct": is_correct_int,
                     "auto_score": result.get("auto_score", 0),
-                    "correct_answer_snapshot": json.dumps(correct_answer) if isinstance(correct_answer, (list, dict)) else str(correct_answer),
+                    "correct_answer_snapshot": json.dumps(correct_answer, ensure_ascii=False),
                     "matched_keywords": matched_keywords,
                     "keyword_match_rate": result.get("keyword_match_rate"),
                     "grading_detail": grading_detail,

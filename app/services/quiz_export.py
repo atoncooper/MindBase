@@ -16,14 +16,14 @@ class QuizDataExportService:
 
     async def export_submissions(
         self,
-        session_id: str,
+        uid: int,
         folder_ids: Optional[list[int]] = None,
         format: str = "jsonl",
     ) -> AsyncGenerator[str, None]:
         """导出用户的答题数据
 
         Args:
-            session_id: 用户会话
+            uid: 用户会话
             folder_ids: 限定收藏夹范围（None 表示全部）
             format: 导出格式 (jsonl / csv / sft)
 
@@ -31,26 +31,26 @@ class QuizDataExportService:
             格式化后的行数据
         """
         if format == "jsonl":
-            async for row in self._export_jsonl(session_id, folder_ids):
+            async for row in self._export_jsonl(uid, folder_ids):
                 yield row
         elif format == "csv":
-            async for row in self._export_csv(session_id, folder_ids):
+            async for row in self._export_csv(uid, folder_ids):
                 yield row
         elif format == "sft":
-            async for row in self._export_sft(session_id, folder_ids):
+            async for row in self._export_sft(uid, folder_ids):
                 yield row
         else:
             raise ValueError(f"Unsupported format: {format}")
 
     async def _export_jsonl(
-        self, session_id: str, folder_ids: Optional[list[int]]
+        self, uid: int, folder_ids: Optional[list[int]]
     ) -> AsyncGenerator[str, None]:
         """JSONL 格式导出"""
-        async for record in self._iter_records(session_id, folder_ids):
+        async for record in self._iter_records(uid, folder_ids):
             yield json.dumps(record, ensure_ascii=False) + "\n"
 
     async def _export_csv(
-        self, session_id: str, folder_ids: Optional[list[int]]
+        self, uid: int, folder_ids: Optional[list[int]]
     ) -> AsyncGenerator[str, None]:
         """CSV 格式导出"""
         fieldnames = [
@@ -60,7 +60,7 @@ class QuizDataExportService:
         ]
 
         header_written = False
-        async for record in self._iter_records(session_id, folder_ids):
+        async for record in self._iter_records(uid, folder_ids):
             if not header_written:
                 output = io.StringIO()
                 writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -79,10 +79,10 @@ class QuizDataExportService:
             yield output.getvalue()
 
     async def _export_sft(
-        self, session_id: str, folder_ids: Optional[list[int]]
+        self, uid: int, folder_ids: Optional[list[int]]
     ) -> AsyncGenerator[str, None]:
         """SFT 格式导出（用于监督微调）"""
-        async for record in self._iter_records(session_id, folder_ids):
+        async for record in self._iter_records(uid, folder_ids):
             qtype = record.get("type", "")
             if qtype in ("single_choice", "multi_choice"):
                 options = record.get("options") or []
@@ -110,7 +110,7 @@ class QuizDataExportService:
             yield json.dumps(sft_record, ensure_ascii=False) + "\n"
 
     async def _iter_records(
-        self, session_id: str, folder_ids: Optional[list[int]]
+        self, uid: int, folder_ids: Optional[list[int]]
     ) -> AsyncGenerator[dict, None]:
         """迭代所有可导出的记录"""
         async with get_db_context() as db:
@@ -129,10 +129,10 @@ class QuizDataExportService:
                 JOIN quiz_submissions qsub ON qsub.submission_uuid = qa.submission_uuid
                 JOIN quiz_questions qq ON qq.question_uuid = qa.question_uuid
                 JOIN quiz_sets qs ON qs.quiz_uuid = qsub.quiz_uuid
-                WHERE qsub.session_id = :session_id
+                WHERE qsub.uid = :uid
                 ORDER BY qsub.submitted_at DESC
             """
-            result = await db.execute(text(sql), {"session_id": session_id})
+            result = await db.execute(text(sql), {"uid": uid})
             rows = result.fetchall()
 
             for row in rows:

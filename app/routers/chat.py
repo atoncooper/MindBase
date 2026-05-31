@@ -20,7 +20,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 
 from app.database import get_db
-from app.models import (
+from app.models import FavoriteFolder, FavoriteVideo, VideoCache
+from app.response import (
     AgenticChatResponse,
     ChatRequest,
     ChatResponse,
@@ -30,14 +31,13 @@ from app.models import (
     ChatSessionListResponse,
     ChatHistoryResponse,
     ChatHistoryQueryParams,
-    FavoriteFolder,
-    FavoriteVideo,
-    VideoCache,
     WorkspacePage,
 )
 from app.config import settings
 from app.routers.knowledge import get_rag_service
+from app.routers.auth import get_current_uid
 from app.services import chat_history as chat_history_service
+from app.services.auth import validate_token as _validate_token
 from app.services.query import RewriteResult, RewriteType, CONFIDENCE_THRESHOLD
 from app.services.rag import get_agentic_rag_service
 from app.services.rag.prompts import (
@@ -110,14 +110,14 @@ def _extract_token_usage_from_llmresult(response: LLMResult) -> tuple[int, int, 
     return 0, 0, 0
 
 
-def _track_usage_after_llm(http_request, session_id, credential_id, provider, model, msg) -> None:
+def _track_usage_after_llm(http_request, uid: int, credential_id, provider, model, msg) -> None:
     """从 LLM 响应中提取 token 用量并写入 credential_usage 表（fire-and-forget）。"""
     import asyncio as _asyncio
     prompt, completion, total = _extract_usage_from_message(msg)
     if total <= 0:
         logger.warning(
             f"[USAGE] no token usage found in response "
-            f"(session={str(session_id)[:8]}... provider={provider} model={model})"
+            f"(uid={uid} provider={provider} model={model})"
         )
         return
 
@@ -127,12 +127,12 @@ def _track_usage_after_llm(http_request, session_id, credential_id, provider, mo
         return
 
     logger.info(
-        f"[USAGE] recording: session={str(session_id)[:8]}... cred_id={credential_id} "
+        f"[USAGE] recording: uid={uid} cred_id={credential_id} "
         f"provider={provider} model={model} "
         f"prompt={prompt} completion={completion} total={total}"
     )
     _asyncio.ensure_future(writer.enqueue(
-        session_id=session_id,
+        uid=uid,
         credential_id=credential_id,
         provider=provider,
         model=model,
@@ -143,7 +143,7 @@ def _track_usage_after_llm(http_request, session_id, credential_id, provider, mo
     ))
 
 
-def _get_llm(session_id: Optional[str] = None) -> ChatOpenAI:
+def _get_llm(uid: Optional[int] = None) -> ChatOpenAI:
     """
     获取 LangChain LLM 实例（优先使用用户默认 Credential，否则回退系统默认）。
 
@@ -155,11 +155,11 @@ def _get_llm(session_id: Optional[str] = None) -> ChatOpenAI:
     model = settings.llm_model
     credential_id: Optional[int] = None  # None = 系统默认
 
-    if session_id:
+    if uid is not None:
         from app.main import app
         manager = getattr(app.state, "api_key_manager", None)
         if manager and manager.is_enabled:
-            user_creds = manager.get_default_credential_sync(session_id)
+            user_creds = manager.get_default_credential_sync(uid)
             if user_creds and user_creds.api_key:
                 api_key = user_creds.api_key
                 if user_creds.base_url:
@@ -541,21 +541,11 @@ async def _is_related_to_collection(db: AsyncSession, folder_ids: List[int], que
     count = await db.scalar(stmt)
     return (count or 0) > 0
 
-async def _get_folder_ids_for_session(db: AsyncSession, session_id: str, media_ids: Optional[List[int]]) -> List[int]:
-    """根据 session 和 media_id 获取内部 folder_id（支持跨 session 查找同用户数据）"""
-    from app.models import UserSession
-    # 1. 尝试获取当前 session 的 mid
-    mid_result = await db.execute(select(UserSession.bili_mid).where(UserSession.session_id == session_id))
-    mid = mid_result.scalar()
-    target_session_ids = [session_id]
-    if mid:
-        # 查找该用户所有的 Session ID
-        sessions_result = await db.execute(select(UserSession.session_id).where(UserSession.bili_mid == mid))
-        target_session_ids = [row[0] for row in sessions_result.fetchall()]
-    # 构建查询：按 media_id 去重，只保留最新的一条
+async def _get_folder_ids_for_uid(db: AsyncSession, uid: int, media_ids: Optional[List[int]]) -> List[int]:
+    """根据 uid 和 media_id 获取内部 folder_id"""
     stmt = (
         select(FavoriteFolder.id, FavoriteFolder.media_id, FavoriteFolder.updated_at)
-        .where(FavoriteFolder.session_id.in_(target_session_ids))
+        .where(FavoriteFolder.uid == uid)
         .order_by(FavoriteFolder.updated_at.desc())
     )
     if media_ids:
@@ -658,14 +648,14 @@ async def _get_video_titles_context(db: AsyncSession, folder_ids: List[int], lim
     context_parts = [f"【{folder_name}】\n" + "\n".join(videos) for folder_name, videos in grouped.items()]
     return "\n\n".join(context_parts)
 
-async def _prepare_messages(request: ChatRequest, db: AsyncSession, rewrite_result: Optional[RewriteResult] = None) -> tuple[list, List[dict], str, Optional[RewriteResult]]:
+async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optional[int] = None, rewrite_result: Optional[RewriteResult] = None) -> tuple[list, List[dict], str, Optional[RewriteResult]]:
     """准备 LLM 消息与来源信息"""
     question = request.question.strip()
     rag = get_rag_service()
     folder_ids = []
-    if request.session_id:
-        folder_ids = await _get_folder_ids_for_session(db, request.session_id, request.folder_ids)
-        logger.info(f"Session: {request.session_id}, 关联 FolderIDs: {folder_ids}")
+    if uid:
+        folder_ids = await _get_folder_ids_for_uid(db, uid, request.folder_ids)
+        logger.info(f"关联 FolderIDs for uid={uid}: {folder_ids}")
     bvids = await _get_bvids_by_folder_ids(db, folder_ids) if folder_ids else []
     has_data = len(bvids) > 0
     is_collection_intent = _is_collection_intent(question)
@@ -751,7 +741,7 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, rewrite_resu
     return _build_fallback_messages(context or "（暂无入库信息）", question), sources, question, rewrite_result
 
 @router.post("/ask", response_model=ChatResponse)
-async def ask_question(request: ChatRequest, http_request: Request, db: AsyncSession = Depends(get_db)):
+async def ask_question(request: ChatRequest, http_request: Request, uid: int = Depends(get_current_uid), db: AsyncSession = Depends(get_db)):
     """智能问答（非流式，写入历史）"""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -759,18 +749,18 @@ async def ask_question(request: ChatRequest, http_request: Request, db: AsyncSes
     # 1. 获取或创建会话
     chat_session = await chat_history_service.get_or_create_chat_session(
         db,
-        session_id=request.session_id or "anonymous",
+        uid=uid,
         chat_session_id=request.chat_session_id,
     )
 
     # 2. 保存用户消息
     await chat_history_service.save_user_message(
-        db, chat_session.chat_session_id, request.question.strip()
+        db, chat_session.chat_session_id, uid, request.question.strip()
     )
 
     # 3. 创建 assistant 占位
     assistant_msg = await chat_history_service.create_pending_assistant_message(
-        db, chat_session.chat_session_id, model=settings.llm_model
+        db, chat_session.chat_session_id, uid, model=settings.llm_model
     )
 
     # 4. 更新会话时间
@@ -785,13 +775,12 @@ async def ask_question(request: ChatRequest, http_request: Request, db: AsyncSes
         logger.info(f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}")
 
         # 预加载用户 Credential 缓存（确保 _get_llm 能命中）
-        if request.session_id:
-            manager = getattr(http_request.app.state, "api_key_manager", None)
-            if manager and manager.is_enabled:
-                await manager.preload_credentials(request.session_id, db)
+        manager = getattr(http_request.app.state, "api_key_manager", None)
+        if manager and manager.is_enabled:
+            await manager.preload_credentials(uid, db)
 
-        messages, sources, _, _ = await _prepare_messages(request, db, rewrite_result)
-        llm = _get_llm(request.session_id)
+        messages, sources, _, _ = await _prepare_messages(request, db, uid, rewrite_result)
+        llm = _get_llm(uid)
 
         cred_id = getattr(llm, "_credential_id", None)
         provider = getattr(llm, "_provider", "openai")
@@ -803,18 +792,18 @@ async def ask_question(request: ChatRequest, http_request: Request, db: AsyncSes
         latency_ms = int((time.time() - start_time) * 1000)
         answer = response.content or ""
 
-        # 提取 token 用量（同步写入 chat_messages）
+        # Extract token usage
         _, _, total_tokens = _extract_usage_from_message(response)
 
         # 用量追踪写入 credential_usage 表
         _track_usage_after_llm(
-            http_request, request.session_id, cred_id, provider, model, response
+            http_request, uid, cred_id, provider, model, response
         )
 
-        # 5. 完成 assistant 消息（token 同步写入 chat_messages）
+        # 5. Finalize assistant message in MongoDB
         await chat_history_service.complete_assistant_message(
             db,
-            message_id=assistant_msg.id,
+            msg_id=assistant_msg.msg_id,
             content=answer,
             sources=sources[:5],
             tokens_used=total_tokens or None,
@@ -824,19 +813,19 @@ async def ask_question(request: ChatRequest, http_request: Request, db: AsyncSes
         return ChatResponse(answer=answer, sources=sources[:5])
     except HTTPException:
         await chat_history_service.fail_assistant_message(
-            db, assistant_msg.id, error="HTTPException during ask"
+            db, assistant_msg.msg_id, error="HTTPException during ask"
         )
         raise
     except Exception as e:
-        logger.error(f"问答失败: {e}")
+        logger.exception("Chat ask failed")
         await chat_history_service.fail_assistant_message(
-            db, assistant_msg.id, error=str(e)
+            db, assistant_msg.msg_id, error=str(e)
         )
         raise HTTPException(status_code=500, detail=f"问答失败: {str(e)}")
 
 
 @router.post("/ask/agentic", response_model=AgenticChatResponse)
-async def ask_question_agentic(request: ChatRequest, http_request: Request, db: AsyncSession = Depends(get_db)):
+async def ask_question_agentic(request: ChatRequest, http_request: Request, uid: int = Depends(get_current_uid), db: AsyncSession = Depends(get_db)):
     """Agentic RAG 问答（写入历史）"""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -844,18 +833,18 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, db: 
     # 1. 获取或创建会话
     chat_session = await chat_history_service.get_or_create_chat_session(
         db,
-        session_id=request.session_id or "anonymous",
+        uid=uid,
         chat_session_id=request.chat_session_id,
     )
 
     # 2. 保存用户消息
     await chat_history_service.save_user_message(
-        db, chat_session.chat_session_id, request.question.strip()
+        db, chat_session.chat_session_id, uid, request.question.strip()
     )
 
     # 3. 创建 assistant 占位
     assistant_msg = await chat_history_service.create_pending_assistant_message(
-        db, chat_session.chat_session_id, model=settings.llm_model
+        db, chat_session.chat_session_id, uid, model=settings.llm_model
     )
 
     # 4. 更新会话时间
@@ -864,7 +853,7 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, db: 
     try:
         folder_ids = []
         if request.session_id:
-            folder_ids = await _get_folder_ids_for_session(db, request.session_id, request.folder_ids)
+            folder_ids = await _get_folder_ids_for_uid(db, uid, request.folder_ids)
         bvids = await _get_bvids_by_folder_ids(db, folder_ids) if folder_ids else []
         workspace_pages = [wp.model_dump() for wp in request.workspace_pages] if request.workspace_pages else None
 
@@ -880,11 +869,11 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, db: 
         )
         latency_ms = int((time.time() - start_time) * 1000)
 
-        # 5. 完成 assistant 消息（token 同步写入 chat_messages）
+        # 5. Finalize assistant message in MongoDB
         total_tokens = result.total_tokens or 0
         await chat_history_service.complete_assistant_message(
             db,
-            message_id=assistant_msg.id,
+            msg_id=assistant_msg.msg_id,
             content=result.answer,
             sources=result.sources,
             tokens_used=total_tokens or None,
@@ -897,7 +886,7 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, db: 
             if writer:
                 import asyncio as _asyncio
                 _asyncio.ensure_future(writer.enqueue(
-                    session_id=request.session_id,
+                    uid=uid,
                     credential_id=None,
                     provider="openai",
                     model=settings.llm_model,
@@ -917,18 +906,18 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, db: 
         )
     except HTTPException:
         await chat_history_service.fail_assistant_message(
-            db, assistant_msg.id, error="HTTPException during agentic"
+            db, assistant_msg.msg_id, error="HTTPException during agentic"
         )
         raise
     except Exception as e:
-        logger.error(f"Agentic RAG 问答失败: {e}")
+        logger.exception("Agentic RAG ask failed")
         await chat_history_service.fail_assistant_message(
-            db, assistant_msg.id, error=str(e)
+            db, assistant_msg.msg_id, error=str(e)
         )
         raise HTTPException(status_code=500, detail=f"Agentic RAG 问答失败: {str(e)}")
 
 @router.post("/ask/stream")
-async def ask_question_stream(request: ChatRequest, http_request: Request, db: AsyncSession = Depends(get_db)):
+async def ask_question_stream(request: ChatRequest, http_request: Request, uid: int = Depends(get_current_uid), db: AsyncSession = Depends(get_db)):
     """流式问答（SSE，写入历史）"""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -936,29 +925,28 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, db: A
     # 1. 获取或创建会话
     chat_session = await chat_history_service.get_or_create_chat_session(
         db,
-        session_id=request.session_id or "anonymous",
+        uid=uid,
         chat_session_id=request.chat_session_id,
     )
     chat_session_id = chat_session.chat_session_id
 
     # 2. 保存用户消息
     await chat_history_service.save_user_message(
-        db, chat_session_id, request.question.strip()
+        db, chat_session_id, uid, request.question.strip()
     )
 
     # 3. 创建 assistant 占位
     assistant_msg = await chat_history_service.create_pending_assistant_message(
-        db, chat_session_id, model=settings.llm_model
+        db, chat_session_id, uid, model=settings.llm_model
     )
 
     # 4. 更新会话时间
     await chat_history_service.touch_chat_session(db, chat_session_id)
 
-    # 5. 预加载用户 Credential 缓存（确保 _get_llm 能命中）
-    if request.session_id:
-        manager = getattr(http_request.app.state, "api_key_manager", None)
-        if manager and manager.is_enabled:
-            await manager.preload_credentials(request.session_id, db)
+    # 预加载 Credential 缓存
+    manager = getattr(http_request.app.state, "api_key_manager", None)
+    if manager and manager.is_enabled:
+        await manager.preload_credentials(uid, db)
 
     try:
         # === Query 改写 ===
@@ -968,8 +956,8 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, db: A
         logger.info(f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}")
         logger.info(f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}")
 
-        messages, sources, _, _ = await _prepare_messages(request, db, rewrite_result)
-        llm = _get_llm(request.session_id)
+        messages, sources, _, _ = await _prepare_messages(request, db, uid, rewrite_result)
+        llm = _get_llm(uid)
 
         cred_id = getattr(llm, "_credential_id", None)
         provider = getattr(llm, "_provider", "openai")
@@ -1009,7 +997,7 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, db: A
                     writer = getattr(http_request.app.state, "usage_writer", None)
                     if writer:
                         asyncio.ensure_future(writer.enqueue(
-                            session_id=request.session_id,
+                            uid=uid,
                             credential_id=cred_id,
                             provider=provider,
                             model=model,
@@ -1031,36 +1019,36 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, db: A
                 done_payload = json.dumps({"type": "done"}, ensure_ascii=False)
                 yield f"data: {done_payload}\n\n"
 
-                # 5. SSE 完成后更新 assistant 消息（token 同步写入 chat_messages）
+                # 5. Finalize assistant message in MongoDB after SSE completes
                 latency_ms = int((time.time() - start_time) * 1000)
                 await chat_history_service.complete_assistant_message(
                     db,
-                    message_id=assistant_msg.id,
+                    msg_id=assistant_msg.msg_id,
                     content=full_content,
                     sources=sources,
                     tokens_used=total_tokens or None,
                     latency_ms=latency_ms,
                 )
             except Exception as e:
-                logger.error(f"流式生成失败: {e}")
+                logger.exception("Stream generation failed")
                 error_msg = str(e)
                 error_payload = json.dumps({"type": "error", "message": error_msg}, ensure_ascii=False)
                 yield f"data: {error_payload}\n\n"
                 # 6. 失败后标记 assistant 消息
                 await chat_history_service.fail_assistant_message(
-                    db, assistant_msg.id, error=error_msg
+                    db, assistant_msg.msg_id, error=error_msg
                 )
 
         return StreamingResponse(generate(), media_type="text/event-stream")
     except HTTPException:
         await chat_history_service.fail_assistant_message(
-            db, assistant_msg.id, error="HTTPException during stream"
+            db, assistant_msg.msg_id, error="HTTPException during stream"
         )
         raise
     except Exception as e:
-        logger.error(f"流式问答失败: {e}")
+        logger.exception("Stream ask failed")
         await chat_history_service.fail_assistant_message(
-            db, assistant_msg.id, error=str(e)
+            db, assistant_msg.msg_id, error=str(e)
         )
         raise HTTPException(status_code=500, detail=f"流式问答失败: {str(e)}")
 
@@ -1085,7 +1073,7 @@ async def search_videos(query: str, k: int = 5):
             })
         return {"results": results}
     except Exception as e:
-        logger.error(f"搜索失败: {e}")
+        logger.exception("Search failed")
         raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
 
 
@@ -1096,21 +1084,22 @@ async def search_videos(query: str, k: int = 5):
 @router.post("/sessions", response_model=ChatSessionResponse)
 async def create_session(
     request: ChatSessionCreateRequest,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """创建新聊天会话"""
     return await chat_history_service.create_chat_session(
-        db, session_id=request.session_id, title=request.title
+        db, uid=uid, title=request.title
     )
 
 
 @router.get("/sessions", response_model=ChatSessionListResponse)
 async def list_sessions(
-    session_id: str,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """获取当前用户的会话列表"""
-    sessions = await chat_history_service.list_chat_sessions(db, session_id)
+    sessions = await chat_history_service.list_chat_sessions(db, uid)
     return ChatSessionListResponse(sessions=sessions)
 
 

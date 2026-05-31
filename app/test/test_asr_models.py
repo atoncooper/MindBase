@@ -6,17 +6,17 @@ import pytest_asyncio
 from datetime import datetime
 
 
-# ==================== VideoPage 模型测试 ====================
+# ==================== Video 模型测试 ====================
 
-class TestVideoPageModel:
-    """VideoPage ORM 模型测试"""
+class TestVideoModel:
+    """Video ORM 模型测试"""
 
     @pytest.mark.asyncio
     async def test_video_page_creation(self, test_db):
-        """测试 VideoPage 写入"""
-        from app.models import VideoPage
+        """测试 Video 写入"""
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1test34",
             cid=123456,
             page_index=0,
@@ -30,9 +30,9 @@ class TestVideoPageModel:
         await test_db.commit()
 
         result = await test_db.execute(
-            __import__('sqlalchemy').select(VideoPage).where(
-                VideoPage.bvid == "BV1test34",
-                VideoPage.cid == 123456
+            __import__('sqlalchemy').select(Video).where(
+                Video.bvid == "BV1test34",
+                Video.cid == 123456
             )
         )
         found = result.scalar_one()
@@ -44,10 +44,10 @@ class TestVideoPageModel:
     @pytest.mark.asyncio
     async def test_video_page_unique_constraint_bvid_cid(self, test_db):
         """同一 bvid+cid 不能重复"""
-        from app.models import VideoPage
+        from app.models import Video
         from sqlalchemy.exc import IntegrityError
 
-        page1 = VideoPage(
+        page1 = Video(
             bvid="BV1unique123",
             cid=999,
             page_index=0,
@@ -56,7 +56,7 @@ class TestVideoPageModel:
         test_db.add(page1)
         await test_db.commit()
 
-        page2 = VideoPage(
+        page2 = Video(
             bvid="BV1unique123",
             cid=999,  # same cid
             page_index=1,
@@ -70,9 +70,9 @@ class TestVideoPageModel:
     @pytest.mark.asyncio
     async def test_video_page_version_defaults(self, test_db):
         """测试默认值"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1defaultTest",
             cid=111,
             page_index=0,
@@ -86,17 +86,17 @@ class TestVideoPageModel:
         assert page.content_source is None
 
 
-# ==================== VideoPageVersion 模型测试 ====================
+# ==================== VideoVersion 模型测试 ====================
 
-class TestVideoPageVersionModel:
-    """VideoPageVersion ORM 模型测试"""
+class TestVideoVersionModel:
+    """VideoVersion ORM 模型测试"""
 
     @pytest.mark.asyncio
     async def test_version_creation(self, test_db):
-        """测试 VideoPageVersion 写入"""
-        from app.models import VideoPageVersion
+        """测试 VideoVersion 写入"""
+        from app.models import VideoVersion
 
-        version = VideoPageVersion(
+        version = VideoVersion(
             bvid="BV1xx",
             cid=123,
             page_index=0,
@@ -109,9 +109,9 @@ class TestVideoPageVersionModel:
         await test_db.commit()
 
         result = await test_db.execute(
-            __import__('sqlalchemy').select(VideoPageVersion).where(
-                VideoPageVersion.bvid == "BV1xx",
-                VideoPageVersion.cid == 123
+            __import__('sqlalchemy').select(VideoVersion).where(
+                VideoVersion.bvid == "BV1xx",
+                VideoVersion.cid == 123
             )
         )
         found = result.scalar_one()
@@ -123,10 +123,10 @@ class TestVideoPageVersionModel:
     @pytest.mark.asyncio
     async def test_version_chain(self, test_db):
         """测试版本链: v1 -> v2 -> v3"""
-        from app.models import VideoPageVersion
+        from app.models import VideoVersion
 
         # v1
-        v1 = VideoPageVersion(
+        v1 = VideoVersion(
             bvid="BV1chainTest",
             cid=555,
             page_index=0,
@@ -139,7 +139,7 @@ class TestVideoPageVersionModel:
         await test_db.flush()
 
         # v2
-        v2 = VideoPageVersion(
+        v2 = VideoVersion(
             bvid="BV1chainTest",
             cid=555,
             page_index=0,
@@ -152,7 +152,7 @@ class TestVideoPageVersionModel:
         await test_db.flush()
 
         # v3 (latest)
-        v3 = VideoPageVersion(
+        v3 = VideoVersion(
             bvid="BV1chainTest",
             cid=555,
             page_index=0,
@@ -165,12 +165,12 @@ class TestVideoPageVersionModel:
         await test_db.commit()
 
         result = await test_db.execute(
-            __import__('sqlalchemy').select(VideoPageVersion)
+            __import__('sqlalchemy').select(VideoVersion)
             .where(
-                VideoPageVersion.bvid == "BV1chainTest",
-                VideoPageVersion.cid == 555
+                VideoVersion.bvid == "BV1chainTest",
+                VideoVersion.cid == 555
             )
-            .order_by(VideoPageVersion.version.desc())
+            .order_by(VideoVersion.version.desc())
         )
         versions = result.scalars().all()
         assert len(versions) == 3
@@ -183,10 +183,10 @@ class TestVideoPageVersionModel:
     @pytest.mark.asyncio
     async def test_version_unique_constraint(self, test_db):
         """同一 bvid+cid+version 不能重复"""
-        from app.models import VideoPageVersion
+        from app.models import VideoVersion
         from sqlalchemy.exc import IntegrityError
 
-        v1 = VideoPageVersion(
+        v1 = VideoVersion(
             bvid="BV1dupVer",
             cid=777,
             page_index=0,
@@ -197,7 +197,7 @@ class TestVideoPageVersionModel:
         test_db.add(v1)
         await test_db.commit()
 
-        v2 = VideoPageVersion(
+        v2 = VideoVersion(
             bvid="BV1dupVer",
             cid=777,
             page_index=0,
@@ -218,7 +218,7 @@ class TestASRPydanticSchemas:
 
     def test_asr_content_response__exists(self):
         """ASRContentResponse exists=true"""
-        from app.models import ASRContentResponse
+        from app.response.asr import ASRContentResponse
 
         resp = ASRContentResponse(
             exists=True,
@@ -239,7 +239,7 @@ class TestASRPydanticSchemas:
 
     def test_asr_content_response__not_exists(self):
         """ASRContentResponse exists=false"""
-        from app.models import ASRContentResponse
+        from app.response.asr import ASRContentResponse
 
         resp = ASRContentResponse(exists=False)
         assert resp.exists is False
@@ -248,7 +248,7 @@ class TestASRPydanticSchemas:
 
     def test_asr_create_request(self):
         """ASRCreateRequest"""
-        from app.models import ASRCreateRequest
+        from app.response.asr import ASRCreateRequest
 
         req = ASRCreateRequest(
             bvid="BV1create123",
@@ -263,7 +263,7 @@ class TestASRPydanticSchemas:
 
     def test_asr_update_request(self):
         """ASRUpdateRequest"""
-        from app.models import ASRUpdateRequest
+        from app.response.asr import ASRUpdateRequest
 
         req = ASRUpdateRequest(
             bvid="BV1update123",
@@ -275,7 +275,7 @@ class TestASRPydanticSchemas:
 
     def test_asr_reasr_request(self):
         """ASRReASRRequest"""
-        from app.models import ASRReASRRequest
+        from app.response.asr import ASRReASRRequest
 
         req = ASRReASRRequest(bvid="BV1reasr123", cid=321)
         assert req.bvid == "BV1reasr123"
@@ -283,7 +283,7 @@ class TestASRPydanticSchemas:
 
     def test_asr_task_status(self):
         """ASRTaskStatus"""
-        from app.models import ASRTaskStatus
+        from app.response.asr import ASRTaskStatus
 
         status = ASRTaskStatus(
             task_id="task-123",
@@ -296,12 +296,12 @@ class TestASRPydanticSchemas:
         assert status.progress == 50
 
     def test_video_page_version_info(self):
-        """VideoPageVersionInfo"""
-        from app.models import VideoPageVersionInfo
+        """VideoVersionInfo"""
+        from app.response.asr import VideoVersionInfo
         from datetime import datetime
 
         now = datetime.utcnow()
-        info = VideoPageVersionInfo(
+        info = VideoVersionInfo(
             version=2,
             content_source="asr",
             content_preview="这是内容预览...",

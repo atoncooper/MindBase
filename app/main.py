@@ -4,11 +4,14 @@ Bilibili RAG 知识库系统
 主应用入口
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 import sys
 import os
+import uuid
+import traceback
 
 from app.config import settings, ensure_directories
 
@@ -27,26 +30,58 @@ if settings.langsmith_endpoint:
     os.environ["LANGSMITH_ENDPOINT"] = settings.langsmith_endpoint
 
 from app.database import init_db
-from app.routers import auth, favorites, knowledge, chat, settings as settings_router
+from app.routers import auth, favorites_v2, knowledge, chat, settings as settings_router
 from app.routers.asr import router as asr_router
 from app.routers.vector_page import router as vector_page_router
 from app.routers.credentials import router as credentials_router
 from app.routers.billing import router as billing_router
 from app.routers.quiz import router as quiz_router
+from app.routers.tasks_ws import router as tasks_ws_router
 
 
-# 配置日志
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+LOG_FORMAT_CONSOLE = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+    "<level>{level: <8}</level> | "
+    "<yellow>{extra[request_id]}</yellow> | "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+    "<level>{message}</level>"
+)
+LOG_FORMAT_FILE = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
+    "{level: <8} | "
+    "{extra[request_id]} | "
+    "{name}:{function}:{line} - "
+    "{message}"
+)
+
+logger.configure(extra={"request_id": "-"})
 logger.remove()
 logger.add(
     sys.stdout,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    level="DEBUG" if settings.debug else "INFO"
+    format=LOG_FORMAT_CONSOLE,
+    level="DEBUG" if settings.debug else "INFO",
+    colorize=True,
 )
+# Main log: everything at DEBUG, rotated
 logger.add(
     "logs/app.log",
+    format=LOG_FORMAT_FILE,
     rotation="10 MB",
     retention="7 days",
-    level="DEBUG"
+    level="DEBUG",
+)
+# Error log: only ERROR+CRITICAL, longer retention, separate file for ops
+logger.add(
+    "logs/error.log",
+    format=LOG_FORMAT_FILE,
+    rotation="10 MB",
+    retention="30 days",
+    level="ERROR",
+    backtrace=True,
+    diagnose=True,
 )
 
 
@@ -108,7 +143,29 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Bilibili RAG 知识库系统启动中...")
     ensure_directories()
     await init_db()
-    logger.info("✅ 数据库初始化完成")
+    logger.info("数据库初始化完成")
+
+    # Init Redis (before cache_manager so L2 can be activated)
+    if settings.redis_enabled:
+        from app.infra.redis import init as redis_init, ping as redis_ping, client as redis_client
+        await redis_init()
+        result = await redis_ping()
+        if not result["ok"]:
+            raise RuntimeError(f"Redis connection failed: {result['error']}")
+        logger.info("[REDIS] connected (latency=%dms)", result["latency_ms"])
+
+    # Init multi-level cache (L1 local, L2 Redis when connected)
+    from app.infra.cache import cache_manager
+    await cache_manager.start(redis_enabled=settings.redis_enabled)
+    logger.info(f"[CACHE] manager started (L1 ready, L2={'redis' if settings.redis_enabled else 'disabled'})")
+
+    # Startup health checks — fails fast if any enabled infra is unreachable
+    from app.utils.startup_checks import run_startup_checks
+    await run_startup_checks()
+
+    # Start async task cache refresher subprocess (every 30s)
+    from app.services.async_task.cache import start_cache_refresher
+    start_cache_refresher(settings.database_url)
 
     # LangSmith 追踪诊断
     diagnose_langsmith()
@@ -135,12 +192,12 @@ async def lifespan(app: FastAPI):
 
     # === 崩溃恢复：扫描 pending 向量化任务 ===
     import asyncio
-    from app.services.task_store import SQLiteTaskPersistence
+    from app.services.async_task.tracker import TaskTracker
     from app.services.vector_page_service import VectorPageService
 
-    task_store = SQLiteTaskPersistence()
-    vector_service = VectorPageService(task_store)
-    pending = await task_store.list_pending("vec_page")
+    tracker = TaskTracker()
+    vector_service = VectorPageService(tracker)
+    pending = await tracker.list_pending("vec_page")
 
     if pending:
         logger.info(f"[STARTUP] 发现 {len(pending)} 个未完成的向量化任务，开始恢复...")
@@ -165,6 +222,16 @@ async def lifespan(app: FastAPI):
 
         await _asyncio.shield(app.state.rewriter.close())
         logger.info("[QUERY_REWRITE] QueryRewriter shutdown")
+
+        from app.infra.mongo import close as close_mongo
+        await _asyncio.shield(close_mongo())
+
+        from app.infra.milvus import close as close_milvus
+        await _asyncio.shield(close_milvus())
+
+        from app.services.async_task.cache import stop_cache_refresher
+        stop_cache_refresher()
+
         logger.info("👋 应用关闭")
     except _asyncio.CancelledError:
         logger.info("👋 应用关闭（interrupted）")
@@ -198,6 +265,30 @@ app = FastAPI(
 )
 
 
+# ---------------------------------------------------------------------------
+# Middleware: request-id + error logging
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """Attach a unique request_id to every request for log correlation."""
+    request_id = request.headers.get("x-request-id", uuid.uuid4().hex[:12])
+    request.state.request_id = request_id
+    with logger.contextualize(request_id=request_id):
+        try:
+            response = await call_next(request)
+            return response
+        except Exception:
+            logger.exception(
+                "Unhandled exception | method=%s path=%s",
+                request.method, request.url.path,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error", "request_id": request_id},
+            )
+
+
 # CORS 中间件
 app.add_middleware(
     CORSMiddleware,
@@ -210,7 +301,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(auth.router)
-app.include_router(favorites.router)
+app.include_router(favorites_v2.router)
 app.include_router(knowledge.router)
 app.include_router(chat.router)
 app.include_router(settings_router.router)
@@ -219,6 +310,7 @@ app.include_router(vector_page_router)
 app.include_router(credentials_router)
 app.include_router(billing_router)
 app.include_router(quiz_router)
+app.include_router(tasks_ws_router)
 
 
 @app.get("/")
@@ -238,11 +330,30 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/cache/stats")
+async def cache_stats():
+    """缓存命中率监控"""
+    from app.infra.cache import cache_manager
+    return cache_manager.get_stats()
+
+
 if __name__ == "__main__":
     import uvicorn
+    from app.infra.config import config as _cfg
+
+    ssl_kwargs = {}
+    if _cfg.server.ssl_certfile and _cfg.server.ssl_keyfile:
+        ssl_kwargs = {
+            "ssl_certfile": _cfg.server.ssl_certfile,
+            "ssl_keyfile": _cfg.server.ssl_keyfile,
+        }
+
     uvicorn.run(
         "app.main:app",
         host=settings.app_host,
         port=settings.app_port,
-        reload=settings.debug
+        reload=settings.debug,
+        proxy_headers=_cfg.server.proxy_headers,
+        forwarded_allow_ips="*" if _cfg.server.proxy_headers else None,
+        **ssl_kwargs,
     )

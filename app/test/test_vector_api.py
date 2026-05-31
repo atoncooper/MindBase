@@ -62,7 +62,7 @@ class TestGetVecStatus:
 
     @pytest.mark.asyncio
     async def test_status_not_exists(self, client, test_db):
-        """VideoPage 不存在返回 exists=false"""
+        """Video 不存在返回 exists=false"""
         response = await client.get("/vec/page/status?bvid=BV1notExist&cid=123")
         assert response.status_code == 200
         data = response.json()
@@ -73,9 +73,9 @@ class TestGetVecStatus:
     @pytest.mark.asyncio
     async def test_status_exists_not_vectorized(self, client, test_db):
         """存在但未向量化"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1noVec",
             cid=111,
             page_index=0,
@@ -104,9 +104,9 @@ class TestGetVecStatus:
     @pytest.mark.asyncio
     async def test_status_done_chroma_exists(self, client, test_db):
         """已向量化且 ChromaDB 有数据"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1doneVec",
             cid=222,
             page_index=0,
@@ -136,9 +136,9 @@ class TestGetVecStatus:
     @pytest.mark.asyncio
     async def test_status_consistency_repair__done_but_chroma_empty(self, client, test_db):
         """DB says done 但 ChromaDB 为空 → 自动修复为 failed"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1inconsistent",
             cid=333,
             page_index=0,
@@ -168,9 +168,9 @@ class TestGetVecStatus:
     @pytest.mark.asyncio
     async def test_status_consistency_repair__pending_but_chroma_has_data(self, client, test_db):
         """DB says pending 但 ChromaDB 有数据 → 自动修复为 done"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1pendingButData",
             cid=444,
             page_index=0,
@@ -206,7 +206,7 @@ class TestCreateVec:
 
     @pytest.mark.asyncio
     async def test_create_page_not_found(self, client, test_db):
-        """VideoPage 不存在返回 404"""
+        """Video 不存在返回 404"""
         response = await client.post(
             "/vec/page/create",
             json={"bvid": "BV1notExist", "cid": 123, "page_index": 0},
@@ -216,9 +216,9 @@ class TestCreateVec:
     @pytest.mark.asyncio
     async def test_create_already_up_to_date(self, client, test_db):
         """已是最新向量（幂等）"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1upToDate",
             cid=555,
             page_index=0,
@@ -245,9 +245,9 @@ class TestCreateVec:
     @pytest.mark.asyncio
     async def test_create_pending_triggers_task(self, client, test_db):
         """未向量化触发后台任务"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1pendingTask",
             cid=666,
             page_index=0,
@@ -284,7 +284,7 @@ class TestReVector:
 
     @pytest.mark.asyncio
     async def test_revector_page_not_found(self, client, test_db):
-        """VideoPage 不存在返回 404"""
+        """Video 不存在返回 404"""
         response = await client.post(
             "/vec/page/revector",
             json={"bvid": "BV1notExist", "cid": 123},
@@ -294,9 +294,9 @@ class TestReVector:
     @pytest.mark.asyncio
     async def test_revector_not_processed(self, client, test_db):
         """ASR 未完成不能向量化"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1notProcessed",
             cid=777,
             page_index=0,
@@ -317,9 +317,9 @@ class TestReVector:
     @pytest.mark.asyncio
     async def test_revector_sets_pending(self, client, test_db):
         """强制重建标记 pending"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1rebuild",
             cid=888,
             page_index=0,
@@ -349,7 +349,7 @@ class TestReVector:
             # 验证 is_vectorized 已改为 pending
             from sqlalchemy import select
             result = await test_db.execute(
-                select(VideoPage).where(VideoPage.bvid == "BV1rebuild")
+                select(Video).where(Video.bvid == "BV1rebuild")
             )
             updated = result.scalar_one()
             assert updated.is_vectorized == "pending"

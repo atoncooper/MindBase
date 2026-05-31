@@ -16,7 +16,7 @@ class TestWorkspacePageModel:
 
     def test_workspace_page_basic(self):
         """基本序列化"""
-        from app.models import WorkspacePage
+        from app.response.chat import WorkspacePage
 
         wp = WorkspacePage(bvid="BV123456", cid=987654, page_index=2, page_title="P3. 第三章")
         assert wp.bvid == "BV123456"
@@ -26,21 +26,21 @@ class TestWorkspacePageModel:
 
     def test_workspace_page_optional_title(self):
         """page_title 可选"""
-        from app.models import WorkspacePage
+        from app.response.chat import WorkspacePage
 
         wp = WorkspacePage(bvid="BV123456", cid=987654, page_index=0)
         assert wp.page_title is None
 
     def test_workspace_page_defaults(self):
         """page_index 默认为 0"""
-        from app.models import WorkspacePage
+        from app.response.chat import WorkspacePage
 
         wp = WorkspacePage(bvid="BV123456", cid=987654)
         assert wp.page_index == 0
 
     def test_workspace_page_serialization(self):
         """model_dump 序列化"""
-        from app.models import WorkspacePage
+        from app.response.chat import WorkspacePage
 
         wp = WorkspacePage(bvid="BVTEST", cid=123, page_index=1, page_title="P2. 测试")
         dumped = wp.model_dump()
@@ -54,7 +54,7 @@ class TestChatRequestWorkspace:
 
     def test_chat_request_with_workspace_pages(self):
         """带 workspace_pages 的请求"""
-        from app.models import ChatRequest, WorkspacePage
+        from app.response.chat import ChatRequest, WorkspacePage
 
         wp = WorkspacePage(bvid="BV001", cid=111, page_index=0, page_title="P1")
         req = ChatRequest(
@@ -68,14 +68,14 @@ class TestChatRequestWorkspace:
 
     def test_chat_request_without_workspace_pages(self):
         """不带 workspace_pages 时为 None"""
-        from app.models import ChatRequest
+        from app.response.chat import ChatRequest
 
         req = ChatRequest(question="测试问题")
         assert req.workspace_pages is None
 
     def test_chat_request_multiple_workspace_pages(self):
         """多个 workspace_pages"""
-        from app.models import ChatRequest, WorkspacePage
+        from app.response.chat import ChatRequest, WorkspacePage
 
         wp1 = WorkspacePage(bvid="BV001", cid=111, page_index=0)
         wp2 = WorkspacePage(bvid="BV001", cid=222, page_index=1)
@@ -85,7 +85,7 @@ class TestChatRequestWorkspace:
 
     def test_chat_request_empty_workspace_pages(self):
         """空列表 vs None"""
-        from app.models import ChatRequest
+        from app.response.chat import ChatRequest
 
         req_none = ChatRequest(question="无工作区", workspace_pages=None)
         req_empty = ChatRequest(question="空工作区", workspace_pages=[])
@@ -338,7 +338,7 @@ class TestPrepareMessagesWorkspace:
     async def test_workspace_mode_forces_vector_route(self, mock_get_rag, test_db):
         """有 workspace_pages 时强制路由为 vector"""
         from app.routers.chat import _prepare_messages
-        from app.models import ChatRequest, WorkspacePage
+        from app.response.chat import ChatRequest, WorkspacePage
 
         wp = WorkspacePage(bvid="BV001", cid=111, page_index=0)
         req = ChatRequest(
@@ -363,7 +363,7 @@ class TestPrepareMessagesWorkspace:
     async def test_workspace_mode_logged(self, mock_get_rag, test_db):
         """工作区模式应打日志"""
         from app.routers.chat import _prepare_messages
-        from app.models import ChatRequest, WorkspacePage
+        from app.response.chat import ChatRequest, WorkspacePage
 
         wp = WorkspacePage(bvid="BV001", cid=111, page_index=0)
         req = ChatRequest(question="测试", workspace_pages=[wp])
@@ -384,7 +384,7 @@ class TestFrontendApiTypes:
 
     def test_workspace_page_type_matches_backend(self):
         """前端 WorkspacePage 类型应与后端 WorkspacePage 模型字段一致"""
-        from app.models import WorkspacePage
+        from app.response.chat import WorkspacePage
 
         # 后端模型字段
         wp_fields = {"bvid", "cid", "page_index", "page_title"}
@@ -400,7 +400,7 @@ class TestFrontendApiTypes:
 
     def test_chat_request_payload_workspace_pages_field(self):
         """验证 ChatRequest 能正确接收 workspace_pages"""
-        from app.models import ChatRequest, WorkspacePage
+        from app.response.chat import ChatRequest, WorkspacePage
 
         payload = {
             "question": "测试问题",

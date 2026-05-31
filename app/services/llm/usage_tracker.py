@@ -72,13 +72,13 @@ class UsageTrackingCallback(BaseCallbackHandler):
 
     def __init__(
         self,
-        session_id: str,
+        uid: int,
         credential_id: Optional[int] = None,
         provider: str = "openai",
         model: Optional[str] = None,
         writer: Optional["BufferedUsageWriter"] = None,
     ):
-        self.session_id = session_id
+        self.uid = uid
         self.credential_id = credential_id
         self.provider = provider
         self.model = model
@@ -112,7 +112,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
             if self._writer is not None:
                 asyncio.ensure_future(
                     self._writer.enqueue(
-                        session_id=self.session_id,
+                        uid=self.uid,
                         credential_id=self.credential_id,
                         provider=self.provider,
                         model=self.model,

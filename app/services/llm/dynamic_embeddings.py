@@ -18,9 +18,9 @@ from loguru import logger
 from app.config import settings
 
 
-# ContextVar：每个请求独立存储当前 session_id
-_embedding_session_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "embedding_session_id", default=None
+# ContextVar：每个请求独立存储当前用户 uid
+_embedding_uid_ctx: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "embedding_uid", default=None
 )
 
 
@@ -31,8 +31,8 @@ class DynamicEmbeddings:
     使用方式：
         embeddings = DynamicEmbeddings(api_key_manager, default_config)
 
-        # 在异步请求上下文中设置 session_id
-        _embedding_session_ctx.set(session_id)
+        # 在异步请求上下文中设置用户 uid
+        _embedding_uid_ctx.set(uid)
 
         # Chroma 调用时会自动使用用户配置的 Key
         results = vectorstore.similarity_search("query")
@@ -50,14 +50,15 @@ class DynamicEmbeddings:
         self._default_model = default_kwargs.get("model", settings.embedding_model)
 
     def _make_embeddings(self) -> OpenAIEmbeddings:
-        """根据 contextvar 中的 session_id 动态创建 OpenAIEmbeddings 实例。"""
-        session_id = _embedding_session_ctx.get()
+        """根据 contextvar 中的 uid 动态创建 OpenAIEmbeddings 实例。"""
+        uid = _embedding_uid_ctx.get()
         api_key = self._default_api_key
         base_url = self._default_base_url
         model = self._default_model
 
-        if session_id and self._api_key_manager.is_enabled:
-            entry = self._api_key_manager._cache.get(session_id)
+        if uid is not None and self._api_key_manager.is_enabled:
+            cache_key = f"cred:{uid}"
+            entry = self._api_key_manager._cache.get(cache_key)
             if entry and entry.embedding_key_encrypted and entry.expire_at >= time.time():
                 try:
                     api_key = self._api_key_manager._decrypt(entry.embedding_key_encrypted)
@@ -86,9 +87,9 @@ class DynamicEmbeddings:
 
 def set_embedding_session(session_id: Optional[str]) -> None:
     """设置当前请求的 embedding session context。"""
-    _embedding_session_ctx.set(session_id)
+    _embedding_uid_ctx.set(session_id)
 
 
 def get_embedding_session() -> Optional[str]:
     """获取当前请求的 embedding session context。"""
-    return _embedding_session_ctx.get()
+    return _embedding_uid_ctx.get()

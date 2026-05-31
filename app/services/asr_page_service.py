@@ -2,6 +2,9 @@
 Bilibili RAG 知识库系统
 
 ASR 分P服务 - 仅做 ASR 转写，不涉及 RAG 向量存储
+
+Storage: ASR text → MongoDB (asr_documents), metadata → MySQL (video + video_versions).
+If MongoDB is disabled, falls back to MySQL video.content column.
 """
 import os
 import time
@@ -12,7 +15,9 @@ from app.services.asr import ASRService
 from app.services.bilibili import BilibiliService
 from app.routers.asr import asr_tasks
 from app.database import get_db_context
-from app.models import VideoPage, VideoPageVersion
+from app.models import Video, VideoVersion
+from app.infra.mongo import is_enabled as mongo_enabled
+from app.utils.bvid import bv_to_av
 
 
 class ContentSource:
@@ -28,7 +33,7 @@ class ASRPageService:
     职责：
     1. 获取单P视频音频（本地下载，不依赖过期URL）
     2. ASR 转写
-    3. 写入 video_pages + video_page_versions
+    3. 写入 video + video_versions
 
     不涉及：RAG 向量存储（那是独立流程）
     """
@@ -55,8 +60,8 @@ class ASRPageService:
         1. 更新任务状态 = processing
         2. 获取音频 URL 并下载到本地
         3. ASR 转写（本地文件上传，避免 URL 过期 403）
-        4. 写入 video_pages.content
-        5. 写入 video_page_versions（新版本）
+        4. 写入 video.content
+        5. 写入 video_versions（新版本）
         6. 更新任务状态 = done
         7. 清理临时文件
 
@@ -101,42 +106,60 @@ class ASRPageService:
                 raise Exception(f"ASR 内容过少: {len(text) if text else 0} 字符")
 
             asr_tasks[task_id]["progress"] = 85
-            asr_tasks[task_id]["message"] = "Writing database..."
+            asr_tasks[task_id]["message"] = "Writing to database..."
 
-            # 写入数据库
+            video_id = bv_to_av(bvid)
+
+            # Write ASR content to MongoDB (primary store for full text)
+            mongo_ok = False
+            if mongo_enabled():
+                try:
+                    from app.repository.mongo_asr_repository import save_asr
+                    await save_asr(
+                        video_id=video_id,
+                        bvid=bvid,
+                        cid=cid,
+                        page_index=page_index,
+                        page_title=page_title,
+                        content=text,
+                        content_source="asr",
+                        version=1,
+                    )
+                    mongo_ok = True
+                except Exception as e:
+                    logger.warning(f"[ASR] MongoDB write failed, falling back to MySQL: {e}")
+
+            # Write metadata to MySQL
             async with get_db_context() as db:
-                # 查询当前 page 记录
                 from sqlalchemy import select
                 result = await db.execute(
-                    select(VideoPage).where(VideoPage.bvid == bvid, VideoPage.cid == cid)
+                    select(Video).where(Video.bvid == bvid, Video.cid == cid)
                 )
                 page = result.scalar_one_or_none()
 
                 if page:
-                    # 写入 video_pages
-                    page.content = text
                     page.content_source = "asr"
                     page.is_processed = True
+                    page.version = (page.version or 0) + 1
 
-                    # 写入 video_page_versions（新版本）
-                    version_record = VideoPageVersion(
+                    # Version history record (metadata only, full text in MongoDB)
+                    version_record = VideoVersion(
                         bvid=bvid,
                         cid=cid,
                         page_index=page_index,
                         version=page.version,
-                        content=text,
                         content_source="asr",
                         is_latest=True,
                     )
                     db.add(version_record)
 
-                    # 旧版本 is_latest = false
+                    # Mark old versions as not latest
                     old_result = await db.execute(
-                        select(VideoPageVersion)
+                        select(VideoVersion)
                         .where(
-                            VideoPageVersion.bvid == bvid,
-                            VideoPageVersion.cid == cid,
-                            VideoPageVersion.version < page.version
+                            VideoVersion.bvid == bvid,
+                            VideoVersion.cid == cid,
+                            VideoVersion.version < page.version
                         )
                     )
                     old_versions = old_result.scalars().all()
@@ -161,7 +184,7 @@ class ASRPageService:
                 async with get_db_context() as db:
                     from sqlalchemy import select
                     result = await db.execute(
-                        select(VideoPage).where(VideoPage.bvid == bvid, VideoPage.cid == cid)
+                        select(Video).where(Video.bvid == bvid, Video.cid == cid)
                     )
                     page = result.scalar_one_or_none()
                     if page:

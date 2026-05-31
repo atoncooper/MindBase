@@ -7,14 +7,15 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import (
-    VideoPage, VideoPageVersion,
+from app.models import Video, VideoVersion
+from app.response import (
     ASRCreateRequest, ASRUpdateRequest, ASRReASRRequest,
-    ASRContentResponse, ASRTaskStatus, VideoPageVersionInfo
+    ASRContentResponse, ASRTaskStatus, VideoVersionInfo,
 )
 
 router = APIRouter(prefix="/asr", tags=["ASR"])
@@ -51,18 +52,31 @@ async def get_asr_content(
     cid: int,
     db: AsyncSession = Depends(get_db)
 ) -> ASRContentResponse:
-    """
-    查询 ASR 内容
-    - 不存在返回 {exists: false}
-    - 存在返回内容详情
-    """
+    """Query ASR content — MongoDB first, MySQL fallback."""
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == bvid, VideoPage.cid == cid)
+        select(Video).where(Video.bvid == bvid, Video.cid == cid)
     )
     page = result.scalar_one_or_none()
 
     if not page:
         return ASRContentResponse(exists=False)
+
+    content = None
+    content_source = page.content_source
+    version = page.version
+
+    # MongoDB is the sole store for full text
+    from app.infra.mongo import is_enabled as mongo_enabled
+    if mongo_enabled() and page.is_processed:
+        try:
+            from app.repository.mongo_asr_repository import get_latest
+            mongo_doc = await get_latest(bvid, cid)
+            if mongo_doc:
+                content = mongo_doc.get("content")
+                content_source = mongo_doc.get("content_source", content_source)
+                version = mongo_doc.get("version", version)
+        except Exception as e:
+            logger.warning(f"[ASR] MongoDB read failed: {e}")
 
     return ASRContentResponse(
         exists=True,
@@ -70,9 +84,9 @@ async def get_asr_content(
         cid=page.cid,
         page_index=page.page_index,
         page_title=page.page_title,
-        content=page.content,
-        content_source=page.content_source,
-        version=page.version,
+        content=content,
+        content_source=content_source,
+        version=version,
         is_processed=page.is_processed,
     )
 
@@ -90,7 +104,7 @@ async def create_asr(
     """
     # 查询是否已存在（唯一约束是 bvid+page_index，非 bvid+cid）
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == req.bvid, VideoPage.page_index == req.page_index)
+        select(Video).where(Video.bvid == req.bvid, Video.page_index == req.page_index)
     )
     existing = result.scalar_one_or_none()
 
@@ -104,7 +118,7 @@ async def create_asr(
 
     # 不存在则创建记录
     if not existing:
-        new_page = VideoPage(
+        new_page = Video(
             bvid=req.bvid,
             cid=req.cid,
             page_index=req.page_index,
@@ -142,20 +156,32 @@ async def update_asr_content(
     手动编辑更新（覆盖，不新建版本）
     """
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == req.bvid, VideoPage.page_index == req.page_index)
+        select(Video).where(Video.bvid == req.bvid, Video.page_index == req.page_index)
     )
     page = result.scalar_one_or_none()
 
     if not page:
         raise HTTPException(status_code=404, detail="ASR 记录不存在")
 
-    # 覆盖内容，标记为用户编辑
-    page.content = req.content
+    # Save to MongoDB (primary), update MySQL metadata
     page.content_source = "user_edit"
     page.is_processed = True
     page.updated_at = datetime.utcnow()
-
     await db.commit()
+
+    from app.infra.mongo import is_enabled as _mongo_ok
+    if _mongo_ok():
+        try:
+            from app.repository.mongo_asr_repository import save_asr
+            from app.utils.bvid import bv_to_av
+            await save_asr(
+                video_id=bv_to_av(req.bvid),
+                bvid=req.bvid, cid=page.cid, page_index=req.page_index,
+                page_title=page.page_title or "",
+                content=req.content, content_source="user_edit",
+            )
+        except Exception as e:
+            logger.warning(f"[ASR] MongoDB save failed on user edit: {e}")
 
     return {"success": True, "message": "更新成功"}
 
@@ -171,7 +197,7 @@ async def reasr(
     """
     # 查询现有记录（唯一约束是 bvid+page_index，非 bvid+cid）
     result = await db.execute(
-        select(VideoPage).where(VideoPage.bvid == req.bvid, VideoPage.page_index == req.page_index)
+        select(Video).where(Video.bvid == req.bvid, Video.page_index == req.page_index)
     )
     page = result.scalar_one_or_none()
 
@@ -181,22 +207,20 @@ async def reasr(
     # 旧版本 is_latest = false
     old_version = page.version
 
-    # 插入新版本记录
-    new_version_record = VideoPageVersion(
+    # Insert version record (metadata only)
+    new_version_record = VideoVersion(
         bvid=req.bvid,
         cid=req.cid,
         page_index=page.page_index,
         version=old_version,
-        content=page.content,
         content_source=page.content_source,
         is_latest=False,
     )
     db.add(new_version_record)
 
-    # 更新 video_pages
+    # Reset page for re-ASR
     page.version = old_version + 1
     page.is_processed = False
-    page.content = None  # 清空，等待新 ASR
     page.content_source = None
     page.updated_at = datetime.utcnow()
 
@@ -240,17 +264,37 @@ async def get_versions(
     bvid: str,
     cid: int,
     db: AsyncSession = Depends(get_db)
-) -> list[VideoPageVersionInfo]:
-    """查询版本历史"""
+) -> list[VideoVersionInfo]:
+    """Query version history — MongoDB first, MySQL fallback."""
+    from app.infra.mongo import is_enabled as mongo_enabled
+
+    if mongo_enabled():
+        try:
+            from app.repository.mongo_asr_repository import list_versions
+            docs = await list_versions(bvid, cid)
+            if docs:
+                return [
+                    VideoVersionInfo(
+                        version=d.get("version", 1),
+                        content_source=d.get("content_source", "unknown"),
+                        content_preview=(d.get("content") or "")[:100],
+                        is_latest=d.get("is_latest", False),
+                        created_at=d.get("created_at", datetime.utcnow()),
+                    )
+                    for d in docs
+                ]
+        except Exception as e:
+            logger.warning(f"[ASR] MongoDB versions read failed, using MySQL: {e}")
+
     result = await db.execute(
-        select(VideoPageVersion)
-        .where(VideoPageVersion.bvid == bvid, VideoPageVersion.cid == cid)
-        .order_by(VideoPageVersion.version.desc())
+        select(VideoVersion)
+        .where(VideoVersion.bvid == bvid, VideoVersion.cid == cid)
+        .order_by(VideoVersion.version.desc())
     )
     versions = result.scalars().all()
 
     return [
-        VideoPageVersionInfo(
+        VideoVersionInfo(
             version=v.version,
             content_source=v.content_source or "unknown",
             content_preview=(v.content or "")[:100],

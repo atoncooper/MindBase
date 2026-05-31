@@ -1,22 +1,22 @@
-# app/test/test_video_pages_models.py
+# app/test/test_video_models.py
 # 模型和缓存 key 测试（不依赖 app.main，避免 langchain import chain）
 
 import re
 
 
-class TestVideoPagesModel:
-    """VideoPagesResponse 格式校验"""
+class TestVideosModel:
+    """VideosResponse 格式校验"""
 
-    def test_video_pages_response_model(self):
-        """VideoPagesResponse 格式校验"""
-        from app.models import VideoPagesResponse, VideoPageInfo
+    def test_video_response_model(self):
+        """VideosResponse 格式校验"""
+        from app.response.knowledge import VideosResponse, VideoInfo
 
-        response = VideoPagesResponse(
+        response = VideosResponse(
             bvid="BV1test",
             title="Test Video",
             pages=[
-                VideoPageInfo(cid=123, page=1, title="Part 1", duration=3600),
-                VideoPageInfo(cid=124, page=2, title="Part 2", duration=2400),
+                VideoInfo(cid=123, page=1, title="Part 1", duration=3600),
+                VideoInfo(cid=124, page=2, title="Part 2", duration=2400),
             ],
             page_count=2
         )
@@ -26,10 +26,10 @@ class TestVideoPagesModel:
         assert response.pages[1].page == 2
 
     def test_video_page_info__fields(self):
-        """VideoPageInfo 字段校验"""
-        from app.models import VideoPageInfo
+        """VideoInfo 字段校验"""
+        from app.response.knowledge import VideoInfo
 
-        page = VideoPageInfo(cid=123, page=1, title="Part 1", duration=3600)
+        page = VideoInfo(cid=123, page=1, title="Part 1", duration=3600)
         assert page.cid == 123
         assert page.page == 1
         assert page.title == "Part 1"
@@ -37,29 +37,29 @@ class TestVideoPagesModel:
 
     def test_video_page_info__multi_pages(self):
         """多分P场景"""
-        from app.models import VideoPagesResponse, VideoPageInfo
+        from app.response.knowledge import VideosResponse, VideoInfo
 
-        response = VideoPagesResponse(
+        response = VideosResponse(
             bvid="BV1234567890",
             title="课程完整版",
             pages=[
-                VideoPageInfo(cid=100, page=1, title="第一章 入门", duration=1800),
-                VideoPageInfo(cid=101, page=2, title="第二章 进阶", duration=2400),
-                VideoPageInfo(cid=102, page=3, title="第三章 实战", duration=3600),
+                VideoInfo(cid=100, page=1, title="第一章 入门", duration=1800),
+                VideoInfo(cid=101, page=2, title="第二章 进阶", duration=2400),
+                VideoInfo(cid=102, page=3, title="第三章 实战", duration=3600),
             ],
             page_count=3
         )
         assert response.page_count == 3
         assert all(p.page == i + 1 for i, p in enumerate(response.pages))
 
-    def test_video_pages_response__single_page(self):
+    def test_video_response__single_page(self):
         """单分P场景"""
-        from app.models import VideoPagesResponse, VideoPageInfo
+        from app.response.knowledge import VideosResponse, VideoInfo
 
-        response = VideoPagesResponse(
+        response = VideosResponse(
             bvid="BV1SinglePage",
             title="单P视频",
-            pages=[VideoPageInfo(cid=999, page=1, title="完整视频", duration=6000)],
+            pages=[VideoInfo(cid=999, page=1, title="完整视频", duration=6000)],
             page_count=1
         )
         assert response.page_count == 1

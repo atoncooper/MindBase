@@ -82,7 +82,7 @@ class QuizGeneratorService:
 
     async def generate_quiz(
         self,
-        session_id: str,
+        uid: int,
         folder_ids: Optional[list[int]] = None,
         pages: Optional[list[dict]] = None,
         question_count: int = 10,
@@ -90,12 +90,7 @@ class QuizGeneratorService:
         difficulty: str = "medium",
         title: Optional[str] = None,
     ) -> tuple[str, int, int]:
-        """
-        批量生成题目集
-
-        Args:
-            folder_ids: 收藏夹 ID 列表（folder 模式）
-            pages: 分P 列表（pages 模式），格式 [{"bvid":"BVxxx","cid":123,"page_index":0,"page_title":"P1"}]
+        """Generate a quiz set from knowledge chunks.
 
         Returns: (quiz_uuid, actual_count, estimated_tokens)
         """
@@ -103,7 +98,6 @@ class QuizGeneratorService:
         if not is_pages_mode and not folder_ids:
             raise ValueError("请提供 folder_ids 或 pages")
 
-        # 默认题型分布
         if type_distribution is None:
             type_distribution = {
                 "single_choice": max(2, question_count // 3),
@@ -117,11 +111,11 @@ class QuizGeneratorService:
 
         quiz_uuid = str(uuid.uuid4())
 
-        # 1. 创建 QuizSet 记录
+        # 1. Create QuizSet row (MySQL)
         async with get_db_context() as db:
             quiz_set = QuizSet(
                 quiz_uuid=quiz_uuid,
-                session_id=session_id,
+                uid=uid,
                 title=title or f"练习 {datetime.utcnow().strftime('%m-%d %H:%M')}",
                 question_count=question_count,
                 type_distribution=type_distribution,
@@ -135,7 +129,7 @@ class QuizGeneratorService:
             await db.commit()
 
         try:
-            # 2. 检索知识片段
+            # 2. Retrieve knowledge chunks from vector store
             if is_pages_mode:
                 chunks = await self._retrieve_chunks_by_pages(pages, question_count)
             else:
@@ -145,18 +139,20 @@ class QuizGeneratorService:
             if len(chunks) < min_chunks:
                 raise ValueError(f"可用知识片段不足: {len(chunks)} < {min_chunks}")
 
-            # 3. 批量生成（1次 LLM 调用）
-            questions = await self._batch_generate(chunks, question_count, type_distribution, difficulty, session_id)
+            # 3. Batch generate via LLM (1 call)
+            questions = await self._batch_generate(chunks, question_count, type_distribution, difficulty, uid)
 
-            # 4. 质量校验
+            # 4. Quality validation
             valid_questions = [q for q in questions if self._validate_question(q, chunks)]
 
-            # 5. 保存到 DB（使用原生 SQL，因为 QuizQuestion 无 ORM session）
-            await self._save_questions(quiz_uuid, valid_questions, chunks)
+            # 5. Save to MongoDB
+            from app.repository import mongo_quiz_repository as mongo_quiz
+            saved = await mongo_quiz.insert_questions(quiz_uuid, uid, valid_questions)
+            if saved == 0 and valid_questions:
+                raise RuntimeError("MongoDB unavailable — 0 questions saved")
 
-            # 6. 更新状态
+            # 6. Update status (MySQL)
             async with get_db_context() as db:
-                qs = await db.get(QuizSet, quiz_uuid)  # quiz_uuid is not PK, need query
                 result = await db.execute(
                     select(QuizSet).where(QuizSet.quiz_uuid == quiz_uuid)
                 )
@@ -311,9 +307,9 @@ class QuizGeneratorService:
         total_count: int,
         type_distribution: dict,
         difficulty: str,
-        session_id: str = "",
+        uid: int,
     ) -> list[dict]:
-        """批量生成所有题目（1次 LLM 调用）"""
+        """Batch generate all questions in a single LLM call."""
         context_parts = []
         for i, c in enumerate(chunks):
             context_parts.append(f"【片段{i}】来源: {c['title']}\n{c['content']}")
@@ -333,7 +329,6 @@ class QuizGeneratorService:
 
         llm = self._get_llm(temperature=0.7)
 
-        # Attach usage tracking callback
         provider = "openai"
         base_url = settings.openai_base_url or ""
         if "deepseek" in base_url:
@@ -342,7 +337,7 @@ class QuizGeneratorService:
             provider = "anthropic"
         writer = get_buffered_usage_writer()
         tracker = UsageTrackingCallback(
-            session_id=session_id,
+            uid=uid,
             provider=provider,
             model=settings.llm_model,
             writer=writer,
@@ -434,50 +429,11 @@ class QuizGeneratorService:
 
         return True
 
-    async def _save_questions(
-        self, quiz_uuid: str, questions: list[dict], chunks: list[dict]
-    ):
-        """批量保存题目（原生 SQL）"""
-        async with get_db_context() as db:
-            from sqlalchemy import text
-            for q in questions:
-                await db.execute(
-                    text(
-                        """INSERT INTO quiz_questions
-                           (quiz_uuid, question_uuid, bvid, chunk_id, source_segment,
-                            question_type, difficulty, question_text, options,
-                            correct_answer, explanation, keywords, answer_template,
-                            scoring_rubric, model_answer, is_valid)
-                           VALUES
-                           (:quiz_uuid, :question_uuid, :bvid, :chunk_id, :source_segment,
-                            :question_type, :difficulty, :question_text, :options,
-                            :correct_answer, :explanation, :keywords, :answer_template,
-                            :scoring_rubric, :model_answer, :is_valid)"""
-                    ),
-                    {
-                        "quiz_uuid": quiz_uuid,
-                        "question_uuid": q["question_uuid"],
-                        "bvid": q.get("bvid"),
-                        "chunk_id": str(q.get("source_chunk_index", "")),
-                        "source_segment": q.get("source_segment"),
-                        "question_type": q.get("type"),
-                        "difficulty": q.get("difficulty", "medium"),
-                        "question_text": q.get("question"),
-                        "options": json.dumps(q.get("options")) if q.get("options") else None,
-                        "correct_answer": json.dumps(q.get("correct_answer")),
-                        "explanation": q.get("explanation"),
-                        "keywords": json.dumps(q.get("keywords")) if q.get("keywords") else None,
-                        "answer_template": q.get("answer_template"),
-                        "scoring_rubric": json.dumps(q.get("scoring_rubric")) if q.get("scoring_rubric") else None,
-                        "model_answer": q.get("model_answer"),
-                        "is_valid": True,
-                    },
-                )
-            await db.commit()
+    # _save_questions removed — questions stored in MongoDB via mongo_quiz_repository
 
 
 async def get_quiz_set(quiz_uuid: str) -> Optional[QuizSet]:
-    """获取题目集"""
+    """Get quiz set metadata from MySQL."""
     async with get_db_context() as db:
         result = await db.execute(
             select(QuizSet).where(QuizSet.quiz_uuid == quiz_uuid)
@@ -486,29 +442,12 @@ async def get_quiz_set(quiz_uuid: str) -> Optional[QuizSet]:
 
 
 async def get_quiz_questions(quiz_uuid: str) -> list[dict]:
-    """获取题目集的所有题目（不含答案的摘要）"""
-    async with get_db_context() as db:
-        from sqlalchemy import text
-        result = await db.execute(
-            text(
-                """SELECT question_uuid, question_type, difficulty, question_text, options
-                   FROM quiz_questions
-                   WHERE quiz_uuid = :quiz_uuid AND is_valid = 1"""
-            ),
-            {"quiz_uuid": quiz_uuid},
-        )
-        return [dict(row._mapping) for row in result.fetchall()]
+    """Get questions without answers from MongoDB (for quiz display)."""
+    from app.repository import mongo_quiz_repository as mongo_quiz
+    return await mongo_quiz.get_questions(quiz_uuid)
 
 
 async def get_quiz_questions_full(quiz_uuid: str) -> list[dict]:
-    """获取题目集的所有题目（含答案，用于批改）"""
-    async with get_db_context() as db:
-        from sqlalchemy import text
-        result = await db.execute(
-            text(
-                """SELECT * FROM quiz_questions
-                   WHERE quiz_uuid = :quiz_uuid AND is_valid = 1"""
-            ),
-            {"quiz_uuid": quiz_uuid},
-        )
-        return [dict(row._mapping) for row in result.fetchall()]
+    """Get questions with answers from MongoDB (for grading / review)."""
+    from app.repository import mongo_quiz_repository as mongo_quiz
+    return await mongo_quiz.get_questions_full(quiz_uuid)

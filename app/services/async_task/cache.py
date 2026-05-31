@@ -1,0 +1,175 @@
+"""
+Shared-memory cache for async tasks, refreshed by a subprocess every 5 minutes.
+
+Design:
+  - multiprocessing.Manager().dict() for cross-process shared state
+  - Subprocess: SELECT * FROM async_tasks → write to shared dict → sleep 300s
+  - Main process: WebSocket reads shared dict directly (no DB query)
+
+Cache structure:
+  {
+      "tasks":       list[dict],    # all task records
+      "updated_at":  float,         # last refresh timestamp
+      "count":       int,           # total task count
+  }
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import multiprocessing
+import os
+import time
+from typing import Any
+
+from loguru import logger
+
+# Shared state — populated by subprocess, read by main process
+_manager: multiprocessing.Manager | None = None
+_shared_cache: Any = None          # multiprocessing.Manager().dict()
+_refresher_process: multiprocessing.Process | None = None
+
+CACHE_KEY = "async_tasks_cache"
+REFRESH_INTERVAL = 30  # 30 seconds
+
+
+def _refresher_worker(
+    shared_dict: Any,
+    database_url: str,
+    interval: int = REFRESH_INTERVAL,
+) -> None:
+    """Subprocess entry point: query DB periodically and write cache."""
+
+    # Re-initialize logging in the subprocess
+    logger.info("[TaskCache] refresher subprocess started")
+
+    while True:
+        try:
+            _refresh_from_db(shared_dict, database_url)
+        except Exception as e:
+            logger.error(f"[TaskCache] refresh failed: {e}")
+        time.sleep(interval)
+
+
+def _refresh_from_db(shared_dict: Any, database_url: str) -> None:
+    """Query MySQL and update the shared dict."""
+    import asyncio as _asyncio
+
+    async def _query():
+        from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+        from app.repository.async_task_repository import AsyncTaskRepository
+
+        engine = create_async_engine(database_url, echo=False)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with factory() as db:
+            repo = AsyncTaskRepository()
+            # Query all tasks, newest first (no uid filter — subprocess reads all)
+            from sqlalchemy import select
+            from app.models import AsyncTask
+            result = await db.execute(
+                select(AsyncTask).order_by(AsyncTask.updated_at.desc()).limit(200)
+            )
+            tasks = result.scalars().all()
+
+            data = [
+                {
+                    "task_id": t.task_id,
+                    "uid": t.uid,
+                    "task_type": t.task_type,
+                    "target": t.target,
+                    "status": t.status,
+                    "progress": t.progress,
+                    "steps": t.steps,
+                    "result": t.result,
+                    "error": t.error,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+                    "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+                }
+                for t in tasks
+            ]
+
+            shared_dict[CACHE_KEY] = {
+                "tasks": data,
+                "updated_at": time.time(),
+                "count": len(data),
+            }
+
+        await engine.dispose()
+        logger.info(f"[TaskCache] refreshed {len(data)} tasks")
+
+    _asyncio.run(_query())
+
+
+# ── Public API (called from main process) ──────────────────────────
+
+
+def start_cache_refresher(database_url: str) -> None:
+    """Start the subprocess that refreshes the cache every 5 minutes."""
+    global _manager, _shared_cache, _refresher_process
+
+    if _refresher_process is not None:
+        logger.warning("[TaskCache] refresher already running")
+        return
+
+    _manager = multiprocessing.Manager()
+    _shared_cache = _manager.dict()
+    _shared_cache[CACHE_KEY] = {"tasks": [], "updated_at": 0, "count": 0}
+
+    _refresher_process = multiprocessing.Process(
+        target=_refresher_worker,
+        args=(_shared_cache, database_url, REFRESH_INTERVAL),
+        name="task-cache-refresher",
+        daemon=True,
+    )
+    _refresher_process.start()
+    logger.info("[TaskCache] refresher subprocess started (interval=%ds)", REFRESH_INTERVAL)
+
+
+def stop_cache_refresher() -> None:
+    """Stop the subprocess and clean up shared memory."""
+    global _manager, _shared_cache, _refresher_process
+
+    if _refresher_process is not None:
+        _refresher_process.terminate()
+        _refresher_process.join(timeout=5)
+        _refresher_process = None
+        logger.info("[TaskCache] refresher subprocess stopped")
+
+    if _manager is not None:
+        _manager.shutdown()
+        _manager = None
+    _shared_cache = None
+
+
+def get_cached_tasks(
+    uid: int | None = None,
+    task_type: str | None = None,
+    status: str | None = None,
+) -> list[dict]:
+    """Read task list from shared cache (no DB query)."""
+    if _shared_cache is None:
+        return []
+
+    cache = _shared_cache.get(CACHE_KEY, {})
+    tasks: list[dict] = cache.get("tasks", [])
+
+    if uid is not None:
+        tasks = [t for t in tasks if t.get("uid") == uid]
+    if task_type:
+        tasks = [t for t in tasks if t.get("task_type") == task_type]
+    if status:
+        tasks = [t for t in tasks if t.get("status") == status]
+
+    return tasks
+
+
+def get_cached_task(task_id: str) -> dict | None:
+    """Get a single task from cache."""
+    tasks = get_cached_tasks()
+    for t in tasks:
+        if t["task_id"] == task_id:
+            return t
+    return None

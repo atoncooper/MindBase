@@ -7,11 +7,11 @@ from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from typing import List, Optional
 from pydantic import BaseModel
-from app.models import FavoriteFolderInfo
+from app.response.knowledge import FavoriteFolderInfo
 from app.services.bilibili import BilibiliService
 from app.routers.auth import get_session
 
-router = APIRouter(prefix="/favorites", tags=["收藏夹"])
+router = APIRouter(prefix="/favorites", tags=["收藏夹"], deprecated=True)
 
 
 def _is_default_folder(folder: dict) -> bool:

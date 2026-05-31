@@ -3,19 +3,43 @@ Bilibili RAG 知识库系统
 
 数据模型定义
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON, Float, UniqueConstraint
+from sqlalchemy import (
+    Column, Integer, BigInteger, String, Text, DateTime, Date,
+    Boolean, JSON, Float, DECIMAL, UniqueConstraint, ForeignKey, Index,
+)
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
+from sqlalchemy.orm import relationship
+from datetime import datetime, date
 from typing import Optional
-from pydantic import BaseModel
-from enum import Enum
 
 Base = declarative_base()
 
 
 # ==================== SQLAlchemy 模型 ====================
+
+class Collection(Base):
+    """Video metadata cached from Bilibili collection/favorites sync.
+
+    Keyed by (media_id, bvid) — one row per video per collection.
+    Query: SELECT * FROM collection WHERE media_id = ? — no JOIN needed.
+    """
+    __tablename__ = 'collection'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    media_id = Column(BigInteger, nullable=False, index=True)  # B站 collection ID
+    bvid = Column(String(20), nullable=False)
+    cid = Column(BigInteger, nullable=True)
+    title = Column(String(500), nullable=False)
+    cover = Column(String(500), nullable=True)
+    duration = Column(Integer, nullable=True)
+    owner_name = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("media_id", "bvid", name="uq_collection_media_bvid"),
+    )
+
 
 class VideoCache(Base):
     """视频内容缓存表"""
@@ -23,15 +47,14 @@ class VideoCache(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     bvid = Column(String(20), unique=True, index=True, nullable=False)
-    cid = Column(Integer, nullable=True)
+    cid = Column(BigInteger, nullable=True)
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
     owner_name = Column(String(100), nullable=True)  # UP主名称
-    owner_mid = Column(Integer, nullable=True)  # UP主ID
+    owner_mid = Column(BigInteger, nullable=True)  # UP主ID (64-bit)
     
-    # 内容
-    content = Column(Text, nullable=True)  # 摘要/字幕文本
-    content_source = Column(String(20), nullable=True)  # ai_summary / subtitle / basic_info
+    # Content text stored in MongoDB asr_documents; MySQL keeps only metadata
+    content_source = Column(String(20), nullable=True)  # ai_summary / subtitle / basic_info / asr
     outline_json = Column(JSON, nullable=True)  # 分段提纲
     
     # 元信息
@@ -46,185 +69,79 @@ class VideoCache(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class UserSession(Base):
-    """用户会话表"""
-    __tablename__ = 'user_sessions'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(64), unique=True, index=True, nullable=False)
-    
-    # B站用户信息
-    bili_mid = Column(Integer, nullable=True)  # B站用户ID
-    bili_uname = Column(String(100), nullable=True)  # B站用户名
-    bili_face = Column(String(500), nullable=True)  # 头像URL
-    
-    # Cookie 信息（加密存储更安全，这里简化处理）
-    sessdata = Column(Text, nullable=True)
-    bili_jct = Column(Text, nullable=True)
-    dedeuserid = Column(String(50), nullable=True)
-    
-    # 状态
-    is_valid = Column(Boolean, default=True)
-    last_active_at = Column(DateTime, default=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
 class FavoriteFolder(Base):
-    """收藏夹记录表"""
+    """收藏夹记录表
+
+    v2 (uid-based): uid + media_id 唯一确定一个收藏夹，同步时 upsert。
+    session_id 保留用于旧路由（knowledge.py / chat.py）兼容。
+    """
     __tablename__ = 'favorite_folders'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(64), index=True, nullable=False)
-    
-    # B站收藏夹信息  
-    media_id = Column(Integer, nullable=False)  # 收藏夹ID
-    fid = Column(Integer, nullable=True)  # 原始ID
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=True, index=True)  # v2: 用户 ID
+    session_id = Column(String(64), index=True, nullable=True)   # 旧路由兼容，新路由可为空
+
+    # B站收藏夹信息
+    media_id = Column(BigInteger, nullable=False)  # B站收藏夹 ID（64-bit）
+    fid = Column(BigInteger, nullable=True)  # deprecated
     title = Column(String(200), nullable=False)
-    media_count = Column(Integer, default=0)  # 视频数量
-    
+    media_count = Column(Integer, default=0)  # 视频总数（同步时更新）
+    is_default = Column(Boolean, default=False)  # v2: 是否默认收藏夹
+
     # 状态
-    is_selected = Column(Boolean, default=True)  # 是否选中用于知识库
+    is_selected = Column(Boolean, default=True)  # 用户是否勾选用于知识库
     last_sync_at = Column(DateTime, nullable=True)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)  # v2: 软删除
+
+    __table_args__ = (
+        UniqueConstraint("uid", "media_id", name="uq_fav_folder_uid_media"),
+    )
 
 
 class FavoriteVideo(Base):
-    """收藏夹-视频关联表"""
+    """收藏夹-视频关联表
+
+    v2: video_id 作为到 video_cache.id 的外键；bvid 保留用于旧路由兼容。
+    """
     __tablename__ = 'favorite_videos'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    folder_id = Column(Integer, index=True, nullable=False)  # 关联 FavoriteFolder.id
-    bvid = Column(String(20), index=True, nullable=False)
-    
+    folder_id = Column(Integer, ForeignKey("favorite_folders.id", ondelete="CASCADE"), index=True, nullable=False)
+    video_id = Column(Integer, ForeignKey("collection.id", ondelete="CASCADE"), nullable=True, index=True)  # v2: FK → collection.id (av_id)
+    bvid = Column(String(20), index=True, nullable=True)  # 旧路由兼容，新路由可通过 video_id JOIN
+
     # 是否选中（用户可以取消选中某些视频）
     is_selected = Column(Boolean, default=True)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
-
-# ==================== Pydantic 模型 (API 用) ====================
-
-class ContentSource(str, Enum):
-    """内容来源"""
-    AI_SUMMARY = "ai_summary"
-    SUBTITLE = "subtitle"
-    BASIC_INFO = "basic_info"
-    ASR = "asr"
+    __table_args__ = (
+        UniqueConstraint("folder_id", "video_id", name="uq_fav_video_folder_video"),
+    )
 
 
-class VideoInfo(BaseModel):
-    """视频信息"""
-    bvid: str
-    cid: Optional[int] = None
-    title: str
-    description: Optional[str] = None
-    owner_name: Optional[str] = None
-    owner_mid: Optional[int] = None
-    duration: Optional[int] = None
-    pic_url: Optional[str] = None
 
 
-class VideoContent(BaseModel):
-    """视频内容（含摘要）"""
-    bvid: str
-    title: str
-    content: str
-    source: ContentSource
-    outline: Optional[list] = None
+# ==================== Video & VideoVersion (分P ASR) ====================
 
+class Video(Base):
+    """Video page identified by cid — one row per episode.
 
-class QRCodeResponse(BaseModel):
-    """二维码响应"""
-    qrcode_key: str
-    qrcode_url: str
-    qrcode_image_base64: str
-
-
-class LoginStatusResponse(BaseModel):
-    """登录状态响应"""
-    status: str  # waiting / scanned / confirmed / expired
-    message: str
-    user_info: Optional[dict] = None
-    session_id: Optional[str] = None
-
-
-class FavoriteFolderInfo(BaseModel):
-    """收藏夹信息"""
-    media_id: int
-    title: str
-    media_count: int
-    is_selected: bool = True
-    is_default: Optional[bool] = None
-
-
-class WorkspacePage(BaseModel):
-    """工作区页面（用户选中的已向量化分P）"""
-    bvid: str
-    cid: int
-    page_index: int = 0
-    page_title: Optional[str] = None
-
-
-class ChatResponse(BaseModel):
-    """对话响应"""
-    answer: str
-    sources: list[dict]  # 来源视频列表
-
-
-class ReasoningStepResponse(BaseModel):
-    """Agentic RAG 推理步骤"""
-    step: int
-    action: str
-    query: str = ""
-    reasoning: str = ""
-    verdict: Optional[str] = None
-    recall_score: Optional[float] = None
-    sources: list[dict] = []
-    content_preview: str = ""
-
-
-class AgenticChatResponse(BaseModel):
-    """Agentic RAG 对话响应"""
-    answer: str
-    sources: list[dict]
-    reasoning_steps: list[ReasoningStepResponse]
-    synthesis_method: str
-    hops_used: int
-    avg_recall_score: float = 0.0
-
-
-class VideoPageInfo(BaseModel):
-    """单个分P信息"""
-    cid: int
-    page: int  # 1-based
-    title: str  # B站 part 字段
-    duration: int
-
-
-class VideoPagesResponse(BaseModel):
-    """GET /api/knowledge/video/{bvid}/pages 响应"""
-    bvid: str
-    title: str
-    pages: list[VideoPageInfo]
-    page_count: int
-
-
-# ==================== VideoPage & VideoPageVersion (分P ASR) ====================
-
-class VideoPage(Base):
-    """视频分P信息表"""
-    __tablename__ = 'video_pages'
+    video_id = bv_to_av(bvid), used as FK to video_cache for JOINs.
+    """
+    __tablename__ = 'video'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    video_id = Column(Integer, index=True, nullable=True)  # bv_to_av(bvid), FK → video_cache.id
     bvid = Column(String(20), index=True, nullable=False)
-    cid = Column(Integer, nullable=False)  # B站唯一标识
+    cid = Column(BigInteger, nullable=False)  # Bilibili cid
     page_index = Column(Integer, nullable=False)  # 0-based P序号
     page_title = Column(String(500), nullable=True)  # 如 "P1. 引言"
 
-    # ASR 内容（当前最新版本）
-    content = Column(Text, nullable=True)  # ASR 转写文字
+    # ASR text stored in MongoDB asr_documents; MySQL keeps only metadata
     content_source = Column(String(20), nullable=True)  # asr / user_edit
     is_processed = Column(Boolean, default=False)  # ASR 是否完成
     version = Column(Integer, default=1)  # 当前版本号
@@ -239,30 +156,66 @@ class VideoPage(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint('bvid', 'cid', name='uq_video_page_bvid_cid'),
-        UniqueConstraint('bvid', 'page_index', name='uq_video_page_bvid_index'),
+        UniqueConstraint('bvid', 'cid', name='uq_video_bvid_cid'),
+        UniqueConstraint('bvid', 'page_index', name='uq_video_bvid_index'),
     )
 
 
-class VideoPageVersion(Base):
-    """分P ASR 版本历史表"""
-    __tablename__ = 'video_page_versions'
+class VideoVersion(Base):
+    """ASR version history per cid."""
+    __tablename__ = 'video_versions'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     bvid = Column(String(20), index=True, nullable=False)
-    cid = Column(Integer, nullable=False)
+    cid = Column(BigInteger, nullable=False)
     page_index = Column(Integer, nullable=False)
     version = Column(Integer, nullable=False)
 
-    content = Column(Text, nullable=True)
     content_source = Column(String(20), nullable=True)  # asr / user_edit
     is_latest = Column(Boolean, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint('bvid', 'cid', 'version', name='uq_video_page_version'),
+        UniqueConstraint('bvid', 'cid', 'version', name='uq_video_version'),
     )
+
+
+class VideoMetadata(Base):
+    """Structured metadata extracted from video content (1:1 with video).
+
+    Full ASR text → MongoDB (asr_documents).  Structured insights → this table.
+    video_id FK → video.id — one metadata row per video page (cid).
+    """
+    __tablename__ = 'arc_meta'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    video_id = Column(Integer, ForeignKey("video.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+
+    # AI-extracted
+    summary = Column(Text, nullable=True)
+    keywords = Column(JSON, nullable=True)           # ["keyword1", "keyword2"]
+    topics = Column(JSON, nullable=True)             # [{"name": "...", "confidence": 0.9}]
+    difficulty = Column(String(20), nullable=True)   # beginner / intermediate / advanced
+
+    # Content stats
+    word_count = Column(Integer, default=0)
+    reading_time = Column(Integer, default=0)        # estimated seconds
+    language = Column(String(10), nullable=True)     # zh / en / mix
+
+    # Video features
+    has_code = Column(Boolean, default=False)
+    has_math = Column(Boolean, default=False)
+    is_tutorial = Column(Boolean, default=False)
+
+    # User-editable
+    user_tags = Column(JSON, nullable=True)          # ["tag1", "tag2"]
+    notes = Column(Text, nullable=True)
+
+    # Timestamps
+    extracted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class AsyncTask(Base):
@@ -270,8 +223,9 @@ class AsyncTask(Base):
     __tablename__ = 'async_tasks'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=True, index=True)
     task_id = Column(String(64), unique=True, index=True, nullable=False)
-    task_type = Column(String(20), nullable=False)  # vec_page / asr / ...
+    task_type = Column(String(20), nullable=False)  # vec_page / asr / arc_meta_extract
     target = Column(JSON, nullable=False)  # {"bvid": "BV1xx", "cid": 123, "page_index": 0}
     status = Column(String(20), default="pending")  # pending / processing / done / failed
     progress = Column(Integer, default=0)
@@ -284,266 +238,79 @@ class AsyncTask(Base):
 
 
 class ChatSession(Base):
-    """聊天会话表"""
+    """Chat session — uid-scoped metadata row.
+
+    ``chat_session_id`` (UUID4) is the public identifier and the
+    MongoDB lookup key for messages.  Messages themselves live in the
+    ``chat_messages`` MongoDB collection; only session metadata stays
+    in MySQL.
+    """
     __tablename__ = 'chat_sessions'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     chat_session_id = Column(String(64), unique=True, index=True, nullable=False)
-    session_id = Column(String(64), index=True, nullable=False)  # 登录态 session
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
     title = Column(String(200), nullable=True)
     status = Column(String(20), default="active")  # active / archived / deleted
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_message_at = Column(DateTime, nullable=True)
 
-
-class ChatMessage(Base):
-    """聊天消息表"""
-    __tablename__ = 'chat_messages'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    chat_session_id = Column(String(64), index=True, nullable=False)
-    role = Column(String(20), nullable=False)  # user / assistant / system
-    content = Column(Text, nullable=False, default="")
-    status = Column(String(20), default="completed")  # pending / completed / failed
-    sources = Column(JSON, nullable=True)  # 来源列表
-    tokens_used = Column(Integer, nullable=True)
-    model = Column(String(100), nullable=True)
-    latency_ms = Column(Integer, nullable=True)
-    error = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-# ==================== Pydantic 模型 (ASR 分P) ====================
-
-class ASRCreateRequest(BaseModel):
-    """POST /asr/create 请求"""
-    bvid: str
-    cid: int
-    page_index: int = 0
-    page_title: Optional[str] = None
-
-
-class ASRUpdateRequest(BaseModel):
-    """POST /asr/update 请求"""
-    bvid: str
-    cid: int
-    page_index: int
-    content: str
-
-
-class ASRReASRRequest(BaseModel):
-    """POST /asr/reasr 请求"""
-    bvid: str
-    cid: int
-    page_index: int
-
-
-class ASRContentResponse(BaseModel):
-    """GET /asr/content 响应"""
-    exists: bool
-    bvid: Optional[str] = None
-    cid: Optional[int] = None
-    page_index: Optional[int] = None
-    page_title: Optional[str] = None
-    content: Optional[str] = None
-    content_source: Optional[str] = None
-    version: Optional[int] = None
-    is_processed: Optional[bool] = None
-
-
-class ASRTaskStatus(BaseModel):
-    """ASR 任务状态"""
-    task_id: str
-    status: str  # pending / processing / done / failed
-    progress: int
-    message: str
-
-
-class VideoPageVersionInfo(BaseModel):
-    """版本历史信息"""
-    version: int
-    content_source: str
-    content_preview: str
-    is_latest: bool
     created_at: datetime
 
 
 # ==================== Pydantic 模型 (分P向量化) ====================
 
-class VectorPageStatusResponse(BaseModel):
-    """GET /vec/page/status 响应"""
-    exists: bool
-    bvid: Optional[str] = None
-    cid: Optional[int] = None
-    page_index: Optional[int] = None
-    page_title: Optional[str] = None
-    is_processed: bool
-    content_preview: Optional[str] = None
-    is_vectorized: str  # pending / processing / done / failed
-    vectorized_at: Optional[datetime] = None
-    vector_chunk_count: int = 0
-    vector_error: Optional[str] = None
-    chroma_exists: bool
-    steps: Optional[list[dict]] = None  # 子步骤透传
-
-
-class VectorPageTaskStatus(BaseModel):
-    """GET /vec/page/status/{task_id} 响应"""
-    task_id: str
-    status: str  # pending / processing / done / failed
-    progress: int
-    message: str
-    steps: Optional[list[dict]] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
-
-
-class VectorPageCreateRequest(BaseModel):
-    """POST /vec/page/create 请求"""
-    bvid: str
-    cid: int
-    page_index: int = 0
-    page_title: Optional[str] = None
-
-
-class VectorPageReVectorRequest(BaseModel):
-    """POST /vec/page/revector 请求"""
-    bvid: str
-    cid: int
-
-
 # ==================== Pydantic 模型 (聊天历史) ====================
 
-class ChatSessionCreateRequest(BaseModel):
-    """创建聊天会话请求"""
-    session_id: str
-    title: Optional[str] = None
 
+# ==================== SQLAlchemy 模型 (用户 Embedding / ASR 配置) ====================
 
-class ChatSessionUpdateRequest(BaseModel):
-    """更新聊天会话请求"""
-    title: str
-
-
-class ChatSessionResponse(BaseModel):
-    """聊天会话响应"""
-    id: int
-    chat_session_id: str
-    session_id: str
-    title: Optional[str] = None
-    status: str = "active"
-    created_at: datetime
-    updated_at: datetime
-    last_message_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-class ChatMessageResponse(BaseModel):
-    """聊天消息响应"""
-    id: int
-    chat_session_id: str
-    role: str
-    content: str
-    status: str = "completed"
-    sources: Optional[list[dict]] = None
-    tokens_used: Optional[int] = None
-    model: Optional[str] = None
-    latency_ms: Optional[int] = None
-    error: Optional[str] = None
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class ChatHistoryQueryParams(BaseModel):
-    """查询聊天历史参数"""
-    chat_session_id: str
-    page: int = 1
-    page_size: int = 50
-
-
-class ChatHistoryResponse(BaseModel):
-    """聊天历史分页响应"""
-    messages: list[ChatMessageResponse]
-    total: int
-    page: int
-    page_size: int
-    has_more: bool
-
-
-class ChatSessionListResponse(BaseModel):
-    """会话列表响应"""
-    sessions: list[ChatSessionResponse]
-
-
-class ChatRequest(BaseModel):
-    """对话请求（更新版，增加 chat_session_id）"""
-    question: str
-    session_id: Optional[str] = None        # 登录态（鉴权）
-    chat_session_id: Optional[str] = None   # 聊天会话（新增）
-    folder_ids: Optional[list[int]] = None  # 指定收藏夹，None 表示全部
-    workspace_pages: Optional[list[WorkspacePage]] = None  # 工作区选中的分P
-    mode: str = "standard"  # standard / agentic
-
-
-# ==================== SQLAlchemy 模型 (用户 API Key) ====================
-
-class UserSettings(Base):
-    """用户自定义 API Key 配置表"""
-    __tablename__ = "user_settings"
+class UserEmbeddingConfig(Base):
+    """用户 Embedding 配置表"""
+    __tablename__ = "user_embedding_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(64), nullable=False, unique=True, index=True)
-    # LLM 配置（Key 密文存储）
-    llm_api_key_encrypted = Column(Text, nullable=True)
-    llm_base_url = Column(Text, nullable=True)
-    llm_model = Column(Text, nullable=True)
-    # Embedding 配置（Key 密文存储）
-    embedding_api_key_encrypted = Column(Text, nullable=True)
-    embedding_base_url = Column(Text, nullable=True)
-    embedding_model = Column(Text, nullable=True)
-    # ASR 配置（Key 密文存储）
-    asr_api_key_encrypted = Column(Text, nullable=True)
-    asr_base_url = Column(Text, nullable=True)
-    asr_model = Column(Text, nullable=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    provider = Column(String(32), nullable=False)
+    api_key_encrypted = Column(Text, nullable=False)
+    base_url = Column(Text, nullable=True)
+    model = Column(Text, nullable=True)
+    is_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    last_test_status = Column(String(20), nullable=True)
+    last_test_error = Column(Text, nullable=True)
+    last_test_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="embedding_configs")
 
 
-# ==================== Pydantic 模型 (用户 API Key) ====================
+class UserASRConfig(Base):
+    """用户 ASR 配置表"""
+    __tablename__ = "user_asr_configs"
 
-class ApiKeySetRequest(BaseModel):
-    """API Key 配置请求（支持部分更新，null = 不修改）"""
-    llm_api_key: Optional[str] = None
-    llm_base_url: Optional[str] = None
-    llm_model: Optional[str] = None
-    embedding_api_key: Optional[str] = None
-    embedding_base_url: Optional[str] = None
-    embedding_model: Optional[str] = None
-    asr_api_key: Optional[str] = None
-    asr_base_url: Optional[str] = None
-    asr_model: Optional[str] = None
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    provider = Column(String(32), nullable=False)       # dashscope / openai / custom
+    api_key_encrypted = Column(Text, nullable=False)
+    base_url = Column(Text, nullable=True)
+    model = Column(Text, nullable=True)                  # paraformer-v2 / whisper-1 / ...
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
 
+    last_test_status = Column(String(20), nullable=True)
+    last_test_error = Column(Text, nullable=True)
+    last_test_at = Column(DateTime, nullable=True)
 
-class ApiKeyStatusResponse(BaseModel):
-    """API Key 配置状态（不包含完整 Key）"""
-    llm_is_configured: bool = False
-    llm_masked_key: Optional[str] = None
-    llm_base_url: Optional[str] = None
-    llm_model: Optional[str] = None
-    embedding_is_configured: bool = False
-    embedding_masked_key: Optional[str] = None
-    embedding_base_url: Optional[str] = None
-    embedding_model: Optional[str] = None
-    asr_is_configured: bool = False
-    asr_masked_key: Optional[str] = None
-    asr_base_url: Optional[str] = None
-    asr_model: Optional[str] = None
-    updated_at: Optional[datetime] = None
+    user = relationship("User", back_populates="asr_configs")
+
 
 
 # ==================== SQLAlchemy 模型 (多 Provider Credential) ====================
@@ -553,7 +320,7 @@ class UserCredential(Base):
     __tablename__ = "user_credentials"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(64), nullable=False, index=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
     name = Column(String(64), nullable=False)          # 用户自定义名称，如 "我的 OpenAI"
     provider = Column(String(32), nullable=False)       # openai / anthropic / deepseek / custom
     api_key_encrypted = Column(Text, nullable=False)
@@ -562,6 +329,13 @@ class UserCredential(Base):
     is_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    last_test_status = Column(String(20), nullable=True)  # None | "ok" | "error"
+    last_test_error = Column(Text, nullable=True)
+    last_test_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="credentials")
 
 
 class CredentialUsage(Base):
@@ -569,7 +343,7 @@ class CredentialUsage(Base):
     __tablename__ = "credential_usage"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(64), nullable=False, index=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
     credential_id = Column(Integer, nullable=True)      # NULL = 系统默认 Key
     provider = Column(String(32), nullable=True)
     model = Column(String(64), nullable=True)
@@ -583,12 +357,15 @@ class CredentialUsage(Base):
 # ==================== SQLAlchemy 模型 (Quiz 题目训练系统) ====================
 
 class QuizSet(Base):
-    """题目集"""
+    """Quiz set metadata — uid-scoped.
+
+    quiz_uuid is the MongoDB lookup key for quiz_questions.
+    """
     __tablename__ = 'quiz_sets'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     quiz_uuid = Column(String(64), unique=True, index=True, nullable=False)
-    session_id = Column(String(64), index=True, nullable=False)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=True, index=True)
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     question_count = Column(Integer, default=10)
@@ -607,40 +384,14 @@ class QuizSet(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class QuizQuestion(Base):
-    """题目明细"""
-    __tablename__ = 'quiz_questions'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    quiz_uuid = Column(String(64), index=True, nullable=False)
-    question_uuid = Column(String(64), unique=True, index=True, nullable=False)
-    bvid = Column(String(20), nullable=True)
-    chunk_id = Column(String(20), nullable=True)
-    source_segment = Column(Text, nullable=True)
-    question_type = Column(String(20), nullable=False)  # single_choice / multi_choice / short_answer / essay
-    difficulty = Column(String(20), default='medium')
-    question_text = Column(Text, nullable=False)
-    options = Column(JSON, nullable=True)  # ["A. 选项1", "B. 选项2", ...]
-    correct_answer = Column(JSON, nullable=False)  # "A" or ["A", "C"] or "答案文本"
-    explanation = Column(Text, nullable=True)
-    keywords = Column(JSON, nullable=True)  # ["关键词1", "关键词2"]
-    answer_template = Column(Text, nullable=True)
-    scoring_rubric = Column(JSON, nullable=True)  # [{"step": "...", "points": 2, "keywords": [...]}]
-    model_answer = Column(Text, nullable=True)
-    metadata_extra = Column(JSON, nullable=True)  # 避免与 SQLAlchemy MetaData 冲突
-    is_valid = Column(Boolean, default=True)
-    invalid_reason = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
 class QuizSubmission(Base):
-    """提交记录"""
+    """Quiz submission record — uid-scoped."""
     __tablename__ = 'quiz_submissions'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     submission_uuid = Column(String(64), unique=True, index=True, nullable=False)
     quiz_uuid = Column(String(64), index=True, nullable=False)
-    session_id = Column(String(64), index=True, nullable=False)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=True, index=True)
     total_score = Column(Integer, nullable=True)
     auto_score = Column(Integer, nullable=True)
     manual_score = Column(Integer, nullable=True)
@@ -677,188 +428,173 @@ class QuizAnswer(Base):
     graded_at = Column(DateTime, nullable=True)
 
 
-# ==================== Pydantic 模型 (多 Provider Credential) ====================
+# ==================== 用户中心 ORM (Plan 0020 Phase 1) ====================
 
-class CredentialCreate(BaseModel):
-    """新建 Credential 请求"""
-    name: str
-    provider: str           # openai | anthropic | deepseek | custom
-    api_key: str            # 明文，服务端加密
-    base_url: Optional[str] = None
-    default_model: Optional[str] = None
-    is_default: bool = False
+class User(Base):
+    """用户核心表 — 全局唯一 uid，软删除"""
+    __tablename__ = "users"
 
+    uid = Column(BigInteger, primary_key=True)
+    status = Column(String(20), default="active")  # active / suspended / deleted
 
-class CredentialUpdate(BaseModel):
-    """更新 Credential 请求（部分更新）"""
-    name: Optional[str] = None
-    api_key: Optional[str] = None       # 传了才更新
-    base_url: Optional[str] = None
-    default_model: Optional[str] = None
-    is_default: Optional[bool] = None
+    # 身份标识 + 登录凭证
+    email = Column(String(200), nullable=True, unique=True)
+    phone = Column(String(20), nullable=True, unique=True)
+    password_hash = Column(String(255), nullable=True)      # bcrypt, nullable = OAuth-only user
+    email_verified = Column(Boolean, default=False)
+    phone_verified = Column(Boolean, default=False)
 
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
 
-class CredentialResponse(BaseModel):
-    """Credential 列表项响应（不包含完整 Key）"""
-    id: int
-    name: str
-    provider: str
-    masked_key: str                     # "sk-abc...4f2a"
-    base_url: Optional[str] = None
-    default_model: Optional[str] = None
-    is_default: bool
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
+    # relationships
+    oauth_bindings = relationship("UserOAuth", back_populates="user", lazy="selectin")
+    profile = relationship("UserProfile", back_populates="user", uselist=False, lazy="selectin")
+    tokens = relationship("UserToken", back_populates="user", lazy="selectin")
+    devices = relationship("UserDevice", back_populates="user", lazy="selectin")
+    roles = relationship("RbacUserRole", back_populates="user", lazy="selectin")
+    credentials = relationship("UserCredential", back_populates="user", lazy="selectin")
+    embedding_configs = relationship("UserEmbeddingConfig", back_populates="user", lazy="selectin")
+    asr_configs = relationship("UserASRConfig", back_populates="user", lazy="selectin")
 
 
-class ProviderUsage(BaseModel):
-    """按 Provider 聚合的用量"""
-    provider: str
-    total_tokens: int
-    api_calls: int
-    cost_estimate: float = 0.0          # 预估费用（暂为 0）
+class UserOAuth(Base):
+    """第三方登录绑定表"""
+    __tablename__ = "user_oauth"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    provider = Column(String(32), nullable=False)       # bilibili / wechat / qq / google / github
+    provider_uid = Column(String(64), nullable=False)   # 平台用户ID（如 bili_mid）
+    email = Column(String(200), nullable=True)           # OAuth 返回的邮箱（Google/微信等）
+    union_id = Column(String(64), nullable=True)         # 微信 union_id
+    access_token = Column(Text, nullable=True)           # AES-GCM encrypted
+    refresh_token = Column(Text, nullable=True)          # AES-GCM encrypted
+    expires_at = Column(DateTime, nullable=True)
+    raw_data = Column(Text, nullable=True)               # JSON: 平台返回的原始用户信息
+    is_primary = Column(Boolean, default=False)          # 是否主登录方式
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)         # 软删除（解绑）
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_uid", name="uq_user_oauth_provider_uid"),
+    )
+
+    user = relationship("User", back_populates="oauth_bindings")
 
 
-class CredentialUsageItem(BaseModel):
-    """按 Credential 聚合的用量"""
-    credential_id: Optional[int] = None  # None = 系统默认
-    name: str
-    provider: str
-    total_tokens: int
-    api_calls: int
-    cost_estimate: float = 0.0
+class UserProfile(Base):
+    """用户资料表"""
+    __tablename__ = "user_profile"
+
+    uid = Column(BigInteger, ForeignKey("users.uid"), primary_key=True)
+    nickname = Column(String(100), nullable=True)
+    avatar = Column(String(500), nullable=True)
+    bio = Column(Text, nullable=True)
+    birthday = Column(Date, nullable=True)
+    gender = Column(String(10), nullable=True)
+    location = Column(String(100), nullable=True)
+    timezone = Column(String(50), nullable=True)
+    language = Column(String(20), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="profile")
 
 
-class UsageSummary(BaseModel):
-    """用量汇总响应"""
-    total_tokens: int
-    total_api_calls: int
-    by_provider: list[ProviderUsage]     # 饼图数据
-    by_credential: list[CredentialUsageItem]  # 树状图数据
+class UserToken(Base):
+    """Token 会话表（替代旧 user_sessions 的部分职责）"""
+    __tablename__ = "user_tokens"
+
+    session_token = Column(String(128), primary_key=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    device_id = Column(String(64), nullable=True)
+    token_type = Column(String(20), default="access")  # access / refresh
+    expires_at = Column(DateTime, nullable=True)
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    is_revoked = Column(Boolean, default=False)
+    last_active_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="tokens")
 
 
-# ==================== Pydantic 模型 (Quiz 题目训练系统) ====================
+class UserDevice(Base):
+    """Device management — one row per known device fingerprint per user."""
+    __tablename__ = "user_device"
 
-class QuestionType(str, Enum):
-    """题型枚举"""
-    SINGLE_CHOICE = "single_choice"
-    MULTI_CHOICE = "multi_choice"
-    SHORT_ANSWER = "short_answer"
-    ESSAY = "essay"
+    device_id = Column(String(64), primary_key=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    device_type = Column(String(20), nullable=True)       # desktop | mobile | tablet
+    device_name = Column(String(100), nullable=True)      # "MacBook Pro" / "iPhone 15"
+    os = Column(String(50), nullable=True)                # "Windows" / "macOS" / "iOS"
+    os_version = Column(String(50), nullable=True)
+    browser = Column(String(100), nullable=True)          # "Chrome" / "Safari"
+    browser_version = Column(String(50), nullable=True)
+    fingerprint = Column(String(128), nullable=True)
+    trust_level = Column(String(20), default="unknown")   # unknown | trusted | flagged
+    last_active_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
 
+    user = relationship("User", back_populates="devices")
 
-class QuizGenerateRequest(BaseModel):
-    """POST /quiz/generate 请求"""
-    folder_ids: Optional[list[int]] = None
-    pages: Optional[list[dict]] = None  # [{"bvid":"BVxxx","cid":123,"page_index":0,"page_title":"P1"}]
-    question_count: int = 10
-    type_distribution: Optional[dict[str, int]] = None
-    difficulty: str = "medium"  # easy / medium / hard
-    title: Optional[str] = None
-
-
-class QuizGenerateResponse(BaseModel):
-    """POST /quiz/generate 响应"""
-    quiz_uuid: str
-    question_count: int
-    estimated_cost_tokens: int
-
-
-class QuizQuestionResponse(BaseModel):
-    """题目响应（不含答案）"""
-    question_uuid: str
-    question_type: str
-    difficulty: str
-    question_text: str
-    options: Optional[list[str]] = None
+    __table_args__ = (
+        UniqueConstraint("uid", "fingerprint"),
+        Index("idx_user_device_uid", "uid"),
+    )
 
 
-class QuizSetResponse(BaseModel):
-    """GET /quiz/{quiz_uuid} 响应"""
-    quiz_uuid: str
-    title: str
-    status: str
-    question_count: int
-    type_distribution: Optional[dict] = None
-    difficulty: str
-    total_score: int
-    passing_score: int
-    created_at: datetime
-    questions: list[QuizQuestionResponse] = []
+class VerificationCode(Base):
+    """验证码表 — 邮箱/手机号验证"""
+    __tablename__ = "verification_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    target = Column(String(200), nullable=False)       # email or phone
+    type = Column(String(20), nullable=False)           # email / sms
+    purpose = Column(String(32), nullable=False)        # bind / change / reset_password
+    code = Column(String(10), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_vc_target_purpose", "target", "purpose"),
+        Index("idx_vc_uid", "uid"),
+    )
 
 
-class QuizAnswerItem(BaseModel):
-    """提交答案项"""
-    question_uuid: str
-    answer: str | list[str]
+class RbacRole(Base):
+    """角色表"""
+    __tablename__ = "rbac_role"
+
+    role_id = Column(String(64), primary_key=True)
+    name = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
+    is_system = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class QuizSubmissionRequest(BaseModel):
-    """POST /quiz/submit 请求"""
-    quiz_uuid: str
-    answers: list[QuizAnswerItem]
-    time_spent_seconds: Optional[int] = None
+class RbacUserRole(Base):
+    """用户-角色关联表"""
+    __tablename__ = "rbac_user_role"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    role_id = Column(String(64), ForeignKey("rbac_role.role_id"), nullable=False)
+    granted_by = Column(BigInteger, nullable=True)
+    granted_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="roles")
 
 
-class QuizAnswerResult(BaseModel):
-    """单题批改结果"""
-    question_uuid: str
-    is_correct: Optional[bool] = None
-    auto_score: Optional[int] = None
-    correct_answer: str | list[str]
-    grading_note: Optional[str] = None
-
-
-class QuizSubmissionResponse(BaseModel):
-    """POST /quiz/submit 响应"""
-    submission_uuid: str
-    score: Optional[int] = None
-    passed: Optional[bool] = None
-    correct_count: int
-    total_count: int
-    results: list[QuizAnswerResult]
-
-
-class QuizHistoryItem(BaseModel):
-    """答题历史项"""
-    submission_uuid: str
-    quiz_uuid: str
-    title: str
-    score: Optional[int] = None
-    passed: Optional[bool] = None
-    correct_count: int
-    total_question_count: int
-    time_spent_seconds: Optional[int] = None
-    submitted_at: str
-
-
-class QuizHistoryResponse(BaseModel):
-    """答题历史响应"""
-    submissions: list[QuizHistoryItem]
-    total: int
-    page: int
-    page_size: int
-    has_more: bool
-
-
-class WrongAnswerItem(BaseModel):
-    """错题项"""
-    question_uuid: str
-    quiz_uuid: str
-    question_type: str
-    question_text: str
-    options: Optional[list[str]] = None
-    user_answer: str | list[str]
-    correct_answer: str | list[str]
-    explanation: Optional[str] = None
-    times_wrong: int
-    last_attempt_at: str
-
-
-class WrongAnswerResponse(BaseModel):
-    """错题响应"""
-    wrong_answers: list[WrongAnswerItem]
-    total: int

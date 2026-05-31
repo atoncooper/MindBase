@@ -1,4 +1,4 @@
-# app/test/test_video_pages.py
+# app/test/test_video.py
 
 import pytest
 import re
@@ -9,19 +9,19 @@ from app.utils.cache import get_cache_service
 
 # ==================== 模型测试 ====================
 
-class TestVideoPagesModel:
-    """VideoPagesResponse 格式校验"""
+class TestVideosModel:
+    """VideosResponse 格式校验"""
 
-    def test_video_pages_response_model(self):
-        """VideoPagesResponse 格式校验"""
-        from app.models import VideoPagesResponse, VideoPageInfo
+    def test_video_response_model(self):
+        """VideosResponse 格式校验"""
+        from app.response.knowledge import VideosResponse, VideoInfo
 
-        response = VideoPagesResponse(
+        response = VideosResponse(
             bvid="BV1test",
             title="Test Video",
             pages=[
-                VideoPageInfo(cid=123, page=1, title="Part 1", duration=3600),
-                VideoPageInfo(cid=124, page=2, title="Part 2", duration=2400),
+                VideoInfo(cid=123, page=1, title="Part 1", duration=3600),
+                VideoInfo(cid=124, page=2, title="Part 2", duration=2400),
             ],
             page_count=2
         )
@@ -31,10 +31,10 @@ class TestVideoPagesModel:
         assert response.pages[1].page == 2
 
     def test_video_page_info__default_values(self):
-        """VideoPageInfo 字段校验"""
-        from app.models import VideoPageInfo
+        """VideoInfo 字段校验"""
+        from app.response.knowledge import VideoInfo
 
-        page = VideoPageInfo(cid=123, page=1, title="Part 1", duration=3600)
+        page = VideoInfo(cid=123, page=1, title="Part 1", duration=3600)
         assert page.cid == 123
         assert page.page == 1
         assert page.title == "Part 1"
@@ -42,29 +42,29 @@ class TestVideoPagesModel:
 
     def test_video_page_info__multi_pages(self):
         """多分P场景"""
-        from app.models import VideoPagesResponse, VideoPageInfo
+        from app.response.knowledge import VideosResponse, VideoInfo
 
-        response = VideoPagesResponse(
+        response = VideosResponse(
             bvid="BV1234567890",
             title="课程完整版",
             pages=[
-                VideoPageInfo(cid=100, page=1, title="第一章 入门", duration=1800),
-                VideoPageInfo(cid=101, page=2, title="第二章 进阶", duration=2400),
-                VideoPageInfo(cid=102, page=3, title="第三章 实战", duration=3600),
+                VideoInfo(cid=100, page=1, title="第一章 入门", duration=1800),
+                VideoInfo(cid=101, page=2, title="第二章 进阶", duration=2400),
+                VideoInfo(cid=102, page=3, title="第三章 实战", duration=3600),
             ],
             page_count=3
         )
         assert response.page_count == 3
         assert all(p.page == i + 1 for i, p in enumerate(response.pages))
 
-    def test_video_pages_response__single_page(self):
+    def test_video_response__single_page(self):
         """单分P场景"""
-        from app.models import VideoPagesResponse, VideoPageInfo
+        from app.response.knowledge import VideosResponse, VideoInfo
 
-        response = VideoPagesResponse(
+        response = VideosResponse(
             bvid="BV1SinglePage",
             title="单P视频",
-            pages=[VideoPageInfo(cid=999, page=1, title="完整视频", duration=6000)],
+            pages=[VideoInfo(cid=999, page=1, title="完整视频", duration=6000)],
             page_count=1
         )
         assert response.page_count == 1
@@ -103,7 +103,7 @@ class TestBvidValidation:
 # ==================== API 端点测试 ====================
 
 @pytest.mark.asyncio
-async def test_get_video_pages__cache_hit__returns_cached():
+async def test_get_video__cache_hit__returns_cached():
     """
     缓存命中时直接返回，不调 B站 API
     """
@@ -136,7 +136,7 @@ async def test_get_video_pages__cache_hit__returns_cached():
 
 
 @pytest.mark.asyncio
-async def test_get_video_pages__invalid_bvid__returns_400():
+async def test_get_video__invalid_bvid__returns_400():
     """
     bvid 格式错误返回 400
     """
@@ -147,7 +147,7 @@ async def test_get_video_pages__invalid_bvid__returns_400():
 
 
 @pytest.mark.asyncio
-async def test_get_video_pages__bvid_case_insensitive():
+async def test_get_video__bvid_case_insensitive():
     """
     bvid 小写也应该合法（由正则处理）
     """

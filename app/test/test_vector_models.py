@@ -135,17 +135,17 @@ class TestAsyncTaskModel:
         assert task.error is None
 
 
-# ==================== VideoPage 向量化字段测试 ====================
+# ==================== Video 向量化字段测试 ====================
 
-class TestVideoPageVectorFields:
-    """VideoPage 向量化扩展字段测试"""
+class TestVideoVectorFields:
+    """Video 向量化扩展字段测试"""
 
     @pytest.mark.asyncio
     async def test_video_page_vector_defaults(self, test_db):
         """测试向量化字段默认值"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1vecDefault",
             cid=300,
             page_index=0,
@@ -162,11 +162,11 @@ class TestVideoPageVectorFields:
     @pytest.mark.asyncio
     async def test_video_page_vectorized_done(self, test_db):
         """测试向量化完成状态"""
-        from app.models import VideoPage
+        from app.models import Video
         from datetime import datetime
 
         now = datetime.utcnow()
-        page = VideoPage(
+        page = Video(
             bvid="BV1vecDone",
             cid=301,
             page_index=0,
@@ -183,7 +183,7 @@ class TestVideoPageVectorFields:
 
         from sqlalchemy import select
         result = await test_db.execute(
-            select(VideoPage).where(VideoPage.bvid == "BV1vecDone")
+            select(Video).where(Video.bvid == "BV1vecDone")
         )
         found = result.scalar_one()
         assert found.is_vectorized == "done"
@@ -193,9 +193,9 @@ class TestVideoPageVectorFields:
     @pytest.mark.asyncio
     async def test_video_page_vectorized_failed(self, test_db):
         """测试向量化失败状态"""
-        from app.models import VideoPage
+        from app.models import Video
 
-        page = VideoPage(
+        page = Video(
             bvid="BV1vecFailed",
             cid=302,
             page_index=0,
@@ -209,7 +209,7 @@ class TestVideoPageVectorFields:
 
         from sqlalchemy import select
         result = await test_db.execute(
-            select(VideoPage).where(VideoPage.bvid == "BV1vecFailed")
+            select(Video).where(Video.bvid == "BV1vecFailed")
         )
         found = result.scalar_one()
         assert found.is_vectorized == "failed"
@@ -223,7 +223,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_status_response__exists(self):
         """VectorPageStatusResponse exists=true"""
-        from app.models import VectorPageStatusResponse
+        from app.response.vector import VectorPageStatusResponse
         from datetime import datetime
 
         now = datetime.utcnow()
@@ -248,7 +248,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_status_response__not_exists(self):
         """VectorPageStatusResponse exists=false"""
-        from app.models import VectorPageStatusResponse
+        from app.response.vector import VectorPageStatusResponse
 
         resp = VectorPageStatusResponse(
             exists=False,
@@ -262,7 +262,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_status_response__with_steps(self):
         """VectorPageStatusResponse 含 steps"""
-        from app.models import VectorPageStatusResponse
+        from app.response.vector import VectorPageStatusResponse
 
         steps = [
             {"name": "asr", "status": "done", "progress": 100},
@@ -281,7 +281,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_task_status(self):
         """VectorPageTaskStatus"""
-        from app.models import VectorPageTaskStatus
+        from app.response.vector import VectorPageTaskStatus
 
         status = VectorPageTaskStatus(
             task_id="task-vec-001",
@@ -300,7 +300,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_task_status__failed(self):
         """VectorPageTaskStatus failed"""
-        from app.models import VectorPageTaskStatus
+        from app.response.vector import VectorPageTaskStatus
 
         status = VectorPageTaskStatus(
             task_id="task-vec-002",
@@ -314,7 +314,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_create_request(self):
         """VectorPageCreateRequest"""
-        from app.models import VectorPageCreateRequest
+        from app.response.vector import VectorPageCreateRequest
 
         req = VectorPageCreateRequest(
             bvid="BV1create123",
@@ -328,7 +328,7 @@ class TestVectorPydanticSchemas:
 
     def test_vector_page_revector_request(self):
         """VectorPageReVectorRequest"""
-        from app.models import VectorPageReVectorRequest
+        from app.response.vector import VectorPageReVectorRequest
 
         req = VectorPageReVectorRequest(bvid="BV1revector123", cid=789)
         assert req.bvid == "BV1revector123"

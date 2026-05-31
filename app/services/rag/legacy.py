@@ -13,7 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from app.config import settings
-from app.models import VideoContent
+from app.response.knowledge import VideoContent
 
 if TYPE_CHECKING:
     from app.services.llm.api_key_manager import ApiKeyManager

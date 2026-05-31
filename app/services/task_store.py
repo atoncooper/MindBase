@@ -1,25 +1,25 @@
 """
-Bilibili RAG 知识库系统
+Task persistence — abstract interface + SQL implementation.
 
-任务持久化层 - TaskPersistence 接口 + SQLite 实现
-支持 future 替换为 Redis 实现
+Delegates CRUD to AsyncTaskRepository.
 """
+
 from abc import ABC, abstractmethod
 from typing import Optional
-from datetime import datetime
 
-from sqlalchemy import select
 from loguru import logger
 
 from app.database import get_db_context
-from app.models import AsyncTask
+from app.repository.async_task_repository import (
+    get_async_task_repository, AsyncTaskRepository,
+)
 
 
 class TaskPersistence(ABC):
-    """任务存储抽象接口 — future 可替换为 Redis 实现"""
+    """Abstract task storage — swappable for Redis in the future."""
 
     @abstractmethod
-    async def create(self, task_id: str, task_type: str, target: dict) -> None: ...
+    async def create(self, task_id: str, task_type: str, target: dict, uid: int | None = None) -> None: ...
 
     @abstractmethod
     async def update(self, task_id: str, **kwargs) -> None: ...
@@ -32,92 +32,41 @@ class TaskPersistence(ABC):
 
 
 class SQLiteTaskPersistence(TaskPersistence):
-    """SQLite 实现（当前版本）"""
+    """SQL implementation — delegates to AsyncTaskRepository."""
 
-    async def create(self, task_id: str, task_type: str, target: dict) -> None:
-        """创建新任务"""
+    def __init__(self, repo: AsyncTaskRepository | None = None):
+        self._repo = repo or get_async_task_repository()
+
+    async def create(self, task_id: str, task_type: str, target: dict, uid: int | None = None) -> None:
         async with get_db_context() as db:
-            task = AsyncTask(
-                task_id=task_id,
-                task_type=task_type,
-                target=target,
-                status="pending",
-                progress=0,
-                steps=None,
-            )
-            db.add(task)
-            await db.commit()
-            logger.debug(f"[TaskStore] 创建任务 task_id={task_id}, type={task_type}")
+            await self._repo.create(task_id, task_type, target, uid=uid, db=db)
+            logger.debug(f"[TaskStore] created task_id={task_id}, type={task_type}, uid={uid}")
 
     async def update(self, task_id: str, **kwargs) -> None:
-        """更新任务状态和字段"""
         async with get_db_context() as db:
-            result = await db.execute(
-                select(AsyncTask).where(AsyncTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
-            if not task:
-                logger.warning(f"[TaskStore] 任务不存在 task_id={task_id}")
-                return
-
-            for key, value in kwargs.items():
-                if hasattr(task, key):
-                    setattr(task, key, value)
-            task.updated_at = datetime.utcnow()
-
-            if kwargs.get("status") in ("done", "failed"):
-                task.completed_at = datetime.utcnow()
-
-            await db.commit()
-            logger.debug(f"[TaskStore] 更新任务 task_id={task_id}, kwargs={kwargs}")
+            row = await self._repo.update_fields(task_id, db, **kwargs)
+            if not row:
+                logger.warning(f"[TaskStore] task not found: {task_id}")
 
     async def get(self, task_id: str) -> Optional[dict]:
-        """获取任务详情"""
         async with get_db_context() as db:
-            result = await db.execute(
-                select(AsyncTask).where(AsyncTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
-            if not task:
+            row = await self._repo.get_by_task_id(task_id, db)
+            if not row:
                 return None
             return {
-                "task_id": task.task_id,
-                "task_type": task.task_type,
-                "target": task.target,
-                "status": task.status,
-                "progress": task.progress,
-                "steps": task.steps,
-                "result": task.result,
-                "error": task.error,
-                "created_at": task.created_at,
-                "updated_at": task.updated_at,
-                "completed_at": task.completed_at,
+                "task_id": row.task_id, "task_type": row.task_type,
+                "target": row.target, "status": row.status,
+                "progress": row.progress, "steps": row.steps,
+                "result": row.result, "error": row.error,
+                "created_at": row.created_at, "updated_at": row.updated_at,
+                "completed_at": row.completed_at,
             }
 
     async def list_pending(self, task_type: str) -> list[dict]:
-        """扫描所有 pending/processing 任务（用于崩溃恢复）"""
         async with get_db_context() as db:
-            result = await db.execute(
-                select(AsyncTask)
-                .where(AsyncTask.task_type == task_type)
-                .where(AsyncTask.status.in_(["pending", "processing"]))
-            )
-            tasks = result.scalars().all()
+            rows = await self._repo.list_pending(task_type, db)
             return [
-                {
-                    "task_id": t.task_id,
-                    "task_type": t.task_type,
-                    "target": t.target,
-                    "status": t.status,
-                }
-                for t in tasks
+                {"task_id": t.task_id, "task_type": t.task_type,
+                 "target": t.target, "status": t.status}
+                for t in rows
             ]
-
-
-# ==================== Redis 预留接口（future 实现） ====================
-# class RedisTaskPersistence(TaskPersistence):
-#     """Redis 实现（future，替换此类不动业务代码）"""
-#     async def create(self, task_id: str, task_type: str, target: dict) -> None: ...
-#     async def update(self, task_id: str, **kwargs) -> None: ...
-#     async def get(self, task_id: str) -> Optional[dict]: ...
-#     async def list_pending(self, task_type: str) -> list[dict]: ...
