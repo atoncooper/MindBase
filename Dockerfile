@@ -15,7 +15,7 @@ WORKDIR /app
 # Tip: for faster downloads in China, uncomment the mirror line below
 #   --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # Copy application code
 COPY app/ ./app/
