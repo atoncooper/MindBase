@@ -41,17 +41,18 @@ async def run_startup_checks() -> None:
         except Exception as e:
             errors.append(f"ChromaDB: {e}")
 
-    # 3. Milvus — required if enabled
+    # 3. Milvus — soft check (warn only; init() already handles graceful degradation)
     if _cfg.milvus.enabled:
         try:
             from app.infra.milvus import ping as milvus_ping, init as milvus_init
             await milvus_init()
             result = await milvus_ping()
             if not result["ok"]:
-                raise StartupCheckError(result.get("error", "unknown"))
-            logger.info("[STARTUP] Milvus: OK (latency=%dms)", result["latency_ms"])
+                logger.warning("[STARTUP] Milvus: not connected (continuing without vector store)")
+            else:
+                logger.info("[STARTUP] Milvus: OK (latency=%dms)", result["latency_ms"])
         except Exception as e:
-            errors.append(f"Milvus: {e}")
+            logger.warning("[STARTUP] Milvus: check failed (continuing): {}", e)
 
     # 4. MongoDB — required if enabled
     if _cfg.mongo.enabled:
