@@ -1,19 +1,21 @@
-# ====== Backend: FastAPI ======
-FROM python:3.12-slim
+# ====== Backend: FastAPI (Alpine) ======
+FROM python:3.12-alpine
 
 LABEL app="bilibili-rag-backend"
 
 # System dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
     ffmpeg \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    gcc musl-dev \
+    && rm -rf /var/cache/apk/*
 
 WORKDIR /app
 
 # Install Python dependencies (leverage Docker layer cache)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && apk del gcc musl-dev
 
 # Copy application code
 COPY app/ ./app/
@@ -22,7 +24,7 @@ COPY app/ ./app/
 RUN mkdir -p /app/data /app/logs
 
 # Non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN adduser -D -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
