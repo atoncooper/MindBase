@@ -548,6 +548,8 @@ CREATE TABLE video_cache (
     description     TEXT,
     owner_name      VARCHAR(100),
     owner_mid       INT,
+    content_source  VARCHAR(20),                    -- ai_summary / subtitle / basic_info / asr
+    outline_json    JSON,                           -- segment outline (JSON array)
     duration        INT,                           -- seconds
     pic_url         VARCHAR(500),
     page_count      INT DEFAULT 1,
@@ -600,6 +602,7 @@ CREATE TABLE video (
     cid                  BIGINT NOT NULL,              -- Bilibili cid
     page_index           INT NOT NULL,              -- 0-based
     page_title           VARCHAR(500),
+    content_source       VARCHAR(20),                -- asr / user_edit
     is_processed         BOOLEAN DEFAULT FALSE,     -- ASR content exists in MongoDB
     version              INT DEFAULT 1,             -- current ASR version (→ asr_documents.version)
     is_vectorized        VARCHAR(20) DEFAULT 'pending',  -- pending | processing | done | failed
