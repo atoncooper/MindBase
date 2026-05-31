@@ -4,25 +4,29 @@ info:
   description: |
     B站收藏内容可检索知识库系统的 RESTful API 文档。
 
-    ## 核心能力
+    ## Core capabilities
 
-    1. **数据获取** - B站扫码登录、收藏夹/视频列表同步
-    2. **内容提取** - ASR（语音转文本）、基础信息（标题/简介）
-    3. **知识构建** - 文本切块（chunking）、向量化（embedding）、存储到 ChromaDB
-    4. **智能问答（RAG）** - 查询路由（direct/db/vector）、向量检索+LLM生成、流式返回+来源追踪
+    1. **Data acquisition** — Bilibili QR login, favorite / video sync
+    2. **Content extraction** — ASR, subtitles, AI summaries
+    3. **Knowledge indexing** — Chunking, embedding, ChromaDB storage
+    4. **Intelligent Q&A (RAG)** — Query routing, vector retrieval + LLM, SSE streaming
 
-    ## 认证机制
+    ## Authentication
 
-    - 使用 `session_id` 作为会话标识
-    - 扫码登录后获取 `session_id`
-    - 大部分接口需要携带 `session_id` 参数
+    **Credentials / Settings / Billing:** Require `Authorization: Bearer <token>` header
+    (no `session_id` query param). Token is returned on login as `session_token`.
 
-    ## SSE 流式响应
+    **Other endpoints:** `Authorization: Bearer <token>` (recommended) or
+    `?session_id=<uuid>` query parameter (legacy compat, will be removed).
 
-    聊天接口 `/chat/ask/stream` 使用 Server-Sent Events 流式返回：
-    - 格式: `data: {chunk_text}`
-    - 结束后发送: `data: [[SOURCES_JSON]]{sources_json}`
-  version: 1.2.0
+    ## SSE streaming
+
+    `/chat/ask/stream` returns Server-Sent Events:
+    - `data: {"type":"chunk","content":"..."}`
+    - `data: {"type":"sources","sources":[...]}`
+    - `data: {"type":"error","message":"..."}`
+    - `data: {"type":"done"}`
+  version: 1.4.0
   contact:
     name: Bilibili RAG Project
   license:
@@ -33,25 +37,33 @@ servers:
     description: 本地开发服务器
 
 tags:
-  - name: 认证
-    description: B站扫码登录与会话管理
-  - name: 对话
-    description: 智能问答与搜索
-  - name: 收藏夹
-    description: 收藏夹浏览与整理
-  - name: 知识库
-    description: 知识库构建与管理
+  - name: Auth
+    description: QR login, tokens, user info
+  - name: Chat
+    description: Q&A, streaming, search, sessions
+  - name: Favorites
+    description: Favorite folders browse & organize
+  - name: Knowledge
+    description: Knowledge base build & manage
   - name: ASR
-    description: 分P视频语音转文本
-  - name: 分P向量化
-    description: 分P视频向量化入库
+    description: Per-page speech-to-text
+  - name: VectorPage
+    description: Per-page vectorization
+  - name: Credentials
+    description: Multi-provider LLM API key management
+  - name: Settings
+    description: User API key / model overrides
+  - name: Billing
+    description: Token usage & cost tracking
+  - name: Quiz
+    description: Quiz generation, submission & grading
 
 paths:
   # ========== 认证路由 ==========
   /auth/qrcode:
     get:
       tags:
-        - 认证
+        - Auth
       summary: 生成登录二维码
       description: |
         调用 B站 接口生成扫码登录所需的二维码。
@@ -76,7 +88,7 @@ paths:
   /auth/qrcode/poll/{qrcode_key}:
     get:
       tags:
-        - 认证
+        - Auth
       summary: 轮询二维码登录状态
       description: |
         轮询扫码登录状态，支持以下状态：
@@ -127,70 +139,10 @@ paths:
                       face: "https://avatar.example.com/face.jpg"
                       level: 4
 
-  /auth/session/{session_id}:
-    get:
-      tags:
-        - 认证
-      summary: 获取会话信息
-      description: |
-        根据 session_id 获取当前登录用户的会话信息。
-
-        内部会检查：
-        1. 内存缓存
-        2. 数据库中的持久化会话
-      operationId: getSessionInfo
-      parameters:
-        - name: session_id
-          in: path
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 会话信息
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SessionInfo'
-        '404':
-          description: 会话不存在或已过期
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-    delete:
-      tags:
-        - 认证
-      summary: 退出登录
-      description: |
-        清除会话信息，登出当前用户。
-      operationId: logout
-      parameters:
-        - name: session_id
-          in: path
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 退出成功
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "已退出登录"
-
-  # ========== 对话路由 ==========
   /chat/ask:
     post:
       tags:
-        - 对话
+        - Chat
       summary: 智能问答（非流式）
       description: |
         基于收藏内容进行智能问答。
@@ -249,7 +201,7 @@ paths:
   /chat/ask/stream:
     post:
       tags:
-        - 对话
+        - Chat
       summary: 流式智能问答
       description: |
         流式版本的智能问答，使用 Server-Sent Events 返回。
@@ -296,7 +248,7 @@ paths:
   /chat/search:
     post:
       tags:
-        - 对话
+        - Chat
       summary: 搜索相关视频片段
       description: |
         在向量库中搜索与查询相关的内容片段。
@@ -343,332 +295,11 @@ paths:
                     content_preview: "机器学习是人工智能的一个分支，它使用数据来训练模型..."
 
   # ========== 收藏夹路由 ==========
-  /favorites/list:
-    get:
-      tags:
-        - 收藏夹
-      summary: 获取收藏夹列表
-      description: |
-        获取当前登录用户的所有收藏夹列表。
 
-        ### 返回字段说明
-
-        - `media_id`: 收藏夹ID
-        - `title`: 收藏夹名称
-        - `media_count`: 收藏夹内视频数量
-        - `is_selected`: 是否选中（默认 true）
-        - `is_default`: 是否默认收藏夹
-      operationId: getFavoritesList
-      parameters:
-        - name: session_id
-          in: query
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 收藏夹列表
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/FavoriteFolderInfo'
-              example:
-                - media_id: 123456
-                  title: "学习资料"
-                  media_count: 42
-                  is_selected: true
-                  is_default: false
-                - media_id: 789012
-                  title: "默认收藏夹"
-                  media_count: 15
-                  is_selected: true
-                  is_default: true
-        '401':
-          description: 未登录或会话已过期
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /favorites/{media_id}/videos:
-    get:
-      tags:
-        - 收藏夹
-      summary: 获取收藏夹视频（分页）
-      description: |
-        获取指定收藏夹中的视频列表，支持分页。
-
-        ### 分页参数
-
-        - `page`: 页码，从 1 开始
-        - `page_size`: 每页数量，默认 20，最大 20
-      operationId: getFavoriteVideos
-      parameters:
-        - name: media_id
-          in: path
-          required: true
-          description: 收藏夹媒体ID
-          schema:
-            type: integer
-        - name: session_id
-          in: query
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          required: false
-          description: 页码
-          schema:
-            type: integer
-            default: 1
-            minimum: 1
-        - name: page_size
-          in: query
-          required: false
-          description: 每页数量
-          schema:
-            type: integer
-            default: 20
-            minimum: 1
-            maximum: 20
-      responses:
-        '200':
-          description: 收藏夹视频列表
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FavoriteVideosResponse'
-              example:
-                folder_info:
-                  title: "学习资料"
-                  media_count: 42
-                videos:
-                  - bvid: "BV1xx411c7mD"
-                    title: "Python 入门教程"
-                    cover: "https://i0.hdslb.com/bfs/archive/xxx.jpg"
-                    duration: "12:34"
-                    owner: "UP主名称"
-                    play_count: 12345
-                    intro: "Python 编程入门..."
-                    is_selected: true
-                has_more: true
-                page: 1
-                page_size: 20
-        '401':
-          description: 未登录
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /favorites/{media_id}/all-videos:
-    get:
-      tags:
-        - 收藏夹
-      summary: 获取收藏夹所有视频
-      description: |
-        获取指定收藏夹中的所有视频（用于构建知识库）。
-
-        ### 注意事项
-
-        - 自动过滤失效视频（已删除、已下架等）
-        - 返回所有有效视频信息
-        - 包含 `cid` 字段，用于后续 ASR 处理
-      operationId: getAllFavoriteVideos
-      parameters:
-        - name: media_id
-          in: path
-          required: true
-          description: 收藏夹媒体ID
-          schema:
-            type: integer
-        - name: session_id
-          in: query
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: 所有视频列表
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  total:
-                    type: integer
-                    description: 有效视频总数
-                  videos:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/VideoInfo'
-              example:
-                total: 42
-                videos:
-                  - bvid: "BV1xx411c7mD"
-                    title: "Python 入门教程"
-                    cover: "https://i0.hdslb.com/bfs/archive/xxx.jpg"
-                    duration: "12:34"
-                    owner: "UP主名称"
-                    cid: 12345678
-        '401':
-          description: 未登录
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /favorites/organize/preview:
-    post:
-      tags:
-        - 收藏夹
-      summary: 预览收藏夹整理
-      description: |
-        预览按已有收藏夹名称对默认收藏夹内容分类的结果。
-
-        ### 功能说明
-
-        - 获取默认收藏夹中的所有视频
-        - 按已有收藏夹名称进行匹配
-        - 返回预览结果供用户确认
-      operationId: organizePreview
-      parameters:
-        - name: session_id
-          in: query
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OrganizePreviewRequest'
-      responses:
-        '200':
-          description: 预览结果
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrganizePreviewResponse'
-        '401':
-          description: 未登录
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /favorites/organize/execute:
-    post:
-      tags:
-        - 收藏夹
-      summary: 执行收藏夹整理
-      description: |
-        根据预览结果批量移动收藏夹内容。
-
-        ### 请求格式
-
-        - `default_folder_id`: 默认收藏夹ID（源）
-        - `moves`: 移动操作列表
-
-        ### 移动格式
-
-        ```json
-        {
-          "resource_id": 123,
-          "resource_type": 2,
-          "target_folder_id": 456
-        }
-        ```
-      operationId: organizeExecute
-      parameters:
-        - name: session_id
-          in: query
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OrganizeExecuteRequest'
-      responses:
-        '200':
-          description: 执行结果
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  moved:
-                    type: integer
-                  groups:
-                    type: integer
-              example:
-                message: "移动完成"
-                moved: 15
-                groups: 3
-        '401':
-          description: 未登录
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /favorites/organize/clean-invalid:
-    post:
-      tags:
-        - 收藏夹
-      summary: 清理失效内容
-      description: |
-        清理指定收藏夹中的失效内容（已删除、已下架视频）。
-      operationId: cleanInvalidResources
-      parameters:
-        - name: session_id
-          in: query
-          required: true
-          description: 会话ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CleanInvalidRequest'
-      responses:
-        '200':
-          description: 清理完成
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  data:
-                    type: object
-              example:
-                message: "清理完成"
-                data:
-                  deleted: 5
-
-  # ========== 知识库路由 ==========
   /knowledge/stats:
     get:
       tags:
-        - 知识库
+        - Knowledge
       summary: 获取知识库统计
       description: |
         获取当前知识库的统计信息。
@@ -694,7 +325,7 @@ paths:
   /knowledge/folders/status:
     get:
       tags:
-        - 知识库
+        - Knowledge
       summary: 获取收藏夹入库状态
       description: |
         获取各收藏夹的索引状态信息。
@@ -734,7 +365,7 @@ paths:
   /knowledge/folders/sync:
     post:
       tags:
-        - 知识库
+        - Knowledge
       summary: 同步收藏夹到向量库
       description: |
         将收藏夹内容同步到向量知识库。
@@ -787,7 +418,7 @@ paths:
   /knowledge/build:
     post:
       tags:
-        - 知识库
+        - Knowledge
       summary: 构建知识库（后台任务）
       description: |
         后台构建知识库任务。
@@ -837,7 +468,7 @@ paths:
   /knowledge/build/status/{task_id}:
     get:
       tags:
-        - 知识库
+        - Knowledge
       summary: 获取构建任务状态
       description: |
         查询知识库构建任务的执行状态。
@@ -883,7 +514,7 @@ paths:
   /knowledge/clear:
     delete:
       tags:
-        - 知识库
+        - Knowledge
       summary: 清空知识库
       description: |
         清空所有向量数据。
@@ -908,7 +539,7 @@ paths:
   /knowledge/video/{bvid}:
     delete:
       tags:
-        - 知识库
+        - Knowledge
       summary: 删除单个视频
       description: |
         从知识库中删除指定视频的向量数据。
@@ -1191,7 +822,7 @@ paths:
   /vec/page/status:
     get:
       tags:
-        - 分P向量化
+        - VectorPage
       summary: 查询分P向量状态
       description: |
         查询指定分P的向量化状态，包含 ChromaDB 实际向量数量校验。
@@ -1234,7 +865,7 @@ paths:
   /vec/page/create:
     post:
       tags:
-        - 分P向量化
+        - VectorPage
       summary: 创建向量化任务
       description: |
         幂等创建分P向量化任务。
@@ -1273,7 +904,7 @@ paths:
   /vec/page/revector:
     post:
       tags:
-        - 分P向量化
+        - VectorPage
       summary: 重新向量化
       description: |
         强制重建分P向量：删除旧向量，重新执行向量化。
@@ -1320,7 +951,7 @@ paths:
   /vec/page/status/{task_id}:
     get:
       tags:
-        - 分P向量化
+        - VectorPage
       summary: 查询向量化任务状态
       description: |
         轮询向量化后台任务的执行状态，含 steps 子步骤透传。
@@ -1357,6 +988,597 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # ========== Auth (new endpoints) ==========
+  /auth/me:
+    get:
+      tags:
+        - Auth
+      summary: Get current user info
+      description: Requires Authorization Bearer header.
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfoResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/token:
+    delete:
+      tags:
+        - Auth
+      summary: Logout current device
+      operationId: logoutCurrent
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Token revoked
+
+  /auth/tokens:
+    delete:
+      tags:
+        - Auth
+      summary: Logout all devices
+      operationId: logoutAll
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: All tokens revoked
+
+  # ========== Chat (extended) ==========
+  /chat/ask/agentic:
+    post:
+      tags:
+        - Chat
+      summary: Agentic RAG multi-hop Q&A
+      operationId: askAgentic
+      parameters:
+        - name: session_id
+          in: query
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgenticChatRequest'
+      responses:
+        '200':
+          description: Agentic answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgenticChatResponse'
+
+  /chat/sessions:
+    get:
+      tags:
+        - Chat
+      summary: List chat sessions
+      operationId: listChatSessions
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Chat session list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSessionListResponse'
+    post:
+      tags:
+        - Chat
+      summary: Create chat session
+      operationId: createChatSession
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatSessionCreateRequest'
+      responses:
+        '200':
+          description: Created session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSessionResponse'
+
+  /chat/sessions/{chat_session_id}:
+    get:
+      tags:
+        - Chat
+      summary: Get chat session
+      operationId: getChatSession
+      parameters:
+        - name: chat_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session detail
+    patch:
+      tags:
+        - Chat
+      summary: Rename chat session
+      operationId: updateChatSession
+      parameters:
+        - name: chat_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatSessionUpdateRequest'
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags:
+        - Chat
+      summary: Delete chat session
+      operationId: deleteChatSession
+      parameters:
+        - name: chat_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+
+  /chat/history:
+    get:
+      tags:
+        - Chat
+      summary: Get chat history
+      operationId: getChatHistory
+      parameters:
+        - name: chat_session_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: Paginated history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatHistoryResponse'
+    delete:
+      tags:
+        - Chat
+      summary: Clear chat history
+      operationId: clearChatHistory
+      parameters:
+        - name: chat_session_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cleared
+
+  /knowledge/pages/vectorized:
+    get:
+      tags:
+        - Knowledge
+      summary: Get vectorized pages
+      operationId: getVectorizedPages
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of vectorized pages
+
+  /credentials:
+    get:
+      tags:
+        - Credentials
+      summary: List credentials
+      operationId: listCredentials
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Credential list (keys masked)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CredentialResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - Credentials
+      summary: Create credential
+      operationId: createCredential
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialCreate'
+      responses:
+        '201':
+          description: Created credential
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /credentials/{credential_id}:
+    patch:
+      tags:
+        - Credentials
+      summary: Update credential
+      operationId: updateCredential
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: credential_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialUpdate'
+      responses:
+        '200':
+          description: Updated
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Credential not found
+    delete:
+      tags:
+        - Credentials
+      summary: Delete credential
+      operationId: deleteCredential
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: credential_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /credentials/{credential_id}/default:
+    post:
+      tags:
+        - Credentials
+      summary: Set as default credential
+      operationId: setDefaultCredential
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: credential_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Default set
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ========== Settings ==========
+  /settings/credentials/status:
+    get:
+      tags:
+        - Settings
+      summary: Get API key config status
+      operationId: getSettingsStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Config status (keys masked)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /settings/credentials:
+    post:
+      tags:
+        - Settings
+      summary: Set/update user API keys
+      operationId: upsertSettings
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeySetRequest'
+      responses:
+        '200':
+          description: Updated
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags:
+        - Settings
+      summary: Delete custom API keys (revert to defaults)
+      operationId: deleteSettings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ========== Billing ==========
+  /billing/summary:
+    get:
+      tags:
+        - Billing
+      summary: Usage summary
+      operationId: getBillingSummary
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+          description: Number of days to look back (1-365)
+      responses:
+        '200':
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /billing/by-provider:
+    get:
+      tags:
+        - Billing
+      summary: Usage by provider
+      operationId: getBillingByProvider
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+          description: Number of days to look back (1-365)
+      responses:
+        '200':
+          description: Provider breakdown
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /billing/by-credential:
+    get:
+      tags:
+        - Billing
+      summary: Usage by credential
+      operationId: getBillingByCredential
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+          description: Number of days to look back (1-365)
+      responses:
+        '200':
+          description: Credential breakdown
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ========== Quiz ==========
+  /quiz/generate:
+    post:
+      tags:
+        - Quiz
+      summary: Generate quiz set
+      operationId: generateQuiz
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuizGenerateRequest'
+      responses:
+        '200':
+          description: Quiz generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuizGenerateResponse'
+
+  /quiz/{quiz_uuid}:
+    get:
+      tags:
+        - Quiz
+      summary: Get quiz set
+      operationId: getQuiz
+      parameters:
+        - name: quiz_uuid
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include_answers
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Quiz set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuizSetResponse'
+
+  /quiz/submit:
+    post:
+      tags:
+        - Quiz
+      summary: Submit answers
+      operationId: submitQuiz
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuizSubmissionRequest'
+      responses:
+        '200':
+          description: Graded submission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuizSubmissionResponse'
+
+  /quiz/history:
+    get:
+      tags:
+        - Quiz
+      summary: Get answer history
+      operationId: getQuizHistory
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: Answer history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuizHistoryResponse'
+
+  /quiz/wrong-answers:
+    get:
+      tags:
+        - Quiz
+      summary: Get wrong answers (study notebook)
+      operationId: getWrongAnswers
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Wrong answers list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WrongAnswerResponse'
+
+  /quiz/export:
+    get:
+      tags:
+        - Quiz
+      summary: Export quiz data
+      operationId: exportQuiz
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [jsonl, csv, sft]
+            default: jsonl
+      responses:
+        '200':
+          description: Streaming export
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
 
 components:
   schemas:
@@ -1974,10 +2196,644 @@ components:
         cid:
           type: integer
 
-    # ========== 通用 ==========
+    # ========== Common ==========
     ErrorResponse:
       type: object
       properties:
         detail:
           type: string
-          description: 错误详情
+
+    # ========== User center ==========
+    UserInfoResponse:
+      type: object
+      properties:
+        uid:
+          type: integer
+        nickname:
+          type: string
+          nullable: true
+        avatar:
+          type: string
+          nullable: true
+        status:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+        primary_oauth:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    TokenResponse:
+      type: object
+      properties:
+        session_token:
+          type: string
+        token_type:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        user_info:
+          $ref: '#/components/schemas/UserInfoResponse'
+
+    # ========== Chat (extended) ==========
+    AgenticChatRequest:
+      type: object
+      required:
+        - question
+      properties:
+        question:
+          type: string
+        session_id:
+          type: string
+        folder_ids:
+          type: array
+          items:
+            type: integer
+        top_k:
+          type: integer
+          default: 5
+        max_hops:
+          type: integer
+          default: 3
+
+    AgenticChatResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+        reasoning_steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReasoningStep'
+        synthesis_method:
+          type: string
+        hops_used:
+          type: integer
+        avg_recall_score:
+          type: number
+
+    ReasoningStep:
+      type: object
+      properties:
+        step:
+          type: integer
+        action:
+          type: string
+        query:
+          type: string
+        reasoning:
+          type: string
+        verdict:
+          type: string
+          nullable: true
+        recall_score:
+          type: number
+          nullable: true
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+        content_preview:
+          type: string
+
+    ChatSessionCreateRequest:
+      type: object
+      properties:
+        session_id:
+          type: string
+        title:
+          type: string
+
+    ChatSessionUpdateRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+
+    ChatSessionResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        chat_session_id:
+          type: string
+        session_id:
+          type: string
+        title:
+          type: string
+          nullable: true
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_message_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ChatSessionListResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatSessionResponse'
+
+    ChatMessageResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        chat_session_id:
+          type: string
+        role:
+          type: string
+        content:
+          type: string
+        status:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+        tokens_used:
+          type: integer
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        latency_ms:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    ChatHistoryResponse:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessageResponse'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        has_more:
+          type: boolean
+
+    # ========== Knowledge (extended) ==========
+    VideoPageInfo:
+      type: object
+      properties:
+        cid:
+          type: integer
+        page:
+          type: integer
+        title:
+          type: string
+        duration:
+          type: integer
+
+    VideoPagesResponse:
+      type: object
+      properties:
+        bvid:
+          type: string
+        title:
+          type: string
+        pages:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoPageInfo'
+        page_count:
+          type: integer
+
+    # ========== Credentials ==========
+    CredentialCreate:
+      type: object
+      required:
+        - name
+        - provider
+        - api_key
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+          enum: [openai, anthropic, deepseek, custom]
+        api_key:
+          type: string
+        base_url:
+          type: string
+        default_model:
+          type: string
+        is_default:
+          type: boolean
+          default: false
+
+    CredentialUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        api_key:
+          type: string
+        base_url:
+          type: string
+        default_model:
+          type: string
+        is_default:
+          type: boolean
+
+    CredentialResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        provider:
+          type: string
+        masked_key:
+          type: string
+        base_url:
+          type: string
+          nullable: true
+        default_model:
+          type: string
+          nullable: true
+        is_default:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ========== Settings ==========
+    ApiKeySetRequest:
+      type: object
+      properties:
+        llm_api_key:
+          type: string
+        llm_base_url:
+          type: string
+        llm_model:
+          type: string
+        embedding_api_key:
+          type: string
+        embedding_base_url:
+          type: string
+        embedding_model:
+          type: string
+        asr_api_key:
+          type: string
+        asr_base_url:
+          type: string
+        asr_model:
+          type: string
+
+    ApiKeyStatusResponse:
+      type: object
+      properties:
+        llm_is_configured:
+          type: boolean
+        llm_masked_key:
+          type: string
+          nullable: true
+        llm_base_url:
+          type: string
+          nullable: true
+        llm_model:
+          type: string
+          nullable: true
+        embedding_is_configured:
+          type: boolean
+        embedding_masked_key:
+          type: string
+          nullable: true
+        embedding_base_url:
+          type: string
+          nullable: true
+        embedding_model:
+          type: string
+          nullable: true
+        asr_is_configured:
+          type: boolean
+        asr_masked_key:
+          type: string
+          nullable: true
+        asr_base_url:
+          type: string
+          nullable: true
+        asr_model:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ========== Billing ==========
+    UsageSummary:
+      type: object
+      properties:
+        total_tokens:
+          type: integer
+        total_api_calls:
+          type: integer
+        by_provider:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderUsage'
+        by_credential:
+          type: array
+          items:
+            $ref: '#/components/schemas/CredentialUsageItem'
+
+    ProviderUsage:
+      type: object
+      properties:
+        provider:
+          type: string
+        total_tokens:
+          type: integer
+        api_calls:
+          type: integer
+        cost_estimate:
+          type: number
+
+    CredentialUsageItem:
+      type: object
+      properties:
+        credential_id:
+          type: integer
+          nullable: true
+        name:
+          type: string
+        provider:
+          type: string
+        total_tokens:
+          type: integer
+        api_calls:
+          type: integer
+        cost_estimate:
+          type: number
+
+    # ========== Quiz ==========
+    QuizGenerateRequest:
+      type: object
+      properties:
+        folder_ids:
+          type: array
+          items:
+            type: integer
+        pages:
+          type: array
+          items:
+            type: object
+        question_count:
+          type: integer
+          default: 10
+        difficulty:
+          type: string
+          enum: [easy, medium, hard]
+          default: medium
+        title:
+          type: string
+
+    QuizGenerateResponse:
+      type: object
+      properties:
+        quiz_uuid:
+          type: string
+        question_count:
+          type: integer
+        estimated_cost_tokens:
+          type: integer
+
+    QuizSetResponse:
+      type: object
+      properties:
+        quiz_uuid:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        question_count:
+          type: integer
+        type_distribution:
+          type: object
+          nullable: true
+        difficulty:
+          type: string
+        total_score:
+          type: integer
+        passing_score:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuizQuestionResponse'
+
+    QuizQuestionResponse:
+      type: object
+      properties:
+        question_uuid:
+          type: string
+        question_type:
+          type: string
+        difficulty:
+          type: string
+        question_text:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+          nullable: true
+
+    QuizSubmissionRequest:
+      type: object
+      required:
+        - quiz_uuid
+        - answers
+      properties:
+        quiz_uuid:
+          type: string
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuizAnswerItem'
+        time_spent_seconds:
+          type: integer
+          nullable: true
+
+    QuizAnswerItem:
+      type: object
+      required:
+        - question_uuid
+        - answer
+      properties:
+        question_uuid:
+          type: string
+        answer:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+
+    QuizSubmissionResponse:
+      type: object
+      properties:
+        submission_uuid:
+          type: string
+        score:
+          type: integer
+          nullable: true
+        passed:
+          type: boolean
+          nullable: true
+        correct_count:
+          type: integer
+        total_count:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuizAnswerResult'
+
+    QuizAnswerResult:
+      type: object
+      properties:
+        question_uuid:
+          type: string
+        is_correct:
+          type: boolean
+          nullable: true
+        auto_score:
+          type: integer
+          nullable: true
+        correct_answer: {}
+        grading_note:
+          type: string
+          nullable: true
+
+    QuizHistoryResponse:
+      type: object
+      properties:
+        submissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuizHistoryItem'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        has_more:
+          type: boolean
+
+    QuizHistoryItem:
+      type: object
+      properties:
+        submission_uuid:
+          type: string
+        quiz_uuid:
+          type: string
+        title:
+          type: string
+        score:
+          type: integer
+          nullable: true
+        passed:
+          type: boolean
+          nullable: true
+        correct_count:
+          type: integer
+        total_question_count:
+          type: integer
+        time_spent_seconds:
+          type: integer
+          nullable: true
+        submitted_at:
+          type: string
+
+    WrongAnswerResponse:
+      type: object
+      properties:
+        wrong_answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/WrongAnswerItem'
+        total:
+          type: integer
+
+    WrongAnswerItem:
+      type: object
+      properties:
+        question_uuid:
+          type: string
+        quiz_uuid:
+          type: string
+        question_type:
+          type: string
+        question_text:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+          nullable: true
+        user_answer: {}
+        correct_answer: {}
+        explanation:
+          type: string
+          nullable: true
+        times_wrong:
+          type: integer
+        last_attempt_at:
+          type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  responses:
+    Unauthorized:
+      description: Token is missing, expired, or revoked
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

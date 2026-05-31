@@ -106,24 +106,21 @@ conda activate bilibili-rag
 pip install -r requirements.txt
 ```
 
-### 2) 配置环境变量
+### 2) 配置
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入 DashScope API Key 等配置
+# 编辑 .env，只需要填入密钥类字段（API Key 等）
+# 所有非敏感配置（端口、超时、模型名等）已在 app/config/*.yaml 中定义
 ```
 
-**关键配置项：**
+**最小 `.env`：**
 
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| `DASHSCOPE_API_KEY` | 阿里云 DashScope API Key | ✅ |
-| `LLM_MODEL` | LLM 模型名称，默认 `qwen3-max` | ✅ |
-| `EMBEDDING_MODEL` | Embedding 模型，默认 `text-embedding-v4` | ✅ |
-| `DATABASE_URL` | SQLite 数据库路径 | - |
-| `CHROMA_PERSIST_DIRECTORY` | ChromaDB 持久化目录 | - |
+```env
+LLM__API_KEY=sk-your-dashscope-key
+```
 
-完整配置说明见 [.env.example](.env.example)。
+> 完整配置说明 → **[docs/configuration.md](docs/configuration.md)**
 
 ### 3) 启动后端
 
@@ -165,27 +162,50 @@ npm run dev
 
 ```
 bilibili-rag/
-├── app/                        # 后端应用根目录
-│   ├── config.py               # 配置管理（读取 .env）
-│   ├── database.py             # SQLite 异步连接 & 初始化
-│   ├── main.py                 # FastAPI 应用入口
-│   ├── models.py               # Pydantic/SQLAlchemy 数据模型
-│   ├── routers/                # HTTP 路由层
-│   │   ├── auth.py             # B站扫码登录
-│   │   ├── chat.py             # 智能问答（Orchestrator）
-│   │   ├── favorites.py        # 收藏夹管理
-│   │   ├── knowledge.py        # 知识库同步/构建
-│   │   ├── asr.py              # 分P视频 ASR 转写
-│   │   └── vector_page.py      # 分P视频向量化
-│   └── services/               # 业务逻辑层
-│       ├── bilibili.py         # B站 API 调用
-│       ├── content_fetcher.py  # 内容获取（音频/字幕）
-│       ├── asr.py              # 语音转文本服务
-│       ├── rag.py              # 向量检索/RAG 核心
-│       ├── wbi.py              # WBI 反爬签名
-│       └── query.py            # 查询重写/Agentic RAG
+├── app/                        # Backend root
+│   ├── config/                 # YAML-based config (docs/configuration.md)
+│   │   ├── default.yaml        #   All defaults (committed)
+│   │   ├── config.yaml         #   Team-shared overrides (committed, optional)
+│   │   └── loader.py           #   YAML loader + env-var merge
+│   ├── database.py             # SQLite async engine & init
+│   ├── main.py                 # FastAPI entry point
+│   ├── models.py               # Pydantic / SQLAlchemy models
+│   ├── utils/                  # Shared utilities
+│   │   ├── snowflake.py        #   Snowflake ID generator
+│   │   └── cache.py            #   In-memory cache
+│   ├── repository/             # Data-access layer (one repo per table)
+│   │   ├── user_repository.py
+│   │   ├── user_oauth_repository.py
+│   │   ├── user_token_repository.py
+│   │   ├── rbac_repository.py
+│   │   └── ...
+│   ├── routers/                # HTTP route layer
+│   │   ├── auth.py             #   Bilibili QR login + user tokens
+│   │   ├── chat.py             #   Q&A orchestrator
+│   │   ├── favorites.py        #   Favorite folders
+│   │   ├── knowledge.py        #   Knowledge base sync
+│   │   ├── asr.py              #   Per-page ASR
+│   │   ├── vector_page.py      #   Per-page vectorization
+│   │   ├── credentials.py      #   Multi-provider API keys
+│   │   ├── billing.py          #   Usage / billing
+│   │   ├── quiz.py             #   Quiz training
+│   │   └── settings.py         #   User API key settings
+│   └── services/               # Business-logic layer
+│       ├── auth/               #   User center (Plan 0020)
+│       │   ├── user_service.py
+│       │   ├── token.py
+│       │   └── security.py
+│       ├── bilibili.py         #   Bilibili API client
+│       ├── content_fetcher.py  #   Audio / subtitle fetch
+│       ├── asr.py              #   Speech-to-text
+│       ├── rag/                #   Vector retrieval + LLM
+│       ├── query/              #   Query rewrite / Agentic RAG
+│       ├── llm/                #   LLM credential / usage
+│       └── wbi.py              #   WBI anti-crawl signing
 │
-├── frontend/                   # Next.js 前端
+├── docs/                       # Documentation
+│   └── configuration.md        #   Full config reference
+├── frontend/                   # Next.js frontend
 │   ├── app/                    # App Router 页面
 │   │   ├── layout.tsx          # 根布局
 │   │   ├── page.tsx            # 首页
@@ -364,7 +384,9 @@ python test/test_sync.py
 - **Web 框架**: FastAPI + Uvicorn
 - **LLM 调用**: LangChain + OpenAI SDK (DashScope 兼容模式)
 - **向量库**: ChromaDB
-- **数据库**: SQLite + SQLAlchemy (异步)
+- **数据库**: SQLite + SQLAlchemy (异步) + Repository 模式
+- **配置**: YAML 分层配置 + env 密钥注入
+- **用户系统**: Snowflake UID + OAuth 多平台绑定 + RBAC 权限
 - **语音转写**: DashScope ASR (Paraformer)
 - **可观测性**: LangSmith 自动追踪
 
@@ -382,10 +404,11 @@ python test/test_sync.py
 
 | 数据 | 存储位置 | 说明 |
 |------|---------|------|
+| 用户体系 | SQLite | users / user_oauth / user_tokens / RBAC |
 | 收藏夹列表 | SQLite | 结构化数据 |
 | 视频内容 | SQLite | ASR 文本、简介等 |
 | 向量数据 | ChromaDB | Embedding 向量 + chunk |
-| 用户会话 | SQLite + 内存 | session 持久化 |
+| 用户会话 | SQLite | token session 持久化 |
 
 ---
 

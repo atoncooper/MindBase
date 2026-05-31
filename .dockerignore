@@ -6,34 +6,51 @@ __pycache__/
 venv/
 *.egg-info/
 dist/
+*.egg
 
 # Node
 node_modules/
 .next/
 out/
 
-# 数据目录（容器内挂载，不打包进镜像）
+# Data directories (volume-mounted, do not bake into image)
 data/
 logs/
+chroma_db/
 
-# 环境配置（通过环境变量注入）
+# Environment (injected at runtime)
 .env
 .env.local
+.env.*.local
 
 # Git
 .git/
 .gitignore
+.gitattributes
 
-# IDE
+# IDE / editor
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
 # Test
 test/
 *_test.py
+.pytest_cache/
+
+# Docs & specs (not needed at runtime)
+*.md
+docs/
+api/
+plan/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Docker
+.dockerignore
+docker-compose*.yml
+Dockerfile*
