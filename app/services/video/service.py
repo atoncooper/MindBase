@@ -16,6 +16,8 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
+from sqlalchemy import select
+from app.models import VideoCache
 from app.services.bilibili import BilibiliService
 from app.repository.video_repository import get_video_repository, VideoRepository
 from app.utils.bvid import bv_to_av
@@ -56,7 +58,30 @@ class VideoService:
                 logger.info(f"[VideoService] fetching pages for bvid={bvid}")
                 video_info = await bili.get_video_info(bvid)
                 pages_raw = video_info.get("pages") or []
-                video_id = bv_to_av(bvid)
+                av_id = bv_to_av(bvid)
+
+                # Ensure video_cache row exists before inserting video pages
+                cache_row = (await db.execute(
+                    select(VideoCache).where(VideoCache.bvid == bvid)
+                )).scalar_one_or_none()
+                if cache_row is None:
+                    db.add(VideoCache(
+                        id=av_id,
+                        bvid=bvid,
+                        title=video_info.get("title", ""),
+                        description=video_info.get("desc", ""),
+                        owner_name=video_info.get("owner", {}).get("name", ""),
+                        owner_mid=video_info.get("owner", {}).get("mid", 0),
+                        duration=video_info.get("duration", 0),
+                        pic_url=video_info.get("pic", ""),
+                    ))
+                    await db.flush()
+                    video_id = av_id
+                else:
+                    video_id = cache_row.id
+                    # Update title in case it changed
+                    if video_info.get("title"):
+                        cache_row.title = video_info.get("title")
 
                 if pages_raw:
                     pages = [
