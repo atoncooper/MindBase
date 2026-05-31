@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useDockContext } from "@/lib/dock-context";
 import { billingApi, type UsageSummary, type ProviderUsage } from "@/lib/api";
 import type { DockPanelProps } from "@/lib/dock-registry";
 
@@ -201,31 +200,27 @@ function InfoIcon() {
 /* ──── Main ──── */
 
 export default function BillingPanel({ isOpen }: DockPanelProps) {
-  const ctx = useDockContext();
-  const sessionId = ctx.sessionId;
-
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [days, setDays] = useState(30);
 
   const loadSummary = useCallback(async () => {
-    if (!sessionId) return;
     setLoading(true);
     try {
-      const data = await billingApi.getSummary(sessionId, days);
+      const data = await billingApi.getSummary(days);
       setSummary(data);
     } catch {
       // silent
     } finally {
       setLoading(false);
     }
-  }, [days, sessionId]);
+  }, [days]);
 
   useEffect(() => {
-    if (isOpen && sessionId) {
+    if (isOpen) {
       loadSummary();
     }
-  }, [isOpen, sessionId, days, loadSummary]);
+  }, [isOpen, days, loadSummary]);
 
   if (!isOpen) return null;
 

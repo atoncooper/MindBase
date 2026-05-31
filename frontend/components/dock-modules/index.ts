@@ -1,9 +1,11 @@
-import { BarChart3, BookOpen, FolderHeart, MessageCircle, MessageSquareText, Settings } from "lucide-react";
+import { BarChart3, BookOpen, FolderHeart, MessageCircle, MessageSquareText, Settings, User, Activity } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
 import ChatPanel from "@/components/ChatPanel";
 import FavoritesPanel from "./favorites";
 import ChatHistoryPanel from "./chat-history";
 import SettingsPanel from "./settings";
+import AccountPanel from "./account";
+import TasksPanel from "./tasks";
 import BillingPanel from "./billing";
 import QuizPanel from "./quiz";
 
@@ -42,6 +44,20 @@ export const dockModules: DockModule[] = [
     title: "API 设置",
     panel: SettingsPanel,
     defaultSize: { width: 1296, height: 806 },
+  },
+  {
+    id: "account",
+    icon: User,
+    title: "个人中心",
+    panel: AccountPanel,
+    defaultSize: { width: 660, height: 740 },
+  },
+  {
+    id: "tasks",
+    icon: Activity,
+    title: "任务监控",
+    panel: TasksPanel,
+    defaultSize: { width: 520, height: 560 },
   },
   {
     id: "billing",

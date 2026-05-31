@@ -6,10 +6,10 @@ import { authApi, QRCodeResponse, UserInfo } from "@/lib/api";
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (sessionId: string, user: UserInfo) => void;
+  onSuccess: (sessionToken: string, user: UserInfo) => void;
 }
 
-export default function LoginModal({ isOpen, onClose, onSuccess }: Props) {
+export default function QRLoginModal({ isOpen, onClose, onSuccess }: Props) {
   const [qr, setQr] = useState<QRCodeResponse | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "scanned" | "success" | "error">("loading");
   const [polling, setPolling] = useState(false);
@@ -28,10 +28,7 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: Props) {
 
   useEffect(() => {
     if (isOpen) getQR();
-    else {
-      setPolling(false);
-      setQr(null);
-    }
+    else { setPolling(false); setQr(null); }
   }, [isOpen]);
 
   useEffect(() => {
@@ -43,7 +40,8 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: Props) {
         else if (res.status === "confirmed") {
           setPolling(false);
           setStatus("success");
-          setTimeout(() => onSuccess(res.session_id!, res.user_info!), 500);
+          const token = res.user_info?.session_token || res.session_id || "";
+          setTimeout(() => onSuccess(token, res.user_info!), 500);
         } else if (res.status === "expired") {
           setPolling(false);
           setStatus("error");
@@ -59,7 +57,7 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: Props) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <h2 className="modal-title">扫码登录</h2>
-        <p className="modal-subtitle">使用哔哩哔哩 APP 扫描</p>
+        <p className="modal-subtitle">使用哔哩哔哩 APP 扫描二维码</p>
 
         <div className="mt-4 flex justify-center">
           {status === "loading" && (
@@ -70,7 +68,7 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: Props) {
 
           {(status === "ready" || status === "scanned") && qr && (
             <div className="relative">
-              <img src={qr.qrcode_image_base64} alt="二维码" className="w-48 h-48 rounded-2xl border border-[var(--border)]" />
+              <img src={qr.qrcode_image_base64} alt="QR Code" className="w-48 h-48 rounded-2xl border border-[var(--border)]" />
               {status === "scanned" && (
                 <div className="absolute inset-0 bg-white/90 rounded-2xl flex flex-col items-center justify-center">
                   <div className="status-pill">已扫码</div>

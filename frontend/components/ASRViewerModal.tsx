@@ -338,7 +338,7 @@ export default function ASRViewerModal({
               }}
             >
               {!isProcessed
-                ? "ASR+Vector"
+                ? "入库"
                 : vecStatus?.is_vectorized === "done"
                 ? "Revector"
                 : vecStatus?.is_vectorized === "processing"

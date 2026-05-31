@@ -2,7 +2,6 @@
 
 import { useRef, useMemo, useState } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import type { DockModule } from "@/lib/dock-registry";
 
@@ -24,16 +23,6 @@ const CYAN = "#06b6d4";
 const CYAN_BRIGHT = "#22d3ee";
 const GOLD = "#f59e0b";
 const GOLD_BRIGHT = "#fbbf24";
-
-/* ── descriptions ── */
-const DESCRIPTIONS: Record<string, string> = {
-  chat: "语义检索 + LLM 生成回答",
-  "chat-history": "查看历史对话记录",
-  quiz: "AI 生成练习题测试知识",
-  favorites: "管理 B 站收藏夹数据",
-  settings: "配置 LLM API 密钥",
-  billing: "查看 API 消耗统计",
-};
 
 const RING_RADIUS = 3.2;
 const FLOW_PARTICLE_COUNT = 12;
@@ -147,49 +136,6 @@ export default function DockModuleOrbit({
               onHover={(h) => setHoveredId(h ? mod.id : null)}
             />
 
-            {/* Label */}
-            {!dimmed && (
-            <Html position={[0, 0.7, 0]} center style={{ pointerEvents: "none" }} distanceFactor={8}>
-              <div
-                style={{
-                  color: active ? brightColor : "#e2e8f0",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  letterSpacing: "0.05em",
-                  whiteSpace: "nowrap",
-                  padding: "3px 10px",
-                  borderRadius: "6px",
-                  background: active ? "#1a2940" : "#0f0f19",
-                  border: `1px solid ${active ? mainColor + "66" : "rgba(255,255,255,0.1)"}`,
-                  transition: "all 0.2s",
-                  fontFamily: "system-ui, -apple-system, sans-serif",
-                }}
-              >
-                {mod.title}
-              </div>
-            </Html>
-            )}
-
-            {/* Description on hover/active */}
-            {!dimmed && (hoveredId === mod.id || activePanelId === mod.id) && (
-              <Html position={[0, -0.65, 0]} center style={{ pointerEvents: "none" }} distanceFactor={9}>
-                <div
-                  style={{
-                    color: activePanelId === mod.id ? "#e2e8f0" : "#cbd5e1",
-                    fontSize: "11px",
-                    fontWeight: 500,
-                    whiteSpace: "nowrap",
-                    padding: "4px 10px",
-                    borderRadius: "8px",
-                    background: "#141420",
-                    border: `1px solid ${mainColor}55`,
-                    fontFamily: "system-ui, -apple-system, sans-serif",
-                  }}
-                >
-                  {DESCRIPTIONS[mod.id] || mod.title}
-                </div>
-              </Html>
-            )}
           </group>
         );
       })}

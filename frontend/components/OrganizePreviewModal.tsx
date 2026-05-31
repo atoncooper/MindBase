@@ -6,6 +6,7 @@ import {
   OrganizePreviewItem,
   favoritesApi,
 } from "@/lib/api";
+import FloatingPanel from "./FloatingPanel";
 
 interface Props {
   open: boolean;
@@ -104,11 +105,15 @@ export default function OrganizePreviewModal({
   if (!open) return null;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card organize-modal" onClick={(e) => e.stopPropagation()}>
+    <FloatingPanel
+      isOpen={open}
+      onClose={onClose}
+      title="一键整理预览"
+      defaultSize={{ width: 720, height: 560 }}
+    >
+      <div className="organize-panel-inner">
         <div className="organize-header">
           <div>
-            <div className="modal-title">一键整理预览</div>
             <div className="modal-subtitle">
               默认收藏夹：{defaultFolderTitle}
             </div>
@@ -184,6 +189,6 @@ export default function OrganizePreviewModal({
           </button>
         </div>
       </div>
-    </div>
+    </FloatingPanel>
   );
 }

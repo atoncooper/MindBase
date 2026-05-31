@@ -4,6 +4,14 @@
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// 获取当前 session token 的 Authorization header
+function getAuthHeaders(): Record<string, string> {
+    if (typeof window === "undefined") return {};
+    const token = localStorage.getItem("bili_session");
+    if (!token) return {};
+    return { Authorization: `Bearer ${token}` };
+}
+
 // 通用请求函数
 async function request<T>(
     endpoint: string,
@@ -15,18 +23,24 @@ async function request<T>(
         ...options,
         headers: {
             "Content-Type": "application/json",
+            ...getAuthHeaders(),
             ...options.headers,
         },
     });
 
-    // 会话失效时自动清除登录状态并刷新页面
+    // 会话失效时清除登录状态（不立即跳转，让调用方决定处理方式）
     if (response.status === 401) {
         if (typeof window !== "undefined") {
-            localStorage.removeItem("bili_session");
-            localStorage.removeItem("bili_user");
-            window.location.href = "/";
+            const token = localStorage.getItem("bili_session");
+            if (token) {
+                // Only clear if we actually sent a token — avoids false positives
+                // on public endpoints that also return 401 for other reasons
+                localStorage.removeItem("bili_session");
+                localStorage.removeItem("bili_user");
+                throw new Error("会话已过期，请重新登录");
+            }
         }
-        throw new Error("会话已过期，请重新登录");
+        // Fall through to the generic error handler below for API-level 401s
     }
 
     if (!response.ok) {
@@ -56,14 +70,27 @@ export interface LoginStatusResponse {
     status: "waiting" | "scanned" | "confirmed" | "expired";
     message: string;
     user_info?: UserInfo;
+    /** @deprecated Use session_token instead */
     session_id?: string;
 }
 
+export interface TokenResponse {
+    session_token: string;
+    token_type: string;
+    expires_at?: string;
+    user_info: UserInfo;
+}
+
 export interface UserInfo {
-    mid: number;
-    uname: string;
-    face: string;
+    uid?: number;
+    mid?: number;
+    uname?: string;
+    face?: string;
     level?: number;
+    roles?: string[];
+    session_token?: string;
+    /** @deprecated Legacy compat */
+    session_id?: string;
 }
 
 export interface FavoriteFolder {
@@ -217,11 +244,11 @@ export interface WorkspacePage {
     page_title?: string;
 }
 
-// 聊天会话
+// Chat session (v2: uid-based auth)
 export interface ChatSession {
     id: number;
     chat_session_id: string;
-    session_id: string;
+    uid?: number;
     title?: string;
     status: string;
     created_at: string;
@@ -229,9 +256,9 @@ export interface ChatSession {
     last_message_at?: string;
 }
 
-// 聊天消息
+// 聊天消息 (v2: MongoDB-backed, msg_id is str)
 export interface ChatMessage {
-    id: number;
+    msg_id: string;
     chat_session_id: string;
     role: "user" | "assistant" | "system";
     content: string;
@@ -283,18 +310,139 @@ export const authApi = {
     pollQRCode: (qrcodeKey: string) =>
         request<LoginStatusResponse>(`/auth/qrcode/poll/${qrcodeKey}`),
 
-    // 获取会话信息
+    // 邮箱密码登录
+    login: (email: string, password: string, device?: Record<string, string | undefined>) =>
+        request<TokenResponse>("/auth/login", {
+            method: "POST",
+            body: JSON.stringify({ email, password, device }),
+        }),
+
+    /** @deprecated Use getMe with Bearer token */
     getSession: (sessionId: string) =>
         request<{ valid: boolean; user_info: UserInfo }>(`/auth/session/${sessionId}`),
 
-    // 退出登录
+    // Get current user via Bearer token
+    getMe: (token: string) =>
+        request<UserInfo>("/auth/me", {
+            headers: { Authorization: `Bearer ${token}` },
+        }),
+
+    // Logout current device (Bearer token)
+    logoutCurrent: (token: string) =>
+        request("/auth/token", {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+        }),
+
+    // Logout all devices
+    logoutAll: (token: string) =>
+        request("/auth/tokens", {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+        }),
+
+    /** @deprecated Use logoutCurrent / logoutAll with Bearer token */
     logout: (sessionId: string) =>
         request(`/auth/session/${sessionId}`, { method: "DELETE" }),
 };
 
-// 收藏夹相关
+// ══════════════════════════════════════════════════════════════
+// 收藏夹 v2 (Bearer token, uid-based)
+// ══════════════════════════════════════════════════════════════
+
+export interface FavoriteFolderV2 {
+    id: number;
+    media_id: number;
+    title: string;
+    media_count: number;
+    is_default: boolean;
+    is_selected: boolean;
+    last_sync_at: string | null;
+}
+
+export interface FavoriteVideoV2 {
+    id: number;
+    bvid: string;
+    title: string;
+    cover: string | null;
+    duration: number | null;
+    owner: string | null;
+    cid: number | null;
+    is_selected: boolean;
+    synced_at: string | null;
+}
+
+export interface FavoriteVideoPageV2 {
+    folder_id: number;
+    media_id: number;
+    folder_title: string;
+    videos: FavoriteVideoV2[];
+    total: number;
+    page: number;
+    page_size: number;
+    has_more: boolean;
+}
+
+export interface VideoPageItemV2 {
+    cid: number;
+    page_index: number;
+    page_title: string | null;
+    is_processed: boolean;
+    is_vectorized: string;
+    vector_chunk_count: number;
+}
+
+export interface VideoPageListV2 {
+    bvid: string;
+    pages: VideoPageItemV2[];
+    page_count: number;
+    is_stored: boolean;
+}
+
+export const favoritesV2Api = {
+    listFolders: () =>
+        request<FavoriteFolderV2[]>("/favorites/v2/list", {
+            headers: getAuthHeaders(),
+        }),
+
+    syncFolders: () =>
+        request<{ folders: FavoriteFolderV2[]; total: number }>("/favorites/v2/sync", {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    updateSelected: (folderId: number, isSelected: boolean) =>
+        request<{ folder_id: number; is_selected: boolean }>(
+            `/favorites/v2/${folderId}/selected?is_selected=${isSelected}`,
+            { method: "PATCH", headers: getAuthHeaders() }
+        ),
+
+    deleteFolder: (folderId: number) =>
+        request<{ message: string; folder_id: number }>(
+            `/favorites/v2/${folderId}`,
+            { method: "DELETE", headers: getAuthHeaders() }
+        ),
+
+    listVideos: (mediaId: number, page = 1, pageSize = 20) =>
+        request<FavoriteVideoPageV2>(
+            `/favorites/v2/media/${mediaId}/videos?page=${page}&page_size=${pageSize}`,
+            { headers: getAuthHeaders() }
+        ),
+
+    listVideoPages: (bvid: string) =>
+        request<VideoPageListV2>(
+            `/favorites/v2/video/${bvid}/pages`,
+            { headers: getAuthHeaders() }
+        ),
+};
+
+// ══════════════════════════════════════════════════════════════
+// 收藏夹 v1 (deprecated — use favoritesV2Api instead)
+// ══════════════════════════════════════════════════════════════
+
+/** @deprecated Use favoritesV2Api instead */
 export const favoritesApi = {
-    // 获取收藏夹列表
+    /** @deprecated Use favoritesV2Api.listFolders() */
     getList: (sessionId: string) =>
         request<FavoriteFolder[]>(`/favorites/list?session_id=${sessionId}`),
 
@@ -374,9 +522,11 @@ export const knowledgeApi = {
     getBuildStatus: (taskId: string) =>
         request<BuildStatus>(`/knowledge/build/status/${taskId}`),
 
-    // 获取收藏夹入库状态
-    getFolderStatus: (sessionId: string) =>
-        request<FolderStatus[]>(`/knowledge/folders/status?session_id=${sessionId}`),
+    // 获取收藏夹入库状态 (v2: Bearer token auth)
+    getFolderStatus: () =>
+        request<FolderStatus[]>("/knowledge/folders/status", {
+            headers: getAuthHeaders(),
+        }),
 
     // 同步收藏夹到向量库
     syncFolders: (data: SyncRequest, sessionId: string) =>
@@ -396,13 +546,15 @@ export const knowledgeApi = {
     deleteVideo: (bvid: string) =>
         request<{ message: string }>(`/knowledge/video/${bvid}`, { method: "DELETE" }),
 
-    // 获取视频分P列表
+    /** @deprecated Use favoritesV2Api.listVideoPages(bvid) */
     getVideoPages: (bvid: string) =>
         request<VideoPagesResponse>(`/knowledge/video/${bvid}/pages`),
 
-    // 获取已向量化的分P列表
-    getVectorizedPages: (sessionId: string) =>
-        request<VectorizedPageItem[]>(`/knowledge/pages/vectorized?session_id=${sessionId}`),
+    // 获取已向量化的分P列表 (v2: Bearer token auth)
+    getVectorizedPages: () =>
+        request<VectorizedPageItem[]>("/knowledge/pages/vectorized", {
+            headers: getAuthHeaders(),
+        }),
 };
 
 // 对话相关
@@ -411,6 +563,7 @@ export const chatApi = {
     ask: (payload: ChatRequestPayload) =>
         request<ChatResponse>("/chat/ask", {
             method: "POST",
+            headers: getAuthHeaders(),
             body: JSON.stringify(payload),
         }),
 
@@ -418,6 +571,7 @@ export const chatApi = {
     askAgentic: (payload: ChatRequestPayload) =>
         request<AgenticChatResponse>("/chat/ask/agentic", {
             method: "POST",
+            headers: getAuthHeaders(),
             body: JSON.stringify(payload),
         }),
 
@@ -432,7 +586,7 @@ export const chatApi = {
     askStream: async (payload: ChatRequestPayload): Promise<ReadableStream<Uint8Array>> => {
         const res = await fetch(`${API_BASE_URL}/chat/ask/stream`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
             body: JSON.stringify(payload),
         });
 
@@ -452,15 +606,18 @@ export const chatApi = {
         return res.body;
     },
 
-    // === 新增：会话管理 ===
-    createSession: (sessionId: string, title?: string) =>
+    // === 新增：会话管理 (v2: Bearer token auth) ===
+    createSession: (title?: string) =>
         request<ChatSession>("/chat/sessions", {
             method: "POST",
-            body: JSON.stringify({ session_id: sessionId, title }),
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ title }),
         }),
 
-    listSessions: (sessionId: string) =>
-        request<ChatSessionListResponse>(`/chat/sessions?session_id=${sessionId}`),
+    listSessions: () =>
+        request<ChatSessionListResponse>("/chat/sessions", {
+            headers: getAuthHeaders(),
+        }),
 
     updateSession: (chatSessionId: string, payload: ChatSessionUpdatePayload) =>
         request<ChatSession>(`/chat/sessions/${chatSessionId}`, {
@@ -613,7 +770,129 @@ export const asrApi = {
         request<VideoPageVersionInfo[]>(`/asr/versions?bvid=${bvid}&cid=${cid}`),
 };
 
-// ==================== 用户 API Key 设置 ====================
+// ==================== 通用配置项类型 ====================
+
+export interface ConfigItem {
+    id: number;
+    name: string;
+    provider: string;
+    masked_key: string;
+    base_url: string | null;
+    model: string | null;
+    is_default: boolean;
+    created_at: string;
+    updated_at: string;
+    last_test_status: string | null;
+    last_test_error: string | null;
+    last_test_at: string | null;
+}
+
+export interface TestResultResponse {
+    status: "ok" | "error";
+    error?: string;
+    latency_ms?: number;
+}
+
+export interface ConfigCreateParams {
+    name: string;
+    provider: string;
+    api_key: string;
+    base_url?: string;
+    model?: string;
+    is_default?: boolean;
+}
+
+export interface ConfigUpdateParams {
+    name?: string;
+    api_key?: string;
+    base_url?: string;
+    model?: string;
+    is_default?: boolean;
+}
+
+// ==================== Embedding 配置 API ====================
+
+export const embeddingConfigApi = {
+    list: () =>
+        request<ConfigItem[]>("/settings/embedding-configs", {
+            headers: getAuthHeaders(),
+        }),
+
+    create: (data: ConfigCreateParams) =>
+        request<ConfigItem>("/settings/embedding-configs", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    update: (id: number, data: ConfigUpdateParams) =>
+        request<ConfigItem>(`/settings/embedding-configs/${id}`, {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    delete: (id: number) =>
+        request(`/settings/embedding-configs/${id}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    setDefault: (id: number) =>
+        request(`/settings/embedding-configs/${id}/default`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    test: (id: number) =>
+        request<TestResultResponse>(`/settings/embedding-configs/${id}/test`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+};
+
+// ==================== ASR 配置 API ====================
+
+export const asrConfigApi = {
+    list: () =>
+        request<ConfigItem[]>("/settings/asr-configs", {
+            headers: getAuthHeaders(),
+        }),
+
+    create: (data: ConfigCreateParams) =>
+        request<ConfigItem>("/settings/asr-configs", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    update: (id: number, data: ConfigUpdateParams) =>
+        request<ConfigItem>(`/settings/asr-configs/${id}`, {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    delete: (id: number) =>
+        request(`/settings/asr-configs/${id}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    setDefault: (id: number) =>
+        request(`/settings/asr-configs/${id}/default`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    test: (id: number) =>
+        request<TestResultResponse>(`/settings/asr-configs/${id}/test`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+};
+
+// ==================== 兼容旧 Settings API ====================
 
 export interface CredentialsStatus {
     llm_is_configured: boolean;
@@ -644,23 +923,23 @@ export interface SetCredentialsParams {
 }
 
 export const settingsApi = {
-    getCredentialsStatus: (sessionId: string) =>
-        request<CredentialsStatus>(`/settings/credentials/status?session_id=${sessionId}`),
+    getCredentialsStatus: () =>
+        request<CredentialsStatus>("/settings/credentials/status", {
+            headers: getAuthHeaders(),
+        }),
 
-    setCredentials: (sessionId: string, params: SetCredentialsParams) =>
-        request<{ message: string }>(
-            `/settings/credentials?session_id=${sessionId}`,
-            {
-                method: "POST",
-                body: JSON.stringify(params),
-            }
-        ),
+    setCredentials: (params: SetCredentialsParams) =>
+        request<{ message: string }>("/settings/credentials", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(params),
+        }),
 
-    deleteCredentials: (sessionId: string) =>
-        request<{ message: string }>(
-            `/settings/credentials?session_id=${sessionId}`,
-            { method: "DELETE" }
-        ),
+    deleteCredentials: () =>
+        request<{ message: string }>("/settings/credentials", {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
 };
 
 // ==================== 多 Provider Credential 管理 ====================
@@ -675,6 +954,9 @@ export interface CredentialItem {
     is_default: boolean;
     created_at: string;
     updated_at: string;
+    last_test_status: string | null;
+    last_test_error: string | null;
+    last_test_at: string | null;
 }
 
 export interface CredentialCreateParams {
@@ -695,26 +977,42 @@ export interface CredentialUpdateParams {
 }
 
 export const credentialsApi = {
-    list: (sessionId: string) =>
-        request<CredentialItem[]>(`/credentials?session_id=${sessionId}`),
+    list: () =>
+        request<CredentialItem[]>("/credentials", {
+            headers: getAuthHeaders(),
+        }),
 
-    create: (sessionId: string, data: CredentialCreateParams) =>
-        request<CredentialItem>(`/credentials?session_id=${sessionId}`, {
+    create: (data: CredentialCreateParams) =>
+        request<CredentialItem>("/credentials", {
             method: "POST",
+            headers: getAuthHeaders(),
             body: JSON.stringify(data),
         }),
 
-    update: (sessionId: string, id: number, data: CredentialUpdateParams) =>
-        request<CredentialItem>(`/credentials/${id}?session_id=${sessionId}`, {
+    update: (id: number, data: CredentialUpdateParams) =>
+        request<CredentialItem>(`/credentials/${id}`, {
             method: "PATCH",
+            headers: getAuthHeaders(),
             body: JSON.stringify(data),
         }),
 
-    delete: (sessionId: string, id: number) =>
-        request(`/credentials/${id}?session_id=${sessionId}`, { method: "DELETE" }),
+    delete: (id: number) =>
+        request(`/credentials/${id}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
 
-    setDefault: (sessionId: string, id: number) =>
-        request(`/credentials/${id}/default?session_id=${sessionId}`, { method: "POST" }),
+    setDefault: (id: number) =>
+        request(`/credentials/${id}/default`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    test: (id: number) =>
+        request<TestResultResponse>(`/credentials/${id}/test`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
 };
 
 // ==================== 计费/用量 ====================
@@ -743,14 +1041,15 @@ export interface UsageSummary {
 }
 
 export const billingApi = {
-    getSummary: (sessionId: string, days = 30) =>
-        request<UsageSummary>(`/billing/summary?session_id=${sessionId}&days=${days}`),
+    getSummary: (days = 30) =>
+        request<UsageSummary>(`/billing/summary?days=${days}`, {
+            headers: getAuthHeaders(),
+        }),
 };
 
 // ==================== Quiz 题目训练系统 ====================
 
 export interface QuizGenerateParams {
-    session_id: string;
     folder_ids?: number[];
     pages?: Array<{ bvid: string; cid: number; page_index: number; page_title?: string }>;
     question_count?: number;
@@ -856,9 +1155,8 @@ export interface WrongAnswerResponse {
 }
 
 export const quizApi = {
-    generate: (params: QuizGenerateParams) => {
+    generate: (params: Omit<QuizGenerateParams, "session_id">) => {
         const sp = new URLSearchParams();
-        sp.set("session_id", params.session_id);
         if (params.folder_ids?.length) sp.set("folder_ids", params.folder_ids.join(","));
         if (params.question_count) sp.set("question_count", String(params.question_count));
         if (params.difficulty) sp.set("difficulty", params.difficulty);
@@ -866,7 +1164,8 @@ export const quizApi = {
         const body = params.pages?.length ? JSON.stringify(params.pages) : undefined;
         return request<QuizGenerateResponse>(`/quiz/generate?${sp.toString()}`, {
             method: "POST",
-            ...(body ? { body, headers: { "Content-Type": "application/json" } } : {}),
+            headers: { ...getAuthHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) as Record<string,string> },
+            ...(body ? { body } : {}),
         });
     },
 
@@ -875,29 +1174,197 @@ export const quizApi = {
 
     submit: (params: {
         quiz_uuid: string;
-        session_id: string;
         answers: QuizAnswerItem[];
         time_spent_seconds?: number;
     }) =>
         request<QuizSubmissionResult>("/quiz/submit", {
             method: "POST",
+            headers: getAuthHeaders(),
             body: JSON.stringify(params),
         }),
 
-    getHistory: (sessionId: string, page = 1, pageSize = 10) =>
-        request<QuizHistoryResponse>(
-            `/quiz/history?session_id=${sessionId}&page=${page}&page_size=${pageSize}`
-        ),
+    getHistory: (page = 1, pageSize = 10) =>
+        request<QuizHistoryResponse>(`/quiz/history?page=${page}&page_size=${pageSize}`, {
+            headers: getAuthHeaders(),
+        }),
 
-    getWrongAnswers: (sessionId: string, folderIds?: number[]) =>
+    getWrongAnswers: (folderIds?: number[]) =>
         request<WrongAnswerResponse>(
-            `/quiz/wrong-answers?session_id=${sessionId}${folderIds?.length ? `&folder_ids=${folderIds.join(",")}` : ""}`
+            `/quiz/wrong-answers${folderIds?.length ? `?folder_ids=${folderIds.join(",")}` : ""}`,
+            { headers: getAuthHeaders() }
         ),
 
-    exportData: async (sessionId: string, format: "jsonl" | "csv" | "sft" = "jsonl", folderIds?: number[]) => {
-        const url = `${API_BASE_URL}/quiz/export?session_id=${encodeURIComponent(sessionId)}&format=${format}${folderIds?.length ? `&folder_ids=${folderIds.join(",")}` : ""}`;
-        const res = await fetch(url);
+    exportData: async (format: "jsonl" | "csv" | "sft" = "jsonl", folderIds?: number[]) => {
+        const sp = new URLSearchParams();
+        sp.set("format", format);
+        if (folderIds?.length) sp.set("folder_ids", folderIds.join(","));
+        const res = await fetch(`${API_BASE_URL}/quiz/export?${sp.toString()}`, {
+            headers: getAuthHeaders(),
+        });
         if (!res.ok) throw new Error("导出失败");
         return res.blob();
     },
 };
+
+// ==================== 用户信息修改 ====================
+
+export interface ProfileData {
+    uid: number;
+    email: string | null;
+    email_verified: boolean;
+    phone: string | null;
+    phone_verified: boolean;
+    nickname: string | null;
+    avatar: string | null;
+    bio: string | null;
+    birthday: string | null;
+    gender: string | null;
+    location: string | null;
+    timezone: string | null;
+    language: string | null;
+    status: string;
+    created_at: string | null;
+}
+
+export interface SecurityOverview {
+    email: string | null;
+    email_verified: boolean;
+    phone: string | null;
+    phone_verified: boolean;
+    has_password: boolean;
+    oauth_bindings: Array<{
+        provider: string;
+        email: string | null;
+        is_primary: boolean;
+    }>;
+}
+
+export interface ProfileUpdateParams {
+    nickname?: string;
+    avatar?: string;
+    bio?: string;
+    birthday?: string;
+    gender?: string;
+    location?: string;
+    timezone?: string;
+    language?: string;
+}
+
+export interface PasswordSetParams {
+    password: string;
+}
+
+export interface PasswordChangeParams {
+    old_password: string;
+    new_password: string;
+}
+
+export interface EmailBindParams {
+    email: string;
+}
+
+export interface PhoneBindParams {
+    phone: string;
+}
+
+export const userApi = {
+    getProfile: () =>
+        request<ProfileData>("/auth/profile", { headers: getAuthHeaders() }),
+
+    updateProfile: (data: ProfileUpdateParams) =>
+        request<ProfileData>("/auth/profile", {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    setPassword: (data: PasswordSetParams) =>
+        request<{ message: string }>("/auth/password/set", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    changePassword: (data: PasswordChangeParams) =>
+        request<{ message: string }>("/auth/password", {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    bindEmail: (data: EmailBindParams) =>
+        request<{ message: string; email: string }>("/auth/email", {
+            method: "PUT",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    unbindEmail: () =>
+        request<{ message: string }>("/auth/email", {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    bindPhone: (data: PhoneBindParams) =>
+        request<{ message: string; phone: string }>("/auth/phone", {
+            method: "PUT",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    unbindPhone: () =>
+        request<{ message: string }>("/auth/phone", {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    getSecurity: () =>
+        request<SecurityOverview>("/auth/security", { headers: getAuthHeaders() }),
+};
+
+// ==================== 异步任务 ====================
+
+export interface TaskStep {
+    name: string;
+    status: string;
+    progress: number;
+}
+
+export interface TaskData {
+    task_id: string;
+    uid: number;
+    task_type: string;       // vec_page / asr / arc_meta_extract / build
+    target: unknown;
+    status: string;           // pending / processing / done / failed
+    progress: number;         // 0-100
+    steps: TaskStep[] | null;
+    result: unknown;
+    error: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+    completed_at: string | null;
+}
+
+export interface WsTaskMessage {
+    type: "tasks" | "task_detail" | "task_update" | "error";
+    count?: number;
+    tasks?: TaskData[];
+    task?: TaskData;
+    message?: string;
+    timestamp?: number;
+}
+
+const TASK_TYPE_LABELS: Record<string, string> = {
+    vec_page: "向量化",
+    asr: "语音转文本",
+    arc_meta_extract: "元数据提取",
+    build: "知识库构建",
+};
+
+export function getTaskTypeLabel(type: string): string {
+    return TASK_TYPE_LABELS[type] ?? type;
+}
+
+export function getTaskStatusLabel(status: string): string {
+    return { pending: "等待中", processing: "处理中", done: "已完成", failed: "失败" }[status] ?? status;
+}

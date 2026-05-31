@@ -2,7 +2,6 @@
 
 import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Html } from "@react-three/drei";
 import * as THREE from "three";
 
 const ARM_COUNT = 3;
@@ -11,18 +10,7 @@ const TOTAL = ARM_COUNT * PARTICLES_PER_ARM;
 const GALAXY_RADIUS = 5.5;
 const CORE_RADIUS = 0.8;
 
-const TECH_STACK = [
-  { name: "Next.js", angle: 0.3, radius: 4.2 },
-  { name: "FastAPI", angle: 2.4, radius: 3.8 },
-  { name: "Python", angle: 4.5, radius: 4.5 },
-  { name: "ChromaDB", angle: 1.2, radius: 3.5 },
-  { name: "Three.js", angle: 3.2, radius: 4.0 },
-  { name: "SQLite", angle: 5.0, radius: 3.2 },
-  { name: "LangChain", angle: 0.8, radius: 4.8 },
-  { name: "Whisper ASR", angle: 5.8, radius: 4.3 },
-];
-
-export default function TechGalaxy({ dimmed = false, opacity = 0.75 }: { dimmed?: boolean; opacity?: number }) {
+export default function TechGalaxy({ opacity = 0.75 }: { dimmed?: boolean; opacity?: number }) {
   const groupRef = useRef<THREE.Group>(null);
   const pointsRef = useRef<THREE.Points>(null);
 
@@ -86,38 +74,6 @@ export default function TechGalaxy({ dimmed = false, opacity = 0.75 }: { dimmed?
           blending={THREE.AdditiveBlending}
         />
       </points>
-
-      {/* Tech labels */}
-      {!dimmed && TECH_STACK.map((tech, i) => {
-        const x = Math.cos(tech.angle) * tech.radius;
-        const z = Math.sin(tech.angle) * tech.radius;
-        return (
-          <Html
-            key={i}
-            position={[x, (Math.random() - 0.5) * 0.4, z]}
-            center
-            distanceFactor={10}
-            style={{ pointerEvents: "none" }}
-          >
-            <div
-              style={{
-                color: "#fbbf24",
-                fontSize: "10px",
-                fontWeight: 600,
-                letterSpacing: "0.04em",
-                whiteSpace: "nowrap",
-                padding: "2px 8px",
-                borderRadius: "6px",
-                background: "#2a1a00",
-                border: "1px solid rgba(251, 191, 36, 0.5)",
-                fontFamily: "system-ui, -apple-system, sans-serif",
-              }}
-            >
-              {tech.name}
-            </div>
-          </Html>
-        );
-      })}
     </group>
   );
 }

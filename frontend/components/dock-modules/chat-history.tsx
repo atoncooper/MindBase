@@ -11,15 +11,15 @@ export default function ChatHistoryPanel({ isOpen, onClose }: DockPanelProps) {
   const handleSelect = useCallback(
     (id: string) => {
       ctx.onSelectSession(id);
-      onClose();
+      // onClose() NOT called — handleSelectSession already calls setActivePanelId("chat")
     },
-    [ctx, onClose]
+    [ctx]
   );
 
   const handleCreate = useCallback(async () => {
     await ctx.onCreateSession();
-    onClose();
-  }, [ctx, onClose]);
+    // onClose() NOT called — handleCreateSession already calls setActivePanelId("chat")
+  }, [ctx]);
 
   if (!isOpen) return null;
 

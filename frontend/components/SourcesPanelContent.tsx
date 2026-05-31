@@ -6,6 +6,9 @@ import {
   Video,
   VideoPageInfo,
   favoritesApi,
+  favoritesV2Api,
+  FavoriteVideoV2,
+  VideoPageItemV2,
   knowledgeApi,
   vecPageApi,
   VectorPageStatusResponse,
@@ -65,11 +68,11 @@ export default function SourcesPanelContent({
   // 向量化操作提示
   const [vectorMessage, setVectorMessage] = useState<string | null>(null);
 
-  // 加载收藏夹列表（从B站获取）
+  // 加载收藏夹列表（v2: DB 优先，空则自动同步 B站）
   const loadFolders = async () => {
     setLoading(true);
     try {
-      const data = await favoritesApi.getList(sessionId);
+      const data = await favoritesV2Api.listFolders();
       setFolders(data.map((f) => ({ ...f, count_source: "bili" })));
     } catch (e) {
       console.error(e);
@@ -80,7 +83,7 @@ export default function SourcesPanelContent({
   // 加载入库状态（从本地数据库）
   const loadStatuses = async () => {
     try {
-      const data = await knowledgeApi.getFolderStatus(sessionId);
+      const data = await knowledgeApi.getFolderStatus();
       const map: Record<number, FolderStatus> = {};
       data.forEach((item) => {
         map[item.media_id] = item;
@@ -148,11 +151,18 @@ export default function SourcesPanelContent({
       return next;
     });
 
-    // 2. 未展开且未缓存时请求分P数据
+    // 2. 未展开且未缓存时请求分P数据 (v2)
     if (!isExpanded && !pageCache[bvid]) {
       try {
-        const data = await knowledgeApi.getVideoPages(bvid);
-        setPageCache((prev) => ({ ...prev, [bvid]: data.pages }));
+        const data = await favoritesV2Api.listVideoPages(bvid);
+        // v2 returns page_index (0-based) — convert to old VideoPageInfo format (page 1-based)
+        const pages: VideoPageInfo[] = data.pages.map((p) => ({
+          cid: p.cid,
+          page: p.page_index + 1,
+          title: p.page_title || "",
+          duration: 0,
+        }));
+        setPageCache((prev) => ({ ...prev, [bvid]: pages }));
 
         // 3. 同步批量查询每P向量状态
         const vecStatusMap: Record<string, VectorPageStatusResponse> = {};
@@ -202,10 +212,19 @@ export default function SourcesPanelContent({
     const folder = folders.find((f) => f.media_id === id);
     if (!folder?.videos) {
       try {
-        const res = await favoritesApi.getAllVideos(id, sessionId);
+        const res = await favoritesV2Api.listVideos(id);
+        const videos: Video[] = res.videos.map((v) => ({
+          bvid: v.bvid,
+          title: v.title,
+          cover: v.cover || undefined,
+          duration: v.duration || undefined,
+          owner: v.owner || undefined,
+          cid: v.cid || undefined,
+          is_selected: v.is_selected,
+        }));
         setFolders((prev) =>
           prev.map((f) =>
-            f.media_id === id ? { ...f, videos: res.videos, loading: false, media_count: res.total, count_source: "filtered" } : f
+            f.media_id === id ? { ...f, videos, loading: false, media_count: res.total, count_source: "filtered" } : f
           )
         );
       } catch {
@@ -643,7 +662,7 @@ export default function SourcesPanelContent({
                                               {vecStatus?.is_vectorized === "processing"
                                                 ? "向量化中..."
                                                 : !vecStatus?.is_processed
-                                                ? "ASR+Vector"
+                                                ? "入库"
                                                 : vecStatus?.is_vectorized === "done"
                                                 ? "重新向量化"
                                                 : "向量化"}

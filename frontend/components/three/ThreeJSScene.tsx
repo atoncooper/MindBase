@@ -13,6 +13,7 @@ import Saturn from "./Saturn";
 import Neptune from "./Neptune";
 import MeteorShower from "./MeteorShower";
 import TechGalaxy from "./TechGalaxy";
+import DwarfGalaxy from "./DwarfGalaxy";
 import Mercury from "./Mercury";
 import Venus from "./Venus";
 import Uranus from "./Uranus";
@@ -82,6 +83,7 @@ export default function ThreeJSScene({
           dimmed={dimmed}
         />
         <TechGalaxy dimmed={dimmed} opacity={params.galaxyOpacity} />
+        <DwarfGalaxy opacity={params.galaxyOpacity * 0.7} />
         <Sun emissiveScale={params.sunEmissiveScale} />
         <Mercury lighting={planetLighting} />
         <Venus lighting={planetLighting} />

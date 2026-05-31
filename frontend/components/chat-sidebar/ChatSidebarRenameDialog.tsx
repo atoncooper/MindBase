@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 interface RenameDialogProps {
   open: boolean;
@@ -71,7 +72,7 @@ export function ChatSidebarRenameDialog({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className="modal-overlay" onClick={() => onOpenChange(false)}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-header">
@@ -115,19 +116,20 @@ export function ChatSidebarRenameDialog({
         .modal-overlay {
           position: fixed;
           inset: 0;
-          background: rgba(20, 16, 12, 0.4);
+          background: rgba(0, 0, 0, 0.55);
+          backdrop-filter: blur(4px);
           display: flex;
           align-items: center;
           justify-content: center;
-          z-index: 50;
+          z-index: 9999;
           animation: fadeIn 0.2s ease;
         }
         .modal-card {
           width: min(360px, 92vw);
-          background: rgba(255, 255, 255, 0.96);
-          border: 1px solid #dbeafe;
+          background: #ffffff;
+          border: 1px solid #e2e8f0;
           border-radius: 20px;
-          box-shadow: 0 22px 50px rgba(20, 16, 12, 0.25);
+          box-shadow: 0 22px 50px rgba(0, 0, 0, 0.3);
           animation: fadeUp 0.3s ease;
           overflow: hidden;
         }
@@ -239,6 +241,7 @@ export function ChatSidebarRenameDialog({
           }
         }
       `}</style>
-    </div>
+    </div>,
+    document.body
   );
 }

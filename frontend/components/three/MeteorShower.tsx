@@ -4,9 +4,9 @@ import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
-const METEOR_COUNT = 8;
-const MAX_LIFETIME = 3.5; // seconds
-const SPAWN_INTERVAL = 4; // seconds between new meteors
+const MAX_METEORS = 20;
+const MAX_LIFETIME = 5;
+const SPAWN_INTERVAL = 1.2;
 
 interface MeteorData {
   position: THREE.Vector3;
@@ -24,57 +24,79 @@ export default function MeteorShower() {
 
   const meteors = useRef<MeteorData[]>([]);
 
-  // Pre-create line geometries for reuse
   const lineGeo = useMemo(() => new THREE.BufferGeometry(), []);
 
   const spawnMeteor = (): MeteorData => {
-    // Spawn from random edge of a large bounding box
-    const side = Math.floor(Math.random() * 4); // 0=top, 1=right, 2=bottom, 3=left
+    const side = Math.floor(Math.random() * 4);
     let x: number, y: number, z: number;
 
     switch (side) {
       case 0: // top
-        x = (Math.random() - 0.5) * 16;
-        y = 5 + Math.random() * 3;
-        z = (Math.random() - 0.5) * 8;
+        x = (Math.random() - 0.5) * 20;
+        y = 6 + Math.random() * 4;
+        z = (Math.random() - 0.5) * 10;
         break;
       case 1: // right
-        x = 8 + Math.random() * 2;
-        y = (Math.random() - 0.5) * 8;
-        z = (Math.random() - 0.5) * 8;
+        x = 10 + Math.random() * 3;
+        y = (Math.random() - 0.5) * 10;
+        z = (Math.random() - 0.5) * 10;
         break;
       case 2: // bottom
-        x = (Math.random() - 0.5) * 16;
-        y = -5 - Math.random() * 3;
-        z = (Math.random() - 0.5) * 8;
+        x = (Math.random() - 0.5) * 20;
+        y = -6 - Math.random() * 4;
+        z = (Math.random() - 0.5) * 10;
         break;
       default: // left
-        x = -8 - Math.random() * 2;
-        y = (Math.random() - 0.5) * 8;
-        z = (Math.random() - 0.5) * 8;
+        x = -10 - Math.random() * 3;
+        y = (Math.random() - 0.5) * 10;
+        z = (Math.random() - 0.5) * 10;
     }
 
-    // Direction: mostly diagonal, slight variation
-    const dx = (Math.random() - 0.3) * 1.4;
-    const dy = -0.4 - Math.random() * 1.0;
-    const dz = (Math.random() - 0.5) * 0.6;
+    const dx = (Math.random() - 0.3) * 1.6;
+    const dy = -0.3 - Math.random() * 1.2;
+    const dz = (Math.random() - 0.5) * 0.8;
     const dir = new THREE.Vector3(dx, dy, dz).normalize();
 
-    // Cyan or white meteor
-    const isCyan = Math.random() < 0.5;
-    const color = new THREE.Color(
-      isCyan ? 0.4 + Math.random() * 0.3 : 0.8 + Math.random() * 0.2,
-      isCyan ? 0.7 + Math.random() * 0.3 : 0.8 + Math.random() * 0.2,
-      isCyan ? 0.8 + Math.random() * 0.2 : 0.7 + Math.random() * 0.3,
-    );
+    // Varied color palette: cyan, gold, white, purple
+    const palette = Math.random();
+    let color: THREE.Color;
+    if (palette < 0.35) {
+      // Cyan-blue
+      color = new THREE.Color(
+        0.3 + Math.random() * 0.25,
+        0.65 + Math.random() * 0.35,
+        0.8 + Math.random() * 0.2,
+      );
+    } else if (palette < 0.6) {
+      // Gold-amber
+      color = new THREE.Color(
+        0.85 + Math.random() * 0.15,
+        0.55 + Math.random() * 0.35,
+        0.15 + Math.random() * 0.2,
+      );
+    } else if (palette < 0.8) {
+      // White-hot
+      color = new THREE.Color(
+        0.85 + Math.random() * 0.15,
+        0.85 + Math.random() * 0.15,
+        0.8 + Math.random() * 0.2,
+      );
+    } else {
+      // Purple-pink
+      color = new THREE.Color(
+        0.6 + Math.random() * 0.35,
+        0.2 + Math.random() * 0.2,
+        0.7 + Math.random() * 0.3,
+      );
+    }
 
     return {
       position: new THREE.Vector3(x, y, z),
       direction: dir,
-      speed: 4 + Math.random() * 6,
-      length: 0.6 + Math.random() * 1.2,
+      speed: 3 + Math.random() * 10,
+      length: 0.8 + Math.random() * 2.0,
       age: 0,
-      lifetime: 1.5 + Math.random() * MAX_LIFETIME,
+      lifetime: 1.2 + Math.random() * MAX_LIFETIME,
       color,
     };
   };
@@ -82,22 +104,16 @@ export default function MeteorShower() {
   useFrame((_, delta) => {
     if (!groupRef.current) return;
 
-    // Spawn new meteors periodically, cap at METEOR_COUNT
     spawnTimer.current += delta;
-    if (
-      spawnTimer.current > SPAWN_INTERVAL &&
-      meteors.current.length < METEOR_COUNT
-    ) {
+    if (spawnTimer.current > SPAWN_INTERVAL && meteors.current.length < MAX_METEORS) {
       spawnTimer.current = 0;
       meteors.current.push(spawnMeteor());
     }
 
-    // Ensure we always have some meteors
     if (meteors.current.length === 0) {
       meteors.current.push(spawnMeteor());
     }
 
-    // Update meteor positions
     const dt = delta;
     for (let i = meteors.current.length - 1; i >= 0; i--) {
       const m = meteors.current[i];
@@ -106,15 +122,12 @@ export default function MeteorShower() {
         meteors.current.splice(i, 1);
         continue;
       }
-      // Move head position
       m.position.x += m.direction.x * m.speed * dt;
       m.position.y += m.direction.y * m.speed * dt;
       m.position.z += m.direction.z * m.speed * dt;
     }
 
-    // Update line visuals — each meteor = one child line
     const children = groupRef.current.children;
-    // Remove excess children
     while (children.length > meteors.current.length) {
       const last = children[children.length - 1];
       if (last) {
@@ -130,20 +143,17 @@ export default function MeteorShower() {
       const m = meteors.current[i];
       const lifeRatio = m.age / m.lifetime;
 
-      // Fade in quickly, fade out slowly
       let alpha: number;
-      if (lifeRatio < 0.1) {
-        alpha = lifeRatio / 0.1;
-      } else if (lifeRatio > 0.7) {
-        alpha = 1 - (lifeRatio - 0.7) / 0.3;
+      if (lifeRatio < 0.08) {
+        alpha = lifeRatio / 0.08;
+      } else if (lifeRatio > 0.65) {
+        alpha = 1 - (lifeRatio - 0.65) / 0.35;
       } else {
         alpha = 1;
       }
 
-      // Tail position (behind the head)
       const tail = m.position.clone().addScaledVector(m.direction, -m.length);
 
-      // Create or update line geometry
       let line: THREE.Line;
       if (i < children.length) {
         line = children[i] as THREE.Line;
@@ -168,7 +178,7 @@ export default function MeteorShower() {
       geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
       geom.setDrawRange(0, 2);
 
-      (line.material as THREE.LineBasicMaterial).opacity = alpha * 0.8;
+      (line.material as THREE.LineBasicMaterial).opacity = alpha * 0.9;
     }
   });
 

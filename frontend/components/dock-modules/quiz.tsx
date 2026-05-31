@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft } from "lucide-react";
 import {
     quizApi,
-    favoritesApi,
+    favoritesV2Api,
     knowledgeApi,
     type QuizSetData,
     type QuizQuestion,
@@ -74,8 +74,8 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         if (!isOpen || !sessionId) return;
         setLoadingFolders(true);
         Promise.all([
-            favoritesApi.getList(sessionId),
-            knowledgeApi.getFolderStatus(sessionId),
+            favoritesV2Api.listFolders(),
+            knowledgeApi.getFolderStatus(),
         ])
             .then(([favList, statusList]) => {
                 const statusMap = new Map<number, FolderStatus>();
@@ -125,11 +125,10 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
 
     // ────── Pages mode: fetch vectorized pages on mode switch ──────
     const fetchVectorizedPages = useCallback(async () => {
-        if (!sessionId) return;
         setLoadingPages(true);
         setError(null);
         try {
-            const pages = await knowledgeApi.getVectorizedPages(sessionId);
+            const pages = await knowledgeApi.getVectorizedPages();
             setVectorizedPages(pages);
             // Pre-select all vectorized pages
             const keys = new Set<string>();
@@ -142,14 +141,14 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         } finally {
             setLoadingPages(false);
         }
-    }, [sessionId]);
+    }, []);
 
     // Fetch pages when switching to pages mode
     useEffect(() => {
-        if (mode === "pages" && isOpen && sessionId) {
+        if (mode === "pages" && isOpen) {
             fetchVectorizedPages();
         }
-    }, [mode, isOpen, sessionId, fetchVectorizedPages]);
+    }, [mode, isOpen, fetchVectorizedPages]);
 
     const togglePage = useCallback((bvid: string, pageIndex: number) => {
         setSelectedPageKeys((prev) => {
@@ -199,7 +198,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                 }
 
                 const res = await quizApi.generate({
-                    session_id: sessionId,
                     pages,
                     question_count: questionCount,
                     difficulty,
@@ -215,7 +213,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                 }
 
                 const res = await quizApi.generate({
-                    session_id: sessionId,
                     folder_ids: fids,
                     question_count: questionCount,
                     difficulty,
@@ -244,7 +241,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         try {
             const result = await quizApi.submit({
                 quiz_uuid: currentQuiz.quiz_uuid,
-                session_id: sessionId,
                 answers,
             });
             setSubmitResult(result);
@@ -259,7 +255,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         async (format: "jsonl" | "csv" | "sft") => {
             if (!sessionId) return;
             try {
-                const blob = await quizApi.exportData(sessionId, format);
+                const blob = await quizApi.exportData(format);
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = url;
@@ -294,7 +290,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         if (!sessionId) return;
         setLoadingHistory(true);
         try {
-            const res = await quizApi.getHistory(sessionId, 1, 50);
+            const res = await quizApi.getHistory(1, 50);
             setHistoryItems(res.submissions);
         } catch (e) {
             setError(e instanceof Error ? e.message : "获取历史失败");
@@ -858,7 +854,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                 <div style={{ maxHeight: "260px", overflow: "auto", borderRadius: "10px", border: "1px solid var(--border)" }}>
                                     {historyItems.map((item) => (
                                         <div
-                                            key={item.submission_uuid}
+                                            key={item.quiz_uuid}
                                             style={{
                                                 display: "flex",
                                                 alignItems: "center",

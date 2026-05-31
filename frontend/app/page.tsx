@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import LoginModal from "@/components/LoginModal";
+import QRLoginModal from "@/components/QRLoginModal";
+import PasswordLoginModal from "@/components/PasswordLoginModal";
 import DemoFlowModal from "@/components/DemoFlowModal";
 import DockBar from "@/components/DockBar";
 import DockPanelWrapper from "@/components/DockPanelWrapper";
@@ -18,7 +19,8 @@ import ThemeToggle from "@/components/ThemeToggle";
 export default function Home() {
   const [session, setSession] = useState<string | null>(null);
   const [user, setUser] = useState<string | null>(null);
-  const [showLogin, setShowLogin] = useState(false);
+  const [showQRLogin, setShowQRLogin] = useState(false);
+  const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
   const [selectedFolderIds, setSelectedFolderIds] = useState<number[]>([]);
   const [workspacePages, setWorkspacePages] = useState<WorkspacePage[]>([]);
@@ -80,12 +82,12 @@ export default function Home() {
   }, [session]);
 
   const handleCreateSession = async () => {
-    if (!session) return;
     try {
-      const res = await chatApi.createSession(session);
+      const res = await chatApi.createSession();
       const cid = res.chat_session_id;
       localStorage.setItem("bili_chat_session", cid);
       setActiveChatSessionId(cid);
+      setActivePanelId("chat"); // auto-open chat panel
     } catch (e) {
       console.error("创建会话失败", e);
     }
@@ -94,18 +96,20 @@ export default function Home() {
   const handleSelectSession = (cid: string) => {
     localStorage.setItem("bili_chat_session", cid);
     setActiveChatSessionId(cid);
+    setActivePanelId("chat"); // auto-open chat panel
   };
 
   const onLogin = (sid: string, info: UserInfo) => {
     setSession(sid);
-    setUser(info.uname);
-    setShowLogin(false);
+    setUser(info.uname || "");
+    setShowQRLogin(false);
+    setShowPasswordLogin(false);
     localStorage.setItem("bili_session", sid);
-    localStorage.setItem("bili_user", info.uname);
+    localStorage.setItem("bili_user", info.uname || "");
   };
 
   const onLogout = useCallback(() => {
-    if (session) authApi.logout(session).catch(() => { });
+    if (session) authApi.logoutCurrent(session).catch(() => { });
     setSession(null);
     setUser(null);
     setActiveChatSessionId(null);
@@ -265,9 +269,14 @@ export default function Home() {
                 </button>
               </>
             ) : (
-              <button onClick={() => setShowLogin(true)} className="btn btn-primary">
-                扫码登录
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowQRLogin(true)} className="btn btn-primary">
+                  扫码登录
+                </button>
+                <button onClick={() => setShowPasswordLogin(true)} className="btn btn-outline">
+                  账号登录
+                </button>
+              </div>
             )}
           </div>
         </header>
@@ -284,8 +293,11 @@ export default function Home() {
                 </p>
 
                 <div className="hero-actions">
-                  <button className="btn btn-primary btn-lg" onClick={() => setShowLogin(true)}>
+                  <button className="btn btn-primary btn-lg" onClick={() => setShowQRLogin(true)}>
                     扫码登录开始构建
+                  </button>
+                  <button className="btn btn-outline" onClick={() => setShowPasswordLogin(true)}>
+                    账号登录
                   </button>
                   <button className="btn btn-outline" onClick={() => setShowDemo(true)}>
                     体验检索流程
@@ -346,7 +358,13 @@ export default function Home() {
           </DockPanelWrapper>
         )}
 
-        <LoginModal isOpen={showLogin} onClose={() => setShowLogin(false)} onSuccess={onLogin} />
+        <QRLoginModal isOpen={showQRLogin} onClose={() => setShowQRLogin(false)} onSuccess={onLogin} />
+        <PasswordLoginModal
+          isOpen={showPasswordLogin}
+          onClose={() => setShowPasswordLogin(false)}
+          onSuccess={onLogin}
+          onSwitchToQR={() => { setShowQRLogin(true); }}
+        />
         <DemoFlowModal isOpen={showDemo} onClose={() => setShowDemo(false)} />
         {asrModal.isOpen && (
           <ASRViewerModal

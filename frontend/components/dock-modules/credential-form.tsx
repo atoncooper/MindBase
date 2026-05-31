@@ -1,43 +1,65 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Eye, EyeOff, X } from "lucide-react";
-import type { CredentialItem, CredentialCreateParams, CredentialUpdateParams } from "@/lib/api";
+import type { CredentialItem, CredentialCreateParams, CredentialUpdateParams, ConfigCreateParams, ConfigUpdateParams } from "@/lib/api";
 
 /* ──── Provider config ──── */
 
-const PROVIDERS: { value: string; label: string; placeholder_url: string }[] = [
+const LLM_PROVIDERS = [
   { value: "openai", label: "OpenAI", placeholder_url: "https://api.openai.com/v1" },
   { value: "anthropic", label: "Anthropic", placeholder_url: "https://api.anthropic.com" },
   { value: "deepseek", label: "DeepSeek", placeholder_url: "https://api.deepseek.com" },
   { value: "custom", label: "Custom", placeholder_url: "" },
 ];
 
+const EMBEDDING_PROVIDERS = [
+  { value: "openai", label: "OpenAI", placeholder_url: "https://api.openai.com/v1" },
+  { value: "dashscope", label: "DashScope", placeholder_url: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { value: "custom", label: "Custom", placeholder_url: "" },
+];
+
+const ASR_PROVIDERS = [
+  { value: "dashscope", label: "DashScope", placeholder_url: "https://dashscope.aliyuncs.com/api/v1" },
+  { value: "openai", label: "OpenAI", placeholder_url: "https://api.openai.com/v1" },
+  { value: "custom", label: "Custom", placeholder_url: "" },
+];
+
+function getProviders(type: "llm" | "embedding" | "asr") {
+  if (type === "llm") return LLM_PROVIDERS;
+  if (type === "embedding") return EMBEDDING_PROVIDERS;
+  return ASR_PROVIDERS;
+}
+
 /* ──── Props ──── */
 
 export interface CredentialFormProps {
-  sessionId: string;
-  credential?: CredentialItem | null; // null = create mode
-  onSave: (data: CredentialCreateParams | CredentialUpdateParams) => Promise<void>;
+  type?: "llm" | "embedding" | "asr";
+  credential?: CredentialItem | null;
+  onSave: (data: CredentialCreateParams | CredentialUpdateParams | ConfigCreateParams | ConfigUpdateParams) => Promise<void>;
   onCancel: () => void;
 }
 
 /* ──── Component ──── */
 
-export default function CredentialForm({ credential, onSave, onCancel }: CredentialFormProps) {
+export default function CredentialForm({ type = "llm", credential, onSave, onCancel }: CredentialFormProps) {
   const isEdit = !!credential;
+  const providers = getProviders(type);
+  const defaultProvider = type === "asr" ? "dashscope" : "openai";
+  const isLLM = type === "llm";
 
   const [name, setName] = useState(credential?.name || "");
-  const [provider, setProvider] = useState(credential?.provider || "openai");
+  const [provider, setProvider] = useState(credential?.provider || defaultProvider);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(credential?.base_url || "");
-  const [defaultModel, setDefaultModel] = useState(credential?.default_model || "");
+  const [model, setModel] = useState((credential as any)?.default_model || (credential as any)?.model || "");
   const [isDefault, setIsDefault] = useState(credential?.is_default || false);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedProvider = PROVIDERS.find(p => p.value === provider);
+  const selectedProvider = providers.find(p => p.value === provider);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,15 +70,17 @@ export default function CredentialForm({ credential, onSave, onCancel }: Credent
 
     setSaving(true);
     try {
-      const data: CredentialCreateParams | CredentialUpdateParams = {
+      const base: any = {
         name: name.trim(),
         ...(isEdit ? {} : { provider }),
         ...(apiKey && { api_key: apiKey.trim() }),
-        ...(baseUrl.trim() ? { base_url: baseUrl.trim() } : {}),
-        ...(defaultModel.trim() ? { default_model: defaultModel.trim() } : {}),
+        base_url: baseUrl.trim() || selectedProvider?.placeholder_url || "",
         ...(isEdit ? {} : { is_default: isDefault }),
       };
-      await onSave(data);
+      if (model.trim()) {
+        base[isLLM ? "default_model" : "model"] = model.trim();
+      }
+      await onSave(base);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -64,7 +88,7 @@ export default function CredentialForm({ credential, onSave, onCancel }: Credent
     }
   };
 
-  return (
+  const formContent = (
     <div className="cf-overlay" onClick={onCancel}>
       <div className="cf-modal" onClick={e => e.stopPropagation()}>
         <div className="cf-head">
@@ -97,7 +121,7 @@ export default function CredentialForm({ credential, onSave, onCancel }: Credent
               onChange={e => { setProvider(e.target.value); setBaseUrl(""); }}
               className="cf-input cf-select"
             >
-              {PROVIDERS.map(p => (
+              {providers.map(p => (
                 <option key={p.value} value={p.value}>{p.label}</option>
               ))}
             </select>
@@ -135,14 +159,18 @@ export default function CredentialForm({ credential, onSave, onCancel }: Credent
             />
           </div>
 
-          {/* 默认模型 */}
+          {/* 模型 */}
           <div className="cf-field">
-            <label>默认模型</label>
+            <label>{isLLM ? "默认模型" : "模型"}</label>
             <input
               type="text"
-              value={defaultModel}
-              onChange={e => setDefaultModel(e.target.value)}
-              placeholder={provider === "openai" ? "gpt-4o" : provider === "anthropic" ? "claude-sonnet-4-6" : provider === "deepseek" ? "deepseek-chat" : ""}
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              placeholder={
+                !isLLM
+                  ? (type === "embedding" ? "text-embedding-3-small" : "paraformer-v2")
+                  : (provider === "openai" ? "gpt-4o" : provider === "anthropic" ? "claude-sonnet-4-6" : provider === "deepseek" ? "deepseek-chat" : "")
+              }
               className="cf-input"
             />
           </div>
@@ -174,31 +202,19 @@ export default function CredentialForm({ credential, onSave, onCancel }: Credent
 
       <style jsx>{`
         .cf-overlay {
-          position: fixed;
-          inset: 0;
-          z-index: 9999;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background:
-            rgba(0, 0, 0, 0.6);
-          backdrop-filter: blur(10px);
+          position: fixed; inset: 0; z-index: 9999;
+          display: flex; align-items: center; justify-content: center;
+          background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(10px);
           animation: cfFadeIn .15s ease;
         }
-        @keyframes cfFadeIn {
-          from { opacity: 0; }
-          to   { opacity: 1; }
-        }
+        @keyframes cfFadeIn { from { opacity: 0; } to { opacity: 1; } }
 
         .cf-modal {
-          width: 440px;
-          max-width: 92vw;
-          max-height: 90vh;
-          overflow-y: auto;
-          background: linear-gradient(180deg, #161b22 0%, #21262d 100%);
-          border: 1px solid rgba(48, 54, 61, 0.92);
+          width: 440px; max-width: 92vw; max-height: 90vh; overflow-y: auto;
+          background: linear-gradient(180deg, var(--card) 0%, var(--paper-3) 100%);
+          border: 1px solid var(--border);
           border-radius: 20px;
-          box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+          box-shadow: 0 30px 80px rgba(0, 0, 0, 0.25);
           animation: cfSlideUp .2s ease;
         }
         @keyframes cfSlideUp {
@@ -206,198 +222,104 @@ export default function CredentialForm({ credential, onSave, onCancel }: Credent
           to   { opacity: 1; transform: translateY(0); }
         }
 
-        .cf-head {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          padding: 20px 22px 0;
-        }
+        .cf-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 22px 0; }
         .cf-kicker {
-          display: inline-flex;
-          align-items: center;
-          margin-bottom: 8px;
-          padding: 4px 10px;
-          border-radius: 999px;
-          background: rgba(6, 182, 212, 0.08);
-          color: #06b6d4;
-          font-size: 11px;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
+          display: inline-flex; align-items: center; margin-bottom: 8px;
+          padding: 4px 10px; border-radius: 999px;
+          background: color-mix(in srgb, var(--accent) 8%, transparent);
+          color: var(--accent); font-size: 11px; font-weight: 700;
+          letter-spacing: 0.08em; text-transform: uppercase;
         }
-        .cf-head h3 {
-          font-size: 18px;
-          font-weight: 700;
-          margin: 0;
-          letter-spacing: -0.02em;
-          color: #e2e8f0;
-        }
+        .cf-head h3 { font-size: 18px; font-weight: 700; margin: 0; letter-spacing: -0.02em; color: var(--foreground); }
         .cf-close {
-          background: #161b22;
-          border: 1px solid rgba(48, 54, 61, 0.95);
-          cursor: pointer;
-          color: #8b949e;
-          padding: 8px;
-          border-radius: 10px;
-          display: flex;
+          background: var(--card); border: 1px solid var(--border); cursor: pointer;
+          color: var(--muted-foreground); padding: 8px; border-radius: 10px; display: flex;
           transition: color .12s, background .12s, border-color .12s, transform .12s;
         }
         .cf-close:hover {
-          color: #e2e8f0;
-          background: rgba(6, 182, 212, 0.08);
-          border-color: rgba(6, 182, 212, 0.15);
+          color: var(--foreground);
+          background: color-mix(in srgb, var(--accent) 8%, transparent);
+          border-color: var(--accent);
           transform: translateY(-1px);
         }
 
-        .cf-body {
-          padding: 18px 22px 22px;
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-        }
+        .cf-body { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 14px; }
 
-        .cf-field {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
+        .cf-field { display: flex; flex-direction: column; gap: 6px; }
         .cf-field label {
-          font-size: 11px;
-          font-weight: 700;
-          color: #8b949e;
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-          display: flex;
-          align-items: center;
-          gap: 6px;
+          font-size: 11px; font-weight: 700; color: var(--muted-foreground);
+          text-transform: uppercase; letter-spacing: 0.06em; display: flex; align-items: center; gap: 6px;
         }
         .cf-label-tag {
-          font-size: 10px;
-          font-weight: 700;
-          text-transform: none;
-          letter-spacing: 0;
-          color: #4ade80;
-          background: rgba(34, 197, 94, 0.1);
-          padding: 1px 6px;
-          border-radius: 3px;
+          font-size: 10px; font-weight: 700; text-transform: none; letter-spacing: 0;
+          color: #16a34a; background: rgba(34, 197, 94, 0.1); padding: 1px 6px; border-radius: 3px;
         }
 
         .cf-input {
-          width: 100%;
-          min-height: 44px;
-          padding: 10px 12px;
-          border: 1px solid #30363d;
-          border-radius: 12px;
-          font-size: 13px;
-          background: #21262d;
-          color: #e2e8f0;
-          outline: none;
+          width: 100%; min-height: 44px; padding: 10px 12px;
+          border: 1px solid var(--border); border-radius: 12px; font-size: 13px;
+          background: var(--paper-3); color: var(--foreground); outline: none;
           transition: border-color .15s, box-shadow .15s, background .15s;
           font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
         }
-        .cf-input::placeholder {
-          font-family: system-ui, -apple-system, sans-serif;
-          color: #8b949e;
-        }
+        .cf-input::placeholder { font-family: system-ui, -apple-system, sans-serif; color: var(--muted-foreground); }
         .cf-input:focus {
-          border-color: #22d3ee;
-          background: #161b22;
-          box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.16);
+          border-color: var(--accent-strong); background: var(--card);
+          box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
         }
-        .cf-select {
-          font-family: system-ui, -apple-system, sans-serif;
-          cursor: pointer;
-        }
+        .cf-select { font-family: system-ui, -apple-system, sans-serif; cursor: pointer; }
+        .cf-select option { background: var(--card); color: var(--foreground); }
 
-        .cf-input-wrap {
-          position: relative;
-          display: flex;
-          align-items: center;
-        }
-        .cf-input-wrap .cf-input {
-          padding-right: 36px;
-        }
+        .cf-input-wrap { position: relative; display: flex; align-items: center; }
+        .cf-input-wrap .cf-input { padding-right: 36px; }
         .cf-eye {
-          position: absolute;
-          right: 6px;
-          background: transparent;
-          border: none;
-          padding: 6px;
-          cursor: pointer;
-          color: #8b949e;
-          display: flex;
-          border-radius: 8px;
+          position: absolute; right: 6px; background: transparent; border: none;
+          padding: 6px; cursor: pointer; color: var(--muted-foreground); display: flex; border-radius: 8px;
         }
-        .cf-eye:hover {
-          color: #e2e8f0;
-          background: rgba(48, 54, 61, 0.72);
-        }
+        .cf-eye:hover { color: var(--foreground); background: color-mix(in srgb, var(--muted-foreground) 12%, transparent); }
 
         .cf-check {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 13px;
-          color: #8b949e;
-          cursor: pointer;
-          padding: 6px 0 2px;
-          font-weight: 600;
+          display: flex; align-items: center; gap: 8px; font-size: 13px;
+          color: var(--muted-foreground); cursor: pointer; padding: 6px 0 2px; font-weight: 600;
         }
-        .cf-check input {
-          width: 16px;
-          height: 16px;
-          accent-color: #06b6d4;
-        }
+        .cf-check input { width: 16px; height: 16px; accent-color: var(--accent); }
 
         .cf-error {
-          font-size: 12.5px;
-          color: #f87171;
-          padding: 10px 12px;
-          background: rgba(248, 113, 113, 0.1);
-          border-radius: 12px;
+          font-size: 12.5px; color: #f87171; padding: 10px 12px;
+          background: rgba(248, 113, 113, 0.1); border-radius: 12px;
           border: 1px solid rgba(248, 113, 113, 0.2);
         }
 
-        .cf-actions {
-          display: flex;
-          gap: 10px;
-          padding-top: 6px;
-        }
+        .cf-actions { display: flex; gap: 10px; padding-top: 6px; }
         .cf-btn {
-          flex: 1;
-          min-height: 40px;
-          padding: 8px 0;
-          border: none;
-          border-radius: 12px;
-          font-size: 12.5px;
-          font-weight: 700;
-          cursor: pointer;
+          flex: 1; min-height: 40px; padding: 8px 0; border: none; border-radius: 12px;
+          font-size: 12.5px; font-weight: 700; cursor: pointer;
           transition: opacity .15s, background .15s, transform .1s, box-shadow .15s, border-color .15s;
         }
         .cf-btn:active:not(:disabled) { transform: scale(0.98); }
         .cf-btn:disabled { opacity: 0.45; cursor: not-allowed; }
         .cf-btn-save {
           flex: 0 0 116px;
-          background: linear-gradient(180deg, rgba(6, 182, 212, 0.18) 0%, rgba(6, 182, 212, 0.1) 100%);
-          color: #22d3ee;
-          border: 1px solid rgba(6, 182, 212, 0.25);
-          box-shadow: 0 8px 18px rgba(6, 182, 212, 0.14);
+          background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent) 0%, color-mix(in srgb, var(--accent) 10%, transparent) 100%);
+          color: var(--accent-strong);
+          border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+          box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
         }
         .cf-btn-save:hover:not(:disabled) {
-          background: linear-gradient(180deg, rgba(6, 182, 212, 0.24) 0%, rgba(6, 182, 212, 0.14) 100%);
-          box-shadow: 0 10px 20px rgba(6, 182, 212, 0.18);
+          background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 24%, transparent) 0%, color-mix(in srgb, var(--accent) 14%, transparent) 100%);
+          box-shadow: 0 10px 20px color-mix(in srgb, var(--accent) 14%, transparent);
         }
         .cf-btn-cancel {
-          background: #161b22;
-          color: #8b949e;
-          border: 1px solid rgba(48, 54, 61, 0.95);
+          background: var(--card); color: var(--muted-foreground); border: 1px solid var(--border);
         }
         .cf-btn-cancel:hover:not(:disabled) {
-          background: rgba(6, 182, 212, 0.08);
-          border-color: rgba(6, 182, 212, 0.15);
+          background: color-mix(in srgb, var(--accent) 8%, transparent);
+          border-color: var(--accent);
         }
       `}</style>
     </div>
   );
+
+  if (typeof window === "undefined") return null;
+  return createPortal(formContent, document.body);
 }

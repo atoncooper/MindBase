@@ -31,12 +31,12 @@ function mergeMessages(
   const map = new Map<string, LocalChatMessage>();
 
   for (const m of existing) {
-    const key = m.id ? String(m.id) : m.clientId!;
+    const key = m.msg_id || m.clientId!!;
     map.set(key, m);
   }
 
   for (const m of incoming) {
-    const key = m.id ? String(m.id) : m.clientId!;
+    const key = m.msg_id || m.clientId!!;
     const existingMsg = map.get(key);
     map.set(key, existingMsg ? { ...existingMsg, ...m } : m);
   }
@@ -124,7 +124,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
 
     // 乐观更新：先显示用户消息 + assistant 占位
     const optimisticUser: LocalChatMessage = {
-      id: 0,
+      msg_id: "",
       clientId,
       chat_session_id: chatSessionId,
       role: "user",
@@ -133,7 +133,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
       created_at: now,
     };
     const optimisticAssistant: LocalChatMessage = {
-      id: 0,
+      msg_id: "",
       clientId: assistantClientId,
       chat_session_id: chatSessionId,
       role: "assistant",
@@ -186,18 +186,10 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
         );
       }
       setLoading(false);
-
-      // 刷新历史，用后端正式 id 替换临时消息
-      try {
-        const history = await chatApi.getHistory(chatSessionId);
-        setChatMessages((prev) => mergeMessages(prev, history.messages));
-      } catch (e) {
-        console.error("刷新历史失败", e);
-      }
       return;
     }
 
-    // 标准模式：流式（SSE 解析）
+    // standard mode: streaming SSE
     try {
       const stream = await chatApi.askStream(payload);
       const reader = stream.getReader();
@@ -294,14 +286,6 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
     }
 
     setLoading(false);
-
-    // SSE 结束后刷新历史，用后端正式 id 替换临时消息
-    try {
-      const history = await chatApi.getHistory(chatSessionId);
-      setChatMessages((prev) => mergeMessages(prev, history.messages));
-    } catch (e) {
-      console.error("刷新历史失败", e);
-    }
   };
 
   if (!isOpen) return null;
@@ -364,7 +348,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
               <div className="chat-window">
                 {messages.map((m) => (
                   <div
-                    key={m.id ? String(m.id) : m.clientId}
+                    key={m.msg_id || m.clientId!}
                     className={cn("message", m.role)}
                   >
                     <div
@@ -422,7 +406,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
                         >
                           <button
                             onClick={() =>
-                              toggleReasoning(m.id ? String(m.id) : m.clientId!)
+                              toggleReasoning(m.msg_id || m.clientId!!)
                             }
                             style={{
                               fontSize: 12,
@@ -438,7 +422,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
                             }}
                           >
                             <span>
-                              {showReasoning.has(m.id ? String(m.id) : m.clientId!)
+                              {showReasoning.has(m.msg_id || m.clientId!!)
                                 ? "▼"
                                 : "▶"}
                             </span>
@@ -449,7 +433,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
                             )
                           </button>
                           {showReasoning.has(
-                            m.id ? String(m.id) : m.clientId!
+                            m.msg_id || m.clientId!!
                           ) && (
                             <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                               {m.reasoningSteps.map((step, i) => (

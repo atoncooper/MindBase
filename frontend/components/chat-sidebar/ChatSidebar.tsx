@@ -35,7 +35,7 @@ export function ChatSidebar({
     setIsLoading(true);
     setError(null);
     try {
-      const res = await chatApi.listSessions(sessionId);
+      const res = await chatApi.listSessions();
       setSessions(res.sessions);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "获取会话列表失败";
