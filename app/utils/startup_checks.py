@@ -78,11 +78,10 @@ async def run_startup_checks() -> None:
             errors.append(f"Redis: {e}")
 
     if errors:
-        msg = "Startup checks failed:\n  " + "\n  ".join(errors)
-        logger.error(f"[STARTUP] {msg}")
-        raise StartupCheckError(msg)
+        logger.warning("[STARTUP] Some services unavailable (app will start anyway):\n  %s",
+                       "\n  ".join(errors))
 
-    logger.info("[STARTUP] All health checks passed")
+    logger.info("[STARTUP] Health checks complete")
 
 
 # ── Per-component checks ────────────────────────────────────────────
