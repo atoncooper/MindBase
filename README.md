@@ -9,14 +9,16 @@
 
 ## ✨ 功能一览
 
-- ✅ B 站扫码登录，读取收藏夹
+- ✅ B 站扫码登录 + **邮箱密码登录**，读取收藏夹
 - ✅ 支持**分 P 视频**的逐 P 处理与向量化
 - ✅ 音频转文字（ASR），自动兜底处理
 - ✅ 语义检索（向量检索）+ **Agentic RAG** 智能问答
 - ✅ 多路由策略（direct / db_list / db_content / vector）自动选择
-- ✅ 本地 SQLite + ChromaDB 存储
+- ✅ **Milvus** 向量数据库 + MySQL + Redis + MongoDB 基础设施
+- ✅ 多 Provider API Key 管理（OpenAI / Anthropic / DeepSeek / 自定义）
+- ✅ **API 配置测试** — 一键验证 LLM / Embedding / ASR 连接
+- ✅ Dashboard 设备管理 + Token 会话列表
 - ✅ **LangSmith** 自动追踪集成，可观测 LLM 调用链路
-- ✅ OpenClaw Skill 本地接入
 
 ---
 
@@ -27,11 +29,6 @@
 
 ## B站演示视频：
 [演示视频](https://b23.tv/bGXyhjU)
-
-## ⭐ Star History
-[![Star History Chart](https://api.star-history.com/svg?repos=via007/bilibili-rag&type=Date)](https://star-history.com/#via007/bilibili-rag&Date)
-
----
 
 ## 🏗️ 系统架构
 
@@ -163,85 +160,72 @@ npm run dev
 ```
 bilibili-rag/
 ├── app/                        # Backend root
-│   ├── config/                 # YAML-based config (docs/configuration.md)
-│   │   ├── default.yaml        #   All defaults (committed)
-│   │   ├── config.yaml         #   Team-shared overrides (committed, optional)
-│   │   └── loader.py           #   YAML loader + env-var merge
-│   ├── database.py             # SQLite async engine & init
+│   ├── config/                 # YAML-based config
+│   │   ├── default.yaml        #   All defaults
+│   │   ├── config.yaml         #   Team-shared overrides (committed)
+│   │   ├── local.yaml.example  #   Per-machine template (gitignored)
+│   │   ├── loader.py           #   YAML loader + env-var merge
+│   │   └── settings.py         #   Flat accessor for backward compat
+│   ├── infra/                  # Infrastructure layer
+│   │   ├── config.py           #   Pydantic-settings based config
+│   │   ├── rdbms.py            #   Async MySQL/PostgreSQL engine
+│   │   ├── redis.py            #   Redis client + pubsub
+│   │   ├── milvus.py           #   Milvus vector DB client
+│   │   ├── mongo.py            #   MongoDB client
+│   │   ├── cache.py            #   Multi-level cache (L1 + Redis L2)
+│   │   ├── slow_sql.py         #   Slow query capture
+│   │   └── transaction.py      #   Retry + readonly routing
+│   ├── database.py             # DB init + auto-migration
 │   ├── main.py                 # FastAPI entry point
-│   ├── models.py               # Pydantic / SQLAlchemy models
-│   ├── utils/                  # Shared utilities
-│   │   ├── snowflake.py        #   Snowflake ID generator
-│   │   └── cache.py            #   In-memory cache
-│   ├── repository/             # Data-access layer (one repo per table)
-│   │   ├── user_repository.py
-│   │   ├── user_oauth_repository.py
-│   │   ├── user_token_repository.py
-│   │   ├── rbac_repository.py
-│   │   └── ...
+│   ├── models.py               # SQLAlchemy ORM models only
+│   ├── response/               # Pydantic API schemas
+│   │   ├── auth.py             #   Auth schemas
+│   │   ├── chat.py             #   Chat schemas
+│   │   ├── asr.py              #   ASR schemas
+│   │   ├── quiz.py             #   Quiz schemas
+│   │   ├── credentials.py      #   Credential / billing schemas
+│   │   ├── favorites.py        #   Favorites v2 schemas
+│   │   ├── knowledge.py        #   Knowledge base schemas
+│   │   ├── metadata.py         #   Video metadata schemas
+│   │   └── vector.py           #   Vectorization schemas
+│   ├── repository/             # Data-access layer
 │   ├── routers/                # HTTP route layer
-│   │   ├── auth.py             #   Bilibili QR login + user tokens
+│   │   ├── auth.py             #   QR login + password login + devices
 │   │   ├── chat.py             #   Q&A orchestrator
-│   │   ├── favorites.py        #   Favorite folders
+│   │   ├── favorites_v2.py     #   Favorite folders v2
 │   │   ├── knowledge.py        #   Knowledge base sync
 │   │   ├── asr.py              #   Per-page ASR
 │   │   ├── vector_page.py      #   Per-page vectorization
-│   │   ├── credentials.py      #   Multi-provider API keys
+│   │   ├── credentials.py      #   Multi-provider API keys + test
 │   │   ├── billing.py          #   Usage / billing
 │   │   ├── quiz.py             #   Quiz training
-│   │   └── settings.py         #   User API key settings
+│   │   ├── settings.py         #   Embedding / ASR config CRUD + test
+│   │   └── tasks_ws.py         #   WebSocket task status
 │   └── services/               # Business-logic layer
-│       ├── auth/               #   User center (Plan 0020)
-│       │   ├── user_service.py
-│       │   ├── token.py
-│       │   └── security.py
+│       ├── auth/               #   User system (password, OAuth, token)
 │       ├── bilibili.py         #   Bilibili API client
-│       ├── content_fetcher.py  #   Audio / subtitle fetch
 │       ├── asr.py              #   Speech-to-text
-│       ├── rag/                #   Vector retrieval + LLM
-│       ├── query/              #   Query rewrite / Agentic RAG
-│       ├── llm/                #   LLM credential / usage
+│       ├── rag/                #   Vector retrieval + LLM + Agentic
+│       ├── llm/                #   Credential manager + config tester
+│       ├── query/              #   Query rewrite
+│       ├── video/              #   Video metadata extraction
+│       ├── favorite/           #   Favorite sync service
 │       └── wbi.py              #   WBI anti-crawl signing
 │
-├── docs/                       # Documentation
-│   └── configuration.md        #   Full config reference
 ├── frontend/                   # Next.js frontend
-│   ├── app/                    # App Router 页面
-│   │   ├── layout.tsx          # 根布局
-│   │   ├── page.tsx            # 首页
-│   │   └── globals.css         # 全局样式
-│   ├── components/             # React 组件
-│   │   ├── ChatPanel.tsx       # 聊天面板
-│   │   ├── SourcesPanel.tsx    # 收藏夹/来源面板
-│   │   ├── LoginModal.tsx      # 扫码登录弹窗
-│   │   ├── ASRViewerModal.tsx  # ASR 结果查看
-│   │   ├── WorkspacePanel.tsx  # 工作区面板
-│   │   └── ui/                 # shadcn/ui 组件库
-│   └── lib/
-│       └── api.ts              # 唯一 API 调用入口
+│   ├── app/                    # App Router (page.tsx, layout.tsx)
+│   ├── components/             # React components
+│   │   ├── QRLoginModal.tsx    #   QR code login
+│   │   ├── PasswordLoginModal.tsx  # Password login
+│   │   ├── dock-modules/       #   Settings, Billing, Quiz panels
+│   │   └── three/              #   Three.js 3D scene
+│   └── lib/                    # API client, device detection, etc.
 │
-├── api/                        # API 文档
-│   ├── README.md               # API 文档说明
-│   └── openapi.yaml            # OpenAPI 3.0 规范
-│
-├── architecture/               # 架构文档
-│   └── app/                    # 各模块详细文档
-│
-├── skills/                     # OpenClaw Skills
-│   └── bilibili-rag-local/     # 本地接入 Skill
-│
-├── data/                       # 数据目录（不提交）
-│   ├── bilibili_rag.db         # SQLite 数据库
-│   └── chroma_db/              # ChromaDB 向量库
-│
-├── scripts/                    # 启动/停止脚本
-│   ├── start.sh / start.ps1
-│   └── stop.sh / stop.ps1
-│
-├── logs/                       # 日志目录
-├── .env.example                # 环境变量模板
-├── requirements.txt            # Python 依赖
-└── README.md                   # 本文档
+├── docs/                       # Documentation
+├── .github/workflows/          # CI/CD (backend lint, frontend build, Docker)
+├── docker-compose.yml          # Full-stack Docker Compose
+├── Dockerfile                  # Backend Docker image
+└── requirements.txt            # Python dependencies
 ```
 
 ---
@@ -383,19 +367,20 @@ python test/test_sync.py
 ### 后端
 - **Web 框架**: FastAPI + Uvicorn
 - **LLM 调用**: LangChain + OpenAI SDK (DashScope 兼容模式)
-- **向量库**: ChromaDB
-- **数据库**: SQLite + SQLAlchemy (异步) + Repository 模式
+- **向量库**: Milvus / ChromaDB
+- **数据库**: MySQL + SQLAlchemy (异步) + Repository 模式
+- **缓存**: Redis (L1 内存 + L2 Redis)
+- **文档存储**: MongoDB
 - **配置**: YAML 分层配置 + env 密钥注入
-- **用户系统**: Snowflake UID + OAuth 多平台绑定 + RBAC 权限
+- **用户系统**: Snowflake UID + OAuth + 邮箱密码登录 + RBAC
 - **语音转写**: DashScope ASR (Paraformer)
-- **可观测性**: LangSmith 自动追踪
+- **可观测性**: LangSmith 自动追踪 + Slow SQL 捕获
 
 ### 前端
-- **框架**: Next.js 15 (App Router)
+- **框架**: Next.js 16 (App Router)
 - **语言**: TypeScript
-- **样式**: Tailwind CSS
-- **组件库**: shadcn/ui (base-nova 风格)
-- **状态**: React Hooks
+- **3D**: Three.js / React Three Fiber (R3F)
+- **样式**: Tailwind CSS + CSS Variables
 - **图标**: Lucide React
 
 ---
@@ -404,11 +389,14 @@ python test/test_sync.py
 
 | 数据 | 存储位置 | 说明 |
 |------|---------|------|
-| 用户体系 | SQLite | users / user_oauth / user_tokens / RBAC |
-| 收藏夹列表 | SQLite | 结构化数据 |
-| 视频内容 | SQLite | ASR 文本、简介等 |
-| 向量数据 | ChromaDB | Embedding 向量 + chunk |
-| 用户会话 | SQLite | token session 持久化 |
+| 用户体系 | MySQL | users / user_oauth / user_tokens / RBAC / devices |
+| 收藏夹列表 | MySQL | 结构化数据 |
+| 视频元数据 | MySQL | 标题、简介、分P |
+| ASR 全文 | MongoDB | asr_documents 集合 |
+| 向量数据 | Milvus | Embedding 向量 + chunk metadata |
+| 聊天消息 | MongoDB | chat_messages 集合 |
+| 缓存 | Redis | Token、用户信息、Credential |
+| 题库 | MySQL | quiz_sets / quiz_answers / quiz_submissions |
 
 ---
 
@@ -445,7 +433,14 @@ MIT
 
 - [x] 分 P 视频支持与逐 P 向量化
 - [x] Agentic RAG 智能问答模式
+- [x] 用户系统 v2（Snowflake UID + OAuth + 邮箱密码 + RBAC）
+- [x] 多 Provider API Key 管理（LLM / Embedding / ASR）
+- [x] API 配置一键测试
+- [x] 设备管理与 Token 会话列表
+- [x] Milvus + MySQL + Redis + MongoDB 基础设施
 - [x] LangSmith 可观测性集成
-- [ ] 对话存储、会话管理、检索历史对话记录
-- [ ] 适配更多 LLM 与向量模型
+- [x] CI/CD（GitHub Actions lint + typecheck + Docker build）
+- [ ] Rerank 重排序提升检索精度
 - [ ] 增量同步（只处理新增/变更视频）
+- [ ] 字幕优先策略（有官方字幕时跳过 ASR）
+- [ ] Celery 异步任务队列
