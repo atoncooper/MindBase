@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytests_cache/
 
 # 虚拟环境
 venv/
@@ -37,6 +38,9 @@ env/
 .env
 .env.local
 .env.*.local
+
+# 本机配置覆盖(配置层 — 详见 plan/0020preview/0020preview-h-config.md)
+app/config/default.yaml
 
 # 数据目录
 data/
@@ -67,3 +71,4 @@ frontend/package-lock.json
 plan/
 architecture/
 CLAUDE.md
+AGENTS.md

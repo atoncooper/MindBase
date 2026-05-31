@@ -1,0 +1,303 @@
+# ============================================================
+# BiliMind — team-shared configuration override
+# ============================================================
+# This file is committed to the repository and loaded on top
+# of default.yaml. Use it to define shared, non-sensitive
+# settings for the entire team.
+#
+# Merge order (later overrides earlier):
+#   1. Pydantic field defaults
+#   2. app/config/default.yaml        ← base defaults (committed)
+#   3. app/config/config.yaml         ← this file (committed, optional)
+#   4. app/config/local.yaml          ← per-machine (git-ignored)
+#   5. Environment variables          ← highest priority; secrets ONLY
+#
+# Conventions:
+#   - Keys are lowercase, underscore-separated.
+#   - Booleans: true / false (lowercase). PyYAML StrictBoolSafeLoader
+#     is used so yes/no/on/off are NOT treated as booleans.
+#   - Secrets (api_key / password / secret / token / uri with
+#     credentials) must NEVER appear in YAML. Inject them via env
+#     vars using double-underscore notation: LLM__API_KEY → llm.api_key
+#   - Strings rarely need quoting, but values starting with special
+#     characters (*, &, !, @) or ending with a colon MUST be quoted.
+# ============================================================
+
+
+# ============================================================
+# Application metadata
+# ============================================================
+app:
+  name: bilirag
+  env: production                        # informational; real env comes from APP_ENV
+  debug: false                           # MUST be false in production
+  log_level: INFO                        # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  timezone: Asia/Shanghai
+
+
+# ============================================================
+# HTTP server
+# ============================================================
+server:
+  host: 0.0.0.0
+  port: 8000
+  workers: 4                             # match CPU cores / 2; 1 when reload is on
+  reload: false                          # only enable for development
+
+  # ----- HTTPS (direct TLS) -----------------------------------
+  # Set both fields to non-empty paths to enable TLS directly on
+  # uvicorn. If unset, the server listens on plain HTTP.
+  # Recommended approach: leave these empty and use a reverse
+  # proxy (Caddy / Nginx / cloud LB) for TLS termination.
+  ssl_certfile: ""                       # e.g. /etc/ssl/certs/bilirag.pem
+  ssl_keyfile: ""                        # e.g. /etc/ssl/private/bilirag.key
+
+  # ----- Reverse proxy ----------------------------------------
+  # When true, uvicorn trusts X-Forwarded-* headers from upstream
+  # proxies (Caddy, Nginx, AWS ALB, etc.).
+  proxy_headers: true                    # recommended for all deployments
+
+
+# ============================================================
+# Relational database (RDBMS)
+# ============================================================
+rdbms:
+  # ----- Connection string -------------------------------------
+  # Supported dialects: mysql+aiomysql, postgresql+asyncpg, sqlite+aiosqlite
+  #
+  # Development / local (uncomment one):
+  #   url: sqlite+aiosqlite:///./data/bilibili_rag.db
+  #
+  # Production MySQL (credentials injected via env RDBMS__URL):
+  url: mysql+aiomysql://127.0.0.1:3306/bilirag
+  #
+  # Production PostgreSQL:
+  #   url: postgresql+asyncpg://user:pass@host:5432/bilirag
+  #   Inject credentials via env: RDBMS__URL
+
+  # ----- Connection pool ---------------------------------------
+  echo: false                            # true = log every SQL statement (dev only)
+  pool_size: 20                          # base connections in pool
+  max_overflow: 10                       # extra connections allowed beyond pool_size
+  pool_timeout: 30                       # seconds to wait for a connection
+  pool_recycle: 1800                     # max connection lifetime (seconds)
+
+
+# ============================================================
+# ChromaDB — legacy vector database (kept for migration)
+# ============================================================
+chroma:
+  enabled: false                         # use Milvus instead
+  persist_directory: ./data/chroma_db
+
+
+# ============================================================
+# Milvus — vector database (active)
+# ============================================================
+# Start standalone: docker run -d --name milvus-standalone \
+#     -p 19530:19530 -p 9091:9091 milvusdb/milvus:v2.4.17
+milvus:
+  enabled: true
+  uri: ""                                # e.g. http://milvus-host:19530 — inject via MILVUS__URI
+  token: ""                              # auth token; inject via MILVUS__TOKEN
+  db_name: bilirag
+  collection_name: bilibili_videos
+  dimension: 1536                        # must match embedding.dimension
+  index_type: IVF_FLAT                   # IVF_FLAT | IVF_SQ8 | HNSW
+  metric_type: COSINE                    # COSINE | L2 | IP
+  nlist: 1024                            # IVF cluster count
+  nprobe: 16                             # clusters searched per query
+
+
+# ============================================================
+# MongoDB — document store
+# ============================================================
+# Collections: operation_log, chat_messages, quiz_questions,
+#   quiz_answers, quiz_submissions
+mongo:
+  enabled: true
+  uri: ""                                # mongodb://user:pass@host:27017/?authSource=admin
+                                          # inject via MONGO__URI
+  db_name: bilirag
+  max_pool_size: 100
+  min_pool_size: 10
+  server_selection_timeout_ms: 5000
+  connect_timeout_ms: 10000
+
+
+# ============================================================
+# Redis — cache, streams, distributed locks
+# ============================================================
+redis:
+  enabled: true
+  url: ""                                # redis://:password@host:6379/0
+                                          # inject via REDIS__URL
+  max_connections: 50
+  socket_timeout: 5
+  socket_connect_timeout: 5
+  health_check_interval: 30
+  key_prefix: "bilirag:"
+
+
+# ============================================================
+# MinIO / S3-compatible object storage
+# ============================================================
+minio:
+  enabled: false                         # enable when file uploads are needed
+  endpoint: http://localhost:9000
+  region: us-east-1
+  bucket: bilirag
+  secure: false                          # true = use HTTPS (requires valid cert)
+  presign_expire: 3600                   # pre-signed URL TTL (seconds)
+  # access_key via env: MINIO__ACCESS_KEY
+  # secret_key via env: MINIO__SECRET_KEY
+
+
+# ============================================================
+# Message queue — Celery + Redis Streams
+# ============================================================
+mq:
+  enabled: false                         # enable when async task workers are deployed
+  broker: redis://localhost:6379/1
+  backend: redis://localhost:6379/2
+  task_time_limit: 1800                  # hard timeout (seconds)
+  task_soft_time_limit: 1500             # soft timeout (seconds); worker gets SIGUSR1
+  task_acks_late: true                   # ack only after task completes
+  worker_prefetch: 1                     # one task per worker at a time
+  result_expires: 86400                  # result TTL in Redis (seconds)
+  stream_maxlen: 10000                   # Redis Streams max length
+  stream_block_ms: 5000                  # blocking read timeout (ms)
+  rabbitmq_url: ""                       # set to switch broker from Redis to RabbitMQ
+
+
+# ============================================================
+# LLM — language model (OpenAI-compatible protocol)
+# ============================================================
+llm:
+  provider: dashscope                    # dashscope | openai | anthropic | custom
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: qwen3-max                       # primary chat / RAG model
+  eval_model: gpt-4o-mini                # auxiliary model for quiz generation & grading
+  timeout: 60                            # API call timeout (seconds)
+  max_retries: 3                         # retries on transient failures
+  # api_key via env: LLM__API_KEY
+  # Legacy fallback env vars: DASHSCOPE_API_KEY, OPENAI_API_KEY
+
+
+# ============================================================
+# Embedding — text-to-vector model
+# ============================================================
+embedding:
+  model: text-embedding-v4               # DashScope, 1536-dimensional
+  batch_size: 100                        # texts per embedding API call
+  dimension: 1536                        # must match Milvus dimension
+  version: v1                            # bump when changing model or chunk strategy
+                                          # (triggers full re-index of existing vectors)
+
+
+# ============================================================
+# Text chunking (rule-based, semantic-aware)
+# ============================================================
+chunk:
+  target_size: 750                       # preferred chunk length (characters)
+  min_size: 300                          # minimum chunk length
+  max_size: 900                          # hard cap — will split if exceeded
+  overlap: 100                           # context overlap between adjacent chunks
+
+
+# ============================================================
+# Agentic RAG — multi-hop reasoning
+# ============================================================
+agentic:
+  top_k: 5                               # documents retrieved per hop
+  max_hops: 3                            # maximum reasoning steps
+
+
+# ============================================================
+# ASR — automatic speech recognition
+# ============================================================
+asr:
+  provider: dashscope                    # dashscope | whisper | funasr
+  base_url: https://dashscope.aliyuncs.com/api/v1
+  model: paraformer-v2                   # offline / batch model
+  model_local: paraformer-realtime-v2    # streaming / real-time model
+  input_format: pcm                      # audio format sent to ASR API
+  timeout: 600                           # per-task timeout (seconds)
+  # api_key via env: ASR__API_KEY
+  # If ASR__API_KEY is unset, falls back to LLM__API_KEY.
+
+
+# ============================================================
+# LangSmith — LLM tracing & observability
+# ============================================================
+# Requires LANGSMITH_API_KEY env var. Set enabled=false in
+# production to reduce cost / latency.
+langsmith:
+  enabled: true
+  project: bilibili-rag
+  endpoint: https://api.smith.langchain.com
+  tracing_v2: true                       # maps to LANGCHAIN_TRACING_V2
+  tracing: true                          # maps to LANGSMITH_TRACING
+  # api_key via env: LANGSMITH_API_KEY
+
+
+# ============================================================
+# Session — user authentication tokens
+# ============================================================
+session:
+  ttl_days: 30                           # token expiry
+  # secret (signing key) via env: SESSION__SECRET
+  # Generate: python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+
+# ============================================================
+# Security — encryption of stored user credentials
+# ============================================================
+# encryption_key is a 32-byte, base64-encoded key for AES-256-GCM
+# encryption of user-provided API keys stored in the database.
+#
+# WARNING: Never change this key after the first deployment.
+# Changing it will make all stored user API keys permanently
+# unreadable.
+#
+# Generate: python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
+#
+# Inject via env: SECURITY__API_KEY_ENCRYPTION_KEY
+# (legacy name API_KEY_ENCRYPTION_KEY also accepted)
+security: {}
+
+
+# ============================================================
+# Rate limiting (currently advisory — enforced by middleware)
+# ============================================================
+ratelimit:
+  chat_per_minute: 60
+  asr_per_hour: 100
+  quiz_per_day: 50
+
+
+# ============================================================
+# Slow SQL capture — query performance monitoring
+# ============================================================
+# Threshold adapts per dialect automatically:
+#   SQLite     → 100 ms
+#   PostgreSQL →  50 ms
+# Override via env: SLOW_SQL__THRESHOLD_MS
+slow_sql:
+  enabled: true
+  threshold_ms: 100
+  max_samples_per_fingerprint: 3         # deduplicate identical queries
+  retention_days: 7                      # auto-cleanup
+  log_to_console: true
+  log_to_storage: true                   # persist to DB for later analysis
+
+
+# ============================================================
+# Transaction — retry & consistency
+# ============================================================
+# retry_delay_base is the initial delay in seconds. Exponential
+# backoff doubles the delay on each retry: 0.1, 0.2, 0.4, …
+transaction:
+  max_retries: 3
+  retry_delay_base: 0.1
+  readonly_hint: false                   # set true to route reads to replicas
