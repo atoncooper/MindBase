@@ -270,8 +270,11 @@ async def _migrate_add_columns():
         # Plan 0022: widen columns for Bilibili 64-bit IDs
         ("favorite_folders", "media_id", "BIGINT NOT NULL"),
         ("favorite_folders", "fid", "BIGINT"),
-        ("video", "cid", "BIGINT"),
+        ("video", "cid", "BIGINT NOT NULL"),
         ("video_versions", "cid", "BIGINT"),
+        # Plan 0034: enforce NOT NULL for uid FKs
+        ("credential_usage", "uid", "BIGINT NOT NULL"),
+        ("chat_sessions", "uid", "BIGINT NOT NULL"),
     ]
 
     for table, column, col_def in column_mods:

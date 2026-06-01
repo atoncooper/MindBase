@@ -28,7 +28,7 @@ create table chat_sessions
     created_at      datetime     null,
     updated_at      datetime     null,
     last_message_at datetime     null,
-    uid             bigint       null,
+    uid             bigint       not null,
     constraint ix_chat_sessions_chat_session_id
         unique (chat_session_id)
 );
@@ -66,8 +66,8 @@ create table credential_usage
     completion_tokens int              null,
     total_tokens      int              null,
     api_calls         int              null,
-    created_at        datetime         null,
-    uid               bigint default 0 null
+    created_at        timestamp default CURRENT_TIMESTAMP null,
+    uid               bigint not null
 );
 
 create table favorite_folders
