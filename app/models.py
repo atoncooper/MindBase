@@ -543,3 +543,93 @@ class RbacUserRole(Base):
     user = relationship("User", back_populates="roles")
 
 
+# ==================== Cloud Drive models (Plan 0021) ====================
+
+
+class CloudFolder(Base):
+    """Cloud drive folder — uid-scoped hierarchical folder tree."""
+    __tablename__ = 'cloud_folders'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("cloud_folders.id"), nullable=True)
+    name = Column(String(200), nullable=False)
+    video_count = Column(Integer, default=0)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+
+class CloudFile(Base):
+    """Cloud drive file — uploaded media file metadata."""
+    __tablename__ = 'cloud_files'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    upload_uuid = Column(String(64), unique=True, nullable=False, index=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    folder_id = Column(Integer, ForeignKey("cloud_folders.id"), nullable=True)
+    original_name = Column(String(500), nullable=False)
+    file_size = Column(BigInteger, nullable=False)
+    mime_type = Column(String(50), nullable=False)
+    duration = Column(Integer, nullable=True)
+    bucket = Column(String(64), nullable=False)
+    object_key = Column(String(500), nullable=False)
+    etag = Column(String(64), nullable=True)
+    upload_status = Column(String(20), default="uploading")
+    asr_status = Column(String(20), default="pending")
+    vector_status = Column(String(20), default="pending")
+    vector_chunk_count = Column(Integer, default=0)
+    title = Column(String(500), nullable=True)
+    description = Column(Text, nullable=True)
+    cover_url = Column(String(500), nullable=True)
+    tags = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("upload_uuid", name="uq_cloud_files_uuid"),
+    )
+
+
+class CloudUploadChunk(Base):
+    """Cloud drive upload chunk — per-chunk tracking for resumable uploads."""
+    __tablename__ = 'cloud_upload_chunks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    upload_uuid = Column(String(64), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    chunk_size = Column(BigInteger, nullable=False)
+    minio_upload_id = Column(String(128), nullable=True)
+    upload_url = Column(Text, nullable=True)
+    upload_status = Column(String(20), default="pending")
+    etag = Column(String(64), nullable=True)
+    retry_count = Column(Integer, default=0)
+    last_heartbeat = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("upload_uuid", "chunk_index", name="uq_cloud_chunks"),
+    )
+
+
+class CloudUploadSession(Base):
+    """Cloud drive upload session — one session groups multiple file uploads."""
+    __tablename__ = 'cloud_upload_sessions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_uuid = Column(String(64), unique=True, nullable=False)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    minio_upload_id = Column(String(128), nullable=True)
+    total_files = Column(Integer, default=1)
+    completed_files = Column(Integer, default=0)
+    status = Column(String(20), default="active")
+    last_heartbeat = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("session_uuid", name="uq_upload_session"),
+    )

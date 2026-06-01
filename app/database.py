@@ -200,6 +200,89 @@ async def _migrate_add_columns():
                 FOREIGN KEY (uid) REFERENCES users(uid)
             )""",
         ),
+        # Plan 0021: Cloud Drive — folder tree
+        (
+            "cloud_folders",
+            """CREATE TABLE IF NOT EXISTS cloud_folders (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                uid BIGINT NOT NULL,
+                parent_id INT,
+                name VARCHAR(200) NOT NULL,
+                video_count INT DEFAULT 0,
+                sort_order INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TIMESTAMP,
+                FOREIGN KEY (uid) REFERENCES users(uid),
+                FOREIGN KEY (parent_id) REFERENCES cloud_folders(id)
+            )""",
+        ),
+        # Plan 0021: Cloud Drive — uploaded file metadata
+        (
+            "cloud_files",
+            """CREATE TABLE IF NOT EXISTS cloud_files (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                upload_uuid VARCHAR(64) NOT NULL UNIQUE,
+                uid BIGINT NOT NULL,
+                folder_id INT,
+                original_name VARCHAR(500) NOT NULL,
+                file_size BIGINT NOT NULL,
+                mime_type VARCHAR(50) NOT NULL,
+                duration INT,
+                bucket VARCHAR(64) NOT NULL,
+                object_key VARCHAR(500) NOT NULL,
+                etag VARCHAR(64),
+                upload_status VARCHAR(20) DEFAULT 'uploading',
+                asr_status VARCHAR(20) DEFAULT 'pending',
+                vector_status VARCHAR(20) DEFAULT 'pending',
+                vector_chunk_count INT DEFAULT 0,
+                title VARCHAR(500),
+                description TEXT,
+                cover_url VARCHAR(500),
+                tags JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TIMESTAMP,
+                FOREIGN KEY (uid) REFERENCES users(uid),
+                FOREIGN KEY (folder_id) REFERENCES cloud_folders(id)
+            )""",
+        ),
+        # Plan 0021: Cloud Drive — resumable upload chunk tracking
+        (
+            "cloud_upload_chunks",
+            """CREATE TABLE IF NOT EXISTS cloud_upload_chunks (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                upload_uuid VARCHAR(64) NOT NULL,
+                chunk_index INT NOT NULL,
+                chunk_size BIGINT NOT NULL,
+                minio_upload_id VARCHAR(128),
+                upload_url TEXT,
+                upload_status VARCHAR(20) DEFAULT 'pending',
+                etag VARCHAR(64),
+                retry_count INT DEFAULT 0,
+                last_heartbeat TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (upload_uuid, chunk_index)
+            )""",
+        ),
+        # Plan 0021: Cloud Drive — upload session grouping
+        (
+            "cloud_upload_sessions",
+            """CREATE TABLE IF NOT EXISTS cloud_upload_sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                session_uuid VARCHAR(64) NOT NULL UNIQUE,
+                uid BIGINT NOT NULL,
+                minio_upload_id VARCHAR(128),
+                total_files INT DEFAULT 1,
+                completed_files INT DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'active',
+                last_heartbeat TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (uid) REFERENCES users(uid)
+            )""",
+        ),
     ]
 
     # Tables that need schema recreation (DROP + CREATE) because the old schema

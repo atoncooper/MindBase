@@ -470,3 +470,106 @@ create table video_versions
 create index ix_video_versions_bvid
     on video_versions (bvid);
 
+create table cloud_folders
+(
+    id         int auto_increment
+        primary key,
+    uid        bigint       not null,
+    parent_id  int          null,
+    name       varchar(200) not null,
+    video_count int         null,
+    sort_order int          null,
+    created_at datetime     null,
+    updated_at datetime     null,
+    deleted_at datetime     null,
+    constraint cloud_folders_ibfk_1
+        foreign key (uid) references users (uid),
+    constraint cloud_folders_ibfk_2
+        foreign key (parent_id) references cloud_folders (id)
+);
+
+create index ix_cloud_folders_uid
+    on cloud_folders (uid);
+
+create table cloud_files
+(
+    id                 int auto_increment
+        primary key,
+    upload_uuid        varchar(64)  not null,
+    uid                bigint       not null,
+    folder_id          int          null,
+    original_name      varchar(500) not null,
+    file_size          bigint       not null,
+    mime_type          varchar(50)  not null,
+    duration           int          null,
+    bucket             varchar(64)  not null,
+    object_key         varchar(500) not null,
+    etag               varchar(64)  null,
+    upload_status      varchar(20)  null,
+    asr_status         varchar(20)  null,
+    vector_status      varchar(20)  null,
+    vector_chunk_count int          null,
+    title              varchar(500) null,
+    description        text         null,
+    cover_url          varchar(500) null,
+    tags               json         null,
+    created_at         datetime     null,
+    updated_at         datetime     null,
+    deleted_at         datetime     null,
+    constraint uq_cloud_files_uuid
+        unique (upload_uuid),
+    constraint cloud_files_ibfk_1
+        foreign key (uid) references users (uid),
+    constraint cloud_files_ibfk_2
+        foreign key (folder_id) references cloud_folders (id)
+);
+
+create index ix_cloud_files_uid
+    on cloud_files (uid);
+
+create index ix_cloud_files_upload_uuid
+    on cloud_files (upload_uuid);
+
+create table cloud_upload_chunks
+(
+    id              int auto_increment
+        primary key,
+    upload_uuid     varchar(64)  not null,
+    chunk_index     int          not null,
+    chunk_size      bigint       not null,
+    minio_upload_id varchar(128) null,
+    upload_url      text         null,
+    upload_status   varchar(20)  null,
+    etag            varchar(64)  null,
+    retry_count     int          null,
+    last_heartbeat  datetime     null,
+    created_at      datetime     null,
+    updated_at      datetime     null,
+    constraint uq_cloud_chunks
+        unique (upload_uuid, chunk_index)
+);
+
+create index ix_cloud_upload_chunks_upload_uuid
+    on cloud_upload_chunks (upload_uuid);
+
+create table cloud_upload_sessions
+(
+    id              int auto_increment
+        primary key,
+    session_uuid    varchar(64)  not null,
+    uid             bigint       not null,
+    minio_upload_id varchar(128) null,
+    total_files     int          null,
+    completed_files int          null,
+    status          varchar(20)  null,
+    last_heartbeat  datetime     null,
+    created_at      datetime     null,
+    updated_at      datetime     null,
+    constraint uq_upload_session
+        unique (session_uuid),
+    constraint cloud_upload_sessions_ibfk_1
+        foreign key (uid) references users (uid)
+);
+
+create index ix_cloud_upload_sessions_uid
+    on cloud_upload_sessions (uid);
