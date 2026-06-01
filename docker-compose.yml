@@ -13,6 +13,7 @@ services:
 
   backend:
     profiles: ["", "standalone", "storage", "full"]
+    image: ${BACKEND_IMAGE:-ghcr.io/atoncooper/bilirag-backend:latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -75,6 +76,7 @@ services:
 
   frontend:
     profiles: ["", "standalone", "storage", "full"]
+    image: ${FRONTEND_IMAGE:-ghcr.io/atoncooper/bilirag-frontend:latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
