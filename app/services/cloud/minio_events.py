@@ -12,8 +12,6 @@ from typing import Any, Optional
 
 from loguru import logger
 
-import asyncio
-
 from app.database import get_db_context
 from app.infra.redis import is_enabled as redis_enabled, pubsub
 from app.repository.cloud.file_repository import get_cloud_file_repository
@@ -27,8 +25,6 @@ CHANNEL: str = "minio:events:clouddrive"
 # ---------------------------------------------------------------------------
 # Event listener
 # ---------------------------------------------------------------------------
-
-
 async def start_minio_event_listener() -> None:
     """Subscribe to Redis channel ``minio:events:clouddrive`` and process
     MinIO bucket events.
@@ -70,13 +66,9 @@ async def start_minio_event_listener() -> None:
         logger.info("[CLOUD_EVENTS] listener cancelled")
     except Exception:
         logger.exception("[CLOUD_EVENTS] listener crashed")
-
-
 # ---------------------------------------------------------------------------
 # Event dispatch
 # ---------------------------------------------------------------------------
-
-
 async def _handle_minio_event(event: dict[str, Any]) -> None:
     """Route a MinIO event to the appropriate handler."""
     event_name = event.get("EventName", "")
@@ -103,13 +95,9 @@ async def _handle_minio_event(event: dict[str, Any]) -> None:
         logger.debug(
             "[CLOUD_EVENTS] unhandled event type event=%s", event_name,
         )
-
-
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
-
-
 async def _on_complete_multipart(object_key: str) -> None:
     """Handle a completed multipart upload event from MinIO.
 
@@ -152,8 +140,6 @@ async def _on_complete_multipart(object_key: str) -> None:
             "[CLOUD_EVENTS] failed to handle complete event upload_uuid=%s",
             upload_uuid,
         )
-
-
 async def _trigger_pipeline_for(upload_uuid: str) -> None:
     """Background task: trigger ASR + vector pipeline for an upload."""
     try:
@@ -168,8 +154,6 @@ async def _trigger_pipeline_for(upload_uuid: str) -> None:
         logger.exception(
             "[CLOUD_EVENTS] pipeline failed upload_uuid=%s", upload_uuid,
         )
-
-
 def _parse_upload_uuid(object_key: str) -> Optional[str]:
     """Extract *upload_uuid* from an object key like ``123/abc-def/video.mp4``."""
     parts = object_key.strip("/").split("/")

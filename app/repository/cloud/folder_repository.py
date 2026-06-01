@@ -5,7 +5,7 @@ CloudFolder CRUD repository — typed operations for cloud_folders table.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, func, update as sa_update
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 

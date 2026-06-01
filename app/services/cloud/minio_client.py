@@ -15,7 +15,7 @@ from app.infra.config import config
 
 
 _MINIO_AVAILABLE: bool | None = None  # tri-state: None = not checked yet
-_MINIO_CLIENT: Optional["Minio"] = None
+_MINIO_CLIENT: Optional[object] = None  # minio.Minio instance (lazy-imported)
 
 
 def _check_minio_import() -> bool:
@@ -52,14 +52,14 @@ class MinioClient:
     """
 
     def __init__(self) -> None:
-        self._client: Optional["Minio"] = None
+        self._client: Optional[object] = None
         self._initialised = False
 
     # ------------------------------------------------------------------
     # internal init
     # ------------------------------------------------------------------
 
-    def _ensure_client(self) -> "Minio":
+    def _ensure_client(self) -> object:  # returns minio.Minio instance
         """Return the underlying Minio SDK client, creating it on first access."""
         if self._client is not None:
             return self._client
