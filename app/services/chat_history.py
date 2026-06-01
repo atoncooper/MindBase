@@ -21,7 +21,7 @@ Lifecycle of a message round-trip
 6. ``delete_chat_session()``     — delete session + all messages
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from loguru import logger
@@ -97,12 +97,13 @@ async def list_chat_sessions(
     sessions = result.scalars().all()
 
     valid = []
+    grace_cutoff = datetime.utcnow() - timedelta(minutes=5)
     for s in sessions:
         has_msgs = await mongo_chat.session_has_messages(s.chat_session_id)
-        if not has_msgs:
+        if not has_msgs and s.created_at and s.created_at < grace_cutoff:
             s.status = "deleted"
             await db.commit()
-            logger.info(f"[CHAT_HISTORY] auto-cleaned session {s.chat_session_id}: no messages in MongoDB")
+            logger.info(f"[CHAT_HISTORY] auto-cleaned stale session {s.chat_session_id}: no messages in MongoDB")
             continue
         valid.append(ChatSessionResponse.model_validate(s))
 
