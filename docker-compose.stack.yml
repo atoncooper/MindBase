@@ -1,97 +1,114 @@
 # ================================================================
-# Bilibili RAG — full-stack development / deployment
+# Bilibili RAG — Docker Swarm Stack (rolling update production)
 # ================================================================
-# App only (external DB): docker compose --profile standalone up -d
-# App + infra:             docker compose up -d
-# App + infra + Milvus:    docker compose --profile storage up -d
-# Everything:              docker compose --profile full up -d
+# Build images first, then deploy:
+#   docker compose -f docker-compose.yml build
+#   docker tag bilibili-rag-backend  registry.example.com/bilirag-backend:v1
+#   docker tag bilibili-rag-frontend registry.example.com/bilirag-frontend:v1
+#   docker push ...
+#
+# Deploy to Swarm:
+#   docker stack deploy -c docker-compose.stack.yml bilirag
+#
+# Rolling update:
+#   docker service update --image registry.example.com/bilirag-backend:v2 bilirag_backend
+#
+# Rollback:
+#   docker service rollback bilirag_backend
 
 services:
   # ==============================================================
-  # Application
+  # Application — rolling update
   # ==============================================================
 
   backend:
-    profiles: ["", "standalone", "storage", "full"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: bilirag-backend
-    ports:
-      - "${APP_PORT:-8000}:8000"
-    volumes:
-      - backend_data:/app/data
-      - backend_logs:/app/logs
-    env_file:
-      - .env
+    image: ${BACKEND_IMAGE:-bilirag-backend:latest}
     environment:
-      # App
-      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_DEBUG=false
       - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
-      # RDBMS — override via .env for external DB
       - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://bilirag:bilirag@mysql:3306/bilirag}
-      # Milvus — override via .env for external Milvus
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - MILVUS__TOKEN=${MILVUS__TOKEN:-}
-      # MongoDB — override via .env for external Mongo
       - MONGO__URI=${MONGO__URI:-mongodb://admin:bilirag@mongo:27017/?authSource=admin}
-      # Redis — override via .env for external Redis
       - REDIS__URL=${REDIS__URL:-redis://:bilirag@redis:6379/1}
-      # LLM
       - LLM__API_KEY=${LLM_API_KEY}
       - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - LLM__MODEL=${LLM_MODEL:-qwen3-max}
-      # Embedding
       - EMBEDDING__MODEL=${EMBEDDING_MODEL:-text-embedding-v4}
       - EMBEDDING__DIMENSION=${EMBEDDING_DIMENSION:-1536}
-      # ASR
       - ASR__API_KEY=${ASR_API_KEY:-}
       - ASR__BASE_URL=${ASR_BASE_URL:-https://dashscope.aliyuncs.com/api/v1}
       - ASR__MODEL=${ASR_MODEL:-paraformer-v2}
-      # LangSmith
       - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-bilibili-rag}
-      # Session
       - SESSION__SECRET=${SESSION_SECRET}
-      # Security
       - SECURITY__API_KEY_ENCRYPTION_KEY=${API_KEY_ENCRYPTION_KEY}
+    volumes:
+      - backend_data:/app/data
+      - backend_logs:/app/logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
-    restart: unless-stopped
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-2}
+      update_config:
+        parallelism: 1           # replace 1 replica at a time
+        delay: 10s               # wait 10s between batches
+        failure_action: rollback # auto-rollback on failure
+        monitor: 30s             # monitor new replica for 30s
+        order: start-first       # start new before stopping old (zero-downtime)
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        failure_action: pause
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
     networks:
       - bilirag-net
 
   frontend:
-    profiles: ["", "standalone", "storage", "full"]
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: bilirag-frontend
-    # Port exposed only for direct debugging; in production nginx handles all traffic
-    # ports:
-    #   - "3000:3000"
+    image: ${FRONTEND_IMAGE:-bilirag-frontend:latest}
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: ${FRONTEND_REPLICAS:-2}
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        failure_action: pause
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
     networks:
       - bilirag-net
 
   # ==============================================================
-  # Reverse Proxy (Nginx) — SSL termination + routing
+  # Reverse Proxy
   # ==============================================================
 
   nginx:
-    profiles: ["", "standalone", "storage", "full"]
     image: nginx:alpine
-    container_name: bilirag-nginx
     ports:
       - "80:80"
       - "443:443"
@@ -99,24 +116,31 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
-    depends_on:
-      frontend:
-        condition: service_started
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 5s
+        failure_action: rollback
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
     networks:
       - bilirag-net
 
   # ==============================================================
-  # Infrastructure
+  # Infrastructure — stateful (no rolling update, single replica)
   # ==============================================================
 
   mysql:
     image: mysql:8.4
-    container_name: bilirag-mysql
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
       - MYSQL_DATABASE=bilirag
@@ -125,20 +149,24 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./app/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
     networks:
       - bilirag-net
 
   redis:
     image: redis:7-alpine
-    container_name: bilirag-redis
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD:-bilirag}
@@ -148,42 +176,48 @@ services:
       --save 300 10
     volumes:
       - redis_data:/data
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-bilirag}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
     networks:
       - bilirag-net
 
   mongo:
     image: mongo:7
-    container_name: bilirag-mongo
-    ports:
-      - "${MONGO_PORT:-27017}:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-bilirag}
     volumes:
       - mongo_data:/data/db
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
     networks:
       - bilirag-net
 
   milvus:
     image: milvusdb/milvus:v2.4.17
-    container_name: bilirag-milvus
-    profiles: ["storage", "full"]
     command: milvus run standalone
-    ports:
-      - "${MILVUS_PORT:-19530}:19530"
-      - "${MILVUS_GRPC_PORT:-9091}:9091"
     environment:
       - ETCD_ENDPOINTS=etcd:2379
       - MINIO_ADDRESS=minio:9000
@@ -191,19 +225,23 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
     volumes:
       - milvus_data:/var/lib/milvus
-    restart: unless-stopped
-    depends_on:
-      etcd:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
     networks:
       - bilirag-net
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
-    container_name: bilirag-etcd
-    profiles: ["storage", "full"]
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -216,64 +254,39 @@ services:
       -data-dir=/etcd
     volumes:
       - etcd_data:/etcd
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
     networks:
       - bilirag-net
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    container_name: bilirag-minio
-    profiles: ["storage", "full"]
-    ports:
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - bilirag-net
-
-  # ==============================================================
-  # Optional tools
-  # ==============================================================
-
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: bilirag-redis-ui
-    profiles: ["tools", "full"]
-    ports:
-      - "${REDIS_UI_PORT:-8081}:8081"
-    environment:
-      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-bilirag}
-    restart: unless-stopped
-    networks:
-      - bilirag-net
-
-  mongo-express:
-    image: mongo-express:latest
-    container_name: bilirag-mongo-ui
-    profiles: ["tools", "full"]
-    ports:
-      - "${MONGO_UI_PORT:-8082}:8081"
-    environment:
-      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_USER:-admin}
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASSWORD:-bilirag}
-      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-bilirag}@mongo:27017/
-      - ME_CONFIG_BASICAUTH=false
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
     networks:
       - bilirag-net
 
@@ -290,4 +303,5 @@ volumes:
 
 networks:
   bilirag-net:
-    driver: bridge
+    driver: overlay
+    attachable: true
