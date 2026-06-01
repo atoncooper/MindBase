@@ -64,14 +64,14 @@ class VideoService:
                          "page_title": p.get("part", ""), "duration": p.get("duration", 0)}
                         for p in pages_raw
                     ]
-                    await self._repo.upsert_pages(bvid, 0, pages, db)
+                    await self._repo.upsert_pages(bvid, pages, db)
                     logger.info(f"[VideoService] stored {len(pages)} pages for bvid={bvid}")
                 else:
                     cid = video_info.get("cid") or 0
                     pages = [{"cid": cid, "page_index": 0,
                               "page_title": video_info.get("title", ""),
                               "duration": video_info.get("duration", 0)}]
-                    await self._repo.upsert_pages(bvid, 0, pages, db)
+                    await self._repo.upsert_pages(bvid, pages, db)
 
             return await self._repo.list_by_bvid(bvid, db)
 

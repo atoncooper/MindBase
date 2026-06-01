@@ -31,7 +31,6 @@ class VideoRepository:
     async def upsert_pages(
         self,
         bvid: str,
-        video_id: int,
         pages: list[dict],   # [{"cid": int, "page_index": int, "page_title": str, "duration": int}, ...]
         db: AsyncSession,
     ) -> int:
@@ -44,7 +43,6 @@ class VideoRepository:
         datetime.utcnow()
         for p in pages:
             db.add(Video(
-                video_id=video_id,
                 bvid=bvid,
                 cid=p["cid"],
                 page_index=p["page_index"],
