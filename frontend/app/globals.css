@@ -2121,6 +2121,29 @@ body {
   backdrop-filter: blur(4px);
 }
 
+/* 3D 轨道节点悬浮标签 */
+.orbit-node-label {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #e2e8f0;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 8px rgba(6, 182, 212, 0.3);
+}
+html:not(.dark) .orbit-node-label {
+  background: rgba(255, 255, 255, 0.88);
+  color: #1a1a2e;
+  border-color: rgba(6, 182, 212, 0.5);
+  text-shadow: none;
+}
+
 /* Dock 面板动画包装器 */
 .dock-panel-wrapper {
   will-change: transform, opacity;

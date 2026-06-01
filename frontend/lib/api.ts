@@ -1368,3 +1368,297 @@ export function getTaskTypeLabel(type: string): string {
 export function getTaskStatusLabel(status: string): string {
     return { pending: "等待中", processing: "处理中", done: "已完成", failed: "失败" }[status] ?? status;
 }
+
+// ==================== 云盘 (Cloud Drive) ====================
+
+export interface CloudFolderTreeItem {
+    id: number;
+    parentId: number | null;
+    name: string;
+    videoCount: number;
+    children: CloudFolderTreeItem[];
+}
+
+export interface CloudFolderTreeResponse {
+    folders: CloudFolderTreeItem[];
+}
+
+export interface CloudFolderResponse {
+    id: number;
+    parentId: number | null;
+    name: string;
+    videoCount: number;
+}
+
+export interface CloudFolderCreateParams {
+    parentId?: number | null;
+    name: string;
+}
+
+export interface CloudFolderUpdateParams {
+    name?: string;
+    parentId?: number | null;
+}
+
+export interface CloudFolderDeleteResponse {
+    deleted: boolean;
+    affectedFiles: number;
+}
+
+export interface CloudVideoItem {
+    uploadUuid: string;
+    originalName: string;
+    fileSize: number;
+    duration: number | null;
+    asrStatus: string;
+    vectorStatus: string;
+    title: string | null;
+    coverUrl: string | null;
+    createdAt: string;
+}
+
+export interface CloudVideoListResponse {
+    videos: CloudVideoItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+}
+
+export interface CloudVideoDetailResponse {
+    uploadUuid: string;
+    originalName: string;
+    fileSize: number;
+    duration: number | null;
+    asrStatus: string;
+    vectorStatus: string;
+    title: string | null;
+    coverUrl: string | null;
+    createdAt: string;
+    description: string | null;
+    tags: string[] | null;
+    folderId: number | null;
+    folderName: string | null;
+    asrPreview: string | null;
+    vectorChunkCount: number;
+}
+
+export interface CloudVideoUpdateParams {
+    title?: string;
+    description?: string;
+    tags?: string[];
+    folderId?: number | null;
+}
+
+export interface CloudUploadPart {
+    PartNumber: number;
+    ETag: string;
+}
+
+export interface CloudUploadInitParams {
+    filename: string;
+    fileSize: number;
+    mimeType: string;
+    folderId?: number | null;
+}
+
+export interface CloudPresignedUrlItem {
+    chunkIndex: number;
+    chunkSize: number;
+    url: string;
+}
+
+export interface CloudUploadInitResponse {
+    uploadUuid: string;
+    sessionUuid: string;
+    minioUploadId: string;
+    chunkCount: number;
+    chunkSize: number;
+    presignedUrls: CloudPresignedUrlItem[];
+}
+
+export interface CloudUploadCompleteResponse {
+    uploadUuid: string;
+    status: string;
+    fileUrl: string;
+}
+
+export interface CloudResumeChunk {
+    chunkIndex: number;
+    chunkSize: number;
+    url: string;
+}
+
+export interface CloudResumeResponse {
+    uploadUuid: string;
+    minioUploadId: string;
+    pendingChunks: CloudResumeChunk[];
+}
+
+export interface CloudVideoProcessResponse {
+    uploadUuid: string;
+    asrTaskId?: string | null;
+    vectorTaskId?: string | null;
+}
+
+export interface CloudVideoStatusResponse {
+    asrStatus: string;
+    asrProgress: number;
+    vectorStatus: string;
+    vectorChunkCount: number;
+}
+
+function formatBytes(bytes: number): string {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+export { formatBytes };
+
+const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk
+
+export const cloudApi = {
+    // ── Folders ──
+    listFolders: () =>
+        request<CloudFolderTreeResponse>("/cloud/folders", {
+            headers: getAuthHeaders(),
+        }),
+
+    createFolder: (data: CloudFolderCreateParams) =>
+        request<CloudFolderResponse>("/cloud/folders", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    updateFolder: (id: number, data: CloudFolderUpdateParams) =>
+        request<CloudFolderResponse>(`/cloud/folders/${id}`, {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    deleteFolder: (id: number, force = false) =>
+        request<CloudFolderDeleteResponse>(`/cloud/folders/${id}?force=${force}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    // ── Videos ──
+    listVideos: (folderId?: number | null, page = 1, pageSize = 50, sort = "created_at", order = "desc") => {
+        let url = `/cloud/videos?page=${page}&pageSize=${pageSize}&sort=${sort}&order=${order}`;
+        if (folderId != null) url += `&folderId=${folderId}`;
+        return request<CloudVideoListResponse>(url, { headers: getAuthHeaders() });
+    },
+
+    getVideoDetail: (uploadUuid: string) =>
+        request<CloudVideoDetailResponse>(`/cloud/video/${uploadUuid}`, {
+            headers: getAuthHeaders(),
+        }),
+
+    updateVideo: (uploadUuid: string, data: CloudVideoUpdateParams) =>
+        request<CloudVideoDetailResponse>(`/cloud/video/${uploadUuid}`, {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    deleteVideo: (uploadUuid: string) =>
+        request<{ deleted: boolean; uploadUuid: string }>(`/cloud/video/${uploadUuid}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    // ── Upload ──
+    initUpload: (data: CloudUploadInitParams) =>
+        request<CloudUploadInitResponse>("/cloud/upload/init", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    completeUpload: (uploadUuid: string, parts: CloudUploadPart[]) =>
+        request<CloudUploadCompleteResponse>(`/cloud/upload/${uploadUuid}/complete`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ parts }),
+        }),
+
+    heartbeat: (sessionUuid: string) =>
+        request<{ ack: boolean }>("/cloud/upload/heartbeat", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ sessionUuid }),
+        }),
+
+    resumeUpload: (uploadUuid: string) =>
+        request<CloudResumeResponse>(`/cloud/upload/${uploadUuid}/resume`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    // ── Processing ──
+    triggerProcess: (uploadUuid: string) =>
+        request<CloudVideoProcessResponse>(`/cloud/video/${uploadUuid}/process`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    getVideoStatus: (uploadUuid: string) =>
+        request<CloudVideoStatusResponse>(`/cloud/video/${uploadUuid}/status`, {
+            headers: getAuthHeaders(),
+        }),
+
+    // ── Helper: chunked upload ──
+    /** Upload a file to the cloud drive with chunked multipart upload */
+    uploadFile: async (
+        file: File,
+        folderId: number | null,
+        onProgress?: (pct: number) => void,
+    ): Promise<CloudUploadCompleteResponse> => {
+        // 1. Init
+        const init = await cloudApi.initUpload({
+            filename: file.name,
+            fileSize: file.size,
+            mimeType: file.type || "application/octet-stream",
+            folderId,
+        });
+
+        // 2. Upload each chunk with presigned URLs
+        const parts: CloudUploadPart[] = [];
+        const heartbeatInterval = setInterval(() => {
+            cloudApi.heartbeat(init.sessionUuid).catch(() => {});
+        }, 60_000);
+
+        try {
+            for (const chunk of init.presignedUrls) {
+                const start = chunk.chunkIndex * init.chunkSize;
+                const end = Math.min(start + chunk.chunkSize, file.size);
+                const blob = file.slice(start, end);
+
+                const res = await fetch(chunk.url, {
+                    method: "PUT",
+                    body: blob,
+                });
+
+                if (!res.ok) {
+                    throw new Error(`Chunk ${chunk.chunkIndex} upload failed: ${res.status}`);
+                }
+
+                const etag = res.headers.get("ETag") ?? "";
+                parts.push({ PartNumber: chunk.chunkIndex + 1, ETag: etag });
+
+                const pct = Math.round(((chunk.chunkIndex + 1) / init.presignedUrls.length) * 100);
+                onProgress?.(pct);
+            }
+        } finally {
+            clearInterval(heartbeatInterval);
+        }
+
+        // 3. Complete
+        return cloudApi.completeUpload(init.uploadUuid, parts);
+    },
+};

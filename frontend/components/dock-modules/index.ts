@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, FolderHeart, MessageCircle, MessageSquareText, Settings, User, Activity } from "lucide-react";
+import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, Settings, User, Activity } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
 import ChatPanel from "@/components/ChatPanel";
 import FavoritesPanel from "./favorites";
@@ -8,6 +8,7 @@ import AccountPanel from "./account";
 import TasksPanel from "./tasks";
 import BillingPanel from "./billing";
 import QuizPanel from "./quiz";
+import CloudDrivePanel from "./cloud-drive";
 
 export const dockModules: DockModule[] = [
   {
@@ -37,6 +38,13 @@ export const dockModules: DockModule[] = [
     title: "收藏夹",
     panel: FavoritesPanel,
     defaultSize: { width: 570, height: 600 },
+  },
+  {
+    id: "cloud-drive",
+    icon: Cloud,
+    title: "云盘",
+    panel: CloudDrivePanel,
+    defaultSize: { width: 900, height: 640 },
   },
   {
     id: "settings",

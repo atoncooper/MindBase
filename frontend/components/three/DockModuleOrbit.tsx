@@ -2,6 +2,7 @@
 
 import { useRef, useMemo, useState } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import type { DockModule } from "@/lib/dock-registry";
 
@@ -128,13 +129,18 @@ export default function DockModuleOrbit({
         return (
           <group key={mod.id} position={nodePositions[i]}>
             <DockOrbitNode
-              geometry={GEO_KEYS[i]}
+              geometry={GEO_KEYS[i % GEO_KEYS.length]}
               active={active}
               mainColor={mainColor}
               brightColor={brightColor}
               onClick={() => onTogglePanel(mod.id)}
               onHover={(h) => setHoveredId(h ? mod.id : null)}
             />
+            {hoveredId === mod.id && (
+              <Html position={[0, 0.65, 0]} center distanceFactor={8} style={{ pointerEvents: "none" }}>
+                <span className="orbit-node-label">{mod.title}</span>
+              </Html>
+            )}
 
           </group>
         );
