@@ -42,3 +42,6 @@ loguru==0.7.2
 
 # System dependency (install separately or via apt)
 # ffmpeg — installed in Dockerfile
+
+# Plan 0021: MinIO client for cloud drive
+minio>=7.2.0

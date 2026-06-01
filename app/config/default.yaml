@@ -100,7 +100,7 @@ minio:
   enabled: false
   endpoint: http://localhost:9000
   region: us-east-1
-  bucket: bilirag
+  bucket: drive-videos
   secure: false                       # set true in production (HTTPS)
   presign_expire: 3600
   # access_key / secret_key via env: MINIO__ACCESS_KEY, MINIO__SECRET_KEY

@@ -169,6 +169,16 @@ async def lifespan(app: FastAPI):
     # LangSmith 追踪诊断
     diagnose_langsmith()
 
+    # Plan 0021: Cloud drive initialization
+    from app.infra.config import config as _cfg
+    if _cfg.minio.enabled:
+        try:
+            from app.services.cloud.minio_client import get_minio_client
+            await get_minio_client().ensure_bucket()
+            logger.info("[MAIN] MinIO bucket ensured")
+        except Exception as e:
+            logger.warning(f"[MAIN] MinIO init failed (cloud drive disabled): {e}")
+
     # 初始化 ApiKeyManager（用户自定义 API Key 加密服务）
     from app.services.llm.api_key_manager import ApiKeyManager
     app.state.api_key_manager = ApiKeyManager(
@@ -310,6 +320,14 @@ app.include_router(credentials_router)
 app.include_router(billing_router)
 app.include_router(quiz_router)
 app.include_router(tasks_ws_router)
+
+# Plan 0021: Cloud drive router (with graceful degradation)
+try:
+    from app.routers.cloud import router as cloud_router
+    app.include_router(cloud_router)
+    logger.info("[MAIN] Cloud drive router registered")
+except ImportError as e:
+    logger.info(f"[MAIN] Cloud drive router not available: {e}")
 
 
 @app.get("/")

@@ -55,6 +55,14 @@ services:
       - SESSION__SECRET=${SESSION_SECRET}
       # Security
       - SECURITY__API_KEY_ENCRYPTION_KEY=${API_KEY_ENCRYPTION_KEY}
+      # Plan 0021: MinIO object storage
+      - MINIO__ENABLED=${MINIO__ENABLED:-true}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - MINIO__REGION=${MINIO_REGION:-us-east-1}
+      - MINIO__SECURE=${MINIO_SECURE:-false}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
@@ -99,6 +107,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
+      - nginx_video_cache:/var/cache/nginx/video   # Plan 0021
     depends_on:
       frontend:
         condition: service_started
@@ -142,6 +151,7 @@ services:
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD:-bilirag}
+      --notify-keyspace-events Ex
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --save 900 1
@@ -234,6 +244,14 @@ services:
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      # Plan 0021: Redis event notification + abandoned upload cleanup
+      - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-bilirag}
+      - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
+      - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
+      - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
@@ -287,6 +305,7 @@ volumes:
   etcd_data:
   minio_data:
   certbot_www:
+  nginx_video_cache:       # Plan 0021: video streaming cache
 
 networks:
   bilirag-net:
