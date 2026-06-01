@@ -128,13 +128,16 @@ class FavoriteService:
             if attr == 9 or title in ("已失效视频", "已删除视频"):
                 continue
 
+            upper = media.get("upper") or {}
             db.add(Collection(
                 media_id=media_id,
                 bvid=bvid,
                 title=title,
                 cover=media.get("cover"),
                 duration=media.get("duration"),
-                owner_name=(media.get("upper") or {}).get("name"),
+                owner_name=upper.get("name"),
+                owner_mid=upper.get("mid"),
+                description=media.get("intro"),
                 cid=(media.get("ugc") or {}).get("first_cid") if media.get("ugc") else None,
             ))
             added += 1

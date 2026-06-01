@@ -1,20 +1,20 @@
 """
-FavoriteFolder + FavoriteVideo CRUD repository.
+FavoriteFolder CRUD repository.
 """
 
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import FavoriteFolder, FavoriteVideo
+from app.models import FavoriteFolder
 
 _ALIVE = FavoriteFolder.deleted_at == None  # noqa: E711
 
 
 class FavoriteRepository:
-    """Persistence operations for favorite_folders and favorite_videos."""
+    """Persistence operations for favorite_folders."""
 
     # ── FavoriteFolder ──────────────────────────────────────────
 
@@ -90,140 +90,6 @@ class FavoriteRepository:
         )
         await db.commit()
         return result.rowcount > 0
-
-    # ── FavoriteVideo ───────────────────────────────────────────
-
-    async def list_videos_by_folder(
-        self, folder_id: int, db: AsyncSession
-    ) -> list[FavoriteVideo]:
-        result = await db.execute(
-            select(FavoriteVideo).where(FavoriteVideo.folder_id == folder_id)
-        )
-        return list(result.scalars().all())
-
-    async def upsert_video(
-        self,
-        folder_id: int,
-        video_id: int,
-        bvid: str,
-        db: AsyncSession,
-    ) -> FavoriteVideo:
-        result = await db.execute(
-            select(FavoriteVideo).where(
-                FavoriteVideo.folder_id == folder_id,
-                FavoriteVideo.video_id == video_id,
-            )
-        )
-        existing = result.scalar_one_or_none()
-        if existing:
-            existing.is_selected = True
-            await db.commit()
-            await db.refresh(existing)
-            return existing
-
-        fv = FavoriteVideo(
-            folder_id=folder_id,
-            video_id=video_id,
-            bvid=bvid,
-            is_selected=True,
-        )
-        db.add(fv)
-        await db.commit()
-        await db.refresh(fv)
-        return fv
-
-    async def bulk_upsert_videos(
-        self,
-        folder_id: int,
-        videos: list[dict],  # [{"video_id": int, "bvid": str}, ...]
-        db: AsyncSession,
-    ) -> int:
-        """Upsert a batch of video links; returns count of newly added rows."""
-        existing_result = await db.execute(
-            select(FavoriteVideo.video_id).where(
-                FavoriteVideo.folder_id == folder_id
-            )
-        )
-        existing_ids = {row[0] for row in existing_result.all()}
-
-        added = 0
-        for v in videos:
-            vid = v["video_id"]
-            bvid = v["bvid"]
-            if vid not in existing_ids:
-                db.add(FavoriteVideo(
-                    folder_id=folder_id,
-                    video_id=vid,
-                    bvid=bvid,
-                    is_selected=True,
-                ))
-                existing_ids.add(vid)
-                added += 1
-
-        if added:
-            await db.commit()
-        return added
-
-    async def remove_videos(
-        self, folder_id: int, video_ids: list[int], db: AsyncSession
-    ) -> int:
-        """Remove video links from a folder; returns count of deleted rows."""
-        result = await db.execute(
-            delete(FavoriteVideo).where(
-                FavoriteVideo.folder_id == folder_id,
-                FavoriteVideo.video_id.in_(video_ids),
-            )
-        )
-        await db.commit()
-        return result.rowcount
-
-    async def count_videos(self, folder_id: int, db: AsyncSession) -> int:
-        result = await db.execute(
-            select(func.count()).where(FavoriteVideo.folder_id == folder_id)
-        )
-        return result.scalar() or 0
-
-    async def list_videos_paginated(
-        self, folder_id: int, offset: int, limit: int, db: AsyncSession
-    ) -> tuple[list[dict], int]:
-        """Paginated video list with video_cache JOIN; returns (rows, total)."""
-        from app.models import Collection as CollectionModel
-
-        total = await self.count_videos(folder_id, db)
-
-        result = await db.execute(
-            select(
-                FavoriteVideo.id,
-                FavoriteVideo.is_selected,
-                FavoriteVideo.created_at,
-                CollectionModel.bvid,
-                CollectionModel.title,
-                CollectionModel.cover,
-                CollectionModel.duration,
-                CollectionModel.owner_name,
-                CollectionModel.cid,
-            )
-            .join(CollectionModel, CollectionModel.id == FavoriteVideo.video_id, isouter=True)
-            .where(FavoriteVideo.folder_id == folder_id)
-            .order_by(FavoriteVideo.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        rows = [
-            {
-                "id": row.id,
-                "bvid": row.bvid,
-                "title": row.title,
-                "cover": row.cover,
-                "duration": row.duration,
-                "owner": row.owner_name,
-                "cid": row.cid,
-                "is_selected": row.is_selected,
-                "synced_at": row.created_at.isoformat() if row.created_at else None,
-            }
-            for row in result.all()
-        ]
-        return rows, total
 
 
 # Module-level singleton

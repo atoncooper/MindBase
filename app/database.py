@@ -67,9 +67,6 @@ async def _migrate_add_columns():
         ("favorite_folders", "uid", "BIGINT"),
         ("favorite_folders", "is_default", "BOOLEAN DEFAULT FALSE"),
         ("favorite_folders", "deleted_at", "TIMESTAMP"),
-        ("favorite_videos", "video_id", "INTEGER"),
-        # Plan 0022: video table — add video_id (bv_to_av mapping)
-        ("video", "video_id", "INTEGER"),
         # Plan 0023: async_tasks — add uid for user scoping
         ("async_tasks", "uid", "BIGINT"),
         # Plan 0025: chat_sessions — uid-based ownership
@@ -95,15 +92,15 @@ async def _migrate_add_columns():
         ("user_asr_configs", "last_test_status", "VARCHAR(20)"),
         ("user_asr_configs", "last_test_error", "TEXT"),
         ("user_asr_configs", "last_test_at", "TIMESTAMP"),
-        # Plan 0033: content_source / outline_json for video and video_cache
+        # Plan 0034: collection — add description and owner_mid
+        ("collection", "description", "TEXT"),
+        ("collection", "owner_mid", "BIGINT"),
+        # Plan 0033: content_source for video
         ("video", "content_source", "VARCHAR(20)"),
-        ("video_cache", "content_source", "VARCHAR(20)"),
-        ("video_cache", "outline_json", "JSON"),
     ]
 
     # Plan 0024/0025/0026: drop deprecated content columns & session_id columns
     drop_columns = [
-        ("video_cache", "content"),
         ("video", "content"),
         ("video_versions", "content"),
         ("chat_sessions", "session_id"),
@@ -282,11 +279,9 @@ async def _migrate_add_columns():
     column_mods = [
         # Plan 0022: relax NOT NULL on legacy columns for v2 compatibility
         ("favorite_folders", "session_id", "VARCHAR(64) NULL"),
-        ("favorite_videos", "bvid", "VARCHAR(20) NULL"),
         # Plan 0022: widen columns for Bilibili 64-bit IDs
         ("favorite_folders", "media_id", "BIGINT NOT NULL"),
         ("favorite_folders", "fid", "BIGINT"),
-        ("video_cache", "cid", "BIGINT"),
         ("video", "cid", "BIGINT"),
         ("video_versions", "cid", "BIGINT"),
     ]

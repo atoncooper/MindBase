@@ -20,7 +20,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 
 from app.database import get_db
-from app.models import FavoriteFolder, FavoriteVideo, VideoCache
+from app.models import FavoriteFolder, Collection
 from app.response import (
     AgenticChatResponse,
     ChatRequest,
@@ -515,9 +515,9 @@ def _build_context_from_docs(docs: List[Document]) -> tuple[str, List[dict]]:
             sources.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
     return "\n\n---\n\n".join(context_parts), sources
 
-async def _is_related_to_collection(db: AsyncSession, folder_ids: List[int], question: str) -> bool:
+async def _is_related_to_collection(db: AsyncSession, media_ids: List[int], question: str) -> bool:
     """判断问题是否与收藏夹内容有关"""
-    if not folder_ids:
+    if not media_ids:
         return False
     keywords = _extract_keywords(question)
     if not keywords:
@@ -525,40 +525,42 @@ async def _is_related_to_collection(db: AsyncSession, folder_ids: List[int], que
     like_conds = []
     for kw in keywords:
         pattern = f"%{kw}%"
-        like_conds.append(VideoCache.title.ilike(pattern))
-        like_conds.append(VideoCache.description.ilike(pattern))
-        like_conds.append(VideoCache.content.ilike(pattern))
+        like_conds.append(Collection.title.ilike(pattern))
+        like_conds.append(Collection.description.ilike(pattern))
     stmt = (
         select(func.count())
-        .select_from(VideoCache)
-        .join(FavoriteVideo, FavoriteVideo.bvid == VideoCache.bvid)
-        .where(FavoriteVideo.folder_id.in_(folder_ids))
+        .select_from(Collection)
+        .where(Collection.media_id.in_(media_ids))
         .where(or_(*like_conds))
     )
     count = await db.scalar(stmt)
     return (count or 0) > 0
 
-async def _get_folder_ids_for_uid(db: AsyncSession, uid: int, media_ids: Optional[List[int]]) -> List[int]:
-    """根据 uid 和 media_id 获取内部 folder_id"""
+async def _get_media_ids_for_uid(db: AsyncSession, uid: int, media_ids: Optional[List[int]]) -> List[int]:
+    """根据 uid 获取用户已同步的收藏夹 media_id 列表"""
     stmt = (
-        select(FavoriteFolder.id, FavoriteFolder.media_id, FavoriteFolder.updated_at)
-        .where(FavoriteFolder.uid == uid)
+        select(FavoriteFolder.media_id)
+        .where(FavoriteFolder.uid == uid, FavoriteFolder.deleted_at.is_(None))
         .order_by(FavoriteFolder.updated_at.desc())
     )
     if media_ids:
         stmt = stmt.where(FavoriteFolder.media_id.in_(media_ids))
     rows = await db.execute(stmt)
-    dedup: dict[int, int] = {}
-    for folder_id, media_id, _updated_at in rows.fetchall():
-        if media_id not in dedup:
-            dedup[media_id] = folder_id
-    return list(dedup.values())
+    seen = set()
+    result = []
+    for (mid,) in rows.fetchall():
+        if mid and mid not in seen:
+            seen.add(mid)
+            result.append(mid)
+    return result
 
-async def _get_bvids_by_folder_ids(db: AsyncSession, folder_ids: List[int]) -> List[str]:
+async def _get_bvids_by_media_ids(db: AsyncSession, media_ids: List[int]) -> List[str]:
     """获取指定收藏夹的视频 BV 列表"""
-    if not folder_ids:
+    if not media_ids:
         return []
-    rows = await db.execute(select(FavoriteVideo.bvid).where(FavoriteVideo.folder_id.in_(folder_ids)))
+    rows = await db.execute(
+        select(Collection.bvid).where(Collection.media_id.in_(media_ids))
+    )
     bvids = []
     seen = set()
     for (bvid,) in rows.fetchall():
@@ -568,22 +570,19 @@ async def _get_bvids_by_folder_ids(db: AsyncSession, folder_ids: List[int]) -> L
         bvids.append(bvid)
     return bvids
 
-async def _get_video_context(db: AsyncSession, folder_ids: List[int], include_content: bool = False, limit: Optional[int] = 50) -> tuple[str, List[dict]]:
-    """获取视频上下文信息"""
-    if not folder_ids:
+async def _get_video_context(db: AsyncSession, media_ids: List[int], include_content: bool = False, limit: Optional[int] = 50) -> tuple[str, List[dict]]:
+    """获取视频上下文信息（按收藏夹分组）"""
+    if not media_ids:
         return "", []
-    # 查询视频信息
     query = (
         select(
             FavoriteFolder.title.label("folder_title"),
-            VideoCache.bvid,
-            VideoCache.title,
-            VideoCache.description,
-            VideoCache.content if include_content else VideoCache.description,
+            Collection.bvid,
+            Collection.title,
+            Collection.description,
         )
-        .join(FavoriteVideo, FavoriteVideo.folder_id == FavoriteFolder.id)
-        .join(VideoCache, VideoCache.bvid == FavoriteVideo.bvid, isouter=True)
-        .where(FavoriteFolder.id.in_(folder_ids))
+        .join(Collection, Collection.media_id == FavoriteFolder.media_id)
+        .where(FavoriteFolder.media_id.in_(media_ids))
     )
     if limit is not None:
         query = query.limit(limit)
@@ -591,48 +590,44 @@ async def _get_video_context(db: AsyncSession, folder_ids: List[int], include_co
     records = result.fetchall()
     if not records:
         return "", []
-    # 按收藏夹分组（对 bvid 去重，避免同一视频重复出现）
-    grouped = {}
+    grouped: dict[str, list[str]] = {}
     sources = []
     seen_bvids = set()
-    for folder_title, bvid, title, desc, content in records:
+    for folder_title, bvid, title, desc in records:
         if not bvid or not title:
             continue
         if bvid in seen_bvids:
             continue
         folder_name = folder_title or "默认收藏夹"
-        if folder_name not in grouped:
-            grouped[folder_name] = []
+        grouped.setdefault(folder_name, [])
         video_info = f"- 《{title}》"
-        if include_content and content:
-            video_info += f"\n  摘要: {content}"
+        if include_content and desc:
+            video_info += f"\n  摘要: {desc}"
         elif desc:
             short_desc = desc[:100] + "..." if len(desc) > 100 else desc
             video_info += f" ({short_desc})"
         grouped[folder_name].append(video_info)
         seen_bvids.add(bvid)
         sources.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
-    # 构建上下文文本
     context_parts = [f"【{folder_name}】\n" + "\n".join(videos) for folder_name, videos in grouped.items()]
     context = "\n\n".join(context_parts)
     return context, sources
 
-async def _get_video_titles_context(db: AsyncSession, folder_ids: List[int], limit: int = 50) -> str:
+async def _get_video_titles_context(db: AsyncSession, media_ids: List[int], limit: int = 50) -> str:
     """获取收藏夹名称与视频标题（用于引导问题）"""
-    if not folder_ids:
+    if not media_ids:
         return ""
     query = (
-        select(FavoriteFolder.title.label("folder_title"), VideoCache.bvid, VideoCache.title)
-        .join(FavoriteVideo, FavoriteVideo.folder_id == FavoriteFolder.id)
-        .join(VideoCache, VideoCache.bvid == FavoriteVideo.bvid, isouter=True)
-        .where(FavoriteFolder.id.in_(folder_ids))
+        select(FavoriteFolder.title.label("folder_title"), Collection.bvid, Collection.title)
+        .join(Collection, Collection.media_id == FavoriteFolder.media_id)
+        .where(FavoriteFolder.media_id.in_(media_ids))
         .limit(limit)
     )
     result = await db.execute(query)
     records = result.fetchall()
     if not records:
         return ""
-    grouped = {}
+    grouped: dict[str, list[str]] = {}
     seen_bvids = set()
     for folder_title, bvid, title in records:
         if not title or not bvid:
@@ -649,11 +644,11 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     """准备 LLM 消息与来源信息"""
     question = request.question.strip()
     get_rag_service()
-    folder_ids = []
+    media_ids = []
     if uid:
-        folder_ids = await _get_folder_ids_for_uid(db, uid, request.folder_ids)
-        logger.info(f"关联 FolderIDs for uid={uid}: {folder_ids}")
-    bvids = await _get_bvids_by_folder_ids(db, folder_ids) if folder_ids else []
+        media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
+        logger.info(f"关联 MediaIDs for uid={uid}: {media_ids}")
+    bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
     has_data = len(bvids) > 0
     is_collection_intent = _is_collection_intent(question)
     is_general = _is_general_question(question)
@@ -667,12 +662,12 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
         logger.info(f"[WORKSPACE] 工作区模式: {len(workspace_pages_dicts)} 个分P")
 
     # 1) LLM 路由优先，失败时降级规则路由
-    logger.info(f"路由输入: question={question} folder_ids={folder_ids} has_data={has_data} is_collection_intent={is_collection_intent}")
+    logger.info(f"路由输入: question={question} media_ids={media_ids} has_data={has_data} is_collection_intent={is_collection_intent}")
     route, route_raw = await _route_with_llm(question)
     route_source = "LLM"
     related: Optional[bool] = None
     if not route:
-        related = await _is_related_to_collection(db, folder_ids, question)
+        related = await _is_related_to_collection(db, media_ids, question)
         route = _route_with_rules(question, is_collection_intent, related)
         route_source = "RULE"
     logger.info(f"路由策略: {route_source} => {route}")
@@ -686,7 +681,7 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     # 2) 无数据时处理
     if not has_data:
         if is_collection_intent:
-            context, sources = await _get_video_context(db, folder_ids, include_content=False, limit=50)
+            context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
             if not context:
                 context = "（暂无已入库的视频信息，请提醒用户可能需要先进行入库操作）"
             messages = _build_fallback_messages(context, question)
@@ -695,33 +690,33 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
         return messages, [], question, rewrite_result
     # 3) 直接回答
     if route == "direct":
-        title_context = await _get_video_titles_context(db, folder_ids, limit=50)
+        title_context = await _get_video_titles_context(db, media_ids, limit=50)
         messages = _build_direct_messages_with_context(title_context, question) if title_context else _build_direct_messages(question)
         return messages, [], question, rewrite_result
     # 4) 列表类问题
     if route == "db_list":
         if related is None:
-            related = await _is_related_to_collection(db, folder_ids, question)
+            related = await _is_related_to_collection(db, media_ids, question)
         if not related and not is_collection_intent:
             return _build_direct_messages(question), [], question, rewrite_result
-        context, sources = await _get_video_context(db, folder_ids, include_content=False, limit=50)
+        context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
         if not context:
             return _build_fallback_messages("（暂无信息，请入库）", question), sources, question, rewrite_result
         return _build_db_list_messages(context, question), sources, question, rewrite_result
     # 5) 总结类问题
     if route == "db_content":
         if related is None:
-            related = await _is_related_to_collection(db, folder_ids, question)
+            related = await _is_related_to_collection(db, media_ids, question)
         if not related and not is_collection_intent:
             return _build_direct_messages(question), [], question, rewrite_result
-        context, sources = await _get_video_context(db, folder_ids, include_content=True, limit=None)
+        context, sources = await _get_video_context(db, media_ids, include_content=True, limit=None)
         if not context:
             return _build_fallback_messages("（暂无信息，请入库）", question), sources, question, rewrite_result
         return _build_db_summary_messages(context, question), sources, question, rewrite_result
     # 6) 检查相关性（使用改写后的 query 以提升语义匹配）
     if related is None:
         rewrite_query = rewrite_result.rewrites[0].query if (rewrite_result and rewrite_result.rewrites) else question
-        related = await _is_related_to_collection(db, folder_ids, rewrite_query)
+        related = await _is_related_to_collection(db, media_ids, rewrite_query)
     if not related and not is_collection_intent and not workspace_mode:
         return _build_direct_messages(question), [], question, rewrite_result
     # 7) 向量检索（使用 Query 改写 + 工作区过滤）
@@ -734,7 +729,7 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     except Exception as e:
         logger.warning(f"向量检索失败: {e}")
     # 兜底
-    context, sources = await _get_video_context(db, folder_ids, include_content=False, limit=50)
+    context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
     return _build_fallback_messages(context or "（暂无入库信息）", question), sources, question, rewrite_result
 
 @router.post("/ask", response_model=ChatResponse)
@@ -848,10 +843,8 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, uid:
     await chat_history_service.touch_chat_session(db, chat_session.chat_session_id)
 
     try:
-        folder_ids = []
-        if request.session_id:
-            folder_ids = await _get_folder_ids_for_uid(db, uid, request.folder_ids)
-        bvids = await _get_bvids_by_folder_ids(db, folder_ids) if folder_ids else []
+        media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
+        bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
         workspace_pages = [wp.model_dump() for wp in request.workspace_pages] if request.workspace_pages else None
 
         service = get_agentic_rag_service(

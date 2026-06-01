@@ -205,7 +205,7 @@ async def list_videos_by_media_id(
     """List videos in a folder by Bilibili media_id with pagination.
 
     Reads from DB first. If no videos cached, auto-syncs from Bilibili
-    (metadata → video_cache, links → favorite_videos), then returns
+    (metadata → collection), then returns
     the paginated result.
     """
     svc = _get_favorite_service()

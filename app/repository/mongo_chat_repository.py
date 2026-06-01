@@ -134,6 +134,14 @@ async def get_messages(
     return rows, total
 
 
+async def session_has_messages(chat_session_id: str) -> bool:
+    """Check if a session has at least one message in MongoDB."""
+    if not is_enabled():
+        return True  # MongoDB disabled → trust MySQL
+    count = await coll(COLLECTION).count_documents({"chat_session_id": chat_session_id}, limit=1)
+    return count > 0
+
+
 async def delete_session_messages(chat_session_id: str) -> int:
     """Delete all messages belonging to a session. Returns deleted count."""
     if not is_enabled():

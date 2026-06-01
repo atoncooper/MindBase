@@ -8,11 +8,11 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from loguru import logger
 from typing import List, Optional, Callable
 from pydantic import BaseModel
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, get_db_context
-from app.models import FavoriteFolder, FavoriteVideo, VideoCache, Video
+from app.models import FavoriteFolder, Collection, Video
 from app.response.knowledge import ContentSource, VideoContent, VideoInfo, VideosResponse
 from app.services.async_task.tracker import TaskTracker
 from app.services.bilibili import BilibiliService
@@ -119,36 +119,39 @@ def _extract_video_info(media: dict) -> tuple[str, str, Optional[int]]:
     return bvid, title, cid
 
 
-async def _upsert_video_cache(db: AsyncSession, bvid: str, meta: dict) -> None:
-    """写入或更新视频缓存信息"""
-    result = await db.execute(select(VideoCache).where(VideoCache.bvid == bvid))
-    cache = result.scalar_one_or_none()
+async def _upsert_collection(db: AsyncSession, media_id: int, bvid: str, meta: dict) -> None:
+    """写入或更新 collection 视频元数据（key: media_id + bvid）"""
+    result = await db.execute(
+        select(Collection).where(Collection.media_id == media_id, Collection.bvid == bvid)
+    )
+    row = result.scalar_one_or_none()
 
-    if cache is None:
-        cache = VideoCache(
+    if row is None:
+        row = Collection(
+            media_id=media_id,
             bvid=bvid,
             title=meta.get("title") or bvid,
             description=meta.get("intro"),
             owner_name=meta.get("owner_name"),
             owner_mid=meta.get("owner_mid"),
             duration=meta.get("duration"),
-            pic_url=meta.get("cover"),
-            is_processed=False,
+            cover=meta.get("cover"),
         )
-        db.add(cache)
+        db.add(row)
         return
 
-    cache.title = meta.get("title") or cache.title
+    if meta.get("title"):
+        row.title = meta["title"]
     if meta.get("intro") is not None:
-        cache.description = meta.get("intro")
+        row.description = meta["intro"]
     if meta.get("owner_name") is not None:
-        cache.owner_name = meta.get("owner_name")
+        row.owner_name = meta["owner_name"]
     if meta.get("owner_mid") is not None:
-        cache.owner_mid = meta.get("owner_mid")
+        row.owner_mid = meta["owner_mid"]
     if meta.get("duration") is not None:
-        cache.duration = meta.get("duration")
+        row.duration = meta["duration"]
     if meta.get("cover") is not None:
-        cache.pic_url = meta.get("cover")
+        row.cover = meta["cover"]
 
 
 async def _sync_folder(
@@ -177,8 +180,7 @@ async def _sync_folder(
         if total_in_folder and total_in_folder > 0:
             logger.warning(f"[{folder_id}] 收藏夹返回空列表，跳过删除逻辑")
             existing_count = await db.scalar(
-                select(func.count(FavoriteVideo.bvid))
-                .where(FavoriteVideo.folder_id == folder_id)
+                select(func.count()).where(Collection.media_id == folder_id)
             )
             return {
                 "folder_id": folder_id,
@@ -233,17 +235,18 @@ async def _sync_folder(
         media_count=valid_count,
     )
 
+    # 查 collection 中该 media_id 已有的 bvid
     existing_rows = await db.execute(
-        select(FavoriteVideo.bvid).where(FavoriteVideo.folder_id == folder.id)
+        select(Collection.bvid).where(Collection.media_id == folder_id)
     )
     existing_bvids = {row[0] for row in existing_rows.fetchall()}
 
     added = current_bvids - existing_bvids
     removed = existing_bvids - current_bvids
 
-    # 写入标题/简介等信息
+    # 写入 collection 元数据
     for bvid, meta in video_map.items():
-        await _upsert_video_cache(db, bvid, meta)
+        await _upsert_collection(db, folder_id, bvid, meta)
 
     source_priority = {
         ContentSource.BASIC_INFO.value: 1,
@@ -258,7 +261,7 @@ async def _sync_folder(
     async def _get_content_text(bvid: str, cid: int, title: str, content_fetcher, meta: dict) -> tuple[str, str]:
         """Get ASR text for a video. Tries MongoDB → fetch → save to MongoDB.
         Returns (text, source).
-        MySQL video_cache.content is NEVER written — full text lives in MongoDB only.
+        Full text lives in MongoDB only, never written to MySQL.
         """
         from app.infra.mongo import is_enabled as _mongo_ok
         from app.repository.mongo_asr_repository import get_latest, save_asr
@@ -296,14 +299,15 @@ async def _sync_folder(
 
         return text, source
 
-    # Mark cache rows that need content refresh (legacy check)
+    # Mark videos that need content refresh (not yet vectorized)
     update_candidates: set[str] = set()
     for bvid in current_bvids & existing_bvids:
         if bvid in added:
             continue
-        result = await db.execute(select(VideoCache).where(VideoCache.bvid == bvid))
-        cache = result.scalar_one_or_none()
-        if not cache or not cache.is_processed:
+        result = await db.execute(
+            select(Video).where(Video.bvid == bvid, Video.is_vectorized != "done")
+        )
+        if result.scalar_one_or_none():
             update_candidates.add(bvid)
 
     # Process each video: get content → vectorize
@@ -341,21 +345,6 @@ async def _sync_folder(
                     progress_callback(meta["title"], processed_targets, total_targets)
                 continue
 
-            # ── Update video_cache metadata (MySQL, no content stored) ──
-            result = await db.execute(select(VideoCache).where(VideoCache.bvid == bvid))
-            cache = result.scalar_one_or_none()
-            if cache:
-                cache.is_processed = True
-                cache.content_source = source
-                cache.content = None  # Full text in MongoDB, MySQL stores only metadata
-            else:
-                cache = VideoCache(
-                    id=bv_to_av(bvid),
-                    bvid=bvid, title=meta["title"],
-                    is_processed=True, content_source=source,
-                )
-                db.add(cache)
-
             # ── Vectorize ──
             try:
                 rag.delete_video(bvid)
@@ -367,7 +356,6 @@ async def _sync_folder(
                 title=meta["title"],
                 content=text,
                 source=ContentSource.ASR,
-                outline=cache.outline_json if cache else None,
             )
             chunks = rag.add_video_content(content_obj)
             logger.info(f"[{bvid}] vectorized: {chunks} chunks")
@@ -390,32 +378,17 @@ async def _sync_folder(
         except Exception as e:
             logger.warning(f"[{bvid}] vectorization failed: {e} (recorded in DB anyway)")
         
-        # 无论向量是否添加成功，都写入 FavoriteVideo 记录
-        try:
-            exists_row = await db.execute(
-                select(FavoriteVideo.id).where(
-                    FavoriteVideo.folder_id == folder.id,
-                    FavoriteVideo.bvid == bvid,
-                )
-            )
-            if exists_row.scalar_one_or_none() is None:
-                db.add(FavoriteVideo(folder_id=folder.id, bvid=bvid, is_selected=True))
-            processed_targets += 1
-            if progress_callback:
-                progress_callback(meta["title"], processed_targets, total_targets)
-        except Exception:
-            logger.exception("DB write failed bvid={}", bvid)
+        processed_targets += 1
+        if progress_callback:
+            progress_callback(meta["title"], processed_targets, total_targets)
 
-    # 删除无效向量
+    # 删除已移除的视频
     if removed:
         for bvid in removed:
             other_count = await db.scalar(
                 select(func.count())
-                .select_from(FavoriteVideo)
-                .where(
-                    FavoriteVideo.bvid == bvid,
-                    FavoriteVideo.folder_id != folder.id,
-                )
+                .select_from(Collection)
+                .where(Collection.bvid == bvid, Collection.media_id != folder_id)
             )
             if other_count == 0:
                 try:
@@ -424,20 +397,27 @@ async def _sync_folder(
                     logger.warning(f"删除向量失败 [{bvid}]: {e}")
 
         await db.execute(
-            delete(FavoriteVideo).where(
-                FavoriteVideo.folder_id == folder.id,
-                FavoriteVideo.bvid.in_(removed),
+            delete(Collection).where(
+                Collection.media_id == folder_id,
+                Collection.bvid.in_(removed),
             )
         )
 
     folder.last_sync_at = datetime.utcnow()
-
     await db.commit()
 
+    # 清除 Redis 缓存（folder_status + vec_status）
+    try:
+        from app.infra.redis import client as _redis, k as _rk
+        if _redis:
+            await _redis.delete(_rk("folder_status", str(uid)))
+    except Exception:
+        pass
+
     indexed_count = await db.scalar(
-        select(func.count(func.distinct(FavoriteVideo.bvid)))
-        .select_from(FavoriteVideo)
-        .where(FavoriteVideo.folder_id == folder.id)
+        select(func.count(func.distinct(Collection.bvid)))
+        .select_from(Collection)
+        .where(Collection.media_id == folder_id)
     )
 
     return {
@@ -468,12 +448,22 @@ async def get_folder_status(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取收藏夹入库状态 — 按实际向量化页数统计"""
+    """获取收藏夹入库状态 — 按「所有分P均已向量化」的视频数统计"""
+
+    # 0. 尝试 Redis 缓存（30s TTL）
+    try:
+        from app.infra.redis import client as _redis, k as _rk, jget as _rjget, jset as _rjset
+        cache_key = _rk("folder_status", str(uid))
+        if _redis:
+            cached = await _rjget(cache_key)
+            if cached:
+                return [FolderStatus(**item) for item in cached]
+    except Exception:
+        pass
 
     # 1. 查该用户所有有效收藏夹
     folders_result = await db.execute(
         select(
-            FavoriteFolder.id,
             FavoriteFolder.media_id,
             FavoriteFolder.media_count,
             FavoriteFolder.last_sync_at,
@@ -486,38 +476,57 @@ async def get_folder_status(
     if not folders:
         return []
 
-    # {folder_id: (media_id, media_count, last_sync_at)}
+    # {media_id: (media_count, last_sync_at)}
     folder_meta = {
-        row.id: (row.media_id, row.media_count, row.last_sync_at)
+        row.media_id: (row.media_count, row.last_sync_at)
         for row in folders
     }
-    folder_ids = list(folder_meta.keys())
+    media_ids = list(folder_meta.keys())
 
-    # 2. 按每个收藏夹统计已向量化的分P数
+    # 2. 统计每个收藏夹中「所有分P均已向量化」的视频数（bvid 级别）
+    incomplete_sub = (
+        select(Video.bvid)
+        .where(
+            or_(
+                Video.is_vectorized != "done",
+                Video.is_vectorized.is_(None),
+            )
+        )
+        .subquery()
+    )
     counts_result = await db.execute(
         select(
-            FavoriteVideo.folder_id,
-            func.count(Video.id),
-        ).select_from(FavoriteVideo).join(
+            Collection.media_id,
+            func.count(func.distinct(Video.bvid)),
+        ).select_from(Collection).join(
             Video,
-            Video.bvid == FavoriteVideo.bvid,
+            Video.bvid == Collection.bvid,
         ).where(
-            FavoriteVideo.folder_id.in_(folder_ids),
-            Video.is_vectorized == "done",
-        ).group_by(FavoriteVideo.folder_id)
+            Collection.media_id.in_(media_ids),
+            ~Video.bvid.in_(select(incomplete_sub.c.bvid)),
+        ).group_by(Collection.media_id)
     )
     count_map = {row[0]: row[1] for row in counts_result.all()}
 
     # 3. 组装返回
-    return [
+    result = [
         FolderStatus(
-            media_id=meta[0],
-            indexed_count=count_map.get(folder_id, 0),
-            media_count=meta[1],
-            last_sync_at=meta[2],
+            media_id=media_id,
+            indexed_count=count_map.get(media_id, 0),
+            media_count=meta[0],
+            last_sync_at=meta[1],
         )
-        for folder_id, meta in folder_meta.items()
+        for media_id, meta in folder_meta.items()
     ]
+
+    # 4. 写入 Redis 缓存（30s TTL）
+    try:
+        if _redis:
+            await _rjset(cache_key, [r.model_dump() for r in result], ex=30)
+    except Exception:
+        pass
+
+    return result
 
 
 class VectorizedPageItem(BaseModel):
@@ -537,19 +546,19 @@ async def get_vectorized_pages(
     db: AsyncSession = Depends(get_db),
 ):
     """Get vectorized pages for the current user (uid-scoped)."""
-    # 1. Get all folder ids for this user
+    # 1. Get all media_ids for this user
     folders_result = await db.execute(
-        select(FavoriteFolder.id)
+        select(FavoriteFolder.media_id)
         .where(FavoriteFolder.uid == uid, FavoriteFolder.deleted_at.is_(None))
     )
-    folder_ids = [row[0] for row in folders_result.all()]
-    if not folder_ids:
+    media_ids = [row[0] for row in folders_result.all()]
+    if not media_ids:
         return []
 
-    # 2. Get all bvids belonging to those folders
+    # 2. Get all bvids belonging to user's collections
     bvids_result = await db.execute(
-        select(FavoriteVideo.bvid)
-        .where(FavoriteVideo.folder_id.in_(folder_ids))
+        select(Collection.bvid)
+        .where(Collection.media_id.in_(media_ids))
     )
     bvids = list(set(row[0] for row in bvids_result.all() if row[0]))
     if not bvids:
@@ -563,11 +572,11 @@ async def get_vectorized_pages(
     )
     pages = pages_result.scalars().all()
 
-    # 4. Resolve video titles from VideoCache
+    # 4. Resolve video titles from collection
     bvid_set = {p.bvid for p in pages}
     titles_result = await db.execute(
-        select(VideoCache.bvid, VideoCache.title)
-        .where(VideoCache.bvid.in_(bvid_set))
+        select(Collection.bvid, Collection.title)
+        .where(Collection.bvid.in_(bvid_set))
     )
     title_map = {row[0]: row[1] for row in titles_result.all()}
 
@@ -753,6 +762,14 @@ async def _build_knowledge_base_task(
             _notify("done", progress=100,
                     current_step="完成",
                     message=f"同步完成：新增 {total_added}，移除 {total_removed}")
+
+            # 清除 Redis 缓存
+            try:
+                from app.infra.redis import client as _redis2, k as _rk2
+                if _redis2:
+                    await _redis2.delete(_rk2("folder_status", str(uid)))
+            except Exception:
+                pass
 
             logger.info(f"知识库构建完成: 新增 {total_added}，移除 {total_removed}")
         finally:

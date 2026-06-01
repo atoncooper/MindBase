@@ -16,11 +16,8 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from sqlalchemy import select
-from app.models import VideoCache
 from app.services.bilibili import BilibiliService
 from app.repository.video_repository import get_video_repository, VideoRepository
-from app.utils.bvid import bv_to_av
 from app.infra.cache import cache_manager
 
 _VIDEO_TTL = 300   # 5 min
@@ -46,78 +43,89 @@ class VideoService:
         bili: BilibiliService,
         db: AsyncSession,
     ) -> dict:
-        """List all pages (cids) for a bvid (cached, single-flight).
+        """List all pages (cids) for a bvid with cross-store consistency check.
 
-        Reads from cache first → DB → Bilibili API if empty.
+        Page metadata (titles, cids) is cached. Vector/MongoDB verification
+        runs on every call to auto-heal MySQL after DB migrations.
         """
         ns = _video_ns()
 
-        async def _fetch():
+        async def _fetch_pages():
+            """Fetch page metadata from DB or Bilibili API (cached)."""
             count = await self._repo.count_by_bvid(bvid, db)
             if count == 0:
                 logger.info(f"[VideoService] fetching pages for bvid={bvid}")
                 video_info = await bili.get_video_info(bvid)
                 pages_raw = video_info.get("pages") or []
-                av_id = bv_to_av(bvid)
-
-                # Ensure video_cache row exists before inserting video pages
-                cache_row = (await db.execute(
-                    select(VideoCache).where(VideoCache.bvid == bvid)
-                )).scalar_one_or_none()
-                if cache_row is None:
-                    db.add(VideoCache(
-                        id=av_id,
-                        bvid=bvid,
-                        title=video_info.get("title", ""),
-                        description=video_info.get("desc", ""),
-                        owner_name=video_info.get("owner", {}).get("name", ""),
-                        owner_mid=video_info.get("owner", {}).get("mid", 0),
-                        duration=video_info.get("duration", 0),
-                        pic_url=video_info.get("pic", ""),
-                    ))
-                    await db.flush()
-                    video_id = av_id
-                else:
-                    video_id = cache_row.id
-                    # Update title in case it changed
-                    if video_info.get("title"):
-                        cache_row.title = video_info.get("title")
 
                 if pages_raw:
                     pages = [
-                        {
-                            "cid": p["cid"],
-                            "page_index": p.get("page", 1) - 1,
-                            "page_title": p.get("part", ""),
-                            "duration": p.get("duration", 0),
-                        }
+                        {"cid": p["cid"], "page_index": p.get("page", 1) - 1,
+                         "page_title": p.get("part", ""), "duration": p.get("duration", 0)}
                         for p in pages_raw
                     ]
-                    await self._repo.upsert_pages(bvid, video_id, pages, db)
+                    await self._repo.upsert_pages(bvid, 0, pages, db)
                     logger.info(f"[VideoService] stored {len(pages)} pages for bvid={bvid}")
                 else:
                     cid = video_info.get("cid") or 0
-                    pages = [{
-                        "cid": cid, "page_index": 0,
-                        "page_title": "", "duration": video_info.get("duration", 0),
-                    }]
-                    await self._repo.upsert_pages(bvid, video_id, pages, db)
+                    pages = [{"cid": cid, "page_index": 0,
+                              "page_title": video_info.get("title", ""),
+                              "duration": video_info.get("duration", 0)}]
+                    await self._repo.upsert_pages(bvid, 0, pages, db)
 
-            rows = await self._repo.list_by_bvid(bvid, db)
-            return {
-                "bvid": bvid,
-                "pages": [
-                    {
-                        "cid": r.cid, "page_index": r.page_index,
-                        "page_title": r.page_title,
-                        "is_processed": r.is_processed,
-                        "is_vectorized": r.is_vectorized,
-                        "vector_chunk_count": r.vector_chunk_count,
-                    }
-                    for r in rows
-                ],
-                "page_count": len(rows),
-                "is_stored": True,
-            }
+            return await self._repo.list_by_bvid(bvid, db)
 
-        return await ns.get_or_fetch(bvid, _fetch)
+        # Cached: ensure pages exist in DB (fetches from Bilibili API if needed)
+        await ns.get_or_fetch(bvid, lambda: _fetch_pages())
+
+        # Always re-query from DB with current session — NEVER reuse cached ORM objects
+        # (cached objects are detached from the current session, commits would be no-ops)
+        rows = await self._repo.list_by_bvid(bvid, db)
+
+        # Cross-store verification: auto-heal MySQL when external data is missing
+        from app.services.rag import get_rag_service as _get_rag
+        rag = _get_rag()
+        need_commit = False
+        verified_pages = []
+
+        for r in rows:
+            fixed_vectorized = r.is_vectorized
+            actual_count = 0
+
+            if r.is_vectorized == "done":
+                actual_count = rag.get_page_vector_count(bvid, r.page_index)
+                if actual_count == 0:
+                    r.is_vectorized = "failed"
+                    r.vector_error = "Vector data lost after DB migration"
+                    fixed_vectorized = "failed"
+                    need_commit = True
+                    logger.warning(f"[VideoService] bvid={bvid} cid={r.cid} marked failed: vector count=0")
+
+            if r.is_processed:
+                from app.infra.mongo import is_enabled as _mongo_ok
+                from app.repository.mongo_asr_repository import get_latest
+                if _mongo_ok():
+                    doc = await get_latest(bvid, r.cid)
+                    if not doc or not doc.get("content") or len(doc["content"].strip()) < 50:
+                        r.is_processed = False
+                        need_commit = True
+                        logger.warning(f"[VideoService] bvid={bvid} cid={r.cid} marked unprocessed: no content in MongoDB")
+
+            verified_pages.append({
+                "cid": r.cid, "page_index": r.page_index,
+                "page_title": r.page_title,
+                "is_processed": r.is_processed,
+                "is_vectorized": fixed_vectorized,
+                "vector_chunk_count": actual_count if actual_count > 0 else (r.vector_chunk_count if fixed_vectorized == "done" else 0),
+            })
+
+        if need_commit:
+            await db.commit()
+            logger.info(f"[VideoService] committed auto-heal for bvid={bvid}")
+
+        return {
+            "bvid": bvid,
+            "pages": verified_pages,
+            "page_count": len(rows),
+            "is_stored": True,
+        }

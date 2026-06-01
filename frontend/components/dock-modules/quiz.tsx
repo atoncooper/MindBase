@@ -303,7 +303,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     const handleViewPastQuiz = useCallback(async (quizUuid: string) => {
         try {
             const quiz = await quizApi.getQuiz(quizUuid, true);
-            // Build correct answers map
             const answers = new Map<string, string | string[]>();
             for (const q of quiz.questions) {
                 if (q.correct_answer !== undefined) {
@@ -313,6 +312,19 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
             setReviewCorrectAnswers(answers);
             setCurrentQuiz(quiz);
             setIsReviewMode(true);
+            setSubmitResult(null);
+            setUserAnswers(new Map());
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "加载题目失败");
+        }
+    }, []);
+
+    const handleRetakeQuiz = useCallback(async (quizUuid: string) => {
+        try {
+            const quiz = await quizApi.getQuiz(quizUuid, false);  // no answers
+            setReviewCorrectAnswers(new Map());
+            setCurrentQuiz(quiz);
+            setIsReviewMode(false);
             setSubmitResult(null);
             setUserAnswers(new Map());
         } catch (e) {
@@ -882,6 +894,21 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                             </div>
                                             <div style={{ display: "flex", gap: "6px", flexShrink: 0, marginLeft: "8px" }}>
                                                 <button
+                                                    onClick={() => handleRetakeQuiz(item.quiz_uuid)}
+                                                    style={{
+                                                        padding: "5px 10px",
+                                                        borderRadius: "6px",
+                                                        background: "var(--accent)",
+                                                        color: "#fff",
+                                                        border: "none",
+                                                        cursor: "pointer",
+                                                        fontSize: "12px",
+                                                        fontWeight: 600,
+                                                    }}
+                                                >
+                                                    重做
+                                                </button>
+                                                <button
                                                     onClick={() => handleViewPastQuiz(item.quiz_uuid)}
                                                     style={{
                                                         padding: "5px 10px",
@@ -1409,13 +1436,14 @@ function QuizQuestionCard({
 async function pollUntilReady(
     quizUuid: string,
     maxRetries = 30,
-    intervalMs = 2000
 ): Promise<QuizSetData> {
+    let delay = 2000;
     for (let i = 0; i < maxRetries; i++) {
         const quiz = await quizApi.getQuiz(quizUuid);
         if (quiz.status === "done") return quiz;
         if (quiz.status === "failed") throw new Error("题目生成失败");
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, 16000);  // exponential backoff: 2s → 16s cap
     }
     throw new Error("题目生成超时");
 }

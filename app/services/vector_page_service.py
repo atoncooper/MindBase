@@ -16,6 +16,16 @@ from app.response.knowledge import VideoContent, ContentSource
 from app.services.async_task.tracker import TaskTracker
 
 
+async def _invalidate_vec_status_cache(bvid: str, cid: int):
+    """Invalidate cached vector status after change."""
+    try:
+        from app.infra.redis import client as _redis, k
+        if _redis:
+            await _redis.delete(k("vec_status", f"{bvid}:{cid}"))
+    except Exception:
+        pass
+
+
 class VectorPageService:
     """Per-page vectorization with atomic state management."""
 
@@ -133,6 +143,7 @@ class VectorPageService:
             await self.tracker.complete(task_id, result={"chunk_count": chunk_count})
             from app.services.video.service import _invalidate_video_pages
             await _invalidate_video_pages(bvid)
+            await _invalidate_vec_status_cache(bvid, cid)
             logger.info(f"[VecPage] done bvid={bvid}, cid={cid}, chunks={chunk_count}")
 
         except Exception as e:

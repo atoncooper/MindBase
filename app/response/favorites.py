@@ -49,7 +49,7 @@ class DeleteFolderResponse(BaseModel):
 
 
 class FavoriteVideoResponse(BaseModel):
-    """v2 favorite video (JOIN video_cache aggregation)."""
+    """v2 favorite video (from collection)."""
     id: int
     bvid: str
     title: str

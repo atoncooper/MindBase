@@ -14,7 +14,7 @@ from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.database import get_db_context
-from app.models import QuizSet, FavoriteVideo
+from app.models import QuizSet, Collection
 from app.services.rag import RAGService
 from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
 from app.services.llm.usage_tracker import UsageTrackingCallback
@@ -80,38 +80,30 @@ class QuizGeneratorService:
     def __init__(self):
         self.rag = RAGService()
 
-    async def generate_quiz(
+    async def create_quiz_set(
         self,
         uid: int,
         folder_ids: Optional[list[int]] = None,
         pages: Optional[list[dict]] = None,
         question_count: int = 10,
-        type_distribution: Optional[dict[str, int]] = None,
         difficulty: str = "medium",
         title: Optional[str] = None,
-    ) -> tuple[str, int, int]:
-        """Generate a quiz set from knowledge chunks.
-
-        Returns: (quiz_uuid, actual_count, estimated_tokens)
-        """
+    ) -> str:
+        """Create QuizSet row with status='generating', return quiz_uuid immediately."""
         is_pages_mode = bool(pages)
-        if not is_pages_mode and not folder_ids:
-            raise ValueError("请提供 folder_ids 或 pages")
 
-        if type_distribution is None:
-            type_distribution = {
-                "single_choice": max(2, question_count // 3),
-                "multi_choice": max(1, question_count // 4),
-                "short_answer": max(1, question_count // 4),
-                "essay": max(1, question_count // 5),
-            }
-            total = sum(type_distribution.values())
-            if total != question_count:
-                type_distribution["single_choice"] += question_count - total
+        type_distribution = {
+            "single_choice": max(2, question_count // 3),
+            "multi_choice": max(1, question_count // 4),
+            "short_answer": max(1, question_count // 4),
+            "essay": max(1, question_count // 5),
+        }
+        total = sum(type_distribution.values())
+        if total != question_count:
+            type_distribution["single_choice"] += question_count - total
 
         quiz_uuid = str(uuid.uuid4())
 
-        # 1. Create QuizSet row (MySQL)
         async with get_db_context() as db:
             quiz_set = QuizSet(
                 quiz_uuid=quiz_uuid,
@@ -128,8 +120,33 @@ class QuizGeneratorService:
             db.add(quiz_set)
             await db.commit()
 
+        return quiz_uuid
+
+    async def run_generation(
+        self,
+        quiz_uuid: str,
+        uid: int,
+        folder_ids: Optional[list[int]] = None,
+        pages: Optional[list[dict]] = None,
+        question_count: int = 10,
+        difficulty: str = "medium",
+        title: Optional[str] = None,
+    ) -> None:
+        """Background: retrieve chunks → LLM generate → save MongoDB → update MySQL status."""
+        is_pages_mode = bool(pages)
+
+        type_distribution = {
+            "single_choice": max(2, question_count // 3),
+            "multi_choice": max(1, question_count // 4),
+            "short_answer": max(1, question_count // 4),
+            "essay": max(1, question_count // 5),
+        }
+        total = sum(type_distribution.values())
+        if total != question_count:
+            type_distribution["single_choice"] += question_count - total
+
         try:
-            # 2. Retrieve knowledge chunks from vector store
+            # 1. Retrieve knowledge chunks from vector store
             if is_pages_mode:
                 chunks = await self._retrieve_chunks_by_pages(pages, question_count)
             else:
@@ -139,19 +156,19 @@ class QuizGeneratorService:
             if len(chunks) < min_chunks:
                 raise ValueError(f"可用知识片段不足: {len(chunks)} < {min_chunks}")
 
-            # 3. Batch generate via LLM (1 call)
+            # 2. Batch generate via LLM
             questions = await self._batch_generate(chunks, question_count, type_distribution, difficulty, uid)
 
-            # 4. Quality validation
+            # 3. Quality validation
             valid_questions = [q for q in questions if self._validate_question(q, chunks)]
 
-            # 5. Save to MongoDB
+            # 4. Save to MongoDB
             from app.repository import mongo_quiz_repository as mongo_quiz
             saved = await mongo_quiz.insert_questions(quiz_uuid, uid, valid_questions)
             if saved == 0 and valid_questions:
                 raise RuntimeError("MongoDB unavailable — 0 questions saved")
 
-            # 6. Update status (MySQL)
+            # 5. Update status → done
             async with get_db_context() as db:
                 result = await db.execute(
                     select(QuizSet).where(QuizSet.quiz_uuid == quiz_uuid)
@@ -165,7 +182,6 @@ class QuizGeneratorService:
 
             est_tokens = sum(len(c["content"]) for c in chunks) // 3
             logger.info(f"[QUIZ] generated quiz_uuid={quiz_uuid} questions={len(valid_questions)} tokens~{est_tokens}")
-            return quiz_uuid, len(valid_questions), est_tokens
 
         except Exception as e:
             logger.error(f"[QUIZ] generation failed quiz_uuid={quiz_uuid}: {e}")
@@ -178,13 +194,12 @@ class QuizGeneratorService:
                     qs.status = "failed"
                     qs.error_message = str(e)
                     await db.commit()
-            raise
 
-    async def _get_bvids_by_folder_ids(self, folder_ids: list[int]) -> list[str]:
-        """获取指定收藏夹的 BV 列表"""
+    async def _get_bvids_by_folder_ids(self, media_ids: list[int]) -> list[str]:
+        """获取指定收藏夹的 BV 列表 (media_id → collection)"""
         async with get_db_context() as db:
             rows = await db.execute(
-                select(FavoriteVideo.bvid).where(FavoriteVideo.folder_id.in_(folder_ids))
+                select(Collection.bvid).where(Collection.media_id.in_(media_ids))
             )
             bvids = []
             seen = set()
@@ -301,33 +316,49 @@ class QuizGeneratorService:
 
         return chunks
 
-    async def _batch_generate(
+    BATCH_SIZE = 5  # generate 5 questions per LLM call for quality
+
+    async def _generate_batch(
         self,
         chunks: list[dict],
-        total_count: int,
-        type_distribution: dict,
+        batch_count: int,
+        batch_types: list[str],
         difficulty: str,
         uid: int,
+        used_chunk_indices: set[int],
     ) -> list[dict]:
-        """Batch generate all questions in a single LLM call."""
+        """Generate a single batch of questions with JSON mode enforcement.
+
+        Returns exactly batch_count questions (or fewer if LLM fails to comply).
+        """
+        # Pick unused chunks for diversity
+        available = [i for i in range(len(chunks)) if i not in used_chunk_indices]
+        if not available:
+            available = list(range(len(chunks)))  # fallback: reuse all
+        selected = available[:max(3, batch_count)]
+
         context_parts = []
-        for i, c in enumerate(chunks):
+        for i in selected:
+            c = chunks[i]
             context_parts.append(f"【片段{i}】来源: {c['title']}\n{c['content']}")
+            used_chunk_indices.add(i)
         context = "\n\n---\n\n".join(context_parts)
 
         type_desc = "、".join(
-            f"{v}道{qtype}" for qtype, v in type_distribution.items() if v > 0
+            f"{batch_types.count(t)}道{t}" for t in set(batch_types)
         )
 
         prompt = QUIZ_BATCH_USER_PROMPT.format(
-            chunk_count=len(chunks),
-            total_count=total_count,
+            chunk_count=len(selected),
+            total_count=batch_count,
             context=context,
             type_distribution=type_desc,
             difficulty=difficulty,
         )
 
         llm = self._get_llm(temperature=0.7)
+        # JSON mode: enforce structured output
+        llm.model_kwargs = {"response_format": {"type": "json_object"}}
 
         provider = "openai"
         base_url = settings.openai_base_url or ""
@@ -344,32 +375,94 @@ class QuizGeneratorService:
         )
         llm.callbacks = [tracker]
 
-        response = await llm.ainvoke([
-            {"role": "system", "content": QUIZ_BATCH_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ])
+        try:
+            response = await llm.ainvoke([
+                {"role": "system", "content": QUIZ_BATCH_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ])
+        except Exception as e:
+            logger.error(f"[QUIZ] LLM call failed: {e}")
+            return []
 
         text = response.content.strip()
-
-        # 解析 JSON
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
 
-        data = json.loads(text)
-        questions = data.get("questions", [])
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            logger.error(f"[QUIZ] failed to parse JSON: {text[:200]}")
+            return []
 
-        # 注入来源信息
+        questions = data.get("questions", [])
         for q in questions:
             chunk_idx = q.get("source_chunk_index", 0)
             if chunk_idx < len(chunks):
-                q["bvid"] = chunks[chunk_idx]["bvid"]
-                q["source_segment"] = chunks[chunk_idx]["content"][:500]
+                q["bvid"] = chunks[chunk_idx].get("bvid", "")
+                q["source_segment"] = chunks[chunk_idx].get("content", "")[:500]
             q["question_uuid"] = str(uuid.uuid4())
 
-        logger.info(f"[QUIZ] batch generated {len(questions)} questions")
+        logger.info(f"[QUIZ] batch generated {len(questions)}/{batch_count} questions")
         return questions
+
+    async def _batch_generate(
+        self,
+        chunks: list[dict],
+        total_count: int,
+        type_distribution: dict,
+        difficulty: str,
+        uid: int,
+    ) -> list[dict]:
+        """Generate questions in batches until target count is reached.
+
+        Uses JSON mode + iterative generation to enforce exact question count.
+        """
+        # Build ordered type list for round-robin distribution
+        type_list = []
+        for qtype, count in type_distribution.items():
+            type_list.extend([qtype] * count)
+
+        all_questions: list[dict] = []
+        used_chunk_indices: set[int] = set()
+        max_rounds = (total_count // self.BATCH_SIZE) + 3
+        seen_questions: set[str] = set()  # dedup by question text
+
+        for round_idx in range(max_rounds):
+            remaining = total_count - len(all_questions)
+            if remaining <= 0:
+                break
+
+            batch_count = min(self.BATCH_SIZE, remaining)
+            batch_types = type_list[len(all_questions):len(all_questions) + batch_count]
+
+            batch = await self._generate_batch(
+                chunks, batch_count, batch_types, difficulty, uid, used_chunk_indices
+            )
+
+            for q in batch:
+                # Dedup by question text
+                q_text = q.get("question", "").strip()
+                if q_text in seen_questions:
+                    continue
+                # Validate
+                if not self._validate_question(q, chunks):
+                    continue
+                seen_questions.add(q_text)
+                all_questions.append(q)
+                if len(all_questions) >= total_count:
+                    break
+
+            logger.info(
+                f"[QUIZ] round {round_idx + 1}: {len(all_questions)}/{total_count} "
+                f"valid questions so far"
+            )
+
+        # Trim to exact count
+        result = all_questions[:total_count]
+        logger.info(f"[QUIZ] final: {len(result)} questions (requested {total_count})")
+        return result
 
     @staticmethod
     def _get_llm(temperature: float = 0.7) -> ChatOpenAI:

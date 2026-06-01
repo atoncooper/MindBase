@@ -61,7 +61,7 @@ chroma:
 #          -p 19530:19530 -p 9091:9091 milvusdb/milvus:latest
 milvus:
   enabled: true
-  uri: http://106.53.220.71:19530
+  uri: http://192.168.138.128:19530
   token: ""
   db_name: bilirag
   collection_name: bilibili_videos
@@ -76,7 +76,7 @@ milvus:
 # Collections: operation_log, chat_messages, quiz_questions, quiz_answers
 mongo:
   enabled: true
-  uri: mongodb://admin:123456@106.53.220.71:27017/?authSource=admin
+  uri: mongodb://192.168.138.128:27017
   db_name: bilirag
   max_pool_size: 100
   min_pool_size: 10
@@ -87,7 +87,7 @@ mongo:
 # ---- Redis (cache + streams + distributed lock) -------------------
 redis:
   enabled: true
-  url: redis://:zjr2005626*@106.53.220.71:6379/1
+  url: redis://192.168.138.128:6379/1
   max_connections: 50
   socket_timeout: 5
   socket_connect_timeout: 5

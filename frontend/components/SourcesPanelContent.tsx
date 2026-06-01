@@ -152,7 +152,7 @@ export default function SourcesPanelContent({
     });
 
     // 2. 未展开且未缓存时请求分P数据 (v2)
-    if (!isExpanded && !pageCache[bvid]) {
+    if (!isExpanded) {
       try {
         const data = await favoritesV2Api.listVideoPages(bvid);
         // v2 returns page_index (0-based) — convert to old VideoPageInfo format (page 1-based)
@@ -164,18 +164,21 @@ export default function SourcesPanelContent({
         }));
         setPageCache((prev) => ({ ...prev, [bvid]: pages }));
 
-        // 3. 同步批量查询每P向量状态
+        // 3. 直接使用 listVideoPages 已返回的向量化状态
         const vecStatusMap: Record<string, VectorPageStatusResponse> = {};
-        await Promise.all(
-          data.pages.map(async (p) => {
-            try {
-              const status = await vecPageApi.getStatus(bvid, p.cid);
-              vecStatusMap[`${bvid}-${p.cid}`] = status;
-            } catch {
-              // ignore
-            }
-          })
-        );
+        for (const p of data.pages) {
+          vecStatusMap[`${bvid}-${p.cid}`] = {
+            exists: true,
+            bvid,
+            cid: p.cid,
+            page_index: p.page_index,
+            page_title: p.page_title,
+            is_processed: p.is_processed,
+            is_vectorized: p.is_vectorized as VectorPageStatusResponse["is_vectorized"],
+            vector_chunk_count: p.vector_chunk_count,
+            chroma_exists: p.is_vectorized === "done",
+          };
+        }
         setPageVectorStatus((prev) => ({ ...prev, ...vecStatusMap }));
       } catch (e) {
         console.error("[SourcesPanel] 获取分P失败:", e);
@@ -253,12 +256,14 @@ export default function SourcesPanelContent({
     try {
       const res = await knowledgeApi.build({ folder_ids: Array.from(selected) }, sessionId);
 
+      let delay = 2000;
       const poll = async () => {
         const s = await knowledgeApi.getBuildStatus(res.task_id);
         setProgress(s);
 
         if (s.status === "running" || s.status === "pending") {
-          setTimeout(poll, 1000);
+          delay = Math.min(delay * 2, 16000);
+          setTimeout(poll, delay);
         } else {
           setBuilding(false);
           if (s.status === "completed") {
@@ -327,8 +332,12 @@ export default function SourcesPanelContent({
       return { label: "有更新", className: "partial", indexedCount, totalCount };
     }
 
-    // 已入库但视频数为0（可能视频都没有内容）
-    return { label: "已入库", className: "ok", indexedCount, totalCount };
+    // 空文件夹（无视频可入库）
+    if (totalCount === 0) {
+      return { label: "已入库", className: "ok", indexedCount, totalCount };
+    }
+    // 有视频但都未完整向量化
+    return { label: "未入库", className: "empty", indexedCount };
   };
 
   // 向量化状态 Icon
@@ -357,13 +366,14 @@ export default function SourcesPanelContent({
         return;
       }
 
-      // 轮询直到完成
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
+      // 轮询直到完成（指数退避: 2s → 4s → 8s → ... → 16s）
+      let delay = 2000;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 16000);
         const taskStatus = await vecPageApi.getTaskStatus(resp.task_id);
         if (taskStatus.status === "done") {
           setVectorMessage("向量化完成");
-          // 刷新状态
           const refreshed = await vecPageApi.getStatus(bvid, cid);
           setPageVectorStatus((prev) => ({
             ...prev,
@@ -419,8 +429,10 @@ export default function SourcesPanelContent({
       });
       setVectorMessage("向量化任务已提交");
 
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
+      let delay = 2000;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 16000);
         const taskStatus = await vecPageApi.getTaskStatus(resp.task_id);
         if (taskStatus.status === "done") {
           const refreshed = await refreshPageVectorStatus(bvid, cid);

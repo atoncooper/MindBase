@@ -84,14 +84,29 @@ async def list_chat_sessions(
     db: AsyncSession,
     uid: int,
 ) -> list[ChatSessionResponse]:
-    """Return all active sessions for a user, newest first."""
+    """Return all active sessions for a user, newest first.
+
+    Cross-store consistency: if a session has 0 messages in MongoDB,
+    soft-delete the MySQL row and exclude it from results.
+    """
     result = await db.execute(
         select(ChatSession)
         .where(ChatSession.uid == uid, ChatSession.status == "active")
         .order_by(desc(ChatSession.updated_at))
     )
     sessions = result.scalars().all()
-    return [ChatSessionResponse.model_validate(s) for s in sessions]
+
+    valid = []
+    for s in sessions:
+        has_msgs = await mongo_chat.session_has_messages(s.chat_session_id)
+        if not has_msgs:
+            s.status = "deleted"
+            await db.commit()
+            logger.info(f"[CHAT_HISTORY] auto-cleaned session {s.chat_session_id}: no messages in MongoDB")
+            continue
+        valid.append(ChatSessionResponse.model_validate(s))
+
+    return valid
 
 
 async def update_chat_session_title(

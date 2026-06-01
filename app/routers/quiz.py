@@ -1,12 +1,13 @@
 """
 Quiz router — question generation, submission, grading, history, export.
 """
+import asyncio
 import json
 
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Body, Depends
+from fastapi import APIRouter, HTTPException, Query, Body, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
@@ -44,31 +45,66 @@ async def generate_quiz(
     difficulty: str = Query("medium", pattern="^(easy|medium|hard)$"),
     title: Optional[str] = Query(None),
     uid: int = Depends(get_current_uid),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
-    """Generate a quiz set from folders or specific pages."""
+    """Generate a quiz set — creates row immediately, processes in background.
+
+    Frontend should poll GET /quiz/{quiz_uuid} until status becomes "done" or "failed".
+    """
     fids = [int(x.strip()) for x in folder_ids.split(",") if x.strip()] if folder_ids else []
     if not fids and not pages:
         raise HTTPException(400, "请提供 folder_ids 或 pages")
 
     service = QuizGeneratorService()
+    quiz_uuid = await service.create_quiz_set(
+        uid=uid,
+        folder_ids=fids if fids else None,
+        pages=pages,
+        question_count=question_count,
+        difficulty=difficulty,
+        title=title,
+    )
+
+    background_tasks.add_task(
+        _run_quiz_generation,
+        quiz_uuid=quiz_uuid,
+        uid=uid,
+        folder_ids=fids if fids else None,
+        pages=pages,
+        question_count=question_count,
+        difficulty=difficulty,
+        title=title,
+    )
+
+    return {
+        "quiz_uuid": quiz_uuid,
+        "status": "generating",
+    }
+
+
+async def _run_quiz_generation(
+    quiz_uuid: str,
+    uid: int,
+    folder_ids: Optional[list[int]],
+    pages: Optional[list[dict]],
+    question_count: int,
+    difficulty: str,
+    title: Optional[str] = None,
+):
+    """Background task: generate quiz via LLM and save to MongoDB."""
     try:
-        quiz_uuid, count, est_tokens = await service.generate_quiz(
+        service = QuizGeneratorService()
+        await service.run_generation(
+            quiz_uuid=quiz_uuid,
             uid=uid,
-            folder_ids=fids if fids else None,
+            folder_ids=folder_ids,
             pages=pages,
             question_count=question_count,
             difficulty=difficulty,
             title=title,
         )
-        return {
-            "quiz_uuid": quiz_uuid,
-            "question_count": count,
-            "estimated_cost_tokens": est_tokens,
-        }
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
+    except Exception as e:
+        logger.error(f"[QUIZ] background generation failed quiz_uuid={quiz_uuid}: {e}")
 
 
 @router.post("/submit")
@@ -109,10 +145,40 @@ async def get_history(
     page_size: int = Query(10, ge=1, le=100),
     uid: int = Depends(get_current_uid),
 ):
-    """Get quiz history for the current user."""
-    async with get_db_context() as db:
-        from sqlalchemy import text
+    """Get quiz history for the current user.
 
+    Cross-store consistency: if a quiz_set has status='done' but MongoDB
+    has 0 questions, mark it as failed and exclude from results.
+    """
+    async with get_db_context() as db:
+        from sqlalchemy import text, select as sa_select
+        from app.models import QuizSet
+        from app.repository import mongo_quiz_repository as mongo_quiz
+
+        # 1. Check for stale quiz sets (MySQL done but MongoDB empty)
+        stale_result = await db.execute(
+            sa_select(QuizSet.quiz_uuid).where(
+                QuizSet.uid == uid,
+                QuizSet.status == "done",
+            )
+        )
+        stale_uuids = [row[0] for row in stale_result.all()]
+        for qid in stale_uuids:
+            try:
+                mq_count = await mongo_quiz.count_questions(qid)
+                if mq_count == 0:
+                    qs_result = await db.execute(
+                        sa_select(QuizSet).where(QuizSet.quiz_uuid == qid)
+                    )
+                    qs = qs_result.scalar_one_or_none()
+                    if qs:
+                        qs.status = "failed"
+                        qs.error_message = "MongoDB data lost — questions not found"
+            except Exception:
+                pass  # MongoDB unavailable — skip check
+        await db.commit()
+
+        # 2. Count and paginate
         count_result = await db.execute(
             text(
                 """SELECT COUNT(*) FROM quiz_sets
@@ -288,11 +354,24 @@ async def get_quiz(quiz_uuid: str, include_answers: bool = Query(False)):
 
     questions = await (get_quiz_questions_full(quiz_uuid) if include_answers else get_quiz_questions(quiz_uuid))
 
-    if quiz_set.question_count > 0 and len(questions) == 0:
+    # Only flag as lost if status is "done" but MongoDB is empty.
+    # "generating" means the background LLM task hasn't finished yet — that's expected.
+    if quiz_set.status == "done" and quiz_set.question_count > 0 and len(questions) == 0:
         logger.warning(
-            f"[QUIZ] quiz_uuid={quiz_uuid} has question_count={quiz_set.question_count} "
-            f"but MongoDB returned 0 questions — check MongoDB connection and data"
+            f"[QUIZ] quiz_uuid={quiz_uuid} has status=done question_count={quiz_set.question_count} "
+            f"but MongoDB returned 0 questions — marking quiz as failed (data lost after migration?)"
         )
+        async with get_db_context() as db:
+            from app.models import QuizSet
+            result = await db.execute(
+                __import__("sqlalchemy").select(QuizSet).where(QuizSet.quiz_uuid == quiz_uuid)
+            )
+            qs = result.scalar_one_or_none()
+            if qs:
+                qs.status = "failed"
+                qs.error_message = "MongoDB data lost — questions not found"
+                await db.commit()
+        raise HTTPException(410, "题目数据已丢失，请重新生成")
 
     return {
         "quiz_uuid": quiz_set.quiz_uuid,

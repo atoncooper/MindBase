@@ -114,6 +114,13 @@ async def get_questions_full(quiz_uuid: str) -> list[dict]:
     return results
 
 
+async def count_questions(quiz_uuid: str) -> int:
+    """Count questions for a quiz in MongoDB."""
+    if not is_enabled():
+        return -1  # MongoDB disabled → don't know
+    return await coll(COLLECTION).count_documents({"quiz_uuid": quiz_uuid, "is_valid": True})
+
+
 async def delete_by_quiz(quiz_uuid: str) -> int:
     """Delete all questions for a quiz. Returns deleted count."""
     if not is_enabled():

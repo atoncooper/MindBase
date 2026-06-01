@@ -32,40 +32,14 @@ class Collection(Base):
     cover = Column(String(500), nullable=True)
     duration = Column(Integer, nullable=True)
     owner_name = Column(String(100), nullable=True)
+    owner_mid = Column(BigInteger, nullable=True)
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("media_id", "bvid", name="uq_collection_media_bvid"),
     )
-
-
-class VideoCache(Base):
-    """视频内容缓存表"""
-    __tablename__ = 'video_cache'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    bvid = Column(String(20), unique=True, index=True, nullable=False)
-    cid = Column(BigInteger, nullable=True)
-    title = Column(String(500), nullable=False)
-    description = Column(Text, nullable=True)
-    owner_name = Column(String(100), nullable=True)  # UP主名称
-    owner_mid = Column(BigInteger, nullable=True)  # UP主ID (64-bit)
-    
-    # Content text stored in MongoDB asr_documents; MySQL keeps only metadata
-    content_source = Column(String(20), nullable=True)  # ai_summary / subtitle / basic_info / asr
-    outline_json = Column(JSON, nullable=True)  # 分段提纲
-    
-    # 元信息
-    duration = Column(Integer, nullable=True)  # 视频时长（秒）
-    pic_url = Column(String(500), nullable=True)  # 封面URL
-    
-    # 处理状态
-    is_processed = Column(Boolean, default=False)  # 是否已处理并加入向量库
-    process_error = Column(Text, nullable=True)  # 处理错误信息
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class FavoriteFolder(Base):
@@ -100,41 +74,13 @@ class FavoriteFolder(Base):
     )
 
 
-class FavoriteVideo(Base):
-    """收藏夹-视频关联表
-
-    v2: video_id 作为到 video_cache.id 的外键；bvid 保留用于旧路由兼容。
-    """
-    __tablename__ = 'favorite_videos'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    folder_id = Column(Integer, ForeignKey("favorite_folders.id", ondelete="CASCADE"), index=True, nullable=False)
-    video_id = Column(Integer, ForeignKey("collection.id", ondelete="CASCADE"), nullable=True, index=True)  # v2: FK → collection.id (av_id)
-    bvid = Column(String(20), index=True, nullable=True)  # 旧路由兼容，新路由可通过 video_id JOIN
-
-    # 是否选中（用户可以取消选中某些视频）
-    is_selected = Column(Boolean, default=True)
-
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    __table_args__ = (
-        UniqueConstraint("folder_id", "video_id", name="uq_fav_video_folder_video"),
-    )
-
-
-
-
 # ==================== Video & VideoVersion (分P ASR) ====================
 
 class Video(Base):
-    """Video page identified by cid — one row per episode.
-
-    video_id = bv_to_av(bvid), used as FK to video_cache for JOINs.
-    """
+    """Video page identified by cid — one row per episode."""
     __tablename__ = 'video'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    video_id = Column(Integer, index=True, nullable=True)  # bv_to_av(bvid), FK → video_cache.id
     bvid = Column(String(20), index=True, nullable=False)
     cid = Column(BigInteger, nullable=False)  # Bilibili cid
     page_index = Column(Integer, nullable=False)  # 0-based P序号

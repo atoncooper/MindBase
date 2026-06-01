@@ -44,6 +44,8 @@ create table collection
     cover      varchar(500) null,
     duration   int          null,
     owner_name varchar(100) null,
+    owner_mid  bigint       null,
+    description text        null,
     created_at datetime     null,
     updated_at datetime     null,
     constraint uq_collection_media_bvid
@@ -88,23 +90,6 @@ create table favorite_folders
 
 create index ix_favorite_folders_session_id
     on favorite_folders (session_id);
-
-create table favorite_videos
-(
-    id          int auto_increment
-        primary key,
-    folder_id   int         not null,
-    bvid        varchar(20) null,
-    is_selected tinyint(1)  null,
-    created_at  datetime    null,
-    video_id    int         null
-);
-
-create index ix_favorite_videos_bvid
-    on favorite_videos (bvid);
-
-create index ix_favorite_videos_folder_id
-    on favorite_videos (folder_id);
 
 create table quiz_answers
 (
@@ -439,7 +424,6 @@ create table video
 (
     id                 int auto_increment
         primary key,
-    video_id           int          null,
     bvid               varchar(20)  not null,
     cid                bigint       null,
     page_index         int          not null,
@@ -489,30 +473,6 @@ create table arc_meta
 create index ix_video_bvid
     on video (bvid);
 
-create index ix_video_video_id
-    on video (video_id);
-
-create table video_cache
-(
-    id             int auto_increment
-        primary key,
-    bvid           varchar(20)  not null,
-    cid            bigint       null,
-    title          varchar(500) not null,
-    description    text         null,
-    owner_name     varchar(100) null,
-    owner_mid      int          null,
-    content_source varchar(20)  null,
-    outline_json   json         null,
-    duration       int          null,
-    pic_url        varchar(500) null,
-    is_processed   tinyint(1)   null,
-    process_error  text         null,
-    created_at     datetime     null,
-    updated_at     datetime     null,
-    constraint ix_video_cache_bvid
-        unique (bvid)
-);
 
 create table video_page_versions
 (

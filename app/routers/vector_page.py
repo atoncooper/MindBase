@@ -6,6 +6,7 @@ For folder-level batch vectorization, use POST /knowledge/build.
 """
 
 import asyncio
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -41,13 +42,54 @@ def get_vector_service() -> VectorPageService:
 # API endpoints
 # ══════════════════════════════════════════════════════════════════
 
+async def _check_mongo_content(bvid: str, cid: int) -> tuple[bool, Optional[str]]:
+    """Verify content exists in MongoDB. Returns (exists, preview)."""
+    from app.infra.mongo import is_enabled as _mongo_ok
+    if not _mongo_ok():
+        return False, None
+    from app.repository.mongo_asr_repository import get_latest
+    doc = await get_latest(bvid, cid)
+    if doc and doc.get("content") and len(doc["content"].strip()) >= 50:
+        return True, doc["content"][:200]
+    return False, None
+
+
+def _vec_status_cache_key(bvid: str, cid: int) -> str:
+    return f"vec:status:{bvid}:{cid}"
+
+
+def _folder_status_cache_key(uid: int) -> str:
+    return f"folder_status:{uid}"
+
+
+async def _invalidate_vec_status(bvid: str, cid: int):
+    """Invalidate cached vector status after change."""
+    try:
+        from app.infra.redis import client as _redis, k
+        if _redis:
+            await _redis.delete(k("vec_status", f"{bvid}:{cid}"))
+            await _redis.delete(k("folder_status_cache", "*"))  # broad invalidation
+    except Exception:
+        pass
+
+
 @router.get("/status")
 async def get_vec_status(
     bvid: str,
     cid: int,
     db: AsyncSession = Depends(get_db)
 ) -> VectorPageStatusResponse:
-    """Query per-page vectorization status with ChromaDB consistency check."""
+    """Query per-page vectorization status with cross-store consistency check."""
+    # 1. Try Redis cache (30s TTL)
+    try:
+        from app.infra.redis import client as _redis, k, jget
+        if _redis:
+            cached = await jget(k("vec_status", f"{bvid}:{cid}"))
+            if cached:
+                return VectorPageStatusResponse(**cached)
+    except Exception:
+        pass
+
     result = await db.execute(
         select(Video).where(Video.bvid == bvid, Video.cid == cid)
     )
@@ -64,43 +106,65 @@ async def get_vec_status(
 
     from app.infra.config import config as _cfg
     rag = get_rag_service()
-    actual_count = rag.get_page_vector_count(bvid, page.page_index)
 
+    need_commit = False
+    vector_exists = False
+    content_exists = False
+    content_preview = None
+
+    # 2. Verify vector existence in vector DB
+    actual_count = rag.get_page_vector_count(bvid, page.page_index)
     vector_exists = actual_count > 0
-    fixed_vectorized = page.is_vectorized
 
     if page.is_vectorized == "done" and actual_count == 0:
         backend_name = "Milvus" if _cfg.milvus.enabled else "ChromaDB"
         page.is_vectorized = "failed"
-        page.vector_error = f"{backend_name} vector count is 0 — data may be corrupted"
-        await db.commit()
-        fixed_vectorized = "failed"
+        page.vector_error = f"{backend_name} vector count is 0 — data lost after DB migration"
+        need_commit = True
         vector_exists = False
 
     elif page.is_vectorized == "pending" and actual_count > 0:
         page.is_vectorized = "done"
-        from datetime import datetime
         page.vectorized_at = datetime.utcnow()
         page.vector_chunk_count = actual_count
-        await db.commit()
-        fixed_vectorized = "done"
+        need_commit = True
         vector_exists = True
 
-    return VectorPageStatusResponse(
+    # 3. Verify content exists in MongoDB
+    if page.is_processed:
+        content_exists, content_preview = await _check_mongo_content(bvid, cid)
+        if not content_exists:
+            page.is_processed = False
+            need_commit = True
+
+    if need_commit:
+        await db.commit()
+
+    resp = VectorPageStatusResponse(
         exists=True,
         bvid=page.bvid,
         cid=page.cid,
         page_index=page.page_index,
         page_title=page.page_title,
         is_processed=page.is_processed,
-        content_preview=None,
-        is_vectorized=fixed_vectorized,
+        content_preview=content_preview,
+        is_vectorized=page.is_vectorized if not (page.is_vectorized == "done" and not vector_exists) else "failed",
         vectorized_at=page.vectorized_at,
         vector_chunk_count=page.vector_chunk_count or actual_count,
         vector_error=page.vector_error,
         chroma_exists=vector_exists,
         steps=None,
     )
+
+    # 4. Cache result (30s TTL)
+    try:
+        from app.infra.redis import client as _redis2, k as _k2, jset as _jset
+        if _redis2:
+            await _jset(_k2("vec_status", f"{bvid}:{cid}"), resp.model_dump(), ex=30)
+    except Exception:
+        pass
+
+    return resp
 
 
 async def _resolve_optional_uid(

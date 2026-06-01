@@ -2,28 +2,24 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  // 允许加载外部图片
   images: {
     remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "**.hdslb.com",
-      },
-      {
-        protocol: "https",
-        hostname: "**.bilivideo.com",
-      },
-      {
-        protocol: "http",
-        hostname: "localhost",
-      },
+      { protocol: "https", hostname: "**.hdslb.com" },
+      { protocol: "https", hostname: "**.bilivideo.com" },
+      { protocol: "http", hostname: "localhost" },
     ],
   },
-  // 环境变量
-  env: {
-    // Empty default = same-origin (reverse-proxy friendly).
-    // SSR requests still reach backend via Docker network (api.ts fallback).
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "",
+  // 开发模式代理：将 API 请求转发到本地后端
+  // 生产环境由 nginx 处理，此 rewrite 不生效（NEXT_PUBLIC_API_URL="" 时跳过）
+  async rewrites() {
+    const backend = process.env.NEXT_PUBLIC_API_URL;
+    if (backend) return []; // 生产模式：nginx 代理，不需要 rewrite
+    return [
+      {
+        source: "/:path((?!_next|favicon).*)",
+        destination: "http://localhost:8000/:path*",
+      },
+    ];
   },
 };
 
