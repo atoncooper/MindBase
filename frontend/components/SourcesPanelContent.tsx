@@ -172,7 +172,7 @@ export default function SourcesPanelContent({
             bvid,
             cid: p.cid,
             page_index: p.page_index,
-            page_title: p.page_title,
+            page_title: p.page_title ?? undefined,
             is_processed: p.is_processed,
             is_vectorized: p.is_vectorized as VectorPageStatusResponse["is_vectorized"],
             vector_chunk_count: p.vector_chunk_count,
