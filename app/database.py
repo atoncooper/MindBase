@@ -122,9 +122,14 @@ async def _migrate_add_columns():
 
     # Plan 0025/0026: drop deprecated tables
     drop_tables = [
-        "chat_messages",      # → MongoDB
-        "quiz_questions",     # → MongoDB
-        "user_sessions",      # → user_tokens (Plan 0020)
+        "chat_messages",         # → MongoDB
+        "quiz_questions",        # → MongoDB
+        "user_sessions",         # → user_tokens (Plan 0020)
+        "user_settings",         # → user_credentials (Plan 0021)
+        "video_pages",           # → video (Plan 0034)
+        "video_page_versions",   # → video_versions (Plan 0034)
+        "video_cache",           # → collection (Plan 0034)
+        "favorite_videos",       # → collection (Plan 0034)
     ]
     for table in drop_tables:
         try:
@@ -133,23 +138,6 @@ async def _migrate_add_columns():
                 logger.info(f"[MIGRATION] Dropped table {table}")
         except Exception as e:
             logger.warning(f"[MIGRATION] Could not drop table {table}: {e}")
-
-    # Table renames (idempotent — skips if already done)
-    table_renames = [
-        ("video_pages", "video"),
-        ("video_page_versions", "video_versions"),
-    ]
-    for old_name, new_name in table_renames:
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(text(f"RENAME TABLE {old_name} TO {new_name}"))
-                logger.info(f"[MIGRATION] Renamed table {old_name} → {new_name}")
-        except Exception as e:
-            err_msg = str(e).lower()
-            if "doesn't exist" in err_msg or "already exists" in err_msg or "1017" in str(e) or "1050" in str(e):
-                logger.debug(f"[MIGRATION] Table rename {old_name} → {new_name} skipped ({e})")
-            else:
-                logger.warning(f"[MIGRATION] Could not rename {old_name} → {new_name}: {e}")
 
     # New table creation (CREATE TABLE IF NOT EXISTS)
     new_tables = [

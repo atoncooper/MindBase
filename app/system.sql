@@ -181,27 +181,6 @@ create table rbac_role
     updated_at  datetime    null
 );
 
-create table user_settings
-(
-    id                          int auto_increment
-        primary key,
-    session_id                  varchar(64)      not null,
-    llm_api_key_encrypted       text             null,
-    llm_base_url                text             null,
-    llm_model                   text             null,
-    embedding_api_key_encrypted text             null,
-    embedding_base_url          text             null,
-    embedding_model             text             null,
-    asr_api_key_encrypted       text             null,
-    asr_base_url                text             null,
-    asr_model                   text             null,
-    created_at                  datetime         null,
-    updated_at                  datetime         null,
-    uid                         bigint default 0 null,
-    constraint ix_user_settings_session_id
-        unique (session_id)
-);
-
 create table users
 (
     uid            bigint auto_increment
@@ -425,7 +404,7 @@ create table video
     id                 int auto_increment
         primary key,
     bvid               varchar(20)  not null,
-    cid                bigint       null,
+    cid                bigint       not null,
     page_index         int          not null,
     page_title         varchar(500) null,
     content_source     varchar(20)  null,
@@ -472,53 +451,6 @@ create table arc_meta
 
 create index ix_video_bvid
     on video (bvid);
-
-
-create table video_page_versions
-(
-    id             int auto_increment
-        primary key,
-    bvid           varchar(20) not null,
-    cid            bigint      null,
-    page_index     int         not null,
-    version        int         not null,
-    content        text        null,
-    content_source varchar(20) null,
-    is_latest      tinyint(1)  null,
-    created_at     datetime    null,
-    constraint uq_video_page_version
-        unique (bvid, cid, version)
-);
-
-create index ix_video_page_versions_bvid
-    on video_page_versions (bvid);
-
-create table video_pages
-(
-    id                 int auto_increment
-        primary key,
-    bvid               varchar(20)  not null,
-    cid                bigint       null,
-    page_index         int          not null,
-    page_title         varchar(500) null,
-    content            text         null,
-    content_source     varchar(20)  null,
-    is_processed       tinyint(1)   null,
-    version            int          null,
-    is_vectorized      varchar(20)  null,
-    vectorized_at      datetime     null,
-    vector_chunk_count int          null,
-    vector_error       text         null,
-    created_at         datetime     null,
-    updated_at         datetime     null,
-    constraint uq_video_page_bvid_cid
-        unique (bvid, cid),
-    constraint uq_video_page_bvid_index
-        unique (bvid, page_index)
-);
-
-create index ix_video_pages_bvid
-    on video_pages (bvid);
 
 create table video_versions
 (
