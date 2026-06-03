@@ -65,6 +65,7 @@ milvus:
   token: ""
   db_name: bilirag
   collection_name: bilibili_videos
+  cloud_collection_name: cloud_drive
   dimension: 1536
   index_type: IVF_FLAT
   metric_type: COSINE

@@ -4,11 +4,11 @@ Pydantic schemas for chat API — request / response models.
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class WorkspacePage(BaseModel):
-    """A selected vectorized page in the user's workspace."""
+    """A selected vectorized page in the user's workspace (B站 page-level precise filter)."""
     bvid: str
     cid: int
     page_index: int = 0
@@ -21,8 +21,21 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     chat_session_id: Optional[str] = None
     folder_ids: Optional[list[int]] = None
-    workspace_pages: Optional[list[WorkspacePage]] = None
+    workspace_pages: Optional[list[WorkspacePage]] = None  # B站 page-level filter
+    workspace_id: Optional[int] = None  # Plan 0023: cloud drive workspace filter
     mode: str = "standard"  # standard | agentic
+
+    @model_validator(mode="after")
+    def validate_search_scope(self) -> "ChatRequest":
+        """workspace_pages（B站分P）和 workspace_id（云盘工作区）互斥，不能同时指定。"""
+        has_pages = self.workspace_pages is not None and len(self.workspace_pages) > 0
+        has_ws_id = self.workspace_id is not None
+        if has_pages and has_ws_id:
+            raise ValueError(
+                "workspace_pages（B站分P精确检索）和 workspace_id（云盘工作区检索）"
+                "不能同时指定。请二选一。"
+            )
+        return self
 
 
 class ChatResponse(BaseModel):

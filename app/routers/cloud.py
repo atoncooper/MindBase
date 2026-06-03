@@ -39,6 +39,11 @@ from app.response.cloud import (
 router = APIRouter(prefix="/cloud", tags=["cloud-drive"])
 
 
+def _milvus_escape(value: str) -> str:
+    """Escape double-quote and backslash in Milvus expression strings."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -466,12 +471,12 @@ async def delete_video(
                     upload_uuid, exc,
                 )
 
-        # 3. Clean up Milvus vectors
+        # 3. Clean up cloud drive Milvus vectors
         if config.milvus.enabled:
             try:
                 from pymilvus import Collection
-                col = Collection(config.milvus.collection_name)
-                col.delete(f'bvid == "{upload_uuid}"')
+                col = Collection(config.milvus.cloud_collection_name)
+                col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
                 col.flush()
                 logger.info(
                     "[CLOUD] milvus vectors deleted upload_uuid=%s", upload_uuid,
@@ -513,20 +518,39 @@ async def trigger_processing(
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Fire-and-forget pipeline trigger (same pattern as upload completion)
+        # Mark as processing immediately (visible in status + WS push)
+        file.asr_status = "processing"
+        file.vector_status = "processing"
+        await db.commit()
+
+        from app.routers.tasks_ws import broadcast_cloud_status
+        asyncio.create_task(broadcast_cloud_status(uid, upload_uuid, "processing", 0))
+
+        # Capture primitive values before spawning background task
+        # (the request-scoped session + ORM object are invalid after response)
+        _upload_uuid = upload_uuid
+        _uid = uid
+        _mime_type = file.mime_type
+
+        # Fire-and-forget: parse → chunk → embed → verify → mark done
         async def _run_pipeline() -> None:
-            try:
-                logger.info(
-                    "[CLOUD] pipeline triggered upload_uuid=%s uid=%d",
-                    upload_uuid, uid,
-                )
-                # TODO: wire up actual ASR + vectorisation for cloud files
-                # from app.services.asr import asr_service
-                # await asr_service.process_cloud_file(upload_uuid, uid)
-            except Exception:
-                logger.exception(
-                    "[CLOUD] pipeline failed upload_uuid=%s", upload_uuid,
-                )
+            from app.database import async_session_factory
+            async with async_session_factory() as bg_db:
+                try:
+                    logger.info(
+                        "[CLOUD] pipeline started upload_uuid=%s uid=%d type=%s",
+                        _upload_uuid, _uid, _mime_type,
+                    )
+                    from app.services.doc_parser.vectorize import vectorize_cloud_document
+                    chunk_count = await vectorize_cloud_document(_upload_uuid, _uid, bg_db)
+                    logger.info(
+                        "[CLOUD] pipeline done upload_uuid=%s chunks=%d",
+                        _upload_uuid, chunk_count,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[CLOUD] pipeline failed upload_uuid=%s", _upload_uuid,
+                    )
 
         asyncio.create_task(_run_pipeline())
 
@@ -558,9 +582,9 @@ async def get_video_status(
         if config.milvus.enabled and milvus_chunk_count == 0:
             try:
                 from pymilvus import Collection
-                col = Collection(config.milvus.collection_name)
+                col = Collection(config.milvus.cloud_collection_name)
                 results = col.query(
-                    expr=f'bvid == "{upload_uuid}"',
+                    expr=f'upload_uuid == "{_milvus_escape(upload_uuid)}"',
                     output_fields=["chunk_index"],
                 )
                 milvus_chunk_count = len(results)
@@ -580,3 +604,116 @@ async def get_video_status(
             "[CLOUD] get_video_status failed upload_uuid=%s", upload_uuid,
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Plan 0023: Document support endpoints ──────────────────────
+
+
+@router.post("/video/{upload_uuid}/reprocess")
+async def reprocess_document(
+    upload_uuid: str,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-parse and re-vectorize a cloud document (for content changes)."""
+    try:
+        file_repo = _get_file_repo()
+        file = await file_repo.get_by_uuid(upload_uuid, uid, db)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        if not file.vectorizable:
+            raise HTTPException(status_code=400, detail="This file type is not vectorizable")
+
+        if config.milvus.enabled:
+            try:
+                from pymilvus import Collection
+                col = Collection(config.milvus.cloud_collection_name)
+                col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
+                col.flush()
+            except Exception as e:
+                logger.warning("[CLOUD] reprocess: delete old vectors failed: %s", e)
+
+        file.vector_status = "pending"
+        file.vector_chunk_count = 0
+        file.content_hash = None
+        await db.commit()
+
+        import uuid as _uuid
+        from app.services.async_task.tracker import TaskTracker
+        task_id = str(_uuid.uuid4())
+        tracker = TaskTracker()
+        await tracker.start(task_id, task_type="cloud_doc")
+        import asyncio as _asyncio
+        _asyncio.create_task(_run_doc_reprocess(task_id, upload_uuid, uid))
+        return {"uploadUuid": upload_uuid, "taskId": task_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[CLOUD] reprocess failed upload_uuid=%s", upload_uuid)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/video/{upload_uuid}/preview")
+async def get_document_preview(
+    upload_uuid: str,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a text preview of a parsed cloud document (first 500 chars from MongoDB)."""
+    try:
+        file_repo = _get_file_repo()
+        file = await file_repo.get_by_uuid(upload_uuid, uid, db)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        preview = ""
+        doc_meta = None
+        try:
+            from app.infra.mongo import get_database
+            mongo_db = get_database()
+            if mongo_db is not None:
+                doc = await mongo_db["cloud_drive_documents"].find_one(
+                    {"upload_uuid": upload_uuid, "uid": uid},
+                    {"content": 1, "doc_meta": 1, "_id": 0},
+                )
+                if doc:
+                    raw = doc.get("content", "")
+                    # Strip any residual HTML tags before returning
+                    import re as _re
+                    cleaned = _re.sub(r"<[^>]*>", "", raw)
+                    preview = cleaned[:500]
+                    doc_meta = doc.get("doc_meta")
+        except Exception as e:
+            logger.warning("[CLOUD] preview mongo lookup failed: %s", e)
+
+        return {
+            "uploadUuid": upload_uuid,
+            "fileName": file.original_name,
+            "mimeType": file.mime_type,
+            "vectorizable": file.vectorizable,
+            "preview": preview,
+            "docMeta": doc_meta,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[CLOUD] preview failed upload_uuid=%s", upload_uuid)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _run_doc_reprocess(task_id: str, upload_uuid: str, uid: int):
+    """Background task: re-parse + re-vectorize a cloud document."""
+    from app.services.async_task.tracker import TaskTracker
+    from app.database import async_session_factory
+    tracker = TaskTracker()
+    log = logger
+    try:
+        async with async_session_factory() as bg_db:
+            await tracker.step(task_id, "parse", "processing", 0)
+            from app.services.doc_parser.vectorize import vectorize_cloud_document
+            chunk_count = await vectorize_cloud_document(upload_uuid, uid, bg_db)
+            await tracker.step(task_id, "parse", "done", 100)
+            await tracker.complete(task_id, {"chunk_count": chunk_count})
+    except Exception as e:
+        log.exception("[CLOUD] _run_doc_reprocess failed task_id=%s", task_id)
+        await tracker.fail(task_id, str(e))

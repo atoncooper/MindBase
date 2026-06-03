@@ -297,6 +297,7 @@ export interface ChatRequestPayload {
     chat_session_id?: string;  // 新增：聊天会话 ID
     folder_ids?: number[];
     workspace_pages?: WorkspacePage[];
+    workspace_id?: number;  // Plan 0023: cloud drive workspace
 }
 
 // ==================== API 函数 ====================
@@ -1661,4 +1662,59 @@ export const cloudApi = {
         // 3. Complete
         return cloudApi.completeUpload(init.uploadUuid, parts);
     },
+};
+
+// ==================== Plan 0023: Workspace API ====================
+
+export interface WorkspaceBinding {
+    id: number;
+    bindType: "folder" | "file";
+    folderId?: number;
+    folderName?: string;
+    uploadUuid?: string;
+    fileName?: string;
+    includeSubfolders: boolean;
+}
+
+export interface WorkspaceItem {
+    id: number;
+    name: string;
+    description?: string;
+    icon?: string;
+    color?: string;
+    fileCount: number;
+    chunkCount: number;
+    bindings: WorkspaceBinding[];
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface WorkspaceCreateParams {
+    name: string;
+    description?: string;
+    icon?: string;
+    color?: string;
+}
+
+export interface BindingCreateParams {
+    bindType: "folder" | "file";
+    folderId?: number;
+    uploadUuid?: string;
+    includeSubfolders?: boolean;
+}
+
+export const workspaceApi = {
+    list: () => request<WorkspaceItem[]>("/workspaces"),
+    create: (data: WorkspaceCreateParams) =>
+        request<WorkspaceItem>("/workspaces", { method: "POST", body: JSON.stringify(data) }),
+    get: (id: number) => request<WorkspaceItem>(`/workspaces/${id}`),
+    update: (id: number, data: Partial<WorkspaceCreateParams>) =>
+        request<WorkspaceItem>(`/workspaces/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    delete: (id: number) => request<{ deleted: boolean }>(`/workspaces/${id}`, { method: "DELETE" }),
+    addBinding: (id: number, data: BindingCreateParams) =>
+        request<WorkspaceItem>(`/workspaces/${id}/bindings`, { method: "POST", body: JSON.stringify(data) }),
+    removeBinding: (workspaceId: number, bindingId: number) =>
+        request<{ deleted: boolean }>(`/workspaces/${workspaceId}/bindings/${bindingId}`, { method: "DELETE" }),
+    listFiles: (id: number) =>
+        request<{ uploadUuid: string; originalName: string; mimeType: string; vectorizable: boolean; vectorStatus: string; vectorChunkCount: number }[]>(`/workspaces/${id}/files`),
 };
