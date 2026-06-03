@@ -42,7 +42,7 @@ server:
 
 # ---- Relational database ------------------------------------------
 rdbms:
-  url: mysql+aiomysql://root:zjr2005626@127.0.0.1:3306/bilirag
+  url: ""                               # inject via RDBMS__URL env var
   echo: true                          # log all SQL (dev-friendly)
   pool_size: 20
   max_overflow: 10
@@ -61,7 +61,7 @@ chroma:
 #          -p 19530:19530 -p 9091:9091 milvusdb/milvus:latest
 milvus:
   enabled: true
-  uri: http://192.168.138.128:19530
+  uri: ""                               # inject via MILVUS__URI env var
   token: ""
   db_name: bilirag
   collection_name: bilibili_videos
@@ -77,7 +77,7 @@ milvus:
 # Collections: operation_log, chat_messages, quiz_questions, quiz_answers
 mongo:
   enabled: true
-  uri: mongodb://192.168.138.128:27017
+  uri: ""                               # inject via MONGO__URI env var
   db_name: bilirag
   max_pool_size: 100
   min_pool_size: 10
@@ -88,7 +88,7 @@ mongo:
 # ---- Redis (cache + streams + distributed lock) -------------------
 redis:
   enabled: true
-  url: redis://192.168.138.128:6379/1
+  url: ""                               # inject via REDIS__URL env var
   max_connections: 50
   socket_timeout: 5
   socket_connect_timeout: 5
