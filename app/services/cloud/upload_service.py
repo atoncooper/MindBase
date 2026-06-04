@@ -38,6 +38,36 @@ from app.services.cloud.minio_client import get_minio_client, MinioClient
 CHUNK_SIZE: int = 10 * 1024 * 1024       # 10 MB
 MAX_FILE_SIZE: int = 5 * 1024 * 1024 * 1024  # 5 GB
 HEARTBEAT_TTL: int = 300                  # 5 minutes in seconds
+
+_MIME_TO_EXT: dict[str, str] = {
+    "video/": ".mp4",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/x-markdown": ".md",
+    "text/csv": ".csv",
+    "text/html": ".html",
+    "application/pdf": ".pdf",
+    "application/zip": ".zip",
+    "application/x-rar-compressed": ".rar",
+    "application/x-7z-compressed": ".7z",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml": ".pptx",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
+def _ext_from_mime(mime_type: str) -> str:
+    for prefix, ext in _MIME_TO_EXT.items():
+        if mime_type.startswith(prefix):
+            return ext
+    return ".bin"
+
+
 ALLOWED_MIME_PREFIXES: list[str] = [
     "video/",
     "text/plain",
@@ -46,6 +76,8 @@ ALLOWED_MIME_PREFIXES: list[str] = [
     "text/csv",
     "text/html",
     "application/vnd.openxmlformats-officedocument.wordprocessingml",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml",
+    "application/vnd.openxmlformats-officedocument.presentationml",
     "application/pdf",
     "application/zip",
     "application/x-rar-compressed",
@@ -174,7 +206,7 @@ class CloudUploadService:
 
         upload_uuid = _generate_uuid7()
         session_uuid = _generate_uuid7()
-        object_key = f"{uid}/{upload_uuid}/video.mp4"
+        object_key = f"{uid}/{upload_uuid}/file{_ext_from_mime(mime_type)}"
         chunk_count = math.ceil(file_size / CHUNK_SIZE)
 
         logger.info(

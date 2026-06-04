@@ -571,7 +571,7 @@ class CloudFile(Base):
     folder_id = Column(Integer, ForeignKey("cloud_folders.id"), nullable=True)
     original_name = Column(String(500), nullable=False)
     file_size = Column(BigInteger, nullable=False)
-    mime_type = Column(String(50), nullable=False)
+    mime_type = Column(String(128), nullable=False)
     duration = Column(Integer, nullable=True)
     bucket = Column(String(64), nullable=False)
     object_key = Column(String(500), nullable=False)
