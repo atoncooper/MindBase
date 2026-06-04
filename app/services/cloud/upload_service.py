@@ -257,18 +257,23 @@ class CloudUploadService:
         )
 
         # ---- presigned URLs ----
-        presigned_urls: list[str] = []
+        presigned_urls: list[dict] = []
         try:
             for part_number in range(1, chunk_count + 1):
                 url = await self._minio.presigned_upload_part(
                     object_key, minio_upload_id, part_number,
                 )
-                presigned_urls.append(url)
+                presigned_urls.append({
+                    "chunkIndex": part_number - 1,
+                    "chunkSize": CHUNK_SIZE,
+                    "url": url,
+                })
         except Exception:
             logger.exception(
                 "[CLOUD_UPLOAD] presigned_url generation failed, aborting"
             )
             await self._minio.abort_multipart_upload(object_key, minio_upload_id)
+            await self._session_repo.mark_abandoned(session_uuid, db)
             raise
 
         # ---- heartbeat ----
@@ -311,6 +316,13 @@ class CloudUploadService:
                 f"CloudFile {upload_uuid} not found for user {uid}"
             )
 
+        # ---- guard: only proceed if still uploading ----
+        if file.upload_status != "uploading":
+            raise ValueError(
+                f"Upload {upload_uuid} is already {file.upload_status}, "
+                f"cannot complete"
+            )
+
         # ---- get minio_upload_id ----
         minio_upload_id = await self._chunk_repo.get_minio_upload_id(
             upload_uuid, db
@@ -334,19 +346,29 @@ class CloudUploadService:
             raise
 
         # ---- mark DB completed ----
-        await self._file_repo.update_upload_completed(upload_uuid, etag, db)
+        try:
+            await self._file_repo.update_upload_completed(upload_uuid, etag, db)
+        except Exception:
+            logger.critical(
+                "[CLOUD_UPLOAD] DB update failed after MinIO complete "
+                "upload_uuid=%s etag=%s — manual fix required!",
+                upload_uuid, etag,
+            )
+            raise
 
         # ---- clean up chunk rows ----
         await self._chunk_repo.delete_by_upload(upload_uuid, db)
 
-        # ---- update session ----
+        # ---- update session (lookup by minio_upload_id) ----
         try:
-            await self._session_repo.mark_completed(file.upload_uuid, db)
+            await self._session_repo.mark_completed_by_minio_upload_id(
+                minio_upload_id, db,
+            )
         except Exception:
-            # session may not exist (legacy uploads); non-fatal
             logger.debug(
-                "[CLOUD_UPLOAD] session mark_completed skipped for upload_uuid=%s",
-                upload_uuid,
+                "[CLOUD_UPLOAD] session mark_completed skipped "
+                "upload_uuid=%s minio_upload_id=%s",
+                upload_uuid, minio_upload_id,
             )
 
         logger.info(
