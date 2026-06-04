@@ -44,7 +44,7 @@ loguru==0.7.2
 # ffmpeg — installed in Dockerfile
 
 # Plan 0021: MinIO client for cloud drive
-minio>=7.2.0
+minio>=7.2.7
 
 # Plan 0023: Document parsing
 markdown-it-py>=3.0.0

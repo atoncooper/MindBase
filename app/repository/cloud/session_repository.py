@@ -63,6 +63,25 @@ class CloudSessionRepository:
                 f"[CLOUD_SESSION_REPO] completed session_uuid={session_uuid}"
             )
 
+    async def mark_completed_by_minio_upload_id(
+        self, minio_upload_id: str, db: AsyncSession,
+    ) -> None:
+        """Mark session as completed, looked up by minio_upload_id."""
+        result = await db.execute(
+            select(CloudUploadSession).where(
+                CloudUploadSession.minio_upload_id == minio_upload_id,
+            )
+        )
+        session = result.scalar_one_or_none()
+        if session:
+            session.status = "completed"
+            session.last_heartbeat = datetime.utcnow()
+            await db.commit()
+            logger.info(
+                "[CLOUD_SESSION_REPO] completed minio_upload_id=%s session_uuid=%s",
+                minio_upload_id, session.session_uuid,
+            )
+
     async def mark_abandoned(
         self, session_uuid: str, db: AsyncSession,
     ) -> None:

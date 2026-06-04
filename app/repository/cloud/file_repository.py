@@ -277,7 +277,7 @@ class CloudFileRepository:
             "vector_status": status,
             "updated_at": datetime.utcnow(),
         }
-        if chunk_count:
+        if chunk_count is not None:
             values["vector_chunk_count"] = chunk_count
         await db.execute(
             sa_update(CloudFile)
