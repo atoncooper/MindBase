@@ -72,6 +72,17 @@ class RAGService:
             from app.infra.vector_store import get_vector_store
             self.backend = get_vector_store(self.embeddings)
 
+        # Cloud drive vector backend (Plan 0023: separate Milvus collection)
+        self.cloud_backend = None
+        try:
+            from app.infra.config import config
+            if config.milvus.enabled:
+                from app.infra.vector_store import get_cloud_vector_store
+                self.cloud_backend = get_cloud_vector_store(self.embeddings)
+                logger.info("[RAG] cloud_backend initialized: %s", config.milvus.cloud_collection_name)
+        except Exception as e:
+            logger.warning("[RAG] cloud_backend init failed: %s", e)
+
         # LLM (default, chat.py creates per-request LLM dynamically)
         self.llm = ChatOpenAI(
             api_key=settings.openai_api_key,

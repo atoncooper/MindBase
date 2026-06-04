@@ -185,6 +185,7 @@ class MilvusSection(_Section):
     token: str = ""
     db_name: str = "bilirag"
     collection_name: str = "bilibili_videos"
+    cloud_collection_name: str = "cloud_drive"
     dimension: int = 1536
     index_type: str = "IVF_FLAT"
     metric_type: str = "COSINE"

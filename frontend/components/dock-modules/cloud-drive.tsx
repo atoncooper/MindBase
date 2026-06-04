@@ -159,6 +159,39 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
     }
   }, [isOpen, loadFolders, loadVideos]);
 
+  // Plan 0023: WebSocket — real-time cloud processing status push
+  useEffect(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("bili_session") : null;
+    if (!token) return;
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = process.env.NEXT_PUBLIC_WS_URL || window.location.host;
+    const ws = new WebSocket(`${protocol}//${host}/ws/tasks?token=${encodeURIComponent(token)}`);
+
+    ws.onopen = () => {};
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type !== "cloud_processing") return;
+
+        const { upload_uuid, status, chunk_count } = msg;
+        setVideos((prev) =>
+          prev.map((v) =>
+            v.uploadUuid === upload_uuid
+              ? { ...v, vectorStatus: status, vectorChunkCount: chunk_count ?? v.vectorChunkCount }
+              : v
+          )
+        );
+      } catch {
+        // ignore non-JSON messages (heartbeats etc.)
+      }
+    };
+    ws.onerror = () => {};
+    ws.onclose = () => {};
+
+    return () => { ws.close(); };
+  }, [isOpen]);
+
   /* ── Handlers ── */
 
   const handleSelectFolder = (id: number | null) => {
@@ -217,6 +250,18 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const ALLOWED_MIME_PREFIXES = [
+      "video/", "text/", "application/vnd.openxmlformats-officedocument.wordprocessingml",
+      "application/pdf", "application/zip", "application/x-rar-compressed", "image/",
+    ];
+    const ALLOWED_EXTENSIONS = /\.(mp4|webm|mov|mkv|avi|md|markdown|html?|docx?|txt|pdf|zip|rar|7z|png|jpe?g|gif|webp)$/i;
+    const isAllowed = ALLOWED_MIME_PREFIXES.some(p => file.type.startsWith(p)) || ALLOWED_EXTENSIONS.test(file.name);
+    if (!isAllowed) {
+      showToast("不支持的文件类型", "error");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
 
     setUploading(true);
     setUploadProgress(0);
@@ -331,7 +376,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
             type="file"
             className="hidden"
             onChange={handleUpload}
-            accept="*/*"
+            accept="video/*,.md,.html,.htm,.docx,.doc,.txt,.pdf,.zip,.rar,.png,.jpg,.jpeg,.gif,.webp"
           />
         </div>
       </div>

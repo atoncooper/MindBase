@@ -38,6 +38,7 @@ class CloudFileRepository:
         db: AsyncSession,
     ) -> CloudFile:
         """Insert a new CloudFile row in 'uploading' state."""
+        from app.services.doc_parser import is_vectorizable
         file = CloudFile(
             upload_uuid=upload_uuid,
             uid=uid,
@@ -50,6 +51,7 @@ class CloudFileRepository:
             upload_status="uploading",
             asr_status="pending",
             vector_status="pending",
+            vectorizable=is_vectorizable(mime_type, original_name),
         )
         db.add(file)
         await db.commit()

@@ -584,6 +584,10 @@ class CloudFile(Base):
     description = Column(Text, nullable=True)
     cover_url = Column(String(500), nullable=True)
     tags = Column(JSON, nullable=True)
+    vectorizable = Column(Boolean, default=True, nullable=False)
+    doc_parser = Column(String(20), nullable=True)
+    doc_meta = Column(JSON, nullable=True)
+    content_hash = Column(String(128), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted_at = Column(DateTime, nullable=True)
@@ -633,3 +637,34 @@ class CloudUploadSession(Base):
     __table_args__ = (
         UniqueConstraint("session_uuid", name="uq_upload_session"),
     )
+
+
+class Workspace(Base):
+    """Plan 0023: User workspace — a named retrieval scope binding cloud files/folders."""
+    __tablename__ = 'workspaces'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    icon = Column(String(50), nullable=True)
+    color = Column(String(20), nullable=True)
+    file_count = Column(Integer, default=0)
+    chunk_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
+
+
+class WorkspaceBinding(Base):
+    """Plan 0023: Binding between workspace and cloud file/folder."""
+    __tablename__ = 'workspace_bindings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    bind_type = Column(String(10), nullable=False)
+    folder_id = Column(Integer, ForeignKey("cloud_folders.id"), nullable=True)
+    upload_uuid = Column(String(64), nullable=True)
+    include_subfolders = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

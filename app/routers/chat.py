@@ -661,6 +661,24 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     if workspace_mode:
         logger.info(f"[WORKSPACE] 工作区模式: {len(workspace_pages_dicts)} 个分P")
 
+    # Plan 0023: Cloud drive workspace mode
+    cloud_workspace_mode = request.workspace_id is not None
+    ws_upload_uuids: list[str] = []
+    if cloud_workspace_mode:
+        from app.repository.workspace_repository import WorkspaceRepository
+        from app.infra.redis import redis_client
+        ws_repo = WorkspaceRepository(redis=redis_client if redis_client else None)
+        ws = await ws_repo.get_by_id(request.workspace_id, uid, db)
+        if ws is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="工作区不存在")
+        ws_upload_uuids = list(await ws_repo.expand_bindings(request.workspace_id, uid, db))
+        logger.info(f"[WORKSPACE] 云盘工作区 id={request.workspace_id} → {len(ws_upload_uuids)} 个文件")
+        if not ws_upload_uuids:
+            context = "（该工作区暂无已向量化的文件，请先添加文件到工作区并完成向量化）"
+            messages = _build_fallback_messages(context, question)
+            return messages, [], question, rewrite_result
+
     # 1) LLM 路由优先，失败时降级规则路由
     logger.info(f"路由输入: question={question} media_ids={media_ids} has_data={has_data} is_collection_intent={is_collection_intent}")
     route, route_raw = await _route_with_llm(question)
@@ -675,7 +693,7 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     if is_general:
         route = "direct"
     # 工作区模式强制走 vector
-    if workspace_mode:
+    if workspace_mode or cloud_workspace_mode:
         route = "vector"
         logger.info("[WORKSPACE] 强制路由: vector")
     # 2) 无数据时处理
@@ -717,12 +735,13 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     if related is None:
         rewrite_query = rewrite_result.rewrites[0].query if (rewrite_result and rewrite_result.rewrites) else question
         related = await _is_related_to_collection(db, media_ids, rewrite_query)
-    if not related and not is_collection_intent and not workspace_mode:
+    if not related and not is_collection_intent and not workspace_mode and not cloud_workspace_mode:
         return _build_direct_messages(question), [], question, rewrite_result
     # 7) 向量检索（使用 Query 改写 + 工作区过滤）
     try:
+        search_bvids = ws_upload_uuids if cloud_workspace_mode else bvids
         context, sources = await _vector_search_with_rewrites(
-            question, rewrite_result, bvids, k=5, workspace_pages=workspace_pages_dicts
+            question, rewrite_result, search_bvids, k=5, workspace_pages=workspace_pages_dicts
         )
         if context:
             return _build_rag_messages(context, question), sources, question, rewrite_result

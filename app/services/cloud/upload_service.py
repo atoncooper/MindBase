@@ -38,7 +38,25 @@ from app.services.cloud.minio_client import get_minio_client, MinioClient
 CHUNK_SIZE: int = 10 * 1024 * 1024       # 10 MB
 MAX_FILE_SIZE: int = 5 * 1024 * 1024 * 1024  # 5 GB
 HEARTBEAT_TTL: int = 300                  # 5 minutes in seconds
-VALID_MIME_PREFIX: str = "video/"
+ALLOWED_MIME_PREFIXES: list[str] = [
+    "video/",
+    "text/plain",
+    "text/markdown",
+    "text/x-markdown",
+    "text/csv",
+    "text/html",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml",
+    "application/pdf",
+    "application/zip",
+    "application/x-rar-compressed",
+    "application/x-7z-compressed",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+]
 
 # ---------------------------------------------------------------------------
 # UUID7 generator (time-ordered)
@@ -143,9 +161,9 @@ class CloudUploadService:
         *chunkCount*, *chunkSize*, and *presignedUrls* (one per chunk).
         """
         # ---- validation ----
-        if not mime_type.startswith(VALID_MIME_PREFIX):
+        if not any(mime_type.startswith(p) for p in ALLOWED_MIME_PREFIXES):
             raise ValueError(
-                f"Invalid mime_type={mime_type!r}; must start with 'video/'"
+                f"Unsupported mime_type={mime_type!r}"
             )
         if file_size <= 0:
             raise ValueError(f"file_size must be positive, got {file_size}")

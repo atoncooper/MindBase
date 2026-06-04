@@ -135,6 +135,33 @@ def _diagnose_langsmith() -> None:
 diagnose_langsmith = _diagnose_langsmith
 
 
+async def _recover_stuck_cloud_tasks():
+    """Plan 0023: Reset stuck cloud drive processing tasks (status=processing and timed out)."""
+    try:
+        from app.infra.config import config as _cfg
+
+        if not _cfg.rdbms.url:
+            return
+
+        from app.database import engine as _engine
+        from sqlalchemy import text as _text
+
+        async with _engine.begin() as conn:
+            result = await conn.execute(
+                _text(
+                    "UPDATE async_tasks SET status = 'pending', progress = 0, updated_at = NOW() "
+                    "WHERE status = 'processing' "
+                    "AND task_type IN ('cloud_doc', 'cloud_video') "
+                    "AND updated_at < NOW() - INTERVAL 30 MINUTE"
+                )
+            )
+            count = result.rowcount
+            if count > 0:
+                logger.warning(f"[STARTUP] 恢复 {count} 个卡住的云盘处理任务")
+    except Exception as e:
+        logger.debug("[STARTUP] cloud task recovery skipped: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -220,6 +247,9 @@ async def lifespan(app: FastAPI):
                     page_title=task["target"].get("page_title"),
                 )
             )
+
+    # Plan 0023: Recover stuck cloud drive document processing tasks
+    await _recover_stuck_cloud_tasks()
 
     yield
 
@@ -307,6 +337,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Plan 0023: Rate limiting middleware (second line of defense after nginx)
+try:
+    from app.infra.redis import redis_client
+    from app.middleware.rate_limit import RateLimitMiddleware
+    if redis_client:
+        app.add_middleware(RateLimitMiddleware, redis_client=redis_client)
+        logger.info("[MAIN] RateLimitMiddleware registered (Redis backend)")
+    else:
+        logger.warning("[MAIN] RateLimitMiddleware skipped — Redis not available")
+except Exception as e:
+    logger.warning("[MAIN] RateLimitMiddleware failed to init: %s", e)
+
 
 # 注册路由
 app.include_router(auth.router)
@@ -328,6 +370,14 @@ try:
     logger.info("[MAIN] Cloud drive router registered")
 except ImportError as e:
     logger.info(f"[MAIN] Cloud drive router not available: {e}")
+
+# Plan 0023: Workspace router
+try:
+    from app.routers.workspace import router as workspace_router
+    app.include_router(workspace_router)
+    logger.info("[MAIN] Workspace router registered")
+except ImportError as e:
+    logger.info(f"[MAIN] Workspace router not available: {e}")
 
 
 @app.get("/")
