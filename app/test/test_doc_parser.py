@@ -1,7 +1,5 @@
 """Tests for doc parser module — MD, HTML, DOCX parsers, cleaner, and registry."""
 
-import pytest
-from app.services.doc_parser.base import ParsedDocument
 from app.services.doc_parser.cleaner import clean_document_text
 from app.services.doc_parser import get_parser, is_vectorizable, MAX_DOC_SIZE
 

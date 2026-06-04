@@ -1,8 +1,7 @@
 """Tests for RateLimitMiddleware and related utilities."""
 
-import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from app.middleware.rate_limit import RateLimitMiddleware, _RATE_LIMITS, _GLOBAL_RATE
 
@@ -70,8 +69,6 @@ class TestRateLimitDispatch:
 
         response = await middleware.dispatch(request, call_next)
         assert response.status_code == 429
-        body = response.body if hasattr(response, "body") else ""
-        assert isinstance(response.status_code, int)
 
     @pytest.mark.asyncio
     async def test_allow_when_redis_unavailable(self):

@@ -1413,6 +1413,7 @@ export interface CloudVideoItem {
     duration: number | null;
     asrStatus: string;
     vectorStatus: string;
+    vectorChunkCount: number | null;
     title: string | null;
     coverUrl: string | null;
     createdAt: string;

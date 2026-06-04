@@ -5,7 +5,6 @@ from __future__ import annotations
 from io import BytesIO
 
 from docx import Document
-from docx.oxml.ns import qn
 
 from app.services.doc_parser.base import BaseDocParser, ParsedDocument
 

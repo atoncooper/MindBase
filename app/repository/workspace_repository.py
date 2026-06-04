@@ -191,7 +191,7 @@ class WorkspaceRepository:
                 select(CloudFile.upload_uuid).where(
                     CloudFile.folder_id.in_(folder_ids),
                     CloudFile.uid == uid,
-                    CloudFile.vectorizable == True,
+                    CloudFile.vectorizable,
                     CloudFile.deleted_at.is_(None),
                 )
             )
@@ -202,7 +202,7 @@ class WorkspaceRepository:
             result = await db.execute(
                 select(CloudFile.upload_uuid).where(
                     CloudFile.upload_uuid.in_(upload_uuids),
-                    CloudFile.vectorizable == True,
+                    CloudFile.vectorizable,
                     CloudFile.deleted_at.is_(None),
                 )
             )

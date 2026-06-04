@@ -1,10 +1,9 @@
 """Tests for WorkspaceRepository — CRUD, binding expansion, and caching."""
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Workspace, WorkspaceBinding, CloudFile, CloudFolder, User
+from app.models import CloudFile, CloudFolder, User
 from app.repository.workspace_repository import WorkspaceRepository
 
 

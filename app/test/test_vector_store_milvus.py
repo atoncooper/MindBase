@@ -1,6 +1,5 @@
 """Tests for Milvus expression escaping and builder utilities."""
 
-import pytest
 from app.repository.vector_store_milvus import _escape_expr, _quote_list, _build_in_filter, MILVUS_IN_MAX_SIZE
 
 

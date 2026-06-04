@@ -235,7 +235,7 @@ class MilvusVectorStore:
     # ── internals ─────────────────────────────────────────────────
 
     def _get_or_create_collection(self):
-        from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, utility
+        from pymilvus import Collection, CollectionSchema, utility
 
         if utility.has_collection(self._collection_name):
             col = Collection(self._collection_name)

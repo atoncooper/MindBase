@@ -138,7 +138,6 @@ diagnose_langsmith = _diagnose_langsmith
 async def _recover_stuck_cloud_tasks():
     """Plan 0023: Reset stuck cloud drive processing tasks (status=processing and timed out)."""
     try:
-        from datetime import timedelta
         from app.infra.config import config as _cfg
 
         if not _cfg.rdbms.url:

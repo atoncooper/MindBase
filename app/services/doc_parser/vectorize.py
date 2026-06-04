@@ -10,6 +10,8 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from langchain_core.documents import Document
+
 from app.services.doc_parser import get_parser, MAX_DOC_SIZE
 from app.services.doc_parser.cleaner import clean_document_text
 
@@ -37,7 +39,6 @@ async def vectorize_cloud_document(
     """
     from app.repository.cloud.file_repository import FileRepository
     from app.services.rag import get_rag_service
-    from langchain_core.documents import Document
 
     file_repo = FileRepository()
     file = await file_repo.get_by_uuid(upload_uuid, uid, db)
