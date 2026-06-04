@@ -500,7 +500,7 @@ create table cloud_files
     folder_id          int          null,
     original_name      varchar(500) not null,
     file_size          bigint       not null,
-    mime_type          varchar(50)  not null,
+    mime_type          varchar(128)  not null,
     duration           int          null,
     bucket             varchar(64)  not null,
     object_key         varchar(500) not null,
