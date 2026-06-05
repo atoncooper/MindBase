@@ -2,6 +2,8 @@
  * API 客户端
  */
 
+import { sanitizeError } from "@/lib/error-utils";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (typeof window !== "undefined" ? "" : "http://backend:8000");
 
 // 获取当前 session token 的 Authorization header
@@ -33,26 +35,22 @@ async function request<T>(
         if (typeof window !== "undefined") {
             const token = localStorage.getItem("bili_session");
             if (token) {
-                // Only clear if we actually sent a token — avoids false positives
-                // on public endpoints that also return 401 for other reasons
                 localStorage.removeItem("bili_session");
                 localStorage.removeItem("bili_user");
-                throw new Error("会话已过期，请重新登录");
+                throw new Error(sanitizeError({ status: 401 }));
             }
         }
-        // Fall through to the generic error handler below for API-level 401s
     }
 
     if (!response.ok) {
-        const text = await response.text();
-        let message = text || `请求失败: ${response.status}`;
+        // Consume body so the connection can be reused
+        let rawDetail = "";
         try {
+            const text = await response.text();
             const parsed = JSON.parse(text);
-            if (parsed.detail) {
-                message = typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
-            }
+            rawDetail = typeof parsed.detail === "string" ? parsed.detail : "";
         } catch {}
-        throw new Error(message);
+        throw new Error(sanitizeError({ status: response.status, detail: rawDetail }));
     }
 
     return response.json();

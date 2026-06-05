@@ -64,6 +64,7 @@ services:
       - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
       - MINIO__REGION=${MINIO_REGION:-us-east-1}
       - MINIO__SECURE=${MINIO_SECURE:-false}
+      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s

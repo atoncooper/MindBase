@@ -49,6 +49,10 @@ class MinioClient:
 
     Created lazily so modules that import this file do not fail when the
     minio package is absent or MinIO is disabled in config.
+
+    When *public_endpoint* is configured, presigned URLs are rewritten so
+    the browser receives a URL it can actually reach (e.g. over HTTPS
+    through a reverse proxy) instead of the internal ``minio:9000`` address.
     """
 
     def __init__(self) -> None:
@@ -83,6 +87,29 @@ class MinioClient:
             config.minio.secure,
         )
         return self._client
+
+    # ------------------------------------------------------------------
+    # public-url rewriting
+    # ------------------------------------------------------------------
+
+    def _public_url(self, internal_url: str) -> str:
+        """Rewrite an internal presigned URL to the public endpoint.
+
+        When ``minio.public_endpoint`` is set, the internal scheme + host are
+        replaced; the path stays the same so the S3 signature (which signs
+        the path component) remains valid.  It is the caller's
+        responsibility to ensure a reverse-proxy location forwards the
+        rewritten URL to the internal MinIO.
+        """
+        public = config.minio.public_endpoint.rstrip("/")
+        if not public:
+            return internal_url
+
+        internal = config.minio.endpoint.rstrip("/")
+        if not internal_url.startswith(internal):
+            return internal_url
+
+        return public + internal_url[len(internal):]
 
     # ------------------------------------------------------------------
     # properties
@@ -159,6 +186,7 @@ class MinioClient:
                 "partNumber": str(part_number),
             },
         )
+        url = self._public_url(url)
         logger.debug(
             "[MINIO] presigned_upload_part object_key=%s part=%d",
             object_key, part_number,
@@ -237,6 +265,7 @@ class MinioClient:
             object_key,
             expires=timedelta(seconds=config.minio.presign_expire),
         )
+        url = self._public_url(url)
         logger.debug("[MINIO] presigned_get object_key=%s", object_key)
         return url
 

@@ -113,23 +113,10 @@ async def complete_upload(
         svc = _get_upload_service()
         result = await svc.complete_upload(upload_uuid, parts, uid, db)
 
-        # Generate a presigned file URL for the completed object
-        file_url = ""
-        try:
-            file_repo = _get_file_repo()
-            file = await file_repo.get_by_uuid(upload_uuid, uid, db)
-            if file is not None:
-                from app.services.cloud.minio_client import get_minio_client
-                file_url = await get_minio_client().presigned_get(file.object_key)
-        except Exception:
-            logger.warning(
-                "[CLOUD] presigned_get failed for upload_uuid=%s", upload_uuid,
-            )
-
         return UploadCompleteResponse(
             uploadUuid=result["uploadUuid"],
+            etag=result["etag"],
             status="completed",
-            fileUrl=file_url,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
