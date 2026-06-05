@@ -34,6 +34,7 @@ from app.services.cloud.minio_client import get_minio_client, MinioClient
 CHUNK_SIZE: int = 10 * 1024 * 1024       # 10 MB
 MAX_FILE_SIZE: int = 5 * 1024 * 1024 * 1024  # 5 GB
 HEARTBEAT_TTL: int = 300                  # 5 minutes in seconds
+UPLOAD_META_TTL: int = 3600               # 1 hour — upload window
 
 _MIME_TO_EXT: dict[str, str] = {
     "video/": ".mp4",
@@ -293,21 +294,8 @@ class CloudUploadService:
         if meta["uid"] != uid:
             raise ValueError(f"Upload {upload_uuid} does not belong to user {uid}")
 
-        # ---- guard: only proceed if still uploading ----
-        if file.upload_status != "uploading":
-            raise ValueError(
-                f"Upload {upload_uuid} is already {file.upload_status}, "
-                f"cannot complete"
-            )
-
-        # ---- get minio_upload_id ----
-        minio_upload_id = await self._chunk_repo.get_minio_upload_id(
-            upload_uuid, db
-        )
-        if not minio_upload_id:
-            raise ValueError(
-                f"No minio_upload_id found for upload_uuid={upload_uuid}"
-            )
+        object_key: str = meta["object_key"]
+        minio_upload_id: str = meta["minio_upload_id"]
 
         # ---- complete MinIO multipart ----
         try:
@@ -320,30 +308,18 @@ class CloudUploadService:
             )
             raise
 
-        # ---- mark DB completed ----
+        # ---- create DB row ----
         try:
-            await self._file_repo.update_upload_completed(upload_uuid, etag, db)
-        except Exception:
-            logger.critical(
-                "[CLOUD_UPLOAD] DB update failed after MinIO complete "
-                "upload_uuid=%s etag=%s — manual fix required!",
-                upload_uuid, etag,
-            )
-            raise
-
-        # ---- clean up chunk rows ----
-        await self._chunk_repo.delete_by_upload(upload_uuid, db)
-
-        # ---- update session (lookup by minio_upload_id) ----
-        try:
-            await self._session_repo.mark_completed_by_minio_upload_id(
-                minio_upload_id, db,
-            )
-        except Exception:
-            logger.debug(
-                "[CLOUD_UPLOAD] session mark_completed skipped "
-                "upload_uuid=%s minio_upload_id=%s",
-                upload_uuid, minio_upload_id,
+            await self._file_repo.create(
+                upload_uuid=upload_uuid,
+                uid=uid,
+                original_name=meta["original_name"],
+                file_size=meta["file_size"],
+                mime_type=meta["mime_type"],
+                folder_id=meta["folder_id"],
+                bucket=meta["bucket"],
+                object_key=object_key,
+                db=db,
             )
             await self._file_repo.update_upload_completed(upload_uuid, etag, db)
         except Exception:
