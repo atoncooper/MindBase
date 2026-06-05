@@ -19,7 +19,7 @@ const body = Noto_Sans_SC({
 });
 
 export const metadata: Metadata = {
-  title: "BiliMind - 收藏夹知识库",
+  title: "MindBase - 知识库系统",
   description: "将你的 B站收藏夹变成可对话的知识库",
   icons: {
     icon: [

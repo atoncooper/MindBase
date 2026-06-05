@@ -338,9 +338,13 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
 
       {/* Upload progress bar */}
       {uploading && (
-        <div className="cd-upload-bar">
-          <div className="cd-upload-bar-inner" style={{ width: `${uploadProgress}%` }} />
-          <span className="cd-upload-bar-text">{uploadFileName} — {uploadProgress}%</span>
+        <div className="cd-upload-bar-wrap">
+          <div className="cd-upload-bar-track">
+            <div className="cd-upload-bar-fill" style={{ width: `${uploadProgress}%` }} />
+          </div>
+          <span className="cd-upload-bar-label">
+            {uploadFileName} — {uploadProgress}%
+          </span>
         </div>
       )}
 
@@ -491,16 +495,23 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
         }
         .cd-input:focus { border-color: rgba(6, 182, 212, 0.6); }
 
-        .cd-upload-bar {
-          position: relative; height: 4px; background: rgba(48, 54, 61, 0.5); flex-shrink: 0;
+        .cd-upload-bar-wrap {
+          display: flex; align-items: center; gap: 12px; padding: 8px 18px;
+          border-bottom: 1px solid rgba(48, 54, 61, 0.88);
+          background: rgba(6, 182, 212, 0.04); flex-shrink: 0;
         }
-        .cd-upload-bar-inner {
-          height: 100%; background: linear-gradient(90deg, #06b6d4, #22d3ee);
-          transition: width .2s ease;
+        .cd-upload-bar-track {
+          flex: 1; height: 8px; border-radius: 4px;
+          background: rgba(48, 54, 61, 0.5); overflow: hidden;
         }
-        .cd-upload-bar-text {
-          position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
-          font-size: 11px; color: #22d3ee; white-space: nowrap;
+        .cd-upload-bar-fill {
+          height: 100%; border-radius: 4px;
+          background: linear-gradient(90deg, #06b6d4, #22d3ee);
+          transition: width .3s ease;
+        }
+        .cd-upload-bar-label {
+          font-size: 12px; color: #22d3ee; white-space: nowrap; font-weight: 500;
+          min-width: 160px; text-align: right;
         }
 
         .cd-create-folder {

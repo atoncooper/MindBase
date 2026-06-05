@@ -249,7 +249,7 @@ export default function Home() {
               </svg>
             </div>
             <div>
-              <span className="brand-title">BiliMind·收藏夹知识库</span>
+              <span className="brand-title">MindBase</span>
               <span className="brand-subtitle">Save • Learn • Ask</span>
             </div>
           </div>

@@ -272,10 +272,60 @@ async def delete_folder(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete a folder.  When ``force=true``, also deletes the subtree."""
+    """Soft-delete a folder and its files (DB + MinIO).  When ``force=true``,
+    also deletes the subtree."""
     try:
+        from sqlalchemy import select
+        from app.models import CloudFile, CloudFolder
+
         folder_repo = _get_folder_repo()
+        _FOLDER_ALIVE = CloudFolder.deleted_at == None  # noqa: E711
+        _FILE_ALIVE = CloudFile.deleted_at == None  # noqa: E711
+
+        # ---- collect folder IDs in subtree (for force mode) ----
+        folder_ids = [folder_id]
+        if force:
+            # BFS/DFS to collect all descendant folder IDs
+            queue = [folder_id]
+            while queue:
+                parent = queue.pop(0)
+                child_result = await db.execute(
+                    select(CloudFolder.id).where(
+                        CloudFolder.parent_id == parent,
+                        CloudFolder.uid == uid,
+                        _FOLDER_ALIVE,
+                    )
+                )
+                for (cid,) in child_result.all():
+                    folder_ids.append(cid)
+                    queue.append(cid)
+
+        # ---- collect object_keys from all affected files ----
+        result = await db.execute(
+            select(CloudFile.object_key).where(
+                CloudFile.folder_id.in_(folder_ids),
+                CloudFile.uid == uid,
+                _FILE_ALIVE,
+            )
+        )
+        object_keys = [row[0] for row in result.all()]
+
+        # ---- soft-delete in DB ----
         affected = await folder_repo.soft_delete(folder_id, uid, force, db)
+
+        # ---- clean up MinIO objects ----
+        if config.minio.enabled and object_keys:
+            from app.services.cloud.minio_client import get_minio_client
+            minio_cli = get_minio_client()
+            for ok in object_keys:
+                try:
+                    await minio_cli.delete_object(ok)
+                except Exception as exc:
+                    logger.warning(
+                        "[CLOUD] delete_folder minio cleanup failed "
+                        "object_key=%s err=%s", ok, exc,
+                    )
+
         return FolderDeleteResponse(deleted=True, affectedFiles=affected)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
