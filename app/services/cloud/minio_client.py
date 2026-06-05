@@ -203,11 +203,10 @@ class MinioClient:
         Returns the final object ETag.
         """
         self._ensure_client()
-        _Minio = self._client.__class__
-        # Build the XML part list expected by S3/MinIO
-        converted: list = []
-        for p in parts:
-            converted.append((p["PartNumber"], p["ETag"]))
+        # Build `Part` objects — the SDK iterates these as objects, not tuples
+        from collections import namedtuple
+        _Part = namedtuple("_Part", ["part_number", "etag"])
+        converted = [_Part(p["PartNumber"], p["ETag"]) for p in parts]
 
         result = await _run_async(
             self._client._complete_multipart_upload,
