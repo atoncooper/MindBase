@@ -1481,8 +1481,8 @@ export interface CloudUploadInitResponse {
 
 export interface CloudUploadCompleteResponse {
     uploadUuid: string;
+    etag: string;
     status: string;
-    fileUrl: string;
 }
 
 export interface CloudResumeChunk {

@@ -149,7 +149,8 @@ class MinioClient:
         """
         self._ensure_client()
         url = await _run_async(
-            self._client.presigned_put_object,
+            self._client.get_presigned_url,
+            "PUT",
             self.bucket,
             object_key,
             expires=timedelta(seconds=config.minio.presign_expire),
