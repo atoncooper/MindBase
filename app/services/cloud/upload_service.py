@@ -279,35 +279,20 @@ class CloudUploadService:
     ) -> dict:
         """Finalise a multipart upload.
 
-        Creates the CloudFile DB row only after MinIO confirms the
-        multipart upload — no permanent DB record exists until this
-        method succeeds.
+        Reads metadata from Redis (ownership + object_key + minio_upload_id
+        in one place).  Creates the CloudFile DB row only after MinIO
+        confirms the multipart upload — no permanent DB record exists
+        until this method succeeds.
         """
-        # ---- validate ownership ----
-        file = await self._file_repo.get_by_uuid(upload_uuid, uid, db)
-        if file is None:
-            raise ValueError(
-                f"CloudFile {upload_uuid} not found for user {uid}"
-            )
+        # ---- read metadata from Redis ----
+        meta = await self._get_upload_meta(upload_uuid)
+        if meta["uid"] != uid:
+            raise ValueError(f"Upload {upload_uuid} does not belong to user {uid}")
 
-        # ---- guard: only proceed if still uploading ----
-        if file.upload_status != "uploading":
-            raise ValueError(
-                f"Upload {upload_uuid} is already {file.upload_status}, "
-                f"cannot complete"
-            )
-
-        # ---- get minio_upload_id ----
-        minio_upload_id = await self._chunk_repo.get_minio_upload_id(
-            upload_uuid, db
-        )
-        if not minio_upload_id:
-            raise ValueError(
-                f"No minio_upload_id found for upload_uuid={upload_uuid}"
-            )
+        object_key: str = meta["object_key"]
+        minio_upload_id: str = meta["minio_upload_id"]
 
         # ---- complete MinIO multipart ----
-        object_key = file.object_key
         try:
             etag = await self._minio.complete_multipart_upload(
                 object_key, minio_upload_id, parts,
@@ -318,31 +303,30 @@ class CloudUploadService:
             )
             raise
 
-        # ---- mark DB completed ----
+        # ---- create DB row ----
         try:
+            await self._file_repo.create(
+                upload_uuid=upload_uuid,
+                uid=uid,
+                original_name=meta["original_name"],
+                file_size=meta["file_size"],
+                mime_type=meta["mime_type"],
+                folder_id=meta["folder_id"],
+                bucket=meta["bucket"],
+                object_key=object_key,
+                db=db,
+            )
             await self._file_repo.update_upload_completed(upload_uuid, etag, db)
         except Exception:
             logger.critical(
-                "[CLOUD_UPLOAD] DB update failed after MinIO complete "
+                "[CLOUD_UPLOAD] DB create/update failed after MinIO complete "
                 "upload_uuid=%s etag=%s — manual fix required!",
                 upload_uuid, etag,
             )
             raise
 
-        # ---- clean up chunk rows ----
-        await self._chunk_repo.delete_by_upload(upload_uuid, db)
-
-        # ---- update session (lookup by minio_upload_id) ----
-        try:
-            await self._session_repo.mark_completed_by_minio_upload_id(
-                minio_upload_id, db,
-            )
-        except Exception:
-            logger.debug(
-                "[CLOUD_UPLOAD] session mark_completed skipped "
-                "upload_uuid=%s minio_upload_id=%s",
-                upload_uuid, minio_upload_id,
-            )
+        # ---- clean up Redis ----
+        await self._delete_upload_meta(upload_uuid)
 
         logger.info(
             "[CLOUD_UPLOAD] complete_upload done upload_uuid=%s etag=%s",
