@@ -45,8 +45,8 @@ class UploadCompleteRequest(BaseModel):
 
 class UploadCompleteResponse(BaseModel):
     uploadUuid: str
+    etag: str
     status: str
-    fileUrl: str
 
 
 # ── Heartbeat ──────────────────────────────────────────────────────

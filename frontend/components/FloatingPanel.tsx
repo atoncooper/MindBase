@@ -40,13 +40,15 @@ export default function FloatingPanel({
   onClose,
   title,
   children,
-  defaultPosition = { x: 80, y: 80 },
+  defaultPosition,
   defaultSize = { width: 380, height: 600 },
   className,
 }: FloatingPanelProps) {
-  const [position, setPosition] = useState(() =>
-    clampPosition(defaultPosition.x, defaultPosition.y, defaultSize.width, defaultSize.height)
-  );
+  const [position, setPosition] = useState(() => {
+    const x = defaultPosition?.x ?? Math.max(0, ((typeof window !== "undefined" ? window.innerWidth : 1200) - defaultSize.width) / 2);
+    const y = defaultPosition?.y ?? Math.max(0, ((typeof window !== "undefined" ? window.innerHeight : 800) - defaultSize.height) / 2);
+    return clampPosition(x, y, defaultSize.width, defaultSize.height);
+  });
   const [size, setSize] = useState(() => clampSize(defaultSize.width, defaultSize.height));
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);

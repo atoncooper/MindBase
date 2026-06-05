@@ -87,7 +87,12 @@ async def task_stream(
       {"action": "subscribe", "task_id": "uuid"}   → push single task detail
       {"action": "filter", "task_type": "...", "status": "..."} → filtered list
     """
-    # ── Auth (before accept) ──
+    # ── Connection limit (before accept, reject early) ──
+    if _total_count >= MAX_TOTAL:
+        await websocket.close(code=4002, reason="Server connection limit reached")
+        return
+
+    # ── Auth ──
     await websocket.accept()
 
     try:
@@ -95,7 +100,7 @@ async def task_stream(
     except WebSocketDisconnect:
         return
 
-    # ── Rate limit / dedup ──
+    # ── Per-uid limit / dedup ──
     # If the user already has connections, close the OLDEST ones before adding new.
     # This handles client-side reconnect without proper cleanup (e.g. React StrictMode).
     existing = _active_connections.get(uid, set())
@@ -210,3 +215,42 @@ async def broadcast_task_update(uid: int, task: dict) -> None:
         connections.discard(ws)
     if dead:
         _update_total()
+
+
+async def broadcast_cloud_status(
+    uid: int,
+    upload_uuid: str,
+    status: str,
+    chunk_count: int = 0,
+    error: str = "",
+) -> None:
+    """Push cloud file vectorization status to all of a user's WS connections."""
+    connections = _active_connections.get(uid, set())
+    if not connections:
+        logger.debug("[CLOUD_WS] no connections for uid=%d, status not pushed", uid)
+        return
+
+    payload = json.dumps({
+        "type": "cloud_processing",
+        "upload_uuid": upload_uuid,
+        "status": status,
+        "chunk_count": chunk_count,
+        "error": error,
+        "timestamp": time.time(),
+    })
+
+    dead: list[WebSocket] = []
+    for ws in connections:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        connections.discard(ws)
+    if dead:
+        _update_total()
+
+    logger.info(
+        "[CLOUD_WS] pushed status=%s upload_uuid=%s to uid=%d (%d conns)",
+        status, upload_uuid, uid, len(connections),
+    )

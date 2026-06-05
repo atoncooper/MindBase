@@ -2439,6 +2439,73 @@ html:not(.dark) .floating-panel-close:hover {
 html:not(.dark) .floating-panel .chat-panel {
   background: var(--card);
 }
+/* ── ErrorDisplay ─────────────────────────────────────────────── */
+
+.err-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  border-radius: 10px;
+  animation: err-slide-in 0.2s ease;
+}
+
+@keyframes err-slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.err-display-icon     { flex-shrink: 0; }
+.err-display-text     { flex: 1; min-width: 0; }
+.err-display-dismiss  {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border: none; border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity .12s, background .12s;
+}
+.err-display-dismiss:hover { opacity: 1; background: rgba(255,255,255,0.08); }
+
+/* Severity */
+.err-display--error   { background: rgba(239, 68, 68, 0.08);  border: 1px solid rgba(239, 68, 68, 0.18);  color: #fca5a5; }
+.err-display--warning { background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.18); color: #fcd34d; }
+.err-display--info    { background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.18); color: #93c5fd; }
+
+/* Variant: toast */
+.err-display--toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  max-width: 380px;
+  padding: 10px 14px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  font-size: 12.5px;
+}
+
+/* Variant: inline */
+.err-display--inline { padding: 10px 14px; }
+
+/* Variant: banner */
+.err-display--banner {
+  padding: 10px 18px;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+
+/* Light mode */
+html:not(.dark) .err-display--error   { background: #fef2f2; border-color: #fecaca; color: #dc2626; }
+html:not(.dark) .err-display--warning { background: #fffbeb; border-color: #fde68a; color: #d97706; }
+html:not(.dark) .err-display--info    { background: #eff6ff; border-color: #bfdbfe; color: #2563eb; }
+html:not(.dark) .err-display--toast   { box-shadow: 0 4px 24px rgba(0,0,0,0.12); }
+
 html:not(.dark) .three-scene-container {
   background: #1a1a1a;
 }

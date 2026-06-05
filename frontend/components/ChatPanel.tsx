@@ -7,6 +7,7 @@ import { Tabs } from "@base-ui/react";
 import { nanoid } from "nanoid";
 import { Loader2, AlertCircle, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { sanitizeError } from "@/lib/error-utils";
 import {
   chatApi,
   knowledgeApi,
@@ -179,7 +180,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
               ? {
                   ...m,
                   status: "failed" as const,
-                  error: err instanceof Error ? err.message : "请求失败",
+                  error: sanitizeError(err),
                 }
               : m
           )
@@ -277,7 +278,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
               ? {
                   ...m,
                   status: "failed" as const,
-                  error: err instanceof Error ? err.message : "请求失败",
+                  error: sanitizeError(err),
                 }
               : m
           )

@@ -2,6 +2,8 @@
  * API 客户端
  */
 
+import { sanitizeError } from "@/lib/error-utils";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (typeof window !== "undefined" ? "" : "http://backend:8000");
 
 // 获取当前 session token 的 Authorization header
@@ -33,26 +35,22 @@ async function request<T>(
         if (typeof window !== "undefined") {
             const token = localStorage.getItem("bili_session");
             if (token) {
-                // Only clear if we actually sent a token — avoids false positives
-                // on public endpoints that also return 401 for other reasons
                 localStorage.removeItem("bili_session");
                 localStorage.removeItem("bili_user");
-                throw new Error("会话已过期，请重新登录");
+                throw new Error(sanitizeError({ status: 401 }));
             }
         }
-        // Fall through to the generic error handler below for API-level 401s
     }
 
     if (!response.ok) {
-        const text = await response.text();
-        let message = text || `请求失败: ${response.status}`;
+        // Consume body so the connection can be reused
+        let rawDetail = "";
         try {
+            const text = await response.text();
             const parsed = JSON.parse(text);
-            if (parsed.detail) {
-                message = typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
-            }
+            rawDetail = typeof parsed.detail === "string" ? parsed.detail : "";
         } catch {}
-        throw new Error(message);
+        throw new Error(sanitizeError({ status: response.status, detail: rawDetail }));
     }
 
     return response.json();
@@ -297,6 +295,7 @@ export interface ChatRequestPayload {
     chat_session_id?: string;  // 新增：聊天会话 ID
     folder_ids?: number[];
     workspace_pages?: WorkspacePage[];
+    workspace_id?: number;  // Plan 0023: cloud drive workspace
 }
 
 // ==================== API 函数 ====================
@@ -1412,6 +1411,7 @@ export interface CloudVideoItem {
     duration: number | null;
     asrStatus: string;
     vectorStatus: string;
+    vectorChunkCount: number | null;
     title: string | null;
     coverUrl: string | null;
     createdAt: string;
@@ -1479,8 +1479,8 @@ export interface CloudUploadInitResponse {
 
 export interface CloudUploadCompleteResponse {
     uploadUuid: string;
+    etag: string;
     status: string;
-    fileUrl: string;
 }
 
 export interface CloudResumeChunk {
@@ -1673,4 +1673,59 @@ export const cloudApi = {
         // 3. Complete
         return cloudApi.completeUpload(init.uploadUuid, parts);
     },
+};
+
+// ==================== Plan 0023: Workspace API ====================
+
+export interface WorkspaceBinding {
+    id: number;
+    bindType: "folder" | "file";
+    folderId?: number;
+    folderName?: string;
+    uploadUuid?: string;
+    fileName?: string;
+    includeSubfolders: boolean;
+}
+
+export interface WorkspaceItem {
+    id: number;
+    name: string;
+    description?: string;
+    icon?: string;
+    color?: string;
+    fileCount: number;
+    chunkCount: number;
+    bindings: WorkspaceBinding[];
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface WorkspaceCreateParams {
+    name: string;
+    description?: string;
+    icon?: string;
+    color?: string;
+}
+
+export interface BindingCreateParams {
+    bindType: "folder" | "file";
+    folderId?: number;
+    uploadUuid?: string;
+    includeSubfolders?: boolean;
+}
+
+export const workspaceApi = {
+    list: () => request<WorkspaceItem[]>("/workspaces"),
+    create: (data: WorkspaceCreateParams) =>
+        request<WorkspaceItem>("/workspaces", { method: "POST", body: JSON.stringify(data) }),
+    get: (id: number) => request<WorkspaceItem>(`/workspaces/${id}`),
+    update: (id: number, data: Partial<WorkspaceCreateParams>) =>
+        request<WorkspaceItem>(`/workspaces/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    delete: (id: number) => request<{ deleted: boolean }>(`/workspaces/${id}`, { method: "DELETE" }),
+    addBinding: (id: number, data: BindingCreateParams) =>
+        request<WorkspaceItem>(`/workspaces/${id}/bindings`, { method: "POST", body: JSON.stringify(data) }),
+    removeBinding: (workspaceId: number, bindingId: number) =>
+        request<{ deleted: boolean }>(`/workspaces/${workspaceId}/bindings/${bindingId}`, { method: "DELETE" }),
+    listFiles: (id: number) =>
+        request<{ uploadUuid: string; originalName: string; mimeType: string; vectorizable: boolean; vectorStatus: string; vectorChunkCount: number }[]>(`/workspaces/${id}/files`),
 };

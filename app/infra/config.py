@@ -185,6 +185,7 @@ class MilvusSection(_Section):
     token: str = ""
     db_name: str = "bilirag"
     collection_name: str = "bilibili_videos"
+    cloud_collection_name: str = "cloud_drive"
     dimension: int = 1536
     index_type: str = "IVF_FLAT"
     metric_type: str = "COSINE"
@@ -221,6 +222,7 @@ class MinioSection(_Section):
     presign_expire: int = 3600
     access_key: SecretStr = SecretStr("")
     secret_key: SecretStr = SecretStr("")
+    public_endpoint: str = ""  # e.g. https://example.com/minio-proxy
 
 
 class MqSection(_Section):

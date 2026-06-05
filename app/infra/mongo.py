@@ -74,6 +74,11 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("bvid", ASCENDING), ("cid", ASCENDING), ("is_latest", ASCENDING)]),
         IndexModel([("video_id", ASCENDING)]),
     ],
+    "cloud_drive_documents": [
+        IndexModel([("upload_uuid", ASCENDING)], unique=True),
+        IndexModel([("uid", ASCENDING), ("created_at", DESCENDING)]),
+        IndexModel([("uid", ASCENDING), ("source_type", ASCENDING)]),
+    ],
 }
 
 

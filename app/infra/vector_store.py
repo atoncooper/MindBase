@@ -80,7 +80,14 @@ def get_vector_store(embedding_fn: Any) -> VectorStoreBackend:
 
     if config.milvus.enabled:
         from app.repository.vector_store_milvus import MilvusVectorStore
-        return MilvusVectorStore(config.milvus, embedding_fn)
+        return MilvusVectorStore(config.milvus, embedding_fn, config.milvus.collection_name)
 
     from app.repository.vector_store_chroma import ChromaVectorStore
     return ChromaVectorStore(config.chroma, embedding_fn)
+
+
+def get_cloud_vector_store(embedding_fn: Any) -> VectorStoreBackend:
+    """Return the cloud drive vector store backend (cloud_drive collection)."""
+    from app.infra.config import config
+    from app.repository.vector_store_milvus import MilvusVectorStore
+    return MilvusVectorStore(config.milvus, embedding_fn, config.milvus.cloud_collection_name)

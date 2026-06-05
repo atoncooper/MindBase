@@ -500,7 +500,7 @@ create table cloud_files
     folder_id          int          null,
     original_name      varchar(500) not null,
     file_size          bigint       not null,
-    mime_type          varchar(50)  not null,
+    mime_type          varchar(128)  not null,
     duration           int          null,
     bucket             varchar(64)  not null,
     object_key         varchar(500) not null,
@@ -513,6 +513,10 @@ create table cloud_files
     description        text         null,
     cover_url          varchar(500) null,
     tags               json         null,
+    vectorizable       tinyint(1)   not null default 1,
+    doc_parser         varchar(20)  null,
+    doc_meta           json         null,
+    content_hash       varchar(128) null,
     created_at         datetime     null,
     updated_at         datetime     null,
     deleted_at         datetime     null,
@@ -573,3 +577,60 @@ create table cloud_upload_sessions
 
 create index ix_cloud_upload_sessions_uid
     on cloud_upload_sessions (uid);
+
+-- Plan 0023: Workspaces
+
+create table workspaces
+(
+    id          int auto_increment primary key,
+    uid         bigint       not null,
+    name        varchar(200) not null,
+    description text         null,
+    icon        varchar(50)  null,
+    color       varchar(20)  null,
+    file_count  int          default 0,
+    chunk_count int          default 0,
+    created_at  datetime     null,
+    updated_at  datetime     null,
+    deleted_at  datetime     null,
+    constraint workspaces_ibfk_1
+        foreign key (uid) references users (uid)
+);
+
+create index ix_workspaces_uid
+    on workspaces (uid);
+
+create index ix_workspaces_active
+    on workspaces (uid, deleted_at);
+
+-- Plan 0023: Workspace bindings
+
+create table workspace_bindings
+(
+    id                 int auto_increment primary key,
+    workspace_id       int         not null,
+    uid                bigint      not null,
+    bind_type          varchar(10) not null,
+    folder_id          int         null,
+    upload_uuid        varchar(64) null,
+    include_subfolders tinyint(1)  default 1,
+    created_at         datetime    null,
+    constraint workspace_bindings_ibfk_1
+        foreign key (workspace_id) references workspaces (id) on delete cascade,
+    constraint workspace_bindings_ibfk_2
+        foreign key (uid) references users (uid),
+    constraint workspace_bindings_ibfk_3
+        foreign key (folder_id) references cloud_folders (id)
+);
+
+create index ix_wb_workspace
+    on workspace_bindings (workspace_id);
+
+create index ix_wb_uid
+    on workspace_bindings (uid);
+
+create index ix_wb_folder
+    on workspace_bindings (folder_id);
+
+create index ix_wb_upload_uuid
+    on workspace_bindings (upload_uuid);

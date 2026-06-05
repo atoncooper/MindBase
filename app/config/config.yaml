@@ -102,6 +102,7 @@ milvus:
   token: ""                              # auth token; inject via MILVUS__TOKEN
   db_name: bilirag
   collection_name: bilibili_videos
+  cloud_collection_name: cloud_drive
   dimension: 1536                        # must match embedding.dimension
   index_type: IVF_FLAT                   # IVF_FLAT | IVF_SQ8 | HNSW
   metric_type: COSINE                    # COSINE | L2 | IP

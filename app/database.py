@@ -97,6 +97,11 @@ async def _migrate_add_columns():
         ("collection", "owner_mid", "BIGINT"),
         # Plan 0033: content_source for video
         ("video", "content_source", "VARCHAR(20)"),
+        # Plan 0023: cloud_files — doc parsing & vectorization support
+        ("cloud_files", "vectorizable", "BOOLEAN NOT NULL DEFAULT TRUE"),
+        ("cloud_files", "doc_parser", "VARCHAR(20) NULL"),
+        ("cloud_files", "doc_meta", "JSON NULL"),
+        ("cloud_files", "content_hash", "VARCHAR(128) NULL"),
     ]
 
     # Plan 0024/0025/0026: drop deprecated content columns & session_id columns
@@ -240,6 +245,10 @@ async def _migrate_add_columns():
                 description TEXT,
                 cover_url VARCHAR(500),
                 tags JSON,
+                vectorizable BOOLEAN NOT NULL DEFAULT TRUE,
+                doc_parser VARCHAR(20),
+                doc_meta JSON,
+                content_hash VARCHAR(128),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 deleted_at TIMESTAMP,
@@ -281,6 +290,47 @@ async def _migrate_add_columns():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (uid) REFERENCES users(uid)
+            )""",
+        ),
+        # Plan 0023: Cloud Drive — user workspaces
+        (
+            "workspaces",
+            """CREATE TABLE IF NOT EXISTS workspaces (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                uid BIGINT NOT NULL,
+                name VARCHAR(200) NOT NULL,
+                description TEXT,
+                icon VARCHAR(50),
+                color VARCHAR(20),
+                file_count INT DEFAULT 0,
+                chunk_count INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TIMESTAMP,
+                FOREIGN KEY (uid) REFERENCES users(uid),
+                INDEX ix_workspaces_uid (uid),
+                INDEX ix_workspaces_active (uid, deleted_at)
+            )""",
+        ),
+        # Plan 0023: Cloud Drive — workspace-to-file/folder bindings
+        (
+            "workspace_bindings",
+            """CREATE TABLE IF NOT EXISTS workspace_bindings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                workspace_id INT NOT NULL,
+                uid BIGINT NOT NULL,
+                bind_type VARCHAR(10) NOT NULL,
+                folder_id INT,
+                upload_uuid VARCHAR(64),
+                include_subfolders BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY (uid) REFERENCES users(uid),
+                FOREIGN KEY (folder_id) REFERENCES cloud_folders(id),
+                INDEX ix_wb_workspace (workspace_id),
+                INDEX ix_wb_uid (uid),
+                INDEX ix_wb_folder (folder_id),
+                INDEX ix_wb_upload_uuid (upload_uuid)
             )""",
         ),
     ]
