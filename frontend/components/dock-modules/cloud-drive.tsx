@@ -12,6 +12,7 @@ import {
   type CloudVideoItem, type CloudVideoListResponse,
 } from "@/lib/api";
 import type { DockPanelProps } from "@/lib/dock-registry";
+import ErrorDisplay, { useErrorDisplay } from "@/components/ErrorDisplay";
 import ConfirmDialog from "./confirm-dialog";
 
 /* ──── Folder tree node ──── */
@@ -112,12 +113,13 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
     name: string;
   } | null>(null);
 
-  // Toast
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  // Toast (success only — errors use ErrorDisplay)
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const { error, setError, clearError } = useErrorDisplay();
 
-  const showToast = (message: string, type: "success" | "error") => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  const showSuccess = (msg: string) => {
+    setSuccessMsg(msg);
+    setTimeout(() => setSuccessMsg(null), 3000);
   };
 
   /* ── Loaders ── */
@@ -128,7 +130,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
       const res = await cloudApi.listFolders();
       setFolders(res.folders || []);
     } catch (e: any) {
-      if (!e.message?.includes("503")) showToast(e.message || "加载文件夹失败", "error");
+      if (!e.message?.includes("503")) setError(e);
     } finally {
       setFoldersLoading(false);
     }
@@ -146,7 +148,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
       setVideoPage(page);
       setVideoHasMore(res.hasMore);
     } catch (e: any) {
-      if (!e.message?.includes("503")) showToast(e.message || "加载文件失败", "error");
+      if (!e.message?.includes("503")) setError(e);
     } finally {
       setVideosLoading(false);
     }
@@ -209,10 +211,10 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
       setNewFolderName("");
       setCreatingFolder(false);
       setCreatingParentId(null);
-      showToast("文件夹已创建", "success");
+      showSuccess("文件夹已创建");
       loadFolders();
     } catch (e: any) {
-      showToast(e.message || "创建失败", "error");
+      setError(e);
     }
   };
 
@@ -220,14 +222,14 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
     if (!deleteTarget || deleteTarget.type !== "folder") return;
     try {
       await cloudApi.deleteFolder(deleteTarget.id as number);
-      showToast("文件夹已删除", "success");
+      showSuccess("文件夹已删除");
       if (selectedFolderId === deleteTarget.id) {
         setSelectedFolderId(null);
         loadVideos(null, 1);
       }
       loadFolders();
     } catch (e: any) {
-      showToast(e.message || "删除失败", "error");
+      setError(e);
     } finally {
       setDeleteTarget(null);
     }
@@ -237,11 +239,11 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
     if (!deleteTarget || deleteTarget.type !== "video") return;
     try {
       await cloudApi.deleteVideo(deleteTarget.id as string);
-      showToast("文件已删除", "success");
+      showSuccess("文件已删除");
       loadVideos(selectedFolderId, 1);
       loadFolders();
     } catch (e: any) {
-      showToast(e.message || "删除失败", "error");
+      setError(e);
     } finally {
       setDeleteTarget(null);
     }
@@ -258,7 +260,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
     const ALLOWED_EXTENSIONS = /\.(mp4|webm|mov|mkv|avi|md|markdown|html?|docx?|txt|pdf|zip|rar|7z|png|jpe?g|gif|webp)$/i;
     const isAllowed = ALLOWED_MIME_PREFIXES.some(p => file.type.startsWith(p)) || ALLOWED_EXTENSIONS.test(file.name);
     if (!isAllowed) {
-      showToast("不支持的文件类型", "error");
+      setError(new Error("不支持的文件类型"));
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -271,11 +273,11 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
       await cloudApi.uploadFile(file, selectedFolderId, (pct) => {
         setUploadProgress(pct);
       });
-      showToast(`"${file.name}" 上传完成`, "success");
+      showSuccess(`"${file.name}" 上传完成`);
       loadVideos(selectedFolderId, 1);
       loadFolders();
     } catch (err: any) {
-      showToast(err.message || "上传失败", "error");
+      setError(err);
     } finally {
       setUploading(false);
       setUploadProgress(0);
@@ -287,10 +289,10 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
   const handleProcess = async (uploadUuid: string) => {
     try {
       await cloudApi.triggerProcess(uploadUuid);
-      showToast("处理任务已触发", "success");
+      showSuccess("处理任务已触发");
       loadVideos(selectedFolderId, videoPage);
     } catch (e: any) {
-      showToast(e.message || "处理触发失败", "error");
+      setError(e);
     }
   };
 
@@ -325,8 +327,11 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
   return (
     <div className="cd-panel">
       {/* Toast */}
-      {toast && (
-        <div className={`sk-toast ${toast.type}`}>{toast.message}</div>
+      {successMsg && (
+        <div className="sk-toast success">{successMsg}</div>
+      )}
+      {error != null && (
+        <ErrorDisplay error={error} variant="toast" onDismiss={clearError} />
       )}
 
       {/* Confirm dialog */}

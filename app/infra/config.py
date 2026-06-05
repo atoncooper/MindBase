@@ -222,6 +222,7 @@ class MinioSection(_Section):
     presign_expire: int = 3600
     access_key: SecretStr = SecretStr("")
     secret_key: SecretStr = SecretStr("")
+    public_endpoint: str = ""  # e.g. https://example.com/minio-proxy
 
 
 class MqSection(_Section):

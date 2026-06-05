@@ -104,6 +104,7 @@ minio:
   bucket: drive-videos
   secure: false                       # set true in production (HTTPS)
   presign_expire: 3600
+  public_endpoint: ""                 # public-facing URL for presigned links, e.g. https://example.com/minio-proxy
   # access_key / secret_key via env: MINIO__ACCESS_KEY, MINIO__SECRET_KEY
 
 
