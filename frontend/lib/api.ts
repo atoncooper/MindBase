@@ -1627,32 +1627,44 @@ export const cloudApi = {
             folderId,
         });
 
-        // 2. Upload each chunk with presigned URLs
+        // 2. Upload each chunk to MinIO with real-time byte progress via XHR
         const parts: CloudUploadPart[] = [];
         const heartbeatInterval = setInterval(() => {
             cloudApi.heartbeat(init.sessionUuid).catch(() => {});
         }, 60_000);
 
         try {
+            let totalUploaded = 0;
             for (const chunk of init.presignedUrls) {
                 const start = chunk.chunkIndex * init.chunkSize;
                 const end = Math.min(start + chunk.chunkSize, file.size);
                 const blob = file.slice(start, end);
 
-                const res = await fetch(chunk.url, {
-                    method: "PUT",
-                    body: blob,
+                await new Promise<void>((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open("PUT", chunk.url);
+                    // Track real-time bytes uploaded within this chunk
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) {
+                            const uploaded = totalUploaded + e.loaded;
+                            const pct = Math.round((uploaded / file.size) * 100);
+                            onProgress?.(pct);
+                        }
+                    };
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            const etag = xhr.getResponseHeader("ETag") ?? "";
+                            parts.push({ PartNumber: chunk.chunkIndex + 1, ETag: etag });
+                            totalUploaded += blob.size;
+                            resolve();
+                        } else {
+                            reject(new Error(`Chunk ${chunk.chunkIndex} upload failed: ${xhr.status}`));
+                        }
+                    };
+                    xhr.onerror = () => reject(new Error(`Chunk ${chunk.chunkIndex} network error`));
+                    xhr.ontimeout = () => reject(new Error(`Chunk ${chunk.chunkIndex} timeout`));
+                    xhr.send(blob);
                 });
-
-                if (!res.ok) {
-                    throw new Error(`Chunk ${chunk.chunkIndex} upload failed: ${res.status}`);
-                }
-
-                const etag = res.headers.get("ETag") ?? "";
-                parts.push({ PartNumber: chunk.chunkIndex + 1, ETag: etag });
-
-                const pct = Math.round(((chunk.chunkIndex + 1) / init.presignedUrls.length) * 100);
-                onProgress?.(pct);
             }
         } finally {
             clearInterval(heartbeatInterval);

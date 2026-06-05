@@ -177,7 +177,7 @@ export default function PasswordLoginModal({ isOpen, onClose, onSuccess, onSwitc
 
         {/* ── Brand ── */}
         <div className="flex items-center gap-2 mb-8">
-          <span className="text-xl font-bold tracking-tight text-[var(--accent)]">BiliMind</span>
+          <span className="text-xl font-bold tracking-tight text-[var(--accent)]">MindBase</span>
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)] border border-[var(--accent)]/20 font-semibold tracking-wider uppercase">
             Account
           </span>
