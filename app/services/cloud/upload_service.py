@@ -34,6 +34,7 @@ from app.services.cloud.minio_client import get_minio_client, MinioClient
 CHUNK_SIZE: int = 10 * 1024 * 1024       # 10 MB
 MAX_FILE_SIZE: int = 5 * 1024 * 1024 * 1024  # 5 GB
 HEARTBEAT_TTL: int = 300                  # 5 minutes in seconds
+UPLOAD_META_TTL: int = 3600               # 1 hour — upload window
 
 _MIME_TO_EXT: dict[str, str] = {
     "video/": ".mp4",
@@ -306,6 +307,7 @@ class CloudUploadService:
             )
 
         # ---- complete MinIO multipart ----
+        object_key = file.object_key
         try:
             etag = await self._minio.complete_multipart_upload(
                 object_key, minio_upload_id, parts,
