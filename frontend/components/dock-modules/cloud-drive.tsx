@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Cloud, FolderPlus, Trash2, Upload, RefreshCw, Loader2,
   ChevronRight, ChevronDown, FileText, FileVideo, FileImage, FileArchive,
-  File, HardDrive, Folder, FolderOpen, Database,
+  File, HardDrive, Folder, FolderOpen, Database, Pencil,
 } from "lucide-react";
 import {
   cloudApi, formatBytes,
@@ -41,22 +41,57 @@ function FolderTreeNode({
   depth,
   onSelect,
   onDelete,
+  onRefresh,
 }: {
   folder: CloudFolderTreeItem;
   selectedId: number | null;
   depth: number;
   onSelect: (id: number | null) => void;
   onDelete: (folder: CloudFolderTreeItem) => void;
+  onRefresh: () => void;
 }) {
   const [expanded, setExpanded] = useState(depth < 1);
+  const [renaming, setRenaming] = useState(false);
+  const [editName, setEditName] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const hasChildren = folder.children && folder.children.length > 0;
+
+  const handleRenameStart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditName(folder.name);
+    setRenaming(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const handleRenameConfirm = async () => {
+    const name = editName.trim();
+    if (!name || name === folder.name) {
+      setRenaming(false);
+      return;
+    }
+    try {
+      await cloudApi.updateFolder(folder.id, { name });
+      onRefresh();
+    } catch {
+      // Revert on error
+    }
+    setRenaming(false);
+  };
+
+  const handleRenameCancel = () => setRenaming(false);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleRenameConfirm();
+    if (e.key === "Escape") handleRenameCancel();
+  };
 
   return (
     <div className="cd-folder-group">
       <div
         className={`cd-folder-row ${selectedId === folder.id ? "cd-folder-row--active" : ""}`}
         style={{ paddingLeft: 12 + depth * 16 }}
-        onClick={() => onSelect(folder.id)}
+        onClick={() => { if (!renaming) onSelect(folder.id); }}
       >
         {hasChildren ? (
           <button
@@ -71,8 +106,27 @@ function FolderTreeNode({
         <span className="cd-folder-icon">
           {selectedId === folder.id ? <FolderOpen size={15} /> : <Folder size={15} />}
         </span>
-        <span className="cd-folder-name">{folder.name}</span>
+        {renaming ? (
+          <input
+            ref={inputRef}
+            className="cd-folder-rename-input"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onBlur={handleRenameConfirm}
+            onKeyDown={handleKeyDown}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span className="cd-folder-name">{folder.name}</span>
+        )}
         <span className="cd-folder-count">{folder.videoCount}</span>
+        <button
+          className="cd-folder-rename"
+          title="重命名"
+          onClick={handleRenameStart}
+        >
+          <Pencil size={12} />
+        </button>
         <button
           className="cd-folder-del"
           title="删除文件夹"
@@ -90,6 +144,7 @@ function FolderTreeNode({
             depth={depth + 1}
             onSelect={onSelect}
             onDelete={onDelete}
+            onRefresh={onRefresh}
           />
         ))
       }
@@ -459,6 +514,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
                 depth={0}
                 onSelect={handleSelectFolder}
                 onDelete={(folder) => setDeleteTarget({ type: "folder", id: folder.id, name: folder.name })}
+                onRefresh={() => { loadFolders(); loadVideos(selectedFolderId, 1); }}
               />
             ))
           )}
@@ -647,6 +703,15 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
         }
         .cd-folder-row:hover .cd-folder-del { display: flex; }
         .cd-folder-del:hover { color: #f87171; }
+        .cd-folder-rename {
+          display: none; background: none; border: none; color: #8b949e; cursor: pointer; padding: 2px; margin-right: 2px;
+        }
+        .cd-folder-row:hover .cd-folder-rename { display: flex; }
+        .cd-folder-rename:hover { color: #22d3ee; }
+        .cd-folder-rename-input {
+          flex: 1; min-width: 0; font-size: 12px; padding: 2px 6px; border: 1px solid #22d3ee; border-radius: 4px;
+          background: rgba(6, 182, 212, 1e-1); color: inherit; outline: none;
+        }
 
         .cd-empty-sidebar { padding: 20px; text-align: center; font-size: 12.5px; color: #8b949e; }
         .cd-loading { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 28px; color: #8b949e; font-size: 13px; }

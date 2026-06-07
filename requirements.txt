@@ -38,6 +38,9 @@ cachetools==5.5.0
 # Logging
 loguru==0.7.2
 
+# Password hashing
+bcrypt>=4.0
+
 # System dependency (install separately or via apt)
 # ffmpeg — installed in Dockerfile
 
