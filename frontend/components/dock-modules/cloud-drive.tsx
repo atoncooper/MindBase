@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Cloud, FolderPlus, Trash2, Upload, RefreshCw, Loader2,
-  ChevronRight, ChevronDown, FileText, Play, HardDrive,
-  Folder, FolderOpen,
+  ChevronRight, ChevronDown, FileText, FileVideo, FileImage, FileArchive,
+  File, HardDrive, Folder, FolderOpen, Database,
 } from "lucide-react";
 import {
   cloudApi, formatBytes,
@@ -14,6 +14,24 @@ import {
 import type { DockPanelProps } from "@/lib/dock-registry";
 import ErrorDisplay, { useErrorDisplay } from "@/components/ErrorDisplay";
 import ConfirmDialog from "./confirm-dialog";
+
+/* ──── File type helpers ──── */
+
+type FileIconInfo = { Icon: typeof FileText; color: string; label: string };
+
+function getFileIcon(mimeType?: string): FileIconInfo {
+  if (!mimeType) return { Icon: File, color: "#9ca3af", label: "文件" };
+  const m = mimeType.toLowerCase();
+  if (m.startsWith("video/"))   return { Icon: FileVideo, color: "#f87171", label: "视频" };
+  if (m.startsWith("image/"))   return { Icon: FileImage, color: "#60a5fa", label: "图片" };
+  if (m.startsWith("text/"))    return { Icon: FileText, color: "#fbbf24", label: "文本" };
+  if (m.includes("pdf"))        return { Icon: FileText, color: "#ef4444", label: "PDF" };
+  if (m.includes("zip") || m.includes("rar") || m.includes("7z") || m.includes("compress"))
+                                 return { Icon: FileArchive, color: "#a78bfa", label: "压缩包" };
+  if (m.includes("document") || m.includes("spreadsheet") || m.includes("presentation"))
+                                 return { Icon: FileText, color: "#34d399", label: "文档" };
+  return { Icon: File, color: "#9ca3af", label: "文件" };
+}
 
 /* ──── Folder tree node ──── */
 
@@ -64,9 +82,9 @@ function FolderTreeNode({
         </button>
       </div>
       {hasChildren && expanded &&
-        folder.children.map((child) => (
+        folder.children.map((child, i) => (
           <FolderTreeNode
-            key={child.id}
+            key={child.id ?? `folder-${i}`}
             folder={child}
             selectedId={selectedId}
             depth={depth + 1}
@@ -237,6 +255,11 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
 
   const handleDeleteVideo = async () => {
     if (!deleteTarget || deleteTarget.type !== "video") return;
+    if (!deleteTarget.id) {
+      setError(new Error("文件 ID 无效，请刷新页面后重试"));
+      setDeleteTarget(null);
+      return;
+    }
     try {
       await cloudApi.deleteVideo(deleteTarget.id as string);
       showSuccess("文件已删除");
@@ -306,20 +329,18 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
 
   /* ──── Status badge ──── */
 
-  const renderStatus = (asr: string, vec: string) => {
+  const renderStatus = (vec: string) => {
     const labels: Record<string, { text: string; cls: string }> = {
-      done: { text: "已完成", cls: "cd-status-done" },
-      processing: { text: "处理中", cls: "cd-status-proc" },
-      pending: { text: "待处理", cls: "cd-status-pend" },
+      done: { text: "已入库", cls: "cd-status-done" },
+      processing: { text: "入库中", cls: "cd-status-proc" },
+      pending: { text: "待入库", cls: "cd-status-pend" },
       failed: { text: "失败", cls: "cd-status-fail" },
     };
-    const asrLabel = labels[asr] || { text: asr, cls: "" };
-    const vecLabel = labels[vec] || { text: vec, cls: "" };
+    const label = labels[vec] || { text: vec, cls: "" };
 
     return (
       <div className="cd-status-group">
-        <span className={`cd-status-tag ${asrLabel.cls}`}>ASR {asrLabel.text}</span>
-        <span className={`cd-status-tag ${vecLabel.cls}`}>向量 {vecLabel.text}</span>
+        <span className={`cd-status-tag ${label.cls}`}>{label.text}</span>
       </div>
     );
   };
@@ -456,36 +477,44 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
           ) : (
             <>
               <div className="cd-video-grid">
-                {videos.map((v) => (
-                  <div key={v.uploadUuid} className="cd-video-card">
+                {videos.map((v, i) => (
+                  <div key={v.uploadUuid || `video-${i}`} className="cd-video-card">
                     <div className="cd-video-icon">
-                      <FileText size={28} />
+                      {(() => {
+                        const fi = getFileIcon(v.mimeType);
+                        return <fi.Icon size={28} color={fi.color} />;
+                      })()}
                     </div>
                     <div className="cd-video-info">
                       <div className="cd-video-name" title={v.originalName}>
                         {v.title || v.originalName}
                       </div>
                       <div className="cd-video-meta">
+                        <span className="cd-meta-type">{getFileIcon(v.mimeType).label}</span>
                         <span>{formatBytes(v.fileSize)}</span>
                         {v.duration != null && <span>{Math.round(v.duration / 60)} 分钟</span>}
                         <span>{new Date(v.createdAt).toLocaleDateString("zh-CN")}</span>
                       </div>
-                      {renderStatus(v.asrStatus, v.vectorStatus)}
+                      {renderStatus(v.vectorStatus)}
                     </div>
                     <div className="cd-video-actions">
-                      {(v.asrStatus !== "done" || v.vectorStatus !== "done") && (
+                      {v.vectorStatus !== "done" && (
                         <button
                           className="cd-btn-icon"
-                          title="触发处理"
+                          title="入库"
                           onClick={() => handleProcess(v.uploadUuid)}
                         >
-                          <Play size={14} />
+                          <Database size={14} />
                         </button>
                       )}
                       <button
                         className="cd-btn-icon cd-btn-icon-danger"
                         title="删除"
-                        onClick={() => setDeleteTarget({ type: "video", id: v.uploadUuid, name: v.originalName })}
+                        disabled={!v.uploadUuid}
+                        onClick={() => {
+                          if (!v.uploadUuid) return;
+                          setDeleteTarget({ type: "video", id: v.uploadUuid, name: v.originalName });
+                        }}
                       >
                         <Trash2 size={14} />
                       </button>
@@ -505,6 +534,20 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
       </div>
 
       <style jsx global>{`
+        .sk-toast {
+          position: fixed; top: 20px; right: 24px; z-index: 99999;
+          padding: 10px 20px; border-radius: 10px; font-size: 13.5px; font-weight: 600;
+          animation: cdFadeSlideIn .25s ease;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3); pointer-events: none;
+        }
+        .sk-toast.success {
+          background: linear-gradient(135deg, #059669, #10b981);
+          color: #fff;
+        }
+        @keyframes cdFadeSlideIn {
+          from { opacity: 0; transform: translateY(-8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
         .cd-panel {
           height: 100%; flex: 1; display: flex; flex-direction: column; gap: 0;
           background: radial-gradient(circle at top right, rgba(6, 182, 212, 0.08), transparent 28%),
@@ -630,7 +673,11 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
           font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           color: #e2e8f0;
         }
-        .cd-video-meta { display: flex; gap: 10px; font-size: 11.5px; color: #8b949e; }
+        .cd-video-meta { display: flex; gap: 10px; font-size: 11.5px; color: #8b949e; align-items: center; }
+        .cd-meta-type {
+          font-size: 10.5px; padding: 1px 5px; border-radius: 4px; font-weight: 600;
+          background: rgba(6, 182, 212, 0.12); color: #22d3ee;
+        }
         .cd-status-group { display: flex; gap: 6px; margin-top: 2px; }
         .cd-status-tag {
           font-size: 10.5px; padding: 2px 6px; border-radius: 999px; font-weight: 600; white-space: nowrap;

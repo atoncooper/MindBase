@@ -176,7 +176,6 @@ export default function SourcesPanelContent({
             is_processed: p.is_processed,
             is_vectorized: p.is_vectorized as VectorPageStatusResponse["is_vectorized"],
             vector_chunk_count: p.vector_chunk_count,
-            chroma_exists: p.is_vectorized === "done",
           };
         }
         setPageVectorStatus((prev) => ({ ...prev, ...vecStatusMap }));
@@ -425,7 +424,6 @@ export default function SourcesPanelContent({
         vectorized_at: prevStatus?.vectorized_at,
         vector_chunk_count: prevStatus?.vector_chunk_count ?? 0,
         vector_error: undefined,
-        chroma_exists: prevStatus?.chroma_exists ?? false,
       });
       setVectorMessage("向量化任务已提交");
 

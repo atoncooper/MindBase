@@ -148,17 +148,17 @@ async def add_binding(
         raise HTTPException(status_code=404, detail="工作区不存在")
 
     # Verify ownership of bound target
-    from app.repository.cloud.folder_repository import FolderRepository
-    from app.repository.cloud.file_repository import FileRepository
+    from app.repository.cloud.folder_repository import get_cloud_folder_repository
+    from app.repository.cloud.file_repository import get_cloud_file_repository
 
     if body.bindType == "folder" and body.folderId:
-        folder_repo = FolderRepository()
+        folder_repo = get_cloud_folder_repository()
         folder = await folder_repo.get_by_id(body.folderId, uid, db)
         if folder is None:
             raise HTTPException(status_code=403, detail="文件夹不存在或不属于你")
 
     if body.bindType == "file" and body.uploadUuid:
-        file_repo = FileRepository()
+        file_repo = get_cloud_file_repository()
         file = await file_repo.get_by_uuid(body.uploadUuid, uid, db)
         if file is None:
             raise HTTPException(status_code=403, detail="文件不存在或不属于你")

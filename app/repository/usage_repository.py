@@ -3,7 +3,7 @@ UsageRepository — credential_usage 表的数据库操作
 
 职责：用量记录写入 + 聚合查询（按 provider / credential 分组）。
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func, delete, insert
@@ -50,7 +50,7 @@ class UsageRepository:
         self, uid: int, db: AsyncSession, days: int = 30
     ) -> UsageSummary:
         """获取用户用量汇总（总 token + 调用次数 + 按 provider/credential 分布）"""
-        since = datetime.utcnow() - timedelta(days=days)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
 
         total_result = await db.execute(
             select(
@@ -77,7 +77,7 @@ class UsageRepository:
         self, uid: int, db: AsyncSession, days: int = 30
     ) -> list[ProviderUsage]:
         """按 provider 聚合用量（饼图数据）"""
-        since = datetime.utcnow() - timedelta(days=days)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
 
         result = await db.execute(
             select(
@@ -107,7 +107,7 @@ class UsageRepository:
         self, uid: int, db: AsyncSession, days: int = 30
     ) -> list[CredentialUsageItem]:
         """按 credential 聚合用量（树状图数据），NULL credential_id = 系统默认"""
-        since = datetime.utcnow() - timedelta(days=days)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
 
         result = await db.execute(
             select(
@@ -167,7 +167,7 @@ class UsageRepository:
 
     async def cleanup_old(self, db: AsyncSession, days: int = 90) -> int:
         """清理超过 N 天的用量记录，返回删除行数"""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         result = await db.execute(
             delete(CredentialUsage).where(CredentialUsage.created_at < cutoff)
         )

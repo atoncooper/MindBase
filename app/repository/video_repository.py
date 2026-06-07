@@ -2,7 +2,7 @@
 Video (video_pages) CRUD repository — pages identified by bvid + cid.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, func
@@ -40,7 +40,7 @@ class VideoRepository:
         await db.execute(sa_delete(Video).where(Video.bvid == bvid))
         await db.commit()
 
-        datetime.utcnow()
+        datetime.now(timezone.utc)
         for p in pages:
             db.add(Video(
                 bvid=bvid,

@@ -5,7 +5,7 @@ CredentialRepository — user_credentials 表的数据库 CRUD 操作
 注意：不包含加密/解密逻辑（由 services/llm/api_key_manager.py 负责）。
 软删除：delete 设置 deleted_at，所有查询过滤 deleted_at IS NULL。
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,7 +109,7 @@ class CredentialRepository:
         record = await self.get_by_id(credential_id, db)
         if record is None or record.uid != uid or record.deleted_at is not None:
             return False
-        record.deleted_at = datetime.utcnow()
+        record.deleted_at = datetime.now(timezone.utc)
         await db.commit()
         logger.info(f"[CRED_REPO] soft-deleted id={credential_id}")
         return True
@@ -169,7 +169,7 @@ class CredentialRepository:
             return False
         record.last_test_status = status
         record.last_test_error = error
-        record.last_test_at = datetime.utcnow()
+        record.last_test_at = datetime.now(timezone.utc)
         await db.commit()
         return True
 

@@ -50,13 +50,7 @@ rdbms:
   pool_recycle: 1800                  # max connection lifetime (seconds)
 
 
-# ---- ChromaDB (legacy vector store) -------------------------------
-chroma:
-  enabled: false
-  persist_directory: ./data/chroma_db
-
-
-# ---- Milvus (current vector store) --------------------------------
+# ---- Milvus (vector store) ----------------------------------------
 # Start: docker run -d --name milvus-standalone \
 #          -p 19530:19530 -p 9091:9091 milvusdb/milvus:latest
 milvus:

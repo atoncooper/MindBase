@@ -84,15 +84,7 @@ rdbms:
 
 
 # ============================================================
-# ChromaDB — legacy vector database (kept for migration)
-# ============================================================
-chroma:
-  enabled: false                         # use Milvus instead
-  persist_directory: ./data/chroma_db
-
-
-# ============================================================
-# Milvus — vector database (active)
+# Milvus — vector database
 # ============================================================
 # Start standalone: docker run -d --name milvus-standalone \
 #     -p 19530:19530 -p 9091:9091 milvusdb/milvus:v2.4.17

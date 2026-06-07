@@ -2,7 +2,7 @@
 CloudFile CRUD repository — typed operations for cloud_files table.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, func, update as sa_update, or_
@@ -54,6 +54,14 @@ class CloudFileRepository:
             vectorizable=is_vectorizable(mime_type, original_name),
         )
         db.add(file)
+
+        if folder_id is not None:
+            from app.repository.cloud.folder_repository import (
+                get_cloud_folder_repository,
+            )
+            folder_repo = get_cloud_folder_repository()
+            await folder_repo.increment_video_count(folder_id, 1, db)
+
         await db.commit()
         await db.refresh(file)
         logger.info(
@@ -73,7 +81,7 @@ class CloudFileRepository:
         result = await db.execute(
             sa_update(CloudFile)
             .where(CloudFile.upload_uuid == upload_uuid)
-            .values(upload_status="completed", etag=etag, updated_at=datetime.utcnow())
+            .values(upload_status="completed", etag=etag, updated_at=datetime.now(timezone.utc))
         )
         await db.commit()
         if result.rowcount == 0:
@@ -89,7 +97,7 @@ class CloudFileRepository:
         result = await db.execute(
             sa_update(CloudFile)
             .where(CloudFile.upload_uuid == upload_uuid)
-            .values(upload_status="failed", updated_at=datetime.utcnow())
+            .values(upload_status="failed", updated_at=datetime.now(timezone.utc))
         )
         await db.commit()
         if result.rowcount == 0:
@@ -241,7 +249,7 @@ class CloudFileRepository:
 
                 file.folder_id = folder_id
 
-        file.updated_at = datetime.utcnow()
+        file.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(file)
         logger.info(
@@ -260,7 +268,7 @@ class CloudFileRepository:
         await db.execute(
             sa_update(CloudFile)
             .where(CloudFile.upload_uuid == upload_uuid)
-            .values(asr_status=status, updated_at=datetime.utcnow())
+            .values(asr_status=status, updated_at=datetime.now(timezone.utc))
         )
         await db.commit()
 
@@ -275,7 +283,7 @@ class CloudFileRepository:
         """Set vectorisation status and optional chunk count."""
         values = {
             "vector_status": status,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
         }
         if chunk_count is not None:
             values["vector_chunk_count"] = chunk_count
@@ -308,7 +316,7 @@ class CloudFileRepository:
             folder_repo = get_cloud_folder_repository()
             await folder_repo.increment_video_count(file.folder_id, -1, db)
 
-        file.deleted_at = datetime.utcnow()
+        file.deleted_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(file)
         logger.info(

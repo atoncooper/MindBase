@@ -371,28 +371,23 @@ def _merge_and_deduplicate(*doc_lists, per_video_k: int = 2) -> List[Document]:
     - 全局去重会丢失同视频的其他相关片段
     - 分组 Top-K 保证每个视频最多 per_video_k 个片段
     """
-    # 按 bvid 分组（Document 对象使用 .metadata.get()）
+    # 按 bvid / upload_uuid 分组（Document 对象使用 .metadata.get()）
     grouped = defaultdict(list)
     for i, docs in enumerate(doc_lists):
         for j, doc in enumerate(docs):
             try:
-                bvid = doc.metadata.get("bvid") if hasattr(doc, "metadata") else doc.get("bvid")
+                meta = doc.metadata if hasattr(doc, "metadata") else doc
+                doc_key = meta.get("bvid") or meta.get("upload_uuid", "")
             except Exception as e:
                 logger.warning(f"[MERGE_DEBUG] doc[{i}][{j}] metadata.get 异常: type(doc)={type(doc)}, err={e}")
                 continue
-            try:
-                if not isinstance(bvid, str):
-                    logger.warning(f"[MERGE_DEBUG] doc[{i}][{j}] bvid 类型异常: type={type(bvid)}, value={repr(bvid)[:100]}")
-                    continue
-                if bvid:
-                    grouped[bvid].append(doc)
-            except TypeError as te:
-                logger.warning(f"[MERGE_DEBUG] grouped[bvid] 异常: bvid={repr(bvid)[:50]}, err={te}")
-                raise
+            if not isinstance(doc_key, str) or not doc_key:
+                continue
+            grouped[doc_key].append(doc)
 
     # 每组内按 score 降序取 top-K
     final_docs = []
-    for bvid, group in grouped.items():
+    for _key, group in grouped.items():
         group_sorted = sorted(group, key=lambda x: x.metadata.get("score", 0) if hasattr(x, "metadata") else x.get("score", 0), reverse=True)
         final_docs.extend(group_sorted[:per_video_k])
 
@@ -407,6 +402,7 @@ async def _vector_search_with_rewrites(
     bvids: Optional[List[str]],
     k: int = 5,
     workspace_pages: Optional[List[dict]] = None,
+    uid: Optional[int] = None,
 ) -> tuple[str, List[dict]]:
     """
     根据改写结果选择检索 query。
@@ -419,6 +415,7 @@ async def _vector_search_with_rewrites(
         bvids: 视频 BV 列表
         k: 召回数量
         workspace_pages: 工作区选中的分P列表，用于精确过滤
+        uid: 用户 ID，用于云盘数据隔离
     """
     rag = get_rag_service()
     rewrites = rewrite_result.rewrites
@@ -432,7 +429,7 @@ async def _vector_search_with_rewrites(
 
     if not rewrites:
         # 无改写结果，降级为直接检索
-        docs = rag.search(question, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages)
+        docs = rag.search(question, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages, uid=uid)
         return _build_context_from_docs(docs)
 
     rewrite = rewrites[0]  # 只有第一个（最高置信度）策略会被使用
@@ -452,10 +449,16 @@ async def _vector_search_with_rewrites(
         )
 
         # 并发执行，不在关键路径上增加延迟
-        general_docs, specific_docs = await asyncio.gather(
-            rag.search(step_back_query, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages),
-            rag.search(specific_query, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages),
+        loop = asyncio.get_running_loop()
+        general_fut = loop.run_in_executor(
+            None, rag.search, step_back_query, k,
+            bvids if bvids else None, workspace_pages, uid,
         )
+        specific_fut = loop.run_in_executor(
+            None, rag.search, specific_query, k,
+            bvids if bvids else None, workspace_pages, uid,
+        )
+        general_docs, specific_docs = await asyncio.gather(general_fut, specific_fut)
         logger.info(
             f"[QUERY_REWRITE] 泛化召回: {len(general_docs)} docs, "
             f"具体召回: {len(specific_docs)} docs"
@@ -478,9 +481,15 @@ async def _vector_search_with_rewrites(
         )
 
         # 并发执行所有子 query 检索
-        results = await asyncio.gather(*[
-            rag.search(q, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages) for q in sub_queries
-        ])
+        loop = asyncio.get_running_loop()
+        futures = [
+            loop.run_in_executor(
+                None, rag.search, q, k,
+                bvids if bvids else None, workspace_pages, uid,
+            )
+            for q in sub_queries
+        ]
+        results = await asyncio.gather(*futures)
         for i, (q, r) in enumerate(zip(sub_queries, results)):
             logger.info(f"[QUERY_REWRITE] 子查询[{i+1}] '{q}' 召回: {len(r)} docs")
         docs = _merge_and_deduplicate(*results)
@@ -492,27 +501,33 @@ async def _vector_search_with_rewrites(
         f"[QUERY_REWRITE] 未命中任何改写策略，使用原始 question 直接检索\n"
         f"  rewrite.type={rewrite.type}, confidence={rewrite.confidence}"
     )
-    docs = rag.search(question, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages)
+    docs = rag.search(question, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages, uid=uid)
     return _build_context_from_docs(docs)
 
 
 def _build_context_from_docs(docs: List[Document]) -> tuple[str, List[dict]]:
     """从文档列表构建 context 和 sources"""
-    context_parts, sources, seen_bvids = [], [], set()
+    context_parts, sources, seen_ids = [], [], set()
     for doc in docs:
         try:
-            bvid = doc.metadata.get("bvid", "") if hasattr(doc, "metadata") else (doc.get("bvid", "") if hasattr(doc, "get") else "")
-            title = doc.metadata.get("title", "") if hasattr(doc, "metadata") else (doc.get("title", "") if hasattr(doc, "get") else "")
+            meta = doc.metadata if hasattr(doc, "metadata") else {}
+            bvid = meta.get("bvid", "")
+            upload_uuid = meta.get("upload_uuid", "")
+            title = meta.get("title", "")
             content = doc.page_content.strip() if hasattr(doc, "page_content") else str(doc).strip()
         except Exception as e:
             logger.warning(f"[BUILD_CTX_DEBUG] doc 处理异常: type(doc)={type(doc)}, err={e}")
             continue
         if content:
             context_parts.append(f"【{title}】\n{content}")
-        # 防御：bvid 可能是 list 或其他非 hashable 类型
-        if bvid and isinstance(bvid, str) and bvid not in seen_bvids:
-            seen_bvids.add(bvid)
-            sources.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
+        # Build source entry: use bvid for B站 videos, upload_uuid for cloud docs
+        src_id = bvid or upload_uuid
+        if src_id and src_id not in seen_ids:
+            seen_ids.add(src_id)
+            if bvid:
+                sources.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
+            else:
+                sources.append({"upload_uuid": upload_uuid, "title": title})
     return "\n\n---\n\n".join(context_parts), sources
 
 async def _is_related_to_collection(db: AsyncSession, media_ids: List[int], question: str) -> bool:
@@ -650,6 +665,13 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
         logger.info(f"关联 MediaIDs for uid={uid}: {media_ids}")
     bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
     has_data = len(bvids) > 0
+
+    # Plan 0023: also check cloud drive vector data
+    rag = get_rag_service()
+    cloud_has_data = rag.cloud_backend is not None
+    has_any_data = has_data or cloud_has_data
+    logger.info(f"data check: b站={has_data} cloud={cloud_has_data}")
+
     is_collection_intent = _is_collection_intent(question)
     is_general = _is_general_question(question)
     if request.folder_ids:
@@ -680,7 +702,7 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
             return messages, [], question, rewrite_result
 
     # 1) LLM 路由优先，失败时降级规则路由
-    logger.info(f"路由输入: question={question} media_ids={media_ids} has_data={has_data} is_collection_intent={is_collection_intent}")
+    logger.info(f"路由输入: question={question} media_ids={media_ids} has_data={has_data} cloud_has_data={cloud_has_data} is_collection_intent={is_collection_intent}")
     route, route_raw = await _route_with_llm(question)
     route_source = "LLM"
     related: Optional[bool] = None
@@ -697,7 +719,7 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
         route = "vector"
         logger.info("[WORKSPACE] 强制路由: vector")
     # 2) 无数据时处理
-    if not has_data:
+    if not has_any_data:
         if is_collection_intent:
             context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
             if not context:
@@ -711,42 +733,50 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
         title_context = await _get_video_titles_context(db, media_ids, limit=50)
         messages = _build_direct_messages_with_context(title_context, question) if title_context else _build_direct_messages(question)
         return messages, [], question, rewrite_result
-    # 4) 列表类问题
+    # 4) 列表类问题 — 优先走 B站收藏夹；无数据时降级到向量检索（含云盘）
     if route == "db_list":
         if related is None:
             related = await _is_related_to_collection(db, media_ids, question)
         if not related and not is_collection_intent:
             return _build_direct_messages(question), [], question, rewrite_result
         context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
-        if not context:
+        if not context and not cloud_has_data:
             return _build_fallback_messages("（暂无信息，请入库）", question), sources, question, rewrite_result
-        return _build_db_list_messages(context, question), sources, question, rewrite_result
-    # 5) 总结类问题
+        if context:
+            return _build_db_list_messages(context, question), sources, question, rewrite_result
+        # Fall through to vector search below for cloud drive data
+    # 5) 总结类问题 — 优先走 B站收藏夹；无数据时降级到向量检索（含云盘）
     if route == "db_content":
         if related is None:
             related = await _is_related_to_collection(db, media_ids, question)
         if not related and not is_collection_intent:
             return _build_direct_messages(question), [], question, rewrite_result
         context, sources = await _get_video_context(db, media_ids, include_content=True, limit=None)
-        if not context:
+        if not context and not cloud_has_data:
             return _build_fallback_messages("（暂无信息，请入库）", question), sources, question, rewrite_result
-        return _build_db_summary_messages(context, question), sources, question, rewrite_result
+        if context:
+            return _build_db_summary_messages(context, question), sources, question, rewrite_result
+        # Fall through to vector search below for cloud drive data
     # 6) 检查相关性（使用改写后的 query 以提升语义匹配）
     if related is None:
         rewrite_query = rewrite_result.rewrites[0].query if (rewrite_result and rewrite_result.rewrites) else question
         related = await _is_related_to_collection(db, media_ids, rewrite_query)
     if not related and not is_collection_intent and not workspace_mode and not cloud_workspace_mode:
-        return _build_direct_messages(question), [], question, rewrite_result
+        # Check if cloud_drive has data — if so, proceed to vector search anyway
+        rag = get_rag_service()
+        cloud_has_data = rag.cloud_backend is not None
+        if not cloud_has_data:
+            return _build_direct_messages(question), [], question, rewrite_result
     # 7) 向量检索（使用 Query 改写 + 工作区过滤）
     try:
         search_bvids = ws_upload_uuids if cloud_workspace_mode else bvids
         context, sources = await _vector_search_with_rewrites(
-            question, rewrite_result, search_bvids, k=5, workspace_pages=workspace_pages_dicts
+            question, rewrite_result, search_bvids, k=5, workspace_pages=workspace_pages_dicts, uid=uid
         )
         if context:
             return _build_rag_messages(context, question), sources, question, rewrite_result
     except Exception as e:
-        logger.warning(f"向量检索失败: {e}")
+        logger.exception(f"向量检索失败: {e}")
     # 兜底
     context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
     return _build_fallback_messages(context or "（暂无入库信息）", question), sources, question, rewrite_result

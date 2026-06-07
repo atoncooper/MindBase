@@ -7,7 +7,7 @@ Delegates persistence to AsyncTaskRepository.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -61,14 +61,14 @@ class TaskTracker:
         async with get_db_context() as db:
             await self._repo.update_fields(
                 task_id, db, status="done", progress=100,
-                result=result, completed_at=datetime.utcnow(),
+                result=result, completed_at=datetime.now(timezone.utc),
             )
 
     async def fail(self, task_id: str, error: str) -> None:
         async with get_db_context() as db:
             await self._repo.update_fields(
                 task_id, db, status="failed", error=error,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
             )
 
     async def set_progress(self, task_id: str, progress: int) -> None:

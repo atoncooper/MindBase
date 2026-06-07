@@ -194,7 +194,7 @@ def _calculate_recall_score(
     diversity = unique_bvids / max(len(docs), 1)
 
     if similarity_scores:
-        # Chroma 默认返回 L2 距离，越小越相似；映射到 [0, 1]
+        # Milvus COSINE score: higher is better; map to [0, 1]
         similarities = [1.0 / (1.0 + score) for score in similarity_scores]
         avg_similarity = sum(similarities) / len(similarities)
         score = 0.6 * avg_similarity + 0.4 * diversity
@@ -302,10 +302,12 @@ class AgenticRAGService:
             filter_cond = {"bvid": {"$in": state.bvids}}
 
         try:
+            search_kwargs = {"k": state.k}
             if filter_cond:
-                docs_with_scores = self.rag.vectorstore.similarity_search_with_score(query, k=state.k, filter=filter_cond)
-            else:
-                docs_with_scores = self.rag.vectorstore.similarity_search_with_score(query, k=state.k)
+                search_kwargs["filter"] = filter_cond
+            docs = self.rag.vectorstore.search(query, **search_kwargs)
+            # Reconstruct (doc, score) tuples from Milvus metadata
+            docs_with_scores = [(d, d.metadata.get("score", 0)) for d in docs]
         except Exception as exc:
             logger.warning(f"[AGENTIC_RAG] vector search failed: {exc}")
             docs_with_scores = []

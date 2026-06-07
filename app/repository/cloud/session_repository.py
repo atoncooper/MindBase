@@ -2,7 +2,7 @@
 CloudUploadSession CRUD repository — typed operations for cloud_upload_sessions.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -35,7 +35,7 @@ class CloudSessionRepository:
             total_files=total_files,
             completed_files=0,
             status="active",
-            last_heartbeat=datetime.utcnow(),
+            last_heartbeat=datetime.now(timezone.utc),
         )
         db.add(session)
         await db.commit()
@@ -57,7 +57,7 @@ class CloudSessionRepository:
         session = await self._get_by_uuid(session_uuid, db)
         if session:
             session.status = "completed"
-            session.last_heartbeat = datetime.utcnow()
+            session.last_heartbeat = datetime.now(timezone.utc)
             await db.commit()
             logger.info(
                 f"[CLOUD_SESSION_REPO] completed session_uuid={session_uuid}"
@@ -75,7 +75,7 @@ class CloudSessionRepository:
         session = result.scalar_one_or_none()
         if session:
             session.status = "completed"
-            session.last_heartbeat = datetime.utcnow()
+            session.last_heartbeat = datetime.now(timezone.utc)
             await db.commit()
             logger.info(
                 "[CLOUD_SESSION_REPO] completed minio_upload_id=%s session_uuid=%s",
@@ -89,7 +89,7 @@ class CloudSessionRepository:
         session = await self._get_by_uuid(session_uuid, db)
         if session:
             session.status = "abandoned"
-            session.last_heartbeat = datetime.utcnow()
+            session.last_heartbeat = datetime.now(timezone.utc)
             await db.commit()
             logger.info(
                 f"[CLOUD_SESSION_REPO] abandoned session_uuid={session_uuid}"

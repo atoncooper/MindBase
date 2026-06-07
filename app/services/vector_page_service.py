@@ -4,7 +4,7 @@ Per-page vectorization service — atomic protection + step-level progress.
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -136,7 +136,7 @@ class VectorPageService:
                 )
                 page = result.scalar_one_or_none()
                 page.is_vectorized = "done"
-                page.vectorized_at = datetime.utcnow()
+                page.vectorized_at = datetime.now(timezone.utc)
                 page.vector_chunk_count = chunk_count
                 await db.commit()
 

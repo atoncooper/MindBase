@@ -11,6 +11,7 @@ Requires: Milvus instance running (docker or cloud).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from langchain_core.documents import Document
@@ -49,47 +50,67 @@ class MilvusVectorStore:
 
     # ── VectorStoreBackend interface ──────────────────────────────
 
-    def add(self, documents: list[Document]) -> int:
+    EMBED_BATCH_SIZE = 10  # DashScope / some OpenAI-compatible APIs limit batch size
+
+    def add(
+        self,
+        documents: list[Document],
+        partition_dt: datetime | None = None,
+    ) -> int:
         if not documents:
             return 0
 
-        texts = [doc.page_content for doc in documents]
-        embeddings = self._embedding_fn.embed_documents(texts)
+        partition_name: str | None = None
+        if partition_dt is not None:
+            partition_name = partition_dt.strftime("%Y-%m")
+            self._ensure_partition(partition_name)
 
-        if self._is_cloud:
-            data = [
-                [doc.metadata.get("upload_uuid", "") for doc in documents],
-                [doc.metadata.get("uid", 0) for doc in documents],
-                [doc.metadata.get("chunk_index", 0) for doc in documents],
-                [doc.metadata.get("chunk_id", "") for doc in documents],
-                [doc.metadata.get("title", "") for doc in documents],
-                [doc.metadata.get("source", "") for doc in documents],
-                [doc.metadata.get("source_type", "") for doc in documents],
-                [doc.metadata.get("section_title", "") for doc in documents],
-                [doc.metadata.get("content_type", "") for doc in documents],
-                [doc.page_content for doc in documents],
-                embeddings,
-            ]
-        else:
-            data = [
-                [doc.metadata.get("bvid", "") for doc in documents],
-                [doc.metadata.get("cid", 0) for doc in documents],
-                [doc.metadata.get("page_index", 0) for doc in documents],
-                [doc.metadata.get("chunk_index", 0) for doc in documents],
-                [doc.metadata.get("chunk_id", "") for doc in documents],
-                [doc.metadata.get("title", "") for doc in documents],
-                [doc.metadata.get("page_title", "") for doc in documents],
-                [doc.metadata.get("source", "") for doc in documents],
-                [doc.metadata.get("section_title", "") for doc in documents],
-                [doc.metadata.get("content_type", "") for doc in documents],
-                [doc.metadata.get("url", "") for doc in documents],
-                [doc.page_content for doc in documents],
-                embeddings,
-            ]
+        total = 0
+        for i in range(0, len(documents), self.EMBED_BATCH_SIZE):
+            batch = documents[i : i + self.EMBED_BATCH_SIZE]
+            texts = [doc.page_content for doc in batch]
+            embeddings = self._embedding_fn.embed_documents(texts)
 
-        mr = self._collection.insert(data)
-        self._collection.flush()
-        return len(mr.primary_keys)
+            if self._is_cloud:
+                data = [
+                    [doc.metadata.get("upload_uuid", "") for doc in batch],
+                    [doc.metadata.get("uid", 0) for doc in batch],
+                    [doc.metadata.get("chunk_index", 0) for doc in batch],
+                    [doc.metadata.get("chunk_id", "") for doc in batch],
+                    [doc.metadata.get("title", "") for doc in batch],
+                    [doc.metadata.get("source", "") for doc in batch],
+                    [doc.metadata.get("source_type", "") for doc in batch],
+                    [doc.metadata.get("section_title", "") for doc in batch],
+                    [doc.metadata.get("content_type", "") for doc in batch],
+                    [doc.page_content for doc in batch],
+                    embeddings,
+                ]
+            else:
+                data = [
+                    [doc.metadata.get("bvid", "") for doc in batch],
+                    [doc.metadata.get("cid", 0) for doc in batch],
+                    [doc.metadata.get("page_index", 0) for doc in batch],
+                    [doc.metadata.get("chunk_index", 0) for doc in batch],
+                    [doc.metadata.get("chunk_id", "") for doc in batch],
+                    [doc.metadata.get("title", "") for doc in batch],
+                    [doc.metadata.get("page_title", "") for doc in batch],
+                    [doc.metadata.get("source", "") for doc in batch],
+                    [doc.metadata.get("section_title", "") for doc in batch],
+                    [doc.metadata.get("content_type", "") for doc in batch],
+                    [doc.metadata.get("url", "") for doc in batch],
+                    [doc.page_content for doc in batch],
+                    embeddings,
+                ]
+
+            mr = self._collection.insert(data, partition_name=partition_name)
+            self._collection.flush()
+            total += len(mr.primary_keys)
+
+        logger.info(
+            "[MILVUS] added %d chunks to collection '%s' partition=%s",
+            total, self._collection_name, partition_name or "_default",
+        )
+        return total
 
     def search(
         self,
@@ -98,6 +119,8 @@ class MilvusVectorStore:
         filter: dict[str, Any] | None = None,
         bvids: list[str] | None = None,
         upload_uuids: list[str] | None = None,
+        partition_dt_start: datetime | None = None,
+        partition_dt_end: datetime | None = None,
     ) -> list[Document]:
         query_embedding = self._embedding_fn.embed_query(query)
 
@@ -105,6 +128,21 @@ class MilvusVectorStore:
             "metric_type": self._config.metric_type,
             "params": {"nprobe": self._config.nprobe},
         }
+
+        # Build partition list from date range
+        partition_names: list[str] | None = None
+        if partition_dt_start is not None and partition_dt_end is not None:
+            names = []
+            cur = partition_dt_start.replace(day=1)
+            end = partition_dt_end.replace(day=1)
+            while cur <= end:
+                names.append(cur.strftime("%Y-%m"))
+                # next month
+                if cur.month == 12:
+                    cur = cur.replace(year=cur.year + 1, month=1)
+                else:
+                    cur = cur.replace(month=cur.month + 1)
+            partition_names = names
 
         # Build filter expression
         if bvids and self._is_cloud:
@@ -120,14 +158,18 @@ class MilvusVectorStore:
 
         output_fields = _CLOUD_DRIVE_FIELDS if self._is_cloud else _BILIBILI_FIELDS
 
-        results = self._collection.search(
-            data=[query_embedding],
-            anns_field="embedding",
-            param=search_params,
-            limit=k,
-            expr=expr,
-            output_fields=output_fields,
-        )
+        search_kwargs: dict[str, Any] = {
+            "data": [query_embedding],
+            "anns_field": "embedding",
+            "param": search_params,
+            "limit": k,
+            "expr": expr,
+            "output_fields": output_fields,
+        }
+        if partition_names:
+            search_kwargs["partition_names"] = partition_names
+
+        results = self._collection.search(**search_kwargs)
 
         docs: list[Document] = []
         for hits in results:
@@ -229,8 +271,25 @@ class MilvusVectorStore:
         self._collection.flush()
         logger.info("[MILVUS] collection '{}' cleared", self._collection_name)
 
+    def reset(self) -> None:
+        """Drop and recreate the collection (e.g. after embedding model change)."""
+        from pymilvus import utility
+        if utility.has_collection(self._collection_name):
+            utility.drop_collection(self._collection_name)
+            logger.info("[MILVUS] collection '%s' dropped for reset", self._collection_name)
+        self._collection = self._get_or_create_collection()
+
     def close(self) -> None:
         pass
+
+    def _ensure_partition(self, name: str) -> None:
+        """Create a partition if it doesn't already exist."""
+        if not self._collection.has_partition(name):
+            self._collection.create_partition(name)
+            logger.info(
+                "[MILVUS] partition '%s' created in collection '%s'",
+                name, self._collection_name,
+            )
 
     # ── internals ─────────────────────────────────────────────────
 
@@ -240,12 +299,26 @@ class MilvusVectorStore:
         if utility.has_collection(self._collection_name):
             col = Collection(self._collection_name)
             col.load()
-            logger.info(
-                "[MILVUS] collection '%s' loaded (%d entities)",
-                self._collection_name,
-                col.num_entities,
-            )
-            return col
+            # Auto-fix: if existing collection dim doesn't match configured dim,
+            # drop and recreate (e.g. after embedding model change).
+            expected_dim = self._config.dimension
+            for field in col.schema.fields:
+                if field.name == "embedding":
+                    existing_dim = field.params.get("dim", 0)
+                    if existing_dim not in (0, expected_dim):
+                        logger.warning(
+                            "[MILVUS] collection '%s' has dim=%d, expected=%d, dropping to recreate",
+                            self._collection_name, existing_dim, expected_dim,
+                        )
+                        utility.drop_collection(self._collection_name)
+                        break
+            else:
+                logger.info(
+                    "[MILVUS] collection '%s' loaded (%d entities)",
+                    self._collection_name,
+                    col.num_entities,
+                )
+                return col
 
         if self._is_cloud:
             fields = self._build_cloud_drive_schema()
@@ -269,8 +342,7 @@ class MilvusVectorStore:
         )
         return col
 
-    @staticmethod
-    def _build_bilibili_schema() -> list:
+    def _build_bilibili_schema(self) -> list:
         from pymilvus import DataType, FieldSchema
 
         return [
@@ -287,7 +359,7 @@ class MilvusVectorStore:
             FieldSchema(name="content_type", dtype=DataType.VARCHAR, max_length=32),
             FieldSchema(name="url", dtype=DataType.VARCHAR, max_length=512),
             FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=0),
+            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._config.dimension),
         ]
 
     def _build_cloud_drive_schema(self) -> list:

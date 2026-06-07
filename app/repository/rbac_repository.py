@@ -4,7 +4,7 @@ RbacRepository — rbac_role and rbac_user_role tables.
 Idempotent seed data for system roles is also handled here.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -53,7 +53,7 @@ class RbacRepository:
                          granted_by: int = 0) -> RbacUserRole:
         record = RbacUserRole(
             uid=uid, role_id=role_id,
-            granted_by=granted_by, granted_at=datetime.utcnow(),
+            granted_by=granted_by, granted_at=datetime.now(timezone.utc),
             is_active=True,
         )
         db.add(record)

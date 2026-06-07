@@ -2,7 +2,7 @@
 VideoMetadata (arc_meta) CRUD repository.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +36,7 @@ class VideoMetadataRepository:
         db: AsyncSession,
     ) -> VideoMetadata:
         existing = await self.get_by_video_id(video_id, db)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         if existing:
             if summary is not None:
@@ -91,7 +91,7 @@ class VideoMetadataRepository:
             meta.user_tags = user_tags
         if notes is not None:
             meta.notes = notes
-        meta.updated_at = datetime.utcnow()
+        meta.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(meta)
         return meta

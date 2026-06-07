@@ -2,7 +2,7 @@
 CloudUploadChunk CRUD repository — per-chunk tracking for resumable uploads.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func, update as sa_update, delete as sa_delete
@@ -28,7 +28,7 @@ class CloudChunkRepository:
         db: AsyncSession,
     ) -> int:
         """Create *chunk_count* chunk rows.  Returns number of rows created."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         chunks = [
             CloudUploadChunk(
                 upload_uuid=upload_uuid,
@@ -69,8 +69,8 @@ class CloudChunkRepository:
             .values(
                 upload_status="completed",
                 etag=etag,
-                last_heartbeat=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                last_heartbeat=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
             )
         )
         await db.commit()
@@ -168,7 +168,7 @@ class CloudChunkRepository:
         Returns the list of affected upload_uuids (so callers can also
         abort the corresponding MinIO multipart uploads).
         """
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         # Find affected upload_uuids before deletion
         result = await db.execute(

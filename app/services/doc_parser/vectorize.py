@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,47 +36,46 @@ async def vectorize_cloud_document(
     Idempotent: skips if vector_status='done' and content hash unchanged.
     Returns chunk count written to Milvus cloud_drive.
     """
-    from app.repository.cloud.file_repository import FileRepository
+    from app.repository.cloud.file_repository import get_cloud_file_repository
     from app.services.rag import get_rag_service
 
-    file_repo = FileRepository()
+    file_repo = get_cloud_file_repository()
     file = await file_repo.get_by_uuid(upload_uuid, uid, db)
     if file is None:
         raise ValueError(f"Cloud file not found: {upload_uuid}")
 
     if not file.vectorizable:
-        logger.info("[VECTORIZE] file %s not vectorizable, skipping", upload_uuid)
-        file.vector_status = "done"
+        logger.info("[VECTORIZE] file %s not vectorizable (mime=%s), skipping",
+                    upload_uuid, file.mime_type)
+        file.vector_status = "not_supported"
         await db.commit()
         return 0
-
-    # Download from MinIO
-    from app.services.cloud.minio_client import get_minio_client
-    minio_client = get_minio_client()
-    content_bytes = await asyncio.get_event_loop().run_in_executor(
-        None, minio_client.get_object, file.object_key
-    )
-
-    if len(content_bytes) > MAX_DOC_SIZE:
-        logger.warning("[VECTORIZE] file %s too large (%d bytes > %d), marking non-vectorizable",
-                       upload_uuid, len(content_bytes), MAX_DOC_SIZE)
-        file.vectorizable = False
-        file.vector_status = "failed"
-        await db.commit()
-        return 0
-
-    # Content hash for idempotency
-    content_hash = hashlib.sha256(content_bytes).hexdigest()
-    if file.vector_status == "done" and file.content_hash == content_hash:
-        logger.info("[VECTORIZE] file %s already vectorized, content unchanged", upload_uuid)
-        return file.vector_chunk_count or 0
-
-    file.vector_status = "processing"
-    file.content_hash = content_hash
-    await db.commit()
-    await _push_status(uid, upload_uuid, "processing", 0)
 
     try:
+        # Download from MinIO
+        from app.infra.minio import get_minio_client
+        minio_client = get_minio_client()
+        content_bytes = await minio_client.get_object(file.object_key)
+
+        if len(content_bytes) > MAX_DOC_SIZE:
+            logger.warning("[VECTORIZE] file %s too large (%d bytes > %d), marking non-vectorizable",
+                           upload_uuid, len(content_bytes), MAX_DOC_SIZE)
+            file.vectorizable = False
+            file.vector_status = "failed"
+            await db.commit()
+            return 0
+
+        # Content hash for idempotency
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        if file.vector_status == "done" and file.content_hash == content_hash:
+            logger.info("[VECTORIZE] file %s already vectorized, content unchanged", upload_uuid)
+            return file.vector_chunk_count or 0
+
+        file.vector_status = "processing"
+        file.content_hash = content_hash
+        await db.commit()
+        await _push_status(uid, upload_uuid, "processing", 0)
+
         mime_type = file.mime_type
         is_video = mime_type.startswith("video/")
         source_type = "drive" if is_video else "doc"
@@ -94,7 +92,7 @@ async def vectorize_cloud_document(
         chunks = chunker.chunk(
             cleaned_text,
             video_title=file.title or file.original_name,
-            doc_headings=headings if headings else None,
+            outline=headings if headings else None,
         )
         if not chunks:
             raise RuntimeError(f"Chunking produced no chunks for {upload_uuid}")
@@ -105,7 +103,7 @@ async def vectorize_cloud_document(
         rag = get_rag_service()
         if rag.cloud_backend is None:
             raise RuntimeError("cloud_backend not available (Milvus not configured)")
-        chunk_count = rag.cloud_backend.add(docs)
+        chunk_count = rag.cloud_backend.add(docs, partition_dt=datetime.now(timezone.utc))
 
         # ── Phase 4: Update MySQL metadata ──
         file.doc_parser = source
@@ -142,15 +140,15 @@ async def vectorize_cloud_document(
 async def _extract_text(upload_uuid, uid, content_bytes, mime_type, filename,
                         content_hash, source_type) -> tuple[str, str, list[dict]]:
     """Extract text from a cloud file. Returns (cleaned_text, source_name, headings)."""
-    from app.repository.mongo_asr_repository import AsrDocumentRepository
     from app.infra.mongo import get_database
 
     is_video = mime_type.startswith("video/")
     if is_video:
-        asr_repo = AsrDocumentRepository()
-        asr_doc = await asr_repo.get_latest_by_bvid(upload_uuid)
+        from app.repository.mongo_asr_repository import get_latest as mongo_get_latest
+        # Cloud-uploaded videos use upload_uuid as cid=0 placeholder
+        asr_doc = await mongo_get_latest(upload_uuid, 0)
         if not asr_doc or not asr_doc.get("content"):
-            raise ValueError(f"No ASR content for video {upload_uuid}")
+            raise ValueError(f"No ASR content for video {upload_uuid}. Run ASR first.")
         return clean_document_text(asr_doc["content"]), "asr", []
 
     parser = get_parser(mime_type, filename)
@@ -178,7 +176,7 @@ async def _extract_text(upload_uuid, uid, content_bytes, mime_type, filename,
                     "code_blocks": len(parsed.code_blocks),
                     "tables": len(parsed.tables),
                 },
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(timezone.utc),
             }},
             upsert=True,
         )
@@ -197,7 +195,7 @@ async def _verify_consistency(
       - MySQL cloud_files has the metadata (doc_parser set)
     """
     from app.infra.mongo import get_database
-    from app.repository.cloud.file_repository import FileRepository
+    from app.repository.cloud.file_repository import get_cloud_file_repository
 
     ok_mongo = False
     ok_milvus = False
@@ -227,7 +225,7 @@ async def _verify_consistency(
             )
 
     # 3. MySQL
-    file_repo = FileRepository()
+    file_repo = get_cloud_file_repository()
     file = await file_repo.get_by_uuid(upload_uuid, uid, db)
     if file is not None:
         ok_mysql = file.doc_parser is not None

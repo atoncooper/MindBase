@@ -338,7 +338,7 @@ class TestGetVersions:
     async def test_versions_multiple(self, client, test_db):
         """多个版本"""
         from app.models import VideoVersion
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         # 写入多个版本
         for v in [1, 2, 3]:
@@ -350,7 +350,7 @@ class TestGetVersions:
                 content=f"v{v}内容",
                 content_source="asr",
                 is_latest=(v == 3),
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             )
             test_db.add(version)
         await test_db.commit()

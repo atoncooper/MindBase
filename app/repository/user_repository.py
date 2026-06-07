@@ -38,11 +38,11 @@ class UserRepository:
 
     async def soft_delete(self, uid: int, db: AsyncSession) -> bool:
         """Mark user as deleted (does NOT physically remove the row)."""
-        from datetime import datetime
+        from datetime import datetime, timezone
         user = await self.get_by_uid(uid, db)
         if not user:
             return False
-        user.deleted_at = datetime.utcnow()
+        user.deleted_at = datetime.now(timezone.utc)
         user.status = "deleted"
         await db.commit()
         logger.info(f"[USER_REPO] soft-deleted uid={uid}")

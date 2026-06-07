@@ -2,7 +2,7 @@
 CloudFolder CRUD repository — typed operations for cloud_folders table.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, update as sa_update
@@ -140,7 +140,7 @@ class CloudFolderRepository:
         if parent_id is not _NO_CHANGE:
             await self._validate_and_move(folder, parent_id, uid, db)
 
-        folder.updated_at = datetime.utcnow()
+        folder.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(folder)
         logger.info(
@@ -159,7 +159,7 @@ class CloudFolderRepository:
         detection)."""
         folder = await self.validate_ownership(folder_id, uid, db)
         await self._validate_and_move(folder, new_parent_id, uid, db)
-        folder.updated_at = datetime.utcnow()
+        folder.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(folder)
         logger.info(
@@ -206,6 +206,38 @@ class CloudFolderRepository:
         )
         await db.commit()
 
+    async def recalc_all_counts(self, uid: int, db: AsyncSession) -> int:
+        """Recalculate video_count for all folders owned by *uid* from
+        the actual CloudFile row counts. Returns the number of folders updated."""
+        from sqlalchemy import func as sql_func
+        _FILE_ALIVE = CloudFile.deleted_at == None  # noqa: E711
+
+        result = await db.execute(
+            select(
+                CloudFile.folder_id,
+                sql_func.count(CloudFile.upload_uuid).label("cnt"),
+            )
+            .where(CloudFile.uid == uid, CloudFile.folder_id.isnot(None), _FILE_ALIVE)
+            .group_by(CloudFile.folder_id)
+        )
+        actual_counts: dict[int, int] = {row[0]: row[1] for row in result.all()}
+
+        # Get all alive folders for this user
+        all_folders = await db.execute(
+            select(CloudFolder).where(CloudFolder.uid == uid, _ALIVE)
+        )
+        updated = 0
+        for folder in all_folders.scalars().all():
+            expected = actual_counts.get(folder.id, 0)
+            if folder.video_count != expected:
+                folder.video_count = expected
+                updated += 1
+        await db.commit()
+        logger.info(
+            f"[CLOUD_FOLDER_REPO] recalc_all_counts uid={uid} updated={updated}"
+        )
+        return updated
+
     # ------------------------------------------------------------------
     # soft_delete
     # ------------------------------------------------------------------
@@ -221,7 +253,7 @@ class CloudFolderRepository:
             Number of CloudFile rows that were soft-deleted.
         """
         folder = await self.validate_ownership(folder_id, uid, db)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         affected_count = await self._soft_delete_files_in_folder(
             folder_id, uid, now, db

@@ -24,7 +24,7 @@ Document:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from loguru import logger
@@ -39,7 +39,7 @@ def _new_msg_id() -> str:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 # ── Write ops ──────────────────────────────────────────────────────

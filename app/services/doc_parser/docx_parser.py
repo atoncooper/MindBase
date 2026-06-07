@@ -49,8 +49,24 @@ class DocxParser(BaseDocParser):
 
         tables = self._extract_tables(doc.tables)
 
+        # Build full text: paragraphs + tables (formatted as markdown)
+        full_text = "\n\n".join(paragraphs)
+        if tables:
+            table_texts = []
+            for t in tables:
+                lines = []
+                if t["headers"]:
+                    lines.append("| " + " | ".join(t["headers"]) + " |")
+                    lines.append("| " + " | ".join(["---"] * len(t["headers"])) + " |")
+                for row in t["rows"]:
+                    lines.append("| " + " | ".join(row) + " |")
+                if lines:
+                    table_texts.append("\n".join(lines))
+            if table_texts:
+                full_text += "\n\n" + "\n\n".join(table_texts)
+
         return ParsedDocument(
-            text="\n\n".join(paragraphs),
+            text=full_text,
             headings=headings,
             code_blocks=code_blocks,
             tables=tables,

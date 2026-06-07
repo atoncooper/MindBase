@@ -191,3 +191,8 @@ def coll(name: str) -> Any:
 def is_enabled() -> bool:
     """Return True if Mongo is enabled and connected."""
     return db is not None
+
+
+def get_database() -> Any | None:
+    """Return the raw Motor database handle, or None if not initialized."""
+    return db
