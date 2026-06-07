@@ -5,7 +5,7 @@ Quiz 题目生成服务 — 批量生成练习题。
 """
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -108,7 +108,7 @@ class QuizGeneratorService:
             quiz_set = QuizSet(
                 quiz_uuid=quiz_uuid,
                 uid=uid,
-                title=title or f"练习 {datetime.utcnow().strftime('%m-%d %H:%M')}",
+                title=title or f"练习 {datetime.now(timezone.utc).strftime('%m-%d %H:%M')}",
                 question_count=question_count,
                 type_distribution=type_distribution,
                 difficulty=difficulty,
@@ -177,7 +177,7 @@ class QuizGeneratorService:
                 if qs:
                     qs.status = "done"
                     qs.bvid_count = len(set(q.get("bvid", "") for q in valid_questions))
-                    qs.completed_at = datetime.utcnow()
+                    qs.completed_at = datetime.now(timezone.utc)
                     await db.commit()
 
             est_tokens = sum(len(c["content"]) for c in chunks) // 3

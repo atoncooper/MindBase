@@ -76,7 +76,7 @@ class ResumeResponse(BaseModel):
 # ── Folders ─────────────────────────────────────────────────────────
 
 class FolderTreeItem(BaseModel):
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "by_alias": False}
 
     id: int
     parentId: Optional[int] = Field(default=None, alias="parent_id")
@@ -95,7 +95,7 @@ class FolderCreateRequest(BaseModel):
 
 
 class FolderResponse(BaseModel):
-    model_config = {"from_attributes": True, "populate_by_name": True}
+    model_config = {"from_attributes": True, "populate_by_name": True, "by_alias": False}
 
     id: int
     parentId: Optional[int] = Field(default=None, alias="parent_id")
@@ -116,11 +116,12 @@ class FolderDeleteResponse(BaseModel):
 # ── Videos (list) ───────────────────────────────────────────────────
 
 class VideoItem(BaseModel):
-    model_config = {"from_attributes": True, "populate_by_name": True}
+    model_config = {"from_attributes": True, "populate_by_name": True, "by_alias": False}
 
     uploadUuid: str = Field(alias="upload_uuid")
     originalName: str = Field(alias="original_name")
     fileSize: int = Field(alias="file_size")
+    mimeType: str = Field(alias="mime_type")
     duration: Optional[int] = None
     asrStatus: str = Field(alias="asr_status")
     vectorStatus: str = Field(alias="vector_status")
@@ -140,11 +141,12 @@ class VideoListResponse(BaseModel):
 # ── Video detail ────────────────────────────────────────────────────
 
 class VideoDetailResponse(BaseModel):
-    model_config = {"from_attributes": True, "populate_by_name": True}
+    model_config = {"from_attributes": True, "populate_by_name": True, "by_alias": False}
 
     uploadUuid: str = Field(alias="upload_uuid")
     originalName: str = Field(alias="original_name")
     fileSize: int = Field(alias="file_size")
+    mimeType: str = Field(alias="mime_type")
     duration: Optional[int] = None
     asrStatus: str = Field(alias="asr_status")
     vectorStatus: str = Field(alias="vector_status")
@@ -177,7 +179,7 @@ class VideoProcessResponse(BaseModel):
 
 
 class VideoStatusResponse(BaseModel):
-    model_config = {"from_attributes": True, "populate_by_name": True}
+    model_config = {"from_attributes": True, "populate_by_name": True, "by_alias": False}
 
     asrStatus: str = Field(alias="asr_status")
     asrProgress: int = 0

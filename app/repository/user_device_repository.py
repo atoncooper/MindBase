@@ -2,7 +2,7 @@
 UserDeviceRepository — user_device table CRUD.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -29,7 +29,7 @@ class UserDeviceRepository:
         browser_version: Optional[str] = None,
         fingerprint: Optional[str] = None,
     ) -> UserDevice:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         result = await db.execute(
             select(UserDevice).where(UserDevice.device_id == device_id)
         )

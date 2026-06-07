@@ -11,10 +11,11 @@
 
 - ✅ B 站扫码登录 + **邮箱密码登录**，读取收藏夹
 - ✅ 支持**分 P 视频**的逐 P 处理与向量化
+- ✅ **云盘文件上传**（Markdown / HTML / DOCX / 纯文本），自动向量化入库
 - ✅ 音频转文字（ASR），自动兜底处理
 - ✅ 语义检索（向量检索）+ **Agentic RAG** 智能问答
 - ✅ 多路由策略（direct / db_list / db_content / vector）自动选择
-- ✅ **Milvus** 向量数据库 + MySQL + Redis + MongoDB 基础设施
+- ✅ **Milvus** 向量数据库（按月分区）+ MySQL + Redis + MongoDB + MinIO 基础设施
 - ✅ 多 Provider API Key 管理（OpenAI / Anthropic / DeepSeek / 自定义）
 - ✅ **API 配置测试** — 一键验证 LLM / Embedding / ASR 连接
 - ✅ Dashboard 设备管理 + Token 会话列表
@@ -62,8 +63,8 @@
 │  │  │  └────────┘ └────────┘ └────────┘ └────────┘  │            │   │
 │  │  └───────────────────────────────────────────────┘            │   │
 │  │  ┌──────────────────┐    ┌──────────────────┐                 │   │
-│  │  │   SQLite         │    │   ChromaDB       │                 │   │
-│  │  │  (结构化数据)     │    │  (向量存储)       │                 │   │
+│  │  │   MySQL           │    │   Milvus          │                 │   │
+│  │  │  (结构化数据)     │    │  (向量存储,月分区) │                 │   │
 │  │  └──────────────────┘    └──────────────────┘                 │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -72,9 +73,9 @@
 ### 核心链路
 
 ```
-B站数据获取 → 内容提取（ASR/字幕/摘要） → 文本分块 → Embedding → ChromaDB
-                                                              ↓
-用户提问 ← LLM 生成回答 ← 向量检索 + 重排序 ← Query Embedding
+B站数据（ASR/字幕） + 云盘文件（MD/HTML/DOCX） → 文本分块 → Embedding → Milvus（按月分区）
+                                                                          ↓
+用户提问 ← LLM 生成回答 ← 向量检索（B站 + 云盘双路并行） ← Query Embedding
 ```
 
 ---
@@ -173,6 +174,7 @@ bilibili-rag/
 │   │   ├── milvus.py           #   Milvus vector DB client
 │   │   ├── mongo.py            #   MongoDB client
 │   │   ├── cache.py            #   Multi-level cache (L1 + Redis L2)
+│   │   ├── minio.py            #   MinIO / S3 object storage
 │   │   ├── slow_sql.py         #   Slow query capture
 │   │   └── transaction.py      #   Retry + readonly routing
 │   ├── database.py             # DB init + auto-migration
@@ -235,8 +237,9 @@ bilibili-rag/
 ```
 1. 扫码登录 → 获取收藏夹列表
 2. 选择收藏夹 → 点击「入库/更新」
-3. 系统执行：拉取视频 → 音频转写（ASR）→ 生成向量 → 写入 ChromaDB
-4. 在 ChatPanel 中提问，系统自动选择最佳路由策略回答
+3. 系统执行：拉取视频 → 音频转写（ASR）→ 生成向量 → 写入 Milvus
+4. 上传文档到云盘 → 自动解析 → 向量化入库（Markdown / HTML / DOCX / 纯文本）
+5. 在 ChatPanel 中提问，系统自动选择最佳路由策略回答（B站 + 云盘双路检索）
 ```
 
 ### 分P视频支持
@@ -393,8 +396,9 @@ python test/test_sync.py
 | 收藏夹列表 | MySQL | 结构化数据 |
 | 视频元数据 | MySQL | 标题、简介、分P |
 | ASR 全文 | MongoDB | asr_documents 集合 |
-| 向量数据 | Milvus | Embedding 向量 + chunk metadata |
+| 向量数据 | Milvus（按月分区） | Embedding 向量 + chunk metadata |
 | 聊天消息 | MongoDB | chat_messages 集合 |
+| 文件存储 | MinIO | 云盘上传文件（Markdown/HTML/DOCX/视频）
 | 缓存 | Redis | Token、用户信息、Credential |
 | 题库 | MySQL | quiz_sets / quiz_answers / quiz_submissions |
 

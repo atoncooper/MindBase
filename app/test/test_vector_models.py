@@ -2,7 +2,7 @@
 # 分P向量化模型测试
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # ==================== AsyncTask 模型测试 ====================
@@ -163,7 +163,7 @@ class TestVideoVectorFields:
         """测试向量化完成状态"""
         from app.models import Video
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         page = Video(
             bvid="BV1vecDone",
             cid=301,
@@ -223,7 +223,7 @@ class TestVectorPydanticSchemas:
         """VectorPageStatusResponse exists=true"""
         from app.response.vector import VectorPageStatusResponse
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         resp = VectorPageStatusResponse(
             exists=True,
             bvid="BV1test123",

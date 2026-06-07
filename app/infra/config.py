@@ -174,11 +174,6 @@ class RdbmsSection(_Section):
     pool_recycle: int = 1800
 
 
-class ChromaSection(_Section):
-    enabled: bool = True
-    persist_directory: str = "./data/chroma_db"
-
-
 class MilvusSection(_Section):
     enabled: bool = False
     uri: str = "http://localhost:19530"
@@ -352,7 +347,6 @@ class AppConfig(BaseSettings):
     app: AppSection = Field(default_factory=AppSection)
     server: ServerSection = Field(default_factory=ServerSection)
     rdbms: RdbmsSection = Field(default_factory=RdbmsSection)
-    chroma: ChromaSection = Field(default_factory=ChromaSection)
     milvus: MilvusSection = Field(default_factory=MilvusSection)
     mongo: MongoSection = Field(default_factory=MongoSection)
     redis: RedisSection = Field(default_factory=RedisSection)

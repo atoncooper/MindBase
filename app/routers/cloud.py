@@ -5,7 +5,7 @@ Cloud drive API router — multipart upload, folder tree, file management.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.infra.config import config
+
+if TYPE_CHECKING:
+    from app.models import CloudFile
 from app.routers.auth import get_current_uid
 from app.response.cloud import (
     UploadInitRequest,
@@ -121,7 +124,7 @@ async def complete_upload(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("[CLOUD] complete_upload failed upload_uuid=%s", upload_uuid)
+        logger.exception(f"[CLOUD] complete_upload failed upload_uuid={upload_uuid}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -194,6 +197,8 @@ async def list_folders(
     """Return the full folder tree for the current user."""
     try:
         folder_repo = _get_folder_repo()
+        # Auto-fix stale video_count (one-time repair for legacy data)
+        await folder_repo.recalc_all_counts(uid, db)
         tree = await folder_repo.get_tree(uid, db)
         folders = [FolderTreeItem.model_validate(item) for item in tree]
         return FolderTreeResponse(folders=folders)
@@ -253,7 +258,7 @@ async def update_folder(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("[CLOUD] update_folder failed folder_id=%d", folder_id)
+        logger.exception(f"[CLOUD] update_folder failed folder_id={folder_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -307,7 +312,7 @@ async def delete_folder(
 
         # ---- clean up MinIO objects ----
         if config.minio.enabled and object_keys:
-            from app.services.cloud.minio_client import get_minio_client
+            from app.infra.minio import get_minio_client
             minio_cli = get_minio_client()
             for ok in object_keys:
                 try:
@@ -468,64 +473,76 @@ async def delete_video(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete an uploaded file and all related data (MinIO, MongoDB, Milvus, MySQL)."""
+    """Delete an uploaded file and all related data.
+
+    MySQL soft-delete runs first (atomic source-of-truth).
+    Storage cleanup (MinIO / MongoDB / Milvus) runs as fire-and-forget
+    to avoid inconsistency on crash: if storage cleanup fails, the file
+    is already logically deleted and the orphaned data is harmless.
+    """
     try:
         file_repo = _get_file_repo()
         file = await file_repo.get_by_uuid(upload_uuid, uid, db)
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # 1. Clean up MinIO object
-        if config.minio.enabled:
-            try:
-                from app.services.cloud.minio_client import get_minio_client
-                await get_minio_client().delete_object(file.object_key)
-                logger.info(
-                    "[CLOUD] minio object deleted upload_uuid=%s object_key=%s",
-                    upload_uuid, file.object_key,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[CLOUD] minio delete_object failed upload_uuid=%s err=%s",
-                    upload_uuid, exc,
-                )
-
-        # 2. Clean up MongoDB ASR documents
-        if config.mongo.enabled:
-            try:
-                from app.infra.mongo import is_enabled as mongo_ok, coll
-                if mongo_ok():
-                    result = await coll("asr_documents").delete_many(
-                        {"bvid": upload_uuid}
-                    )
-                    logger.info(
-                        "[CLOUD] mongo asr_documents deleted upload_uuid=%s count=%d",
-                        upload_uuid, result.deleted_count,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "[CLOUD] mongo cleanup failed upload_uuid=%s err=%s",
-                    upload_uuid, exc,
-                )
-
-        # 3. Clean up cloud drive Milvus vectors
-        if config.milvus.enabled:
-            try:
-                from pymilvus import Collection
-                col = Collection(config.milvus.cloud_collection_name)
-                col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
-                col.flush()
-                logger.info(
-                    "[CLOUD] milvus vectors deleted upload_uuid=%s", upload_uuid,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[CLOUD] milvus cleanup failed upload_uuid=%s err=%s",
-                    upload_uuid, exc,
-                )
-
-        # 4. Soft-delete MySQL row
+        # ── 1. Soft-delete MySQL row FIRST (source of truth) ──
         await file_repo.soft_delete(upload_uuid, uid, db)
+        _object_key = file.object_key
+
+        # ── 2. Async cleanup: MinIO / MongoDB / Milvus ──
+        # TODO: periodic orphan-scan job — scan MinIO objects without
+        #       corresponding non-deleted cloud_files rows, and clean up
+        #       orphaned MongoDB / Milvus entries.
+        async def _cleanup_storage():
+            if config.minio.enabled and _object_key:
+                try:
+                    from app.infra.minio import get_minio_client
+                    await get_minio_client().delete_object(_object_key)
+                    logger.info(
+                        "[CLOUD] minio object deleted upload_uuid=%s object_key=%s",
+                        upload_uuid, _object_key,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[CLOUD] minio delete_object failed (orphaned) "
+                        "upload_uuid=%s object_key=%s err=%s",
+                        upload_uuid, _object_key, exc,
+                    )
+
+            if config.mongo.enabled:
+                try:
+                    from app.infra.mongo import is_enabled as mongo_ok, coll
+                    if mongo_ok():
+                        result = await coll("asr_documents").delete_many(
+                            {"bvid": upload_uuid}
+                        )
+                        logger.info(
+                            "[CLOUD] mongo asr_documents deleted upload_uuid=%s count=%d",
+                            upload_uuid, result.deleted_count,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[CLOUD] mongo cleanup failed upload_uuid=%s err=%s",
+                        upload_uuid, exc,
+                    )
+
+            if config.milvus.enabled:
+                try:
+                    from pymilvus import Collection
+                    col = Collection(config.milvus.cloud_collection_name)
+                    col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
+                    col.flush()
+                    logger.info(
+                        "[CLOUD] milvus vectors deleted upload_uuid=%s", upload_uuid,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[CLOUD] milvus cleanup failed upload_uuid=%s err=%s",
+                        upload_uuid, exc,
+                    )
+
+        asyncio.create_task(_cleanup_storage())
 
         return {"deleted": True, "uploadUuid": upload_uuid}
     except HTTPException:
@@ -548,12 +565,17 @@ async def trigger_processing(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """Fire-and-forget ASR + vectorisation pipeline for an uploaded file."""
+    """Fire-and-forget ASR + vectorisation e for an uploaded file."""
     try:
         file_repo = _get_file_repo()
-        file = await file_repo.get_by_uuid(upload_uuid, uid, db)
+        file: CloudFile | None = await file_repo.get_by_uuid(upload_uuid, uid, db)
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
+
+        # Force vectorizable=True on manual trigger — let the pipeline
+        # decide whether the file can actually be processed.
+        if not file.vectorizable:
+            file.vectorizable = True
 
         # Mark as processing immediately (visible in status + WS push)
         file.asr_status = "processing"
@@ -565,9 +587,9 @@ async def trigger_processing(
 
         # Capture primitive values before spawning background task
         # (the request-scoped session + ORM object are invalid after response)
-        _upload_uuid = upload_uuid
-        _uid = uid
-        _mime_type = file.mime_type
+        _upload_uuid: str = upload_uuid
+        _uid: int = uid
+        _mime_type: str = file.mime_type
 
         # Fire-and-forget: parse → chunk → embed → verify → mark done
         async def _run_pipeline() -> None:
@@ -575,19 +597,32 @@ async def trigger_processing(
             async with async_session_factory() as bg_db:
                 try:
                     logger.info(
-                        "[CLOUD] pipeline started upload_uuid=%s uid=%d type=%s",
-                        _upload_uuid, _uid, _mime_type,
+                        f"[CLOUD] pipeline started upload_uuid={_upload_uuid} "
+                        f"uid={_uid} type={_mime_type}",
                     )
                     from app.services.doc_parser.vectorize import vectorize_cloud_document
                     chunk_count = await vectorize_cloud_document(_upload_uuid, _uid, bg_db)
                     logger.info(
-                        "[CLOUD] pipeline done upload_uuid=%s chunks=%d",
-                        _upload_uuid, chunk_count,
+                        f"[CLOUD] pipeline done upload_uuid={_upload_uuid} "
+                        f"chunks={chunk_count}",
                     )
                 except Exception:
                     logger.exception(
-                        "[CLOUD] pipeline failed upload_uuid=%s", _upload_uuid,
+                        f"[CLOUD] pipeline failed upload_uuid={_upload_uuid}",
                     )
+                    # Ensure DB reflects failure even if vectorize_cloud_document
+                    # couldn't set it (e.g. import error before its try/except)
+                    try:
+                        from app.repository.cloud.file_repository import get_cloud_file_repository
+                        file_repo = get_cloud_file_repository()
+                        file = await file_repo.get_by_uuid(_upload_uuid, _uid, bg_db)
+                        if file is not None and file.vector_status != "failed":
+                            file.vector_status = "failed"
+                            await bg_db.commit()
+                    except Exception:
+                        logger.exception(
+                            f"[CLOUD] failed to mark vector_status=failed for {_upload_uuid}",
+                        )
 
         asyncio.create_task(_run_pipeline())
 
@@ -595,9 +630,7 @@ async def trigger_processing(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(
-            "[CLOUD] trigger_processing failed upload_uuid=%s", upload_uuid,
-        )
+        logger.exception(f"[CLOUD] trigger_processing failed upload_uuid={upload_uuid}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -668,7 +701,7 @@ async def reprocess_document(
                 col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
                 col.flush()
             except Exception as e:
-                logger.warning("[CLOUD] reprocess: delete old vectors failed: %s", e)
+                logger.warning(f"[CLOUD] reprocess: delete old vectors failed: {e}")
 
         file.vector_status = "pending"
         file.vector_chunk_count = 0
@@ -686,7 +719,7 @@ async def reprocess_document(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("[CLOUD] reprocess failed upload_uuid=%s", upload_uuid)
+        logger.exception(f"[CLOUD] reprocess failed upload_uuid={upload_uuid}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -721,7 +754,7 @@ async def get_document_preview(
                     preview = cleaned[:500]
                     doc_meta = doc.get("doc_meta")
         except Exception as e:
-            logger.warning("[CLOUD] preview mongo lookup failed: %s", e)
+            logger.warning(f"[CLOUD] preview mongo lookup failed: {e}")
 
         return {
             "uploadUuid": upload_uuid,
@@ -734,7 +767,7 @@ async def get_document_preview(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("[CLOUD] preview failed upload_uuid=%s", upload_uuid)
+        logger.exception(f"[CLOUD] preview failed upload_uuid={upload_uuid}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -754,3 +787,25 @@ async def _run_doc_reprocess(task_id: str, upload_uuid: str, uid: int):
     except Exception as e:
         log.exception("[CLOUD] _run_doc_reprocess failed task_id=%s", task_id)
         await tracker.fail(task_id, str(e))
+
+
+# ── Admin utils ────────────────────────────────────────────────────
+
+
+@router.post("/admin/reset-vector-collection")
+async def reset_vector_collection(
+    uid: int = Depends(get_current_uid),
+):
+    """Drop and recreate the cloud_drive Milvus collection.
+    Use after changing embedding model or when dimension mismatch occurs."""
+    try:
+        from app.services.rag import get_rag_service
+        rag = get_rag_service()
+        if rag.cloud_backend is None:
+            raise HTTPException(status_code=503, detail="cloud_backend not available")
+        rag.cloud_backend.reset()
+        # Also reset vector_status on all files so they can be re-processed
+        return {"message": "cloud_drive collection dropped and recreated"}
+    except Exception as e:
+        logger.exception("[CLOUD] reset_vector_collection failed")
+        raise HTTPException(status_code=500, detail=str(e))

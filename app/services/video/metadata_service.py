@@ -5,7 +5,7 @@ Reads full ASR text from MongoDB (asr_documents), extracts structured metadata
 via LLM, and stores in arc_meta table (MySQL).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -141,7 +141,7 @@ class MetadataService:
         )
 
         # Mark extraction time
-        meta.extracted_at = datetime.utcnow()
+        meta.extracted_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(meta)
 

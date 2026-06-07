@@ -1,7 +1,7 @@
 """
 EmbeddingConfigRepository — user_embedding_configs 表的 CRUD 操作
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,7 +79,7 @@ class EmbeddingConfigRepository:
         record = await self.get_by_id(config_id, db)
         if record is None or record.uid != uid or record.deleted_at is not None:
             return False
-        record.deleted_at = datetime.utcnow()
+        record.deleted_at = datetime.now(timezone.utc)
         await db.commit()
         logger.info(f"[EMB_REPO] soft-deleted id={config_id}")
         return True
@@ -127,7 +127,7 @@ class EmbeddingConfigRepository:
             return False
         record.last_test_status = status
         record.last_test_error = error
-        record.last_test_at = datetime.utcnow()
+        record.last_test_at = datetime.now(timezone.utc)
         await db.commit()
         return True
 

@@ -16,7 +16,6 @@ out/
 # Data directories (volume-mounted, do not bake into image)
 data/
 logs/
-chroma_db/
 
 # Environment (injected at runtime)
 .env

@@ -94,8 +94,8 @@ class UserOAuthRepository:
 
     async def soft_delete(self, record: UserOAuth, db: AsyncSession) -> None:
         """Mark an OAuth binding as unbound."""
-        from datetime import datetime
-        record.deleted_at = datetime.utcnow()
+        from datetime import datetime, timezone
+        record.deleted_at = datetime.now(timezone.utc)
         await db.commit()
         logger.info(f"[OAUTH_REPO] soft-deleted uid={record.uid} {record.provider}:{record.provider_uid}")
 

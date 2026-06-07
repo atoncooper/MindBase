@@ -2,7 +2,7 @@
 FavoriteFolder CRUD repository.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -48,7 +48,7 @@ class FavoriteRepository:
         db: AsyncSession,
     ) -> FavoriteFolder:
         existing = await self.get_folder_by_uid_media(uid, media_id, db)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if existing:
             existing.title = title
             existing.media_count = media_count
@@ -78,7 +78,7 @@ class FavoriteRepository:
         await db.execute(
             update(FavoriteFolder)
             .where(FavoriteFolder.id == folder_id)
-            .values(is_selected=is_selected, updated_at=datetime.utcnow())
+            .values(is_selected=is_selected, updated_at=datetime.now(timezone.utc))
         )
         await db.commit()
 
@@ -86,7 +86,7 @@ class FavoriteRepository:
         result = await db.execute(
             update(FavoriteFolder)
             .where(FavoriteFolder.id == folder_id, _ALIVE)
-            .values(deleted_at=datetime.utcnow(), updated_at=datetime.utcnow())
+            .values(deleted_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
         )
         await db.commit()
         return result.rowcount > 0

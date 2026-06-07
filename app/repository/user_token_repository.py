@@ -4,7 +4,7 @@ UserTokenRepository — user_tokens table CRUD.
 Handles token create, validate, and revoke operations at the data layer.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -29,10 +29,10 @@ class UserTokenRepository:
             )
         )
         tokens = result.scalars().all()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return [
             t for t in tokens
-            if t.expires_at is None or t.expires_at.replace(tzinfo=None) > now
+            if t.expires_at is None or t.expires_at.replace(tzinfo=timezone.utc) > now
         ]
 
     async def revoke_by_id(self, session_token: str, uid: int, db: AsyncSession) -> bool:
@@ -48,7 +48,7 @@ class UserTokenRepository:
         if token is None:
             return False
         token.is_revoked = True
-        token.deleted_at = datetime.utcnow()
+        token.deleted_at = datetime.now(timezone.utc)
         await db.commit()
         logger.info(f"[TOKEN_REPO] revoked token for uid={uid}")
         return True
@@ -62,7 +62,7 @@ class UserTokenRepository:
             uid=uid,
             device_id=device_id,
             token_type="access",
-            expires_at=datetime.utcnow() + timedelta(days=ttl_days),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=ttl_days),
             ip=ip,
             user_agent=user_agent,
         )
@@ -84,18 +84,18 @@ class UserTokenRepository:
             return None
         if token.deleted_at is not None:
             return None
-        if token.expires_at and token.expires_at.replace(tzinfo=None) < datetime.utcnow():
+        if token.expires_at and token.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
             return None
         return token
 
     async def bump_activity(self, token: UserToken, db: AsyncSession) -> None:
-        token.last_active_at = datetime.utcnow()
+        token.last_active_at = datetime.now(timezone.utc)
         await db.commit()
 
     async def revoke(self, token: UserToken, db: AsyncSession) -> None:
         """Revoke a single token (soft)."""
         token.is_revoked = True
-        token.deleted_at = datetime.utcnow()
+        token.deleted_at = datetime.now(timezone.utc)
         await db.commit()
         logger.info(f"[TOKEN_REPO] revoked token for uid={token.uid}")
 
@@ -104,7 +104,7 @@ class UserTokenRepository:
         await db.execute(
             update(UserToken)
             .where(UserToken.uid == uid, UserToken.is_revoked == False)  # noqa: E712
-            .values(is_revoked=True, deleted_at=datetime.utcnow())
+            .values(is_revoked=True, deleted_at=datetime.now(timezone.utc))
         )
         await db.commit()
         logger.info(f"[TOKEN_REPO] revoked all tokens for uid={uid}")

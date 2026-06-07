@@ -3,7 +3,7 @@ Bilibili RAG 知识库系统
 
 知识库路由 - 构建和管理知识库
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from loguru import logger
 from typing import List, Optional, Callable
@@ -189,7 +189,7 @@ async def _sync_folder(
                 "removed": 0,
                 "indexed": existing_count or 0,
                 "message": "本次同步异常：空列表，已跳过",
-                "last_sync_at": datetime.utcnow(),
+                "last_sync_at": datetime.now(timezone.utc),
             }
 
     video_map = {}
@@ -403,7 +403,7 @@ async def _sync_folder(
             )
         )
 
-    folder.last_sync_at = datetime.utcnow()
+    folder.last_sync_at = datetime.now(timezone.utc)
     await db.commit()
 
     # 清除 Redis 缓存（folder_status + vec_status）

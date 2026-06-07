@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from loguru import logger
 
@@ -26,7 +26,7 @@ def _new_uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 # ── Write ──────────────────────────────────────────────────────────

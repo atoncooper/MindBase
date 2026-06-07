@@ -3,10 +3,10 @@ Bilibili RAG 知识库系统
 
 RAG 服务模块 - 向量存储与问答
 """
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -78,12 +78,41 @@ class RAGService:
                     check_embedding_ctx_length=False,
                 )
 
-        # 初始化向量存储
-        self.vectorstore = Chroma(
-            collection_name=collection_name,
-            embedding_function=self.embeddings,
-            persist_directory=settings.chroma_persist_directory
-        )
+        # 初始化向量存储 — 统一使用 Milvus
+        self.vectorstore = None
+        self.cloud_backend = None
+
+        from app.infra.config import config
+        if not config.milvus.enabled:
+            logger.warning("[RAG] Milvus not enabled, vector store unavailable")
+        else:
+            from app.repository.vector_store_milvus import MilvusVectorStore
+
+            # Auto-detect actual embedding dimension
+            test_vec = self.embeddings.embed_query("dim-probe")
+            actual_dim = len(test_vec)
+            logger.info(
+                "[RAG] detected embedding dim=%d (config says %d)",
+                actual_dim, config.milvus.dimension,
+            )
+            config.milvus.dimension = actual_dim
+
+            # B站 video store (bilibili_videos)
+            try:
+                self.vectorstore = MilvusVectorStore(
+                    config.milvus, self.embeddings, config.milvus.collection_name,
+                )
+                logger.info("[RAG] vectorstore initialized: %s", config.milvus.collection_name)
+            except Exception:
+                logger.exception("[RAG] vectorstore init failed")
+
+            # Cloud drive store (cloud_drive) — independent try/except
+            try:
+                from app.infra.vector_store import get_cloud_vector_store
+                self.cloud_backend = get_cloud_vector_store(self.embeddings)
+                logger.info("[RAG] cloud_backend initialized: %s", config.milvus.cloud_collection_name)
+            except Exception:
+                logger.exception("[RAG] cloud_backend init failed")
 
         # 初始化 LLM
         self.llm = ChatOpenAI(
@@ -220,34 +249,13 @@ class RAGService:
 
         # 添加到向量库
         try:
-            batch_size = 10
-            for idx in range(0, len(documents), batch_size):
-                self.vectorstore.add_documents(documents[idx:idx + batch_size])
-            logger.info(f"[{video.bvid}] 添加了 {len(documents)} 个文档块")
+            count = self.vectorstore.add(documents, partition_dt=datetime.now(timezone.utc))
+            logger.info(f"[{video.bvid}] 添加了 {count} 个文档块")
         except Exception as e:
             logger.error(f"[{video.bvid}] 添加到向量库失败: {e}")
             raise
 
         return len(documents)
-
-    def _get_page_vector_ids(self, bvid: str, page_index: int) -> List[str]:
-        """
-        先按 bvid 获取全部 chunk，再在 Python 侧过滤 page_index，
-        避免 Chroma 多条件 where 在不同版本下的兼容性问题。
-        """
-        result = self.vectorstore._collection.get(
-            where={"bvid": bvid},
-            include=["metadatas"]
-        )
-        ids = result.get("ids", [])
-        metadatas = result.get("metadatas", [])
-        matched_ids: List[str] = []
-
-        for doc_id, metadata in zip(ids, metadatas):
-            if metadata and metadata.get("page_index") == page_index:
-                matched_ids.append(doc_id)
-
-        return matched_ids
 
     def add_videos_batch(self, videos: List[VideoContent], progress_callback=None) -> dict:
         """
@@ -289,6 +297,9 @@ class RAGService:
         k: int = 5,
         bvids: Optional[List[str]] = None,
         workspace_pages: Optional[List[dict]] = None,
+        uid: Optional[int] = None,
+        partition_start: Optional[datetime] = None,
+        partition_end: Optional[datetime] = None,
     ) -> List[Document]:
         """
         检索相关内容
@@ -299,10 +310,19 @@ class RAGService:
             bvids: 可选，限制在这些视频范围内搜索
             workspace_pages: 可选，工作区选中的分P列表，用于精确过滤。
                              格式: [{"bvid": "BVxxx", "cid": 123, "page_index": 0}, ...]
+            uid: 可选，用户 ID，用于云盘搜索时隔离数据
+            partition_start: 可选，分区起始日期，默认最近12个月
+            partition_end: 可选，分区结束日期
         """
         if not query or not query.strip():
             logger.warning("检索查询为空")
             return []
+
+        # Default partition range: last 12 months
+        if partition_start is None:
+            partition_start = datetime.now(timezone.utc) - timedelta(days=365)
+        if partition_end is None:
+            partition_end = datetime.now(timezone.utc)
 
         try:
             # 构建过滤条件
@@ -334,10 +354,41 @@ class RAGService:
             elif bvids:
                 filter_cond = {"bvid": {"$in": bvids}}
 
+            # 并行搜索 ChromaDB + Milvus cloud_drive
+            from concurrent.futures import ThreadPoolExecutor
+
+            search_kwargs = {"k": k}
             if filter_cond:
-                docs = self.vectorstore.similarity_search(query, k=k, filter=filter_cond)
-            else:
-                docs = self.vectorstore.similarity_search(query, k=k)
+                search_kwargs["filter"] = filter_cond
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                chroma_fut = pool.submit(
+                    self.vectorstore.search, query,
+                    partition_dt_start=partition_start,
+                    partition_dt_end=partition_end,
+                    **search_kwargs,
+                )
+                cloud_fut = None
+                if self.cloud_backend is not None:
+                    cloud_filter = {"uid": uid} if uid is not None else None
+                    cloud_fut = pool.submit(
+                        self.cloud_backend.search, query, k=k,
+                        filter=cloud_filter,
+                        partition_dt_start=partition_start,
+                        partition_dt_end=partition_end,
+                    )
+
+                docs = list(chroma_fut.result())
+                if cloud_fut:
+                    try:
+                        cloud_docs = cloud_fut.result()
+                        logger.info(
+                            "[RAG] cloud_backend search: query=%s uid=%s → %d results",
+                            query[:60], uid, len(cloud_docs),
+                        )
+                        docs.extend(cloud_docs)
+                    except Exception as e:
+                        logger.warning("[RAG] cloud_backend search skipped: %s", e)
 
             # 工作区模式：进一步按 page_index 精确过滤
             if workspace_pages:
@@ -349,9 +400,11 @@ class RAGService:
                 meta = doc.metadata or {}
                 title = meta.get("title", "")
                 bvid = meta.get("bvid", "")
+                upload_uuid = meta.get("upload_uuid", "")
                 chunk_index = meta.get("chunk_index", "")
+                src = bvid or upload_uuid or "?"
                 preview = doc.page_content[:120].replace("\n", " ").strip()
-                logger.info(f"召回[{idx+1}] {bvid} #{chunk_index} {title} | {preview}")
+                logger.info(f"召回[{idx+1}] {src} #{chunk_index} {title} | {preview}")
 
             return docs
         except Exception as e:
@@ -505,40 +558,21 @@ class RAGService:
         return await chain.ainvoke(content)
 
     def get_collection_stats(self) -> dict:
-        """
-        获取向量库统计信息
-
-        Returns:
-            统计信息字典
-        """
+        """获取向量库统计信息"""
         try:
-            collection = self.vectorstore._collection
-            count = collection.count()
-
-            # 获取唯一视频数
-            result = collection.get(include=["metadatas"])
-            bvids = set()
-            for meta in result.get("metadatas", []):
-                if meta and "bvid" in meta:
-                    bvids.add(meta["bvid"])
-
-            return {
-                "total_chunks": count,
-                "total_videos": len(bvids),
-                "collection_name": self.collection_name
-            }
+            return self.vectorstore.get_stats()
         except Exception as e:
             logger.error(f"获取统计信息失败: {e}")
             return {
                 "total_chunks": 0,
                 "total_videos": 0,
-                "collection_name": self.collection_name
+                "collection_name": self.collection_name,
             }
 
     def clear_collection(self):
         """清空向量库"""
         try:
-            self.vectorstore._collection.delete(where={})
+            self.vectorstore.clear()
             logger.info(f"已清空向量库: {self.collection_name}")
         except Exception as e:
             logger.error(f"清空向量库失败: {e}")
@@ -552,7 +586,7 @@ class RAGService:
             bvid: 视频 BV 号
         """
         try:
-            self.vectorstore._collection.delete(where={"bvid": bvid})
+            self.vectorstore.delete_by_bvid(bvid)
             logger.info(f"已删除视频: {bvid}")
         except Exception as e:
             logger.error(f"删除视频失败 [{bvid}]: {e}")
@@ -567,9 +601,7 @@ class RAGService:
             page_index: 分P序号（0-based）
         """
         try:
-            ids = self._get_page_vector_ids(bvid, page_index)
-            if ids:
-                self.vectorstore._collection.delete(ids=ids)
+            self.vectorstore.delete_by_page(bvid, page_index)
             logger.info(f"已删除分P向量: {bvid} P{page_index + 1}")
         except Exception as e:
             logger.error(f"删除分P向量失败 [{bvid} P{page_index + 1}]: {e}")
@@ -587,7 +619,7 @@ class RAGService:
             向量块数量
         """
         try:
-            return len(self._get_page_vector_ids(bvid, page_index))
+            return self.vectorstore.count_by_page(bvid, page_index)
         except Exception as e:
             logger.warning(f"获取分P向量数量失败 [{bvid} P{page_index + 1}]: {e}")
             return 0

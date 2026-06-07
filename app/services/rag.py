@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 class RAGService:
     """RAG service — vector storage, retrieval, and QA.
 
-    Uses a swappable VectorStoreBackend (ChromaDB default, Milvus optional).
+    Uses a Milvus VectorStoreBackend.
     """
 
     def __init__(

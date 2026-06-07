@@ -2,7 +2,7 @@
 AsyncTask CRUD repository — typed operations for async_tasks table.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, func
@@ -52,9 +52,9 @@ class AsyncTaskRepository:
         for k, v in kwargs.items():
             if hasattr(row, k):
                 setattr(row, k, v)
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(timezone.utc)
         if kwargs.get("status") in ("done", "failed"):
-            row.completed_at = datetime.utcnow()
+            row.completed_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(row)
         return row
@@ -91,7 +91,7 @@ class AsyncTaskRepository:
                           "result": result, "error": error})
         row.steps = steps
         row.progress = progress
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(row)
         return row

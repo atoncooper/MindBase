@@ -57,7 +57,6 @@ from app.repository.async_task_repository import (
     AsyncTaskRepository,
     get_async_task_repository,
 )
-from app.repository.vector_store_chroma import ChromaVectorStore
 from app.repository.vector_store_milvus import MilvusVectorStore
 from app.repository.mongo_asr_repository import (
     save_asr, get_latest, get_version, list_versions, delete_all,
@@ -91,7 +90,6 @@ __all__ = [
     "get_video_metadata_repository",
     "AsyncTaskRepository",
     "get_async_task_repository",
-    "ChromaVectorStore",
     "MilvusVectorStore",
     "save_asr",
     "get_latest",

@@ -25,7 +25,7 @@ Indexes:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from loguru import logger
@@ -90,7 +90,7 @@ async def save_asr(
         "content_source": content_source,
         "version": version,
         "is_latest": True,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     }
     result = await coll(COLLECTION).insert_one(doc)
     logger.info(f"[MONGO_ASR] saved bvid={bvid} cid={cid} v{version}")

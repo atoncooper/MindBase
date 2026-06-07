@@ -23,7 +23,7 @@ from app.infra.redis import (
 from app.models import CloudFile, CloudUploadChunk, CloudUploadSession
 from app.repository.cloud.chunk_repository import get_cloud_chunk_repository
 from app.repository.cloud.session_repository import get_cloud_session_repository
-from app.services.cloud.minio_client import get_minio_client
+from app.infra.minio import get_minio_client
 
 # ---------------------------------------------------------------------------
 # Keyspace listener
@@ -283,14 +283,14 @@ async def cleanup_dead_chunks(max_age_hours: int = 24) -> int:
 
             # Mark the corresponding CloudFile rows as failed
             from sqlalchemy import update as sa_update
-            from datetime import datetime
+            from datetime import datetime, timezone
 
             await db.execute(
                 sa_update(CloudFile)
                 .where(CloudFile.upload_uuid.in_(stale_uuids))
                 .values(
                     upload_status="failed",
-                    updated_at=datetime.utcnow(),
+                    updated_at=datetime.now(timezone.utc),
                 )
             )
             await db.commit()

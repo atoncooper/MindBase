@@ -20,7 +20,6 @@ class VectorPageStatusResponse(BaseModel):
     vectorized_at: Optional[datetime] = None
     vector_chunk_count: int = 0
     vector_error: Optional[str] = None
-    chroma_exists: bool
     steps: Optional[list[dict]] = None
 
 

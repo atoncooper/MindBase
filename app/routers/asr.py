@@ -4,7 +4,7 @@ Bilibili RAG 知识库系统
 ASR 路由 - 分P视频语音转文本
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from sqlalchemy import select
@@ -165,7 +165,7 @@ async def update_asr_content(
     # Save to MongoDB (primary), update MySQL metadata
     page.content_source = "user_edit"
     page.is_processed = True
-    page.updated_at = datetime.utcnow()
+    page.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
     from app.infra.mongo import is_enabled as _mongo_ok
@@ -221,7 +221,7 @@ async def reasr(
     page.version = old_version + 1
     page.is_processed = False
     page.content_source = None
-    page.updated_at = datetime.utcnow()
+    page.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
 
@@ -278,7 +278,7 @@ async def get_versions(
                         content_source=d.get("content_source", "unknown"),
                         content_preview=(d.get("content") or "")[:100],
                         is_latest=d.get("is_latest", False),
-                        created_at=d.get("created_at", datetime.utcnow()),
+                        created_at=d.get("created_at", datetime.now(timezone.utc)),
                     )
                     for d in docs
                 ]

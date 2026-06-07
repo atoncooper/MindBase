@@ -44,8 +44,6 @@ app/config/default.yaml
 data/
 *.db
 
-# ChromaDB
-chroma_db/
 
 # 日志
 logs/
@@ -73,3 +71,6 @@ plan/
 architecture/
 CLAUDE.md
 AGENTS.md
+
+# 软著申请材料
+copyright/

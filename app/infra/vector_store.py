@@ -53,6 +53,14 @@ class VectorStoreBackend(Protocol):
         """Count vectors for a bvid + page_index."""
         ...
 
+    def count_by_upload_uuid(self, upload_uuid: str) -> int:
+        """Count vectors for a cloud drive upload_uuid."""
+        ...
+
+    def delete_by_upload_uuid(self, upload_uuid: str) -> int:
+        """Delete all vectors for a cloud drive upload_uuid. Returns count deleted."""
+        ...
+
     def get_stats(self) -> dict:
         """Collection stats: total_chunks, total_videos, collection_name."""
         ...
@@ -72,18 +80,11 @@ class VectorStoreBackend(Protocol):
 def get_vector_store(embedding_fn: Any) -> VectorStoreBackend:
     """Return the configured vector store backend.
 
-    The decision is based on config.milvus.enabled:
-      - True  → MilvusVectorStore
-      - False → ChromaVectorStore (default)
+    Always returns MilvusVectorStore (ChromaDB has been removed).
     """
     from app.infra.config import config
-
-    if config.milvus.enabled:
-        from app.repository.vector_store_milvus import MilvusVectorStore
-        return MilvusVectorStore(config.milvus, embedding_fn, config.milvus.collection_name)
-
-    from app.repository.vector_store_chroma import ChromaVectorStore
-    return ChromaVectorStore(config.chroma, embedding_fn)
+    from app.repository.vector_store_milvus import MilvusVectorStore
+    return MilvusVectorStore(config.milvus, embedding_fn, config.milvus.collection_name)
 
 
 def get_cloud_vector_store(embedding_fn: Any) -> VectorStoreBackend:

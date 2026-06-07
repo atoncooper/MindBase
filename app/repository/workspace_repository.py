@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, func, text, delete as sa_delete
@@ -71,7 +71,7 @@ class WorkspaceRepository:
         for key, value in kwargs.items():
             if value is not None and hasattr(ws, key):
                 setattr(ws, key, value)
-        ws.updated_at = datetime.utcnow()
+        ws.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(ws)
         return ws
@@ -80,7 +80,7 @@ class WorkspaceRepository:
         ws = await self.get_by_id(workspace_id, uid, db)
         if ws is None:
             return False
-        ws.deleted_at = datetime.utcnow()
+        ws.deleted_at = datetime.now(timezone.utc)
         # Cascade-delete bindings via FK ON DELETE CASCADE
         await db.execute(
             sa_delete(WorkspaceBinding).where(WorkspaceBinding.workspace_id == workspace_id)

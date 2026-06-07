@@ -49,7 +49,6 @@ _LEGACY_ENV_MAP = {
     "APP_PORT":            ("server", "port"),
     "DEBUG":               ("app", "debug"),
     "DATABASE_URL":        ("rdbms", "url"),
-    "CHROMA_PERSIST_DIRECTORY": ("chroma", "persist_directory"),
     "CHUNK_TARGET_SIZE":   ("chunk", "target_size"),
     "CHUNK_MIN_SIZE":      ("chunk", "min_size"),
     "CHUNK_MAX_SIZE":      ("chunk", "max_size"),

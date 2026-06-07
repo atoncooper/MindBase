@@ -651,7 +651,6 @@ export interface VectorPageStatusResponse {
   vectorized_at?: string;
   vector_chunk_count: number;
   vector_error?: string;
-  chroma_exists: boolean;
 }
 
 export interface VectorPageTaskStatus {
@@ -1408,6 +1407,7 @@ export interface CloudVideoItem {
     uploadUuid: string;
     originalName: string;
     fileSize: number;
+    mimeType: string;
     duration: number | null;
     asrStatus: string;
     vectorStatus: string;
@@ -1429,6 +1429,7 @@ export interface CloudVideoDetailResponse {
     uploadUuid: string;
     originalName: string;
     fileSize: number;
+    mimeType: string;
     duration: number | null;
     asrStatus: string;
     vectorStatus: string;
@@ -1516,16 +1517,32 @@ function formatBytes(bytes: number): string {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
+/** Recursively convert snake_case keys to camelCase */
+function snakeToCamel<T>(obj: unknown): T {
+    if (Array.isArray(obj)) return obj.map(snakeToCamel) as T;
+    if (obj !== null && typeof obj === "object" && obj.constructor === Object) {
+        const result: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+            const camelKey = key.replace(/_([a-z])/g, (_, c) => (c as string).toUpperCase());
+            result[camelKey] = snakeToCamel(value);
+        }
+        return result as T;
+    }
+    return obj as T;
+}
+
 export { formatBytes };
 
 const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk
 
 export const cloudApi = {
     // ── Folders ──
-    listFolders: () =>
-        request<CloudFolderTreeResponse>("/cloud/folders", {
+    listFolders: async () => {
+        const raw = await request<CloudFolderTreeResponse>("/cloud/folders", {
             headers: getAuthHeaders(),
-        }),
+        });
+        return snakeToCamel<CloudFolderTreeResponse>(raw);
+    },
 
     createFolder: (data: CloudFolderCreateParams) =>
         request<CloudFolderResponse>("/cloud/folders", {
@@ -1548,16 +1565,19 @@ export const cloudApi = {
         }),
 
     // ── Videos ──
-    listVideos: (folderId?: number | null, page = 1, pageSize = 50, sort = "created_at", order = "desc") => {
+    listVideos: async (folderId?: number | null, page = 1, pageSize = 50, sort = "created_at", order = "desc") => {
         let url = `/cloud/videos?page=${page}&pageSize=${pageSize}&sort=${sort}&order=${order}`;
         if (folderId != null) url += `&folderId=${folderId}`;
-        return request<CloudVideoListResponse>(url, { headers: getAuthHeaders() });
+        const raw = await request<CloudVideoListResponse>(url, { headers: getAuthHeaders() });
+        return snakeToCamel<CloudVideoListResponse>(raw);
     },
 
-    getVideoDetail: (uploadUuid: string) =>
-        request<CloudVideoDetailResponse>(`/cloud/video/${uploadUuid}`, {
+    getVideoDetail: async (uploadUuid: string) => {
+        const raw = await request<CloudVideoDetailResponse>(`/cloud/video/${uploadUuid}`, {
             headers: getAuthHeaders(),
-        }),
+        });
+        return snakeToCamel<CloudVideoDetailResponse>(raw);
+    },
 
     updateVideo: (uploadUuid: string, data: CloudVideoUpdateParams) =>
         request<CloudVideoDetailResponse>(`/cloud/video/${uploadUuid}`, {

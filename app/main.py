@@ -200,9 +200,9 @@ async def lifespan(app: FastAPI):
     from app.infra.config import config as _cfg
     if _cfg.minio.enabled:
         try:
-            from app.services.cloud.minio_client import get_minio_client
-            await get_minio_client().ensure_bucket()
-            logger.info("[MAIN] MinIO bucket ensured")
+            from app.infra.minio import init as minio_init
+            await minio_init()
+            logger.info("[MAIN] MinIO init OK")
         except Exception as e:
             logger.warning(f"[MAIN] MinIO init failed (cloud drive disabled): {e}")
 
@@ -281,6 +281,7 @@ async def lifespan(app: FastAPI):
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Bilibili RAG 知识库系统",
+    response_model_by_alias=False,
     description="""
 ## 项目简介
 

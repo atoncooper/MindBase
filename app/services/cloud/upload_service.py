@@ -25,7 +25,7 @@ from app.repository.cloud.file_repository import (
     get_cloud_file_repository,
     CloudFileRepository,
 )
-from app.services.cloud.minio_client import get_minio_client, MinioClient
+from app.infra.minio import get_minio_client, MinioClient
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -21,7 +21,7 @@ Lifecycle of a message round-trip
 6. ``delete_chat_session()``     — delete session + all messages
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from loguru import logger
@@ -48,7 +48,7 @@ async def create_chat_session(
     identifier and the MongoDB lookup key for messages.
     """
     chat_session_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     session = ChatSession(
         chat_session_id=chat_session_id,
@@ -97,7 +97,7 @@ async def list_chat_sessions(
     sessions = result.scalars().all()
 
     valid = []
-    grace_cutoff = datetime.utcnow() - timedelta(minutes=5)
+    grace_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     for s in sessions:
         has_msgs = await mongo_chat.session_has_messages(s.chat_session_id)
         if not has_msgs and s.created_at and s.created_at < grace_cutoff:
@@ -128,7 +128,7 @@ async def update_chat_session_title(
         logger.warning(f"[CHAT_HISTORY] update_title: not found {chat_session_id}")
         return
     session.title = title
-    session.updated_at = datetime.utcnow()
+    session.updated_at = datetime.now(timezone.utc)
     await db.commit()
     logger.info(f"[CHAT_HISTORY] updated title {chat_session_id}")
 
@@ -147,7 +147,7 @@ async def touch_chat_session(
     session = result.scalar_one_or_none()
     if session is None:
         return
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     session.updated_at = now
     session.last_message_at = now
     await db.commit()
@@ -198,7 +198,7 @@ async def save_user_message(
         content=content,
         status="completed",
         sources=sources,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -226,7 +226,7 @@ async def create_pending_assistant_message(
         content="",
         status="pending",
         model=model,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -289,7 +289,7 @@ async def get_history(
             model=r.get("model"),
             latency_ms=r.get("latency_ms"),
             error=r.get("error"),
-            created_at=r.get("created_at", datetime.utcnow()),
+            created_at=r.get("created_at", datetime.now(timezone.utc)),
         )
         for r in rows
     ]

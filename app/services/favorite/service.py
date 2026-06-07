@@ -11,7 +11,7 @@ Not responsible for:
   - Cookie management (BilibiliService injected by router)
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, func
@@ -116,7 +116,7 @@ class FavoriteService:
         await db.execute(sa_delete(Collection).where(Collection.media_id == media_id))
         await db.commit()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         added = 0
 
         for media in raw_videos:

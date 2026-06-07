@@ -6,7 +6,7 @@ For folder-level batch vectorization, use POST /knowledge/build.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -101,10 +101,8 @@ async def get_vec_status(
             is_processed=False,
             is_vectorized="pending",
             vector_chunk_count=0,
-            chroma_exists=False,
         )
 
-    from app.infra.config import config as _cfg
     rag = get_rag_service()
 
     need_commit = False
@@ -117,15 +115,14 @@ async def get_vec_status(
     vector_exists = actual_count > 0
 
     if page.is_vectorized == "done" and actual_count == 0:
-        backend_name = "Milvus" if _cfg.milvus.enabled else "ChromaDB"
         page.is_vectorized = "failed"
-        page.vector_error = f"{backend_name} vector count is 0 — data lost after DB migration"
+        page.vector_error = "Milvus vector count is 0 — data lost after DB migration"
         need_commit = True
         vector_exists = False
 
     elif page.is_vectorized == "pending" and actual_count > 0:
         page.is_vectorized = "done"
-        page.vectorized_at = datetime.utcnow()
+        page.vectorized_at = datetime.now(timezone.utc)
         page.vector_chunk_count = actual_count
         need_commit = True
         vector_exists = True
@@ -152,7 +149,6 @@ async def get_vec_status(
         vectorized_at=page.vectorized_at,
         vector_chunk_count=page.vector_chunk_count or actual_count,
         vector_error=page.vector_error,
-        chroma_exists=vector_exists,
         steps=None,
     )
 

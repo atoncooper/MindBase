@@ -2,7 +2,7 @@
 # ASR 分P模型测试
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # ==================== Video 模型测试 ====================
@@ -298,7 +298,7 @@ class TestASRPydanticSchemas:
         """VideoVersionInfo"""
         from app.response.asr import VideoVersionInfo
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         info = VideoVersionInfo(
             version=2,
             content_source="asr",

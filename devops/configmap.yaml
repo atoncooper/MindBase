@@ -12,8 +12,6 @@ data:
   DEBUG: "false"
   # Database
   DATABASE_URL: "sqlite+aiosqlite:///./data/bilibili_rag.db"
-  # ChromaDB
-  CHROMA_PERSIST_DIRECTORY: "./data/chroma_db"
   # LLM
   OPENAI_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   LLM_MODEL: "qwen3-max"

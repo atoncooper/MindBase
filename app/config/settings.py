@@ -70,12 +70,6 @@ class _Settings:
     def database_url(self) -> str:
         return str(_get("rdbms", "url", default="sqlite+aiosqlite:///./data/bilibili_rag.db"))
 
-    # ── ChromaDB ─────────────────────────────────────────────────
-
-    @property
-    def chroma_persist_directory(self) -> str:
-        return str(_get("chroma", "persist_directory", default="./data/chroma_db"))
-
     # ── LLM ──────────────────────────────────────────────────────
 
     @property
@@ -203,7 +197,6 @@ def ensure_directories() -> None:
     """Create required directories on startup."""
     dirs = [
         "data",
-        settings.chroma_persist_directory,
         "logs",
     ]
     for d in dirs:
