@@ -2,13 +2,14 @@
 Bilibili RAG 知识库系统
 对话路由 - 智能问答
 """
+
 import asyncio
 import json
 import re
 import time
 from collections import defaultdict
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy import select, func, or_
@@ -34,7 +35,12 @@ from app.response import (
 from app.config import settings
 from app.routers.knowledge import get_rag_service
 from app.routers.auth import get_current_uid
+from app.security.url_validation import validate_public_http_url
 from app.services import chat_history as chat_history_service
+from app.services.chat_title import (
+    generate_chat_title_background,
+    should_generate_title,
+)
 from app.services.query import RewriteResult, RewriteType, CONFIDENCE_THRESHOLD
 from app.services.rag import get_agentic_rag_service
 from app.services.rag.prompts import (
@@ -107,9 +113,12 @@ def _extract_token_usage_from_llmresult(response: LLMResult) -> tuple[int, int, 
     return 0, 0, 0
 
 
-def _track_usage_after_llm(http_request, uid: int, credential_id, provider, model, msg) -> None:
+def _track_usage_after_llm(
+    http_request, uid: int, credential_id, provider, model, msg
+) -> None:
     """从 LLM 响应中提取 token 用量并写入 credential_usage 表（fire-and-forget）。"""
     import asyncio as _asyncio
+
     prompt, completion, total = _extract_usage_from_message(msg)
     if total <= 0:
         logger.warning(
@@ -128,16 +137,18 @@ def _track_usage_after_llm(http_request, uid: int, credential_id, provider, mode
         f"provider={provider} model={model} "
         f"prompt={prompt} completion={completion} total={total}"
     )
-    _asyncio.ensure_future(writer.enqueue(
-        uid=uid,
-        credential_id=credential_id,
-        provider=provider,
-        model=model,
-        prompt_tokens=prompt,
-        completion_tokens=completion,
-        total_tokens=total,
-        api_calls=1,
-    ))
+    _asyncio.ensure_future(
+        writer.enqueue(
+            uid=uid,
+            credential_id=credential_id,
+            provider=provider,
+            model=model,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
+            api_calls=1,
+        )
+    )
 
 
 def _get_llm(uid: Optional[int] = None) -> ChatOpenAI:
@@ -154,6 +165,7 @@ def _get_llm(uid: Optional[int] = None) -> ChatOpenAI:
 
     if uid is not None:
         from app.main import app
+
         manager = getattr(app.state, "api_key_manager", None)
         if manager and manager.is_enabled:
             user_creds = manager.get_default_credential_sync(uid)
@@ -168,6 +180,13 @@ def _get_llm(uid: Optional[int] = None) -> ChatOpenAI:
     if not api_key:
         raise HTTPException(status_code=400, detail="未配置 LLM API Key")
 
+    try:
+        base_url = validate_public_http_url(base_url)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="LLM API 地址不安全或无效")
+    if base_url is None:
+        raise HTTPException(status_code=400, detail="未配置 LLM API 地址")
+
     llm = ChatOpenAI(
         api_key=api_key,
         base_url=base_url,
@@ -178,6 +197,26 @@ def _get_llm(uid: Optional[int] = None) -> ChatOpenAI:
     setattr(llm, "_credential_id", credential_id)
     setattr(llm, "_provider", _infer_provider(base_url))
     return llm
+
+
+def _schedule_title_generation(
+    background_tasks: BackgroundTasks,
+    chat_session: ChatSessionResponse,
+    *,
+    uid: int,
+    first_message: str,
+) -> None:
+    if chat_session.last_message_at is not None or not should_generate_title(
+        chat_session.title
+    ):
+        return
+    background_tasks.add_task(
+        generate_chat_title_background,
+        chat_session_id=chat_session.chat_session_id,
+        uid=uid,
+        first_message=first_message,
+        llm_factory=_get_llm,
+    )
 
 
 def _infer_provider(base_url: Optional[str]) -> str:
@@ -193,12 +232,14 @@ def _infer_provider(base_url: Optional[str]) -> str:
         return "openai"
     return "custom"
 
+
 def _build_overview_messages(context: str, question: str) -> list:
     system = overview_system_prompt(context)
     return [
         SystemMessage(content=system),
         HumanMessage(content=question),
     ]
+
 
 def _build_rag_messages(context: str, question: str) -> list:
     system = qa_system_prompt(context)
@@ -207,12 +248,14 @@ def _build_rag_messages(context: str, question: str) -> list:
         HumanMessage(content=question),
     ]
 
+
 def _build_fallback_messages(context: str, question: str) -> list:
     system = fallback_system_prompt(context=context)
     return [
         SystemMessage(content=system),
         HumanMessage(content=question),
     ]
+
 
 def _build_direct_messages(question: str) -> list:
     """通用回答（不查库）"""
@@ -222,6 +265,7 @@ def _build_direct_messages(question: str) -> list:
         HumanMessage(content=question),
     ]
 
+
 def _build_direct_messages_with_context(context: str, question: str) -> list:
     """带收藏夹上下文的通用回答（引导用户提问）"""
     system = direct_system_prompt(question, title_context=context)
@@ -230,11 +274,13 @@ def _build_direct_messages_with_context(context: str, question: str) -> list:
         HumanMessage(content=question),
     ]
 
+
 def _log_final_payload(route: str, messages: list, sources: list[dict]) -> None:
     """记录最终发送给 LLM 的内容与来源"""
     logger.info(f"最终路由: {route}")
     logger.info(f"最终消息: {messages}")
     logger.info(f"最终来源数量: {len(sources)}")
+
 
 def _build_db_list_messages(context: str, question: str) -> list:
     """仅用标题/简介回答列表类问题"""
@@ -244,6 +290,7 @@ def _build_db_list_messages(context: str, question: str) -> list:
         HumanMessage(content=question),
     ]
 
+
 def _build_db_summary_messages(context: str, question: str) -> list:
     """仅用数据库内容回答总结类问题"""
     system = db_summary_system_prompt(context)
@@ -252,19 +299,61 @@ def _build_db_summary_messages(context: str, question: str) -> list:
         HumanMessage(content=question),
     ]
 
+
 def _is_list_question(question: str) -> bool:
     """列表/清单类问题"""
-    list_terms = ["有哪些", "有什么", "列表", "清单", "目录", "都有哪些", "列出", "罗列", "多少个", "几个"]
+    list_terms = [
+        "有哪些",
+        "有什么",
+        "列表",
+        "清单",
+        "目录",
+        "都有哪些",
+        "列出",
+        "罗列",
+        "多少个",
+        "几个",
+    ]
     return any(term in question for term in list_terms)
+
 
 def _is_summary_question(question: str) -> bool:
     """总结/概括类问题"""
-    summary_terms = ["总结", "概述", "概括", "分析", "梳理", "提炼", "回顾", "复盘", "要点", "重点", "关键点", "核心", "讲了什么", "讲些什么"]
+    summary_terms = [
+        "总结",
+        "概述",
+        "概括",
+        "分析",
+        "梳理",
+        "提炼",
+        "回顾",
+        "复盘",
+        "要点",
+        "重点",
+        "关键点",
+        "核心",
+        "讲了什么",
+        "讲些什么",
+    ]
     return any(term in question for term in summary_terms)
+
 
 def _is_general_question(question: str) -> bool:
     """通用闲聊/与收藏无关的问题"""
-    general_terms = ["你好", "嗨", "哈喽", "hello", "hi", "在吗", "你是谁", "你能做什么", "谢谢", "晚安", "早安", "早上好"]
+    general_terms = [
+        "你好",
+        "嗨",
+        "哈喽",
+        "hello",
+        "hi",
+        "在吗",
+        "你是谁",
+        "你能做什么",
+        "谢谢",
+        "晚安",
+        "早安",
+        "早上好",
+    ]
     cleaned = re.sub(r"[\\W_]+", "", question, flags=re.UNICODE)
     lowered = cleaned.lower()
     residual = lowered
@@ -272,14 +361,32 @@ def _is_general_question(question: str) -> bool:
         residual = residual.replace(term.lower(), "")
     return residual == ""
 
+
 def _is_collection_intent(question: str) -> bool:
     """是否显式指向收藏/视频/知识库"""
-    terms = ["收藏", "收藏夹", "视频", "合集", "up主", "BV", "bv", "分P", "字幕", "知识库", "入库", "同步", "向量", "检索"]
+    terms = [
+        "收藏",
+        "收藏夹",
+        "视频",
+        "合集",
+        "up主",
+        "BV",
+        "bv",
+        "分P",
+        "字幕",
+        "知识库",
+        "入库",
+        "同步",
+        "向量",
+        "检索",
+    ]
     return any(term in question for term in terms)
+
 
 def _is_overview_question(question: str) -> bool:
     """概览类问题（列表或总结）"""
     return _is_list_question(question) or _is_summary_question(question)
+
 
 def _route_with_rules(question: str, is_collection_intent: bool, related: bool) -> str:
     """规则路由兜底"""
@@ -292,6 +399,7 @@ def _route_with_rules(question: str, is_collection_intent: bool, related: bool) 
     if not related and not is_collection_intent:
         return "direct"
     return "vector"
+
 
 async def _route_with_llm(question: str) -> tuple[Optional[str], str]:
     """使用 LLM 进行路由判断（LangChain 版本，支持 LangSmith 追踪）"""
@@ -326,12 +434,38 @@ async def _route_with_llm(question: str) -> tuple[Optional[str], str]:
         logger.warning(f"LLM 路由失败: {e}")
         return None, ""
 
+
 def _extract_keywords(question: str) -> List[str]:
     """提取用于过滤的关键词"""
     stopwords = {
-        "什么", "怎么", "如何", "是否", "可以", "哪个", "哪些", "请问", "一下", "为什么",
-        "有没有", "能不能", "能否", "是不是", "是什么", "多少", "哪里", "讲讲", "介绍",
-        "总结", "概括", "分析", "解释", "说明", "评价", "区别", "内容", "视频",
+        "什么",
+        "怎么",
+        "如何",
+        "是否",
+        "可以",
+        "哪个",
+        "哪些",
+        "请问",
+        "一下",
+        "为什么",
+        "有没有",
+        "能不能",
+        "能否",
+        "是不是",
+        "是什么",
+        "多少",
+        "哪里",
+        "讲讲",
+        "介绍",
+        "总结",
+        "概括",
+        "分析",
+        "解释",
+        "说明",
+        "评价",
+        "区别",
+        "内容",
+        "视频",
     }
     keywords: List[str] = []
     for kw in re.findall(r"[\u4e00-\u9fff]{2,}", question):
@@ -341,6 +475,7 @@ def _extract_keywords(question: str) -> List[str]:
         if kw not in keywords:
             keywords.append(kw)
     return keywords
+
 
 def _filter_docs_by_keywords(docs: List[Document], question: str) -> List[Document]:
     """根据关键词过滤召回内容，减少噪声"""
@@ -379,7 +514,9 @@ def _merge_and_deduplicate(*doc_lists, per_video_k: int = 2) -> List[Document]:
                 meta = doc.metadata if hasattr(doc, "metadata") else doc
                 doc_key = meta.get("bvid") or meta.get("upload_uuid", "")
             except Exception as e:
-                logger.warning(f"[MERGE_DEBUG] doc[{i}][{j}] metadata.get 异常: type(doc)={type(doc)}, err={e}")
+                logger.warning(
+                    f"[MERGE_DEBUG] doc[{i}][{j}] metadata.get 异常: type(doc)={type(doc)}, err={e}"
+                )
                 continue
             if not isinstance(doc_key, str) or not doc_key:
                 continue
@@ -388,11 +525,24 @@ def _merge_and_deduplicate(*doc_lists, per_video_k: int = 2) -> List[Document]:
     # 每组内按 score 降序取 top-K
     final_docs = []
     for _key, group in grouped.items():
-        group_sorted = sorted(group, key=lambda x: x.metadata.get("score", 0) if hasattr(x, "metadata") else x.get("score", 0), reverse=True)
+        group_sorted = sorted(
+            group,
+            key=lambda x: (
+                x.metadata.get("score", 0)
+                if hasattr(x, "metadata")
+                else x.get("score", 0)
+            ),
+            reverse=True,
+        )
         final_docs.extend(group_sorted[:per_video_k])
 
     # 全局按 score 降序
-    final_docs.sort(key=lambda x: x.metadata.get("score", 0) if hasattr(x, "metadata") else x.get("score", 0), reverse=True)
+    final_docs.sort(
+        key=lambda x: (
+            x.metadata.get("score", 0) if hasattr(x, "metadata") else x.get("score", 0)
+        ),
+        reverse=True,
+    )
     return final_docs
 
 
@@ -425,17 +575,28 @@ async def _vector_search_with_rewrites(
         for wp in workspace_pages:
             for k_field, v in wp.items():
                 if isinstance(v, list):
-                    logger.warning(f"[WORKSPACE_DEBUG] workspace_pages 中发现 list 类型: {k_field}={v}")
+                    logger.warning(
+                        f"[WORKSPACE_DEBUG] workspace_pages 中发现 list 类型: {k_field}={v}"
+                    )
 
     if not rewrites:
         # 无改写结果，降级为直接检索
-        docs = rag.search(question, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages, uid=uid)
+        docs = rag.search(
+            question,
+            k=k,
+            bvids=bvids if bvids else None,
+            workspace_pages=workspace_pages,
+            uid=uid,
+        )
         return _build_context_from_docs(docs)
 
     rewrite = rewrites[0]  # 只有第一个（最高置信度）策略会被使用
 
     # === 策略1：后退提示词 → 泛化 + 具体 双路并发检索 ===
-    if rewrite.type == RewriteType.STEP_BACK and rewrite.confidence >= CONFIDENCE_THRESHOLD:
+    if (
+        rewrite.type == RewriteType.STEP_BACK
+        and rewrite.confidence >= CONFIDENCE_THRESHOLD
+    ):
         # 类型安全访问（dataclass 属性）
         step_back_query = rewrite.metadata.step_back_query
         specific_query = rewrite.metadata.specific_query
@@ -451,12 +612,22 @@ async def _vector_search_with_rewrites(
         # 并发执行，不在关键路径上增加延迟
         loop = asyncio.get_running_loop()
         general_fut = loop.run_in_executor(
-            None, rag.search, step_back_query, k,
-            bvids if bvids else None, workspace_pages, uid,
+            None,
+            rag.search,
+            step_back_query,
+            k,
+            bvids if bvids else None,
+            workspace_pages,
+            uid,
         )
         specific_fut = loop.run_in_executor(
-            None, rag.search, specific_query, k,
-            bvids if bvids else None, workspace_pages, uid,
+            None,
+            rag.search,
+            specific_query,
+            k,
+            bvids if bvids else None,
+            workspace_pages,
+            uid,
         )
         general_docs, specific_docs = await asyncio.gather(general_fut, specific_fut)
         logger.info(
@@ -468,7 +639,10 @@ async def _vector_search_with_rewrites(
         return _build_context_from_docs(docs)
 
     # === 策略2：子查询拆分 → 所有子 query 并发检索 ===
-    if rewrite.type == RewriteType.SUB_QUERIES and rewrite.confidence >= CONFIDENCE_THRESHOLD:
+    if (
+        rewrite.type == RewriteType.SUB_QUERIES
+        and rewrite.confidence >= CONFIDENCE_THRESHOLD
+    ):
         # 类型安全访问（dataclass 属性）
         sub_queries = rewrite.metadata.sub_queries
 
@@ -484,8 +658,13 @@ async def _vector_search_with_rewrites(
         loop = asyncio.get_running_loop()
         futures = [
             loop.run_in_executor(
-                None, rag.search, q, k,
-                bvids if bvids else None, workspace_pages, uid,
+                None,
+                rag.search,
+                q,
+                k,
+                bvids if bvids else None,
+                workspace_pages,
+                uid,
             )
             for q in sub_queries
         ]
@@ -501,7 +680,13 @@ async def _vector_search_with_rewrites(
         f"[QUERY_REWRITE] 未命中任何改写策略，使用原始 question 直接检索\n"
         f"  rewrite.type={rewrite.type}, confidence={rewrite.confidence}"
     )
-    docs = rag.search(question, k=k, bvids=bvids if bvids else None, workspace_pages=workspace_pages, uid=uid)
+    docs = rag.search(
+        question,
+        k=k,
+        bvids=bvids if bvids else None,
+        workspace_pages=workspace_pages,
+        uid=uid,
+    )
     return _build_context_from_docs(docs)
 
 
@@ -514,9 +699,15 @@ def _build_context_from_docs(docs: List[Document]) -> tuple[str, List[dict]]:
             bvid = meta.get("bvid", "")
             upload_uuid = meta.get("upload_uuid", "")
             title = meta.get("title", "")
-            content = doc.page_content.strip() if hasattr(doc, "page_content") else str(doc).strip()
+            content = (
+                doc.page_content.strip()
+                if hasattr(doc, "page_content")
+                else str(doc).strip()
+            )
         except Exception as e:
-            logger.warning(f"[BUILD_CTX_DEBUG] doc 处理异常: type(doc)={type(doc)}, err={e}")
+            logger.warning(
+                f"[BUILD_CTX_DEBUG] doc 处理异常: type(doc)={type(doc)}, err={e}"
+            )
             continue
         if content:
             context_parts.append(f"【{title}】\n{content}")
@@ -525,12 +716,21 @@ def _build_context_from_docs(docs: List[Document]) -> tuple[str, List[dict]]:
         if src_id and src_id not in seen_ids:
             seen_ids.add(src_id)
             if bvid:
-                sources.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
+                sources.append(
+                    {
+                        "bvid": bvid,
+                        "title": title,
+                        "url": f"https://www.bilibili.com/video/{bvid}",
+                    }
+                )
             else:
                 sources.append({"upload_uuid": upload_uuid, "title": title})
     return "\n\n---\n\n".join(context_parts), sources
 
-async def _is_related_to_collection(db: AsyncSession, media_ids: List[int], question: str) -> bool:
+
+async def _is_related_to_collection(
+    db: AsyncSession, media_ids: List[int], question: str
+) -> bool:
     """判断问题是否与收藏夹内容有关"""
     if not media_ids:
         return False
@@ -551,7 +751,10 @@ async def _is_related_to_collection(db: AsyncSession, media_ids: List[int], ques
     count = await db.scalar(stmt)
     return (count or 0) > 0
 
-async def _get_media_ids_for_uid(db: AsyncSession, uid: int, media_ids: Optional[List[int]]) -> List[int]:
+
+async def _get_media_ids_for_uid(
+    db: AsyncSession, uid: int, media_ids: Optional[List[int]]
+) -> List[int]:
     """根据 uid 获取用户已同步的收藏夹 media_id 列表"""
     stmt = (
         select(FavoriteFolder.media_id)
@@ -569,6 +772,7 @@ async def _get_media_ids_for_uid(db: AsyncSession, uid: int, media_ids: Optional
             result.append(mid)
     return result
 
+
 async def _get_bvids_by_media_ids(db: AsyncSession, media_ids: List[int]) -> List[str]:
     """获取指定收藏夹的视频 BV 列表"""
     if not media_ids:
@@ -585,7 +789,13 @@ async def _get_bvids_by_media_ids(db: AsyncSession, media_ids: List[int]) -> Lis
         bvids.append(bvid)
     return bvids
 
-async def _get_video_context(db: AsyncSession, media_ids: List[int], include_content: bool = False, limit: Optional[int] = 50) -> tuple[str, List[dict]]:
+
+async def _get_video_context(
+    db: AsyncSession,
+    media_ids: List[int],
+    include_content: bool = False,
+    limit: Optional[int] = 50,
+) -> tuple[str, List[dict]]:
     """获取视频上下文信息（按收藏夹分组）"""
     if not media_ids:
         return "", []
@@ -623,17 +833,33 @@ async def _get_video_context(db: AsyncSession, media_ids: List[int], include_con
             video_info += f" ({short_desc})"
         grouped[folder_name].append(video_info)
         seen_bvids.add(bvid)
-        sources.append({"bvid": bvid, "title": title, "url": f"https://www.bilibili.com/video/{bvid}"})
-    context_parts = [f"【{folder_name}】\n" + "\n".join(videos) for folder_name, videos in grouped.items()]
+        sources.append(
+            {
+                "bvid": bvid,
+                "title": title,
+                "url": f"https://www.bilibili.com/video/{bvid}",
+            }
+        )
+    context_parts = [
+        f"【{folder_name}】\n" + "\n".join(videos)
+        for folder_name, videos in grouped.items()
+    ]
     context = "\n\n".join(context_parts)
     return context, sources
 
-async def _get_video_titles_context(db: AsyncSession, media_ids: List[int], limit: int = 50) -> str:
+
+async def _get_video_titles_context(
+    db: AsyncSession, media_ids: List[int], limit: int = 50
+) -> str:
     """获取收藏夹名称与视频标题（用于引导问题）"""
     if not media_ids:
         return ""
     query = (
-        select(FavoriteFolder.title.label("folder_title"), Collection.bvid, Collection.title)
+        select(
+            FavoriteFolder.title.label("folder_title"),
+            Collection.bvid,
+            Collection.title,
+        )
         .join(Collection, Collection.media_id == FavoriteFolder.media_id)
         .where(FavoriteFolder.media_id.in_(media_ids))
         .limit(limit)
@@ -652,10 +878,19 @@ async def _get_video_titles_context(db: AsyncSession, media_ids: List[int], limi
         seen_bvids.add(bvid)
         folder_name = folder_title or "默认收藏夹"
         grouped.setdefault(folder_name, []).append(f"- 《{title}》")
-    context_parts = [f"【{folder_name}】\n" + "\n".join(videos) for folder_name, videos in grouped.items()]
+    context_parts = [
+        f"【{folder_name}】\n" + "\n".join(videos)
+        for folder_name, videos in grouped.items()
+    ]
     return "\n\n".join(context_parts)
 
-async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optional[int] = None, rewrite_result: Optional[RewriteResult] = None) -> tuple[list, List[dict], str, Optional[RewriteResult]]:
+
+async def _prepare_messages(
+    request: ChatRequest,
+    db: AsyncSession,
+    uid: Optional[int] = None,
+    rewrite_result: Optional[RewriteResult] = None,
+) -> tuple[list, List[dict], str, Optional[RewriteResult]]:
     """准备 LLM 消息与来源信息"""
     question = request.question.strip()
     get_rag_service()
@@ -678,8 +913,12 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
         is_collection_intent = True
 
     # 工作区模式：有 workspace_pages 时强制走 vector 检索
-    workspace_mode = request.workspace_pages is not None and len(request.workspace_pages) > 0
-    workspace_pages_dicts = [wp.model_dump() for wp in request.workspace_pages] if workspace_mode else None
+    workspace_mode = (
+        request.workspace_pages is not None and len(request.workspace_pages) > 0
+    )
+    workspace_pages_dicts = (
+        [wp.model_dump() for wp in request.workspace_pages] if workspace_mode else None
+    )
     if workspace_mode:
         logger.info(f"[WORKSPACE] 工作区模式: {len(workspace_pages_dicts)} 个分P")
 
@@ -689,20 +928,28 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     if cloud_workspace_mode:
         from app.repository.workspace_repository import WorkspaceRepository
         from app.infra.redis import redis_client
+
         ws_repo = WorkspaceRepository(redis=redis_client if redis_client else None)
         ws = await ws_repo.get_by_id(request.workspace_id, uid, db)
         if ws is None:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="工作区不存在")
-        ws_upload_uuids = list(await ws_repo.expand_bindings(request.workspace_id, uid, db))
-        logger.info(f"[WORKSPACE] 云盘工作区 id={request.workspace_id} → {len(ws_upload_uuids)} 个文件")
+        ws_upload_uuids = list(
+            await ws_repo.expand_bindings(request.workspace_id, uid, db)
+        )
+        logger.info(
+            f"[WORKSPACE] 云盘工作区 id={request.workspace_id} → {len(ws_upload_uuids)} 个文件"
+        )
         if not ws_upload_uuids:
             context = "（该工作区暂无已向量化的文件，请先添加文件到工作区并完成向量化）"
             messages = _build_fallback_messages(context, question)
             return messages, [], question, rewrite_result
 
     # 1) LLM 路由优先，失败时降级规则路由
-    logger.info(f"路由输入: question={question} media_ids={media_ids} has_data={has_data} cloud_has_data={cloud_has_data} is_collection_intent={is_collection_intent}")
+    logger.info(
+        f"路由输入: question={question} media_ids={media_ids} has_data={has_data} cloud_has_data={cloud_has_data} is_collection_intent={is_collection_intent}"
+    )
     route, route_raw = await _route_with_llm(question)
     route_source = "LLM"
     related: Optional[bool] = None
@@ -721,7 +968,9 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     # 2) 无数据时处理
     if not has_any_data:
         if is_collection_intent:
-            context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
+            context, sources = await _get_video_context(
+                db, media_ids, include_content=False, limit=50
+            )
             if not context:
                 context = "（暂无已入库的视频信息，请提醒用户可能需要先进行入库操作）"
             messages = _build_fallback_messages(context, question)
@@ -731,7 +980,11 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     # 3) 直接回答
     if route == "direct":
         title_context = await _get_video_titles_context(db, media_ids, limit=50)
-        messages = _build_direct_messages_with_context(title_context, question) if title_context else _build_direct_messages(question)
+        messages = (
+            _build_direct_messages_with_context(title_context, question)
+            if title_context
+            else _build_direct_messages(question)
+        )
         return messages, [], question, rewrite_result
     # 4) 列表类问题 — 优先走 B站收藏夹；无数据时降级到向量检索（含云盘）
     if route == "db_list":
@@ -739,11 +992,23 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
             related = await _is_related_to_collection(db, media_ids, question)
         if not related and not is_collection_intent:
             return _build_direct_messages(question), [], question, rewrite_result
-        context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
+        context, sources = await _get_video_context(
+            db, media_ids, include_content=False, limit=50
+        )
         if not context and not cloud_has_data:
-            return _build_fallback_messages("（暂无信息，请入库）", question), sources, question, rewrite_result
+            return (
+                _build_fallback_messages("（暂无信息，请入库）", question),
+                sources,
+                question,
+                rewrite_result,
+            )
         if context:
-            return _build_db_list_messages(context, question), sources, question, rewrite_result
+            return (
+                _build_db_list_messages(context, question),
+                sources,
+                question,
+                rewrite_result,
+            )
         # Fall through to vector search below for cloud drive data
     # 5) 总结类问题 — 优先走 B站收藏夹；无数据时降级到向量检索（含云盘）
     if route == "db_content":
@@ -751,17 +1016,38 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
             related = await _is_related_to_collection(db, media_ids, question)
         if not related and not is_collection_intent:
             return _build_direct_messages(question), [], question, rewrite_result
-        context, sources = await _get_video_context(db, media_ids, include_content=True, limit=None)
+        context, sources = await _get_video_context(
+            db, media_ids, include_content=True, limit=None
+        )
         if not context and not cloud_has_data:
-            return _build_fallback_messages("（暂无信息，请入库）", question), sources, question, rewrite_result
+            return (
+                _build_fallback_messages("（暂无信息，请入库）", question),
+                sources,
+                question,
+                rewrite_result,
+            )
         if context:
-            return _build_db_summary_messages(context, question), sources, question, rewrite_result
+            return (
+                _build_db_summary_messages(context, question),
+                sources,
+                question,
+                rewrite_result,
+            )
         # Fall through to vector search below for cloud drive data
     # 6) 检查相关性（使用改写后的 query 以提升语义匹配）
     if related is None:
-        rewrite_query = rewrite_result.rewrites[0].query if (rewrite_result and rewrite_result.rewrites) else question
+        rewrite_query = (
+            rewrite_result.rewrites[0].query
+            if (rewrite_result and rewrite_result.rewrites)
+            else question
+        )
         related = await _is_related_to_collection(db, media_ids, rewrite_query)
-    if not related and not is_collection_intent and not workspace_mode and not cloud_workspace_mode:
+    if (
+        not related
+        and not is_collection_intent
+        and not workspace_mode
+        and not cloud_workspace_mode
+    ):
         # Check if cloud_drive has data — if so, proceed to vector search anyway
         rag = get_rag_service()
         cloud_has_data = rag.cloud_backend is not None
@@ -771,18 +1057,42 @@ async def _prepare_messages(request: ChatRequest, db: AsyncSession, uid: Optiona
     try:
         search_bvids = ws_upload_uuids if cloud_workspace_mode else bvids
         context, sources = await _vector_search_with_rewrites(
-            question, rewrite_result, search_bvids, k=5, workspace_pages=workspace_pages_dicts, uid=uid
+            question,
+            rewrite_result,
+            search_bvids,
+            k=5,
+            workspace_pages=workspace_pages_dicts,
+            uid=uid,
         )
         if context:
-            return _build_rag_messages(context, question), sources, question, rewrite_result
+            return (
+                _build_rag_messages(context, question),
+                sources,
+                question,
+                rewrite_result,
+            )
     except Exception as e:
         logger.exception(f"向量检索失败: {e}")
     # 兜底
-    context, sources = await _get_video_context(db, media_ids, include_content=False, limit=50)
-    return _build_fallback_messages(context or "（暂无入库信息）", question), sources, question, rewrite_result
+    context, sources = await _get_video_context(
+        db, media_ids, include_content=False, limit=50
+    )
+    return (
+        _build_fallback_messages(context or "（暂无入库信息）", question),
+        sources,
+        question,
+        rewrite_result,
+    )
+
 
 @router.post("/ask", response_model=ChatResponse)
-async def ask_question(request: ChatRequest, http_request: Request, uid: int = Depends(get_current_uid), db: AsyncSession = Depends(get_db)):
+async def ask_question(
+    request: ChatRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
     """智能问答（非流式，写入历史）"""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -795,8 +1105,15 @@ async def ask_question(request: ChatRequest, http_request: Request, uid: int = D
     )
 
     # 2. 保存用户消息
+    first_message = request.question.strip()
     await chat_history_service.save_user_message(
-        db, chat_session.chat_session_id, uid, request.question.strip()
+        db, chat_session.chat_session_id, uid, first_message
+    )
+    _schedule_title_generation(
+        background_tasks,
+        chat_session,
+        uid=uid,
+        first_message=first_message,
     )
 
     # 3. 创建 assistant 占位
@@ -812,15 +1129,21 @@ async def ask_question(request: ChatRequest, http_request: Request, uid: int = D
         rewriter = http_request.app.state.rewriter
         rewrite_result = await rewriter.rewrite(request.question.strip())
         logger.info(f"[QUERY_REWRITE] original={request.question.strip()}")
-        logger.info(f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}")
-        logger.info(f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}")
+        logger.info(
+            f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}"
+        )
+        logger.info(
+            f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}"
+        )
 
         # 预加载用户 Credential 缓存（确保 _get_llm 能命中）
         manager = getattr(http_request.app.state, "api_key_manager", None)
         if manager and manager.is_enabled:
             await manager.preload_credentials(uid, db)
 
-        messages, sources, _, _ = await _prepare_messages(request, db, uid, rewrite_result)
+        messages, sources, _, _ = await _prepare_messages(
+            request, db, uid, rewrite_result
+        )
         llm = _get_llm(uid)
 
         cred_id = getattr(llm, "_credential_id", None)
@@ -837,9 +1160,7 @@ async def ask_question(request: ChatRequest, http_request: Request, uid: int = D
         _, _, total_tokens = _extract_usage_from_message(response)
 
         # 用量追踪写入 credential_usage 表
-        _track_usage_after_llm(
-            http_request, uid, cred_id, provider, model, response
-        )
+        _track_usage_after_llm(http_request, uid, cred_id, provider, model, response)
 
         # 5. Finalize assistant message in MongoDB
         await chat_history_service.complete_assistant_message(
@@ -866,7 +1187,13 @@ async def ask_question(request: ChatRequest, http_request: Request, uid: int = D
 
 
 @router.post("/ask/agentic", response_model=AgenticChatResponse)
-async def ask_question_agentic(request: ChatRequest, http_request: Request, uid: int = Depends(get_current_uid), db: AsyncSession = Depends(get_db)):
+async def ask_question_agentic(
+    request: ChatRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
     """Agentic RAG 问答（写入历史）"""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -879,8 +1206,15 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, uid:
     )
 
     # 2. 保存用户消息
+    first_message = request.question.strip()
     await chat_history_service.save_user_message(
-        db, chat_session.chat_session_id, uid, request.question.strip()
+        db, chat_session.chat_session_id, uid, first_message
+    )
+    _schedule_title_generation(
+        background_tasks,
+        chat_session,
+        uid=uid,
+        first_message=first_message,
     )
 
     # 3. 创建 assistant 占位
@@ -894,7 +1228,11 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, uid:
     try:
         media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
         bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
-        workspace_pages = [wp.model_dump() for wp in request.workspace_pages] if request.workspace_pages else None
+        workspace_pages = (
+            [wp.model_dump() for wp in request.workspace_pages]
+            if request.workspace_pages
+            else None
+        )
 
         service = get_agentic_rag_service(
             rag_service=get_rag_service(),
@@ -924,16 +1262,19 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, uid:
             writer = getattr(http_request.app.state, "usage_writer", None)
             if writer:
                 import asyncio as _asyncio
-                _asyncio.ensure_future(writer.enqueue(
-                    uid=uid,
-                    credential_id=None,
-                    provider="openai",
-                    model=settings.llm_model,
-                    prompt_tokens=0,
-                    completion_tokens=0,
-                    total_tokens=total_tokens,
-                    api_calls=1,
-                ))
+
+                _asyncio.ensure_future(
+                    writer.enqueue(
+                        uid=uid,
+                        credential_id=None,
+                        provider="openai",
+                        model=settings.llm_model,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        total_tokens=total_tokens,
+                        api_calls=1,
+                    )
+                )
 
         return AgenticChatResponse(
             answer=result.answer,
@@ -955,8 +1296,15 @@ async def ask_question_agentic(request: ChatRequest, http_request: Request, uid:
         )
         raise HTTPException(status_code=500, detail=f"Agentic RAG 问答失败: {str(e)}")
 
+
 @router.post("/ask/stream")
-async def ask_question_stream(request: ChatRequest, http_request: Request, uid: int = Depends(get_current_uid), db: AsyncSession = Depends(get_db)):
+async def ask_question_stream(
+    request: ChatRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
     """流式问答（SSE，写入历史）"""
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -970,8 +1318,15 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
     chat_session_id = chat_session.chat_session_id
 
     # 2. 保存用户消息
+    first_message = request.question.strip()
     await chat_history_service.save_user_message(
-        db, chat_session_id, uid, request.question.strip()
+        db, chat_session_id, uid, first_message
+    )
+    _schedule_title_generation(
+        background_tasks,
+        chat_session,
+        uid=uid,
+        first_message=first_message,
     )
 
     # 3. 创建 assistant 占位
@@ -992,10 +1347,16 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
         rewriter = http_request.app.state.rewriter
         rewrite_result = await rewriter.rewrite(request.question.strip())
         logger.info(f"[QUERY_REWRITE] original={request.question.strip()}")
-        logger.info(f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}")
-        logger.info(f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}")
+        logger.info(
+            f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}"
+        )
+        logger.info(
+            f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}"
+        )
 
-        messages, sources, _, _ = await _prepare_messages(request, db, uid, rewrite_result)
+        messages, sources, _, _ = await _prepare_messages(
+            request, db, uid, rewrite_result
+        )
         llm = _get_llm(uid)
 
         cred_id = getattr(llm, "_credential_id", None)
@@ -1024,7 +1385,9 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
                 async for chunk in llm.astream(messages):
                     chunk_text = chunk.content or ""
                     full_content += chunk_text
-                    data = json.dumps({"type": "chunk", "content": chunk_text}, ensure_ascii=False)
+                    data = json.dumps(
+                        {"type": "chunk", "content": chunk_text}, ensure_ascii=False
+                    )
                     yield f"data: {data}\n\n"
 
                 # 用量追踪写入 credential_usage 表
@@ -1033,23 +1396,28 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
                     # 流式回调已经捕获了完整 token 用量，直接入队
                     writer = getattr(http_request.app.state, "usage_writer", None)
                     if writer:
-                        asyncio.ensure_future(writer.enqueue(
-                            uid=uid,
-                            credential_id=cred_id,
-                            provider=provider,
-                            model=model,
-                            prompt_tokens=0,
-                            completion_tokens=0,
-                            total_tokens=total_tokens,
-                            api_calls=1,
-                        ))
+                        asyncio.ensure_future(
+                            writer.enqueue(
+                                uid=uid,
+                                credential_id=cred_id,
+                                provider=provider,
+                                model=model,
+                                prompt_tokens=0,
+                                completion_tokens=0,
+                                total_tokens=total_tokens,
+                                api_calls=1,
+                            )
+                        )
 
                 # 附加 sources 和 rewrite 信息
-                sources_payload = json.dumps({
-                    "type": "sources",
-                    "sources": sources,
-                    "rewrite_info": rewrite_info,
-                }, ensure_ascii=False)
+                sources_payload = json.dumps(
+                    {
+                        "type": "sources",
+                        "sources": sources,
+                        "rewrite_info": rewrite_info,
+                    },
+                    ensure_ascii=False,
+                )
                 yield f"data: {sources_payload}\n\n"
 
                 # 结束标记
@@ -1069,7 +1437,9 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
             except Exception as e:
                 logger.exception("Stream generation failed")
                 error_msg = str(e)
-                error_payload = json.dumps({"type": "error", "message": error_msg}, ensure_ascii=False)
+                error_payload = json.dumps(
+                    {"type": "error", "message": error_msg}, ensure_ascii=False
+                )
                 yield f"data: {error_payload}\n\n"
                 # 6. 失败后标记 assistant 消息
                 await chat_history_service.fail_assistant_message(
@@ -1089,6 +1459,7 @@ async def ask_question_stream(request: ChatRequest, http_request: Request, uid: 
         )
         raise HTTPException(status_code=500, detail=f"流式问答失败: {str(e)}")
 
+
 @router.post("/search")
 async def search_videos(query: str, k: int = 5):
     """搜索相关视频片段"""
@@ -1103,12 +1474,18 @@ async def search_videos(query: str, k: int = 5):
             if bvid in seen_bvids:
                 continue
             seen_bvids.add(bvid)
-            results.append({
-                "bvid": bvid,
-                "title": doc.metadata.get("title", ""),
-                "url": doc.metadata.get("url", ""),
-                "content_preview": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
-            })
+            results.append(
+                {
+                    "bvid": bvid,
+                    "title": doc.metadata.get("title", ""),
+                    "url": doc.metadata.get("url", ""),
+                    "content_preview": (
+                        doc.page_content[:200] + "..."
+                        if len(doc.page_content) > 200
+                        else doc.page_content
+                    ),
+                }
+            )
         return {"results": results}
     except Exception as e:
         logger.exception("Search failed")
@@ -1118,6 +1495,7 @@ async def search_videos(query: str, k: int = 5):
 # ============================================================================
 # 聊天会话管理
 # ============================================================================
+
 
 @router.post("/sessions", response_model=ChatSessionResponse)
 async def create_session(
@@ -1144,10 +1522,13 @@ async def list_sessions(
 @router.get("/sessions/{chat_session_id}", response_model=ChatSessionResponse)
 async def get_session(
     chat_session_id: str,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """获取单条会话"""
-    session = await chat_history_service.get_chat_session(db, chat_session_id)
+    session = await chat_history_service.get_chat_session_for_user(
+        db, uid, chat_session_id
+    )
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
     return session
@@ -1157,6 +1538,7 @@ async def get_session(
 async def update_session(
     chat_session_id: str,
     request: ChatSessionUpdateRequest,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """更新会话标题"""
@@ -1164,8 +1546,14 @@ async def update_session(
     if not title:
         raise HTTPException(status_code=400, detail="标题不能为空")
 
-    await chat_history_service.update_chat_session_title(db, chat_session_id, title)
-    session = await chat_history_service.get_chat_session(db, chat_session_id)
+    updated = await chat_history_service.update_chat_session_title_for_user(
+        db, uid, chat_session_id, title
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    session = await chat_history_service.get_chat_session_for_user(
+        db, uid, chat_session_id
+    )
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
     return session
@@ -1174,10 +1562,15 @@ async def update_session(
 @router.delete("/sessions/{chat_session_id}")
 async def delete_session(
     chat_session_id: str,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """删除会话及其所有消息"""
-    await chat_history_service.delete_chat_session(db, chat_session_id)
+    deleted = await chat_history_service.delete_chat_session_for_user(
+        db, uid, chat_session_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="会话不存在")
     return {"success": True}
 
 
@@ -1185,17 +1578,22 @@ async def delete_session(
 # 聊天历史消息
 # ============================================================================
 
+
 @router.get("/history", response_model=ChatHistoryResponse)
 async def get_chat_history(
     chat_session_id: str,
     page: int = 1,
     page_size: int = 50,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """分页查询聊天历史"""
-    messages, total = await chat_history_service.get_history(
-        db, chat_session_id, page=page, page_size=page_size
+    history = await chat_history_service.get_history_for_user(
+        db, uid, chat_session_id, page=page, page_size=page_size
     )
+    if history is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    messages, total = history
     has_more = (page * page_size) < total
     return ChatHistoryResponse(
         messages=messages,
@@ -1209,8 +1607,316 @@ async def get_chat_history(
 @router.delete("/history")
 async def clear_chat_history(
     chat_session_id: str,
+    uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
     """清空某会话的所有消息"""
-    await chat_history_service.clear_history(db, chat_session_id)
+    cleared = await chat_history_service.clear_history_for_user(
+        db, uid, chat_session_id
+    )
+    if not cleared:
+        raise HTTPException(status_code=404, detail="会话不存在")
     return {"success": True}
+
+
+@router.post("/ask/agent", response_model=ChatResponse)
+async def ask_question_agent(
+    request: ChatRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Agent-based RAG 问答 — routes through AgentHarness Chat Agent.
+
+    The Chat Agent uses a ReAct loop with tools (vector_search,
+    list_videos, get_video_summaries, search_chat_history, etc.)
+    to produce an answer.
+    """
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    # Verify harness is available
+    harness = getattr(http_request.app.state, "agent_harness", None)
+    if not harness or not harness.started:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent 服务暂不可用，请使用标准问答模式",
+        )
+
+    # 1. Get or create chat session
+    chat_session = await chat_history_service.get_or_create_chat_session(
+        db,
+        uid=uid,
+        chat_session_id=request.chat_session_id,
+    )
+
+    # 2. Save user message
+    first_message = request.question.strip()
+    await chat_history_service.save_user_message(
+        db, chat_session.chat_session_id, uid, first_message
+    )
+    _schedule_title_generation(
+        background_tasks,
+        chat_session,
+        uid=uid,
+        first_message=first_message,
+    )
+
+    # 3. Create assistant placeholder
+    assistant_msg = await chat_history_service.create_pending_assistant_message(
+        db, chat_session.chat_session_id, uid, model=settings.llm_model
+    )
+
+    # 4. Touch session
+    await chat_history_service.touch_chat_session(db, chat_session.chat_session_id)
+
+    try:
+        # Resolve data scope for the agent
+        media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
+        bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
+        workspace_pages = (
+            [wp.model_dump() for wp in request.workspace_pages]
+            if request.workspace_pages
+            else None
+        )
+
+        start_time = time.time()
+
+        result = await harness.dispatch(
+            session_id=chat_session.chat_session_id,
+            query=request.question.strip(),
+            uid=uid,
+            bvids=bvids,
+            media_ids=media_ids,
+            workspace_pages=workspace_pages,
+        )
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        # Extract answer — agent returns full ChatAgentState dict
+        answer = ""
+        sources: list[dict] = []
+        if isinstance(result, dict):
+            if "error" in result and result["error"]:
+                raise HTTPException(status_code=500, detail=result["error"])
+            answer = result.get("result", "")
+            sources = result.get("sources", [])
+            # Fallback: extract from last message if result is empty
+            if not answer:
+                messages = result.get("messages", [])
+                if messages:
+                    last_msg = messages[-1]
+                    answer = getattr(last_msg, "content", str(last_msg))
+
+        if not answer:
+            answer = "抱歉，我无法回答这个问题。"
+
+        # 5. Finalize assistant message
+        await chat_history_service.complete_assistant_message(
+            db,
+            msg_id=assistant_msg.msg_id,
+            content=answer,
+            sources=sources[:5],
+            tokens_used=None,
+            latency_ms=latency_ms,
+        )
+
+        # Usage tracking (best-effort — agent LLM usage is not directly available)
+        writer = getattr(http_request.app.state, "usage_writer", None)
+        if writer:
+            asyncio.ensure_future(
+                writer.enqueue(
+                    uid=uid,
+                    credential_id=None,
+                    provider="openai",
+                    model=settings.llm_model,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    api_calls=1,
+                )
+            )
+
+        return ChatResponse(answer=answer, sources=sources[:5])
+
+    except HTTPException:
+        await chat_history_service.fail_assistant_message(
+            db, assistant_msg.msg_id, error="HTTPException during agent ask"
+        )
+        raise
+    except Exception as e:
+        logger.exception("Agent ask failed")
+        await chat_history_service.fail_assistant_message(
+            db, assistant_msg.msg_id, error=str(e)
+        )
+        raise HTTPException(status_code=500, detail=f"Agent 问答失败: {str(e)}")
+
+
+@router.post("/ask/agent/stream")
+async def ask_question_agent_stream(
+    request: ChatRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Streaming Agent-based RAG 问答 — SSE with token-level streaming.
+
+    The Chat Agent uses a ReAct loop: the LLM autonomously decides which
+    tools to call (vector_search, list_videos, search_chat_history, etc.),
+    observes results, and produces a final answer.  This avoids the rigid
+    routing classification that can misroute content queries as "direct".
+    """
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    harness = getattr(http_request.app.state, "agent_harness", None)
+    if not harness or not harness.started:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent 服务暂不可用，请使用标准问答模式",
+        )
+
+    chat_session = await chat_history_service.get_or_create_chat_session(
+        db,
+        uid=uid,
+        chat_session_id=request.chat_session_id,
+    )
+    chat_session_id = chat_session.chat_session_id
+
+    first_message = request.question.strip()
+    await chat_history_service.save_user_message(
+        db, chat_session_id, uid, first_message
+    )
+    _schedule_title_generation(
+        background_tasks,
+        chat_session,
+        uid=uid,
+        first_message=first_message,
+    )
+    assistant_msg = await chat_history_service.create_pending_assistant_message(
+        db, chat_session_id, uid, model=settings.llm_model
+    )
+    await chat_history_service.touch_chat_session(db, chat_session_id)
+
+    try:
+        media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
+        bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
+        workspace_pages = (
+            [wp.model_dump() for wp in request.workspace_pages]
+            if request.workspace_pages
+            else None
+        )
+
+        # Auto-route to the best agent, then acquire its graph
+        agent_name, agent_graph = await harness.dispatch_stream(
+            session_id=chat_session_id,
+            query=request.question.strip(),
+            uid=uid,
+            bvids=bvids,
+            media_ids=media_ids,
+            workspace_pages=workspace_pages,
+        )
+
+        input_state = {
+            "query": request.question.strip(),
+            "session_id": chat_session_id,
+            "uid": uid,
+            "folder_ids": request.folder_ids or [],
+            "bvids": bvids,
+            "media_ids": media_ids,
+            "workspace_pages": workspace_pages or [],
+        }
+
+        run_config = {
+            "run_name": f"{agent_name}_agent_stream",
+            "tags": [f"{agent_name}_agent", "streaming"],
+            "metadata": {
+                "agent_name": agent_name,
+                "session_id": chat_session_id,
+                "uid": uid,
+            },
+        }
+
+        async def generate():
+            full_content = ""
+            sources: list[dict] = []
+            start_time = time.time()
+
+            # Emit route event so frontend knows which agent was selected
+            route_event = json.dumps(
+                {"type": "route", "agent": agent_name},
+                ensure_ascii=False,
+            )
+            yield f"data: {route_event}\n\n"
+
+            try:
+                async for event in agent_graph.astream_events(
+                    input_state,
+                    config=run_config,
+                    version="v2",
+                ):
+                    kind = event.get("event", "")
+
+                    # Token-level streaming from the LLM
+                    if kind == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk:
+                            text = getattr(chunk, "content", "") or ""
+                            if text:
+                                full_content += text
+                                data = json.dumps(
+                                    {"type": "chunk", "content": text},
+                                    ensure_ascii=False,
+                                )
+                                yield f"data: {data}\n\n"
+
+                # Send sources
+                sources_payload = json.dumps(
+                    {"type": "sources", "sources": sources[:5]},
+                    ensure_ascii=False,
+                )
+                yield f"data: {sources_payload}\n\n"
+
+                # Done
+                done_payload = json.dumps({"type": "done"}, ensure_ascii=False)
+                yield f"data: {done_payload}\n\n"
+
+                # Finalize assistant message
+                latency_ms = int((time.time() - start_time) * 1000)
+                await chat_history_service.complete_assistant_message(
+                    db,
+                    msg_id=assistant_msg.msg_id,
+                    content=full_content,
+                    sources=sources[:5],
+                    tokens_used=None,
+                    latency_ms=latency_ms,
+                )
+
+            except Exception as e:
+                logger.exception("Agent stream generation failed")
+                error_msg = str(e)
+                error_payload = json.dumps(
+                    {"type": "error", "message": error_msg},
+                    ensure_ascii=False,
+                )
+                yield f"data: {error_payload}\n\n"
+                await chat_history_service.fail_assistant_message(
+                    db,
+                    assistant_msg.msg_id,
+                    error=error_msg,
+                )
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    except HTTPException:
+        await chat_history_service.fail_assistant_message(
+            db, assistant_msg.msg_id, error="HTTPException during agent stream"
+        )
+        raise
+    except Exception as e:
+        logger.exception("Agent stream ask failed")
+        await chat_history_service.fail_assistant_message(
+            db, assistant_msg.msg_id, error=str(e)
+        )
+        raise HTTPException(status_code=500, detail=f"Agent 流式问答失败: {str(e)}")

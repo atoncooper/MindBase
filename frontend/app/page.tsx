@@ -55,9 +55,9 @@ export default function Home() {
   useEffect(() => {
     const s = localStorage.getItem("bili_session");
     const u = localStorage.getItem("bili_user");
-    if (s && u) {
+    if (s) {
       setSession(s);
-      setUser(u);
+      setUser(u || "用户");
     }
   }, []);
 
@@ -100,12 +100,13 @@ export default function Home() {
   };
 
   const onLogin = (sid: string, info: UserInfo) => {
+    const displayName = info.uname || info.nickname || "用户";
     setSession(sid);
-    setUser(info.uname || "");
+    setUser(displayName);
     setShowQRLogin(false);
     setShowPasswordLogin(false);
     localStorage.setItem("bili_session", sid);
-    localStorage.setItem("bili_user", info.uname || "");
+    localStorage.setItem("bili_user", displayName);
   };
 
   const onLogout = useCallback(() => {

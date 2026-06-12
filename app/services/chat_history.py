@@ -16,10 +16,11 @@ Lifecycle of a message round-trip
 2. ``create_pending_assistant_message()`` — inserts a placeholder (status=pending)
 3. ``complete_assistant_message()``       — fills content after LLM response
    (or ``fail_assistant_message()`` on error)
-4. ``get_history()``             — paginated read, newest last
-5. ``clear_history()``           — delete messages, keep session
-6. ``delete_chat_session()``     — delete session + all messages
+4. ``get_history_for_user()``    — paginated read, newest last
+5. ``clear_history_for_user()``  — delete messages, keep session
+6. ``delete_chat_session_for_user()`` — delete session + all messages
 """
+
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -36,6 +37,7 @@ from app.repository import mongo_chat_repository as mongo_chat
 # ═══════════════════════════════════════════════════════════════════
 # Session management — MySQL chat_sessions table
 # ═══════════════════════════════════════════════════════════════════
+
 
 async def create_chat_session(
     db: AsyncSession,
@@ -66,13 +68,30 @@ async def create_chat_session(
     return ChatSessionResponse.model_validate(session)
 
 
-async def get_chat_session(
+async def _unsafe_get_chat_session(
     db: AsyncSession,
     chat_session_id: str,
 ) -> Optional[ChatSessionResponse]:
     """Return a single session by its public *chat_session_id*, or None."""
     result = await db.execute(
         select(ChatSession).where(ChatSession.chat_session_id == chat_session_id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        return None
+    return ChatSessionResponse.model_validate(session)
+
+
+async def get_chat_session_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+) -> Optional[ChatSessionResponse]:
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.chat_session_id == chat_session_id,
+            ChatSession.uid == uid,
+        )
     )
     session = result.scalar_one_or_none()
     if session is None:
@@ -100,17 +119,25 @@ async def list_chat_sessions(
     grace_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     for s in sessions:
         has_msgs = await mongo_chat.session_has_messages(s.chat_session_id)
-        if not has_msgs and s.created_at and s.created_at < grace_cutoff:
-            s.status = "deleted"
-            await db.commit()
-            logger.info(f"[CHAT_HISTORY] auto-cleaned stale session {s.chat_session_id}: no messages in MongoDB")
-            continue
+        if not has_msgs and s.created_at:
+            created = (
+                s.created_at
+                if s.created_at.tzinfo
+                else s.created_at.replace(tzinfo=timezone.utc)
+            )
+            if created < grace_cutoff:
+                s.status = "deleted"
+                await db.commit()
+                logger.info(
+                    f"[CHAT_HISTORY] auto-cleaned stale session {s.chat_session_id}: no messages in MongoDB"
+                )
+                continue
         valid.append(ChatSessionResponse.model_validate(s))
 
     return valid
 
 
-async def update_chat_session_title(
+async def _unsafe_update_chat_session_title(
     db: AsyncSession,
     chat_session_id: str,
     title: str,
@@ -133,6 +160,31 @@ async def update_chat_session_title(
     logger.info(f"[CHAT_HISTORY] updated title {chat_session_id}")
 
 
+async def update_chat_session_title_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+    title: str,
+) -> bool:
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.chat_session_id == chat_session_id,
+            ChatSession.uid == uid,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        logger.warning(
+            f"[CHAT_HISTORY] update_title: not found chat_session_id={chat_session_id} uid={uid}"
+        )
+        return False
+    session.title = title
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    logger.info(f"[CHAT_HISTORY] updated title {chat_session_id} uid={uid}")
+    return True
+
+
 async def touch_chat_session(
     db: AsyncSession,
     chat_session_id: str,
@@ -153,12 +205,12 @@ async def touch_chat_session(
     await db.commit()
 
 
-async def delete_chat_session(
+async def _unsafe_delete_chat_session(
     db: AsyncSession,
     chat_session_id: str,
 ) -> None:
     """Delete a session row from MySQL and all its messages from MongoDB."""
-    await mongo_chat.delete_session_messages(chat_session_id)
+    await mongo_chat._unsafe_delete_session_messages(chat_session_id)
     await db.execute(
         delete(ChatSession).where(ChatSession.chat_session_id == chat_session_id)
     )
@@ -166,9 +218,52 @@ async def delete_chat_session(
     logger.info(f"[CHAT_HISTORY] deleted session {chat_session_id}")
 
 
+async def delete_chat_session_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+) -> bool:
+    session = await get_chat_session_for_user(db, uid, chat_session_id)
+    if session is None:
+        logger.warning(
+            f"[CHAT_HISTORY] delete_session: not found chat_session_id={chat_session_id} uid={uid}"
+        )
+        return False
+    await mongo_chat.delete_session_messages_for_user(chat_session_id, uid)
+    await db.execute(
+        delete(ChatSession).where(
+            ChatSession.chat_session_id == chat_session_id,
+            ChatSession.uid == uid,
+        )
+    )
+    await db.commit()
+    logger.info(f"[CHAT_HISTORY] deleted session {chat_session_id} uid={uid}")
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Message management — MongoDB chat_messages collection
 # ═══════════════════════════════════════════════════════════════════
+
+
+def _messages_from_rows(rows: list[dict]) -> list[ChatMessageResponse]:
+    return [
+        ChatMessageResponse(
+            msg_id=r.get("msg_id", ""),
+            chat_session_id=r.get("chat_session_id", ""),
+            role=r.get("role", ""),
+            content=r.get("content", ""),
+            status=r.get("status", "completed"),
+            sources=r.get("sources"),
+            tokens_used=r.get("tokens_used"),
+            model=r.get("model"),
+            latency_ms=r.get("latency_ms"),
+            error=r.get("error"),
+            created_at=r.get("created_at", datetime.now(timezone.utc)),
+        )
+        for r in rows
+    ]
+
 
 async def save_user_message(
     db: AsyncSession,
@@ -250,7 +345,9 @@ async def complete_assistant_message(
         tokens_used=tokens_used,
         latency_ms=latency_ms,
     )
-    logger.info(f"[CHAT_HISTORY] completed assistant msg_id={msg_id} len={len(content)}")
+    logger.info(
+        f"[CHAT_HISTORY] completed assistant msg_id={msg_id} len={len(content)}"
+    )
 
 
 async def fail_assistant_message(
@@ -263,7 +360,7 @@ async def fail_assistant_message(
     logger.warning(f"[CHAT_HISTORY] failed assistant msg_id={msg_id}")
 
 
-async def get_history(
+async def _unsafe_get_history(
     db: AsyncSession,
     chat_session_id: str,
     page: int = 1,
@@ -274,29 +371,30 @@ async def get_history(
     Messages are sorted by ``created_at`` ascending (chronological order).
     Returns ``(messages, total_count)``.
     """
-    rows, total = await mongo_chat.get_messages(
+    rows, total = await mongo_chat._unsafe_get_messages(
         chat_session_id, page=page, page_size=page_size
     )
-    messages = [
-        ChatMessageResponse(
-            msg_id=r.get("msg_id", ""),
-            chat_session_id=r.get("chat_session_id", ""),
-            role=r.get("role", ""),
-            content=r.get("content", ""),
-            status=r.get("status", "completed"),
-            sources=r.get("sources"),
-            tokens_used=r.get("tokens_used"),
-            model=r.get("model"),
-            latency_ms=r.get("latency_ms"),
-            error=r.get("error"),
-            created_at=r.get("created_at", datetime.now(timezone.utc)),
-        )
-        for r in rows
-    ]
+    messages = _messages_from_rows(rows)
     return messages, total
 
 
-async def clear_history(
+async def get_history_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+    page: int = 1,
+    page_size: int = 50,
+) -> Optional[tuple[list[ChatMessageResponse], int]]:
+    session = await get_chat_session_for_user(db, uid, chat_session_id)
+    if session is None:
+        return None
+    rows, total = await mongo_chat.get_messages_for_user(
+        chat_session_id, uid, page=page, page_size=page_size
+    )
+    return _messages_from_rows(rows), total
+
+
+async def _unsafe_clear_history(
     db: AsyncSession,
     chat_session_id: str,
 ) -> None:
@@ -304,13 +402,29 @@ async def clear_history(
 
     The session row in MySQL is kept intact — only messages are removed.
     """
-    deleted = await mongo_chat.delete_session_messages(chat_session_id)
+    deleted = await mongo_chat._unsafe_delete_session_messages(chat_session_id)
     logger.info(f"[CHAT_HISTORY] cleared {deleted} messages from {chat_session_id}")
+
+
+async def clear_history_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+) -> bool:
+    session = await get_chat_session_for_user(db, uid, chat_session_id)
+    if session is None:
+        return False
+    deleted = await mongo_chat.delete_session_messages_for_user(chat_session_id, uid)
+    logger.info(
+        f"[CHAT_HISTORY] cleared {deleted} messages from {chat_session_id} uid={uid}"
+    )
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Convenience
 # ═══════════════════════════════════════════════════════════════════
+
 
 async def get_or_create_chat_session(
     db: AsyncSession,
@@ -324,7 +438,7 @@ async def get_or_create_chat_session(
     conversation or start a fresh one on the first message.
     """
     if chat_session_id:
-        existing = await get_chat_session(db, chat_session_id)
+        existing = await get_chat_session_for_user(db, uid, chat_session_id)
         if existing:
             return existing
 
