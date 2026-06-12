@@ -14,6 +14,14 @@ function getAuthHeaders(): Record<string, string> {
     return { Authorization: `Bearer ${token}` };
 }
 
+function requireAuthHeaders(): Record<string, string> {
+    const headers = getAuthHeaders();
+    if (!headers.Authorization) {
+        throw new Error(sanitizeError({ status: 401 }));
+    }
+    return headers;
+}
+
 // 通用请求函数
 async function request<T>(
     endpoint: string,
@@ -83,7 +91,9 @@ export interface UserInfo {
     uid?: number;
     mid?: number;
     uname?: string;
+    nickname?: string | null;
     face?: string;
+    avatar?: string | null;
     level?: number;
     roles?: string[];
     session_token?: string;
@@ -308,6 +318,12 @@ export const authApi = {
     // 轮询登录状态
     pollQRCode: (qrcodeKey: string) =>
         request<LoginStatusResponse>(`/auth/qrcode/poll/${qrcodeKey}`),
+
+    // 已登录用户扫码绑定/刷新 B站授权
+    pollQRCodeForBinding: (qrcodeKey: string) =>
+        request<LoginStatusResponse>(`/auth/qrcode/poll/${qrcodeKey}?purpose=bind`, {
+            headers: requireAuthHeaders(),
+        }),
 
     // 邮箱密码登录
     login: (email: string, password: string, device?: Record<string, string | undefined>) =>
@@ -601,6 +617,29 @@ export const chatApi = {
 
         if (!res.ok || !res.body) {
             throw new Error("流式接口不可用");
+        }
+        return res.body;
+    },
+
+    // Agent 模式流式接口（ReAct 循环，LLM 自主决策工具调用）
+    askAgentStream: async (payload: ChatRequestPayload): Promise<ReadableStream<Uint8Array>> => {
+        const res = await fetch(`${API_BASE_URL}/chat/ask/agent/stream`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify(payload),
+        });
+
+        if (res.status === 401) {
+            if (typeof window !== "undefined") {
+                localStorage.removeItem("bili_session");
+                localStorage.removeItem("bili_user");
+                window.location.href = "/";
+            }
+            throw new Error("会话已过期，请重新登录");
+        }
+
+        if (!res.ok || !res.body) {
+            throw new Error("Agent 流式接口不可用");
         }
         return res.body;
     },
@@ -1134,6 +1173,14 @@ export interface QuizHistoryResponse {
     has_more: boolean;
 }
 
+export interface QuizDeleteResponse {
+    deleted: boolean;
+    quiz_uuid: string;
+    deleted_questions: number;
+    deleted_submissions: number;
+    deleted_answers: number;
+}
+
 export interface WrongAnswerItem {
     question_uuid: string;
     quiz_uuid: string;
@@ -1186,6 +1233,12 @@ export const quizApi = {
             headers: getAuthHeaders(),
         }),
 
+    deleteQuiz: (quizUuid: string) =>
+        request<QuizDeleteResponse>(`/quiz/${quizUuid}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
     getWrongAnswers: (folderIds?: number[]) =>
         request<WrongAnswerResponse>(
             `/quiz/wrong-answers${folderIds?.length ? `?folder_ids=${folderIds.join(",")}` : ""}`,
@@ -1224,6 +1277,15 @@ export interface ProfileData {
     created_at: string | null;
 }
 
+export interface BilibiliBindingStatus {
+    bound: boolean;
+    valid: boolean;
+    mid: number | null;
+    nickname: string | null;
+    avatar: string | null;
+    message: string;
+}
+
 export interface SecurityOverview {
     email: string | null;
     email_verified: boolean;
@@ -1235,6 +1297,7 @@ export interface SecurityOverview {
         email: string | null;
         is_primary: boolean;
     }>;
+    bilibili: BilibiliBindingStatus;
 }
 
 export interface ProfileUpdateParams {
@@ -1532,8 +1595,6 @@ function snakeToCamel<T>(obj: unknown): T {
 }
 
 export { formatBytes };
-
-const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk
 
 export const cloudApi = {
     // ── Folders ──
