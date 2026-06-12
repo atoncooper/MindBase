@@ -4,11 +4,34 @@ Pydantic schemas for auth API — request / response models.
 
 from datetime import datetime, date
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+
+def normalize_email(value: str) -> str:
+    email = value.strip().lower()
+    if not email:
+        raise ValueError("邮箱不能为空")
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        raise ValueError("邮箱格式不正确")
+    local, domain = email.rsplit("@", 1)
+    if (
+        "@" in local
+        or not local
+        or "." not in domain
+        or domain.startswith(".")
+        or domain.endswith(".")
+    ):
+        raise ValueError("邮箱格式不正确")
+    if any(part == "" for part in domain.split(".")) or any(
+        ch.isspace() for ch in email
+    ):
+        raise ValueError("邮箱格式不正确")
+    return email
 
 
 class QRCodeResponse(BaseModel):
     """GET /auth/qrcode response."""
+
     qrcode_key: str
     qrcode_url: str
     qrcode_image_base64: str
@@ -16,6 +39,7 @@ class QRCodeResponse(BaseModel):
 
 class LoginStatusResponse(BaseModel):
     """GET /auth/qrcode/poll/{key} response."""
+
     status: str  # waiting | scanned | confirmed | expired
     message: str
     user_info: Optional[dict] = None
@@ -24,6 +48,7 @@ class LoginStatusResponse(BaseModel):
 
 class UserInfoResponse(BaseModel):
     """GET /auth/me response."""
+
     uid: int
     nickname: Optional[str] = None
     avatar: Optional[str] = None
@@ -38,6 +63,7 @@ class UserInfoResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     """Login success token envelope."""
+
     session_token: str
     token_type: str = "access"
     expires_at: Optional[datetime] = None
@@ -46,6 +72,7 @@ class TokenResponse(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     """PATCH /auth/profile request — all fields optional."""
+
     nickname: Optional[str] = None
     avatar: Optional[str] = None
     bio: Optional[str] = None
@@ -58,6 +85,7 @@ class ProfileUpdateRequest(BaseModel):
 
 class ProfileResponse(BaseModel):
     """GET /auth/profile response."""
+
     uid: int
     email: Optional[str] = None
     email_verified: bool = False
@@ -80,22 +108,31 @@ class ProfileResponse(BaseModel):
 
 class PasswordSetRequest(BaseModel):
     """POST /auth/password/set request."""
+
     password: str
 
 
 class PasswordChangeRequest(BaseModel):
     """PATCH /auth/password request."""
+
     old_password: str
     new_password: str
 
 
 class EmailBindRequest(BaseModel):
     """PUT /auth/email request."""
+
     email: str
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email_value(cls, value: str) -> str:
+        return normalize_email(value)
 
 
 class PhoneBindRequest(BaseModel):
     """PUT /auth/phone request."""
+
     phone: str
 
 
@@ -104,9 +141,10 @@ class DeviceInfo(BaseModel):
     The backend derives device_id from request headers; this payload
     enriches the user_device record for human-readable management.
     """
-    device_type: Optional[str] = None         # desktop | mobile | tablet
-    device_name: Optional[str] = None         # "MacBook Pro" / "iPhone 15"
-    os: Optional[str] = None                  # parsed from user-agent or platform
+
+    device_type: Optional[str] = None  # desktop | mobile | tablet
+    device_name: Optional[str] = None  # "MacBook Pro" / "iPhone 15"
+    os: Optional[str] = None  # parsed from user-agent or platform
     os_version: Optional[str] = None
     browser: Optional[str] = None
     browser_version: Optional[str] = None
@@ -114,19 +152,45 @@ class DeviceInfo(BaseModel):
 
 class LoginRequest(BaseModel):
     """POST /auth/login request — email + password login."""
+
     email: str
     password: str
     device: Optional[DeviceInfo] = None
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email_value(cls, value: str) -> str:
+        return normalize_email(value)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not value:
+            raise ValueError("密码不能为空")
+        if len(value) > 1024:
+            raise ValueError("密码长度不合法")
+        return value
+
+
+class BilibiliBindingStatus(BaseModel):
+    bound: bool = False
+    valid: bool = False
+    mid: Optional[int] = None
+    nickname: Optional[str] = None
+    avatar: Optional[str] = None
+    message: str = "未绑定B站账号"
+
 
 class SecurityOverviewResponse(BaseModel):
     """GET /auth/security response."""
+
     email: Optional[str] = None
     email_verified: bool = False
     phone: Optional[str] = None
     phone_verified: bool = False
     has_password: bool = False
     oauth_bindings: list[dict] = []
+    bilibili: BilibiliBindingStatus = BilibiliBindingStatus()
 
     class Config:
         from_attributes = True

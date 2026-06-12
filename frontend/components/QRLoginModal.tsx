@@ -1,20 +1,23 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import Image from "next/image";
+import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { authApi, QRCodeResponse, UserInfo } from "@/lib/api";
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (sessionToken: string, user: UserInfo) => void;
+  mode?: "login" | "bind";
 }
 
-export default function QRLoginModal({ isOpen, onClose, onSuccess }: Props) {
+export default function QRLoginModal({ isOpen, onClose, onSuccess, mode = "login" }: Props) {
   const [qr, setQr] = useState<QRCodeResponse | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "scanned" | "success" | "error">("loading");
   const [polling, setPolling] = useState(false);
 
-  const getQR = async () => {
+  const getQR = useCallback(async () => {
     setStatus("loading");
     try {
       const data = await authApi.getQRCode();
@@ -24,18 +27,23 @@ export default function QRLoginModal({ isOpen, onClose, onSuccess }: Props) {
     } catch {
       setStatus("error");
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (isOpen) getQR();
-    else { setPolling(false); setQr(null); }
-  }, [isOpen]);
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      getQR();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, getQR]);
 
   useEffect(() => {
-    if (!polling || !qr) return;
+    if (!isOpen || !polling || !qr) return;
     const timer = setInterval(async () => {
       try {
-        const res = await authApi.pollQRCode(qr.qrcode_key);
+        const res = mode === "bind"
+          ? await authApi.pollQRCodeForBinding(qr.qrcode_key)
+          : await authApi.pollQRCode(qr.qrcode_key);
         if (res.status === "scanned") setStatus("scanned");
         else if (res.status === "confirmed") {
           setPolling(false);
@@ -46,17 +54,28 @@ export default function QRLoginModal({ isOpen, onClose, onSuccess }: Props) {
           setPolling(false);
           setStatus("error");
         }
-      } catch { }
+      } catch {
+        if (mode === "bind") {
+          setPolling(false);
+          setStatus("error");
+        }
+      }
     }, 2000);
     return () => clearInterval(timer);
-  }, [polling, qr, onSuccess]);
+  }, [isOpen, polling, qr, onSuccess, mode]);
 
-  if (!isOpen) return null;
+  const handleClose = () => {
+    setPolling(false);
+    setQr(null);
+    onClose();
+  };
 
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
+  if (!isOpen || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="modal-backdrop" onClick={handleClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">扫码登录</h2>
+        <h2 className="modal-title">{mode === "bind" ? "绑定B站账号" : "扫码登录"}</h2>
         <p className="modal-subtitle">使用哔哩哔哩 APP 扫描二维码</p>
 
         <div className="mt-4 flex justify-center">
@@ -68,7 +87,14 @@ export default function QRLoginModal({ isOpen, onClose, onSuccess }: Props) {
 
           {(status === "ready" || status === "scanned") && qr && (
             <div className="relative">
-              <img src={qr.qrcode_image_base64} alt="QR Code" className="w-48 h-48 rounded-2xl border border-[var(--border)]" />
+              <Image
+                src={qr.qrcode_image_base64}
+                alt="QR Code"
+                width={192}
+                height={192}
+                unoptimized
+                className="w-48 h-48 rounded-2xl border border-[var(--border)]"
+              />
               {status === "scanned" && (
                 <div className="absolute inset-0 bg-white/90 rounded-2xl flex flex-col items-center justify-center">
                   <div className="status-pill">已扫码</div>
@@ -93,6 +119,7 @@ export default function QRLoginModal({ isOpen, onClose, onSuccess }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -7,18 +7,25 @@ user_token / rbac_user_role). The legacy user_sessions table has been removed.
 
 import hashlib
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Request
+from fastapi import APIRouter, HTTPException, Depends, Header, Query, Request
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from app.database import get_db, get_db_context
+from app.infra.transaction import transactional_scope
 from app.response import (
-    LoginRequest, QRCodeResponse, LoginStatusResponse,
-    TokenResponse, UserInfoResponse,
-    ProfileUpdateRequest, ProfileResponse,
-    PasswordSetRequest, PasswordChangeRequest,
-    EmailBindRequest, PhoneBindRequest,
+    LoginRequest,
+    QRCodeResponse,
+    LoginStatusResponse,
+    TokenResponse,
+    UserInfoResponse,
+    ProfileUpdateRequest,
+    ProfileResponse,
+    PasswordSetRequest,
+    PasswordChangeRequest,
+    EmailBindRequest,
+    PhoneBindRequest,
     SecurityOverviewResponse,
 )
 from app.services.bilibili import BilibiliService
@@ -44,10 +51,12 @@ def _get_client_ip(request: Request) -> str:
         return real_ip.strip()
     return request.client.host if request.client else "unknown"
 
+
 router = APIRouter(prefix="/auth", tags=["认证"])
 
 
 # ── Token extraction ────────────────────────────────────────────
+
 
 async def get_session_token(
     authorization: Optional[str] = Header(None),
@@ -87,6 +96,7 @@ def _pop_qrcode_client(qrcode_key: str) -> BilibiliService | None:
     if client:
         # schedule close in background to avoid blocking
         import asyncio
+
         asyncio.ensure_future(client.close())
     return client
 
@@ -109,7 +119,9 @@ async def generate_qrcode():
         )
     except Exception as e:
         logger.exception("Failed to generate QR code")
-        raise HTTPException(status_code=500, detail=f"Failed to generate QR code: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate QR code: {str(e)}"
+        )
 
 
 @router.get("/qrcode/poll/{qrcode_key}", response_model=LoginStatusResponse)
@@ -117,6 +129,8 @@ async def poll_qrcode_status(
     qrcode_key: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
+    token_str: Optional[str] = Depends(get_session_token),
+    purpose: Optional[str] = Query(None),
 ):
     """
     Poll QR code scan status.
@@ -171,7 +185,9 @@ async def poll_qrcode_status(
                 # Use mid from get_user_info as authoritative source
                 api_mid = user_info.get("mid")
                 if api_mid and (not bili_mid or int(api_mid) != bili_mid):
-                    logger.info(f"[AUTH] corrected bili_mid from {bili_mid} to {api_mid}")
+                    logger.info(
+                        f"[AUTH] corrected bili_mid from {bili_mid} to {api_mid}"
+                    )
                     bili_mid = int(api_mid)
                     bili_mid_str = str(api_mid)
 
@@ -184,50 +200,84 @@ async def poll_qrcode_status(
 
             # Fatal if we still have no valid bili_mid
             if not bili_mid:
-                raise HTTPException(status_code=500, detail="Failed to identify Bilibili user")
+                raise HTTPException(
+                    status_code=500, detail="Failed to identify Bilibili user"
+                )
 
-            # ── New user system ──
             user_service = UserService(db, (await _get_sf()))
-            uid, user_token = await user_service.ensure_user_from_oauth(
-                provider="bilibili",
-                provider_uid=str(bili_mid),
-                provider_data={
-                    "access_token": cookies.get("SESSDATA"),
-                    "refresh_token": result.get("refresh_token"),
-                    "raw_data": str(user_info) if "user_info" in dir() else None,
-                },
-                profile=profile_data,
-                device_id=_get_device_id(request),
-                ip=_get_client_ip(request),
-                user_agent=request.headers.get("user-agent"),
-            )
-
-            # Build response
-            roles = await user_service.get_user_roles(uid)
-            response.session_id = user_token.session_token
-            response.user_info = {
-                "uid": uid,
-                "mid": bili_mid,
-                "uname": profile_data["nickname"],
-                "face": profile_data["avatar"],
-                "roles": roles,
-                "session_token": user_token.session_token,
+            provider_data = {
+                "access_token": cookies.get("SESSDATA"),
+                "refresh_token": result.get("refresh_token"),
+                "raw_data": str(user_info) if "user_info" in dir() else None,
             }
+            is_binding = purpose == "bind"
+            current_uid = await _validate_token(db, token_str) if token_str else None
+            if is_binding and not token_str:
+                raise HTTPException(status_code=401, detail="未提供认证 token")
+            if (is_binding or token_str) and current_uid is None:
+                raise HTTPException(status_code=401, detail="token 无效或已过期")
+
+            if current_uid is not None:
+                await user_service.bind_oauth_to_user(
+                    uid=current_uid,
+                    provider="bilibili",
+                    provider_uid=str(bili_mid),
+                    provider_data=provider_data,
+                    profile=profile_data,
+                )
+                roles = await user_service.get_user_roles(current_uid)
+                response.user_info = {
+                    "uid": current_uid,
+                    "mid": bili_mid,
+                    "uname": profile_data["nickname"],
+                    "face": profile_data["avatar"],
+                    "roles": roles,
+                }
+            else:
+                uid, user_token = await user_service.ensure_user_from_oauth(
+                    provider="bilibili",
+                    provider_uid=str(bili_mid),
+                    provider_data=provider_data,
+                    profile=profile_data,
+                    device_id=_get_device_id(request),
+                    ip=_get_client_ip(request),
+                    user_agent=request.headers.get("user-agent"),
+                )
+                roles = await user_service.get_user_roles(uid)
+                response.session_id = user_token.session_token
+                response.user_info = {
+                    "uid": uid,
+                    "mid": bili_mid,
+                    "uname": profile_data["nickname"],
+                    "face": profile_data["avatar"],
+                    "roles": roles,
+                    "session_token": user_token.session_token,
+                }
 
         # Clean up client on terminal states
         if result["status"] != "waiting":
             if _should_close:
                 # Fallback client — close it ourselves
                 import asyncio
+
                 asyncio.ensure_future(bili.close())
             else:
                 _pop_qrcode_client(qrcode_key)
 
         return response
 
+    except HTTPException:
+        if _should_close:
+            import asyncio
+
+            asyncio.ensure_future(bili.close())
+        else:
+            _pop_qrcode_client(qrcode_key)
+        raise
     except Exception as e:
         if _should_close:
             import asyncio
+
             asyncio.ensure_future(bili.close())
         else:
             _pop_qrcode_client(qrcode_key)
@@ -237,42 +287,52 @@ async def poll_qrcode_status(
 
 # ── Password login ──────────────────────────────────────────────
 
+
 @router.post("/login", response_model=TokenResponse)
 async def login_with_password(
     req: LoginRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
 ):
     """Login with email + password. Returns session token on success."""
-    user_service = UserService(db, (await _get_sf()))
+    device_id = _get_device_id(request)
+    ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent")
+
     try:
-        uid, user_token = await user_service.login_with_password(
-            req.email, req.password,
-            device_id=_get_device_id(request),
-            ip=_get_client_ip(request),
-            user_agent=request.headers.get("user-agent"),
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-    # Record rich device metadata (best-effort, non-blocking)
-    if req.device:
-        from app.repository.user_device_repository import get_user_device_repository
-        try:
-            await get_user_device_repository().upsert(
-                db, uid=uid, device_id=_get_device_id(request),
-                device_type=req.device.device_type,
-                device_name=req.device.device_name,
-                os=req.device.os,
-                os_version=req.device.os_version,
-                browser=req.device.browser,
-                browser_version=req.device.browser_version,
+        async with transactional_scope() as db:
+            user_service = UserService(db, (await _get_sf()))
+            uid, user_token = await user_service.login_with_password(
+                req.email,
+                req.password,
+                device_id=device_id,
+                ip=ip,
+                user_agent=user_agent,
             )
-        except Exception:
-            logger.exception("[AUTH] device enrich failed uid={}", uid)
+            info = await user_service.get_user_by_uid(uid)
+            roles = await user_service.get_user_roles(uid)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="邮箱或密码不正确")
 
-    info = await user_service.get_user_by_uid(uid)
-    roles = await user_service.get_user_roles(uid)
+    # Record device metadata after token commit (best-effort)
+    from app.repository.user_device_repository import get_user_device_repository
+
+    try:
+        async with transactional_scope() as db:
+            await get_user_device_repository().upsert(
+                db,
+                uid=uid,
+                device_id=device_id,
+                device_type=req.device.device_type if req.device else None,
+                device_name=req.device.device_name if req.device else None,
+                os=req.device.os if req.device else None,
+                os_version=req.device.os_version if req.device else None,
+                browser=req.device.browser if req.device else None,
+                browser_version=req.device.browser_version if req.device else None,
+                commit=False,
+            )
+    except Exception:
+        logger.exception("[AUTH] device record failed uid={}", uid)
+
     return TokenResponse(
         session_token=user_token.session_token,
         token_type="access",
@@ -289,6 +349,7 @@ async def login_with_password(
 
 # ── Current user ─────────────────────────────────────────────────
 
+
 @router.get("/me", response_model=UserInfoResponse)
 async def get_current_user(uid: int = Depends(get_current_uid)):
     """获取当前登录用户信息"""
@@ -301,6 +362,7 @@ async def get_current_user(uid: int = Depends(get_current_uid)):
 
 
 # ── Logout ──────────────────────────────────────────────────────
+
 
 @router.delete("/token")
 async def logout_current(
@@ -336,7 +398,7 @@ async def list_sessions(
     user_service = UserService(db, await _get_sf())
     tokens = await user_service.list_active_tokens(uid)
     for t in tokens:
-        t["is_current"] = (t["session_token"] == token_str)
+        t["is_current"] = t["session_token"] == token_str
     return {"sessions": tokens}
 
 
@@ -379,7 +441,8 @@ async def update_profile(
     """更新个人资料（全部字段 optional）"""
     user_service = UserService(db, await _get_sf())
     profile = await user_service.update_profile(
-        uid, **body.model_dump(exclude_none=True),
+        uid,
+        **body.model_dump(exclude_none=True),
     )
     if not profile:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -529,6 +592,7 @@ async def list_devices(
 ):
     """List known devices for the current user."""
     from app.repository.user_device_repository import get_user_device_repository
+
     repo = get_user_device_repository()
     devices = await repo.list_by_uid(uid, db)
     return {
@@ -542,7 +606,9 @@ async def list_devices(
                 "browser": d.browser,
                 "browser_version": d.browser_version,
                 "trust_level": d.trust_level,
-                "last_active_at": d.last_active_at.isoformat() if d.last_active_at else None,
+                "last_active_at": (
+                    d.last_active_at.isoformat() if d.last_active_at else None
+                ),
                 "created_at": d.created_at.isoformat() if d.created_at else None,
                 "is_current": False,
             }
@@ -567,8 +633,10 @@ async def get_security_info(
 
 # ── Internal helpers ─────────────────────────────────────────────
 
+
 async def _get_sf():
     from app.utils.snowflake import get_snowflake
+
     return await get_snowflake()
 
 
@@ -585,6 +653,7 @@ async def get_session(session_id: str) -> dict | None:
 
         from sqlalchemy import select
         from app.models import UserOAuth as UserOAuthModel
+
         oauth_result = await db.execute(
             select(UserOAuthModel).where(
                 UserOAuthModel.uid == uid,
@@ -605,7 +674,9 @@ async def get_session(session_id: str) -> dict | None:
                 "DedeUserID": oauth.provider_uid,
             },
             "user_info": {
-                "mid": int(oauth.provider_uid) if oauth.provider_uid.isdigit() else None,
+                "mid": (
+                    int(oauth.provider_uid) if oauth.provider_uid.isdigit() else None
+                ),
                 "uname": info.get("nickname") if info else None,
                 "face": info.get("avatar") if info else None,
             },
@@ -633,7 +704,9 @@ async def _get_bili_cookies_by_uid(uid: int, db) -> tuple:
 
     sessdata = _decrypt(oauth.access_token)
     if not sessdata:
-        raise HTTPException(status_code=401, detail="Failed to decrypt Bilibili session")
+        raise HTTPException(
+            status_code=401, detail="Failed to decrypt Bilibili session"
+        )
 
     bili_mid = int(oauth.provider_uid) if oauth.provider_uid.isdigit() else 0
     if not bili_mid:

@@ -18,7 +18,10 @@ class UserOAuthRepository:
     """Data access for the user_oauth table."""
 
     async def find_by_provider(
-        self, provider: str, provider_uid: str, db: AsyncSession,
+        self,
+        provider: str,
+        provider_uid: str,
+        db: AsyncSession,
     ) -> Optional[UserOAuth]:
         """Look up a non-deleted OAuth binding by (provider, provider_uid)."""
         result = await db.execute(
@@ -30,12 +33,31 @@ class UserOAuthRepository:
         )
         return result.scalar_one_or_none()
 
-    async def create(self, uid: int, db: AsyncSession, *,
-                     provider: str, provider_uid: str,
-                     access_token: Optional[str] = None,
-                     refresh_token: Optional[str] = None,
-                     expires_at=None, raw_data: Optional[str] = None,
-                     is_primary: bool = False) -> UserOAuth:
+    async def find_by_uid_provider(
+        self, uid: int, provider: str, db: AsyncSession
+    ) -> Optional[UserOAuth]:
+        result = await db.execute(
+            select(UserOAuth).where(
+                UserOAuth.uid == uid,
+                UserOAuth.provider == provider,
+                UserOAuth.deleted_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        uid: int,
+        db: AsyncSession,
+        *,
+        provider: str,
+        provider_uid: str,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        expires_at=None,
+        raw_data: Optional[str] = None,
+        is_primary: bool = False,
+    ) -> UserOAuth:
         record = UserOAuth(
             uid=uid,
             provider=provider,
@@ -53,9 +75,13 @@ class UserOAuthRepository:
         return record
 
     async def update_tokens(
-        self, record: UserOAuth, db: AsyncSession, *,
+        self,
+        record: UserOAuth,
+        db: AsyncSession,
+        *,
         access_token: Optional[str] = None,
-        refresh_token: Optional[str] = None, expires_at=None,
+        refresh_token: Optional[str] = None,
+        expires_at=None,
         raw_data: Optional[str] = None,
     ) -> UserOAuth:
         """Update token fields on an existing OAuth binding (partial update)."""
@@ -71,6 +97,27 @@ class UserOAuthRepository:
         await db.refresh(record)
         return record
 
+    async def update_binding(
+        self,
+        record: UserOAuth,
+        db: AsyncSession,
+        *,
+        provider_uid: str,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        expires_at=None,
+        raw_data: Optional[str] = None,
+    ) -> UserOAuth:
+        record.provider_uid = provider_uid
+        return await self.update_tokens(
+            record,
+            db,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            raw_data=raw_data,
+        )
+
     async def list_by_uid(self, uid: int, db: AsyncSession) -> list[UserOAuth]:
         """List all non-deleted OAuth bindings for a user."""
         result = await db.execute(
@@ -84,6 +131,7 @@ class UserOAuthRepository:
     async def count_by_uid(self, uid: int, db: AsyncSession) -> int:
         """Count non-deleted OAuth bindings for a user."""
         from sqlalchemy import func
+
         result = await db.execute(
             select(func.count()).where(
                 UserOAuth.uid == uid,
@@ -95,9 +143,12 @@ class UserOAuthRepository:
     async def soft_delete(self, record: UserOAuth, db: AsyncSession) -> None:
         """Mark an OAuth binding as unbound."""
         from datetime import datetime, timezone
+
         record.deleted_at = datetime.now(timezone.utc)
         await db.commit()
-        logger.info(f"[OAUTH_REPO] soft-deleted uid={record.uid} {record.provider}:{record.provider_uid}")
+        logger.info(
+            f"[OAUTH_REPO] soft-deleted uid={record.uid} {record.provider}:{record.provider_uid}"
+        )
 
 
 _oauth_repo: Optional[UserOAuthRepository] = None
