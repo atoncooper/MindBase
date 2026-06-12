@@ -148,7 +148,7 @@ class AgentHarness:
         self._started = True
 
         logger.info(
-            "[HARNESS] started tools={} agents={} schedulers={}",
+            "[HARNESS] started tools=%s agents=%s schedulers=%s",
             len(self._registry.list()),
             self._lifecycle.registered_agents,
             list(self._agent_configs.keys()),
@@ -184,7 +184,7 @@ class AgentHarness:
                     )
                     if cleaned:
                         logger.info(
-                            "[HARNESS] cleanup removed {} expired sessions", cleaned
+                            "[HARNESS] cleanup removed %s expired sessions", cleaned
                         )
                 except Exception:
                     logger.exception("[HARNESS] cleanup error")
@@ -257,7 +257,7 @@ class AgentHarness:
         """
         agent_name = await self._orchestrator.route(query, **input)
         logger.info(
-            "[HARNESS] dispatch: query='{}' → agent='{}'",
+            "[HARNESS] dispatch: query='%s' → agent='%s'",
             query[:60],
             agent_name,
         )
@@ -291,7 +291,7 @@ class AgentHarness:
         """
         agent_name = await self._orchestrator.route(query, **input)
         logger.info(
-            "[HARNESS] dispatch_stream: query='{}' → agent='{}'",
+            "[HARNESS] dispatch_stream: query='%s' → agent='%s'",
             query[:60],
             agent_name,
         )
@@ -349,7 +349,7 @@ class AgentHarness:
         # ── Inter-agent delegation tool ──────────────────────────────
         self._registry.register(DelegateToAgentTool(self._lifecycle))
 
-        logger.info("[HARNESS] registered {} tools", len(self._registry.list()))
+        logger.info("[HARNESS] registered %s tools", len(self._registry.list()))
 
     def _register_agents(self) -> None:
         """Register all agents with the lifecycle manager."""

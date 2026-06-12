@@ -46,6 +46,7 @@ from .models import ConversationMessage
 from .store_mongo import _mongo_doc_to_message
 
 if TYPE_CHECKING:
+    from .cache import CachedSummary
     from .compressor import CompressionResult
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ DEFAULT_GREP_LIMIT = 200
 async def _cache_get(chat_session_id: str) -> "CachedSummary | None":
     """Read compressed summary from Redis.  Returns None on any failure."""
     from .cache import get_cached
+
     return await get_cached(chat_session_id)
 
 
@@ -66,6 +68,7 @@ async def _cache_set(
 ) -> None:
     """Write compressed summary to Redis (best-effort)."""
     from .cache import set_cached
+
     await set_cached(chat_session_id, result, ttl=ttl)
 
 
@@ -149,7 +152,7 @@ class ContextRetriever:
         docs.reverse()
         messages = [_mongo_doc_to_message(d) for d in docs]
         logger.debug(
-            "[RETRIEVER] recent session={} count={}",
+            "[RETRIEVER] recent session=%s count=%s",
             chat_session_id,
             len(messages),
         )
@@ -189,12 +192,10 @@ class ContextRetriever:
             # Validate regex before sending to MongoDB
             re.compile(pattern)
         except re.error as exc:
-            logger.warning("[RETRIEVER] invalid regex pattern={} err={}", pattern, exc)
+            logger.warning("[RETRIEVER] invalid regex pattern=%s err=%s", pattern, exc)
             # Fall back to literal substring match
             pattern = re.escape(pattern)
 
-        regex_flags = 0 if case_sensitive else re.IGNORECASE
-        # MongoDB $regex uses the same flag values as Python's re module
         mongo_flags = "" if case_sensitive else "i"
 
         cursor = (
@@ -213,7 +214,7 @@ class ContextRetriever:
 
         messages = [_mongo_doc_to_message(d) for d in docs]
         logger.debug(
-            "[RETRIEVER] grep session={} pattern={} count={}",
+            "[RETRIEVER] grep session=%s pattern=%s count=%s",
             chat_session_id,
             pattern[:80],
             len(messages),
@@ -276,7 +277,7 @@ class ContextRetriever:
         results = _deduplicate(results)
 
         logger.info(
-            "[RETRIEVER] retrieve session={} total={} pattern={}",
+            "[RETRIEVER] retrieve session=%s total=%s pattern=%s",
             chat_session_id,
             len(results),
             pattern,
@@ -326,7 +327,7 @@ class ContextRetriever:
             cached = await _cache_get(chat_session_id)
             if cached is not None:
                 logger.info(
-                    "[RETRIEVER] cache-hit session={} summary_len={}",
+                    "[RETRIEVER] cache-hit session=%s summary_len=%s",
                     chat_session_id,
                     len(cached.summary) if cached.summary else 0,
                 )
@@ -345,7 +346,7 @@ class ContextRetriever:
         )
 
         if not messages:
-            logger.info("[RETRIEVER] no messages for session={}", chat_session_id)
+            logger.info("[RETRIEVER] no messages for session=%s", chat_session_id)
             return CompressionResult(
                 summary=compressor.summary,
                 kept_messages=[],
@@ -359,8 +360,8 @@ class ContextRetriever:
             await _cache_set(chat_session_id, result, ttl=cache_ttl)
 
         logger.info(
-            "[RETRIEVER] compress done session={} input={} compressed={} "
-            "kept={} has_summary={}",
+            "[RETRIEVER] compress done session=%s input=%s compressed=%s "
+            "kept=%s has_summary=%s",
             chat_session_id,
             len(messages),
             result.compressed_count,

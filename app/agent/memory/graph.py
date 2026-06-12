@@ -24,7 +24,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.graph import END, StateGraph
 
 from app.agent.lifecycle.circuit import CircuitBreaker
@@ -76,7 +81,7 @@ async def inject_window(state: AgentState) -> dict[str, Any]:
     user = HumanMessage(content=state.query)
 
     logger.info(
-        "[MEM_AGENT] inject_window query={} window_size={} target={}",
+        "[MEM_AGENT] inject_window query=%s window_size=%s target=%s",
         state.query[:80],
         len(state.search_window),
         state.target_agent,
@@ -159,7 +164,7 @@ async def update_window(state: AgentState) -> dict[str, Any]:
     updated = push_search_window(state.search_window, entry)
 
     logger.debug(
-        "[MEM_AGENT] update_window query={} window_size={}",
+        "[MEM_AGENT] update_window query=%s window_size=%s",
         state.query[:80],
         len(updated),
     )
@@ -171,13 +176,18 @@ async def error_node(state: AgentState) -> dict[str, Any]:
     category = classify_error(state.error)
 
     logger.error(
-        "[MEM_AGENT] error_node node={} error={} category={} retry={}/{}",
-        state.failed_node, state.error, category.value,
-        state.retry_count, state.max_retries,
+        "[MEM_AGENT] error_node node=%s error=%s category=%s retry=%s/%s",
+        state.failed_node,
+        state.error,
+        category.value,
+        state.retry_count,
+        state.max_retries,
     )
 
     if category is ErrorCategory.FATAL:
-        logger.critical("[MEM_AGENT] fatal error in {}: {}", state.failed_node, state.error)
+        logger.critical(
+            "[MEM_AGENT] fatal error in %s: %s", state.failed_node, state.error
+        )
         return build_fallback(state)
 
     if category is ErrorCategory.RETRYABLE and state.retry_count < state.max_retries:
@@ -294,11 +304,13 @@ def build_memory_agent(
     graph.set_entry_point("inject_window")
 
     graph.add_conditional_edges(
-        "inject_window", route_after_inject,
+        "inject_window",
+        route_after_inject,
         {"error_node": "error_node", "agent": "agent"},
     )
     graph.add_conditional_edges(
-        "agent", route_after_agent,
+        "agent",
+        route_after_agent,
         {
             "error_node": "error_node",
             "runtime_dispatch": "runtime_dispatch",
@@ -306,11 +318,13 @@ def build_memory_agent(
         },
     )
     graph.add_conditional_edges(
-        "runtime_dispatch", route_after_dispatch,
+        "runtime_dispatch",
+        route_after_dispatch,
         {"error_node": "error_node", "agent": "agent"},
     )
     graph.add_conditional_edges(
-        "error_node", route_after_error,
+        "error_node",
+        route_after_error,
         {
             "inject_window": "inject_window",
             "agent": "agent",

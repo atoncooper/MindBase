@@ -7,7 +7,6 @@ metrics, tracing, logging, or audit trails without touching agent code.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -55,18 +54,29 @@ class LifecycleHookRegistry:
             try:
                 fn(**kwargs)
             except Exception as exc:
-                logger.warning("[HOOK] {} callback failed: {}", event, exc)
+                logger.warning("[HOOK] %s callback failed: %s", event, exc)
 
     # ── convenience emitters ──────────────────────────────────────────
 
     def on_invoke_start(self, session_id: str, agent_name: str, **input: Any) -> None:
-        self.emit("on_invoke_start", session_id=session_id, agent_name=agent_name, input=input)
+        self.emit(
+            "on_invoke_start", session_id=session_id, agent_name=agent_name, input=input
+        )
 
-    def on_invoke_end(self, session_id: str, agent_name: str, duration_ms: float) -> None:
-        self.emit("on_invoke_end", session_id=session_id, agent_name=agent_name, duration_ms=duration_ms)
+    def on_invoke_end(
+        self, session_id: str, agent_name: str, duration_ms: float
+    ) -> None:
+        self.emit(
+            "on_invoke_end",
+            session_id=session_id,
+            agent_name=agent_name,
+            duration_ms=duration_ms,
+        )
 
     def on_invoke_error(self, session_id: str, agent_name: str, error: str) -> None:
-        self.emit("on_invoke_error", session_id=session_id, agent_name=agent_name, error=error)
+        self.emit(
+            "on_invoke_error", session_id=session_id, agent_name=agent_name, error=error
+        )
 
     def on_session_created(self, session_id: str) -> None:
         self.emit("on_session_created", session_id=session_id)

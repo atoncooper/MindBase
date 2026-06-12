@@ -64,6 +64,7 @@ class FifoQueue(QueueProtocol):
 @dataclass(frozen=True)
 class AgentRetryConfig:
     """Retry policy for failed agent invocations."""
+
     max_retries: int = 2
     backoff_base: float = 1.0
     backoff_max: float = 30.0
@@ -72,6 +73,7 @@ class AgentRetryConfig:
 @dataclass(frozen=True)
 class AgentConfig:
     """Per-agent-type scheduling configuration."""
+
     max_concurrent: int = 1
     max_queue: int = 50
     retry: AgentRetryConfig | None = None
@@ -80,6 +82,7 @@ class AgentConfig:
 @dataclass
 class InvocationTicket:
     """One queued or scheduled invocation."""
+
     job_id: str
     agent_name: str
     session_id: str
@@ -98,6 +101,7 @@ class InvocationTicket:
 @dataclass
 class AgentSlot:
     """Per-agent-type runtime state."""
+
     semaphore: asyncio.Semaphore
     queue: QueueProtocol
     worker_task: asyncio.Task | None = None
@@ -146,7 +150,8 @@ class AgentScheduler:
                 self._drain_queue(name), name=f"agent-{name}"
             )
         logger.info(
-            "[AGENT_SCHED] started workers={}", list(self._slots.keys()),
+            "[AGENT_SCHED] started workers=%s",
+            list(self._slots.keys()),
         )
 
     async def shutdown(self) -> None:
@@ -188,8 +193,10 @@ class AgentScheduler:
             config=config,
         )
         logger.info(
-            "[AGENT_SCHED] config {} concurrent={} queue={}",
-            agent_name, config.max_concurrent, config.max_queue,
+            "[AGENT_SCHED] config %s concurrent=%s queue=%s",
+            agent_name,
+            config.max_concurrent,
+            config.max_queue,
         )
 
     # ── invoke ───────────────────────────────────────────────────────
@@ -233,8 +240,11 @@ class AgentScheduler:
             self._scheduled[ticket.job_id] = task
             task.add_done_callback(lambda _: self._scheduled.pop(ticket.job_id, None))
             logger.debug(
-                "[AGENT_SCHED] scheduled {}/{} job={} at=%.1f",
-                agent_name, session_id, ticket.job_id, fire_at,
+                "[AGENT_SCHED] scheduled %s/%s job=%s at=%.1f",
+                agent_name,
+                session_id,
+                ticket.job_id,
+                fire_at,
             )
             return {"scheduled": True, "job_id": ticket.job_id}
 
@@ -247,8 +257,10 @@ class AgentScheduler:
             await slot.queue.put(ticket)
         except asyncio.QueueFull:
             logger.warning(
-                "[AGENT_SCHED] queue full {}/{} limit={}",
-                agent_name, session_id, slot.config.max_queue,
+                "[AGENT_SCHED] queue full %s/%s limit=%s",
+                agent_name,
+                session_id,
+                slot.config.max_queue,
             )
             return {"error": "queue full, try again later"}
 
@@ -271,14 +283,16 @@ class AgentScheduler:
         task = self._scheduled.get(job_id)
         if task is not None and not task.done():
             task.cancel()
-            logger.debug("[AGENT_SCHED] cancelled scheduled job={}", job_id)
+            logger.debug("[AGENT_SCHED] cancelled scheduled job=%s", job_id)
             return True
 
         # Check queues — O(n) per agent type. Acceptable for small queues.
         for name, slot in self._slots.items():
             cancelled = await self._cancel_in_queue(slot, job_id)
             if cancelled:
-                logger.debug("[AGENT_SCHED] cancelled queued job={} agent={}", job_id, name)
+                logger.debug(
+                    "[AGENT_SCHED] cancelled queued job=%s agent=%s", job_id, name
+                )
                 return True
 
         return False
@@ -318,12 +332,13 @@ class AgentScheduler:
                 ok = agent_name in h.get("registered_agents", [])
                 if not ok:
                     logger.warning(
-                        "[AGENT_SCHED] health {}: not registered", agent_name,
+                        "[AGENT_SCHED] health %s: not registered",
+                        agent_name,
                     )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.warning("[AGENT_SCHED] health {}: {}", agent_name, exc)
+                logger.warning("[AGENT_SCHED] health %s: %s", agent_name, exc)
 
     # ── stats / health ───────────────────────────────────────────────
 
@@ -381,8 +396,9 @@ class AgentScheduler:
             await slot.queue.put(ticket)
         except asyncio.QueueFull:
             logger.warning(
-                "[AGENT_SCHED] queue full on schedule {}/{}",
-                ticket.agent_name, ticket.session_id,
+                "[AGENT_SCHED] queue full on schedule %s/%s",
+                ticket.agent_name,
+                ticket.session_id,
             )
             return
 
@@ -397,7 +413,7 @@ class AgentScheduler:
         if slot is None:
             return
 
-        logger.debug("[AGENT_SCHED] worker started agent={}", agent_name)
+        logger.debug("[AGENT_SCHED] worker started agent=%s", agent_name)
 
         while self._running:
             try:
@@ -429,7 +445,7 @@ class AgentScheduler:
                 ticket.event.set()
                 slot.active -= 1
 
-        logger.debug("[AGENT_SCHED] worker stopped agent={}", agent_name)
+        logger.debug("[AGENT_SCHED] worker stopped agent=%s", agent_name)
 
     async def _execute_with_retry(
         self,
@@ -462,18 +478,23 @@ class AgentScheduler:
                         retry_cfg.backoff_max,
                     )
                     logger.warning(
-                        "[AGENT_SCHED] retry {}/{} attempt={}/{} "
-                        "error={} backoff=%.1fs",
-                        ticket.agent_name, ticket.session_id,
-                        attempt + 1, retry_cfg.max_retries,
-                        error_msg, delay,
+                        "[AGENT_SCHED] retry %s/%s attempt=%s/%s "
+                        "error=%s backoff=%.1fs",
+                        ticket.agent_name,
+                        ticket.session_id,
+                        attempt + 1,
+                        retry_cfg.max_retries,
+                        error_msg,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     continue
 
                 ticket.error = error_msg
                 logger.error(
-                    "[AGENT_SCHED] failed {}/{} (final) error={}",
-                    ticket.agent_name, ticket.session_id, error_msg,
+                    "[AGENT_SCHED] failed %s/%s (final) error=%s",
+                    ticket.agent_name,
+                    ticket.session_id,
+                    error_msg,
                 )
                 return {"error": error_msg}

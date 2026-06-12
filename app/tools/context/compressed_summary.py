@@ -42,7 +42,7 @@ class GetCompressedSummaryTool:
     async def run(self, chat_session_id: str, **kwargs: Any) -> str:
         from app.context.cache import get_cached
 
-        logger.info("[CTX_TOOL] get_compressed_summary session={}", chat_session_id)
+        logger.info("[CTX_TOOL] get_compressed_summary session=%s", chat_session_id)
 
         try:
             cached = await get_cached(chat_session_id)
@@ -50,5 +50,5 @@ class GetCompressedSummaryTool:
                 return "【历史记忆 — Redis缓存】\n\n" + cached.summary
             return "未找到对话历史的压缩摘要。"
         except Exception as exc:
-            logger.warning("[CTX_TOOL] get_compressed_summary failed: {}", exc)
+            logger.warning("[CTX_TOOL] get_compressed_summary failed: %s", exc)
             return "无法获取压缩摘要。"

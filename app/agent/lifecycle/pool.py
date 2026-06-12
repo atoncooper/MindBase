@@ -36,14 +36,14 @@ class AgentPool:
         key = (agent_type, session_id)
         if key not in self._instances:
             self._instances[key] = factory()
-            logger.debug("[POOL] created {}/{}", agent_type, session_id)
+            logger.debug("[POOL] created %s/%s", agent_type, session_id)
         return self._instances[key]
 
     def release(self, agent_type: str, session_id: str) -> None:
         """Remove a specific agent instance from the pool."""
         key = (agent_type, session_id)
         self._instances.pop(key, None)
-        logger.debug("[POOL] released {}/{}", agent_type, session_id)
+        logger.debug("[POOL] released %s/%s", agent_type, session_id)
 
     def release_session(self, session_id: str) -> int:
         """Release all agent instances for a given session."""
@@ -51,7 +51,9 @@ class AgentPool:
         for k in keys:
             self._instances.pop(k, None)
         if keys:
-            logger.debug("[POOL] released session {} ({} agents)", session_id, len(keys))
+            logger.debug(
+                "[POOL] released session %s (%s agents)", session_id, len(keys)
+            )
         return len(keys)
 
     def release_all(self) -> int:
@@ -59,7 +61,7 @@ class AgentPool:
         count = len(self._instances)
         self._instances.clear()
         if count:
-            logger.info("[POOL] released all {} instances", count)
+            logger.info("[POOL] released all %s instances", count)
         return count
 
     @property

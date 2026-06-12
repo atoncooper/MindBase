@@ -61,7 +61,8 @@ class VectorSearchTool:
         docs = await loop.run_in_executor(
             None,
             self._rag.search,
-            query, k,
+            query,
+            k,
             bvids if bvids else None,
             workspace_pages,
             uid,
@@ -91,7 +92,11 @@ def _format_docs(docs: list[Document], per_video_k: int = 3) -> str:
         for doc in sorted_group[:per_video_k]:
             meta = doc.metadata if hasattr(doc, "metadata") else {}
             title = meta.get("title", "未知标题")
-            content = doc.page_content.strip() if hasattr(doc, "page_content") else str(doc).strip()
+            content = (
+                doc.page_content.strip()
+                if hasattr(doc, "page_content")
+                else str(doc).strip()
+            )
             score = meta.get("score", 0)
             if content:
                 parts.append(f"【{title}】(相关度: {score:.2f})\n{content}")

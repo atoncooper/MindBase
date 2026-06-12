@@ -38,6 +38,7 @@ def _redis_ok() -> bool:
     """Return True if Redis is ready.  Handles import errors gracefully."""
     try:
         from app.infra.redis import is_enabled
+
         return is_enabled()
     except Exception:
         return False
@@ -45,6 +46,7 @@ def _redis_ok() -> bool:
 
 def _cache_key(chat_session_id: str) -> str:
     from app.infra.redis import k as _rk
+
     return _rk(_NS, "compressed", chat_session_id)
 
 
@@ -69,6 +71,7 @@ async def get_cached(chat_session_id: str) -> CachedSummary | None:
         return None
     try:
         from app.infra.redis import jget
+
         raw = await jget(_cache_key(chat_session_id))
     except Exception:
         logger.warning("[CTX_CACHE] get failed", exc_info=True)
@@ -103,9 +106,10 @@ async def set_cached(
     }
     try:
         from app.infra.redis import jset
+
         await jset(_cache_key(chat_session_id), payload, ex=ttl)
         logger.debug(
-            "[CTX_CACHE] set session={} ttl={}s summary_len={}",
+            "[CTX_CACHE] set session=%s ttl=%ss summary_len=%s",
             chat_session_id,
             ttl,
             len(result.summary) if result.summary else 0,
@@ -128,7 +132,7 @@ async def invalidate(chat_session_id: str) -> bool:
             return False
         deleted = await _redis.delete(_cache_key(chat_session_id))
         if deleted:
-            logger.debug("[CTX_CACHE] invalidated session={}", chat_session_id)
+            logger.debug("[CTX_CACHE] invalidated session=%s", chat_session_id)
         return bool(deleted)
     except Exception:
         logger.warning("[CTX_CACHE] invalidate failed", exc_info=True)

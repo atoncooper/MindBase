@@ -36,7 +36,9 @@ class ConversationStore(ABC):
         """Append a single message to an existing session context."""
 
     @abstractmethod
-    async def append_batch(self, session_id: str, messages: list[ConversationMessage]) -> None:
+    async def append_batch(
+        self, session_id: str, messages: list[ConversationMessage]
+    ) -> None:
         """Append multiple messages atomically in a single lock acquisition."""
 
     @abstractmethod
@@ -101,7 +103,10 @@ class InMemoryStore(ConversationStore):
     async def save(self, session_id: str, context: ConversationContext) -> None:
         lock = await self._get_lock(session_id)
         async with lock:
-            if self._config.max_sessions > 0 and len(self._store) >= self._config.max_sessions:
+            if (
+                self._config.max_sessions > 0
+                and len(self._store) >= self._config.max_sessions
+            ):
                 if session_id not in self._store:
                     await self._evict_lru()
             self._store[session_id] = context
@@ -117,7 +122,9 @@ class InMemoryStore(ConversationStore):
             ctx.messages.append(message)
             ctx.touch()
 
-    async def append_batch(self, session_id: str, messages: list[ConversationMessage]) -> None:
+    async def append_batch(
+        self, session_id: str, messages: list[ConversationMessage]
+    ) -> None:
         lock = await self._get_lock(session_id)
         async with lock:
             ctx = self._store.get(session_id)
@@ -161,12 +168,14 @@ class InMemoryStore(ConversationStore):
         for sid in expired_ids:
             lock = await self._get_lock(sid)
             async with lock:
-                if sid in self._store and self._is_expired(self._store[sid], ttl_seconds):
+                if sid in self._store and self._is_expired(
+                    self._store[sid], ttl_seconds
+                ):
                     self._store.pop(sid, None)
                     self._cleanup_lock(sid)
                     removed += 1
         if removed:
-            logger.info("cleanup_expired removed={} sessions", removed)
+            logger.info("cleanup_expired removed=%s sessions", removed)
         return removed
 
     # ------------------------------------------------------------------
@@ -193,4 +202,4 @@ class InMemoryStore(ConversationStore):
         async with lock:
             self._store.pop(lru_id, None)
             self._cleanup_lock(lru_id)
-        logger.info("evicted LRU session={}", lru_id)
+        logger.info("evicted LRU session=%s", lru_id)

@@ -10,7 +10,7 @@ from typing import Optional
 from loguru import logger
 from langchain_openai import ChatOpenAI
 
-from app.agent.quiz import EssayGradingOutput, EssayStepScore, grade_essay
+from app.agent.quiz import grade_essay
 from app.config import settings
 from app.database import get_db_context
 from app.services.quiz_generator import get_quiz_set, get_quiz_questions_full

@@ -79,7 +79,11 @@ class DBChatDeps:
         return ""
 
     async def get_video_context(
-        self, media_ids: list[int], *, include_content: bool = False, limit: int | None = 50,
+        self,
+        media_ids: list[int],
+        *,
+        include_content: bool = False,
+        limit: int | None = 50,
     ) -> tuple[str, list[dict]]:
         if not media_ids:
             return "", []
@@ -121,7 +125,9 @@ class DBChatDeps:
                 seen_bvids.add(bvid)
                 sources.append({"bvid": bvid, "title": title})
 
-            parts = [f"【{name}】\n" + "\n".join(vids) for name, vids in grouped.items()]
+            parts = [
+                f"【{name}】\n" + "\n".join(vids) for name, vids in grouped.items()
+            ]
             return "\n\n".join(parts), sources
 
     async def get_video_titles_context(self, media_ids: list[int]) -> str:
@@ -154,9 +160,13 @@ class DBChatDeps:
                 folder_name = folder_title or "默认收藏夹"
                 grouped.setdefault(folder_name, []).append(f"- 《{title}》")
 
-            parts = [f"【{name}】\n" + "\n".join(vids) for name, vids in grouped.items()]
+            parts = [
+                f"【{name}】\n" + "\n".join(vids) for name, vids in grouped.items()
+            ]
             return "\n\n".join(parts)
 
-    async def is_related_to_collection(self, media_ids: list[int], question: str) -> bool:
+    async def is_related_to_collection(
+        self, media_ids: list[int], question: str
+    ) -> bool:
         # Heuristic: if we have media_ids, the question is likely related
         return bool(media_ids)

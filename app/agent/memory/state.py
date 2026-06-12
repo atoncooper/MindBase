@@ -14,7 +14,6 @@ from __future__ import annotations
 import time
 from typing import Annotated
 
-from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
@@ -44,7 +43,9 @@ def format_search_window(entries: list[dict]) -> str:
         preview = e.get("result_preview", "")[:200]
         lines.append(f"{i}. [{ts}] 查询: {e['query']}")
         if preview:
-            lines.append(f"   结果: {preview}…" if len(preview) >= 200 else f"   结果: {preview}")
+            lines.append(
+                f"   结果: {preview}…" if len(preview) >= 200 else f"   结果: {preview}"
+            )
         if tools:
             lines.append(f"   工具: {tools}")
     return "\n".join(lines)
@@ -91,7 +92,9 @@ class AgentState(BaseModel):
     )
 
     # ── output ────────────────────────────────────────────────────────
-    result: str = Field(default="", description="Retrieval result returned to the caller.")
+    result: str = Field(
+        default="", description="Retrieval result returned to the caller."
+    )
 
     # ── error handling ────────────────────────────────────────────────
     error: str = Field(default="", description="Error message, set on node failure.")

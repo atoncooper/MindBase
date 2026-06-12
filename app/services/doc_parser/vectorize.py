@@ -49,7 +49,7 @@ async def vectorize_cloud_document(
 
     if not file.vectorizable:
         logger.info(
-            "[VECTORIZE] file {} not vectorizable (mime={}), skipping",
+            "[VECTORIZE] file %s not vectorizable (mime=%s), skipping",
             upload_uuid,
             file.mime_type,
         )
@@ -66,7 +66,7 @@ async def vectorize_cloud_document(
 
         if len(content_bytes) > MAX_DOC_SIZE:
             logger.warning(
-                "[VECTORIZE] file {} too large ({} bytes > {}), marking non-vectorizable",
+                "[VECTORIZE] file %s too large (%s bytes > %s), marking non-vectorizable",
                 upload_uuid,
                 len(content_bytes),
                 MAX_DOC_SIZE,
@@ -80,7 +80,7 @@ async def vectorize_cloud_document(
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         if file.vector_status == "done" and file.content_hash == content_hash:
             logger.info(
-                "[VECTORIZE] file {} already vectorized, content unchanged", upload_uuid
+                "[VECTORIZE] file %s already vectorized, content unchanged", upload_uuid
             )
             return file.vector_chunk_count or 0
 
@@ -157,7 +157,7 @@ async def vectorize_cloud_document(
         file.vector_chunk_count = chunk_count
         await db.commit()
         logger.info(
-            "[VECTORIZE] file {} done: {} chunks (3-layer verified)",
+            "[VECTORIZE] file %s done: %s chunks (3-layer verified)",
             upload_uuid,
             chunk_count,
         )
@@ -165,7 +165,7 @@ async def vectorize_cloud_document(
         return chunk_count
 
     except Exception as e:
-        logger.exception("[VECTORIZE] pipeline failed for {}", upload_uuid)
+        logger.exception("[VECTORIZE] pipeline failed for %s", upload_uuid)
         file.vector_status = "failed"
         await db.commit()
         await _push_status(uid, upload_uuid, "failed", 0, error=str(e))
@@ -255,7 +255,7 @@ async def _verify_consistency(
         )
         ok_mongo = doc is not None
         if not ok_mongo:
-            logger.error("[VERIFY] MongoDB missing for {}", upload_uuid)
+            logger.error("[VERIFY] MongoDB missing for %s", upload_uuid)
 
     # 2. Milvus
     from app.services.rag import get_rag_service
@@ -266,7 +266,7 @@ async def _verify_consistency(
         ok_milvus = actual >= expected_chunks
         if not ok_milvus:
             logger.error(
-                "[VERIFY] Milvus mismatch for {}: expected={} actual={}",
+                "[VERIFY] Milvus mismatch for %s: expected=%s actual=%s",
                 upload_uuid,
                 expected_chunks,
                 actual,
@@ -278,11 +278,11 @@ async def _verify_consistency(
     if file is not None:
         ok_mysql = file.doc_parser is not None
         if not ok_mysql:
-            logger.error("[VERIFY] MySQL doc_parser not set for {}", upload_uuid)
+            logger.error("[VERIFY] MySQL doc_parser not set for %s", upload_uuid)
 
     result = ok_mongo and ok_milvus and ok_mysql
     logger.info(
-        "[VERIFY] {} mongo={} milvus={} mysql={} → {}",
+        "[VERIFY] %s mongo=%s milvus=%s mysql=%s → %s",
         upload_uuid,
         ok_mongo,
         ok_milvus,

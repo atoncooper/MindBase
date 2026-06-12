@@ -13,9 +13,7 @@ from sqlalchemy import select
 from langchain_openai import ChatOpenAI
 
 from app.agent.quiz import (
-    QuizBatchOutput,
-    QuizQuestionOutput,
-    QuizRubricItemOutput,
+    QuizBatchOutput as QuizBatchOutput,
     generate_batch,
     generate_questions,
     validate_question,

@@ -9,7 +9,7 @@ from app.agent.chat import build_chat_agent, ChatAgentState
 from app.agent.chat.prompts import build_system_prompt
 from app.agent.chat.error_handling import classify_error, ErrorCategory
 from app.agent.chat.graph import runtime_dispatch
-from app.tools.chat import VectorSearchTool, ListVideosTool, GetVideoSummariesTool
+from app.tools.chat import VectorSearchTool, ListVideosTool
 from app.tools.registry import ToolRegistry
 from app.harness.runtime import AgentRuntime
 
@@ -20,8 +20,15 @@ from app.harness.runtime import AgentRuntime
 
 
 class MockDeps:
-    def __init__(self, *, media_ids=None, bvids=None, cloud=False,
-                 video_context=("", []), titles_context=""):
+    def __init__(
+        self,
+        *,
+        media_ids=None,
+        bvids=None,
+        cloud=False,
+        video_context=("", []),
+        titles_context="",
+    ):
         self._media_ids = media_ids or [123]
         self._bvids = bvids or ["BV1xx"]
         self._cloud = cloud
@@ -130,20 +137,26 @@ class TestBuildSystemPrompt:
 
 
 class TestErrorClassification:
-    @pytest.mark.parametrize("msg", [
-        "connection timeout",
-        "rate limit exceeded",
-        "502 bad gateway",
-        "service unavailable",
-    ])
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "connection timeout",
+            "rate limit exceeded",
+            "502 bad gateway",
+            "service unavailable",
+        ],
+    )
     def test_retryable(self, msg):
         assert classify_error(msg) == ErrorCategory.RETRYABLE
 
-    @pytest.mark.parametrize("msg", [
-        "invalid api key",
-        "authentication failed",
-        "permission denied",
-    ])
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "invalid api key",
+            "authentication failed",
+            "permission denied",
+        ],
+    )
     def test_fatal(self, msg):
         assert classify_error(msg) == ErrorCategory.FATAL
 
@@ -161,7 +174,9 @@ class TestReActDirectAnswer:
     async def test_llm_answers_without_tools(self):
         """LLM decides to answer directly without calling any tools."""
         _, runtime, llm = _make_runtime_and_llm()
-        llm.ainvoke = AsyncMock(return_value=AIMessage(content="你好！我是你的知识库助手。"))
+        llm.ainvoke = AsyncMock(
+            return_value=AIMessage(content="你好！我是你的知识库助手。")
+        )
 
         agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps())
         result = await agent.ainvoke({"query": "你好", "uid": 1})
@@ -179,20 +194,32 @@ class TestReActToolCall:
     async def test_llm_calls_vector_search_then_answers(self):
         """LLM calls vector_search, gets results, then answers."""
         mock_rag = MagicMock()
-        mock_rag.search = MagicMock(return_value=[
-            Document(page_content="哲学是关于世界观的学问", metadata={"bvid": "BV1xx", "title": "哲学入门", "score": 0.9})
-        ])
+        mock_rag.search = MagicMock(
+            return_value=[
+                Document(
+                    page_content="哲学是关于世界观的学问",
+                    metadata={"bvid": "BV1xx", "title": "哲学入门", "score": 0.9},
+                )
+            ]
+        )
 
         _, runtime, llm = _make_runtime_and_llm(tools=[VectorSearchTool(mock_rag)])
 
         call_count = 0
+
         async def mock_invoke(messages, **kw):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return AIMessage(
                     content="",
-                    tool_calls=[{"id": "tc1", "name": "vector_search", "args": {"query": "中国哲学"}}],
+                    tool_calls=[
+                        {
+                            "id": "tc1",
+                            "name": "vector_search",
+                            "args": {"query": "中国哲学"},
+                        }
+                    ],
                 )
             return AIMessage(content="根据检索结果，中国哲学的核心观点包括...")
 
@@ -214,6 +241,7 @@ class TestReActToolCall:
         _, runtime, llm = _make_runtime_and_llm(tools=[ListVideosTool(deps)])
 
         call_count = 0
+
         async def mock_invoke(messages, **kw):
             nonlocal call_count
             call_count += 1
@@ -238,26 +266,44 @@ class TestReActMultiRound:
     async def test_llm_searches_twice_before_answering(self):
         """LLM calls vector_search twice, then answers with combined results."""
         mock_rag = MagicMock()
-        mock_rag.search = MagicMock(return_value=[
-            Document(page_content="结果", metadata={"bvid": "BV1xx", "title": "Test", "score": 0.8})
-        ])
+        mock_rag.search = MagicMock(
+            return_value=[
+                Document(
+                    page_content="结果",
+                    metadata={"bvid": "BV1xx", "title": "Test", "score": 0.8},
+                )
+            ]
+        )
 
         _, runtime, llm = _make_runtime_and_llm(tools=[VectorSearchTool(mock_rag)])
 
         call_count = 0
+
         async def mock_invoke(messages, **kw):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return AIMessage(
                     content="",
-                    tool_calls=[{"id": "tc1", "name": "vector_search", "args": {"query": "中国哲学"}}],
+                    tool_calls=[
+                        {
+                            "id": "tc1",
+                            "name": "vector_search",
+                            "args": {"query": "中国哲学"},
+                        }
+                    ],
                 )
             if call_count == 2:
                 # Still not satisfied, search again
                 return AIMessage(
                     content="",
-                    tool_calls=[{"id": "tc2", "name": "vector_search", "args": {"query": "西方哲学"}}],
+                    tool_calls=[
+                        {
+                            "id": "tc2",
+                            "name": "vector_search",
+                            "args": {"query": "西方哲学"},
+                        }
+                    ],
                 )
             # Third call: answer with all results
             return AIMessage(content="综合两轮检索结果，中西方哲学的差异在于...")
@@ -284,10 +330,15 @@ class TestReActErrorHandling:
         cb.record_failure()
         assert cb.is_tripped
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps(), circuit_breaker=cb)
+        agent = build_chat_agent(
+            llm=llm, runtime=runtime, deps=MockDeps(), circuit_breaker=cb
+        )
         result = await agent.ainvoke({"query": "test"})
         # Circuit breaker should cause a fallback result (not a normal answer)
-        assert result.get("result") == "服务暂时不可用，请稍后再试。" or result.get("error") != ""
+        assert (
+            result.get("result") == "服务暂时不可用，请稍后再试。"
+            or result.get("error") != ""
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -333,11 +384,13 @@ class TestSessionIdInjection:
                 HumanMessage(content="之前聊过的内容"),
                 AIMessage(
                     content="",
-                    tool_calls=[{
-                        "id": "tc1",
-                        "name": "search_chat_history",
-                        "args": {"query": "之前的内容"},
-                    }],
+                    tool_calls=[
+                        {
+                            "id": "tc1",
+                            "name": "search_chat_history",
+                            "args": {"query": "之前的内容"},
+                        }
+                    ],
                 ),
             ],
         )
@@ -363,16 +416,18 @@ class TestSessionIdInjection:
                 HumanMessage(content="test"),
                 AIMessage(
                     content="",
-                    tool_calls=[{
-                        "id": "tc1",
-                        "name": "search_chat_history",
-                        "args": {"query": "test"},
-                    }],
+                    tool_calls=[
+                        {
+                            "id": "tc1",
+                            "name": "search_chat_history",
+                            "args": {"query": "test"},
+                        }
+                    ],
                 ),
             ],
         )
 
-        result = await runtime_dispatch(state, runtime=runtime)
+        await runtime_dispatch(state, runtime=runtime)
         # Tool should still be called, but chat_session_id will be empty
         assert mock_tool.last_args["chat_session_id"] == ""
 
@@ -390,11 +445,13 @@ class TestSessionIdInjection:
                 HumanMessage(content="test"),
                 AIMessage(
                     content="",
-                    tool_calls=[{
-                        "id": "tc1",
-                        "name": "search_chat_history",
-                        "args": {"query": "test", "chat_session_id": "sess-manual"},
-                    }],
+                    tool_calls=[
+                        {
+                            "id": "tc1",
+                            "name": "search_chat_history",
+                            "args": {"query": "test", "chat_session_id": "sess-manual"},
+                        }
+                    ],
                 ),
             ],
         )
@@ -422,31 +479,37 @@ class TestReActWithContextTools:
         )
 
         call_count = 0
+
         async def mock_invoke(messages, **kw):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 return AIMessage(
                     content="",
-                    tool_calls=[{
-                        "id": "tc1",
-                        "name": "search_chat_history",
-                        "args": {"query": "之前讨论的哲学"},
-                    }],
+                    tool_calls=[
+                        {
+                            "id": "tc1",
+                            "name": "search_chat_history",
+                            "args": {"query": "之前讨论的哲学"},
+                        }
+                    ],
                 )
             return AIMessage(content="根据之前的对话，你问过王德峰的中国哲学讲座...")
 
         llm.ainvoke = mock_invoke
 
         agent = build_chat_agent(
-            llm=llm, runtime=runtime,
+            llm=llm,
+            runtime=runtime,
             deps=MockDeps(),
         )
-        result = await agent.ainvoke({
-            "query": "我们之前聊过的哲学内容",
-            "uid": 1,
-            "session_id": "sess-xyz",
-        })
+        result = await agent.ainvoke(
+            {
+                "query": "我们之前聊过的哲学内容",
+                "uid": 1,
+                "session_id": "sess-xyz",
+            }
+        )
 
         assert call_count == 2
         assert "哲学" in result["result"]

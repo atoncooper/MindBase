@@ -49,7 +49,7 @@ class CircuitBreaker:
         if self._state is CircuitState.OPEN:
             elapsed = time.monotonic() - self._last_open_time
             if elapsed >= self._cooldown:
-                logger.info("[CIRCUIT:{}] OPEN → HALF_OPEN", self._name)
+                logger.info("[CIRCUIT:%s] OPEN → HALF_OPEN", self._name)
                 self._state = CircuitState.HALF_OPEN
         return self._state
 
@@ -63,7 +63,7 @@ class CircuitBreaker:
 
     def record_success(self) -> None:
         if self._state is CircuitState.HALF_OPEN:
-            logger.info("[CIRCUIT:{}] HALF_OPEN → CLOSED", self._name)
+            logger.info("[CIRCUIT:%s] HALF_OPEN → CLOSED", self._name)
         self._failure_count = 0
         self._state = CircuitState.CLOSED
 
@@ -74,7 +74,7 @@ class CircuitBreaker:
             self._state = CircuitState.OPEN
             self._last_open_time = time.monotonic()
             logger.warning(
-                "[CIRCUIT:{}] OPEN (failures={}/{})",
+                "[CIRCUIT:%s] OPEN (failures=%s/%s)",
                 self._name,
                 self._failure_count,
                 self._failure_threshold,
@@ -86,4 +86,4 @@ class CircuitBreaker:
         self._failure_count = 0
         self._state = CircuitState.CLOSED
         self._last_open_time = 0.0
-        logger.info("[CIRCUIT:{}] reset", self._name)
+        logger.info("[CIRCUIT:%s] reset", self._name)

@@ -85,7 +85,7 @@ class SearchChatHistoryTool:
         """Execute the search."""
         pattern = query_to_pattern(query)
         logger.info(
-            "[CTX_TOOL] search_chat_history session={} query={} pattern={}",
+            "[CTX_TOOL] search_chat_history session=%s query=%s pattern=%s",
             chat_session_id,
             query[:80],
             pattern[:80],

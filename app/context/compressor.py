@@ -199,9 +199,7 @@ def build_summarize_fn(
         recent: list[ConversationMessage],
         previous_summary: str | None,
     ) -> str:
-        system = SUMMARIZE_SYSTEM_PROMPT.replace(
-            "{max_chars}", str(max_chars)
-        )
+        system = SUMMARIZE_SYSTEM_PROMPT.replace("{max_chars}", str(max_chars))
 
         prev_section = ""
         if previous_summary:
@@ -216,10 +214,12 @@ def build_summarize_fn(
         )
 
         try:
-            result = await llm_invoke([
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ])
+            result = await llm_invoke(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ]
+            )
             text = result.strip()
             # Strip common LLM preambles
             for prefix in ("好的，", "好的", "以下是", "这是"):
@@ -341,7 +341,7 @@ class ConversationCompressor:
             )
 
         logger.info(
-            "compressing old_turns={} recent_turns={} has_prev_summary={}",
+            "compressing old_turns=%s recent_turns=%s has_prev_summary=%s",
             count_turns(old),
             count_turns(recent),
             self._summary is not None,

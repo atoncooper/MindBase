@@ -176,7 +176,7 @@ class WorkspaceRepository:
                 if cached is not None:
                     return set(json.loads(cached))
             except Exception as e:
-                logger.debug("[WS] redis get failed: {}", e)
+                logger.debug("[WS] redis get failed: %s", e)
 
         # DB expansion
         upload_uuids = await self._expand_bindings_from_db(workspace_id, uid, db)
@@ -189,7 +189,7 @@ class WorkspaceRepository:
                     cache_key, json.dumps(list(upload_uuids)), ex=CACHE_TTL
                 )
             except Exception as e:
-                logger.debug("[WS] redis set failed: {}", e)
+                logger.debug("[WS] redis set failed: %s", e)
 
         return upload_uuids
 
@@ -303,4 +303,4 @@ class WorkspaceRepository:
                 cache_key = f"{CACHE_KEY_PREFIX}{workspace_id}:{uid}"
                 await self._redis.delete(cache_key)
             except Exception as e:
-                logger.debug("[WS] redis delete failed: {}", e)
+                logger.debug("[WS] redis delete failed: %s", e)

@@ -146,7 +146,7 @@ def create_context_tools(
         """
         pattern = _query_to_pattern(query)
         logger.info(
-            "[CTX_TOOL] search_chat_history session={} query={} pattern={}",
+            "[CTX_TOOL] search_chat_history session=%s query=%s pattern=%s",
             chat_session_id,
             query[:80],
             pattern[:80],
@@ -197,7 +197,7 @@ def create_context_tools(
         """
         from .cache import get_cached
 
-        logger.info("[CTX_TOOL] get_compressed_summary session={}", chat_session_id)
+        logger.info("[CTX_TOOL] get_compressed_summary session=%s", chat_session_id)
 
         try:
             cached = await get_cached(chat_session_id)
@@ -207,7 +207,7 @@ def create_context_tools(
                 return prefix + summary
             return "未找到对话历史的压缩摘要。"
         except Exception as exc:
-            logger.warning("[CTX_TOOL] get_compressed_summary failed: {}", exc)
+            logger.warning("[CTX_TOOL] get_compressed_summary failed: %s", exc)
             return "无法获取压缩摘要。"
 
     @tool
@@ -233,7 +233,7 @@ def create_context_tools(
             Recent conversation messages in chronological order.
         """
         n = min(n_messages, 500)
-        logger.info("[CTX_TOOL] get_full_history session={} n={}", chat_session_id, n)
+        logger.info("[CTX_TOOL] get_full_history session=%s n=%s", chat_session_id, n)
 
         try:
             messages = await retriever.get_recent_messages(chat_session_id, n)
@@ -241,7 +241,7 @@ def create_context_tools(
                 return "未在数据库中找到对话记录。"
             return "【完整历史记录 — MongoDB】\n\n" + _messages_to_text(messages)
         except Exception as exc:
-            logger.warning("[CTX_TOOL] get_full_history failed: {}", exc)
+            logger.warning("[CTX_TOOL] get_full_history failed: %s", exc)
             return "无法获取完整历史记录。"
 
     @tool
@@ -270,4 +270,9 @@ def create_context_tools(
         recent = all_messages[-n_messages:] if n_messages > 0 else all_messages
         return "【最近对话记录 — 内存】\n\n" + _messages_to_text(recent)
 
-    return [search_chat_history, get_compressed_summary, get_full_history, get_recent_context]
+    return [
+        search_chat_history,
+        get_compressed_summary,
+        get_full_history,
+        get_recent_context,
+    ]

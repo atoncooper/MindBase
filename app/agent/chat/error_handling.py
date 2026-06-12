@@ -29,15 +29,32 @@ class ErrorCategory(Enum):
 
 
 _RETRYABLE_PATTERNS: Sequence[str] = [
-    "timeout", "connection", "try again", "rate limit", "too many",
-    "temporarily", "service unavailable", "eof", "reset", "retryable",
-    "deadline exceeded", "too many requests", "internal server error",
-    "503", "502", "500",
+    "timeout",
+    "connection",
+    "try again",
+    "rate limit",
+    "too many",
+    "temporarily",
+    "service unavailable",
+    "eof",
+    "reset",
+    "retryable",
+    "deadline exceeded",
+    "too many requests",
+    "internal server error",
+    "503",
+    "502",
+    "500",
 ]
 
 _FATAL_PATTERNS: Sequence[str] = [
-    "authentication", "unauthorized", "invalid api key",
-    "permission denied", "forbidden", "account suspended", "access denied",
+    "authentication",
+    "unauthorized",
+    "invalid api key",
+    "permission denied",
+    "forbidden",
+    "account suspended",
+    "access denied",
 ]
 
 
@@ -56,7 +73,7 @@ def classify_error(error_message: str) -> ErrorCategory:
 async def backoff_delay(attempt: int, base_seconds: float = 1.0) -> None:
     """Exponential backoff: sleep base * 2^attempt seconds (capped at 10)."""
     delay = min(base_seconds * (2**attempt), 10.0)
-    logger.debug("[CHAT_AGENT] backoff {:.2f}s (attempt {})", delay, attempt)
+    logger.debug("[CHAT_AGENT] backoff %.2fs (attempt %s)", delay, attempt)
     await asyncio.sleep(delay)
 
 
@@ -82,8 +99,11 @@ def as_error_node(node_name: str):
                 return result
             except Exception as exc:
                 logger.warning(
-                    "[CHAT_AGENT] {} failed: {} (retry {}/{})",
-                    node_name, exc, state.retry_count, state.max_retries,
+                    "[CHAT_AGENT] %s failed: %s (retry %s/%s)",
+                    node_name,
+                    exc,
+                    state.retry_count,
+                    state.max_retries,
                 )
                 return {"error": str(exc), "failed_node": node_name}
 

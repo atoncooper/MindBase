@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.messages import ToolMessage
 
-from app.harness.runtime import AgentRuntime, ToolMetrics
+from app.harness.runtime import AgentRuntime
 from app.tools import BaseTool, ToolRegistry
 
 
@@ -199,7 +199,6 @@ class TestContextTools:
 
     @pytest.mark.asyncio
     async def test_get_recent_context_tool(self):
-        from unittest.mock import AsyncMock
 
         ctx_mgr = AsyncMock()
         ctx_mgr.get_context_raw.return_value = []
@@ -235,7 +234,6 @@ class TestContextTools:
 
     @pytest.mark.asyncio
     async def test_search_chat_history_tool(self):
-        from unittest.mock import AsyncMock
 
         ctx_mgr = AsyncMock()
         from app.tools.context import SearchChatHistoryTool
@@ -254,8 +252,6 @@ class TestContextTools:
             SearchChatHistoryTool,
         )
 
-        from unittest.mock import AsyncMock
-
         ctx_mgr = AsyncMock()
 
         tools = [
@@ -268,4 +264,6 @@ class TestContextTools:
         for tool in tools:
             params = tool.parameters()
             assert "properties" in params
-            assert "chat_session_id" in params["properties"], f"{tool.name} missing chat_session_id"
+            assert (
+                "chat_session_id" in params["properties"]
+            ), f"{tool.name} missing chat_session_id"

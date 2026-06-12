@@ -1,6 +1,6 @@
 """Configuration for the context management module."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

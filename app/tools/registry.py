@@ -38,15 +38,15 @@ class ToolRegistry:
         """Register a tool instance (must match ``BaseTool`` protocol)."""
         name = tool.name
         if name in self._tools:
-            logger.warning("[TOOL_REGISTRY] overwriting tool '{}'", name)
+            logger.warning("[TOOL_REGISTRY] overwriting tool '%s'", name)
         self._tools[name] = tool
-        logger.info("[TOOL_REGISTRY] registered tool '{}'", name)
+        logger.info("[TOOL_REGISTRY] registered tool '%s'", name)
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by name.  Returns True if it existed."""
         if name in self._tools:
             del self._tools[name]
-            logger.info("[TOOL_REGISTRY] unregistered tool '{}'", name)
+            logger.info("[TOOL_REGISTRY] unregistered tool '%s'", name)
             return True
         return False
 
@@ -84,13 +84,15 @@ class ToolRegistry:
                 )
                 result.append(st)
             except Exception:
-                logger.exception("[TOOL_REGISTRY] failed to build def for '{}'", name)
+                logger.exception("[TOOL_REGISTRY] failed to build def for '%s'", name)
         return result
 
     def _make_stub(self, name: str) -> callable:
         """Create a closure that captures *name* by value (avoids late-binding bug)."""
+
         async def stub(**kwargs: Any) -> str:
             return await self._stub(name, kwargs)
+
         return stub
 
     async def _stub(self, name: str, kwargs: dict) -> str:

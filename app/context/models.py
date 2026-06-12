@@ -40,9 +40,11 @@ class ConversationMessage:
         """Convert to a LangChain message object."""
         if self.role == "user":
             from langchain_core.messages import HumanMessage
+
             return HumanMessage(content=self.content)
         else:
             from langchain_core.messages import AIMessage
+
             return AIMessage(content=self.content)
 
 

@@ -64,7 +64,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
             if current > burst:
                 logger.warning(
-                    "[RATELIMIT] blocked | ip={} path={} count={} burst={}",
+                    "[RATELIMIT] blocked | ip=%s path=%s count=%s burst=%s",
                     client_ip,
                     path,
                     current,
@@ -79,7 +79,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     headers={"Retry-After": str(int(1 / rate)) if rate > 0 else "1"},
                 )
         except Exception as e:
-            logger.debug("[RATELIMIT] redis error, allowing request: {}", e)
+            logger.debug("[RATELIMIT] redis error, allowing request: %s", e)
             # Redis unavailable → allow request (fail open, nginx is first line)
 
         return await call_next(request)

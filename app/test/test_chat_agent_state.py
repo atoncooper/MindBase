@@ -1,6 +1,5 @@
 """Tests for ChatAgentState and ChatAgentResult."""
 
-import pytest
 
 from app.agent.chat.state import ChatAgentResult, ChatAgentState
 

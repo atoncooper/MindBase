@@ -107,6 +107,7 @@ class ContextManager:
     ) -> None:
         """Replace the entire context for a session (e.g. after summarization)."""
         from .models import ConversationContext
+
         ctx = ConversationContext(
             session_id=session_id,
             messages=list(messages),
@@ -147,6 +148,7 @@ class ContextManager:
         """Invalidate the Redis compressed-summary cache for *session_id*."""
         try:
             from .cache import invalidate as _invalidate
+
             await _invalidate(session_id)
         except Exception:
             pass  # best-effort, never block the caller
@@ -168,15 +170,13 @@ class ContextManager:
                         self._config.ttl_seconds
                     )
                     if removed:
-                        logger.debug(
-                            "background cleanup: removed={} sessions", removed
-                        )
+                        logger.debug("background cleanup: removed=%s sessions", removed)
                 except Exception:
                     logger.exception("background cleanup failed")
 
         self._cleanup_task = asyncio.create_task(_loop())
         logger.info(
-            "cleanup task started interval={}s ttl={}s",
+            "cleanup task started interval=%ss ttl=%ss",
             self._config.cleanup_interval,
             self._config.ttl_seconds,
         )

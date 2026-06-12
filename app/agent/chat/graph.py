@@ -46,7 +46,9 @@ def _has_tool_calls(msg: BaseMessage) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def inject_context(state: ChatAgentState, *, deps: Any, runtime: AgentRuntime) -> dict[str, Any]:
+async def inject_context(
+    state: ChatAgentState, *, deps: Any, runtime: AgentRuntime
+) -> dict[str, Any]:
     """1/4. Resolve data scope + inject system prompt with conversation context.
 
     ``deps`` must provide:
@@ -70,17 +72,21 @@ async def inject_context(state: ChatAgentState, *, deps: Any, runtime: AgentRunt
 
     # Detect context tools in the registry
     registered = runtime.list_tool_names()
-    has_context_tools = "search_chat_history" in registered or "get_recent_context" in registered
+    has_context_tools = (
+        "search_chat_history" in registered or "get_recent_context" in registered
+    )
 
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    system = SystemMessage(content=build_system_prompt(
-        state.query,
-        has_data=has_data,
-        cloud_has_data=cloud_has_data,
-        conversation_context=conversation_context,
-        has_context_tools=has_context_tools,
-    ))
+    system = SystemMessage(
+        content=build_system_prompt(
+            state.query,
+            has_data=has_data,
+            cloud_has_data=cloud_has_data,
+            conversation_context=conversation_context,
+            has_context_tools=has_context_tools,
+        )
+    )
     user = HumanMessage(content=state.query)
 
     return {
@@ -117,7 +123,9 @@ async def call_agent(state: ChatAgentState, *, llm_with_tools: Any) -> dict[str,
     return {"messages": [response]}
 
 
-async def runtime_dispatch(state: ChatAgentState, *, runtime: AgentRuntime) -> dict[str, Any]:
+async def runtime_dispatch(
+    state: ChatAgentState, *, runtime: AgentRuntime
+) -> dict[str, Any]:
     """3/4. Hand tool_calls to AgentRuntime for execution.
 
     Extracts pending tool calls (skipping already-executed ones on retry),
@@ -157,8 +165,7 @@ async def runtime_dispatch(state: ChatAgentState, *, runtime: AgentRuntime) -> d
 
     if implicit_kwargs:
         pending = [
-            {**tc, "args": {**tc.get("args", {}), **implicit_kwargs}}
-            for tc in pending
+            {**tc, "args": {**tc.get("args", {}), **implicit_kwargs}} for tc in pending
         ]
 
     tool_messages = await runtime.execute(
@@ -191,14 +198,21 @@ async def format_result(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]
 
 async def error_node(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
     """Error handler: classify and decide retry or fallback."""
-    from app.agent.chat.error_handling import classify_error, ErrorCategory, FALLBACK_RESULT
+    from app.agent.chat.error_handling import (
+        classify_error,
+        ErrorCategory,
+        FALLBACK_RESULT,
+    )
 
     category = classify_error(state.error)
 
     logger.error(
-        "[CHAT_AGENT] error_node node={} error={} category={} retry={}/{}",
-        state.failed_node, state.error, category.value,
-        state.retry_count, state.max_retries,
+        "[CHAT_AGENT] error_node node=%s error=%s category=%s retry=%s/%s",
+        state.failed_node,
+        state.error,
+        category.value,
+        state.retry_count,
+        state.max_retries,
     )
 
     if category is ErrorCategory.FATAL:
@@ -206,6 +220,7 @@ async def error_node(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
 
     if category is ErrorCategory.RETRYABLE and state.retry_count < state.max_retries:
         from app.agent.chat.error_handling import backoff_delay
+
         await backoff_delay(state.retry_count)
         return {"error": "", "retry_count": state.retry_count + 1}
 
@@ -235,7 +250,9 @@ def route_after_dispatch(state: ChatAgentState) -> str:
     if state.error:
         return "error_node"
     if state.step_count >= state.max_steps:
-        logger.warning("[CHAT_AGENT] max_steps={} reached, forcing format_result", state.max_steps)
+        logger.warning(
+            "[CHAT_AGENT] max_steps=%s reached, forcing format_result", state.max_steps
+        )
         return "format_result"
     return "agent"
 
@@ -316,11 +333,13 @@ def build_chat_agent(
     graph.set_entry_point("inject_context")
 
     graph.add_conditional_edges(
-        "inject_context", route_after_inject,
+        "inject_context",
+        route_after_inject,
         {"error_node": "error_node", "agent": "agent"},
     )
     graph.add_conditional_edges(
-        "agent", route_after_agent,
+        "agent",
+        route_after_agent,
         {
             "error_node": "error_node",
             "runtime_dispatch": "runtime_dispatch",
@@ -328,11 +347,17 @@ def build_chat_agent(
         },
     )
     graph.add_conditional_edges(
-        "runtime_dispatch", route_after_dispatch,
-        {"error_node": "error_node", "agent": "agent", "format_result": "format_result"},
+        "runtime_dispatch",
+        route_after_dispatch,
+        {
+            "error_node": "error_node",
+            "agent": "agent",
+            "format_result": "format_result",
+        },
     )
     graph.add_conditional_edges(
-        "error_node", route_after_error,
+        "error_node",
+        route_after_error,
         {
             "inject_context": "inject_context",
             "agent": "agent",

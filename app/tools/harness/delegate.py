@@ -80,8 +80,10 @@ class DelegateToAgentTool:
             return "无法委托：缺少 chat_session_id"
 
         logger.info(
-            "[DELEGATE] agent='{}' query='{}' session={}",
-            agent_name, query[:60], session_id,
+            "[DELEGATE] agent='%s' query='%s' session=%s",
+            agent_name,
+            query[:60],
+            session_id,
         )
 
         try:
@@ -108,5 +110,5 @@ class DelegateToAgentTool:
             return str(result)
 
         except Exception as exc:
-            logger.warning("[DELEGATE] failed: {}", exc)
+            logger.warning("[DELEGATE] failed: %s", exc)
             return f"委托失败: {exc}"

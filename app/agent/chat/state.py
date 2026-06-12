@@ -36,16 +36,28 @@ class ChatAgentState(BaseModel):
     query: str = Field(description="User question.")
     session_id: str = Field(default="", description="Chat session ID.")
     uid: int | None = Field(default=None, description="User ID.")
-    folder_ids: list[int] = Field(default_factory=list, description="Selected favorite folder IDs.")
-    workspace_pages: list[dict] = Field(default_factory=list, description="Workspace selected pages.")
-    workspace_id: str | None = Field(default=None, description="Cloud drive workspace ID.")
+    folder_ids: list[int] = Field(
+        default_factory=list, description="Selected favorite folder IDs."
+    )
+    workspace_pages: list[dict] = Field(
+        default_factory=list, description="Workspace selected pages."
+    )
+    workspace_id: str | None = Field(
+        default=None, description="Cloud drive workspace ID."
+    )
 
     # ── intermediate: data resolution (set by inject_context) ──────────
-    media_ids: list[int] = Field(default_factory=list, description="Resolved favorite folder media IDs.")
+    media_ids: list[int] = Field(
+        default_factory=list, description="Resolved favorite folder media IDs."
+    )
     bvids: list[str] = Field(default_factory=list, description="Resolved video BV IDs.")
     has_data: bool = Field(default=False, description="Whether B站 data exists.")
-    cloud_has_data: bool = Field(default=False, description="Whether cloud backend is available.")
-    conversation_context: str = Field(default="", description="Injected conversation context.")
+    cloud_has_data: bool = Field(
+        default=False, description="Whether cloud backend is available."
+    )
+    conversation_context: str = Field(
+        default="", description="Injected conversation context."
+    )
 
     # ── messages (LangGraph reducer for tool-call accumulation) ───────
     messages: Annotated[list, add_messages] = Field(
@@ -61,7 +73,9 @@ class ChatAgentState(BaseModel):
 
     # ── output ────────────────────────────────────────────────────────
     result: str = Field(default="", description="Final answer text from the LLM.")
-    sources: list[dict] = Field(default_factory=list, description="Deduplicated source metadata.")
+    sources: list[dict] = Field(
+        default_factory=list, description="Deduplicated source metadata."
+    )
 
     # ── error handling ────────────────────────────────────────────────
     error: str = Field(default="", description="Error message set on node failure.")

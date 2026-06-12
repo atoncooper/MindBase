@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ToolMetrics:
     """Per-tool runtime statistics."""
+
     call_count: int = 0
     total_duration_ms: float = 0.0
     error_count: int = 0
@@ -73,7 +74,7 @@ class AgentRuntime:
         tool_names = self._registry.list()
         self._metrics = {name: ToolMetrics() for name in tool_names}
         self._started = True
-        logger.info("[RUNTIME] started with {} tools: {}", len(tool_names), tool_names)
+        logger.info("[RUNTIME] started with %s tools: %s", len(tool_names), tool_names)
 
     async def stop(self) -> None:
         """Stop the runtime and log final metrics summary."""
@@ -81,7 +82,7 @@ class AgentRuntime:
         total_calls = sum(m.call_count for m in self._metrics.values())
         total_errors = sum(m.error_count for m in self._metrics.values())
         logger.info(
-            "[RUNTIME] stopped — total_calls={} total_errors={} tools={}",
+            "[RUNTIME] stopped — total_calls=%s total_errors=%s tools=%s",
             total_calls,
             total_errors,
             len(self._metrics),
@@ -140,7 +141,7 @@ class AgentRuntime:
         tool_messages: list[ToolMessage] = []
         for tc, result in zip(tool_calls, results):
             if isinstance(result, Exception):
-                logger.error("[RUNTIME] tool '{}' failed: {}", tc["name"], result)
+                logger.error("[RUNTIME] tool '%s' failed: %s", tc["name"], result)
                 tool_messages.append(self._error_message(tc, str(result)))
             else:
                 tool_messages.append(result)
@@ -161,21 +162,11 @@ class AgentRuntime:
         tool = self._registry.get(name)
         start = time.monotonic()
 
-        # Build LangSmith tracing config for this individual tool
-        tool_config = {
-            "run_name": f"tool_{name}",
-            "tags": list({*(config or {}).get("tags", []), name, "tool"}),
-            "metadata": {
-                **(config or {}).get("metadata", {}),
-                "tool_name": name,
-            },
-        }
-
         try:
             content = await tool.run(**args)
             duration = (time.monotonic() - start) * 1000
             self._record_metrics(name, duration, success=True)
-            logger.debug("[RUNTIME] tool '{}' OK ({:.0f}ms)", name, duration)
+            logger.debug("[RUNTIME] tool '%s' OK (%.0fms)", name, duration)
             return ToolMessage(
                 content=content,
                 tool_call_id=call_id,

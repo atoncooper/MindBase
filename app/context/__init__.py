@@ -52,7 +52,12 @@ from .compressor import (
 from .config import ContextConfig, DEFAULT_CONFIG
 from .dependency import get_context_manager, init_context_manager, reset_context_manager
 from .manager import ContextManager
-from .models import ConversationContext, ConversationMessage, ConversationTurn, count_turns
+from .models import (
+    ConversationContext,
+    ConversationMessage,
+    ConversationTurn,
+    count_turns,
+)
 from .retriever import ContextRetriever, build_context_injection
 from .store import ConversationStore, InMemoryStore
 from .store_mongo import MongoStore

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SessionState:
     """Runtime state for a single session."""
+
     session_id: str
     created_at: float = field(default_factory=time.monotonic)
     last_active: float = field(default_factory=time.monotonic)
@@ -46,7 +47,7 @@ class SessionManager:
         """Return existing session or create a new one."""
         if session_id not in self._sessions:
             self._sessions[session_id] = SessionState(session_id=session_id)
-            logger.debug("[SESSION] created {}", session_id)
+            logger.debug("[SESSION] created %s", session_id)
         return self._sessions[session_id]
 
     def touch(self, session_id: str) -> None:
@@ -85,20 +86,20 @@ class SessionManager:
         for sid in expired:
             self.destroy(sid)
         if expired:
-            logger.info("[SESSION] cleaned {} expired sessions", len(expired))
+            logger.info("[SESSION] cleaned %s expired sessions", len(expired))
         return len(expired)
 
     def destroy(self, session_id: str) -> None:
         """Destroy a specific session and release its resources."""
         self._sessions.pop(session_id, None)
-        logger.debug("[SESSION] destroyed {}", session_id)
+        logger.debug("[SESSION] destroyed %s", session_id)
 
     def destroy_all(self) -> int:
         """Destroy every tracked session — used during shutdown."""
         count = len(self._sessions)
         self._sessions.clear()
         if count:
-            logger.info("[SESSION] destroyed all {} sessions", count)
+            logger.info("[SESSION] destroyed all %s sessions", count)
         return count
 
     @property

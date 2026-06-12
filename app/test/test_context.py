@@ -15,10 +15,9 @@ Covers:
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-from pytest import approx
 
 from app.context import (
     ContextManager,
@@ -66,6 +65,7 @@ class TestConversationMessage:
         assert type(lc).__name__ == "AIMessage"
         assert lc.content == "world"
 
+
 class TestConversationTurn:
     def test_messages_with_assistant(self):
         user = ConversationMessage(role="user", content="u", timestamp=1.0)
@@ -85,20 +85,26 @@ class TestConversationContext:
         assert ctx.turn_count == 0
 
     def test_turn_count_one_pair(self):
-        ctx = ConversationContext(session_id="s1", messages=[
-            ConversationMessage(role="user", content="u1", timestamp=1.0),
-            ConversationMessage(role="assistant", content="a1", timestamp=2.0),
-        ])
+        ctx = ConversationContext(
+            session_id="s1",
+            messages=[
+                ConversationMessage(role="user", content="u1", timestamp=1.0),
+                ConversationMessage(role="assistant", content="a1", timestamp=2.0),
+            ],
+        )
         assert ctx.turn_count == 1
 
     def test_turn_count_multi(self):
-        ctx = ConversationContext(session_id="s1", messages=[
-            ConversationMessage(role="user", content="u1", timestamp=1.0),
-            ConversationMessage(role="assistant", content="a1", timestamp=2.0),
-            ConversationMessage(role="user", content="u2", timestamp=3.0),
-            ConversationMessage(role="assistant", content="a2", timestamp=4.0),
-            ConversationMessage(role="user", content="u3", timestamp=5.0),
-        ])
+        ctx = ConversationContext(
+            session_id="s1",
+            messages=[
+                ConversationMessage(role="user", content="u1", timestamp=1.0),
+                ConversationMessage(role="assistant", content="a1", timestamp=2.0),
+                ConversationMessage(role="user", content="u2", timestamp=3.0),
+                ConversationMessage(role="assistant", content="a2", timestamp=4.0),
+                ConversationMessage(role="user", content="u3", timestamp=5.0),
+            ],
+        )
         assert ctx.turn_count == 2  # u3 is unpaired → not counted
 
     def test_touch_updates_updated_at(self):
@@ -218,12 +224,18 @@ class TestFixedSizeWindow:
 
     def test_under_budget(self):
         w = FixedSizeWindow(max_messages=5)
-        msgs = [ConversationMessage(role="user", content="u", timestamp=float(i)) for i in range(3)]
+        msgs = [
+            ConversationMessage(role="user", content="u", timestamp=float(i))
+            for i in range(3)
+        ]
         assert w.apply(msgs) == msgs
 
     def test_trim(self):
         w = FixedSizeWindow(max_messages=3)
-        msgs = [ConversationMessage(role="user", content=f"u{i}", timestamp=float(i)) for i in range(10)]
+        msgs = [
+            ConversationMessage(role="user", content=f"u{i}", timestamp=float(i))
+            for i in range(10)
+        ]
         kept = w.apply(msgs)
         assert len(kept) == 3
         assert kept[0].content == "u7"
@@ -254,9 +266,12 @@ class TestInMemoryStore:
 
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
-        ctx = ConversationContext(session_id="s1", messages=[
-            ConversationMessage(role="user", content="hi", timestamp=1.0),
-        ])
+        ctx = ConversationContext(
+            session_id="s1",
+            messages=[
+                ConversationMessage(role="user", content="hi", timestamp=1.0),
+            ],
+        )
         await store.save("s1", ctx)
         loaded = await store.load("s1")
         assert loaded is not None
@@ -274,11 +289,16 @@ class TestInMemoryStore:
 
     @pytest.mark.asyncio
     async def test_append_existing(self, store):
-        ctx = ConversationContext(session_id="s1", messages=[
-            ConversationMessage(role="user", content="u1", timestamp=1.0),
-        ])
+        ctx = ConversationContext(
+            session_id="s1",
+            messages=[
+                ConversationMessage(role="user", content="u1", timestamp=1.0),
+            ],
+        )
         await store.save("s1", ctx)
-        await store.append("s1", ConversationMessage(role="assistant", content="a1", timestamp=2.0))
+        await store.append(
+            "s1", ConversationMessage(role="assistant", content="a1", timestamp=2.0)
+        )
         loaded = await store.load("s1")
         assert len(loaded.messages) == 2
 
@@ -362,22 +382,38 @@ class TestInMemoryStore:
 class TestTurnThreshold:
     def test_below_max_turns(self):
         trigger = TurnThreshold(max_turns=5, cooldown_turns=3)
-        msgs = [ConversationMessage(role="user", content="u", timestamp=float(i))
-                for i in range(4)]  # 2 turns, below 5
-        assert not trigger(messages=msgs, summary=None, turns_since_last=0, last_compressed_at=None)
+        msgs = [
+            ConversationMessage(role="user", content="u", timestamp=float(i))
+            for i in range(4)
+        ]  # 2 turns, below 5
+        assert not trigger(
+            messages=msgs, summary=None, turns_since_last=0, last_compressed_at=None
+        )
 
     def test_above_max_turns(self):
         trigger = TurnThreshold(max_turns=2, cooldown_turns=3)
-        msgs = [ConversationMessage(role="user" if i % 2 == 0 else "assistant",
-                                     content=f"m{i}", timestamp=float(i))
-                for i in range(6)]  # 3 turns, above 2
-        assert trigger(messages=msgs, summary=None, turns_since_last=5, last_compressed_at=None)
+        msgs = [
+            ConversationMessage(
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"m{i}",
+                timestamp=float(i),
+            )
+            for i in range(6)
+        ]  # 3 turns, above 2
+        assert trigger(
+            messages=msgs, summary=None, turns_since_last=5, last_compressed_at=None
+        )
 
     def test_respects_cooldown(self):
         trigger = TurnThreshold(max_turns=2, cooldown_turns=5)
-        msgs = [ConversationMessage(role="user" if i % 2 == 0 else "assistant",
-                                     content=f"m{i}", timestamp=float(i))
-                for i in range(6)]
+        msgs = [
+            ConversationMessage(
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"m{i}",
+                timestamp=float(i),
+            )
+            for i in range(6)
+        ]
         # Already compressed once, only 1 turn since last → should NOT fire
         assert not trigger(
             messages=msgs, summary="prev", turns_since_last=1, last_compressed_at=100.0
@@ -385,20 +421,31 @@ class TestTurnThreshold:
 
     def test_cooldown_bypass_on_first_compression(self):
         trigger = TurnThreshold(max_turns=2, cooldown_turns=5)
-        msgs = [ConversationMessage(role="user" if i % 2 == 0 else "assistant",
-                                     content=f"m{i}", timestamp=float(i))
-                for i in range(6)]
+        msgs = [
+            ConversationMessage(
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"m{i}",
+                timestamp=float(i),
+            )
+            for i in range(6)
+        ]
         # First compression: last_compressed_at is None → ignore cooldown
-        assert trigger(messages=msgs, summary=None, turns_since_last=0, last_compressed_at=None)
+        assert trigger(
+            messages=msgs, summary=None, turns_since_last=0, last_compressed_at=None
+        )
 
 
 class TestSummarizeFn:
     @pytest.mark.asyncio
     async def test_happy_path(self):
-        llm_mock = AsyncMock(return_value="讨论主题：测试\n【摘要正文】这是一个测试摘要。")
+        llm_mock = AsyncMock(
+            return_value="讨论主题：测试\n【摘要正文】这是一个测试摘要。"
+        )
         fn = build_summarize_fn(llm_mock, max_chars=500)
-        old = [ConversationMessage(role="user", content="u1", timestamp=1.0),
-               ConversationMessage(role="assistant", content="a1", timestamp=2.0)]
+        old = [
+            ConversationMessage(role="user", content="u1", timestamp=1.0),
+            ConversationMessage(role="assistant", content="a1", timestamp=2.0),
+        ]
         recent = [ConversationMessage(role="user", content="u2", timestamp=3.0)]
         result = await fn(old, recent, previous_summary=None)
         assert "讨论主题" in result
@@ -408,8 +455,10 @@ class TestSummarizeFn:
     async def test_fallback_on_exception(self):
         llm_mock = AsyncMock(side_effect=RuntimeError("LLM down"))
         fn = build_summarize_fn(llm_mock)
-        old = [ConversationMessage(role="user", content="u1", timestamp=1.0),
-               ConversationMessage(role="assistant", content="a1", timestamp=2.0)]
+        old = [
+            ConversationMessage(role="user", content="u1", timestamp=1.0),
+            ConversationMessage(role="assistant", content="a1", timestamp=2.0),
+        ]
         result = await fn(old, [], previous_summary=None)
         # Falls back to raw text of last 6 messages (old)
         assert "u1" in result
@@ -434,8 +483,16 @@ class TestConversationCompressor:
     def _make_msgs(self, n_pairs: int) -> list[ConversationMessage]:
         msgs = []
         for i in range(n_pairs):
-            msgs.append(ConversationMessage(role="user", content=f"u{i}", timestamp=float(i * 2)))
-            msgs.append(ConversationMessage(role="assistant", content=f"a{i}", timestamp=float(i * 2 + 1)))
+            msgs.append(
+                ConversationMessage(
+                    role="user", content=f"u{i}", timestamp=float(i * 2)
+                )
+            )
+            msgs.append(
+                ConversationMessage(
+                    role="assistant", content=f"a{i}", timestamp=float(i * 2 + 1)
+                )
+            )
         return msgs
 
     @pytest.mark.asyncio
@@ -482,12 +539,14 @@ class TestConversationCompressor:
 class TestContextManager:
     @pytest.fixture
     def manager(self):
-        return ContextManager(config=ContextConfig(
-            max_turns=10,
-            ttl_seconds=3600,
-            max_sessions=100,
-            cleanup_interval=0,  # disable background cleanup
-        ))
+        return ContextManager(
+            config=ContextConfig(
+                max_turns=10,
+                ttl_seconds=3600,
+                max_sessions=100,
+                cleanup_interval=0,  # disable background cleanup
+            )
+        )
 
     @pytest.mark.asyncio
     async def test_get_context_empty(self, manager):
@@ -534,7 +593,9 @@ class TestContextManager:
     @pytest.mark.asyncio
     async def test_message_count(self, manager):
         assert await manager.message_count("s1") == 0
-        await manager.add_message("s1", ConversationMessage(role="user", content="hi", timestamp=1.0))
+        await manager.add_message(
+            "s1", ConversationMessage(role="user", content="hi", timestamp=1.0)
+        )
         assert await manager.message_count("s1") == 1
 
     @pytest.mark.asyncio
@@ -625,7 +686,9 @@ class TestDependency:
 class TestContextTools:
     @pytest.fixture
     def manager(self):
-        return ContextManager(config=ContextConfig(max_turns=20, ttl_seconds=3600, cleanup_interval=0))
+        return ContextManager(
+            config=ContextConfig(max_turns=20, ttl_seconds=3600, cleanup_interval=0)
+        )
 
     @pytest.fixture
     def tools(self, manager):
@@ -633,29 +696,35 @@ class TestContextTools:
 
     @pytest.mark.asyncio
     async def test_get_recent_context_no_session(self, tools):
-        result = await tools[3].ainvoke({
-            "chat_session_id": "no-session",
-            "n_messages": 20,
-        })
+        result = await tools[3].ainvoke(
+            {
+                "chat_session_id": "no-session",
+                "n_messages": 20,
+            }
+        )
         assert "尚无对话记录" in result
 
     @pytest.mark.asyncio
     async def test_get_recent_context_with_data(self, manager, tools):
         await manager.add_turn("s1", "你好", "你好！有什么帮助吗？")
-        result = await tools[3].ainvoke({
-            "chat_session_id": "s1",
-            "n_messages": 10,
-        })
+        result = await tools[3].ainvoke(
+            {
+                "chat_session_id": "s1",
+                "n_messages": 10,
+            }
+        )
         assert "你好" in result
         assert "最近对话记录" in result
 
     @pytest.mark.asyncio
     async def test_search_chat_history_no_mongo(self, tools):
         """When MongoDB is disabled, gracefully returns 'not found'."""
-        result = await tools[0].ainvoke({
-            "chat_session_id": "s1",
-            "query": "test query",
-        })
+        result = await tools[0].ainvoke(
+            {
+                "chat_session_id": "s1",
+                "query": "test query",
+            }
+        )
         assert "未在" in result and "找到" in result
 
     @pytest.mark.asyncio
@@ -663,10 +732,12 @@ class TestContextTools:
         """With llm_invoke provided but MongoDB disabled, returns fallback."""
         llm_mock = AsyncMock(return_value="【讨论主题】测试")
         tools = create_context_tools(context_manager=manager, llm_invoke=llm_mock)
-        result = await tools[0].ainvoke({
-            "chat_session_id": "s1",
-            "query": "测试主题",
-        })
+        result = await tools[0].ainvoke(
+            {
+                "chat_session_id": "s1",
+                "query": "测试主题",
+            }
+        )
         # MongoDB is disabled in the test environment, so returns "not found"
         assert "未在" in result and "找到" in result
 
@@ -682,9 +753,11 @@ class TestContextTools:
         await manager.add_turn("s1", "2", "b")
         await manager.add_turn("s1", "3", "c")
         # Request only 1 message
-        result = await tools[3].ainvoke({
-            "chat_session_id": "s1",
-            "n_messages": 1,
-        })
+        result = await tools[3].ainvoke(
+            {
+                "chat_session_id": "s1",
+                "n_messages": 1,
+            }
+        )
         # Should contain only the last assistant message's content
         assert "c" in result

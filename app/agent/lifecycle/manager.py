@@ -108,9 +108,9 @@ class AgentLifecycleManager:
                 a new instance is needed.
         """
         if name in self._factories:
-            logger.warning("[LIFECYCLE] re-registering agent '{}'", name)
+            logger.warning("[LIFECYCLE] re-registering agent '%s'", name)
         self._factories[name] = (factory, factory_kwargs)
-        logger.info("[LIFECYCLE] registered agent '{}'", name)
+        logger.info("[LIFECYCLE] registered agent '%s'", name)
 
     # ── invoke ────────────────────────────────────────────────────────
 
@@ -152,7 +152,7 @@ class AgentLifecycleManager:
         # 1. Circuit breaker guard
         if self._circuit_breaker.is_tripped:
             logger.warning(
-                "[LIFECYCLE] circuit breaker open, rejecting {}/{}",
+                "[LIFECYCLE] circuit breaker open, rejecting %s/%s",
                 agent_name,
                 session_id,
             )
@@ -222,7 +222,7 @@ class AgentLifecycleManager:
                 self._circuit_breaker.record_failure()
 
                 logger.error(
-                    "[LIFECYCLE] {}/{} failed after {:.0f}ms: {}",
+                    "[LIFECYCLE] %s/%s failed after %.0fms: %s",
                     agent_name,
                     session_id,
                     elapsed,

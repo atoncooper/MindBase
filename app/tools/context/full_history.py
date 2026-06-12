@@ -55,7 +55,7 @@ class GetFullHistoryTool:
         **kwargs: Any,
     ) -> str:
         n = min(max(n_messages, 1), 500)  # Clamp to [1, 500]
-        logger.info("[CTX_TOOL] get_full_history session={} n={}", chat_session_id, n)
+        logger.info("[CTX_TOOL] get_full_history session=%s n=%s", chat_session_id, n)
 
         try:
             messages = await self._retriever.get_recent_messages(chat_session_id, n)
@@ -63,5 +63,5 @@ class GetFullHistoryTool:
                 return "未在数据库中找到对话记录。"
             return "【完整历史记录 — MongoDB】\n\n" + messages_to_text(messages)
         except Exception as exc:
-            logger.warning("[CTX_TOOL] get_full_history failed: {}", exc)
+            logger.warning("[CTX_TOOL] get_full_history failed: %s", exc)
             return "无法获取完整历史记录。"

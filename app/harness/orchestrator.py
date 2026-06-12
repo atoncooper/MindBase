@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -82,19 +82,21 @@ class AgentOrchestrator:
             default: Set True for the fallback agent when routing fails.
         """
         self._agents[name] = AgentDescriptor(
-            name=name, description=description, default=default,
+            name=name,
+            description=description,
+            default=default,
         )
         if default:
             self._default_agent = name
         self._prompt_cache = None  # invalidate cache
-        logger.info("[ORCHESTRATOR] registered agent '{}' (default={})", name, default)
+        logger.info("[ORCHESTRATOR] registered agent '%s' (default=%s)", name, default)
 
     def unregister(self, name: str) -> None:
         """Remove an agent from the routing table."""
         if name in self._agents:
             del self._agents[name]
             self._prompt_cache = None
-            logger.info("[ORCHESTRATOR] unregistered agent '{}'", name)
+            logger.info("[ORCHESTRATOR] unregistered agent '%s'", name)
 
     def list_agents(self) -> list[dict[str, Any]]:
         """Return info about all registered agents."""
@@ -134,22 +136,22 @@ class AgentOrchestrator:
             text = (resp.content or "").strip()
             name = self._parse_agent_name(text)
             if name:
-                logger.info("[ORCHESTRATOR] route: query='{}' → '{}'", query[:60], name)
+                logger.info("[ORCHESTRATOR] route: query='%s' → '%s'", query[:60], name)
                 return name
 
             logger.warning(
-                "[ORCHESTRATOR] couldn't parse route from '{}', defaulting to '{}'",
+                "[ORCHESTRATOR] couldn't parse route from '%s', defaulting to '%s'",
                 text[:50],
                 self._default_agent,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "[ORCHESTRATOR] routing timed out (%.1fs), defaulting to '{}'",
+                "[ORCHESTRATOR] routing timed out (%.1fs), defaulting to '%s'",
                 self._routing_timeout,
                 self._default_agent,
             )
         except Exception as exc:
-            logger.warning("[ORCHESTRATOR] routing failed: {}", exc)
+            logger.warning("[ORCHESTRATOR] routing failed: %s", exc)
 
         return self._default_agent
 

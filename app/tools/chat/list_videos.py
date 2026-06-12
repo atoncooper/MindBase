@@ -50,7 +50,9 @@ class ListVideosTool:
             return "用户暂无已同步的收藏夹。"
 
         context, sources = await self._deps.get_video_context(
-            media_ids, include_content=False, limit=50,
+            media_ids,
+            include_content=False,
+            limit=50,
         )
         if not context:
             return "收藏夹中暂无视频信息，可能需要先入库。"

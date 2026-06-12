@@ -20,7 +20,7 @@ from .models import ConversationContext, ConversationMessage
 from .store import ConversationStore
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ def _mongo_doc_to_message(doc: dict) -> ConversationMessage:
         ts = created_at.timestamp()
     else:
         import time
+
         ts = time.time()
     role = doc.get("role", "user")
     if role == "system":
@@ -60,9 +61,7 @@ def _message_to_mongo_doc(
         "role": message.role,
         "content": message.content,
         "status": "completed",
-        "created_at": datetime.fromtimestamp(
-            message.timestamp, tz=timezone.utc
-        ),
+        "created_at": datetime.fromtimestamp(message.timestamp, tz=timezone.utc),
     }
 
 
@@ -166,7 +165,9 @@ class MongoStore(ConversationStore):
             doc = _message_to_mongo_doc(session_id, message, self._uid)
             await coll(COLLECTION).insert_one(doc)
 
-    async def append_batch(self, session_id: str, messages: list[ConversationMessage]) -> None:
+    async def append_batch(
+        self, session_id: str, messages: list[ConversationMessage]
+    ) -> None:
         from app.infra.mongo import coll, is_enabled
 
         if not is_enabled():
@@ -185,9 +186,7 @@ class MongoStore(ConversationStore):
 
         lock = await self._get_lock(session_id)
         async with lock:
-            result = await coll(COLLECTION).delete_many(
-                {"chat_session_id": session_id}
-            )
+            result = await coll(COLLECTION).delete_many({"chat_session_id": session_id})
             return result.deleted_count > 0
 
     async def exists(self, session_id: str) -> bool:
@@ -247,7 +246,7 @@ class MongoStore(ConversationStore):
         removed = result.deleted_count
         if removed:
             logger.info(
-                "[MONGO_STORE] cleanup_expired sessions={} docs={}",
+                "[MONGO_STORE] cleanup_expired sessions=%s docs=%s",
                 len(stale_ids),
                 removed,
             )

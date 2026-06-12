@@ -67,7 +67,7 @@ class SlidingTurnWindow(WindowStrategy):
         if len(turns) <= self.max_turns:
             return list(messages)
 
-        kept = turns[-self.max_turns:]
+        kept = turns[-self.max_turns :]
         result: list[ConversationMessage] = []
         for user_msg, assistant_msg in kept:
             result.append(user_msg)
@@ -91,4 +91,4 @@ class FixedSizeWindow(WindowStrategy):
     def apply(self, messages: list[ConversationMessage]) -> list[ConversationMessage]:
         if len(messages) <= self.max_messages:
             return list(messages)
-        return messages[-self.max_messages:]
+        return messages[-self.max_messages :]

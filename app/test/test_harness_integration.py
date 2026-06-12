@@ -3,18 +3,13 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage
 
-from app.agent.chat import build_chat_agent, ChatAgentState
-from app.agent.lifecycle.circuit import CircuitBreaker
+from app.agent.chat import build_chat_agent
 from app.agent.memory import build_memory_agent
 from app.agent.quiz import build_quiz_agent
 from app.harness.app import AgentHarness
-from app.harness.runtime import AgentRuntime
 from app.tools.chat import VectorSearchTool, ListVideosTool, GetVideoSummariesTool
-from app.tools.context import SearchChatHistoryTool, GetRecentContextTool
-from app.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
