@@ -20,7 +20,13 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.config import config
-from app.infra.redis import client as redis_client, is_enabled as redis_enabled, k, jset, jget
+from app.infra.redis import (
+    client as redis_client,
+    is_enabled as redis_enabled,
+    k,
+    jset,
+    jget,
+)
 from app.repository.cloud.file_repository import (
     get_cloud_file_repository,
     CloudFileRepository,
@@ -31,10 +37,10 @@ from app.infra.minio import get_minio_client, MinioClient
 # Constants
 # ---------------------------------------------------------------------------
 
-CHUNK_SIZE: int = 10 * 1024 * 1024       # 10 MB
+CHUNK_SIZE: int = 10 * 1024 * 1024  # 10 MB
 MAX_FILE_SIZE: int = 5 * 1024 * 1024 * 1024  # 5 GB
-HEARTBEAT_TTL: int = 300                  # 5 minutes in seconds
-UPLOAD_META_TTL: int = 3600               # 1 hour — upload window
+HEARTBEAT_TTL: int = 300  # 5 minutes in seconds
+UPLOAD_META_TTL: int = 3600  # 1 hour — upload window
 
 _MIME_TO_EXT: dict[str, str] = {
     "video/": ".mp4",
@@ -99,6 +105,7 @@ def _uuid7_timestamp() -> int:
     global _UUID7_EPOCH_MS
     if _UUID7_EPOCH_MS == 0:
         import datetime as _dt
+
         _UUID7_EPOCH_MS = int(
             _dt.datetime(2020, 1, 1, tzinfo=_dt.timezone.utc).timestamp() * 1000
         )
@@ -192,9 +199,7 @@ class CloudUploadService:
         """
         # ---- validation ----
         if not any(mime_type.startswith(p) for p in ALLOWED_MIME_PREFIXES):
-            raise ValueError(
-                f"Unsupported mime_type={mime_type!r}"
-            )
+            raise ValueError(f"Unsupported mime_type={mime_type!r}")
         if file_size <= 0:
             raise ValueError(f"file_size must be positive, got {file_size}")
         if file_size > MAX_FILE_SIZE:
@@ -206,9 +211,13 @@ class CloudUploadService:
         chunk_count = math.ceil(file_size / CHUNK_SIZE)
 
         logger.info(
-            "[CLOUD_UPLOAD] init_upload uid=%d filename=%s size=%d "
-            "chunks=%d upload_uuid=%s",
-            uid, filename, file_size, chunk_count, upload_uuid,
+            "[CLOUD_UPLOAD] init_upload uid={} filename={} size={} "
+            "chunks={} upload_uuid={}",
+            uid,
+            filename,
+            file_size,
+            chunk_count,
+            upload_uuid,
         )
 
         # ---- MinIO multipart upload ----
@@ -223,17 +232,19 @@ class CloudUploadService:
         try:
             for part_number in range(1, chunk_count + 1):
                 url = await self._minio.presigned_upload_part(
-                    object_key, minio_upload_id, part_number,
+                    object_key,
+                    minio_upload_id,
+                    part_number,
                 )
-                presigned_urls.append({
-                    "chunkIndex": part_number - 1,
-                    "chunkSize": CHUNK_SIZE,
-                    "url": url,
-                })
+                presigned_urls.append(
+                    {
+                        "chunkIndex": part_number - 1,
+                        "chunkSize": CHUNK_SIZE,
+                        "url": url,
+                    }
+                )
         except Exception:
-            logger.exception(
-                "[CLOUD_UPLOAD] presigned_url generation failed, aborting"
-            )
+            logger.exception("[CLOUD_UPLOAD] presigned_url generation failed, aborting")
             await self._minio.abort_multipart_upload(object_key, minio_upload_id)
             await self._session_repo.mark_abandoned(session_uuid, db)
             raise
@@ -258,8 +269,9 @@ class CloudUploadService:
         await self._set_heartbeat(session_uuid)
 
         logger.info(
-            "[CLOUD_UPLOAD] init_upload complete upload_uuid=%s session_uuid=%s",
-            upload_uuid, session_uuid,
+            "[CLOUD_UPLOAD] init_upload complete upload_uuid={} session_uuid={}",
+            upload_uuid,
+            session_uuid,
         )
 
         return {
@@ -300,12 +312,12 @@ class CloudUploadService:
         # ---- complete MinIO multipart ----
         try:
             etag = await self._minio.complete_multipart_upload(
-                object_key, minio_upload_id, parts,
+                object_key,
+                minio_upload_id,
+                parts,
             )
         except Exception:
-            logger.exception(
-                "[CLOUD_UPLOAD] minio complete_multipart_upload failed"
-            )
+            logger.exception("[CLOUD_UPLOAD] minio complete_multipart_upload failed")
             raise
 
         # ---- create DB row ----
@@ -325,8 +337,9 @@ class CloudUploadService:
         except Exception:
             logger.critical(
                 "[CLOUD_UPLOAD] DB create/update failed after MinIO complete "
-                "upload_uuid=%s etag=%s — manual fix required!",
-                upload_uuid, etag,
+                "upload_uuid={} etag={} — manual fix required!",
+                upload_uuid,
+                etag,
             )
             raise
 
@@ -334,8 +347,9 @@ class CloudUploadService:
         await self._delete_upload_meta(upload_uuid)
 
         logger.info(
-            "[CLOUD_UPLOAD] complete_upload done upload_uuid=%s etag=%s",
-            upload_uuid, etag,
+            "[CLOUD_UPLOAD] complete_upload done upload_uuid={} etag={}",
+            upload_uuid,
+            etag,
         )
 
         # ---- fire-and-forget pipeline ----
@@ -365,12 +379,13 @@ class CloudUploadService:
             key = k("cloud", "heartbeat", session_uuid)
             await redis_client.setex(key, HEARTBEAT_TTL, "alive")
             logger.debug(
-                "[CLOUD_UPLOAD] heartbeat set session_uuid=%s ttl=%d",
-                session_uuid, HEARTBEAT_TTL,
+                "[CLOUD_UPLOAD] heartbeat set session_uuid={} ttl={}",
+                session_uuid,
+                HEARTBEAT_TTL,
             )
         except Exception:
             logger.warning(
-                "[CLOUD_UPLOAD] heartbeat Redis SETEX failed session_uuid=%s",
+                "[CLOUD_UPLOAD] heartbeat Redis SETEX failed session_uuid={}",
                 session_uuid,
             )
 
@@ -402,22 +417,25 @@ class CloudUploadService:
         try:
             for part_number in range(1, chunk_count + 1):
                 url = await self._minio.presigned_upload_part(
-                    object_key, minio_upload_id, part_number,
+                    object_key,
+                    minio_upload_id,
+                    part_number,
                 )
-                pending_chunks.append({
-                    "chunkIndex": part_number - 1,
-                    "chunkSize": meta["chunk_size"],
-                    "presignedUrl": url,
-                })
+                pending_chunks.append(
+                    {
+                        "chunkIndex": part_number - 1,
+                        "chunkSize": meta["chunk_size"],
+                        "presignedUrl": url,
+                    }
+                )
         except Exception:
-            logger.exception(
-                "[CLOUD_UPLOAD] resume presigned_url generation failed"
-            )
+            logger.exception("[CLOUD_UPLOAD] resume presigned_url generation failed")
             raise
 
         logger.info(
-            "[CLOUD_UPLOAD] resume_upload upload_uuid=%s chunks=%d",
-            upload_uuid, len(pending_chunks),
+            "[CLOUD_UPLOAD] resume_upload upload_uuid={} chunks={}",
+            upload_uuid,
+            len(pending_chunks),
         )
 
         return {
@@ -437,13 +455,14 @@ class CloudUploadService:
         async def _run():
             try:
                 logger.info(
-                    "[CLOUD_UPLOAD] pipeline triggered upload_uuid=%s uid=%d",
-                    upload_uuid, uid,
+                    "[CLOUD_UPLOAD] pipeline triggered upload_uuid={} uid={}",
+                    upload_uuid,
+                    uid,
                 )
                 # TODO: wire up actual ASR + vectorisation
             except Exception:
                 logger.exception(
-                    "[CLOUD_UPLOAD] pipeline failed upload_uuid=%s",
+                    "[CLOUD_UPLOAD] pipeline failed upload_uuid={}",
                     upload_uuid,
                 )
 

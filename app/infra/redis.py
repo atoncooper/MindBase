@@ -50,6 +50,7 @@ client: Redis | None = None
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+
 async def init() -> None:
     """Create the connection pool and verify connectivity.
 
@@ -77,7 +78,7 @@ async def init() -> None:
         raise RuntimeError(f"[REDIS] init failed: {result['error']}")
 
     await _register_scripts()
-    logger.info("[REDIS] connected: latency=%dms", result["latency_ms"])
+    logger.info("[REDIS] connected: latency={}ms", result["latency_ms"])
 
 
 async def close() -> None:
@@ -99,14 +100,23 @@ async def ping() -> dict[str, Any]:
     start = time.time()
     try:
         await client.ping()
-        return {"ok": True, "latency_ms": int((time.time() - start) * 1000), "error": None}
+        return {
+            "ok": True,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": None,
+        }
     except Exception as exc:
-        return {"ok": False, "latency_ms": int((time.time() - start) * 1000), "error": str(exc)}
+        return {
+            "ok": False,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": str(exc),
+        }
 
 
 # ---------------------------------------------------------------------------
 # Key namespace
 # ---------------------------------------------------------------------------
+
 
 def k(*parts: str) -> str:
     """Build a prefixed key: ``k('session', sid)`` → ``bilirag:session:{sid}``."""
@@ -116,6 +126,7 @@ def k(*parts: str) -> str:
 # ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------
+
 
 def _dump(value: Any) -> bytes:
     if _serializer is _json:
@@ -195,7 +206,7 @@ async def _register_scripts() -> None:
         return
     _scripts["rate_limit"] = client.register_script(_RATE_LIMIT_LUA)
     _scripts["cas_delete"] = client.register_script(_CAS_DELETE_LUA)
-    logger.debug("[REDIS] registered %d Lua scripts", len(_scripts))
+    logger.debug("[REDIS] registered {} Lua scripts", len(_scripts))
 
 
 async def rate_limit(key: str, max_per_window: int, window_sec: int) -> bool:
@@ -222,6 +233,7 @@ async def cas_delete(key: str, expected: bytes | str) -> bool:
 # Pub/Sub
 # ---------------------------------------------------------------------------
 
+
 async def publish(channel: str, message: Any) -> int:
     """Publish a JSON-serialised message to *channel*."""
     if client is None:
@@ -239,6 +251,7 @@ def pubsub() -> PubSub:
 # ---------------------------------------------------------------------------
 # Distributed lock (SET NX EX)
 # ---------------------------------------------------------------------------
+
 
 def is_enabled() -> bool:
     """Return True if Redis is initialized and connected."""

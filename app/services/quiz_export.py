@@ -1,6 +1,7 @@
 """
 Quiz 训练数据导出服务 — 支持 JSONL / CSV / SFT 三种格式。
 """
+
 import csv
 import io
 import json
@@ -53,9 +54,18 @@ class QuizDataExportService:
     ) -> AsyncGenerator[str, None]:
         """CSV 格式导出"""
         fieldnames = [
-            "question", "type", "difficulty", "correct_answer",
-            "user_answer", "is_correct", "explanation",
-            "context", "bvid", "quiz_uuid", "submission_uuid", "timestamp",
+            "question",
+            "type",
+            "difficulty",
+            "correct_answer",
+            "user_answer",
+            "is_correct",
+            "explanation",
+            "context",
+            "bvid",
+            "quiz_uuid",
+            "submission_uuid",
+            "timestamp",
         ]
 
         header_written = False
@@ -128,7 +138,7 @@ class QuizDataExportService:
                 JOIN quiz_submissions qsub ON qsub.submission_uuid = qa.submission_uuid
                 JOIN quiz_questions qq ON qq.question_uuid = qa.question_uuid
                 JOIN quiz_sets qs ON qs.quiz_uuid = qsub.quiz_uuid
-                WHERE qsub.uid = :uid
+                WHERE qsub.uid = :uid AND qs.status = 'done'
                 ORDER BY qsub.submitted_at DESC
             """
             result = await db.execute(text(sql), {"uid": uid})
@@ -139,13 +149,27 @@ class QuizDataExportService:
 
                 # 过滤 folder_ids
                 if folder_ids:
-                    quiz_folder_ids = json.loads(row_dict["folder_ids"]) if row_dict["folder_ids"] else []
+                    quiz_folder_ids = (
+                        json.loads(row_dict["folder_ids"])
+                        if row_dict["folder_ids"]
+                        else []
+                    )
                     if not any(fid in folder_ids for fid in quiz_folder_ids):
                         continue
 
-                user_answer = json.loads(row_dict["user_answer"]) if row_dict["user_answer"] else row_dict["user_answer_text"]
-                correct_answer = json.loads(row_dict["correct_answer_snapshot"]) if row_dict["correct_answer_snapshot"] else row_dict["correct_answer_snapshot"]
-                options_data = json.loads(row_dict["options"]) if row_dict["options"] else None
+                user_answer = (
+                    json.loads(row_dict["user_answer"])
+                    if row_dict["user_answer"]
+                    else row_dict["user_answer_text"]
+                )
+                correct_answer = (
+                    json.loads(row_dict["correct_answer_snapshot"])
+                    if row_dict["correct_answer_snapshot"]
+                    else row_dict["correct_answer_snapshot"]
+                )
+                options_data = (
+                    json.loads(row_dict["options"]) if row_dict["options"] else None
+                )
 
                 yield {
                     "question": row_dict["question_text"],
@@ -156,7 +180,11 @@ class QuizDataExportService:
                     "user_answer": user_answer,
                     "is_correct": bool(row_dict["is_correct"]),
                     "explanation": row_dict["explanation"],
-                    "context": row_dict["source_segment"][:500] if row_dict["source_segment"] else None,
+                    "context": (
+                        row_dict["source_segment"][:500]
+                        if row_dict["source_segment"]
+                        else None
+                    ),
                     "bvid": row_dict["bvid"],
                     "folder_id": row_dict["folder_ids"],
                     "quiz_uuid": row_dict["quiz_uuid"],

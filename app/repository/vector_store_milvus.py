@@ -23,15 +23,31 @@ MILVUS_IN_MAX_SIZE = 1000
 IVF_PQ_COLD_START_THRESHOLD = 5000
 
 _BILIBILI_FIELDS = [
-    "bvid", "cid", "page_index", "chunk_index", "chunk_id",
-    "title", "page_title", "source", "section_title",
-    "content_type", "url", "text",
+    "bvid",
+    "cid",
+    "page_index",
+    "chunk_index",
+    "chunk_id",
+    "title",
+    "page_title",
+    "source",
+    "section_title",
+    "content_type",
+    "url",
+    "text",
 ]
 
 _CLOUD_DRIVE_FIELDS = [
-    "upload_uuid", "uid", "chunk_index", "chunk_id",
-    "title", "source", "source_type", "section_title",
-    "content_type", "text",
+    "upload_uuid",
+    "uid",
+    "chunk_index",
+    "chunk_id",
+    "title",
+    "source",
+    "source_type",
+    "section_title",
+    "content_type",
+    "text",
 ]
 
 
@@ -45,7 +61,7 @@ class MilvusVectorStore:
         self._config = config
         self._embedding_fn = embedding_fn
         self._collection_name = collection_name
-        self._is_cloud = (collection_name == config.cloud_collection_name)
+        self._is_cloud = collection_name == config.cloud_collection_name
         self._collection = self._get_or_create_collection()
 
     # ── VectorStoreBackend interface ──────────────────────────────
@@ -107,8 +123,10 @@ class MilvusVectorStore:
             total += len(mr.primary_keys)
 
         logger.info(
-            "[MILVUS] added %d chunks to collection '%s' partition=%s",
-            total, self._collection_name, partition_name or "_default",
+            "[MILVUS] added {} chunks to collection '{}' partition={}",
+            total,
+            self._collection_name,
+            partition_name or "_default",
         )
         return total
 
@@ -142,7 +160,7 @@ class MilvusVectorStore:
                     cur = cur.replace(year=cur.year + 1, month=1)
                 else:
                     cur = cur.replace(month=cur.month + 1)
-            partition_names = names
+            partition_names = self._filter_existing_partitions(names)
 
         # Build filter expression
         if bvids and self._is_cloud:
@@ -203,7 +221,9 @@ class MilvusVectorStore:
                         "url": entity.get("url", ""),
                         "score": hit.score,
                     }
-                docs.append(Document(page_content=entity.get("text", ""), metadata=metadata))
+                docs.append(
+                    Document(page_content=entity.get("text", ""), metadata=metadata)
+                )
         return docs
 
     def delete(
@@ -212,7 +232,7 @@ class MilvusVectorStore:
         where: dict[str, Any] | None = None,
     ) -> int:
         if ids:
-            expr = f'chunk_id in {_quote_list(ids)}'
+            expr = f"chunk_id in {_quote_list(ids)}"
         elif where:
             expr = self._build_filter_expr(where)
         else:
@@ -255,7 +275,9 @@ class MilvusVectorStore:
         try:
             total = self._collection.num_entities
             id_field = "upload_uuid" if self._is_cloud else "bvid"
-            result = self._collection.query(expr="id >= 0", output_fields=[id_field], limit=10000)
+            result = self._collection.query(
+                expr="id >= 0", output_fields=[id_field], limit=10000
+            )
             unique_ids = set(r.get(id_field, "") for r in result)
             return {
                 "total_chunks": total,
@@ -264,7 +286,11 @@ class MilvusVectorStore:
             }
         except Exception as e:
             logger.warning(f"[MILVUS] get_stats failed: {e}")
-            return {"total_chunks": 0, "total_videos": 0, "collection_name": self._collection_name}
+            return {
+                "total_chunks": 0,
+                "total_videos": 0,
+                "collection_name": self._collection_name,
+            }
 
     def clear(self) -> None:
         self._collection.delete("id >= 0")
@@ -274,9 +300,12 @@ class MilvusVectorStore:
     def reset(self) -> None:
         """Drop and recreate the collection (e.g. after embedding model change)."""
         from pymilvus import utility
+
         if utility.has_collection(self._collection_name):
             utility.drop_collection(self._collection_name)
-            logger.info("[MILVUS] collection '%s' dropped for reset", self._collection_name)
+            logger.info(
+                "[MILVUS] collection '{}' dropped for reset", self._collection_name
+            )
         self._collection = self._get_or_create_collection()
 
     def close(self) -> None:
@@ -287,9 +316,36 @@ class MilvusVectorStore:
         if not self._collection.has_partition(name):
             self._collection.create_partition(name)
             logger.info(
-                "[MILVUS] partition '%s' created in collection '%s'",
-                name, self._collection_name,
+                "[MILVUS] partition '{}' created in collection '{}'",
+                name,
+                self._collection_name,
             )
+
+    def _filter_existing_partitions(self, names: list[str]) -> list[str] | None:
+        """Keep only partitions that actually exist in the collection.
+
+        Returns ``None`` if no requested partitions exist (falls back to
+        searching the default partition) or the filtered list otherwise.
+        """
+        if not names:
+            return None
+        existing = [n for n in names if self._collection.has_partition(n)]
+        if not existing:
+            logger.warning(
+                "[MILVUS] none of the requested partitions {} exist in '{}', "
+                "falling back to default partition",
+                names,
+                self._collection_name,
+            )
+            return None
+        if len(existing) < len(names):
+            missing = set(names) - set(existing)
+            logger.debug(
+                "[MILVUS] skipping missing partitions {} in '{}'",
+                missing,
+                self._collection_name,
+            )
+        return existing
 
     # ── internals ─────────────────────────────────────────────────
 
@@ -307,14 +363,16 @@ class MilvusVectorStore:
                     existing_dim = field.params.get("dim", 0)
                     if existing_dim not in (0, expected_dim):
                         logger.warning(
-                            "[MILVUS] collection '%s' has dim=%d, expected=%d, dropping to recreate",
-                            self._collection_name, existing_dim, expected_dim,
+                            "[MILVUS] collection '{}' has dim={}, expected={}, dropping to recreate",
+                            self._collection_name,
+                            existing_dim,
+                            expected_dim,
                         )
                         utility.drop_collection(self._collection_name)
                         break
             else:
                 logger.info(
-                    "[MILVUS] collection '%s' loaded (%d entities)",
+                    "[MILVUS] collection '{}' loaded ({} entities)",
                     self._collection_name,
                     col.num_entities,
                 )
@@ -327,7 +385,9 @@ class MilvusVectorStore:
             fields = self._build_bilibili_schema()
             description = "Bilibili RAG video chunks"
 
-        schema = CollectionSchema(fields, description=description, enable_dynamic_field=True)
+        schema = CollectionSchema(
+            fields, description=description, enable_dynamic_field=True
+        )
         col = Collection(self._collection_name, schema)
 
         index_params = self._get_index_params(self._collection_name, 0)
@@ -335,7 +395,7 @@ class MilvusVectorStore:
         col.load()
 
         logger.info(
-            "[MILVUS] collection '%s' created (dim=%d, index=%s)",
+            "[MILVUS] collection '{}' created (dim={}, index={})",
             self._collection_name,
             self._config.dimension,
             index_params["index_type"],
@@ -359,7 +419,11 @@ class MilvusVectorStore:
             FieldSchema(name="content_type", dtype=DataType.VARCHAR, max_length=32),
             FieldSchema(name="url", dtype=DataType.VARCHAR, max_length=512),
             FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._config.dimension),
+            FieldSchema(
+                name="embedding",
+                dtype=DataType.FLOAT_VECTOR,
+                dim=self._config.dimension,
+            ),
         ]
 
     def _build_cloud_drive_schema(self) -> list:
@@ -377,13 +441,22 @@ class MilvusVectorStore:
             FieldSchema(name="section_title", dtype=DataType.VARCHAR, max_length=256),
             FieldSchema(name="content_type", dtype=DataType.VARCHAR, max_length=32),
             FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._config.dimension),
+            FieldSchema(
+                name="embedding",
+                dtype=DataType.FLOAT_VECTOR,
+                dim=self._config.dimension,
+            ),
         ]
 
-    def _get_index_params(self, collection_name: str, current_vector_count: int) -> dict:
-        if collection_name == self._config.cloud_collection_name and current_vector_count < IVF_PQ_COLD_START_THRESHOLD:
+    def _get_index_params(
+        self, collection_name: str, current_vector_count: int
+    ) -> dict:
+        if (
+            collection_name == self._config.cloud_collection_name
+            and current_vector_count < IVF_PQ_COLD_START_THRESHOLD
+        ):
             logger.info(
-                "[MILVUS] cloud_drive cold-start mode (%d < %d), using IVF_FLAT",
+                "[MILVUS] cloud_drive cold-start mode ({} < {}), using IVF_FLAT",
                 current_vector_count,
                 IVF_PQ_COLD_START_THRESHOLD,
             )
@@ -411,6 +484,8 @@ class MilvusVectorStore:
             if isinstance(value, dict) and "$in" in value:
                 items = _quote_list(value["$in"])
                 parts.append(f"{key} in {items}")
+            elif isinstance(value, dict) and "$like" in value:
+                parts.append(f'{key} like "{_escape_expr(value["$like"])}"')
             elif isinstance(value, str):
                 parts.append(f'{key} == "{_escape_expr(value)}"')
             elif isinstance(value, (int, float)):
@@ -429,7 +504,7 @@ def _build_in_filter(field: str, values: list[str]) -> str | None:
     batch = values[:MILVUS_IN_MAX_SIZE]
     items = _quote_list(batch)
     logger.warning(
-        "[MILVUS] in-filter truncated: %d values → %d (MILVUS_IN_MAX_SIZE=%d)",
+        "[MILVUS] in-filter truncated: {} values → {} (MILVUS_IN_MAX_SIZE={})",
         len(values),
         len(batch),
         MILVUS_IN_MAX_SIZE,

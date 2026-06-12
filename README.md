@@ -370,7 +370,7 @@ python test/test_sync.py
 ### 后端
 - **Web 框架**: FastAPI + Uvicorn
 - **LLM 调用**: LangChain + OpenAI SDK (DashScope 兼容模式)
-- **向量库**: Milvus / ChromaDB
+- **向量库**: Milvus
 - **数据库**: MySQL + SQLAlchemy (异步) + Repository 模式
 - **缓存**: Redis (L1 内存 + L2 Redis)
 - **文档存储**: MongoDB

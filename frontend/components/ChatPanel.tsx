@@ -58,7 +58,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
-  const [chatMode, setChatMode] = useState<"standard" | "agentic">("standard");
+  const [chatMode, setChatMode] = useState<"standard" | "agentic">("agentic");
   const [showReasoning, setShowReasoning] = useState<Set<string>>(new Set());
 
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
@@ -154,25 +154,71 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
       workspace_pages: workspacePages,
     };
 
-    // Agentic 模式：非流式
+    // Agentic 模式：流式 SSE（Agent ReAct 循环）
     if (chatMode === "agentic") {
       try {
-        const res = await chatApi.askAgentic(payload);
-        setChatMessages((prev) =>
-          prev.map((m) =>
-            m.clientId === assistantClientId
-              ? {
-                  ...m,
-                  content: res.answer,
-                  sources: res.sources,
-                  reasoningSteps: res.reasoning_steps,
-                  hopsUsed: res.hops_used,
-                  avgRecallScore: res.avg_recall_score,
-                  status: "completed" as const,
-                }
-              : m
-          )
-        );
+        const stream = await chatApi.askAgentStream(payload);
+        const reader = stream.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let done = false;
+        let sseBuffer = "";
+        let contentBuffer = "";
+
+        while (!done) {
+          const { value, done: doneReading } = await reader.read();
+          done = doneReading;
+          if (!value) continue;
+
+          sseBuffer += decoder.decode(value, { stream: !done });
+          const events = sseBuffer.split("\n\n");
+          sseBuffer = events.pop() || "";
+
+          for (const event of events) {
+            const lines = event.split("\n");
+            let dataLine = "";
+            for (const line of lines) {
+              if (line.startsWith("data:")) {
+                dataLine = line.slice(5).trim();
+              }
+            }
+            if (!dataLine) continue;
+
+            try {
+              const parsed = JSON.parse(dataLine);
+              if (parsed.type === "chunk") {
+                contentBuffer += parsed.content || "";
+                setChatMessages((prev) =>
+                  prev.map((m) =>
+                    m.clientId === assistantClientId
+                      ? { ...m, content: contentBuffer }
+                      : m
+                  )
+                );
+              } else if (parsed.type === "sources") {
+                const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
+                setChatMessages((prev) =>
+                  prev.map((m) =>
+                    m.clientId === assistantClientId ? { ...m, sources } : m
+                  )
+                );
+              } else if (parsed.type === "error") {
+                setChatMessages((prev) =>
+                  prev.map((m) =>
+                    m.clientId === assistantClientId
+                      ? {
+                          ...m,
+                          status: "failed" as const,
+                          error: parsed.message || "Agent 生成失败",
+                        }
+                      : m
+                  )
+                );
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+        }
       } catch (err) {
         setChatMessages((prev) =>
           prev.map((m) =>
@@ -561,7 +607,7 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
                   标准模式
                 </Tabs.Tab>
                 <Tabs.Tab value="agentic" className="mode-tabs-tab">
-                  Agentic RAG
+                  Agent 模式
                 </Tabs.Tab>
               </Tabs.List>
             </Tabs.Root>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft, Trash2 } from "lucide-react";
 import {
     quizApi,
     favoritesV2Api,
@@ -68,6 +68,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     const [showHistory, setShowHistory] = useState(false);
     const [historyItems, setHistoryItems] = useState<QuizHistoryItem[]>([]);
     const [loadingHistory, setLoadingHistory] = useState(false);
+    const [deletingQuizUuid, setDeletingQuizUuid] = useState<string | null>(null);
 
     // Fetch folders on open
     useEffect(() => {
@@ -331,6 +332,36 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
             setError(e instanceof Error ? e.message : "加载题目失败");
         }
     }, []);
+
+    const handleDeleteQuiz = useCallback(async (item: QuizHistoryItem) => {
+        const confirmed = window.confirm(
+            `确定要永久删除「${item.title}」吗？\n\n` +
+            "此操作不可撤销，将删除该题目集、所有作答记录、错题记录和题目数据。\n" +
+            "删除后无法恢复。"
+        );
+
+        if (!confirmed) return;
+
+        setDeletingQuizUuid(item.quiz_uuid);
+        setError(null);
+
+        try {
+            await quizApi.deleteQuiz(item.quiz_uuid);
+            setHistoryItems((prev) => prev.filter((x) => x.quiz_uuid !== item.quiz_uuid));
+
+            if (currentQuiz?.quiz_uuid === item.quiz_uuid) {
+                setCurrentQuiz(null);
+                setSubmitResult(null);
+                setUserAnswers(new Map());
+                setIsReviewMode(false);
+                setReviewCorrectAnswers(new Map());
+            }
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "删除失败");
+        } finally {
+            setDeletingQuizUuid(null);
+        }
+    }, [currentQuiz]);
 
     // Back to generate from review
     const handleBackToGenerate = useCallback(() => {
@@ -939,6 +970,28 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                                 >
                                                     <Download size={12} style={{ display: "inline", marginRight: "3px" }} />
                                                     下载
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteQuiz(item)}
+                                                    disabled={deletingQuizUuid === item.quiz_uuid}
+                                                    style={{
+                                                        padding: "5px 10px",
+                                                        borderRadius: "6px",
+                                                        background: "var(--danger-bg)",
+                                                        color: "var(--danger)",
+                                                        border: "1px solid var(--danger)",
+                                                        cursor: deletingQuizUuid === item.quiz_uuid ? "not-allowed" : "pointer",
+                                                        fontSize: "12px",
+                                                        fontWeight: 600,
+                                                        opacity: deletingQuizUuid === item.quiz_uuid ? 0.6 : 1,
+                                                    }}
+                                                >
+                                                    {deletingQuizUuid === item.quiz_uuid ? (
+                                                        <Loader2 size={12} className="animate-spin" style={{ display: "inline", marginRight: "3px" }} />
+                                                    ) : (
+                                                        <Trash2 size={12} style={{ display: "inline", marginRight: "3px" }} />
+                                                    )}
+                                                    {deletingQuizUuid === item.quiz_uuid ? "删除中" : "删除"}
                                                 </button>
                                             </div>
                                         </div>

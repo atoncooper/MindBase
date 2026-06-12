@@ -48,19 +48,23 @@ async def init() -> None:
             token=config.milvus.token or None,
         )
     except Exception as e:
-        logger.warning("[MILVUS] init failed (continuing): %s", e)
+        logger.warning(
+            "[MILVUS] init failed (continuing): error_type={}", type(e).__name__
+        )
         return
 
     result = await ping()
     if result["ok"]:
         logger.info(
-            "[MILVUS] connected: uri=%s, db=%s, latency=%dms",
-            config.milvus.uri,
+            "[MILVUS] connected: uri_configured={}, db={}, latency={}ms",
+            bool(config.milvus.uri),
             config.milvus.db_name,
             result["latency_ms"],
         )
     else:
-        logger.warning("[MILVUS] ping failed after connect: %s", result["error"])
+        logger.warning(
+            "[MILVUS] ping failed after connect: error_type={}", result["error"]
+        )
 
 
 async def close() -> None:
@@ -74,7 +78,7 @@ async def close() -> None:
         connections.disconnect("default")
         logger.info("[MILVUS] closed")
     except Exception as e:
-        logger.warning("[MILVUS] close error: %s", e)
+        logger.warning("[MILVUS] close error: error_type={}", type(e).__name__)
 
 
 async def ping() -> dict[str, Any]:
@@ -93,7 +97,16 @@ async def ping() -> dict[str, Any]:
     start = time.time()
     try:
         from pymilvus import utility
+
         utility.list_collections()
-        return {"ok": True, "latency_ms": int((time.time() - start) * 1000), "error": None}
+        return {
+            "ok": True,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": None,
+        }
     except Exception as exc:
-        return {"ok": False, "latency_ms": int((time.time() - start) * 1000), "error": str(exc)}
+        return {
+            "ok": False,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": type(exc).__name__,
+        }

@@ -1,6 +1,7 @@
 """
 Quiz 自动批改服务 — 客观题精确批改，简答题关键词匹配，主观题 LLM 评分。
 """
+
 import json
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from typing import Optional
 from loguru import logger
 from langchain_openai import ChatOpenAI
 
+from app.agent.quiz import grade_essay
 from app.config import settings
 from app.database import get_db_context
 from app.services.quiz_generator import get_quiz_set, get_quiz_questions_full
@@ -26,35 +28,8 @@ def _safe_json(value):
         return value
 
 
-ESSAY_GRADING_SYSTEM = "你是一个严格的评分老师。根据评分标准对答案进行客观评分。"
-
-ESSAY_GRADING_PROMPT = """请根据评分标准对学生的答案进行评分。
-
-【题目】
-{question_text}
-
-【评分标准】
-{scoring_rubric}
-
-【参考答案】
-{model_answer}
-
-【学生答案】
-{user_answer}
-
-请按JSON格式输出：
-```json
-{{
-  "total_score": 总分,
-  "max_score": 满分,
-  "step_scores": [
-    {{"step": "第一步名称", "max_points": 2, "score": 1, "reason": "评分理由"}}
-  ],
-  "overall_feedback": "总体评价",
-  "strengths": ["优点"],
-  "weaknesses": ["不足"]
-}}
-```"""
+def _db_utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class QuizGraderService:
@@ -72,7 +47,7 @@ class QuizGraderService:
 
         # 1. Get quiz set and questions
         quiz_set = await get_quiz_set(quiz_uuid)
-        if not quiz_set:
+        if not quiz_set or quiz_set.uid != uid or quiz_set.status != "done":
             raise ValueError("题目集不存在")
 
         questions = await get_quiz_questions_full(quiz_uuid)
@@ -83,7 +58,12 @@ class QuizGraderService:
 
         # 2. 创建提交记录
         await self._create_submission(
-            submission_uuid, quiz_uuid, uid, total_question_count, passing_score, time_spent_seconds
+            submission_uuid,
+            quiz_uuid,
+            uid,
+            total_question_count,
+            passing_score,
+            time_spent_seconds,
         )
 
         # 3. 逐题批改
@@ -108,19 +88,29 @@ class QuizGraderService:
                 result = self._grade_multi_choice(user_answer, correct_answer)
             elif qtype == "short_answer":
                 keywords = _safe_json(question.get("keywords")) or []
-                result = self._grade_short_answer(user_answer, str(correct_answer), keywords)
+                result = self._grade_short_answer(
+                    user_answer, str(correct_answer), keywords
+                )
                 grading_note = "关键词自动评分，仅供参考"
             elif qtype == "essay":
                 rubric = _safe_json(question.get("scoring_rubric")) or []
                 try:
                     result = await self._grade_essay(
-                        question["question_text"], str(user_answer),
-                        rubric, question.get("model_answer"),
+                        question["question_text"],
+                        str(user_answer),
+                        rubric,
+                        question.get("model_answer"),
                     )
                     grading_note = "AI辅助评分，可人工修改"
                 except Exception as e:
                     logger.warning(f"[GRADER] essay grading failed: {e}")
-                    result = {"auto_score": 5, "grading_detail": {"type": "default"}, "grading_note": "LLM评分失败，默认给5分"}
+                    rubric_max = sum(r.get("points", 0) for r in rubric)
+                    fallback_score = min(5, rubric_max) if rubric_max > 0 else 0
+                    result = {
+                        "auto_score": fallback_score,
+                        "grading_detail": {"type": "default"},
+                        "grading_note": "LLM评分失败，默认给5分",
+                    }
                     grading_note = "LLM评分失败，默认给5分"
             else:
                 result = {"auto_score": 0, "grading_detail": {"type": "unknown"}}
@@ -130,25 +120,34 @@ class QuizGraderService:
 
             # 4. 保存答案记录
             await self._save_answer(
-                submission_uuid, q_uuid, qtype, user_answer,
-                correct_answer, result, grading_note,
+                submission_uuid,
+                q_uuid,
+                qtype,
+                user_answer,
+                correct_answer,
+                result,
+                grading_note,
             )
 
             total_score += score
             if is_correct:
                 correct_count += 1
 
-            graded_results.append({
-                "question_uuid": q_uuid,
-                "is_correct": is_correct,
-                "auto_score": score,
-                "correct_answer": correct_answer,
-                "grading_note": grading_note or result.get("grading_note"),
-            })
+            graded_results.append(
+                {
+                    "question_uuid": q_uuid,
+                    "is_correct": is_correct,
+                    "auto_score": score,
+                    "correct_answer": correct_answer,
+                    "grading_note": grading_note or result.get("grading_note"),
+                }
+            )
 
         # 5. 更新提交记录
         passed = total_score >= passing_score
-        await self._update_submission(submission_uuid, total_score, correct_count, passed)
+        await self._update_submission(
+            submission_uuid, total_score, correct_count, passed
+        )
 
         return {
             "submission_uuid": submission_uuid,
@@ -188,7 +187,9 @@ class QuizGraderService:
             },
         }
 
-    def _grade_short_answer(self, user_answer: str, correct_answer: str, keywords: list) -> dict:
+    def _grade_short_answer(
+        self, user_answer: str, correct_answer: str, keywords: list
+    ) -> dict:
         """简答题：关键词匹配"""
         user_lower = str(user_answer).lower()
         matched = [kw for kw in keywords if kw.lower() in user_lower]
@@ -216,44 +217,13 @@ class QuizGraderService:
         scoring_rubric: list,
         model_answer: Optional[str],
     ) -> dict:
-        """主观题：LLM 评分"""
-        total_max = sum(r.get("points", 0) for r in scoring_rubric)
-
-        rubric_text = "\n".join(
-            f"- {r.get('step', '步骤')}（{r.get('points', 0)}分）：关键词 {', '.join(r.get('keywords', []))}"
-            for r in scoring_rubric
-        )
-
-        prompt = ESSAY_GRADING_PROMPT.format(
+        return await grade_essay(
             question_text=question_text,
-            scoring_rubric=rubric_text,
-            model_answer=model_answer or "暂无参考答案",
             user_answer=user_answer,
+            scoring_rubric=scoring_rubric,
+            model_answer=model_answer,
+            llm_factory=lambda _temperature: self._get_llm(),
         )
-
-        llm = self._get_llm()
-        response = await llm.ainvoke([
-            {"role": "system", "content": ESSAY_GRADING_SYSTEM},
-            {"role": "user", "content": prompt},
-        ])
-
-        text = response.content.strip()
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        data = json.loads(text)
-
-        return {
-            "auto_score": data.get("total_score", 0),
-            "max_score": total_max,
-            "grading_detail": {
-                "type": "llm_essay_grading",
-                "step_scores": data.get("step_scores", []),
-                "feedback": data.get("overall_feedback", ""),
-                "strengths": data.get("strengths", []),
-                "weaknesses": data.get("weaknesses", []),
-            },
-            "grading_note": "AI辅助评分，可人工修改",
-        }
 
     @staticmethod
     def _get_llm() -> ChatOpenAI:
@@ -283,6 +253,8 @@ class QuizGraderService:
     ):
         async with get_db_context() as db:
             from sqlalchemy import text
+
+            now = _db_utc_now()
             await db.execute(
                 text(
                     """INSERT INTO quiz_submissions
@@ -300,8 +272,8 @@ class QuizGraderService:
                     "passing_score": passing_score,
                     "is_complete": False,
                     "time_spent_seconds": time_spent_seconds,
-                    "started_at": datetime.now(timezone.utc).isoformat(),
-                    "submitted_at": datetime.now(timezone.utc).isoformat(),
+                    "started_at": now,
+                    "submitted_at": now,
                 },
             )
             await db.commit()
@@ -318,10 +290,20 @@ class QuizGraderService:
     ):
         async with get_db_context() as db:
             from sqlalchemy import text
-            is_correct_int = 1 if result.get("is_correct") else 0
-            matched_keywords = json.dumps(result.get("matched_keywords")) if result.get("matched_keywords") else None
-            grading_detail = json.dumps(result.get("grading_detail")) if result.get("grading_detail") else None
 
+            is_correct_int = 1 if result.get("is_correct") else 0
+            matched_keywords = (
+                json.dumps(result.get("matched_keywords"))
+                if result.get("matched_keywords")
+                else None
+            )
+            grading_detail = (
+                json.dumps(result.get("grading_detail"))
+                if result.get("grading_detail")
+                else None
+            )
+
+            now = _db_utc_now()
             await db.execute(
                 text(
                     """INSERT INTO quiz_answers
@@ -338,15 +320,21 @@ class QuizGraderService:
                     "question_uuid": question_uuid,
                     "question_type": question_type,
                     "user_answer": json.dumps(user_answer, ensure_ascii=False),
-                    "user_answer_text": str(user_answer) if not isinstance(user_answer, str) else user_answer,
+                    "user_answer_text": (
+                        str(user_answer)
+                        if not isinstance(user_answer, str)
+                        else user_answer
+                    ),
                     "is_correct": is_correct_int,
                     "auto_score": result.get("auto_score", 0),
-                    "correct_answer_snapshot": json.dumps(correct_answer, ensure_ascii=False),
+                    "correct_answer_snapshot": json.dumps(
+                        correct_answer, ensure_ascii=False
+                    ),
                     "matched_keywords": matched_keywords,
                     "keyword_match_rate": result.get("keyword_match_rate"),
                     "grading_detail": grading_detail,
-                    "submitted_at": datetime.now(timezone.utc).isoformat(),
-                    "graded_at": datetime.now(timezone.utc).isoformat(),
+                    "submitted_at": now,
+                    "graded_at": now,
                 },
             )
             await db.commit()
@@ -360,6 +348,7 @@ class QuizGraderService:
     ):
         async with get_db_context() as db:
             from sqlalchemy import text
+
             await db.execute(
                 text(
                     """UPDATE quiz_submissions
@@ -373,7 +362,7 @@ class QuizGraderService:
                     "total_score": total_score,
                     "correct_count": correct_count,
                     "is_passed": 1 if passed else 0,
-                    "graded_at": datetime.now(timezone.utc).isoformat(),
+                    "graded_at": _db_utc_now(),
                 },
             )
             await db.commit()

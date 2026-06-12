@@ -21,6 +21,7 @@ Document:
         "created_at":        datetime,
     }
 """
+
 from __future__ import annotations
 
 import uuid
@@ -43,6 +44,7 @@ def _now() -> datetime:
 
 
 # ── Write ops ──────────────────────────────────────────────────────
+
 
 async def insert_message(
     *,
@@ -87,11 +89,11 @@ async def update_message_content(msg_id: str, *, content: str, **fields: Any) ->
     if not is_enabled():
         return
     set_fields = {"content": content, "status": "completed", **fields}
-    result = await coll(COLLECTION).update_one(
-        {"msg_id": msg_id}, {"$set": set_fields}
-    )
+    result = await coll(COLLECTION).update_one({"msg_id": msg_id}, {"$set": set_fields})
     if result.matched_count == 0:
-        logger.warning(f"[MONGO_CHAT] update_message_content: msg_id={msg_id} not found")
+        logger.warning(
+            f"[MONGO_CHAT] update_message_content: msg_id={msg_id} not found"
+        )
 
 
 async def fail_message(msg_id: str, error: str) -> None:
@@ -106,7 +108,8 @@ async def fail_message(msg_id: str, error: str) -> None:
 
 # ── Read ops ───────────────────────────────────────────────────────
 
-async def get_messages(
+
+async def _unsafe_get_messages(
     chat_session_id: str,
     *,
     page: int = 1,
@@ -114,12 +117,38 @@ async def get_messages(
     before_msg_id: Optional[str] = None,
 ) -> tuple[list[dict], int]:
     """Paginated messages for a session, oldest first (chat order)."""
+    query: dict[str, Any] = {"chat_session_id": chat_session_id}
+    return await _get_messages_by_query(
+        query, page=page, page_size=page_size, before_msg_id=before_msg_id
+    )
+
+
+async def get_messages_for_user(
+    chat_session_id: str,
+    uid: int,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    before_msg_id: Optional[str] = None,
+) -> tuple[list[dict], int]:
+    query: dict[str, Any] = {"chat_session_id": chat_session_id, "uid": uid}
+    return await _get_messages_by_query(
+        query, page=page, page_size=page_size, before_msg_id=before_msg_id
+    )
+
+
+async def _get_messages_by_query(
+    query: dict[str, Any],
+    *,
+    page: int,
+    page_size: int,
+    before_msg_id: Optional[str],
+) -> tuple[list[dict], int]:
     if not is_enabled():
         return [], 0
 
-    query: dict[str, Any] = {"chat_session_id": chat_session_id}
     if before_msg_id:
-        query["msg_id"] = {"$lt": before_msg_id}
+        query = {**query, "msg_id": {"$lt": before_msg_id}}
 
     total = await coll(COLLECTION).count_documents(query)
 
@@ -138,17 +167,26 @@ async def session_has_messages(chat_session_id: str) -> bool:
     """Check if a session has at least one message in MongoDB."""
     if not is_enabled():
         return True  # MongoDB disabled → trust MySQL
-    count = await coll(COLLECTION).count_documents({"chat_session_id": chat_session_id}, limit=1)
+    count = await coll(COLLECTION).count_documents(
+        {"chat_session_id": chat_session_id}, limit=1
+    )
     return count > 0
 
 
-async def delete_session_messages(chat_session_id: str) -> int:
+async def _unsafe_delete_session_messages(chat_session_id: str) -> int:
     """Delete all messages belonging to a session. Returns deleted count."""
+    return await _delete_messages_by_query({"chat_session_id": chat_session_id})
+
+
+async def delete_session_messages_for_user(chat_session_id: str, uid: int) -> int:
+    return await _delete_messages_by_query(
+        {"chat_session_id": chat_session_id, "uid": uid}
+    )
+
+
+async def _delete_messages_by_query(query: dict[str, Any]) -> int:
     if not is_enabled():
         return 0
-    result = await coll(COLLECTION).delete_many({"chat_session_id": chat_session_id})
-    logger.info(
-        f"[MONGO_CHAT] deleted {result.deleted_count} messages "
-        f"for chat_session_id={chat_session_id}"
-    )
+    result = await coll(COLLECTION).delete_many(query)
+    logger.info(f"[MONGO_CHAT] deleted {result.deleted_count} messages")
     return result.deleted_count

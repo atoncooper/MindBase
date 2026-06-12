@@ -18,6 +18,9 @@ wheels/
 .installed.cfg
 *.egg
 .pytests_cache/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
 
 # 虚拟环境
 venv/

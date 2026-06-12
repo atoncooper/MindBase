@@ -3,7 +3,9 @@ Bilibili RAG 知识库系统
 
 RAG 服务模块 - 向量存储与问答
 """
+
 from datetime import datetime, timezone, timedelta
+import re
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -17,6 +19,17 @@ from app.response.knowledge import VideoContent
 
 if TYPE_CHECKING:
     from app.services.llm.api_key_manager import ApiKeyManager
+
+
+_FILENAME_RE = re.compile(
+    r"(?P<name>\S+\.(?:md|markdown|docx?|pdf|txt|pptx?|xlsx?|csv|json|py|js|ts|html?|rst|tex|yaml|yml|toml|ini|cfg|conf|sh|bash|zsh|go|java|c|cpp|h|rs|rb|php|sql|r|swift|kt))",
+    re.IGNORECASE,
+)
+
+
+def _extract_filenames(query: str) -> list[str]:
+    """Extract filenames (with extensions) from a user query."""
+    return [m.group("name") for m in _FILENAME_RE.finditer(query)]
 
 
 class RAGService:
@@ -54,6 +67,7 @@ class RAGService:
         # 初始化 Embeddings
         if api_key_manager and api_key_manager.is_enabled:
             from app.services.llm.dynamic_embeddings import DynamicEmbeddings
+
             self.embeddings = DynamicEmbeddings(
                 api_key_manager,
                 api_key=default_embedding_api_key,
@@ -65,6 +79,7 @@ class RAGService:
             # 无 ApiKeyManager 时使用默认 Embeddings（兼容现有逻辑）
             try:
                 from langchain_community.embeddings import DashScopeEmbeddings
+
                 self.embeddings = DashScopeEmbeddings(
                     dashscope_api_key=default_embedding_api_key,
                     model=default_embedding_model,
@@ -83,6 +98,7 @@ class RAGService:
         self.cloud_backend = None
 
         from app.infra.config import config
+
         if not config.milvus.enabled:
             logger.warning("[RAG] Milvus not enabled, vector store unavailable")
         else:
@@ -92,46 +108,64 @@ class RAGService:
             test_vec = self.embeddings.embed_query("dim-probe")
             actual_dim = len(test_vec)
             logger.info(
-                "[RAG] detected embedding dim=%d (config says %d)",
-                actual_dim, config.milvus.dimension,
+                "[RAG] detected embedding dim={} (config says {})",
+                actual_dim,
+                config.milvus.dimension,
             )
             config.milvus.dimension = actual_dim
 
             # B站 video store (bilibili_videos)
             try:
                 self.vectorstore = MilvusVectorStore(
-                    config.milvus, self.embeddings, config.milvus.collection_name,
+                    config.milvus,
+                    self.embeddings,
+                    config.milvus.collection_name,
                 )
-                logger.info("[RAG] vectorstore initialized: %s", config.milvus.collection_name)
-            except Exception:
-                logger.exception("[RAG] vectorstore init failed")
+                logger.info(
+                    "[RAG] vectorstore initialized: {}", config.milvus.collection_name
+                )
+            except Exception as e:
+                logger.warning(
+                    "[RAG] vectorstore init failed: error_type={}",
+                    type(e).__name__,
+                )
 
             # Cloud drive store (cloud_drive) — independent try/except
             try:
                 from app.infra.vector_store import get_cloud_vector_store
+
                 self.cloud_backend = get_cloud_vector_store(self.embeddings)
-                logger.info("[RAG] cloud_backend initialized: %s", config.milvus.cloud_collection_name)
-            except Exception:
-                logger.exception("[RAG] cloud_backend init failed")
+                logger.info(
+                    "[RAG] cloud_backend initialized: {}",
+                    config.milvus.cloud_collection_name,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[RAG] cloud_backend init failed: error_type={}",
+                    type(e).__name__,
+                )
 
         # 初始化 LLM
         self.llm = ChatOpenAI(
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
             model=settings.llm_model,
-            temperature=0.5
+            temperature=0.5,
         )
 
         # 文本分割器
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " "]
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " "],
         )
 
         # 问答提示模板
-        self.qa_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一个知识库助手，专门基于用户收藏的 B站视频内容来回答问题。
+        self.qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """你是一个知识库助手，专门基于用户收藏的 B站视频内容来回答问题。
 
 请遵循以下规则：
 1. 根据提供的视频内容来回答问题
@@ -141,13 +175,18 @@ class RAGService:
 
 视频内容：
 {context}
-"""),
-            ("human", "{question}")
-        ])
+""",
+                ),
+                ("human", "{question}"),
+            ]
+        )
 
         # 无内容时的通用回复模板
-        self.fallback_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一个友好的助手。用户在使用一个B站收藏夹知识库系统。
+        self.fallback_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """你是一个友好的助手。用户在使用一个B站收藏夹知识库系统。
 
 当前情况：知识库中没有找到与用户问题相关的内容。
 
@@ -156,22 +195,29 @@ class RAGService:
 2. 如果能根据常识简单回答，可以简要回答
 3. 建议用户构建更多收藏夹内容，或者换个问法
 4. 保持自然、不要死板
-"""),
-            ("human", "{question}")
-        ])
+""",
+                ),
+                ("human", "{question}"),
+            ]
+        )
 
         # 摘要提示模板
-        self.summary_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一个内容总结专家。请对以下视频字幕内容进行总结。
+        self.summary_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """你是一个内容总结专家。请对以下视频字幕内容进行总结。
 
 要求：
 1. 提取核心要点（3-5个）
 2. 生成一段简洁的总结（100-200字）
 3. 保持原意，不要添加额外信息
 
-字幕内容："""),
-            ("human", "{content}")
-        ])
+字幕内容：""",
+                ),
+                ("human", "{content}"),
+            ]
+        )
 
     def add_video_content(
         self,
@@ -201,10 +247,10 @@ class RAGService:
         if video.outline:
             outline_text = "\n## 内容提纲\n"
             for item in video.outline:
-                item_title = item.get('title', '') or ''
+                item_title = item.get("title", "") or ""
                 outline_text += f"\n### {item_title}\n"
                 for point in item.get("points", []):
-                    point_content = point.get('content', '') or ''
+                    point_content = point.get("content", "") or ""
                     if point_content:
                         outline_text += f"- {point_content}\n"
             if outline_text.strip() != "## 内容提纲":
@@ -214,20 +260,20 @@ class RAGService:
 
         # 验证内容不为空
         if not full_content or len(full_content.strip()) < 10:
-            logger.warning(f"[{video.bvid}] 内容太少，跳过")
+            logger.warning("内容太少，跳过: bvid_present={}", bool(video.bvid))
             return 0
 
         # 分块
         chunks = self.text_splitter.split_text(full_content)
 
         if not chunks:
-            logger.warning(f"[{video.bvid}] 没有生成文档块")
+            logger.warning("没有生成文档块: bvid_present={}", bool(video.bvid))
             return 0
 
         # 过滤空内容块
         valid_chunks = [c for c in chunks if c and c.strip() and len(c.strip()) > 5]
         if not valid_chunks:
-            logger.warning(f"[{video.bvid}] 没有有效的文档块")
+            logger.warning("没有有效的文档块: bvid_present={}", bool(video.bvid))
             return 0
 
         # 创建文档
@@ -242,22 +288,34 @@ class RAGService:
                     "page_title": page_title or title,
                     "source": video.source.value,
                     "chunk_index": i,
-                    "url": f"https://www.bilibili.com/video/{video.bvid}?p={page_index + 1}"
-                }
+                    "url": f"https://www.bilibili.com/video/{video.bvid}?p={page_index + 1}",
+                },
             )
             documents.append(doc)
 
         # 添加到向量库
         try:
-            count = self.vectorstore.add(documents, partition_dt=datetime.now(timezone.utc))
-            logger.info(f"[{video.bvid}] 添加了 {count} 个文档块")
+            count = self.vectorstore.add(
+                documents, partition_dt=datetime.now(timezone.utc)
+            )
+            logger.info(
+                "视频内容添加完成: bvid_present={} chunks={}",
+                bool(video.bvid),
+                count,
+            )
         except Exception as e:
-            logger.error(f"[{video.bvid}] 添加到向量库失败: {e}")
+            logger.error(
+                "添加到向量库失败: bvid_present={} error_type={}",
+                bool(video.bvid),
+                type(e).__name__,
+            )
             raise
 
         return len(documents)
 
-    def add_videos_batch(self, videos: List[VideoContent], progress_callback=None) -> dict:
+    def add_videos_batch(
+        self, videos: List[VideoContent], progress_callback=None
+    ) -> dict:
         """
         批量添加视频到向量库
 
@@ -282,14 +340,14 @@ class RAGService:
                     progress_callback(i + 1, len(videos), video.title)
 
             except Exception as e:
-                logger.error(f"添加视频失败 [{video.bvid}]: {e}")
+                logger.error(
+                    "添加视频失败: bvid_present={} error_type={}",
+                    bool(video.bvid),
+                    type(e).__name__,
+                )
                 failed += 1
 
-        return {
-            "success": success,
-            "failed": failed,
-            "chunks": total_chunks
-        }
+        return {"success": success, "failed": failed, "chunks": total_chunks}
 
     def search(
         self,
@@ -327,6 +385,12 @@ class RAGService:
         try:
             # 构建过滤条件
             filter_cond = None
+            filenames = _extract_filenames(query)
+            if filenames:
+                logger.info(
+                    "[RAG] detected filenames in query: count={}", len(filenames)
+                )
+
             if workspace_pages:
                 # 工作区模式：精确匹配 bvid + page_index
                 conditions = []
@@ -335,26 +399,32 @@ class RAGService:
                     page_idx = wp.get("page_index", 0)
                     # 诊断：检查是否有异常类型
                     if not isinstance(bvid_val, str):
-                        logger.warning(f"[RAG_SEARCH_DEBUG] workspace_pages 中 bvid 类型异常: type={type(bvid_val)}, value={repr(bvid_val)[:50]}")
+                        logger.warning(
+                            "[RAG_SEARCH_DEBUG] workspace_pages 中 bvid 类型异常: type={}",
+                            type(bvid_val).__name__,
+                        )
                     if not isinstance(page_idx, int):
-                        logger.warning(f"[RAG_SEARCH_DEBUG] workspace_pages 中 page_index 类型异常: type={type(page_idx)}, value={repr(page_idx)[:50]}")
-                    conditions.append({
-                        "bvid": bvid_val,
-                        "page_index": page_idx
-                    })
+                        logger.warning(
+                            "[RAG_SEARCH_DEBUG] workspace_pages 中 page_index 类型异常: type={}",
+                            type(page_idx).__name__,
+                        )
+                    conditions.append({"bvid": bvid_val, "page_index": page_idx})
                 if conditions:
-                    # Chroma 的 $or 需要用 where_document 配合
+                    # Milvus $or is not yet needed — simplified bvid $in filter
                     # 这里用简化的方式：先用 bvids 过滤，再在结果中过滤 page_index
                     try:
                         wp_bvids = list(set(wp.get("bvid") for wp in workspace_pages))
                     except TypeError as te:
-                        logger.warning(f"[RAG_SEARCH_DEBUG] wp_bvids set 构建失败: {te}")
+                        logger.warning(
+                            "[RAG_SEARCH_DEBUG] wp_bvids set 构建失败: error_type={}",
+                            type(te).__name__,
+                        )
                         raise
                     filter_cond = {"bvid": {"$in": wp_bvids}}
             elif bvids:
                 filter_cond = {"bvid": {"$in": bvids}}
 
-            # 并行搜索 ChromaDB + Milvus cloud_drive
+            # 并行搜索 Milvus bilibili_videos + cloud_drive
             from concurrent.futures import ThreadPoolExecutor
 
             search_kwargs = {"k": k}
@@ -362,53 +432,96 @@ class RAGService:
                 search_kwargs["filter"] = filter_cond
 
             with ThreadPoolExecutor(max_workers=2) as pool:
-                chroma_fut = pool.submit(
-                    self.vectorstore.search, query,
-                    partition_dt_start=partition_start,
-                    partition_dt_end=partition_end,
-                    **search_kwargs,
-                )
+                # B站 search: only run when a scope filter is present
+                # (bvids / workspace_pages).  Without a filter, full-scan
+                # over all B站 videos produces too much noise — the
+                # embedding space is shared with cloud docs so unrelated
+                # video chunks frequently leak in.
+                bilibili_fut = None
+                has_bilibili_scope = bool(filter_cond) or bool(workspace_pages)
+                if has_bilibili_scope and not filenames:
+                    bilibili_fut = pool.submit(
+                        self.vectorstore.search,
+                        query,
+                        partition_dt_start=partition_start,
+                        partition_dt_end=partition_end,
+                        **search_kwargs,
+                    )
                 cloud_fut = None
                 if self.cloud_backend is not None:
-                    cloud_filter = {"uid": uid} if uid is not None else None
+                    cloud_filter: dict | None = (
+                        {"uid": uid} if uid is not None else None
+                    )
+                    # When query mentions a filename, restrict cloud search by title
+                    if filenames:
+                        if cloud_filter is None:
+                            cloud_filter = {}
+                        # Use like-match so "report.pdf" also matches
+                        # stored titles like "/path/to/report.pdf"
+                        cloud_filter["title"] = {"$like": f"%{filenames[0]}%"}
+                        logger.info(
+                            "[RAG] cloud search with title like-filter: filename_count={}",
+                            len(filenames),
+                        )
                     cloud_fut = pool.submit(
-                        self.cloud_backend.search, query, k=k,
+                        self.cloud_backend.search,
+                        query,
+                        k=k,
                         filter=cloud_filter,
                         partition_dt_start=partition_start,
                         partition_dt_end=partition_end,
                     )
 
-                docs = list(chroma_fut.result())
+                docs = list(bilibili_fut.result()) if bilibili_fut else []
                 if cloud_fut:
                     try:
                         cloud_docs = cloud_fut.result()
                         logger.info(
-                            "[RAG] cloud_backend search: query=%s uid=%s → %d results",
-                            query[:60], uid, len(cloud_docs),
+                            "[RAG] cloud_backend search: query_len={} uid_present={} → {} results",
+                            len(query),
+                            uid is not None,
+                            len(cloud_docs),
                         )
                         docs.extend(cloud_docs)
                     except Exception as e:
-                        logger.warning("[RAG] cloud_backend search skipped: %s", e)
+                        logger.warning(
+                            "[RAG] cloud_backend search skipped: error_type={}",
+                            type(e).__name__,
+                        )
+
+                # When querying by filename and no results found,
+                # do NOT fall back to unfiltered semantic search — it returns
+                # irrelevant docs and confuses the LLM.  Instead return empty
+                # so the LLM can clearly say "file not found in knowledge base".
 
             # 工作区模式：进一步按 page_index 精确过滤
             if workspace_pages:
-                wp_set = {(wp.get("bvid"), wp.get("page_index", 0)) for wp in workspace_pages}
-                docs = [d for d in docs if (d.metadata.get("bvid"), d.metadata.get("page_index", 0)) in wp_set]
+                wp_set = {
+                    (wp.get("bvid"), wp.get("page_index", 0)) for wp in workspace_pages
+                }
+                docs = [
+                    d
+                    for d in docs
+                    if (d.metadata.get("bvid"), d.metadata.get("page_index", 0))
+                    in wp_set
+                ]
 
-            logger.info(f"检索完成：query='{query}'，召回={len(docs)}")
+            logger.info("检索完成：query_len={}，召回={}", len(query), len(docs))
             for idx, doc in enumerate(docs):
                 meta = doc.metadata or {}
-                title = meta.get("title", "")
-                bvid = meta.get("bvid", "")
-                upload_uuid = meta.get("upload_uuid", "")
-                chunk_index = meta.get("chunk_index", "")
-                src = bvid or upload_uuid or "?"
-                preview = doc.page_content[:120].replace("\n", " ").strip()
-                logger.info(f"召回[{idx+1}] {src} #{chunk_index} {title} | {preview}")
+                logger.info(
+                    "召回[{}] source_type={} has_bvid={} has_upload_uuid={} chunk_index_present={} content_len={}",
+                    idx + 1,
+                    "cloud" if meta.get("upload_uuid") else "bilibili",
+                    bool(meta.get("bvid")),
+                    bool(meta.get("upload_uuid")),
+                    meta.get("chunk_index") is not None,
+                    len(doc.page_content or ""),
+                )
 
             return docs
         except Exception as e:
-            logger.warning(f"向量检索失败: {e}")
+            logger.warning("向量检索失败: error_type={}", type(e).__name__)
             return []
 
     async def _fallback_answer(self, question: str, reason: str = "") -> dict:
@@ -431,18 +544,17 @@ class RAGService:
             )
 
             answer = await chain.ainvoke(question)
-            return {
-                "answer": answer,
-                "sources": []
-            }
+            return {"answer": answer, "sources": []}
         except Exception as e:
-            logger.error(f"Fallback 回复失败: {e}")
+            logger.error("Fallback 回复失败: error_type={}", type(e).__name__)
             return {
                 "answer": f"抱歉，{reason}。您可以尝试构建更多收藏夹内容，或者换个问法试试。",
-                "sources": []
+                "sources": [],
             }
 
-    async def answer_question(self, question: str, k: int = 5, bvids: Optional[List[str]] = None) -> dict:
+    async def answer_question(
+        self, question: str, k: int = 5, bvids: Optional[List[str]] = None
+    ) -> dict:
         """
         回答问题
 
@@ -467,7 +579,7 @@ class RAGService:
         try:
             docs = self.search(question, k=k, bvids=bvids if bvids else None)
         except Exception as e:
-            logger.error(f"检索失败: {e}")
+            logger.error("检索失败: error_type={}", type(e).__name__)
             return await self._fallback_answer(question, "检索时遇到问题")
 
         if not docs:
@@ -489,27 +601,28 @@ class RAGService:
 
             if bvid and bvid not in seen_bvids:
                 seen_bvids.add(bvid)
-                sources.append({
-                    "bvid": bvid,
-                    "title": title,
-                    "url": doc.metadata.get("url", f"https://www.bilibili.com/video/{bvid}")
-                })
+                sources.append(
+                    {
+                        "bvid": bvid,
+                        "title": title,
+                        "url": doc.metadata.get(
+                            "url", f"https://www.bilibili.com/video/{bvid}"
+                        ),
+                    }
+                )
 
         # 如果没有有效内容
         if not context_parts:
             return {
                 "answer": "检索到了相关视频，但没有找到有效的文本内容。可能是视频还未完成内容提取。",
-                "sources": sources
+                "sources": sources,
             }
 
         context = "\n\n---\n\n".join(context_parts)
 
         # 确保 context 不为空
         if not context.strip():
-            return {
-                "answer": "没有找到可用的内容来回答您的问题。",
-                "sources": sources
-            }
+            return {"answer": "没有找到可用的内容来回答您的问题。", "sources": sources}
 
         # 构建链并执行
         try:
@@ -522,16 +635,10 @@ class RAGService:
 
             answer = await chain.ainvoke(question)
 
-            return {
-                "answer": answer,
-                "sources": sources
-            }
+            return {"answer": answer, "sources": sources}
         except Exception as e:
-            logger.error(f"LLM 调用失败: {e}")
-            return {
-                "answer": f"AI 回答时发生错误: {str(e)}",
-                "sources": sources
-            }
+            logger.error("LLM 调用失败: error_type={}", type(e).__name__)
+            return {"answer": "AI 回答时发生错误", "sources": sources}
 
     async def summarize_content(self, content: str) -> str:
         """
@@ -562,7 +669,7 @@ class RAGService:
         try:
             return self.vectorstore.get_stats()
         except Exception as e:
-            logger.error(f"获取统计信息失败: {e}")
+            logger.error("获取统计信息失败: error_type={}", type(e).__name__)
             return {
                 "total_chunks": 0,
                 "total_videos": 0,
@@ -573,9 +680,9 @@ class RAGService:
         """清空向量库"""
         try:
             self.vectorstore.clear()
-            logger.info(f"已清空向量库: {self.collection_name}")
+            logger.info("已清空向量库: collection={}", self.collection_name)
         except Exception as e:
-            logger.error(f"清空向量库失败: {e}")
+            logger.error("清空向量库失败: error_type={}", type(e).__name__)
             raise
 
     def delete_video(self, bvid: str):
@@ -587,9 +694,13 @@ class RAGService:
         """
         try:
             self.vectorstore.delete_by_bvid(bvid)
-            logger.info(f"已删除视频: {bvid}")
+            logger.info("已删除视频: bvid_present={}", bool(bvid))
         except Exception as e:
-            logger.error(f"删除视频失败 [{bvid}]: {e}")
+            logger.error(
+                "删除视频失败: bvid_present={} error_type={}",
+                bool(bvid),
+                type(e).__name__,
+            )
             raise
 
     def delete_page_vectors(self, bvid: str, page_index: int):
@@ -602,9 +713,18 @@ class RAGService:
         """
         try:
             self.vectorstore.delete_by_page(bvid, page_index)
-            logger.info(f"已删除分P向量: {bvid} P{page_index + 1}")
+            logger.info(
+                "已删除分P向量: bvid_present={} page_index={}",
+                bool(bvid),
+                page_index,
+            )
         except Exception as e:
-            logger.error(f"删除分P向量失败 [{bvid} P{page_index + 1}]: {e}")
+            logger.error(
+                "删除分P向量失败: bvid_present={} page_index={} error_type={}",
+                bool(bvid),
+                page_index,
+                type(e).__name__,
+            )
             raise
 
     def get_page_vector_count(self, bvid: str, page_index: int) -> int:
@@ -621,5 +741,10 @@ class RAGService:
         try:
             return self.vectorstore.count_by_page(bvid, page_index)
         except Exception as e:
-            logger.warning(f"获取分P向量数量失败 [{bvid} P{page_index + 1}]: {e}")
+            logger.warning(
+                "获取分P向量数量失败: bvid_present={} page_index={} error_type={}",
+                bool(bvid),
+                page_index,
+                type(e).__name__,
+            )
             return 0

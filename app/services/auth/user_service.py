@@ -12,8 +12,13 @@ from loguru import logger
 
 from app.models import UserToken
 from app.utils.snowflake import SnowflakeGenerator
-from app.services.auth.security import encrypt
-from app.services.auth.token import create_token, validate_token, revoke_token, revoke_all_tokens  # noqa: F401
+from app.services.auth.security import encrypt, decrypt
+from app.services.auth.token import (
+    create_token,
+    validate_token,
+    revoke_token,
+    revoke_all_tokens,
+)  # noqa: F401
 
 from app.repository.user_repository import get_user_repository
 from app.repository.user_oauth_repository import get_user_oauth_repository
@@ -59,14 +64,17 @@ class UserService:
             if provider_data:
                 access_token_enc = (
                     encrypt(provider_data["access_token"])
-                    if provider_data.get("access_token") else None
+                    if provider_data.get("access_token")
+                    else None
                 )
                 refresh_token_enc = (
                     encrypt(provider_data["refresh_token"])
-                    if provider_data.get("refresh_token") else None
+                    if provider_data.get("refresh_token")
+                    else None
                 )
                 await oauth_repo.update_tokens(
-                    existing, self.db,
+                    existing,
+                    self.db,
                     access_token=access_token_enc,
                     refresh_token=refresh_token_enc,
                     expires_at=provider_data.get("expires_at"),
@@ -80,24 +88,36 @@ class UserService:
             await user_repo.create(uid, self.db)
 
             await oauth_repo.create(
-                uid, self.db,
+                uid,
+                self.db,
                 provider=provider,
                 provider_uid=provider_uid,
-                access_token=encrypt(provider_data["access_token"]) if provider_data and provider_data.get("access_token") else None,
-                refresh_token=encrypt(provider_data["refresh_token"]) if provider_data and provider_data.get("refresh_token") else None,
+                access_token=(
+                    encrypt(provider_data["access_token"])
+                    if provider_data and provider_data.get("access_token")
+                    else None
+                ),
+                refresh_token=(
+                    encrypt(provider_data["refresh_token"])
+                    if provider_data and provider_data.get("refresh_token")
+                    else None
+                ),
                 expires_at=provider_data.get("expires_at") if provider_data else None,
                 raw_data=provider_data.get("raw_data") if provider_data else None,
                 is_primary=True,
             )
-            await profile_repo.upsert(uid, self.db, **(
-                self._pick_profile(profile) if profile else {}
-            ))
+            await profile_repo.upsert(
+                uid, self.db, **(self._pick_profile(profile) if profile else {})
+            )
             await rbac_repo.grant_role(uid, DEFAULT_ROLE, self.db, granted_by=0)
             logger.info(f"[USER] created uid={uid} via {provider}:{provider_uid}")
 
         token = await create_token(
-            self.db, uid=uid,
-            device_id=device_id, ip=ip, user_agent=user_agent,
+            self.db,
+            uid=uid,
+            device_id=device_id,
+            ip=ip,
+            user_agent=user_agent,
         )
         # Record device info for device management
         if device_id:
@@ -136,14 +156,94 @@ class UserService:
     @staticmethod
     async def _invalidate_user_cache(uid: int) -> None:
         from app.services.auth import cache as auth_cache
+
         await auth_cache.delete_user(uid)
 
-    async def get_user_by_oauth(self, provider: str, provider_uid: str) -> Optional[dict]:
+    async def get_user_by_oauth(
+        self, provider: str, provider_uid: str
+    ) -> Optional[dict]:
         """Find user by OAuth binding."""
-        oauth = await get_user_oauth_repository().find_by_provider(provider, provider_uid, self.db)
+        oauth = await get_user_oauth_repository().find_by_provider(
+            provider, provider_uid, self.db
+        )
         if not oauth:
             return None
         return await self.get_user_by_uid(oauth.uid)
+
+    async def bind_oauth_to_user(
+        self,
+        *,
+        uid: int,
+        provider: str,
+        provider_uid: str,
+        provider_data: dict | None = None,
+        profile: dict | None = None,
+    ) -> None:
+        user = await get_user_repository().get_by_uid(uid, self.db)
+        if not user:
+            raise ValueError("用户不存在")
+
+        oauth_repo = get_user_oauth_repository()
+        existing = await oauth_repo.find_by_provider(provider, provider_uid, self.db)
+        access_token_enc = (
+            encrypt(provider_data["access_token"])
+            if provider_data and provider_data.get("access_token")
+            else None
+        )
+        refresh_token_enc = (
+            encrypt(provider_data["refresh_token"])
+            if provider_data and provider_data.get("refresh_token")
+            else None
+        )
+
+        if existing:
+            if existing.uid != uid:
+                raise ValueError("该第三方账号已绑定其他用户")
+            await oauth_repo.update_tokens(
+                existing,
+                self.db,
+                access_token=access_token_enc,
+                refresh_token=refresh_token_enc,
+                expires_at=provider_data.get("expires_at") if provider_data else None,
+                raw_data=provider_data.get("raw_data") if provider_data else None,
+            )
+        else:
+            current_binding = await oauth_repo.find_by_uid_provider(
+                uid, provider, self.db
+            )
+            if current_binding:
+                await oauth_repo.update_binding(
+                    current_binding,
+                    self.db,
+                    provider_uid=provider_uid,
+                    access_token=access_token_enc,
+                    refresh_token=refresh_token_enc,
+                    expires_at=(
+                        provider_data.get("expires_at") if provider_data else None
+                    ),
+                    raw_data=provider_data.get("raw_data") if provider_data else None,
+                )
+            else:
+                await oauth_repo.create(
+                    uid,
+                    self.db,
+                    provider=provider,
+                    provider_uid=provider_uid,
+                    access_token=access_token_enc,
+                    refresh_token=refresh_token_enc,
+                    expires_at=(
+                        provider_data.get("expires_at") if provider_data else None
+                    ),
+                    raw_data=provider_data.get("raw_data") if provider_data else None,
+                    is_primary=False,
+                )
+
+        if profile:
+            await get_user_profile_repository().upsert(
+                uid, self.db, **self._pick_profile(profile)
+            )
+        await self._invalidate_user_cache(uid)
+        logger.info(f"[USER] bound oauth uid={uid} via {provider}:{provider_uid}")
 
     async def get_user_roles(self, uid: int) -> list[str]:
         """Return active role IDs for a user."""
@@ -165,22 +265,30 @@ class UserService:
     # ── Login ──────────────────────────────────────────────────
 
     async def login_with_password(
-        self, email: str, password: str,
-        *, device_id: str | None = None, ip: str | None = None, user_agent: str | None = None,
+        self,
+        email: str,
+        password: str,
+        *,
+        device_id: str | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
     ) -> tuple[int, UserToken]:
         """Login via email + password. Raises ValueError on failure."""
         from app.services.auth.security import verify_password as _verify
+
         user = await get_user_repository().find_by_email(email, self.db)
         if not user or not user.password_hash:
             raise ValueError("邮箱未注册或未设置密码")
         if not _verify(password, user.password_hash):
             raise ValueError("密码不正确")
         token = await create_token(
-            self.db, uid=user.uid,
-            device_id=device_id, ip=ip, user_agent=user_agent,
+            self.db,
+            uid=user.uid,
+            device_id=device_id,
+            ip=ip,
+            user_agent=user_agent,
+            commit=False,
         )
-        if device_id:
-            await self._record_device(uid=user.uid, device_id=device_id)
         logger.info(f"[USER] password login uid={user.uid}")
         return user.uid, token
 
@@ -250,10 +358,18 @@ class UserService:
         if not user:
             return None
         profile_keys = {
-            "nickname", "avatar", "bio", "birthday",
-            "gender", "location", "timezone", "language",
+            "nickname",
+            "avatar",
+            "bio",
+            "birthday",
+            "gender",
+            "location",
+            "timezone",
+            "language",
         }
-        profile_fields = {k: v for k, v in fields.items() if k in profile_keys and v is not None}
+        profile_fields = {
+            k: v for k, v in fields.items() if k in profile_keys and v is not None
+        }
         if profile_fields:
             await get_user_profile_repository().upsert(uid, self.db, **profile_fields)
         await self._invalidate_user_cache(uid)
@@ -264,20 +380,29 @@ class UserService:
     async def set_password(self, uid: int, password: str) -> None:
         """Set password for the first time (only if no password exists)."""
         from app.services.auth.security import hash_password as _hash
+
         user = await get_user_repository().get_by_uid(uid, self.db)
         if not user:
             raise ValueError("用户不存在")
         if user.password_hash:
             raise ValueError("密码已设置，请使用修改密码接口")
         await get_user_repository().update(
-            uid, self.db, password_hash=_hash(password),
+            uid,
+            self.db,
+            password_hash=_hash(password),
         )
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] password set for uid={uid}")
 
-    async def change_password(self, uid: int, old_password: str, new_password: str) -> None:
+    async def change_password(
+        self, uid: int, old_password: str, new_password: str
+    ) -> None:
         """Change password (requires old_password verification)."""
-        from app.services.auth.security import verify_password as _verify, hash_password as _hash
+        from app.services.auth.security import (
+            verify_password as _verify,
+            hash_password as _hash,
+        )
+
         user = await get_user_repository().get_by_uid(uid, self.db)
         if not user:
             raise ValueError("用户不存在")
@@ -286,7 +411,9 @@ class UserService:
         if not _verify(old_password, user.password_hash):
             raise ValueError("旧密码不正确")
         await get_user_repository().update(
-            uid, self.db, password_hash=_hash(new_password),
+            uid,
+            self.db,
+            password_hash=_hash(new_password),
         )
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] password changed for uid={uid}")
@@ -296,10 +423,13 @@ class UserService:
     async def bind_email(self, uid: int, email: str) -> None:
         """Directly bind/change email (no verification)."""
         from sqlalchemy.exc import IntegrityError
+
         try:
             user = await get_user_repository().update(
-                uid, self.db,
-                email=email, email_verified=False,
+                uid,
+                self.db,
+                email=email,
+                email_verified=False,
             )
             if not user:
                 raise ValueError("用户不存在")
@@ -311,10 +441,13 @@ class UserService:
     async def bind_phone(self, uid: int, phone: str) -> None:
         """Directly bind/change phone (no verification)."""
         from sqlalchemy.exc import IntegrityError
+
         try:
             user = await get_user_repository().update(
-                uid, self.db,
-                phone=phone, phone_verified=False,
+                uid,
+                self.db,
+                phone=phone,
+                phone_verified=False,
             )
             if not user:
                 raise ValueError("用户不存在")
@@ -332,7 +465,10 @@ class UserService:
             return
         await self._check_can_unbind(uid)
         await get_user_repository().update(
-            uid, self.db, email=None, email_verified=False,
+            uid,
+            self.db,
+            email=None,
+            email_verified=False,
         )
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] email unbound for uid={uid}")
@@ -346,7 +482,10 @@ class UserService:
             return
         await self._check_can_unbind(uid)
         await get_user_repository().update(
-            uid, self.db, phone=None, phone_verified=False,
+            uid,
+            self.db,
+            phone=None,
+            phone_verified=False,
         )
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] phone unbound for uid={uid}")
@@ -374,12 +513,24 @@ class UserService:
         oauth_repo = get_user_oauth_repository()
         bindings = await oauth_repo.list_by_uid(uid, self.db)
         oauth_list = []
+        bilibili_status = {
+            "bound": False,
+            "valid": False,
+            "mid": None,
+            "nickname": None,
+            "avatar": None,
+            "message": "未绑定B站账号",
+        }
         for b in bindings:
-            oauth_list.append({
-                "provider": b.provider,
-                "email": getattr(b, "email", None),
-                "is_primary": bool(b.is_primary),
-            })
+            oauth_list.append(
+                {
+                    "provider": b.provider,
+                    "email": getattr(b, "email", None),
+                    "is_primary": bool(b.is_primary),
+                }
+            )
+            if b.provider == "bilibili":
+                bilibili_status = await self._get_bilibili_status(b)
 
         return {
             "email": user.email,
@@ -388,7 +539,45 @@ class UserService:
             "phone_verified": bool(user.phone_verified),
             "has_password": bool(user.password_hash),
             "oauth_bindings": oauth_list,
+            "bilibili": bilibili_status,
         }
+
+    async def _get_bilibili_status(self, binding) -> dict:
+        status = {
+            "bound": True,
+            "valid": False,
+            "mid": (
+                int(binding.provider_uid)
+                if str(binding.provider_uid).isdigit()
+                else None
+            ),
+            "nickname": None,
+            "avatar": None,
+            "message": "B站登录已失效，请重新扫码",
+        }
+        if not binding.access_token:
+            return status
+
+        try:
+            sessdata = decrypt(binding.access_token)
+            from app.services.bilibili import BilibiliService
+
+            bili = BilibiliService(sessdata=sessdata, dedeuserid=binding.provider_uid)
+            try:
+                data = await bili.get_user_info()
+            finally:
+                await bili.close()
+            return {
+                **status,
+                "valid": True,
+                "mid": data.get("mid") or status["mid"],
+                "nickname": data.get("uname"),
+                "avatar": data.get("face"),
+                "message": "B站账号已绑定",
+            }
+        except Exception as exc:
+            logger.warning(f"[USER] bilibili binding invalid uid={binding.uid}: {exc}")
+            return status
 
     # ── Internal helpers ─────────────────────────────────────────
 
@@ -398,8 +587,9 @@ class UserService:
         """
         try:
             from app.repository.user_device_repository import get_user_device_repository
+
             repo = get_user_device_repository()
-            await repo.upsert(self.db, uid=uid, device_id=device_id)
+            await repo.upsert(self.db, uid=uid, device_id=device_id, commit=False)
         except Exception:
             logger.exception("[USER] failed to record device uid={}", uid)
 

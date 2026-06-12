@@ -3,6 +3,7 @@ Bilibili RAG 知识库系统
 
 主应用入口
 """
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -114,6 +115,7 @@ def _diagnose_langsmith() -> None:
     # 检查 langsmith 包是否安装
     try:
         import langsmith as ls
+
         logger.info(f"[LANGSMITH] langsmith 包已安装 (版本: {ls.__version__})")
     except ImportError:
         logger.error(
@@ -125,6 +127,7 @@ def _diagnose_langsmith() -> None:
     # 验证 API key 是否有效
     try:
         from langsmith import Client
+
         client = Client()
         projects = list(client.list_projects())
         logger.info(f"[LANGSMITH] API key 验证成功 (找到 {len(projects)} 个项目)")
@@ -159,7 +162,7 @@ async def _recover_stuck_cloud_tasks():
             if count > 0:
                 logger.warning(f"[STARTUP] 恢复 {count} 个卡住的云盘处理任务")
     except Exception as e:
-        logger.debug("[STARTUP] cloud task recovery skipped: %s", e)
+        logger.debug("[STARTUP] cloud task recovery skipped: {}", e)
 
 
 @asynccontextmanager
@@ -174,23 +177,29 @@ async def lifespan(app: FastAPI):
     # Init Redis (before cache_manager so L2 can be activated)
     if settings.redis_enabled:
         from app.infra.redis import init as redis_init, ping as redis_ping
+
         await redis_init()
         result = await redis_ping()
         if not result["ok"]:
             raise RuntimeError(f"Redis connection failed: {result['error']}")
-        logger.info("[REDIS] connected (latency=%dms)", result["latency_ms"])
+        logger.info("[REDIS] connected (latency={}ms)", result["latency_ms"])
 
     # Init multi-level cache (L1 local, L2 Redis when connected)
     from app.infra.cache import cache_manager
+
     await cache_manager.start(redis_enabled=settings.redis_enabled)
-    logger.info(f"[CACHE] manager started (L1 ready, L2={'redis' if settings.redis_enabled else 'disabled'})")
+    logger.info(
+        f"[CACHE] manager started (L1 ready, L2={'redis' if settings.redis_enabled else 'disabled'})"
+    )
 
     # Startup health checks — fails fast if any enabled infra is unreachable
     from app.utils.startup_checks import run_startup_checks
+
     await run_startup_checks()
 
     # Start async task cache refresher subprocess (every 30s)
     from app.services.async_task.cache import start_cache_refresher
+
     start_cache_refresher(settings.database_url)
 
     # LangSmith 追踪诊断
@@ -198,9 +207,11 @@ async def lifespan(app: FastAPI):
 
     # Plan 0021: Cloud drive initialization
     from app.infra.config import config as _cfg
+
     if _cfg.minio.enabled:
         try:
             from app.infra.minio import init as minio_init
+
             await minio_init()
             logger.info("[MAIN] MinIO init OK")
         except Exception as e:
@@ -208,6 +219,7 @@ async def lifespan(app: FastAPI):
 
     # 初始化 ApiKeyManager（用户自定义 API Key 加密服务）
     from app.services.llm.api_key_manager import ApiKeyManager
+
     app.state.api_key_manager = ApiKeyManager(
         encryption_key_b64=settings.api_key_encryption_key or None
     )
@@ -219,10 +231,12 @@ async def lifespan(app: FastAPI):
 
     # 初始化 BufferedUsageWriter（用量缓冲批量写入器）
     from app.services.llm.buffered_usage_writer import start_buffered_usage_writer
+
     app.state.usage_writer = await start_buffered_usage_writer()
 
     # 初始化 QueryRewriter
     from app.services.query import QueryRewriter
+
     app.state.rewriter = QueryRewriter()
     logger.info("[QUERY_REWRITE] QueryRewriter initialized")
 
@@ -251,24 +265,64 @@ async def lifespan(app: FastAPI):
     # Plan 0023: Recover stuck cloud drive document processing tasks
     await _recover_stuck_cloud_tasks()
 
+    # === Agent Harness 启动 ===
+    try:
+        from app.context import init_context_manager
+        from app.harness import AgentHarness
+
+        ctx_mgr = init_context_manager()
+        _llm_for_harness = _get_harness_llm()
+        if _llm_for_harness:
+            from app.database import async_session_factory
+
+            _harness = AgentHarness(
+                context_manager=ctx_mgr,
+                llm=_llm_for_harness,
+                session_factory=async_session_factory,
+            )
+            await _harness.start()
+            app.state.agent_harness = _harness
+            logger.info(
+                "[HARNESS] started agents={} tools={}",
+                _harness.lifecycle.registered_agents,
+                len(_harness.tool_names),
+            )
+        else:
+            logger.warning("[HARNESS] LLM not configured — harness not started")
+    except Exception as e:
+        logger.warning(f"[HARNESS] startup failed (agents unavailable): {e}")
+
     yield
 
     # 关闭时 — 使用 asyncio.shield 防止 Ctrl+C 取消导致缓冲区数据丢失
     import asyncio as _asyncio
+
     try:
-        from app.services.llm.buffered_usage_writer import shutdown_buffered_usage_writer
+        from app.services.llm.buffered_usage_writer import (
+            shutdown_buffered_usage_writer,
+        )
+
         await _asyncio.shield(shutdown_buffered_usage_writer())
 
         await _asyncio.shield(app.state.rewriter.close())
         logger.info("[QUERY_REWRITE] QueryRewriter shutdown")
 
+        # Agent Harness shutdown
+        _harness = getattr(app.state, "agent_harness", None)
+        if _harness and _harness.started:
+            await _asyncio.shield(_harness.shutdown())
+            logger.info("[HARNESS] shutdown complete")
+
         from app.infra.mongo import close as close_mongo
+
         await _asyncio.shield(close_mongo())
 
         from app.infra.milvus import close as close_milvus
+
         await _asyncio.shield(close_milvus())
 
         from app.services.async_task.cache import stop_cache_refresher
+
         stop_cache_refresher()
 
         logger.info("👋 应用关闭")
@@ -297,17 +351,18 @@ app = FastAPI(
 
 ### 技术栈
 
-- FastAPI + LangChain + ChromaDB
+- FastAPI + LangChain + Milvus
 - B站 API (非官方)
     """,
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 
 # ---------------------------------------------------------------------------
 # Middleware: request-id + error logging
 # ---------------------------------------------------------------------------
+
 
 @app.middleware("http")
 async def request_context_middleware(request: Request, call_next):
@@ -320,8 +375,9 @@ async def request_context_middleware(request: Request, call_next):
             return response
         except Exception:
             logger.exception(
-                "Unhandled exception | method=%s path=%s",
-                request.method, request.url.path,
+                "Unhandled exception | method={} path={}",
+                request.method,
+                request.url.path,
             )
             return JSONResponse(
                 status_code=500,
@@ -342,13 +398,14 @@ app.add_middleware(
 try:
     from app.infra.redis import redis_client
     from app.middleware.rate_limit import RateLimitMiddleware
+
     if redis_client:
         app.add_middleware(RateLimitMiddleware, redis_client=redis_client)
         logger.info("[MAIN] RateLimitMiddleware registered (Redis backend)")
     else:
         logger.warning("[MAIN] RateLimitMiddleware skipped — Redis not available")
 except Exception as e:
-    logger.warning("[MAIN] RateLimitMiddleware failed to init: %s", e)
+    logger.warning("[MAIN] RateLimitMiddleware failed to init: {}", e)
 
 
 # 注册路由
@@ -367,6 +424,7 @@ app.include_router(tasks_ws_router)
 # Plan 0021: Cloud drive router (with graceful degradation)
 try:
     from app.routers.cloud import router as cloud_router
+
     app.include_router(cloud_router)
     logger.info("[MAIN] Cloud drive router registered")
 except ImportError as e:
@@ -375,6 +433,7 @@ except ImportError as e:
 # Plan 0023: Workspace router
 try:
     from app.routers.workspace import router as workspace_router
+
     app.include_router(workspace_router)
     logger.info("[MAIN] Workspace router registered")
 except ImportError as e:
@@ -388,7 +447,7 @@ async def root():
         "message": "🎬 Bilibili RAG 知识库系统",
         "version": "0.1.0",
         "docs": "/docs",
-        "status": "running"
+        "status": "running",
     }
 
 
@@ -402,7 +461,32 @@ async def health_check():
 async def cache_stats():
     """缓存命中率监控"""
     from app.infra.cache import cache_manager
+
     return cache_manager.get_stats()
+
+
+def _get_harness_llm():
+    """Create a ChatOpenAI instance for the AgentHarness.
+
+    Uses the system default LLM config.  Returns None if no API key is
+    configured so that the harness startup can be skipped gracefully.
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+
+        api_key = settings.openai_api_key
+        if not api_key:
+            return None
+
+        return ChatOpenAI(
+            api_key=api_key,
+            base_url=settings.openai_base_url or None,
+            model=settings.llm_model,
+            temperature=0,
+        )
+    except Exception as e:
+        logger.warning("[HARNESS] failed to create LLM: {}", e)
+        return None
 
 
 if __name__ == "__main__":

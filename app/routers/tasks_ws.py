@@ -24,9 +24,9 @@ from app.services.auth.token import validate_token as _validate_token
 
 router = APIRouter()
 
-PUSH_INTERVAL = 5          # seconds between cache re-checks
-MAX_PER_UID = 3            # max concurrent connections per user
-MAX_TOTAL = 50             # max total connections
+PUSH_INTERVAL = 5  # seconds between cache re-checks
+MAX_PER_UID = 3  # max concurrent connections per user
+MAX_TOTAL = 50  # max total connections
 
 # Connected clients: {uid: set[WebSocket]}
 _active_connections: dict[int, set[WebSocket]] = {}
@@ -105,7 +105,7 @@ async def task_stream(
     # This handles client-side reconnect without proper cleanup (e.g. React StrictMode).
     existing = _active_connections.get(uid, set())
     if len(existing) >= MAX_PER_UID:
-        to_close = list(existing)[:len(existing) - MAX_PER_UID + 1]
+        to_close = list(existing)[: len(existing) - MAX_PER_UID + 1]
         for old_ws in to_close:
             try:
                 await old_ws.close(code=4003, reason="Superseded by newer connection")
@@ -136,12 +136,14 @@ async def task_stream(
             current_hash = hash(tasks_json)
 
             if current_hash != last_cache_hash:
-                await websocket.send_json({
-                    "type": "tasks",
-                    "count": len(current_tasks),
-                    "tasks": current_tasks,
-                    "timestamp": time.time(),
-                })
+                await websocket.send_json(
+                    {
+                        "type": "tasks",
+                        "count": len(current_tasks),
+                        "tasks": current_tasks,
+                        "timestamp": time.time(),
+                    }
+                )
                 last_cache_hash = current_hash
 
             # Wait for client message (or timeout to re-check cache)
@@ -157,15 +159,19 @@ async def task_stream(
                     if task_id:
                         task = get_cached_task(task_id)
                         if task and task.get("uid") == uid:
-                            await websocket.send_json({
-                                "type": "task_detail",
-                                "task": task,
-                            })
+                            await websocket.send_json(
+                                {
+                                    "type": "task_detail",
+                                    "task": task,
+                                }
+                            )
                         else:
-                            await websocket.send_json({
-                                "type": "error",
-                                "message": "Task not found or access denied",
-                            })
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "message": "Task not found or access denied",
+                                }
+                            )
 
                 elif data.get("action") == "filter":
                     filtered = get_cached_tasks(
@@ -173,12 +179,14 @@ async def task_stream(
                         task_type=data.get("task_type"),
                         status=data.get("status"),
                     )
-                    await websocket.send_json({
-                        "type": "tasks",
-                        "count": len(filtered),
-                        "tasks": filtered,
-                        "timestamp": time.time(),
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "tasks",
+                            "count": len(filtered),
+                            "tasks": filtered,
+                            "timestamp": time.time(),
+                        }
+                    )
                     last_cache_hash = 0  # force re-push on next cycle
 
             except asyncio.TimeoutError:
@@ -227,17 +235,19 @@ async def broadcast_cloud_status(
     """Push cloud file vectorization status to all of a user's WS connections."""
     connections = _active_connections.get(uid, set())
     if not connections:
-        logger.debug("[CLOUD_WS] no connections for uid=%d, status not pushed", uid)
+        logger.debug("[CLOUD_WS] no connections for uid={}, status not pushed", uid)
         return
 
-    payload = json.dumps({
-        "type": "cloud_processing",
-        "upload_uuid": upload_uuid,
-        "status": status,
-        "chunk_count": chunk_count,
-        "error": error,
-        "timestamp": time.time(),
-    })
+    payload = json.dumps(
+        {
+            "type": "cloud_processing",
+            "upload_uuid": upload_uuid,
+            "status": status,
+            "chunk_count": chunk_count,
+            "error": error,
+            "timestamp": time.time(),
+        }
+    )
 
     dead: list[WebSocket] = []
     for ws in connections:
@@ -251,6 +261,9 @@ async def broadcast_cloud_status(
         _update_total()
 
     logger.info(
-        "[CLOUD_WS] pushed status=%s upload_uuid=%s to uid=%d (%d conns)",
-        status, upload_uuid, uid, len(connections),
+        "[CLOUD_WS] pushed status={} upload_uuid={} to uid={} ({} conns)",
+        status,
+        upload_uuid,
+        uid,
+        len(connections),
     )

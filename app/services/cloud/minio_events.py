@@ -22,6 +22,7 @@ from app.repository.cloud.file_repository import get_cloud_file_repository
 
 CHANNEL: str = "minio:events:clouddrive"
 
+
 # ---------------------------------------------------------------------------
 # Event listener
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ async def start_minio_event_listener() -> None:
         logger.info("[CLOUD_EVENTS] listener skipped — Redis disabled")
         return
 
-    logger.info("[CLOUD_EVENTS] starting minio-event listener channel=%s", CHANNEL)
+    logger.info("[CLOUD_EVENTS] starting minio-event listener channel={}", CHANNEL)
 
     try:
         ps = pubsub()
@@ -56,7 +57,7 @@ async def start_minio_event_listener() -> None:
                 event: dict[str, Any] = json.loads(data)
             except (json.JSONDecodeError, TypeError):
                 logger.warning(
-                    "[CLOUD_EVENTS] received non-JSON message on %s", CHANNEL
+                    "[CLOUD_EVENTS] received non-JSON message on {}", CHANNEL
                 )
                 continue
 
@@ -66,6 +67,8 @@ async def start_minio_event_listener() -> None:
         logger.info("[CLOUD_EVENTS] listener cancelled")
     except Exception:
         logger.exception("[CLOUD_EVENTS] listener crashed")
+
+
 # ---------------------------------------------------------------------------
 # Event dispatch
 # ---------------------------------------------------------------------------
@@ -78,9 +81,12 @@ async def _handle_minio_event(event: dict[str, Any]) -> None:
         # MinIO webhook format: Records[0].eventName
         event_name = records[0].get("eventName", "")
 
-    logger.debug("[CLOUD_EVENTS] received event=%s", event_name)
+    logger.debug("[CLOUD_EVENTS] received event={}", event_name)
 
-    if "CompleteMultipartUpload" in event_name or "s3:ObjectCreated:CompleteMultipartUpload" in event_name:
+    if (
+        "CompleteMultipartUpload" in event_name
+        or "s3:ObjectCreated:CompleteMultipartUpload" in event_name
+    ):
         for record in records:
             s3_info = record.get("s3", {})
             bucket_name = s3_info.get("bucket", {}).get("name", "")
@@ -93,8 +99,11 @@ async def _handle_minio_event(event: dict[str, Any]) -> None:
                 await _on_complete_multipart(object_key)
     else:
         logger.debug(
-            "[CLOUD_EVENTS] unhandled event type event=%s", event_name,
+            "[CLOUD_EVENTS] unhandled event type event={}",
+            event_name,
         )
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -110,14 +119,15 @@ async def _on_complete_multipart(object_key: str) -> None:
     upload_uuid = _parse_upload_uuid(object_key)
     if upload_uuid is None:
         logger.warning(
-            "[CLOUD_EVENTS] cannot parse upload_uuid from object_key=%s",
+            "[CLOUD_EVENTS] cannot parse upload_uuid from object_key={}",
             object_key,
         )
         return
 
     logger.info(
-        "[CLOUD_EVENTS] complete_multipart object_key=%s upload_uuid=%s",
-        object_key, upload_uuid,
+        "[CLOUD_EVENTS] complete_multipart object_key={} upload_uuid={}",
+        object_key,
+        upload_uuid,
     )
 
     try:
@@ -127,7 +137,7 @@ async def _on_complete_multipart(object_key: str) -> None:
             await file_repo.update_upload_completed(upload_uuid, "", db)
 
             logger.info(
-                "[CLOUD_EVENTS] marked upload_uuid=%s as completed via event",
+                "[CLOUD_EVENTS] marked upload_uuid={} as completed via event",
                 upload_uuid,
             )
 
@@ -137,14 +147,17 @@ async def _on_complete_multipart(object_key: str) -> None:
 
     except Exception:
         logger.exception(
-            "[CLOUD_EVENTS] failed to handle complete event upload_uuid=%s",
+            "[CLOUD_EVENTS] failed to handle complete event upload_uuid={}",
             upload_uuid,
         )
+
+
 async def _trigger_pipeline_for(upload_uuid: str) -> None:
     """Background task: trigger ASR + vector pipeline for an upload."""
     try:
         logger.info(
-            "[CLOUD_EVENTS] pipeline triggered upload_uuid=%s", upload_uuid,
+            "[CLOUD_EVENTS] pipeline triggered upload_uuid={}",
+            upload_uuid,
         )
         # TODO: wire up actual ASR + vectorisation when those modules
         # gain cloud-awareness.
@@ -152,8 +165,11 @@ async def _trigger_pipeline_for(upload_uuid: str) -> None:
         # await asr_service.process_cloud_file(upload_uuid)
     except Exception:
         logger.exception(
-            "[CLOUD_EVENTS] pipeline failed upload_uuid=%s", upload_uuid,
+            "[CLOUD_EVENTS] pipeline failed upload_uuid={}",
+            upload_uuid,
         )
+
+
 def _parse_upload_uuid(object_key: str) -> Optional[str]:
     """Extract *upload_uuid* from an object key like ``123/abc-def/video.mp4``."""
     parts = object_key.strip("/").split("/")

@@ -51,7 +51,9 @@ class CloudSessionRepository:
     # ------------------------------------------------------------------
 
     async def mark_completed(
-        self, session_uuid: str, db: AsyncSession,
+        self,
+        session_uuid: str,
+        db: AsyncSession,
     ) -> None:
         """Mark session as completed."""
         session = await self._get_by_uuid(session_uuid, db)
@@ -59,12 +61,12 @@ class CloudSessionRepository:
             session.status = "completed"
             session.last_heartbeat = datetime.now(timezone.utc)
             await db.commit()
-            logger.info(
-                f"[CLOUD_SESSION_REPO] completed session_uuid={session_uuid}"
-            )
+            logger.info(f"[CLOUD_SESSION_REPO] completed session_uuid={session_uuid}")
 
     async def mark_completed_by_minio_upload_id(
-        self, minio_upload_id: str, db: AsyncSession,
+        self,
+        minio_upload_id: str,
+        db: AsyncSession,
     ) -> None:
         """Mark session as completed, looked up by minio_upload_id."""
         result = await db.execute(
@@ -78,12 +80,15 @@ class CloudSessionRepository:
             session.last_heartbeat = datetime.now(timezone.utc)
             await db.commit()
             logger.info(
-                "[CLOUD_SESSION_REPO] completed minio_upload_id=%s session_uuid=%s",
-                minio_upload_id, session.session_uuid,
+                "[CLOUD_SESSION_REPO] completed minio_upload_id={} session_uuid={}",
+                minio_upload_id,
+                session.session_uuid,
             )
 
     async def mark_abandoned(
-        self, session_uuid: str, db: AsyncSession,
+        self,
+        session_uuid: str,
+        db: AsyncSession,
     ) -> None:
         """Mark session as abandoned."""
         session = await self._get_by_uuid(session_uuid, db)
@@ -91,27 +96,26 @@ class CloudSessionRepository:
             session.status = "abandoned"
             session.last_heartbeat = datetime.now(timezone.utc)
             await db.commit()
-            logger.info(
-                f"[CLOUD_SESSION_REPO] abandoned session_uuid={session_uuid}"
-            )
+            logger.info(f"[CLOUD_SESSION_REPO] abandoned session_uuid={session_uuid}")
 
     # ------------------------------------------------------------------
     # read
     # ------------------------------------------------------------------
 
     async def get_active_sessions(
-        self, db: AsyncSession,
+        self,
+        db: AsyncSession,
     ) -> list[CloudUploadSession]:
         """Return all sessions currently in 'active' status."""
         result = await db.execute(
-            select(CloudUploadSession).where(
-                CloudUploadSession.status == "active"
-            )
+            select(CloudUploadSession).where(CloudUploadSession.status == "active")
         )
         return list(result.scalars().all())
 
     async def _get_by_uuid(
-        self, session_uuid: str, db: AsyncSession,
+        self,
+        session_uuid: str,
+        db: AsyncSession,
     ) -> Optional[CloudUploadSession]:
         result = await db.execute(
             select(CloudUploadSession).where(

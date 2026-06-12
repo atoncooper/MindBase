@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Endpoint-specific rate limits (requests per second, burst)
 _RATE_LIMITS: dict[str, tuple[float, int]] = {
-    "/auth": (1.0, 5),          # login / verification: 1 rps burst 5
-    "/chat/ask": (3.0, 10),     # AI chat: 3 rps burst 10
-    "/cloud/upload": (5.0, 30), # chunked upload: 5 rps burst 30
+    "/auth": (1.0, 5),  # login / verification: 1 rps burst 5
+    "/chat/ask": (3.0, 10),  # AI chat: 3 rps burst 10
+    "/cloud/upload": (5.0, 30),  # chunked upload: 5 rps burst 30
     "/favorites/organize": (1.0, 3),
     "/quiz/generate": (2.0, 5),
     "/credentials": (1.0, 3),
@@ -64,8 +64,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
             if current > burst:
                 logger.warning(
-                    "[RATELIMIT] blocked | ip=%s path=%s count=%d burst=%d",
-                    client_ip, path, current, burst,
+                    "[RATELIMIT] blocked | ip=%s path=%s count=%s burst=%s",
+                    client_ip,
+                    path,
+                    current,
+                    burst,
                 )
                 return JSONResponse(
                     status_code=429,
@@ -80,4 +83,3 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # Redis unavailable → allow request (fail open, nginx is first line)
 
         return await call_next(request)
-

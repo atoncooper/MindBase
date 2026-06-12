@@ -1,8 +1,8 @@
 """Transaction scope manager with retry logic for PostgreSQL.
 
 Provides a decorator and context manager that handle commit / rollback
-automatically, support nested calls (savepoint delegation), and retry
-on transient PG errors (deadlock, serialization failure, connection loss).
+automatically. The decorator can retry transient PG errors (deadlock,
+serialization failure, connection loss).
 
 Usage:
     # Decorator — most common in service layer
@@ -39,7 +39,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.config import config
-from app.infra.rdbms import get_db_context
+from app.database import get_db_context
 
 # PG error codes considered transient and safe to retry:
 #   40001  serialization_failure
@@ -69,37 +69,20 @@ async def transactional_scope(
 ) -> AsyncIterator[AsyncSession]:
     """Explicit transaction context.
 
-    Commits on clean exit, rolls back on exception.
-    Retries up to *max_retries* with exponential backoff for transient errors.
-
-    Args:
-        readonly: If True, emits ``SET TRANSACTION READ ONLY``.
-        max_retries: Override config default (defaults to ``transaction.max_retries``).
-        retry_delay_base: Override config default (defaults to ``transaction.retry_delay_base``).
+    Commits on clean exit and rolls back on exception. Context managers cannot
+    safely retry the caller body after ``yield``; use ``@transactional`` when
+    retrying the whole callable is required.
     """
-    _max_retries = max_retries if max_retries is not None else config.transaction.max_retries
-    _delay = retry_delay_base if retry_delay_base is not None else config.transaction.retry_delay_base
-
-    attempt = 0
-    while True:
-        async with get_db_context() as db:
-            if readonly:
-                await db.execute(text("SET TRANSACTION READ ONLY"))
-            try:
-                yield db
-                await db.commit()
-                return
-            except Exception as exc:
-                await db.rollback()
-                if not _is_retryable(exc) or attempt >= _max_retries:
-                    raise
-                attempt += 1
-                delay = _delay * (2 ** attempt)
-                logger.warning(
-                    "[TX] retryable error %s, attempt %d/%d, sleep %.2fs",
-                    exc, attempt, _max_retries, delay,
-                )
-                await asyncio.sleep(delay)
+    _ = max_retries, retry_delay_base
+    async with get_db_context() as db:
+        if readonly:
+            await db.execute(text("SET TRANSACTION READ ONLY"))
+        try:
+            yield db
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 def transactional(
@@ -119,6 +102,7 @@ def transactional(
         async def create_user(db: AsyncSession, name: str) -> User:
             ...
     """
+
     def decorator(func: F) -> F:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -127,8 +111,16 @@ def transactional(
             if db is not None and db.in_transaction():
                 return await func(*args, **kwargs)
 
-            _max_retries = max_retries if max_retries is not None else config.transaction.max_retries
-            _delay = retry_delay_base if retry_delay_base is not None else config.transaction.retry_delay_base
+            _max_retries = (
+                max_retries
+                if max_retries is not None
+                else config.transaction.max_retries
+            )
+            _delay = (
+                retry_delay_base
+                if retry_delay_base is not None
+                else config.transaction.retry_delay_base
+            )
 
             attempt = 0
             while True:
@@ -147,11 +139,16 @@ def transactional(
                         if not _is_retryable(exc) or attempt >= _max_retries:
                             raise
                         attempt += 1
-                        delay = _delay * (2 ** attempt)
+                        delay = _delay * (2**attempt)
                         logger.warning(
-                            "[TX] retryable error in %s, attempt %d/%d, sleep %.2fs",
-                            func.__name__, attempt, _max_retries, delay,
+                            "[TX] retryable error in {}, attempt {}/{}, sleep {:.2f}s",
+                            func.__name__,
+                            attempt,
+                            _max_retries,
+                            delay,
                         )
                         await asyncio.sleep(delay)
+
         return wrapper  # type: ignore[return-value]
+
     return decorator

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Pencil, Check, X, Eye, EyeOff, AtSign, Smartphone, Key, Shield, Globe } from "lucide-react";
+import { Pencil, Check, Eye, EyeOff, AtSign, Smartphone, Key, Globe } from "lucide-react";
+import QRLoginModal from "@/components/QRLoginModal";
 import { userApi, type ProfileData, type SecurityOverview } from "@/lib/api";
 import type { DockPanelProps } from "@/lib/dock-registry";
 
@@ -9,9 +10,6 @@ import type { DockPanelProps } from "@/lib/dock-registry";
 
 const GENDER_LABELS: Record<string, string> = { male: "男", female: "女", other: "其他" };
 const LANG_LABELS: Record<string, string> = { zh: "中文", en: "English" };
-const PROVIDER_LABELS: Record<string, string> = {
-  bilibili: "Bilibili", wechat: "微信", qq: "QQ", google: "Google", github: "GitHub",
-};
 
 /* ─── inline editor (shared) ─── */
 
@@ -38,6 +36,7 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
   const [security, setSecurity] = useState<SecurityOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [showBiliBind, setShowBiliBind] = useState(false);
 
   // edit mode toggles
   const [editMode, setEditMode] = useState<"view" | "profile" | null>(null);
@@ -124,6 +123,12 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
 
   // ── password ──
 
+  const onBiliBindSuccess = () => {
+    setShowBiliBind(false);
+    flash("B站账号已绑定", "success");
+    load();
+  };
+
   const savePassword = async () => {
     try {
       if (security?.has_password) {
@@ -189,8 +194,8 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
         <div className={`ac-chip ${security.has_password ? "ok" : ""}`}>
           <Key size={12} /> {security.has_password ? "密码已设置" : "未设密码"}
         </div>
-        <div className="ac-chip ok">
-          <Globe size={12} /> {security.oauth_bindings.map(b => PROVIDER_LABELS[b.provider] ?? b.provider).join(" · ")}
+        <div className={`ac-chip ${security.bilibili.valid ? "ok" : "warn"}`}>
+          <Globe size={12} /> {security.bilibili.valid ? "B站已授权" : (security.bilibili.bound ? "B站授权失效" : "未绑定B站")}
         </div>
       </div>
 
@@ -230,6 +235,31 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
               <ReadonlyField label="位置" value={profile.location} />
               <ReadonlyField label="语言" value={LANG_LABELS[profile.language ?? ""]} />
               <ReadonlyField label="时区" value={profile.timezone} />
+            </div>
+          )}
+        </section>
+
+        {/* ── Bilibili binding ── */}
+        <section className="ac-card">
+          <div className="ac-card-bar">
+            <h3><Globe size={15} /> B站授权</h3>
+            <button className="ac-ghost-btn" onClick={() => setShowBiliBind(true)}>
+              {security.bilibili.bound ? "重新扫码" : "扫码绑定"}
+            </button>
+          </div>
+          <div className="ac-prop-row">
+            <span className="ac-prop-label">状态</span>
+            <span className="ac-prop-value">
+              <span className={`ac-tag ${security.bilibili.valid ? "green" : "amber"}`}>
+                {security.bilibili.valid ? "可用" : (security.bilibili.bound ? "已失效" : "未绑定")}
+              </span>
+              <span className="ac-help-text">{security.bilibili.message}</span>
+            </span>
+          </div>
+          {security.bilibili.nickname && (
+            <div className="ac-prop-row">
+              <span className="ac-prop-label">账号</span>
+              <span className="ac-prop-value">{security.bilibili.nickname}</span>
             </div>
           )}
         </section>
@@ -332,6 +362,12 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
         </section>
       </div>
 
+      <QRLoginModal
+        isOpen={showBiliBind}
+        onClose={() => setShowBiliBind(false)}
+        onSuccess={onBiliBindSuccess}
+        mode="bind"
+      />
       <style jsx global>{AC_CSS}</style>
     </div>
   );
@@ -421,6 +457,7 @@ const AC_CSS = `
     border:1px solid rgba(48,54,61,.6);
   }
   .ac-chip.ok { background:rgba(22,163,74,.08);color:#4ade80;border-color:rgba(22,163,74,.15); }
+  .ac-chip.warn { background:rgba(251,191,36,.08);color:#fbbf24;border-color:rgba(251,191,36,.15); }
 
   /* body */
   .ac-body { display:flex;flex-direction:column;gap:14px; }
@@ -494,12 +531,14 @@ const AC_CSS = `
   .ac-tag { display:inline-block;font-size:10px;padding:3px 8px;border-radius:10px;font-weight:600;margin-left:6px; }
   .ac-tag.green { background:rgba(22,163,74,.1);color:#4ade80; }
   .ac-tag.amber { background:rgba(251,191,36,.1);color:#fbbf24; }
+  .ac-help-text { margin-left:8px;color:var(--muted-foreground,#8b949e); }
 
   /* light-mode overrides */
   html:not(.dark) .ac-root { background:var(--card,#fff);color:var(--foreground,#111827); }
   html:not(.dark) .ac-card { border-color:var(--border,#e5e7eb);background:var(--paper,#f9fafb); }
   html:not(.dark) .ac-chip { background:#f3f4f6;color:#6b7280;border-color:#e5e7eb; }
   html:not(.dark) .ac-chip.ok { background:rgba(22,163,74,.06);color:#16a34a;border-color:rgba(22,163,74,.12); }
+  html:not(.dark) .ac-chip.warn { background:rgba(217,119,6,.06);color:#d97706;border-color:rgba(217,119,6,.12); }
   html:not(.dark) .ac-input { border-color:#e5e7eb;background:#fff;color:#111827; }
   html:not(.dark) .ac-input:focus { border-color:#06b6d4; }
   html:not(.dark) .ac-ro-field { background:#f3f4f6; }

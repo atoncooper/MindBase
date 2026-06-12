@@ -34,6 +34,7 @@ async def create_token(
     ip: Optional[str] = None,
     user_agent: Optional[str] = None,
     ttl_days: int = DEFAULT_TOKEN_TTL_DAYS,
+    commit: bool = True,
 ):
     """Create and persist a new session token."""
     repo = get_user_token_repository()
@@ -45,6 +46,7 @@ async def create_token(
         ip=ip,
         user_agent=user_agent,
         ttl_days=ttl_days,
+        commit=commit,
     )
 
 
@@ -79,6 +81,7 @@ async def revoke_token(db: AsyncSession, session_token: str) -> None:
     await repo.revoke(token, db)
 
     from app.services.auth import cache as auth_cache
+
     await auth_cache.delete_token(session_token)
 
 
@@ -89,4 +92,5 @@ async def revoke_all_tokens(db: AsyncSession, uid: int) -> None:
 
     # Clear all token caches — we can't enumerate session tokens per uid
     from app.services.auth import cache as auth_cache
+
     await auth_cache.delete_all_tokens()

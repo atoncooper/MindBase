@@ -4,17 +4,21 @@ Pydantic response models for credentials, settings, billing, and LLM configs.
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from app.security.url_validation import validate_public_http_url
 
 
 # ── Credentials ─────────────────────────────────────────────────
 
+
 class CredentialResponse(BaseModel):
     """Credential list item (API key masked)."""
+
     id: int
     name: str
     provider: str
-    masked_key: str                     # "sk-abc...4f2a"
+    masked_key: str  # "sk-abc...4f2a"
     base_url: Optional[str] = None
     default_model: Optional[str] = None
     is_default: bool
@@ -30,6 +34,7 @@ class CredentialResponse(BaseModel):
 
 class TestResultResponse(BaseModel):
     """Test result for a single config."""
+
     status: str  # "ok" | "error"
     error: Optional[str] = None
     latency_ms: float = 0.0
@@ -37,8 +42,10 @@ class TestResultResponse(BaseModel):
 
 # ── Embedding / ASR configs ─────────────────────────────────────
 
+
 class EmbeddingConfigResponse(BaseModel):
     """Embedding config item (API key masked)."""
+
     id: int
     name: str
     provider: str
@@ -58,6 +65,7 @@ class EmbeddingConfigResponse(BaseModel):
 
 class ASRConfigResponse(BaseModel):
     """ASR config item (API key masked)."""
+
     id: int
     name: str
     provider: str
@@ -77,6 +85,7 @@ class ASRConfigResponse(BaseModel):
 
 class ApiKeyStatusResponse(BaseModel):
     """Legacy settings status (keys masked, no full values)."""
+
     llm_is_configured: bool = False
     llm_masked_key: Optional[str] = None
     llm_base_url: Optional[str] = None
@@ -94,8 +103,10 @@ class ApiKeyStatusResponse(BaseModel):
 
 # ── Billing / Usage ─────────────────────────────────────────────
 
+
 class ProviderUsage(BaseModel):
     """Per-provider aggregated usage."""
+
     provider: str
     total_tokens: int
     api_calls: int
@@ -104,6 +115,7 @@ class ProviderUsage(BaseModel):
 
 class CredentialUsageItem(BaseModel):
     """Per-credential aggregated usage."""
+
     credential_id: Optional[int] = None  # None = system default
     name: str
     provider: str
@@ -114,6 +126,7 @@ class CredentialUsageItem(BaseModel):
 
 class UsageSummary(BaseModel):
     """Billing usage summary (top-level response)."""
+
     total_tokens: int
     total_api_calls: int
     by_provider: list[ProviderUsage]
@@ -122,18 +135,30 @@ class UsageSummary(BaseModel):
 
 # ── Credential Create / Update (requests) ─────────────────────────
 
-class CredentialCreate(BaseModel):
+
+class BaseUrlRequest(BaseModel):
+    base_url: Optional[str] = None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: Optional[str]) -> Optional[str]:
+        return validate_public_http_url(value)
+
+
+class CredentialCreate(BaseUrlRequest):
     """POST /credentials request."""
+
     name: str
-    provider: str           # openai | anthropic | deepseek | custom
+    provider: str  # openai | anthropic | deepseek | custom
     api_key: str
     base_url: Optional[str] = None
     default_model: Optional[str] = None
     is_default: bool = False
 
 
-class CredentialUpdate(BaseModel):
+class CredentialUpdate(BaseUrlRequest):
     """PATCH /credentials/{id} request (partial update)."""
+
     name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -143,8 +168,10 @@ class CredentialUpdate(BaseModel):
 
 # ── Embedding / ASR config Create / Update (requests) ──────────────
 
-class EmbeddingConfigCreate(BaseModel):
+
+class EmbeddingConfigCreate(BaseUrlRequest):
     """POST /settings/embedding-configs request."""
+
     name: str
     provider: str = "openai"
     api_key: str
@@ -153,8 +180,9 @@ class EmbeddingConfigCreate(BaseModel):
     is_default: bool = False
 
 
-class EmbeddingConfigUpdate(BaseModel):
+class EmbeddingConfigUpdate(BaseUrlRequest):
     """PATCH /settings/embedding-configs/{id} request."""
+
     name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -162,8 +190,9 @@ class EmbeddingConfigUpdate(BaseModel):
     is_default: Optional[bool] = None
 
 
-class ASRConfigCreate(BaseModel):
+class ASRConfigCreate(BaseUrlRequest):
     """POST /settings/asr-configs request."""
+
     name: str
     provider: str = "dashscope"
     api_key: str
@@ -172,8 +201,9 @@ class ASRConfigCreate(BaseModel):
     is_default: bool = False
 
 
-class ASRConfigUpdate(BaseModel):
+class ASRConfigUpdate(BaseUrlRequest):
     """PATCH /settings/asr-configs/{id} request."""
+
     name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -183,6 +213,7 @@ class ASRConfigUpdate(BaseModel):
 
 class ApiKeySetRequest(BaseModel):
     """POST /settings/credentials request (legacy compat)."""
+
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
@@ -192,3 +223,8 @@ class ApiKeySetRequest(BaseModel):
     asr_api_key: Optional[str] = None
     asr_base_url: Optional[str] = None
     asr_model: Optional[str] = None
+
+    @field_validator("llm_base_url", "embedding_base_url", "asr_base_url")
+    @classmethod
+    def validate_base_urls(cls, value: Optional[str]) -> Optional[str]:
+        return validate_public_http_url(value)

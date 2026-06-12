@@ -33,7 +33,9 @@ class VectorStoreBackend(Protocol):
         """Semantic similarity search.  Returns top-k Documents with metadata."""
         ...
 
-    def delete(self, ids: list[str] | None = None, where: dict[str, Any] | None = None) -> int:
+    def delete(
+        self, ids: list[str] | None = None, where: dict[str, Any] | None = None
+    ) -> int:
         """Delete vectors by ids or metadata filter.  Returns count deleted."""
         ...
 
@@ -78,12 +80,10 @@ class VectorStoreBackend(Protocol):
 
 
 def get_vector_store(embedding_fn: Any) -> VectorStoreBackend:
-    """Return the configured vector store backend.
-
-    Always returns MilvusVectorStore (ChromaDB has been removed).
-    """
+    """Return the configured vector store backend (Milvus)."""
     from app.infra.config import config
     from app.repository.vector_store_milvus import MilvusVectorStore
+
     return MilvusVectorStore(config.milvus, embedding_fn, config.milvus.collection_name)
 
 
@@ -91,4 +91,7 @@ def get_cloud_vector_store(embedding_fn: Any) -> VectorStoreBackend:
     """Return the cloud drive vector store backend (cloud_drive collection)."""
     from app.infra.config import config
     from app.repository.vector_store_milvus import MilvusVectorStore
-    return MilvusVectorStore(config.milvus, embedding_fn, config.milvus.cloud_collection_name)
+
+    return MilvusVectorStore(
+        config.milvus, embedding_fn, config.milvus.cloud_collection_name
+    )

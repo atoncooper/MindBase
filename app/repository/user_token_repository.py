@@ -25,17 +25,20 @@ class UserTokenRepository:
             select(UserToken).where(
                 UserToken.uid == uid,
                 UserToken.is_revoked == False,  # noqa: E712
-                UserToken.deleted_at == None,    # noqa: E711
+                UserToken.deleted_at == None,  # noqa: E711
             )
         )
         tokens = result.scalars().all()
         now = datetime.now(timezone.utc)
         return [
-            t for t in tokens
+            t
+            for t in tokens
             if t.expires_at is None or t.expires_at.replace(tzinfo=timezone.utc) > now
         ]
 
-    async def revoke_by_id(self, session_token: str, uid: int, db: AsyncSession) -> bool:
+    async def revoke_by_id(
+        self, session_token: str, uid: int, db: AsyncSession
+    ) -> bool:
         """Revoke a specific token, verifying ownership. Returns True if revoked."""
         result = await db.execute(
             select(UserToken).where(
@@ -53,10 +56,18 @@ class UserTokenRepository:
         logger.info(f"[TOKEN_REPO] revoked token for uid={uid}")
         return True
 
-    async def create(self, db: AsyncSession, *, uid: int,
-                     session_token: str, device_id: Optional[str] = None,
-                     ip: Optional[str] = None, user_agent: Optional[str] = None,
-                     ttl_days: int = DEFAULT_TOKEN_TTL_DAYS) -> UserToken:
+    async def create(
+        self,
+        db: AsyncSession,
+        *,
+        uid: int,
+        session_token: str,
+        device_id: Optional[str] = None,
+        ip: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        ttl_days: int = DEFAULT_TOKEN_TTL_DAYS,
+        commit: bool = True,
+    ) -> UserToken:
         token = UserToken(
             session_token=session_token,
             uid=uid,
@@ -67,12 +78,17 @@ class UserTokenRepository:
             user_agent=user_agent,
         )
         db.add(token)
-        await db.commit()
-        await db.refresh(token)
+        if commit:
+            await db.commit()
+            await db.refresh(token)
+        else:
+            await db.flush()
         logger.info(f"[TOKEN_REPO] created token for uid={uid}")
         return token
 
-    async def find_valid(self, session_token: str, db: AsyncSession) -> Optional[UserToken]:
+    async def find_valid(
+        self, session_token: str, db: AsyncSession
+    ) -> Optional[UserToken]:
         """Return the token row if it is valid (exists, not revoked, not expired)."""
         result = await db.execute(
             select(UserToken).where(UserToken.session_token == session_token)
@@ -84,7 +100,9 @@ class UserTokenRepository:
             return None
         if token.deleted_at is not None:
             return None
-        if token.expires_at and token.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        if token.expires_at and token.expires_at.replace(
+            tzinfo=timezone.utc
+        ) < datetime.now(timezone.utc):
             return None
         return token
 
