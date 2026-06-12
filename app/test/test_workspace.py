@@ -11,6 +11,7 @@ from langchain_core.documents import Document
 
 # ==================== WorkspacePage Pydantic 模型测试 ====================
 
+
 class TestWorkspacePageModel:
     """WorkspacePage 模型测试"""
 
@@ -18,7 +19,9 @@ class TestWorkspacePageModel:
         """基本序列化"""
         from app.response.chat import WorkspacePage
 
-        wp = WorkspacePage(bvid="BV123456", cid=987654, page_index=2, page_title="P3. 第三章")
+        wp = WorkspacePage(
+            bvid="BV123456", cid=987654, page_index=2, page_title="P3. 第三章"
+        )
         assert wp.bvid == "BV123456"
         assert wp.cid == 987654
         assert wp.page_index == 2
@@ -44,10 +47,16 @@ class TestWorkspacePageModel:
 
         wp = WorkspacePage(bvid="BVTEST", cid=123, page_index=1, page_title="P2. 测试")
         dumped = wp.model_dump()
-        assert dumped == {"bvid": "BVTEST", "cid": 123, "page_index": 1, "page_title": "P2. 测试"}
+        assert dumped == {
+            "bvid": "BVTEST",
+            "cid": 123,
+            "page_index": 1,
+            "page_title": "P2. 测试",
+        }
 
 
 # ==================== ChatRequest workspace_pages 扩展测试 ====================
+
 
 class TestChatRequestWorkspace:
     """ChatRequest.workspace_pages 字段测试"""
@@ -95,12 +104,13 @@ class TestChatRequestWorkspace:
 
 # ==================== rag.search workspace_pages 过滤测试 ====================
 
+
 class TestRagSearchWorkspace:
     """rag.search workspace_pages 参数测试"""
 
     @pytest.fixture
     def mock_vectorstore(self):
-        """模拟 Chroma 向量存储"""
+        """模拟 Milvus 向量存储"""
         store = MagicMock()
         store.similarity_search = MagicMock(return_value=[])
         store._collection = MagicMock()
@@ -138,7 +148,9 @@ class TestRagSearchWorkspace:
                 {"bvid": "BV001", "cid": 111, "page_index": 0},
                 {"bvid": "BV002", "cid": 222, "page_index": 0},
             ]
-            result = rag.search("测试", k=5, bvids=None, workspace_pages=workspace_pages)
+            result = rag.search(
+                "测试", k=5, bvids=None, workspace_pages=workspace_pages
+            )
 
             # BV001 page 0, BV002 page 0 应该保留，BV001 page 1 被过滤，BV003 不在列表中被过滤
             assert len(result) == 2
@@ -182,6 +194,7 @@ class TestRagSearchWorkspace:
 
 
 # ==================== _vector_search_with_rewrites workspace_pages 测试 ====================
+
 
 class TestVectorSearchWithRewritesWorkspace:
     """_vector_search_with_rewrites workspace_pages 透传测试"""
@@ -244,7 +257,10 @@ class TestVectorSearchWithRewritesWorkspace:
         """step_back 策略下 workspace_pages 同样透传给每路检索（验证调用参数）"""
         from app.routers.chat import _vector_search_with_rewrites
         from app.services.query.types import (
-            RewriteResult, RewriteType, RewrittenQuery, StepBackMetadata,
+            RewriteResult,
+            RewriteType,
+            RewrittenQuery,
+            StepBackMetadata,
         )
         from unittest.mock import AsyncMock
 
@@ -253,7 +269,9 @@ class TestVectorSearchWithRewritesWorkspace:
             query="泛化",
             confidence=0.85,
             reason="test",
-            metadata=StepBackMetadata(step_back_query="泛化 query", specific_query="具体 query"),
+            metadata=StepBackMetadata(
+                step_back_query="泛化 query", specific_query="具体 query"
+            ),
         )
         rewrite_result = RewriteResult(
             original="具体 query",
@@ -272,7 +290,11 @@ class TestVectorSearchWithRewritesWorkspace:
         )
 
         await _vector_search_with_rewrites(
-            "具体 query", rewrite_result, bvids=None, k=5, workspace_pages=workspace_pages
+            "具体 query",
+            rewrite_result,
+            bvids=None,
+            k=5,
+            workspace_pages=workspace_pages,
         )
 
         # 验证两路并发检索都传递了 workspace_pages
@@ -285,7 +307,10 @@ class TestVectorSearchWithRewritesWorkspace:
         """sub_queries 策略下 workspace_pages 同样透传给所有子查询（验证调用参数）"""
         from app.routers.chat import _vector_search_with_rewrites
         from app.services.query.types import (
-            RewriteResult, RewriteType, RewrittenQuery, SubQueryMetadata,
+            RewriteResult,
+            RewriteType,
+            RewrittenQuery,
+            SubQueryMetadata,
         )
         from unittest.mock import AsyncMock
 
@@ -294,7 +319,9 @@ class TestVectorSearchWithRewritesWorkspace:
             query="A 和 B",
             confidence=0.9,
             reason="test",
-            metadata=SubQueryMetadata(sub_queries=["A", "B"], is_multi_topic=True, main_topic="A与B"),
+            metadata=SubQueryMetadata(
+                sub_queries=["A", "B"], is_multi_topic=True, main_topic="A与B"
+            ),
         )
         rewrite_result = RewriteResult(
             original="A 和 B",
@@ -307,8 +334,12 @@ class TestVectorSearchWithRewritesWorkspace:
         # 使用 AsyncMock 使 rag.search 可正确 await
         mock_get_rag.search = AsyncMock(
             side_effect=lambda *args, **kwargs: [
-                Document(page_content="r1", metadata={"bvid": "BV001", "page_index": 1}),
-                Document(page_content="r2", metadata={"bvid": "BV001", "page_index": 1}),
+                Document(
+                    page_content="r1", metadata={"bvid": "BV001", "page_index": 1}
+                ),
+                Document(
+                    page_content="r2", metadata={"bvid": "BV001", "page_index": 1}
+                ),
             ]
         )
 
@@ -323,6 +354,7 @@ class TestVectorSearchWithRewritesWorkspace:
 
 
 # ==================== _prepare_messages 工作区模式路由测试 ====================
+
 
 class TestPrepareMessagesWorkspace:
     """_prepare_messages 工作区强制 vector 路由测试"""
@@ -350,7 +382,9 @@ class TestPrepareMessagesWorkspace:
 
         # Mock _route_with_llm 返回 direct（工作区应该忽略 LLM 路由）
         with patch("app.routers.chat._route_with_llm", return_value=("direct", "")):
-            messages, sources, _, _ = await _prepare_messages(req, test_db, rewrite_result=None)
+            messages, sources, _, _ = await _prepare_messages(
+                req, test_db, rewrite_result=None
+            )
 
         # 工作区模式应强制 vector 路由
         # vector 路由最终会走到 _vector_search_with_rewrites
@@ -378,6 +412,7 @@ class TestPrepareMessagesWorkspace:
 
 
 # ==================== 前端 API 类型测试 ====================
+
 
 class TestFrontendApiTypes:
     """frontend/lib/api.ts 对应类型的前端模拟验证"""

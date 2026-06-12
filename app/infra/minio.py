@@ -45,9 +45,11 @@ async def init() -> None:
     client = get_minio_client()
     try:
         await client.ensure_bucket()
-        logger.info("[MINIO] init OK (endpoint=%s bucket=%s)", client.endpoint, client.bucket)
+        logger.info(
+            "[MINIO] init OK (endpoint={} bucket={})", client.endpoint, client.bucket
+        )
     except Exception as e:
-        logger.warning("[MINIO] init failed (continuing): %s", e)
+        logger.warning("[MINIO] init failed (continuing): {}", e)
 
 
 async def close() -> None:
@@ -66,6 +68,7 @@ async def ping() -> dict:
         return {"ok": False, "error": "disabled"}
 
     import time
+
     start = time.time()
     try:
         client = get_minio_client()
@@ -78,7 +81,11 @@ async def ping() -> dict:
             "error": None if found else "bucket not found",
         }
     except Exception as e:
-        return {"ok": False, "latency_ms": int((time.time() - start) * 1000), "error": str(e)}
+        return {
+            "ok": False,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": str(e),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +106,7 @@ def _check_minio_import() -> bool:
     if _MINIO_AVAILABLE is None:
         try:
             import minio  # noqa: F401
+
             _MINIO_AVAILABLE = True
         except ImportError:
             _MINIO_AVAILABLE = False
@@ -109,6 +117,7 @@ def _check_minio_import() -> bool:
 def _get_minio_sdk():
     import minio as _m
     from minio import Minio, S3Error
+
     return _m, Minio, S3Error
 
 
@@ -148,7 +157,7 @@ class MinioClient:
             region=config.minio.region,
         )
         logger.info(
-            "[MINIO] client created endpoint=%s bucket=%s secure=%s",
+            "[MINIO] client created endpoint={} bucket={} secure={}",
             _endpoint_host(config.minio.endpoint),
             config.minio.bucket,
             config.minio.secure,
@@ -162,7 +171,7 @@ class MinioClient:
         internal = config.minio.endpoint.rstrip("/")
         if not internal_url.startswith(internal):
             return internal_url
-        return public + internal_url[len(internal):]
+        return public + internal_url[len(internal) :]
 
     @property
     def enabled(self) -> bool:
@@ -185,50 +194,67 @@ class MinioClient:
         client = self._ensure_client()
         found = await _run_async(client.bucket_exists, self.bucket)
         if found:
-            logger.debug("[MINIO] bucket exists bucket=%s", self.bucket)
+            logger.debug("[MINIO] bucket exists bucket={}", self.bucket)
             return
         await _run_async(client.make_bucket, self.bucket)
-        logger.info("[MINIO] created bucket=%s", self.bucket)
+        logger.info("[MINIO] created bucket={}", self.bucket)
 
     # ── multipart upload ──────────────────────────────────────
 
     async def create_multipart_upload(self, object_key: str) -> str:
         self._ensure_client()
         result = await _run_async(
-            self._client._create_multipart_upload, self.bucket, object_key, {},
+            self._client._create_multipart_upload,
+            self.bucket,
+            object_key,
+            {},
         )
         return result
 
     async def presigned_upload_part(
-        self, object_key: str, upload_id: str, part_number: int,
+        self,
+        object_key: str,
+        upload_id: str,
+        part_number: int,
     ) -> str:
         self._ensure_client()
         url = await _run_async(
             self._client.get_presigned_url,
-            "PUT", self.bucket, object_key,
+            "PUT",
+            self.bucket,
+            object_key,
             expires=timedelta(seconds=config.minio.presign_expire),
             extra_query_params={"uploadId": upload_id, "partNumber": str(part_number)},
         )
         return self._public_url(url)
 
     async def complete_multipart_upload(
-        self, object_key: str, upload_id: str, parts: list[dict],
+        self,
+        object_key: str,
+        upload_id: str,
+        parts: list[dict],
     ) -> str:
         from collections import namedtuple
+
         self._ensure_client()
         _Part = namedtuple("_Part", ["part_number", "etag"])
         converted = [_Part(p["PartNumber"], p["ETag"]) for p in parts]
         result = await _run_async(
             self._client._complete_multipart_upload,
-            self.bucket, object_key, upload_id, converted,
+            self.bucket,
+            object_key,
+            upload_id,
+            converted,
         )
         etag = ""
         if isinstance(result, str):
             tag_start = result.find("<ETag>")
             tag_end = result.find("</ETag>")
             if tag_start != -1 and tag_end != -1:
-                etag = result[tag_start + 6:tag_end].strip('"')
-        logger.info("[MINIO] multipart_upload complete object_key=%s etag=%s", object_key, etag)
+                etag = result[tag_start + 6 : tag_end].strip('"')
+        logger.info(
+            "[MINIO] multipart_upload complete object_key={} etag={}", object_key, etag
+        )
         return etag
 
     async def abort_multipart_upload(self, object_key: str, upload_id: str) -> None:
@@ -236,10 +262,16 @@ class MinioClient:
         try:
             await _run_async(
                 self._client._abort_multipart_upload,
-                self.bucket, object_key, upload_id,
+                self.bucket,
+                object_key,
+                upload_id,
             )
         except Exception as exc:
-            logger.warning("[MINIO] abort_multipart_upload failed object_key=%s err=%s", object_key, exc)
+            logger.warning(
+                "[MINIO] abort_multipart_upload failed object_key={} err={}",
+                object_key,
+                exc,
+            )
 
     # ── object access ─────────────────────────────────────────
 
@@ -247,7 +279,8 @@ class MinioClient:
         self._ensure_client()
         url = await _run_async(
             self._client.presigned_get_object,
-            self.bucket, object_key,
+            self.bucket,
+            object_key,
             expires=timedelta(seconds=config.minio.presign_expire),
         )
         return self._public_url(url)
@@ -255,7 +288,7 @@ class MinioClient:
     async def delete_object(self, object_key: str) -> None:
         self._ensure_client()
         await _run_async(self._client.remove_object, self.bucket, object_key)
-        logger.info("[MINIO] deleted object_key=%s", object_key)
+        logger.info("[MINIO] deleted object_key={}", object_key)
 
     async def stat_object(self, object_key: str) -> Optional[dict]:
         self._ensure_client()
@@ -266,7 +299,9 @@ class MinioClient:
                 "size": stat.size,
                 "etag": stat.etag,
                 "content_type": getattr(stat, "content_type", None),
-                "last_modified": stat.last_modified.isoformat() if stat.last_modified else None,
+                "last_modified": (
+                    stat.last_modified.isoformat() if stat.last_modified else None
+                ),
             }
         except S3Error as exc:
             if exc.code == "NoSuchKey":
@@ -277,7 +312,9 @@ class MinioClient:
         self._ensure_client()
         _, _, S3Error = _get_minio_sdk()
         try:
-            response = await _run_async(self._client.get_object, self.bucket, object_key)
+            response = await _run_async(
+                self._client.get_object, self.bucket, object_key
+            )
             data = await _run_async(response.read)
             await _run_async(response.close)
             await _run_async(response.release_conn)

@@ -86,6 +86,7 @@ INDEXES: dict[str, list[IndexModel]] = {
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+
 async def init() -> None:
     """Connect to MongoDB and ensure indexes.
 
@@ -113,7 +114,7 @@ async def init() -> None:
 
     result = await ping()
     if not result["ok"]:
-        logger.warning("[MONGO] init failed (continuing): %s", result["error"])
+        logger.warning("[MONGO] init failed (continuing): {}", result["error"])
         _client = None
         db = None
         return
@@ -121,7 +122,7 @@ async def init() -> None:
     await _drop_stale_indexes()
     await _ensure_indexes()
     logger.info(
-        "[MONGO] connected: db=%s, latency=%dms",
+        "[MONGO] connected: db={}, latency={}ms",
         config.mongo.db_name,
         result["latency_ms"],
     )
@@ -138,7 +139,7 @@ async def _drop_stale_indexes() -> None:
         for name in index_names:
             try:
                 await db[collection].drop_index(name)
-                logger.info("[MONGO] dropped stale index %s.%s", collection, name)
+                logger.info("[MONGO] dropped stale index {}.{}", collection, name)
             except OperationFailure:
                 pass  # already gone
 
@@ -150,9 +151,9 @@ async def _ensure_indexes() -> None:
     for collection, indexes in INDEXES.items():
         try:
             await db[collection].create_indexes(indexes)
-            logger.debug("[MONGO] indexes ensured: %s (%d)", collection, len(indexes))
+            logger.debug("[MONGO] indexes ensured: {} ({})", collection, len(indexes))
         except OperationFailure as exc:
-            logger.warning("[MONGO] index conflict on %s: %s", collection, exc)
+            logger.warning("[MONGO] index conflict on {}: {}", collection, exc)
 
 
 async def close() -> None:
@@ -172,14 +173,23 @@ async def ping() -> dict[str, Any]:
     start = time.time()
     try:
         await _client.admin.command("ping")
-        return {"ok": True, "latency_ms": int((time.time() - start) * 1000), "error": None}
+        return {
+            "ok": True,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": None,
+        }
     except Exception as exc:
-        return {"ok": False, "latency_ms": int((time.time() - start) * 1000), "error": str(exc)}
+        return {
+            "ok": False,
+            "latency_ms": int((time.time() - start) * 1000),
+            "error": str(exc),
+        }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def coll(name: str) -> Any:
     """Return a collection handle.  Raises if Mongo is disabled."""

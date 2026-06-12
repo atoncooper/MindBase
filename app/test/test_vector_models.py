@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 # ==================== AsyncTask 模型测试 ====================
 
+
 class TestAsyncTaskModel:
     """AsyncTask ORM 模型测试"""
 
@@ -26,6 +27,7 @@ class TestAsyncTaskModel:
         await test_db.commit()
 
         from sqlalchemy import select
+
         result = await test_db.execute(
             select(AsyncTask).where(AsyncTask.task_id == "test-async-001")
         )
@@ -56,6 +58,7 @@ class TestAsyncTaskModel:
         await test_db.commit()
 
         from sqlalchemy import select
+
         result = await test_db.execute(
             select(AsyncTask).where(AsyncTask.task_id == "test-steps-001")
         )
@@ -82,6 +85,7 @@ class TestAsyncTaskModel:
         await test_db.commit()
 
         from sqlalchemy import select
+
         result = await test_db.execute(
             select(AsyncTask).where(AsyncTask.task_id == "test-result-001")
         )
@@ -136,6 +140,7 @@ class TestAsyncTaskModel:
 
 # ==================== Video 向量化字段测试 ====================
 
+
 class TestVideoVectorFields:
     """Video 向量化扩展字段测试"""
 
@@ -180,9 +185,8 @@ class TestVideoVectorFields:
         await test_db.commit()
 
         from sqlalchemy import select
-        result = await test_db.execute(
-            select(Video).where(Video.bvid == "BV1vecDone")
-        )
+
+        result = await test_db.execute(select(Video).where(Video.bvid == "BV1vecDone"))
         found = result.scalar_one()
         assert found.is_vectorized == "done"
         assert found.vector_chunk_count == 5
@@ -200,21 +204,23 @@ class TestVideoVectorFields:
             page_title="P1. 失败",
             is_processed=True,
             is_vectorized="failed",
-            vector_error="ChromaDB 连接失败",
+            vector_error="Milvus 连接失败",
         )
         test_db.add(page)
         await test_db.commit()
 
         from sqlalchemy import select
+
         result = await test_db.execute(
             select(Video).where(Video.bvid == "BV1vecFailed")
         )
         found = result.scalar_one()
         assert found.is_vectorized == "failed"
-        assert "ChromaDB" in found.vector_error
+        assert "Milvus" in found.vector_error
 
 
 # ==================== Pydantic Schema 测试 ====================
+
 
 class TestVectorPydanticSchemas:
     """分P向量化 Pydantic 模型测试"""
@@ -236,12 +242,10 @@ class TestVectorPydanticSchemas:
             vectorized_at=now,
             vector_chunk_count=5,
             vector_error=None,
-            chroma_exists=True,
         )
         assert resp.exists is True
         assert resp.is_vectorized == "done"
         assert resp.vector_chunk_count == 5
-        assert resp.chroma_exists is True
 
     def test_vector_page_status_response__not_exists(self):
         """VectorPageStatusResponse exists=false"""
@@ -252,7 +256,6 @@ class TestVectorPydanticSchemas:
             is_processed=False,
             is_vectorized="pending",
             vector_chunk_count=0,
-            chroma_exists=False,
         )
         assert resp.exists is False
         assert resp.bvid is None
@@ -270,7 +273,6 @@ class TestVectorPydanticSchemas:
             is_processed=True,
             is_vectorized="done",
             vector_chunk_count=3,
-            chroma_exists=True,
             steps=steps,
         )
         assert resp.steps is not None

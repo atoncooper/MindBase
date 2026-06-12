@@ -3,6 +3,7 @@ Bilibili RAG 知识库系统
 
 ASR 服务 - 使用 DashScope 录音文件识别
 """
+
 import asyncio
 import json
 import os
@@ -21,6 +22,7 @@ from dashscope.utils.oss_utils import OssUtils
 from loguru import logger
 
 from app.config import settings
+from app.security.url_validation import validate_public_http_url
 
 
 class ASRService:
@@ -45,6 +47,7 @@ class ASRService:
             raise ValueError("未配置 DASHSCOPE API Key")
         dashscope.api_key = self.api_key
         if self.base_url:
+            self.base_url = validate_public_http_url(self.base_url)
             dashscope.base_http_api_url = self.base_url
 
     def _get_output_value(self, output: Any, key: str, default=None):
@@ -63,11 +66,16 @@ class ASRService:
         cmd = [
             ffmpeg,
             "-y",
-            "-i", file_path,
-            "-f", "s16le",
-            "-acodec", "pcm_s16le",
-            "-ac", "1",
-            "-ar", "16000",
+            "-i",
+            file_path,
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
             pcm_path,
         ]
         try:
@@ -97,9 +105,12 @@ class ASRService:
         cmd = [
             ffmpeg,
             "-y",
-            "-i", file_path,
-            "-ac", "1",
-            "-ar", "16000",
+            "-i",
+            file_path,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
             "-vn",
             wav_path,
         ]
@@ -183,7 +194,10 @@ class ASRService:
 
     def _download_transcription(self, url: str) -> Optional[str]:
         try:
-            raw = urlrequest.urlopen(url).read().decode("utf-8")
+            safe_url = validate_public_http_url(url)
+            if safe_url is None:
+                return None
+            raw = urlrequest.urlopen(safe_url, timeout=30).read().decode("utf-8")
             data = json.loads(raw)
         except Exception as e:
             logger.warning(f"ASR 结果下载失败: {e}")
@@ -210,9 +224,14 @@ class ASRService:
         base_url = self.base_url or getattr(dashscope, "base_http_api_url", None)
         if not base_url:
             base_url = "https://dashscope.aliyuncs.com/api/v1"
+        base_url = validate_public_http_url(base_url)
+        if base_url is None:
+            raise ValueError("未配置 ASR API 地址")
         return join_url(base_url, *parts)
 
-    def _submit_transcription_task_restful(self, audio_url: str, model: str) -> Optional[str]:
+    def _submit_transcription_task_restful(
+        self, audio_url: str, model: str
+    ) -> Optional[str]:
         url = self._build_api_url("services", "audio", "asr", "transcription")
         headers = {
             **default_headers(self.api_key),
@@ -233,7 +252,9 @@ class ASRService:
             return None
 
         if resp.status_code != HTTPStatus.OK:
-            logger.warning(f"ASR RESTful 提交失败: status_code={resp.status_code}, body={resp.text[:300]}")
+            logger.warning(
+                f"ASR RESTful 提交失败: status_code={resp.status_code}, body={resp.text[:300]}"
+            )
             return None
 
         data = resp.json()
@@ -254,7 +275,9 @@ class ASRService:
             return None
 
         if resp.status_code != HTTPStatus.OK:
-            logger.warning(f"ASR RESTful 查询失败: status_code={resp.status_code}, body={resp.text[:300]}")
+            logger.warning(
+                f"ASR RESTful 查询失败: status_code={resp.status_code}, body={resp.text[:300]}"
+            )
             return None
 
         data = resp.json()
@@ -384,7 +407,9 @@ class ASRService:
         logger.warning("ASR 未返回有效转写结果")
         return None
 
-    def _upload_temp_file(self, file_path: str, model: Optional[str] = None) -> Optional[str]:
+    def _upload_temp_file(
+        self, file_path: str, model: Optional[str] = None
+    ) -> Optional[str]:
         """上传本地文件到 DashScope 临时 OSS，返回 oss:// URL"""
         self._configure()
         if not os.path.exists(file_path):

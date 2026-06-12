@@ -1,11 +1,12 @@
 """
 DynamicEmbeddings — 支持每次调用时动态解析 API Key 的 Embedding 包装器
 
-用于 ChromaDB：Chroma 在 add/query 时会调用 embed_documents/embed_query，
+用于 Milvus：Milvus 在 add/query 时会调用 embed_documents/embed_query，
 此包装器在每次调用前根据 session_id 动态创建正确的 OpenAIEmbeddings 实例。
 
 采用组合模式（不继承 OpenAIEmbeddings），避免 Pydantic v2 序列化冲突。
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -34,7 +35,7 @@ class DynamicEmbeddings:
         # 在异步请求上下文中设置用户 uid
         _embedding_uid_ctx.set(uid)
 
-        # Chroma 调用时会自动使用用户配置的 Key
+        # Milvus 调用时会自动使用用户配置的 Key
         results = vectorstore.similarity_search("query")
     """
 
@@ -46,7 +47,9 @@ class DynamicEmbeddings:
         """
         self._api_key_manager = api_key_manager
         self._default_api_key = default_kwargs.get("api_key", settings.openai_api_key)
-        self._default_base_url = default_kwargs.get("base_url", settings.openai_base_url)
+        self._default_base_url = default_kwargs.get(
+            "base_url", settings.openai_base_url
+        )
         self._default_model = default_kwargs.get("model", settings.embedding_model)
 
     def _make_embeddings(self) -> OpenAIEmbeddings:
@@ -59,15 +62,23 @@ class DynamicEmbeddings:
         if uid is not None and self._api_key_manager.is_enabled:
             cache_key = f"cred:{uid}"
             entry = self._api_key_manager._cache.get(cache_key)
-            if entry and entry.embedding_key_encrypted and entry.expire_at >= time.time():
+            if (
+                entry
+                and entry.embedding_key_encrypted
+                and entry.expire_at >= time.time()
+            ):
                 try:
-                    api_key = self._api_key_manager._decrypt(entry.embedding_key_encrypted)
+                    api_key = self._api_key_manager._decrypt(
+                        entry.embedding_key_encrypted
+                    )
                     if entry.embedding_base_url:
                         base_url = entry.embedding_base_url
                     if entry.embedding_model:
                         model = entry.embedding_model
                 except Exception as e:
-                    logger.warning(f"[DYNAMIC_EMBED] failed to apply session config: {e}")
+                    logger.warning(
+                        f"[DYNAMIC_EMBED] failed to apply session config: {e}"
+                    )
 
         return OpenAIEmbeddings(
             api_key=api_key,
@@ -77,11 +88,11 @@ class DynamicEmbeddings:
         )
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """嵌入文档列表（Chroma add 时调用）。"""
+        """嵌入文档列表（Milvus add 时调用）。"""
         return self._make_embeddings().embed_documents(texts)
 
     def embed_query(self, text: str) -> List[float]:
-        """嵌入查询文本（Chroma query 时调用）。"""
+        """嵌入查询文本（Milvus query 时调用）。"""
         return self._make_embeddings().embed_query(text)
 
 

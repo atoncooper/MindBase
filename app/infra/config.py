@@ -62,8 +62,10 @@ StrictBoolSafeLoader.add_implicit_resolver(
 # Paths
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]   # app/infra/config.py -> project root
-APP_DIR = Path(__file__).resolve().parents[1]        # app/infra/config.py -> app/
+PROJECT_ROOT = (
+    Path(__file__).resolve().parents[2]
+)  # app/infra/config.py -> project root
+APP_DIR = Path(__file__).resolve().parents[1]  # app/infra/config.py -> app/
 CONFIG_DIR = APP_DIR / "config"
 
 
@@ -77,12 +79,13 @@ def _config_files() -> list[Path]:
 
     Prefers .yaml over .yml; warns if both exist.
     """
+
     def pick(stem: str) -> Path | None:
         yaml_path = CONFIG_DIR / f"{stem}.yaml"
         yml_path = CONFIG_DIR / f"{stem}.yml"
         if yaml_path.is_file() and yml_path.is_file():
             logger.warning(
-                "[CONFIG] both %s.yaml and %s.yml exist, using .yaml", stem, stem
+                "[CONFIG] both {}.yaml and {}.yml exist, using .yaml", stem, stem
             )
             return yaml_path
         if yaml_path.is_file():
@@ -102,6 +105,7 @@ def _config_files() -> list[Path]:
 # ---------------------------------------------------------------------------
 # Custom YAML source (pydantic-settings has no built-in YAML source)
 # ---------------------------------------------------------------------------
+
 
 class YamlConfigSettingsSource(PydanticBaseSettingsSource):
     """Load config from a single YAML file.
@@ -131,6 +135,7 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
 # Sub-config sections (top-level keys in YAML)
 # ---------------------------------------------------------------------------
 
+
 class _Section(BaseSettings):
     """Base class for nested config sections.
 
@@ -140,6 +145,7 @@ class _Section(BaseSettings):
     - protected_namespaces=(): allow model_* field names (e.g. model_local)
     - extra="ignore": silently drop unknown YAML keys for forward compatibility
     """
+
     model_config = SettingsConfigDict(
         populate_by_name=True,
         protected_namespaces=(),
@@ -336,6 +342,7 @@ class TransactionSection(_Section):
 # Top-level aggregator
 # ---------------------------------------------------------------------------
 
+
 class AppConfig(BaseSettings):
     """Aggregator for all sub-sections.
 
@@ -344,6 +351,7 @@ class AppConfig(BaseSettings):
         print(config.rdbms.url)
         print(config.llm.api_key.get_secret_value())
     """
+
     app: AppSection = Field(default_factory=AppSection)
     server: ServerSection = Field(default_factory=ServerSection)
     rdbms: RdbmsSection = Field(default_factory=RdbmsSection)
@@ -389,7 +397,9 @@ class AppConfig(BaseSettings):
         """
         yaml_sources = [
             YamlConfigSettingsSource(settings_cls, yaml_file=f)
-            for f in reversed(_config_files())   # reversed: local pushed first (higher priority)
+            for f in reversed(
+                _config_files()
+            )  # reversed: local pushed first (higher priority)
         ]
         return (
             init_settings,
@@ -404,24 +414,27 @@ class AppConfig(BaseSettings):
 # Singleton + startup validation
 # ---------------------------------------------------------------------------
 
+
 @lru_cache(maxsize=1)
 def get_config() -> AppConfig:
     files = _config_files()
     if not files:
         logger.warning(
-            "[CONFIG] no yaml files found in %s, using defaults+env only", CONFIG_DIR
+            "[CONFIG] no yaml files found in {}, using defaults+env only", CONFIG_DIR
         )
     else:
         logger.info(
-            "[CONFIG] loading: %s",
+            "[CONFIG] loading: {}",
             [str(f.relative_to(PROJECT_ROOT)) for f in files],
         )
 
     cfg = AppConfig()
     _validate(cfg)
     logger.info(
-        "[CONFIG] loaded: env=%s debug=%s log=%s",
-        cfg.app.env, cfg.app.debug, cfg.app.log_level,
+        "[CONFIG] loaded: env={} debug={} log={}",
+        cfg.app.env,
+        cfg.app.debug,
+        cfg.app.log_level,
     )
     return cfg
 
@@ -438,7 +451,9 @@ def _validate(cfg: AppConfig) -> None:
     if not cfg.session.secret.get_secret_value():
         missing.append("session.secret (env: SESSION__SECRET)")
     if not cfg.security.encryption_key.get_secret_value():
-        missing.append("security.encryption_key (env: SECURITY__API_KEY_ENCRYPTION_KEY)")
+        missing.append(
+            "security.encryption_key (env: SECURITY__API_KEY_ENCRYPTION_KEY)"
+        )
     if cfg.minio.enabled:
         if not cfg.minio.access_key.get_secret_value():
             missing.append("minio.access_key (env: MINIO__ACCESS_KEY)")
@@ -450,7 +465,7 @@ def _validate(cfg: AppConfig) -> None:
     if missing:
         if cfg.app.env == "prod":
             raise RuntimeError(f"[CONFIG] missing required secrets: {missing}")
-        logger.warning("[CONFIG] missing secrets (dev mode, continuing): %s", missing)
+        logger.warning("[CONFIG] missing secrets (dev mode, continuing): {}", missing)
 
 
 # Module-level alias for convenience:

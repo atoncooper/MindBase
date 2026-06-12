@@ -24,7 +24,7 @@ from loguru import logger
 
 # Shared state — populated by subprocess, read by main process
 _manager: multiprocessing.Manager | None = None
-_shared_cache: Any = None          # multiprocessing.Manager().dict()
+_shared_cache: Any = None  # multiprocessing.Manager().dict()
 _refresher_process: multiprocessing.Process | None = None
 
 CACHE_KEY = "async_tasks_cache"
@@ -54,17 +54,24 @@ def _refresh_from_db(shared_dict: Any, database_url: str) -> None:
     import asyncio as _asyncio
 
     async def _query():
-        from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+        from sqlalchemy.ext.asyncio import (
+            create_async_engine,
+            AsyncSession,
+            async_sessionmaker,
+        )
         from app.repository.async_task_repository import AsyncTaskRepository
 
         engine = create_async_engine(database_url, echo=False)
-        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
 
         async with factory() as db:
             AsyncTaskRepository()
             # Query all tasks, newest first (no uid filter — subprocess reads all)
             from sqlalchemy import select
             from app.models import AsyncTask
+
             result = await db.execute(
                 select(AsyncTask).order_by(AsyncTask.updated_at.desc()).limit(200)
             )
@@ -83,7 +90,9 @@ def _refresh_from_db(shared_dict: Any, database_url: str) -> None:
                     "error": t.error,
                     "created_at": t.created_at.isoformat() if t.created_at else None,
                     "updated_at": t.updated_at.isoformat() if t.updated_at else None,
-                    "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+                    "completed_at": (
+                        t.completed_at.isoformat() if t.completed_at else None
+                    ),
                 }
                 for t in tasks
             ]
@@ -122,7 +131,9 @@ def start_cache_refresher(database_url: str) -> None:
         daemon=True,
     )
     _refresher_process.start()
-    logger.info("[TaskCache] refresher subprocess started (interval=%ds)", REFRESH_INTERVAL)
+    logger.info(
+        "[TaskCache] refresher subprocess started (interval={}s)", REFRESH_INTERVAL
+    )
 
 
 def stop_cache_refresher() -> None:

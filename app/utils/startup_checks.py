@@ -34,15 +34,19 @@ async def run_startup_checks() -> None:
 
     # 2. Milvus — soft check (warn only; init() already handles graceful degradation)
     from app.infra.config import config as _cfg
+
     if _cfg.milvus.enabled:
         try:
             from app.infra.milvus import ping as milvus_ping, init as milvus_init
+
             await milvus_init()
             result = await milvus_ping()
             if not result["ok"]:
-                logger.warning("[STARTUP] Milvus: not connected (continuing without vector store)")
+                logger.warning(
+                    "[STARTUP] Milvus: not connected (continuing without vector store)"
+                )
             else:
-                logger.info("[STARTUP] Milvus: OK (latency=%dms)", result["latency_ms"])
+                logger.info("[STARTUP] Milvus: OK (latency={}ms)", result["latency_ms"])
                 # Check cloud file consistency after Milvus is confirmed OK
                 await _check_cloud_consistency()
         except Exception as e:
@@ -52,11 +56,12 @@ async def run_startup_checks() -> None:
     if _cfg.mongo.enabled:
         try:
             from app.infra.mongo import init as mongo_init, ping as mongo_ping
+
             await mongo_init()
             result = await mongo_ping()
             if not result["ok"]:
                 raise StartupCheckError(result.get("error", "unknown"))
-            logger.info("[STARTUP] MongoDB: OK (latency=%dms)", result["latency_ms"])
+            logger.info("[STARTUP] MongoDB: OK (latency={}ms)", result["latency_ms"])
         except Exception as e:
             errors.append(f"MongoDB: {e}")
 
@@ -64,11 +69,12 @@ async def run_startup_checks() -> None:
     if _cfg.redis.enabled:
         try:
             from app.infra.redis import init as redis_init, ping as redis_ping
+
             await redis_init()
             result = await redis_ping()
             if not result["ok"]:
                 raise StartupCheckError(result.get("error", "unknown"))
-            logger.info("[STARTUP] Redis: OK (latency=%dms)", result["latency_ms"])
+            logger.info("[STARTUP] Redis: OK (latency={}ms)", result["latency_ms"])
         except Exception as e:
             errors.append(f"Redis: {e}")
 
@@ -109,15 +115,14 @@ async def _check_time_drift() -> None:
 
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                "https://www.googleapis.com/discovery/v1/apis"
-            )
+            resp = await client.get("https://www.googleapis.com/discovery/v1/apis")
             server_date = resp.headers.get("date", "")
             if not server_date:
                 logger.warning("[STARTUP] Time drift check skipped (no Date header)")
                 return
 
             from email.utils import parsedate_to_datetime
+
             server_dt = parsedate_to_datetime(server_date).replace(tzinfo=timezone.utc)
             local_dt = datetime.now(timezone.utc)
             drift = abs((local_dt - server_dt).total_seconds())
@@ -180,14 +185,14 @@ async def _check_cloud_consistency() -> None:
 
         if stale_count > 0:
             logger.warning(
-                "[STARTUP] Cloud consistency: %d/%d files marked 'done' have 0 vectors in Milvus. "
+                "[STARTUP] Cloud consistency: {}/{} files marked 'done' have 0 vectors in Milvus. "
                 "Run: python test/check_cloud_consistency.py --repair",
                 stale_count,
                 len(done_rows),
             )
         else:
             logger.info(
-                "[STARTUP] Cloud consistency: OK (%d files, all present in Milvus)",
+                "[STARTUP] Cloud consistency: OK ({} files, all present in Milvus)",
                 len(done_rows),
             )
     except Exception:

@@ -57,6 +57,7 @@ _state: ContextVar[dict[int, float]] = ContextVar("slow_sql_state", default={})
 # Event handlers (sync — called on engine.sync_engine)
 # ---------------------------------------------------------------------------
 
+
 def _before_cursor_execute(
     conn, cursor, statement: str, parameters, context, executemany
 ) -> None:
@@ -92,7 +93,9 @@ def _after_cursor_execute(
         "fingerprint": fingerprint,
         "sql": statement[:2000],
         "elapsed_ms": round(elapsed_ms, 3),
-        "params_count": len(parameters) if isinstance(parameters, (list, tuple, dict)) else 0,
+        "params_count": (
+            len(parameters) if isinstance(parameters, (list, tuple, dict)) else 0
+        ),
         "dialect": getattr(conn.dialect, "name", "unknown"),
         "created_at": now,
     }
@@ -118,17 +121,20 @@ def _after_cursor_execute(
 # Persistence
 # ---------------------------------------------------------------------------
 
+
 async def _persist(record: dict[str, Any]) -> None:
     """Write a slow-query record to Mongo (if enabled) or SQLite fallback."""
     if config.mongo.enabled:
         try:
             from app.infra.mongo import get_mongo
+
             await get_mongo().slow_queries.insert_one(record)
             return
         except Exception:
             logger.exception("[SLOW_SQL] mongo persist failed, falling back to sqlite")
 
     from app.infra.rdbms import get_engine
+
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.execute(
@@ -163,6 +169,7 @@ async def _persist(record: dict[str, Any]) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def install_hooks(engine) -> None:
     """Attach before/after cursor listeners to *engine*.
 
@@ -172,7 +179,7 @@ def install_hooks(engine) -> None:
     event.listen(engine.sync_engine, "before_cursor_execute", _before_cursor_execute)
     event.listen(engine.sync_engine, "after_cursor_execute", _after_cursor_execute)
     logger.info(
-        "[SLOW_SQL] hooks installed, threshold=%dms",
+        "[SLOW_SQL] hooks installed, threshold={}ms",
         config.slow_sql.threshold_ms,
     )
 
@@ -184,12 +191,14 @@ async def cleanup_old_records() -> None:
     if config.mongo.enabled:
         try:
             from app.infra.mongo import get_mongo
+
             await get_mongo().slow_queries.delete_many({"created_at": {"$lt": cutoff}})
             return
         except Exception:
             logger.exception("[SLOW_SQL] mongo cleanup failed")
 
     from app.infra.rdbms import get_engine
+
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.execute(

@@ -53,6 +53,7 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 # Config
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class RdbmsConfig:
     url: str = "sqlite+aiosqlite:///./data/bilibili_rag.db"
@@ -105,6 +106,7 @@ def _load_config() -> RdbmsConfig:
 # ---------------------------------------------------------------------------
 # Engine construction
 # ---------------------------------------------------------------------------
+
 
 def _resolve_url(cfg: RdbmsConfig) -> URL:
     url = make_url(cfg.url)
@@ -162,13 +164,13 @@ def init_engine(cfg: RdbmsConfig | None = None) -> AsyncEngine:
 
     if not dialect.startswith("postgresql"):
         logger.warning(
-            "[RDBMS] non-postgres URL detected (driver=%s); pool tuning params "
+            "[RDBMS] non-postgres URL detected (driver={}); pool tuning params "
             "target asyncpg and may be ignored by other drivers",
             dialect,
         )
 
     logger.info(
-        "[RDBMS] init engine driver=%s host=%s db=%s pool=%d+%d pre_ping=%s",
+        "[RDBMS] init engine driver={} host={} db={} pool={}+{} pre_ping={}",
         dialect,
         url.host,
         url.database,
@@ -185,8 +187,10 @@ def init_engine(cfg: RdbmsConfig | None = None) -> AsyncEngine:
     )
 
     from app.infra.config import config
+
     if config.slow_sql.enabled:
         from app.infra.slow_sql import install_hooks
+
         install_hooks(_engine)
 
     return _engine
@@ -219,6 +223,7 @@ async def close_engine() -> None:
 # ---------------------------------------------------------------------------
 # Session acquisition
 # ---------------------------------------------------------------------------
+
 
 async def get_db() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency injection entrypoint."""
@@ -266,6 +271,7 @@ async def get_db_context() -> AsyncIterator[AsyncSession]:
 # ---------------------------------------------------------------------------
 # Ops helpers
 # ---------------------------------------------------------------------------
+
 
 async def health_check() -> bool:
     """Return True if SELECT 1 succeeds. Logs warning on failure, never raises."""

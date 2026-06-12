@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 # ==================== 测试数据库 Fixture ====================
 
+
 @pytest_asyncio.fixture(scope="function")
 async def test_db():
     """创建内存 SQLite 数据库用于测试"""
@@ -42,6 +43,7 @@ async def test_db():
 @pytest_asyncio.fixture(scope="function")
 async def client(test_db):
     """创建测试客户端，注入测试数据库"""
+
     async def override_get_db():
         yield test_db
 
@@ -56,6 +58,7 @@ async def client(test_db):
 
 # ==================== GET /vec/page/status ====================
 
+
 class TestGetVecStatus:
     """GET /vec/page/status 测试"""
 
@@ -67,7 +70,7 @@ class TestGetVecStatus:
         data = response.json()
         assert data["exists"] is False
         assert data["is_vectorized"] == "pending"
-        assert data["chroma_exists"] is False
+        assert data["vector_chunk_count"] == 0
 
     @pytest.mark.asyncio
     async def test_status_exists_not_vectorized(self, client, test_db):
@@ -98,11 +101,11 @@ class TestGetVecStatus:
             data = response.json()
             assert data["exists"] is True
             assert data["is_vectorized"] == "pending"
-            assert data["chroma_exists"] is False
+            assert data["vector_chunk_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_status_done_chroma_exists(self, client, test_db):
-        """已向量化且 ChromaDB 有数据"""
+    async def test_status_done_vector_exists(self, client, test_db):
+        """已向量化且 Milvus 有数据"""
         from app.models import Video
 
         page = Video(
@@ -129,12 +132,13 @@ class TestGetVecStatus:
             assert response.status_code == 200
             data = response.json()
             assert data["is_vectorized"] == "done"
-            assert data["chroma_exists"] is True
             assert data["vector_chunk_count"] == 5
 
     @pytest.mark.asyncio
-    async def test_status_consistency_repair__done_but_chroma_empty(self, client, test_db):
-        """DB says done 但 ChromaDB 为空 → 自动修复为 failed"""
+    async def test_status_consistency_repair__done_but_vectors_empty(
+        self, client, test_db
+    ):
+        """DB says done 但 Milvus 为空 → 自动修复为 failed"""
         from app.models import Video
 
         page = Video(
@@ -154,7 +158,7 @@ class TestGetVecStatus:
 
         with patch("app.routers.vector_page.RAGService") as mock_rag:
             mock_instance = MagicMock()
-            mock_instance.get_page_vector_count.return_value = 0  # 但 ChromaDB 实际为空
+            mock_instance.get_page_vector_count.return_value = 0  # 但 Milvus 实际为空
             mock_rag.return_value = mock_instance
 
             response = await client.get("/vec/page/status?bvid=BV1inconsistent&cid=333")
@@ -162,11 +166,12 @@ class TestGetVecStatus:
             data = response.json()
             # 应被修复为 failed
             assert data["is_vectorized"] == "failed"
-            assert data["chroma_exists"] is False
 
     @pytest.mark.asyncio
-    async def test_status_consistency_repair__pending_but_chroma_has_data(self, client, test_db):
-        """DB says pending 但 ChromaDB 有数据 → 自动修复为 done"""
+    async def test_status_consistency_repair__pending_but_vectors_have_data(
+        self, client, test_db
+    ):
+        """DB says pending 但 Milvus 有数据 → 自动修复为 done"""
         from app.models import Video
 
         page = Video(
@@ -186,19 +191,21 @@ class TestGetVecStatus:
 
         with patch("app.routers.vector_page.RAGService") as mock_rag:
             mock_instance = MagicMock()
-            mock_instance.get_page_vector_count.return_value = 3  # ChromaDB 实际有 3 个块
+            mock_instance.get_page_vector_count.return_value = 3  # Milvus 实际有 3 个块
             mock_rag.return_value = mock_instance
 
-            response = await client.get("/vec/page/status?bvid=BV1pendingButData&cid=444")
+            response = await client.get(
+                "/vec/page/status?bvid=BV1pendingButData&cid=444"
+            )
             assert response.status_code == 200
             data = response.json()
             # 应被修复为 done
             assert data["is_vectorized"] == "done"
-            assert data["chroma_exists"] is True
             assert data["vector_chunk_count"] == 3
 
 
 # ==================== POST /vec/page/create ====================
+
 
 class TestCreateVec:
     """POST /vec/page/create 测试"""
@@ -261,8 +268,11 @@ class TestCreateVec:
         await test_db.commit()
 
         # Mock create_task 避免真实后台运行，同时 patch task_store 使其用测试数据库
-        with patch("app.routers.vector_page.asyncio.create_task") as mock_create_task, \
-             patch("app.routers.vector_page._task_store") as mock_store:
+        with patch(
+            "app.routers.vector_page.asyncio.create_task"
+        ) as mock_create_task, patch(
+            "app.routers.vector_page._task_store"
+        ) as mock_store:
             mock_create_task.return_value = MagicMock()
             mock_store.create = AsyncMock(return_value=None)
 
@@ -277,6 +287,7 @@ class TestCreateVec:
 
 
 # ==================== POST /vec/page/revector ====================
+
 
 class TestReVector:
     """POST /vec/page/revector 测试"""
@@ -332,8 +343,11 @@ class TestReVector:
         test_db.add(page)
         await test_db.commit()
 
-        with patch("app.routers.vector_page.asyncio.create_task") as mock_create_task, \
-             patch("app.routers.vector_page._task_store") as mock_store:
+        with patch(
+            "app.routers.vector_page.asyncio.create_task"
+        ) as mock_create_task, patch(
+            "app.routers.vector_page._task_store"
+        ) as mock_store:
             mock_create_task.return_value = MagicMock()
             mock_store.create = AsyncMock(return_value=None)
 
@@ -347,6 +361,7 @@ class TestReVector:
 
             # 验证 is_vectorized 已改为 pending
             from sqlalchemy import select
+
             result = await test_db.execute(
                 select(Video).where(Video.bvid == "BV1rebuild")
             )
@@ -355,6 +370,7 @@ class TestReVector:
 
 
 # ==================== GET /vec/page/status/{task_id} ====================
+
 
 class TestGetVecTaskStatus:
     """GET /vec/page/status/{task_id} 测试"""

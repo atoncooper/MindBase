@@ -35,7 +35,7 @@ _HEARTBEAT_PREFIX: str = f"{config.redis.key_prefix}cloud:heartbeat:"
 def _extract_session_uuid(key: str) -> Optional[str]:
     """Extract session_uuid from a heartbeat key, or None if not a match."""
     if key.startswith(_HEARTBEAT_PREFIX) and len(key) > len(_HEARTBEAT_PREFIX):
-        return key[len(_HEARTBEAT_PREFIX):]
+        return key[len(_HEARTBEAT_PREFIX) :]
     return None
 
 
@@ -73,7 +73,7 @@ async def start_keyspace_listener() -> None:
                 continue
 
             logger.info(
-                "[CLOUD_CLEANUP] heartbeat expired session_uuid=%s",
+                "[CLOUD_CLEANUP] heartbeat expired session_uuid={}",
                 session_uuid,
             )
             await _cleanup_session(session_uuid)
@@ -107,14 +107,14 @@ async def reconcile_on_startup() -> None:
                 return
 
             logger.info(
-                "[CLOUD_CLEANUP] reconciling %d active session(s)",
+                "[CLOUD_CLEANUP] reconciling {} active session(s)",
                 len(active_sessions),
             )
 
             for session in active_sessions:
                 if not await _is_heartbeat_alive(session.session_uuid):
                     logger.info(
-                        "[CLOUD_CLEANUP] stale session session_uuid=%s",
+                        "[CLOUD_CLEANUP] stale session session_uuid={}",
                         session.session_uuid,
                     )
                     await _cleanup_session(session.session_uuid)
@@ -140,7 +140,7 @@ async def _is_heartbeat_alive(session_uuid: str) -> bool:
         return bool(exists)
     except Exception:
         logger.warning(
-            "[CLOUD_CLEANUP] Redis exists check failed session_uuid=%s",
+            "[CLOUD_CLEANUP] Redis exists check failed session_uuid={}",
             session_uuid,
         )
         return True  # assume alive on Redis failure
@@ -159,7 +159,7 @@ async def _cleanup_session(session_uuid: str) -> None:
     3. Mark MySQL ``cloud_files`` rows as failed.
     4. Hard-delete ``cloud_upload_chunks`` rows.
     """
-    logger.info("[CLOUD_CLEANUP] cleaning session_uuid=%s", session_uuid)
+    logger.info("[CLOUD_CLEANUP] cleaning session_uuid={}", session_uuid)
 
     try:
         async with get_db_context() as db:
@@ -178,24 +178,26 @@ async def _cleanup_session(session_uuid: str) -> None:
             # Hard-delete chunks tied to the session's minio_upload_id
             if session_row is not None and session_row.minio_upload_id:
                 from sqlalchemy import delete as sa_delete
+
                 await db.execute(
                     sa_delete(CloudUploadChunk).where(
-                        CloudUploadChunk.minio_upload_id
-                        == session_row.minio_upload_id,
+                        CloudUploadChunk.minio_upload_id == session_row.minio_upload_id,
                     )
                 )
                 await db.commit()
 
-        logger.info("[CLOUD_CLEANUP] cleanup done session_uuid=%s", session_uuid)
+        logger.info("[CLOUD_CLEANUP] cleanup done session_uuid={}", session_uuid)
 
     except Exception:
         logger.exception(
-            "[CLOUD_CLEANUP] cleanup failed session_uuid=%s", session_uuid,
+            "[CLOUD_CLEANUP] cleanup failed session_uuid={}",
+            session_uuid,
         )
 
 
 async def _get_session_by_uuid(
-    session_uuid: str, db: AsyncSession,
+    session_uuid: str,
+    db: AsyncSession,
 ) -> Optional[CloudUploadSession]:
     """Low-level lookup for a session row (no uid filter, cleanup use only)."""
     result = await db.execute(
@@ -207,7 +209,8 @@ async def _get_session_by_uuid(
 
 
 async def _abort_minio_for_uploads(
-    minio_upload_id: str, db: AsyncSession,
+    minio_upload_id: str,
+    db: AsyncSession,
 ) -> None:
     """Abort every MinIO multipart upload that matches *minio_upload_id*.
 
@@ -242,7 +245,8 @@ async def _abort_minio_for_uploads(
             await minio_client.abort_multipart_upload(object_key, minio_upload_id)
         except Exception:
             logger.warning(
-                "[CLOUD_CLEANUP] minio_abort failed upload_uuid=%s", upload_uuid,
+                "[CLOUD_CLEANUP] minio_abort failed upload_uuid={}",
+                upload_uuid,
             )
 
 
@@ -259,7 +263,8 @@ async def cleanup_dead_chunks(max_age_hours: int = 24) -> int:
     Returns the number of affected upload_uuids.
     """
     logger.info(
-        "[CLOUD_CLEANUP] dead chunk cleanup max_age_hours=%d", max_age_hours,
+        "[CLOUD_CLEANUP] dead chunk cleanup max_age_hours={}",
+        max_age_hours,
     )
 
     try:
@@ -272,7 +277,8 @@ async def cleanup_dead_chunks(max_age_hours: int = 24) -> int:
                 return 0
 
             logger.info(
-                "[CLOUD_CLEANUP] found %d stale upload(s)", len(stale_uuids),
+                "[CLOUD_CLEANUP] found {} stale upload(s)",
+                len(stale_uuids),
             )
 
             # Best-effort: abort MinIO multipart uploads for stale uploads
@@ -303,7 +309,8 @@ async def cleanup_dead_chunks(max_age_hours: int = 24) -> int:
 
 
 async def _abort_minio_for_stale_upload(
-    upload_uuid: str, db: AsyncSession,
+    upload_uuid: str,
+    db: AsyncSession,
 ) -> None:
     """Try to abort the MinIO multipart upload for a stale upload_uuid."""
     minio_client = get_minio_client()
@@ -324,16 +331,18 @@ async def _abort_minio_for_stale_upload(
     # already be deleted; catch the error gracefully)
     try:
         chunk_result = await db.execute(
-            select(CloudUploadChunk.minio_upload_id).where(
+            select(CloudUploadChunk.minio_upload_id)
+            .where(
                 CloudUploadChunk.upload_uuid == upload_uuid,
                 CloudUploadChunk.minio_upload_id.isnot(None),
-            ).limit(1)
+            )
+            .limit(1)
         )
         chunk_row = chunk_result.first()
         if chunk_row and chunk_row[0]:
             await minio_client.abort_multipart_upload(object_key, chunk_row[0])
     except Exception:
         logger.debug(
-            "[CLOUD_CLEANUP] minio abort skipped for stale upload_uuid=%s",
+            "[CLOUD_CLEANUP] minio abort skipped for stale upload_uuid={}",
             upload_uuid,
         )
