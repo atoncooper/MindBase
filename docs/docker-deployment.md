@@ -45,7 +45,7 @@ docker-compose.yml
 - **前端 UI**：`http://localhost:3000`
 
 **数据持久化通过 Docker Volumes：**
-- `backend_data`：SQLite 数据库 + ChromaDB 向量数据
+- `backend_data`：SQLite 数据库 + Milvus 向量数据
 - `backend_logs`：应用日志
 
 ---
@@ -346,7 +346,7 @@ NEXT_PUBLIC_API_URL=http://backend:8000
 2. DashScope API Key 是否正确：确认 `LLM__API_KEY` 已设置（ASR 复用 LLM 的 API Key）
 3. ASR 音频文件是否正常下载
 
-### Q: ChromaDB 数据丢失？
+### Q: Milvus 数据丢失？
 
 确保不要删除 `backend_data` volume：
 ```bash
@@ -365,4 +365,4 @@ git pull
 docker compose up -d --build
 ```
 
-> 如果涉及 embedding 模型更换，需要清空 ChromaDB 数据并全量重建向量索引。
+> 如果涉及 embedding 模型更换，需要清空 Milvus 数据并全量重建向量索引。

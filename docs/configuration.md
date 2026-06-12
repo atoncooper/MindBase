@@ -99,11 +99,14 @@ rdbms:
 RDBMS__URL=postgresql+asyncpg://user:pass@host:5432/bilirag
 ```
 
-### `chroma` — Vector database
+### `milvus` — Vector database
 
 ```yaml
-chroma:
-  persist_directory: ./data/chroma_db
+milvus:
+  host: localhost
+  port: 19530
+  collection_name: bilibili_videos
+  cloud_collection_name: cloud_drive
 ```
 
 ### `llm` — Language model (OpenAI-compatible)
