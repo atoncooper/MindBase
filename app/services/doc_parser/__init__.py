@@ -6,6 +6,7 @@ from app.services.doc_parser.base import DocParser
 from app.services.doc_parser.markdown_parser import MarkdownParser
 from app.services.doc_parser.html_parser import HtmlParser
 from app.services.doc_parser.docx_parser import DocxParser
+from app.services.doc_parser.pdf_parser import PdfParser
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ _PARSERS: list[DocParser] = [
     MarkdownParser(),
     HtmlParser(),
     DocxParser(),
+    PdfParser(),
 ]
 
 MAX_DOC_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -23,11 +25,11 @@ VECTORIZABLE_MIME_PREFIXES: list[str] = [
     "text/html",
     "text/plain",
     "application/vnd.openxmlformats-officedocument.wordprocessingml",
+    "application/pdf",
     "video/",
 ]
 
 NOT_VECTORIZABLE_MIME_PREFIXES: list[str] = [
-    "application/pdf",
     "application/zip",
     "application/x-rar-compressed",
     "application/x-7z-compressed",

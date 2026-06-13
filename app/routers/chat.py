@@ -42,7 +42,7 @@ from app.services.chat_title import (
     should_generate_title,
 )
 from app.services.query import RewriteResult, RewriteType, CONFIDENCE_THRESHOLD
-from app.services.rag import get_agentic_rag_service
+from app.services.rag import ChatHarness, HistoryTurn, get_agentic_rag_service
 from app.services.rag.prompts import (
     qa_system_prompt,
     fallback_system_prompt,
@@ -216,6 +216,71 @@ def _schedule_title_generation(
         uid=uid,
         first_message=first_message,
         llm_factory=_get_llm,
+    )
+
+
+async def _load_history_turns(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+    limit: int = 6,
+) -> list[HistoryTurn]:
+    """Load the last *limit* completed messages for harness memory injection."""
+    try:
+        rows = await chat_history_service.get_recent_turns_for_user(
+            db, uid, chat_session_id, limit=limit
+        )
+    except Exception as exc:
+        logger.warning("[CHAT_HARNESS] history load failed: %s", exc)
+        return []
+    return [HistoryTurn(role=r.role, content=r.content) for r in rows]
+
+
+async def _resolve_search_scope(
+    request: ChatRequest,
+    db: AsyncSession,
+    uid: Optional[int],
+) -> tuple[Optional[list[str]], Optional[list[dict]]]:
+    """Compute (bvids, workspace_pages) the harness should pass to RAG.search.
+
+    Mirrors the workspace handling in :func:`_prepare_messages` but skips
+    routing logic — the harness planner now owns scope decisions.  Returns
+    ``(None, None)`` when no scope filter applies (full-vector search).
+    """
+    workspace_pages_dicts: Optional[list[dict]] = None
+    if request.workspace_pages:
+        workspace_pages_dicts = [wp.model_dump() for wp in request.workspace_pages]
+
+    if request.workspace_id is not None:
+        from app.repository.workspace_repository import WorkspaceRepository
+        from app.infra.redis import redis_client
+
+        ws_repo = WorkspaceRepository(redis=redis_client if redis_client else None)
+        ws = await ws_repo.get_by_id(request.workspace_id, uid, db)
+        if ws is None:
+            raise HTTPException(status_code=404, detail="工作区不存在")
+        ws_upload_uuids = list(
+            await ws_repo.expand_bindings(request.workspace_id, uid, db)
+        )
+        return ws_upload_uuids or None, None
+
+    if uid is not None:
+        media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
+        bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
+        return (bvids or None), workspace_pages_dicts
+
+    return None, workspace_pages_dicts
+
+
+def _build_harness(uid: Optional[int]) -> ChatHarness:
+    """Construct a ChatHarness using per-request LLM (so user credentials apply)."""
+    llm = _get_llm(uid)
+    return ChatHarness(
+        rag=get_rag_service(),
+        planner_llm=llm,
+        answer_llm=llm,
+        max_hops=getattr(settings, "agentic_rag_max_hops", 3),
+        retrieval_k=getattr(settings, "agentic_rag_top_k", 5),
     )
 
 
@@ -1125,54 +1190,68 @@ async def ask_question(
     await chat_history_service.touch_chat_session(db, chat_session.chat_session_id)
 
     try:
-        # === Query 改写 ===
-        rewriter = http_request.app.state.rewriter
-        rewrite_result = await rewriter.rewrite(request.question.strip())
-        logger.info(f"[QUERY_REWRITE] original={request.question.strip()}")
-        logger.info(
-            f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}"
-        )
-        logger.info(
-            f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}"
-        )
-
         # 预加载用户 Credential 缓存（确保 _get_llm 能命中）
         manager = getattr(http_request.app.state, "api_key_manager", None)
         if manager and manager.is_enabled:
             await manager.preload_credentials(uid, db)
 
-        messages, sources, _, _ = await _prepare_messages(
-            request, db, uid, rewrite_result
+        # Agent harness: planner decides search vs answer (no keyword routing)
+        history = await _load_history_turns(
+            db, uid, chat_session.chat_session_id
         )
-        llm = _get_llm(uid)
-
+        bvids, workspace_pages = await _resolve_search_scope(request, db, uid)
+        harness = _build_harness(uid)
+        llm = harness.answer_llm
         cred_id = getattr(llm, "_credential_id", None)
         provider = getattr(llm, "_provider", "openai")
         model = getattr(llm, "model_name", None)
 
         start_time = time.time()
-        response = await llm.ainvoke(messages)
-
+        result = await harness.run(
+            question=first_message,
+            history=history,
+            bvids=bvids,
+            workspace_pages=workspace_pages,
+            uid=uid,
+        )
         latency_ms = int((time.time() - start_time) * 1000)
-        answer = response.content or ""
+        answer = result.answer
+        sources = result.sources[:5]
+        total_tokens = result.total_tokens
 
-        # Extract token usage
-        _, _, total_tokens = _extract_usage_from_message(response)
-
-        # 用量追踪写入 credential_usage 表
-        _track_usage_after_llm(http_request, uid, cred_id, provider, model, response)
+        # 用量追踪写入 credential_usage 表（harness 累计的总 token）
+        if total_tokens > 0:
+            writer = getattr(http_request.app.state, "usage_writer", None)
+            if writer:
+                asyncio.ensure_future(
+                    writer.enqueue(
+                        uid=uid,
+                        credential_id=cred_id,
+                        provider=provider,
+                        model=model,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        total_tokens=total_tokens,
+                        api_calls=1,
+                    )
+                )
+        else:
+            logger.warning(
+                "[USAGE] harness returned 0 tokens "
+                f"(uid={uid} provider={provider} model={model})"
+            )
 
         # 5. Finalize assistant message in MongoDB
         await chat_history_service.complete_assistant_message(
             db,
             msg_id=assistant_msg.msg_id,
             content=answer,
-            sources=sources[:5],
+            sources=sources,
             tokens_used=total_tokens or None,
             latency_ms=latency_ms,
         )
 
-        return ChatResponse(answer=answer, sources=sources[:5])
+        return ChatResponse(answer=answer, sources=sources)
     except HTTPException:
         await chat_history_service.fail_assistant_message(
             db, assistant_msg.msg_id, error="HTTPException during ask"
@@ -1226,49 +1305,50 @@ async def ask_question_agentic(
     await chat_history_service.touch_chat_session(db, chat_session.chat_session_id)
 
     try:
-        media_ids = await _get_media_ids_for_uid(db, uid, request.folder_ids)
-        bvids = await _get_bvids_by_media_ids(db, media_ids) if media_ids else []
-        workspace_pages = (
-            [wp.model_dump() for wp in request.workspace_pages]
-            if request.workspace_pages
-            else None
-        )
+        # 预加载用户 Credential 缓存
+        manager = getattr(http_request.app.state, "api_key_manager", None)
+        if manager and manager.is_enabled:
+            await manager.preload_credentials(uid, db)
 
-        service = get_agentic_rag_service(
-            rag_service=get_rag_service(),
-            rewriter=http_request.app.state.rewriter,
+        history = await _load_history_turns(
+            db, uid, chat_session.chat_session_id
         )
+        bvids, workspace_pages = await _resolve_search_scope(request, db, uid)
+        harness = _build_harness(uid)
+        llm = harness.answer_llm
+        cred_id = getattr(llm, "_credential_id", None)
+        provider = getattr(llm, "_provider", "openai")
+        model = getattr(llm, "model_name", None)
+
         start_time = time.time()
-        result = await service.answer(
-            question=request.question.strip(),
+        result = await harness.run(
+            question=first_message,
+            history=history,
             bvids=bvids,
             workspace_pages=workspace_pages,
+            uid=uid,
         )
         latency_ms = int((time.time() - start_time) * 1000)
 
-        # 5. Finalize assistant message in MongoDB
         total_tokens = result.total_tokens or 0
         await chat_history_service.complete_assistant_message(
             db,
             msg_id=assistant_msg.msg_id,
             content=result.answer,
-            sources=result.sources,
+            sources=result.sources[:5],
             tokens_used=total_tokens or None,
             latency_ms=latency_ms,
         )
 
-        # 用量追踪写入 credential_usage 表
         if total_tokens > 0:
             writer = getattr(http_request.app.state, "usage_writer", None)
             if writer:
-                import asyncio as _asyncio
-
-                _asyncio.ensure_future(
+                asyncio.ensure_future(
                     writer.enqueue(
                         uid=uid,
-                        credential_id=None,
-                        provider="openai",
-                        model=settings.llm_model,
+                        credential_id=cred_id,
+                        provider=provider,
+                        model=model,
                         prompt_tokens=0,
                         completion_tokens=0,
                         total_tokens=total_tokens,
@@ -1276,13 +1356,25 @@ async def ask_question_agentic(
                     )
                 )
 
+        # Map harness steps onto the legacy ReasoningStepResponse schema
+        reasoning_payload = [
+            {
+                "step": s.step,
+                "action": s.action,
+                "query": s.query,
+                "reasoning": s.reason,
+                "sources": s.sources,
+                "content_preview": s.content_preview,
+            }
+            for s in result.reasoning_steps
+        ]
         return AgenticChatResponse(
             answer=result.answer,
-            sources=result.sources,
-            reasoning_steps=[step.model_dump() for step in result.reasoning_steps],
-            synthesis_method=result.synthesis_method,
+            sources=result.sources[:5],
+            reasoning_steps=reasoning_payload,
+            synthesis_method="harness_planner",
             hops_used=result.hops_used,
-            avg_recall_score=result.avg_recall_score,
+            avg_recall_score=0.0,
         )
     except HTTPException:
         await chat_history_service.fail_assistant_message(
@@ -1343,57 +1435,71 @@ async def ask_question_stream(
         await manager.preload_credentials(uid, db)
 
     try:
-        # === Query 改写 ===
-        rewriter = http_request.app.state.rewriter
-        rewrite_result = await rewriter.rewrite(request.question.strip())
-        logger.info(f"[QUERY_REWRITE] original={request.question.strip()}")
-        logger.info(
-            f"[QUERY_REWRITE] rewrites={[(r.type.value, r.query[:50], r.confidence) for r in rewrite_result.rewrites]}"
-        )
-        logger.info(
-            f"[QUERY_REWRITE] suggested_route={rewrite_result.suggested_route}, needs_rewrite={rewrite_result.needs_rewrite}"
-        )
-
-        messages, sources, _, _ = await _prepare_messages(
-            request, db, uid, rewrite_result
-        )
-        llm = _get_llm(uid)
-
+        history = await _load_history_turns(db, uid, chat_session_id)
+        bvids, workspace_pages = await _resolve_search_scope(request, db, uid)
+        harness = _build_harness(uid)
+        llm = harness.answer_llm
         cred_id = getattr(llm, "_credential_id", None)
         provider = getattr(llm, "_provider", "openai")
         model = getattr(llm, "model_name", None)
 
-        # 流式 token 追踪：通过回调捕获（on_llm_end 在流结束后自动触发，携带聚合后的 token 用量）
-        token_capture = _StreamTokenCapture()
-        llm.callbacks = (llm.callbacks or []) + [token_capture]
-
-        # 获取 rewrite 信息用于附加到 sources
-        rewrite = rewrite_result.rewrites[0] if rewrite_result.rewrites else None
-        rewrite_info = None
-        if rewrite:
-            rewrite_info = {
-                "used_rewrite": rewrite.type.value,
-                "rewrite_query": rewrite.query[:50] if rewrite.query else None,
-                "confidence": rewrite.confidence,
-            }
-
         async def generate():
-            """标准 SSE 流式生成器（data: 前缀 + event type），完成后写历史"""
+            """SSE generator: harness emits step → chunk → sources → done."""
             full_content = ""
             start_time = time.time()
+            collected_sources: list[dict] = []
+            total_tokens = 0
             try:
-                async for chunk in llm.astream(messages):
-                    chunk_text = chunk.content or ""
-                    full_content += chunk_text
-                    data = json.dumps(
-                        {"type": "chunk", "content": chunk_text}, ensure_ascii=False
-                    )
-                    yield f"data: {data}\n\n"
+                async for event in harness.stream(
+                    question=first_message,
+                    history=history,
+                    bvids=bvids,
+                    workspace_pages=workspace_pages,
+                    uid=uid,
+                ):
+                    etype = event.get("type")
+                    if etype == "chunk":
+                        text = event.get("content", "")
+                        full_content += text
+                        payload = json.dumps(
+                            {"type": "chunk", "content": text}, ensure_ascii=False
+                        )
+                        yield f"data: {payload}\n\n"
+                    elif etype == "step":
+                        payload = json.dumps(
+                            {"type": "step", "step": event.get("step", {})},
+                            ensure_ascii=False,
+                        )
+                        yield f"data: {payload}\n\n"
+                    elif etype == "sources":
+                        collected_sources = event.get("sources", []) or []
+                        payload = json.dumps(
+                            {"type": "sources", "sources": collected_sources[:5]},
+                            ensure_ascii=False,
+                        )
+                        yield f"data: {payload}\n\n"
+                    elif etype == "done":
+                        total_tokens = int(event.get("total_tokens") or 0)
+                        payload = json.dumps(
+                            {
+                                "type": "done",
+                                "hops_used": event.get("hops_used", 0),
+                            },
+                            ensure_ascii=False,
+                        )
+                        yield f"data: {payload}\n\n"
+                    elif etype == "error":
+                        msg = str(event.get("message") or "stream error")
+                        payload = json.dumps(
+                            {"type": "error", "message": msg}, ensure_ascii=False
+                        )
+                        yield f"data: {payload}\n\n"
+                        await chat_history_service.fail_assistant_message(
+                            db, assistant_msg.msg_id, error=msg
+                        )
+                        return
 
-                # 用量追踪写入 credential_usage 表
-                total_tokens = token_capture.total_tokens
                 if total_tokens > 0:
-                    # 流式回调已经捕获了完整 token 用量，直接入队
                     writer = getattr(http_request.app.state, "usage_writer", None)
                     if writer:
                         asyncio.ensure_future(
@@ -1409,28 +1515,12 @@ async def ask_question_stream(
                             )
                         )
 
-                # 附加 sources 和 rewrite 信息
-                sources_payload = json.dumps(
-                    {
-                        "type": "sources",
-                        "sources": sources,
-                        "rewrite_info": rewrite_info,
-                    },
-                    ensure_ascii=False,
-                )
-                yield f"data: {sources_payload}\n\n"
-
-                # 结束标记
-                done_payload = json.dumps({"type": "done"}, ensure_ascii=False)
-                yield f"data: {done_payload}\n\n"
-
-                # 5. Finalize assistant message in MongoDB after SSE completes
                 latency_ms = int((time.time() - start_time) * 1000)
                 await chat_history_service.complete_assistant_message(
                     db,
                     msg_id=assistant_msg.msg_id,
                     content=full_content,
-                    sources=sources,
+                    sources=collected_sources[:5],
                     tokens_used=total_tokens or None,
                     latency_ms=latency_ms,
                 )
@@ -1441,7 +1531,6 @@ async def ask_question_stream(
                     {"type": "error", "message": error_msg}, ensure_ascii=False
                 )
                 yield f"data: {error_payload}\n\n"
-                # 6. 失败后标记 assistant 消息
                 await chat_history_service.fail_assistant_message(
                     db, assistant_msg.msg_id, error=error_msg
                 )

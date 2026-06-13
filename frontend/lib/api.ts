@@ -1572,6 +1572,20 @@ export interface CloudVideoStatusResponse {
     vectorChunkCount: number;
 }
 
+export interface CloudDocumentPreviewResponse {
+    uploadUuid: string;
+    fileName: string;
+    mimeType: string;
+    vectorizable: boolean;
+    preview: string;
+    docMeta: Record<string, unknown> | null;
+    offset: number;
+    limit: number;
+    totalChars: number;
+    hasMore: boolean;
+    nextOffset: number | null;
+}
+
 function formatBytes(bytes: number): string {
     if (bytes === 0) return "0 B";
     const k = 1024;
@@ -1692,6 +1706,22 @@ export const cloudApi = {
         request<CloudVideoStatusResponse>(`/cloud/video/${uploadUuid}/status`, {
             headers: getAuthHeaders(),
         }),
+
+    getDocumentPreview: async (
+        uploadUuid: string,
+        offset: number = 0,
+        limit: number = 5000,
+    ) => {
+        const params = new URLSearchParams({
+            offset: String(offset),
+            limit: String(limit),
+        });
+        const raw = await request<CloudDocumentPreviewResponse>(
+            `/cloud/video/${uploadUuid}/preview?${params}`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<CloudDocumentPreviewResponse>(raw);
+    },
 
     // ── Helper: chunked upload ──
     /** Upload a file to the cloud drive with chunked multipart upload */

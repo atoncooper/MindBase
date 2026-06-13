@@ -12,6 +12,12 @@ from .agentic import (
     ReasoningStep,
     get_agentic_rag_service,
 )
+from .harness import (
+    ChatHarness,
+    HarnessReasoningStep,
+    HarnessResult,
+    HistoryTurn,
+)
 
 # Singleton RAGService — avoids re-initializing embeddings/vector store on every request
 _rag_service: Optional[RAGService] = None
@@ -36,4 +42,8 @@ __all__ = [
     "ReasoningStep",
     "get_agentic_rag_service",
     "get_rag_service",
+    "ChatHarness",
+    "HarnessReasoningStep",
+    "HarnessResult",
+    "HistoryTurn",
 ]
