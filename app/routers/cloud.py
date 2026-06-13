@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -615,8 +615,18 @@ async def trigger_processing(
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Force vectorizable=True on manual trigger — let the pipeline
-        # decide whether the file can actually be processed.
+        # Enforce mime allowlist on manual reprocess. Without this the
+        # caller could re-vectorize blacklisted types (image/*, archives,
+        # exes), which would just churn the pipeline before failing
+        # downstream. We only flip vectorizable=True when the registry
+        # actually has a parser or the mime is on the allowlist.
+        from app.services.doc_parser import is_vectorizable
+
+        if not is_vectorizable(file.mime_type, file.original_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"This mime type is not supported: {file.mime_type}",
+            )
         if not file.vectorizable:
             file.vectorizable = True
 
@@ -784,11 +794,23 @@ async def reprocess_document(
 
 @router.get("/video/{upload_uuid}/preview")
 async def get_document_preview(
-    upload_uuid: str,
+    upload_uuid: str = Path(
+        ...,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Upload UUID — alphanumeric, underscore, dash only.",
+    ),
+    offset: int = Query(0, ge=0, le=10_000_000, description="Starting char index"),
+    limit: int = Query(5000, ge=1, le=20000, description="Max chars per slice"),
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a text preview of a parsed cloud document (first 500 chars from MongoDB)."""
+    """Get a paginated text preview of a parsed cloud document.
+
+    FastAPI validates upload_uuid format and offset/limit ranges before this
+    body runs — out-of-range params return 422 with a structured error.
+    """
     try:
         file_repo = _get_file_repo()
         file = await file_repo.get_by_uuid(upload_uuid, uid, db)
@@ -796,6 +818,7 @@ async def get_document_preview(
             raise HTTPException(status_code=404, detail="File not found")
 
         preview = ""
+        total_chars = 0
         doc_meta = None
         try:
             from app.infra.mongo import get_database
@@ -812,10 +835,25 @@ async def get_document_preview(
                     import re as _re
 
                     cleaned = _re.sub(r"<[^>]*>", "", raw)
-                    preview = cleaned[:500]
+                    total_chars = len(cleaned)
+                    preview = cleaned[offset : offset + limit]
                     doc_meta = doc.get("doc_meta")
         except Exception as e:
-            logger.warning(f"[CLOUD] preview mongo lookup failed: {e}")
+            # Audit log only — do not surface internal errors to client.
+            logger.warning("[CLOUD] preview mongo lookup failed: %s", e)
+
+        next_offset = offset + len(preview)
+        has_more = next_offset < total_chars
+
+        # Audit trail for private document access (uid + uuid + slice).
+        logger.info(
+            "[CLOUD][AUDIT] preview uid=%s upload_uuid=%s offset=%s len=%s total=%s",
+            uid,
+            upload_uuid,
+            offset,
+            len(preview),
+            total_chars,
+        )
 
         return {
             "uploadUuid": upload_uuid,
@@ -824,12 +862,18 @@ async def get_document_preview(
             "vectorizable": file.vectorizable,
             "preview": preview,
             "docMeta": doc_meta,
+            "offset": offset,
+            "limit": limit,
+            "totalChars": total_chars,
+            "hasMore": has_more,
+            "nextOffset": next_offset if has_more else None,
         }
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception(f"[CLOUD] preview failed upload_uuid={upload_uuid}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Log full stack server-side; return generic message to client.
+        logger.exception("[CLOUD] preview failed upload_uuid=%s", upload_uuid)
+        raise HTTPException(status_code=500, detail="Preview unavailable")
 
 
 async def _run_doc_reprocess(task_id: str, upload_uuid: str, uid: int):

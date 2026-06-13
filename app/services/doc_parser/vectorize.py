@@ -13,8 +13,19 @@ from langchain_core.documents import Document
 
 from app.services.doc_parser import get_parser, MAX_DOC_SIZE
 from app.services.doc_parser.cleaner import clean_document_text
+from app.services.doc_parser.pdf_parser import (
+    EmptyPdfTextError,
+    PdfEncryptedError,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Aggregate parser-level "permanent skip" exceptions. Anything in this
+# tuple maps to vector_status='not_supported' instead of 'failed', and
+# does not re-raise — the pipeline is fire-and-forget so an unhandled
+# raise would only end up in logs anyway.
+_NotSupportedDocError = (EmptyPdfTextError, PdfEncryptedError)
 
 
 async def _push_status(
@@ -195,6 +206,26 @@ async def vectorize_cloud_document(
         )
         await _push_status(uid, upload_uuid, "done", chunk_count)
         return chunk_count
+
+    except _NotSupportedDocError as e:
+        # Encrypted / scanned / image-only PDF (or future similar formats).
+        # Treat as a permanent skip rather than a retryable failure: flip
+        # vectorizable=False so the file stops re-entering the pipeline,
+        # and surface a distinct status to the UI.
+        logger.warning(
+            "[VECTORIZE] file %s marked not_supported: %s", upload_uuid, e
+        )
+        try:
+            file.vectorizable = False
+            file.vector_status = "not_supported"
+            await db.commit()
+        except Exception:
+            logger.exception(
+                "[VECTORIZE] failed to persist not_supported state for %s",
+                upload_uuid,
+            )
+        await _push_status(uid, upload_uuid, "not_supported", 0, error=str(e))
+        return 0
 
     except Exception as e:
         logger.exception("[VECTORIZE] pipeline failed for %s", upload_uuid)

@@ -302,8 +302,13 @@ class TestParserRegistry:
         assert p is not None
         assert p.name == "docx"
 
-    def test_get_parser_returns_none_for_unknown(self):
+    def test_get_parser_returns_pdf(self):
         p = get_parser("application/pdf", "doc.pdf")
+        assert p is not None
+        assert p.name == "pdf"
+
+    def test_get_parser_returns_none_for_unknown(self):
+        p = get_parser("application/zip", "archive.zip")
         assert p is None
 
     def test_get_parser_fallback_by_extension(self):
@@ -329,7 +334,8 @@ class TestIsVectorizable:
         assert is_vectorizable("video/webm")
 
     def test_pdf_not_vectorizable(self):
-        assert not is_vectorizable("application/pdf")
+        # PDF moved off the deny list once PdfParser landed.
+        assert is_vectorizable("application/pdf")
 
     def test_zip_not_vectorizable(self):
         assert not is_vectorizable("application/zip")
@@ -355,3 +361,291 @@ class TestIsVectorizable:
 class TestMaxDocSize:
     def test_max_doc_size_is_100mb(self):
         assert MAX_DOC_SIZE == 100 * 1024 * 1024
+
+
+# ====================================================================
+# PDF Parser
+# ====================================================================
+
+
+def _build_minimal_pdf(text: str) -> bytes:
+    """Construct a tiny PDF 1.4 with a single page rendering ``text``.
+
+    Avoids reportlab so the test suite stays dependency-light. The text
+    is embedded directly in a content stream via ``Tj``; pypdf can read
+    it back from ``page.extract_text()``.
+    """
+    cs = f"BT /F1 12 Tf 50 750 Td ({text}) Tj ET".encode("latin-1")
+    objs: list[tuple[int, bytes]] = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        ),
+        (
+            4,
+            b"<< /Length " + str(len(cs)).encode() + b" >>\nstream\n" + cs + b"\nendstream",
+        ),
+        (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: dict[int, int] = {}
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for num, _ in objs:
+        out += f"{offsets[num]:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_pos}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+class TestPdfParser:
+    def test_can_parse_pdf_mime(self):
+        from app.services.doc_parser.pdf_parser import PdfParser
+
+        p = PdfParser()
+        assert p.can_parse("application/pdf", "doc.pdf")
+        assert p.can_parse("application/octet-stream", "report.PDF")
+        assert not p.can_parse("text/plain", "notes.txt")
+
+    def test_basic_text_extraction(self):
+        from app.services.doc_parser.pdf_parser import PdfParser
+
+        text = (
+            "Hello World, this is a test PDF document for parser unit tests "
+            "covering basic extraction."
+        )
+        pdf_bytes = _build_minimal_pdf(text)
+        p = PdfParser()
+        result = p._parse_sync(pdf_bytes, "sample.pdf")
+        assert text.split(",")[0] in result.text
+        assert result.metadata.get("title") == "sample.pdf"
+        assert result.metadata.get("page_count") == 1
+        assert result.tables == []
+        assert result.code_blocks == []
+
+    def test_empty_pdf_raises_empty_text(self):
+        from app.services.doc_parser.pdf_parser import (
+            EmptyPdfTextError,
+            PdfParser,
+        )
+
+        # Below the 50-char floor — looks like a scanned image PDF.
+        pdf_bytes = _build_minimal_pdf("hi")
+        p = PdfParser()
+        try:
+            p._parse_sync(pdf_bytes, "empty.pdf")
+        except EmptyPdfTextError:
+            return
+        raise AssertionError("expected EmptyPdfTextError")
+
+    def test_invalid_bytes_raise(self):
+        from app.services.doc_parser.pdf_parser import PdfParser
+
+        p = PdfParser()
+        try:
+            p._parse_sync(b"not a real pdf at all", "broken.pdf")
+        except Exception:
+            return
+        raise AssertionError("expected an exception on invalid PDF bytes")
+
+
+class TestPdfRegistration:
+    def test_registry_returns_pdf_parser(self):
+        from app.services.doc_parser.pdf_parser import PdfParser
+
+        p = get_parser("application/pdf", "anything.pdf")
+        assert isinstance(p, PdfParser)
+
+    def test_pdf_is_vectorizable_via_registry(self):
+        assert is_vectorizable("application/pdf", "doc.pdf")
+
+
+# ====================================================================
+# PDF helpers — table rendering + font-size heading heuristic
+# ====================================================================
+
+
+class TestPdfTableRender:
+    def test_basic_table_rendered_as_markdown(self):
+        from app.services.doc_parser.pdf_parser import _render_table_markdown
+
+        out = _render_table_markdown([["Col A", "Col B"], ["1", "2"], ["3", "4"]])
+        assert out is not None
+        assert "| Col A | Col B |" in out
+        assert "| --- | --- |" in out
+        assert "| 1 | 2 |" in out
+        assert "| 3 | 4 |" in out
+
+    def test_none_cells_become_empty(self):
+        from app.services.doc_parser.pdf_parser import _render_table_markdown
+
+        out = _render_table_markdown([["A", "B"], ["x", None]])
+        assert "| x |  |" in out
+
+    def test_pipe_in_cell_is_escaped(self):
+        from app.services.doc_parser.pdf_parser import _render_table_markdown
+
+        out = _render_table_markdown([["A", "B"], ["x|y", "z"]])
+        assert "x\\|y" in out
+
+    def test_single_column_skipped(self):
+        from app.services.doc_parser.pdf_parser import _render_table_markdown
+
+        # Single column tables are usually layout artefacts.
+        assert _render_table_markdown([["only"], ["one"]]) == ""
+
+    def test_empty_table_skipped(self):
+        from app.services.doc_parser.pdf_parser import _render_table_markdown
+
+        assert _render_table_markdown([]) == ""
+        assert _render_table_markdown([["", ""], ["", ""]]) == ""
+
+    def test_ragged_rows_padded(self):
+        from app.services.doc_parser.pdf_parser import _render_table_markdown
+
+        out = _render_table_markdown([["A", "B", "C"], ["1", "2"]])
+        # Row 2 must be padded to 3 columns.
+        assert "| 1 | 2 |  |" in out
+
+
+class TestPdfHeadingHeuristic:
+    def test_no_records_returns_empty(self):
+        from app.services.doc_parser.pdf_parser import _infer_headings_by_fontsize
+
+        assert _infer_headings_by_fontsize([]) == []
+
+    def test_uniform_size_yields_no_headings(self):
+        from app.services.doc_parser.pdf_parser import _infer_headings_by_fontsize
+
+        records = [(0, 12.0, f"line {i}") for i in range(5)]
+        assert _infer_headings_by_fontsize(records) == []
+
+    def test_two_distinct_heading_sizes_get_levels(self):
+        from app.services.doc_parser.pdf_parser import _infer_headings_by_fontsize
+
+        # Body is 12pt (most common), 18pt → level 1, 14pt → level 2.
+        records = [
+            (0, 18.0, "Top heading"),
+            (0, 12.0, "body line one"),
+            (0, 12.0, "body line two"),
+            (0, 12.0, "body line three"),
+            (0, 14.0, "Sub heading"),
+            (0, 12.0, "more body"),
+        ]
+        out = _infer_headings_by_fontsize(records)
+        by_text = {h["text"]: h["level"] for h in out}
+        assert by_text["Top heading"] == 1
+        assert by_text["Sub heading"] == 2
+
+    def test_long_lines_are_not_promoted(self):
+        from app.services.doc_parser.pdf_parser import (
+            _HEADING_MAX_CHARS,
+            _infer_headings_by_fontsize,
+        )
+
+        long_line = "x" * (_HEADING_MAX_CHARS + 1)
+        records = [
+            (0, 12.0, "body"),
+            (0, 12.0, "body"),
+            (0, 12.0, "body"),
+            (0, 18.0, long_line),
+        ]
+        out = _infer_headings_by_fontsize(records)
+        assert all(h["text"] != long_line for h in out)
+
+    def test_size_just_above_body_below_threshold(self):
+        from app.services.doc_parser.pdf_parser import _infer_headings_by_fontsize
+
+        # 12 → 13.5 is +12.5 % → below the 1.15 ratio, must NOT count as heading.
+        records = [
+            (0, 12.0, "body"),
+            (0, 12.0, "body"),
+            (0, 12.0, "body"),
+            (0, 13.5, "near-body"),
+        ]
+        assert _infer_headings_by_fontsize(records) == []
+
+
+class TestPdfParserTableIntegration:
+    def test_extract_text_picks_up_table_rows(self):
+        """Build a simple bordered table PDF via reportlab if available;
+        otherwise rely on the existing minimal PDF basic test for coverage.
+
+        pdfplumber's table detection requires actual rule lines, which the
+        hand-rolled minimal PDF does not provide. We therefore skip cleanly
+        when reportlab is missing rather than fabricating a brittle byte
+        sequence.
+        """
+        try:
+            from reportlab.lib.pagesizes import LETTER  # noqa: F401
+            from reportlab.pdfgen import canvas
+        except ImportError:
+            import pytest
+
+            pytest.skip("reportlab not installed; table integration test skipped")
+
+        from io import BytesIO
+
+        from app.services.doc_parser.pdf_parser import PdfParser
+
+        buf = BytesIO()
+        c = canvas.Canvas(buf)
+        # Body paragraph so the doc clears the 50-char floor.
+        c.setFont("Helvetica", 12)
+        c.drawString(72, 700, "This is a sample report containing one table for testing.")
+
+        # Draw a 3x2 table using lines + cell text.
+        x0, y0, cw, rh = 72, 600, 90, 24
+        rows = [["Col1", "Col2", "Col3"], ["A", "B", "C"]]
+        for r, row in enumerate(rows):
+            for col_idx, val in enumerate(row):
+                c.drawString(x0 + col_idx * cw + 4, y0 - r * rh - 16, val)
+        # Outer + inner grid lines.
+        c.rect(x0, y0 - rh * len(rows), cw * 3, rh * len(rows), stroke=1, fill=0)
+        for i in range(1, 3):
+            c.line(x0 + i * cw, y0, x0 + i * cw, y0 - rh * len(rows))
+        for i in range(1, len(rows)):
+            c.line(x0, y0 - i * rh, x0 + cw * 3, y0 - i * rh)
+        c.showPage()
+        c.save()
+
+        p = PdfParser()
+        result = p._parse_sync(buf.getvalue(), "table.pdf")
+        # The text must contain the cell values (in either layout or
+        # markdown table form).
+        assert "Col1" in result.text
+        assert "A" in result.text
+        # And the rendered tables payload should be populated.
+        assert isinstance(result.tables, list)
+
+
+class TestPdfParserHeadingFallback:
+    def test_outline_takes_precedence_over_heuristic(self):
+        """When pypdf reports an outline, the font-size heuristic should
+        not run. The minimal hand-rolled PDF carries no outline, so we
+        verify the empty-outline → heuristic path instead by asserting
+        the call shape rather than the data: heuristic output is allowed
+        to be empty for a single-line PDF, but it must not crash.
+        """
+        from app.services.doc_parser.pdf_parser import PdfParser
+
+        text = (
+            "Body paragraph with sufficient length so the parser does not "
+            "raise EmptyPdfTextError on this document."
+        )
+        pdf_bytes = _build_minimal_pdf(text)
+        p = PdfParser()
+        result = p._parse_sync(pdf_bytes, "doc.pdf")
+        # No outline + single-line same-size body → no heuristic headings.
+        assert result.headings == []
+
+

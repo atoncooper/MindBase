@@ -768,6 +768,60 @@ body {
   gap: 20px;
 }
 
+/* ── Global custom scrollbar (Material thin overlay) ──
+   Targets every scrollable surface across the shell with a universal
+   selector, mirroring the cloud-drive panel approach. We use !important
+   on the critical thumb properties to win against Tailwind v4's
+   `@layer` cascade and any third-party reset (shadcn, tw-animate-css). */
+html ::-webkit-scrollbar {
+  width: 10px !important;
+  height: 10px !important;
+}
+html ::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+html ::-webkit-scrollbar-thumb {
+  background-color: rgba(60, 64, 67, 0.18) !important;
+  border: 2px solid transparent !important;
+  border-radius: 999px !important;
+  background-clip: padding-box !important;
+  transition: background-color 0.2s;
+}
+html *:hover::-webkit-scrollbar-thumb,
+html *:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgba(60, 64, 67, 0.45) !important;
+}
+html ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(60, 64, 67, 0.6) !important;
+}
+html ::-webkit-scrollbar-thumb:active {
+  background-color: rgba(8, 145, 178, 0.7) !important;
+}
+html ::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+html * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(60, 64, 67, 0.35) transparent;
+}
+/* Dark-mode thumb — lighter to stay visible on dark surfaces */
+html.dark ::-webkit-scrollbar-thumb {
+  background-color: rgba(203, 213, 225, 0.18) !important;
+}
+html.dark *:hover::-webkit-scrollbar-thumb,
+html.dark *:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgba(203, 213, 225, 0.4) !important;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(203, 213, 225, 0.55) !important;
+}
+html.dark ::-webkit-scrollbar-thumb:active {
+  background-color: rgba(6, 182, 212, 0.75) !important;
+}
+html.dark * {
+  scrollbar-color: rgba(203, 213, 225, 0.35) transparent;
+}
+
 .chat-window {
   display: flex;
   flex-direction: column;

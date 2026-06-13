@@ -378,6 +378,30 @@ async def _unsafe_get_history(
     return messages, total
 
 
+async def get_recent_turns_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+    limit: int = 6,
+) -> list[ChatMessageResponse]:
+    """Return the most recent *limit* completed messages, oldest-first.
+
+    Pending / failed assistant rows are filtered out so the planner never
+    sees an in-flight placeholder echoed back as context.  Used by the
+    chat harness to inject conversation memory.
+    """
+    session = await get_chat_session_for_user(db, uid, chat_session_id)
+    if session is None:
+        return []
+    page_size = max(limit, 1)
+    rows, _ = await mongo_chat.get_messages_for_user(
+        chat_session_id, uid, page=1, page_size=page_size * 2
+    )
+    messages = _messages_from_rows(rows)
+    completed = [m for m in messages if (m.status or "completed") == "completed"]
+    return completed[-limit:]
+
+
 async def get_history_for_user(
     db: AsyncSession,
     uid: int,
