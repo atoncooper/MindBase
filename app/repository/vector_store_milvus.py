@@ -78,7 +78,7 @@ class MilvusVectorStore:
 
         partition_name: str | None = None
         if partition_dt is not None:
-            partition_name = partition_dt.strftime("%Y-%m")
+            partition_name = partition_dt.strftime("_%Y_%m")
             self._ensure_partition(partition_name)
 
         total = 0
@@ -154,7 +154,7 @@ class MilvusVectorStore:
             cur = partition_dt_start.replace(day=1)
             end = partition_dt_end.replace(day=1)
             while cur <= end:
-                names.append(cur.strftime("%Y-%m"))
+                names.append(cur.strftime("_%Y_%m"))
                 # next month
                 if cur.month == 12:
                     cur = cur.replace(year=cur.year + 1, month=1)
@@ -263,12 +263,22 @@ class MilvusVectorStore:
 
     def count_by_page(self, bvid: str, page_index: int) -> int:
         expr = f'bvid == "{_escape_expr(bvid)}" && page_index == {page_index}'
-        result = self._collection.query(expr=expr, output_fields=["id"], limit=10000)
+        result = self._collection.query(
+            expr=expr,
+            output_fields=["id"],
+            limit=10000,
+            consistency_level="Strong",
+        )
         return len(result)
 
     def count_by_upload_uuid(self, upload_uuid: str) -> int:
         expr = f'upload_uuid == "{_escape_expr(upload_uuid)}"'
-        result = self._collection.query(expr=expr, output_fields=["id"], limit=10000)
+        result = self._collection.query(
+            expr=expr,
+            output_fields=["id"],
+            limit=10000,
+            consistency_level="Strong",
+        )
         return len(result)
 
     def get_stats(self) -> dict:

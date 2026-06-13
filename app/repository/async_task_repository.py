@@ -5,7 +5,7 @@ AsyncTask CRUD repository — typed operations for async_tasks table.
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AsyncTask
@@ -127,6 +127,26 @@ class AsyncTaskRepository:
             select(func.count()).where(AsyncTask.uid == uid)
         )
         return result.scalar() or 0
+
+    async def delete_completed_before(
+        self, cutoff: datetime, db: AsyncSession,
+    ) -> int:
+        """Delete fully-resolved tasks older than ``cutoff``.
+
+        Only rows in terminal states ('done' / 'failed') are removed so
+        in-flight work is never touched. Returns the row count purged.
+
+        Transaction is owned by the caller — pair with
+        ``transactional_scope`` (main process) or ``async with
+        session.begin()`` (subprocess engine).
+        """
+        stmt = delete(AsyncTask).where(
+            AsyncTask.status.in_(["done", "failed"]),
+            AsyncTask.completed_at.isnot(None),
+            AsyncTask.completed_at < cutoff,
+        )
+        result = await db.execute(stmt)
+        return result.rowcount or 0
 
 
 _repo: Optional[AsyncTaskRepository] = None

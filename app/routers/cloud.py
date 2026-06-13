@@ -41,6 +41,18 @@ from app.response.cloud import (
 
 router = APIRouter(prefix="/cloud", tags=["cloud-drive"])
 
+# Strong refs for fire-and-forget background tasks. Without this, asyncio
+# may garbage-collect the task object mid-flight and the pipeline silently
+# disappears (see CPython docs on asyncio.create_task).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 def _milvus_escape(value: str) -> str:
     """Escape double-quote and backslash in Milvus expression strings."""
@@ -572,7 +584,7 @@ async def delete_video(
                         exc,
                     )
 
-        asyncio.create_task(_cleanup_storage())
+        _spawn(_cleanup_storage())
 
         return {"deleted": True, "uploadUuid": upload_uuid}
     except HTTPException:
@@ -615,7 +627,7 @@ async def trigger_processing(
 
         from app.routers.tasks_ws import broadcast_cloud_status
 
-        asyncio.create_task(broadcast_cloud_status(uid, upload_uuid, "processing", 0))
+        _spawn(broadcast_cloud_status(uid, upload_uuid, "processing", 0))
 
         # Capture primitive values before spawning background task
         # (the request-scoped session + ORM object are invalid after response)
@@ -665,7 +677,7 @@ async def trigger_processing(
                             f"[CLOUD] failed to mark vector_status=failed for {_upload_uuid}",
                         )
 
-        asyncio.create_task(_run_pipeline())
+        _spawn(_run_pipeline())
 
         return VideoProcessResponse(uploadUuid=upload_uuid)
     except HTTPException:
@@ -760,9 +772,8 @@ async def reprocess_document(
         task_id = str(_uuid.uuid4())
         tracker = TaskTracker()
         await tracker.start(task_id, task_type="cloud_doc")
-        import asyncio as _asyncio
 
-        _asyncio.create_task(_run_doc_reprocess(task_id, upload_uuid, uid))
+        _spawn(_run_doc_reprocess(task_id, upload_uuid, uid))
         return {"uploadUuid": upload_uuid, "taskId": task_id}
     except HTTPException:
         raise

@@ -76,7 +76,9 @@ async def vectorize_cloud_document(
             await db.commit()
             return 0
 
-        # Content hash for idempotency
+        # Content hash for idempotency.
+        # Hash is only persisted *after* the pipeline succeeds, so a crash
+        # mid-flight cannot poison the dedup check on retry.
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         if file.vector_status == "done" and file.content_hash == content_hash:
             logger.info(
@@ -85,7 +87,6 @@ async def vectorize_cloud_document(
             return file.vector_chunk_count or 0
 
         file.vector_status = "processing"
-        file.content_hash = content_hash
         await db.commit()
         await _push_status(uid, upload_uuid, "processing", 0)
 
@@ -128,9 +129,26 @@ async def vectorize_cloud_document(
         rag = get_rag_service()
         if rag.cloud_backend is None:
             raise RuntimeError("cloud_backend not available (Milvus not configured)")
-        chunk_count = rag.cloud_backend.add(
-            docs, partition_dt=datetime.now(timezone.utc)
-        )
+
+        # Clean residual chunks from prior failed runs before re-adding,
+        # otherwise the consistency check would see stale data and the
+        # collection would accumulate orphan vectors across retries.
+        try:
+            rag.cloud_backend.delete_by_upload_uuid(upload_uuid)
+        except Exception:
+            logger.warning(
+                "[VECTORIZE] failed to delete stale chunks for %s (continuing)",
+                upload_uuid,
+                exc_info=True,
+            )
+
+        # Use file.created_at (not now()) so retries always land in the
+        # same partition — required for idempotent verification and
+        # to keep partition count bounded.
+        partition_dt = file.created_at or datetime.now(timezone.utc)
+        if partition_dt.tzinfo is None:
+            partition_dt = partition_dt.replace(tzinfo=timezone.utc)
+        chunk_count = rag.cloud_backend.add(docs, partition_dt=partition_dt)
 
         # ── Phase 4: Update MySQL metadata ──
         file.doc_parser = source
@@ -147,13 +165,27 @@ async def vectorize_cloud_document(
         # ── Phase 5: Three-layer consistency check ──
         verified = await _verify_consistency(upload_uuid, uid, chunk_count, db)
         if not verified:
+            # Roll back Milvus so MySQL `failed` status reflects reality.
+            # Otherwise the next retry's idempotency check would compare
+            # against stale Milvus data and the collection would accumulate
+            # orphan vectors that still leak into search results.
+            try:
+                rag.cloud_backend.delete_by_upload_uuid(upload_uuid)
+            except Exception:
+                logger.exception(
+                    "[VECTORIZE] failed to roll back Milvus for %s after verify miss",
+                    upload_uuid,
+                )
             raise RuntimeError(
                 f"Consistency check failed for {upload_uuid}: "
                 "data mismatch across MongoDB / Milvus / MySQL"
             )
 
         # ── Phase 6: Mark done ──
+        # Persist content_hash only on success — a half-finished run must not
+        # poison future idempotency checks.
         file.vector_status = "done"
+        file.content_hash = content_hash
         file.vector_chunk_count = chunk_count
         await db.commit()
         logger.info(
@@ -263,7 +295,9 @@ async def _verify_consistency(
     rag = get_rag_service()
     if rag.cloud_backend is not None:
         actual = rag.cloud_backend.count_by_upload_uuid(upload_uuid)
-        ok_milvus = actual >= expected_chunks
+        # Strict equality: stale chunks must be cleaned before add(),
+        # so any drift means the write didn't land cleanly.
+        ok_milvus = actual == expected_chunks
         if not ok_milvus:
             logger.error(
                 "[VERIFY] Milvus mismatch for %s: expected=%s actual=%s",
