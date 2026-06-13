@@ -42,7 +42,7 @@ from app.services.chat_title import (
     should_generate_title,
 )
 from app.services.query import RewriteResult, RewriteType, CONFIDENCE_THRESHOLD
-from app.services.rag import ChatHarness, HistoryTurn, get_agentic_rag_service
+from app.services.rag import ChatHarness, HistoryTurn
 from app.services.rag.prompts import (
     qa_system_prompt,
     fallback_system_prompt,
