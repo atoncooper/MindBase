@@ -1,9 +1,9 @@
 """
-Shared-memory cache for async tasks, refreshed by a subprocess every 5 minutes.
+Shared-memory cache for async tasks, refreshed by a subprocess every 30 seconds.
 
 Design:
   - multiprocessing.Manager().dict() for cross-process shared state
-  - Subprocess: SELECT * FROM async_tasks → write to shared dict → sleep 300s
+  - Subprocess: SELECT * FROM async_tasks → write to shared dict → sleep 30s
   - Main process: WebSocket reads shared dict directly (no DB query)
 
 Cache structure:
@@ -18,17 +18,27 @@ from __future__ import annotations
 
 import multiprocessing
 import time
+from datetime import datetime, timedelta, timezone
+from multiprocessing.managers import SyncManager
 from typing import Any
 
 from loguru import logger
 
 # Shared state — populated by subprocess, read by main process
-_manager: multiprocessing.Manager | None = None
+_manager: SyncManager | None = None
 _shared_cache: Any = None  # multiprocessing.Manager().dict()
 _refresher_process: multiprocessing.Process | None = None
 
 CACHE_KEY = "async_tasks_cache"
 REFRESH_INTERVAL = 30  # 30 seconds
+
+# Cache visibility window for finished tasks. Older done/failed rows stay
+# in MySQL (audit trail) but are not pushed to WebSocket clients.
+RECENT_DONE_WINDOW = timedelta(hours=1)
+
+# Daily prune of fully-resolved rows so async_tasks doesn't grow forever.
+PRUNE_INTERVAL_SEC = 24 * 3600
+PRUNE_RETENTION = timedelta(days=7)
 
 
 def _refresher_worker(
@@ -36,77 +46,123 @@ def _refresher_worker(
     database_url: str,
     interval: int = REFRESH_INTERVAL,
 ) -> None:
-    """Subprocess entry point: query DB periodically and write cache."""
+    """Subprocess entry point: query DB periodically and write cache.
 
-    # Re-initialize logging in the subprocess
+    Runs a single event loop with a single engine for the lifetime of the
+    subprocess — recreating either on every tick would churn the
+    connection pool unnecessarily.
+    """
+    import asyncio
+
     logger.info("[TaskCache] refresher subprocess started")
 
-    while True:
-        try:
-            _refresh_from_db(shared_dict, database_url)
-        except Exception as e:
-            logger.error(f"[TaskCache] refresh failed: {e}")
-        time.sleep(interval)
-
-
-def _refresh_from_db(shared_dict: Any, database_url: str) -> None:
-    """Query MySQL and update the shared dict."""
-    import asyncio as _asyncio
-
-    async def _query():
+    async def _loop() -> None:
         from sqlalchemy.ext.asyncio import (
             create_async_engine,
             AsyncSession,
             async_sessionmaker,
         )
-        from app.repository.async_task_repository import AsyncTaskRepository
 
         engine = create_async_engine(database_url, echo=False)
         factory = async_sessionmaker(
             engine, class_=AsyncSession, expire_on_commit=False
         )
 
-        async with factory() as db:
-            AsyncTaskRepository()
-            # Query all tasks, newest first (no uid filter — subprocess reads all)
-            from sqlalchemy import select
-            from app.models import AsyncTask
+        last_prune_at = 0.0
+        try:
+            while True:
+                try:
+                    await _refresh_from_db(factory, shared_dict)
+                except Exception as e:
+                    logger.error(f"[TaskCache] refresh failed: {e}")
 
-            result = await db.execute(
-                select(AsyncTask).order_by(AsyncTask.updated_at.desc()).limit(200)
+                now = time.time()
+                if now - last_prune_at >= PRUNE_INTERVAL_SEC:
+                    last_prune_at = now
+                    try:
+                        await _prune(factory)
+                    except Exception as e:
+                        logger.error(f"[TaskCache] prune failed: {e}")
+
+                await asyncio.sleep(interval)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_loop())
+
+
+async def _refresh_from_db(factory, shared_dict: Any) -> None:
+    """Query MySQL and update the shared dict (read-only)."""
+    from sqlalchemy import select, or_
+    from app.models import AsyncTask
+
+    # Only push tasks the UI actually cares about: anything still in
+    # flight, plus anything that finished within the visibility window.
+    # Older finished rows stay in MySQL as audit trail and are pruned
+    # separately.
+    recent_cutoff = datetime.now(timezone.utc) - RECENT_DONE_WINDOW
+    stmt = (
+        select(AsyncTask)
+        .where(
+            or_(
+                AsyncTask.status.in_(["pending", "processing"]),
+                AsyncTask.completed_at >= recent_cutoff,
             )
-            tasks = result.scalars().all()
+        )
+        .order_by(AsyncTask.updated_at.desc())
+        .limit(200)
+    )
 
-            data = [
-                {
-                    "task_id": t.task_id,
-                    "uid": t.uid,
-                    "task_type": t.task_type,
-                    "target": t.target,
-                    "status": t.status,
-                    "progress": t.progress,
-                    "steps": t.steps,
-                    "result": t.result,
-                    "error": t.error,
-                    "created_at": t.created_at.isoformat() if t.created_at else None,
-                    "updated_at": t.updated_at.isoformat() if t.updated_at else None,
-                    "completed_at": (
-                        t.completed_at.isoformat() if t.completed_at else None
-                    ),
-                }
-                for t in tasks
-            ]
+    async with factory() as db:
+        result = await db.execute(stmt)
+        tasks = result.scalars().all()
 
-            shared_dict[CACHE_KEY] = {
-                "tasks": data,
-                "updated_at": time.time(),
-                "count": len(data),
+        data = [
+            {
+                "task_id": t.task_id,
+                "uid": t.uid,
+                "task_type": t.task_type,
+                "target": t.target,
+                "status": t.status,
+                "progress": t.progress,
+                "steps": t.steps,
+                "result": t.result,
+                "error": t.error,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+                "completed_at": (
+                    t.completed_at.isoformat() if t.completed_at else None
+                ),
             }
+            for t in tasks
+        ]
 
-        await engine.dispose()
-        logger.info(f"[TaskCache] refreshed {len(data)} tasks")
+    shared_dict[CACHE_KEY] = {
+        "tasks": data,
+        "updated_at": time.time(),
+        "count": len(data),
+    }
+    logger.info(f"[TaskCache] refreshed {len(data)} tasks")
 
-    _asyncio.run(_query())
+
+async def _prune(factory) -> None:
+    """Delete fully-resolved tasks older than PRUNE_RETENTION."""
+    from app.repository.async_task_repository import AsyncTaskRepository
+
+    cutoff = datetime.now(timezone.utc) - PRUNE_RETENTION
+    # Subprocess owns its own engine, so app.infra.transaction (which
+    # binds to the main-process factory) cannot be reused. session.begin()
+    # gives the same commit-on-success / rollback-on-error semantics with
+    # the subprocess engine.
+    async with factory() as db:
+        async with db.begin():
+            purged = await AsyncTaskRepository().delete_completed_before(cutoff, db)
+    if purged:
+        logger.info(
+            "[TaskCache] pruned {} finished tasks older than {}",
+            purged,
+            cutoff.isoformat(),
+        )
 
 
 # ── Public API (called from main process) ──────────────────────────
