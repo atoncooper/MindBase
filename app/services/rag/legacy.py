@@ -293,8 +293,9 @@ class RAGService:
             )
             documents.append(doc)
 
-        # 添加到向量库
+        # 幂等性：先删除该页面的旧向量（避免重复写入）
         try:
+            self.delete_page_vectors(video.bvid, page_index)
             count = self.vectorstore.add(
                 documents, partition_dt=datetime.now(timezone.utc)
             )
@@ -358,6 +359,7 @@ class RAGService:
         uid: Optional[int] = None,
         partition_start: Optional[datetime] = None,
         partition_end: Optional[datetime] = None,
+        upload_uuids: Optional[List[str]] = None,
     ) -> List[Document]:
         """
         检索相关内容
@@ -427,7 +429,9 @@ class RAGService:
             # 并行搜索 Milvus bilibili_videos + cloud_drive
             from concurrent.futures import ThreadPoolExecutor
 
-            search_kwargs = {"k": k}
+            effective_k = k
+
+            search_kwargs = {"k": effective_k}
             if filter_cond:
                 search_kwargs["filter"] = filter_cond
 
@@ -452,6 +456,15 @@ class RAGService:
                     cloud_filter: dict | None = (
                         {"uid": uid} if uid is not None else None
                     )
+                    # Inherited scope from last turn: restrict to specific cloud docs
+                    if upload_uuids:
+                        if cloud_filter is None:
+                            cloud_filter = {}
+                        cloud_filter["upload_uuid"] = {"$in": upload_uuids}
+                        logger.info(
+                            "[RAG] cloud search with inherited scope: upload_uuid count={}",
+                            len(upload_uuids),
+                        )
                     # When query mentions a filename, restrict cloud search by title
                     if filenames:
                         if cloud_filter is None:
@@ -466,10 +479,12 @@ class RAGService:
                     cloud_fut = pool.submit(
                         self.cloud_backend.search,
                         query,
-                        k=k,
+                        k=effective_k,
                         filter=cloud_filter,
-                        partition_dt_start=partition_start,
-                        partition_dt_end=partition_end,
+                    )
+                else:
+                    logger.error(
+                        "[RAG] cloud_backend is None — cloud document search SKIPPED (Milvus not connected?)"
                     )
 
                 docs = list(bilibili_fut.result()) if bilibili_fut else []
@@ -505,6 +520,13 @@ class RAGService:
                     if (d.metadata.get("bvid"), d.metadata.get("page_index", 0))
                     in wp_set
                 ]
+
+            # Rerank stage. Runs after merge + workspace filter so the
+            # reranker sees the same candidate pool the consumer would have
+            # seen — minus the k-cut. NullReranker just slices, so this is
+            # safe to call unconditionally; we keep the flag check only to
+            # avoid the cost when disabled.
+            docs = docs[:k]
 
             logger.info("检索完成：query_len={}，召回={}", len(query), len(docs))
             for idx, doc in enumerate(docs):

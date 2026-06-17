@@ -140,6 +140,12 @@ class MilvusVectorStore:
         partition_dt_start: datetime | None = None,
         partition_dt_end: datetime | None = None,
     ) -> list[Document]:
+        if self._collection is None:
+            logger.error(
+                "[MILVUS] search called on uninitialized collection '{}' — returning empty results",
+                self._collection_name,
+            )
+            return []
         query_embedding = self._embedding_fn.embed_query(query)
 
         search_params = {
@@ -187,6 +193,12 @@ class MilvusVectorStore:
         if partition_names:
             search_kwargs["partition_names"] = partition_names
 
+        logger.info(
+            "[MILVUS] search collection='{}' k={} expr='{}'",
+            self._collection_name,
+            k,
+            expr,
+        )
         results = self._collection.search(**search_kwargs)
 
         docs: list[Document] = []
@@ -362,55 +374,64 @@ class MilvusVectorStore:
     def _get_or_create_collection(self):
         from pymilvus import Collection, CollectionSchema, utility
 
-        if utility.has_collection(self._collection_name):
-            col = Collection(self._collection_name)
-            col.load()
-            # Auto-fix: if existing collection dim doesn't match configured dim,
-            # drop and recreate (e.g. after embedding model change).
-            expected_dim = self._config.dimension
-            for field in col.schema.fields:
-                if field.name == "embedding":
-                    existing_dim = field.params.get("dim", 0)
-                    if existing_dim not in (0, expected_dim):
-                        logger.warning(
-                            "[MILVUS] collection '{}' has dim={}, expected={}, dropping to recreate",
-                            self._collection_name,
-                            existing_dim,
-                            expected_dim,
-                        )
-                        utility.drop_collection(self._collection_name)
-                        break
+        try:
+            if utility.has_collection(self._collection_name):
+                col = Collection(self._collection_name)
+                col.load()
+                # Auto-fix: if existing collection dim doesn't match configured dim,
+                # drop and recreate (e.g. after embedding model change).
+                expected_dim = self._config.dimension
+                for field in col.schema.fields:
+                    if field.name == "embedding":
+                        existing_dim = field.params.get("dim", 0)
+                        if existing_dim not in (0, expected_dim):
+                            logger.warning(
+                                "[MILVUS] collection '{}' has dim={}, expected={}, dropping to recreate",
+                                self._collection_name,
+                                existing_dim,
+                                expected_dim,
+                            )
+                            utility.drop_collection(self._collection_name)
+                            break
+                else:
+                    logger.info(
+                        "[MILVUS] collection '{}' loaded ({} entities)",
+                        self._collection_name,
+                        col.num_entities,
+                    )
+                    return col
+
+            if self._is_cloud:
+                fields = self._build_cloud_drive_schema()
+                description = "Cloud drive document & video vector chunks"
             else:
-                logger.info(
-                    "[MILVUS] collection '{}' loaded ({} entities)",
-                    self._collection_name,
-                    col.num_entities,
-                )
-                return col
+                fields = self._build_bilibili_schema()
+                description = "Bilibili RAG video chunks"
 
-        if self._is_cloud:
-            fields = self._build_cloud_drive_schema()
-            description = "Cloud drive document & video vector chunks"
-        else:
-            fields = self._build_bilibili_schema()
-            description = "Bilibili RAG video chunks"
+            schema = CollectionSchema(
+                fields, description=description, enable_dynamic_field=True
+            )
+            col = Collection(self._collection_name, schema)
 
-        schema = CollectionSchema(
-            fields, description=description, enable_dynamic_field=True
-        )
-        col = Collection(self._collection_name, schema)
+            index_params = self._get_index_params(self._collection_name, 0)
+            col.create_index("embedding", index_params)
+            col.load()
 
-        index_params = self._get_index_params(self._collection_name, 0)
-        col.create_index("embedding", index_params)
-        col.load()
+            logger.info(
+                "[MILVUS] collection '{}' created (dim={}, index={})",
+                self._collection_name,
+                self._config.dimension,
+                index_params["index_type"],
+            )
+            return col
 
-        logger.info(
-            "[MILVUS] collection '{}' created (dim={}, index={})",
-            self._collection_name,
-            self._config.dimension,
-            index_params["index_type"],
-        )
-        return col
+        except Exception as e:
+            logger.error(
+                "[MILVUS] failed to init collection '{}': {} — vector search will return empty results",
+                self._collection_name,
+                str(e),
+            )
+            return None
 
     def _build_bilibili_schema(self) -> list:
         from pymilvus import DataType, FieldSchema

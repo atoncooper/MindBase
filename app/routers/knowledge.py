@@ -3,6 +3,9 @@ Bilibili RAG 知识库系统
 
 知识库路由 - 构建和管理知识库
 """
+import asyncio
+import random
+import re
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from loguru import logger
@@ -22,12 +25,32 @@ from app.services.rag import RAGService, get_rag_service
 from app.routers.auth import get_current_uid, _get_bili_cookies_by_uid
 from app.utils.bvid import bv_to_av
 from app.utils.cache import cache_dependency_singleton
-import re
 
 router = APIRouter(prefix="/knowledge", tags=["知识库"])
 
 # Build task state (legacy in-memory)
 build_tasks = {}
+
+# ---------------------------------------------------------------------------
+# Process-wide singleton lock for /knowledge/build.
+#
+# B站 throttles concurrent requests aggressively. Letting two build jobs run
+# in parallel hits the same SESSDATA twice and triggers RST mid-download.
+# We keep at most ONE active build per process, identified by task_id.
+# ---------------------------------------------------------------------------
+_active_build_task_id: Optional[str] = None
+_active_build_uid: Optional[int] = None
+_active_build_lock = asyncio.Lock()
+
+
+def _is_build_active() -> bool:
+    """Whether a build task is currently in flight in this process."""
+    return _active_build_task_id is not None
+
+
+async def _human_pause(min_s: float, max_s: float) -> None:
+    """Random sleep between min_s and max_s seconds — mimics human pacing."""
+    await asyncio.sleep(random.uniform(min_s, max_s))
 
 
 class BuildRequest(BaseModel):
@@ -299,88 +322,97 @@ async def _sync_folder(
 
         return text, source
 
-    # Mark videos that need content refresh (not yet vectorized)
-    update_candidates: set[str] = set()
-    for bvid in current_bvids & existing_bvids:
-        if bvid in added:
-            continue
-        result = await db.execute(
-            select(Video).where(Video.bvid == bvid, Video.is_vectorized != "done")
-        )
-        if result.scalar_one_or_none():
-            update_candidates.add(bvid)
+    # ── Per-page vectorization ──
+    # Three-layer ingestion: collection (folder) → video (bvid) → page (cid).
+    # For each bvid we materialize all pages into the `video` table, then
+    # serially feed every still-pending page into vector_page_service so it
+    # runs through ASR + vectorization with proper task tracking.
+    from app.services.video.service import VideoService
+    from app.services.vector_page_service import VectorPageService
 
-    # Process each video: get content → vectorize
-    targets = list(added) + list(update_candidates)
+    video_service = VideoService()
+    page_tracker = TaskTracker()
+    vector_service = VectorPageService(page_tracker, rag=rag)
+
+    # Walk every video in this folder so newly-added pages of previously-known
+    # bvids also get picked up. Already-done pages will be skipped cheaply.
+    targets = list(current_bvids)
     total_targets = len(targets)
     processed_targets = 0
     if progress_callback:
         progress_callback("准备处理", processed_targets, total_targets)
 
+    failed_pages: list[tuple[str, int]] = []
+
     for bvid in targets:
         meta = video_map[bvid]
-        cid = meta.get("cid", 0)
 
         try:
-            # ── Dedup: check if already vectorized ──
-            from sqlalchemy import select as sa_select
-            vec_result = await db.execute(
-                sa_select(Video).where(Video.bvid == bvid, Video.cid == cid)
-            )
-            video_page = vec_result.scalar_one_or_none()
-            if video_page and video_page.is_vectorized == "done":
-                logger.info(f"[{bvid}] already vectorized (shared), skipping")
-                processed_targets += 1
-                if progress_callback:
-                    progress_callback(meta["title"], processed_targets, total_targets)
-                continue
+            # 1) Materialize all pages of this bvid into `video` table
+            pages_info = await video_service.list_pages_by_bvid(bvid, bili, db)
+            pages = pages_info.get("pages") or []
 
-            # ── Get content (MongoDB → fetch ASR → save to MongoDB) ──
-            text, source = await _get_content_text(bvid, cid, meta["title"], content_fetcher, meta)
-
-            if not text or len(text) < 50:
-                logger.warning(f"[{bvid}] insufficient content, skipping vectorization")
-                processed_targets += 1
-                if progress_callback:
-                    progress_callback(meta["title"], processed_targets, total_targets)
-                continue
-
-            # ── Vectorize ──
-            try:
-                rag.delete_video(bvid)
-            except Exception as e:
-                logger.warning(f"[{bvid}] delete old vectors failed: {e}")
-
-            content_obj = VideoContent(
-                bvid=bvid,
-                title=meta["title"],
-                content=text,
-                source=ContentSource.ASR,
-            )
-            chunks = rag.add_video_content(content_obj)
-            logger.info(f"[{bvid}] vectorized: {chunks} chunks")
-
-            # Mark video page as vectorized
-            if not video_page:
-                video_page = Video(
-                    bvid=bvid, cid=cid, page_index=0,
-                    page_title=meta["title"],
-                    is_processed=True, is_vectorized="done",
-                    vector_chunk_count=chunks,
+            # 2) Filter pages that still need vectorization
+            todo = [p for p in pages if p.get("is_vectorized") != "done"]
+            if not todo:
+                logger.info(
+                    f"[{bvid}] all {len(pages)} page(s) already vectorized, skipping"
                 )
-                db.add(video_page)
             else:
-                video_page.is_vectorized = "done"
-                video_page.vector_chunk_count = chunks
+                logger.info(
+                    f"[{bvid}] queue {len(todo)}/{len(pages)} page(s) for vectorization"
+                )
+                for p_idx, p in enumerate(todo):
+                    cid = p["cid"]
+                    page_index = p["page_index"]
+                    page_title = p.get("page_title") or f"P{page_index + 1}"
 
-            await db.commit()
+                    vec_task_id = await page_tracker.create(
+                        uid=uid,
+                        task_type="vec_page",
+                        target={
+                            "bvid": bvid,
+                            "cid": cid,
+                            "page_index": page_index,
+                            "page_title": page_title,
+                        },
+                    )
+                    try:
+                        await vector_service.process_page_vectorization(
+                            task_id=vec_task_id,
+                            bvid=bvid,
+                            cid=cid,
+                            page_index=page_index,
+                            page_title=page_title,
+                        )
+                    except Exception as page_err:
+                        # Failed page is already marked is_vectorized=failed in
+                        # vector_page_service; just log and move on.
+                        logger.warning(
+                            f"[{bvid}] page cid={cid} idx={page_index} failed: {page_err}"
+                        )
+                        failed_pages.append((bvid, cid))
+
+                    # Inter-page pause: 1-3s human pacing per the spec.
+                    if p_idx < len(todo) - 1:
+                        await _human_pause(1.0, 3.0)
 
         except Exception as e:
-            logger.warning(f"[{bvid}] vectorization failed: {e} (recorded in DB anyway)")
-        
+            logger.warning(f"[{bvid}] enumerate/process pages failed: {e}")
+            failed_pages.append((bvid, -1))
+
         processed_targets += 1
         if progress_callback:
             progress_callback(meta["title"], processed_targets, total_targets)
+
+        # Inter-video pause to keep load steady across the whole folder.
+        if processed_targets < total_targets:
+            await _human_pause(1.5, 4.0)
+
+    if failed_pages:
+        logger.warning(
+            f"[{folder_id}] {len(failed_pages)} page(s) failed during vectorization"
+        )
 
     # 删除已移除的视频
     if removed:
@@ -651,21 +683,46 @@ async def build_knowledge_base(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """构建知识库（后台任务，写入 async_tasks 表）"""
-    bili, _bili_mid = await _get_bili_cookies_by_uid(uid, db)
-    sessdata = bili.sessdata
+    """构建知识库（后台任务，写入 async_tasks 表）。
 
-    tracker = TaskTracker()
-    task_id = await tracker.create(
-        uid=uid,
-        task_type="build",
-        target={"folder_ids": request.folder_ids},
-    )
-    # Legacy in-memory compat (existing polling endpoint still reads build_tasks)
-    build_tasks[task_id] = build_tasks.get(task_id) or {
-        "status": "pending", "progress": 0, "current_step": "初始化中...",
-        "total_videos": 0, "processed_videos": 0, "message": "",
-    }
+    全局单例：同一进程同一时刻只允许一个 build 任务在跑。重复点击直接
+    返回当前活跃的 task_id，而不是再起一个新的——避免对 B站 CDN 的并发
+    请求触发限流。
+    """
+    global _active_build_task_id, _active_build_uid
+
+    async with _active_build_lock:
+        if _active_build_task_id is not None:
+            logger.info(
+                f"[build] reuse active task_id={_active_build_task_id} "
+                f"uid={_active_build_uid} (requested by uid={uid})"
+            )
+            return {
+                "task_id": _active_build_task_id,
+                "message": "已有构建任务在运行，复用该任务",
+                "reused": True,
+            }
+
+        bili, _bili_mid = await _get_bili_cookies_by_uid(uid, db)
+        sessdata = bili.sessdata
+
+        tracker = TaskTracker()
+        task_id = await tracker.create(
+            uid=uid,
+            task_type="build",
+            target={"folder_ids": request.folder_ids},
+        )
+        # Legacy in-memory compat (existing polling endpoint still reads build_tasks)
+        build_tasks[task_id] = build_tasks.get(task_id) or {
+            "status": "pending", "progress": 0, "current_step": "初始化中...",
+            "total_videos": 0, "processed_videos": 0, "message": "",
+        }
+
+        # Mark this task as the active singleton BEFORE scheduling, so a
+        # second click that arrives while we're still in this function still
+        # sees the lock as taken.
+        _active_build_task_id = task_id
+        _active_build_uid = uid
 
     background_tasks.add_task(
         _build_knowledge_base_task,
@@ -676,7 +733,20 @@ async def build_knowledge_base(
         request.exclude_bvids or [],
     )
 
-    return {"task_id": task_id, "message": "构建任务已启动"}
+    return {"task_id": task_id, "message": "构建任务已启动", "reused": False}
+
+
+@router.get("/build/active")
+async def get_active_build_task(uid: int = Depends(get_current_uid)):
+    """查询当前是否有活跃的 build 任务（前端用来禁用按钮 / 复用 task_id）。"""
+    if _active_build_task_id is None:
+        return {"active": False, "task_id": None, "uid": None}
+    return {
+        "active": True,
+        "task_id": _active_build_task_id,
+        "uid": _active_build_uid,
+        "is_yours": _active_build_uid == uid,
+    }
 
 
 async def _build_knowledge_base_task(
@@ -688,16 +758,42 @@ async def _build_knowledge_base_task(
 ):
     """后台构建任务 — 通过 TaskTracker 写入 async_tasks 表，完成后广播 WebSocket。"""
     from app.services.async_task.tracker import TaskTracker
+    global _active_build_task_id, _active_build_uid
+
+    # Mutable cursor of "where are we right now". Updated as we move between
+    # folders / videos so every _notify() call carries the same context.
+    cursor: dict = {
+        "folder_index": 0,
+        "total_folders": 0,
+        "folder_id": None,
+        "folder_title": None,
+        "video_index": 0,
+        "total_videos_in_folder": 0,
+        "current_video_title": None,
+    }
 
     def _notify(status: str, **kwargs) -> None:
-        """Update legacy state + broadcast to WebSocket clients."""
-        legacy_state(task_id, status, **kwargs)
+        """Update legacy state + broadcast to WebSocket clients.
+
+        Always includes the current folder/video cursor so the frontend can
+        render "收藏夹 A: 3/12 — 正在处理《XXX》" without extra round trips.
+        """
+        # legacy_state only knows a small set of fields; pass them explicitly.
+        legacy_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k in {"progress", "processed", "total_videos", "message"}
+        }
+        if "current_step" in kwargs:
+            legacy_kwargs["step"] = kwargs["current_step"]
+        legacy_state(task_id, status, **legacy_kwargs)
         try:
             from app.routers.tasks_ws import broadcast_task_update
             import asyncio
             task_info = {
                 "task_id": task_id, "task_type": "build", "uid": uid,
-                "status": status, **kwargs,
+                "status": status,
+                **cursor,
+                **kwargs,
             }
             asyncio.ensure_future(broadcast_task_update(uid, task_info))
         except Exception:
@@ -725,20 +821,64 @@ async def _build_knowledge_base_task(
             total_added = 0
             total_removed = 0
 
+            cursor["total_folders"] = total_folders
+
             async with get_db_context() as db:
                 for idx, folder_id in enumerate(folder_ids, start=1):
                     folder_progress = int((idx / total_folders) * 100)
+
+                    # Resolve folder title (best-effort) so the broadcast carries
+                    # human-readable context, not just a numeric id.
+                    folder_title: Optional[str] = None
+                    try:
+                        ff_row = await db.execute(
+                            select(FavoriteFolder.title).where(
+                                FavoriteFolder.media_id == folder_id,
+                                FavoriteFolder.uid == uid,
+                            )
+                        )
+                        folder_title = ff_row.scalar_one_or_none()
+                    except Exception:
+                        folder_title = None
+
+                    cursor.update({
+                        "folder_index": idx,
+                        "folder_id": folder_id,
+                        "folder_title": folder_title,
+                        "video_index": 0,
+                        "total_videos_in_folder": 0,
+                        "current_video_title": None,
+                    })
+
+                    folder_label = folder_title or f"#{folder_id}"
                     await tracker.step(
                         task_id,
                         name=f"folder:{folder_id}",
                         status="processing",
                         progress=folder_progress,
                     )
-                    legacy_state(task_id, f"同步收藏夹 {folder_id}", progress=folder_progress)
+                    _notify(
+                        "running",
+                        progress=folder_progress,
+                        current_step=f"收藏夹 {idx}/{total_folders}：{folder_label}",
+                    )
 
                     def progress_cb(title: str, count: int = 0, total: int = 0):
-                        legacy_state(task_id, f"处理: {title}",
-                                     processed=count, total_videos=total)
+                        cursor.update({
+                            "video_index": count,
+                            "total_videos_in_folder": total,
+                            "current_video_title": title,
+                        })
+                        legacy_state(
+                            task_id, "running",
+                            step=f"处理: {title}",
+                            processed=count, total_videos=total,
+                        )
+                        _notify(
+                            "running",
+                            progress=folder_progress,
+                            current_step=f"{folder_label} {count}/{total}：{title}",
+                        )
 
                     result = await _sync_folder(
                         db, bili, rag, content_fetcher,
@@ -751,6 +891,16 @@ async def _build_knowledge_base_task(
                     total_added += result["added"]
                     total_removed += result["removed"]
 
+                    # Human-pace pause between folders so we don't hammer the API.
+                    if idx < total_folders:
+                        wait_s = random.uniform(2.0, 5.0)
+                        _notify(
+                            "running",
+                            progress=folder_progress,
+                            current_step=f"等待 {wait_s:.1f}s 后处理下一个收藏夹",
+                        )
+                        await asyncio.sleep(wait_s)
+
             await tracker.complete(
                 task_id,
                 result={
@@ -759,6 +909,11 @@ async def _build_knowledge_base_task(
                     "videos_removed": total_removed,
                 },
             )
+            cursor.update({
+                "video_index": 0,
+                "total_videos_in_folder": 0,
+                "current_video_title": None,
+            })
             _notify("done", progress=100,
                     current_step="完成",
                     message=f"同步完成：新增 {total_added}，移除 {total_removed}")
@@ -779,6 +934,13 @@ async def _build_knowledge_base_task(
         logger.exception("Build task failed")
         await tracker.fail(task_id, str(e))
         _notify("failed", message=str(e))
+    finally:
+        # Release the singleton so a new build can be scheduled.
+        async with _active_build_lock:
+            if _active_build_task_id == task_id:
+                _active_build_task_id = None
+                _active_build_uid = None
+                logger.info(f"[build] released singleton task_id={task_id}")
 
 
 def legacy_state(task_id: str, status: str, step: str = "",
@@ -819,12 +981,14 @@ async def get_build_status(task_id: str):
                 if row.steps:
                     last = row.steps[-1] if row.steps else {}
                     current_step = last.get("name", "")
+                # `total_videos` is a count, not the folder list itself.
+                folder_ids = (row.target or {}).get("folder_ids") or []
                 return BuildStatus(
                     task_id=task_id,
                     status=row.status or "pending",
                     progress=row.progress or 0,
                     current_step=current_step,
-                    total_videos=row.target.get("folder_ids", []) if row.target else [],
+                    total_videos=len(folder_ids),
                     processed_videos=len(row.steps or []),
                     message=row.error or "",
                 )

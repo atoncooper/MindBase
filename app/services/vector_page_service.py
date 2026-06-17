@@ -62,11 +62,16 @@ class VectorPageService:
                 if not page:
                     raise Exception(f"Video not found: bvid={bvid}, cid={cid}")
 
+                if page.is_vectorized == "processing":
+                    logger.info(f"[VecPage] already in progress: bvid={bvid}, cid={cid}")
+                    await self.tracker.complete(task_id, result={"skipped": True, "message": "Already in progress"})
+                    return
+
                 if page.is_vectorized == "done" and not self._content_changed(page):
                     await self.tracker.complete(task_id, result={"skipped": True, "message": "Already up to date"})
                     return
 
-                page.is_vectorized = "pending"
+                page.is_vectorized = "processing"
                 page.vector_error = None
                 await db.commit()
 
