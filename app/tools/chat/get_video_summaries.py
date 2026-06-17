@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.tools import ToolDeps, register_tool
+
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class GetVideoSummariesTool:
     """Get video titles + full descriptions from the user's collection.
 
@@ -17,6 +20,12 @@ class GetVideoSummariesTool:
 
     def __init__(self, deps: Any) -> None:
         self._deps = deps
+
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "GetVideoSummariesTool | None":
+        if deps.db_deps is None:
+            return None
+        return cls(deps.db_deps)
 
     @property
     def name(self) -> str:

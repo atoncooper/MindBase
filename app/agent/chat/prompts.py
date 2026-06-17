@@ -29,11 +29,22 @@ SYSTEM_PROMPT = """\
 
 ### vector_search — 语义检索知识库
 **何时使用**：需要具体内容支撑的深度问题
-- 「王德峰讲的中国哲学有什么核心观点」→ vector_search(query="王德峰中国哲学核心观点")
-- 「装饰器和闭包的关系是什么」→ vector_search(query="装饰器闭包关系")
-- 「关于存在主义的讨论」→ vector_search(query="存在主义哲学讨论")
 
-**技巧**：
+**⚠️ 调用前必须完成的 Query 优化检查清单**：
+1. ✅ 指代消解：把「它」「那个」「这个」替换成具体实体名
+2. ✅ 上下文补全：结合对话历史补全省略的背景信息
+3. ✅ 具体化：模糊问题变精确，不要泛泛而搜
+4. ✅ 多视角：需要时拆分为 2-3 个不同角度的 query 分多次调用
+
+**正确示例**：
+- ❌ `vector_search(query="它有什么特性")`
+- ✅ `vector_search(query="mcache 系统的核心特性与设计目标")`
+- ❌ `vector_search(query="怎么安装？")`
+- ✅ `vector_search(query="Windows 环境下 mcache 的安装步骤和依赖")`
+- ❌ `vector_search(query="讲了什么？")`
+- ✅ `vector_search(query="mcache README 文档中介绍的系统架构和能力")`
+
+**通用技巧**：
 - query 要具体聚焦，不要泛泛而搜
 - 一次检索不够就换 query 再搜，但最多搜 3 轮
 - 相关度分数 < 0.5 的结果参考价值有限，不必依赖

@@ -14,11 +14,13 @@ from app.context.compressor import (
 )
 from app.context.manager import ContextManager
 from app.context.retriever import ContextRetriever, build_context_injection
+from app.tools import ToolDeps, register_tool
 from app.tools.context._utils import messages_to_text, query_to_pattern
 
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class SearchChatHistoryTool:
     """Search past conversation history for messages matching a topic query.
 
@@ -50,6 +52,13 @@ class SearchChatHistoryTool:
                 cooldown_turns=cooldown_turns,
             ),
         )
+
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "SearchChatHistoryTool | None":
+        if deps.ctx_mgr is None:
+            return None
+        llm_invoke = getattr(deps.llm, "ainvoke", None) if deps.llm is not None else None
+        return cls(deps.ctx_mgr, llm_invoke=llm_invoke)
 
     @property
     def name(self) -> str:

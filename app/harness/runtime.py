@@ -163,14 +163,16 @@ class AgentRuntime:
         start = time.monotonic()
 
         try:
-            content = await tool.run(**args)
+            raw = await tool.run(**args)
             duration = (time.monotonic() - start) * 1000
             self._record_metrics(name, duration, success=True)
             logger.debug("[RUNTIME] tool '%s' OK (%.0fms)", name, duration)
+            content, extras = _split_tool_result(raw)
             return ToolMessage(
                 content=content,
                 tool_call_id=call_id,
                 name=name,
+                additional_kwargs=extras,
             )
         except Exception as exc:
             duration = (time.monotonic() - start) * 1000
@@ -234,3 +236,18 @@ class AgentRuntime:
             content=f"工具执行失败: {error}",
             tool_call_id=tool_call["id"],
         )
+
+
+def _split_tool_result(raw: Any) -> tuple[str, dict[str, Any]]:
+    """Normalise tool return values into ``(content, extras)``.
+
+    Tools may return either a plain string or a dict carrying extra
+    structured data (e.g. ``{"content": "...", "sources": [...]}``).
+    Extras are forwarded as ``ToolMessage.additional_kwargs`` so graph
+    nodes can read structured payloads without re-parsing the text.
+    """
+    if isinstance(raw, dict):
+        content = raw.get("content", "")
+        extras = {k: v for k, v in raw.items() if k != "content"}
+        return str(content), extras
+    return str(raw), {}

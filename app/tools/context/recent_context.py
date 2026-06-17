@@ -6,11 +6,13 @@ import logging
 from typing import Any
 
 from app.context.manager import ContextManager
+from app.tools import ToolDeps, register_tool
 from app.tools.context._utils import messages_to_text
 
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class GetRecentContextTool:
     """Get the most recent conversation messages from in-memory storage.
 
@@ -19,6 +21,12 @@ class GetRecentContextTool:
 
     def __init__(self, context_manager: ContextManager) -> None:
         self._context_manager = context_manager
+
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "GetRecentContextTool | None":
+        if deps.ctx_mgr is None:
+            return None
+        return cls(deps.ctx_mgr)
 
     @property
     def name(self) -> str:

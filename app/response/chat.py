@@ -4,7 +4,7 @@ Pydantic schemas for chat API — request / response models.
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class WorkspacePage(BaseModel):
@@ -23,7 +23,10 @@ class ChatRequest(BaseModel):
     folder_ids: Optional[list[int]] = None
     workspace_pages: Optional[list[WorkspacePage]] = None  # B站 page-level filter
     workspace_id: Optional[int] = None  # Plan 0023: cloud drive workspace filter
-    mode: str = "standard"  # standard | agentic
+    mode: str = Field(
+        default="standard",
+        deprecated="Routing is owned by AgentHarness; this field is ignored.",
+    )
 
     @model_validator(mode="after")
     def validate_search_scope(self) -> "ChatRequest":

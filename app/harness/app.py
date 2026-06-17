@@ -19,19 +19,7 @@ from app.context import ContextManager
 from app.harness.orchestrator import AgentOrchestrator
 from app.harness.runtime import AgentRuntime
 from app.harness.scheduling.agent import AgentConfig, AgentScheduler
-from app.tools import ToolRegistry
-from app.tools.chat import (
-    GetVideoSummariesTool,
-    ListVideosTool,
-    VectorSearchTool,
-)
-from app.tools.context import (
-    GetCompressedSummaryTool,
-    GetFullHistoryTool,
-    GetRecentContextTool,
-    SearchChatHistoryTool,
-)
-from app.tools.harness.delegate import DelegateToAgentTool
+from app.tools import ToolDeps, ToolManager, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +83,7 @@ class AgentHarness:
         self._lifecycle = AgentLifecycleManager()
         self._orchestrator = AgentOrchestrator(llm=llm)
         self._scheduler = AgentScheduler(self._lifecycle)
+        self._tool_manager: ToolManager | None = None
         self._cleanup_task: asyncio.Task | None = None
         self._started = False
 
@@ -123,6 +112,11 @@ class AgentHarness:
     def tool_names(self) -> list[str]:
         """Names of all registered tools."""
         return self._registry.list()
+
+    @property
+    def tool_manager(self) -> ToolManager | None:
+        """Tool discovery manager (None until ``start()`` runs)."""
+        return self._tool_manager
 
     @property
     def started(self) -> bool:
@@ -305,51 +299,60 @@ class AgentHarness:
         base["harness_started"] = self._started
         base["runtime"] = self._runtime.monitor()
         base["scheduler"] = self._scheduler.stats()
+        base["tools"] = (
+            self._tool_manager.summary()
+            if self._tool_manager is not None
+            else {"discovered": False}
+        )
         return base
 
     # ── internal ──────────────────────────────────────────────────────
 
     def _register_tools(self) -> None:
-        """Create and register all available tools.
+        """Discover and register all tools via ``ToolManager``.
 
-        Tool groups:
-            - Context tools (shared): search_chat_history, get_recent_context,
-              get_compressed_summary, get_full_history
-            - Chat tools: vector_search, list_videos, get_video_summaries
+        Tools self-register via ``@register_tool`` and declare their own
+        dependency requirements through a ``from_deps`` classmethod.
+        Failures are recorded but never abort startup — see
+        ``ToolManager.report()`` and ``health()['tools']`` for diagnostics.
         """
-        # ── Context tools (also used by Memory Agent) ─────────────────
-        self._registry.register(
-            SearchChatHistoryTool(
-                self._ctx_mgr,
-                llm_invoke=self._llm.ainvoke,
-            )
-        )
-        self._registry.register(GetRecentContextTool(self._ctx_mgr))
-        self._registry.register(GetCompressedSummaryTool())
-        self._registry.register(GetFullHistoryTool())
-
-        # ── Chat tools ───────────────────────────────────────────────
-        from app.services.rag import get_rag_service
-
-        rag = get_rag_service()
-        self._registry.register(VectorSearchTool(rag))
-
-        if self._session_factory:
+        db_deps: Any = None
+        if self._session_factory is not None:
             from app.agent.chat.db_deps import DBChatDeps
 
-            deps = DBChatDeps(self._session_factory)
-            self._registry.register(ListVideosTool(deps))
-            self._registry.register(GetVideoSummariesTool(deps))
-        else:
-            logger.warning(
-                "[HARNESS] no session_factory provided — "
-                "ListVideosTool / GetVideoSummariesTool will not be registered"
+            db_deps = DBChatDeps(self._session_factory)
+
+        rag: Any = None
+        try:
+            from app.services.rag import get_rag_service
+
+            rag = get_rag_service()
+        except Exception:
+            logger.exception("[HARNESS] failed to acquire RAG service")
+
+        deps = ToolDeps(
+            rag=rag,
+            ctx_mgr=self._ctx_mgr,
+            llm=self._llm,
+            db_deps=db_deps,
+            lifecycle=self._lifecycle,
+        )
+
+        manager = ToolManager(deps)
+        manager.discover()
+
+        for tool in manager.tools:
+            self._registry.register(tool)
+
+        self._tool_manager = manager
+
+        logger.info(manager.report())
+        if manager.failed():
+            logger.error(
+                "[HARNESS] %s tool(s) failed to load: %s",
+                len(manager.failed()),
+                [r.name for r in manager.failed()],
             )
-
-        # ── Inter-agent delegation tool ──────────────────────────────
-        self._registry.register(DelegateToAgentTool(self._lifecycle))
-
-        logger.info("[HARNESS] registered %s tools", len(self._registry.list()))
 
     def _register_agents(self) -> None:
         """Register all agents with the lifecycle manager."""
