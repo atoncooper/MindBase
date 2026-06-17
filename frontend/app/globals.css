@@ -840,50 +840,70 @@ html.dark * {
 }
 
 .folder-card {
-  border-radius: 14px;
-  border: 1px solid transparent;
-  padding: 12px 12px 10px;
-  transition: all 0.2s ease;
-  background: rgba(22, 27, 34, 0.4);
+  /* Google Drive / Material 3 surface card */
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  background: transparent;
   position: relative;
   overflow: hidden;
   min-width: 0;
 }
 
 .folder-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 10px;
-  bottom: 10px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--accent);
-  opacity: 0;
-  transition: opacity 0.2s ease;
+  /* Removed neon left bar — Material doesn't accent that way. */
+  content: none;
 }
 
 .folder-card:hover {
+  /* Material state layer: 8% on-surface */
+  background: rgba(255, 255, 255, 0.06);
   border-color: var(--border);
-  background: rgba(22, 27, 34, 0.65);
 }
 
 .folder-card.selected {
-  border-color: rgba(6, 182, 212, 0.35);
-  background: rgba(22, 27, 34, 0.8);
-  box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.1), 0 2px 8px rgba(6, 182, 212, 0.06);
+  /* Drive selected: tonal primary container, no glow */
+  border-color: rgba(138, 180, 248, 0.45);
+  background: rgba(138, 180, 248, 0.12);
+  box-shadow: none;
 }
 
 .folder-card.selected::before {
-  opacity: 1;
+  content: none;
 }
 
 .folder-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   cursor: pointer;
   min-width: 0;
+}
+
+.folder-checkbox {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: #8ab4f8;
+  cursor: pointer;
+}
+
+.folder-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(138, 180, 248, 0.12);
+  color: #8ab4f8;
+}
+
+.folder-icon svg {
+  width: 22px;
+  height: 22px;
 }
 
 .folder-meta {
@@ -923,11 +943,19 @@ html.dark * {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 1px solid var(--border);
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(22, 27, 34, 0.6);
+  background: transparent;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.folder-card:hover .folder-toggle {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--foreground);
 }
 
 .folder-list {
@@ -1470,35 +1498,40 @@ html.dark * {
 }
 
 .status-pill {
+  /* Material chip: assist chip style */
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(6, 182, 212, 0.12);
-  color: var(--teal);
-  font-size: 12px;
-  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(138, 180, 248, 0.14);
+  color: #8ab4f8;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .status-pill.ok {
-  background: rgba(6, 182, 212, 0.12);
-  color: var(--teal);
+  background: rgba(129, 201, 149, 0.16);
+  color: #81c995;
 }
 
 .status-pill.partial {
-  background: rgba(6, 182, 212, 0.15);
-  color: var(--accent-strong);
+  background: rgba(253, 214, 99, 0.16);
+  color: #fdd663;
 }
 
 .status-pill.empty {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--muted-foreground);
 }
 
 .status-pill.alert {
-  background: rgba(248, 113, 113, 0.12);
-  color: var(--danger);
+  background: rgba(242, 139, 130, 0.16);
+  color: #f28b82;
 }
 
 @keyframes fadeUp {
@@ -1771,64 +1804,6 @@ html.dark * {
   html {
     @apply font-sans;
   }
-}
-
-/* ---------- Mode Toggle Switch (Base UI Tabs) ---------- */
-.mode-tabs-list {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  background: var(--paper-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 3px;
-  gap: 0;
-}
-
-.mode-tabs-indicator {
-  position: absolute;
-  top: var(--active-tab-top);
-  left: var(--active-tab-left);
-  width: var(--active-tab-width);
-  height: var(--active-tab-height);
-  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
-  border-radius: 999px;
-  transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.3);
-  z-index: 0;
-}
-
-.mode-tabs-tab {
-  position: relative;
-  z-index: 1;
-  padding: 5px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: 999px;
-  border: none;
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  transition: color 0.2s ease;
-  white-space: nowrap;
-  font-family: inherit;
-  outline: none;
-}
-
-.mode-tabs-tab[data-active] {
-  color: #0d1117;
-}
-
-.mode-tabs-tab:not([data-active]):hover {
-  color: var(--ink-soft);
-}
-
-.mode-tabs-tab:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
 }
 
 /* ---------- 分P行样式 ---------- */
@@ -2381,19 +2356,52 @@ html:not(.dark) .sidebar-dialog-btn-confirm {
   color: var(--primary-foreground);
 }
 html:not(.dark) .folder-card {
-  background: rgba(0, 0, 0, 0.02);
+  background: transparent;
+  border-color: rgba(0, 0, 0, 0.08);
 }
 html:not(.dark) .folder-card:hover {
-  background: rgba(0, 0, 0, 0.04);
-  border-color: var(--border);
+  background: rgba(60, 64, 67, 0.06);
+  border-color: rgba(0, 0, 0, 0.08);
 }
 html:not(.dark) .folder-card.selected {
-  background: rgba(8, 145, 178, 0.04);
-  border-color: rgba(8, 145, 178, 0.2);
-  box-shadow: 0 0 0 1px rgba(8, 145, 178, 0.06);
+  background: rgba(26, 115, 232, 0.08);
+  border-color: rgba(26, 115, 232, 0.35);
+  box-shadow: none;
+}
+html:not(.dark) .folder-icon {
+  background: rgba(26, 115, 232, 0.12);
+  color: #1a73e8;
+}
+html:not(.dark) .folder-checkbox {
+  accent-color: #1a73e8;
 }
 html:not(.dark) .folder-toggle {
-  background: rgba(0, 0, 0, 0.03);
+  background: transparent;
+  color: var(--muted-foreground);
+}
+html:not(.dark) .folder-card:hover .folder-toggle {
+  background: rgba(60, 64, 67, 0.08);
+  color: var(--foreground);
+}
+html:not(.dark) .status-pill {
+  background: rgba(26, 115, 232, 0.10);
+  color: #1a73e8;
+}
+html:not(.dark) .status-pill.ok {
+  background: rgba(30, 142, 62, 0.10);
+  color: #1e8e3e;
+}
+html:not(.dark) .status-pill.partial {
+  background: rgba(234, 134, 0, 0.12);
+  color: #b06000;
+}
+html:not(.dark) .status-pill.empty {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--muted-foreground);
+}
+html:not(.dark) .status-pill.alert {
+  background: rgba(217, 48, 37, 0.10);
+  color: #d93025;
 }
 html:not(.dark) .workspace-item {
   background: rgba(0, 0, 0, 0.02);
@@ -2477,9 +2485,6 @@ html:not(.dark) .source-list {
 }
 html:not(.dark) .progress {
   background: rgba(0, 0, 0, 0.06);
-}
-html:not(.dark) .status-pill.empty {
-  background: rgba(0, 0, 0, 0.04);
 }
 html:not(.dark) .floating-panel-close {
   background: var(--card);
