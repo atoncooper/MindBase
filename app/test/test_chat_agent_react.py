@@ -233,6 +233,10 @@ class TestReActToolCall:
         # Messages: system + user + ai(tool_call) + tool_message + ai(answer)
         assert len(result["messages"]) == 5
         assert isinstance(result["messages"][3], ToolMessage)
+        # Structured sources should propagate from VectorSearchTool →
+        # ToolMessage.additional_kwargs → state.search_results → result["sources"].
+        assert result["sources"], "expected sources to be populated"
+        assert result["sources"][0]["bvid"] == "BV1xx"
 
     @pytest.mark.asyncio
     async def test_llm_calls_list_videos(self):

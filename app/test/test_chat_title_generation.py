@@ -134,7 +134,7 @@ def test_sanitize_generated_title_removes_noise_and_limits_length():
 
 def test_schedule_chat_title_generation_uses_background_tasks(monkeypatch):
     from app.response.chat import ChatSessionResponse
-    from app.routers import chat
+    from app.services.chat import build_llm, schedule_title_generation
 
     scheduled = []
 
@@ -152,7 +152,7 @@ def test_schedule_chat_title_generation_uses_background_tasks(monkeypatch):
         updated_at=datetime.now(timezone.utc),
     )
 
-    chat._schedule_title_generation(
+    schedule_title_generation(
         BackgroundTasks(),
         session,
         uid=42,
@@ -165,7 +165,7 @@ def test_schedule_chat_title_generation_uses_background_tasks(monkeypatch):
     assert kwargs["chat_session_id"] == "chat-schedule"
     assert kwargs["uid"] == 42
     assert kwargs["first_message"] == "如何实现 AI 标题生成？"
-    assert kwargs["llm_factory"] is chat._get_llm
+    assert kwargs["llm_factory"] is build_llm
 
 
 @pytest.mark.asyncio
@@ -297,7 +297,7 @@ async def test_generate_chat_title_background_commits_with_own_scope(
 
 
 def test_schedule_chat_title_generation_skips_non_first_message():
-    from app.routers import chat
+    from app.services.chat import schedule_title_generation
 
     class BackgroundTasks:
         def add_task(self, fn, *args, **kwargs):
@@ -314,7 +314,7 @@ def test_schedule_chat_title_generation_skips_non_first_message():
         last_message_at=datetime.now(timezone.utc),
     )
 
-    chat._schedule_title_generation(
+    schedule_title_generation(
         BackgroundTasks(),
         session,
         uid=42,
@@ -323,7 +323,7 @@ def test_schedule_chat_title_generation_skips_non_first_message():
 
 
 def test_schedule_chat_title_generation_skips_existing_title():
-    from app.routers import chat
+    from app.services.chat import schedule_title_generation
 
     class BackgroundTasks:
         def add_task(self, fn, *args, **kwargs):
@@ -339,7 +339,7 @@ def test_schedule_chat_title_generation_skips_existing_title():
         updated_at=datetime.now(timezone.utc),
     )
 
-    chat._schedule_title_generation(
+    schedule_title_generation(
         BackgroundTasks(),
         session,
         uid=42,

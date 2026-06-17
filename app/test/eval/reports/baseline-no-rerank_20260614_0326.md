@@ -1,0 +1,58 @@
+# Eval Run · `baseline-no-rerank_20260614_0326`
+
+- **tag:** `baseline-no-rerank`
+- **started:** 2026-06-14T03:26:51.487738+00:00
+- **duration:** 124.0s
+- **git_sha:** `88f654a`
+- **llm_model:** `qwen3-max` · **embedding:** `text-embedding-v4` · **judge:** `gpt-4o-mini`
+- **judge_calls:** 6
+
+## Summary
+
+| metric | value |
+|---|---|
+| samples | 6 |
+| recall@5 | 100.0% |
+| precision@5 | 100.0% |
+| mrr@5 | 1.000 |
+| answer_quality_avg | 3.83 / 5 |
+| citation_accuracy | 100.0% |
+| keyword_hit_rate | 100.0% |
+| latency p50 / p95 / p99 | 11453 / 21496 / 22424 ms |
+
+## By category
+
+| category | n | recall@5 | precision@5 | mrr@5 | answer_quality | citation_acc | kw_hit |
+|---|---|---|---|---|---|---|---|
+| abstract | 1 | 100.0% | 100.0% | 1.00 | 2.00 | 100.0% | 100.0% |
+| cross_video | 1 | 100.0% | 100.0% | 1.00 | 3.00 | 100.0% | 100.0% |
+| negation | 1 | 100.0% | 100.0% | 1.00 | 4.00 | 100.0% | 100.0% |
+| numeric_fact | 1 | 100.0% | 100.0% | 1.00 | 5.00 | 100.0% | 100.0% |
+| proper_noun | 1 | 100.0% | 100.0% | 1.00 | 4.00 | 100.0% | 100.0% |
+| single_video | 1 | 100.0% | 100.0% | 1.00 | 5.00 | 100.0% | 100.0% |
+
+
+## Failures (score ≤ 2 or error)
+
+- **ab-001** [score=2] recall=100.0% latency=18016ms
+  - answer: 根据提供的知识库内容，《计算机组成原理微课堂》第一章至少涵盖了以下两个主要部分：
+  - reason: 答案覆盖了软件分类这一预期点，但遗漏了计算机发展历程和硬件基本结构等关键事实，并添加了检索上下文中不存在的冯·诺依曼报告细节，属于幻觉。
+
+
+## Config snapshot
+
+```json
+{
+  "llm_model": "qwen3-max",
+  "embedding_model": "text-embedding-v4",
+  "embedding_version": "v1",
+  "chunk_target_size": 750,
+  "chunk_min_size": 300,
+  "chunk_max_size": 900,
+  "chunk_overlap": 100,
+  "rerank_enabled": true,
+  "rerank_provider": "dashscope",
+  "rerank_model": "gte-rerank-v2",
+  "rerank_top_n": 30
+}
+```

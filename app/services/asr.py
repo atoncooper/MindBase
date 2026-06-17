@@ -144,22 +144,32 @@ class ASRService:
             logger.warning(f"ASR 本地文件不存在: {file_path}")
             return None
 
+        file_size = os.path.getsize(file_path) / (1024 * 1024)
+        logger.info(f"[ASR_PERF] 开始识别: file_size={file_size:.2f}MB")
+
+        t0 = time.time()
         input_path = self._prepare_recognition_input(file_path)
         if not input_path:
             return None
 
+        t1 = time.time()
+        logger.info(f"[ASR_PERF] 转码完成: 耗时={(t1-t0):.1f}s")
+
         logger.info(
-            f"ASR Recognition 使用模型: {self.local_model or self.model}, format={self.input_format or 'pcm'}"
+            f"ASR Recognition 使用模型: {self.model}, format={self.input_format or 'pcm'}"
         )
 
         try:
+            # 批量识别优先用离线模型（更快、更准），实时模型仅用于真正的流式场景
             recognizer = Recognition(
-                model=self.local_model or self.model,
+                model=self.model,
                 callback=None,
                 format=(self.input_format or "pcm"),
                 sample_rate=16000,
             )
             result = recognizer.call(input_path)
+            t2 = time.time()
+            logger.info(f"[ASR_PERF] 云端识别完成: 耗时={(t2-t1):.1f}s")
             logger.info(
                 "ASR Recognition 结果: status_code={}, code={}, message={}, request_id={}",
                 getattr(result, "status_code", None),
@@ -180,6 +190,8 @@ class ASRService:
             if text:
                 preview = text[:120].replace("\n", " ").strip()
                 logger.info(f"ASR Recognition 成功，长度={len(text)}，预览：{preview}")
+            t3 = time.time()
+            logger.info(f"[ASR_PERF] 总耗时: {(t3-t0):.1f}s")
             return text
         except Exception as e:
             logger.warning(f"ASR Recognition 异常: {e}")

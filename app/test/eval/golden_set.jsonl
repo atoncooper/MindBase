@@ -1,0 +1,47 @@
+// golden_set.jsonl — RAG evaluation golden set
+//
+// Format: one JSON object per line. Lines starting with // or # are skipped.
+// Schema mirrors app/test/eval/schema.py:GoldenSample. Field reference:
+//
+//   qid                    — unique short id, e.g. "sv-001" (single_video #1)
+//   category               — single_video | cross_video | negation |
+//                            proper_noun | numeric_fact | abstract
+//   question               — the question to ask the RAG pipeline
+//   scope                  — vector | direct | db_list | db_content
+//   folder_ids             — bilibili favorite folder ids (optional)
+//   must_contain_bvid      — at least one of these BVs must appear in top-K
+//                            (drives recall@5; required for vector scope when
+//                            must_contain_keywords is empty)
+//   must_contain_keywords  — strings that should appear in the final answer
+//                            (case-insensitive substring match)
+//   expected_answer_points — natural-language facts the answer should cover
+//                            (consumed by the LLM judge, NOT for substring
+//                            matching)
+//   negative_keywords      — strings that MUST NOT appear in the answer;
+//                            any hit caps answer_quality at 1
+//   min_chunks             — minimum chunks expected (currently informational)
+//   tags                   — free-form labels for slicing reports
+//   created_at             — ISO date (optional)
+//   owner                  — who curated this row
+//
+// ── Domain note (2026-06-14) ───────────────────────────────────
+// Current vector store contains only one core CS-foundations video:
+//   BV1qG41197E4  "计算机组成原理微课堂"  (5 pages: 课程介绍 / 系统组成 /
+//                  计算机的发展 / 计算机硬件 / 计算机软件)
+// All seed rows below probe that single video. Because there is only
+// one BV, cross_video is simulated as a question that needs facts
+// from TWO different pages of the same video; recall@5 will be
+// near-saturated (everything matches BV1qG41197E4), so MRR@5 is the
+// primary signal for the rerank A/B comparison.
+// When more videos are vectorized, replace these rows with real
+// multi-BV cross_video questions.
+//
+// Validation runs automatically on load (see schema.validate_golden_set).
+// Common errors: duplicate qid, vector scope with no anchors, missing fields.
+
+{"qid":"sv-001","category":"single_video","question":"冯·诺依曼计算机的核心思想是什么？","scope":"vector","folder_ids":[],"must_contain_bvid":["BV1qG41197E4"],"must_contain_keywords":["存储程序"],"expected_answer_points":["存储程序的概念，即程序和数据以同等地位存入存储器","计算机由运算器、控制器、存储器、输入设备、输出设备五大部件组成","程序自动按顺序执行"],"negative_keywords":[],"min_chunks":1,"tags":["seed","组成原理"],"owner":"zjr"}
+{"qid":"cv-001","category":"cross_video","question":"对比一下计算机硬件和软件的关系，并说明计算机系统的整体组成。","scope":"vector","folder_ids":[],"must_contain_bvid":["BV1qG41197E4"],"must_contain_keywords":[],"expected_answer_points":["硬件是物理实体，软件是程序与数据的集合","硬件是软件运行的基础，软件是硬件功能的扩展","计算机系统由硬件系统和软件系统两部分组成","软硬件在逻辑功能上是等效的"],"negative_keywords":[],"min_chunks":2,"tags":["seed","cross_page"],"owner":"zjr"}
+{"qid":"ng-001","category":"negation","question":"计算机的发展历程主要按硬件元器件划分为哪几代？请只列出元器件类型，不要展开介绍每代的应用领域。","scope":"vector","folder_ids":[],"must_contain_bvid":["BV1qG41197E4"],"must_contain_keywords":["电子管","晶体管","集成电路"],"expected_answer_points":["第一代：电子管","第二代：晶体管","第三代：中小规模集成电路","第四代：大规模/超大规模集成电路"],"negative_keywords":["人工智能","互联网","云计算"],"min_chunks":1,"tags":["seed","constraint"],"owner":"zjr"}
+{"qid":"pn-001","category":"proper_noun","question":"冯·诺依曼是谁？他对计算机体系结构有什么贡献？","scope":"vector","folder_ids":[],"must_contain_bvid":["BV1qG41197E4"],"must_contain_keywords":["冯·诺依曼"],"expected_answer_points":["匈牙利裔美国数学家","提出了存储程序的概念","奠定了现代计算机的体系结构基础（冯·诺依曼体系结构）"],"negative_keywords":[],"min_chunks":1,"tags":["seed","named_entity"],"owner":"zjr"}
+{"qid":"nf-001","category":"numeric_fact","question":"冯·诺依曼提出的计算机体系结构包含几大部件？分别是什么？","scope":"vector","folder_ids":[],"must_contain_bvid":["BV1qG41197E4"],"must_contain_keywords":["五大部件"],"expected_answer_points":["共五大部件","运算器、控制器、存储器、输入设备、输出设备"],"negative_keywords":["四大","六大","三大"],"min_chunks":1,"tags":["seed","number"],"owner":"zjr"}
+{"qid":"ab-001","category":"abstract","question":"《计算机组成原理微课堂》的第一章主要讲了哪些内容？","scope":"vector","folder_ids":[],"must_contain_bvid":["BV1qG41197E4"],"must_contain_keywords":[],"expected_answer_points":["计算机系统的组成（硬件 + 软件）","计算机的发展历程（按元器件分代）","计算机硬件的基本结构","计算机软件的分类（系统软件、应用软件）"],"negative_keywords":[],"min_chunks":2,"tags":["seed","summary"],"owner":"zjr"}
