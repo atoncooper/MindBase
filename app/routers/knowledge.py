@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, get_db_context
 from app.models import FavoriteFolder, Collection, Video
-from app.response.knowledge import ContentSource, VideoContent, VideoInfo, VideosResponse
+from app.response.knowledge import ContentSource, VideoInfo, VideosResponse
 from app.services.async_task.tracker import TaskTracker
 from app.services.bilibili import BilibiliService
 from app.services.content_fetcher import ContentFetcher

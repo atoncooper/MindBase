@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 
 from app.tools._manager import (
-    ToolLoadRecord,
     ToolManager,
     _REGISTERED_QUALNAMES,
     register_tool,

@@ -19,15 +19,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import re
 import subprocess
 import sys
 import time
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -50,7 +48,6 @@ from .schema import (
     RunMeta,
     RunReport,
     SampleResult,
-    SummaryMetrics,
     load_golden_set,
     validate_golden_set,
 )
