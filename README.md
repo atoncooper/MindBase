@@ -1,141 +1,159 @@
-# 🚀 Bilibili RAG：把收藏夹变成可对话的知识库
+# MindBase · Bilibili RAG Knowledge Base
 
-把你在 B 站收藏的访谈/演讲/课程，变成可检索、可追溯来源的**个人知识库**。
-适合：访谈/演讲/课程、技术视频与学习视频整理、公开课复盘、知识总结、会议/分享回顾、播客内容归档等。
+把 B 站收藏、云盘文档和学习记录转化为可检索、可追问、可复习的个人知识库。
 
-> 亮点：自动拉取内容 → 语音转写 → 向量检索 → 对话问答
+MindBase 面向“收藏了很多内容但很难重新利用”的场景：同步 B 站收藏夹，提取视频分 P 内容，写入向量库，再通过 Agentic Chat、语义检索、题目练习和历史会话把内容重新组织成可用知识。
 
----
+![MindBase 首页](assets/screenshots/index.png)
 
-## ✨ 功能一览
+## 核心能力
 
-- ✅ B 站扫码登录 + **邮箱密码登录**，读取收藏夹
-- ✅ 支持**分 P 视频**的逐 P 处理与向量化
-- ✅ **云盘文件上传**（Markdown / HTML / DOCX / 纯文本），自动向量化入库
-- ✅ 音频转文字（ASR），自动兜底处理
-- ✅ 语义检索（向量检索）+ **Agentic RAG** 智能问答
-- ✅ 多路由策略（direct / db_list / db_content / vector）自动选择
-- ✅ **Milvus** 向量数据库（按月分区）+ MySQL + Redis + MongoDB + MinIO 基础设施
-- ✅ 多 Provider API Key 管理（OpenAI / Anthropic / DeepSeek / 自定义）
-- ✅ **API 配置测试** — 一键验证 LLM / Embedding / ASR 连接
-- ✅ Dashboard 设备管理 + Token 会话列表
-- ✅ **LangSmith** 自动追踪集成，可观测 LLM 调用链路
+- **B 站收藏知识库**：扫码/账号登录后同步收藏夹，按收藏夹、视频、分 P 管理内容。
+- **视频内容入库**：支持 ASR 内容查看、手动编辑、分 P 向量化、知识库构建进度追踪。
+- **Agentic Chat**：默认使用 Agent ReAct 流式问答，结合收藏夹、工作区分 P、历史上下文和检索工具回答问题。
+- **云盘知识库**：支持文件夹管理、文件上传、搜索、列表/网格视图、批量入库和实时处理状态。
+- **题目练习**：可按收藏夹或已向量化分 P 生成练习题，支持提交批改、历史回看和训练数据导出。
+- **多 Provider 配置**：前端管理 LLM、Embedding、ASR 凭证，支持默认配置、连接测试和用量统计。
+- **Agent/Harness 工程化**：`AgentHarness` 统一管理工具发现、Agent 生命周期、运行时 metrics 和调度器。
 
----
+## 最新界面预览
 
-## 🖼️ 演示与截图
+### Agentic Chat
 
-![首页截图](assets/screenshots/home.png)
-![对话界面截图](assets/screenshots/chat.png)
+默认聊天面板支持标准模式和 Agentic 模式，流式接收 SSE，展示来源、历史消息和知识库统计。
 
-## B站演示视频：
-[演示视频](https://b23.tv/bGXyhjU)
+![Agentic Chat](assets/screenshots/chat-v2.png)
 
-## 🏗️ 系统架构
+### 收藏夹与视频入库
 
+收藏夹模块用于同步 B 站收藏、查看视频/分 P、触发 ASR 和向量化。
+
+![收藏夹](assets/screenshots/favorites.png)
+
+### 云盘知识库
+
+云盘模块支持文件夹树、文件上传、批量处理、搜索、排序、详情抽屉和实时任务状态。
+
+![云盘](assets/screenshots/drive.png)
+
+### 题目练习
+
+Quiz 模块可基于收藏夹或已向量化分 P 生成练习题，并保留历史记录。
+
+![题目练习](assets/screenshots/topic-generation.png)
+
+### API 设置
+
+统一配置 LLM、Embedding 和 ASR Provider，支持新增、编辑、设为默认、测试连接。
+
+![API 设置](assets/screenshots/configuration-llm.png)
+
+### 历史与个人中心
+
+支持历史会话管理、重命名/删除，以及个人资料、安全绑定、B 站授权状态维护。
+
+![历史会话](assets/screenshots/history.png)
+
+![个人中心](assets/screenshots/persnal-center.png)
+
+## 架构概览
+
+```text
+Frontend / Next.js
+  ├─ Dock + 3D 首页
+  ├─ Chat / Favorites / Cloud Drive / Quiz / Settings
+  └─ frontend/lib/api.ts 统一封装所有 API 调用
+
+FastAPI Backend
+  ├─ routers/*：HTTP 参数解析与响应转换
+  ├─ services/*：业务编排、同步、ASR、RAG、Quiz、Cloud
+  ├─ repository/*：数据库与向量存储访问
+  ├─ agent/*：Chat / Memory / Quiz Agent 图
+  ├─ harness/*：AgentRuntime、AgentHarness、调度与生命周期
+  └─ tools/*：framework-agnostic tools，经 ToolManager 自动发现
+
+Storage / Infra
+  ├─ RDBMS：SQLite / MySQL
+  ├─ Vector Store：Milvus
+  ├─ MongoDB：聊天上下文/历史相关能力
+  ├─ Redis：异步任务与缓存相关能力
+  └─ MinIO：云盘文件存储
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              前端 (Next.js 15)                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
-│  │ SourcesPanel │  │  ChatPanel   │  │  LoginModal  │  │ASRViewer... │ │
-│  │ 收藏夹/来源   │  │  对话面板     │  │  扫码登录     │  │ 转写查看    │ │
-│  └──────┬───────┘  └──────┬───────┘  └──────────────┘  └─────────────┘ │
-│         └─────────────────┘                                             │
-│                    │                                                    │
-│         ┌──────────┴──────────┐                                       │
-│         │    lib/api.ts       │  ← 唯一 API 调用入口                   │
-│         └──────────┬──────────┘                                       │
-└────────────────────┼────────────────────────────────────────────────────┘
-                     │ HTTP / SSE
-┌────────────────────┼────────────────────────────────────────────────────┐
-│                    ▼                                                    │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                    FastAPI 后端 (Python)                         │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │   │
-│  │  │ /auth    │ │/favorites│ │ /chat    │ │/knowledge│          │   │
-│  │  │ 认证     │ │ 收藏夹   │ │ 对话     │ │ 知识库   │          │   │
-│  │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘          │   │
-│  │  ┌────┴────────────┴────────────┴────────────┴────┐            │   │
-│  │  │              Services 业务层                    │            │   │
-│  │  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐  │            │   │
-│  │  │  │bilibili│ │content_│ │  asr   │ │  rag   │  │            │   │
-│  │  │  │  B站API │ │fetcher │ │ 语音转写│ │向量/RAG│  │            │   │
-│  │  │  └────────┘ └────────┘ └────────┘ └────────┘  │            │   │
-│  │  └───────────────────────────────────────────────┘            │   │
-│  │  ┌──────────────────┐    ┌──────────────────┐                 │   │
-│  │  │   MySQL           │    │   Milvus          │                 │   │
-│  │  │  (结构化数据)     │    │  (向量存储,月分区) │                 │   │
-│  │  └──────────────────┘    └──────────────────┘                 │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
 
-### 核心链路
+## 技术栈
 
-```
-B站数据（ASR/字幕） + 云盘文件（MD/HTML/DOCX） → 文本分块 → Embedding → Milvus（按月分区）
-                                                                          ↓
-用户提问 ← LLM 生成回答 ← 向量检索（B站 + 云盘双路并行） ← Query Embedding
-```
+### 前端
 
----
+- Next.js 16 + React 19
+- TypeScript
+- Tailwind CSS 4
+- Framer Motion
+- Three.js / React Three Fiber
+- Base UI / Radix UI / Lucide Icons
+- Vitest
 
-## ⚡ 快速开始
+### 后端
 
-### 0) 前置依赖
+- FastAPI
+- SQLAlchemy Async
+- LangChain / LangGraph
+- OpenAI-compatible LLM 接入
+- Milvus / PyMilvus
+- MongoDB / Redis / MinIO
+- pytest / pytest-asyncio
 
-| 工具 | 版本要求 | 说明 |
-|------|---------|------|
-| Python | >= 3.10 | 后端运行环境 |
-| Node.js | >= 18 | 前端运行环境 |
-| ffmpeg | 最新版 | ASR 音频处理依赖 |
-| Conda (推荐) | - | Python 环境管理 |
+## 快速启动
 
-安装 ffmpeg：
-- macOS: `brew install ffmpeg`
-- Windows: 下载安装包后将 `bin` 目录加入 PATH
-- Linux: `apt/yum/pacman` 安装 `ffmpeg`
-
-### 1) 安装后端依赖
+### 1. 安装后端依赖
 
 ```bash
-conda create -n bilibili-rag python=3.10
-conda activate bilibili-rag
 pip install -r requirements.txt
 ```
 
-### 2) 配置
+### 2. 配置环境变量
+
+最小本地开发配置示例：
 
 ```bash
-cp .env.example .env
-# 编辑 .env，只需要填入密钥类字段（API Key 等）
-# 所有非敏感配置（端口、超时、模型名等）已在 app/config/*.yaml 中定义
+export LLM__API_KEY="你的 LLM Key"
+export RDBMS__URL="sqlite+aiosqlite:///./data/bilibili_rag.db"
 ```
 
-**最小 `.env`：**
-
-```env
-LLM__API_KEY=sk-your-dashscope-key
-```
-
-> 完整配置说明 → **[docs/configuration.md](docs/configuration.md)**
-
-### 3) 启动后端
+如果使用 DashScope 兼容接口：
 
 ```bash
-# 方式一：直接启动
-python -m uvicorn app.main:app --reload
-
-# 方式二：使用脚本（后台运行）
-# Linux/macOS:
-./scripts/start.sh
-# Windows PowerShell:
-./scripts/start.ps1
+export DASHSCOPE_API_KEY="你的 DashScope Key"
+export LLM__API_KEY="$DASHSCOPE_API_KEY"
 ```
 
-后端文档：`http://localhost:8000/docs`
+配置加载顺序：
 
-### 4) 启动前端
+```text
+app/config/default.yaml → app/config/config.yaml → app/config/local.yaml → 环境变量
+```
+
+环境变量采用双下划线映射，例如：
+
+```bash
+export RDBMS__URL="sqlite+aiosqlite:///./data/bilibili_rag.db"
+export LLM__MODEL="qwen-plus"
+export MILVUS__ENABLED="true"
+```
+
+完整配置说明见：[`docs/configuration.md`](docs/configuration.md)。
+
+### 3. 启动后端
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+启动成功后访问：
+
+- API 文档：`http://localhost:8000/docs`
+- 健康检查：`http://localhost:8000/health`
+
+### 4. 启动前端
 
 ```bash
 cd frontend
@@ -143,308 +161,143 @@ npm install
 npm run dev
 ```
 
-前端页面：`http://localhost:3000`
+默认访问：
 
-### 5) 停止服务
+```text
+http://localhost:3000
+```
+
+如前端和后端不在同一 origin，设置：
 
 ```bash
-# Linux/macOS:
-./scripts/stop.sh
-# Windows PowerShell:
-./scripts/stop.ps1
+export NEXT_PUBLIC_API_URL="http://localhost:8000"
+export NEXT_PUBLIC_WS_URL="localhost:8000"
 ```
 
----
-
-## 📂 目录结构
-
-```
-bilibili-rag/
-├── app/                        # Backend root
-│   ├── config/                 # YAML-based config
-│   │   ├── default.yaml        #   All defaults
-│   │   ├── config.yaml         #   Team-shared overrides (committed)
-│   │   ├── local.yaml.example  #   Per-machine template (gitignored)
-│   │   ├── loader.py           #   YAML loader + env-var merge
-│   │   └── settings.py         #   Flat accessor for backward compat
-│   ├── infra/                  # Infrastructure layer
-│   │   ├── config.py           #   Pydantic-settings based config
-│   │   ├── rdbms.py            #   Async MySQL/PostgreSQL engine
-│   │   ├── redis.py            #   Redis client + pubsub
-│   │   ├── milvus.py           #   Milvus vector DB client
-│   │   ├── mongo.py            #   MongoDB client
-│   │   ├── cache.py            #   Multi-level cache (L1 + Redis L2)
-│   │   ├── minio.py            #   MinIO / S3 object storage
-│   │   ├── slow_sql.py         #   Slow query capture
-│   │   └── transaction.py      #   Retry + readonly routing
-│   ├── database.py             # DB init + auto-migration
-│   ├── main.py                 # FastAPI entry point
-│   ├── models.py               # SQLAlchemy ORM models only
-│   ├── response/               # Pydantic API schemas
-│   │   ├── auth.py             #   Auth schemas
-│   │   ├── chat.py             #   Chat schemas
-│   │   ├── asr.py              #   ASR schemas
-│   │   ├── quiz.py             #   Quiz schemas
-│   │   ├── credentials.py      #   Credential / billing schemas
-│   │   ├── favorites.py        #   Favorites v2 schemas
-│   │   ├── knowledge.py        #   Knowledge base schemas
-│   │   ├── metadata.py         #   Video metadata schemas
-│   │   └── vector.py           #   Vectorization schemas
-│   ├── repository/             # Data-access layer
-│   ├── routers/                # HTTP route layer
-│   │   ├── auth.py             #   QR login + password login + devices
-│   │   ├── chat.py             #   Q&A orchestrator
-│   │   ├── favorites_v2.py     #   Favorite folders v2
-│   │   ├── knowledge.py        #   Knowledge base sync
-│   │   ├── asr.py              #   Per-page ASR
-│   │   ├── vector_page.py      #   Per-page vectorization
-│   │   ├── credentials.py      #   Multi-provider API keys + test
-│   │   ├── billing.py          #   Usage / billing
-│   │   ├── quiz.py             #   Quiz training
-│   │   ├── settings.py         #   Embedding / ASR config CRUD + test
-│   │   └── tasks_ws.py         #   WebSocket task status
-│   └── services/               # Business-logic layer
-│       ├── auth/               #   User system (password, OAuth, token)
-│       ├── bilibili.py         #   Bilibili API client
-│       ├── asr.py              #   Speech-to-text
-│       ├── rag/                #   Vector retrieval + LLM + Agentic
-│       ├── llm/                #   Credential manager + config tester
-│       ├── query/              #   Query rewrite
-│       ├── video/              #   Video metadata extraction
-│       ├── favorite/           #   Favorite sync service
-│       └── wbi.py              #   WBI anti-crawl signing
-│
-├── frontend/                   # Next.js frontend
-│   ├── app/                    # App Router (page.tsx, layout.tsx)
-│   ├── components/             # React components
-│   │   ├── QRLoginModal.tsx    #   QR code login
-│   │   ├── PasswordLoginModal.tsx  # Password login
-│   │   ├── dock-modules/       #   Settings, Billing, Quiz panels
-│   │   └── three/              #   Three.js 3D scene
-│   └── lib/                    # API client, device detection, etc.
-│
-├── docs/                       # Documentation
-├── .github/workflows/          # CI/CD (backend lint, frontend build, Docker)
-├── docker-compose.yml          # Full-stack Docker Compose
-├── Dockerfile                  # Backend Docker image
-└── requirements.txt            # Python dependencies
-```
-
----
-
-## 🧠 工作流程
-
-```
-1. 扫码登录 → 获取收藏夹列表
-2. 选择收藏夹 → 点击「入库/更新」
-3. 系统执行：拉取视频 → 音频转写（ASR）→ 生成向量 → 写入 Milvus
-4. 上传文档到云盘 → 自动解析 → 向量化入库（Markdown / HTML / DOCX / 纯文本）
-5. 在 ChatPanel 中提问，系统自动选择最佳路由策略回答（B站 + 云盘双路检索）
-```
-
-### 分P视频支持
-
-对于多 P 视频（合集/课程），系统支持：
-- 逐 P 展示列表
-- 单 P 独立的 ASR 转写
-- 单 P 独立的向量化入库
-- 工作区勾选，精确选择要检索的分 P 范围
-
-### 路由策略
-
-对话接口采用智能路由，自动选择最佳回答策略：
-
-| 路由 | 说明 | 使用场景 |
-|------|------|----------|
-| `direct` | 直接回答 | 寒暄、闲聊、通用问题 |
-| `db_list` | 列表回答 | "有哪些"、"清单"、"目录"类问题 |
-| `db_content` | 内容总结 | "总结"、"概述"、"分析"类问题 |
-| `vector` | 向量检索+RAG | 具体主题问题，需要检索相关内容 |
-
----
-
-## 🔌 API 文档
-
-系统提供完整的 RESTful API，交互式文档在启动后自动可用：
-
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
-- **OpenAPI YAML**: 见 [`api/openapi.yaml`](api/openapi.yaml)
-- **API 文档说明**: 见 [`api/README.md`](api/README.md)
-
-### 主要接口分组
-
-| 分组 | 路径前缀 | 说明 |
-|------|----------|------|
-| 认证 | `/auth` | 扫码登录、会话管理 |
-| 收藏夹 | `/favorites` | 收藏夹列表、视频、整理 |
-| 对话 | `/chat` | 智能问答、流式问答、搜索 |
-| 知识库 | `/knowledge` | 同步、构建、状态、清空 |
-| ASR | `/asr` | 分P视频语音转写 |
-| 分P向量 | `/vec/page` | 分P视频向量化任务 |
-
----
-
-## 🤖 OpenClaw Skill（本地接入）
-
-本仓库已提供一个可直接使用的 Skill：`skills/bilibili-rag-local/SKILL.md`。
-作用：把本地运行的 `bilibili-rag` 服务接入 OpenClaw，让 OpenClaw 直接调用你的收藏夹知识库进行检索和问答。
-
-### 前置条件
-
-1. 先按上面的步骤完成本项目本地部署。
-2. 确认后端接口可访问：`http://127.0.0.1:8000/docs`。
-3. 确认 OpenClaw 已安装并可加载本地 Skills。
-
-### 接入方式
-
-1. 将本仓库中的 `skills/bilibili-rag-local` 放到 OpenClaw 的 Skills 目录（例如 `~/.openclaw/skills/`）。
-2. 重启或刷新 OpenClaw Skills。
-3. 在 OpenClaw 中调用该 Skill，让它通过本地 API 执行：
-   - `POST /chat/ask`（问答）
-   - `POST /chat/search`（检索片段）
-   - `GET /knowledge/folders/status`（入库状态）
-
-### 使用建议
-
-1. 先同步/入库收藏夹，再进行问答。
-2. 问题越具体，召回效果越好。
-3. 若出现"无命中"，优先检查是否完成入库或是否选错收藏夹。
-
----
-
-## 🧩 基于 Skill 的扩展示例
-
-你可以在 `skills/` 目录继续开发更多 Skill，把收藏夹真正变成可持续运营的知识系统。
-例如结合 OpenClaw 的定时能力（Cron）做自动化：
-
-1. 每日/每周统计收藏夹入库状态（新增、未入库、失败项）。
-2. 定时生成"新增收藏学习摘要"（按主题聚合要点）。
-3. 定时输出"待补全内容清单"（ASR 失败、内容过短、召回弱视频）。
-4. 将统计结果自动推送到你常用的消息渠道，形成固定复盘节奏。
-
----
-
-## 🧪 测试与诊断
+## Docker 启动
 
 ```bash
-# 向量检索链路自检（P0，每次提交前必须运行）
-python test/diagnose_rag.py
-
-# 聊天接口测试（修改 chat/rag 后运行）
-python test/test_chat.py
-
-# 同步链路测试（修改 knowledge/asr 后运行）
-python test/test_sync.py
+docker-compose up --build
 ```
 
----
+适合一次性启动后端依赖、数据库、向量库和对象存储。实际连接参数以 `docker-compose.yml` 与 `app/config/config.yaml` 为准。
 
-## 🎧 ASR 说明（音频不可达兜底）
+## 功能模块说明
 
-部分 B 站音频 URL 可能返回 403（直链不可拉取），系统会自动执行兜底流程：
+### 对话
 
-1. 本地下载音频（带 Cookie）
-2. ffmpeg 转码为 16k 单声道
-3. 上传到 DashScope 后再识别
+- 入口：Dock `对话`
+- 前端：`frontend/components/ChatPanel.tsx`
+- 后端：`app/routers/chat.py`、`app/services/chat/*`
+- Agent：`app/agent/chat/*`
+- Harness：`app/harness/*`
 
-> 请确保本机已安装 `ffmpeg` 并加入 PATH。
+当前 Chat Router 是 HTTP 薄层，主要负责参数解析、依赖注入和 SSE 响应转换；聊天编排在 `app/services/chat/`，Agent 调用通过 `AgentHarness` 完成。
 
----
+### 收藏夹
 
-## 💰 费用说明（DashScope）
+- 入口：Dock `收藏夹`
+- 同步 B 站收藏夹与视频列表
+- 支持分 P 查看、ASR 内容查看、向量化状态和知识库构建
 
-模型相关费用包括：
-- LLM 对话（按 Token）
-- Embedding（按 Token）
-- ASR 音频转写（按时长）
+### 云盘
 
-建议：
-- 部署/测试阶段先用 **短视频（约 10 分钟）**验证流程与费用
-- 正式使用按需启用，注意费用；大多数模型有免费额度，通常足够日常使用
+- 入口：Dock `云盘`
+- 支持文件夹树、上传、搜索、排序、批量处理、删除、详情抽屉
+- 通过 WebSocket 接收云盘文件处理状态
 
----
+### 题目练习
 
-## 🧩 技术栈
+- 入口：Dock `题目练习`
+- 支持按收藏夹或已向量化分 P 出题
+- 支持提交批改、历史回看、错题/训练数据导出
 
-### 后端
-- **Web 框架**: FastAPI + Uvicorn
-- **LLM 调用**: LangChain + OpenAI SDK (DashScope 兼容模式)
-- **向量库**: Milvus
-- **数据库**: MySQL + SQLAlchemy (异步) + Repository 模式
-- **缓存**: Redis (L1 内存 + L2 Redis)
-- **文档存储**: MongoDB
-- **配置**: YAML 分层配置 + env 密钥注入
-- **用户系统**: Snowflake UID + OAuth + 邮箱密码登录 + RBAC
-- **语音转写**: DashScope ASR (Paraformer)
-- **可观测性**: LangSmith 自动追踪 + Slow SQL 捕获
+### API 设置
 
-### 前端
-- **框架**: Next.js 16 (App Router)
-- **语言**: TypeScript
-- **3D**: Three.js / React Three Fiber (R3F)
-- **样式**: Tailwind CSS + CSS Variables
-- **图标**: Lucide React
+- 入口：Dock `API 设置`
+- 管理 LLM、Embedding、ASR 配置
+- 支持多 Provider、多凭证、默认凭证和连接测试
 
----
+### 任务监控与计费
 
-## 📂 数据存储
+- `任务监控` 查看异步任务状态
+- `用量计费` 查看 token/API 调用统计和 Provider 分布
 
-| 数据 | 存储位置 | 说明 |
-|------|---------|------|
-| 用户体系 | MySQL | users / user_oauth / user_tokens / RBAC / devices |
-| 收藏夹列表 | MySQL | 结构化数据 |
-| 视频元数据 | MySQL | 标题、简介、分P |
-| ASR 全文 | MongoDB | asr_documents 集合 |
-| 向量数据 | Milvus（按月分区） | Embedding 向量 + chunk metadata |
-| 聊天消息 | MongoDB | chat_messages 集合 |
-| 文件存储 | MinIO | 云盘上传文件（Markdown/HTML/DOCX/视频）
-| 缓存 | Redis | Token、用户信息、Credential |
-| 题库 | MySQL | quiz_sets / quiz_answers / quiz_submissions |
+## 真实测试
 
----
+### RAG 诊断
 
-## ✅ 常见问题
+用于确认真实向量库和数据库状态：
 
-**Q：为什么有些音频 URL 可达、有些不可达？**
-A：B 站音频直链存在鉴权/过期/区域限制，只有公网可直接拉取的 URL 才可达。
+```bash
+python -m app.test.diagnose_rag
+```
 
-**Q：分 P 视频如何入库？**
-A：在 SourcesPanel 中展开分 P 列表，可以对单 P 执行「转文字」和「向量化」。也支持整批处理。
+它会输出向量库文档数、搜索结果和 `VideoCache` 记录。
 
-**Q：对话返回"未检索到相关内容"怎么办？**
-A：检查 1) 是否已完成收藏夹入库；2) 是否选中了正确的收藏夹；3) 问题是否与视频内容相关。
+### Agent/Harness 真实集成测试
 
-**Q：如何查看 LLM 调用链路？**
-A：配置 `LANGSMITH_API_KEY` 后，访问 LangSmith 控制台即可查看每次问答的完整 trace。
+真实测试目录：
 
-**Q：支持哪些 LLM 模型？**
-A：任何兼容 OpenAI API 格式的模型均可，如 DashScope、OpenAI、Anthropic (通过代理) 等。
+```text
+app/test/real_agent_harness/
+```
 
----
+运行前必须显式打开开关，避免误把真实 LLM/向量库调用混入普通测试：
 
-> 免责声明：本项目仅供个人学习与技术研究，使用者需自行遵守相关平台协议与法律法规，禁止用于未授权的商业或违规用途。
+```bash
+export BILIRAG_REAL_AGENT_HARNESS_TESTS=1
+export LLM__API_KEY="你的真实 LLM Key"
+pytest app/test/real_agent_harness -v -s
+```
 
----
+默认不设置开关时：
 
-## 📜 License
+```bash
+pytest app/test/real_agent_harness -q
+```
 
-MIT
+预期结果为全部 skip，表示没有消耗真实资源。
 
----
+更多说明见：
 
-## 🧩 TodoList
+```text
+app/test/real_agent_harness/README.md
+```
 
-- [x] 分 P 视频支持与逐 P 向量化
-- [x] Agentic RAG 智能问答模式
-- [x] 用户系统 v2（Snowflake UID + OAuth + 邮箱密码 + RBAC）
-- [x] 多 Provider API Key 管理（LLM / Embedding / ASR）
-- [x] API 配置一键测试
-- [x] 设备管理与 Token 会话列表
-- [x] Milvus + MySQL + Redis + MongoDB 基础设施
-- [x] LangSmith 可观测性集成
-- [x] CI/CD（GitHub Actions lint + typecheck + Docker build）
-- [ ] Rerank 重排序提升检索精度
-- [ ] 增量同步（只处理新增/变更视频）
-- [ ] 字幕优先策略（有官方字幕时跳过 ASR）
-- [ ] Celery 异步任务队列
+### 前端测试
+
+```bash
+cd frontend
+npm run lint
+npm test
+```
+
+## 开发约束
+
+- 前端所有请求必须通过 `frontend/lib/api.ts`，组件内不要直接 `fetch`。
+- Router 层只做 HTTP 参数解析和响应转换，不写复杂业务逻辑。
+- RAG/ASR/内容提取/向量库逻辑放在 service/repository 层，不要回灌到 router。
+- 不要提交 `.env`、数据库文件、向量库数据、对象存储数据或真实密钥。
+- 新增配置项时同步更新 `.env.example` 和相关文档。
+
+## 目录索引
+
+```text
+app/
+  agent/                 Agent 图与状态定义
+  harness/               AgentHarness、AgentRuntime、调度与生命周期
+  routers/               FastAPI 路由
+  services/              业务服务
+  repository/            数据访问与向量库实现
+  tools/                 Agent 工具层
+  test/                  后端测试与诊断脚本
+
+frontend/
+  app/                   Next.js App Router
+  components/            UI 组件与 Dock 模块
+  lib/api.ts             统一 API 客户端
+  stores/                前端状态
+
+assets/screenshots/      README 使用的最新界面截图
+```

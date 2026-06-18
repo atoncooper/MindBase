@@ -14,12 +14,15 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from app.tools import ToolDeps, register_tool
+
 if TYPE_CHECKING:
     from app.agent.lifecycle import AgentLifecycleManager
 
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class DelegateToAgentTool:
     """Call another registered agent and return its result.
 
@@ -37,6 +40,12 @@ class DelegateToAgentTool:
     ) -> None:
         self._lifecycle = lifecycle
         self._timeout = timeout
+
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "DelegateToAgentTool | None":
+        if deps.lifecycle is None:
+            return None
+        return cls(deps.lifecycle)
 
     @property
     def name(self) -> str:

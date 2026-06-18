@@ -147,14 +147,6 @@ chunk:
   overlap: 100
 ```
 
-### `agentic` — Agentic RAG
-
-```yaml
-agentic:
-  top_k: 5
-  max_hops: 3
-```
-
 ### `asr` — Speech-to-text
 
 ```yaml

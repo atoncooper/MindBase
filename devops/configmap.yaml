@@ -24,9 +24,6 @@ data:
   LANGSMITH_TRACING: "false"
   LANGSMITH_PROJECT: "bilibili-rag"
   LANGSMITH_ENDPOINT: "https://api.smith.langchain.com"
-  # Agentic RAG
-  AGENTIC_RAG_TOP_K: "5"
-  AGENTIC_RAG_MAX_HOPS: "3"
   # Chunking
   CHUNK_TARGET_SIZE: "750"
   CHUNK_MIN_SIZE: "300"

@@ -67,8 +67,16 @@ async def inject_context(
     cloud_has_data = deps.has_cloud_backend()
 
     conversation_context = ""
-    if state.session_id:
-        conversation_context = await deps.get_conversation_context(state.session_id)
+    if state.session_id and state.uid:
+        conversation_context = await deps.get_conversation_context(state.session_id, state.uid)
+        logger.info(
+            "[CHAT_AGENT] conversation_context: session_id={} uid={} chars={}",
+            state.session_id[:8] if state.session_id else "",
+            state.uid,
+            len(conversation_context),
+        )
+        if conversation_context:
+            logger.info("  context preview: {}", conversation_context[:200])
 
     # Detect context tools in the registry
     registered = runtime.list_tool_names()
@@ -92,6 +100,7 @@ async def inject_context(
     return {
         "media_ids": media_ids,
         "bvids": bvids,
+        "upload_uuids": state.upload_uuids,  # Passed in from dispatcher state
         "has_data": has_data,
         "cloud_has_data": cloud_has_data,
         "conversation_context": conversation_context,
@@ -162,6 +171,8 @@ async def runtime_dispatch(
         implicit_kwargs["_uid"] = state.uid
     if state.workspace_pages:
         implicit_kwargs["_workspace_pages"] = state.workspace_pages
+    if state.upload_uuids:
+        implicit_kwargs["_upload_uuids"] = state.upload_uuids
 
     if implicit_kwargs:
         pending = [
@@ -179,7 +190,25 @@ async def runtime_dispatch(
             },
         },
     )
-    return {"messages": tool_messages, "step_count": state.step_count + 1}
+
+    # Harvest structured sources from ToolMessage.additional_kwargs so the
+    # final ``format_result`` step has retrieval provenance to expose. The
+    # state field uses ``default_factory=list``, so we explicitly merge
+    # against the current value to preserve sources across loop turns.
+    new_sources: list[dict] = []
+    for tm in tool_messages:
+        extras = getattr(tm, "additional_kwargs", None) or {}
+        srcs = extras.get("sources")
+        if isinstance(srcs, list):
+            new_sources.extend(s for s in srcs if isinstance(s, dict))
+
+    update: dict[str, Any] = {
+        "messages": tool_messages,
+        "step_count": state.step_count + 1,
+    }
+    if new_sources:
+        update["search_results"] = [*state.search_results, *new_sources]
+    return update
 
 
 async def format_result(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
@@ -192,6 +221,14 @@ async def format_result(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]
         if src_id and src_id not in seen_ids:
             seen_ids.add(src_id)
             sources.append(src)
+
+    logger.info(
+        "[CHAT_AGENT] format_result: search_results={} final_sources={}",
+        len(state.search_results),
+        len(sources),
+    )
+    for src in sources:
+        logger.info("  - source: {}", src)
 
     return {"sources": sources}
 

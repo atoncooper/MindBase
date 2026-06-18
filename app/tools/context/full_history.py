@@ -6,11 +6,13 @@ import logging
 from typing import Any
 
 from app.context.retriever import ContextRetriever
+from app.tools import ToolDeps, register_tool
 from app.tools.context._utils import messages_to_text
 
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class GetFullHistoryTool:
     """Get raw full conversation history from MongoDB.
 
@@ -19,6 +21,10 @@ class GetFullHistoryTool:
 
     def __init__(self) -> None:
         self._retriever = ContextRetriever()
+
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "GetFullHistoryTool":
+        return cls()
 
     @property
     def name(self) -> str:

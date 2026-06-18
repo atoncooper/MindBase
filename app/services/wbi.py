@@ -6,10 +6,13 @@ Wbi 签名模块 - 用于 B站 API 鉴权
 """
 import time
 import hashlib
+import logging
 from urllib.parse import urlencode
 from functools import reduce
 import httpx
 from typing import Optional, Dict
+
+logger = logging.getLogger(__name__)
 
 
 # Wbi 签名用的混淆表
@@ -29,12 +32,15 @@ class WbiSigner:
         self.sub_key: Optional[str] = None
         self.mixin_key: Optional[str] = None
         self.last_update: float = 0
-        self.update_interval: int = 3600  # 1小时更新一次
-    
+        # WBI keys are device/IP-scoped public params; B站 typically rotates them
+        # at most a few times per day. 6h gives plenty of safety margin without
+        # hammering /x/web-interface/nav on every request.
+        self.update_interval: int = 6 * 3600
+
     def _get_mixin_key(self, orig: str) -> str:
         """生成混淆后的 key"""
         return reduce(lambda s, i: s + orig[i], MIXIN_KEY_ENC_TAB, '')[:32]
-    
+
     async def _fetch_wbi_keys(self, cookies: Optional[Dict[str, str]] = None) -> None:
         """从 B站获取 wbi keys"""
         async with httpx.AsyncClient() as client:
@@ -47,31 +53,38 @@ class WbiSigner:
                 cookies=cookies,
             )
             data = resp.json()
-            
-        if data["code"] != 0:
+
+        # /nav returns code=-101 (未登录) but still includes wbi_img in `data`.
+        # WBI keys are public — extract them regardless of login state and only
+        # raise when wbi_img itself is missing/malformed.
+        wbi_img = (data.get("data") or {}).get("wbi_img") or {}
+        img_url = wbi_img.get("img_url")
+        sub_url = wbi_img.get("sub_url")
+        if not img_url or not sub_url:
             raise Exception(f"获取 Wbi keys 失败: {data}")
-        
-        wbi_img = data["data"]["wbi_img"]
-        
-        # 提取 img_key 和 sub_key
-        # img_url 格式: https://i0.hdslb.com/bfs/wbi/xxx.png
-        self.img_key = wbi_img["img_url"].rsplit("/", 1)[1].split(".")[0]
-        self.sub_key = wbi_img["sub_url"].rsplit("/", 1)[1].split(".")[0]
-        
+
+        self.img_key = img_url.rsplit("/", 1)[1].split(".")[0]
+        self.sub_key = sub_url.rsplit("/", 1)[1].split(".")[0]
+
         # 生成混淆 key
         self.mixin_key = self._get_mixin_key(self.img_key + self.sub_key)
         self.last_update = time.time()
-    
+
+        if data.get("code") != 0:
+            logger.debug(
+                "[WBI] keys fetched in anonymous mode (code=%s); signing still works",
+                data.get("code"),
+            )
+
     async def ensure_keys(self, cookies: Optional[Dict[str, str]] = None) -> None:
-        """确保 keys 有效"""
-        # 如果提供了 cookies，强制刷新 key 以确保权限正确
-        # 否则使用缓存
-        force_refresh = cookies is not None
-        
+        """确保 keys 有效。
+
+        WBI keys 与登录态无关，传不传 cookies 都不影响 keys 内容，
+        因此这里只按时间窗口刷新，避免每次签名都打 /nav。
+        """
         if (
-            force_refresh or
-            self.mixin_key is None or 
-            time.time() - self.last_update > self.update_interval
+            self.mixin_key is None
+            or time.time() - self.last_update > self.update_interval
         ):
             await self._fetch_wbi_keys(cookies=cookies)
     

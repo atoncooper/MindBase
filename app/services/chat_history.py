@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import ChatSession
 from app.response.chat import ChatSessionResponse, ChatMessageResponse
 from app.repository import mongo_chat_repository as mongo_chat
+from app.infra.mongo import is_enabled, coll
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -239,6 +240,61 @@ async def delete_chat_session_for_user(
     await db.commit()
     logger.info(f"[CHAT_HISTORY] deleted session {chat_session_id} uid={uid}")
     return True
+
+
+async def get_last_assistant_sources(
+    chat_session_id: str, uid: int
+) -> tuple[list[str], list[str]]:
+    """Retrieve source filters from the last assistant turn.
+
+    Returns ``(upload_uuids, bvids)`` extracted from the most recent
+    assistant message's ``sources`` field. Used for context inheritance:
+    when the user asks a follow-up question without specifying scope,
+    we automatically narrow the search to documents they already saw.
+
+    Both lists are empty if:
+    - MongoDB is disabled
+    - No previous assistant message
+    - The last message has no sources
+    """
+    if not is_enabled():
+        return [], []
+
+    cursor = (
+        coll(mongo_chat.COLLECTION)
+        .find(
+            {
+                "chat_session_id": chat_session_id,
+                "uid": uid,
+                "role": "assistant",
+                "status": "completed",
+                "sources": {"$exists": True, "$ne": []},
+            }
+        )
+        .sort("created_at", -1)
+        .limit(1)
+    )
+    rows = await cursor.to_list(length=1)
+    if not rows:
+        return [], []
+
+    sources = rows[0].get("sources") or []
+    upload_uuids: list[str] = []
+    bvids: list[str] = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        if s.get("upload_uuid"):
+            upload_uuids.append(s["upload_uuid"])
+        elif s.get("bvid"):
+            bvids.append(s["bvid"])
+
+    logger.info(
+        "[CHAT_SCOPE] inherited sources from last assistant msg: upload_uuids={}, bvids={}",
+        upload_uuids,
+        bvids,
+    )
+    return upload_uuids, bvids
 
 
 # ═══════════════════════════════════════════════════════════════════

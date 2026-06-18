@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Tabs } from "@base-ui/react";
 import { nanoid } from "nanoid";
 import { Loader2, AlertCircle, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -58,7 +57,6 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
-  const [chatMode, setChatMode] = useState<"standard" | "agentic">("agentic");
   const [showReasoning, setShowReasoning] = useState<Set<string>>(new Set());
 
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
@@ -154,89 +152,6 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
       workspace_pages: workspacePages,
     };
 
-    // Agentic 模式：流式 SSE（Agent ReAct 循环）
-    if (chatMode === "agentic") {
-      try {
-        const stream = await chatApi.askAgentStream(payload);
-        const reader = stream.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let done = false;
-        let sseBuffer = "";
-        let contentBuffer = "";
-
-        while (!done) {
-          const { value, done: doneReading } = await reader.read();
-          done = doneReading;
-          if (!value) continue;
-
-          sseBuffer += decoder.decode(value, { stream: !done });
-          const events = sseBuffer.split("\n\n");
-          sseBuffer = events.pop() || "";
-
-          for (const event of events) {
-            const lines = event.split("\n");
-            let dataLine = "";
-            for (const line of lines) {
-              if (line.startsWith("data:")) {
-                dataLine = line.slice(5).trim();
-              }
-            }
-            if (!dataLine) continue;
-
-            try {
-              const parsed = JSON.parse(dataLine);
-              if (parsed.type === "chunk") {
-                contentBuffer += parsed.content || "";
-                setChatMessages((prev) =>
-                  prev.map((m) =>
-                    m.clientId === assistantClientId
-                      ? { ...m, content: contentBuffer }
-                      : m
-                  )
-                );
-              } else if (parsed.type === "sources") {
-                const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
-                setChatMessages((prev) =>
-                  prev.map((m) =>
-                    m.clientId === assistantClientId ? { ...m, sources } : m
-                  )
-                );
-              } else if (parsed.type === "error") {
-                setChatMessages((prev) =>
-                  prev.map((m) =>
-                    m.clientId === assistantClientId
-                      ? {
-                          ...m,
-                          status: "failed" as const,
-                          error: parsed.message || "Agent 生成失败",
-                        }
-                      : m
-                  )
-                );
-              }
-            } catch {
-              // ignore parse errors
-            }
-          }
-        }
-      } catch (err) {
-        setChatMessages((prev) =>
-          prev.map((m) =>
-            m.clientId === assistantClientId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error: sanitizeError(err),
-                }
-              : m
-          )
-        );
-      }
-      setLoading(false);
-      return;
-    }
-
-    // standard mode: streaming SSE
     try {
       const stream = await chatApi.askStream(payload);
       const reader = stream.getReader();
@@ -596,22 +511,6 @@ export default function ChatPanel({ isOpen, onClose }: Props) {
         </div>
 
         <div className="panel-footer">
-          <div className="mb-4">
-            <Tabs.Root
-              value={chatMode}
-              onValueChange={(v) => setChatMode(v as "standard" | "agentic")}
-            >
-              <Tabs.List className="mode-tabs-list">
-                <Tabs.Indicator className="mode-tabs-indicator" />
-                <Tabs.Tab value="standard" className="mode-tabs-tab">
-                  标准模式
-                </Tabs.Tab>
-                <Tabs.Tab value="agentic" className="mode-tabs-tab">
-                  Agent 模式
-                </Tabs.Tab>
-              </Tabs.List>
-            </Tabs.Root>
-          </div>
           <div className="flex gap-2">
             <input
               value={input}

@@ -1,23 +1,10 @@
-"""Package wrapper for legacy RAG service plus new agentic modules."""
+"""Package wrapper for legacy RAG service."""
 
 from __future__ import annotations
 
 from typing import Optional
 
 from .legacy import RAGService
-from .agentic import (
-    AgenticAnswer,
-    AgenticRAGService,
-    AgenticState,
-    ReasoningStep,
-    get_agentic_rag_service,
-)
-from .harness import (
-    ChatHarness,
-    HarnessReasoningStep,
-    HarnessResult,
-    HistoryTurn,
-)
 
 # Singleton RAGService — avoids re-initializing embeddings/vector store on every request
 _rag_service: Optional[RAGService] = None
@@ -36,14 +23,5 @@ def get_rag_service() -> RAGService:
 
 __all__ = [
     "RAGService",
-    "AgenticAnswer",
-    "AgenticRAGService",
-    "AgenticState",
-    "ReasoningStep",
-    "get_agentic_rag_service",
     "get_rag_service",
-    "ChatHarness",
-    "HarnessReasoningStep",
-    "HarnessResult",
-    "HistoryTurn",
 ]

@@ -51,6 +51,9 @@ class ChatAgentState(BaseModel):
         default_factory=list, description="Resolved favorite folder media IDs."
     )
     bvids: list[str] = Field(default_factory=list, description="Resolved video BV IDs.")
+    upload_uuids: list[str] = Field(
+        default_factory=list, description="Inherited cloud document UUIDs from last turn."
+    )
     has_data: bool = Field(default=False, description="Whether B站 data exists.")
     cloud_has_data: bool = Field(
         default=False, description="Whether cloud backend is available."

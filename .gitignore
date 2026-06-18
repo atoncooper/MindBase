@@ -77,3 +77,10 @@ AGENTS.md
 
 # 软著申请材料
 copyright/
+
+# RAG eval reports — heavy JSON artifacts; keep dir but not contents
+app/test/eval/reports/*.json
+app/test/eval/reports/*.md
+!app/test/eval/reports/.gitkeep
+!app/test/eval/reports/baseline*.json
+!app/test/eval/reports/baseline*.md

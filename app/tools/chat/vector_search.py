@@ -9,9 +9,12 @@ from typing import Any
 
 from langchain_core.documents import Document
 
+from app.tools import ToolDeps, register_tool
+
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class VectorSearchTool:
     """Semantic vector search over the knowledge base.
 
@@ -22,6 +25,12 @@ class VectorSearchTool:
     def __init__(self, rag_service: Any) -> None:
         self._rag = rag_service
 
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "VectorSearchTool | None":
+        if deps.rag is None:
+            return None
+        return cls(deps.rag)
+
     @property
     def name(self) -> str:
         return "vector_search"
@@ -29,9 +38,12 @@ class VectorSearchTool:
     @property
     def description(self) -> str:
         return (
-            "从知识库中检索与查询语义相关的内容片段。"
-            "适用于需要具体内容的深度问题，例如「XX讲了什么」「XX的核心观点」。"
-            "可以多次调用，每次使用不同的 query 来收集更多信息。"
+            "从知识库中语义检索相关内容。**调用前必须先优化 query**：\n"
+            "1. 指代消解：把「它」「那个」替换为具体实体名\n"
+            "2. 上下文补全：结合对话历史补全省略信息\n"
+            "3. 具体化：模糊问题变精确，不要泛泛而搜\n"
+            "4. 多视角：分多次调用不同 query 覆盖不同角度\n"
+            "适用于深度问题、具体观点查找、需要内容支撑的回答。"
         )
 
     def parameters(self) -> dict[str, Any]:
@@ -50,12 +62,20 @@ class VectorSearchTool:
             "required": ["query"],
         }
 
-    async def run(self, *, query: str, k: int = 5, **kwargs: Any) -> str:
-        """Execute vector search and return formatted results."""
+    async def run(self, *, query: str, k: int = 5, **kwargs: Any) -> dict[str, Any]:
+        """Execute vector search.
+
+        Returns a dict ``{"content": <text>, "sources": [<source dict>, ...]}``
+        so the runtime can preserve structured sources alongside the text
+        result that goes back to the LLM. ``AgentRuntime`` lifts ``sources``
+        into ``ToolMessage.additional_kwargs`` and the chat graph
+        accumulates them into ``state.search_results``.
+        """
         k = min(max(k, 1), 50)  # Clamp to [1, 50]
         bvids = kwargs.get("_bvids")
         workspace_pages = kwargs.get("_workspace_pages")
         uid = kwargs.get("_uid")
+        upload_uuids = kwargs.get("_upload_uuids")
 
         loop = asyncio.get_running_loop()
         docs = await loop.run_in_executor(
@@ -66,12 +86,18 @@ class VectorSearchTool:
             bvids if bvids else None,
             workspace_pages,
             uid,
+            None,  # partition_start
+            None,  # partition_end
+            upload_uuids,
         )
 
         if not docs:
-            return "未找到相关内容。"
+            return {"content": "未找到相关内容。", "sources": []}
 
-        return _format_docs(docs)
+        return {
+            "content": _format_docs(docs),
+            "sources": _extract_sources(docs),
+        }
 
 
 def _format_docs(docs: list[Document], per_video_k: int = 3) -> str:
@@ -102,3 +128,37 @@ def _format_docs(docs: list[Document], per_video_k: int = 3) -> str:
                 parts.append(f"【{title}】(相关度: {score:.2f})\n{content}")
 
     return "\n\n---\n\n".join(parts) if parts else "未找到相关内容。"
+
+
+def _extract_sources(docs: list[Document]) -> list[dict[str, Any]]:
+    """Extract structured source metadata from retrieved documents.
+
+    Deduplicates by ``bvid`` (or ``upload_uuid`` for cloud docs). Keeps the
+    first occurrence — callers receive the full set so the chat graph can
+    merge sources from multiple search calls.
+    """
+    seen: set[str] = set()
+    sources: list[dict[str, Any]] = []
+    for doc in docs:
+        meta = doc.metadata if hasattr(doc, "metadata") else {}
+        bvid = meta.get("bvid") or ""
+        upload_uuid = meta.get("upload_uuid") or ""
+        key = bvid or upload_uuid
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        source: dict[str, Any] = {
+            "title": meta.get("title", "未知标题"),
+            "score": meta.get("score", 0),
+        }
+        if bvid:
+            source["bvid"] = bvid
+            source["url"] = meta.get(
+                "url", f"https://www.bilibili.com/video/{bvid}"
+            )
+            if meta.get("page_index") is not None:
+                source["page_index"] = meta.get("page_index")
+        if upload_uuid:
+            source["upload_uuid"] = upload_uuid
+        sources.append(source)
+    return sources

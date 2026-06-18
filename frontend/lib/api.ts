@@ -231,19 +231,6 @@ export interface ReasoningStep {
     content_preview: string;
 }
 
-export interface AgenticChatResponse {
-    answer: string;
-    sources: Array<{
-        bvid: string;
-        title: string;
-        url: string;
-    }>;
-    reasoning_steps: ReasoningStep[];
-    synthesis_method: string;
-    hops_used: number;
-    avg_recall_score: number;
-}
-
 // 工作区页面（用户选中的已向量化分P）
 export interface WorkspacePage {
     bvid: string;
@@ -582,14 +569,6 @@ export const chatApi = {
             body: JSON.stringify(payload),
         }),
 
-    // 提问（Agentic RAG 模式）
-    askAgentic: (payload: ChatRequestPayload) =>
-        request<AgenticChatResponse>("/chat/ask/agentic", {
-            method: "POST",
-            headers: getAuthHeaders(),
-            body: JSON.stringify(payload),
-        }),
-
     // 搜索
     search: (query: string, k = 5) =>
         request<{ results: Array<{ bvid: string; title: string; url: string; content_preview: string }> }>(
@@ -617,29 +596,6 @@ export const chatApi = {
 
         if (!res.ok || !res.body) {
             throw new Error("流式接口不可用");
-        }
-        return res.body;
-    },
-
-    // Agent 模式流式接口（ReAct 循环，LLM 自主决策工具调用）
-    askAgentStream: async (payload: ChatRequestPayload): Promise<ReadableStream<Uint8Array>> => {
-        const res = await fetch(`${API_BASE_URL}/chat/ask/agent/stream`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-            body: JSON.stringify(payload),
-        });
-
-        if (res.status === 401) {
-            if (typeof window !== "undefined") {
-                localStorage.removeItem("bili_session");
-                localStorage.removeItem("bili_user");
-                window.location.href = "/";
-            }
-            throw new Error("会话已过期，请重新登录");
-        }
-
-        if (!res.ok || !res.body) {
-            throw new Error("Agent 流式接口不可用");
         }
         return res.body;
     },

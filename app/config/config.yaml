@@ -212,7 +212,7 @@ agentic:
 asr:
   provider: dashscope                    # dashscope | whisper | funasr
   base_url: https://dashscope.aliyuncs.com/api/v1
-  model: paraformer-v2                   # offline / batch model
+  model: paraformer-realtime-v2          # 本地直传 Recognition 接口支持
   model_local: paraformer-realtime-v2    # streaming / real-time model
   input_format: pcm                      # audio format sent to ASR API
   timeout: 600                           # per-task timeout (seconds)

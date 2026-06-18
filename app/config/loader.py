@@ -38,8 +38,6 @@ _LEGACY_ENV_MAP = {
     "LLM_MODEL":           ("llm", "model"),
     "EMBEDDING_MODEL":     ("embedding", "model"),
     "EVAL_LLM_MODEL":      ("llm", "eval_model"),
-    "AGENTIC_RAG_TOP_K":   ("agentic", "top_k"),
-    "AGENTIC_RAG_MAX_HOPS": ("agentic", "max_hops"),
     "DASHSCOPE_BASE_URL":  ("asr", "base_url"),
     "ASR_MODEL":           ("asr", "model"),
     "ASR_TIMEOUT":         ("asr", "timeout"),

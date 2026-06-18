@@ -30,6 +30,16 @@ class BaseTool(Protocol):
         """Return JSON Schema describing this tool's parameters."""
         ...
 
-    async def run(self, **kwargs: Any) -> str:
-        """Execute the tool and return a text result."""
+    async def run(self, **kwargs: Any) -> Any:
+        """Execute the tool.
+
+        Returns either:
+
+        * A plain string — used as ``ToolMessage.content``.
+        * A dict ``{"content": str, **extras}`` — ``content`` becomes the
+          ``ToolMessage.content`` (visible to the LLM) and the remaining
+          keys are placed in ``ToolMessage.additional_kwargs`` so graph
+          nodes can read structured payloads (e.g. retrieval sources)
+          without re-parsing the text.
+        """
         ...

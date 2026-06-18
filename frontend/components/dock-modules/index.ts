@@ -37,7 +37,7 @@ export const dockModules: DockModule[] = [
     icon: FolderHeart,
     title: "收藏夹",
     panel: FavoritesPanel,
-    defaultSize: { width: 570, height: 600 },
+    defaultSize: { width: 880, height: 680 },
   },
   {
     id: "cloud-drive",

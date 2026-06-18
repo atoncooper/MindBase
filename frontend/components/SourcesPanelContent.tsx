@@ -328,7 +328,7 @@ export default function SourcesPanelContent({
 
     // 有更新：B站收藏夹比本地多
     if (indexedCount < totalCount && indexedCount > 0) {
-      return { label: "有更新", className: "partial", indexedCount, totalCount };
+      return { label: "待入库", className: "partial", indexedCount, totalCount };
     }
 
     // 空文件夹（无视频可入库）
@@ -487,18 +487,7 @@ export default function SourcesPanelContent({
   const getButtonText = () => {
     if (building) return progress?.current_step || "处理中...";
     if (selected.size === 0) return "选择收藏夹";
-
-    // 检查选中的是否有未入库的
-    const hasUnindexed = Array.from(selected).some((id) => {
-      const folder = folders.find((f) => f.media_id === id);
-      if (!folder) return false;
-      return !statusMap[id]?.last_sync_at;
-    });
-
-    if (hasUnindexed) {
-      return `入库 (${selected.size})`;
-    }
-    return `更新 (${selected.size})`;
+    return `入库 (${selected.size})`;
   };
 
   return (
@@ -579,8 +568,13 @@ export default function SourcesPanelContent({
                         checked={selected.has(f.media_id)}
                         onChange={() => toggleSelect(f.media_id)}
                         onClick={(e) => e.stopPropagation()}
-                        className="w-4 h-4 accent-[var(--accent)]"
+                        className="folder-checkbox"
                       />
+                      <span className="folder-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+                        </svg>
+                      </span>
                       <div className="folder-meta">
                         <div className="folder-title" title={f.title}>{f.title}</div>
                       <div className="folder-count">
@@ -589,7 +583,7 @@ export default function SourcesPanelContent({
                       </div>
                       </div>
                       <span className={`status-pill ${status.className}`}>{status.label}</span>
-                      <div className="folder-toggle">
+                      <div className="folder-toggle" aria-hidden="true">
                         <svg className={`w-4 h-4 transition-transform ${f.expanded ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>

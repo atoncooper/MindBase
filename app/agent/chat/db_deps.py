@@ -73,10 +73,37 @@ class DBChatDeps:
         rag = get_rag_service()
         return rag.cloud_backend is not None
 
-    async def get_conversation_context(self, session_id: str) -> str:
-        # Short-term context injection — the detailed retrieval is handled
-        # by context tools (search_chat_history, get_recent_context, etc.)
-        return ""
+    async def get_conversation_context(self, session_id: str, uid: int | None) -> str:
+        """Inject last 3 turns of conversation as short-term context.
+
+        Detailed long-term retrieval is handled by context tools
+        (search_chat_history, get_recent_context, etc.), but we always
+        inject the most recent turns so the agent doesn't "forget" what
+        was just said in the same conversation.
+        """
+        if not session_id or uid is None:
+            return ""
+
+        from app.services import chat_history as chat_history_service
+
+        async with await self._get_session() as db:
+            messages = await chat_history_service.get_recent_turns_for_user(
+                db,
+                uid=uid,
+                chat_session_id=session_id,
+                limit=6,  # Last 3 turns (user + assistant = 6 messages)
+            )
+
+        if not messages:
+            return ""
+
+        # Format: [User] xxx\n[Assistant] yyy
+        parts = []
+        for msg in messages:
+            role_display = "用户" if msg.role == "user" else "助手"
+            parts.append(f"[{role_display}] {msg.content}")
+
+        return "\n".join(parts) if parts else ""
 
     async def get_video_context(
         self,

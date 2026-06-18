@@ -5,15 +5,22 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.tools import ToolDeps, register_tool
+
 logger = logging.getLogger(__name__)
 
 
+@register_tool
 class GetCompressedSummaryTool:
     """Get the compressed summary of past conversation from Redis cache.
 
     Faster than ``search_chat_history`` because it reads a pre-computed
     structured summary instead of scanning MongoDB.
     """
+
+    @classmethod
+    def from_deps(cls, deps: ToolDeps) -> "GetCompressedSummaryTool":
+        return cls()
 
     @property
     def name(self) -> str:
