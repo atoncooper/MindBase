@@ -15,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_context
 from app.infra.config import config
+from app.infra import redis as _redis
 from app.infra.redis import (
-    client as redis_client,
     is_enabled as redis_enabled,
     pubsub,
 )
@@ -131,12 +131,12 @@ async def _is_heartbeat_alive(session_uuid: str) -> bool:
     Returns True if Redis is disabled (cannot check -- assume alive so we
     do not accidentally clean up active sessions).
     """
-    if not redis_enabled() or redis_client is None:
+    if not redis_enabled() or _redis.client is None:
         return True  # cannot verify; err on the side of caution
 
     try:
         key = f"{_HEARTBEAT_PREFIX}{session_uuid}"
-        exists = await redis_client.exists(key)
+        exists = await _redis.client.exists(key)
         return bool(exists)
     except Exception:
         logger.warning(

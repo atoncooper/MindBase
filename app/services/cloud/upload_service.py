@@ -20,8 +20,8 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.config import config
+from app.infra import redis as _redis
 from app.infra.redis import (
-    client as redis_client,
     is_enabled as redis_enabled,
     k,
     jset,
@@ -163,7 +163,7 @@ class CloudUploadService:
 
     async def _get_upload_meta(self, upload_uuid: str) -> dict:
         """Fetch upload metadata from Redis.  Raises ValueError on miss."""
-        if not redis_enabled() or redis_client is None:
+        if not redis_enabled() or _redis.client is None:
             raise ValueError("Redis is required for cloud uploads")
         meta = await jget(self._upload_key(upload_uuid))
         if meta is None:
@@ -171,13 +171,14 @@ class CloudUploadService:
         return meta
 
     async def _set_upload_meta(self, upload_uuid: str, meta: dict) -> None:
-        if not redis_enabled() or redis_client is None:
+        if not redis_enabled() or _redis.client is None:
             raise ValueError("Redis is required for cloud uploads")
         await jset(self._upload_key(upload_uuid), meta, ex=UPLOAD_META_TTL)
 
     async def _delete_upload_meta(self, upload_uuid: str) -> None:
-        if redis_client is not None:
-            await redis_client.delete(self._upload_key(upload_uuid))
+        client = _redis.client
+        if client is not None:
+            await client.delete(self._upload_key(upload_uuid))
 
     # ------------------------------------------------------------------
     # init_upload
@@ -372,12 +373,12 @@ class CloudUploadService:
 
     async def _set_heartbeat(self, session_uuid: str) -> None:
         """Internal: Redis SETEX heartbeat key."""
-        if not redis_enabled() or redis_client is None:
+        if not redis_enabled() or _redis.client is None:
             logger.debug("[CLOUD_UPLOAD] heartbeat skipped — Redis disabled")
             return
         try:
             key = k("cloud", "heartbeat", session_uuid)
-            await redis_client.setex(key, HEARTBEAT_TTL, "alive")
+            await _redis.client.setex(key, HEARTBEAT_TTL, "alive")
             logger.debug(
                 "[CLOUD_UPLOAD] heartbeat set session_uuid={} ttl={}",
                 session_uuid,

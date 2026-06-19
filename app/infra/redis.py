@@ -45,6 +45,12 @@ except Exception:  # pragma: no cover
 # Module-level state — populated by init()
 _pool: ConnectionPool | None = None
 client: Redis | None = None
+# Alias kept in sync with ``client`` so callers can do
+# ``from app.infra import redis; redis.redis_client`` (runtime attribute
+# access — NOT ``from app.infra.redis import redis_client``, which would
+# bind the pre-init None forever).  Some legacy call sites still use the
+# ``redis_client`` name; new code should prefer ``client``.
+redis_client: Redis | None = None
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -57,7 +63,7 @@ async def init() -> None:
     Raises on failure because Redis is treated as a required dependency
     when enabled.
     """
-    global _pool, client
+    global _pool, client, redis_client
 
     if not config.redis.enabled:
         logger.info("[REDIS] disabled, skipping init")
@@ -72,6 +78,7 @@ async def init() -> None:
         decode_responses=False,
     )
     client = Redis(connection_pool=_pool)
+    redis_client = client
 
     result = await ping()
     if not result["ok"]:
@@ -83,12 +90,13 @@ async def init() -> None:
 
 async def close() -> None:
     """Disconnect and drain the pool."""
-    global _pool, client
+    global _pool, client, redis_client
     if client is not None:
         await client.aclose()
     if _pool is not None:
         await _pool.aclose()
     client = None
+    redis_client = None
     _pool = None
     logger.info("[REDIS] closed")
 

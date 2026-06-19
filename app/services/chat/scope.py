@@ -71,10 +71,11 @@ async def resolve_search_scope(
         workspace_pages_dicts = [wp.model_dump() for wp in request.workspace_pages]
 
     if request.workspace_id is not None:
-        from app.infra.redis import redis_client
+        # Runtime attribute access — see app/infra/redis.py header.
+        from app.infra import redis as _redis
         from app.repository.workspace_repository import WorkspaceRepository
 
-        ws_repo = WorkspaceRepository(redis=redis_client if redis_client else None)
+        ws_repo = WorkspaceRepository(redis=_redis.redis_client)
         ws = await ws_repo.get_by_id(request.workspace_id, uid, db)
         if ws is None:
             raise HTTPException(status_code=404, detail="工作区不存在")
