@@ -1,8 +1,13 @@
 """
-Milvus connection management — follows same lifecycle pattern as mongo.py / redis.py.
+Milvus connection health — follows same lifecycle pattern as mongo.py / redis.py.
 
-Lazy initialisation: call ``init()`` during application startup.
-If ``milvus.enabled`` is false the module skips connection entirely.
+Uses the modern ``MilvusClient`` function-style API (PyMilvus 2.4+).
+The legacy ORM-style ``connections`` / ``utility`` API is deprecated and
+will be removed in PyMilvus 3.1.
+
+This module owns a singleton ``MilvusClient`` used purely for health
+checks (``ping``).  ``MilvusVectorStore`` instances create their own
+clients independently — both are lightweight gRPC channels.
 
 Usage:
     from app.infra.milvus import init, close, ping, is_enabled
@@ -10,54 +15,24 @@ Usage:
     # startup
     await init()
 
-    # query
-    from pymilvus import Collection
-    col = Collection("bilibili_videos")
-    col.query(expr="bvid == 'BV1xx'")
+    # health
+    result = await ping()  # {"ok": True, "latency_ms": 3, "error": None}
 
     # shutdown
     await close()
-
-Note on PyMilvusDeprecationWarning:
-    pymilvus 2.5+ flags the ORM-style API (``connections.connect``,
-    ``Collection(...)``, ``utility.*``) as deprecated in favor of
-    ``MilvusClient``. Migrating is a cross-cutting change (this file plus
-    ``app/repository/vector_store_milvus.py`` and the ``cloud`` /
-    ``knowledge`` routers all share the same default connection), so for
-    now we suppress the warning at the call sites instead of half-migrating
-    a single file. Track the full migration as a separate task.
 """
 
 from __future__ import annotations
 
-import contextlib
 import time
-import warnings
 from typing import Any
 
 from loguru import logger
 
 from app.infra.config import config
 
-
-@contextlib.contextmanager
-def _suppress_pymilvus_deprecation():
-    """Filter PyMilvusDeprecationWarning only; other warnings still surface.
-
-    The warning class is imported lazily so this module still works when
-    pymilvus is missing or vendored.
-    """
-
-    with warnings.catch_warnings():
-        try:
-            from pymilvus.exceptions import PyMilvusDeprecationWarning
-
-            warnings.filterwarnings("ignore", category=PyMilvusDeprecationWarning)
-        except ImportError:
-            # Older / vendored pymilvus may put the class elsewhere — fall
-            # back to a message-based filter so we still squelch the noise.
-            warnings.filterwarnings("ignore", message=r".*ORM-style PyMilvus API.*")
-        yield
+# Singleton health-check client — populated by init(), cleared by close().
+_client: Any = None
 
 
 def is_enabled() -> bool:
@@ -65,20 +40,19 @@ def is_enabled() -> bool:
 
 
 async def init() -> None:
-    """Connect to Milvus.  No-op when disabled."""
+    """Create the health-check MilvusClient.  No-op when disabled."""
+    global _client
     if not is_enabled():
         logger.info("[MILVUS] disabled, skipping init")
         return
 
-    from pymilvus import connections
+    from pymilvus import MilvusClient
 
     try:
-        with _suppress_pymilvus_deprecation():
-            connections.connect(
-                alias="default",
-                uri=config.milvus.uri,
-                token=config.milvus.token or None,
-            )
+        kwargs: dict[str, Any] = {"uri": config.milvus.uri}
+        if config.milvus.token:
+            kwargs["token"] = config.milvus.token
+        _client = MilvusClient(**kwargs)
     except Exception as e:
         logger.warning(
             "[MILVUS] init failed (continuing): error_type={} uri={} msg={}",
@@ -103,40 +77,29 @@ async def init() -> None:
 
 
 async def close() -> None:
-    """Disconnect from Milvus."""
-    if not is_enabled():
+    """Close the health-check client."""
+    global _client
+    if _client is None:
         return
-
-    from pymilvus import connections
-
     try:
-        with _suppress_pymilvus_deprecation():
-            connections.disconnect("default")
+        _client.close()
         logger.info("[MILVUS] closed")
     except Exception as e:
         logger.warning("[MILVUS] close error: error_type={}", type(e).__name__)
+    finally:
+        _client = None
 
 
 async def ping() -> dict[str, Any]:
     """Health check with round-trip latency."""
     if not is_enabled():
         return {"ok": False, "latency_ms": 0, "error": "disabled"}
-
-    from pymilvus import connections
-
-    try:
-        with _suppress_pymilvus_deprecation():
-            if not connections.has_connection("default"):
-                return {"ok": False, "latency_ms": 0, "error": "not connected"}
-    except Exception:
-        pass
+    if _client is None:
+        return {"ok": False, "latency_ms": 0, "error": "not initialized"}
 
     start = time.time()
     try:
-        from pymilvus import utility
-
-        with _suppress_pymilvus_deprecation():
-            utility.list_collections()
+        _client.list_collections()
         return {
             "ok": True,
             "latency_ms": int((time.time() - start) * 1000),
