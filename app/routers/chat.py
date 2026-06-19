@@ -8,7 +8,7 @@ LLM construction, message persistence, routing rules.  All of those live
 in ``app/services/chat/``.
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,7 +143,11 @@ async def ask_question_agent_stream(
 
 
 @router.post("/search")
-async def search_videos(query: str, k: int = 5):
+async def search_videos(
+    query: str,
+    k: int = Query(5, ge=1, le=100),
+    uid: int = Depends(get_current_uid),
+):
     """Vector search for related video clips."""
     if not query or not query.strip():
         raise HTTPException(status_code=400, detail="查询不能为空")

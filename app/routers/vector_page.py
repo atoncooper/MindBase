@@ -284,7 +284,7 @@ async def get_vec_task_status(task_id: str) -> VectorPageTaskStatus:
         task = await _tracker._repo.get_by_task_id(task_id, db)
 
     if not task:
-        from app.routers.asr import asr_tasks
+        from app.services.async_task.asr_task_registry import asr_tasks
         asr_task = asr_tasks.get(task_id)
         if asr_task:
             return VectorPageTaskStatus(
@@ -330,7 +330,7 @@ async def _trigger_asr_then_vec(
     uid: int = 0,
 ):
     """Chain: wait for ASR → then start vectorization."""
-    from app.routers.asr import asr_tasks
+    from app.services.async_task.asr_task_registry import asr_tasks
 
     for _ in range(300):
         task = asr_tasks.get(asr_task_id)

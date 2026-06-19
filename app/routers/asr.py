@@ -3,7 +3,6 @@ Bilibili RAG 知识库系统
 
 ASR 路由 - 分P视频语音转文本
 """
-import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
@@ -16,23 +15,9 @@ from app.response import (
     ASRCreateRequest, ASRUpdateRequest, ASRReASRRequest,
     ASRContentResponse, ASRTaskStatus, VideoVersionInfo,
 )
+from app.services.async_task.asr_task_registry import asr_tasks, create_task
 
 router = APIRouter(prefix="/asr", tags=["ASR"])
-
-# 内存任务状态存储
-asr_tasks: dict = {}
-
-
-def _create_task() -> str:
-    """创建新任务并返回 task_id"""
-    task_id = str(uuid.uuid4())
-    asr_tasks[task_id] = {
-        "status": "pending",
-        "progress": 0,
-        "message": "任务已创建",
-        "result": None,
-    }
-    return task_id
 
 
 # ==================== 依赖注入 ====================
@@ -129,7 +114,7 @@ async def create_asr(
         await db.commit()
 
     # 创建后台任务
-    task_id = _create_task()
+    task_id = create_task()
 
     # 启动后台 ASR 处理
     import asyncio
@@ -226,7 +211,7 @@ async def reasr(
     await db.commit()
 
     # 创建后台任务
-    task_id = _create_task()
+    task_id = create_task()
 
     # 启动后台 ASR 处理
     import asyncio

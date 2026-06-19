@@ -3,7 +3,6 @@ Per-page vectorization service — atomic protection + step-level progress.
 """
 
 import asyncio
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -173,11 +172,11 @@ class VectorPageService:
     async def _run_asr(self, bvid: str, cid: int, page_index: int, page_title: str):
         """Run ASR via ASRPageService (poll for completion, max 5 minutes)."""
         from app.services.asr_page_service import ASRPageService
-        from app.routers.asr import asr_tasks
+        from app.services.async_task.asr_task_registry import asr_tasks, create_task
 
         service = ASRPageService()
-        task_id = str(uuid.uuid4())
-        asr_tasks[task_id] = {"status": "pending", "progress": 0, "message": "ASR task created"}
+        task_id = create_task()
+        asr_tasks[task_id].update({"message": "ASR task created"})
 
         await service.process_page(
             task_id=task_id, bvid=bvid, cid=cid,

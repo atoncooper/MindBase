@@ -54,11 +54,6 @@ def _spawn(coro) -> asyncio.Task:
     return task
 
 
-def _milvus_escape(value: str) -> str:
-    """Escape double-quote and backslash in Milvus expression strings."""
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -568,15 +563,10 @@ async def delete_video(
 
             if config.milvus.enabled:
                 try:
-                    from pymilvus import Collection
+                    from app.services.rag import get_rag_service
 
-                    col = Collection(config.milvus.cloud_collection_name)
-                    col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
-                    col.flush()
-                    logger.info(
-                        "[CLOUD] milvus vectors deleted upload_uuid={}",
-                        upload_uuid,
-                    )
+                    rag = get_rag_service()
+                    rag.delete_cloud_vectors(upload_uuid)
                 except Exception as exc:
                     logger.warning(
                         "[CLOUD] milvus cleanup failed upload_uuid={} err={}",
@@ -635,7 +625,7 @@ async def trigger_processing(
         file.vector_status = "processing"
         await db.commit()
 
-        from app.routers.tasks_ws import broadcast_cloud_status
+        from app.services.ws_registry import broadcast_cloud_status
 
         _spawn(broadcast_cloud_status(uid, upload_uuid, "processing", 0))
 
@@ -714,14 +704,10 @@ async def get_video_status(
         milvus_chunk_count = file.vector_chunk_count or 0
         if config.milvus.enabled and milvus_chunk_count == 0:
             try:
-                from pymilvus import Collection
+                from app.services.rag import get_rag_service
 
-                col = Collection(config.milvus.cloud_collection_name)
-                results = col.query(
-                    expr=f'upload_uuid == "{_milvus_escape(upload_uuid)}"',
-                    output_fields=["chunk_index"],
-                )
-                milvus_chunk_count = len(results)
+                rag = get_rag_service()
+                milvus_chunk_count = rag.count_cloud_chunks(upload_uuid)
             except Exception:
                 pass
 
@@ -763,11 +749,10 @@ async def reprocess_document(
 
         if config.milvus.enabled:
             try:
-                from pymilvus import Collection
+                from app.services.rag import get_rag_service
 
-                col = Collection(config.milvus.cloud_collection_name)
-                col.delete(f'upload_uuid == "{_milvus_escape(upload_uuid)}"')
-                col.flush()
+                rag = get_rag_service()
+                rag.delete_cloud_vectors(upload_uuid)
             except Exception as e:
                 logger.warning(f"[CLOUD] reprocess: delete old vectors failed: {e}")
 

@@ -464,7 +464,7 @@ async def _sync_folder(
 
 
 @router.get("/stats")
-async def get_knowledge_stats():
+async def get_knowledge_stats(uid: int = Depends(get_current_uid)):
     """获取知识库统计信息"""
     try:
         rag = get_rag_service()
@@ -787,7 +787,7 @@ async def _build_knowledge_base_task(
             legacy_kwargs["step"] = kwargs["current_step"]
         legacy_state(task_id, status, **legacy_kwargs)
         try:
-            from app.routers.tasks_ws import broadcast_task_update
+            from app.services.ws_registry import broadcast_task_update
             import asyncio
             task_info = {
                 "task_id": task_id, "task_type": "build", "uid": uid,
@@ -963,7 +963,7 @@ def legacy_state(task_id: str, status: str, step: str = "",
 
 
 @router.get("/build/status/{task_id}", response_model=BuildStatus)
-async def get_build_status(task_id: str):
+async def get_build_status(task_id: str, uid: int = Depends(get_current_uid)):
     """获取构建任务状态 — async_tasks 表优先，build_tasks 内存兜底"""
     # 1. Try async_tasks table (persisted)
     try:
@@ -1012,7 +1012,7 @@ async def get_build_status(task_id: str):
 
 
 @router.delete("/clear")
-async def clear_knowledge_base():
+async def clear_knowledge_base(uid: int = Depends(get_current_uid)):
     """清空知识库"""
     try:
         rag = get_rag_service()
@@ -1024,7 +1024,7 @@ async def clear_knowledge_base():
 
 
 @router.delete("/video/{bvid}")
-async def delete_video_from_knowledge(bvid: str):
+async def delete_video_from_knowledge(bvid: str, uid: int = Depends(get_current_uid)):
     """从知识库中删除指定视频"""
     try:
         rag = get_rag_service()
@@ -1045,6 +1045,7 @@ PAGES_CACHE_TTL = 86400  # 24小时
 async def get_video(
     bvid: str,
     cache=Depends(cache_dependency_singleton()),
+    uid: int = Depends(get_current_uid),
 ):
     """
     获取视频全部分P信息（旁路缓存策略）
