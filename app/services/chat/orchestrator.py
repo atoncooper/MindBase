@@ -28,6 +28,7 @@ from app.services.chat.dispatcher import agent_run, agent_stream_setup
 from app.services.chat.lifecycle import (
     TurnContext,
     begin_turn,
+    cancel_turn,
     fail_turn,
     finalize_turn,
 )
@@ -164,9 +165,10 @@ async def ask(
         )
         return ChatResponse(answer=answer, sources=sources[:5])
     except HTTPException:
-        await fail_turn(
-            db, assistant_msg_id=ctx.assistant_msg_id, error="HTTPException during ask"
-        )
+        # Service-level failure (e.g. harness 503) before generation started:
+        # remove the placeholder rather than marking it failed, so the
+        # history doesn't show an empty "failed" assistant bubble.
+        await cancel_turn(db, assistant_msg_id=ctx.assistant_msg_id)
         raise
     except Exception as e:
         logger.exception("Chat ask failed")
@@ -228,11 +230,7 @@ async def ask_agentic(
             avg_recall_score=0.0,
         )
     except HTTPException:
-        await fail_turn(
-            db,
-            assistant_msg_id=ctx.assistant_msg_id,
-            error="HTTPException during agentic",
-        )
+        await cancel_turn(db, assistant_msg_id=ctx.assistant_msg_id)
         raise
     except Exception as e:
         logger.exception("Agentic RAG ask failed")
@@ -273,11 +271,7 @@ async def ask_stream(
             query=ctx.user_message,
         )
     except HTTPException:
-        await fail_turn(
-            db,
-            assistant_msg_id=ctx.assistant_msg_id,
-            error="HTTPException during stream",
-        )
+        await cancel_turn(db, assistant_msg_id=ctx.assistant_msg_id)
         raise
     except Exception as e:
         logger.exception("Stream ask setup failed")
@@ -345,11 +339,7 @@ async def ask_agent_stream(
             query=ctx.user_message,
         )
     except HTTPException:
-        await fail_turn(
-            db,
-            assistant_msg_id=ctx.assistant_msg_id,
-            error="HTTPException during agent stream",
-        )
+        await cancel_turn(db, assistant_msg_id=ctx.assistant_msg_id)
         raise
     except Exception as e:
         logger.exception("Agent stream dispatch failed")
@@ -397,7 +387,19 @@ async def _stream_agent_events(
     try:
         async for frame in streamer.stream(agent_graph, input_state, run_config):
             yield frame
+    except Exception as e:
+        logger.exception("Agent stream generation failed")
+        error_msg = str(e)
+        yield sse_event({"type": "error", "message": error_msg})
+        await fail_turn(db, assistant_msg_id=ctx.assistant_msg_id, error=error_msg)
+        return
 
+    # Post-stream persistence.  By this point the client has already
+    # received the ``done`` frame from ``streamer.stream()``, so any
+    # failure here MUST NOT emit a second ``error`` event — clients that
+    # close on ``done`` would never see it, and those that don't would
+    # render a spurious error after a successful answer.
+    try:
         latency_ms = int((time.time() - start_time) * 1000)
         await finalize_turn(
             db,
@@ -418,8 +420,5 @@ async def _stream_agent_events(
             completion_tokens=token_handler.completion_tokens,
             api_calls=token_handler.llm_calls or 1,
         )
-    except Exception as e:
-        logger.exception("Agent stream generation failed")
-        error_msg = str(e)
-        yield sse_event({"type": "error", "message": error_msg})
-        await fail_turn(db, assistant_msg_id=ctx.assistant_msg_id, error=error_msg)
+    except Exception:
+        logger.exception("Post-stream finalize/usage failed; answer already delivered to client")

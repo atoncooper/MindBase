@@ -106,6 +106,23 @@ async def fail_message(msg_id: str, error: str) -> None:
     )
 
 
+async def delete_message(msg_id: str) -> int:
+    """Delete a single message by ``msg_id``.
+
+    Used to clean up the pending assistant placeholder when a turn fails
+    *before* generation starts (e.g. harness unavailable / 503) — those
+    failures are service-level, not a failed answer, so leaving a "failed"
+    placeholder in the history would mislead the user.  Returns the number
+    of deleted documents (0 if not found or Mongo disabled).
+    """
+    if not is_enabled():
+        return 0
+    result = await coll(COLLECTION).delete_one({"msg_id": msg_id})
+    if result.deleted_count:
+        logger.info(f"[MONGO_CHAT] deleted placeholder msg_id={msg_id}")
+    return result.deleted_count
+
+
 # ── Read ops ───────────────────────────────────────────────────────
 
 

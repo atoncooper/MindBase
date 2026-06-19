@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pymongo import ASCENDING
 
@@ -144,15 +144,55 @@ class MongoStore(ConversationStore):
 
         lock = await self._get_lock(session_id)
         async with lock:
-            # Remove existing messages for this session, then bulk-insert
-            await coll(COLLECTION).delete_many({"chat_session_id": session_id})
-            if context.messages:
-                docs = [
-                    _message_to_mongo_doc(session_id, m, self._uid)
-                    for m in context.messages
-                ]
-                await coll(COLLECTION).insert_many(docs)
+            await self._save_atomic(session_id, context, coll)
             context.touch()
+
+    async def _save_atomic(
+        self,
+        session_id: str,
+        context: ConversationContext,
+        coll_fn: Any,
+    ) -> None:
+        """Replace all messages for *session_id* atomically.
+
+        Uses a MongoDB transaction so a failure between ``delete_many`` and
+        ``insert_many`` cannot lose history.  Standalone deployments (no
+        replica set) reject transactions — in that case we fall back to the
+        non-transactional path and log a warning, preserving prior behavior
+        rather than blocking writes.
+        """
+        from pymongo.errors import OperationFailure
+
+        collection = coll_fn(COLLECTION)
+        docs = (
+            [_message_to_mongo_doc(session_id, m, self._uid) for m in context.messages]
+            if context.messages
+            else []
+        )
+
+        client = collection.database.client
+        try:
+            async with await client.start_session() as s:
+                async with s.start_transaction():
+                    await collection.delete_many(
+                        {"chat_session_id": session_id}, session=s
+                    )
+                    if docs:
+                        await collection.insert_many(docs, session=s)
+        except OperationFailure as exc:
+            # Typical message: "Transaction numbers are only allowed on a
+            # replica set member or a mongos" — standalone server.
+            if "replica set" in str(exc) or "mongos" in str(exc) or exc.code == 20:
+                logger.warning(
+                    "[MONGO_STORE] transactions unsupported, falling back to "
+                    "non-atomic save for session=%s",
+                    session_id,
+                )
+                await collection.delete_many({"chat_session_id": session_id})
+                if docs:
+                    await collection.insert_many(docs)
+            else:
+                raise
 
     async def append(self, session_id: str, message: ConversationMessage) -> None:
         from app.infra.mongo import coll, is_enabled
