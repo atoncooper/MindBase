@@ -11,7 +11,12 @@ aiomysql==0.3.2
 # LangChain + vector store
 langchain==0.3.28
 langchain-openai==0.2.6
-langgraph==1.1.2
+# langgraph 1.x pulls langgraph-prebuilt>=1.0.0 which requires
+# langchain-core>=1.0.0, conflicting with langchain 0.3.x (core<1.0.0).
+# 0.6.11 is the last 0.x release; it pulls prebuilt 0.6.x which allows
+# langchain-core 0.3.x. All APIs used by this codebase (StateGraph, END,
+# add_messages, ToolNode) exist in 0.6.x.
+langgraph==0.6.11
 openai==1.59.7
 dashscope==1.20.0
 langsmith==0.7.22
