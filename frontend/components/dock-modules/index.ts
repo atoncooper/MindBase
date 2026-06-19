@@ -1,6 +1,6 @@
 import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, Settings, User, Activity } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
-import ChatPanel from "@/components/ChatPanel";
+import ChatDockPanel from "@/components/chat/ChatDockPanel";
 import FavoritesPanel from "./favorites";
 import ChatHistoryPanel from "./chat-history";
 import SettingsPanel from "./settings";
@@ -15,8 +15,8 @@ export const dockModules: DockModule[] = [
     id: "chat",
     icon: MessageCircle,
     title: "对话",
-    panel: ChatPanel,
-    defaultSize: { width: 1156, height: 640 },
+    panel: ChatDockPanel,
+    defaultSize: { width: 1156, height: 680 },
   },
   {
     id: "chat-history",
