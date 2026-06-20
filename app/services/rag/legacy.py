@@ -139,6 +139,17 @@ class RAGService:
                     "[RAG] cloud_backend initialized: {}",
                     config.milvus.cloud_collection_name,
                 )
+                # If the collection was dropped+recreated on dim mismatch,
+                # all prior vectors are gone.  Reset every cloud file marked
+                # "done" back to "pending" so the next access re-vectorizes
+                # it — otherwise the idempotency guard in vectorize.py
+                # would skip them forever and the files stay unsearchable.
+                if getattr(self.cloud_backend, "was_recreated", False):
+                    logger.warning(
+                        "[RAG] cloud_drive collection was recreated (dim mismatch) — "
+                        "resetting vector_status for all done files to pending"
+                    )
+                    self._reset_cloud_vector_statuses()
             except Exception as e:
                 logger.warning(
                     "[RAG] cloud_backend init failed: error_type={}",
@@ -770,3 +781,99 @@ class RAGService:
                 type(e).__name__,
             )
             return 0
+
+    def count_cloud_chunks(self, upload_uuid: str) -> int:
+        """Count cloud-drive vectors for *upload_uuid*.
+
+        Returns 0 when the cloud backend is not initialized or the upload
+        has no vectors.  Routers call this instead of querying Milvus
+        directly so all vector-store access stays inside the RAG layer.
+        """
+        if self.cloud_backend is None:
+            return 0
+        try:
+            return self.cloud_backend.count_by_upload_uuid(upload_uuid)
+        except Exception as e:
+            logger.warning(
+                "[RAG] count_cloud_chunks failed upload_uuid={} error_type={}",
+                upload_uuid,
+                type(e).__name__,
+            )
+            return 0
+
+    def delete_cloud_vectors(self, upload_uuid: str) -> int:
+        """Delete all cloud-drive vectors for *upload_uuid*.
+
+        Returns the number of deleted chunks, or 0 if the cloud backend is
+        unavailable.  Routers must call this instead of operating on Milvus
+        collections directly.
+        """
+        if self.cloud_backend is None:
+            return 0
+        try:
+            deleted = self.cloud_backend.delete_by_upload_uuid(upload_uuid)
+            logger.info(
+                "[RAG] cloud vectors deleted upload_uuid={} count={}",
+                upload_uuid,
+                deleted,
+            )
+            return deleted
+        except Exception as e:
+            logger.warning(
+                "[RAG] delete_cloud_vectors failed upload_uuid={} error_type={}",
+                upload_uuid,
+                type(e).__name__,
+            )
+            return 0
+
+    def _reset_cloud_vector_statuses(self) -> None:
+        """Reset all cloud files marked ``done`` back to ``pending``.
+
+        Called from ``__init__`` when the cloud_drive collection was
+        recreated (dim mismatch).  Spawns a background task so the sync
+        constructor is not blocked and does not need its own DB session.
+
+        The background task resets ``vector_status='pending'``,
+        ``vector_chunk_count=0``, ``content_hash=NULL`` for every
+        non-deleted cloud file whose status was ``done``.  Files are
+        then re-vectorized lazily on next access (the idempotency guard
+        in vectorize.py sees pending status and runs the pipeline), or
+        eagerly by a caller invoking ``vectorize_cloud_document``.
+        """
+        import asyncio
+
+        async def _reset() -> None:
+            from sqlalchemy import text
+            from app.database import async_session_factory
+
+            try:
+                async with async_session_factory() as session:
+                    result = await session.execute(
+                        text(
+                            "UPDATE cloud_files "
+                            "SET vector_status = 'pending', "
+                            "    vector_chunk_count = 0, "
+                            "    content_hash = NULL "
+                            "WHERE vector_status = 'done' "
+                            "  AND deleted_at IS NULL"
+                        )
+                    )
+                    await session.commit()
+                    logger.warning(
+                        "[RAG] reset {} cloud files from done → pending "
+                        "(collection was recreated, vectors lost)",
+                        result.rowcount,
+                    )
+            except Exception:
+                logger.exception("[RAG] failed to reset cloud vector statuses")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_reset())
+        except RuntimeError:
+            # No running loop (e.g. constructing outside an event loop) —
+            # run synchronously as a fallback.  This blocks init briefly
+            # but guarantees the reset happens.
+            import asyncio as _aio
+
+            _aio.run(_reset())

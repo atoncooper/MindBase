@@ -24,8 +24,12 @@ router = APIRouter(prefix="/workspaces", tags=["工作区"])
 
 
 def _get_ws_repo() -> WorkspaceRepository:
-    from app.infra.redis import redis_client
-    return WorkspaceRepository(redis=redis_client if redis_client else None)
+    # Runtime attribute access — `from app.infra.redis import redis_client`
+    # would bind the pre-init None at import time and never see the
+    # post-init value.  See app/infra/redis.py header for the rationale.
+    from app.infra import redis as _redis
+
+    return WorkspaceRepository(redis=_redis.redis_client)
 
 
 def _workspace_to_response(ws, bindings: list = None) -> WorkspaceResponse:

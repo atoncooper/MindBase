@@ -416,6 +416,22 @@ async def fail_assistant_message(
     logger.warning(f"[CHAT_HISTORY] failed assistant msg_id={msg_id}")
 
 
+async def delete_assistant_message(
+    db: AsyncSession,
+    msg_id: str,
+) -> None:
+    """Delete a pending assistant placeholder.
+
+    Use this (not :func:`fail_assistant_message`) when the turn failed
+    *before* any generation happened — e.g. harness unavailable (503) or
+    scope-resolution errors.  A placeholder that never produced content
+    should not linger in history as a "failed" turn, because that misleads
+    the user into thinking the model attempted and failed an answer.
+    """
+    await mongo_chat.delete_message(msg_id)
+    logger.info(f"[CHAT_HISTORY] removed placeholder msg_id={msg_id} (turn aborted before generation)")
+
+
 async def _unsafe_get_history(
     db: AsyncSession,
     chat_session_id: str,

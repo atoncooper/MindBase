@@ -158,77 +158,117 @@ class AgentLifecycleManager:
             )
             return {"error": "service temporarily unavailable"}
 
-        # 2. Per-session concurrency lock
+        # 2. Per-session concurrency lock (non-reentrant — use invoke_reentrant
+        #    when the caller already holds the session lock, e.g. delegate_to_agent)
         async with self._sessions.acquire_lock(session_id):
-            start = time.monotonic()
+            return await self._invoke_locked(
+                agent_name, session_id, timeout, **input
+            )
 
-            # 3. Ensure session exists
-            self._sessions.get_or_create(session_id)
+    async def invoke_reentrant(
+        self,
+        agent_name: str,
+        session_id: str,
+        timeout: float | None = 60.0,
+        **input: Any,
+    ) -> dict[str, Any]:
+        """Invoke without acquiring the session lock.
 
-            try:
-                # 4. Pool: get or create agent instance
-                agent = await self._acquire_agent(agent_name, session_id)
+        Use this when the caller already holds the lock for *session_id*
+        (e.g. ``delegate_to_agent`` runs inside the chat agent's invoke).
+        ``asyncio.Lock`` is non-reentrant, so calling :meth:`invoke` from
+        within an agent's tool would deadlock.
+        """
+        if self._closed:
+            raise RuntimeError("AgentLifecycleManager is shut down")
 
-                # 5. Hook: invoke start
-                self._hooks.on_invoke_start(session_id, agent_name, **input)
+        if self._circuit_breaker.is_tripped:
+            logger.warning(
+                "[LIFECYCLE] circuit breaker open, rejecting %s/%s",
+                agent_name,
+                session_id,
+            )
+            return {"error": "service temporarily unavailable"}
 
-                # 6. Execute with optional timeout + LangSmith tracing config
-                run_config = {
-                    "run_name": f"{agent_name}_agent",
-                    "tags": [agent_name, "agent"],
-                    "metadata": {
-                        "agent_name": agent_name,
-                        "session_id": session_id,
-                    },
-                }
+        return await self._invoke_locked(agent_name, session_id, timeout, **input)
 
-                if timeout is not None:
-                    result = await asyncio.wait_for(
-                        agent.ainvoke(input, config=run_config),
-                        timeout=timeout,
-                    )
-                else:
-                    result = await agent.ainvoke(input, config=run_config)
+    async def _invoke_locked(
+        self,
+        agent_name: str,
+        session_id: str,
+        timeout: float | None,
+        **input: Any,
+    ) -> dict[str, Any]:
+        """Inner invoke — assumes the per-session lock is already held."""
+        start = time.monotonic()
 
-                # Ensure result is a dict
-                if not isinstance(result, dict):
-                    result = {"result": result}
+        # Ensure session exists
+        self._sessions.get_or_create(session_id)
 
-                # 7a. Hook: invoke end
-                elapsed = (time.monotonic() - start) * 1000
-                self._hooks.on_invoke_end(session_id, agent_name, elapsed)
+        try:
+            # Pool: get or create agent instance
+            agent = await self._acquire_agent(agent_name, session_id)
 
-                # 8. Touch session heartbeat
-                self._sessions.touch(session_id)
+            # Hook: invoke start
+            self._hooks.on_invoke_start(session_id, agent_name, **input)
 
-                # 9. Record success on circuit breaker
-                self._circuit_breaker.record_success()
+            # Execute with optional timeout + LangSmith tracing config
+            run_config = {
+                "run_name": f"{agent_name}_agent",
+                "tags": [agent_name, "agent"],
+                "metadata": {
+                    "agent_name": agent_name,
+                    "session_id": session_id,
+                },
+            }
 
-                return result
-
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                self._circuit_breaker.record_failure()
-                raise
-            except Exception as exc:
-                elapsed = (time.monotonic() - start) * 1000
-                error_msg = str(exc)
-
-                # 7b. Hook: invoke error
-                self._hooks.on_invoke_error(session_id, agent_name, error_msg)
-
-                # 9. Record failure on circuit breaker
-                self._circuit_breaker.record_failure()
-
-                logger.error(
-                    "[LIFECYCLE] %s/%s failed after %.0fms: %s",
-                    agent_name,
-                    session_id,
-                    elapsed,
-                    error_msg,
+            if timeout is not None:
+                result = await asyncio.wait_for(
+                    agent.ainvoke(input, config=run_config),
+                    timeout=timeout,
                 )
-                return {"error": error_msg}
+            else:
+                result = await agent.ainvoke(input, config=run_config)
+
+            # Ensure result is a dict
+            if not isinstance(result, dict):
+                result = {"result": result}
+
+            # Hook: invoke end
+            elapsed = (time.monotonic() - start) * 1000
+            self._hooks.on_invoke_end(session_id, agent_name, elapsed)
+
+            # Touch session heartbeat
+            self._sessions.touch(session_id)
+
+            # Record success on circuit breaker
+            self._circuit_breaker.record_success()
+
+            return result
+
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            self._circuit_breaker.record_failure()
+            raise
+        except Exception as exc:
+            elapsed = (time.monotonic() - start) * 1000
+            error_msg = str(exc)
+
+            # Hook: invoke error
+            self._hooks.on_invoke_error(session_id, agent_name, error_msg)
+
+            # Record failure on circuit breaker
+            self._circuit_breaker.record_failure()
+
+            logger.error(
+                "[LIFECYCLE] %s/%s failed after %.0fms: %s",
+                agent_name,
+                session_id,
+                elapsed,
+                error_msg,
+            )
+            return {"error": error_msg}
 
     # ── internal ──────────────────────────────────────────────────────
 

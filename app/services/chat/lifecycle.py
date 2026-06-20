@@ -92,3 +92,18 @@ async def fail_turn(
     await chat_history_service.fail_assistant_message(
         db, assistant_msg_id, error=error
     )
+
+
+async def cancel_turn(
+    db: AsyncSession,
+    *,
+    assistant_msg_id: str,
+) -> None:
+    """Remove the pending assistant placeholder for a turn that never ran.
+
+    Call this when setup failed *before* the agent produced anything
+    (e.g. harness 503, scope resolution error).  Unlike :func:`fail_turn`,
+    this leaves no trace in history — the user's question is preserved
+    but no empty "failed" assistant bubble appears.
+    """
+    await chat_history_service.delete_assistant_message(db, assistant_msg_id)

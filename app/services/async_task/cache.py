@@ -142,7 +142,10 @@ async def _refresh_from_db(factory, shared_dict: Any) -> None:
         "updated_at": time.time(),
         "count": len(data),
     }
-    logger.info(f"[TaskCache] refreshed {len(data)} tasks")
+    if data:
+        logger.info("[TaskCache] refreshed {} tasks", len(data))
+    else:
+        logger.debug("[TaskCache] refreshed 0 tasks")
 
 
 async def _prune(factory) -> None:

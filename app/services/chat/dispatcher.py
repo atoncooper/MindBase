@@ -9,7 +9,7 @@ stay consistent across `/ask`, `/ask/agentic`, `/ask/stream`,
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 from loguru import logger
@@ -22,13 +22,46 @@ from app.services.chat.scope import (
     get_media_ids_for_uid,
 )
 
+# Health provider — registered by main.py at startup so that the 503 raised
+# here can carry the real root cause (e.g. "No module named 'langgraph'") back
+# to the client and logs, instead of a generic "unavailable".
+# Returns (status, error_message); status is one of:
+#   "started" | "skipped" | "failed" | "unknown"
+def _default_harness_health() -> tuple[str, Optional[str]]:
+    return ("unknown", None)
+
+
+_harness_health_provider: Callable[[], tuple[str, Optional[str]]] = _default_harness_health
+
+
+def set_harness_health_provider(
+    provider: Callable[[], tuple[str, Optional[str]]],
+) -> None:
+    """Register a callable returning (harness_status, harness_error).
+
+    Called by ``app.main`` during startup with a closure over
+    ``app.state``.  Keeping this as an injected provider (rather than
+    passing ``app.state`` through every orchestrator/dispatcher signature)
+    avoids threading a FastAPI-specific object through the service layer.
+    """
+    global _harness_health_provider
+    _harness_health_provider = provider
+
 
 def _ensure_started(agent_harness: Any) -> None:
-    if not agent_harness or not getattr(agent_harness, "started", False):
-        raise HTTPException(
-            status_code=503,
-            detail="Agent 服务暂不可用，请稍后再试",
-        )
+    if agent_harness and getattr(agent_harness, "started", False):
+        return
+
+    status, error = _harness_health_provider()
+    # Build a detail string that surfaces the root cause when we have one.
+    if status == "failed" and error:
+        detail = f"Agent 服务启动失败: {error}"
+    elif status == "skipped":
+        detail = f"Agent 服务未启动: {error or 'LLM 未配置'}"
+    else:
+        detail = "Agent 服务暂不可用，请稍后再试"
+    logger.warning("[DISPATCHER] harness not ready: status={} error={}", status, error)
+    raise HTTPException(status_code=503, detail=detail)
 
 
 async def _resolve_agent_context(

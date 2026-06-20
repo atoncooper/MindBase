@@ -33,14 +33,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """Token-bucket rate limiter backed by Redis.
 
     Key format: bilirag:rl:<endpoint>:<ip>:<window>
+
+    The Redis client is resolved lazily per-request via
+    :func:`app.infra.redis.is_enabled` / ``client`` so the middleware can
+    be registered before ``init()`` runs (FastAPI requires middleware
+    registration at app construction, which precedes lifespan startup).
     """
 
     def __init__(self, app, redis_client=None):
         super().__init__(app)
+        # Stash an explicit client if given (legacy/tests), otherwise we
+        # resolve at dispatch time.  Kept for backward compatibility with
+        # tests that inject a mock.
         self._redis = redis_client
 
+    async def _get_redis(self):
+        if self._redis is not None:
+            return self._redis
+        from app.infra.redis import client, is_enabled
+
+        return client if is_enabled() else None
+
     async def dispatch(self, request: Request, call_next) -> Response:
-        if self._redis is None:
+        redis_client = await self._get_redis()
+        if redis_client is None:
             return await call_next(request)
 
         path = request.url.path[:256]
@@ -58,9 +74,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key = f"bilirag:rl:{path}:{client_ip}:{window}"
 
         try:
-            current = await self._redis.incr(key)
+            current = await redis_client.incr(key)
             if current == 1:
-                await self._redis.expire(key, 2)  # TTL 2s to auto-cleanup
+                await redis_client.expire(key, 2)  # TTL 2s to auto-cleanup
 
             if current > burst:
                 logger.warning(

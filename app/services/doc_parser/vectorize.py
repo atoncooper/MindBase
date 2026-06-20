@@ -33,11 +33,11 @@ async def _push_status(
 ):
     """Fire-and-forget WebSocket push — never blocks the pipeline on failure."""
     try:
-        from app.routers.tasks_ws import broadcast_cloud_status
+        from app.services.ws_registry import broadcast_cloud_status
 
         await broadcast_cloud_status(uid, upload_uuid, status, chunk_count, error)
     except Exception:
-        logger.debug("[VECTORIZE] WS push skipped (no router loaded yet)")
+        logger.debug("[VECTORIZE] WS push skipped (registry unavailable)")
 
 
 async def vectorize_cloud_document(
@@ -92,10 +92,36 @@ async def vectorize_cloud_document(
         # mid-flight cannot poison the dedup check on retry.
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         if file.vector_status == "done" and file.content_hash == content_hash:
-            logger.info(
-                "[VECTORIZE] file %s already vectorized, content unchanged", upload_uuid
-            )
-            return file.vector_chunk_count or 0
+            # DB says done — but verify Milvus actually still has the
+            # vectors.  The cloud_drive collection may have been dropped
+            # +recreated by _ensure_collection on an embedding dim
+            # mismatch (e.g. after switching embedding models), which
+            # silently loses all vectors while the DB status stays
+            # "done".  Without this check the idempotency guard would
+            # skip re-vectorization forever and the file would be
+            # unsearchable.
+            rag = get_rag_service()
+            if rag.cloud_backend is not None:
+                actual = rag.cloud_backend.count_by_upload_uuid(upload_uuid)
+                if actual == 0:
+                    logger.warning(
+                        "[VECTORIZE] file %s marked done but Milvus has 0 chunks "
+                        "(collection likely recreated) — re-vectorizing",
+                        upload_uuid,
+                    )
+                    # Fall through to re-run the full pipeline.
+                else:
+                    logger.info(
+                        "[VECTORIZE] file %s already vectorized, content unchanged",
+                        upload_uuid,
+                    )
+                    return file.vector_chunk_count or 0
+            else:
+                logger.info(
+                    "[VECTORIZE] file %s already vectorized, content unchanged",
+                    upload_uuid,
+                )
+                return file.vector_chunk_count or 0
 
         file.vector_status = "processing"
         await db.commit()

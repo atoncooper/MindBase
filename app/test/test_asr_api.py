@@ -305,7 +305,7 @@ class TestGetASRStatus:
     @pytest.mark.asyncio
     async def test_status_pending(self, client, test_db):
         """pending 状态"""
-        from app.routers.asr import asr_tasks
+        from app.services.async_task.asr_task_registry import asr_tasks
 
         task_id = "test-task-pending"
         asr_tasks[task_id] = {

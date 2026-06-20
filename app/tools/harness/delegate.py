@@ -96,7 +96,10 @@ class DelegateToAgentTool:
         )
 
         try:
-            result = await self._lifecycle.invoke(
+            # Reentrant entry: the chat agent already holds the session lock,
+            # and asyncio.Lock is non-reentrant. Using plain invoke() would
+            # deadlock against the outer acquire.
+            result = await self._lifecycle.invoke_reentrant(
                 agent_name,
                 session_id,
                 timeout=self._timeout,

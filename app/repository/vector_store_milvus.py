@@ -1,6 +1,10 @@
 """
 Milvus vector store — implements VectorStoreBackend.
 
+Uses the modern ``MilvusClient`` function-style API (PyMilvus 2.4+).
+The legacy ORM-style ``Collection`` / ``utility`` API is deprecated and
+will be removed in PyMilvus 3.1.
+
 Supports dual-collection architecture:
   - bilibili_videos  (IVF_FLAT) — B站 video ASR content
   - cloud_drive      (IVF_PQ, IVF_FLAT cold-start) — cloud drive docs + video ASR
@@ -62,7 +66,15 @@ class MilvusVectorStore:
         self._embedding_fn = embedding_fn
         self._collection_name = collection_name
         self._is_cloud = collection_name == config.cloud_collection_name
-        self._collection = self._get_or_create_collection()
+        # Set to True by _ensure_collection when an existing collection was
+        # dropped + recreated (e.g. embedding dim mismatch after model
+        # change).  Callers (RAGService startup) check this flag to reset
+        # DB vectorization statuses — otherwise files stay marked "done"
+        # while their vectors are gone, and the idempotency check in
+        # vectorize.py prevents self-healing.
+        self.was_recreated = False
+        self._client = self._build_client()
+        self._ensure_collection()
 
     # ── VectorStoreBackend interface ──────────────────────────────
 
@@ -74,6 +86,12 @@ class MilvusVectorStore:
         partition_dt: datetime | None = None,
     ) -> int:
         if not documents:
+            return 0
+        if self._client is None:
+            logger.error(
+                "[MILVUS] add called on uninitialized client — skipping collection='{}'",
+                self._collection_name,
+            )
             return 0
 
         partition_name: str | None = None
@@ -88,39 +106,51 @@ class MilvusVectorStore:
             embeddings = self._embedding_fn.embed_documents(texts)
 
             if self._is_cloud:
-                data = [
-                    [doc.metadata.get("upload_uuid", "") for doc in batch],
-                    [doc.metadata.get("uid", 0) for doc in batch],
-                    [doc.metadata.get("chunk_index", 0) for doc in batch],
-                    [doc.metadata.get("chunk_id", "") for doc in batch],
-                    [doc.metadata.get("title", "") for doc in batch],
-                    [doc.metadata.get("source", "") for doc in batch],
-                    [doc.metadata.get("source_type", "") for doc in batch],
-                    [doc.metadata.get("section_title", "") for doc in batch],
-                    [doc.metadata.get("content_type", "") for doc in batch],
-                    [doc.page_content for doc in batch],
-                    embeddings,
+                rows = [
+                    {
+                        "upload_uuid": doc.metadata.get("upload_uuid", ""),
+                        "uid": doc.metadata.get("uid", 0),
+                        "chunk_index": doc.metadata.get("chunk_index", 0),
+                        "chunk_id": doc.metadata.get("chunk_id", ""),
+                        "title": doc.metadata.get("title", ""),
+                        "source": doc.metadata.get("source", ""),
+                        "source_type": doc.metadata.get("source_type", ""),
+                        "section_title": doc.metadata.get("section_title", ""),
+                        "content_type": doc.metadata.get("content_type", ""),
+                        "text": doc.page_content,
+                        "embedding": emb,
+                    }
+                    for doc, emb in zip(batch, embeddings)
                 ]
             else:
-                data = [
-                    [doc.metadata.get("bvid", "") for doc in batch],
-                    [doc.metadata.get("cid", 0) for doc in batch],
-                    [doc.metadata.get("page_index", 0) for doc in batch],
-                    [doc.metadata.get("chunk_index", 0) for doc in batch],
-                    [doc.metadata.get("chunk_id", "") for doc in batch],
-                    [doc.metadata.get("title", "") for doc in batch],
-                    [doc.metadata.get("page_title", "") for doc in batch],
-                    [doc.metadata.get("source", "") for doc in batch],
-                    [doc.metadata.get("section_title", "") for doc in batch],
-                    [doc.metadata.get("content_type", "") for doc in batch],
-                    [doc.metadata.get("url", "") for doc in batch],
-                    [doc.page_content for doc in batch],
-                    embeddings,
+                rows = [
+                    {
+                        "bvid": doc.metadata.get("bvid", ""),
+                        "cid": doc.metadata.get("cid", 0),
+                        "page_index": doc.metadata.get("page_index", 0),
+                        "chunk_index": doc.metadata.get("chunk_index", 0),
+                        "chunk_id": doc.metadata.get("chunk_id", ""),
+                        "title": doc.metadata.get("title", ""),
+                        "page_title": doc.metadata.get("page_title", ""),
+                        "source": doc.metadata.get("source", ""),
+                        "section_title": doc.metadata.get("section_title", ""),
+                        "content_type": doc.metadata.get("content_type", ""),
+                        "url": doc.metadata.get("url", ""),
+                        "text": doc.page_content,
+                        "embedding": emb,
+                    }
+                    for doc, emb in zip(batch, embeddings)
                 ]
 
-            mr = self._collection.insert(data, partition_name=partition_name)
-            self._collection.flush()
-            total += len(mr.primary_keys)
+            self._client.insert(
+                collection_name=self._collection_name,
+                data=rows,
+                partition_name=partition_name,
+            )
+            total += len(rows)
+
+        # Flush so that subsequent num_entities / stats reflect the new rows.
+        self._safe_flush()
 
         logger.info(
             "[MILVUS] added {} chunks to collection '{}' partition={}",
@@ -140,9 +170,9 @@ class MilvusVectorStore:
         partition_dt_start: datetime | None = None,
         partition_dt_end: datetime | None = None,
     ) -> list[Document]:
-        if self._collection is None:
+        if self._client is None:
             logger.error(
-                "[MILVUS] search called on uninitialized collection '{}' — returning empty results",
+                "[MILVUS] search called on uninitialized client — returning empty results collection='{}'",
                 self._collection_name,
             )
             return []
@@ -183,13 +213,15 @@ class MilvusVectorStore:
         output_fields = _CLOUD_DRIVE_FIELDS if self._is_cloud else _BILIBILI_FIELDS
 
         search_kwargs: dict[str, Any] = {
+            "collection_name": self._collection_name,
             "data": [query_embedding],
             "anns_field": "embedding",
-            "param": search_params,
+            "search_params": search_params,
             "limit": k,
-            "expr": expr,
             "output_fields": output_fields,
         }
+        if expr:
+            search_kwargs["filter"] = expr
         if partition_names:
             search_kwargs["partition_names"] = partition_names
 
@@ -199,42 +231,44 @@ class MilvusVectorStore:
             k,
             expr,
         )
-        results = self._collection.search(**search_kwargs)
+        results = self._client.search(**search_kwargs)
 
         docs: list[Document] = []
-        for hits in results:
-            for hit in hits:
-                entity = hit.entity
+        # MilvusClient search returns list[list[Hit]]; each Hit is a dict
+        # subclass supporting direct field access via hit.get(field).
+        for topk in results:
+            for hit in topk:
+                score = hit.get("distance", 0.0)
                 if self._is_cloud:
                     metadata = {
-                        "upload_uuid": entity.get("upload_uuid", ""),
-                        "uid": entity.get("uid", 0),
-                        "chunk_index": entity.get("chunk_index", 0),
-                        "chunk_id": entity.get("chunk_id", ""),
-                        "title": entity.get("title", ""),
-                        "source": entity.get("source", ""),
-                        "source_type": entity.get("source_type", ""),
-                        "section_title": entity.get("section_title", ""),
-                        "content_type": entity.get("content_type", ""),
-                        "score": hit.score,
+                        "upload_uuid": hit.get("upload_uuid", ""),
+                        "uid": hit.get("uid", 0),
+                        "chunk_index": hit.get("chunk_index", 0),
+                        "chunk_id": hit.get("chunk_id", ""),
+                        "title": hit.get("title", ""),
+                        "source": hit.get("source", ""),
+                        "source_type": hit.get("source_type", ""),
+                        "section_title": hit.get("section_title", ""),
+                        "content_type": hit.get("content_type", ""),
+                        "score": score,
                     }
                 else:
                     metadata = {
-                        "bvid": entity.get("bvid", ""),
-                        "cid": entity.get("cid", 0),
-                        "page_index": entity.get("page_index", 0),
-                        "chunk_index": entity.get("chunk_index", 0),
-                        "chunk_id": entity.get("chunk_id", ""),
-                        "title": entity.get("title", ""),
-                        "page_title": entity.get("page_title", ""),
-                        "source": entity.get("source", ""),
-                        "section_title": entity.get("section_title", ""),
-                        "content_type": entity.get("content_type", ""),
-                        "url": entity.get("url", ""),
-                        "score": hit.score,
+                        "bvid": hit.get("bvid", ""),
+                        "cid": hit.get("cid", 0),
+                        "page_index": hit.get("page_index", 0),
+                        "chunk_index": hit.get("chunk_index", 0),
+                        "chunk_id": hit.get("chunk_id", ""),
+                        "title": hit.get("title", ""),
+                        "page_title": hit.get("page_title", ""),
+                        "source": hit.get("source", ""),
+                        "section_title": hit.get("section_title", ""),
+                        "content_type": hit.get("content_type", ""),
+                        "url": hit.get("url", ""),
+                        "score": score,
                     }
                 docs.append(
-                    Document(page_content=entity.get("text", ""), metadata=metadata)
+                    Document(page_content=hit.get("text", ""), metadata=metadata)
                 )
         return docs
 
@@ -243,6 +277,8 @@ class MilvusVectorStore:
         ids: list[str] | None = None,
         where: dict[str, Any] | None = None,
     ) -> int:
+        if self._client is None:
+            return 0
         if ids:
             expr = f"chunk_id in {_quote_list(ids)}"
         elif where:
@@ -250,33 +286,38 @@ class MilvusVectorStore:
         else:
             return 0
 
-        before = self._collection.num_entities
-        self._collection.delete(expr)
-        self._collection.flush()
-        after = self._collection.num_entities
-        return before - after
+        before = self._row_count()
+        self._client.delete(collection_name=self._collection_name, filter=expr)
+        self._safe_flush()
+        after = self._row_count()
+        return max(0, before - after)
 
     def count(self) -> int:
-        return self._collection.num_entities
+        return self._row_count()
 
     def delete_by_bvid(self, bvid: str) -> int:
         return self.delete(where={"bvid": bvid})
 
     def delete_by_upload_uuid(self, upload_uuid: str) -> int:
+        if self._client is None:
+            return 0
         expr = f'upload_uuid == "{_escape_expr(upload_uuid)}"'
-        before = self._collection.num_entities
-        self._collection.delete(expr)
-        self._collection.flush()
-        after = self._collection.num_entities
-        return before - after
+        before = self._row_count()
+        self._client.delete(collection_name=self._collection_name, filter=expr)
+        self._safe_flush()
+        after = self._row_count()
+        return max(0, before - after)
 
     def delete_by_page(self, bvid: str, page_index: int) -> int:
         return self.delete(where={"bvid": bvid, "page_index": page_index})
 
     def count_by_page(self, bvid: str, page_index: int) -> int:
+        if self._client is None:
+            return 0
         expr = f'bvid == "{_escape_expr(bvid)}" && page_index == {page_index}'
-        result = self._collection.query(
-            expr=expr,
+        result = self._client.query(
+            collection_name=self._collection_name,
+            filter=expr,
             output_fields=["id"],
             limit=10000,
             consistency_level="Strong",
@@ -284,9 +325,12 @@ class MilvusVectorStore:
         return len(result)
 
     def count_by_upload_uuid(self, upload_uuid: str) -> int:
+        if self._client is None:
+            return 0
         expr = f'upload_uuid == "{_escape_expr(upload_uuid)}"'
-        result = self._collection.query(
-            expr=expr,
+        result = self._client.query(
+            collection_name=self._collection_name,
+            filter=expr,
             output_fields=["id"],
             limit=10000,
             consistency_level="Strong",
@@ -294,11 +338,20 @@ class MilvusVectorStore:
         return len(result)
 
     def get_stats(self) -> dict:
+        if self._client is None:
+            return {
+                "total_chunks": 0,
+                "total_videos": 0,
+                "collection_name": self._collection_name,
+            }
         try:
-            total = self._collection.num_entities
+            total = self._row_count()
             id_field = "upload_uuid" if self._is_cloud else "bvid"
-            result = self._collection.query(
-                expr="id >= 0", output_fields=[id_field], limit=10000
+            result = self._client.query(
+                collection_name=self._collection_name,
+                filter="id >= 0",
+                output_fields=[id_field],
+                limit=10000,
             )
             unique_ids = set(r.get(id_field, "") for r in result)
             return {
@@ -315,28 +368,39 @@ class MilvusVectorStore:
             }
 
     def clear(self) -> None:
-        self._collection.delete("id >= 0")
-        self._collection.flush()
+        if self._client is None:
+            return
+        self._client.delete(
+            collection_name=self._collection_name, filter="id >= 0"
+        )
+        self._safe_flush()
         logger.info("[MILVUS] collection '{}' cleared", self._collection_name)
 
     def reset(self) -> None:
         """Drop and recreate the collection (e.g. after embedding model change)."""
-        from pymilvus import utility
-
-        if utility.has_collection(self._collection_name):
-            utility.drop_collection(self._collection_name)
+        if self._client is None:
+            return
+        if self._client.has_collection(self._collection_name):
+            self._client.drop_collection(self._collection_name)
             logger.info(
                 "[MILVUS] collection '{}' dropped for reset", self._collection_name
             )
-        self._collection = self._get_or_create_collection()
+        self._ensure_collection()
 
     def close(self) -> None:
-        pass
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
 
     def _ensure_partition(self, name: str) -> None:
         """Create a partition if it doesn't already exist."""
-        if not self._collection.has_partition(name):
-            self._collection.create_partition(name)
+        if self._client is None:
+            return
+        if not self._client.has_partition(self._collection_name, name):
+            self._client.create_partition(self._collection_name, name)
             logger.info(
                 "[MILVUS] partition '{}' created in collection '{}'",
                 name,
@@ -349,9 +413,11 @@ class MilvusVectorStore:
         Returns ``None`` if no requested partitions exist (falls back to
         searching the default partition) or the filtered list otherwise.
         """
-        if not names:
+        if self._client is None or not names:
             return None
-        existing = [n for n in names if self._collection.has_partition(n)]
+        existing = [
+            n for n in names if self._client.has_partition(self._collection_name, n)
+        ]
         if not existing:
             logger.warning(
                 "[MILVUS] none of the requested partitions {} exist in '{}', "
@@ -371,19 +437,59 @@ class MilvusVectorStore:
 
     # ── internals ─────────────────────────────────────────────────
 
-    def _get_or_create_collection(self):
-        from pymilvus import Collection, CollectionSchema, utility
+    def _build_client(self):
+        from pymilvus import MilvusClient
+
+        kwargs: dict[str, Any] = {"uri": self._config.uri}
+        if self._config.token:
+            kwargs["token"] = self._config.token
+        try:
+            return MilvusClient(**kwargs)
+        except Exception as e:
+            logger.error(
+                "[MILVUS] failed to connect '{}': {} — vector search will return empty results",
+                self._config.uri,
+                str(e),
+            )
+            return None
+
+    def _row_count(self) -> int:
+        if self._client is None:
+            return 0
+        try:
+            stats = self._client.get_collection_stats(self._collection_name)
+            return int(stats.get("row_count", 0))
+        except Exception as e:
+            logger.debug("[MILVUS] get_collection_stats failed: {}", e)
+            return 0
+
+    def _safe_flush(self) -> None:
+        """Best-effort flush so counts/stats reflect pending writes."""
+        if self._client is None:
+            return
+        try:
+            self._client.flush(self._collection_name)
+        except Exception as e:
+            logger.debug("[MILVUS] flush failed (ignored): {}", e)
+
+    def _ensure_collection(self) -> None:
+        """Load or create the target collection, auto-fixing dim mismatch."""
+        if self._client is None:
+            return
 
         try:
-            if utility.has_collection(self._collection_name):
-                col = Collection(self._collection_name)
-                col.load()
+            if self._client.has_collection(self._collection_name):
                 # Auto-fix: if existing collection dim doesn't match configured dim,
                 # drop and recreate (e.g. after embedding model change).
+                desc = self._client.describe_collection(self._collection_name)
                 expected_dim = self._config.dimension
-                for field in col.schema.fields:
-                    if field.name == "embedding":
-                        existing_dim = field.params.get("dim", 0)
+                for field in desc.get("fields", []):
+                    if field.get("name") == "embedding":
+                        params = field.get("params") or field.get("typeParams") or {}
+                        try:
+                            existing_dim = int(params.get("dim", 0))
+                        except (TypeError, ValueError):
+                            existing_dim = 0
                         if existing_dim not in (0, expected_dim):
                             logger.warning(
                                 "[MILVUS] collection '{}' has dim={}, expected={}, dropping to recreate",
@@ -391,39 +497,41 @@ class MilvusVectorStore:
                                 existing_dim,
                                 expected_dim,
                             )
-                            utility.drop_collection(self._collection_name)
+                            self._client.drop_collection(self._collection_name)
+                            # Signal callers that all prior vectors are gone
+                            # — DB vectorization statuses must be reset so
+                            # files get re-vectorized instead of being
+                            # skipped by the idempotency check.
+                            self.was_recreated = True
                             break
                 else:
+                    self._client.load_collection(self._collection_name)
                     logger.info(
                         "[MILVUS] collection '{}' loaded ({} entities)",
                         self._collection_name,
-                        col.num_entities,
+                        self._row_count(),
                     )
-                    return col
+                    return
 
+            # Create new collection
             if self._is_cloud:
-                fields = self._build_cloud_drive_schema()
-                description = "Cloud drive document & video vector chunks"
+                schema = self._build_cloud_drive_schema()
             else:
-                fields = self._build_bilibili_schema()
-                description = "Bilibili RAG video chunks"
-
-            schema = CollectionSchema(
-                fields, description=description, enable_dynamic_field=True
-            )
-            col = Collection(self._collection_name, schema)
+                schema = self._build_bilibili_schema()
 
             index_params = self._get_index_params(self._collection_name, 0)
-            col.create_index("embedding", index_params)
-            col.load()
+            self._client.create_collection(
+                collection_name=self._collection_name,
+                schema=schema,
+                index_params=index_params,
+            )
 
             logger.info(
                 "[MILVUS] collection '{}' created (dim={}, index={})",
                 self._collection_name,
                 self._config.dimension,
-                index_params["index_type"],
+                self._index_type_for_logging(self._collection_name, 0),
             )
-            return col
 
         except Exception as e:
             logger.error(
@@ -431,57 +539,72 @@ class MilvusVectorStore:
                 self._collection_name,
                 str(e),
             )
-            return None
 
-    def _build_bilibili_schema(self) -> list:
-        from pymilvus import DataType, FieldSchema
+    def _build_bilibili_schema(self):
+        from pymilvus import DataType
 
-        return [
-            FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-            FieldSchema(name="bvid", dtype=DataType.VARCHAR, max_length=20),
-            FieldSchema(name="cid", dtype=DataType.INT64),
-            FieldSchema(name="page_index", dtype=DataType.INT64),
-            FieldSchema(name="chunk_index", dtype=DataType.INT64),
-            FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="page_title", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="section_title", dtype=DataType.VARCHAR, max_length=256),
-            FieldSchema(name="content_type", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="url", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(
-                name="embedding",
-                dtype=DataType.FLOAT_VECTOR,
-                dim=self._config.dimension,
-            ),
-        ]
+        schema = self._client.create_schema(enable_dynamic_field=True)
+        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True)
+        schema.add_field(field_name="bvid", datatype=DataType.VARCHAR, max_length=20)
+        schema.add_field(field_name="cid", datatype=DataType.INT64)
+        schema.add_field(field_name="page_index", datatype=DataType.INT64)
+        schema.add_field(field_name="chunk_index", datatype=DataType.INT64)
+        schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="title", datatype=DataType.VARCHAR, max_length=512)
+        schema.add_field(field_name="page_title", datatype=DataType.VARCHAR, max_length=512)
+        schema.add_field(field_name="source", datatype=DataType.VARCHAR, max_length=32)
+        schema.add_field(field_name="section_title", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(field_name="content_type", datatype=DataType.VARCHAR, max_length=32)
+        schema.add_field(field_name="url", datatype=DataType.VARCHAR, max_length=512)
+        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(
+            field_name="embedding",
+            datatype=DataType.FLOAT_VECTOR,
+            dim=self._config.dimension,
+        )
+        return schema
 
-    def _build_cloud_drive_schema(self) -> list:
-        from pymilvus import DataType, FieldSchema
+    def _build_cloud_drive_schema(self):
+        from pymilvus import DataType
 
-        return [
-            FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-            FieldSchema(name="upload_uuid", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="uid", dtype=DataType.INT64),
-            FieldSchema(name="chunk_index", dtype=DataType.INT64),
-            FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=128),
-            FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="source_type", dtype=DataType.VARCHAR, max_length=16),
-            FieldSchema(name="section_title", dtype=DataType.VARCHAR, max_length=256),
-            FieldSchema(name="content_type", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(
-                name="embedding",
-                dtype=DataType.FLOAT_VECTOR,
-                dim=self._config.dimension,
-            ),
-        ]
+        schema = self._client.create_schema(enable_dynamic_field=True)
+        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True)
+        schema.add_field(field_name="upload_uuid", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="uid", datatype=DataType.INT64)
+        schema.add_field(field_name="chunk_index", datatype=DataType.INT64)
+        schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, max_length=128)
+        schema.add_field(field_name="title", datatype=DataType.VARCHAR, max_length=512)
+        schema.add_field(field_name="source", datatype=DataType.VARCHAR, max_length=32)
+        schema.add_field(field_name="source_type", datatype=DataType.VARCHAR, max_length=16)
+        schema.add_field(field_name="section_title", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(field_name="content_type", datatype=DataType.VARCHAR, max_length=32)
+        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(
+            field_name="embedding",
+            datatype=DataType.FLOAT_VECTOR,
+            dim=self._config.dimension,
+        )
+        return schema
 
-    def _get_index_params(
+    def _get_index_params(self, collection_name: str, current_vector_count: int):
+        """Build an ``IndexParams`` object for the embedding field."""
+        index_type, params = self._resolve_index_config(collection_name, current_vector_count)
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(
+            field_name="embedding",
+            index_type=index_type,
+            metric_type=self._config.metric_type,
+            params=params,
+        )
+        return index_params
+
+    def _index_type_for_logging(self, collection_name: str, current_vector_count: int) -> str:
+        index_type, _ = self._resolve_index_config(collection_name, current_vector_count)
+        return index_type
+
+    def _resolve_index_config(
         self, collection_name: str, current_vector_count: int
-    ) -> dict:
+    ) -> tuple[str, dict[str, Any]]:
         if (
             collection_name == self._config.cloud_collection_name
             and current_vector_count < IVF_PQ_COLD_START_THRESHOLD
@@ -491,23 +614,11 @@ class MilvusVectorStore:
                 current_vector_count,
                 IVF_PQ_COLD_START_THRESHOLD,
             )
-            return {
-                "metric_type": self._config.metric_type,
-                "index_type": "IVF_FLAT",
-                "params": {"nlist": 128},
-            }
+            return "IVF_FLAT", {"nlist": 128}
         elif collection_name == self._config.cloud_collection_name:
-            return {
-                "metric_type": self._config.metric_type,
-                "index_type": "IVF_PQ",
-                "params": {"nlist": 1024, "m": 48, "nbits": 8},
-            }
+            return "IVF_PQ", {"nlist": 1024, "m": 48, "nbits": 8}
         else:
-            return {
-                "metric_type": self._config.metric_type,
-                "index_type": self._config.index_type,
-                "params": {"nlist": self._config.nlist},
-            }
+            return self._config.index_type, {"nlist": self._config.nlist}
 
     def _build_filter_expr(self, filter: dict[str, Any]) -> str:
         parts: list[str] = []

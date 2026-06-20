@@ -13,7 +13,7 @@ from loguru import logger
 
 from app.services.asr import ASRService
 from app.services.bilibili import BilibiliService
-from app.routers.asr import asr_tasks
+from app.services.async_task.asr_task_registry import asr_tasks
 from app.database import get_db_context
 from app.models import Video, VideoVersion
 from app.infra.mongo import is_enabled as mongo_enabled

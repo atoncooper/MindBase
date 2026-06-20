@@ -1,5 +1,9 @@
-"""
-WebSocket endpoint for real-time async task status streaming.
+"""WebSocket endpoint for real-time async task status streaming.
+
+Connection state (the per-uid socket pool) and broadcast fan-out live in
+``app.services.ws_registry`` so that service-layer code can push status
+without importing this router.  This module only owns the WS endpoint,
+auth, and the per-connection read loop.
 
 Security:
   - Token-based auth: client passes ?token=<bearer_token>, server validates
@@ -19,18 +23,13 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from loguru import logger
 
+from app.services import ws_registry
 from app.services.async_task.cache import get_cached_tasks, get_cached_task
 from app.services.auth.token import validate_token as _validate_token
 
 router = APIRouter()
 
 PUSH_INTERVAL = 5  # seconds between cache re-checks
-MAX_PER_UID = 3  # max concurrent connections per user
-MAX_TOTAL = 50  # max total connections
-
-# Connected clients: {uid: set[WebSocket]}
-_active_connections: dict[int, set[WebSocket]] = {}
-_total_count = 0
 
 
 def _sanitize_token(raw: str) -> str:
@@ -62,17 +61,6 @@ async def _authenticate_websocket(
     return uid
 
 
-def _check_connection_limits(uid: int) -> bool:
-    """Return False if connection limits exceeded (should reject)."""
-    global _total_count
-    if _total_count >= MAX_TOTAL:
-        return False
-    existing = len(_active_connections.get(uid, set()))
-    if existing >= MAX_PER_UID:
-        return False
-    return True
-
-
 @router.websocket("/ws/tasks")
 async def task_stream(
     websocket: WebSocket,
@@ -88,7 +76,7 @@ async def task_stream(
       {"action": "filter", "task_type": "...", "status": "..."} → filtered list
     """
     # ── Connection limit (before accept, reject early) ──
-    if _total_count >= MAX_TOTAL:
+    if ws_registry.total_count() >= ws_registry.MAX_TOTAL:
         await websocket.close(code=4002, reason="Server connection limit reached")
         return
 
@@ -103,27 +91,28 @@ async def task_stream(
     # ── Per-uid limit / dedup ──
     # If the user already has connections, close the OLDEST ones before adding new.
     # This handles client-side reconnect without proper cleanup (e.g. React StrictMode).
-    existing = _active_connections.get(uid, set())
-    if len(existing) >= MAX_PER_UID:
-        to_close = list(existing)[: len(existing) - MAX_PER_UID + 1]
-        for old_ws in to_close:
+    existing = ws_registry.connections_for(uid)
+    if len(existing) >= ws_registry.MAX_PER_UID:
+        evicted = ws_registry.evict_oldest(
+            uid, keep=ws_registry.MAX_PER_UID
+        )
+        for old_ws in evicted:
             try:
                 await old_ws.close(code=4003, reason="Superseded by newer connection")
             except Exception:
                 pass
-            existing.discard(old_ws)
-        logger.info(f"[TaskWS] uid={uid} evicted {len(to_close)} stale connections")
+        if evicted:
+            logger.info(f"[TaskWS] uid={uid} evicted {len(evicted)} stale connections")
 
-    if _total_count >= MAX_TOTAL:
+    if ws_registry.total_count() >= ws_registry.MAX_TOTAL:
         await websocket.close(code=4002, reason="Server connection limit reached")
         logger.warning(f"[TaskWS] rejected uid={uid} — server total limit exceeded")
         return
 
-    _active_connections.setdefault(uid, set()).add(websocket)
-    _update_total()
+    ws_registry.register(uid, websocket)
     logger.info(
         f"[TaskWS] connected uid={uid} "
-        f"(user_conns={len(_active_connections[uid])} total={_total_count})"
+        f"(user_conns={len(ws_registry.connections_for(uid))} total={ws_registry.total_count()})"
     )
 
     last_cache_hash = 0
@@ -197,73 +186,4 @@ async def task_stream(
     except Exception:
         logger.exception("[TaskWS] error uid={}", uid)
     finally:
-        _active_connections.get(uid, set()).discard(websocket)
-        if not _active_connections.get(uid):
-            _active_connections.pop(uid, None)
-        _update_total()
-
-
-def _update_total() -> None:
-    global _total_count
-    _total_count = sum(len(v) for v in _active_connections.values())
-
-
-async def broadcast_task_update(uid: int, task: dict) -> None:
-    """Push a task update to all connected clients for a user."""
-    connections = _active_connections.get(uid, set())
-    if not connections:
-        return
-    dead: list[WebSocket] = []
-    for ws in connections:
-        try:
-            await ws.send_json({"type": "task_update", "task": task})
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        connections.discard(ws)
-    if dead:
-        _update_total()
-
-
-async def broadcast_cloud_status(
-    uid: int,
-    upload_uuid: str,
-    status: str,
-    chunk_count: int = 0,
-    error: str = "",
-) -> None:
-    """Push cloud file vectorization status to all of a user's WS connections."""
-    connections = _active_connections.get(uid, set())
-    if not connections:
-        logger.debug("[CLOUD_WS] no connections for uid={}, status not pushed", uid)
-        return
-
-    payload = json.dumps(
-        {
-            "type": "cloud_processing",
-            "upload_uuid": upload_uuid,
-            "status": status,
-            "chunk_count": chunk_count,
-            "error": error,
-            "timestamp": time.time(),
-        }
-    )
-
-    dead: list[WebSocket] = []
-    for ws in connections:
-        try:
-            await ws.send_text(payload)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        connections.discard(ws)
-    if dead:
-        _update_total()
-
-    logger.info(
-        "[CLOUD_WS] pushed status={} upload_uuid={} to uid={} ({} conns)",
-        status,
-        upload_uuid,
-        uid,
-        len(connections),
-    )
+        ws_registry.unregister(uid, websocket)

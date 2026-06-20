@@ -12,6 +12,7 @@ from loguru import logger
 import sys
 import os
 import uuid
+from typing import Any
 
 from app.config import settings, ensure_directories
 
@@ -266,6 +267,14 @@ async def lifespan(app: FastAPI):
     await _recover_stuck_cloud_tasks()
 
     # === Agent Harness 启动 ===
+    # Failure modes (stored on app.state so /health and request-time 503s can
+    # surface the real reason instead of a generic "unavailable"):
+    #   - LLM not configured → state.agent_harness_status = "skipped"
+    #   - start() raised     → state.agent_harness_status = "failed"
+    #                         + state.agent_harness_error = "<msg>"
+    #   - success            → state.agent_harness_status = "started"
+    app.state.agent_harness_status = "skipped"
+    app.state.agent_harness_error = None
     try:
         from app.context import init_context_manager
         from app.harness import AgentHarness
@@ -282,6 +291,7 @@ async def lifespan(app: FastAPI):
             )
             await _harness.start()
             app.state.agent_harness = _harness
+            app.state.agent_harness_status = "started"
             logger.info(
                 "[HARNESS] started agents={} tools={}",
                 _harness.lifecycle.registered_agents,
@@ -289,8 +299,28 @@ async def lifespan(app: FastAPI):
             )
         else:
             logger.warning("[HARNESS] LLM not configured — harness not started")
+            app.state.agent_harness_error = "LLM not configured (openai_api_key empty)"
     except Exception as e:
-        logger.warning(f"[HARNESS] startup failed (agents unavailable): {e}")
+        # ERROR + full traceback: a failed harness makes ALL chat endpoints
+        # return 503, so this is a service-impacting condition, not a warning.
+        logger.exception(f"[HARNESS] startup failed (agents unavailable): {e}")
+        app.state.agent_harness_status = "failed"
+        app.state.agent_harness_error = f"{type(e).__name__}: {e}"
+
+    # Register a health provider so the dispatcher's 503 can carry the real
+    # root cause (e.g. "ModuleNotFoundError: No module named 'langgraph'")
+    # instead of a generic "unavailable".
+    from app.services.chat.dispatcher import set_harness_health_provider
+
+    _app_state = app.state
+
+    def _harness_health() -> tuple[str, Any]:
+        return (
+            getattr(_app_state, "agent_harness_status", "unknown"),
+            getattr(_app_state, "agent_harness_error", None),
+        )
+
+    set_harness_health_provider(_harness_health)
 
     yield
 
@@ -394,16 +424,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Plan 0023: Rate limiting middleware (second line of defense after nginx)
+# Plan 0023: Rate limiting middleware (second line of defense after nginx).
+# The middleware lazy-resolves the Redis client at dispatch time, so it is
+# always safe to register — if Redis is disabled or not yet initialised it
+# simply passes requests through (nginx remains the first line of defense).
 try:
-    from app.infra.redis import redis_client
     from app.middleware.rate_limit import RateLimitMiddleware
 
-    if redis_client:
-        app.add_middleware(RateLimitMiddleware, redis_client=redis_client)
-        logger.info("[MAIN] RateLimitMiddleware registered (Redis backend)")
-    else:
-        logger.warning("[MAIN] RateLimitMiddleware skipped — Redis not available")
+    app.add_middleware(RateLimitMiddleware)
+    logger.info("[MAIN] RateLimitMiddleware registered (lazy Redis resolution)")
 except Exception as e:
     logger.warning("[MAIN] RateLimitMiddleware failed to init: {}", e)
 
@@ -452,9 +481,33 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
-    """健康检查"""
-    return {"status": "healthy"}
+async def health_check(request: Request):
+    """健康检查 — 包含 Agent Harness 状态。
+
+    harness 是所有 /chat/ask* 端点的前置依赖：它没起来，聊天接口
+    一律 503。把它的状态暴露给健康检查，让监控能及早告警，而不是
+    等到用户发请求时才发现。
+
+    status 取值：
+      - "healthy"  : harness 已启动
+      - "degraded" : harness 未启动（LLM 未配置 / 启动失败），
+                     非 chat 功能仍可用，chat 会 503
+    """
+    harness_status = getattr(request.app.state, "agent_harness_status", "unknown")
+    harness_error = getattr(request.app.state, "agent_harness_error", None)
+
+    healthy = harness_status == "started"
+    payload: dict[str, Any] = {
+        "status": "healthy" if healthy else "degraded",
+        "agent_harness": {
+            "status": harness_status,
+            "error": harness_error,
+        },
+    }
+    # 503 让负载均衡/监控把不健康实例摘掉，而不是继续转发 chat 请求过来。
+    if not healthy:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @app.get("/cache/stats")
