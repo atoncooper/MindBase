@@ -80,12 +80,24 @@ class FavoriteService:
         return await self._repo.list_folders_by_uid(uid, db)
 
     async def update_folder_selected(
-        self, folder_id: int, is_selected: bool, db: AsyncSession
-    ) -> None:
-        await self._repo.update_folder_selected(folder_id, is_selected, db)
+        self, folder_id: int, is_selected: bool, db: AsyncSession, *, uid: int
+    ) -> bool:
+        """Update is_selected; uid-scoped to prevent IDOR.
 
-    async def delete_folder(self, folder_id: int, db: AsyncSession) -> bool:
-        return await self._repo.soft_delete_folder(folder_id, db)
+        Returns False if the folder does not exist or does not belong to `uid`.
+        """
+        return await self._repo.update_folder_selected(
+            folder_id, is_selected, db, uid=uid
+        )
+
+    async def delete_folder(
+        self, folder_id: int, db: AsyncSession, *, uid: int
+    ) -> bool:
+        """Soft-delete; uid-scoped to prevent IDOR.
+
+        Returns False if the folder does not exist or does not belong to `uid`.
+        """
+        return await self._repo.soft_delete_folder(folder_id, db, uid=uid)
 
     # ── Videos (collection table, keyed by media_id + bvid) ──
 

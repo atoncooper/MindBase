@@ -73,19 +73,37 @@ class FavoriteRepository:
         return folder
 
     async def update_folder_selected(
-        self, folder_id: int, is_selected: bool, db: AsyncSession
-    ) -> None:
-        await db.execute(
+        self, folder_id: int, is_selected: bool, db: AsyncSession, *, uid: int
+    ) -> bool:
+        """Update is_selected; scoped by uid to prevent IDOR.
+
+        Returns False if the folder does not exist or does not belong to `uid`
+        — same semantics as `soft_delete_folder` so callers can raise 404.
+        """
+        result = await db.execute(
             update(FavoriteFolder)
-            .where(FavoriteFolder.id == folder_id)
+            .where(
+                FavoriteFolder.id == folder_id,
+                FavoriteFolder.uid == uid,
+                _ALIVE,
+            )
             .values(is_selected=is_selected, updated_at=datetime.now(timezone.utc))
         )
         await db.commit()
+        return result.rowcount > 0
 
-    async def soft_delete_folder(self, folder_id: int, db: AsyncSession) -> bool:
+    async def soft_delete_folder(
+        self, folder_id: int, db: AsyncSession, *, uid: int
+    ) -> bool:
+        """Soft-delete; scoped by uid to prevent IDOR. Returns False if the
+        folder does not exist or does not belong to `uid`."""
         result = await db.execute(
             update(FavoriteFolder)
-            .where(FavoriteFolder.id == folder_id, _ALIVE)
+            .where(
+                FavoriteFolder.id == folder_id,
+                FavoriteFolder.uid == uid,
+                _ALIVE,
+            )
             .values(deleted_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
         )
         await db.commit()

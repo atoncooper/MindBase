@@ -8,7 +8,9 @@ via LLM, and stores in arc_meta table (MySQL).
 from datetime import datetime, timezone
 from typing import Optional
 
+from fastapi import HTTPException
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Video, VideoMetadata
@@ -37,6 +39,24 @@ class MetadataService:
 
     def __init__(self, repo: Optional[VideoMetadataRepository] = None):
         self._repo = repo or get_video_metadata_repository()
+
+    async def get_video_page_id(
+        self, bvid: str, cid: int, db: AsyncSession
+    ) -> int:
+        """Resolve a (bvid, cid) pair to its video.id.
+
+        Raises HTTPException(404) if the page does not exist — saves the
+        router from doing inline select(Video) lookups.
+        """
+        result = await db.execute(
+            select(Video.id).where(Video.bvid == bvid, Video.cid == cid)
+        )
+        page_id = result.scalar_one_or_none()
+        if page_id is None:
+            raise HTTPException(
+                status_code=404, detail="Video page not found"
+            )
+        return page_id
 
     async def get_metadata(
         self, video_id: int, db: AsyncSession
