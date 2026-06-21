@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft, Trash2 } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft, Trash2, Share2, Copy, Link as LinkIcon, CircleAlert } from "lucide-react";
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogDescription,
+} from "@/components/ui/dialog";
 import {
     quizApi,
     favoritesV2Api,
@@ -14,6 +21,7 @@ import {
     type FolderStatus,
     type VectorizedPageItem,
     type QuizHistoryItem,
+    type QuizShareStatus,
 } from "@/lib/api";
 import { type DockPanelProps } from "@/lib/dock-registry";
 import { useDockContext } from "@/lib/dock-context";
@@ -23,6 +31,12 @@ const TYPE_LABELS: Record<string, string> = {
     multi_choice: "多选",
     short_answer: "简答",
     essay: "主观",
+};
+
+const DIFFICULTY_LABELS: Record<string, string> = {
+    easy: "简单",
+    medium: "中等",
+    hard: "困难",
 };
 
 interface FolderInfo {
@@ -35,42 +49,42 @@ interface FolderInfo {
 export default function QuizPanel({ isOpen }: DockPanelProps) {
     const { sessionId } = useDockContext();
 
-    // Mode
     const [mode, setMode] = useState<"folder" | "pages">("folder");
 
-    // Folder list
     const [folders, setFolders] = useState<FolderInfo[]>([]);
     const [loadingFolders, setLoadingFolders] = useState(false);
     const [selectedFolderIds, setSelectedFolderIds] = useState<Set<number>>(new Set());
 
-    // Pages mode: vectorized pages list
     const [vectorizedPages, setVectorizedPages] = useState<VectorizedPageItem[]>([]);
     const [loadingPages, setLoadingPages] = useState(false);
     const [selectedPageKeys, setSelectedPageKeys] = useState<Set<string>>(new Set());
 
-    // Generation config
     const [questionCount, setQuestionCount] = useState(10);
     const [difficulty, setDifficulty] = useState("medium");
     const [generating, setGenerating] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // Current quiz
     const [currentQuiz, setCurrentQuiz] = useState<QuizSetData | null>(null);
     const [userAnswers, setUserAnswers] = useState<Map<string, string | string[]>>(new Map());
     const [submitting, setSubmitting] = useState(false);
     const [submitResult, setSubmitResult] = useState<QuizSubmissionResult | null>(null);
 
-    // Review mode (viewing a past quiz)
     const [isReviewMode, setIsReviewMode] = useState(false);
     const [reviewCorrectAnswers, setReviewCorrectAnswers] = useState<Map<string, string | string[]>>(new Map());
 
-    // History
     const [showHistory, setShowHistory] = useState(false);
     const [historyItems, setHistoryItems] = useState<QuizHistoryItem[]>([]);
     const [loadingHistory, setLoadingHistory] = useState(false);
     const [deletingQuizUuid, setDeletingQuizUuid] = useState<string | null>(null);
 
-    // Fetch folders on open
+    // Share modal state
+    const [shareModalUuid, setShareModalUuid] = useState<string | null>(null);
+    const [shareStatus, setShareStatus] = useState<QuizShareStatus | null>(null);
+    const [shareLoading, setShareLoading] = useState(false);
+    const [shareError, setShareError] = useState<string | null>(null);
+    const [shareDuration, setShareDuration] = useState<number | "">("");
+    const [copied, setCopied] = useState(false);
+
     useEffect(() => {
         if (!isOpen || !sessionId) return;
         setLoadingFolders(true);
@@ -90,7 +104,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                 }));
                 setFolders(merged);
 
-                // Pre-select folders that have indexed data
                 const preSelected = new Set<number>();
                 for (const f of merged) {
                     if (f.indexed_count > 0) preSelected.add(f.media_id);
@@ -101,7 +114,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
             .finally(() => setLoadingFolders(false));
     }, [isOpen, sessionId]);
 
-    // Reset when closed
     useEffect(() => {
         if (!isOpen) {
             setCurrentQuiz(null);
@@ -124,14 +136,12 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         });
     }, []);
 
-    // ────── Pages mode: fetch vectorized pages on mode switch ──────
     const fetchVectorizedPages = useCallback(async () => {
         setLoadingPages(true);
         setError(null);
         try {
             const pages = await knowledgeApi.getVectorizedPages();
             setVectorizedPages(pages);
-            // Pre-select all vectorized pages
             const keys = new Set<string>();
             for (const p of pages) {
                 keys.add(`${p.bvid}:${p.page_index}`);
@@ -144,7 +154,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         }
     }, []);
 
-    // Fetch pages when switching to pages mode
     useEffect(() => {
         if (mode === "pages" && isOpen) {
             fetchVectorizedPages();
@@ -167,7 +176,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         setSelectedPageKeys(new Set(allSelected ? [] : allKeys));
     }, [vectorizedPages, selectedPageKeys]);
 
-    // ────── Generate ──────
     const handleGenerate = useCallback(async () => {
         if (!sessionId) {
             setError("未登录");
@@ -270,7 +278,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         [sessionId]
     );
 
-    // Download a specific quiz with answers
     const handleDownloadQuiz = useCallback(async (quizUuid: string, title: string) => {
         try {
             const quiz = await quizApi.getQuiz(quizUuid, true);
@@ -286,7 +293,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         }
     }, []);
 
-    // Fetch quiz history
     const fetchHistory = useCallback(async () => {
         if (!sessionId) return;
         setLoadingHistory(true);
@@ -300,7 +306,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         }
     }, [sessionId]);
 
-    // View a past quiz (review mode)
     const handleViewPastQuiz = useCallback(async (quizUuid: string) => {
         try {
             const quiz = await quizApi.getQuiz(quizUuid, true);
@@ -322,7 +327,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
 
     const handleRetakeQuiz = useCallback(async (quizUuid: string) => {
         try {
-            const quiz = await quizApi.getQuiz(quizUuid, false);  // no answers
+            const quiz = await quizApi.getQuiz(quizUuid, false);
             setReviewCorrectAnswers(new Map());
             setCurrentQuiz(quiz);
             setIsReviewMode(false);
@@ -363,7 +368,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         }
     }, [currentQuiz]);
 
-    // Back to generate from review
     const handleBackToGenerate = useCallback(() => {
         setCurrentQuiz(null);
         setIsReviewMode(false);
@@ -371,6 +375,105 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         setUserAnswers(new Map());
         setReviewCorrectAnswers(new Map());
     }, []);
+
+    const shareUrl = useCallback(
+        (token: string) => {
+            if (typeof window === "undefined") return `/quiz/share-view/${token}`;
+            return `${window.location.origin}/quiz/share-view/${token}`;
+        },
+        [],
+    );
+
+    const handleOpenShare = useCallback(async (quizUuid: string) => {
+        setShareModalUuid(quizUuid);
+        setShareStatus(null);
+        setShareError(null);
+        setShareDuration("");
+        setCopied(false);
+        setShareLoading(true);
+        try {
+            const status = await quizApi.getShareStatus(quizUuid);
+            setShareStatus(status);
+        } catch (e) {
+            setShareError(e instanceof Error ? e.message : "获取分享状态失败");
+        } finally {
+            setShareLoading(false);
+        }
+    }, []);
+
+    const handleCloseShare = useCallback(() => {
+        setShareModalUuid(null);
+        setShareStatus(null);
+        setShareError(null);
+        setShareDuration("");
+        setCopied(false);
+    }, []);
+
+    const handleCreateShare = useCallback(async () => {
+        if (!shareModalUuid) return;
+        const days =
+            shareDuration === "" ? null : Number(shareDuration);
+        if (days !== null && (!Number.isFinite(days) || days < 1 || days > 365)) {
+            setShareError("有效期必须在 1~365 天之间");
+            return;
+        }
+        setShareLoading(true);
+        setShareError(null);
+        try {
+            const res = await quizApi.createShare(shareModalUuid, days);
+            const status: QuizShareStatus = {
+                quiz_uuid: res.quiz_uuid,
+                shared: true,
+                share_token: res.share_token,
+                shared_at: res.shared_at,
+                share_expires_at: res.share_expires_at,
+                expired: false,
+            };
+            setShareStatus(status);
+            setCopied(false);
+        } catch (e) {
+            setShareError(e instanceof Error ? e.message : "创建分享失败");
+        } finally {
+            setShareLoading(false);
+        }
+    }, [shareModalUuid, shareDuration]);
+
+    const handleRevokeShare = useCallback(async () => {
+        if (!shareModalUuid) return;
+        if (!window.confirm("确定撤销分享？撤销后已分享的链接立即失效。")) return;
+        setShareLoading(true);
+        setShareError(null);
+        try {
+            await quizApi.revokeShare(shareModalUuid);
+            setShareStatus({ quiz_uuid: shareModalUuid, shared: false });
+            setCopied(false);
+        } catch (e) {
+            setShareError(e instanceof Error ? e.message : "撤销失败");
+        } finally {
+            setShareLoading(false);
+        }
+    }, [shareModalUuid]);
+
+    const handleCopyShareLink = useCallback(async () => {
+        if (!shareStatus?.share_token) return;
+        const url = shareUrl(shareStatus.share_token);
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(url);
+            } else {
+                const ta = document.createElement("textarea");
+                ta.value = url;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+            }
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch {
+            setShareError("复制失败，请手动复制链接");
+        }
+    }, [shareStatus, shareUrl]);
 
     const isAllAnswered =
         currentQuiz?.questions.every((q) => {
@@ -385,38 +488,16 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     const selectedFolderCount = selectedFolderIds.size;
     const hasIndexedFolders = folders.some((f) => f.indexed_count > 0);
 
-    // Pages mode stats
     const totalPageCount = vectorizedPages.length;
     const selectedPageCount = selectedPageKeys.size;
     const allPagesSelected = totalPageCount > 0 && selectedPageCount === totalPageCount;
 
     return (
-        <div style={{ color: "var(--foreground)", padding: "16px", overflow: "auto", flex: 1 }}>
+        <div className="quiz" style={{ color: "var(--foreground)", padding: "16px", overflow: "auto", flex: 1 }}>
             {error && (
-                <div
-                    style={{
-                        color: "var(--danger)",
-                        background: "var(--danger-bg)",
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        marginBottom: "12px",
-                        fontSize: "14px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                    }}
-                >
+                <div className="quiz-error">
                     <span>{error}</span>
-                    <button
-                        onClick={() => setError(null)}
-                        style={{
-                            background: "none",
-                            border: "none",
-                            color: "var(--danger)",
-                            cursor: "pointer",
-                            fontSize: "16px",
-                        }}
-                    >
+                    <button className="quiz-error__close" onClick={() => setError(null)} aria-label="关闭">
                         ✕
                     </button>
                 </div>
@@ -424,155 +505,66 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
 
             {!currentQuiz ? (
                 <div>
-                    {/* Mode toggle */}
-                    <div
-                        style={{
-                            display: "flex",
-                            background: "var(--card)",
-                            borderRadius: "10px",
-                            padding: "3px",
-                            marginBottom: "16px",
-                            border: "1px solid var(--border)",
-                        }}
-                    >
+                    <div className="quiz-seg" data-mode={mode}>
+                        <span className="quiz-seg__indicator" />
                         <button
+                            className="quiz-seg__btn"
+                            data-active={mode === "folder"}
                             onClick={() => setMode("folder")}
-                            style={{
-                                flex: 1,
-                                padding: "8px 0",
-                                borderRadius: "8px",
-                                border: "none",
-                                cursor: "pointer",
-                                fontSize: "13px",
-                                fontWeight: 600,
-                                background: mode === "folder"
-                                    ? "linear-gradient(180deg, rgba(6,182,212,0.18) 0%, rgba(6,182,212,0.1) 100%)"
-                                    : "transparent",
-                                color: mode === "folder" ? "var(--accent)" : "var(--muted-foreground)",
-                            }}
                         >
-                            <Database size={14} style={{ display: "inline", marginRight: "4px" }} />
+                            <Database size={14} />
                             按收藏夹
                         </button>
                         <button
+                            className="quiz-seg__btn"
+                            data-active={mode === "pages"}
                             onClick={() => setMode("pages")}
-                            style={{
-                                flex: 1,
-                                padding: "8px 0",
-                                borderRadius: "8px",
-                                border: "none",
-                                cursor: "pointer",
-                                fontSize: "13px",
-                                fontWeight: 600,
-                                background: mode === "pages"
-                                    ? "linear-gradient(180deg, rgba(6,182,212,0.18) 0%, rgba(6,182,212,0.1) 100%)"
-                                    : "transparent",
-                                color: mode === "pages" ? "var(--accent)" : "var(--muted-foreground)",
-                            }}
                         >
-                            <Layers size={14} style={{ display: "inline", marginRight: "4px" }} />
+                            <Layers size={14} />
                             按分P
                         </button>
                     </div>
 
-                    {/* ────── Folder mode ────── */}
                     {mode === "folder" && (
                         <>
-                            <p
-                                style={{
-                                    fontSize: "13px",
-                                    color: "var(--muted-foreground)",
-                                    marginBottom: "8px",
-                                }}
-                            >
-                                选择已入库的收藏夹出题
-                            </p>
+                            <div className="quiz-hint">
+                                <span className="quiz-hint__text">选择已入库的收藏夹出题</span>
+                            </div>
 
                             {loadingFolders ? (
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: "8px",
-                                        padding: "16px",
-                                        color: "var(--muted-foreground)",
-                                        fontSize: "14px",
-                                    }}
-                                >
+                                <div className="quiz-loading">
                                     <Loader2 size={16} className="animate-spin" />
                                     加载收藏夹...
                                 </div>
                             ) : folders.length === 0 ? (
-                                <div
-                                    style={{
-                                        padding: "16px",
-                                        color: "var(--muted-foreground)",
-                                        fontSize: "14px",
-                                        textAlign: "center",
-                                    }}
-                                >
+                                <div className="quiz-empty">
                                     暂无收藏夹，请先在收藏夹面板中同步数据
                                 </div>
                             ) : (
-                                <div
-                                    style={{
-                                        maxHeight: "240px",
-                                        overflow: "auto",
-                                        marginBottom: "16px",
-                                        borderRadius: "10px",
-                                        border: "1px solid var(--border)",
-                                    }}
-                                >
+                                <div className="quiz-list">
                                     {folders.map((f) => (
                                         <label
                                             key={f.media_id}
-                                            style={{
-                                                display: "flex",
-                                                alignItems: "center",
-                                                justifyContent: "space-between",
-                                                padding: "10px 14px",
-                                                cursor: "pointer",
-                                                borderBottom: "1px solid var(--border)",
-                                                background: selectedFolderIds.has(f.media_id)
-                                                    ? "rgba(6,182,212,0.08)"
-                                                    : "transparent",
-                                            }}
+                                            className="quiz-list__item"
+                                            data-selected={selectedFolderIds.has(f.media_id)}
                                         >
-                                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                            <div className="quiz-list__main">
                                                 <input
                                                     type="checkbox"
+                                                    className="quiz-list__check"
                                                     checked={selectedFolderIds.has(f.media_id)}
                                                     onChange={() => toggleFolder(f.media_id)}
-                                                    style={{ accentColor: "var(--accent)" }}
                                                 />
                                                 <div>
-                                                    <div style={{ fontSize: "14px", fontWeight: 500 }}>
-                                                        {f.title}
-                                                    </div>
-                                                    <div
-                                                        style={{
-                                                            fontSize: "12px",
-                                                            color: "var(--muted-foreground)",
-                                                        }}
-                                                    >
-                                                        {f.media_count} 个视频
-                                                    </div>
+                                                    <div className="quiz-list__title">{f.title}</div>
+                                                    <div className="quiz-list__sub">{f.media_count} 个视频</div>
                                                 </div>
                                             </div>
                                             <span
-                                                style={{
-                                                    fontSize: "12px",
-                                                    padding: "2px 8px",
-                                                    borderRadius: "6px",
-                                                    background: f.indexed_count > 0
-                                                        ? "var(--success-bg)"
-                                                        : "rgba(107,114,128,0.1)",
-                                                    color: f.indexed_count > 0
-                                                        ? "var(--success)"
-                                                        : "var(--muted-foreground)",
-                                                }}
+                                                className="quiz-list__badge"
+                                                data-tone={f.indexed_count > 0 ? "success" : "muted"}
                                             >
-                                                <Database size={10} style={{ display: "inline", marginRight: "3px" }} />
+                                                <Database size={10} />
                                                 {f.indexed_count > 0 ? `${f.indexed_count} 已入库` : "未入库"}
                                             </span>
                                         </label>
@@ -584,147 +576,66 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                 generating={generating}
                                 disabled={selectedFolderCount === 0}
                                 onClick={handleGenerate}
-                                label={`生成题目 (${selectedFolderCount} 个收藏夹)`}
+                                label={`生成题目 · ${selectedFolderCount} 个收藏夹`}
                             />
 
                             {!hasIndexedFolders && folders.length > 0 && !loadingFolders && (
-                                <p
-                                    style={{
-                                        fontSize: "12px",
-                                        color: "var(--warning)",
-                                        textAlign: "center",
-                                        marginTop: "4px",
-                                    }}
-                                >
+                                <p style={{ fontSize: "12px", color: "var(--warning)", textAlign: "center", marginTop: "6px" }}>
                                     提示：需要先在收藏夹面板中将视频入库，才能生成题目
                                 </p>
                             )}
                         </>
                     )}
 
-                    {/* ────── Pages mode ────── */}
                     {mode === "pages" && (
                         <>
-                            <div
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    marginBottom: "8px",
-                                }}
-                            >
-                                <p
-                                    style={{
-                                        fontSize: "13px",
-                                        color: "var(--muted-foreground)",
-                                        margin: 0,
-                                    }}
-                                >
-                                    选择已向量化的分P出题
-                                </p>
+                            <div className="quiz-hint">
+                                <span className="quiz-hint__text">选择已向量化的分P出题</span>
                                 {totalPageCount > 0 && (
-                                    <button
-                                        onClick={toggleAllPages}
-                                        style={{
-                                            fontSize: "12px",
-                                            padding: "3px 10px",
-                                            borderRadius: "6px",
-                                            background: "var(--card)",
-                                            color: "var(--muted-foreground)",
-                                            border: "1px solid var(--border)",
-                                            cursor: "pointer",
-                                        }}
-                                    >
+                                    <button className="quiz-hint__action" onClick={toggleAllPages}>
                                         {allPagesSelected ? "取消全选" : "全选"}
                                     </button>
                                 )}
                             </div>
 
                             {loadingPages ? (
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: "8px",
-                                        padding: "16px",
-                                        color: "var(--muted-foreground)",
-                                        fontSize: "14px",
-                                    }}
-                                >
+                                <div className="quiz-loading">
                                     <Loader2 size={16} className="animate-spin" />
                                     加载分P列表...
                                 </div>
                             ) : vectorizedPages.length === 0 ? (
-                                <div
-                                    style={{
-                                        padding: "16px",
-                                        color: "var(--muted-foreground)",
-                                        fontSize: "14px",
-                                        textAlign: "center",
-                                    }}
-                                >
+                                <div className="quiz-empty">
                                     暂无已入库的分P，请先在收藏夹面板中同步入库
                                 </div>
                             ) : (
-                                <div
-                                    style={{
-                                        maxHeight: "300px",
-                                        overflow: "auto",
-                                        marginBottom: "16px",
-                                        borderRadius: "10px",
-                                        border: "1px solid var(--border)",
-                                    }}
-                                >
+                                <div className="quiz-list" style={{ maxHeight: "300px" }}>
                                     {vectorizedPages.map((p) => {
                                         const key = `${p.bvid}:${p.page_index}`;
                                         const isSelected = selectedPageKeys.has(key);
                                         return (
                                             <label
                                                 key={key}
-                                                style={{
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    justifyContent: "space-between",
-                                                    padding: "10px 14px",
-                                                    cursor: "pointer",
-                                                    borderBottom: "1px solid var(--border)",
-                                                    background: isSelected
-                                                        ? "rgba(6,182,212,0.08)"
-                                                        : "transparent",
-                                                }}
+                                                className="quiz-list__item"
+                                                data-selected={isSelected}
                                             >
-                                                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                                <div className="quiz-list__main">
                                                     <input
                                                         type="checkbox"
+                                                        className="quiz-list__check"
                                                         checked={isSelected}
                                                         onChange={() => togglePage(p.bvid, p.page_index)}
-                                                        style={{ accentColor: "var(--accent)" }}
                                                     />
                                                     <div>
-                                                        <div style={{ fontSize: "14px", fontWeight: 500 }}>
+                                                        <div className="quiz-list__title">
                                                             {p.page_title || `P${p.page_index + 1}`}
                                                         </div>
-                                                        <div
-                                                            style={{
-                                                                fontSize: "12px",
-                                                                color: "var(--muted-foreground)",
-                                                            }}
-                                                        >
+                                                        <div className="quiz-list__sub">
                                                             {p.video_title || p.bvid}
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <span
-                                                    style={{
-                                                        fontSize: "12px",
-                                                        padding: "2px 8px",
-                                                        borderRadius: "6px",
-                                                        background: "var(--success-bg)",
-                                                        color: "var(--success)",
-                                                        flexShrink: 0,
-                                                    }}
-                                                >
-                                                    <Database size={10} style={{ display: "inline", marginRight: "3px" }} />
+                                                <span className="quiz-list__badge" data-tone="success">
+                                                    <Database size={10} />
                                                     {p.vector_chunk_count} 块
                                                 </span>
                                             </label>
@@ -737,64 +648,29 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                 generating={generating}
                                 disabled={selectedPageCount === 0}
                                 onClick={handleGenerate}
-                                label={`生成题目 (${selectedPageCount} 个分P)`}
+                                label={`生成题目 · ${selectedPageCount} 个分P`}
                             />
                         </>
                     )}
 
-                    {/* Config — shared between modes */}
-                    <div style={{ display: "flex", gap: "12px", marginTop: "12px", marginBottom: "12px" }}>
-                        <div style={{ flex: 1 }}>
-                            <label
-                                style={{
-                                    fontSize: "13px",
-                                    color: "var(--muted-foreground)",
-                                    display: "block",
-                                    marginBottom: "6px",
-                                }}
-                            >
-                                题目数量
-                            </label>
+                    <div className="quiz-config">
+                        <div className="quiz-config__field">
+                            <label className="quiz-config__label">题目数量</label>
                             <input
                                 type="number"
                                 min={1}
                                 max={50}
                                 value={questionCount}
                                 onChange={(e) => setQuestionCount(Number(e.target.value))}
-                                style={{
-                                    width: "100%",
-                                    padding: "10px 12px",
-                                    borderRadius: "8px",
-                                    background: "var(--background)",
-                                    color: "var(--foreground)",
-                                    border: "1px solid var(--border)",
-                                    fontSize: "14px",
-                                }}
+                                className="quiz-config__input"
                             />
                         </div>
-                        <div style={{ flex: 1 }}>
-                            <label
-                                style={{
-                                    fontSize: "13px",
-                                    color: "var(--muted-foreground)",
-                                    display: "block",
-                                    marginBottom: "6px",
-                                }}
-                            >
-                                难度
-                            </label>
+                        <div className="quiz-config__field">
+                            <label className="quiz-config__label">难度</label>
                             <select
                                 value={difficulty}
                                 onChange={(e) => setDifficulty(e.target.value)}
-                                style={{
-                                    width: "100%",
-                                    padding: "10px 12px",
-                                    borderRadius: "8px",
-                                    background: "var(--background)",
-                                    color: "var(--foreground)",
-                                    border: "1px solid var(--border)",
-                                    fontSize: "14px",
-                                }}
+                                className="quiz-config__select"
                             >
                                 <option value="easy">简单</option>
                                 <option value="medium">中等</option>
@@ -803,195 +679,114 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                         </div>
                     </div>
 
-                    {/* Export area */}
-                    <div
-                        style={{
-                            marginTop: "24px",
-                            borderTop: "1px solid var(--border)",
-                            paddingTop: "16px",
-                        }}
-                    >
-                        <p
-                            style={{
-                                fontSize: "13px",
-                                color: "var(--muted-foreground)",
-                                marginBottom: "8px",
-                            }}
-                        >
-                            导出训练数据
-                        </p>
-                        <div style={{ display: "flex", gap: "8px" }}>
+                    <div className="quiz-section">
+                        <p className="quiz-section__title">导出训练数据</p>
+                        <div className="quiz-export">
                             {(["jsonl", "csv", "sft"] as const).map((fmt) => (
                                 <button
                                     key={fmt}
+                                    className="quiz-export__btn"
                                     onClick={() => handleExport(fmt)}
-                                    style={{
-                                        flex: 1,
-                                        padding: "8px",
-                                        borderRadius: "8px",
-                                        background: "var(--card)",
-                                        color: "var(--muted-foreground)",
-                                        border: "1px solid var(--border)",
-                                        cursor: "pointer",
-                                        fontSize: "13px",
-                                        fontWeight: 600,
-                                        textTransform: "uppercase",
-                                    }}
                                 >
-                                    <Download
-                                        size={14}
-                                        style={{ display: "inline", marginRight: "4px" }}
-                                    />
+                                    <Download size={13} />
                                     {fmt}
                                 </button>
                             ))}
                         </div>
                     </div>
 
-                    {/* History section */}
-                    <div
-                        style={{
-                            marginTop: "24px",
-                            borderTop: "1px solid var(--border)",
-                            paddingTop: "16px",
-                        }}
-                    >
+                    <div className="quiz-section">
                         <button
+                            className="quiz-section__toggle"
+                            data-open={showHistory}
                             onClick={() => {
                                 const willShow = !showHistory;
                                 setShowHistory(willShow);
                                 if (willShow) fetchHistory();
                             }}
-                            style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "6px",
-                                background: "none",
-                                border: "none",
-                                color: "var(--muted-foreground)",
-                                cursor: "pointer",
-                                fontSize: "13px",
-                                fontWeight: 600,
-                                padding: 0,
-                                marginBottom: showHistory ? "12px" : 0,
-                            }}
                         >
-                            <History size={14} />
+                            <History size={13} />
                             题目历史
-                            <span style={{ fontSize: "11px", transform: showHistory ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
-                                ▶
-                            </span>
+                            <span className="quiz-section__caret">▶</span>
                         </button>
 
                         {showHistory && (
                             loadingHistory ? (
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px", color: "var(--muted-foreground)", fontSize: "13px" }}>
+                                <div className="quiz-loading">
                                     <Loader2 size={14} className="animate-spin" />
                                     加载历史...
                                 </div>
                             ) : historyItems.length === 0 ? (
-                                <div style={{ padding: "12px", color: "var(--muted-foreground)", fontSize: "13px", textAlign: "center" }}>
-                                    暂无历史记录
-                                </div>
+                                <div className="quiz-empty">暂无历史记录</div>
                             ) : (
-                                <div style={{ maxHeight: "260px", overflow: "auto", borderRadius: "10px", border: "1px solid var(--border)" }}>
+                                <div className="quiz-history">
                                     {historyItems.map((item) => (
-                                        <div
-                                            key={item.quiz_uuid}
-                                            style={{
-                                                display: "flex",
-                                                alignItems: "center",
-                                                justifyContent: "space-between",
-                                                padding: "10px 14px",
-                                                borderBottom: "1px solid var(--border)",
-                                            }}
-                                        >
-                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                <div style={{ fontSize: "13px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                                    {item.title}
-                                                </div>
-                                                <div style={{ fontSize: "11px", color: "var(--muted-foreground)", marginTop: "2px" }}>
-                                                    {item.question_count ?? item.total_question_count} 题
+                                        <div key={item.quiz_uuid} className="quiz-history__item">
+                                            <div className="quiz-history__info">
+                                                <div className="quiz-history__title">{item.title}</div>
+                                                <div className="quiz-history__meta">
+                                                    <span>{item.question_count ?? item.total_question_count} 题</span>
                                                     {item.submission_uuid ? (
                                                         <>
-                                                            {item.score != null && ` · ${item.score}分`}
-                                                            {item.passed != null && (item.passed ? " · 通过" : " · 未通过")}
+                                                            <span className="quiz-history__meta-dot" />
+                                                            <span className="quiz-history__score" data-tone={item.passed ? "pass" : "fail"}>
+                                                                {item.score != null ? `${item.score}分` : item.passed ? "通过" : "未通过"}
+                                                            </span>
                                                         </>
                                                     ) : (
-                                                        " · 未作答"
+                                                        <>
+                                                            <span className="quiz-history__meta-dot" />
+                                                            <span className="quiz-history__score" data-tone="idle">未作答</span>
+                                                        </>
                                                     )}
-                                                    {item.created_at && ` · ${new Date(item.created_at).toLocaleDateString()}`}
+                                                    {item.created_at && (
+                                                        <>
+                                                            <span className="quiz-history__meta-dot" />
+                                                            <span>{new Date(item.created_at).toLocaleDateString()}</span>
+                                                        </>
+                                                    )}
                                                 </div>
                                             </div>
-                                            <div style={{ display: "flex", gap: "6px", flexShrink: 0, marginLeft: "8px" }}>
+                                            <div className="quiz-history__actions">
                                                 <button
+                                                    className="quiz-history__btn"
+                                                    data-variant="primary"
                                                     onClick={() => handleRetakeQuiz(item.quiz_uuid)}
-                                                    style={{
-                                                        padding: "5px 10px",
-                                                        borderRadius: "6px",
-                                                        background: "var(--accent)",
-                                                        color: "#fff",
-                                                        border: "none",
-                                                        cursor: "pointer",
-                                                        fontSize: "12px",
-                                                        fontWeight: 600,
-                                                    }}
                                                 >
                                                     重做
                                                 </button>
                                                 <button
+                                                    className="quiz-history__btn"
                                                     onClick={() => handleViewPastQuiz(item.quiz_uuid)}
-                                                    style={{
-                                                        padding: "5px 10px",
-                                                        borderRadius: "6px",
-                                                        background: "var(--card)",
-                                                        color: "var(--accent)",
-                                                        border: "1px solid rgba(6,182,212,0.25)",
-                                                        cursor: "pointer",
-                                                        fontSize: "12px",
-                                                        fontWeight: 600,
-                                                    }}
                                                 >
-                                                    <Eye size={12} style={{ display: "inline", marginRight: "3px" }} />
+                                                    <Eye size={12} />
                                                     查看
                                                 </button>
                                                 <button
-                                                    onClick={() => handleDownloadQuiz(item.quiz_uuid, item.title)}
-                                                    style={{
-                                                        padding: "5px 10px",
-                                                        borderRadius: "6px",
-                                                        background: "var(--card)",
-                                                        color: "var(--muted-foreground)",
-                                                        border: "1px solid var(--border)",
-                                                        cursor: "pointer",
-                                                        fontSize: "12px",
-                                                        fontWeight: 600,
-                                                    }}
+                                                    className="quiz-history__btn"
+                                                    onClick={() => handleOpenShare(item.quiz_uuid)}
+                                                    title="分享"
                                                 >
-                                                    <Download size={12} style={{ display: "inline", marginRight: "3px" }} />
-                                                    下载
+                                                    <Share2 size={12} />
+                                                    分享
                                                 </button>
                                                 <button
+                                                    className="quiz-history__btn"
+                                                    onClick={() => handleDownloadQuiz(item.quiz_uuid, item.title)}
+                                                >
+                                                    <Download size={12} />
+                                                </button>
+                                                <button
+                                                    className="quiz-history__btn"
+                                                    data-variant="danger"
                                                     onClick={() => handleDeleteQuiz(item)}
                                                     disabled={deletingQuizUuid === item.quiz_uuid}
-                                                    style={{
-                                                        padding: "5px 10px",
-                                                        borderRadius: "6px",
-                                                        background: "var(--danger-bg)",
-                                                        color: "var(--danger)",
-                                                        border: "1px solid var(--danger)",
-                                                        cursor: deletingQuizUuid === item.quiz_uuid ? "not-allowed" : "pointer",
-                                                        fontSize: "12px",
-                                                        fontWeight: 600,
-                                                        opacity: deletingQuizUuid === item.quiz_uuid ? 0.6 : 1,
-                                                    }}
                                                 >
                                                     {deletingQuizUuid === item.quiz_uuid ? (
-                                                        <Loader2 size={12} className="animate-spin" style={{ display: "inline", marginRight: "3px" }} />
+                                                        <Loader2 size={12} className="animate-spin" />
                                                     ) : (
-                                                        <Trash2 size={12} style={{ display: "inline", marginRight: "3px" }} />
+                                                        <Trash2 size={12} />
                                                     )}
-                                                    {deletingQuizUuid === item.quiz_uuid ? "删除中" : "删除"}
                                                 </button>
                                             </div>
                                         </div>
@@ -1000,105 +795,76 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                             )
                         )}
                     </div>
+                <ShareModal
+                    open={!!shareModalUuid}
+                    loading={shareLoading}
+                    status={shareStatus}
+                    error={shareError}
+                    duration={shareDuration}
+                    copied={copied}
+                    onDurationChange={setShareDuration}
+                    onCreate={handleCreateShare}
+                    onRevoke={handleRevokeShare}
+                    onCopy={handleCopyShareLink}
+                    onClose={handleCloseShare}
+                    shareUrl={shareStatus?.share_token ? shareUrl(shareStatus.share_token) : ""}
+                />
                 </div>
             ) : (
-                /* ────── Quiz Questions ────── */
                 <div>
-                    <div
-                        style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            marginBottom: "16px",
-                        }}
-                    >
-                        <div>
-                            <h4 style={{ margin: 0, fontSize: "16px" }}>
-                                {isReviewMode && (
-                                    <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "6px", background: "rgba(6,182,212,0.12)", color: "var(--accent)", marginRight: "8px", fontWeight: 600 }}>
-                                        回看
-                                    </span>
+                    <div className="quiz-run__head">
+                        <div className="quiz-run__title-block">
+                            <div>
+                                {isReviewMode && <span className="quiz-run__chip">回看</span>}
+                                <h4 className="quiz-run__title">{currentQuiz.title}</h4>
+                            </div>
+                            <div className="quiz-run__sub">
+                                <span>{currentQuiz.question_count} 题</span>
+                                <span className="quiz-history__meta-dot" />
+                                <span>{DIFFICULTY_LABELS[currentQuiz.difficulty] || currentQuiz.difficulty}</span>
+                                {currentQuiz.source_type === "pages" && (
+                                    <>
+                                        <span className="quiz-history__meta-dot" />
+                                        <span>按分P</span>
+                                    </>
                                 )}
-                                {currentQuiz.title}
-                            </h4>
-                            <span style={{ fontSize: "12px", color: "var(--muted-foreground)" }}>
-                                {currentQuiz.question_count} 题 · {currentQuiz.difficulty}
-                                {currentQuiz.source_type === "pages" && " · 按分P"}
-                            </span>
+                            </div>
                         </div>
-                        <div style={{ display: "flex", gap: "8px" }}>
+                        <div className="quiz-run__actions">
                             {!submitResult && !isReviewMode && (
                                 <button
+                                    className="quiz-btn"
+                                    data-variant="primary"
                                     onClick={handleSubmit}
                                     disabled={!isAllAnswered || submitting}
-                                    style={{
-                                        padding: "8px 20px",
-                                        borderRadius: "8px",
-                                        fontWeight: 700,
-                                        cursor: isAllAnswered && !submitting ? "pointer" : "not-allowed",
-                                        background: "var(--accent)",
-                                        color: "#0d1117",
-                                        border: "none",
-                                        opacity: isAllAnswered && !submitting ? 1 : 0.5,
-                                    }}
                                 >
                                     {submitting ? (
-                                        <span
-                                            style={{
-                                                display: "flex",
-                                                alignItems: "center",
-                                                gap: "6px",
-                                            }}
-                                        >
+                                        <>
                                             <Loader2 size={14} className="animate-spin" />
                                             批改中
-                                        </span>
+                                        </>
                                     ) : (
-                                        `交卷 (${userAnswers.size}/${currentQuiz.questions.length})`
+                                        `交卷 · ${userAnswers.size}/${currentQuiz.questions.length}`
                                     )}
                                 </button>
                             )}
                             {(submitResult || isReviewMode) && (
-                                <button
-                                    onClick={handleBackToGenerate}
-                                    style={{
-                                        padding: "8px 16px",
-                                        borderRadius: "8px",
-                                        cursor: "pointer",
-                                        background: "var(--card)",
-                                        color: "var(--muted-foreground)",
-                                        border: "1px solid var(--border)",
-                                        fontWeight: 600,
-                                        fontSize: "13px",
-                                    }}
-                                >
-                                    <ArrowLeft size={14} style={{ display: "inline", marginRight: "4px" }} />
+                                <button className="quiz-btn" onClick={handleBackToGenerate}>
+                                    <ArrowLeft size={14} />
                                     返回
                                 </button>
                             )}
                             <button
-                                onClick={() =>
-                                    handleDownloadQuiz(currentQuiz.quiz_uuid, currentQuiz.title)
-                                }
-                                style={{
-                                    padding: "8px 16px",
-                                    borderRadius: "8px",
-                                    cursor: "pointer",
-                                    background: "var(--card)",
-                                    color: "var(--muted-foreground)",
-                                    border: "1px solid var(--border)",
-                                    fontWeight: 600,
-                                    fontSize: "13px",
-                                }}
+                                className="quiz-btn"
+                                onClick={() => handleDownloadQuiz(currentQuiz.quiz_uuid, currentQuiz.title)}
                             >
-                                <Download size={14} style={{ display: "inline", marginRight: "4px" }} />
+                                <Download size={14} />
                                 下载
                             </button>
                         </div>
                     </div>
 
                     {currentQuiz.questions.map((q, i) => {
-                        // In review mode, create a pseudo-result to show correct answers
                         const reviewResult: QuizAnswerResult | undefined = isReviewMode
                             ? {
                                   question_uuid: q.question_uuid,
@@ -1130,55 +896,11 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                         );
                     })}
 
-                    {/* Result summary */}
                     {submitResult && (
-                        <div
-                            style={{
-                                padding: "16px",
-                                borderRadius: "12px",
-                                textAlign: "center",
-                                background: submitResult.passed
-                                    ? "var(--success-bg)"
-                                    : "var(--danger-bg)",
-                                border: `1px solid ${
-                                    submitResult.passed ? "var(--success)" : "var(--danger)"
-                                }`,
-                            }}
-                        >
-                            <p
-                                style={{
-                                    fontSize: "20px",
-                                    fontWeight: 700,
-                                    color: submitResult.passed
-                                        ? "var(--success)"
-                                        : "var(--danger)",
-                                    margin: 0,
-                                }}
-                            >
-                                {submitResult.score} 分 -{" "}
-                                {submitResult.passed ? "通过" : "未通过"}
-                            </p>
-                            <p style={{ color: "var(--muted-foreground)", margin: "8px 0 0" }}>
-                                {submitResult.correct_count}/{submitResult.total_count} 正确
-                            </p>
-                            <div style={{ display: "flex", gap: "8px", justifyContent: "center", marginTop: "12px" }}>
-                                <button
-                                    onClick={handleBackToGenerate}
-                                    style={{
-                                        padding: "8px 20px",
-                                        borderRadius: "8px",
-                                        background:
-                                            "linear-gradient(180deg, rgba(6,182,212,0.18) 0%, rgba(6,182,212,0.1) 100%)",
-                                        color: "var(--accent)",
-                                        border: "1px solid rgba(6,182,212,0.25)",
-                                        cursor: "pointer",
-                                        fontWeight: 600,
-                                    }}
-                                >
-                                    再做一套
-                                </button>
-                            </div>
-                        </div>
+                        <ResultScorecard
+                            result={submitResult}
+                            onRetry={handleBackToGenerate}
+                        />
                     )}
                 </div>
             )}
@@ -1186,7 +908,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     );
 }
 
-/* ────── Generate Button (reusable) ────── */
+/* ────── Generate Button ────── */
 
 function GenerateButton({
     generating,
@@ -1201,30 +923,13 @@ function GenerateButton({
 }) {
     return (
         <button
+            className="quiz-cta"
             disabled={generating || disabled}
             onClick={onClick}
-            style={{
-                width: "100%",
-                padding: "12px",
-                borderRadius: "10px",
-                fontWeight: 700,
-                cursor: generating || disabled ? "not-allowed" : "pointer",
-                background: "linear-gradient(180deg, rgba(6,182,212,0.18) 0%, rgba(6,182,212,0.1) 100%)",
-                color: "var(--accent)",
-                border: "1px solid rgba(6,182,212,0.25)",
-                opacity: generating || disabled ? 0.5 : 1,
-                marginBottom: "8px",
-            }}
+            style={{ marginBottom: "8px" }}
         >
             {generating ? (
-                <span
-                    style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "8px",
-                    }}
-                >
+                <span className="quiz-cta__inner">
                     <Loader2 size={16} className="animate-spin" />
                     AI 正在出题...
                 </span>
@@ -1255,149 +960,116 @@ function QuizQuestionCard({
     const isMulti = question.question_type === "multi_choice";
     const showResult = !!result;
     const isCorrect = result?.is_correct;
-    const hasGradingNote = !!result?.grading_note;
+
+    const cardState = !showResult
+        ? "default"
+        : isCorrect === true
+        ? "correct"
+        : isCorrect === false
+        ? "wrong"
+        : "partial";
+
+    const feedbackTone =
+        isCorrect === true ? "correct" : isCorrect === false ? "wrong" : "partial";
+
+    const correctKeys = ((): string[] => {
+        if (!showResult) return [];
+        const ans = result!.correct_answer;
+        const arr = Array.isArray(ans) ? ans : [String(ans)];
+        return arr
+            .map((s) => String(s).trim().toUpperCase()[0])
+            .filter((c): c is string => !!c);
+    })();
+
+    const formatCorrectAnswer = (): string => {
+        if (!result) return "";
+        return Array.isArray(result.correct_answer)
+            ? result.correct_answer.join(", ")
+            : String(result.correct_answer);
+    };
 
     return (
-        <div
-            style={{
-                background: "var(--card)",
-                border: `1px solid ${
-                    showResult && isCorrect === false ? "var(--danger)" : "var(--border)"
-                }`,
-                borderRadius: "12px",
-                padding: "16px",
-                marginBottom: "12px",
-            }}
+        <article
+            className="quiz-card"
+            data-type={question.question_type}
+            data-state={cardState}
+            style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
         >
-            {/* Header */}
-            <div
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    marginBottom: "12px",
-                }}
-            >
-                <span style={{ fontWeight: 700, color: "var(--foreground)" }}>
-                    Q{index + 1}.
+            <header className="quiz-card__head">
+                <span className="quiz-card__index">
+                    Q{String(index + 1).padStart(2, "0")}
                 </span>
-                <span
-                    style={{
-                        fontSize: "11px",
-                        padding: "2px 8px",
-                        borderRadius: "6px",
-                        background: "rgba(6, 182, 212, 0.1)",
-                        color: "var(--accent)",
-                        fontWeight: 600,
-                    }}
-                >
+                <span className="quiz-card__type">
                     {TYPE_LABELS[question.question_type] || question.question_type}
                 </span>
+                <span className="quiz-card__difficulty">
+                    {DIFFICULTY_LABELS[question.difficulty] || question.difficulty}
+                </span>
                 {showResult && (
-                    <span style={{ marginLeft: "auto" }}>
-                        {isCorrect ? (
+                    <span className="quiz-card__status">
+                        {isCorrect === true ? (
                             <CheckCircle size={18} style={{ color: "var(--success)" }} />
-                        ) : (
+                        ) : isCorrect === false ? (
                             <XCircle size={18} style={{ color: "var(--danger)" }} />
-                        )}
+                        ) : null}
                     </span>
                 )}
-            </div>
+            </header>
 
-            {/* Question text */}
-            <p
-                style={{
-                    color: "var(--foreground)",
-                    marginBottom: "12px",
-                    lineHeight: 1.6,
-                }}
-            >
-                {question.question_text}
-            </p>
+            <p className="quiz-card__text">{question.question_text}</p>
 
-            {/* Options (choice questions) */}
-            {question.options?.map((opt, i) => {
-                const optKey = opt[0];
-                const isSelected = Array.isArray(userAnswer)
-                    ? userAnswer.includes(optKey)
-                    : userAnswer === optKey;
+            {question.options && question.options.length > 0 && (
+                <div className="quiz-options">
+                    {question.options.map((opt, i) => {
+                        const optKey = opt[0];
+                        const isSelected = Array.isArray(userAnswer)
+                            ? userAnswer.includes(optKey)
+                            : userAnswer === optKey;
 
-                let bgColor = "var(--card)";
-                let borderColor = "var(--border)";
-                if (showResult) {
-                    const correctAnswer = result!.correct_answer;
-                    const correctKeys = Array.isArray(correctAnswer)
-                        ? correctAnswer.map((s: string) =>
-                              String(s).trim().toUpperCase()[0]
-                          )
-                        : [String(correctAnswer).trim().toUpperCase()[0]];
-                    if (correctKeys.includes(optKey)) {
-                        bgColor = "var(--success-bg)";
-                        borderColor = "var(--success)";
-                    } else if (isSelected && !correctKeys.includes(optKey)) {
-                        bgColor = "var(--danger-bg)";
-                        borderColor = "var(--danger)";
-                    }
-                } else if (isSelected) {
-                    borderColor = "var(--accent)";
-                }
+                        let optState: "default" | "selected" | "correct" | "wrong" = "default";
+                        if (showResult) {
+                            if (correctKeys.includes(optKey)) optState = "correct";
+                            else if (isSelected) optState = "wrong";
+                        } else if (isSelected) {
+                            optState = "selected";
+                        }
 
-                return (
-                    <label
-                        key={i}
-                        style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "10px",
-                            padding: "10px 12px",
-                            borderRadius: "8px",
-                            background: bgColor,
-                            border: `1px solid ${borderColor}`,
-                            cursor: disabled ? "default" : "pointer",
-                            marginBottom: "6px",
-                        }}
-                    >
-                        <input
-                            type={isMulti ? "checkbox" : "radio"}
-                            name={`q-${question.question_uuid}`}
-                            checked={isSelected}
-                            disabled={disabled}
-                            onChange={() => {
-                                if (isMulti) {
-                                    const arr = Array.isArray(userAnswer)
-                                        ? [...userAnswer]
-                                        : [];
-                                    arr.includes(optKey)
-                                        ? arr.splice(arr.indexOf(optKey), 1)
-                                        : arr.push(optKey);
-                                    onAnswer(question.question_uuid, arr);
-                                } else {
-                                    onAnswer(question.question_uuid, optKey);
-                                }
-                            }}
-                            style={{ accentColor: "var(--accent)" }}
-                        />
-                        <span style={{ color: "var(--foreground)", fontSize: "14px" }}>
-                            {opt}
-                        </span>
-                    </label>
-                );
-            })}
+                        return (
+                            <label
+                                key={i}
+                                className="quiz-option"
+                                data-selected={optState === "selected"}
+                                data-state={optState === "correct" || optState === "wrong" ? optState : undefined}
+                            >
+                                <input
+                                    type={isMulti ? "checkbox" : "radio"}
+                                    className="quiz-option__native"
+                                    name={`q-${question.question_uuid}`}
+                                    checked={isSelected}
+                                    disabled={disabled}
+                                    onChange={() => {
+                                        if (isMulti) {
+                                            const arr = Array.isArray(userAnswer) ? [...userAnswer] : [];
+                                            arr.includes(optKey)
+                                                ? arr.splice(arr.indexOf(optKey), 1)
+                                                : arr.push(optKey);
+                                            onAnswer(question.question_uuid, arr);
+                                        } else {
+                                            onAnswer(question.question_uuid, optKey);
+                                        }
+                                    }}
+                                />
+                                <span className="quiz-option__badge">{optKey}</span>
+                                <span className="quiz-option__text">{opt}</span>
+                            </label>
+                        );
+                    })}
+                </div>
+            )}
 
-            {/* Text input for short_answer / essay */}
             {!question.options && (
                 <textarea
-                    style={{
-                        width: "100%",
-                        minHeight: "100px",
-                        padding: "10px 12px",
-                        borderRadius: "8px",
-                        background: "var(--background)",
-                        color: "var(--foreground)",
-                        border: "1px solid var(--border)",
-                        resize: "vertical",
-                        fontFamily: "inherit",
-                    }}
+                    className="quiz-textarea"
                     placeholder="请输入答案..."
                     value={(userAnswer as string) ?? ""}
                     onChange={(e) => onAnswer(question.question_uuid, e.target.value)}
@@ -1405,81 +1077,92 @@ function QuizQuestionCard({
                 />
             )}
 
-            {/* Result feedback */}
             {showResult && (
-                <div
-                    style={{
-                        marginTop: "12px",
-                        padding: "10px 12px",
-                        borderRadius: "8px",
-                        background: isCorrect === false
-                            ? "var(--danger-bg)"
-                            : isCorrect === true
-                            ? "var(--success-bg)"
-                            : "rgba(6,182,212,0.08)",
-                        border: `1px solid ${
-                            isCorrect === false ? "var(--danger)"
-                            : isCorrect === true ? "var(--success)"
-                            : "rgba(6,182,212,0.25)"
-                        }`,
-                    }}
-                >
-                    {isCorrect === true ? (
-                        <span style={{ color: "var(--success)", fontWeight: 600 }}>
-                            ✓ 正确
-                        </span>
-                    ) : isCorrect === false ? (
-                        <>
-                            <span style={{ color: "var(--danger)", fontWeight: 600 }}>
-                                ✗
-                            </span>
-                            <span
-                                style={{
-                                    color: "var(--muted-foreground)",
-                                    marginLeft: "8px",
-                                }}
-                            >
-                                正确答案：
-                                {Array.isArray(result!.correct_answer)
-                                    ? result!.correct_answer.join(", ")
-                                    : String(result!.correct_answer)}
-                            </span>
-                        </>
-                    ) : (
-                        <span style={{ color: "var(--accent)", fontWeight: 600 }}>
-                            正确答案：
-                            {Array.isArray(result!.correct_answer)
-                                ? result!.correct_answer.join(", ")
-                                : String(result!.correct_answer)}
-                        </span>
-                    )}
-                    {hasGradingNote && (
-                        <span
-                            style={{
-                                marginLeft: "8px",
-                                fontSize: "11px",
-                                color: "var(--warning)",
-                                fontWeight: 600,
-                            }}
-                        >
-                            {result!.grading_note}
-                        </span>
-                    )}
+                <div className="quiz-feedback" data-tone={feedbackTone}>
+                    <div className="quiz-feedback__line">
+                        {isCorrect === true ? (
+                            <span className="quiz-feedback__tag">✓ 正确</span>
+                        ) : isCorrect === false ? (
+                            <>
+                                <span className="quiz-feedback__tag">✗ 错误</span>
+                                <span className="quiz-feedback__answer-label">正确答案：</span>
+                                <span className="quiz-feedback__answer">{formatCorrectAnswer()}</span>
+                            </>
+                        ) : (
+                            <>
+                                <span className="quiz-feedback__tag">参考答案</span>
+                                <span className="quiz-feedback__answer">{formatCorrectAnswer()}</span>
+                            </>
+                        )}
+                        {result?.grading_note && (
+                            <span className="quiz-feedback__note">{result.grading_note}</span>
+                        )}
+                    </div>
                     {question.explanation && (
-                        <p style={{
-                            margin: "8px 0 0",
-                            fontSize: "12px",
-                            color: "var(--muted-foreground)",
-                            lineHeight: 1.6,
-                            borderTop: "1px solid var(--border)",
-                            paddingTop: "8px",
-                        }}>
-                            <span style={{ fontWeight: 600 }}>解析：</span>
+                        <div className="quiz-feedback__explanation">
+                            <span className="quiz-feedback__explanation-tag">解析</span>
                             {question.explanation}
-                        </p>
+                        </div>
                     )}
                 </div>
             )}
+        </article>
+    );
+}
+
+/* ────── Result Scorecard ────── */
+
+function ResultScorecard({
+    result,
+    onRetry,
+}: {
+    result: QuizSubmissionResult;
+    onRetry: () => void;
+}) {
+    const passed = result.passed === true;
+    const score = result.score ?? 0;
+    const total = result.total_count || 1;
+    const correct = result.correct_count;
+    const ratio = Math.max(0, Math.min(1, score / 100));
+    const RING_C = 2 * Math.PI * 52; // radius 52
+
+    return (
+        <div className="quiz-result" data-passed={String(passed)}>
+            <span className="quiz-result__stamp">
+                {passed ? "Passed" : "Failed"}
+            </span>
+
+            <div className="quiz-result__ring">
+                <svg width="120" height="120" viewBox="0 0 120 120">
+                    <circle className="quiz-result__ring-bg" cx="60" cy="60" r="52" />
+                    <circle
+                        className="quiz-result__ring-fg"
+                        cx="60"
+                        cy="60"
+                        r="52"
+                        strokeDasharray={RING_C}
+                        strokeDashoffset={RING_C * (1 - ratio)}
+                    />
+                </svg>
+                <div className="quiz-result__score">
+                    <span className="quiz-result__score-num">{score}</span>
+                    <span className="quiz-result__score-unit">/ 100</span>
+                </div>
+            </div>
+
+            <p className="quiz-result__verdict">
+                {passed ? "考核通过" : "未通过"}
+            </p>
+            <p className="quiz-result__detail">
+                正确 <strong>{correct}</strong> / {total} · 得分率{" "}
+                <strong>{Math.round(ratio * 100)}%</strong>
+            </p>
+
+            <div className="quiz-result__actions">
+                <button className="quiz-btn" data-variant="primary" onClick={onRetry}>
+                    再做一套
+                </button>
+            </div>
         </div>
     );
 }
@@ -1496,7 +1179,259 @@ async function pollUntilReady(
         if (quiz.status === "done") return quiz;
         if (quiz.status === "failed") throw new Error("题目生成失败");
         await new Promise((resolve) => setTimeout(resolve, delay));
-        delay = Math.min(delay * 2, 16000);  // exponential backoff: 2s → 16s cap
+        delay = Math.min(delay * 2, 16000);
     }
     throw new Error("题目生成超时");
+}
+
+interface ShareModalProps {
+    open: boolean;
+    loading: boolean;
+    status: QuizShareStatus | null;
+    error: string | null;
+    duration: number | "";
+    copied: boolean;
+    onDurationChange: (v: number | "") => void;
+    onCreate: () => void;
+    onRevoke: () => void;
+    onCopy: () => void;
+    onClose: () => void;
+    shareUrl: string;
+}
+
+function ShareModal({
+    open,
+    loading,
+    status,
+    error,
+    duration,
+    copied,
+    onDurationChange,
+    onCreate,
+    onRevoke,
+    onCopy,
+    onClose,
+    shareUrl,
+}: ShareModalProps) {
+    const isShared = status?.shared && !status.expired;
+    const isExpired = status?.shared && status.expired;
+    const isIdle = status && !isShared && !isExpired;
+
+    const pillTone = isShared ? "live" : isExpired ? "expired" : "idle";
+    const pillLabel = isShared ? "已分享 · 在线" : isExpired ? "已过期" : "未分享";
+
+    const formatTime = (t?: string | null): string => {
+        if (!t) return "—";
+        const d = new Date(t);
+        if (isNaN(d.getTime())) return "—";
+        return d.toLocaleString("zh-CN", {
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+            <DialogContent
+                className="quiz-share-dialog sm:max-w-[460px] gap-0 p-0 overflow-hidden"
+                showCloseButton
+            >
+                <header className="quiz-share__header">
+                    <span className="quiz-share__icon-wrap">
+                        <Share2 size={18} />
+                    </span>
+                    <DialogHeader className="gap-0">
+                        <DialogTitle className="quiz-share__title">分享题目</DialogTitle>
+                        <DialogDescription className="quiz-share__subtitle">
+                            生成链接即可让他人在浏览器自测
+                        </DialogDescription>
+                    </DialogHeader>
+                </header>
+
+                <div className="quiz-share__body">
+                    <span className="quiz-share__pill" data-tone={pillTone}>
+                        {isShared ? (
+                            <CheckCircle size={12} />
+                        ) : isExpired ? (
+                            <CircleAlert size={12} />
+                        ) : (
+                            <span className="quiz-share__pill-dot" />
+                        )}
+                        {pillLabel}
+                    </span>
+
+                    {loading && !status && (
+                        <div className="quiz-share__loading">
+                            <Loader2 size={16} className="animate-spin" />
+                            加载分享状态...
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="quiz-share__callout" data-tone="error">
+                            <span>{error}</span>
+                        </div>
+                    )}
+
+                    {isIdle && (
+                        <>
+                            <p className="quiz-share__desc">
+                                当前题目集未分享。生成链接后，任何人可通过链接查看题目用于自测（不含答案与解析）。
+                            </p>
+                            <div className="quiz-share__field">
+                                <label className="quiz-share__label">有效期</label>
+                                <div className="quiz-chips">
+                                    {([
+                                        { v: "", label: "永久" },
+                                        { v: 1, label: "1 天" },
+                                        { v: 7, label: "7 天" },
+                                        { v: 30, label: "30 天" },
+                                        { v: 365, label: "365 天" },
+                                    ] as const).map((opt) => (
+                                        <button
+                                            key={String(opt.v)}
+                                            type="button"
+                                            className="quiz-chip"
+                                            data-selected={duration === opt.v}
+                                            onClick={() => onDurationChange(opt.v)}
+                                        >
+                                            {opt.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <button
+                                className="quiz-share__cta"
+                                onClick={onCreate}
+                                disabled={loading}
+                            >
+                                {loading ? (
+                                    <>
+                                        <Loader2 size={14} className="animate-spin" />
+                                        生成中...
+                                    </>
+                                ) : (
+                                    <>
+                                        <LinkIcon size={14} />
+                                        生成分享链接
+                                    </>
+                                )}
+                            </button>
+                        </>
+                    )}
+
+                    {(isShared || isExpired) && status && (
+                        <>
+                            {isExpired && (
+                                <div className="quiz-share__callout" data-tone="warning">
+                                    <CircleAlert size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                                    <span>此分享链接已过期，可重新生成以恢复访问。</span>
+                                </div>
+                            )}
+
+                            <div className="quiz-ticket" data-state={isShared ? "live" : "expired"}>
+                                <div className="quiz-ticket__head">
+                                    <div className="quiz-ticket__title-row">
+                                        <span className="quiz-ticket__icon">
+                                            <LinkIcon size={13} />
+                                        </span>
+                                        <span className="quiz-ticket__label">分享链接</span>
+                                    </div>
+                                    {isShared && (
+                                        <span className="quiz-ticket__badge">
+                                            <span className="quiz-ticket__badge-dot" />
+                                            LIVE
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="quiz-ticket__url-row">
+                                    <input
+                                        readOnly
+                                        className="quiz-ticket__url"
+                                        value={shareUrl}
+                                        onFocus={(e) => e.target.select()}
+                                        aria-label="分享链接"
+                                    />
+                                </div>
+                                <button
+                                    className="quiz-ticket__copy"
+                                    data-copied={copied}
+                                    onClick={onCopy}
+                                    title="复制链接"
+                                >
+                                    {copied ? (
+                                        <>
+                                            <CheckCircle size={14} />
+                                            已复制
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Copy size={14} />
+                                            复制链接
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+
+                            <div className="quiz-share__meta">
+                                <div className="quiz-share__meta-cell">
+                                    <div className="quiz-share__meta-label">
+                                        <Share2 size={11} />
+                                        分享时间
+                                    </div>
+                                    <div className="quiz-share__meta-value">
+                                        {formatTime(status.shared_at)}
+                                    </div>
+                                </div>
+                                <div className="quiz-share__meta-cell">
+                                    <div className="quiz-share__meta-label">
+                                        <CircleAlert size={11} />
+                                        过期时间
+                                    </div>
+                                    <div className="quiz-share__meta-value">
+                                        {status.share_expires_at
+                                            ? formatTime(status.share_expires_at)
+                                            : "永不失效"}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="quiz-share__actions">
+                                <button
+                                    className="quiz-share__btn"
+                                    onClick={onCreate}
+                                    disabled={loading}
+                                >
+                                    {loading ? (
+                                        <Loader2 size={13} className="animate-spin" />
+                                    ) : (
+                                        <LinkIcon size={13} />
+                                    )}
+                                    重新生成
+                                </button>
+                                <button
+                                    className="quiz-share__btn"
+                                    data-variant="danger"
+                                    onClick={onRevoke}
+                                    disabled={loading}
+                                >
+                                    <Trash2 size={13} />
+                                    撤销分享
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+
+                <footer className="quiz-share__footer">
+                    <LinkIcon size={12} className="quiz-share__footer-icon" />
+                    <span>
+                        分享视图仅展示题目用于自测，不含正确答案与解析。重新生成或撤销会令旧链接立即失效。
+                    </span>
+                </footer>
+            </DialogContent>
+        </Dialog>
+    );
 }

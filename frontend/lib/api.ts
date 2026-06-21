@@ -1155,6 +1155,48 @@ export interface WrongAnswerResponse {
     total: number;
 }
 
+export interface QuizShareResponse {
+    quiz_uuid: string;
+    share_token: string;
+    shared_at: string | null;
+    share_expires_at: string | null;
+}
+
+export interface QuizShareStatus {
+    quiz_uuid: string;
+    shared: boolean;
+    share_token?: string;
+    shared_at?: string | null;
+    share_expires_at?: string | null;
+    expired?: boolean;
+}
+
+export interface QuizShareRevokeResponse {
+    quiz_uuid: string;
+    shared: boolean;
+}
+
+export interface SharedQuizQuestion {
+    question_uuid: string;
+    question_type: string;
+    difficulty: string;
+    question_text: string;
+    options?: string[] | Record<string, string>;
+}
+
+export interface SharedQuizData {
+    quiz_uuid: string;
+    title: string;
+    question_count: number;
+    type_distribution?: Record<string, number>;
+    difficulty: string;
+    total_score: number;
+    passing_score: number;
+    source_type?: string;
+    shared_at: string | null;
+    questions: SharedQuizQuestion[];
+}
+
 export const quizApi = {
     generate: (params: Omit<QuizGenerateParams, "session_id">) => {
         const sp = new URLSearchParams();
@@ -1211,6 +1253,31 @@ export const quizApi = {
         if (!res.ok) throw new Error("导出失败");
         return res.blob();
     },
+
+    createShare: (quizUuid: string, expiresInDays?: number | null) =>
+        request<QuizShareResponse>(`/quiz/${quizUuid}/share`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(
+                expiresInDays === undefined
+                    ? {}
+                    : { expires_in_days: expiresInDays ?? null }
+            ),
+        }),
+
+    getShareStatus: (quizUuid: string) =>
+        request<QuizShareStatus>(`/quiz/${quizUuid}/share`, {
+            headers: getAuthHeaders(),
+        }),
+
+    revokeShare: (quizUuid: string) =>
+        request<QuizShareRevokeResponse>(`/quiz/${quizUuid}/share`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    getSharedQuiz: (shareToken: string) =>
+        request<SharedQuizData>(`/quiz/shared/${encodeURIComponent(shareToken)}`),
 };
 
 // ==================== 用户信息修改 ====================
