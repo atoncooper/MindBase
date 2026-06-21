@@ -102,6 +102,10 @@ async def _migrate_add_columns():
         ("cloud_files", "doc_parser", "VARCHAR(20) NULL"),
         ("cloud_files", "doc_meta", "JSON NULL"),
         ("cloud_files", "content_hash", "VARCHAR(128) NULL"),
+        # Quiz sharing — unguessable share token (separate from quiz_uuid)
+        ("quiz_sets", "share_token", "VARCHAR(32)"),
+        ("quiz_sets", "shared_at", "TIMESTAMP"),
+        ("quiz_sets", "share_expires_at", "TIMESTAMP"),
     ]
 
     # Plan 0024/0025/0026: drop deprecated content columns & session_id columns
@@ -423,6 +427,36 @@ async def _migrate_add_columns():
                 logger.debug(f"[MIGRATION] Column {table}.{column} already modified, skipping")
             else:
                 logger.warning(f"[MIGRATION] Could not modify {table}.{column}: {e}")
+
+    # Unique index on quiz_sets.share_token — separate from the column add
+    # above because ALTER TABLE ADD COLUMN does not always create the index
+    # on existing tables (esp. MySQL). Idempotent.
+    # Try with IF NOT EXISTS first (SQLite + MySQL 8.0.29+); fall back to plain
+    # CREATE UNIQUE INDEX for older MySQL where the syntax is unsupported.
+    index_statements = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_quiz_sets_share_token ON quiz_sets (share_token)",
+        "CREATE UNIQUE INDEX ix_quiz_sets_share_token ON quiz_sets (share_token)",
+    ]
+    index_created = False
+    for stmt in index_statements:
+        if index_created:
+            break
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+            logger.info("[MIGRATION] Index ensured: ix_quiz_sets_share_token")
+            index_created = True
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "1061" in str(e):
+                logger.debug("[MIGRATION] Index ix_quiz_sets_share_token already exists, skipping")
+                index_created = True
+            elif "syntax" in err_msg or "1064" in str(e):
+                # Unsupported IF NOT EXISTS syntax — try the next statement form.
+                logger.debug(f"[MIGRATION] Statement form unsupported, trying fallback: {stmt}")
+                continue
+            else:
+                logger.warning(f"[MIGRATION] Could not create index ix_quiz_sets_share_token: {e}")
 
 
 async def _seed_default_data():

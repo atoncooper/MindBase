@@ -413,6 +413,12 @@ class QuizSet(Base):
     total_score = Column(Integer, default=100)
     passing_score = Column(Integer, default=60)
     completed_at = Column(DateTime, nullable=True)
+    # Quiz sharing — share_token is a separate unguessable secret so that
+    # quiz_uuid (which is only a UUID4) cannot be enumerated. NULL = not shared.
+    share_token = Column(String(32), unique=True, index=True, nullable=True)
+    shared_at = Column(DateTime, nullable=True)
+    # Optional expiry — NULL = never expires (until owner revokes).
+    share_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
