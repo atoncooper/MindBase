@@ -22,6 +22,7 @@ _RATE_LIMITS: dict[str, tuple[float, int]] = {
     "/cloud/upload": (5.0, 30),  # chunked upload: 5 rps burst 30
     "/favorites/organize": (1.0, 3),
     "/quiz/generate": (2.0, 5),
+    "/quiz/shared": (2.0, 5),  # public unauthenticated endpoint — throttle token guessing
     "/credentials": (1.0, 3),
     "/workspaces": (5.0, 10),
 }

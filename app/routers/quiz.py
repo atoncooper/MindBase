@@ -7,10 +7,13 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Body, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Query, Body, Depends, BackgroundTasks, Response
 from fastapi.responses import StreamingResponse
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db, get_db_context
+from app.routers.auth import get_current_uid
 from app.services.quiz_delete import QuizDeleteError, QuizDeleteService
 from app.services.quiz_generator import (
     QuizGeneratorService,
@@ -20,8 +23,7 @@ from app.services.quiz_generator import (
 )
 from app.services.quiz_grader import QuizGraderService
 from app.services.quiz_export import QuizDataExportService
-from app.database import get_db_context
-from app.routers.auth import get_current_uid
+from app.services.quiz_share_service import get_quiz_share_service
 
 router = APIRouter(prefix="/quiz", tags=["quiz"])
 
@@ -160,95 +162,22 @@ async def get_history(
     Cross-store consistency: if a quiz_set has status='done' but MongoDB
     has 0 questions, mark it as failed and exclude from results.
     """
+    from app.repository.quiz_repository import get_quiz_repository
+
+    repo = get_quiz_repository()
     async with get_db_context() as db:
-        from sqlalchemy import text, select as sa_select
-        from app.models import QuizSet
-        from app.repository import mongo_quiz_repository as mongo_quiz
+        await repo.refresh_stale_quiz_sets(uid, db)
+        total = await repo.count_history(uid, db)
+        submissions = await repo.list_history(uid, page, page_size, db)
 
-        # 1. Check for stale quiz sets (MySQL done but MongoDB empty)
-        stale_result = await db.execute(
-            sa_select(QuizSet.quiz_uuid).where(
-                QuizSet.uid == uid,
-                QuizSet.status == "done",
-            )
-        )
-        stale_uuids = [row[0] for row in stale_result.all()]
-        for qid in stale_uuids:
-            try:
-                mq_count = await mongo_quiz.count_questions(qid)
-                if mq_count == 0:
-                    qs_result = await db.execute(
-                        sa_select(QuizSet).where(QuizSet.quiz_uuid == qid)
-                    )
-                    qs = qs_result.scalar_one_or_none()
-                    if qs:
-                        qs.status = "failed"
-                        qs.error_message = "MongoDB data lost — questions not found"
-            except Exception:
-                pass  # MongoDB unavailable — skip check
-        await db.commit()
-
-        # 2. Count and paginate
-        count_result = await db.execute(
-            text(
-                """SELECT COUNT(*) FROM quiz_sets
-                   WHERE uid = :uid AND status IN ('done', 'failed')"""
-            ),
-            {"uid": uid},
-        )
-        total = count_result.scalar()
-
-        offset = (page - 1) * page_size
-        result = await db.execute(
-            text(
-                """SELECT qs.quiz_uuid, qs.title, qs.question_count,
-                          qs.difficulty, qs.status, qs.source_type,
-                          qs.created_at,
-                          qsub.submission_uuid, qsub.total_score,
-                          qsub.is_passed, qsub.correct_count,
-                          qsub.total_question_count, qsub.time_spent_seconds,
-                          qsub.submitted_at
-                   FROM quiz_sets qs
-                   LEFT JOIN quiz_submissions qsub
-                     ON qsub.quiz_uuid = qs.quiz_uuid AND qsub.uid = :uid
-                   WHERE qs.uid = :uid
-                     AND qs.status IN ('done', 'failed')
-                   ORDER BY qs.created_at DESC
-                   LIMIT :limit OFFSET :offset"""
-            ),
-            {"uid": uid, "limit": page_size, "offset": offset},
-        )
-        submissions = []
-        for row in result.fetchall():
-            d = dict(row._mapping)
-            submissions.append(
-                {
-                    "submission_uuid": d["submission_uuid"],
-                    "quiz_uuid": d["quiz_uuid"],
-                    "title": d["title"],
-                    "status": d["status"],
-                    "question_count": d["question_count"],
-                    "difficulty": d["difficulty"],
-                    "source_type": d["source_type"],
-                    "score": d["total_score"],
-                    "passed": (
-                        bool(d["is_passed"]) if d["is_passed"] is not None else None
-                    ),
-                    "correct_count": d["correct_count"],
-                    "total_question_count": d["total_question_count"],
-                    "time_spent_seconds": d["time_spent_seconds"],
-                    "submitted_at": d["submitted_at"],
-                    "created_at": str(d["created_at"]) if d["created_at"] else "",
-                }
-            )
-
-        return {
-            "submissions": submissions,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "has_more": offset + page_size < total,
-        }
+    offset = (page - 1) * page_size
+    return {
+        "submissions": submissions,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": offset + page_size < total,
+    }
 
 
 @router.get("/wrong-answers")
@@ -257,86 +186,19 @@ async def get_wrong_answers(
     uid: int = Depends(get_current_uid),
 ):
     """Get wrong-answer notebook for the current user."""
+    fids = (
+        [int(x.strip()) for x in folder_ids.split(",") if x.strip()]
+        if folder_ids
+        else None
+    )
+
+    from app.repository.quiz_repository import get_quiz_repository
+
+    repo = get_quiz_repository()
     async with get_db_context() as db:
-        from sqlalchemy import text
+        wrong_answers = await repo.list_wrong_answers(uid, fids, db)
 
-        sql = """
-            SELECT qq.question_uuid, qq.quiz_uuid, qq.question_type,
-                   qq.question_text, qq.options,
-                   qa.user_answer, qa.correct_answer_snapshot,
-                   qq.explanation,
-                   COUNT(qa.id) as times_wrong,
-                   MAX(qa.submitted_at) as last_attempt_at
-            FROM quiz_answers qa
-            JOIN quiz_submissions qsub ON qsub.submission_uuid = qa.submission_uuid
-            JOIN quiz_questions qq ON qq.question_uuid = qa.question_uuid
-            JOIN quiz_sets qs ON qs.quiz_uuid = qsub.quiz_uuid
-            WHERE qsub.uid = :uid AND qa.is_correct = 0 AND qs.status = 'done'
-        """
-
-        params = {"uid": uid}
-        if folder_ids:
-            fids = [int(x.strip()) for x in folder_ids.split(",") if x.strip()]
-            folder_conditions = []
-            for i, fid in enumerate(fids):
-                param_name = f"fid_{i}"
-                folder_conditions.append(f"qs.folder_ids LIKE :{param_name}")
-                params[param_name] = f"%{fid}%"
-            if folder_conditions:
-                sql = """
-                    SELECT qq.question_uuid, qq.quiz_uuid, qq.question_type,
-                           qq.question_text, qq.options,
-                           qa.user_answer, qa.correct_answer_snapshot,
-                           qq.explanation,
-                           COUNT(qa.id) as times_wrong,
-                           MAX(qa.submitted_at) as last_attempt_at
-                    FROM quiz_answers qa
-                    JOIN quiz_submissions qsub ON qsub.submission_uuid = qa.submission_uuid
-                    JOIN quiz_questions qq ON qq.question_uuid = qa.question_uuid
-                    JOIN quiz_sets qs ON qs.quiz_uuid = qsub.quiz_uuid
-                    WHERE qsub.uid = :uid AND qa.is_correct = 0 AND qs.status = 'done'
-                """ + (
-                    " AND (" + " OR ".join(folder_conditions) + ")"
-                )
-
-        sql += " GROUP BY qq.question_uuid ORDER BY last_attempt_at DESC"
-
-        result = await db.execute(text(sql), params)
-        wrong_answers = []
-        import json as _json
-
-        for row in result.fetchall():
-            d = dict(row._mapping)
-            user_answer = (
-                _json.loads(d["user_answer"]) if d["user_answer"] else d["user_answer"]
-            )
-            correct_answer = (
-                _json.loads(d["correct_answer_snapshot"])
-                if d["correct_answer_snapshot"]
-                else d["correct_answer_snapshot"]
-            )
-            options_data = (
-                _json.loads(d["options"])
-                if isinstance(d.get("options"), str)
-                else d.get("options")
-            )
-
-            wrong_answers.append(
-                {
-                    "question_uuid": d["question_uuid"],
-                    "quiz_uuid": d["quiz_uuid"],
-                    "question_type": d["question_type"],
-                    "question_text": d["question_text"],
-                    "options": options_data,
-                    "user_answer": user_answer,
-                    "correct_answer": correct_answer,
-                    "explanation": d["explanation"],
-                    "times_wrong": d["times_wrong"],
-                    "last_attempt_at": d["last_attempt_at"],
-                }
-            )
-
-        return {"wrong_answers": wrong_answers, "total": len(wrong_answers)}
+    return {"wrong_answers": wrong_answers, "total": len(wrong_answers)}
 
 
 @router.get("/export")
@@ -374,6 +236,77 @@ async def export_quiz_data(
             "Cache-Control": "no-cache",
         },
     )
+
+
+# ── Sharing (public read + owner-managed write) ─────────────────
+
+
+@router.post("/{quiz_uuid}/share")
+async def create_quiz_share(
+    quiz_uuid: str,
+    body: dict = Body(default_factory=dict),
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create or rotate the share_token for an owned quiz.
+
+    Body: ``{"expires_in_days": int | null}``. ``null``/absent = never expires.
+    Returns ``{quiz_uuid, share_token, shared_at, share_expires_at}``.
+    Re-issuing invalidates the previous link.
+    """
+    expires_in_days = body.get("expires_in_days") if isinstance(body, dict) else None
+    if expires_in_days is not None:
+        try:
+            expires_in_days = int(expires_in_days)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="expires_in_days 必须是整数或 null")
+    service = get_quiz_share_service()
+    return await service.create_share(quiz_uuid, uid, db, expires_in_days)
+
+
+@router.get("/{quiz_uuid}/share")
+async def get_quiz_share_status(
+    quiz_uuid: str,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Owner-side query: current share state for an owned quiz."""
+    service = get_quiz_share_service()
+    return await service.get_share_status(quiz_uuid, uid, db)
+
+
+@router.delete("/{quiz_uuid}/share")
+async def revoke_quiz_share(
+    quiz_uuid: str,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke sharing for an owned quiz. Idempotent."""
+    service = get_quiz_share_service()
+    return await service.revoke_share(quiz_uuid, uid, db)
+
+
+@router.get("/shared/{share_token}")
+async def get_shared_quiz(
+    share_token: str,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public read of a shared quiz — NO authentication required.
+
+    Returns quiz questions WITHOUT correct answers / explanations / keywords
+    so viewers can self-test. Raises 404 for invalid / revoked / non-shareable
+    tokens (identical response to avoid state enumeration).
+
+    Response is cacheable for 60s at the browser and at nginx (separate
+    ``proxy_cache`` directive). Revocation / re-issuance takes effect
+    immediately at the Redis L2 layer; worst-case staleness at the HTTP
+    layers is bounded by the 60s TTL — acceptable for non-sensitive content.
+    """
+    response.headers["Cache-Control"] = "public, max-age=60"
+    response.headers["Vary"] = "Accept-Encoding"
+    service = get_quiz_share_service()
+    return await service.get_shared_quiz(share_token, db)
 
 
 # ── Parameterized routes (MUST be last) ────────────────────────
@@ -419,19 +352,10 @@ async def get_quiz(
             f"[QUIZ] quiz_uuid={quiz_uuid} has status=done question_count={quiz_set.question_count} "
             f"but MongoDB returned 0 questions — marking quiz as failed (data lost after migration?)"
         )
-        async with get_db_context() as db:
-            from app.models import QuizSet
+        from app.repository.quiz_repository import get_quiz_repository
 
-            result = await db.execute(
-                __import__("sqlalchemy")
-                .select(QuizSet)
-                .where(QuizSet.quiz_uuid == quiz_uuid)
-            )
-            qs = result.scalar_one_or_none()
-            if qs:
-                qs.status = "failed"
-                qs.error_message = "MongoDB data lost — questions not found"
-                await db.commit()
+        async with get_db_context() as db:
+            await get_quiz_repository().mark_quiz_lost(quiz_uuid, db)
         raise HTTPException(410, "题目数据已丢失，请重新生成")
 
     return {
