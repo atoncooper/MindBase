@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.infra.config import config
+from app.infra.errors import internal_error
 
 if TYPE_CHECKING:
     from app.models import CloudFile
-from app.routers.auth import get_current_uid
+from app.routers.auth import get_current_uid, require_admin
 from app.response.cloud import (
     UploadInitRequest,
     UploadInitResponse,
@@ -40,18 +41,6 @@ from app.response.cloud import (
 )
 
 router = APIRouter(prefix="/cloud", tags=["cloud-drive"])
-
-# Strong refs for fire-and-forget background tasks. Without this, asyncio
-# may garbage-collect the task object mid-flight and the pipeline silently
-# disappears (see CPython docs on asyncio.create_task).
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-    return task
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +98,7 @@ async def init_upload(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("[CLOUD] init_upload failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.post("/upload/{upload_uuid}/complete", response_model=UploadCompleteResponse)
@@ -135,8 +123,7 @@ async def complete_upload(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception(f"[CLOUD] complete_upload failed upload_uuid={upload_uuid}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.post("/upload/heartbeat", response_model=HeartbeatResponse)
@@ -195,7 +182,7 @@ async def resume_upload(
             "[CLOUD] resume_upload failed upload_uuid={}",
             upload_uuid,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +204,7 @@ async def list_folders(
         folders = [FolderTreeItem.model_validate(item) for item in tree]
         return FolderTreeResponse(folders=folders)
     except Exception as e:
-        logger.exception("[CLOUD] list_folders failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.post("/folders", response_model=FolderResponse, status_code=201)
@@ -242,8 +228,7 @@ async def create_folder(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("[CLOUD] create_folder failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.patch("/folders/{folder_id}", response_model=FolderResponse)
@@ -272,8 +257,7 @@ async def update_folder(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception(f"[CLOUD] update_folder failed folder_id={folder_id}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.delete("/folders/{folder_id}", response_model=FolderDeleteResponse)
@@ -286,59 +270,23 @@ async def delete_folder(
     """Soft-delete a folder and its files (DB + MinIO).  When ``force=true``,
     also deletes the subtree."""
     try:
-        from sqlalchemy import select
-        from app.models import CloudFile, CloudFolder
-
-        folder_repo = _get_folder_repo()
-        _FOLDER_ALIVE = CloudFolder.deleted_at == None  # noqa: E711
-        _FILE_ALIVE = CloudFile.deleted_at == None  # noqa: E711
-
-        # ---- collect folder IDs in subtree (for force mode) ----
-        folder_ids = [folder_id]
-        if force:
-            # BFS/DFS to collect all descendant folder IDs
-            queue = [folder_id]
-            while queue:
-                parent = queue.pop(0)
-                child_result = await db.execute(
-                    select(CloudFolder.id).where(
-                        CloudFolder.parent_id == parent,
-                        CloudFolder.uid == uid,
-                        _FOLDER_ALIVE,
-                    )
-                )
-                for (cid,) in child_result.all():
-                    folder_ids.append(cid)
-                    queue.append(cid)
-
-        # ---- collect object_keys from all affected files ----
-        result = await db.execute(
-            select(CloudFile.object_key).where(
-                CloudFile.folder_id.in_(folder_ids),
-                CloudFile.uid == uid,
-                _FILE_ALIVE,
-            )
+        from app.services.cloud.storage_cleanup import (
+            get_cloud_storage_cleanup_service,
         )
-        object_keys = [row[0] for row in result.all()]
 
-        # ---- soft-delete in DB ----
+        cleanup = get_cloud_storage_cleanup_service()
+        folder_repo = _get_folder_repo()
+
+        folder_ids = await cleanup.collect_folder_subtree(
+            folder_id, uid, db, force
+        )
+        object_keys = await cleanup.collect_folder_object_keys(
+            folder_ids, uid, db
+        )
+
         affected = await folder_repo.soft_delete(folder_id, uid, force, db)
 
-        # ---- clean up MinIO objects ----
-        if config.minio.enabled and object_keys:
-            from app.infra.minio import get_minio_client
-
-            minio_cli = get_minio_client()
-            for ok in object_keys:
-                try:
-                    await minio_cli.delete_object(ok)
-                except Exception as exc:
-                    logger.warning(
-                        "[CLOUD] delete_folder minio cleanup failed "
-                        "object_key={} err={}",
-                        ok,
-                        exc,
-                    )
+        await cleanup.delete_minio_objects(object_keys)
 
         return FolderDeleteResponse(deleted=True, affectedFiles=affected)
     except PermissionError as e:
@@ -349,7 +297,7 @@ async def delete_folder(
             folder_id,
             force,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +336,7 @@ async def list_videos(
             hasMore=(page * pageSize) < total,
         )
     except Exception as e:
-        logger.exception("[CLOUD] list_videos failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.get("/video/{upload_uuid}", response_model=VideoDetailResponse)
@@ -446,7 +393,7 @@ async def get_video_detail(
             "[CLOUD] get_video_detail failed upload_uuid={}",
             upload_uuid,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.patch("/video/{upload_uuid}", response_model=VideoDetailResponse)
@@ -491,7 +438,7 @@ async def update_video(
             "[CLOUD] update_video failed upload_uuid={}",
             upload_uuid,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.delete("/video/{upload_uuid}")
@@ -515,66 +462,15 @@ async def delete_video(
 
         # ── 1. Soft-delete MySQL row FIRST (source of truth) ──
         await file_repo.soft_delete(upload_uuid, uid, db)
-        _object_key = file.object_key
 
         # ── 2. Async cleanup: MinIO / MongoDB / Milvus ──
-        # TODO: periodic orphan-scan job — scan MinIO objects without
-        #       corresponding non-deleted cloud_files rows, and clean up
-        #       orphaned MongoDB / Milvus entries.
-        async def _cleanup_storage():
-            if config.minio.enabled and _object_key:
-                try:
-                    from app.infra.minio import get_minio_client
+        from app.services.cloud.storage_cleanup import (
+            get_cloud_storage_cleanup_service,
+        )
 
-                    await get_minio_client().delete_object(_object_key)
-                    logger.info(
-                        "[CLOUD] minio object deleted upload_uuid={} object_key={}",
-                        upload_uuid,
-                        _object_key,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[CLOUD] minio delete_object failed (orphaned) "
-                        "upload_uuid={} object_key={} err={}",
-                        upload_uuid,
-                        _object_key,
-                        exc,
-                    )
-
-            if config.mongo.enabled:
-                try:
-                    from app.infra.mongo import is_enabled as mongo_ok, coll
-
-                    if mongo_ok():
-                        result = await coll("asr_documents").delete_many(
-                            {"bvid": upload_uuid}
-                        )
-                        logger.info(
-                            "[CLOUD] mongo asr_documents deleted upload_uuid={} count={}",
-                            upload_uuid,
-                            result.deleted_count,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "[CLOUD] mongo cleanup failed upload_uuid={} err={}",
-                        upload_uuid,
-                        exc,
-                    )
-
-            if config.milvus.enabled:
-                try:
-                    from app.services.rag import get_rag_service
-
-                    rag = get_rag_service()
-                    rag.delete_cloud_vectors(upload_uuid)
-                except Exception as exc:
-                    logger.warning(
-                        "[CLOUD] milvus cleanup failed upload_uuid={} err={}",
-                        upload_uuid,
-                        exc,
-                    )
-
-        _spawn(_cleanup_storage())
+        get_cloud_storage_cleanup_service().spawn_video_cleanup(
+            upload_uuid, file.object_key
+        )
 
         return {"deleted": True, "uploadUuid": upload_uuid}
     except HTTPException:
@@ -584,7 +480,7 @@ async def delete_video(
             "[CLOUD] delete_video failed upload_uuid={}",
             upload_uuid,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 # ---------------------------------------------------------------------------
@@ -598,93 +494,20 @@ async def trigger_processing(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """Fire-and-forget ASR + vectorisation e for an uploaded file."""
+    """Fire-and-forget ASR + vectorisation for an uploaded file."""
     try:
-        file_repo = _get_file_repo()
-        file: CloudFile | None = await file_repo.get_by_uuid(upload_uuid, uid, db)
-        if file is None:
-            raise HTTPException(status_code=404, detail="File not found")
+        from app.services.cloud.processing_service import (
+            get_cloud_processing_service,
+        )
 
-        # Enforce mime allowlist on manual reprocess. Without this the
-        # caller could re-vectorize blacklisted types (image/*, archives,
-        # exes), which would just churn the pipeline before failing
-        # downstream. We only flip vectorizable=True when the registry
-        # actually has a parser or the mime is on the allowlist.
-        from app.services.doc_parser import is_vectorizable
-
-        if not is_vectorizable(file.mime_type, file.original_name):
-            raise HTTPException(
-                status_code=400,
-                detail=f"This mime type is not supported: {file.mime_type}",
-            )
-        if not file.vectorizable:
-            file.vectorizable = True
-
-        # Mark as processing immediately (visible in status + WS push)
-        file.asr_status = "processing"
-        file.vector_status = "processing"
-        await db.commit()
-
-        from app.services.ws_registry import broadcast_cloud_status
-
-        _spawn(broadcast_cloud_status(uid, upload_uuid, "processing", 0))
-
-        # Capture primitive values before spawning background task
-        # (the request-scoped session + ORM object are invalid after response)
-        _upload_uuid: str = upload_uuid
-        _uid: int = uid
-        _mime_type: str = file.mime_type
-
-        # Fire-and-forget: parse → chunk → embed → verify → mark done
-        async def _run_pipeline() -> None:
-            from app.database import async_session_factory
-
-            async with async_session_factory() as bg_db:
-                try:
-                    logger.info(
-                        f"[CLOUD] pipeline started upload_uuid={_upload_uuid} "
-                        f"uid={_uid} type={_mime_type}",
-                    )
-                    from app.services.doc_parser.vectorize import (
-                        vectorize_cloud_document,
-                    )
-
-                    chunk_count = await vectorize_cloud_document(
-                        _upload_uuid, _uid, bg_db
-                    )
-                    logger.info(
-                        f"[CLOUD] pipeline done upload_uuid={_upload_uuid} "
-                        f"chunks={chunk_count}",
-                    )
-                except Exception:
-                    logger.exception(
-                        f"[CLOUD] pipeline failed upload_uuid={_upload_uuid}",
-                    )
-                    # Ensure DB reflects failure even if vectorize_cloud_document
-                    # couldn't set it (e.g. import error before its try/except)
-                    try:
-                        from app.repository.cloud.file_repository import (
-                            get_cloud_file_repository,
-                        )
-
-                        file_repo = get_cloud_file_repository()
-                        file = await file_repo.get_by_uuid(_upload_uuid, _uid, bg_db)
-                        if file is not None and file.vector_status != "failed":
-                            file.vector_status = "failed"
-                            await bg_db.commit()
-                    except Exception:
-                        logger.exception(
-                            f"[CLOUD] failed to mark vector_status=failed for {_upload_uuid}",
-                        )
-
-        _spawn(_run_pipeline())
-
+        await get_cloud_processing_service().trigger_processing(
+            upload_uuid, uid, db
+        )
         return VideoProcessResponse(uploadUuid=upload_uuid)
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"[CLOUD] trigger_processing failed upload_uuid={upload_uuid}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.get("/video/{upload_uuid}/status", response_model=VideoStatusResponse)
@@ -724,7 +547,7 @@ async def get_video_status(
             "[CLOUD] get_video_status failed upload_uuid={}",
             upload_uuid,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 # ── Plan 0023: Document support endpoints ──────────────────────
@@ -738,43 +561,18 @@ async def reprocess_document(
 ):
     """Re-parse and re-vectorize a cloud document (for content changes)."""
     try:
-        file_repo = _get_file_repo()
-        file = await file_repo.get_by_uuid(upload_uuid, uid, db)
-        if file is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        if not file.vectorizable:
-            raise HTTPException(
-                status_code=400, detail="This file type is not vectorizable"
-            )
+        from app.services.cloud.processing_service import (
+            get_cloud_processing_service,
+        )
 
-        if config.milvus.enabled:
-            try:
-                from app.services.rag import get_rag_service
-
-                rag = get_rag_service()
-                rag.delete_cloud_vectors(upload_uuid)
-            except Exception as e:
-                logger.warning(f"[CLOUD] reprocess: delete old vectors failed: {e}")
-
-        file.vector_status = "pending"
-        file.vector_chunk_count = 0
-        file.content_hash = None
-        await db.commit()
-
-        import uuid as _uuid
-        from app.services.async_task.tracker import TaskTracker
-
-        task_id = str(_uuid.uuid4())
-        tracker = TaskTracker()
-        await tracker.start(task_id, task_type="cloud_doc")
-
-        _spawn(_run_doc_reprocess(task_id, upload_uuid, uid))
+        task_id = await get_cloud_processing_service().reprocess_document(
+            upload_uuid, uid, db
+        )
         return {"uploadUuid": upload_uuid, "taskId": task_id}
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"[CLOUD] reprocess failed upload_uuid={upload_uuid}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
 
 
 @router.get("/video/{upload_uuid}/preview")
@@ -862,23 +660,18 @@ async def get_document_preview(
 
 
 async def _run_doc_reprocess(task_id: str, upload_uuid: str, uid: int):
-    """Background task: re-parse + re-vectorize a cloud document."""
-    from app.services.async_task.tracker import TaskTracker
-    from app.database import async_session_factory
+    """Deprecated: use CloudProcessingService._run_doc_reprocess instead.
 
-    tracker = TaskTracker()
-    log = logger
-    try:
-        async with async_session_factory() as bg_db:
-            await tracker.step(task_id, "parse", "processing", 0)
-            from app.services.doc_parser.vectorize import vectorize_cloud_document
+    Kept temporarily to avoid breaking any external references; will be
+    removed once confirmed unused.
+    """
+    from app.services.cloud.processing_service import (
+        get_cloud_processing_service,
+    )
 
-            chunk_count = await vectorize_cloud_document(upload_uuid, uid, bg_db)
-            await tracker.step(task_id, "parse", "done", 100)
-            await tracker.complete(task_id, {"chunk_count": chunk_count})
-    except Exception as e:
-        log.exception("[CLOUD] _run_doc_reprocess failed task_id={}", task_id)
-        await tracker.fail(task_id, str(e))
+    await get_cloud_processing_service()._run_doc_reprocess(
+        task_id, upload_uuid, uid
+    )
 
 
 # ── Admin utils ────────────────────────────────────────────────────
@@ -886,7 +679,7 @@ async def _run_doc_reprocess(task_id: str, upload_uuid: str, uid: int):
 
 @router.post("/admin/reset-vector-collection")
 async def reset_vector_collection(
-    uid: int = Depends(get_current_uid),
+    uid: int = Depends(require_admin),
 ):
     """Drop and recreate the cloud_drive Milvus collection.
     Use after changing embedding model or when dimension mismatch occurs."""
@@ -900,5 +693,4 @@ async def reset_vector_collection(
         # Also reset vector_status on all files so they can be re-processed
         return {"message": "cloud_drive collection dropped and recreated"}
     except Exception as e:
-        logger.exception("[CLOUD] reset_vector_collection failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e)
