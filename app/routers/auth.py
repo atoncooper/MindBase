@@ -172,7 +172,7 @@ async def generate_qrcode():
             qrcode_url=result["qrcode_url"],
             qrcode_image_base64=result["qrcode_image_base64"],
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to generate QR code")
         raise HTTPException(
             status_code=500, detail="二维码生成失败，请稍后重试"
@@ -329,7 +329,7 @@ async def poll_qrcode_status(
         else:
             _pop_qrcode_client(qrcode_key)
         raise
-    except Exception as e:
+    except Exception:
         if _should_close:
             import asyncio
 
