@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from typing import List, Optional
 from pydantic import BaseModel
+from app.infra.errors import internal_error
 from app.response.knowledge import FavoriteFolderInfo
 from app.services.bilibili import BilibiliService
 from app.routers.auth import get_session
@@ -107,7 +108,7 @@ async def get_favorites_list(session_id: str = Query(..., description="会话ID"
         raise
     except Exception as e:
         logger.exception("获取收藏夹列表失败")
-        raise HTTPException(status_code=500, detail=f"获取收藏夹失败: {str(e) or '未知错误'}")
+        raise internal_error(e)
     finally:
         await bili.close()
 
@@ -162,7 +163,7 @@ async def get_favorite_videos(
         raise
     except Exception as e:
         logger.exception("获取收藏夹视频失败")
-        raise HTTPException(status_code=500, detail=f"获取视频失败: {str(e) or '未知错误'}")
+        raise internal_error(e)
     finally:
         await bili.close()
 
@@ -220,7 +221,7 @@ async def get_all_favorite_videos(
         raise
     except Exception as e:
         logger.exception("获取所有视频失败")
-        raise HTTPException(status_code=500, detail=f"获取视频失败: {str(e) or '未知错误'}")
+        raise internal_error(e)
     finally:
         await bili.close()
 
@@ -339,7 +340,7 @@ async def organize_preview(
         raise
     except Exception as e:
         logger.exception("收藏夹整理预览失败")
-        raise HTTPException(status_code=500, detail=f"预览失败: {str(e) or '未知错误'}")
+        raise internal_error(e)
     finally:
         await bili.close()
 
@@ -391,7 +392,7 @@ async def organize_execute(
         raise
     except Exception as e:
         logger.exception("收藏夹整理执行失败")
-        raise HTTPException(status_code=500, detail=f"执行失败: {str(e) or '未知错误'}")
+        raise internal_error(e)
     finally:
         await bili.close()
 
@@ -422,6 +423,6 @@ async def clean_invalid_resources(
         raise
     except Exception as e:
         logger.exception("清理失效内容失败")
-        raise HTTPException(status_code=500, detail=f"清理失败: {str(e) or '未知错误'}")
+        raise internal_error(e)
     finally:
         await bili.close()
