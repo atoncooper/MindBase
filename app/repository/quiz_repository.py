@@ -13,7 +13,6 @@ from typing import Any, Optional
 
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.models import QuizSet
 
