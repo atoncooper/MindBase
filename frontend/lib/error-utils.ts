@@ -74,6 +74,19 @@ export function sanitizeError(err: unknown): string {
     if (typeof obj.detail === "string") message = obj.detail;
   }
 
+  // 4xx with a backend-provided detail: trust it — these are user-facing
+  // messages (e.g. "题目尚未生成完成，无法分享"). Only 5xx may leak internals.
+  if (status && status >= 400 && status < 500 && message) {
+    // Guard against obvious internal leakage just in case
+    if (
+      message.length > 200 ||
+      /traceback|select |insert |update |sqlalchemy|aiomysql/i.test(message)
+    ) {
+      return STATUS_MESSAGES[status] ?? "操作失败，请重试";
+    }
+    return message;
+  }
+
   // Classify by HTTP status
   if (status && STATUS_MESSAGES[status]) {
     return STATUS_MESSAGES[status];
