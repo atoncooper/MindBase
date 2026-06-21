@@ -12,20 +12,25 @@ must not import from routers.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Optional
 
-# task_id -> {"status", "progress", "message", "result"}
+# task_id -> {"status", "progress", "message", "result", "uid"}
 asr_tasks: dict[str, dict[str, Any]] = {}
 
 
-def create_task() -> str:
-    """Create a new pending task and return its id."""
+def create_task(uid: Optional[int] = None) -> str:
+    """Create a new pending task and return its id.
+
+    ``uid`` is optional for backward compat with callers that predate the
+    IDOR fix; when provided, polling endpoints can enforce ownership.
+    """
     task_id = str(uuid.uuid4())
     asr_tasks[task_id] = {
         "status": "pending",
         "progress": 0,
         "message": "任务已创建",
         "result": None,
+        "uid": uid,
     }
     return task_id
 
