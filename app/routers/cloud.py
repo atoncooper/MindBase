@@ -4,8 +4,7 @@ Cloud drive API router — multipart upload, folder tree, file management.
 
 from __future__ import annotations
 
-import asyncio
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from loguru import logger
@@ -15,8 +14,6 @@ from app.database import get_db
 from app.infra.config import config
 from app.infra.errors import internal_error
 
-if TYPE_CHECKING:
-    from app.models import CloudFile
 from app.routers.auth import get_current_uid, require_admin
 from app.response.cloud import (
     UploadInitRequest,
