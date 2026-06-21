@@ -13,18 +13,16 @@ from __future__ import annotations
 import asyncio
 import random
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from loguru import logger
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import FavoriteFolder, Collection
-from app.response.knowledge import ContentSource
 from app.services.bilibili import BilibiliService
 from app.services.content_fetcher import ContentFetcher
 from app.services.rag import RAGService
-from app.utils.bvid import bv_to_av
 
 
 async def _human_pause(min_s: float, max_s: float) -> None:

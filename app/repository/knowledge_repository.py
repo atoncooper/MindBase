@@ -6,10 +6,9 @@ and the bvid ownership check in ``delete_video_from_knowledge``.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, func, or_, delete
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import FavoriteFolder, Collection, Video, AsyncTask

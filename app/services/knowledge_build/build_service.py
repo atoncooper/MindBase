@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 from loguru import logger
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_context
 from app.models import FavoriteFolder
