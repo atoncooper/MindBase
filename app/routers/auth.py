@@ -41,15 +41,53 @@ def _get_device_id(request: Request) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _is_trusted_proxy(host: str | None) -> bool:
+    """Return True iff `host` falls within the configured trusted_proxies CIDRs.
+
+    Used to decide whether to honour X-Forwarded-For / X-Real-IP. If the
+    direct peer is not a trusted proxy we ignore those headers entirely so
+    attackers cannot spoof client IP to bypass per-IP rate limits.
+    """
+    if not host:
+        return False
+    raw = ""
+    try:
+        from app.infra.config import config as _cfg
+        raw = str(getattr(_cfg.server, "trusted_proxies", "") or "")
+    except Exception:
+        return False
+    if not raw.strip():
+        return False
+    try:
+        import ipaddress
+        peer = ipaddress.ip_address(host)
+        for cidr in (c.strip() for c in raw.split(",") if c.strip()):
+            try:
+                if peer in ipaddress.ip_network(cidr, strict=False):
+                    return True
+            except ValueError:
+                continue
+    except ValueError:
+        return False
+    return False
+
+
 def _get_client_ip(request: Request) -> str:
-    """Extract real client IP, respecting reverse-proxy headers."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
-    return request.client.host if request.client else "unknown"
+    """Extract real client IP, respecting reverse-proxy headers.
+
+    Only honours X-Forwarded-For / X-Real-IP when the direct peer is a
+    trusted proxy (see ``_is_trusted_proxy``). Otherwise falls back to the
+    raw socket peer, preventing spoofed-header IP bypass.
+    """
+    peer = request.client.host if request.client else None
+    if _is_trusted_proxy(peer):
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
+    return peer or "unknown"
 
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -80,6 +118,23 @@ async def get_current_uid(
     uid = await _validate_token(db, token_str)
     if uid is None:
         raise HTTPException(status_code=401, detail="token 无效或已过期")
+    return uid
+
+
+async def require_admin(
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+) -> int:
+    """FastAPI dependency: require the caller to hold the 'admin' RBAC role.
+
+    Returns uid on success; raises 403 otherwise. Used to gate globally
+    destructive endpoints (e.g. drop Milvus collection, clear knowledge base).
+    """
+    from app.repository.rbac_repository import get_rbac_repository
+
+    roles = await get_rbac_repository().get_user_roles(uid, db)
+    if "admin" not in roles:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
     return uid
 
 
@@ -117,10 +172,10 @@ async def generate_qrcode():
             qrcode_url=result["qrcode_url"],
             qrcode_image_base64=result["qrcode_image_base64"],
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to generate QR code")
         raise HTTPException(
-            status_code=500, detail=f"Failed to generate QR code: {str(e)}"
+            status_code=500, detail="二维码生成失败，请稍后重试"
         )
 
 
@@ -274,7 +329,7 @@ async def poll_qrcode_status(
         else:
             _pop_qrcode_client(qrcode_key)
         raise
-    except Exception as e:
+    except Exception:
         if _should_close:
             import asyncio
 
@@ -282,7 +337,7 @@ async def poll_qrcode_status(
         else:
             _pop_qrcode_client(qrcode_key)
         logger.exception("Failed to poll QR code")
-        raise HTTPException(status_code=500, detail=f"Poll failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="二维码轮询失败，请稍后重试")
 
 
 # ── Password login ──────────────────────────────────────────────
@@ -293,7 +348,28 @@ async def login_with_password(
     req: LoginRequest,
     request: Request,
 ):
-    """Login with email + password. Returns session token on success."""
+    """Login with email + password. Returns session token on success.
+
+    Brute-force defense:
+      1. Per-IP rate limit (middleware/rate_limit.py, /auth prefix)
+      2. Per-email lockout — 5 failed attempts → 15-min hard lockout
+         (services/auth/login_throttle.py, Redis-backed).
+    """
+    from app.services.auth.login_throttle import (
+        check_login_allowed,
+        record_failed_login,
+        record_successful_login,
+    )
+
+    # Per-email lockout check — must happen before the password check.
+    allowed, retry_after = await check_login_allowed(req.email)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="登录失败次数过多，请稍后再试",
+            headers={"Retry-After": str(retry_after or 60)},
+        )
+
     device_id = _get_device_id(request)
     ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
@@ -311,7 +387,12 @@ async def login_with_password(
             info = await user_service.get_user_by_uid(uid)
             roles = await user_service.get_user_roles(uid)
     except ValueError:
+        # Count the failed attempt so repeated wrong-password tries lock
+        # the account regardless of how many IPs the attacker spoofs.
+        await record_failed_login(req.email)
         raise HTTPException(status_code=401, detail="邮箱或密码不正确")
+
+    await record_successful_login(req.email)
 
     # Record device metadata after token commit (best-effort)
     from app.repository.user_device_repository import get_user_device_repository
@@ -686,35 +767,11 @@ async def get_session(session_id: str) -> dict | None:
 async def _get_bili_cookies_by_uid(uid: int, db) -> tuple:
     """Resolve B站 cookies from user_oauth by uid.
 
-    Returns (BilibiliService, bili_mid).  Raises HTTPException(401) if no
-    bilibili oauth binding exists or the access_token cannot be decrypted.
+    Thin wrapper over ``app.services.auth.bilibili_credentials.resolve_bili_credentials``
+    — kept here so existing callers (knowledge / cloud routers) don't need
+    to change their import paths. The actual DB access + AES decryption
+    lives in the service layer.
     """
-    from sqlalchemy import select
-    from app.models import UserOAuth as UserOAuthModel
+    from app.services.auth.bilibili_credentials import resolve_bili_credentials
 
-    oauth_result = await db.execute(
-        select(UserOAuthModel).where(
-            UserOAuthModel.uid == uid,
-            UserOAuthModel.provider == "bilibili",
-        )
-    )
-    oauth = oauth_result.scalar_one_or_none()
-    if not oauth or not oauth.access_token:
-        raise HTTPException(status_code=401, detail="Bilibili account not linked")
-
-    sessdata = _decrypt(oauth.access_token)
-    if not sessdata:
-        raise HTTPException(
-            status_code=401, detail="Failed to decrypt Bilibili session"
-        )
-
-    bili_mid = int(oauth.provider_uid) if oauth.provider_uid.isdigit() else 0
-    if not bili_mid:
-        raise HTTPException(status_code=401, detail="Invalid Bilibili user ID")
-
-    bili = BilibiliService(
-        sessdata=sessdata,
-        bili_jct="",
-        dedeuserid=oauth.provider_uid,
-    )
-    return bili, bili_mid
+    return await resolve_bili_credentials(uid, db)

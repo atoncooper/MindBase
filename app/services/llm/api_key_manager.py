@@ -102,13 +102,15 @@ class ApiKeyManager:
                 self._aesgcm = None
                 logger.warning(
                     f"[API_KEY_MANAGER] invalid encryption key ({e}), "
-                    "API keys will be stored WITHOUT encryption"
+                    "API keys will be stored WITHOUT encryption (DEV ONLY — "
+                    "production startup will refuse to boot)"
                 )
         else:
             self._aesgcm = None
             logger.warning(
                 "[API_KEY_MANAGER] encryption key not configured, "
-                "API keys will be stored WITHOUT encryption"
+                "API keys will be stored WITHOUT encryption (DEV ONLY — "
+                "production startup will refuse to boot)"
             )
 
     # ═══════════════════════════════════════════════════════════
@@ -707,3 +709,8 @@ class ApiKeyManager:
     @property
     def is_enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def is_encryption_enabled(self) -> bool:
+        """True iff AES-GCM encryption is active (key configured & valid)."""
+        return self._aesgcm is not None
