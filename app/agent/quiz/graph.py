@@ -29,6 +29,7 @@ MAX_GRADING_MODEL_ANSWER_CHARS = 4000
 MAX_GRADING_USER_ANSWER_CHARS = 8000
 ALLOWED_QUESTION_TYPES = {"single_choice", "multi_choice", "short_answer", "essay"}
 ALLOWED_DIFFICULTIES = {"easy", "medium", "hard"}
+_DOWNGRADE_MAP = {"essay": "short_answer", "short_answer": "single_choice"}
 
 
 def get_default_llm(temperature: float = 0.7) -> ChatOpenAI:
@@ -106,13 +107,36 @@ def _trace_tokens(text: str) -> set[str]:
 
 
 def _is_traced_to_source(terms: list[str], source: str) -> bool:
-    term_tokens = (
-        set().union(*(_trace_tokens(term) for term in terms)) if terms else set()
-    )
-    if not term_tokens:
+    """Check whether each answer term has an anchor in the source chunk.
+
+    Each term must independently trace back to source via one of:
+      1. Substring containment (≥3 chars, case-insensitive) — tolerates
+         rephrased answers that still embed an original phrase.
+      2. 2-gram / alphanumeric token overlap — handles short or
+         English/numeric terms where substring matching is too coarse.
+
+    Pure-fabricated answers with zero anchor fail. This replaces the old
+    "merged token set overlap ≥ 1" rule, which let one term's hit cover
+    for unrelated others and still rejected legitimate rephrased answers
+    from generation models like qwen3-max.
+    """
+    if not terms:
         return False
-    overlap = term_tokens & _trace_tokens(source)
-    return len(overlap) >= 1
+    source_lower = source.lower()
+    source_tokens = _trace_tokens(source)
+    validated = 0
+    for term in terms:
+        if len(term) < 2:
+            continue
+        term_lower = term.lower()
+        if len(term_lower) >= 3 and term_lower in source_lower:
+            validated += 1
+            continue
+        if _trace_tokens(term) & source_tokens:
+            validated += 1
+            continue
+        return False
+    return validated > 0
 
 
 def _invalid_question(reason: str, q: dict[str, Any], **extra: Any) -> bool:
@@ -167,7 +191,8 @@ def validate_question(q: dict[str, Any], chunks: list[dict[str, Any]]) -> bool:
         trace_terms = [str(keyword) for keyword in keywords]
     elif qtype == "essay":
         rubric = q.get("scoring_rubric") or []
-        if not q.get("model_answer") or not rubric:
+        model_answer = q.get("model_answer")
+        if not model_answer or not rubric:
             return _invalid_question("essay_missing_model_answer_or_rubric", q)
         trace_terms = [
             str(keyword)
@@ -178,6 +203,8 @@ def validate_question(q: dict[str, Any], chunks: list[dict[str, Any]]) -> bool:
                 else getattr(item, "keywords", [])
             )
         ]
+        # Include the model answer itself so we verify it is grounded in source
+        trace_terms.append(str(model_answer))
     else:
         return _invalid_question("unsupported_question_type", q)
 
@@ -188,10 +215,25 @@ def validate_question(q: dict[str, Any], chunks: list[dict[str, Any]]) -> bool:
     else:
         traced = not trace_terms or _is_traced_to_source(trace_terms, source)
     if not traced:
-        return _invalid_question(
-            "answer_not_traced_to_source",
-            q,
-            trace_term_count=len(trace_terms),
+        # Downgrade: trace failure is no longer a hard reject. Good quiz
+        # answers are often conceptual summaries that share no 3-char
+        # substring with the source; a lexical check cannot distinguish
+        # legitimate rephrasing from fabrication. Mark low_confidence so
+        # harness evaluation can flag/filter, and keep the question.
+        q["_low_confidence"] = True
+        question_str = str(q.get("question", ""))
+        question_hash = hashlib.sha256(
+            question_str.encode("utf-8")
+        ).hexdigest()[:12]
+        logger.warning(
+            "[QUIZ] low_confidence reason=answer_not_traced_to_source "
+            "type={} chunk={} question_len={} question_hash={} "
+            "trace_term_count={}",
+            qtype,
+            q.get("source_chunk_index"),
+            len(question_str),
+            question_hash,
+            len(trace_terms),
         )
 
     return True
@@ -275,26 +317,75 @@ async def generate_batch(
 
     active_llm = llm or (llm_factory(0.7) if llm_factory else get_default_llm(0.7))
 
-    try:
-        response = await active_llm.with_structured_output(
-            QuizBatchOutput,
-            method="function_calling",
-        ).ainvoke(
-            [
-                {"role": "system", "content": QUIZ_BATCH_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ]
-        )
-    except Exception as e:
-        logger.error(f"[QUIZ] LLM structured output failed: {e}")
+    # Retry once on structured-output / parse failures (transient schema mismatches).
+    # Rate-limit and other errors are not retried here — the outer round loop in
+    # generate_questions handles broader retry by generating a fresh batch.
+    response = None
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = await active_llm.with_structured_output(
+                QuizBatchOutput,
+                method="function_calling",
+            ).ainvoke(
+                [
+                    {"role": "system", "content": QUIZ_BATCH_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+            break
+        except Exception as e:
+            last_exc = e
+            err_msg = str(e).lower()
+            is_parse_error = any(
+                sig in err_msg
+                for sig in ("structured_output", "function_call", "parse", "schema", "validation")
+            )
+            if not is_parse_error or attempt == 1:
+                logger.error(f"[QUIZ] LLM structured output failed: {e}")
+                return []
+            logger.warning(f"[QUIZ] structured output retry attempt=1 err={e}")
+            # retry with slightly higher temperature via a fresh LLM if factory provided
+            if llm_factory is not None and llm is None:
+                try:
+                    active_llm = llm_factory(0.8)
+                except Exception as factory_err:
+                    logger.debug(f"[QUIZ] llm_factory retry temp=0.8 failed: {factory_err}")
+
+    if response is None:
+        if last_exc:
+            logger.error(f"[QUIZ] structured output gave up: {last_exc}")
         return []
 
     questions = []
+    failed_types: list[str] = []
     for item in response.questions:
         q = item.model_dump()
-        if not validate_question(q, chunks):
-            continue
-        questions.append(normalize_question(q, chunks))
+        if validate_question(q, chunks):
+            questions.append(normalize_question(q, chunks))
+        else:
+            if q.get("type") in _DOWNGRADE_MAP:
+                failed_types.append(_DOWNGRADE_MAP[q["type"]])
+
+    # Bounded downgrade: for each failed essay/short_answer, retry once as a
+    # lower-rigor type. Caps at 2 extra LLM calls per batch to bound cost.
+    for target_type in failed_types[:2]:
+        if len(questions) >= batch_count:
+            break
+        downgrade = await generate_batch(
+            chunks=chunks,
+            batch_count=1,
+            batch_types=[target_type],
+            difficulty=difficulty,
+            uid=uid,
+            used_chunk_indices=set(),
+            llm_factory=llm_factory,
+        )
+        if downgrade:
+            questions.append(downgrade[0])
+            logger.info(
+                f"[QUIZ] downgrade retry succeeded type={target_type}"
+            )
 
     logger.info(f"[QUIZ] batch generated {len(questions)}/{batch_count} questions")
     return questions
@@ -363,6 +454,7 @@ async def grade_essay(
     user_answer: str,
     scoring_rubric: list[dict[str, Any]],
     model_answer: str | None,
+    uid: int | None = None,
     llm: Any | None = None,
     llm_factory: Callable[[float], Any] | None = None,
 ) -> dict[str, Any]:
@@ -386,7 +478,14 @@ async def grade_essay(
         ),
     )
 
-    active_llm = llm or (llm_factory(0.1) if llm_factory else get_default_llm(0.1))
+    # llm_factory may accept uid to wire up usage tracking; fall back to plain call
+    if llm is None and llm_factory is not None:
+        try:
+            active_llm = llm_factory(0.1, uid=uid) if uid is not None else llm_factory(0.1)
+        except TypeError:
+            active_llm = llm_factory(0.1)
+    else:
+        active_llm = llm or get_default_llm(0.1)
     data = await active_llm.with_structured_output(
         EssayGradingOutput,
         method="function_calling",
@@ -446,6 +545,7 @@ class QuizAgent:
                 user_answer=input["user_answer"],
                 scoring_rubric=input["scoring_rubric"],
                 model_answer=input.get("model_answer"),
+                uid=input.get("uid"),
                 llm=self.llm,
                 llm_factory=self.llm_factory,
             )

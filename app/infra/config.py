@@ -338,6 +338,20 @@ class TransactionSection(_Section):
     readonly_hint: bool = False
 
 
+class QuizQueueSection(_Section):
+    engine: str = "background"
+
+
+class QuizLimitsSection(_Section):
+    generate: int = 5
+    grade: int = 20
+
+
+class QuizSection(_Section):
+    limits: QuizLimitsSection = Field(default_factory=QuizLimitsSection)
+    queue: QuizQueueSection = Field(default_factory=QuizQueueSection)
+
+
 # ---------------------------------------------------------------------------
 # Top-level aggregator
 # ---------------------------------------------------------------------------
@@ -371,6 +385,7 @@ class AppConfig(BaseSettings):
     ratelimit: RateLimitSection = Field(default_factory=RateLimitSection)
     slow_sql: SlowSqlSection = Field(default_factory=SlowSqlSection)
     transaction: TransactionSection = Field(default_factory=TransactionSection)
+    quiz: QuizSection = Field(default_factory=QuizSection)
 
     model_config = SettingsConfigDict(
         env_file=".env",

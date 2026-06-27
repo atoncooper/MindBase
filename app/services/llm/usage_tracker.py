@@ -83,6 +83,13 @@ class UsageTrackingCallback(BaseCallbackHandler):
         self.provider = provider
         self.model = model
         self._writer = writer
+        # Capture the running loop at construction so sync on_llm_end
+        # (often invoked from executor worker threads with no current loop)
+        # can schedule the async enqueue back onto the main event loop.
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         """LLM 调用完成后触发，提取 token 用量并入队到缓冲写入器。"""
@@ -108,9 +115,13 @@ class UsageTrackingCallback(BaseCallbackHandler):
                 )
                 return
 
-            # 有 writer 时入队到缓冲批量写入器
-            if self._writer is not None:
-                asyncio.ensure_future(
+            # 有 writer 时入队到缓冲批量写入器。
+            # on_llm_end 是 sync 回调，常被 LangChain 在 executor 工作线程里
+            # 调用（线程名如 asyncio_0），该线程无 event loop，直接
+            # asyncio.ensure_future 会抛 RuntimeError。用 run_coroutine_threadsafe
+            # 把协程投递回构造时捕获的主 loop。
+            if self._writer is not None and self._loop is not None:
+                asyncio.run_coroutine_threadsafe(
                     self._writer.enqueue(
                         uid=self.uid,
                         credential_id=self.credential_id,
@@ -120,12 +131,13 @@ class UsageTrackingCallback(BaseCallbackHandler):
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
                         api_calls=1,
-                    )
+                    ),
+                    self._loop,
                 )
             else:
-                # 降级：无 writer 时至少记录日志
+                # 降级：无 writer 或无可用 loop 时至少记录日志
                 logger.warning(
-                    f"[USAGE_TRACKER] no writer available, "
+                    f"[USAGE_TRACKER] no writer/loop available, "
                     f"usage not recorded: {total_tokens} tokens"
                 )
 

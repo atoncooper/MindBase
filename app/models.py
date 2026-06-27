@@ -419,6 +419,8 @@ class QuizSet(Base):
     shared_at = Column(DateTime, nullable=True)
     # Optional expiry — NULL = never expires (until owner revokes).
     share_expires_at = Column(DateTime, nullable=True)
+    # Quality metrics from generation: {"traceability_rate", "dedup_rate", ...}
+    quality_metrics = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
