@@ -106,6 +106,8 @@ async def _migrate_add_columns():
         ("quiz_sets", "share_token", "VARCHAR(32)"),
         ("quiz_sets", "shared_at", "TIMESTAMP"),
         ("quiz_sets", "share_expires_at", "TIMESTAMP"),
+        # Quiz quality metrics from generation (traceability_rate, dedup_rate, ...)
+        ("quiz_sets", "quality_metrics", "JSON"),
     ]
 
     # Plan 0024/0025/0026: drop deprecated content columns & session_id columns

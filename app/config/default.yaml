@@ -214,3 +214,17 @@ transaction:
   max_retries: 3
   retry_delay_base: 0.1
   readonly_hint: false
+
+
+# ---- Quiz AI governance -------------------------------------------
+# Per-uid daily quotas. Redis must be enabled for enforcement; when
+# Redis is unavailable the quota check fails open (no blocking).
+quiz:
+  limits:
+    generate: 5    # quiz sets generated per uid per day
+    grade: 20      # submissions graded per uid per day
+  # Task queue engine for quiz generation.
+  # background = FastAPI BackgroundTasks (in-process, lost on restart)
+  # rq / celery = external queue (not yet implemented, falls back to background)
+  queue:
+    engine: background
