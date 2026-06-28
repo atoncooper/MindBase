@@ -1071,6 +1071,7 @@ export interface QuizSetData {
     quiz_uuid: string;
     title: string;
     status: string;
+    error_message?: string | null;
     question_count: number;
     type_distribution?: Record<string, number>;
     difficulty: string;
@@ -1109,6 +1110,7 @@ export interface QuizHistoryItem {
     quiz_uuid: string;
     title: string;
     status?: string;
+    error_message?: string | null;
     question_count?: number;
     difficulty?: string;
     source_type?: string;
@@ -1207,7 +1209,7 @@ export const quizApi = {
         const body = params.pages?.length ? JSON.stringify(params.pages) : undefined;
         return request<QuizGenerateResponse>(`/quiz/generate?${sp.toString()}`, {
             method: "POST",
-            headers: { ...getAuthHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) as Record<string,string> },
+            headers: { ...getAuthHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) },
             ...(body ? { body } : {}),
         });
     },
@@ -1341,10 +1343,31 @@ export interface PasswordSetParams {
 export interface PasswordChangeParams {
     old_password: string;
     new_password: string;
+    email_code?: string;
 }
 
 export interface EmailBindParams {
     email: string;
+}
+
+export interface EmailSendCodeParams {
+    email: string;
+    purpose: "bind_email" | "twofa";
+}
+
+export interface EmailVerifyParams {
+    email: string;
+    code: string;
+    purpose: "bind_email" | "twofa";
+}
+
+export interface PasswordResetRequestParams {
+    email: string;
+}
+
+export interface PasswordResetConfirmParams {
+    reset_token: string;
+    new_password: string;
 }
 
 export interface PhoneBindParams {
@@ -1380,6 +1403,32 @@ export const userApi = {
         request<{ message: string; email: string }>("/auth/email", {
             method: "PUT",
             headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    sendEmailCode: (data: EmailSendCodeParams) =>
+        request<{ message: string }>("/auth/email/send-code", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    verifyEmail: (data: EmailVerifyParams) =>
+        request<{ message: string; email: string; purpose: string }>("/auth/email/verify", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    requestPasswordReset: (data: PasswordResetRequestParams) =>
+        request<{ message: string }>("/auth/password/reset-request", {
+            method: "POST",
+            body: JSON.stringify(data),
+        }),
+
+    confirmPasswordReset: (data: PasswordResetConfirmParams) =>
+        request<{ message: string }>("/auth/password/reset", {
+            method: "POST",
             body: JSON.stringify(data),
         }),
 

@@ -47,14 +47,24 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
   const [editPhone, setEditPhone] = useState(false);
   const [editPassword, setEditPassword] = useState(false);
   const [emailVal, setEmailVal] = useState("");
+  const [emailCode, setEmailCode] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailCooldown, setEmailCooldown] = useState(0);
   const [phoneVal, setPhoneVal] = useState("");
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
+  const [pwEmailCode, setPwEmailCode] = useState("");
+  const [pwEmailSending, setPwEmailSending] = useState(false);
+  const [pwEmailCooldown, setPwEmailCooldown] = useState(0);
   const [showPw, setShowPw] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
 
   const flash = (message: string, type: "success" | "error") => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3200);
+    // Errors need more time to read; success is fleeting.
+    const duration = type === "error" ? 6000 : 3200;
+    setTimeout(() => setToast(null), duration);
   };
 
   const load = useCallback(async () => {
@@ -67,6 +77,47 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
   }, []);
 
   useEffect(() => { if (isOpen) load(); }, [isOpen, load]);
+
+  // Cooldown tick for "resend code" buttons (1s resolution).
+  useEffect(() => {
+    if (emailCooldown <= 0 && pwEmailCooldown <= 0) return;
+    const t = setInterval(() => {
+      setEmailCooldown(v => Math.max(0, v - 1));
+      setPwEmailCooldown(v => Math.max(0, v - 1));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [emailCooldown, pwEmailCooldown]);
+
+  // ── email verification (bind/ change) ──
+
+  const sendEmailCode = async () => {
+    if (!emailVal.trim() || emailCooldown > 0) return;
+    setEmailSending(true);
+    try {
+      await userApi.sendEmailCode({ email: emailVal.trim(), purpose: "bind_email" });
+      setEmailCooldown(60);
+      flash("验证码已发送，请查收邮件", "success");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "发送失败", "error");
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
+  const sendPwEmailCode = async () => {
+    if (!profile?.email || pwEmailCooldown > 0) return;
+    setPwEmailSending(true);
+    try {
+      await userApi.sendEmailCode({ email: profile.email, purpose: "twofa" });
+      setPwEmailCooldown(60);
+      flash("验证码已发送至邮箱", "success");
+    } catch (e) {
+      console.error("[Account] sendPwEmailCode failed:", e);
+      flash(e instanceof Error ? e.message : "发送失败", "error");
+    } finally {
+      setPwEmailSending(false);
+    }
+  };
 
   // ── profile ──
 
@@ -98,9 +149,28 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
   // ── email ──
 
   const saveEmail = async () => {
-    if (!emailVal.trim()) return;
-    try { await userApi.bindEmail({ email: emailVal.trim() }); setEditEmail(false); flash("邮箱已绑定", "success"); load(); }
-    catch (e) { flash(e instanceof Error ? e.message : "绑定失败", "error"); }
+    if (!emailVal.trim() || !emailCode.trim()) {
+      setEmailError("请填写邮箱和验证码");
+      return;
+    }
+    setEmailError(null);
+    try {
+      await userApi.verifyEmail({
+        email: emailVal.trim(),
+        code: emailCode.trim(),
+        purpose: "bind_email",
+      });
+      setEditEmail(false);
+      setEmailCode("");
+      setEmailCooldown(0);
+      flash("邮箱已验证并绑定", "success");
+      load();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "验证失败";
+      console.error("[Account] saveEmail failed:", e);
+      setEmailError(msg);
+      flash(msg, "error");
+    }
   };
 
   const unbindEmail = async () => {
@@ -130,18 +200,40 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
   };
 
   const savePassword = async () => {
+    setPwError(null);
     try {
       if (security?.has_password) {
-        if (!oldPw || !newPw) return;
-        await userApi.changePassword({ old_password: oldPw, new_password: newPw });
+        if (!oldPw || !newPw) {
+          setPwError("请填写当前密码和新密码");
+          return;
+        }
+        // If email is verified, 2FA code is required by backend.
+        const needs2FA = !!profile?.email_verified && !!profile?.email;
+        if (needs2FA && !pwEmailCode.trim()) {
+          setPwError("请先获取并输入邮箱验证码");
+          return;
+        }
+        await userApi.changePassword({
+          old_password: oldPw,
+          new_password: newPw,
+          email_code: needs2FA ? pwEmailCode.trim() : undefined,
+        });
       } else {
-        if (!newPw) return;
+        if (!newPw) {
+          setPwError("请输入新密码");
+          return;
+        }
         await userApi.setPassword({ password: newPw });
       }
-      setEditPassword(false); setOldPw(""); setNewPw("");
+      setEditPassword(false); setOldPw(""); setNewPw(""); setPwEmailCode(""); setPwEmailCooldown(0); setPwError(null);
       flash(security?.has_password ? "密码已修改" : "密码已设置", "success");
       load();
-    } catch (e) { flash(e instanceof Error ? e.message : "操作失败", "error"); }
+    } catch (e) {
+      console.error("[Account] savePassword failed:", e);
+      const msg = e instanceof Error ? e.message : "操作失败";
+      setPwError(msg);
+      flash(msg, "error");
+    }
   };
 
   if (!isOpen) return null;
@@ -276,10 +368,24 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
           </div>
           {editEmail ? (
             <div className="ac-edit-area">
-              <InlineField value={emailVal} onChange={setEmailVal} placeholder="your@email.com" />
+              <InlineField value={emailVal} onChange={(v) => { setEmailVal(v); setEmailError(null); }} placeholder="your@email.com" />
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <InlineField value={emailCode} onChange={setEmailCode} placeholder="6 位验证码" />
+                <button
+                  className="ac-ghost-btn"
+                  onClick={sendEmailCode}
+                  disabled={emailSending || emailCooldown > 0 || !emailVal.trim()}
+                  style={{ whiteSpace: "nowrap" }}
+                >
+                  {emailCooldown > 0 ? `${emailCooldown}s` : emailSending ? "发送中…" : "发送验证码"}
+                </button>
+              </div>
+              {emailError && (
+                <div style={{ color: "#dc2626", fontSize: 12, marginTop: 4 }}>{emailError}</div>
+              )}
               <div className="ac-edit-actions">
-                <button className="ac-btn secondary" onClick={() => setEditEmail(false)}>取消</button>
-                <button className="ac-btn primary" onClick={saveEmail}><Check size={14} /> 保存</button>
+                <button className="ac-btn secondary" onClick={() => { setEditEmail(false); setEmailCode(""); setEmailCooldown(0); setEmailError(null); }}>取消</button>
+                <button className="ac-btn primary" onClick={saveEmail}><Check size={14} /> 验证并绑定</button>
               </div>
             </div>
           ) : (
@@ -339,15 +445,38 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
           {editPassword ? (
             <div className="ac-edit-area">
               {security.has_password && (
-                <InlineField value={oldPw} onChange={setOldPw} placeholder="当前密码" type={showPw ? "text" : "password"} />
+                <InlineField value={oldPw} onChange={(v) => { setOldPw(v); setPwError(null); }} placeholder="当前密码" type={showPw ? "text" : "password"} />
               )}
-              <InlineField value={newPw} onChange={setNewPw} placeholder="新密码" type={showPw ? "text" : "password"} />
+              <InlineField value={newPw} onChange={(v) => { setNewPw(v); setPwError(null); }} placeholder="新密码（8 位以上，含字母和数字）" type={showPw ? "text" : "password"} />
+              {security.has_password && profile?.email_verified && profile?.email && (
+                <>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <InlineField value={pwEmailCode} onChange={(v) => { setPwEmailCode(v); setPwError(null); }} placeholder="邮箱验证码（二次验证）" />
+                    <button
+                      className="ac-ghost-btn"
+                      onClick={sendPwEmailCode}
+                      disabled={pwEmailSending || pwEmailCooldown > 0}
+                      style={{ whiteSpace: "nowrap" }}
+                    >
+                      {pwEmailCooldown > 0 ? `${pwEmailCooldown}s` : pwEmailSending ? "发送中…" : "发送验证码"}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#5f6368" }}>
+                    验证码将发送至 {profile.email}
+                  </div>
+                </>
+              )}
+              {pwError && (
+                <div style={{ color: "#dc2626", fontSize: 12, marginTop: 4, padding: "6px 10px", background: "rgba(220,38,38,0.06)", borderRadius: 6, border: "1px solid rgba(220,38,38,0.12)" }}>
+                  {pwError}
+                </div>
+              )}
               <div className="ac-edit-actions">
                 <button className="ac-ghost-btn" onClick={() => setShowPw(p => !p)}>
                   {showPw ? <EyeOff size={14} /> : <Eye size={14} />} {showPw ? "隐藏" : "显示"}
                 </button>
                 <div style={{ flex: 1 }} />
-                <button className="ac-btn secondary" onClick={() => setEditPassword(false)}>取消</button>
+                <button className="ac-btn secondary" onClick={() => { setEditPassword(false); setOldPw(""); setNewPw(""); setPwEmailCode(""); setPwEmailCooldown(0); setPwError(null); }}>取消</button>
                 <button className="ac-btn primary" onClick={savePassword}><Check size={14} /> 保存</button>
               </div>
             </div>

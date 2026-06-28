@@ -13,6 +13,8 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from app.utils.request_meta import get_client_ip
+
 logger = logging.getLogger(__name__)
 
 # Endpoint-specific rate limits (requests per second, burst)
@@ -61,7 +63,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path[:256]
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
 
         # Determine rate limit for this path
         rate, burst = _GLOBAL_RATE

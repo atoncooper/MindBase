@@ -188,6 +188,135 @@ class _Settings:
     def api_key_encryption_key(self) -> str:
         return str(_get("security", "api_key_encryption_key", default=""))
 
+    # ── Email ────────────────────────────────────────────────────
+
+    @property
+    def email_enabled(self) -> bool:
+        return bool(_get("email", "enabled", default=False))
+
+    @property
+    def email_api_key(self) -> str:
+        return str(_get("email", "api_key", default=""))
+
+    @property
+    def email_from(self) -> str:
+        return str(_get("email", "from_email",
+                        default="MindBase <onboarding@resend.dev>"))
+
+    @property
+    def email_frontend_url(self) -> str:
+        return str(_get("email", "frontend_url",
+                        default="http://localhost:3000"))
+
+    @property
+    def email_code_ttl_seconds(self) -> int:
+        return int(_get("email", "code_ttl_seconds", default=300))
+
+    @property
+    def email_code_length(self) -> int:
+        return int(_get("email", "code_length", default=6))
+
+    @property
+    def email_rate_limit_target_seconds(self) -> int:
+        return int(_get("email", "rate_limit_target_seconds", default=60))
+
+    @property
+    def email_rate_limit_uid_minutes(self) -> int:
+        return int(_get("email", "rate_limit_uid_minutes", default=10))
+
+    @property
+    def email_rate_limit_uid_max(self) -> int:
+        return int(_get("email", "rate_limit_uid_max", default=5))
+
+    @property
+    def email_max_verify_attempts(self) -> int:
+        return int(_get("email", "max_verify_attempts", default=5))
+
+    # ── Security: rate_limit (Plan 0028) ────────────────────────
+
+    def _rl(self, endpoint: str, key: str, default: int) -> int:
+        return int(_get("security", "rate_limit", endpoint, key, default=default))
+
+    @property
+    def rl_login_ip_max(self) -> int:
+        return self._rl("login", "ip_max", 10)
+
+    @property
+    def rl_login_ip_window(self) -> int:
+        return self._rl("login", "ip_window", 60)
+
+    @property
+    def rl_login_email_max(self) -> int:
+        return self._rl("login", "email_max", 5)
+
+    @property
+    def rl_login_email_window(self) -> int:
+        return self._rl("login", "email_window", 300)
+
+    @property
+    def rl_login_cooldown_threshold(self) -> int:
+        return self._rl("login", "cooldown_threshold", 5)
+
+    @property
+    def rl_login_cooldown_seconds(self) -> int:
+        return self._rl("login", "cooldown_seconds", 900)
+
+    @property
+    def rl_reset_request_ip_max(self) -> int:
+        return self._rl("password_reset_request", "ip_max", 5)
+
+    @property
+    def rl_reset_request_ip_window(self) -> int:
+        return self._rl("password_reset_request", "ip_window", 3600)
+
+    @property
+    def rl_reset_request_email_max(self) -> int:
+        return self._rl("password_reset_request", "email_max", 3)
+
+    @property
+    def rl_reset_request_email_window(self) -> int:
+        return self._rl("password_reset_request", "email_window", 3600)
+
+    @property
+    def rl_reset_ip_max(self) -> int:
+        return self._rl("password_reset", "ip_max", 10)
+
+    @property
+    def rl_reset_ip_window(self) -> int:
+        return self._rl("password_reset", "ip_window", 3600)
+
+    @property
+    def rl_send_code_ip_max(self) -> int:
+        return self._rl("email_send_code", "ip_max", 10)
+
+    @property
+    def rl_send_code_ip_window(self) -> int:
+        return self._rl("email_send_code", "ip_window", 60)
+
+    @property
+    def rl_send_code_uid_max(self) -> int:
+        return self._rl("email_send_code", "uid_max", 5)
+
+    @property
+    def rl_send_code_uid_window(self) -> int:
+        return self._rl("email_send_code", "uid_window", 600)
+
+    @property
+    def rl_change_password_uid_max(self) -> int:
+        return self._rl("change_password", "uid_max", 3)
+
+    @property
+    def rl_change_password_uid_window(self) -> int:
+        return self._rl("change_password", "uid_window", 3600)
+
+    @property
+    def rl_email_verify_ip_max(self) -> int:
+        return self._rl("email_verify", "ip_max", 20)
+
+    @property
+    def rl_email_verify_ip_window(self) -> int:
+        return self._rl("email_verify", "ip_window", 60)
+
 
 # Module-level singleton — the single config access point
 settings = _Settings()

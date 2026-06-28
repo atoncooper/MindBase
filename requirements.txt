@@ -47,6 +47,9 @@ loguru==0.7.2
 # Password hashing
 bcrypt>=4.0
 
+# User-Agent parsing — device fingerprint metadata extraction
+ua-parser>=1.0
+
 # System dependency (install separately or via apt)
 # ffmpeg — installed in Dockerfile
 

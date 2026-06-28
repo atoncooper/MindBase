@@ -185,7 +185,57 @@ session:
 # WARNING: never change this key after deployment — historical data
 # becomes undecryptable.
 # Generate: python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
-security: {}
+security:
+  # Plan 0028: per-endpoint rate limits + login cooldown.
+  # All windows are seconds. Override via env:
+  #   SECURITY__RATE_LIMIT__LOGIN__IP_MAX=20
+  rate_limit:
+    login:
+      ip_max: 10            # per-IP max attempts per window
+      ip_window: 60         # 60s
+      email_max: 5          # per-email max attempts per window
+      email_window: 300     # 5 minutes
+      cooldown_threshold: 5 # failed attempts before cooldown kicks in
+      cooldown_seconds: 900 # 15 minutes
+    password_reset_request:
+      ip_max: 5
+      ip_window: 3600       # per-IP per hour
+      email_max: 3
+      email_window: 3600
+    password_reset:
+      ip_max: 10
+      ip_window: 3600
+    email_send_code:
+      ip_max: 10
+      ip_window: 60
+      uid_max: 5
+      uid_window: 600       # 10 minutes
+    change_password:
+      uid_max: 3
+      uid_window: 3600
+    email_verify:
+      ip_max: 20
+      ip_window: 60
+
+
+# ---- Email (verification + password reset) ------------------------
+# Uses Resend (https://resend.com). Free tier: 100 emails/day.
+#   1. Sign up at resend.com, create API key
+#   2. (Optional) verify your domain to send from your address
+#   3. For quick testing without domain setup, use the shared address:
+#      from_email: "MindBase <onboarding@resend.dev>"
+# api_key via env: EMAIL__API_KEY
+email:
+  enabled: false                    # set true once API key is configured
+  api_key: ""                       # inject via EMAIL__API_KEY
+  from_email: "MindBase <onboarding@resend.dev>"
+  frontend_url: "http://localhost:3000"  # for reset password link
+  code_ttl_seconds: 300             # 5 minutes
+  code_length: 6                    # 6-digit numeric
+  rate_limit_target_seconds: 60     # min interval between sends to same target
+  rate_limit_uid_minutes: 10        # window for per-uid send count
+  rate_limit_uid_max: 5             # max sends per uid in window
+  max_verify_attempts: 5            # wrong code attempts before code is voided
 
 
 # ---- Rate limiting ------------------------------------------------
