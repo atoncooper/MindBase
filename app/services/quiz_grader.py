@@ -28,6 +28,18 @@ def _safe_json(value):
         return value
 
 
+def _get_question_field(question: dict, *names: str, default=None):
+    """Read the first present field from a question document.
+
+    Tolerates old MongoDB documents that may use legacy field names
+    (e.g. ``answer_template`` vs ``correct_answer`` for short_answer).
+    """
+    for name in names:
+        if name in question and question[name] is not None:
+            return question[name]
+    return default
+
+
 def _db_utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -70,6 +82,7 @@ class QuizGraderService:
         graded_results = []
         total_score = 0
         correct_count = 0
+        has_pending_manual = False
 
         for answer_item in answers:
             q_uuid = answer_item["question_uuid"]
@@ -78,7 +91,7 @@ class QuizGraderService:
             if not question:
                 continue
 
-            correct_answer = _safe_json(question["correct_answer"])
+            correct_answer = _safe_json(_get_question_field(question, "correct_answer"))
             qtype = question["question_type"]
             grading_note = None
 
@@ -87,36 +100,42 @@ class QuizGraderService:
             elif qtype == "multi_choice":
                 result = self._grade_multi_choice(user_answer, correct_answer)
             elif qtype == "short_answer":
-                keywords = _safe_json(question.get("keywords")) or []
+                keywords = _safe_json(_get_question_field(question, "keywords")) or []
                 result = self._grade_short_answer(
                     user_answer, str(correct_answer), keywords
                 )
                 grading_note = "关键词自动评分，仅供参考"
             elif qtype == "essay":
-                rubric = _safe_json(question.get("scoring_rubric")) or []
+                rubric = _safe_json(_get_question_field(question, "scoring_rubric")) or []
+                model_answer = _get_question_field(
+                    question, "model_answer", "correct_answer", default=None
+                )
                 try:
                     result = await self._grade_essay(
                         question["question_text"],
                         str(user_answer),
                         rubric,
-                        question.get("model_answer"),
+                        model_answer,
+                        uid=uid,
                     )
                     grading_note = "AI辅助评分，可人工修改"
                 except Exception as e:
                     logger.warning(f"[GRADER] essay grading failed: {e}")
-                    rubric_max = sum(r.get("points", 0) for r in rubric)
-                    fallback_score = min(5, rubric_max) if rubric_max > 0 else 0
                     result = {
-                        "auto_score": fallback_score,
-                        "grading_detail": {"type": "default"},
-                        "grading_note": "LLM评分失败，默认给5分",
+                        "auto_score": None,
+                        "needs_manual_grading": True,
+                        "grading_detail": {"type": "llm_failure"},
+                        "grading_note": "LLM评分失败，待人工评分",
                     }
-                    grading_note = "LLM评分失败，默认给5分"
+                    grading_note = "LLM评分失败，待人工评分"
             else:
                 result = {"auto_score": 0, "grading_detail": {"type": "unknown"}}
 
-            score = result.get("auto_score", 0)
+            score = result.get("auto_score")
             is_correct = result.get("is_correct", False)
+
+            if result.get("needs_manual_grading"):
+                has_pending_manual = True
 
             # 4. 保存答案记录
             await self._save_answer(
@@ -129,7 +148,9 @@ class QuizGraderService:
                 grading_note,
             )
 
-            total_score += score
+            # essay with auto_score=None is excluded from total until manual grading
+            if score is not None:
+                total_score += score
             if is_correct:
                 correct_count += 1
 
@@ -138,13 +159,18 @@ class QuizGraderService:
                     "question_uuid": q_uuid,
                     "is_correct": is_correct,
                     "auto_score": score,
+                    "needs_manual_grading": result.get("needs_manual_grading", False),
                     "correct_answer": correct_answer,
                     "grading_note": grading_note or result.get("grading_note"),
                 }
             )
 
         # 5. 更新提交记录
-        passed = total_score >= passing_score
+        # If any essay awaits manual grading, passed is undetermined (None).
+        if has_pending_manual:
+            passed = None
+        else:
+            passed = total_score >= passing_score
         await self._update_submission(
             submission_uuid, total_score, correct_count, passed
         )
@@ -166,14 +192,18 @@ class QuizGraderService:
         return {"is_correct": ok, "auto_score": 10 if ok else 0}
 
     def _grade_multi_choice(self, user_answer, correct_answer) -> dict:
-        """多选题：部分给分"""
+        """多选题：部分给分
+
+        扣分系数与正确项分值对称（points_per），避免硬编码 1 分。
+        全对 10 分；错 1 个扣 points_per；底线 0 分。
+        """
         user_set = set(str(a).strip().upper() for a in user_answer)
         correct_set = set(str(a).strip().upper() for a in correct_answer)
 
         correct_picks = len(user_set & correct_set)
         wrong_picks = len(user_set - correct_set)
         points_per = round(10 / len(correct_set), 2) if correct_set else 0
-        score = max(0, min(10, round(correct_picks * points_per - wrong_picks * 1)))
+        score = max(0, round(correct_picks * points_per - wrong_picks * points_per))
 
         return {
             "is_correct": user_set == correct_set,
@@ -184,20 +214,24 @@ class QuizGraderService:
                 "correct_set": list(correct_set),
                 "correct_picks": correct_picks,
                 "wrong_picks": wrong_picks,
+                "points_per": points_per,
             },
         }
 
     def _grade_short_answer(
         self, user_answer: str, correct_answer: str, keywords: list
     ) -> dict:
-        """简答题：关键词匹配"""
+        """简答题：关键词匹配
+
+        threshold 0.8（覆盖大部分关键词才算正确），满分 10（与选择题对齐）。
+        """
         user_lower = str(user_answer).lower()
         matched = [kw for kw in keywords if kw.lower() in user_lower]
         match_rate = len(matched) / len(keywords) if keywords else 0
-        score = round(match_rate * 8)
+        score = round(match_rate * 10)
 
         return {
-            "is_correct": match_rate >= 0.5,
+            "is_correct": match_rate >= 0.8,
             "auto_score": score,
             "matched_keywords": matched,
             "keyword_match_rate": round(match_rate, 3),
@@ -216,13 +250,15 @@ class QuizGraderService:
         user_answer: str,
         scoring_rubric: list,
         model_answer: Optional[str],
+        uid: int | None = None,
     ) -> dict:
         return await grade_essay(
             question_text=question_text,
             user_answer=user_answer,
             scoring_rubric=scoring_rubric,
             model_answer=model_answer,
-            llm_factory=lambda _temperature: self._get_llm(),
+            uid=uid,
+            llm_factory=lambda _temperature, uid=None: self._get_tracking_llm(uid),
         )
 
     @staticmethod
@@ -241,6 +277,26 @@ class QuizGraderService:
             model=model,
             temperature=0.1,
         )
+
+    def _get_tracking_llm(self, uid: int | None = None) -> ChatOpenAI:
+        """LLM with usage tracking wired up for essay grading cost accounting."""
+        llm = self._get_llm()
+        if uid is None:
+            return llm
+        from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
+        from app.services.llm.usage_tracker import UsageTrackingCallback
+        from app.services.llm.provider_detect import detect_provider
+
+        provider = detect_provider(settings.openai_base_url)
+        writer = get_buffered_usage_writer()
+        tracker = UsageTrackingCallback(
+            uid=uid,
+            provider=provider,
+            model=settings.llm_model,
+            writer=writer,
+        )
+        llm.callbacks = [tracker]
+        return llm
 
     async def _create_submission(
         self,
@@ -302,6 +358,7 @@ class QuizGraderService:
                 if result.get("grading_detail")
                 else None
             )
+            auto_score = result.get("auto_score")
 
             now = _db_utc_now()
             await db.execute(
@@ -326,7 +383,7 @@ class QuizGraderService:
                         else user_answer
                     ),
                     "is_correct": is_correct_int,
-                    "auto_score": result.get("auto_score", 0),
+                    "auto_score": auto_score,
                     "correct_answer_snapshot": json.dumps(
                         correct_answer, ensure_ascii=False
                     ),
@@ -344,7 +401,7 @@ class QuizGraderService:
         submission_uuid: str,
         total_score: int,
         correct_count: int,
-        passed: bool,
+        passed: Optional[bool],
     ):
         async with get_db_context() as db:
             from sqlalchemy import text
@@ -361,7 +418,7 @@ class QuizGraderService:
                     "submission_uuid": submission_uuid,
                     "total_score": total_score,
                     "correct_count": correct_count,
-                    "is_passed": 1 if passed else 0,
+                    "is_passed": 1 if passed is True else (0 if passed is False else None),
                     "graded_at": _db_utc_now(),
                 },
             )

@@ -423,7 +423,10 @@ async def test_essay_grading_clamps_score_to_rubric_max(monkeypatch: Any) -> Non
 
 
 @pytest.mark.asyncio
-async def test_submit_essay_fallback_score_is_clamped(monkeypatch: Any) -> None:
+async def test_submit_essay_fallback_marks_manual_grading(monkeypatch: Any) -> None:
+    """When essay LLM grading fails, the answer is flagged for manual grading
+    instead of receiving a default score. total_score excludes it and
+    passed is None (undetermined)."""
     service = QuizGraderService()
 
     async def failing_grade_essay(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -444,7 +447,10 @@ async def test_submit_essay_fallback_score_is_clamped(monkeypatch: Any) -> None:
         answers=[{"question_uuid": "q1", "answer": "简答内容"}],
     )
 
-    assert result["score"] == 3
+    assert result["score"] == 0  # essay excluded from total
+    assert result["passed"] is None  # undetermined until manual grading
+    assert result["results"][0]["needs_manual_grading"] is True
+    assert result["results"][0]["auto_score"] is None
 
 
 def test_single_choice_rephrased_answer_is_valid_when_option_keywords_match_source() -> (
@@ -505,7 +511,9 @@ def test_single_choice_unrelated_answer_is_filtered() -> None:
         "explanation": "无关答案不应通过。",
     }
 
-    assert validate_question(question, chunks) is False
+    # Trace failure downgrades to _low_confidence flag (not hard reject).
+    assert validate_question(question, chunks) is True
+    assert question.get("_low_confidence") is True
 
 
 def test_single_choice_chinese_label_separator_does_not_bypass_trace() -> None:
@@ -525,7 +533,9 @@ def test_single_choice_chinese_label_separator_does_not_bypass_trace() -> None:
         "explanation": "中文分隔符不应绕过溯源校验。",
     }
 
-    assert validate_question(question, chunks) is False
+    # Trace failure downgrades to _low_confidence flag (not hard reject).
+    assert validate_question(question, chunks) is True
+    assert question.get("_low_confidence") is True
 
 
 def test_multi_choice_requires_each_correct_answer_to_trace_to_source() -> None:
@@ -545,7 +555,9 @@ def test_multi_choice_requires_each_correct_answer_to_trace_to_source() -> None:
         "explanation": "每个正确答案都必须能从来源中找到支撑。",
     }
 
-    assert validate_question(question, chunks) is False
+    # Trace failure downgrades to _low_confidence flag (not hard reject).
+    assert validate_question(question, chunks) is True
+    assert question.get("_low_confidence") is True
 
 
 def test_multi_choice_unknown_correct_label_is_filtered() -> None:

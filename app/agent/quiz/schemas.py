@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class QuizRubricItemOutput(BaseModel):
     step: str = Field(min_length=1, max_length=80)
-    points: int | float = Field(gt=0, le=10)
+    points: int | float = Field(gt=0, le=20)
     keywords: list[str] = Field(min_length=1, max_length=5)
 
 
@@ -32,14 +32,12 @@ class ShortAnswerQuestionOutput(BaseQuizQuestionOutput):
     type: Literal["short_answer"]
     keywords: list[str] = Field(min_length=3, max_length=5)
     answer_template: str = Field(min_length=30, max_length=100)
-    correct_answer: str = ""
 
 
 class EssayQuestionOutput(BaseQuizQuestionOutput):
     type: Literal["essay"]
     model_answer: str = Field(min_length=30, max_length=800)
     scoring_rubric: list[QuizRubricItemOutput] = Field(min_length=1, max_length=6)
-    correct_answer: str = ""
 
 
 QuizQuestionOutput = Annotated[

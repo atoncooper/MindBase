@@ -90,7 +90,7 @@ class QuizRepository:
             text(
                 """SELECT qs.quiz_uuid, qs.title, qs.question_count,
                           qs.difficulty, qs.status, qs.source_type,
-                          qs.created_at,
+                          qs.error_message, qs.created_at,
                           qsub.submission_uuid, qsub.total_score,
                           qsub.is_passed, qsub.correct_count,
                           qsub.total_question_count, qsub.time_spent_seconds,
@@ -114,6 +114,7 @@ class QuizRepository:
                     "quiz_uuid": d["quiz_uuid"],
                     "title": d["title"],
                     "status": d["status"],
+                    "error_message": d.get("error_message"),
                     "question_count": d["question_count"],
                     "difficulty": d["difficulty"],
                     "source_type": d["source_type"],
