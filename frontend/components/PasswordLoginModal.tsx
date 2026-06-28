@@ -204,6 +204,19 @@ export default function PasswordLoginModal({ isOpen, onClose, onSuccess, onSwitc
                 还没有密码？请先使用 B 站扫码登录，在账户安全中绑定邮箱并设置密码。
               </p>
 
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    window.location.href = "/forgot-password";
+                  }}
+                  className="text-[13px] font-medium text-[#1a73e8] hover:underline"
+                >
+                  忘记密码？
+                </button>
+              </div>
+
               <div className="flex flex-col-reverse items-stretch gap-3 pt-8 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
                 <Button
                   type="button"

@@ -3,6 +3,10 @@
  *
  * NEVER expose raw backend error messages to the user — they may contain
  * stack traces, SQL queries, file paths, or other internal details.
+ *
+ * Exception: short, business-level detail strings (e.g. "密码至少 8 位")
+ * raised via ValueError at the router layer are intended for end users and
+ * are passed through after a safety check.
  */
 
 const STATUS_MESSAGES: Record<number, string> = {
@@ -32,6 +36,32 @@ const NETWORK_PATTERNS = [
   "net::ERR_",
 ];
 
+// Tech markers that indicate a raw backend leak (stack trace, SQL, etc.).
+// If any of these appear in detail, treat as unsafe and fall back to status message.
+const UNSAFE_DETAIL_MARKERS = [
+  "traceback",
+  "Error:",
+  "Exception",
+  "sqlalchemy",
+  "SQL",
+  "psycopg",
+  "asyncpg",
+  "IntegrityError",
+  "KeyError",
+  "AttributeError",
+  "TypeError",
+  "ValueError:",  // raw ValueError repr, not our user-facing message
+  "File \"",
+  "line ",
+  ".py:",
+  "\\",
+  "/",
+  "<",
+  ">",
+];
+
+const SAFE_DETAIL_MAX_LEN = 80;
+
 function isNetworkError(message: string): boolean {
   return NETWORK_PATTERNS.some((p) => message.includes(p));
 }
@@ -46,6 +76,18 @@ function isTimeoutError(message: string): boolean {
   );
 }
 
+/**
+ * A detail string is safe to show only if it is short and contains no
+ * technical markers. Our router-layer ValueError messages (e.g.
+ * "密码至少 8 位", "新密码不能与旧密码相同") pass; raw exception reprs,
+ * SQL fragments, or file paths do not.
+ */
+function isSafeDetail(detail: string): boolean {
+  if (!detail || detail.length > SAFE_DETAIL_MAX_LEN) return false;
+  const lower = detail.toLowerCase();
+  return !UNSAFE_DETAIL_MARKERS.some((m) => lower.includes(m.toLowerCase()));
+}
+
 export function sanitizeError(err: unknown): string {
   if (!err) return "操作失败，请重试";
 
@@ -58,9 +100,10 @@ export function sanitizeError(err: unknown): string {
     return err;
   }
 
-  // Extract status and message from error-like objects
+  // Extract status, message, and detail from error-like objects
   let status: number | undefined;
   let message = "";
+  let detail = "";
 
   if (err instanceof Error) {
     message = err.message;
@@ -71,7 +114,14 @@ export function sanitizeError(err: unknown): string {
     const obj = err as Record<string, unknown>;
     if (typeof obj.status === "number") status = obj.status;
     if (typeof obj.message === "string") message = obj.message;
-    if (typeof obj.detail === "string") message = obj.detail;
+    if (typeof obj.detail === "string") detail = obj.detail;
+  }
+
+  // Prefer explicit detail when it is a safe business-level message.
+  // This must run BEFORE the status-code fallback so that "密码至少 8 位"
+  // is shown instead of the generic "请求参数有误".
+  if (detail && isSafeDetail(detail)) {
+    return detail;
   }
 
   // 4xx with a backend-provided detail: trust it — these are user-facing

@@ -17,6 +17,10 @@ from app.response.auth import (
     PasswordSetRequest,
     PasswordChangeRequest,
     EmailBindRequest,
+    EmailSendCodeRequest,
+    EmailVerifyRequest,
+    PasswordResetRequest,
+    PasswordResetConfirmRequest,
     PhoneBindRequest,
     SecurityOverviewResponse,
 )
@@ -144,6 +148,10 @@ __all__ = [
     "PasswordSetRequest",
     "PasswordChangeRequest",
     "EmailBindRequest",
+    "EmailSendCodeRequest",
+    "EmailVerifyRequest",
+    "PasswordResetRequest",
+    "PasswordResetConfirmRequest",
     "PhoneBindRequest",
     "SecurityOverviewResponse",
     # chat

@@ -632,15 +632,41 @@ class VerificationCode(Base):
     uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
     target = Column(String(200), nullable=False)  # email or phone
     type = Column(String(20), nullable=False)  # email / sms
-    purpose = Column(String(32), nullable=False)  # bind / change / reset_password
-    code = Column(String(10), nullable=False)
+    purpose = Column(String(32), nullable=False)  # bind_email / reset_password / twofa
+    code = Column(String(64), nullable=False)  # 6-digit code or reset token
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False)
+    attempts = Column(Integer, default=0)  # wrong-code attempts (brute-force protection)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("idx_vc_target_purpose", "target", "purpose"),
         Index("idx_vc_uid", "uid"),
+    )
+
+
+class LoginAttempt(Base):
+    """登录尝试审计表 — 用于失败计数、冷却、风控告警。
+
+    每次 /auth/login 调用写一行（无论成功失败）。
+    失败计数按 ip / email / uid 三维度聚合，超阈值后进入冷却。
+    """
+
+    __tablename__ = "login_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, nullable=True)  # 登录失败时可能未知
+    email = Column(String(200), nullable=True)
+    ip = Column(String(64), nullable=False)
+    device_id = Column(String(64), nullable=True)
+    success = Column(Boolean, default=False, nullable=False)
+    failure_reason = Column(String(100), nullable=True)  # 防止泄漏细节，仅内部记录
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __table_args__ = (
+        Index("idx_la_ip_created", "ip", "created_at"),
+        Index("idx_la_email_created", "email", "created_at"),
+        Index("idx_la_uid_created", "uid", "created_at"),
     )
 
 

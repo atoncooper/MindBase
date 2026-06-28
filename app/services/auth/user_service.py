@@ -6,6 +6,7 @@ Repository classes. No raw SQL or session.query() calls live here.
 """
 
 from typing import Optional
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -27,6 +28,34 @@ from app.repository.user_token_repository import get_user_token_repository
 from app.repository.rbac_repository import get_rbac_repository, DEFAULT_ROLE
 
 
+# Password strength policy — enforced on set and change.
+_PASSWORD_MIN_LEN = 8
+_PASSWORD_MAX_LEN = 128
+_PASSWORD_LETTER_RE = re.compile(r"[A-Za-z]")
+_PASSWORD_DIGIT_RE = re.compile(r"[0-9]")
+
+
+def _validate_password_strength(password: str) -> None:
+    """Raise ValueError if password fails strength policy.
+
+    Policy: 8-128 chars, must contain both a letter and a digit, no leading/
+    trailing whitespace. Intended to be called inside service methods that
+    already wrap ValueError → HTTPException(400) at the router layer.
+    """
+    if not isinstance(password, str) or not password:
+        raise ValueError("密码不能为空")
+    if password != password.strip():
+        raise ValueError("密码首尾不能包含空白字符")
+    if len(password) < _PASSWORD_MIN_LEN:
+        raise ValueError(f"密码至少 {_PASSWORD_MIN_LEN} 位")
+    if len(password) > _PASSWORD_MAX_LEN:
+        raise ValueError(f"密码不能超过 {_PASSWORD_MAX_LEN} 位")
+    if not _PASSWORD_LETTER_RE.search(password):
+        raise ValueError("密码必须同时包含字母和数字")
+    if not _PASSWORD_DIGIT_RE.search(password):
+        raise ValueError("密码必须同时包含字母和数字")
+
+
 class UserService:
     """User lifecycle service — stateless, repositories injected per-call."""
 
@@ -46,6 +75,7 @@ class UserService:
         device_id: str | None = None,
         ip: str | None = None,
         user_agent: str | None = None,
+        device_meta: dict | None = None,
     ) -> tuple[int, UserToken]:
         """Find or create a user via OAuth binding, then issue a session token.
 
@@ -121,7 +151,9 @@ class UserService:
         )
         # Record device info for device management
         if device_id:
-            await self._record_device(uid=uid, device_id=device_id)
+            await self._record_device(
+                uid=uid, device_id=device_id, device_meta=device_meta
+            )
         return uid, token
 
     # ── Queries ──────────────────────────────────────────────────
@@ -381,6 +413,7 @@ class UserService:
         """Set password for the first time (only if no password exists)."""
         from app.services.auth.security import hash_password as _hash
 
+        _validate_password_strength(password)
         user = await get_user_repository().get_by_uid(uid, self.db)
         if not user:
             raise ValueError("用户不存在")
@@ -403,6 +436,9 @@ class UserService:
             hash_password as _hash,
         )
 
+        _validate_password_strength(new_password)
+        if old_password == new_password:
+            raise ValueError("新密码不能与旧密码相同")
         user = await get_user_repository().get_by_uid(uid, self.db)
         if not user:
             raise ValueError("用户不存在")
@@ -410,6 +446,8 @@ class UserService:
             raise ValueError("未设置密码，请使用密码设置接口")
         if not _verify(old_password, user.password_hash):
             raise ValueError("旧密码不正确")
+        if _verify(new_password, user.password_hash):
+            raise ValueError("新密码不能与旧密码相同")
         await get_user_repository().update(
             uid,
             self.db,
@@ -417,6 +455,32 @@ class UserService:
         )
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] password changed for uid={uid}")
+
+    async def reset_password(self, uid: int, new_password: str) -> None:
+        """Reset password without old_password verification.
+
+        Caller MUST have verified the reset token before calling this.
+        Used by the forgot-password flow.
+        """
+        from app.services.auth.security import (
+            hash_password as _hash,
+            verify_password as _verify,
+        )
+
+        _validate_password_strength(new_password)
+        user = await get_user_repository().get_by_uid(uid, self.db)
+        if not user:
+            raise ValueError("用户不存在")
+        # If user had a password, refuse to reuse it.
+        if user.password_hash and _verify(new_password, user.password_hash):
+            raise ValueError("新密码不能与旧密码相同")
+        await get_user_repository().update(
+            uid,
+            self.db,
+            password_hash=_hash(new_password),
+        )
+        await self._invalidate_user_cache(uid)
+        logger.info(f"[USER] password reset for uid={uid}")
 
     # ── Email / Phone ─────────────────────────────────────────────
 
@@ -437,6 +501,29 @@ class UserService:
             raise ValueError("该邮箱已被其他账号绑定")
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] email bound for uid={uid}")
+
+    async def apply_verified_email(self, uid: int, email: str) -> None:
+        """Bind email AND mark email_verified=true.
+
+        Called by the verify-email flow after the user has proven control
+        of the inbox via verification code. Rejects emails already taken
+        by another account.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            user = await get_user_repository().update(
+                uid,
+                self.db,
+                email=email,
+                email_verified=True,
+            )
+            if not user:
+                raise ValueError("用户不存在")
+        except IntegrityError:
+            raise ValueError("该邮箱已被其他账号绑定")
+        await self._invalidate_user_cache(uid)
+        logger.info(f"[USER] email verified for uid={uid}")
 
     async def bind_phone(self, uid: int, phone: str) -> None:
         """Directly bind/change phone (no verification)."""
@@ -581,7 +668,13 @@ class UserService:
 
     # ── Internal helpers ─────────────────────────────────────────
 
-    async def _record_device(self, *, uid: int, device_id: str) -> None:
+    async def _record_device(
+        self,
+        *,
+        uid: int,
+        device_id: str,
+        device_meta: dict | None = None,
+    ) -> None:
         """Ensure a user_device row exists for the given fingerprint.
         Best-effort — failures are logged but never block login.
         """
@@ -589,7 +682,19 @@ class UserService:
             from app.repository.user_device_repository import get_user_device_repository
 
             repo = get_user_device_repository()
-            await repo.upsert(self.db, uid=uid, device_id=device_id, commit=False)
+            meta = device_meta or {}
+            await repo.upsert(
+                self.db,
+                uid=uid,
+                device_id=device_id,
+                device_type=meta.get("device_type"),
+                device_name=meta.get("device_name"),
+                os=meta.get("os"),
+                os_version=meta.get("os_version"),
+                browser=meta.get("browser"),
+                browser_version=meta.get("browser_version"),
+                commit=False,
+            )
         except Exception:
             logger.exception("[USER] failed to record device uid={}", uid)
 

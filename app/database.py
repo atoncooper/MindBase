@@ -108,7 +108,37 @@ async def _migrate_add_columns():
         ("quiz_sets", "share_expires_at", "TIMESTAMP"),
         # Quiz quality metrics from generation (traceability_rate, dedup_rate, ...)
         ("quiz_sets", "quality_metrics", "JSON"),
+        # Email verification: brute-force attempt counter + wider code column
+        ("verification_codes", "attempts", "INTEGER DEFAULT 0"),
     ]
+
+    # Column type modifications (widening VARCHAR, etc.)
+    # Uses MySQL syntax MODIFY COLUMN; SQLite needs recreate-and-copy,
+    # so this is best-effort and logs a warning on failure.
+    modify_columns = [
+        # reset tokens are ~43 chars; original VARCHAR(10) truncated them
+        ("verification_codes", "code", "VARCHAR(64) NOT NULL"),
+    ]
+    for table, column, new_type in modify_columns:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(f"ALTER TABLE {table} MODIFY COLUMN {column} {new_type}")
+                )
+                logger.info(
+                    f"[MIGRATION] Modified column {table}.{column} -> {new_type}"
+                )
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "modify" in err_msg or "syntax" in err_msg:
+                # SQLite doesn't support MODIFY COLUMN; skip silently.
+                logger.debug(
+                    f"[MIGRATION] MODIFY COLUMN not supported here, skipping {table}.{column}"
+                )
+            else:
+                logger.warning(
+                    f"[MIGRATION] Could not modify {table}.{column}: {e}"
+                )
 
     # Plan 0024/0025/0026: drop deprecated content columns & session_id columns
     drop_columns = [
@@ -202,13 +232,31 @@ async def _migrate_add_columns():
                 target VARCHAR(200) NOT NULL,
                 type VARCHAR(20) NOT NULL,
                 purpose VARCHAR(32) NOT NULL,
-                code VARCHAR(10) NOT NULL,
+                code VARCHAR(64) NOT NULL,
                 expires_at TIMESTAMP NOT NULL,
                 used BOOLEAN DEFAULT FALSE,
+                attempts INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_vc_target_purpose (target, purpose),
                 INDEX idx_vc_uid (uid),
                 FOREIGN KEY (uid) REFERENCES users(uid)
+            )""",
+        ),
+        # Plan 0028: login_attempts — login audit + brute-force cooldown
+        (
+            "login_attempts",
+            """CREATE TABLE IF NOT EXISTS login_attempts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                uid BIGINT NULL,
+                email VARCHAR(200) NULL,
+                ip VARCHAR(64) NOT NULL,
+                device_id VARCHAR(64) NULL,
+                success BOOLEAN NOT NULL DEFAULT FALSE,
+                failure_reason VARCHAR(100) NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_la_ip_created (ip, created_at),
+                INDEX idx_la_email_created (email, created_at),
+                INDEX idx_la_uid_created (uid, created_at)
             )""",
         ),
         # Plan 0021: Cloud Drive — folder tree

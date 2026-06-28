@@ -5,15 +5,19 @@ Login writes to new tables (users / user_oauth / user_profile /
 user_token / rbac_user_role). The legacy user_sessions table has been removed.
 """
 
-import hashlib
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Header, Query, Request
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
 
 from app.database import get_db, get_db_context
 from app.infra.transaction import transactional_scope
+from app.utils.request_meta import (
+    get_client_ip as _get_client_ip,
+    get_device_id as _get_device_id,
+    extract_device_meta as _extract_device_meta,
+)
 from app.response import (
     LoginRequest,
     QRCodeResponse,
@@ -25,69 +29,26 @@ from app.response import (
     PasswordSetRequest,
     PasswordChangeRequest,
     EmailBindRequest,
+    EmailSendCodeRequest,
+    EmailVerifyRequest,
+    PasswordResetRequest,
+    PasswordResetConfirmRequest,
     PhoneBindRequest,
     SecurityOverviewResponse,
 )
 from app.services.bilibili import BilibiliService
 from app.services.auth import UserService, validate_token as _validate_token
 from app.services.auth.security import decrypt as _decrypt
-
-
-def _get_device_id(request: Request) -> str:
-    """Derive a stable anonymous device fingerprint from request headers."""
-    ua = request.headers.get("user-agent", "")
-    accept_lang = request.headers.get("accept-language", "")
-    raw = f"{ua}|{accept_lang}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def _is_trusted_proxy(host: str | None) -> bool:
-    """Return True iff `host` falls within the configured trusted_proxies CIDRs.
-
-    Used to decide whether to honour X-Forwarded-For / X-Real-IP. If the
-    direct peer is not a trusted proxy we ignore those headers entirely so
-    attackers cannot spoof client IP to bypass per-IP rate limits.
-    """
-    if not host:
-        return False
-    raw = ""
-    try:
-        from app.infra.config import config as _cfg
-        raw = str(getattr(_cfg.server, "trusted_proxies", "") or "")
-    except Exception:
-        return False
-    if not raw.strip():
-        return False
-    try:
-        import ipaddress
-        peer = ipaddress.ip_address(host)
-        for cidr in (c.strip() for c in raw.split(",") if c.strip()):
-            try:
-                if peer in ipaddress.ip_network(cidr, strict=False):
-                    return True
-            except ValueError:
-                continue
-    except ValueError:
-        return False
-    return False
-
-
-def _get_client_ip(request: Request) -> str:
-    """Extract real client IP, respecting reverse-proxy headers.
-
-    Only honours X-Forwarded-For / X-Real-IP when the direct peer is a
-    trusted proxy (see ``_is_trusted_proxy``). Otherwise falls back to the
-    raw socket peer, preventing spoofed-header IP bypass.
-    """
-    peer = request.client.host if request.client else None
-    if _is_trusted_proxy(peer):
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip.strip()
-    return peer or "unknown"
+from app.services.auth.verification_service import VerificationService
+from app.services.auth.rate_limit_deps import (
+    change_password_rate_limit_dep_inline as _change_pw_rl,
+    email_send_code_rate_limit_dep,
+    email_verify_rate_limit_dep,
+    login_rate_limit_dep,
+    password_reset_rate_limit_dep,
+    password_reset_request_rate_limit_dep,
+    send_code_uid_rate_limit,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -297,6 +258,7 @@ async def poll_qrcode_status(
                     device_id=_get_device_id(request),
                     ip=_get_client_ip(request),
                     user_agent=request.headers.get("user-agent"),
+                    device_meta=_extract_device_meta(request),
                 )
                 roles = await user_service.get_user_roles(uid)
                 response.session_id = user_token.session_token
@@ -347,6 +309,7 @@ async def poll_qrcode_status(
 async def login_with_password(
     req: LoginRequest,
     request: Request,
+    _rl: None = Depends(login_rate_limit_dep),
 ):
     """Login with email + password. Returns session token on success.
 
@@ -357,8 +320,6 @@ async def login_with_password(
     """
     from app.services.auth.login_throttle import (
         check_login_allowed,
-        record_failed_login,
-        record_successful_login,
     )
 
     # Per-email lockout check — must happen before the password check.
@@ -387,15 +348,51 @@ async def login_with_password(
             info = await user_service.get_user_by_uid(uid)
             roles = await user_service.get_user_roles(uid)
     except ValueError:
-        # Count the failed attempt so repeated wrong-password tries lock
-        # the account regardless of how many IPs the attacker spoofs.
-        await record_failed_login(req.email)
+        # Record failed attempt for cooldown / audit.
+        from app.services.auth.rate_limit_service import rate_limit_service
+        await rate_limit_service.record_login_attempt(
+            db,
+            uid=None,
+            email=req.email,
+            ip=ip,
+            device_id=device_id,
+            success=False,
+            failure_reason="invalid_credentials",
+        )
         raise HTTPException(status_code=401, detail="邮箱或密码不正确")
 
-    await record_successful_login(req.email)
+    # Record successful login for audit.
+    from app.services.auth.rate_limit_service import rate_limit_service
+    try:
+        await rate_limit_service.record_login_attempt(
+            db,
+            uid=uid,
+            email=req.email,
+            ip=ip,
+            device_id=device_id,
+            success=True,
+        )
+    except Exception:
+        logger.exception("[AUTH] record_login_attempt (success) failed uid={}", uid)
 
-    # Record device metadata after token commit (best-effort)
+    # Record device metadata after token commit (best-effort).
+    # Server-parsed UA metadata is the base; client-supplied req.device
+    # overrides per-field when present.
     from app.repository.user_device_repository import get_user_device_repository
+
+    server_meta = _extract_device_meta(request)
+    client_meta = req.device.model_dump() if req.device else {}
+    merged: dict[str, Any] = {
+        k: client_meta.get(k) or server_meta.get(k)
+        for k in (
+            "device_type",
+            "device_name",
+            "os",
+            "os_version",
+            "browser",
+            "browser_version",
+        )
+    }
 
     try:
         async with transactional_scope() as db:
@@ -403,12 +400,12 @@ async def login_with_password(
                 db,
                 uid=uid,
                 device_id=device_id,
-                device_type=req.device.device_type if req.device else None,
-                device_name=req.device.device_name if req.device else None,
-                os=req.device.os if req.device else None,
-                os_version=req.device.os_version if req.device else None,
-                browser=req.device.browser if req.device else None,
-                browser_version=req.device.browser_version if req.device else None,
+                device_type=merged["device_type"],
+                device_name=merged["device_name"],
+                os=merged["os"],
+                os_version=merged["os_version"],
+                browser=merged["browser"],
+                browser_version=merged["browser_version"],
                 commit=False,
             )
     except Exception:
@@ -544,6 +541,7 @@ async def set_password(
     try:
         await user_service.set_password(uid, body.password)
     except ValueError as e:
+        logger.warning("[AUTH] set_password failed uid={} reason={}", uid, e)
         raise HTTPException(status_code=400, detail=str(e))
     return {"message": "密码设置成功"}
 
@@ -554,25 +552,68 @@ async def change_password(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """修改密码（需验证旧密码）"""
-    user_service = UserService(db, await _get_sf())
+    """修改密码（需验证旧密码 + 可选邮箱二次验证）。"""
+    # Per-uid rate limit (inline — dep would need get_current_uid → cycle).
+    await _change_pw_rl(uid, db)
+
+    vs = VerificationService()
     try:
-        await user_service.change_password(uid, body.old_password, body.new_password)
+        await vs.verify_and_change_password(
+            db,
+            uid=uid,
+            old_password=body.old_password,
+            new_password=body.new_password,
+            email_code=body.email_code,
+            sf=await _get_sf(),
+        )
     except ValueError as e:
+        logger.warning(
+            "[AUTH] change_password failed uid={} reason={}", uid, e,
+        )
         raise HTTPException(status_code=400, detail=str(e))
     return {"message": "密码修改成功"}
 
 
 @router.post("/password/reset-request")
-async def reset_password_request(uid: int = Depends(get_current_uid)):
-    """[预留] 请求密码重置邮件"""
-    raise HTTPException(status_code=501, detail="密码重置功能即将上线")
+async def reset_password_request(
+    body: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(password_reset_request_rate_limit_dep),
+):
+    """公开接口：请求密码重置邮件。
+
+    即便邮箱未注册也返回相同成功信息（不泄漏账号是否存在）。
+    """
+    vs = VerificationService()
+    try:
+        await vs.send_reset_token(db, target=body.email)
+    except ValueError as e:
+        # "如果该邮箱已注册，您将收到重置邮件" 也走 200，避免账号枚举。
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "如果该邮箱已注册，您将收到重置邮件"}
 
 
 @router.post("/password/reset")
-async def reset_password(uid: int = Depends(get_current_uid)):
-    """[预留] 执行密码重置"""
-    raise HTTPException(status_code=501, detail="密码重置功能即将上线")
+async def reset_password(
+    body: PasswordResetConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(password_reset_rate_limit_dep),
+):
+    """公开接口：用 reset_token 设置新密码。"""
+    vs = VerificationService()
+    try:
+        await vs.consume_token_and_reset_password(
+            db,
+            token=body.reset_token,
+            new_password=body.new_password,
+            sf=await _get_sf(),
+        )
+    except ValueError as e:
+        logger.warning(
+            "[AUTH] reset_password failed reason={} err={}", type(e).__name__, e
+        )
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "密码已重置，请使用新密码登录"}
 
 
 # ── Email ────────────────────────────────────────────────────────
@@ -608,15 +649,55 @@ async def unbind_email(
 
 
 @router.post("/email/send-code")
-async def send_email_code(uid: int = Depends(get_current_uid)):
-    """[预留] 发送邮箱验证码"""
-    raise HTTPException(status_code=501, detail="邮箱验证功能即将上线")
+async def send_email_code(
+    body: EmailSendCodeRequest,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(email_send_code_rate_limit_dep),
+):
+    """发送邮箱验证码（登录态）。
+
+    用途：
+      - bind_email: 绑定/换邮箱前验证邮箱所有权
+      - twofa: 敏感操作（如改密码）二次验证
+    """
+    # Per-uid rate limit (inline — dep would need get_current_uid → cycle).
+    await send_code_uid_rate_limit(uid, db)
+
+    vs = VerificationService()
+    try:
+        await vs.send_code(
+            db, uid=uid, target=body.email, purpose=body.purpose,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "验证码已发送"}
 
 
 @router.post("/email/verify")
-async def verify_email(uid: int = Depends(get_current_uid)):
-    """[预留] 验证邮箱并绑定"""
-    raise HTTPException(status_code=501, detail="邮箱验证功能即将上线")
+async def verify_email(
+    body: EmailVerifyRequest,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(email_verify_rate_limit_dep),
+):
+    """验证邮箱验证码并完成绑定（purpose=bind_email 时）。
+
+    purpose=twofa 时仅校验，不绑定。
+    """
+    vs = VerificationService()
+    try:
+        await vs.verify_and_bind_email(
+            db,
+            uid=uid,
+            email=body.email,
+            code=body.code,
+            purpose=body.purpose,
+            sf=await _get_sf(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "验证成功", "email": body.email, "purpose": body.purpose}
 
 
 # ── Phone ────────────────────────────────────────────────────────

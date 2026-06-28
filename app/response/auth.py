@@ -4,7 +4,7 @@ Pydantic schemas for auth API — request / response models.
 
 from datetime import datetime, date
 from typing import Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 def normalize_email(value: str) -> str:
@@ -109,14 +109,17 @@ class ProfileResponse(BaseModel):
 class PasswordSetRequest(BaseModel):
     """POST /auth/password/set request."""
 
-    password: str
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class PasswordChangeRequest(BaseModel):
     """PATCH /auth/password request."""
 
-    old_password: str
-    new_password: str
+    old_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=1, max_length=128)
+    # Optional email verification code for 2FA on sensitive operations.
+    # Required when the user has email_verified=true; ignored otherwise.
+    email_code: Optional[str] = None
 
 
 class EmailBindRequest(BaseModel):
@@ -128,6 +131,68 @@ class EmailBindRequest(BaseModel):
     @classmethod
     def normalize_email_value(cls, value: str) -> str:
         return normalize_email(value)
+
+
+class EmailSendCodeRequest(BaseModel):
+    """POST /auth/email/send-code request."""
+
+    email: str
+    purpose: str = "bind_email"  # bind_email | twofa
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email_value(cls, value: str) -> str:
+        return normalize_email(value)
+
+    @field_validator("purpose")
+    @classmethod
+    def validate_purpose(cls, v: str) -> str:
+        if v not in {"bind_email", "twofa"}:
+            raise ValueError("purpose must be bind_email or twofa")
+        return v
+
+
+class EmailVerifyRequest(BaseModel):
+    """POST /auth/email/verify request."""
+
+    email: str
+    code: str
+    purpose: str = "bind_email"
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email_value(cls, value: str) -> str:
+        return normalize_email(value)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, v: str) -> str:
+        return v.strip()
+
+    @field_validator("purpose")
+    @classmethod
+    def validate_purpose(cls, v: str) -> str:
+        if v not in {"bind_email", "twofa"}:
+            raise ValueError("purpose must be bind_email or twofa")
+        return v
+
+
+class PasswordResetRequest(BaseModel):
+    """POST /auth/password/reset-request request (public)."""
+
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email_value(cls, value: str) -> str:
+        return normalize_email(value)
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    """POST /auth/password/reset request (public, uses reset token)."""
+
+    reset_token: str = Field(..., min_length=10)
+    new_password: str = Field(..., min_length=1, max_length=128)
 
 
 class PhoneBindRequest(BaseModel):
