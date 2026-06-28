@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MindBase · B站收藏知识库 RAG 系统 — 课程答辩</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ===========================================
+   VIEWPORT FITTING — MANDATORY BASE
+   =========================================== */
+html, body { height: 100%; overflow-x: hidden; margin: 0; padding: 0; }
+html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+
+:root {
+    /* Bold Signal — refined */
+    --bg: #0d0d0f;
+    --bg-soft: #16161a;
+    --bg-card: #1a1a1f;
+    --ink: #f5f3ef;
+    --ink-mute: #8e8a85;
+    --ink-dim: #5a5752;
+    --line: #26262b;
+    --line-soft: #1f1f24;
+    --accent: #ff5b1f;
+    --accent-dim: #b03d14;
+    --accent-soft: #2a1a14;
+    --gold: #f5c563;
+
+    --title-size: clamp(2.2rem, 6.5vw, 5.5rem);
+    --h2-size: clamp(1.5rem, 3.8vw, 2.8rem);
+    --h3-size: clamp(1.05rem, 2.2vw, 1.5rem);
+    --body-size: clamp(0.85rem, 1.4vw, 1.05rem);
+    --small-size: clamp(0.72rem, 1vw, 0.85rem);
+    --tiny-size: clamp(0.62rem, 0.85vw, 0.75rem);
+    --mono-size: clamp(0.72rem, 1vw, 0.88rem);
+
+    --slide-padding: clamp(1.5rem, 5vw, 5rem);
+    --content-gap: clamp(0.8rem, 2vw, 2rem);
+    --element-gap: clamp(0.4rem, 1vw, 1rem);
+}
+
+body {
+    font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+.slide {
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    box-sizing: border-box;
+}
+
+.slide-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    max-height: 100%;
+    overflow: hidden;
+    padding: var(--slide-padding);
+    box-sizing: border-box;
+    position: relative;
+    z-index: 1;
+}
+
+/* ===== Slide chrome / header bar ===== */
+.slide-header {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: clamp(2.2rem, 4vw, 3rem);
+    padding: 0 var(--slide-padding);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--line-soft);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    z-index: 3;
+}
+.slide-header .tag {
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+}
+.slide-header .tag::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--accent);
+}
+.slide-header .page {
+    color: var(--ink-mute);
+    display: flex;
+    gap: 1em;
+    align-items: center;
+}
+.slide-header .page .cur { color: var(--ink); }
+
+/* ===== Slide footer ===== */
+.slide-footer {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: clamp(1.8rem, 3.5vw, 2.5rem);
+    padding: 0 var(--slide-padding);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-top: 1px solid var(--line-soft);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    color: var(--ink-dim);
+    letter-spacing: 0.1em;
+    z-index: 3;
+}
+
+/* ===== Typography ===== */
+.display {
+    font-family: 'Archivo Black', 'Noto Sans SC', sans-serif;
+    font-size: var(--title-size);
+    line-height: 0.92;
+    letter-spacing: -0.025em;
+    margin: 0;
+}
+.h2 {
+    font-family: 'Archivo Black', 'Noto Sans SC', sans-serif;
+    font-size: var(--h2-size);
+    line-height: 1.02;
+    letter-spacing: -0.01em;
+    margin: 0 0 var(--content-gap) 0;
+}
+.h3 {
+    font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
+    font-weight: 700;
+    font-size: var(--h3-size);
+    line-height: 1.2;
+    margin: 0;
+}
+.body {
+    font-size: var(--body-size);
+    line-height: 1.55;
+    margin: 0;
+}
+.mute { color: var(--ink-mute); }
+.dim { color: var(--ink-dim); }
+.accent { color: var(--accent); }
+.mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--mono-size);
+}
+
+/* ===== Kicker / eyebrow ===== */
+.kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.6em;
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+}
+.kicker::before {
+    content: '';
+    width: 18px;
+    height: 1px;
+    background: var(--accent);
+}
+
+/* ===== Accent focal ===== */
+.focal {
+    background: var(--accent);
+    color: #0e0e10;
+    padding: 0.25em 0.7em;
+    border-radius: 2px;
+    display: inline-block;
+    font-weight: 600;
+}
+.focal-block {
+    background: var(--accent);
+    color: #0e0e10;
+    padding: clamp(1rem, 2.2vw, 1.6rem);
+    border-radius: 4px;
+}
+
+/* ===== Grids ===== */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(0.9rem, 2vw, 1.6rem); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(0.7rem, 1.6vw, 1.2rem); }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(0.7rem, 1.4vw, 1.1rem); }
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    padding: clamp(0.9rem, 1.8vw, 1.3rem);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    position: relative;
+}
+.card-accent {
+    background: linear-gradient(180deg, var(--accent-soft) 0%, var(--bg-card) 100%);
+    border-left: 2px solid var(--accent);
+}
+.card .num-tag {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-size: var(--small-size);
+    letter-spacing: 0.1em;
+}
+
+/* ===== Bullets ===== */
+ul.bullets {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--element-gap);
+}
+ul.bullets li {
+    font-size: var(--body-size);
+    line-height: 1.5;
+    padding-left: 1.4em;
+    position: relative;
+}
+ul.bullets li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-weight: 700;
+}
+ul.bullets.tight li { font-size: var(--small-size); }
+
+/* ===== Pipeline ===== */
+.pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: clamp(0.2rem, 0.6vw, 0.4rem);
+}
+.pipe-step {
+    flex: 1 1 0;
+    min-width: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    padding: clamp(0.7rem, 1.4vw, 1.1rem);
+    border-radius: 4px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3em;
+}
+.pipe-step .num {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-size: var(--tiny-size);
+    letter-spacing: 0.1em;
+}
+.pipe-step .label {
+    font-family: 'Archivo Black', 'Noto Sans SC', sans-serif;
+    font-size: clamp(0.85rem, 1.3vw, 1.1rem);
+    line-height: 1.1;
+}
+.pipe-step .desc {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    color: var(--ink-mute);
+}
+.pipe-arrow {
+    align-self: center;
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 1.1em;
+}
+
+/* ===== Agent matrix ===== */
+.agent-table {
+    display: grid;
+    grid-template-columns: 1.1fr 2fr 1.6fr;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    font-size: var(--small-size);
+}
+.agent-table > div {
+    padding: clamp(0.55rem, 1.1vw, 0.85rem) clamp(0.7rem, 1.4vw, 1rem);
+    border-bottom: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+}
+.agent-table > div:nth-child(3n) { border-right: none; }
+.agent-table > div:nth-last-child(-n+3) { border-bottom: none; }
+.agent-table .head {
+    background: var(--accent);
+    color: #0e0e10;
+    font-family: 'Archivo Black', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: var(--tiny-size);
+}
+.agent-table .role {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: var(--small-size);
+}
+
+/* ===== Code ===== */
+.code {
+    background: #050507;
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    padding: clamp(0.7rem, 1.4vw, 1.1rem);
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--mono-size);
+    line-height: 1.55;
+    overflow: hidden;
+    color: var(--ink);
+    white-space: pre;
+}
+.code .kw { color: var(--accent); }
+.code .str { color: var(--gold); }
+.code .com { color: var(--ink-dim); font-style: italic; }
+.code .fn { color: #7fc7ff; }
+
+/* ===== Layer stack ===== */
+.layer-stack {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(0.3rem, 0.8vw, 0.5rem);
+}
+.layer {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    padding: clamp(0.6rem, 1.3vw, 0.95rem) clamp(0.9rem, 1.8vw, 1.3rem);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.layer .lname {
+    font-family: 'Archivo Black', sans-serif;
+    font-size: clamp(0.9rem, 1.5vw, 1.15rem);
+    min-width: 7em;
+}
+.layer .ldesc {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--small-size);
+    color: var(--ink-mute);
+    flex: 1;
+    text-align: right;
+}
+
+/* ===== Harness flow ===== */
+.harness-flow {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    gap: clamp(0.4rem, 0.9vw, 0.7rem);
+    align-items: stretch;
+}
+.harness-node {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: clamp(0.8rem, 1.5vw, 1.2rem);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.3em;
+}
+.harness-node.planner {
+    background: var(--accent);
+    color: #0e0e10;
+    border-color: var(--accent);
+}
+.harness-arrow {
+    color: var(--accent);
+    font-size: 1.4em;
+    text-align: center;
+    align-self: center;
+}
+
+/* ===== Risk rows ===== */
+.risk-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: clamp(0.6rem, 1.5vw, 1.2rem);
+    align-items: center;
+    padding: clamp(0.55rem, 1.1vw, 0.85rem) 0;
+    border-bottom: 1px solid var(--line);
+}
+.risk-row:last-child { border-bottom: none; }
+.risk-level {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    padding: 0.25em 0.7em;
+    border-radius: 2px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+.risk-high { background: var(--accent); color: #0e0e10; }
+.risk-mid { background: #3a2a14; color: var(--gold); }
+.risk-low { background: var(--line); color: var(--ink-mute); }
+
+/* ===== Progress + nav ===== */
+.progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: var(--accent);
+    z-index: 100;
+    transition: width 0.3s ease;
+    box-shadow: 0 0 10px var(--accent);
+}
+.nav-dots {
+    position: fixed;
+    right: clamp(0.6rem, 1.5vw, 1.2rem);
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    z-index: 50;
+}
+.nav-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--line);
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+    padding: 0;
+    position: relative;
+}
+.nav-dot:hover { background: var(--ink-mute); }
+.nav-dot.active {
+    background: var(--accent);
+    transform: scale(1.5);
+    box-shadow: 0 0 8px var(--accent);
+}
+
+.keyboard-hint {
+    position: fixed;
+    bottom: clamp(0.4rem, 1vw, 0.7rem);
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    color: var(--ink-dim);
+    z-index: 50;
+    letter-spacing: 0.12em;
+    background: var(--bg);
+    padding: 0.2em 0.8em;
+    border-radius: 2px;
+}
+
+/* ===== Decorative ===== */
+.bignum {
+    position: absolute;
+    font-family: 'Archivo Black', sans-serif;
+    font-size: clamp(10rem, 32vw, 26rem);
+    color: var(--bg-soft);
+    line-height: 0.8;
+    bottom: -0.15em;
+    right: -0.05em;
+    z-index: 0;
+    pointer-events: none;
+    user-select: none;
+    opacity: 0.55;
+}
+.corner-mark {
+    position: absolute;
+    top: clamp(2.8rem, 6vw, 4rem);
+    right: var(--slide-padding);
+    width: clamp(2rem, 4vw, 3rem);
+    height: clamp(2rem, 4vw, 3rem);
+    border-top: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+    z-index: 2;
+    opacity: 0.6;
+}
+.section-rail {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 60%;
+    background: linear-gradient(180deg, transparent, var(--accent) 30%, var(--accent) 70%, transparent);
+    z-index: 2;
+    opacity: 0.4;
+}
+
+/* ===== Reveal animations ===== */
+.reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.7s cubic-bezier(0.2, 0.7, 0.3, 1), transform 0.7s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.slide.is-active .reveal { opacity: 1; transform: translateY(0); }
+.slide.is-active .reveal:nth-child(2) { transition-delay: 0.08s; }
+.slide.is-active .reveal:nth-child(3) { transition-delay: 0.16s; }
+.slide.is-active .reveal:nth-child(4) { transition-delay: 0.24s; }
+.slide.is-active .reveal:nth-child(5) { transition-delay: 0.32s; }
+.slide.is-active .reveal:nth-child(6) { transition-delay: 0.40s; }
+
+/* stagger children inside a reveal container */
+.slide.is-active .reveal .stagger > * {
+    opacity: 0;
+    transform: translateY(12px);
+    animation: staggerIn 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+.slide.is-active .reveal .stagger > *:nth-child(1) { animation-delay: 0.2s; }
+.slide.is-active .reveal .stagger > *:nth-child(2) { animation-delay: 0.3s; }
+.slide.is-active .reveal .stagger > *:nth-child(3) { animation-delay: 0.4s; }
+.slide.is-active .reveal .stagger > *:nth-child(4) { animation-delay: 0.5s; }
+@keyframes staggerIn {
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== Title slide specifics ===== */
+.title-slide { background: var(--bg); }
+.title-slide .title-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(var(--line-soft) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+    background-size: clamp(2rem, 5vw, 4rem) clamp(2rem, 5vw, 4rem);
+    opacity: 0.4;
+    z-index: 0;
+    mask-image: radial-gradient(ellipse at 30% 40%, black 30%, transparent 75%);
+}
+.title-meta {
+    display: flex;
+    gap: clamp(1rem, 3vw, 3rem);
+    margin-top: clamp(1.2rem, 2.5vw, 2rem);
+    flex-wrap: wrap;
+}
+.title-meta div {
+    border-left: 2px solid var(--accent);
+    padding-left: 0.8em;
+}
+.title-meta .label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: var(--tiny-size);
+    color: var(--ink-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 0.2em;
+}
+.title-meta .val {
+    font-size: var(--body-size);
+    font-weight: 500;
+}
+
+/* ===== Short-screen safety ===== */
+@media (max-height: 700px) {
+    :root {
+        --slide-padding: clamp(1rem, 3vw, 2.5rem);
+        --title-size: clamp(1.6rem, 5vw, 3.2rem);
+        --h2-size: clamp(1.2rem, 3vw, 1.9rem);
+    }
+    .bignum { font-size: clamp(7rem, 24vw, 18rem); }
+    .slide-header, .slide-footer { font-size: 0.6rem; }
+}
+@media (max-height: 600px) {
+    .nav-dots, .keyboard-hint { display: none; }
+}
+@media (max-width: 700px) {
+    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; }
+    .pipeline { flex-wrap: wrap; }
+    .pipe-step { flex: 1 1 40%; }
+    .pipe-arrow { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.2s !important;
+    }
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; }
+    .slide.is-active .reveal .stagger > * { opacity: 1; transform: none; animation: none; }
+}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="nav-dots" id="navDots"></div>
+<div class="keyboard-hint">← → 翻页 · 空格 下一页 · F 全屏</div>
+
+<!-- ============ SLIDE 1: TITLE ============ -->
+<section class="slide title-slide" data-section="封面">
+    <div class="title-grid"></div>
+    <div class="slide-header">
+        <span class="tag">Course Defense · 2026</span>
+        <span class="page"><span class="cur">01</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="reveal">
+            <span class="focal mono" style="font-size: var(--small-size);">RAG · AGENT · KNOWLEDGE</span>
+        </div>
+        <h1 class="display reveal" style="margin-top: 0.25em;">Mind<span style="color: var(--accent);">Base</span>.</h1>
+        <p class="h3 mute reveal" style="font-weight: 400; margin-top: 0.5em;">把 B 站收藏，变成可检索的知识库</p>
+        <p class="body reveal" style="max-width: 46ch; margin-top: 1em;">
+            面向 B 站收藏内容的 RAG 系统 —— 视频内容提取、向量化、语义检索、
+            LLM 流式问答，配合多 Agent 工程化协作规范。
+        </p>
+        <div class="title-meta reveal">
+            <div>
+                <div class="label">Stack</div>
+                <div class="val">FastAPI · Next.js · ChromaDB</div>
+            </div>
+            <div>
+                <div class="label">Highlight</div>
+                <div class="val">ChatHarness · 多 Agent 协作</div>
+            </div>
+            <div>
+                <div class="label">Branch</div>
+                <div class="val">refactor/vector-page-thin</div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>课程项目答辩</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 2: PROBLEM ============ -->
+<section class="slide" data-section="问题与动机">
+    <div class="slide-header">
+        <span class="tag">Problem</span>
+        <span class="page"><span class="cur">02</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">问题与动机</div>
+        <h2 class="h2 reveal">视频收藏，<span class="accent">只藏不用</span>。</h2>
+        <div class="grid-2" style="margin-top: var(--content-gap);">
+            <div class="card reveal">
+                <div class="num-tag">01 · 用户痛点</div>
+                <ul class="bullets">
+                    <li>收藏夹越攒越大，几乎从不回看</li>
+                    <li>想找"那个视频讲过的方法"，只能凭记忆</li>
+                    <li>视频不可全文检索，知识沉睡在音频里</li>
+                </ul>
+            </div>
+            <div class="card card-accent reveal">
+                <div class="num-tag">02 · 技术挑战</div>
+                <ul class="bullets">
+                    <li>视频内容是非结构化的音频/字幕</li>
+                    <li>B 站反爬（WBI 签名）增加数据获取难度</li>
+                    <li>ASR 是单点风险，失败需隔离不影响其他</li>
+                    <li>多模块协作易失控，需要强工程约束</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>02 / 12 · Problem</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 3: CORE CAPABILITIES ============ -->
+<section class="slide" data-section="核心能力">
+    <div class="slide-header">
+        <span class="tag">Capabilities</span>
+        <span class="page"><span class="cur">03</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">核心能力</div>
+        <h2 class="h2 reveal">四个模块，<span class="accent">一条主链路</span></h2>
+        <div class="grid-4 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="num-tag">01</div>
+                <div class="h3">数据获取</div>
+                <p class="body mute" style="font-size: var(--small-size);">扫码登录、收藏夹/视频列表同步</p>
+            </div>
+            <div class="card">
+                <div class="num-tag">02</div>
+                <div class="h3">内容提取</div>
+                <p class="body mute" style="font-size: var(--small-size);">ASR 语音转文本、字幕抓取</p>
+            </div>
+            <div class="card">
+                <div class="num-tag">03</div>
+                <div class="h3">知识构建</div>
+                <p class="body mute" style="font-size: var(--small-size);">chunking + embedding + ChromaDB</p>
+            </div>
+            <div class="card">
+                <div class="num-tag">04</div>
+                <div class="h3">智能问答</div>
+                <p class="body mute" style="font-size: var(--small-size);">向量检索 + LLM 流式 + 来源</p>
+            </div>
+        </div>
+        <div class="reveal" style="margin-top: var(--content-gap);">
+            <div class="code">
+<span class="com"># 核心链路</span>
+B站数据  →  内容提取  →  <span class="kw">向量化</span>  →  检索  →  LLM 生成
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>03 / 12 · Capabilities</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 4: ARCHITECTURE ============ -->
+<section class="slide" data-section="系统架构">
+    <div class="slide-header">
+        <span class="tag">Architecture</span>
+        <span class="page"><span class="cur">04</span> / 12</span>
+    </div>
+    <div class="section-rail"></div>
+    <div class="slide-content">
+        <div class="kicker reveal">系统架构</div>
+        <h2 class="h2 reveal">分层架构，<span class="accent">单向调用</span></h2>
+        <div class="layer-stack reveal" style="margin-top: var(--content-gap);">
+            <div class="layer">
+                <div class="lname">Routers</div>
+                <div class="ldesc">参数解析 → 转发 service · 禁止业务逻辑</div>
+            </div>
+            <div class="layer">
+                <div class="lname">Services</div>
+                <div class="ldesc">bilibili · wbi · content_fetcher · asr · rag · ChatHarness</div>
+            </div>
+            <div class="layer">
+                <div class="lname">Data</div>
+                <div class="ldesc">SQLite（结构化）+ ChromaDB（向量）</div>
+            </div>
+        </div>
+        <div class="grid-3 reveal" style="margin-top: var(--content-gap);">
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">✓ 允许</div>
+                <p class="body" style="font-size: var(--small-size);">router → service → data<br>bilibili → wbi（同层内部）</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">✗ 禁止</div>
+                <p class="body" style="font-size: var(--small-size);">跨层调用、反向依赖<br>router 直接操作数据库</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">› 原则</div>
+                <p class="body" style="font-size: var(--small-size);">小步修改、先定位再改<br>不"顺手"改无关模块</p>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>04 / 12 · Architecture</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 5: RAG PIPELINE ============ -->
+<section class="slide" data-section="RAG 核心链路">
+    <div class="slide-header">
+        <span class="tag">RAG Pipeline</span>
+        <span class="page"><span class="cur">05</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">RAG 核心链路</div>
+        <h2 class="h2 reveal">端到端 <span class="accent">5 步</span> 管道</h2>
+        <div class="pipeline reveal" style="margin-top: var(--content-gap);">
+            <div class="pipe-step">
+                <div class="num">01</div>
+                <div class="label">B站数据</div>
+                <div class="desc">bilibili + wbi</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-step">
+                <div class="num">02</div>
+                <div class="label">内容提取</div>
+                <div class="desc">fetcher + ASR</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-step">
+                <div class="num">03</div>
+                <div class="label">向量化</div>
+                <div class="desc">chunk + embed</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-step">
+                <div class="num">04</div>
+                <div class="label">检索</div>
+                <div class="desc">ChromaDB</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-step">
+                <div class="num">05</div>
+                <div class="label">生成</div>
+                <div class="desc">LLM 流式</div>
+            </div>
+        </div>
+        <div class="grid-2 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">写入接口</div>
+                <div class="code">rag.<span class="fn">add_video</span>(bvid, text)
+rag.<span class="fn">delete_video</span>(bvid)
+rag.<span class="fn">get_vector_count</span>(bvid)</div>
+            </div>
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">检索接口 · 流式</div>
+                <div class="code"><span class="kw">async for</span> chunk <span class="kw">in</span> rag.<span class="fn">query_stream</span>(
+    query=<span class="str">"..."</span>,
+    folder_ids=[...]
+):
+    <span class="kw">yield</span> chunk</div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>05 / 12 · Pipeline</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 6: CHATHARNESS ============ -->
+<section class="slide" data-section="ChatHarness 调度">
+    <div class="slide-header">
+        <span class="tag">Harness</span>
+        <span class="page"><span class="cur">06</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">ChatHarness 调度</div>
+        <h2 class="h2 reveal">路由决策，<span class="accent">交给 planner</span></h2>
+        <p class="body reveal mute" style="margin-bottom: var(--content-gap); max-width: 60ch;">
+            不再用规则判断 direct / vector / db_list，Harness 自主决定是否检索、检索几次、如何聚合。
+        </p>
+        <div class="harness-flow reveal">
+            <div class="harness-node">
+                <div class="mono mute" style="font-size: var(--tiny-size);">INPUT</div>
+                <div class="h3" style="font-size: var(--body-size);">用户问题 + 作用域</div>
+            </div>
+            <div class="harness-arrow">→</div>
+            <div class="harness-node planner">
+                <div class="mono" style="font-size: var(--tiny-size);">PLANNER</div>
+                <div class="h3" style="font-size: var(--body-size);">语义路由 + 多步推理</div>
+            </div>
+            <div class="harness-arrow">→</div>
+            <div class="harness-node">
+                <div class="mono mute" style="font-size: var(--tiny-size);">OUTPUT</div>
+                <div class="h3" style="font-size: var(--body-size);">SSE 流式 + 来源</div>
+            </div>
+        </div>
+        <div class="grid-3 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">SSE 事件</div>
+                <ul class="bullets tight">
+                    <li><span class="mono">chunk</span> · 文字增量</li>
+                    <li><span class="mono">sources</span> · 来源追踪</li>
+                    <li><span class="mono">route</span> · 路由透传</li>
+                    <li><span class="mono">done</span> / <span class="mono">error</span></li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">废弃字段</div>
+                <p class="body" style="font-size: var(--small-size);">
+                    <span class="mono">ChatRequest.mode</span> 保留兼容，router 不再消费。<br>
+                    规则路由 <span class="mono">_route_with_*</span> 已删除。
+                </p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">关键收益</div>
+                <p class="body" style="font-size: var(--small-size);">
+                    planner 根据问题语义自主决定检索次数与聚合方式，支持多步推理（agentic）。
+                </p>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>06 / 12 · Harness</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 7: MULTI-AGENT ============ -->
+<section class="slide" data-section="多 Agent 协作">
+    <div class="slide-header">
+        <span class="tag">Agent Teams</span>
+        <span class="page"><span class="cur">07</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">多 Agent 协作规范</div>
+        <h2 class="h2 reveal">4 个 Agent，<span class="accent">职责不重叠</span></h2>
+        <div class="agent-table reveal" style="margin-top: var(--content-gap);">
+            <div class="head">Agent</div>
+            <div class="head">文件权限</div>
+            <div class="head">禁止触碰</div>
+
+            <div class="role">BackendAgent</div>
+            <div>routers/* · models · database · config · main</div>
+            <div class="mute">services/* · frontend</div>
+
+            <div class="role">RAGAgent</div>
+            <div>services/rag.py · asr.py · content_fetcher.py</div>
+            <div class="mute">routers · models · 前端</div>
+
+            <div class="role">BilibiliAgent</div>
+            <div>services/bilibili.py · wbi.py</div>
+            <div class="mute">rag · routers · 前端</div>
+
+            <div class="role">FrontendAgent</div>
+            <div>frontend/app · components · lib/api.ts</div>
+            <div class="mute">所有后端文件</div>
+        </div>
+        <div class="grid-3 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">接口契约</div>
+                <p class="body" style="font-size: var(--small-size);">修改对外接口前必须先发变更通知，等待相关方确认。</p>
+            </div>
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">交接报告</div>
+                <p class="body" style="font-size: var(--small-size);">完成后输出标准报告：改了什么、没改什么、对他人的影响。</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">冲突裁决</div>
+                <p class="body" style="font-size: var(--small-size);">数据正确性 &gt; 链路稳定性 &gt; 性能 &gt; 整洁度</p>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>07 / 12 · Agent Teams</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 8: ENGINEERING ============ -->
+<section class="slide" data-section="工程规范">
+    <div class="slide-header">
+        <span class="tag">Engineering</span>
+        <span class="page"><span class="cur">08</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">工程规范</div>
+        <h2 class="h2 reveal">CLAUDE.md：<span class="accent">唯一权威规范</span></h2>
+        <div class="grid-2 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">防误删机制</div>
+                <div class="code"><span class="com"># B站返回空 ≠ 本地清空</span>
+<span class="kw">if not</span> remote_videos:
+    logger.warning(<span class="str">"empty"</span>)
+    <span class="kw">return</span> existing_local
+<span class="com"># 绝不 return []</span></div>
+            </div>
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">ASR 状态流转</div>
+                <div class="code">pending → processing → <span class="kw">done</span>
+                  ↘ <span class="str">failed</span> (可重试)
+<span class="com"># 失败隔离，不影响他人</span></div>
+            </div>
+        </div>
+        <div class="grid-3 reveal" style="margin-top: var(--content-gap);">
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">提交规范</div>
+                <p class="body" style="font-size: var(--small-size);"><span class="mono">[模块] type: 说明</span><br>禁止跨层、自动提交</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">P0 自检</div>
+                <p class="body" style="font-size: var(--small-size);"><span class="mono">diagnose_rag.py</span><br>每次提交前必跑</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">单 Agent 守则</div>
+                <p class="body" style="font-size: var(--small-size);">小步修改 · 先定位<br>不"顺手"改架构</p>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>08 / 12 · Engineering</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 9: API SURFACE ============ -->
+<section class="slide" data-section="API 全景">
+    <div class="slide-header">
+        <span class="tag">API</span>
+        <span class="page"><span class="cur">09</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">API 全景</div>
+        <h2 class="h2 reveal">模块化 <span class="accent">API 体系</span></h2>
+        <div class="grid-4 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="mono accent">/auth</div>
+                <p class="body mute" style="font-size: var(--small-size);">扫码登录 · session</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/favorites</div>
+                <p class="body mute" style="font-size: var(--small-size);">收藏夹同步 · 整理</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/knowledge</div>
+                <p class="body mute" style="font-size: var(--small-size);">向量化构建 · 状态</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/chat</div>
+                <p class="body mute" style="font-size: var(--small-size);">问答 · SSE · 会话</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/asr</div>
+                <p class="body mute" style="font-size: var(--small-size);">ASR 任务 · 版本</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/vec/page</div>
+                <p class="body mute" style="font-size: var(--small-size);">分P向量化 · 幂等</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/credentials</div>
+                <p class="body mute" style="font-size: var(--small-size);">多 Provider Key</p>
+            </div>
+            <div class="card">
+                <div class="mono accent">/quiz</div>
+                <p class="body mute" style="font-size: var(--small-size);">出题 · 批改 · 错题</p>
+            </div>
+        </div>
+        <div class="reveal" style="margin-top: var(--content-gap); text-align: center;">
+            <span class="mono dim" style="font-size: var(--small-size);">+ /billing · /settings · /health · 完整交互式文档 /docs</span>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>09 / 12 · API</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 10: DEMO ============ -->
+<section class="slide" data-section="Demo 亮点">
+    <div class="slide-header">
+        <span class="tag">Demo</span>
+        <span class="page"><span class="cur">10</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">Demo 亮点</div>
+        <h2 class="h2 reveal">可演示的<span class="accent">核心闭环</span></h2>
+        <div class="grid-2 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">主线 Demo</div>
+                <ul class="bullets">
+                    <li>扫码登录 B 站 → 拉取收藏夹</li>
+                    <li>触发视频向量化（ASR + embedding）</li>
+                    <li>提问 → 流式回答 + 来源卡片</li>
+                    <li>分P粒度检索与状态追踪</li>
+                </ul>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">技术亮点</div>
+                <ul class="bullets">
+                    <li>WBI 签名应对 B 站反爬</li>
+                    <li>字幕优先，ASR 兜底的内容策略</li>
+                    <li>embedding 切换需全量重建的约束</li>
+                    <li>多 Provider credential 管理</li>
+                </ul>
+            </div>
+        </div>
+        <div class="reveal" style="margin-top: var(--content-gap);">
+            <div class="focal-block">
+                <div class="mono" style="font-size: var(--tiny-size); margin-bottom: 0.3em; letter-spacing: 0.15em;">DEMO FLOW</div>
+                <div class="h3" style="font-size: clamp(1rem, 2vw, 1.35rem);">登录 → 同步 → 向量化 → 提问 → 看见来源</div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>10 / 12 · Demo</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 11: RISKS & ROADMAP ============ -->
+<section class="slide" data-section="风险与演进">
+    <div class="slide-header">
+        <span class="tag">Risks · Roadmap</span>
+        <span class="page"><span class="cur">11</span> / 12</span>
+    </div>
+    <div class="slide-content">
+        <div class="kicker reveal">已知风险与演进方向</div>
+        <h2 class="h2 reveal">风险与<span class="accent">演进</span></h2>
+        <div class="reveal" style="margin-top: var(--content-gap);">
+            <div class="risk-row">
+                <span class="risk-level risk-high">HIGH</span>
+                <span class="body">ASR 成功率 — 内容质量单点，失败则视频无法入库</span>
+                <span class="mono mute" style="font-size: var(--small-size);">→ 字幕优先 · 异步队列</span>
+            </div>
+            <div class="risk-row">
+                <span class="risk-level risk-high">HIGH</span>
+                <span class="body">WBI 签名失效 — B 站定期更新算法，失效即 412</span>
+                <span class="mono mute" style="font-size: var(--small-size);">→ 自动监控告警</span>
+            </div>
+            <div class="risk-row">
+                <span class="risk-level risk-mid">MID</span>
+                <span class="body">ChatHarness 路由边界 — 多步推理复杂度高</span>
+                <span class="mono mute" style="font-size: var(--small-size);">→ OpenTelemetry</span>
+            </div>
+            <div class="risk-row">
+                <span class="risk-level risk-mid">MID</span>
+                <span class="body">session 内存态 — 多进程部署不掉登录</span>
+                <span class="mono mute" style="font-size: var(--small-size);">→ Redis 持久化</span>
+            </div>
+        </div>
+        <div class="grid-3 reveal" style="margin-top: var(--content-gap);">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">短期</div>
+                <p class="body" style="font-size: var(--small-size);">Task Queue 异步化 ASR / 向量写入</p>
+            </div>
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">中期</div>
+                <p class="body" style="font-size: var(--small-size);">Rerank · 增量同步 · 链路追踪</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">长期</div>
+                <p class="body" style="font-size: var(--small-size);">Quiz Agent harness 化做质量回归</p>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>11 / 12 · Risks</span>
+    </div>
+</section>
+
+<!-- ============ SLIDE 12: CLOSING ============ -->
+<section class="slide" data-section="总结">
+    <div class="slide-header">
+        <span class="tag">Thanks</span>
+        <span class="page"><span class="cur">12</span> / 12</span>
+    </div>
+    <div class="bignum">12</div>
+    <div class="corner-mark"></div>
+    <div class="slide-content" style="position: relative; z-index: 1;">
+        <div class="reveal">
+            <span class="focal mono" style="font-size: var(--small-size);">END · Q&amp;A</span>
+        </div>
+        <h2 class="display reveal" style="margin-top: 0.25em;">谢谢<span class="accent">。</span></h2>
+        <p class="h3 mute reveal" style="font-weight: 400; margin-top: 0.5em; max-width: 30ch;">欢迎提问与指正</p>
+        <div class="grid-3 reveal" style="margin-top: var(--content-gap); max-width: 820px;">
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">交付物</div>
+                <p class="body" style="font-size: var(--small-size);">后端 FastAPI + 前端 Next.js + ChromaDB</p>
+            </div>
+            <div class="card">
+                <div class="kicker" style="margin-bottom: 0.3em;">规范</div>
+                <p class="body" style="font-size: var(--small-size);">CLAUDE.md 单一权威 · 多 Agent 协作</p>
+            </div>
+            <div class="card card-accent">
+                <div class="kicker" style="margin-bottom: 0.3em;">核心</div>
+                <p class="body" style="font-size: var(--small-size);">RAG 管道 + ChatHarness 自主路由</p>
+            </div>
+        </div>
+    </div>
+    <div class="slide-footer">
+        <span>MindBase · Bilibili RAG</span>
+        <span>12 / 12 · End</span>
+    </div>
+</section>
+
+<script>
+(function () {
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const progress = document.getElementById('progress');
+    const navDots = document.getElementById('navDots');
+
+    // Build nav dots
+    slides.forEach((s, i) => {
+        const dot = document.createElement('button');
+        dot.className = 'nav-dot';
+        dot.setAttribute('aria-label', `跳转到第 ${i + 1} 页 · ${s.dataset.section || ''}`);
+        dot.title = `${i + 1}. ${s.dataset.section || ''}`;
+        dot.addEventListener('click', () => {
+            slides[i].scrollIntoView({ behavior: 'smooth' });
+        });
+        navDots.appendChild(dot);
+    });
+    const dots = Array.from(navDots.children);
+
+    // Track active slide
+    const io = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const idx = slides.indexOf(entry.target);
+                entry.target.classList.add('is-active');
+                dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+                progress.style.width = `${((idx + 1) / slides.length) * 100}%`;
+            }
+        });
+    }, { threshold: 0.5 });
+    slides.forEach(s => io.observe(s));
+
+    // Keyboard nav
+    function findCurrent() {
+        const y = window.scrollY + window.innerHeight / 2;
+        for (let i = 0; i < slides.length; i++) {
+            const top = slides[i].offsetTop;
+            const bottom = top + slides[i].offsetHeight;
+            if (y >= top && y < bottom) return i;
+        }
+        return 0;
+    }
+    function goTo(idx) {
+        idx = Math.max(0, Math.min(slides.length - 1, idx));
+        slides[idx].scrollIntoView({ behavior: 'smooth' });
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+            e.preventDefault(); goTo(findCurrent() + 1);
+        } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+            e.preventDefault(); goTo(findCurrent() - 1);
+        } else if (e.key === 'Home') {
+            e.preventDefault(); goTo(0);
+        } else if (e.key === 'End') {
+            e.preventDefault(); goTo(slides.length - 1);
+        } else if (e.key === 'f' || e.key === 'F') {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+            else document.exitFullscreen();
+        }
+    });
+
+    // Touch swipe
+    let touchStartY = 0;
+    document.addEventListener('touchstart', (e) => {
+        touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+    document.addEventListener('touchend', (e) => {
+        const dy = e.changedTouches[0].clientY - touchStartY;
+        if (Math.abs(dy) > 60) {
+            if (dy < 0) goTo(findCurrent() + 1);
+            else goTo(findCurrent() - 1);
+        }
+    }, { passive: true });
+})();
+</script>
+</body>
+</html>
