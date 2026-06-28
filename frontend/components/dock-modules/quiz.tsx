@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft, Trash2, Share2, Copy, Link as LinkIcon, CircleAlert } from "lucide-react";
+import { Loader2, CheckCircle, XCircle, Download, Database, Layers, History, Eye, ArrowLeft, ArrowRight, Trash2, Share2, Copy, Link as LinkIcon, CircleAlert } from "lucide-react";
 import {
     Dialog,
     DialogContent,
@@ -50,6 +50,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     const { sessionId } = useDockContext();
 
     const [mode, setMode] = useState<"folder" | "pages">("folder");
+    const [quizSerial] = useState(() => String(Math.floor(1000 + Math.random() * 9000)));
 
     const [folders, setFolders] = useState<FolderInfo[]>([]);
     const [loadingFolders, setLoadingFolders] = useState(false);
@@ -309,6 +310,10 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     const handleViewPastQuiz = useCallback(async (quizUuid: string) => {
         try {
             const quiz = await quizApi.getQuiz(quizUuid, true);
+            if (quiz.status === "failed") {
+                setError(quiz.error_message || "题目生成失败");
+                return;
+            }
             const answers = new Map<string, string | string[]>();
             for (const q of quiz.questions) {
                 if (q.correct_answer !== undefined) {
@@ -328,6 +333,10 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     const handleRetakeQuiz = useCallback(async (quizUuid: string) => {
         try {
             const quiz = await quizApi.getQuiz(quizUuid, false);
+            if (quiz.status === "failed") {
+                setError(quiz.error_message || "题目生成失败，无法重做");
+                return;
+            }
             setReviewCorrectAnswers(new Map());
             setCurrentQuiz(quiz);
             setIsReviewMode(false);
@@ -458,20 +467,17 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
         if (!shareStatus?.share_token) return;
         const url = shareUrl(shareStatus.share_token);
         try {
-            if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(url);
-            } else {
-                const ta = document.createElement("textarea");
-                ta.value = url;
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand("copy");
-                document.body.removeChild(ta);
+            if (!navigator.clipboard?.writeText) {
+                throw new Error("clipboard API unavailable");
             }
+            await navigator.clipboard.writeText(url);
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch {
-            setShareError("复制失败，请手动复制链接");
+            // Don't fall back to deprecated document.execCommand("copy") —
+            // surface a clear hint so the user can copy manually from the
+            // readonly input rendered in the share ticket.
+            setShareError("复制失败，请手动选中链接后 Ctrl+C 复制");
         }
     }, [shareStatus, shareUrl]);
 
@@ -504,183 +510,220 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
             )}
 
             {!currentQuiz ? (
-                <div>
-                    <div className="quiz-seg" data-mode={mode}>
-                        <span className="quiz-seg__indicator" />
-                        <button
-                            className="quiz-seg__btn"
-                            data-active={mode === "folder"}
-                            onClick={() => setMode("folder")}
-                        >
-                            <Database size={14} />
-                            按收藏夹
-                        </button>
-                        <button
-                            className="quiz-seg__btn"
-                            data-active={mode === "pages"}
-                            onClick={() => setMode("pages")}
-                        >
-                            <Layers size={14} />
-                            按分P
-                        </button>
-                    </div>
+                <div className="quiz-paper">
+                    <header className="quiz-paper__head">
+                        <div className="quiz-paper__meta-strip">
+                            <span className="quiz-paper__serial">№ {quizSerial}</span>
+                            <span className="quiz-paper__rule" />
+                            <span className="quiz-paper__kicker">QUIZ · COMPOSE</span>
+                        </div>
+                        <h3 className="quiz-paper__title">出题</h3>
+                        <p className="quiz-paper__sub">
+                            选取知识库范围，AI 拟一套练习卷
+                        </p>
+                    </header>
 
-                    {mode === "folder" && (
-                        <>
-                            <div className="quiz-hint">
-                                <span className="quiz-hint__text">选择已入库的收藏夹出题</span>
-                            </div>
+                    <section className="quiz-block">
+                        <div className="quiz-block__label">
+                            <span className="quiz-block__num">I</span>
+                            <span className="quiz-block__en">SCOPE</span>
+                            <span className="quiz-block__cn">范围</span>
+                            <span className="quiz-block__count">
+                                {mode === "folder"
+                                    ? `${selectedFolderCount} 项`
+                                    : `${selectedPageCount}/${totalPageCount} P`}
+                            </span>
+                        </div>
 
-                            {loadingFolders ? (
-                                <div className="quiz-loading">
-                                    <Loader2 size={16} className="animate-spin" />
-                                    加载收藏夹...
-                                </div>
-                            ) : folders.length === 0 ? (
-                                <div className="quiz-empty">
-                                    暂无收藏夹，请先在收藏夹面板中同步数据
-                                </div>
-                            ) : (
-                                <div className="quiz-list">
-                                    {folders.map((f) => (
-                                        <label
-                                            key={f.media_id}
-                                            className="quiz-list__item"
-                                            data-selected={selectedFolderIds.has(f.media_id)}
-                                        >
-                                            <div className="quiz-list__main">
+                        <div className="quiz-tabs" data-mode={mode}>
+                            <button
+                                className="quiz-tabs__btn"
+                                data-active={mode === "folder"}
+                                onClick={() => setMode("folder")}
+                            >
+                                按收藏夹
+                            </button>
+                            <button
+                                className="quiz-tabs__btn"
+                                data-active={mode === "pages"}
+                                onClick={() => setMode("pages")}
+                            >
+                                按分P
+                            </button>
+                        </div>
+
+                        {mode === "folder" && (
+                            <>
+                                {loadingFolders ? (
+                                    <div className="quiz-loading">
+                                        <Loader2 size={16} className="animate-spin" />
+                                        加载收藏夹...
+                                    </div>
+                                ) : folders.length === 0 ? (
+                                    <div className="quiz-empty">
+                                        暂无收藏夹，请先同步数据
+                                    </div>
+                                ) : (
+                                    <div className="quiz-table">
+                                        {folders.map((f, i) => (
+                                            <label
+                                                key={f.media_id}
+                                                className="quiz-row"
+                                                data-selected={selectedFolderIds.has(f.media_id)}
+                                            >
+                                                <span className="quiz-row__idx">
+                                                    {String(i + 1).padStart(2, "0")}
+                                                </span>
                                                 <input
                                                     type="checkbox"
-                                                    className="quiz-list__check"
+                                                    className="quiz-row__check"
                                                     checked={selectedFolderIds.has(f.media_id)}
                                                     onChange={() => toggleFolder(f.media_id)}
                                                 />
-                                                <div>
-                                                    <div className="quiz-list__title">{f.title}</div>
-                                                    <div className="quiz-list__sub">{f.media_count} 个视频</div>
+                                                <div className="quiz-row__main">
+                                                    <div className="quiz-row__title">{f.title}</div>
+                                                    <div className="quiz-row__sub">{f.media_count} 视频</div>
                                                 </div>
-                                            </div>
-                                            <span
-                                                className="quiz-list__badge"
-                                                data-tone={f.indexed_count > 0 ? "success" : "muted"}
-                                            >
-                                                <Database size={10} />
-                                                {f.indexed_count > 0 ? `${f.indexed_count} 已入库` : "未入库"}
-                                            </span>
-                                        </label>
-                                    ))}
-                                </div>
-                            )}
-
-                            <GenerateButton
-                                generating={generating}
-                                disabled={selectedFolderCount === 0}
-                                onClick={handleGenerate}
-                                label={`生成题目 · ${selectedFolderCount} 个收藏夹`}
-                            />
-
-                            {!hasIndexedFolders && folders.length > 0 && !loadingFolders && (
-                                <p style={{ fontSize: "12px", color: "var(--warning)", textAlign: "center", marginTop: "6px" }}>
-                                    提示：需要先在收藏夹面板中将视频入库，才能生成题目
-                                </p>
-                            )}
-                        </>
-                    )}
-
-                    {mode === "pages" && (
-                        <>
-                            <div className="quiz-hint">
-                                <span className="quiz-hint__text">选择已向量化的分P出题</span>
-                                {totalPageCount > 0 && (
-                                    <button className="quiz-hint__action" onClick={toggleAllPages}>
-                                        {allPagesSelected ? "取消全选" : "全选"}
-                                    </button>
+                                                <span
+                                                    className="quiz-row__badge"
+                                                    data-tone={f.indexed_count > 0 ? "ok" : "no"}
+                                                >
+                                                    {f.indexed_count > 0 ? `${f.indexed_count} 入库` : "未入库"}
+                                                </span>
+                                            </label>
+                                        ))}
+                                    </div>
                                 )}
-                            </div>
 
-                            {loadingPages ? (
-                                <div className="quiz-loading">
-                                    <Loader2 size={16} className="animate-spin" />
-                                    加载分P列表...
-                                </div>
-                            ) : vectorizedPages.length === 0 ? (
-                                <div className="quiz-empty">
-                                    暂无已入库的分P，请先在收藏夹面板中同步入库
-                                </div>
-                            ) : (
-                                <div className="quiz-list" style={{ maxHeight: "300px" }}>
-                                    {vectorizedPages.map((p) => {
-                                        const key = `${p.bvid}:${p.page_index}`;
-                                        const isSelected = selectedPageKeys.has(key);
-                                        return (
-                                            <label
-                                                key={key}
-                                                className="quiz-list__item"
-                                                data-selected={isSelected}
-                                            >
-                                                <div className="quiz-list__main">
+                                {!hasIndexedFolders && folders.length > 0 && !loadingFolders && (
+                                    <p className="quiz-block__hint" data-tone="warn">
+                                        <CircleAlert size={12} />
+                                        需先将收藏夹入库，方可出题
+                                    </p>
+                                )}
+                            </>
+                        )}
+
+                        {mode === "pages" && (
+                            <>
+                                {totalPageCount > 0 && (
+                                    <div className="quiz-table__bar">
+                                        <span className="quiz-table__bar-text">已向量化分P</span>
+                                        <button className="quiz-table__bar-action" onClick={toggleAllPages}>
+                                            {allPagesSelected ? "取消全选" : "全选"}
+                                        </button>
+                                    </div>
+                                )}
+
+                                {loadingPages ? (
+                                    <div className="quiz-loading">
+                                        <Loader2 size={16} className="animate-spin" />
+                                        加载分P列表...
+                                    </div>
+                                ) : vectorizedPages.length === 0 ? (
+                                    <div className="quiz-empty">
+                                        暂无已入库分P
+                                    </div>
+                                ) : (
+                                    <div className="quiz-table" style={{ maxHeight: "300px" }}>
+                                        {vectorizedPages.map((p, i) => {
+                                            const key = `${p.bvid}:${p.page_index}`;
+                                            const isSelected = selectedPageKeys.has(key);
+                                            return (
+                                                <label
+                                                    key={key}
+                                                    className="quiz-row"
+                                                    data-selected={isSelected}
+                                                >
+                                                    <span className="quiz-row__idx">
+                                                        {String(i + 1).padStart(2, "0")}
+                                                    </span>
                                                     <input
                                                         type="checkbox"
-                                                        className="quiz-list__check"
+                                                        className="quiz-row__check"
                                                         checked={isSelected}
                                                         onChange={() => togglePage(p.bvid, p.page_index)}
                                                     />
-                                                    <div>
-                                                        <div className="quiz-list__title">
+                                                    <div className="quiz-row__main">
+                                                        <div className="quiz-row__title">
                                                             {p.page_title || `P${p.page_index + 1}`}
                                                         </div>
-                                                        <div className="quiz-list__sub">
+                                                        <div className="quiz-row__sub">
                                                             {p.video_title || p.bvid}
                                                         </div>
                                                     </div>
-                                                </div>
-                                                <span className="quiz-list__badge" data-tone="success">
-                                                    <Database size={10} />
-                                                    {p.vector_chunk_count} 块
-                                                </span>
-                                            </label>
-                                        );
-                                    })}
-                                </div>
-                            )}
+                                                    <span className="quiz-row__badge" data-tone="ok">
+                                                        {p.vector_chunk_count} 块
+                                                    </span>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </section>
 
-                            <GenerateButton
-                                generating={generating}
-                                disabled={selectedPageCount === 0}
-                                onClick={handleGenerate}
-                                label={`生成题目 · ${selectedPageCount} 个分P`}
-                            />
-                        </>
-                    )}
-
-                    <div className="quiz-config">
-                        <div className="quiz-config__field">
-                            <label className="quiz-config__label">题目数量</label>
-                            <input
-                                type="number"
-                                min={1}
-                                max={50}
-                                value={questionCount}
-                                onChange={(e) => setQuestionCount(Number(e.target.value))}
-                                className="quiz-config__input"
-                            />
+                    <section className="quiz-block">
+                        <div className="quiz-block__label">
+                            <span className="quiz-block__num">II</span>
+                            <span className="quiz-block__en">SPEC</span>
+                            <span className="quiz-block__cn">规格</span>
                         </div>
-                        <div className="quiz-config__field">
-                            <label className="quiz-config__label">难度</label>
-                            <select
-                                value={difficulty}
-                                onChange={(e) => setDifficulty(e.target.value)}
-                                className="quiz-config__select"
-                            >
-                                <option value="easy">简单</option>
-                                <option value="medium">中等</option>
-                                <option value="hard">困难</option>
-                            </select>
+                        <div className="quiz-spec">
+                            <label className="quiz-spec__field">
+                                <span className="quiz-spec__label">题数</span>
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={50}
+                                    value={questionCount}
+                                    onChange={(e) => setQuestionCount(Number(e.target.value))}
+                                    className="quiz-spec__input"
+                                />
+                            </label>
+                            <label className="quiz-spec__field">
+                                <span className="quiz-spec__label">难度</span>
+                                <select
+                                    value={difficulty}
+                                    onChange={(e) => setDifficulty(e.target.value)}
+                                    className="quiz-spec__select"
+                                >
+                                    <option value="easy">简单</option>
+                                    <option value="medium">中等</option>
+                                    <option value="hard">困难</option>
+                                </select>
+                            </label>
                         </div>
-                    </div>
+                    </section>
 
-                    <div className="quiz-section">
-                        <p className="quiz-section__title">导出训练数据</p>
+                    <button
+                        className="quiz-cta"
+                        disabled={generating || (mode === "folder" ? selectedFolderCount === 0 : selectedPageCount === 0)}
+                        onClick={handleGenerate}
+                    >
+                        {generating ? (
+                            <>
+                                <Loader2 size={16} className="animate-spin" />
+                                <span>AI 拟卷中</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>生成题目</span>
+                                <span className="quiz-cta__count">
+                                    {mode === "folder" ? selectedFolderCount : selectedPageCount}
+                                </span>
+                                <ArrowRight size={16} />
+                            </>
+                        )}
+                    </button>
+
+                    <section className="quiz-block">
+                        <div className="quiz-block__label">
+                            <span className="quiz-block__num">III</span>
+                            <span className="quiz-block__en">EXPORT</span>
+                            <span className="quiz-block__cn">导出</span>
+                        </div>
                         <div className="quiz-export">
                             {(["jsonl", "csv", "sft"] as const).map((fmt) => (
                                 <button
@@ -688,16 +731,16 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                     className="quiz-export__btn"
                                     onClick={() => handleExport(fmt)}
                                 >
-                                    <Download size={13} />
+                                    <Download size={12} />
                                     {fmt}
                                 </button>
                             ))}
                         </div>
-                    </div>
+                    </section>
 
-                    <div className="quiz-section">
+                    <section className="quiz-block">
                         <button
-                            className="quiz-section__toggle"
+                            className="quiz-block__label quiz-block__label--btn"
                             data-open={showHistory}
                             onClick={() => {
                                 const willShow = !showHistory;
@@ -705,9 +748,10 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                 if (willShow) fetchHistory();
                             }}
                         >
-                            <History size={13} />
-                            题目历史
-                            <span className="quiz-section__caret">▶</span>
+                            <span className="quiz-block__num">IV</span>
+                            <span className="quiz-block__en">ARCHIVE</span>
+                            <span className="quiz-block__cn">历史</span>
+                            <span className="quiz-block__caret" data-open={showHistory}>▸</span>
                         </button>
 
                         {showHistory && (
@@ -717,70 +761,75 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                     加载历史...
                                 </div>
                             ) : historyItems.length === 0 ? (
-                                <div className="quiz-empty">暂无历史记录</div>
+                                <div className="quiz-empty">暂无历史</div>
                             ) : (
-                                <div className="quiz-history">
-                                    {historyItems.map((item) => (
-                                        <div key={item.quiz_uuid} className="quiz-history__item">
-                                            <div className="quiz-history__info">
-                                                <div className="quiz-history__title">{item.title}</div>
-                                                <div className="quiz-history__meta">
-                                                    <span>{item.question_count ?? item.total_question_count} 题</span>
-                                                    {item.submission_uuid ? (
-                                                        <>
-                                                            <span className="quiz-history__meta-dot" />
-                                                            <span className="quiz-history__score" data-tone={item.passed ? "pass" : "fail"}>
-                                                                {item.score != null ? `${item.score}分` : item.passed ? "通过" : "未通过"}
-                                                            </span>
-                                                        </>
+                                <div className="quiz-archive">
+                                    {historyItems.map((item, i) => (
+                                        <div
+                                            key={item.quiz_uuid}
+                                            className="quiz-archive__item"
+                                            title={item.status === "failed" ? item.error_message || "题目生成失败" : undefined}
+                                        >
+                                            <span className="quiz-archive__idx">
+                                                {String(i + 1).padStart(2, "0")}
+                                            </span>
+                                            <div className="quiz-archive__body">
+                                                <div className="quiz-archive__title">{item.title}</div>
+                                                <div className="quiz-archive__meta">
+                                                    <span className="quiz-archive__q">
+                                                        {item.question_count ?? item.total_question_count} 题
+                                                    </span>
+                                                    {item.status === "failed" ? (
+                                                        <span className="quiz-archive__pill" data-tone="fail">失败</span>
+                                                    ) : item.submission_uuid ? (
+                                                        <span className="quiz-archive__pill" data-tone={item.passed ? "pass" : "fail"}>
+                                                            {item.score != null ? `${item.score}分` : item.passed ? "通过" : "未通过"}
+                                                        </span>
                                                     ) : (
-                                                        <>
-                                                            <span className="quiz-history__meta-dot" />
-                                                            <span className="quiz-history__score" data-tone="idle">未作答</span>
-                                                        </>
+                                                        <span className="quiz-archive__pill" data-tone="idle">未作答</span>
                                                     )}
                                                     {item.created_at && (
-                                                        <>
-                                                            <span className="quiz-history__meta-dot" />
-                                                            <span>{new Date(item.created_at).toLocaleDateString()}</span>
-                                                        </>
+                                                        <span className="quiz-archive__date">
+                                                            {new Date(item.created_at).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}
+                                                        </span>
                                                     )}
                                                 </div>
                                             </div>
-                                            <div className="quiz-history__actions">
+                                            <div className="quiz-archive__actions">
                                                 <button
-                                                    className="quiz-history__btn"
+                                                    className="quiz-archive__btn"
                                                     data-variant="primary"
                                                     onClick={() => handleRetakeQuiz(item.quiz_uuid)}
                                                 >
                                                     重做
                                                 </button>
                                                 <button
-                                                    className="quiz-history__btn"
+                                                    className="quiz-archive__btn"
                                                     onClick={() => handleViewPastQuiz(item.quiz_uuid)}
+                                                    title="查看"
                                                 >
                                                     <Eye size={12} />
-                                                    查看
                                                 </button>
                                                 <button
-                                                    className="quiz-history__btn"
+                                                    className="quiz-archive__btn"
                                                     onClick={() => handleOpenShare(item.quiz_uuid)}
                                                     title="分享"
                                                 >
                                                     <Share2 size={12} />
-                                                    分享
                                                 </button>
                                                 <button
-                                                    className="quiz-history__btn"
+                                                    className="quiz-archive__btn"
                                                     onClick={() => handleDownloadQuiz(item.quiz_uuid, item.title)}
+                                                    title="下载"
                                                 >
                                                     <Download size={12} />
                                                 </button>
                                                 <button
-                                                    className="quiz-history__btn"
+                                                    className="quiz-archive__btn"
                                                     data-variant="danger"
                                                     onClick={() => handleDeleteQuiz(item)}
                                                     disabled={deletingQuizUuid === item.quiz_uuid}
+                                                    title="删除"
                                                 >
                                                     {deletingQuizUuid === item.quiz_uuid ? (
                                                         <Loader2 size={12} className="animate-spin" />
@@ -794,7 +843,7 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
                                 </div>
                             )
                         )}
-                    </div>
+                    </section>
                 <ShareModal
                     open={!!shareModalUuid}
                     loading={shareLoading}
@@ -908,38 +957,6 @@ export default function QuizPanel({ isOpen }: DockPanelProps) {
     );
 }
 
-/* ────── Generate Button ────── */
-
-function GenerateButton({
-    generating,
-    disabled,
-    onClick,
-    label,
-}: {
-    generating: boolean;
-    disabled: boolean;
-    onClick: () => void;
-    label: string;
-}) {
-    return (
-        <button
-            className="quiz-cta"
-            disabled={generating || disabled}
-            onClick={onClick}
-            style={{ marginBottom: "8px" }}
-        >
-            {generating ? (
-                <span className="quiz-cta__inner">
-                    <Loader2 size={16} className="animate-spin" />
-                    AI 正在出题...
-                </span>
-            ) : (
-                label
-            )}
-        </button>
-    );
-}
-
 /* ────── Question Card ────── */
 
 function QuizQuestionCard({
@@ -960,6 +977,7 @@ function QuizQuestionCard({
     const isMulti = question.question_type === "multi_choice";
     const showResult = !!result;
     const isCorrect = result?.is_correct;
+    const isPending = showResult && isCorrect === null;
 
     const cardState = !showResult
         ? "default"
@@ -967,10 +985,10 @@ function QuizQuestionCard({
         ? "correct"
         : isCorrect === false
         ? "wrong"
-        : "partial";
+        : "pending";
 
     const feedbackTone =
-        isCorrect === true ? "correct" : isCorrect === false ? "wrong" : "partial";
+        isCorrect === true ? "correct" : isCorrect === false ? "wrong" : "pending";
 
     const correctKeys = ((): string[] => {
         if (!showResult) return [];
@@ -1021,7 +1039,12 @@ function QuizQuestionCard({
             {question.options && question.options.length > 0 && (
                 <div className="quiz-options">
                     {question.options.map((opt, i) => {
-                        const optKey = opt[0];
+                        // Stable label derived from position (A, B, C, ...).
+                        // Backend normalize outputs options as "A. text" / "B. text";
+                        // we no longer rely on opt[0] so emoji / non-latin leading
+                        // chars don't break selection matching.
+                        const optKey = String.fromCharCode(65 + i);
+                        const optLabel = opt.replace(/^[A-Z][\.\)、\s]+/, "");
                         const isSelected = Array.isArray(userAnswer)
                             ? userAnswer.includes(optKey)
                             : userAnswer === optKey;
@@ -1036,7 +1059,7 @@ function QuizQuestionCard({
 
                         return (
                             <label
-                                key={i}
+                                key={optKey}
                                 className="quiz-option"
                                 data-selected={optState === "selected"}
                                 data-state={optState === "correct" || optState === "wrong" ? optState : undefined}
@@ -1060,7 +1083,7 @@ function QuizQuestionCard({
                                     }}
                                 />
                                 <span className="quiz-option__badge">{optKey}</span>
-                                <span className="quiz-option__text">{opt}</span>
+                                <span className="quiz-option__text">{optLabel}</span>
                             </label>
                         );
                     })}
@@ -1090,15 +1113,17 @@ function QuizQuestionCard({
                             </>
                         ) : (
                             <>
-                                <span className="quiz-feedback__tag">参考答案</span>
-                                <span className="quiz-feedback__answer">{formatCorrectAnswer()}</span>
+                                <span className="quiz-feedback__tag">待人工评分</span>
+                                <span className="quiz-feedback__note">
+                                    本题（{TYPE_LABELS[question.question_type] || question.question_type}）由 LLM 评分失败，已转入人工复核，暂不计入总分。
+                                </span>
                             </>
                         )}
-                        {result?.grading_note && (
+                        {result?.grading_note && isCorrect !== null && (
                             <span className="quiz-feedback__note">{result.grading_note}</span>
                         )}
                     </div>
-                    {question.explanation && (
+                    {question.explanation && isCorrect !== null && (
                         <div className="quiz-feedback__explanation">
                             <span className="quiz-feedback__explanation-tag">解析</span>
                             {question.explanation}
@@ -1119,17 +1144,20 @@ function ResultScorecard({
     result: QuizSubmissionResult;
     onRetry: () => void;
 }) {
-    const passed = result.passed === true;
+    const passed = result.passed;
+    const isPending = passed === null;
     const score = result.score ?? 0;
     const total = result.total_count || 1;
     const correct = result.correct_count;
     const ratio = Math.max(0, Math.min(1, score / 100));
     const RING_C = 2 * Math.PI * 52; // radius 52
 
+    const stateAttr = isPending ? "pending" : passed === true ? "true" : "false";
+
     return (
-        <div className="quiz-result" data-passed={String(passed)}>
+        <div className="quiz-result" data-passed={stateAttr}>
             <span className="quiz-result__stamp">
-                {passed ? "Passed" : "Failed"}
+                {isPending ? "待评分" : passed ? "Passed" : "Failed"}
             </span>
 
             <div className="quiz-result__ring">
@@ -1151,11 +1179,16 @@ function ResultScorecard({
             </div>
 
             <p className="quiz-result__verdict">
-                {passed ? "考核通过" : "未通过"}
+                {isPending
+                    ? "部分题目待人工评分"
+                    : passed
+                    ? "考核通过"
+                    : "未通过"}
             </p>
             <p className="quiz-result__detail">
                 正确 <strong>{correct}</strong> / {total} · 得分率{" "}
                 <strong>{Math.round(ratio * 100)}%</strong>
+                {isPending && <span className="quiz-result__pending-hint">（essay 待评分，最终成绩以人工复核为准）</span>}
             </p>
 
             <div className="quiz-result__actions">
@@ -1176,7 +1209,8 @@ async function pollUntilReady(
     let delay = 2000;
     for (let i = 0; i < maxRetries; i++) {
         const quiz = await quizApi.getQuiz(quizUuid);
-        if (quiz.status === "done") return quiz;
+        // done = full set ready; partial = some questions ready, still answerable
+        if (quiz.status === "done" || quiz.status === "partial") return quiz;
         if (quiz.status === "failed") throw new Error("题目生成失败");
         await new Promise((resolve) => setTimeout(resolve, delay));
         delay = Math.min(delay * 2, 16000);

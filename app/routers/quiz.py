@@ -3,6 +3,7 @@ Quiz router — question generation, submission, grading, history, export.
 """
 
 import json
+import re
 
 from datetime import datetime
 from typing import Any, Optional
@@ -13,6 +14,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, get_db_context
+from app.response.quiz import QuizGeneratePage, QuizSubmissionRequest
 from app.routers.auth import get_current_uid
 from app.services.quiz_delete import QuizDeleteError, QuizDeleteService
 from app.services.quiz_generator import (
@@ -26,6 +28,19 @@ from app.services.quiz_export import QuizDataExportService
 from app.services.quiz_share_service import get_quiz_share_service
 
 router = APIRouter(prefix="/quiz", tags=["quiz"])
+
+
+_FOLDER_IDS_PATTERN = re.compile(r"^\d+(,\d+)*$")
+_UUID_PATTERN = re.compile(r"^[a-f0-9-]{36}$")
+
+
+def _parse_folder_ids(folder_ids: Optional[str]) -> list[int]:
+    """Parse and validate comma-separated folder IDs query parameter."""
+    if not folder_ids:
+        return []
+    if not _FOLDER_IDS_PATTERN.match(folder_ids):
+        raise HTTPException(400, "folder_ids 格式非法")
+    return [int(x.strip()) for x in folder_ids.split(",") if x.strip()]
 
 
 def _parse_json_field(value: Any) -> Any:
@@ -48,7 +63,7 @@ def _parse_json_field(value: Any) -> Any:
 @router.post("/generate")
 async def generate_quiz(
     folder_ids: Optional[str] = Query(None, description="comma-separated folder IDs"),
-    pages: Optional[list[dict]] = Body(None, description="page list"),
+    pages: Optional[list[QuizGeneratePage]] = Body(None, description="page list"),
     question_count: int = Query(10, ge=1, le=50),
     difficulty: str = Query("medium", pattern="^(easy|medium|hard)$"),
     title: Optional[str] = Query(None),
@@ -59,30 +74,51 @@ async def generate_quiz(
 
     Frontend should poll GET /quiz/{quiz_uuid} until status becomes "done" or "failed".
     """
-    fids = (
-        [int(x.strip()) for x in folder_ids.split(",") if x.strip()]
-        if folder_ids
-        else []
-    )
+    fids = _parse_folder_ids(folder_ids)
     if not fids and not pages:
         raise HTTPException(400, "请提供 folder_ids 或 pages")
+
+    # Preflight: verify enough retrievable chunks exist before creating the
+    # quiz row, so the user gets an immediate 400 instead of polling for 30s
+    # only to see a generation failure.
+    from app.services.quiz_preflight import preflight_check
+
+    preflight = await preflight_check(
+        folder_ids=fids if fids else None,
+        pages=[p.model_dump() for p in pages] if pages else None,
+        question_count=question_count,
+    )
+    if not preflight.ok:
+        raise HTTPException(400, preflight.reason)
+
+    # Per-uid daily quota — fail-open if Redis is down.
+    from app.services.llm.quiz_quota import QuizQuotaExceeded, check_and_consume
+
+    try:
+        await check_and_consume(uid, "generate")
+    except QuizQuotaExceeded as e:
+        raise HTTPException(429, f"今日出题次数已达上限（{e.limit} 次/天）")
+
+    pages_payload = [p.model_dump() for p in pages] if pages else None
 
     service = QuizGeneratorService()
     quiz_uuid = await service.create_quiz_set(
         uid=uid,
         folder_ids=fids if fids else None,
-        pages=pages,
+        pages=pages_payload,
         question_count=question_count,
         difficulty=difficulty,
         title=title,
     )
 
-    background_tasks.add_task(
-        _run_quiz_generation,
+    from app.services.quiz_queue import enqueue_generation
+
+    enqueue_generation(
+        background_tasks,
         quiz_uuid=quiz_uuid,
         uid=uid,
         folder_ids=fids if fids else None,
-        pages=pages,
+        pages=pages_payload,
         question_count=question_count,
         difficulty=difficulty,
         title=title,
@@ -94,58 +130,35 @@ async def generate_quiz(
     }
 
 
-async def _run_quiz_generation(
-    quiz_uuid: str,
-    uid: int,
-    folder_ids: Optional[list[int]],
-    pages: Optional[list[dict]],
-    question_count: int,
-    difficulty: str,
-    title: Optional[str] = None,
-):
-    """Background task: generate quiz via LLM and save to MongoDB."""
-    try:
-        service = QuizGeneratorService()
-        await service.run_generation(
-            quiz_uuid=quiz_uuid,
-            uid=uid,
-            folder_ids=folder_ids,
-            pages=pages,
-            question_count=question_count,
-            difficulty=difficulty,
-            title=title,
-        )
-    except Exception as e:
-        logger.error(f"[QUIZ] background generation failed quiz_uuid={quiz_uuid}: {e}")
-
-
 @router.post("/submit")
-async def submit_quiz(body: dict, uid: int = Depends(get_current_uid)):
+async def submit_quiz(
+    body: QuizSubmissionRequest, uid: int = Depends(get_current_uid)
+):
     """Submit answers and grade immediately."""
-    quiz_uuid = body.get("quiz_uuid")
-    answers = body.get("answers", [])
-    time_spent = body.get("time_spent_seconds")
-
-    if not quiz_uuid:
-        raise HTTPException(400, "缺少 quiz_uuid")
-
-    if not answers:
+    if not body.answers:
         raise HTTPException(400, "缺少 answers")
+
+    from app.services.llm.quiz_quota import QuizQuotaExceeded, check_and_consume
+
+    try:
+        await check_and_consume(uid, "grade")
+    except QuizQuotaExceeded as e:
+        raise HTTPException(429, f"今日批改次数已达上限（{e.limit} 次/天）")
 
     service = QuizGraderService()
     try:
         result = await service.submit_and_grade(
-            quiz_uuid=quiz_uuid,
+            quiz_uuid=body.quiz_uuid,
             uid=uid,
-            answers=answers,
-            time_spent_seconds=time_spent,
+            answers=[a.model_dump() for a in body.answers],
+            time_spent_seconds=body.time_spent_seconds,
         )
         return result
     except ValueError as e:
         raise HTTPException(400, str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("[QUIZ] submit failed")
-        raise HTTPException(500, f"批改失败: {e}")
+        raise HTTPException(500, "批改服务异常，请稍后重试")
 
 
 # ── GET routes (specific paths BEFORE parameterized) ────────────
@@ -159,14 +172,16 @@ async def get_history(
 ):
     """Get quiz history for the current user.
 
-    Cross-store consistency: if a quiz_set has status='done' but MongoDB
-    has 0 questions, mark it as failed and exclude from results.
+    Cross-store consistency: stale ``generating`` quizzes past the timeout
+    are marked failed, and ``done`` quizzes with no MongoDB questions are
+    marked lost, before listing.
     """
+    from app.services.quiz_lifecycle import refresh_stale_quiz_states
     from app.repository.quiz_repository import get_quiz_repository
 
     repo = get_quiz_repository()
     async with get_db_context() as db:
-        await repo.refresh_stale_quiz_sets(uid, db)
+        await refresh_stale_quiz_states(uid, db)
         total = await repo.count_history(uid, db)
         submissions = await repo.list_history(uid, page, page_size, db)
 
@@ -186,11 +201,7 @@ async def get_wrong_answers(
     uid: int = Depends(get_current_uid),
 ):
     """Get wrong-answer notebook for the current user."""
-    fids = (
-        [int(x.strip()) for x in folder_ids.split(",") if x.strip()]
-        if folder_ids
-        else None
-    )
+    fids = _parse_folder_ids(folder_ids) or None
 
     from app.repository.quiz_repository import get_quiz_repository
 
@@ -208,11 +219,7 @@ async def export_quiz_data(
     uid: int = Depends(get_current_uid),
 ):
     """Export quiz training data as a streaming response."""
-    fids = (
-        [int(x.strip()) for x in folder_ids.split(",") if x.strip()]
-        if folder_ids
-        else None
-    )
+    fids = _parse_folder_ids(folder_ids) or None
 
     service = QuizDataExportService()
 
@@ -331,6 +338,15 @@ async def get_quiz(
     uid: int = Depends(get_current_uid),
 ):
     """获取题目集（不含答案用于答题，include_answers=true 含答案用于下载/回看）"""
+    # Refresh stale states (timeout / lost) before reading — best-effort.
+    try:
+        from app.services.quiz_lifecycle import refresh_on_read
+
+        async with get_db_context() as db:
+            await refresh_on_read(quiz_uuid, uid, db)
+    except Exception as e:
+        logger.warning(f"[QUIZ] refresh_on_read skipped quiz_uuid={quiz_uuid}: {e}")
+
     quiz_set = await get_quiz_set(quiz_uuid)
     if not quiz_set or quiz_set.uid != uid or quiz_set.status == "deleting":
         raise HTTPException(404, "题目集不存在")
@@ -341,16 +357,17 @@ async def get_quiz(
         else get_quiz_questions(quiz_uuid)
     )
 
-    # Only flag as lost if status is "done" but MongoDB is empty.
+    # Only flag as lost if status is "done"/"partial" but MongoDB is empty.
     # "generating" means the background LLM task hasn't finished yet — that's expected.
     if (
-        quiz_set.status == "done"
+        quiz_set.status in ("done", "partial")
         and quiz_set.question_count > 0
         and len(questions) == 0
     ):
         logger.warning(
-            f"[QUIZ] quiz_uuid={quiz_uuid} has status=done question_count={quiz_set.question_count} "
-            f"but MongoDB returned 0 questions — marking quiz as failed (data lost after migration?)"
+            f"[QUIZ] quiz_uuid={quiz_uuid} has status={quiz_set.status} "
+            f"question_count={quiz_set.question_count} but MongoDB returned 0 questions "
+            f"— marking quiz as failed (data lost after migration?)"
         )
         from app.repository.quiz_repository import get_quiz_repository
 
@@ -362,6 +379,8 @@ async def get_quiz(
         "quiz_uuid": quiz_set.quiz_uuid,
         "title": quiz_set.title,
         "status": quiz_set.status,
+        "partial": quiz_set.status == "partial",
+        "error_message": quiz_set.error_message,
         "question_count": quiz_set.question_count,
         "type_distribution": quiz_set.type_distribution,
         "difficulty": quiz_set.difficulty,

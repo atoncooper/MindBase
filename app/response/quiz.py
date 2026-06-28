@@ -15,10 +15,18 @@ class QuestionType(str, Enum):
     ESSAY = "essay"
 
 
+class QuizGeneratePage(BaseModel):
+    """A single page reference for page-scoped quiz generation."""
+    bvid: str
+    cid: Optional[int] = None
+    page_index: int = 0
+    page_title: Optional[str] = None
+
+
 class QuizGenerateRequest(BaseModel):
     """POST /quiz/generate request."""
     folder_ids: Optional[list[int]] = None
-    pages: Optional[list[dict]] = None
+    pages: Optional[list[QuizGeneratePage]] = None
     question_count: int = 10
     type_distribution: Optional[dict[str, int]] = None
     difficulty: str = "medium"  # easy | medium | hard

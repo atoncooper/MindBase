@@ -1,0 +1,8 @@
+# E2E testing dependencies for MindBase (Playwright + Pytest)
+playwright>=1.44.0
+pytest>=8.0.0
+pytest-playwright>=0.5.0
+pytest-html>=4.1.1
+pytest-asyncio>=0.23.0
+allure-pytest>=2.13.5
+python-dotenv>=1.0.0

@@ -26,7 +26,6 @@ interface SharedQuizViewProps {
 const TYPE_LABEL: Record<string, string> = {
   single_choice: "单选题",
   multi_choice: "多选题",
-  true_false: "判断题",
   short_answer: "简答题",
   essay: "论述题",
 };

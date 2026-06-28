@@ -1,0 +1,14 @@
+{
+  "run_at": "2026-06-27T13:09:23.335257+00:00",
+  "metrics": {
+    "rounds": 3,
+    "generation_success_rate": 1.0,
+    "schema_parse_rate": 1.0,
+    "traceability_rate": 0.5,
+    "type_distribution_match_rate": 1.0,
+    "grading_consistency_max_variance": 0.0,
+    "total_questions_generated": 6,
+    "total_tokens": 0,
+    "avg_token_cost": 0
+  }
+}

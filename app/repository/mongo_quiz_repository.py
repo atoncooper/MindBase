@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timezone
 
 from loguru import logger
+from pymongo import UpdateOne
 
 from app.infra.mongo import coll, is_enabled
 
@@ -92,8 +93,22 @@ async def insert_questions(
             }
         )
 
-    await coll(COLLECTION).insert_many(docs)
-    logger.info(f"[MONGO_QUIZ] inserted {len(docs)} questions for {quiz_uuid}")
+    # Idempotent upsert by (quiz_uuid, question_uuid) so retried generation
+    # runs do not produce orphan duplicate documents.
+    ops = []
+    for doc in docs:
+        filter_q = {
+            "quiz_uuid": doc["quiz_uuid"],
+            "question_uuid": doc["question_uuid"],
+        }
+        ops.append(UpdateOne(filter_q, {"$set": doc}, upsert=True))
+
+    result = await coll(COLLECTION).bulk_write(ops, ordered=False)
+    written = result.upserted_count + result.modified_count
+    logger.info(
+        f"[MONGO_QUIZ] upserted {written} questions for {quiz_uuid} "
+        f"(upserted={result.upserted_count}, modified={result.modified_count})"
+    )
     return len(docs)
 
 
