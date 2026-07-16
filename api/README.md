@@ -137,6 +137,27 @@ python -m http.server 8080
 | GET | `/quiz/wrong-answers` | Wrong answers notebook |
 | GET | `/quiz/export` | Export data (jsonl/csv/sft) |
 
+### Notes (`/notes`)
+
+User-authored markdown notes attached to a video or cloud file. Supports anchors, revision history, and public sharing. All endpoints except shared view require auth. See [docs/notes.md](../docs/notes.md).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/notes/shared/{share_token}` | Public read-only view (no auth) |
+| GET | `/notes` | List notes (filter by `target_type`/`target_id`, `X-Total-Count` header) |
+| POST | `/notes` | Create note (201) |
+| GET | `/notes/{note_uuid}` | Note detail (content + anchors + share info) |
+| PATCH | `/notes/{note_uuid}` | Update (supports `If-Match` optimistic concurrency, 409 on conflict) |
+| DELETE | `/notes/{note_uuid}` | Soft delete (204) |
+| POST | `/notes/{note_uuid}/anchors` | Add anchor (201) |
+| DELETE | `/notes/{note_uuid}/anchors/{anchor_id}` | Delete anchor (204) |
+| GET | `/notes/{note_uuid}/revisions` | List revisions |
+| POST | `/notes/{note_uuid}/revisions/restore/{revision_id}` | Restore a revision |
+| POST | `/notes/{note_uuid}/share` | Create share link (`expires_in_days`, null=permanent) |
+| DELETE | `/notes/{note_uuid}/share` | Revoke share (204) |
+
+> Cross-user access returns 404 (not 403) to avoid leaking note existence.
+
 ### System
 
 | Method | Path | Description |

@@ -37,6 +37,7 @@ from app.routers.vector_page import router as vector_page_router
 from app.routers.credentials import router as credentials_router
 from app.routers.billing import router as billing_router
 from app.routers.quiz import router as quiz_router
+from app.routers.notes import router as notes_router
 from app.routers.tasks_ws import router as tasks_ws_router
 
 
@@ -448,6 +449,7 @@ app.include_router(vector_page_router)
 app.include_router(credentials_router)
 app.include_router(billing_router)
 app.include_router(quiz_router)
+app.include_router(notes_router)
 app.include_router(tasks_ws_router)
 
 # Plan 0021: Cloud drive router (with graceful degradation)
