@@ -1,5 +1,5 @@
 # ================================================================
-# Bilibili RAG — full-stack development / deployment
+# MindBase — full-stack development / deployment
 # ================================================================
 # App only (external DB): docker compose --profile standalone up -d
 # App + infra:             docker compose up -d
@@ -13,11 +13,11 @@ services:
 
   backend:
     profiles: ["", "standalone", "storage", "full"]
-    image: ${BACKEND_IMAGE:-ghcr.io/atoncooper/bilirag-backend:latest}
+    image: ${BACKEND_IMAGE:-ghcr.io/atoncooper/mind-base-backend:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: bilirag-backend
+    container_name: mind-base-backend
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:
@@ -30,14 +30,14 @@ services:
       - APP_DEBUG=${APP_DEBUG:-false}
       - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
       # RDBMS — override via .env for external DB
-      - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://bilirag:bilirag@mysql:3306/bilirag}
+      - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       # Milvus — override via .env for external Milvus
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - MILVUS__TOKEN=${MILVUS__TOKEN:-}
       # MongoDB — override via .env for external Mongo
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:bilirag@mongo:27017/?authSource=admin}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       # Redis — override via .env for external Redis
-      - REDIS__URL=${REDIS__URL:-redis://:bilirag@redis:6379/1}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # LLM
       - LLM__API_KEY=${LLM_API_KEY}
       - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
@@ -51,7 +51,7 @@ services:
       - ASR__MODEL=${ASR_MODEL:-paraformer-v2}
       # LangSmith
       - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-bilibili-rag}
+      - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
       # Session
       - SESSION__SECRET=${SESSION_SECRET}
       # Security
@@ -73,15 +73,15 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - bilirag-net
+      - mind-base-net
 
   frontend:
     profiles: ["", "standalone", "storage", "full"]
-    image: ${FRONTEND_IMAGE:-ghcr.io/atoncooper/bilirag-frontend:latest}
+    image: ${FRONTEND_IMAGE:-ghcr.io/atoncooper/mind-base-frontend:latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: bilirag-frontend
+    container_name: mind-base-frontend
     # Port exposed only for direct debugging; in production nginx handles all traffic
     # ports:
     #   - "3000:3000"
@@ -93,7 +93,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - bilirag-net
+      - mind-base-net
 
   # ==============================================================
   # Reverse Proxy (Nginx) — SSL termination + routing
@@ -102,7 +102,7 @@ services:
   nginx:
     profiles: ["", "standalone", "storage", "full"]
     image: nginx:alpine
-    container_name: bilirag-nginx
+    container_name: mind-base-nginx
     ports:
       - "80:80"
       - "443:443"
@@ -118,7 +118,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - bilirag-net
+      - mind-base-net
 
   # ==============================================================
   # Infrastructure
@@ -126,14 +126,14 @@ services:
 
   mysql:
     image: mysql:8.4
-    container_name: bilirag-mysql
+    container_name: mind-base-mysql
     ports:
       - "${MYSQL_PORT:-3306}:3306"
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
-      - MYSQL_DATABASE=bilirag
-      - MYSQL_USER=${MYSQL_USER:-bilirag}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-bilirag}
+      - MYSQL_DATABASE=mind_base
+      - MYSQL_USER=${MYSQL_USER:-mind_base}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
     volumes:
       - mysql_data:/var/lib/mysql
       - ./app/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -144,16 +144,16 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   redis:
     image: redis:7-alpine
-    container_name: bilirag-redis
+    container_name: mind-base-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-bilirag}
+      --requirepass ${REDIS_PASSWORD:-mind-base}
       --notify-keyspace-events Ex
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
@@ -163,21 +163,21 @@ services:
       - redis_data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-bilirag}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   mongo:
     image: mongo:7
-    container_name: bilirag-mongo
+    container_name: mind-base-mongo
     ports:
       - "${MONGO_PORT:-27017}:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-bilirag}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
@@ -187,11 +187,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   milvus:
     image: milvusdb/milvus:v2.4.17
-    container_name: bilirag-milvus
+    container_name: mind-base-milvus
     profiles: ["storage", "full"]
     command: milvus run standalone
     ports:
@@ -211,11 +211,11 @@ services:
       minio:
         condition: service_healthy
     networks:
-      - bilirag-net
+      - mind-base-net
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
-    container_name: bilirag-etcd
+    container_name: mind-base-etcd
     profiles: ["storage", "full"]
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
@@ -236,11 +236,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    container_name: bilirag-minio
+    container_name: mind-base-minio
     profiles: ["storage", "full"]
     ports:
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
@@ -251,7 +251,7 @@ services:
       - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
       - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
       - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
-      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-bilirag}
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
       - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
       - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
       - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
@@ -265,7 +265,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   # ==============================================================
   # Optional tools
@@ -273,30 +273,30 @@ services:
 
   redis-commander:
     image: rediscommander/redis-commander:latest
-    container_name: bilirag-redis-ui
+    container_name: mind-base-redis-ui
     profiles: ["tools", "full"]
     ports:
       - "${REDIS_UI_PORT:-8081}:8081"
     environment:
-      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-bilirag}
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-mind-base}
     restart: unless-stopped
     networks:
-      - bilirag-net
+      - mind-base-net
 
   mongo-express:
     image: mongo-express:latest
-    container_name: bilirag-mongo-ui
+    container_name: mind-base-mongo-ui
     profiles: ["tools", "full"]
     ports:
       - "${MONGO_UI_PORT:-8082}:8081"
     environment:
       - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_USER:-admin}
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASSWORD:-bilirag}
-      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-bilirag}@mongo:27017/
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASSWORD:-mind-base}
+      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/
       - ME_CONFIG_BASICAUTH=false
     restart: unless-stopped
     networks:
-      - bilirag-net
+      - mind-base-net
 
 volumes:
   backend_data:
@@ -308,8 +308,8 @@ volumes:
   etcd_data:
   minio_data:
   certbot_www:
-  nginx_video_cache:       # Plan 0021: video streaming cache
+  nginx_video_cache:
 
 networks:
-  bilirag-net:
+  mind-base-net:
     driver: bridge

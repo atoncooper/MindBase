@@ -1,5 +1,5 @@
 """
-Bilibili RAG 知识库系统
+MindBase 知识库系统
 
 ASR 分P服务 - 仅做 ASR 转写，不涉及 RAG 向量存储
 

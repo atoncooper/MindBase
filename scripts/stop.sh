@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/stop.sh
-# 停止 Bilibili RAG 后端服务
+# 停止 MindBase 后端服务
 set -euo pipefail
 
 PORT="${1:-8000}"

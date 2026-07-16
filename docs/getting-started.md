@@ -1,6 +1,6 @@
 # Getting Started — Local Development
 
-Run BiliMind on your machine for development.
+Run MindBase on your machine for development.
 
 ---
 
@@ -22,7 +22,7 @@ Run BiliMind on your machine for development.
 
 ```bash
 # 1. Clone
-git clone <repo-url> && cd bilibili-rag
+git clone <repo-url> && cd mind-base
 
 # 2. Environment
 cp .env.example .env
@@ -59,7 +59,7 @@ If MySQL is not available, change `rdbms.url` in a `config.yaml`:
 ```yaml
 # app/config/config.yaml
 rdbms:
-  url: sqlite+aiosqlite:///./data/bilibili_rag.db
+  url: sqlite+aiosqlite:///./data/mind_base.db
 ```
 
 By default the project uses MySQL (`mysql+aiomysql://...`). SQLite is fine for local dev.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/status.sh
-# 检查 Bilibili RAG 后端服务状态
+# 检查 MindBase 后端服务状态
 set -euo pipefail
 
 PORT="${1:-8000}"

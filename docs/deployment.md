@@ -1,6 +1,6 @@
 # Production Deployment
 
-This guide covers deploying BiliMind in production — with HTTPS, monitoring, and high availability.
+This guide covers deploying MindBase in production — with HTTPS, monitoring, and high availability.
 
 ---
 
@@ -40,8 +40,8 @@ This guide covers deploying BiliMind in production — with HTTPS, monitoring, a
 ### 1. Clone & configure
 
 ```bash
-git clone <repo-url> /opt/bilirag
-cd /opt/bilirag
+git clone <repo-url> /opt/mind-base
+cd /opt/mind-base
 ```
 
 ### 2. Secrets
@@ -62,7 +62,7 @@ Create `.env`:
 LLM__API_KEY=sk-your-production-key
 SESSION__SECRET=<output-from-above>
 SECURITY__API_KEY_ENCRYPTION_KEY=<output-from-above>
-RDBMS__URL=mysql+aiomysql://bilirag:strongpassword@mysql:3306/bilirag
+RDBMS__URL=mysql+aiomysql://mind_base:strongpassword@mysql:3306/mind_base
 MONGO__URI=mongodb://admin:strongpassword@mongo:27017/?authSource=admin
 REDIS__URL=redis://:strongpassword@redis:6379/1
 
@@ -206,30 +206,30 @@ sudo certbot --nginx -d your-domain.com
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bilirag-backend
+  name: mind-base-backend
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: bilirag-backend
+      app: mind-base-backend
   template:
     metadata:
       labels:
-        app: bilirag-backend
+        app: mind-base-backend
     spec:
       containers:
         - name: backend
-          image: your-registry/bilirag-backend:latest
+          image: your-registry/mind-base-backend:latest
           ports:
             - containerPort: 8000
           envFrom:
             - secretRef:
-                name: bilirag-secrets
+                name: mind-base-secrets
           env:
             - name: APP_LOG_LEVEL
               value: "WARNING"
             - name: RDBMS__URL
-              value: "mysql+aiomysql://bilirag:$(MYSQL_PASSWORD)@mysql-svc:3306/bilirag"
+              value: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql-svc:3306/mind_base"
           resources:
             limits:
               memory: "4Gi"
@@ -253,10 +253,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: bilirag-backend-svc
+  name: mind-base-backend-svc
 spec:
   selector:
-    app: bilirag-backend
+    app: mind-base-backend
   ports:
     - port: 8000
       targetPort: 8000
@@ -265,7 +265,7 @@ spec:
 ### Secrets
 
 ```bash
-kubectl create secret generic bilirag-secrets \
+kubectl create secret generic mind-base-secrets \
   --from-literal=LLM__API_KEY=sk-xxx \
   --from-literal=SESSION__SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))") \
   --from-literal=SECURITY__API_KEY_ENCRYPTION_KEY=$(python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())")
@@ -322,16 +322,16 @@ GET /cache/stats → {"l1_hits": ..., "l2_hits": ..., "misses": ...}
 
 ```bash
 # Database (MySQL)
-docker compose exec mysql mysqldump -u root -p bilirag > backup.sql
+docker compose exec mysql mysqldump -u root -p mind_base > backup.sql
 
 # Volumes
 docker run --rm \
-  -v bilibili-rag_backend_data:/data \
+  -v mind-base_backend_data:/data \
   -v $(pwd):/backup \
   alpine tar czf /backup/data-backup-$(date +%F).tar.gz -C /data .
 
 # Restore MySQL
-docker compose exec -T mysql mysql -u root -p bilirag < backup.sql
+docker compose exec -T mysql mysql -u root -p mind_base < backup.sql
 ```
 
 ---
@@ -339,7 +339,7 @@ docker compose exec -T mysql mysql -u root -p bilirag < backup.sql
 ## Upgrading
 
 ```bash
-cd /opt/bilirag
+cd /opt/mind-base
 git pull
 docker compose --profile storage up -d --build
 ```

@@ -56,7 +56,7 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 @dataclass(frozen=True)
 class RdbmsConfig:
-    url: str = "sqlite+aiosqlite:///./data/bilibili_rag.db"
+    url: str = "sqlite+aiosqlite:///./data/mind_base.db"
     password_override: str | None = None  # Optional env override: RDBMS__PASSWORD
     echo: bool = False
     pool_size: int = 20
@@ -64,7 +64,7 @@ class RdbmsConfig:
     pool_timeout: int = 30  # Seconds to wait for a free connection from the pool
     pool_recycle: int = 1800  # Max connection lifetime in seconds
     pool_pre_ping: bool = True  # SELECT 1 before checkout to drop stale conns
-    application_name: str = "bilirag-api"  # Shows up in pg_stat_activity
+    application_name: str = "mind-base-api"  # Shows up in pg_stat_activity
     statement_timeout_ms: int = 60_000  # Per-statement timeout on the PG side
     connect_timeout: int = 10  # TCP connect timeout in seconds
     ssl_mode: str | None = None  # disable / prefer / require / verify-ca / verify-full
@@ -96,7 +96,7 @@ def _load_config() -> RdbmsConfig:
         pool_timeout=rdbms.pool_timeout,
         pool_recycle=rdbms.pool_recycle,
         pool_pre_ping=_env_bool("RDBMS__POOL_PRE_PING", True),
-        application_name=os.environ.get("RDBMS__APPLICATION_NAME", "bilirag-api"),
+        application_name=os.environ.get("RDBMS__APPLICATION_NAME", "mind-base-api"),
         statement_timeout_ms=_env_int("RDBMS__STATEMENT_TIMEOUT_MS", 60_000),
         connect_timeout=_env_int("RDBMS__CONNECT_TIMEOUT", 10),
         ssl_mode=os.environ.get("RDBMS__SSL_MODE"),

@@ -20,7 +20,7 @@ from loguru import logger
 MAX_FAILED_ATTEMPTS = 5     # lockout threshold within the window
 WINDOW_SECONDS = 3600       # 1 hour rolling window
 LOCKOUT_SECONDS = 900       # 15 min hard lockout after threshold reached
-KEY_PREFIX = "bilirag:login_fail"
+KEY_PREFIX = "mind-base:login_fail"
 
 
 def _normalise_email(email: str) -> str:

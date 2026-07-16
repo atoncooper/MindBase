@@ -75,7 +75,7 @@ def resolve_video_id(bvid: str, aid_from_api: Optional[int] = None) -> int:
 
     if aid_from_api and aid_from_api > 0 and computed != aid_from_api:
         import logging
-        logging.getLogger("bilibili_rag").warning(
+        logging.getLogger("mind_base").warning(
             f"[BVID] algorithm mismatch! bvid={bvid} "
             f"computed={computed} api_aid={aid_from_api} "
             f"— using api_aid"

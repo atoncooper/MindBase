@@ -1,6 +1,6 @@
 # Docker 构建与部署指南
 
-本文档介绍如何使用 Docker Compose 一键构建并部署 Bilibili RAG 系统。
+本文档介绍如何使用 Docker Compose 一键构建并部署 MindBase 系统。
 
 ---
 
@@ -34,9 +34,9 @@
 
 ```
 docker-compose.yml
-├── backend (bilibili-rag-backend)    ← FastAPI :8000
+├── backend (mind-base-backend)    ← FastAPI :8000
 │   └── Dockerfile (项目根目录)
-└── frontend (bilibili-rag-frontend)  ← Next.js :3000
+└── frontend (mind-base-frontend)  ← Next.js :3000
     └── Dockerfile (frontend/ 目录)
 ```
 
@@ -54,7 +54,7 @@ docker-compose.yml
 
 ```bash
 # 1. 进入项目根目录
-cd bilibili-rag
+cd mind-base
 
 # 2. 复制并编辑环境变量
 cp .env.example .env
@@ -220,13 +220,13 @@ docker compose exec frontend sh         # 前端（Alpine）
 docker compose logs -f --tail=100 backend
 
 # 查看资源使用
-docker stats bilibili-rag-backend bilibili-rag-frontend
+docker stats mind-base-backend mind-base-frontend
 
 # 备份数据卷
-docker run --rm -v bilibili-rag_backend_data:/data -v $(pwd):/backup alpine tar czf /backup/data-backup.tar.gz -C /data .
+docker run --rm -v mind-base_backend_data:/data -v $(pwd):/backup alpine tar czf /backup/data-backup.tar.gz -C /data .
 
 # 恢复数据卷
-docker run --rm -v bilibili-rag_backend_data:/data -v $(pwd):/backup alpine tar xzf /backup/data-backup.tar.gz -C /data
+docker run --rm -v mind-base_backend_data:/data -v $(pwd):/backup alpine tar xzf /backup/data-backup.tar.gz -C /data
 ```
 
 ---
@@ -239,7 +239,7 @@ docker run --rm -v bilibili-rag_backend_data:/data -v $(pwd):/backup alpine tar 
 
 ```bash
 # .env
-RDBMS__URL=postgresql+asyncpg://user:password@host:5432/bilirag
+RDBMS__URL=postgresql+asyncpg://user:password@host:5432/mind_base
 ```
 
 并在 `app/config/config.yaml` 中配置连接池：
@@ -351,7 +351,7 @@ NEXT_PUBLIC_API_URL=http://backend:8000
 确保不要删除 `backend_data` volume：
 ```bash
 # 查看 volume 是否存在
-docker volume ls | grep bilibili-rag
+docker volume ls | grep mind-base
 
 # 停止容器时保留 volume（不加 -v 参数）
 docker compose down        # 保留数据

@@ -1,14 +1,14 @@
-﻿# scripts/status.ps1
+# scripts/status.ps1
 <#
 .SYNOPSIS
-检查 Bilibili RAG 后端服务状态
+检查 MindBase 后端服务状态
 
 .DESCRIPTION
 输出 JSON 格式状态：{running, pid, port, started_at}
 不信任 state.json.running，始终通过进程 PID 验证
 #>
 param(
-    [string]$DataDir = "$env:USERPROFILE\.bilibili-rag"
+    [string]$DataDir = "$env:USERPROFILE\.mind-base"
 )
 
 $ErrorActionPreference = "Continue"

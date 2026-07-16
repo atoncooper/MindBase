@@ -1,4 +1,4 @@
-"""Base page object: shared helpers for all MindBase pages."""
+"""Base page object: shared helpers for all mind-base pages."""
 from __future__ import annotations
 
 import logging

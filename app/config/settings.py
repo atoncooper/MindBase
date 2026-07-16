@@ -68,7 +68,7 @@ class _Settings:
 
     @property
     def database_url(self) -> str:
-        return str(_get("rdbms", "url", default="sqlite+aiosqlite:///./data/bilibili_rag.db"))
+        return str(_get("rdbms", "url", default="sqlite+aiosqlite:///./data/mind_base.db"))
 
     # ── LLM ──────────────────────────────────────────────────────
 
@@ -164,7 +164,7 @@ class _Settings:
 
     @property
     def langsmith_project(self) -> str:
-        return str(_get("langsmith", "project", default="bilibili-rag"))
+        return str(_get("langsmith", "project", default="MindBase"))
 
     @property
     def langsmith_endpoint(self) -> str:

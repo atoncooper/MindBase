@@ -56,7 +56,7 @@ Legacy flat env var names (e.g. `DASHSCOPE_API_KEY`, `OPENAI_API_KEY`) are still
 
 ```yaml
 app:
-  name: bilirag
+  name: MindBase
   env: dev
   debug: false
   log_level: INFO         # DEBUG / INFO / WARNING / ERROR / CRITICAL
@@ -77,7 +77,7 @@ server:
 
 ```yaml
 rdbms:
-  url: sqlite+aiosqlite:///./data/bilibili_rag.db
+  url: sqlite+aiosqlite:///./data/mind_base.db
   echo: false
   pool_size: 20
   max_overflow: 10
@@ -96,7 +96,7 @@ rdbms:
 ```
 
 ```env
-RDBMS__URL=postgresql+asyncpg://user:pass@host:5432/bilirag
+RDBMS__URL=postgresql+asyncpg://user:pass@host:5432/mind_base
 ```
 
 ### `milvus` — Vector database
@@ -164,7 +164,7 @@ asr:
 ```yaml
 langsmith:
   enabled: true
-  project: bilibili-rag
+  project: MindBase
   endpoint: https://api.smith.langchain.com
   tracing_v2: true
   tracing: true
@@ -273,7 +273,7 @@ Put personal overrides here — different port, local DB, experimental model:
 
 ```yaml
 rdbms:
-  url: postgresql+asyncpg://me:mypass@localhost:54320/bilirag_local
+  url: postgresql+asyncpg://me:mypass@localhost:54320/mind_base_local
 
 llm:
   model: qwen3-plus

@@ -1,10 +1,10 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: bilibili-rag-ingress
-  namespace: bilibili-rag
+  name: mind-base-ingress
+  namespace: mind-base
   labels:
-    app.kubernetes.io/name: bilibili-rag
+    app.kubernetes.io/name: mind-base
   annotations:
     # 使用 nginx ingress controller
     kubernetes.io/ingress.class: nginx
@@ -15,7 +15,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
   rules:
-    - host: bilibili-rag.example.com  # 替换为实际域名
+    - host: mind-base.example.com  # 替换为实际域名
       http:
         paths:
           # API 路由到后端
@@ -23,21 +23,21 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: bilibili-rag-backend
+                name: mind-base-backend
                 port:
                   number: 8000
           - path: /docs
             pathType: Prefix
             backend:
               service:
-                name: bilibili-rag-backend
+                name: mind-base-backend
                 port:
                   number: 8000
           - path: /health
             pathType: Exact
             backend:
               service:
-                name: bilibili-rag-backend
+                name: mind-base-backend
                 port:
                   number: 8000
           # 其余路由到前端
@@ -45,6 +45,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: bilibili-rag-frontend
+                name: mind-base-frontend
                 port:
                   number: 3000

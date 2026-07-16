@@ -1,5 +1,5 @@
 """
-Bilibili RAG 知识库系统
+MindBase 知识库系统
 
 RAG 服务模块 - 向量存储与问答
 """

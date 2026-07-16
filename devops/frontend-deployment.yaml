@@ -2,9 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: bilibili-rag
+  namespace: mind-base
   labels:
-    app.kubernetes.io/name: bilibili-rag
+    app.kubernetes.io/name: mind-base
     app.kubernetes.io/component: frontend
 spec:
   replicas: 2
@@ -15,17 +15,17 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: bilibili-rag
+      app.kubernetes.io/name: mind-base
       app.kubernetes.io/component: frontend
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: bilibili-rag
+        app.kubernetes.io/name: mind-base
         app.kubernetes.io/component: frontend
     spec:
       containers:
         - name: frontend
-          image: bilibili-rag-frontend:latest
+          image: mind-base-frontend:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
@@ -34,7 +34,7 @@ spec:
             - name: NEXT_PUBLIC_API_URL
               valueFrom:
                 configMapKeyRef:
-                  name: bilibili-rag-config
+                  name: mind-base-config
                   key: NEXT_PUBLIC_API_URL
           resources:
             requests:

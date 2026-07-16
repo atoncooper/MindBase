@@ -1,7 +1,7 @@
-﻿# scripts/start.ps1
+# scripts/start.ps1
 <#
 .SYNOPSIS
-启动 Bilibili RAG 后端服务
+启动 MindBase 后端服务
 
 .PARAMETER Port
 默认 8000
@@ -41,7 +41,7 @@ Write-Host "[INFO] Working directory: $PROJECT_ROOT" -ForegroundColor Cyan
 # 激活 conda 环境并启动服务
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = "powershell"
-$psi.Arguments = "-NoProfile -Command `"Set-Location '$PROJECT_ROOT'; conda activate bilibili-rag 2`$null; if (`$LASTEXITCODE -ne 0) { python -m uvicorn app.main:app --host 127.0.0.1 --port $Port } else { uvicorn app.main:app --host 127.0.0.1 --port $Port }`""
+$psi.Arguments = "-NoProfile -Command `"Set-Location '$PROJECT_ROOT'; conda activate mind-base 2`$null; if (`$LASTEXITCODE -ne 0) { python -m uvicorn app.main:app --host 127.0.0.1 --port $Port } else { uvicorn app.main:app --host 127.0.0.1 --port $Port }`""
 $psi.WorkingDirectory = $PROJECT_ROOT
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true

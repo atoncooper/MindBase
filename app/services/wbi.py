@@ -1,5 +1,5 @@
 """
-Bilibili RAG 知识库系统
+MindBase 知识库系统
 
 Wbi 签名模块 - 用于 B站 API 鉴权
 参考: https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/misc/sign/wbi.md

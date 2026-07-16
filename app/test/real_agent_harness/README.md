@@ -114,19 +114,19 @@ set LLM__API_KEY=%DASHSCOPE_API_KEY%
 Linux/macOS：
 
 ```bash
-export RDBMS__URL="sqlite+aiosqlite:///./data/bilibili_rag.db"
+export RDBMS__URL="sqlite+aiosqlite:///./data/mind_base.db"
 ```
 
 Windows PowerShell：
 
 ```powershell
-$env:RDBMS__URL="sqlite+aiosqlite:///./data/bilibili_rag.db"
+$env:RDBMS__URL="sqlite+aiosqlite:///./data/mind_base.db"
 ```
 
 Windows CMD：
 
 ```cmd
-set RDBMS__URL=sqlite+aiosqlite:///./data/bilibili_rag.db
+set RDBMS__URL=sqlite+aiosqlite:///./data/mind_base.db
 ```
 
 如果你要测真实 Milvus/向量库，请确保 `app/config/default.yaml`、`app/config/config.yaml`、`app/config/local.yaml` 或环境变量里的 Milvus 配置指向你的真实实例。

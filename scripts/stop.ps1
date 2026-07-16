@@ -1,7 +1,7 @@
-﻿# scripts/stop.ps1
+# scripts/stop.ps1
 <#
 .SYNOPSIS
-停止 Bilibili RAG 后端服务
+停止 MindBase 后端服务
 
 .PARAMETER Port
 服务端口，默认 8000
