@@ -13,16 +13,21 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Static ffmpeg + ffprobe (~160MB, self-contained codecs) replace apt ffmpeg
-# (~451MB layer). johnvansickle static build bundles all codecs — compatible
-# with Bilibili aac/m4s audio used in the ASR pipeline (asr.py, content_fetcher.py).
-RUN curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 \
-        https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+# Static ffmpeg + ffprobe (~126MB, self-contained codecs) replace apt ffmpeg
+# (~451MB layer). GPL build bundles all codecs — compatible with Bilibili
+# aac/m4s audio used in the ASR pipeline (asr.py, content_fetcher.py).
+#
+# Source: BtbN/FFmpeg-Builds GitHub releases (GPL, linux64 = amd64). Hosted on
+# GitHub's own CDN so it is reliable in GitHub Actions. The previous
+# johnvansickle.com host started returning HTTP 415 to GH Actions datacenter
+# IPs; curl --retry does not retry 4xx, so --retry-all-errors is added.
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 30 \
+        https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
         -o /tmp/ffmpeg.tar.xz \
     && tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ \
-    && cp /tmp/ffmpeg-*-amd64-static/ffmpeg /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ \
+    && cp /tmp/ffmpeg-*/bin/ffmpeg /tmp/ffmpeg-*/bin/ffprobe /usr/local/bin/ \
     && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
-    && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-*-amd64-static \
+    && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-* \
     && ffmpeg -version | head -1
 
 WORKDIR /app
