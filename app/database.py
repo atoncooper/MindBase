@@ -387,6 +387,63 @@ async def _migrate_add_columns():
                 INDEX ix_wb_upload_uuid (upload_uuid)
             )""",
         ),
+        # Notes — user-authored markdown notes (metadata only; content in MongoDB)
+        (
+            "notes",
+            """CREATE TABLE IF NOT EXISTS notes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                uuid VARCHAR(36) NOT NULL UNIQUE,
+                uid BIGINT NOT NULL,
+                title VARCHAR(500) NOT NULL,
+                target_type VARCHAR(20) NOT NULL,
+                target_id VARCHAR(100) NOT NULL,
+                content_doc_id VARCHAR(64) NOT NULL,
+                content_length INT DEFAULT 0,
+                content_hash VARCHAR(64),
+                revision_count INT DEFAULT 0,
+                is_pinned BOOLEAN DEFAULT FALSE,
+                is_deleted BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (uid) REFERENCES users(uid),
+                INDEX ix_notes_uuid (uuid),
+                INDEX ix_notes_uid (uid),
+                INDEX ix_notes_target (target_type, target_id),
+                INDEX ix_notes_uid_target (uid, target_type, target_id)
+            )""",
+        ),
+        # Notes — block anchors (timestamp / position markers)
+        (
+            "note_anchors",
+            """CREATE TABLE IF NOT EXISTS note_anchors (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                note_id INT NOT NULL,
+                block_id VARCHAR(50) NOT NULL,
+                position INT NOT NULL,
+                label VARCHAR(200),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+                INDEX ix_na_note (note_id)
+            )""",
+        ),
+        # Notes — share tokens for read-only public access
+        (
+            "note_shares",
+            """CREATE TABLE IF NOT EXISTS note_shares (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                note_uuid VARCHAR(36) NOT NULL,
+                share_token VARCHAR(64) NOT NULL UNIQUE,
+                created_by_uid BIGINT NOT NULL,
+                expires_at TIMESTAMP,
+                view_count INT DEFAULT 0,
+                is_revoked BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_uuid) REFERENCES notes(uuid) ON DELETE CASCADE,
+                FOREIGN KEY (created_by_uid) REFERENCES users(uid),
+                INDEX ix_ns_note (note_uuid),
+                INDEX ix_ns_token (share_token)
+            )""",
+        ),
     ]
 
     # Tables that need schema recreation (DROP + CREATE) because the old schema

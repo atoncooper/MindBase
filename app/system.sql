@@ -85,7 +85,9 @@ create table favorite_folders
     updated_at   datetime             null,
     uid          bigint               null,
     is_default   tinyint(1) default 0 null,
-    deleted_at   timestamp            null
+    deleted_at   timestamp            null,
+    constraint uq_fav_folder_uid_media
+        unique (uid, media_id)
 );
 
 create index ix_favorite_folders_session_id
@@ -137,11 +139,17 @@ create table quiz_sets
     total_score       int          null,
     passing_score     int          null,
     completed_at      datetime     null,
+    share_token       varchar(32)  null,
+    shared_at         datetime     null,
+    share_expires_at  datetime     null,
+    quality_metrics   json         null,
     created_at        datetime     null,
     updated_at        datetime     null,
     uid               bigint       null,
     constraint ix_quiz_sets_quiz_uuid
-        unique (quiz_uuid)
+        unique (quiz_uuid),
+    constraint uq_quiz_sets_share_token
+        unique (share_token)
 );
 
 create table quiz_submissions
@@ -234,6 +242,9 @@ create table user_asr_configs
     base_url          text        null,
     model             text        null,
     is_default        tinyint(1)  null,
+    last_test_status  varchar(20) null,
+    last_test_error   text        null,
+    last_test_at      datetime    null,
     created_at        datetime    null,
     updated_at        datetime    null,
     deleted_at        datetime    null,
@@ -254,7 +265,10 @@ create table user_credentials
     api_key_encrypted text                                not null,
     base_url          text                                null,
     default_model     text                                null,
-    is_default        int       default 0                 null,
+    is_default        tinyint(1) default 0                null,
+    last_test_status  varchar(20)                         null,
+    last_test_error   text                                null,
+    last_test_at      datetime                            null,
     created_at        timestamp default CURRENT_TIMESTAMP null,
     updated_at        timestamp default CURRENT_TIMESTAMP null on update CURRENT_TIMESTAMP,
     deleted_at        timestamp                           null,
@@ -301,6 +315,9 @@ create table user_embedding_configs
     base_url          text        null,
     model             text        null,
     is_default        tinyint(1)  null,
+    last_test_status  varchar(20) null,
+    last_test_error   text        null,
+    last_test_at      datetime    null,
     created_at        datetime    null,
     updated_at        datetime    null,
     deleted_at        datetime    null,
@@ -385,9 +402,10 @@ create table verification_codes
     target     varchar(200) not null,
     type       varchar(20)  not null,
     purpose    varchar(32)  not null,
-    code       varchar(10)  not null,
+    code       varchar(64)  not null,
     expires_at datetime     not null,
     used       tinyint(1)   null,
+    attempts   int          default 0 null,
     created_at datetime     null,
     constraint verification_codes_ibfk_1
         foreign key (uid) references users (uid)
@@ -398,6 +416,28 @@ create index idx_vc_target_purpose
 
 create index idx_vc_uid
     on verification_codes (uid);
+
+create table login_attempts
+(
+    id             int auto_increment
+        primary key,
+    uid            bigint       null,
+    email          varchar(200) null,
+    ip             varchar(64)  not null,
+    device_id      varchar(64)  null,
+    success        tinyint(1) default 0 not null,
+    failure_reason varchar(100) null,
+    created_at     datetime     not null
+);
+
+create index idx_la_ip_created
+    on login_attempts (ip, created_at);
+
+create index idx_la_email_created
+    on login_attempts (email, created_at);
+
+create index idx_la_uid_created
+    on login_attempts (uid, created_at);
 
 create table video
 (
@@ -634,3 +674,75 @@ create index ix_wb_folder
 
 create index ix_wb_upload_uuid
     on workspace_bindings (upload_uuid);
+
+-- Notes — user-authored markdown notes (metadata only; content in MongoDB)
+
+create table notes
+(
+    id             int auto_increment
+        primary key,
+    uuid           varchar(36)  not null,
+    uid            bigint       not null,
+    title          varchar(500) not null default '无标题',
+    target_type    varchar(20)  not null,
+    target_id      varchar(100) not null,
+    content_doc_id varchar(64)  not null,
+    content_length int          default 0 null,
+    content_hash   varchar(64)  null,
+    revision_count int          default 0 null,
+    is_pinned      tinyint(1)   default 0 null,
+    is_deleted     tinyint(1)   default 0 null,
+    created_at     datetime     null,
+    updated_at     datetime     null,
+    constraint uq_notes_uuid
+        unique (uuid),
+    constraint notes_ibfk_1
+        foreign key (uid) references users (uid)
+);
+
+create index ix_notes_uid
+    on notes (uid);
+
+create index ix_notes_target_id
+    on notes (target_id);
+
+create index ix_notes_uid_target
+    on notes (uid, target_type, target_id);
+
+create table note_anchors
+(
+    id         int auto_increment
+        primary key,
+    note_id    int          not null,
+    block_id   varchar(50)  not null,
+    position   int          not null,
+    label      varchar(200) null,
+    created_at datetime     null,
+    constraint note_anchors_ibfk_1
+        foreign key (note_id) references notes (id) on delete cascade
+);
+
+create index ix_note_anchors_note_id
+    on note_anchors (note_id);
+
+create table note_shares
+(
+    id             int auto_increment
+        primary key,
+    note_uuid      varchar(36) not null,
+    share_token    varchar(64) not null,
+    created_by_uid bigint      not null,
+    expires_at     datetime    null,
+    view_count     int         default 0 null,
+    is_revoked     tinyint(1)  default 0 null,
+    created_at     datetime    null,
+    constraint uq_note_shares_token
+        unique (share_token),
+    constraint note_shares_ibfk_1
+        foreign key (note_uuid) references notes (uuid) on delete cascade,
+    constraint note_shares_ibfk_2
+        foreign key (created_by_uid) references users (uid)
+);
+
+create index ix_note_shares_note_uuid
+    on note_shares (note_uuid);

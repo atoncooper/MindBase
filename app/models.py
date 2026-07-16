@@ -853,3 +853,72 @@ class WorkspaceBinding(Base):
     upload_uuid = Column(String(64), nullable=True)
     include_subfolders = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+# ==================== Notes (Plan: Notion-style markdown notes) ====================
+
+
+class Note(Base):
+    """User-authored markdown note attached to a video or cloud file.
+
+    Content lives in MongoDB (note_documents collection, keyed by content_doc_id);
+    MySQL stores only metadata for list/filter/permission checks.
+    """
+
+    __tablename__ = "notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uuid = Column(String(36), unique=True, nullable=False, index=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    title = Column(String(500), nullable=False, default="无标题")
+    target_type = Column(String(20), nullable=False)  # video / cloud_file
+    # Multi-form target: video → "bvid:cid"; cloud_file → cloud_files.id
+    target_id = Column(String(100), nullable=False, index=True)
+    content_doc_id = Column(String(64), nullable=False)  # MongoDB _id (string form)
+    content_length = Column(Integer, default=0)
+    content_hash = Column(String(64), nullable=True)  # sha256 hex — dirty check
+    revision_count = Column(Integer, default=0)
+    is_pinned = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False)  # soft delete
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_notes_uid_target", "uid", "target_type", "target_id"),
+    )
+
+
+class NoteAnchor(Base):
+    """Optional timestamp/position anchor — Notion-like block marker."""
+
+    __tablename__ = "note_anchors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    note_id = Column(
+        Integer, ForeignKey("notes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    block_id = Column(String(50), nullable=False)  # BlockNote block ID
+    position = Column(Integer, nullable=False)  # video seconds / doc offset
+    label = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class NoteShare(Base):
+    """Share token — a note can have multiple share links (different expiry/permission)."""
+
+    __tablename__ = "note_shares"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    note_uuid = Column(
+        String(36), ForeignKey("notes.uuid", ondelete="CASCADE"), nullable=False, index=True
+    )
+    share_token = Column(String(64), unique=True, nullable=False, index=True)
+    created_by_uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    expires_at = Column(DateTime, nullable=True)  # null = permanent
+    view_count = Column(Integer, default=0)
+    is_revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
