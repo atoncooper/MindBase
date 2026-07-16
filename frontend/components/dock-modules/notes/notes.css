@@ -1,0 +1,752 @@
+/* Notes — "Editorial Atelier": a writer's desk aesthetic.
+   Fraunces (variable serif) for display, Hanken Grotesk for UI chrome.
+   Warm ivory paper, deep ink, burnt-sienna accent, hairline rules.
+   Scoped under .notes-scope so we don't leak into the rest of the app. */
+
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap");
+
+/* Color + type tokens are shared between the in-app panel (.notes-scope)
+   and the public reading page (.notes-reading), so the latter doesn't have
+   to redeclare them inline. */
+.notes-scope,
+.notes-reading {
+  --note-paper: #faf8f3;
+  --note-paper-elev: #fffefb;
+  --note-paper-sunken: #f3efe5;
+  --note-ink: #1a1a1c;
+  --note-ink-soft: #54545a;
+  --note-ink-faint: #a8a39b;
+  --note-line: #e3dccb;
+  --note-line-soft: #ede7d8;
+  --note-accent: #8b2500;
+  --note-accent-soft: #f7e3d2;
+  --note-accent-ink: #6b1d00;
+  --note-teal: #0e6b78;
+  --note-danger: #9c2a1a;
+  --note-danger-soft: #f8e3df;
+  --note-folio: #c4b89f;
+  --note-rule-ink: #2a2a2e;
+
+  --note-serif: "Fraunces", "Source Han Serif SC", "Noto Serif SC", Georgia, serif;
+  --note-sans: "Hanken Grotesk", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --note-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  --note-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --note-ease-precise: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.notes-scope {
+  position: relative;
+  isolation: isolate;
+}
+
+/* Paper grain — extremely subtle SVG noise. No gradient mesh. */
+.notes-scope::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.08 0 0 0 0 0.05 0 0 0 0.9 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.notes-scope > * { position: relative; z-index: 1; }
+
+/* ─── Small-caps editorial meta label ─────────────────────────────── */
+.notes-scope .note-eyebrow {
+  font-family: var(--note-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--note-ink-faint);
+}
+
+/* ─── Sidebar list rows ────────────────────────────────────────────── */
+.notes-scope .note-row {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  padding: 13px 18px 13px 20px;
+  border-bottom: 1px solid var(--note-line-soft);
+  cursor: default;
+  transition: background 180ms var(--note-ease);
+}
+.notes-scope .note-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  background: var(--note-accent);
+  transform: translateY(-50%);
+  transition: height 240ms var(--note-ease);
+}
+.notes-scope .note-row:hover {
+  background: var(--note-paper-sunken);
+}
+.notes-scope .note-row.is-selected {
+  background: var(--note-paper-sunken);
+}
+.notes-scope .note-row.is-selected::before {
+  height: 26px;
+}
+
+.notes-scope .note-folio {
+  font-family: var(--note-serif);
+  font-style: italic;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--note-folio);
+  flex-shrink: 0;
+  width: 22px;
+  letter-spacing: 0.01em;
+  padding-top: 3px;
+  font-variation-settings: "opsz" 9;
+  transition: color 200ms var(--note-ease);
+}
+.notes-scope .note-row.is-selected .note-folio,
+.notes-scope .note-row:hover .note-folio {
+  color: var(--note-accent);
+}
+
+.notes-scope .note-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ─── Editorial title input (Fraunces, high opsz) ──────────────────── */
+.notes-scope .note-title-input {
+  font-family: var(--note-serif);
+  font-size: 30px;
+  line-height: 1.18;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--note-ink);
+  background: transparent;
+  border: none;
+  outline: none;
+  width: 100%;
+  padding: 4px 0 2px;
+  font-variation-settings: "opsz" 96;
+}
+.notes-scope .note-title-input::placeholder {
+  color: var(--note-ink-faint);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* Em-rule ornament under the title */
+.notes-scope .note-title-rule {
+  width: 48px;
+  height: 1px;
+  background: var(--note-rule-ink);
+  margin: 10px 0 8px;
+  opacity: 0.7;
+}
+.notes-scope .note-title-rule::after {
+  content: "";
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--note-accent);
+  margin-top: -1.5px;
+  transform: translateY(-1px);
+}
+
+/* ─── Status pill ──────────────────────────────────────────────────── */
+.notes-scope .note-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-family: var(--note-sans);
+  transition: all 200ms var(--note-ease);
+}
+.notes-scope .note-status-pill .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.notes-scope .note-status-pill.is-idle { color: var(--note-ink-faint); }
+.notes-scope .note-status-pill.is-saving {
+  color: var(--note-ink-soft);
+  background: var(--note-line-soft);
+}
+.notes-scope .note-status-pill.is-saving .dot {
+  background: var(--note-ink-soft);
+  animation: note-pulse 1.1s ease-in-out infinite;
+}
+.notes-scope .note-status-pill.is-saved {
+  color: #4d6b3f;
+  background: #e6eedd;
+}
+.notes-scope .note-status-pill.is-saved .dot { background: #6b8a52; }
+.notes-scope .note-status-pill.is-error {
+  color: var(--note-danger);
+  background: var(--note-danger-soft);
+}
+.notes-scope .note-status-pill.is-error .dot { background: var(--note-danger); }
+.notes-scope .note-status-pill.is-conflict {
+  color: var(--note-accent-ink);
+  background: var(--note-accent-soft);
+}
+.notes-scope .note-status-pill.is-conflict .dot { background: var(--note-accent); }
+
+@keyframes note-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+/* ─── Writing surface (textarea) ───────────────────────────────────── */
+.notes-scope .note-textarea {
+  font-family: var(--note-serif);
+  font-size: 16.5px;
+  line-height: 1.78;
+  color: var(--note-ink);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  width: 100%;
+  height: 100%;
+  padding: 8px 0;
+  letter-spacing: 0.003em;
+  font-variation-settings: "opsz" 16;
+  caret-color: var(--note-accent);
+}
+.notes-scope .note-textarea::placeholder {
+  color: var(--note-ink-faint);
+  font-style: italic;
+}
+
+/* ─── Preview typography (editorial) ───────────────────────────────── */
+.notes-scope .note-preview {
+  font-family: var(--note-sans);
+  font-size: 15px;
+  line-height: 1.78;
+  color: var(--note-ink);
+}
+.notes-scope .note-preview h1 {
+  font-family: var(--note-serif);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  margin: 1.3em 0 0.5em;
+  line-height: 1.22;
+  font-variation-settings: "opsz" 72;
+}
+.notes-scope .note-preview h2 {
+  font-family: var(--note-serif);
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  margin: 1.3em 0 0.45em;
+  line-height: 1.28;
+  font-variation-settings: "opsz" 48;
+}
+.notes-scope .note-preview h3 {
+  font-family: var(--note-sans);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 1.4em 0 0.4em;
+  color: var(--note-ink-soft);
+}
+.notes-scope .note-preview p {
+  margin: 0.7em 0;
+  hyphens: auto;
+}
+.notes-scope .note-preview code {
+  font-family: var(--note-mono);
+  font-size: 0.84em;
+  background: var(--note-paper-sunken);
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--note-accent-ink);
+}
+.notes-scope .note-preview pre {
+  font-family: var(--note-mono);
+  font-size: 12.5px;
+  background: var(--note-paper-sunken);
+  padding: 14px 16px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 1em 0;
+  border-left: 2px solid var(--note-accent);
+  line-height: 1.6;
+}
+.notes-scope .note-preview pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.notes-scope .note-preview blockquote {
+  border-left: 2px solid var(--note-accent);
+  padding: 4px 0 4px 18px;
+  margin: 1em 0;
+  color: var(--note-ink-soft);
+  font-style: italic;
+  font-family: var(--note-serif);
+  font-size: 16px;
+  font-variation-settings: "opsz" 24;
+}
+.notes-scope .note-preview blockquote p { margin: 0.3em 0; }
+.notes-scope .note-preview ul,
+.notes-scope .note-preview ol {
+  padding-left: 1.4em;
+  margin: 0.6em 0;
+}
+.notes-scope .note-preview li { margin: 0.28em 0; }
+.notes-scope .note-preview a {
+  color: var(--note-teal);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--note-teal) 35%, transparent);
+  transition: border-color 180ms var(--note-ease);
+}
+.notes-scope .note-preview a:hover {
+  border-bottom-color: var(--note-teal);
+}
+.notes-scope .note-preview hr {
+  border: none;
+  text-align: center;
+  margin: 1.8em 0;
+  height: 14px;
+}
+.notes-scope .note-preview hr::before {
+  content: "❦";
+  display: inline-block;
+  font-family: var(--note-serif);
+  font-size: 14px;
+  color: var(--note-folio);
+}
+.notes-scope .note-preview table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 13.5px;
+  width: auto;
+}
+.notes-scope .note-preview th,
+.notes-scope .note-preview td {
+  border: 1px solid var(--note-line);
+  padding: 7px 14px;
+  text-align: left;
+}
+.notes-scope .note-preview th {
+  background: var(--note-paper-sunken);
+  font-weight: 600;
+  font-family: var(--note-sans);
+  letter-spacing: 0.04em;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.notes-scope .note-preview img {
+  max-width: 100%;
+  border-radius: 3px;
+  margin: 1em 0;
+}
+.notes-scope .note-preview strong {
+  font-weight: 600;
+  color: var(--note-ink);
+}
+
+/* ─── Buttons ──────────────────────────────────────────────────────── */
+.notes-scope .note-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--note-sans);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--note-ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 160ms var(--note-ease-precise);
+}
+.notes-scope .note-btn:hover {
+  background: var(--note-paper-sunken);
+  color: var(--note-ink);
+}
+.notes-scope .note-btn.is-primary {
+  background: var(--note-ink);
+  color: var(--note-paper-elev);
+  border-color: var(--note-ink);
+}
+.notes-scope .note-btn.is-primary:hover {
+  background: #000;
+}
+.notes-scope .note-btn.is-danger {
+  color: var(--note-danger);
+}
+.notes-scope .note-btn.is-danger:hover {
+  background: var(--note-danger-soft);
+}
+.notes-scope .note-btn.is-ghost {
+  padding: 6px 8px;
+}
+/* Small-caps label variant */
+.notes-scope .note-btn-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ─── Sidebar meta text ─────────────────────────────────────────────── */
+.notes-scope .note-meta-soft {
+  font-family: var(--note-sans);
+  font-size: 11.5px;
+  color: var(--note-ink-faint);
+  letter-spacing: 0.015em;
+  font-weight: 400;
+}
+
+.notes-scope .note-pin-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--note-accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2.5px var(--note-accent-soft);
+}
+
+/* ─── Subtle scrollbar ─────────────────────────────────────────────── */
+.notes-scope ::-webkit-scrollbar { width: 8px; height: 8px; }
+.notes-scope ::-webkit-scrollbar-track { background: transparent; }
+.notes-scope ::-webkit-scrollbar-thumb {
+  background: var(--note-line);
+  border-radius: 4px;
+}
+.notes-scope ::-webkit-scrollbar-thumb:hover { background: var(--note-ink-faint); }
+
+/* ─── Text selection ───────────────────────────────────────────────── */
+.notes-scope ::selection {
+  background: var(--note-accent-soft);
+  color: var(--note-accent-ink);
+}
+
+/* ─── Modal ────────────────────────────────────────────────────────── */
+.notes-scope .note-modal-backdrop {
+  background: rgba(26, 26, 28, 0.34);
+  backdrop-filter: blur(2px);
+}
+.notes-scope .note-modal {
+  background: var(--note-paper-elev);
+  border-radius: 6px;
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.04),
+    0 24px 60px rgba(60, 40, 20, 0.16),
+    0 4px 12px rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--note-line-soft);
+}
+
+/* ─── Reading page (public share) ──────────────────────────────────── */
+.notes-reading {
+  background: var(--note-paper);
+  min-height: 100vh;
+  position: relative;
+  isolation: isolate;
+}
+.notes-reading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.04;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.08 0 0 0 0 0.05 0 0 0 0.9 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.notes-reading > * { position: relative; z-index: 1; }
+
+.notes-reading .note-article {
+  background: var(--note-paper-elev);
+  border-radius: 4px;
+  border: 1px solid var(--note-line-soft);
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.03),
+    0 12px 40px rgba(60, 40, 20, 0.06);
+}
+
+/* Drop cap — only on the very first paragraph of the article body */
+.notes-reading .note-article-body > p:first-of-type::first-letter {
+  font-family: var(--note-serif);
+  font-weight: 600;
+  font-size: 3.6em;
+  line-height: 0.86;
+  float: left;
+  margin: 0.06em 0.1em 0 -0.04em;
+  color: var(--note-accent);
+  font-variation-settings: "opsz" 144;
+}
+
+/* Editorial colophon at the foot of a shared note */
+.notes-reading .note-colophon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2.4em;
+  padding-top: 1.4em;
+  border-top: 1px solid var(--note-line-soft);
+  font-family: var(--note-sans);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--note-ink-faint);
+}
+.notes-reading .note-colophon .note-colophon-mark {
+  font-family: var(--note-serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--note-accent);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ─── Empty state illustration ─────────────────────────────────────── */
+.notes-scope .note-empty-glyph {
+  font-family: var(--note-serif);
+  font-size: 72px;
+  color: var(--note-ink-faint);
+  line-height: 1;
+  font-style: italic;
+  font-weight: 400;
+  opacity: 0.32;
+  font-variation-settings: "opsz" 144;
+}
+
+/* ─── Staggered fade-in ────────────────────────────────────────────── */
+@keyframes note-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.notes-scope .note-fade-in {
+  animation: note-fade-in 320ms var(--note-ease);
+}
+.notes-scope .note-stagger {
+  animation: note-fade-in 360ms var(--note-ease) both;
+}
+
+/* Ornament — fleuron between meta items */
+.notes-scope .note-meta-sep {
+  font-family: var(--note-serif);
+  font-style: italic;
+  color: var(--note-folio);
+  font-size: 10px;
+  user-select: none;
+}
+
+/* ─── Date group header (editorial archive) ────────────────────────── */
+.notes-scope .note-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px 6px;
+  font-family: var(--note-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--note-ink-faint);
+}
+.notes-scope .note-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--note-line-soft);
+}
+.notes-scope .note-group-count {
+  font-family: var(--note-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--note-folio);
+}
+.notes-scope .note-group:first-child {
+  padding-top: 4px;
+}
+
+/* ─── List skeleton (shimmer) ──────────────────────────────────────── */
+.notes-scope .note-skel {
+  display: flex;
+  gap: 14px;
+  padding: 14px 18px 14px 20px;
+  border-bottom: 1px solid var(--note-line-soft);
+}
+.notes-scope .note-skel-mark {
+  width: 22px;
+  flex-shrink: 0;
+  padding-top: 3px;
+}
+.notes-scope .note-skel-mark span {
+  display: block;
+  width: 16px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--note-line);
+}
+.notes-scope .note-skel-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 2px;
+}
+.notes-scope .note-skel-line {
+  height: 9px;
+  border-radius: 3px;
+  background: var(--note-line);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: note-skel-shimmer 1.5s var(--note-ease) infinite;
+}
+.notes-scope .note-skel-line:nth-child(1) { width: 62%; }
+.notes-scope .note-skel-line:nth-child(2) { width: 40%; animation-delay: 0.12s; }
+.notes-scope .note-skel-line:nth-child(3) { width: 28%; height: 7px; animation-delay: 0.24s; }
+
+@keyframes note-skel-shimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* ─── Search clear button ──────────────────────────────────────────── */
+.notes-scope .note-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--note-ink-faint);
+  color: var(--note-paper);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 160ms var(--note-ease-precise);
+}
+.notes-scope .note-search-clear:hover {
+  background: var(--note-ink-soft);
+}
+
+/* ─── View-mode segmented control (editor) ─────────────────────────── */
+.notes-scope .note-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--note-paper-sunken);
+  border: 1px solid var(--note-line-soft);
+}
+.notes-scope .note-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--note-ink-faint);
+  font-family: var(--note-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 160ms var(--note-ease-precise);
+}
+.notes-scope .note-seg-btn:hover:not(.is-active) {
+  color: var(--note-ink-soft);
+}
+.notes-scope .note-seg-btn.is-active {
+  background: var(--note-paper-elev);
+  color: var(--note-ink);
+  box-shadow: 0 1px 2px rgba(60, 40, 20, 0.08);
+}
+
+/* ─── Editor single-pane modes ─────────────────────────────────────── */
+/* Split by default; write/read modes collapse the inactive pane. */
+.notes-scope .note-edit-grid {
+  grid-template-columns: 1fr 1fr;
+}
+.notes-scope .note-edit-grid.is-write {
+  grid-template-columns: 1fr;
+}
+.notes-scope .note-edit-grid.is-read {
+  grid-template-columns: 1fr;
+}
+.notes-scope .note-edit-grid.is-write .note-pane-preview,
+.notes-scope .note-edit-grid.is-read .note-pane-write {
+  display: none;
+}
+.notes-scope .note-edit-grid.is-write .note-pane-write,
+.notes-scope .note-edit-grid.is-read .note-pane-preview {
+  border-right: none !important;
+}
+
+/* ─── Focus-visible refinements ────────────────────────────────────── */
+.notes-scope .note-row:focus-visible,
+.notes-scope .note-btn:focus-visible,
+.notes-scope .note-seg-btn:focus-visible,
+.notes-scope .note-search-clear:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--note-accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* ─── First-note empty state ───────────────────────────────────────── */
+.notes-scope .note-first-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 8px 16px;
+  border-radius: 4px;
+  background: var(--note-ink);
+  color: var(--note-paper-elev);
+  font-family: var(--note-sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: none;
+  cursor: pointer;
+  transition: background 160ms var(--note-ease-precise);
+}
+.notes-scope .note-first-cta:hover {
+  background: #000;
+}
+
+/* ─── Reading-time pill (shared page colophon) ─────────────────────── */
+.notes-reading .note-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.notes-reading .note-stat-mark {
+  font-family: var(--note-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--note-accent);
+  text-transform: none;
+  letter-spacing: 0;
+}

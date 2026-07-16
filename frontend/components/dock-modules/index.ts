@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, Settings, User, Activity } from "lucide-react";
+import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, NotebookPen, Settings, User, Activity } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
 import ChatDockPanel from "@/components/chat/ChatDockPanel";
 import FavoritesPanel from "./favorites";
@@ -9,6 +9,7 @@ import TasksPanel from "./tasks";
 import BillingPanel from "./billing";
 import QuizPanel from "./quiz";
 import CloudDrivePanel from "./cloud-drive";
+import NotesPanel from "./notes";
 
 export const dockModules: DockModule[] = [
   {
@@ -31,6 +32,13 @@ export const dockModules: DockModule[] = [
     title: "题目练习",
     panel: QuizPanel,
     defaultSize: { width: 720, height: 700 },
+  },
+  {
+    id: "notes",
+    icon: NotebookPen,
+    title: "笔记",
+    panel: NotesPanel,
+    defaultSize: { width: 1100, height: 680 },
   },
   {
     id: "favorites",
