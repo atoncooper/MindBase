@@ -2757,6 +2757,552 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /notes/shared/{share_token}:
+    get:
+      tags:
+      - notes
+      summary: Get Shared Note
+      description: Public read-only access — no auth required.
+      operationId: get_shared_note_notes_shared__share_token__get
+      parameters:
+      - name: share_token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Share Token
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteSharedView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes:
+    get:
+      tags:
+      - notes
+      summary: List Notes
+      operationId: list_notes_notes_get
+      parameters:
+      - name: target_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(video|cloud_file)$
+          - type: 'null'
+          title: Target Type
+      - name: target_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Target Id
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NoteMetaResponse'
+                title: Response List Notes Notes Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - notes
+      summary: Create Note
+      operationId: create_note_notes_post
+      parameters:
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes/{note_uuid}:
+    get:
+      tags:
+      - notes
+      summary: Get Note
+      operationId: get_note_notes__note_uuid__get
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - notes
+      summary: Update Note
+      operationId: update_note_notes__note_uuid__patch
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: If-Match
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: If-Match
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - notes
+      summary: Delete Note
+      operationId: delete_note_notes__note_uuid__delete
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes/{note_uuid}/anchors:
+    post:
+      tags:
+      - notes
+      summary: Add Anchor
+      operationId: add_anchor_notes__note_uuid__anchors_post
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteAnchorRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteAnchorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes/{note_uuid}/anchors/{anchor_id}:
+    delete:
+      tags:
+      - notes
+      summary: Delete Anchor
+      operationId: delete_anchor_notes__note_uuid__anchors__anchor_id__delete
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: anchor_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Anchor Id
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes/{note_uuid}/revisions:
+    get:
+      tags:
+      - notes
+      summary: List Revisions
+      operationId: list_revisions_notes__note_uuid__revisions_get
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NoteRevisionResponse'
+                title: Response List Revisions Notes  Note Uuid  Revisions Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes/{note_uuid}/revisions/restore/{revision_id}:
+    post:
+      tags:
+      - notes
+      summary: Restore Revision
+      operationId: restore_revision_notes__note_uuid__revisions_restore__revision_id__post
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: revision_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Revision Id
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /notes/{note_uuid}/share:
+    post:
+      tags:
+      - notes
+      summary: Create Share
+      operationId: create_share_notes__note_uuid__share_post
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteShareCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteShareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - notes
+      summary: Revoke Share
+      operationId: revoke_share_notes__note_uuid__share_delete
+      parameters:
+      - name: note_uuid
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /cloud/upload/init:
     post:
       tags:
@@ -6447,6 +6993,298 @@ components:
           title: Color
       type: object
       title: WorkspaceUpdateRequest
+    NoteCreateRequest:
+      properties:
+        title:
+          type: string
+          maxLength: 500
+          title: Title
+          default: 无标题
+        target_type:
+          type: string
+          pattern: ^(video|cloud_file)$
+          title: Target Type
+        target_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Target Id
+        content_md:
+          type: string
+          maxLength: 524288
+          title: Content Md
+          default: ''
+      type: object
+      required:
+      - target_type
+      - target_id
+      title: NoteCreateRequest
+    NoteUpdateRequest:
+      properties:
+        title:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Title
+        content_md:
+          anyOf:
+          - type: string
+            maxLength: 524288
+          - type: 'null'
+          title: Content Md
+        is_pinned:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Pinned
+      type: object
+      title: NoteUpdateRequest
+    NoteAnchorRequest:
+      properties:
+        block_id:
+          type: string
+          maxLength: 50
+          minLength: 1
+          title: Block Id
+        position:
+          type: integer
+          minimum: 0.0
+          title: Position
+        label:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Label
+      type: object
+      required:
+      - block_id
+      - position
+      title: NoteAnchorRequest
+    NoteShareCreateRequest:
+      properties:
+        expires_in_days:
+          anyOf:
+          - type: integer
+            maximum: 365.0
+            minimum: 1.0
+          - type: 'null'
+          title: Expires In Days
+          description: None = permanent
+      type: object
+      title: NoteShareCreateRequest
+    NoteMetaResponse:
+      properties:
+        uuid:
+          type: string
+          title: Uuid
+        title:
+          type: string
+          title: Title
+        target_type:
+          type: string
+          title: Target Type
+        target_id:
+          type: string
+          title: Target Id
+        content_length:
+          type: integer
+          title: Content Length
+        is_pinned:
+          type: boolean
+          title: Is Pinned
+        revision_count:
+          type: integer
+          title: Revision Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - uuid
+      - title
+      - target_type
+      - target_id
+      - content_length
+      - is_pinned
+      - revision_count
+      - created_at
+      - updated_at
+      title: NoteMetaResponse
+      description: Note metadata — no content (used in lists).
+    NoteDetailResponse:
+      properties:
+        uuid:
+          type: string
+          title: Uuid
+        title:
+          type: string
+          title: Title
+        target_type:
+          type: string
+          title: Target Type
+        target_id:
+          type: string
+          title: Target Id
+        content_length:
+          type: integer
+          title: Content Length
+        is_pinned:
+          type: boolean
+          title: Is Pinned
+        revision_count:
+          type: integer
+          title: Revision Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        content_md:
+          type: string
+          title: Content Md
+        anchors:
+          items:
+            type: object
+          type: array
+          title: Anchors
+        share_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Share Token
+        share_expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Share Expires At
+      type: object
+      required:
+      - uuid
+      - title
+      - target_type
+      - target_id
+      - content_length
+      - is_pinned
+      - revision_count
+      - created_at
+      - updated_at
+      - content_md
+      title: NoteDetailResponse
+      description: Note detail with content + anchors + share info.
+    NoteAnchorResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        block_id:
+          type: string
+          title: Block Id
+        position:
+          type: integer
+          title: Position
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Label
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - block_id
+      - position
+      - label
+      - created_at
+      title: NoteAnchorResponse
+    NoteShareResponse:
+      properties:
+        share_token:
+          type: string
+          title: Share Token
+        share_url:
+          type: string
+          title: Share Url
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - share_token
+      - share_url
+      - expires_at
+      title: NoteShareResponse
+    NoteRevisionResponse:
+      properties:
+        revision_id:
+          type: string
+          title: Revision Id
+        content_md:
+          type: string
+          title: Content Md
+        revision_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Revision Note
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - revision_id
+      - content_md
+      - revision_note
+      - created_at
+      title: NoteRevisionResponse
+    NoteSharedView:
+      properties:
+        title:
+          type: string
+          title: Title
+        content_md:
+          type: string
+          title: Content Md
+        target_type:
+          type: string
+          title: Target Type
+        target_id:
+          type: string
+          title: Target Id
+        shared_at:
+          type: string
+          format: date-time
+          title: Shared At
+        view_count:
+          type: integer
+          title: View Count
+      type: object
+      required:
+      - title
+      - content_md
+      - target_type
+      - target_id
+      - shared_at
+      - view_count
+      title: NoteSharedView
+      description: Public read-only view (no auth required).
   securitySchemes:
     HTTPBearer:
       type: http
