@@ -1,6 +1,6 @@
-# Bilibili RAG API Documentation
+# MindBase API Documentation
 
-Complete OpenAPI 3.0 specification for the Bilibili RAG knowledge base system.
+Complete OpenAPI 3.0 specification for the MindBase knowledge base system.
 
 ## Quick start
 

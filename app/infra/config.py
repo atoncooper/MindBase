@@ -154,7 +154,7 @@ class _Section(BaseSettings):
 
 
 class AppSection(_Section):
-    name: str = "bilirag"
+    name: str = "MindBase"
     env: str = "dev"
     debug: bool = False
     log_level: str = "INFO"
@@ -172,7 +172,7 @@ class ServerSection(_Section):
 
 
 class RdbmsSection(_Section):
-    url: str = "sqlite+aiosqlite:///./data/bilibili_rag.db"
+    url: str = "sqlite+aiosqlite:///./data/mind_base.db"
     echo: bool = False
     pool_size: int = 20
     max_overflow: int = 10
@@ -184,7 +184,7 @@ class MilvusSection(_Section):
     enabled: bool = False
     uri: str = "http://localhost:19530"
     token: str = ""
-    db_name: str = "bilirag"
+    db_name: str = "mind_base"
     collection_name: str = "bilibili_videos"
     cloud_collection_name: str = "cloud_drive"
     dimension: int = 1536
@@ -197,7 +197,7 @@ class MilvusSection(_Section):
 class MongoSection(_Section):
     enabled: bool = False
     uri: str = "mongodb://localhost:27017"
-    db_name: str = "bilirag"
+    db_name: str = "mind_base"
     max_pool_size: int = 100
     min_pool_size: int = 10
     server_selection_timeout_ms: int = 5000
@@ -211,14 +211,14 @@ class RedisSection(_Section):
     socket_timeout: int = 5
     socket_connect_timeout: int = 5
     health_check_interval: int = 30
-    key_prefix: str = "bilirag:"
+    key_prefix: str = "mind-base:"
 
 
 class MinioSection(_Section):
     enabled: bool = False
     endpoint: str = "http://localhost:9000"
     region: str = "us-east-1"
-    bucket: str = "bilirag"
+    bucket: str = "mind-base"
     secure: bool = False
     presign_expire: int = 3600
     access_key: SecretStr = SecretStr("")
@@ -289,7 +289,7 @@ class AsrSection(_Section):
 
 class LangsmithSection(_Section):
     enabled: bool = True
-    project: str = "bilibili-rag"
+    project: str = "MindBase"
     endpoint: str = "https://api.smith.langchain.com"
     tracing_v2: bool = True
     tracing: bool = True

@@ -1,1 +1,1 @@
-"""MindBase E2E tests package."""
+"""mind-base E2E tests package."""

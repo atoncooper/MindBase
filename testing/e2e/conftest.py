@@ -1,4 +1,4 @@
-"""Pytest fixtures for MindBase E2E tests (Playwright)."""
+"""Pytest fixtures for mind-base E2E tests (Playwright)."""
 from __future__ import annotations
 
 import os

@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug to help us improve MindBase
+about: Report a bug to help us improve mind-base
 title: "[Bug] "
 labels: bug
 assignees: ""
@@ -29,7 +29,7 @@ assignees: ""
 - OS:
 - Python version:
 - Node.js version (if frontend):
-- MindBase branch/commit:
+- mind-base branch/commit:
 
 ## Additional Context
 

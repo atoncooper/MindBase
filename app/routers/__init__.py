@@ -1,5 +1,5 @@
 """
-Bilibili RAG 知识库系统
+MindBase 知识库系统
 
 路由模块初始化
 """

@@ -1,5 +1,5 @@
 """
-Bilibili RAG 知识库系统
+MindBase 知识库系统
 
 主应用入口
 """
@@ -170,7 +170,7 @@ async def _recover_stuck_cloud_tasks():
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
-    logger.info("🚀 Bilibili RAG 知识库系统启动中...")
+    logger.info("🚀 MindBase 知识库系统启动中...")
     ensure_directories()
     await init_db()
     logger.info("数据库初始化完成")
@@ -364,7 +364,7 @@ async def lifespan(app: FastAPI):
 
 # 创建 FastAPI 应用
 app = FastAPI(
-    title="Bilibili RAG 知识库系统",
+    title="MindBase 知识库系统",
     response_model_by_alias=False,
     description="""
 ## 项目简介
@@ -473,7 +473,7 @@ except ImportError as e:
 async def root():
     """API 根路径"""
     return {
-        "message": "🎬 Bilibili RAG 知识库系统",
+        "message": "🎬 MindBase 知识库系统",
         "version": "0.1.0",
         "docs": "/docs",
         "status": "running",

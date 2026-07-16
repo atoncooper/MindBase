@@ -1,4 +1,4 @@
-# MindBase 黑盒 GUI 自动化测试设计文档
+# mind-base 黑盒 GUI 自动化测试设计文档
 
 > 课程设计配套文档 · 2026-06-22
 > 工具栈:Playwright (Python) + Pytest + Allure
@@ -9,8 +9,8 @@
 
 | 项 | 值 |
 |---|---|
-| 系统名 | MindBase(B站收藏知识库 RAG 系统) |
-| 仓库 | `D:\code\app\bilibili-rag\bilibili-rag` |
+| 系统名 | mind-base(B站收藏知识库 RAG 系统) |
+| 仓库 | `D:\code\app\mind-base\mind-base` |
 | 前端 | Next.js 15(App Router) @ `http://localhost:3000` |
 | 后端 | FastAPI @ `http://localhost:8000` |
 | 核心链路 | B站数据 → 内容提取 → 向量化 → 检索 → LLM 生成 |

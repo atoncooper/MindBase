@@ -42,7 +42,7 @@ elif [ "$MODE" = "letsencrypt" ]; then
     EMAIL="${3:-}"
 
     if [ -z "$DOMAIN" ]; then
-        read -rp "Domain name (e.g. bilirag.example.com): " DOMAIN
+        read -rp "Domain name (e.g. mind-base.example.com): " DOMAIN
     fi
     if [ -z "$EMAIL" ]; then
         read -rp "Email (for expiry notices): " EMAIL

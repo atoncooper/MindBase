@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # scripts/start.sh
-# 启动 Bilibili RAG 后端服务
-# 要求：conda 环境 bilibili-rag 已存在
+# 启动 MindBase 后端服务
+# 要求：conda 环境 mind-base 已存在
 set -euo pipefail
 
 PORT="${1:-8000}"
-CONDA_ENV="bilibili-rag"
+CONDA_ENV="mind-base"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'

@@ -1,5 +1,5 @@
 # ============================================================
-# Bilibili RAG — default configuration
+# MindBase — default configuration
 # ============================================================
 # This file is committed as live documentation and fallback defaults.
 #
@@ -21,7 +21,7 @@
 
 # ---- App ----------------------------------------------------------
 app:
-  name: bilirag
+  name: MindBase
   env: dev
   debug: false
   log_level: INFO                     # DEBUG | INFO | WARNING | ERROR | CRITICAL
@@ -34,8 +34,8 @@ server:
   workers: 4
   reload: false                       # set true in config.yaml for dev
   # HTTPS — set both certfile and keyfile to enable TLS
-  ssl_certfile: ""                    # /etc/ssl/certs/bilirag.pem
-  ssl_keyfile: ""                     # /etc/ssl/private/bilirag.key
+  ssl_certfile: ""                    # /etc/ssl/certs/mind-base.pem
+  ssl_keyfile: ""                     # /etc/ssl/private/mind-base.key
   # Set to true when behind a reverse proxy (nginx/Caddy) that handles TLS
   proxy_headers: true                 # trust X-Forwarded-* headers
 
@@ -57,7 +57,7 @@ milvus:
   enabled: true
   uri: ""                               # inject via MILVUS__URI env var
   token: ""
-  db_name: bilirag
+  db_name: MindBase
   collection_name: bilibili_videos
   cloud_collection_name: cloud_drive
   dimension: 1536
@@ -72,7 +72,7 @@ milvus:
 mongo:
   enabled: true
   uri: ""                               # inject via MONGO__URI env var
-  db_name: bilirag
+  db_name: MindBase
   max_pool_size: 100
   min_pool_size: 10
   server_selection_timeout_ms: 5000
@@ -87,7 +87,7 @@ redis:
   socket_timeout: 5
   socket_connect_timeout: 5
   health_check_interval: 30
-  key_prefix: "bilirag:"
+  key_prefix: "mind-base:"
 
 
 # ---- MinIO / S3 (object storage) ----------------------------------
@@ -165,7 +165,7 @@ asr:
 # Set enabled=true + LANGSMITH__API_KEY env var to activate.
 langsmith:
   enabled: true
-  project: bilibili-rag
+  project: MindBase
   endpoint: https://api.smith.langchain.com
   tracing_v2: true                    # LANGCHAIN_TRACING_V2 compat
   tracing: true                       # LANGSMITH_TRACING compat

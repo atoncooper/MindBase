@@ -1,4 +1,4 @@
-# MindBase E2E 黑盒 GUI 自动化测试
+# mind-base E2E 黑盒 GUI 自动化测试
 
 > 课程设计项目 · 使用 Playwright (Python) 驱动 PC 端黑盒测试
 
@@ -41,7 +41,7 @@ cp .env.example .env
 ### 3. 启动被测系统
 ```bash
 # 后端
-cd D:/code/app/bilibili-rag/bilibili-rag
+cd D:/code/app/mind-base/mind-base
 uvicorn app.main:app --reload --port 8000
 
 # 前端(新终端)

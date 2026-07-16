@@ -1,6 +1,6 @@
 """RAG evaluation harness.
 
-Lightweight, offline evaluation framework for the bilibili-rag retrieval +
+Lightweight, offline evaluation framework for the MindBase retrieval +
 generation pipeline. See ``app/test/eval/README.md`` for usage.
 
 The harness deliberately avoids heavy frameworks (ragas, langchain-eval,

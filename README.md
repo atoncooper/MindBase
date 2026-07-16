@@ -1,4 +1,4 @@
-# MindBase · Bilibili RAG Knowledge Base
+# MindBase Knowledge Base
 
 把 B 站收藏、云盘文档和学习记录转化为可检索、可追问、可复习的个人知识库。
 
@@ -116,7 +116,7 @@ pip install -r requirements.txt
 
 ```bash
 export LLM__API_KEY="你的 LLM Key"
-export RDBMS__URL="sqlite+aiosqlite:///./data/bilibili_rag.db"
+export RDBMS__URL="sqlite+aiosqlite:///./data/mind_base.db"
 ```
 
 如果使用 DashScope 兼容接口：
@@ -135,7 +135,7 @@ app/config/default.yaml → app/config/config.yaml → app/config/local.yaml →
 环境变量采用双下划线映射，例如：
 
 ```bash
-export RDBMS__URL="sqlite+aiosqlite:///./data/bilibili_rag.db"
+export RDBMS__URL="sqlite+aiosqlite:///./data/mind_base.db"
 export LLM__MODEL="qwen-plus"
 export MILVUS__ENABLED="true"
 ```

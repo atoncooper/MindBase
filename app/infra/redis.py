@@ -127,7 +127,7 @@ async def ping() -> dict[str, Any]:
 
 
 def k(*parts: str) -> str:
-    """Build a prefixed key: ``k('session', sid)`` → ``bilirag:session:{sid}``."""
+    """Build a prefixed key: ``k('session', sid)`` → ``mind-base:session:{sid}``."""
     return config.redis.key_prefix + ":".join(parts)
 
 

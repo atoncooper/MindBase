@@ -1,4 +1,4 @@
-"""Convenience runner for MindBase E2E tests.
+"""Convenience runner for mind-base E2E tests.
 
 Usage:
     python run.py                    # run all
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="MindBase E2E runner")
+    parser = argparse.ArgumentParser(description="mind-base E2E runner")
     parser.add_argument("--module", choices=["m1_auth", "m2_favorites", "m3_knowledge", "m4_chat", "m5_quiz"], help="run a single module")
     parser.add_argument("--scenario", action="store_true", help="run only end-to-end scenarios")
     parser.add_argument("--smoke", action="store_true", help="run only smoke tests")

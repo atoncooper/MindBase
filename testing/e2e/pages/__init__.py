@@ -1,4 +1,4 @@
-"""Page Object layer for MindBase E2E tests."""
+"""Page Object layer for mind-base E2E tests."""
 from .base_page import BasePage
 from .login_page import LoginPage
 from .dock_page import DockPage

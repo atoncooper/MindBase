@@ -35,7 +35,7 @@ _GLOBAL_RATE = (20.0, 50)  # global fallback: 20 rps burst 50
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Token-bucket rate limiter backed by Redis.
 
-    Key format: bilirag:rl:<endpoint>:<ip>:<window>
+    Key format: mind-base:rl:<endpoint>:<ip>:<window>
 
     The Redis client is resolved lazily per-request via
     :func:`app.infra.redis.is_enabled` / ``client`` so the middleware can
@@ -74,7 +74,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Token bucket: use a 1-second sliding window
         window = int(time.time())
-        key = f"bilirag:rl:{path}:{client_ip}:{window}"
+        key = f"mind-base:rl:{path}:{client_ip}:{window}"
 
         try:
             current = await redis_client.incr(key)

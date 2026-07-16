@@ -1,4 +1,4 @@
-"""Utility helpers for MindBase E2E tests."""
+"""Utility helpers for mind-base E2E tests."""
 from .sse_collector import collect_sse_events
 from .env import get_env
 

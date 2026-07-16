@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Bilibili RAG 知识库系统
+  title: MindBase 知识库系统
   description: 'B站收藏内容可检索知识库系统的 RESTful API 文档。
 
 

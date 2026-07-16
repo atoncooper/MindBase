@@ -1,6 +1,6 @@
 # RAG Evaluation Harness
 
-Lightweight, offline evaluation framework for the bilibili-rag retrieval +
+Lightweight, offline evaluation framework for the MindBase retrieval +
 generation pipeline. No external eval frameworks (ragas / arize / langchain-eval),
 just stdlib + the project's existing LLM/embedding clients.
 

@@ -1,5 +1,5 @@
 # ============================================================
-# BiliMind — team-shared configuration override
+# MindBase — team-shared configuration override
 # ============================================================
 # This file is committed to the repository and loaded on top
 # of default.yaml. Use it to define shared, non-sensitive
@@ -28,7 +28,7 @@
 # Application metadata
 # ============================================================
 app:
-  name: bilirag
+  name: MindBase
   env: production                        # informational; real env comes from APP_ENV
   debug: false                           # MUST be false in production
   log_level: INFO                        # DEBUG | INFO | WARNING | ERROR | CRITICAL
@@ -49,8 +49,8 @@ server:
   # uvicorn. If unset, the server listens on plain HTTP.
   # Recommended approach: leave these empty and use a reverse
   # proxy (Caddy / Nginx / cloud LB) for TLS termination.
-  ssl_certfile: ""                       # e.g. /etc/ssl/certs/bilirag.pem
-  ssl_keyfile: ""                        # e.g. /etc/ssl/private/bilirag.key
+  ssl_certfile: ""                       # e.g. /etc/ssl/certs/mind-base.pem
+  ssl_keyfile: ""                        # e.g. /etc/ssl/private/mind-base.key
 
   # ----- Reverse proxy ----------------------------------------
   # When true, uvicorn trusts X-Forwarded-* headers from upstream
@@ -66,13 +66,13 @@ rdbms:
   # Supported dialects: mysql+aiomysql, postgresql+asyncpg, sqlite+aiosqlite
   #
   # Development / local (uncomment one):
-  #   url: sqlite+aiosqlite:///./data/bilibili_rag.db
+  #   url: sqlite+aiosqlite:///./data/mind_base.db
   #
   # Production MySQL (credentials injected via env RDBMS__URL):
-  url: mysql+aiomysql://127.0.0.1:3306/bilirag
+  url: mysql+aiomysql://127.0.0.1:3306/mind_base
   #
   # Production PostgreSQL:
-  #   url: postgresql+asyncpg://user:pass@host:5432/bilirag
+  #   url: postgresql+asyncpg://user:pass@host:5432/mind_base
   #   Inject credentials via env: RDBMS__URL
 
   # ----- Connection pool ---------------------------------------
@@ -92,7 +92,7 @@ milvus:
   enabled: true
   uri: ""                                # e.g. http://milvus-host:19530 — inject via MILVUS__URI
   token: ""                              # auth token; inject via MILVUS__TOKEN
-  db_name: bilirag
+  db_name: mind_base
   collection_name: bilibili_videos
   cloud_collection_name: cloud_drive
   dimension: 1536                        # must match embedding.dimension
@@ -111,7 +111,7 @@ mongo:
   enabled: true
   uri: ""                                # mongodb://user:pass@host:27017/?authSource=admin
                                           # inject via MONGO__URI
-  db_name: bilirag
+  db_name: mind_base
   max_pool_size: 100
   min_pool_size: 10
   server_selection_timeout_ms: 5000
@@ -129,7 +129,7 @@ redis:
   socket_timeout: 5
   socket_connect_timeout: 5
   health_check_interval: 30
-  key_prefix: "bilirag:"
+  key_prefix: "mind-base:"
 
 
 # ============================================================
@@ -139,7 +139,7 @@ minio:
   enabled: false                         # enable when file uploads are needed
   endpoint: http://localhost:9000
   region: us-east-1
-  bucket: bilirag
+  bucket: mind-base
   secure: false                          # true = use HTTPS (requires valid cert)
   presign_expire: 3600                   # pre-signed URL TTL (seconds)
   # access_key via env: MINIO__ACCESS_KEY
@@ -227,7 +227,7 @@ asr:
 # production to reduce cost / latency.
 langsmith:
   enabled: true
-  project: bilibili-rag
+  project: MindBase
   endpoint: https://api.smith.langchain.com
   tracing_v2: true                       # maps to LANGCHAIN_TRACING_V2
   tracing: true                          # maps to LANGSMITH_TRACING

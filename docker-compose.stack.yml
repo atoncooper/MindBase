@@ -1,20 +1,20 @@
 # ================================================================
-# Bilibili RAG — Docker Swarm Stack (rolling update production)
+# MindBase — Docker Swarm Stack (rolling update production)
 # ================================================================
 # Build images first, then deploy:
 #   docker compose -f docker-compose.yml build
-#   docker tag bilibili-rag-backend  registry.example.com/bilirag-backend:v1
-#   docker tag bilibili-rag-frontend registry.example.com/bilirag-frontend:v1
+#   docker tag mind-base-backend  registry.example.com/mind-base-backend:v1
+#   docker tag mind-base-frontend registry.example.com/mind-base-frontend:v1
 #   docker push ...
 #
 # Deploy to Swarm:
-#   docker stack deploy -c docker-compose.stack.yml bilirag
+#   docker stack deploy -c docker-compose.stack.yml mind-base
 #
 # Rolling update:
-#   docker service update --image registry.example.com/bilirag-backend:v2 bilirag_backend
+#   docker service update --image registry.example.com/mind-base-backend:v2 mind-base_backend
 #
 # Rollback:
-#   docker service rollback bilirag_backend
+#   docker service rollback mind-base_backend
 
 services:
   # ==============================================================
@@ -22,15 +22,15 @@ services:
   # ==============================================================
 
   backend:
-    image: ${BACKEND_IMAGE:-bilirag-backend:latest}
+    image: ${BACKEND_IMAGE:-mind-base-backend:latest}
     environment:
       - APP_DEBUG=false
       - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
-      - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://bilirag:bilirag@mysql:3306/bilirag}
+      - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - MILVUS__TOKEN=${MILVUS__TOKEN:-}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:bilirag@mongo:27017/?authSource=admin}
-      - REDIS__URL=${REDIS__URL:-redis://:bilirag@redis:6379/1}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       - LLM__API_KEY=${LLM_API_KEY}
       - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - LLM__MODEL=${LLM_MODEL:-qwen3-max}
@@ -40,7 +40,7 @@ services:
       - ASR__BASE_URL=${ASR_BASE_URL:-https://dashscope.aliyuncs.com/api/v1}
       - ASR__MODEL=${ASR_MODEL:-paraformer-v2}
       - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-bilibili-rag}
+      - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
       - SESSION__SECRET=${SESSION_SECRET}
       - SECURITY__API_KEY_ENCRYPTION_KEY=${API_KEY_ENCRYPTION_KEY}
     volumes:
@@ -70,10 +70,10 @@ services:
         max_attempts: 3
         window: 120s
     networks:
-      - bilirag-net
+      - mind-base-net
 
   frontend:
-    image: ${FRONTEND_IMAGE:-bilirag-frontend:latest}
+    image: ${FRONTEND_IMAGE:-mind-base-frontend:latest}
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
@@ -101,7 +101,7 @@ services:
         max_attempts: 3
         window: 120s
     networks:
-      - bilirag-net
+      - mind-base-net
 
   # ==============================================================
   # Reverse Proxy
@@ -133,7 +133,7 @@ services:
         delay: 5s
         max_attempts: 3
     networks:
-      - bilirag-net
+      - mind-base-net
 
   # ==============================================================
   # Infrastructure — stateful (no rolling update, single replica)
@@ -143,9 +143,9 @@ services:
     image: mysql:8.4
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
-      - MYSQL_DATABASE=bilirag
-      - MYSQL_USER=${MYSQL_USER:-bilirag}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-bilirag}
+      - MYSQL_DATABASE=mind_base
+      - MYSQL_USER=${MYSQL_USER:-mind_base}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
     volumes:
       - mysql_data:/var/lib/mysql
       - ./app/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -163,13 +163,13 @@ services:
         delay: 10s
         max_attempts: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   redis:
     image: redis:7-alpine
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-bilirag}
+      --requirepass ${REDIS_PASSWORD:-mind-base}
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --save 900 1
@@ -177,7 +177,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-bilirag}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -190,13 +190,13 @@ services:
         delay: 10s
         max_attempts: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   mongo:
     image: mongo:7
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-bilirag}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -213,7 +213,7 @@ services:
         delay: 10s
         max_attempts: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   milvus:
     image: milvusdb/milvus:v2.4.17
@@ -238,7 +238,7 @@ services:
         delay: 10s
         max_attempts: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
@@ -266,7 +266,7 @@ services:
         delay: 5s
         max_attempts: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
@@ -288,7 +288,7 @@ services:
         delay: 5s
         max_attempts: 5
     networks:
-      - bilirag-net
+      - mind-base-net
 
 volumes:
   backend_data:
@@ -302,6 +302,6 @@ volumes:
   certbot_www:
 
 networks:
-  bilirag-net:
+  mind-base-net:
     driver: overlay
     attachable: true
