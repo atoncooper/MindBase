@@ -23,7 +23,6 @@ from app.database import get_db
 from app.utils.request_meta import get_client_ip
 from app.response import (
     LoginRequest,
-    PasswordResetRequest,
 )
 from app.services.auth.rate_limit_service import (
     LoginCooldown,
@@ -81,9 +80,16 @@ async def login_rate_limit_dep(
 
 async def password_reset_request_rate_limit_dep(
     request: Request,
-    req: PasswordResetRequest,
     db: AsyncSession = Depends(get_db),
 ) -> None:
+    """Per-IP limiter for reset-request. Per-email is done by the router
+    inline via ``password_reset_request_email_rate_limit()``.
+
+    Do NOT declare the request body (e.g. ``req: PasswordResetRequest``)
+    here: a bare Pydantic-model param is treated as a second body field,
+    colliding with the route's ``body`` and making FastAPI wrap the body
+    into ``{req, body}`` (HTTP 422 for callers sending ``{email}``).
+    """
     ip = get_client_ip(request)
     try:
         await rate_limit_service.check_ip(
@@ -93,10 +99,21 @@ async def password_reset_request_rate_limit_dep(
             max_count=settings.rl_reset_request_ip_max,
             window_sec=settings.rl_reset_request_ip_window,
         )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+async def password_reset_request_email_rate_limit(
+    email: str, db: AsyncSession
+) -> None:
+    """Per-email limiter for reset-request. Called by the router inline
+    (mirrors ``send_code_uid_rate_limit`` / ``change_password_rate_limit_dep_inline``).
+    """
+    try:
         await rate_limit_service.check_target(
             db,
             endpoint="pw_reset_req",
-            target=req.email,
+            target=email,
             max_count=settings.rl_reset_request_email_max,
             window_sec=settings.rl_reset_request_email_window,
         )

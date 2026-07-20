@@ -46,6 +46,7 @@ from app.services.auth.rate_limit_deps import (
     email_verify_rate_limit_dep,
     login_rate_limit_dep,
     password_reset_rate_limit_dep,
+    password_reset_request_email_rate_limit,
     password_reset_request_rate_limit_dep,
     send_code_uid_rate_limit,
 )
@@ -584,6 +585,7 @@ async def reset_password_request(
 
     即便邮箱未注册也返回相同成功信息（不泄漏账号是否存在）。
     """
+    await password_reset_request_email_rate_limit(body.email, db)
     vs = VerificationService()
     try:
         await vs.send_reset_token(db, target=body.email)
