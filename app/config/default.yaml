@@ -63,6 +63,7 @@ milvus:
   dimension: 1536
   index_type: IVF_FLAT
   metric_type: COSINE
+  analyzer: chinese              # text analyzer: chinese (jieba) for B站中文, standard for English
   nlist: 1024
   nprobe: 16
 
@@ -148,6 +149,24 @@ chunk:
 agentic:
   top_k: 5
   max_hops: 3
+
+
+# ---- Rerank (two-stage retrieval) --------------------------------
+# embedding recall (top_n) -> rerank model -> cut to top_k.
+# provider: null (passthrough) | dashscope (gte-rerank-v2 cross-encoder) |
+#           hybrid (rule blend) | mmr (diversity) | llm (placeholder).
+# api_key via env: RERANK__API_KEY (falls back to LLM__API_KEY).
+rerank:
+  enabled: true                       # master switch; false -> NullReranker passthrough
+  provider: dashscope                 # gte-rerank-v2 cross-encoder via DashScope
+  model: gte-rerank-v2
+  base_url: https://dashscope.aliyuncs.com/api/v1
+  timeout: 30                         # seconds per rerank call
+  top_n: 30                           # over-recall count fed to the reranker
+  alpha: 0.7                          # hybrid weight: embedding similarity
+  beta: 0.2                           # hybrid weight: recency (placeholder)
+  gamma: 0.1                          # hybrid weight: field boost
+  lambda: 0.7                         # mmr relevance vs diversity (1.0 = pure relevance)
 
 
 # ---- ASR — DashScope speech-to-text ------------------------------
