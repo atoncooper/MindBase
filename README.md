@@ -242,7 +242,7 @@ docker-compose up --build
 用于确认真实向量库和数据库状态：
 
 ```bash
-python -m app.test.diagnose_rag
+python -m app.test.rag.diagnose_rag
 ```
 
 它会输出向量库文档数、搜索结果和 `VideoCache` 记录。

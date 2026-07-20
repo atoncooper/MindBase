@@ -84,3 +84,12 @@ app/test/eval/reports/*.md
 !app/test/eval/reports/.gitkeep
 !app/test/eval/reports/baseline*.json
 !app/test/eval/reports/baseline*.md
+
+# RAG eval metrics - generated PNG charts (eval_ragas via plot_utils)
+app/test/rag/metrics/
+
+# RAG eval datasets - downloaded/regenerable (BEIR/NFCorpus/mMARCO, ~40MB)
+app/test/rag/data/
+
+# Stray dev screenshots at repo root
+/forgot-password-light.png
