@@ -3,6 +3,8 @@ import { ZCOOL_XiaoWei, Noto_Sans_SC, Geist, Roboto } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { AuthProvider } from "@/lib/auth";
+import { RouteGuard } from "@/components/RouteGuard";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
@@ -43,7 +45,9 @@ export default function RootLayout({
     <html lang="zh-CN" className={cn("font-sans", "dark", geist.variable, roboto.variable)}>
       <body className={`${display.variable} ${body.variable} ${roboto.variable} antialiased`}>
         <ThemeProvider>
-          {children}
+          <AuthProvider>
+            <RouteGuard>{children}</RouteGuard>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

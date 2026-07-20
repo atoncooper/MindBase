@@ -1,9 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
+import Link from "next/link";
+import { motion } from "framer-motion";
 import { userApi } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { GoogleInput } from "@/components/ui/google-input";
+import { AuthLayout, itemVariants, Spinner, AlertIcon, SuccessCard } from "@/components/auth/auth-ui";
 
 export default function ForgotPasswordPage() {
+  const emailId = useId();
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
@@ -11,14 +17,19 @@ export default function ForgotPasswordPage() {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim()) {
-      setError("请输入邮箱");
+    setError(null);
+    const trimmed = email.trim();
+    if (!trimmed) {
+      setError("请输入邮箱地址");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setError("请输入有效的邮箱地址");
       return;
     }
     setSubmitting(true);
-    setError(null);
     try {
-      await userApi.requestPasswordReset({ email: email.trim() });
+      await userApi.requestPasswordReset({ email: trimmed });
       setDone(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "请求失败，请稍后重试");
@@ -28,74 +39,111 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f8fafd] flex items-center justify-center px-4">
-      <div className="w-full max-w-md bg-white rounded-[20px] shadow-[0_12px_36px_rgba(60,64,67,0.18)] p-8">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="h-11 w-11 rounded-full bg-[#e8f0fe] text-[#1a73e8] flex items-center justify-center font-medium text-lg">
-            M
-          </div>
-          <div>
-            <p className="text-xs font-medium tracking-[0.16em] text-[#1a73e8]">MINDBASE</p>
-            <h1 className="text-[22px] font-normal text-[#202124]">重置密码</h1>
-          </div>
-        </div>
+    <AuthLayout
+      brand={
+        <>
+          <motion.div variants={itemVariants} className="relative z-10 flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--gemini-user-bubble)] text-[var(--gemini-primary)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--gemini-primary)_12%,transparent)]">
+              <span className="text-lg font-medium">M</span>
+            </div>
+            <p className="text-xs font-medium tracking-[0.18em] text-[var(--gemini-primary)]">MINDBASE</p>
+          </motion.div>
 
-        {done ? (
-          <div className="space-y-4">
-            <p className="text-[14px] leading-6 text-[#3c4043]">
-              如果该邮箱已注册，您将收到一封包含重置链接的邮件。请在 10 分钟内完成重置。
+          <motion.div variants={itemVariants} className="relative z-10 my-10 md:my-0">
+            <h1 className="max-w-[320px] text-[28px] font-normal leading-[1.18] tracking-[-0.5px] text-[var(--gemini-text-primary)] md:text-[34px]">
+              找回你的账号访问
+            </h1>
+            <p className="mt-4 max-w-[360px] text-[14px] leading-[1.65] text-[var(--gemini-text-secondary)]">
+              输入注册邮箱，我们会发送一封密码重置邮件。链接在 10 分钟内有效，请尽快完成重置。
             </p>
-            <p className="text-[13px] text-[#5f6368]">
-              没收到？请检查垃圾邮件箱，或{" "}
-              <button
-                onClick={() => setDone(false)}
-                className="text-[#1a73e8] hover:underline font-medium"
-              >
-                重新输入邮箱
-              </button>
-            </p>
-            <button
-              onClick={() => (window.location.href = "/")}
-              className="w-full h-11 rounded-full bg-[#1a73e8] text-white font-medium text-[14px] hover:bg-[#1765cc] transition-colors"
-            >
-              返回首页
+          </motion.div>
+
+          <motion.p variants={itemVariants} className="relative z-10 hidden text-[13px] text-[var(--gemini-text-tertiary)] md:block">
+            还没有账号？先扫码登录，再在账户安全中绑定邮箱并设置密码。
+          </motion.p>
+        </>
+      }
+    >
+      {done ? (
+        <SuccessCard
+          title="检查你的邮箱"
+          desc={
+            <>
+              如果 <span className="font-medium text-[var(--gemini-text-primary)]">{email}</span> 已注册，你将收到一封包含重置链接的邮件。
+            </>
+          }
+        >
+          <p className="mt-2 text-[13px] text-[var(--gemini-text-tertiary)]">
+            没收到？检查垃圾邮件箱，或
+            <button type="button" onClick={() => setDone(false)} className="ml-1 font-medium text-[var(--gemini-primary)] hover:underline">
+              重新输入邮箱
             </button>
-          </div>
-        ) : (
-          <form onSubmit={onSubmit} className="space-y-4">
-            <p className="text-[14px] leading-6 text-[#3c4043]">
-              输入您的账号邮箱，我们会向您发送一封密码重置邮件。
-            </p>
-            <input
+          </p>
+          <Link
+            href="/"
+            className="mt-6 flex h-11 items-center justify-center rounded-full bg-[var(--gemini-primary)] font-medium text-white transition-colors hover:bg-[var(--gemini-primary-hover)]"
+          >
+            返回登录
+          </Link>
+        </SuccessCard>
+      ) : (
+        <form onSubmit={onSubmit} noValidate>
+          <motion.div variants={itemVariants} className="mb-2">
+            <p className="text-xs font-medium tracking-[0.16em] text-[var(--gemini-primary)]">MINDBASE</p>
+            <h2 className="mt-1 text-[24px] font-normal tracking-[-0.3px] text-[var(--gemini-text-primary)]">重置密码</h2>
+          </motion.div>
+          <motion.p variants={itemVariants} className="mb-6 text-[14px] leading-[1.6] text-[var(--gemini-text-secondary)]">
+            输入账号邮箱，我们会向你发送一封密码重置邮件。
+          </motion.p>
+
+          <motion.div variants={itemVariants}>
+            <GoogleInput
+              id={emailId}
+              label="电子邮件地址"
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="your@email.com"
+              onChange={(v) => {
+                setEmail(v);
+                setError(null);
+              }}
+              autoComplete="email"
+              autoFocus
               required
-              className="w-full h-[48px] rounded border border-[#dadce0] bg-white px-4 text-base text-[#202124] outline-none focus:border-2 focus:border-[#1a73e8] transition-colors"
             />
+          </motion.div>
+
+          <motion.div variants={itemVariants} className="min-h-[40px] pt-3">
             {error && (
-              <div className="text-[13px] text-[#d93025] bg-[#fce8e6] rounded px-3 py-2">
-                {error}
+              <div role="alert" className="flex items-start gap-2 rounded-[8px] bg-[#fce8e6] px-3 py-2 text-[13px] leading-5 text-[#d93025] dark:bg-[#2a1a1a] dark:text-[#f28b82]">
+                <AlertIcon />
+                <span>{error}</span>
               </div>
             )}
-            <button
+          </motion.div>
+
+          <motion.div variants={itemVariants}>
+            <Button
               type="submit"
               disabled={submitting}
-              className="w-full h-11 rounded-full bg-[#1a73e8] text-white font-medium text-[14px] hover:bg-[#1765cc] transition-colors disabled:opacity-60"
+              className="h-11 w-full rounded-full bg-[var(--gemini-primary)] text-white transition-colors hover:bg-[var(--gemini-primary-hover)] disabled:opacity-60"
             >
-              {submitting ? "发送中…" : "发送重置邮件"}
-            </button>
-            <button
-              type="button"
-              onClick={() => (window.location.href = "/")}
-              className="w-full text-[13px] text-[#5f6368] hover:underline"
-            >
-              返回首页
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+              {submitting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Spinner /> 发送中
+                </span>
+              ) : (
+                "发送重置邮件"
+              )}
+            </Button>
+          </motion.div>
+
+          <motion.div variants={itemVariants} className="mt-5 text-center">
+            <Link href="/" className="text-[13px] font-medium text-[var(--gemini-text-secondary)] transition-colors hover:text-[var(--gemini-primary)] hover:underline">
+              ← 返回登录
+            </Link>
+          </motion.div>
+        </form>
+      )}
+    </AuthLayout>
   );
 }

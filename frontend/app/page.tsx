@@ -9,7 +9,8 @@ import DockPanelWrapper from "@/components/DockPanelWrapper";
 import ASRViewerModal from "@/components/ASRViewerModal";
 import { DockContext } from "@/lib/dock-context";
 import { dockModules } from "@/components/dock-modules";
-import { UserInfo, authApi, chatApi, VectorPageStatusResponse, WorkspacePage } from "@/lib/api";
+import { UserInfo, chatApi, VectorPageStatusResponse, WorkspacePage } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { ChatSidebarRenameDialog } from "@/components/chat-sidebar/ChatSidebarRenameDialog";
 import { ChatSidebarDeleteDialog } from "@/components/chat-sidebar/ChatSidebarDeleteDialog";
 import { useAppStore } from "@/stores/app-store";
@@ -17,8 +18,7 @@ import ThreeJSScene from "@/components/three/ThreeJSScene";
 import ThemeToggle from "@/components/ThemeToggle";
 
 export default function Home() {
-  const [session, setSession] = useState<string | null>(null);
-  const [user, setUser] = useState<string | null>(null);
+  const { user, sessionToken: session, login, logout } = useAuth();
   const [showQRLogin, setShowQRLogin] = useState(false);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
@@ -51,15 +51,6 @@ export default function Home() {
   const [renameDialog, setRenameDialog] = useState<{ sessionId: string; title: string } | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<{ sessionId: string; title: string } | null>(null);
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
-
-  useEffect(() => {
-    const s = localStorage.getItem("bili_session");
-    const u = localStorage.getItem("bili_user");
-    if (s) {
-      setSession(s);
-      setUser(u || "用户");
-    }
-  }, []);
 
   // 初始化/恢复聊天会话
   useEffect(() => {
@@ -100,27 +91,18 @@ export default function Home() {
   };
 
   const onLogin = (sid: string, info: UserInfo) => {
-    const displayName = info.uname || info.nickname || "用户";
-    setSession(sid);
-    setUser(displayName);
+    login(sid, info);
     setShowQRLogin(false);
     setShowPasswordLogin(false);
-    localStorage.setItem("bili_session", sid);
-    localStorage.setItem("bili_user", displayName);
   };
 
-  const onLogout = useCallback(() => {
-    if (session) authApi.logoutCurrent(session).catch(() => { });
-    setSession(null);
-    setUser(null);
+  const onLogout = useCallback(async () => {
+    await logout();
     setActiveChatSessionId(null);
     setActivePanelId(null);
     setSelectedFolderIds([]);
     setWorkspacePages([]);
-    localStorage.removeItem("bili_session");
-    localStorage.removeItem("bili_user");
-    localStorage.removeItem("bili_chat_session");
-  }, [session]);
+  }, [logout]);
 
   const onOpenASR = useCallback((bvid: string, cid: number, pageTitle: string, pageIndex: number = 0) => {
     setAsrModal({ isOpen: true, bvid, cid, pageIndex, pageTitle });
