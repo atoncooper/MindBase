@@ -324,6 +324,48 @@ async def list_videos(
             sort=sort,
             order=order,
         )
+        # Read-time reconcile: batch-check done files against Milvus, flip
+        # to failed those whose vectors are gone. Concurrent to bound latency;
+        # only done rows checked (processing may be mid-write). Skip when
+        # Milvus is not configured to avoid false positives.
+        done_files = [f for f in files if f.vector_status == "done"]
+        if done_files and config.milvus.enabled:
+            try:
+                import asyncio
+                from concurrent.futures import ThreadPoolExecutor
+
+                from app.services.rag import get_rag_service
+
+                rag = get_rag_service()
+                if rag.cloud_backend is not None:
+                    loop = asyncio.get_running_loop()
+                    uuids = [f.upload_uuid for f in done_files]
+                    with ThreadPoolExecutor(
+                        max_workers=min(len(uuids), 10)
+                    ) as pool:
+                        counts = await asyncio.gather(
+                            *[
+                                loop.run_in_executor(
+                                    pool, rag.count_cloud_chunks, u
+                                )
+                                for u in uuids
+                            ]
+                        )
+                    flipped = 0
+                    for f, c in zip(done_files, counts):
+                        if c == 0:
+                            f.vector_status = "failed"
+                            flipped += 1
+                    if flipped:
+                        logger.warning(
+                            "[CLOUD] list: flipped {} done file(s) -> failed "
+                            "(Milvus vectors lost)",
+                            flipped,
+                        )
+                        await db.commit()
+            except Exception:
+                logger.exception("[CLOUD] list: read-time reconcile failed")
+
         videos = [VideoItem.model_validate(f) for f in files]
         return VideoListResponse(
             videos=videos,
@@ -348,6 +390,29 @@ async def get_video_detail(
         file = await file_repo.get_by_uuid(upload_uuid, uid, db)
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
+
+        # Read-time reconcile: flip done -> failed if Milvus vectors gone.
+        if file.vector_status == "done" and config.milvus.enabled:
+            try:
+                from app.services.rag import get_rag_service
+
+                rag = get_rag_service()
+                if (
+                    rag.cloud_backend is not None
+                    and rag.count_cloud_chunks(upload_uuid) == 0
+                ):
+                    file.vector_status = "failed"
+                    logger.warning(
+                        "[CLOUD] detail: file {} flipped done->failed "
+                        "(Milvus vectors lost)",
+                        upload_uuid,
+                    )
+                    await db.commit()
+            except Exception:
+                logger.exception(
+                    "[CLOUD] detail: read-time reconcile failed upload_uuid={}",
+                    upload_uuid,
+                )
 
         # Build base response from ORM model
         result = VideoDetailResponse.model_validate(file)
@@ -520,16 +585,36 @@ async def get_video_status(
         if file is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Check Milvus for actual chunk count (authoritative)
+        # Read-time reconcile: DB may say "done" while Milvus has lost the
+        # vectors (collection rebuilt after embedding model change, data
+        # corruption, manual reset, etc.). Verify done rows against Milvus
+        # and flip to failed if vectors are gone, so the user sees the
+        # truth and can reprocess. Only check done rows (processing may be
+        # mid-write); skip when Milvus is not configured (cloud_backend
+        # is None) to avoid false positives.
         milvus_chunk_count = file.vector_chunk_count or 0
-        if config.milvus.enabled and milvus_chunk_count == 0:
+        if file.vector_status == "done" and config.milvus.enabled:
             try:
                 from app.services.rag import get_rag_service
 
                 rag = get_rag_service()
-                milvus_chunk_count = rag.count_cloud_chunks(upload_uuid)
+                if rag.cloud_backend is not None:
+                    actual = rag.count_cloud_chunks(upload_uuid)
+                    milvus_chunk_count = actual
+                    if actual == 0:
+                        file.vector_status = "failed"
+                        logger.warning(
+                            "[CLOUD] file {} flipped done->failed: "
+                            "Milvus vectors lost (collection rebuilt "
+                            "or data missing)",
+                            upload_uuid,
+                        )
+                        await db.commit()
             except Exception:
-                pass
+                logger.exception(
+                    "[CLOUD] read-time reconcile failed upload_uuid={}",
+                    upload_uuid,
+                )
 
         return VideoStatusResponse(
             asrStatus=file.asr_status,

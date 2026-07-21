@@ -59,6 +59,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
   // Video list
   const [videos, setVideos] = useState<CloudVideoItem[]>([]);
   const [videosLoading, setVideosLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [videoPage, setVideoPage] = useState(1);
   const [videoHasMore, setVideoHasMore] = useState(false);
 
@@ -223,6 +224,10 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
   }, []);
 
   const loadVideos = useCallback(async (folderId: number | null, page: number) => {
+    // page === 1 = refresh / first load; track separately so the overlay
+    // doesn't fire on "load more" (page > 1), which would blank the list
+    // the user is currently scrolling.
+    if (page === 1) setRefreshing(true);
     setVideosLoading(true);
     try {
       const res = await cloudApi.listVideos(folderId, page);
@@ -237,6 +242,7 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
       if (!e.message?.includes("503")) setError(e);
     } finally {
       setVideosLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -546,7 +552,29 @@ export default function CloudDrivePanel({ isOpen }: DockPanelProps) {
         </aside>
 
         {/* Right — file list */}
-        <section className="cd-file-list">
+        <section className="cd-file-list" style={{ position: "relative" }}>
+          {/* Refresh overlay: only when refreshing with existing data,
+              so first load (length 0) keeps its own spinner and "load
+              more" (page > 1) doesn't blank the list. */}
+          {refreshing && videos.length > 0 && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                background: "rgba(255, 255, 255, 0.7)",
+                zIndex: 20,
+                color: "#666",
+                fontSize: 14,
+              }}
+            >
+              <Loader2 size={20} className="animate-spin" />
+              <span>刷新中…</span>
+            </div>
+          )}
           {/* Breadcrumb */}
           <nav className="cd-breadcrumb" aria-label="位置">
             <button
