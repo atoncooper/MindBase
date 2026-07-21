@@ -61,11 +61,12 @@ class MilvusVectorStore:
     Each instance is bound to a single collection (bilibili_videos or cloud_drive).
     """
 
-    def __init__(self, config: MilvusSection, embedding_fn: Any, collection_name: str):
+    def __init__(self, config: MilvusSection, embedding_fn: Any, collection_name: str, analyzer: str | None = None):
         self._config = config
         self._embedding_fn = embedding_fn
         self._collection_name = collection_name
         self._is_cloud = collection_name == config.cloud_collection_name
+        self._analyzer = analyzer  # override config.analyzer for this collection
         # Set to True by _ensure_collection when an existing collection was
         # dropped + recreated (e.g. embedding dim mismatch after model
         # change).  Callers (RAGService startup) check this flag to reset
@@ -236,6 +237,100 @@ class MilvusVectorStore:
         docs: list[Document] = []
         # MilvusClient search returns list[list[Hit]]; each Hit is a dict
         # subclass supporting direct field access via hit.get(field).
+        for topk in results:
+            for hit in topk:
+                score = hit.get("distance", 0.0)
+                if self._is_cloud:
+                    metadata = {
+                        "upload_uuid": hit.get("upload_uuid", ""),
+                        "uid": hit.get("uid", 0),
+                        "chunk_index": hit.get("chunk_index", 0),
+                        "chunk_id": hit.get("chunk_id", ""),
+                        "title": hit.get("title", ""),
+                        "source": hit.get("source", ""),
+                        "source_type": hit.get("source_type", ""),
+                        "section_title": hit.get("section_title", ""),
+                        "content_type": hit.get("content_type", ""),
+                        "score": score,
+                    }
+                else:
+                    metadata = {
+                        "bvid": hit.get("bvid", ""),
+                        "cid": hit.get("cid", 0),
+                        "page_index": hit.get("page_index", 0),
+                        "chunk_index": hit.get("chunk_index", 0),
+                        "chunk_id": hit.get("chunk_id", ""),
+                        "title": hit.get("title", ""),
+                        "page_title": hit.get("page_title", ""),
+                        "source": hit.get("source", ""),
+                        "section_title": hit.get("section_title", ""),
+                        "content_type": hit.get("content_type", ""),
+                        "url": hit.get("url", ""),
+                        "score": score,
+                    }
+                docs.append(
+                    Document(page_content=hit.get("text", ""), metadata=metadata)
+                )
+        return docs
+
+    def hybrid_search(
+        self,
+        query: str,
+        k: int = 5,
+        filter: dict[str, Any] | None = None,
+        rrf_k: int = 60,
+    ) -> list[Document]:
+        """Hybrid retrieval: dense (semantic) + sparse (BM25) -> RRF fusion.
+
+        Requires the collection to be created with the BM25 schema (text
+        analyzer + sparse_embedding + Function). Returns [] on legacy
+        collections lacking sparse_embedding.
+        """
+        if self._client is None:
+            logger.error(
+                "[MILVUS] hybrid_search on uninitialized client - returning empty collection='{}'",
+                self._collection_name,
+            )
+            return []
+        from pymilvus import AnnSearchRequest, RRFRanker
+
+        query_embedding = self._embedding_fn.embed_query(query)
+        dense_param = {
+            "metric_type": self._config.metric_type,
+            "params": {"nprobe": self._config.nprobe},
+        }
+        sparse_param = {"metric_type": "BM25"}
+        expr = self._build_filter_expr(filter) if filter else ""
+        output_fields = _CLOUD_DRIVE_FIELDS if self._is_cloud else _BILIBILI_FIELDS
+
+        dense_req = AnnSearchRequest(
+            data=[query_embedding],
+            anns_field="embedding",
+            param=dense_param,
+            limit=k,
+            expr=expr,
+        )
+        sparse_req = AnnSearchRequest(
+            data=[query],
+            anns_field="sparse_embedding",
+            param=sparse_param,
+            limit=k,
+            expr=expr,
+        )
+        logger.info(
+            "[MILVUS] hybrid_search collection='{}' k={} rrf_k={}",
+            self._collection_name,
+            k,
+            rrf_k,
+        )
+        results = self._client.hybrid_search(
+            collection_name=self._collection_name,
+            reqs=[dense_req, sparse_req],
+            ranker=RRFRanker(rrf_k),
+            limit=k,
+            output_fields=output_fields,
+        )
+        docs: list[Document] = []
         for topk in results:
             for hit in topk:
                 score = hit.get("distance", 0.0)
@@ -541,7 +636,7 @@ class MilvusVectorStore:
             )
 
     def _build_bilibili_schema(self):
-        from pymilvus import DataType
+        from pymilvus import DataType, Function, FunctionType
 
         schema = self._client.create_schema(enable_dynamic_field=True)
         schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True)
@@ -556,7 +651,24 @@ class MilvusVectorStore:
         schema.add_field(field_name="section_title", datatype=DataType.VARCHAR, max_length=256)
         schema.add_field(field_name="content_type", datatype=DataType.VARCHAR, max_length=32)
         schema.add_field(field_name="url", datatype=DataType.VARCHAR, max_length=512)
-        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
+        # text field with Chinese analyzer -> enables BM25 full-text search
+        schema.add_field(
+            field_name="text",
+            datatype=DataType.VARCHAR,
+            max_length=65535,
+            enable_analyzer=True,
+            analyzer_params={"type": self._analyzer or getattr(self._config, "analyzer", "chinese")},
+        )
+        # sparse vector auto-generated from text by the BM25 function
+        schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
+        schema.add_function(
+            Function(
+                name="text_bm25",
+                input_field_names=["text"],
+                output_field_names=["sparse_embedding"],
+                function_type=FunctionType.BM25,
+            )
+        )
         schema.add_field(
             field_name="embedding",
             datatype=DataType.FLOAT_VECTOR,
@@ -565,7 +677,7 @@ class MilvusVectorStore:
         return schema
 
     def _build_cloud_drive_schema(self):
-        from pymilvus import DataType
+        from pymilvus import DataType, Function, FunctionType
 
         schema = self._client.create_schema(enable_dynamic_field=True)
         schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True, auto_id=True)
@@ -578,7 +690,24 @@ class MilvusVectorStore:
         schema.add_field(field_name="source_type", datatype=DataType.VARCHAR, max_length=16)
         schema.add_field(field_name="section_title", datatype=DataType.VARCHAR, max_length=256)
         schema.add_field(field_name="content_type", datatype=DataType.VARCHAR, max_length=32)
-        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
+        # text field with Chinese analyzer -> enables BM25 full-text search
+        schema.add_field(
+            field_name="text",
+            datatype=DataType.VARCHAR,
+            max_length=65535,
+            enable_analyzer=True,
+            analyzer_params={"type": self._analyzer or getattr(self._config, "analyzer", "chinese")},
+        )
+        # sparse vector auto-generated from text by the BM25 function
+        schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
+        schema.add_function(
+            Function(
+                name="text_bm25",
+                input_field_names=["text"],
+                output_field_names=["sparse_embedding"],
+                function_type=FunctionType.BM25,
+            )
+        )
         schema.add_field(
             field_name="embedding",
             datatype=DataType.FLOAT_VECTOR,
@@ -595,6 +724,12 @@ class MilvusVectorStore:
             index_type=index_type,
             metric_type=self._config.metric_type,
             params=params,
+        )
+        # sparse vector index for BM25 full-text search (hybrid retrieval)
+        index_params.add_index(
+            field_name="sparse_embedding",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
         )
         return index_params
 

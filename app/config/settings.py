@@ -317,6 +317,57 @@ class _Settings:
     def rl_email_verify_ip_window(self) -> int:
         return self._rl("email_verify", "ip_window", 60)
 
+    # ── Rerank ────────────────────────────────────────────────────
+
+    @property
+    def rerank_enabled(self) -> bool:
+        return bool(_get("rerank", "enabled", default=False))
+
+    @property
+    def rerank_provider(self) -> str:
+        # "none" is accepted as an alias for "null" by Reranker.__init__.
+        return str(_get("rerank", "provider", default="null"))
+
+    @property
+    def rerank_api_key(self) -> str:
+        # Leave empty to fall back to the LLM api key (DashScope same-source).
+        return str(_get("rerank", "api_key", default=""))
+
+    @property
+    def rerank_model(self) -> str:
+        return str(_get("rerank", "model", default="gte-rerank-v2"))
+
+    @property
+    def rerank_base_url(self) -> str:
+        return str(_get("rerank", "base_url",
+                        default="https://dashscope.aliyuncs.com/api/v1"))
+
+    @property
+    def rerank_timeout(self) -> int:
+        return int(_get("rerank", "timeout", default=30))
+
+    @property
+    def rerank_top_n(self) -> int:
+        # Over-recall count fed to the reranker (embedding recall -> rerank -> top_k).
+        return int(_get("rerank", "top_n", default=30))
+
+    @property
+    def rerank_alpha(self) -> float:
+        return float(_get("rerank", "alpha", default=0.7))
+
+    @property
+    def rerank_beta(self) -> float:
+        return float(_get("rerank", "beta", default=0.2))
+
+    @property
+    def rerank_gamma(self) -> float:
+        return float(_get("rerank", "gamma", default=0.1))
+
+    @property
+    def rerank_lambda(self) -> float:
+        # MMR relevance/diversity trade-off (1.0 = pure relevance).
+        return float(_get("rerank", "lambda", default=0.7))
+
 
 # Module-level singleton — the single config access point
 settings = _Settings()

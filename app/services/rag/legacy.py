@@ -440,7 +440,12 @@ class RAGService:
             # 并行搜索 Milvus bilibili_videos + cloud_drive
             from concurrent.futures import ThreadPoolExecutor
 
-            effective_k = k
+            # Over-recall so the reranker has a candidate pool to pick from.
+            # When rerank is disabled, recall exactly k (identical to before).
+            if settings.rerank_enabled:
+                effective_k = max(getattr(settings, "rerank_top_n", 30), k)
+            else:
+                effective_k = k
 
             search_kwargs = {"k": effective_k}
             if filter_cond:
@@ -537,7 +542,8 @@ class RAGService:
             # seen — minus the k-cut. NullReranker just slices, so this is
             # safe to call unconditionally; we keep the flag check only to
             # avoid the cost when disabled.
-            docs = docs[:k]
+            from app.services.rag.rerank import get_reranker
+            docs = get_reranker().rerank(query, docs, top_k=k)
 
             logger.info("检索完成：query_len={}，召回={}", len(query), len(docs))
             for idx, doc in enumerate(docs):
