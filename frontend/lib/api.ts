@@ -45,6 +45,7 @@ async function request<T>(
             if (token) {
                 localStorage.removeItem("bili_session");
                 localStorage.removeItem("bili_user");
+                window.dispatchEvent(new Event("auth:unauthorized"));
                 throw new Error(sanitizeError({ status: 401 }));
             }
         }
@@ -584,12 +585,12 @@ export const chatApi = {
             body: JSON.stringify(payload),
         });
 
-        // 会话失效时自动清除登录状态并刷新页面（与 request() 保持一致）
+        // 会话失效：清本地登录态并通知 AuthProvider 统一跳转（替代硬刷新）
         if (res.status === 401) {
             if (typeof window !== "undefined") {
                 localStorage.removeItem("bili_session");
                 localStorage.removeItem("bili_user");
-                window.location.href = "/";
+                window.dispatchEvent(new Event("auth:unauthorized"));
             }
             throw new Error("会话已过期，请重新登录");
         }
@@ -2003,6 +2004,7 @@ async function fetchNotesList(
             if (token) {
                 localStorage.removeItem("bili_session");
                 localStorage.removeItem("bili_user");
+                window.dispatchEvent(new Event("auth:unauthorized"));
                 throw new Error(sanitizeError({ status: 401 }));
             }
         }
