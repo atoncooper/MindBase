@@ -138,7 +138,7 @@ set RDBMS__URL=sqlite+aiosqlite:///./data/mind_base.db
 如果要让 `vector_search` 测试真正执行检索并通过，需要先保证向量库里已有数据。可以先运行项目已有诊断脚本：
 
 ```bash
-python -m app.test.diagnose_rag
+python -m app.test.rag.diagnose_rag
 ```
 
 你应看到类似：
@@ -239,7 +239,7 @@ set BILIRAG_REAL_AGENT_HARNESS_TESTS=1
 先运行：
 
 ```bash
-python -m app.test.diagnose_rag
+python -m app.test.rag.diagnose_rag
 ```
 
 确认真实向量库有数据后再跑。
