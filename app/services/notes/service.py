@@ -80,7 +80,7 @@ class NoteService:
         content_hash = mongo_note.content_hash(clean_md)
 
         try:
-            note = await self._repo.create_note(
+            await self._repo.create_note(
                 db,
                 uuid=note_uuid,
                 uid=uid,
@@ -99,7 +99,7 @@ class NoteService:
             await mongo_note.delete_content(note_uuid)
             raise
 
-        return self._meta_to_dict(note)
+        return await self.get_note(db, note_uuid, uid=uid)
 
     # ── Read ───────────────────────────────────────────────────────
 
@@ -185,6 +185,11 @@ class NoteService:
         if if_match is not None and if_match != note.updated_at:
             raise NoteConflictError(note_uuid, note.updated_at)
 
+        # Reject no-op updates so silent field-mapping regressions surface
+        # as 400 instead of a misleading 200.
+        if title is None and content_md is None and is_pinned is None:
+            raise ValueError("empty update: at least one field required")
+
         new_title: Optional[str] = title
         new_pinned: Optional[bool] = is_pinned
         new_length: Optional[int] = None
@@ -230,7 +235,11 @@ class NoteService:
                 bump_revision=bump_revision,
             )
 
-        return self._meta_to_dict(note)
+        # Return full detail (meta + content_md + anchors + share) so the
+        # NoteDetailResponse validation passes - returning _meta_to_dict alone
+        # omits content_md and triggers a 500 that breaks the auto-save loop
+        # (serverUpdatedAtRef never advances -> next save 409s).
+        return await self.get_note(db, note_uuid, uid=uid)
 
     @staticmethod
     async def _should_snapshot(
