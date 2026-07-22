@@ -11,6 +11,8 @@ from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.security.url_validation import validate_public_http_url
+from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
+from app.services.llm.usage_tracker import attach_usage_tracking
 
 
 def infer_provider(base_url: Optional[str]) -> str:
@@ -22,6 +24,10 @@ def infer_provider(base_url: Optional[str]) -> str:
         return "anthropic"
     if "deepseek" in url:
         return "deepseek"
+    if "dashscope" in url or "aliyun" in url:
+        return "dashscope"
+    if "moonshot" in url or "kimi" in url:
+        return "moonshot"
     if "openai" in url:
         return "openai"
     return "custom"
@@ -68,7 +74,21 @@ def build_llm(uid: Optional[int] = None) -> ChatOpenAI:
         base_url=base_url,
         model=model,
         temperature=0.5,
+        stream_usage=True,
     )
+    provider = infer_provider(base_url)
     setattr(llm, "_credential_id", credential_id)
-    setattr(llm, "_provider", infer_provider(base_url))
+    setattr(llm, "_provider", provider)
+    setattr(llm, "_model", model)
+
+    if uid is not None:
+        attach_usage_tracking(
+            llm,
+            uid=uid,
+            credential_id=credential_id,
+            provider=provider,
+            model=model,
+            writer=get_buffered_usage_writer(),
+        )
+
     return llm

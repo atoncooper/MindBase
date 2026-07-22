@@ -110,6 +110,8 @@ async def _migrate_add_columns():
         ("quiz_sets", "quality_metrics", "JSON"),
         # Email verification: brute-force attempt counter + wider code column
         ("verification_codes", "attempts", "INTEGER DEFAULT 0"),
+        # Plan 0035: real usage tracking with cost estimate
+        ("credential_usage", "cost_estimate", "NUMERIC(12, 6) DEFAULT 0.0"),
     ]
 
     # Column type modifications (widening VARCHAR, etc.)

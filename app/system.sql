@@ -59,6 +59,7 @@ create table credential_usage
 (
     id                int auto_increment
         primary key,
+    uid               bigint           not null,
     credential_id     int              null,
     provider          varchar(32)      null,
     model             varchar(64)      null,
@@ -66,9 +67,14 @@ create table credential_usage
     completion_tokens int              null,
     total_tokens      int              null,
     api_calls         int              null,
-    created_at        timestamp default CURRENT_TIMESTAMP null,
-    uid               bigint not null
+    cost_estimate     numeric(12, 6)   default 0.0 null,
+    created_at        timestamp        default CURRENT_TIMESTAMP null,
+    constraint credential_usage_ibfk_1
+        foreign key (uid) references users (uid)
 );
+
+create index ix_credential_usage_uid
+    on credential_usage (uid);
 
 create table favorite_folders
 (
