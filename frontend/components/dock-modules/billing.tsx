@@ -1,7 +1,13 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { billingApi, type UsageSummary, type ProviderUsage } from "@/lib/api";
+import {
+  billingApi,
+  type UsageSummary,
+  type ProviderUsage,
+  type UsageTimeseriesPoint,
+  type ModelUsage,
+} from "@/lib/api";
 import type { DockPanelProps } from "@/lib/dock-registry";
 
 /* ──── SVG Pie Chart ──── */
@@ -105,7 +111,12 @@ function ProviderBars({ summary }: { summary: UsageSummary }) {
                     }}
                   />
                 </div>
-                <span className="bp-bar-val">{item.total_tokens.toLocaleString()}</span>
+                <span className="bp-bar-val">
+                  {item.total_tokens.toLocaleString()}
+                  {(item.cost_estimate ?? 0) > 0 && (
+                    <span className="bp-bar-cost"> ¥{item.cost_estimate.toFixed(2)}</span>
+                  )}
+                </span>
               </div>
             ))}
           </div>
@@ -115,54 +126,139 @@ function ProviderBars({ summary }: { summary: UsageSummary }) {
   );
 }
 
-function ProviderHistogram({ data }: { data: ProviderUsage[] }) {
-  if (data.length === 0) {
-    return <div className="bp-sub-empty">暂无服务商用量数据</div>;
-  }
-  const maxTokens = Math.max(1, ...data.map(item => item.total_tokens));
-
-  return (
-    <div className="bp-histogram">
-      {data.map((item, index) => {
-        const color = COLORS[index % COLORS.length];
-        const height = Math.max(14, (item.total_tokens / maxTokens) * 132);
-        return (
-          <div key={item.provider} className="bp-hist-col">
-            <span className="bp-hist-value">{item.total_tokens.toLocaleString()}</span>
-            <div className="bp-hist-track">
-              <div
-                className="bp-hist-fill"
-                style={{ height, background: color }}
-              />
-            </div>
-            <span className="bp-hist-name">{item.provider}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 /* ──── Summary Cards ──── */
 
 function SummaryCards({ summary, credCount }: { summary: UsageSummary; credCount: number }) {
+  const prompt = summary.total_prompt_tokens ?? 0;
+  const completion = summary.total_completion_tokens ?? 0;
+  const promptPct = prompt + completion > 0 ? Math.round((prompt / (prompt + completion)) * 100) : 0;
   return (
     <div className="bp-cards">
       <div className="bp-card">
         <div className="bp-card-kicker">用量</div>
         <div className="bp-card-val">{summary.total_tokens.toLocaleString()}</div>
-        <div className="bp-card-label">所选时间范围内累计 Token 用量</div>
+        <div className="bp-card-label">累计 Token 用量</div>
+        {prompt + completion > 0 && (
+          <div className="bp-card-split">
+            <span className="bp-split-in">输入 {prompt.toLocaleString()} ({promptPct}%)</span>
+            <span className="bp-split-out">输出 {completion.toLocaleString()} ({100 - promptPct}%)</span>
+          </div>
+        )}
       </div>
       <div className="bp-card">
         <div className="bp-card-kicker">请求</div>
         <div className="bp-card-val">{summary.total_api_calls.toLocaleString()}</div>
-        <div className="bp-card-label">根据接口响应统计的成功请求次数</div>
+        <div className="bp-card-label">成功请求次数</div>
       </div>
       <div className="bp-card">
         <div className="bp-card-kicker">凭证</div>
         <div className="bp-card-val">{credCount}</div>
-        <div className="bp-card-label">本时间段内产生过用量的凭证数量</div>
+        <div className="bp-card-label">产生过用量的凭证数</div>
       </div>
+      <div className="bp-card">
+        <div className="bp-card-kicker">估算费用</div>
+        <div className="bp-card-val">¥{(summary.total_cost ?? 0).toFixed(4)}</div>
+        <div className="bp-card-label">
+          均次 ¥{summary.total_api_calls > 0
+            ? (summary.total_cost / summary.total_api_calls).toFixed(4)
+            : "0.0000"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ──── Trend Chart (daily tokens + cost) ──── */
+
+function TrendChart({ data }: { data: UsageTimeseriesPoint[] }) {
+  if (!data || data.length === 0) {
+    return <div className="bp-sub-empty">暂无趋势数据</div>;
+  }
+
+  const W = 720, H = 180, padL = 40, padR = 12, padT = 16, padB = 28;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const maxTokens = Math.max(1, ...data.map(d => d.total_tokens));
+  const n = data.length;
+
+  const x = (i: number) => padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const yT = (v: number) => padT + innerH - (v / maxTokens) * innerH;
+
+  const tokenPath = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${yT(d.total_tokens)}`).join(" ");
+  const areaPath = `${tokenPath} L ${x(n - 1)} ${padT + innerH} L ${x(0)} ${padT + innerH} Z`;
+
+  // Cost on a secondary axis (right), scaled to max cost.
+  const maxCost = Math.max(...data.map(d => d.cost_estimate), 0.01);
+  const yC = (v: number) => padT + innerH - (v / maxCost) * innerH;
+  const costPath = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${yC(d.cost_estimate)}`).join(" ");
+
+  // X-axis labels: show first, middle, last date.
+  const labelIdx = n <= 1 ? [0] : [0, Math.floor(n / 2), n - 1];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="bp-trend" preserveAspectRatio="none">
+      {/* gridlines */}
+      {[0, 0.25, 0.5, 0.75, 1].map((g, i) => {
+        const gy = padT + innerH - g * innerH;
+        return (
+          <g key={i}>
+            <line x1={padL} y1={gy} x2={W - padR} y2={gy} stroke="var(--border, #30363d)" strokeWidth="0.5" strokeDasharray="3 3" />
+            <text x={padL - 6} y={gy + 3} textAnchor="end" fill="var(--fg-muted, #8b949e)" fontSize="9">
+              {Math.round(g * maxTokens).toLocaleString()}
+            </text>
+          </g>
+        );
+      })}
+      {/* token area + line */}
+      <path d={areaPath} fill="rgba(6, 182, 212, 0.12)" />
+      <path d={tokenPath} fill="none" stroke="#06b6d4" strokeWidth="1.8" strokeLinejoin="round" />
+      {/* cost line (secondary) */}
+      {maxCost > 0 && (
+        <path d={costPath} fill="none" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="4 3" strokeLinejoin="round" />
+      )}
+      {/* x labels */}
+      {labelIdx.map(i => (
+        <text key={i} x={x(i)} y={H - 8} textAnchor="middle" fill="var(--fg-muted, #8b949e)" fontSize="9">
+          {data[i].date.slice(5)}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+/* ──── Model Breakdown Table ──── */
+
+function ModelTable({ data }: { data: ModelUsage[] }) {
+  if (!data || data.length === 0) {
+    return <div className="bp-sub-empty">暂无模型用量数据</div>;
+  }
+  return (
+    <div className="bp-table-wrap">
+      <table className="bp-table">
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>服务商</th>
+            <th className="bp-num">输入 Token</th>
+            <th className="bp-num">输出 Token</th>
+            <th className="bp-num">调用次数</th>
+            <th className="bp-num">估算费用</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((m, i) => (
+            <tr key={i}>
+              <td className="bp-mono">{m.model || "unknown"}</td>
+              <td><span className="bp-tag" style={{ background: BAR_COLORS[m.provider] || BAR_COLORS.unknown }}>{m.provider}</span></td>
+              <td className="bp-num">{m.prompt_tokens.toLocaleString()}</td>
+              <td className="bp-num">{m.completion_tokens.toLocaleString()}</td>
+              <td className="bp-num">{m.api_calls.toLocaleString()}</td>
+              <td className="bp-num bp-cost-cell">¥{m.cost_estimate.toFixed(4)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -201,14 +297,19 @@ function InfoIcon() {
 
 export default function BillingPanel({ isOpen }: DockPanelProps) {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
+  const [timeseries, setTimeseries] = useState<UsageTimeseriesPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [days, setDays] = useState(30);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await billingApi.getSummary(days);
-      setSummary(data);
+      const [sum, ts] = await Promise.all([
+        billingApi.getSummary(days),
+        billingApi.getTimeseries(days),
+      ]);
+      setSummary(sum);
+      setTimeseries(ts);
     } catch {
       // silent
     } finally {
@@ -225,6 +326,7 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
   if (!isOpen) return null;
 
   const credCount = summary?.by_credential?.length ?? 0;
+  const modelCount = summary?.by_model?.length ?? 0;
 
   return (
     <div className="bp-panel">
@@ -232,7 +334,7 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
         <div>
           <span className="bp-kicker">Usage Overview</span>
           <h2>用量与计费</h2>
-          <p>查看所选时间范围内的 Token 分布，以及各凭证对应的用量情况。</p>
+          <p>查看所选时间范围内的 Token 分布、费用趋势及各模型用量明细。</p>
         </div>
         <div className="bp-head-controls">
           <div className="bp-range-card">
@@ -257,6 +359,18 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
         <>
           <SummaryCards summary={summary} credCount={credCount} />
 
+          {/* Trend */}
+          <div className="bp-section">
+            <div className="bp-section-head">
+              <h3>用量趋势</h3>
+              <span className="bp-section-meta">
+                <span className="bp-legend-dot" style={{ background: "#06b6d4" }} /> Token
+                <span className="bp-legend-dot" style={{ background: "#f59e0b", marginLeft: 10 }} /> 费用
+              </span>
+            </div>
+            <TrendChart data={timeseries} />
+          </div>
+
           {/* Provider Distribution */}
           <div className="bp-section">
             <div className="bp-section-head">
@@ -269,12 +383,13 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
             </div>
           </div>
 
+          {/* Model Breakdown */}
           <div className="bp-section">
             <div className="bp-section-head">
-              <h3>用量直方图</h3>
-              <span className="bp-section-meta">按服务商</span>
+              <h3>模型明细</h3>
+              <span className="bp-section-meta">{modelCount} 个模型</span>
             </div>
-            <ProviderHistogram data={summary.by_provider} />
+            <ModelTable data={summary.by_model ?? []} />
           </div>
 
           {/* Credential Breakdown */}
@@ -295,7 +410,7 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
 
       <div className="bp-note">
         <span className="bp-note-icon"><InfoIcon /></span>
-        <p>Token 数量来自 LLM 接口返回结果，费用为基于服务商定价规则的估算值。</p>
+        <p>Token 数量来自 LLM 接口返回结果，费用为基于服务商公开定价的估算值，仅供参考。</p>
       </div>
 
       <style jsx global>{`
@@ -418,7 +533,7 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
         /* ── Cards ── */
         .bp-cards {
           display: grid;
-          grid-template-columns: repeat(3, 1fr);
+          grid-template-columns: repeat(4, 1fr);
           gap: 12px;
         }
         .bp-card {
@@ -450,6 +565,64 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
           color: #8b949e;
           margin-top: 6px;
           line-height: 1.55;
+        }
+        .bp-card-split {
+          display: flex;
+          gap: 10px;
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid rgba(48, 54, 61, 0.6);
+          font-size: 10.5px;
+          font-weight: 600;
+        }
+        .bp-split-in { color: #22d3ee; }
+        .bp-split-out { color: #f59e0b; }
+
+        /* ── Trend Chart ── */
+        .bp-trend {
+          width: 100%;
+          height: 180px;
+          display: block;
+        }
+
+        /* ── Model Table ── */
+        .bp-table-wrap {
+          overflow-x: auto;
+          margin: 0 -4px;
+        }
+        .bp-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 12px;
+        }
+        .bp-table th {
+          text-align: left;
+          padding: 8px 10px;
+          color: #8b949e;
+          font-weight: 600;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          border-bottom: 1px solid rgba(48, 54, 61, 0.92);
+          white-space: nowrap;
+        }
+        .bp-table td {
+          padding: 9px 10px;
+          border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+          color: #cbd5e1;
+        }
+        .bp-table tr:last-child td { border-bottom: none; }
+        .bp-table .bp-num { text-align: right; font-variant-numeric: tabular-nums; }
+        .bp-table .bp-mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; color: #e2e8f0; }
+        .bp-cost-cell { color: #22d3ee; font-weight: 700; }
+        .bp-tag {
+          display: inline-block;
+          padding: 2px 8px;
+          border-radius: 999px;
+          font-size: 10.5px;
+          font-weight: 700;
+          color: #fff;
+          text-transform: capitalize;
         }
 
         /* ── Section ── */
@@ -671,6 +844,11 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
           font-weight: 700;
           font-variant-numeric: tabular-nums;
         }
+        .bp-bar-cost {
+          margin-left: 6px;
+          color: #22d3ee;
+          font-weight: 600;
+        }
 
         /* ── Note ── */
         .bp-note {
@@ -742,6 +920,13 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
         html:not(.dark) .bp-card-kicker { color: var(--accent); }
         html:not(.dark) .bp-card-val { color: var(--foreground); }
         html:not(.dark) .bp-card-label { color: var(--muted-foreground); }
+        html:not(.dark) .bp-split-in { color: var(--accent); }
+        html:not(.dark) .bp-split-out { color: #d97706; }
+        html:not(.dark) .bp-table th { color: var(--muted-foreground); border-color: var(--border); }
+        html:not(.dark) .bp-table td { color: var(--foreground); border-color: var(--border); }
+        html:not(.dark) .bp-table .bp-mono { color: var(--foreground); }
+        html:not(.dark) .bp-cost-cell { color: var(--accent); }
+        html:not(.dark) .bp-card-split { border-color: var(--border); }
         html:not(.dark) .bp-section {
           border-color: var(--border);
           background: var(--card);
@@ -782,6 +967,7 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
         html:not(.dark) .bp-bar-track { background: var(--paper-3); }
         html:not(.dark) .bp-bar-fill { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08) inset; }
         html:not(.dark) .bp-bar-val { color: var(--muted-foreground); }
+        html:not(.dark) .bp-bar-cost { color: var(--accent); }
         html:not(.dark) .bp-note {
           color: var(--muted-foreground);
           background: linear-gradient(180deg, var(--paper) 0%, rgba(6, 182, 212, 0.06) 100%);
@@ -804,7 +990,7 @@ export default function BillingPanel({ isOpen }: DockPanelProps) {
             width: 100%;
           }
           .bp-cards {
-            grid-template-columns: 1fr;
+            grid-template-columns: repeat(2, 1fr);
           }
           .bp-chart {
             margin: 0 auto;
