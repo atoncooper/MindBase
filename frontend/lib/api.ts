@@ -65,6 +65,17 @@ async function request<T>(
     return response.json();
 }
 
+// Like `request`, but recursively converts snake_case response keys to
+// camelCase. Use for endpoints whose Pydantic models serialize with snake_case
+// field names (notes, etc.) so callers can consume camelCase directly.
+async function requestCamel<T>(
+    endpoint: string,
+    options: RequestInit = {}
+): Promise<T> {
+    const raw = await request<T>(endpoint, options);
+    return snakeToCamel<T>(raw);
+}
+
 // ==================== 类型定义 ====================
 
 export interface QRCodeResponse {
@@ -2018,7 +2029,7 @@ async function fetchNotesList(
         } catch {}
         throw new Error(sanitizeError({ status: response.status, detail: rawDetail }));
     }
-    const items = (await response.json()) as NoteMeta[];
+    const items = snakeToCamel<NoteMeta[]>(await response.json());
     const total = Number(response.headers.get("X-Total-Count") ?? "0");
     return { items, total: Number.isFinite(total) ? total : 0 };
 }
@@ -2032,35 +2043,51 @@ export const notesApi = {
         return fetchNotesList(params);
     },
     create: (data: NoteCreateParams) =>
-        request<NoteDetail>("/notes", { method: "POST", body: JSON.stringify(data) }),
+        requestCamel<NoteDetail>("/notes", {
+            method: "POST",
+            body: JSON.stringify({
+                title: data.title,
+                target_type: data.targetType,
+                target_id: data.targetId,
+                content_md: data.contentMd,
+            }),
+        }),
     get: (uuid: string) =>
-        request<NoteDetail>(`/notes/${uuid}`),
+        requestCamel<NoteDetail>(`/notes/${uuid}`),
     update: (uuid: string, data: NoteUpdateParams, ifMatch?: string) =>
-        request<NoteDetail>(`/notes/${uuid}`, {
+        requestCamel<NoteDetail>(`/notes/${uuid}`, {
             method: "PATCH",
-            body: JSON.stringify(data),
+            body: JSON.stringify({
+                title: data.title,
+                content_md: data.contentMd,
+                is_pinned: data.isPinned,
+            }),
             headers: ifMatch ? { "If-Match": ifMatch } : undefined,
         }),
     delete: (uuid: string) =>
         request<void>(`/notes/${uuid}`, { method: "DELETE" }),
     addAnchor: (uuid: string, data: { blockId: string; position: number; label?: string }) =>
-        request<NoteAnchor>(`/notes/${uuid}/anchors`, {
+        requestCamel<NoteAnchor>(`/notes/${uuid}/anchors`, {
             method: "POST",
-            body: JSON.stringify(data),
+            body: JSON.stringify({
+                block_id: data.blockId,
+                position: data.position,
+                label: data.label,
+            }),
         }),
     deleteAnchor: (uuid: string, anchorId: number) =>
         request<void>(`/notes/${uuid}/anchors/${anchorId}`, { method: "DELETE" }),
     listRevisions: (uuid: string) =>
-        request<NoteRevision[]>(`/notes/${uuid}/revisions`),
+        requestCamel<NoteRevision[]>(`/notes/${uuid}/revisions`),
     restoreRevision: (uuid: string, revisionId: string) =>
-        request<NoteDetail>(`/notes/${uuid}/revisions/restore/${revisionId}`, { method: "POST" }),
+        requestCamel<NoteDetail>(`/notes/${uuid}/revisions/restore/${revisionId}`, { method: "POST" }),
     createShare: (uuid: string, expiresInDays?: number) =>
-        request<NoteShareInfo>(`/notes/${uuid}/share`, {
+        requestCamel<NoteShareInfo>(`/notes/${uuid}/share`, {
             method: "POST",
             body: JSON.stringify({ expires_in_days: expiresInDays ?? null }),
         }),
     revokeShare: (uuid: string) =>
         request<void>(`/notes/${uuid}/share`, { method: "DELETE" }),
     getShared: (token: string) =>
-        request<NoteSharedView>(`/notes/shared/${token}`),
+        requestCamel<NoteSharedView>(`/notes/shared/${token}`),
 };
