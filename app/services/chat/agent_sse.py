@@ -64,13 +64,26 @@ def _parse_tool_output(output: Any) -> tuple[list[dict], str]:
 
 
 class AgentSSEStreamer:
-    """Translate ``astream_events`` output into the legacy SSE protocol."""
+    """Translate ``astream_events`` output into the legacy SSE protocol.
+
+    Token usage is extracted from the root chain's ``on_chain_end`` event
+    (which carries the final agent state including all messages).  This is
+    the most reliable approach — it works regardless of model type
+    (ChatOpenAI vs legacy LLM), call mode (streaming vs non-streaming),
+    or LangGraph version (v1 vs v2 events).
+    """
 
     def __init__(self) -> None:
         self.full_content: str = ""
         self.sources: list[dict] = []
+        # Token usage accumulated from the final agent state.
+        self.total_tokens: int = 0
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+        self.llm_calls: int = 0
         self._step_no = 0
         self._tool_runs: dict[str, dict[str, Any]] = {}
+        self._root_run_name: str = ""
 
     async def stream(
         self,
@@ -79,6 +92,7 @@ class AgentSSEStreamer:
         run_config: dict[str, Any],
     ) -> AsyncIterator[str]:
         """Yield SSE frames; mutate ``self.full_content`` / ``self.sources``."""
+        self._root_run_name = run_config.get("run_name", "LangGraph")
         try:
             async for event in agent_graph.astream_events(
                 input_state, config=run_config, version="v2"
@@ -92,6 +106,8 @@ class AgentSSEStreamer:
                     frame = self._handle_tool_start(event)
                 elif kind == "on_tool_end":
                     frame = self._handle_tool_end(event)
+                elif kind == "on_chain_end" and event.get("name") == self._root_run_name:
+                    self._capture_root_output(event)
 
                 if frame is not None:
                     yield frame
@@ -101,6 +117,37 @@ class AgentSSEStreamer:
         except Exception as exc:
             logger.exception("Agent SSE stream failed")
             yield sse_event({"type": "error", "message": str(exc)})
+
+    def _capture_root_output(self, event: dict[str, Any]) -> None:
+        """Extract token usage from the root graph's final state.
+
+        The root ``on_chain_end`` event carries ``data.output`` which is the
+        full agent state dict, including the ``messages`` list.  Each AI
+        message in this list has ``response_metadata.token_usage`` (from
+        non-streaming ``ainvoke`` inside ReAct).
+        """
+        output = event.get("data", {}).get("output")
+        if not isinstance(output, dict):
+            return
+
+        messages = output.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return
+
+        from app.services.chat.token_count import sum_token_usage_from_messages
+
+        counts = sum_token_usage_from_messages(messages)
+        self.total_tokens = counts.total_tokens
+        self.prompt_tokens = counts.prompt_tokens
+        self.completion_tokens = counts.completion_tokens
+        self.llm_calls = counts.llm_calls
+
+        if self.total_tokens > 0:
+            logger.info(
+                "[SSE_STREAMER] root chain end: tokens=%s (prompt=%s, completion=%s, calls=%s)",
+                self.total_tokens, self.prompt_tokens,
+                self.completion_tokens, self.llm_calls,
+            )
 
     # ── handlers ─────────────────────────────────────────────────────
 

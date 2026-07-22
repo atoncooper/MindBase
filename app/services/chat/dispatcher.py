@@ -131,6 +131,9 @@ async def agent_run(
     Returns the agent output dict (``result``, ``messages``, ``sources``,
     ``error``).  Raises ``HTTPException(503)`` when the harness is not
     started.
+
+    ``callbacks`` are passed as LangChain config callbacks (NOT agent state)
+    so they reach the LLM via ``run_config``.
     """
     _ensure_started(agent_harness)
     ctx = await _resolve_agent_context(request, db=db, uid=uid)
@@ -143,12 +146,11 @@ async def agent_run(
         folder_ids=request.folder_ids or [],
         upload_uuids=ctx["upload_uuids"],
     )
-    if callbacks:
-        invoke_kwargs["callbacks"] = callbacks
 
     return await agent_harness.dispatch(
         session_id=session_id,
         query=query,
+        callbacks=callbacks,
         **invoke_kwargs,
     )
 

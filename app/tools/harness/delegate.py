@@ -88,11 +88,15 @@ class DelegateToAgentTool:
         if not session_id:
             return "无法委托：缺少 chat_session_id"
 
+        uid = kwargs.get("_uid")
+        callbacks = self._make_usage_callbacks(uid)
+
         logger.info(
-            "[DELEGATE] agent='%s' query='%s' session=%s",
+            "[DELEGATE] agent='%s' query='%s' session=%s uid=%s",
             agent_name,
             query[:60],
             session_id,
+            uid,
         )
 
         try:
@@ -103,6 +107,7 @@ class DelegateToAgentTool:
                 agent_name,
                 session_id,
                 timeout=self._timeout,
+                callbacks=callbacks,
                 query=query,
                 target_agent="chat",
             )
@@ -124,3 +129,30 @@ class DelegateToAgentTool:
         except Exception as exc:
             logger.warning("[DELEGATE] failed: %s", exc)
             return f"委托失败: {exc}"
+
+    def _make_usage_callbacks(self, uid: Any) -> list[Any]:
+        """Build usage-tracking callbacks for sub-agent invocation.
+
+        Sub-agents (e.g. memory) run outside the parent agent's token handler,
+        so we attach a dedicated callback here.
+        """
+        if uid is None:
+            return []
+        try:
+            from app.services.chat.llm import build_llm
+            from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
+            from app.services.llm.usage_tracker import UsageTrackingCallback
+
+            llm = build_llm(uid=uid)
+            return [
+                UsageTrackingCallback(
+                    uid=uid,
+                    credential_id=getattr(llm, "_credential_id", None),
+                    provider=getattr(llm, "_provider", "openai"),
+                    model=getattr(llm, "_model", None),
+                    writer=get_buffered_usage_writer(),
+                )
+            ]
+        except Exception:
+            logger.exception("[DELEGATE] failed to create usage callback")
+            return []

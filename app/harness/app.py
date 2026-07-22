@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from app.agent.lifecycle import AgentLifecycleManager
 from app.context import ContextManager
@@ -232,6 +232,7 @@ class AgentHarness:
         query: str,
         timeout: float | None = 60.0,
         bypass_scheduler: bool = True,
+        callbacks: Optional[list[Any]] = None,
         **input: Any,
     ) -> dict[str, Any]:
         """Auto-route to the best agent, then invoke it.
@@ -249,7 +250,9 @@ class AgentHarness:
         Returns:
             Agent output dict.
         """
-        agent_name = await self._orchestrator.route(query, **input)
+        uid = input.get("uid")
+        route_input = {k: v for k, v in input.items() if k != "uid"}
+        agent_name = await self._orchestrator.route(query, uid=uid, **route_input)
         logger.info(
             "[HARNESS] dispatch: query='%s' → agent='%s'",
             query[:60],
@@ -260,6 +263,7 @@ class AgentHarness:
             session_id,
             timeout=timeout,
             bypass_scheduler=bypass_scheduler,
+            callbacks=callbacks,
             **input,
         )
 
@@ -283,7 +287,9 @@ class AgentHarness:
         Returns:
             ``(agent_name, compiled_graph)`` tuple.
         """
-        agent_name = await self._orchestrator.route(query, **input)
+        uid = input.get("uid")
+        route_input = {k: v for k, v in input.items() if k != "uid"}
+        agent_name = await self._orchestrator.route(query, uid=uid, **route_input)
         logger.info(
             "[HARNESS] dispatch_stream: query='%s' → agent='%s'",
             query[:60],

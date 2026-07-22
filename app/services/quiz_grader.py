@@ -280,22 +280,14 @@ class QuizGraderService:
 
     def _get_tracking_llm(self, uid: int | None = None) -> ChatOpenAI:
         """LLM with usage tracking wired up for essay grading cost accounting."""
-        llm = self._get_llm()
         if uid is None:
-            return llm
-        from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
-        from app.services.llm.usage_tracker import UsageTrackingCallback
-        from app.services.llm.provider_detect import detect_provider
+            return self._get_llm()
+        from app.services.chat.llm import build_llm
 
-        provider = detect_provider(settings.openai_base_url)
-        writer = get_buffered_usage_writer()
-        tracker = UsageTrackingCallback(
-            uid=uid,
-            provider=provider,
-            model=settings.llm_model,
-            writer=writer,
-        )
-        llm.callbacks = [tracker]
+        # build_llm already attaches UsageTrackingCallback with the user's
+        # real credential/provider.  We just need to lower the temperature.
+        llm = build_llm(uid=uid)
+        llm.temperature = 0.1
         return llm
 
     async def _create_submission(

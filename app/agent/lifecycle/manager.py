@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from app.agent.lifecycle.circuit import CircuitBreaker
 from app.agent.lifecycle.hooks import LifecycleHookRegistry
@@ -119,6 +119,7 @@ class AgentLifecycleManager:
         agent_name: str,
         session_id: str,
         timeout: float | None = 60.0,
+        callbacks: Optional[list[Any]] = None,
         **input: Any,
     ) -> dict[str, Any]:
         """Execute an agent with full lifecycle management.
@@ -162,7 +163,7 @@ class AgentLifecycleManager:
         #    when the caller already holds the session lock, e.g. delegate_to_agent)
         async with self._sessions.acquire_lock(session_id):
             return await self._invoke_locked(
-                agent_name, session_id, timeout, **input
+                agent_name, session_id, timeout, callbacks=callbacks, **input
             )
 
     async def invoke_reentrant(
@@ -170,6 +171,7 @@ class AgentLifecycleManager:
         agent_name: str,
         session_id: str,
         timeout: float | None = 60.0,
+        callbacks: Optional[list[Any]] = None,
         **input: Any,
     ) -> dict[str, Any]:
         """Invoke without acquiring the session lock.
@@ -178,6 +180,10 @@ class AgentLifecycleManager:
         (e.g. ``delegate_to_agent`` runs inside the chat agent's invoke).
         ``asyncio.Lock`` is non-reentrant, so calling :meth:`invoke` from
         within an agent's tool would deadlock.
+
+        Args:
+            callbacks: Optional LangChain callbacks to attach to the
+                invocation.  Used for usage tracking of sub-agents.
         """
         if self._closed:
             raise RuntimeError("AgentLifecycleManager is shut down")
@@ -190,13 +196,16 @@ class AgentLifecycleManager:
             )
             return {"error": "service temporarily unavailable"}
 
-        return await self._invoke_locked(agent_name, session_id, timeout, **input)
+        return await self._invoke_locked(
+            agent_name, session_id, timeout, callbacks=callbacks, **input
+        )
 
     async def _invoke_locked(
         self,
         agent_name: str,
         session_id: str,
         timeout: float | None,
+        callbacks: Optional[list[Any]] = None,
         **input: Any,
     ) -> dict[str, Any]:
         """Inner invoke — assumes the per-session lock is already held."""
@@ -213,7 +222,7 @@ class AgentLifecycleManager:
             self._hooks.on_invoke_start(session_id, agent_name, **input)
 
             # Execute with optional timeout + LangSmith tracing config
-            run_config = {
+            run_config: dict[str, Any] = {
                 "run_name": f"{agent_name}_agent",
                 "tags": [agent_name, "agent"],
                 "metadata": {
@@ -221,6 +230,8 @@ class AgentLifecycleManager:
                     "session_id": session_id,
                 },
             }
+            if callbacks:
+                run_config["callbacks"] = callbacks
 
             if timeout is not None:
                 result = await asyncio.wait_for(
