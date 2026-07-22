@@ -38,7 +38,7 @@ export const dockModules: DockModule[] = [
     icon: NotebookPen,
     title: "笔记",
     panel: NotesPanel,
-    defaultSize: { width: 1100, height: 680 },
+    defaultSize: { width: 1200, height: 680 },
   },
   {
     id: "favorites",

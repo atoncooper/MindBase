@@ -28,30 +28,10 @@ export default function SharedNotePage() {
 
     if (loading) {
         return (
-            <div
-                className="min-h-screen flex items-center justify-center"
-                style={{
-                    background: "#faf8f3",
-                    color: "#a8a39b",
-                    fontFamily: '"Hanken Grotesk", sans-serif',
-                    fontStyle: "italic",
-                }}
-            >
+            <div className="notes-reading notes-reading-center">
                 <div className="flex flex-col items-center gap-3">
-                    <div
-                        style={{
-                            fontFamily: '"Fraunces", Georgia, serif',
-                            fontStyle: "italic",
-                            fontSize: 40,
-                            color: "#c4b89f",
-                            opacity: 0.6,
-                        }}
-                    >
-                        ❦
-                    </div>
-                    <span style={{ fontSize: 12, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 600 }}>
-                        Loading
-                    </span>
+                    <div className="note-fleuron-lg">❦</div>
+                    <span className="note-eyebrow">Loading</span>
                 </div>
             </div>
         );
@@ -59,46 +39,17 @@ export default function SharedNotePage() {
 
     if (error || !note) {
         return (
-            <div
-                className="min-h-screen flex flex-col items-center justify-center gap-4"
-                style={{
-                    background: "#faf8f3",
-                    color: "#54545a",
-                    fontFamily: '"Hanken Grotesk", sans-serif',
-                }}
-            >
-                <div
-                    style={{
-                        fontFamily: '"Fraunces", Georgia, serif',
-                        fontSize: 88,
-                        fontStyle: "italic",
-                        color: "#c4b89f",
-                        opacity: 0.55,
-                        lineHeight: 1,
-                        fontVariationSettings: '"opsz" 144',
-                    }}
-                >
-                    404
-                </div>
-                <div
-                    style={{
-                        fontSize: 10,
-                        letterSpacing: "0.18em",
-                        textTransform: "uppercase",
-                        fontWeight: 600,
-                        color: "#a8a39b",
-                    }}
-                >
-                    Not Found
-                </div>
-                <div style={{ fontSize: 14, fontFamily: '"Fraunces", Georgia, serif', fontStyle: "italic" }}>
-                    {error || "分享不存在或已失效"}
+            <div className="notes-reading notes-reading-center">
+                <div className="flex flex-col items-center gap-4">
+                    <div className="note-404">404</div>
+                    <div className="note-eyebrow">Not Found</div>
+                    <div className="note-404-msg">分享不存在或已失效</div>
                 </div>
             </div>
         );
     }
 
-    // Reading stats for the colophon — strip markdown noise + whitespace.
+    // Reading stats for the colophon - strip markdown noise + whitespace.
     const stripped = note.contentMd
         ? note.contentMd
               .replace(/```[\s\S]*?```/g, "")
@@ -117,55 +68,13 @@ export default function SharedNotePage() {
                     style={{ animationDuration: "480ms" }}
                 >
                     <header className="mb-10">
-                        <div
-                            style={{
-                                fontFamily: "var(--note-sans)",
-                                fontSize: 10,
-                                fontWeight: 600,
-                                letterSpacing: "0.2em",
-                                textTransform: "uppercase",
-                                color: "var(--note-folio)",
-                                marginBottom: 18,
-                            }}
-                        >
-                            <span style={{ fontStyle: "italic", fontFamily: "var(--note-serif)", textTransform: "none", letterSpacing: 0, fontSize: 14, marginRight: 8, color: "var(--note-accent)" }}>
-                                ❦
-                            </span>
+                        <div className="note-eyebrow note-eyebrow-lg">
+                            <span className="note-fleuron">❦</span>
                             A Note from MindBase
                         </div>
-                        <h1
-                            style={{
-                                fontFamily: "var(--note-serif)",
-                                fontSize: 44,
-                                fontWeight: 500,
-                                letterSpacing: "-0.022em",
-                                lineHeight: 1.12,
-                                color: "var(--note-ink)",
-                                fontVariationSettings: '"opsz" 144',
-                            }}
-                        >
-                            {note.title || "无标题"}
-                        </h1>
-                        <div
-                            style={{
-                                width: 56,
-                                height: 1,
-                                background: "var(--note-ink)",
-                                opacity: 0.65,
-                                marginTop: 22,
-                            }}
-                        />
-                        <div
-                            className="flex flex-wrap items-center gap-3 mt-5"
-                            style={{
-                                color: "var(--note-ink-faint)",
-                                fontFamily: "var(--note-sans)",
-                                fontSize: 11,
-                                fontWeight: 600,
-                                letterSpacing: "0.14em",
-                                textTransform: "uppercase",
-                            }}
-                        >
+                        <h1 className="note-article-title">{note.title || "无标题"}</h1>
+                        <div className="note-title-rule" />
+                        <div className="note-article-meta">
                             <span>
                                 {new Date(note.sharedAt).toLocaleDateString("zh-CN", {
                                     year: "numeric",
@@ -173,36 +82,18 @@ export default function SharedNotePage() {
                                     day: "numeric",
                                 })}
                             </span>
-                            <span style={{ fontFamily: "var(--note-serif)", fontStyle: "italic", textTransform: "none", letterSpacing: 0, fontSize: 11, color: "var(--note-folio)" }}>
-                                ❧
-                            </span>
+                            <span className="note-meta-sep">❧</span>
                             <span>{note.viewCount} 次浏览</span>
                         </div>
                     </header>
 
-                    <div
-                        className="note-preview note-article-body"
-                        style={{
-                            fontFamily: "var(--note-sans)",
-                            fontSize: 16.5,
-                            lineHeight: 1.85,
-                            color: "var(--note-ink)",
-                        }}
-                    >
+                    <div className="note-preview note-article-body">
                         {note.contentMd ? (
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {note.contentMd}
                             </ReactMarkdown>
                         ) : (
-                            <p
-                                style={{
-                                    color: "var(--note-ink-faint)",
-                                    fontStyle: "italic",
-                                    fontFamily: "var(--note-serif)",
-                                }}
-                            >
-                                （空笔记）
-                            </p>
+                            <p className="note-empty-body">（空笔记）</p>
                         )}
                     </div>
 
