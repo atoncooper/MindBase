@@ -2,7 +2,7 @@
 Pydantic response models for credentials, settings, billing, and LLM configs.
 """
 
-from datetime import datetime
+from datetime import date as date_type, datetime
 from typing import Optional
 from pydantic import BaseModel, field_validator
 
@@ -109,6 +109,8 @@ class ProviderUsage(BaseModel):
 
     provider: str
     total_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     api_calls: int
     cost_estimate: float = 0.0
 
@@ -120,7 +122,32 @@ class CredentialUsageItem(BaseModel):
     name: str
     provider: str
     total_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     api_calls: int
+    cost_estimate: float = 0.0
+
+
+class ModelUsage(BaseModel):
+    """Per-model aggregated usage."""
+
+    model: str
+    provider: str
+    total_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    api_calls: int
+    cost_estimate: float = 0.0
+
+
+class UsageTimeseriesPoint(BaseModel):
+    """Single day in a usage time series."""
+
+    date: date_type
+    total_tokens: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    api_calls: int = 0
     cost_estimate: float = 0.0
 
 
@@ -128,9 +155,14 @@ class UsageSummary(BaseModel):
     """Billing usage summary (top-level response)."""
 
     total_tokens: int
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
     total_api_calls: int
+    total_cost: float = 0.0
+    avg_cost_per_call: float = 0.0
     by_provider: list[ProviderUsage]
     by_credential: list[CredentialUsageItem]
+    by_model: list[ModelUsage] = []
 
 
 # ── Credential Create / Update (requests) ─────────────────────────

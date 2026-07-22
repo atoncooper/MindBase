@@ -14,9 +14,10 @@ Covers:
 - ``run_coroutine_threadsafe`` is used when loop + writer present
 - Warning path when no writer
 - Warning path when no loop (e.g. constructed outside a running loop)
-- ``total_tokens == 0`` short-circuits before enqueue
+- ``total_tokens == 0`` still records the API call (api_calls=1)
 - Token extraction from both ``llm_output`` (non-streaming) and
   ``usage_metadata`` (streaming) paths
+- cost_estimate is computed and passed to the writer
 - Exception isolation: ``on_llm_end`` never re-raises
 - End-to-end cross-thread scheduling reproducing the original bug scenario
 """
@@ -269,7 +270,8 @@ class TestOnLlmEndScheduling:
         assert not mock_sched.called
 
     @pytest.mark.asyncio
-    async def test_zero_total_tokens_short_circuits(self) -> None:
+    async def test_zero_total_tokens_records_call(self) -> None:
+        """When token usage is missing, we still record the API call itself."""
         writer = _FakeWriter()
         cb = UsageTrackingCallback(uid=1, writer=writer)  # type: ignore[arg-type]
         result = _make_llm_result(0, 0, 0)
@@ -279,7 +281,15 @@ class TestOnLlmEndScheduling:
         ) as mock_sched:
             cb.on_llm_end(result)
 
-        assert not mock_sched.called
+        assert mock_sched.called
+        args, _ = mock_sched.call_args
+        coro = args[0]
+        # Inspect the coroutine's bound arguments via a hack: await it and
+        # inspect the writer call.  The coroutine is writer.enqueue(**record).
+        await coro
+        call_kwargs = writer.enqueue.await_args.kwargs
+        assert call_kwargs["total_tokens"] == 0
+        assert call_kwargs["api_calls"] == 1
 
     @pytest.mark.asyncio
     async def test_streaming_result_enqueues(self) -> None:
@@ -301,7 +311,8 @@ class TestOnLlmEndScheduling:
         assert mock_sched.called
 
     @pytest.mark.asyncio
-    async def test_no_token_usage_key_no_crash(self) -> None:
+    async def test_no_token_usage_key_records_call(self) -> None:
+        """When no usage metadata is returned, we still record the API call."""
         writer = _FakeWriter()
         cb = UsageTrackingCallback(uid=1, writer=writer)  # type: ignore[arg-type]
         result = _make_llm_result_no_usage()
@@ -311,7 +322,34 @@ class TestOnLlmEndScheduling:
         ) as mock_sched:
             cb.on_llm_end(result)  # must not raise
 
-        assert not mock_sched.called
+        assert mock_sched.called
+        args, _ = mock_sched.call_args
+        await args[0]
+        call_kwargs = writer.enqueue.await_args.kwargs
+        assert call_kwargs["total_tokens"] == 0
+        assert call_kwargs["api_calls"] == 1
+
+    @pytest.mark.asyncio
+    async def test_cost_estimate_is_computed(self) -> None:
+        writer = _FakeWriter()
+        cb = UsageTrackingCallback(
+            uid=1,
+            provider="openai",
+            model="gpt-4o",
+            writer=writer,  # type: ignore[arg-type]
+        )
+        result = _make_llm_result(1_000_000, 1_000_000, 2_000_000)
+
+        with patch(
+            "app.services.llm.usage_tracker.asyncio.run_coroutine_threadsafe"
+        ) as mock_sched:
+            cb.on_llm_end(result)
+
+        assert mock_sched.called
+        args, _ = mock_sched.call_args
+        await args[0]
+        call_kwargs = writer.enqueue.await_args.kwargs
+        assert call_kwargs["cost_estimate"] == 20.0  # 5 + 15
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -391,6 +429,39 @@ class TestCrossThreadIntegration:
         assert call_kwargs["total_tokens"] == 110
         assert call_kwargs["prompt_tokens"] == 50
         assert call_kwargs["completion_tokens"] == 60
+        assert "cost_estimate" in call_kwargs
+
+
+# ═══════════════════════════════════════════════════════════════
+# attach_usage_tracking helper
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestAttachUsageTracking:
+    """``attach_usage_tracking`` wires callbacks without mutating existing ones."""
+
+    def test_appends_callback(self) -> None:
+        from langchain_openai import ChatOpenAI
+        from app.services.llm.usage_tracker import attach_usage_tracking
+
+        llm = ChatOpenAI(api_key="sk-test", model="gpt-4o")
+        assert not getattr(llm, "callbacks", None)
+        attached = attach_usage_tracking(
+            llm, uid=1, provider="openai", model="gpt-4o", writer=None
+        )
+        assert attached is llm
+        assert len(llm.callbacks) == 1
+        assert isinstance(llm.callbacks[0], UsageTrackingCallback)
+
+    def test_preserves_existing_callbacks(self) -> None:
+        from langchain_openai import ChatOpenAI
+        from app.services.llm.usage_tracker import attach_usage_tracking
+
+        llm = ChatOpenAI(api_key="sk-test", model="gpt-4o")
+        llm.callbacks = ["existing"]
+        attach_usage_tracking(llm, uid=1, provider="openai", model="gpt-4o")
+        assert len(llm.callbacks) == 2
+        assert llm.callbacks[0] == "existing"
 
 
 if __name__ == "__main__":

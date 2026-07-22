@@ -1,60 +1,81 @@
+"""Usage tracking callback — records LLM token usage via LangChain callbacks.
+
+Provides:
+- ``UsageTrackingCallback``: a LangChain BaseCallbackHandler that extracts
+  token usage from both streaming and non-streaming LLM completions and
+  enqueues records to a BufferedUsageWriter.
+- ``attach_usage_tracking``: helper to attach the callback to a LangChain
+  chat model without mutating the original object.
+
+Data flow:
+    on_llm_end -> extract token_usage -> compute cost -> enqueue to writer
+
+Token usage sources:
+    - Non-streaming (ainvoke): llm_output["token_usage"]
+    - Streaming (astream): generations[0][0].message.usage_metadata
 """
-用量追踪回调 — 通过 LangChain BaseCallbackHandler 记录每次 LLM 调用的 token 消耗。
+from __future__ import annotations
 
-用法：
-    writer = get_buffered_usage_writer()
-    tracker = UsageTrackingCallback(session_id, credential_id, provider, model, writer)
-    llm = ChatOpenAI(...)
-    llm.callbacks = [tracker]
-
-数据流：
-    on_llm_end → 提取 token_usage → fire-and-forget enqueue 到 BufferedUsageWriter
-    BufferedUsageWriter 后台协程 → 定时/定量批量 INSERT → credential_usage 表
-
-两种 token_usage 来源：
-    - 非流式 (ainvoke)：llm_output["token_usage"] (prompt_tokens/completion_tokens/total_tokens)
-    - 流式 (astream)  ：generations[0][0].message.usage_metadata (input_tokens/output_tokens/total_tokens)
-"""
 import asyncio
-from typing import Optional, Any, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from loguru import logger
+
+from app.services.llm.pricing import estimate_cost
 
 if TYPE_CHECKING:
     from app.services.llm.buffered_usage_writer import BufferedUsageWriter
 
 
 def _extract_token_usage(response: LLMResult) -> tuple[int, int, int, str]:
-    """
-    从 LLMResult 中提取 token 用量，兼容流式和非流式两种路径。
+    """Extract token usage from an LLMResult.
 
-    返回 (prompt_tokens, completion_tokens, total_tokens, source)
-    source: "llm_output" | "usage_metadata" | "none"
+    Returns (prompt_tokens, completion_tokens, total_tokens, source).
+    source is one of "llm_output", "usage_metadata", "response_metadata", or "none".
     """
-    # 路径 1: 非流式 — llm_output["token_usage"]
+    # Path 1: non-streaming ainvoke - llm_output.token_usage
     if response.llm_output:
         tu = response.llm_output.get("token_usage")
-        if tu and isinstance(tu, dict):
-            p = tu.get("prompt_tokens", 0)
-            c = tu.get("completion_tokens", 0)
-            t = tu.get("total_tokens", p + c)
+        if isinstance(tu, dict):
+            p = int(tu.get("prompt_tokens", 0) or 0)
+            c = int(tu.get("completion_tokens", 0) or 0)
+            t = int(tu.get("total_tokens", p + c) or 0)
+            if t > 0:
+                return p, c, t, "llm_output"
+        # Some providers put usage directly under llm_output (no token_usage key)
+        if "prompt_tokens" in (tu or {}) or response.llm_output.get("prompt_tokens"):
+            lo = response.llm_output
+            p = int(lo.get("prompt_tokens", 0) or 0)
+            c = int(lo.get("completion_tokens", 0) or 0)
+            t = int(lo.get("total_tokens", p + c) or 0)
             if t > 0:
                 return p, c, t, "llm_output"
 
-    # 路径 2: 流式 — generations[0][0].message.usage_metadata
-    # (TypedDict: input_tokens / output_tokens / total_tokens)
+    # Path 2 & 3: streaming astream - inspect the final AIMessage
     try:
         gen = response.generations[0][0]
         msg = gen.message
+
+        # Path 2: usage_metadata (LangChain standard for streaming)
         um = getattr(msg, "usage_metadata", None) or {}
         if um:
-            p = um.get("input_tokens", 0)
-            c = um.get("output_tokens", 0)
-            t = um.get("total_tokens", p + c)
+            p = int(um.get("input_tokens", 0) or 0)
+            c = int(um.get("output_tokens", 0) or 0)
+            t = int(um.get("total_tokens", p + c) or 0)
             if t > 0:
                 return p, c, t, "usage_metadata"
+
+        # Path 3: response_metadata.token_usage (some providers)
+        rm = getattr(msg, "response_metadata", None) or {}
+        tu = rm.get("token_usage") or rm.get("usage")
+        if isinstance(tu, dict):
+            p = int(tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0) or 0)
+            c = int(tu.get("completion_tokens", 0) or tu.get("output_tokens", 0) or 0)
+            t = int(tu.get("total_tokens", p + c) or 0)
+            if t > 0:
+                return p, c, t, "response_metadata"
     except (IndexError, AttributeError, TypeError):
         pass
 
@@ -62,12 +83,15 @@ def _extract_token_usage(response: LLMResult) -> tuple[int, int, int, str]:
 
 
 class UsageTrackingCallback(BaseCallbackHandler):
-    """
-    LangChain 回调 — 在 on_llm_end 中提取 token_usage 并入队至缓冲写入器。
+    """LangChain callback that records token usage and cost to a buffered writer.
 
-    - 无 writer 时静默跳过（兼容降级）
-    - 有 writer 时 fire-and-forget enqueue，不阻塞 LLM 响应流
-    - 实际数据库写入由 BufferedUsageWriter 的后台协程负责
+    - Falls back silently when no writer is configured.
+    - Fire-and-forget enqueue: does not block the LLM response stream.
+    - Captures the running event loop at construction so that sync
+      ``on_llm_end`` (often invoked from executor worker threads) can schedule
+      async enqueue back onto the main loop safely.
+    - Also accumulates token counts in-process so the caller can read them
+      after the run (e.g. for ``finalize_turn`` ``tokens_used``).
     """
 
     def __init__(
@@ -77,24 +101,28 @@ class UsageTrackingCallback(BaseCallbackHandler):
         provider: str = "openai",
         model: Optional[str] = None,
         writer: Optional["BufferedUsageWriter"] = None,
-    ):
+    ) -> None:
         self.uid = uid
         self.credential_id = credential_id
         self.provider = provider
         self.model = model
         self._writer = writer
-        # Capture the running loop at construction so sync on_llm_end
-        # (often invoked from executor worker threads with no current loop)
-        # can schedule the async enqueue back onto the main event loop.
+        # In-process accumulator (read by caller after the run completes).
+        self.total_tokens: int = 0
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+        self.llm_calls: int = 0
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
-        """LLM 调用完成后触发，提取 token 用量并入队到缓冲写入器。"""
+        """Called by LangChain after each LLM completion."""
         try:
-            prompt_tokens, completion_tokens, total_tokens, source = _extract_token_usage(response)
+            prompt_tokens, completion_tokens, total_tokens, source = _extract_token_usage(
+                response
+            )
 
             logger.info(
                 f"[USAGE_TRACKER] on_llm_end fired "
@@ -103,23 +131,29 @@ class UsageTrackingCallback(BaseCallbackHandler):
                 f"provider={self.provider} model={self.model}"
             )
 
+            # Accumulate in-process so the caller can read totals after the run.
+            self.prompt_tokens += prompt_tokens
+            self.completion_tokens += completion_tokens
+            self.total_tokens += total_tokens
+            self.llm_calls += 1
+
+            # Even if token metadata is missing, the API call itself happened.
+            # Record it with zero tokens so per-call billing is not silently lost.
+            api_calls = 1
+
             if total_tokens == 0:
                 llm_output_keys = (
-                    list(response.llm_output.keys()) if response.llm_output
-                    else "None"
+                    list(response.llm_output.keys()) if response.llm_output else "None"
                 )
                 logger.warning(
-                    f"[USAGE_TRACKER] total_tokens=0, skipping enqueue "
-                    f"(llm_output={llm_output_keys}, "
-                    f"source={source})"
+                    f"[USAGE_TRACKER] total_tokens=0, recording call only "
+                    f"(llm_output={llm_output_keys}, source={source})"
                 )
-                return
 
-            # 有 writer 时入队到缓冲批量写入器。
-            # on_llm_end 是 sync 回调，常被 LangChain 在 executor 工作线程里
-            # 调用（线程名如 asyncio_0），该线程无 event loop，直接
-            # asyncio.ensure_future 会抛 RuntimeError。用 run_coroutine_threadsafe
-            # 把协程投递回构造时捕获的主 loop。
+            cost_estimate = estimate_cost(
+                self.provider, self.model, prompt_tokens, completion_tokens
+            )
+
             if self._writer is not None and self._loop is not None:
                 asyncio.run_coroutine_threadsafe(
                     self._writer.enqueue(
@@ -130,12 +164,12 @@ class UsageTrackingCallback(BaseCallbackHandler):
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
-                        api_calls=1,
+                        api_calls=api_calls,
+                        cost_estimate=cost_estimate,
                     ),
                     self._loop,
                 )
             else:
-                # 降级：无 writer 或无可用 loop 时至少记录日志
                 logger.warning(
                     f"[USAGE_TRACKER] no writer/loop available, "
                     f"usage not recorded: {total_tokens} tokens"
@@ -143,8 +177,33 @@ class UsageTrackingCallback(BaseCallbackHandler):
 
             logger.info(
                 f"[USAGE_TRACKER] enqueued {total_tokens} tokens "
-                f"(prompt={prompt_tokens}, completion={completion_tokens}) "
-                f"provider={self.provider} model={self.model}"
+                f"cost={cost_estimate} provider={self.provider} model={self.model}"
             )
         except Exception as e:
             logger.error(f"[USAGE_TRACKER] failed to enqueue usage: {e}")
+
+
+def attach_usage_tracking(
+    llm: Any,
+    *,
+    uid: int,
+    credential_id: Optional[int] = None,
+    provider: str = "openai",
+    model: Optional[str] = None,
+    writer: Optional["BufferedUsageWriter"] = None,
+) -> Any:
+    """Attach a UsageTrackingCallback to a LangChain LLM and return it.
+
+    The original object is not mutated; callbacks are appended to a new list.
+    """
+    tracker = UsageTrackingCallback(
+        uid=uid,
+        credential_id=credential_id,
+        provider=provider,
+        model=model,
+        writer=writer,
+    )
+    callbacks = list(getattr(llm, "callbacks", None) or [])
+    callbacks.append(tracker)
+    llm.callbacks = callbacks
+    return llm

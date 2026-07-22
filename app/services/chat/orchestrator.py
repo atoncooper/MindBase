@@ -32,8 +32,8 @@ from app.services.chat.lifecycle import (
     fail_turn,
     finalize_turn,
 )
+from app.services.chat.llm import build_llm
 from app.services.chat.reasoning import extract_reasoning_steps
-from app.services.chat.usage import TokenUsageHandler
 
 
 async def _preload_user_credentials(
@@ -41,6 +41,53 @@ async def _preload_user_credentials(
 ) -> None:
     if api_key_manager and getattr(api_key_manager, "is_enabled", False):
         await api_key_manager.preload_credentials(uid, db)
+
+
+def _resolve_usage_metadata(
+    uid: int,
+    api_key_manager: Any,
+) -> tuple[Optional[int], str, Optional[str]]:
+    """Resolve the credential/provider/model that will actually be used.
+
+    Builds a per-user LLM (reusing the same logic as the chat title generator)
+    and reads its metadata.  If no user credential is configured, falls back
+    to system defaults.
+    """
+    try:
+        llm = build_llm(uid=uid)
+        credential_id = getattr(llm, "_credential_id", None)
+        provider = getattr(llm, "_provider", "openai")
+        model = getattr(llm, "_model", settings.llm_model)
+        return credential_id, provider, model
+    except Exception:
+        logger.exception("[CHAT_ORCH] failed to resolve usage metadata")
+        return None, "openai", settings.llm_model
+
+
+def _make_usage_callback(
+    usage_writer: Any,
+    *,
+    uid: int,
+    credential_id: Optional[int],
+    provider: str,
+    model: Optional[str],
+) -> Any:
+    """Build a UsageTrackingCallback attached to the global writer.
+
+    The callback is passed via ``run_config["callbacks"]`` so LangGraph
+    propagates it to every LLM call inside the ReAct loop.  ``on_llm_end``
+    fires per call and enqueues usage cross-thread to the writer.
+    """
+    if not usage_writer:
+        return None
+    from app.services.llm.usage_tracker import UsageTrackingCallback
+    return UsageTrackingCallback(
+        uid=uid,
+        credential_id=credential_id,
+        provider=provider,
+        model=model,
+        writer=usage_writer,
+    )
 
 
 def _enqueue_usage(
@@ -55,8 +102,20 @@ def _enqueue_usage(
     completion_tokens: int = 0,
     api_calls: int = 1,
 ) -> None:
-    if not usage_writer or total_tokens <= 0:
+    if not usage_writer:
+        logger.warning("[CHAT_ORCH] _enqueue_usage skipped: no usage_writer")
         return
+    if total_tokens <= 0:
+        logger.warning(
+            f"[CHAT_ORCH] _enqueue_usage skipped: total_tokens={total_tokens} "
+            f"(provider={provider} model={model})"
+        )
+        return
+    logger.info(
+        f"[CHAT_ORCH] enqueuing usage: uid={uid} provider={provider} model={model} "
+        f"tokens={total_tokens} (prompt={prompt_tokens} completion={completion_tokens}) "
+        f"calls={api_calls}"
+    )
     asyncio.ensure_future(
         usage_writer.enqueue(
             uid=uid,
@@ -99,9 +158,13 @@ async def _run_agent_turn(
     db: AsyncSession,
     agent_harness: Any,
     ctx: TurnContext,
-) -> tuple[str, list[dict], list[BaseMessage], int, TokenUsageHandler]:
-    """Shared body for non-streaming endpoints — dispatch + measure."""
-    token_handler = TokenUsageHandler()
+    usage_callback: Any = None,
+) -> tuple[str, list[dict], list[BaseMessage], int, Any]:
+    """Shared body for non-streaming endpoints - dispatch + measure.
+
+    Returns (answer, sources, messages, latency_ms, usage_callback).
+    Token totals are read from ``usage_callback`` after the run completes.
+    """
     start_time = time.time()
     raw = await agent_run(
         request,
@@ -110,11 +173,11 @@ async def _run_agent_turn(
         agent_harness=agent_harness,
         session_id=ctx.chat_session_id,
         query=ctx.user_message,
-        callbacks=[token_handler],
+        callbacks=[usage_callback] if usage_callback else None,
     )
     latency_ms = int((time.time() - start_time) * 1000)
     answer, sources, messages = _normalize_agent_result(raw)
-    return answer, sources, messages, latency_ms, token_handler
+    return answer, sources, messages, latency_ms, usage_callback
 
 
 # ── non-streaming endpoints ─────────────────────────────────────────
@@ -141,27 +204,26 @@ async def ask(
 
     try:
         await _preload_user_credentials(api_key_manager, uid, db)
-        answer, sources, _msgs, latency_ms, tokens = await _run_agent_turn(
-            request, uid=uid, db=db, agent_harness=agent_harness, ctx=ctx
+        credential_id, provider, model = _resolve_usage_metadata(uid, api_key_manager)
+        usage_callback = _make_usage_callback(
+            usage_writer, uid=uid, credential_id=credential_id,
+            provider=provider, model=model,
+        )
+        answer, sources, _msgs, latency_ms, uc = await _run_agent_turn(
+            request, uid=uid, db=db, agent_harness=agent_harness, ctx=ctx,
+            usage_callback=usage_callback,
+        )
+        total_tokens = uc.total_tokens if uc else 0
+        logger.info(
+            f"[CHAT_ORCH] ask done: tokens={total_tokens} provider={provider} model={model}"
         )
         await finalize_turn(
             db,
             assistant_msg_id=ctx.assistant_msg_id,
             content=answer,
             sources=sources[:5],
-            tokens_used=tokens.total_tokens or None,
+            tokens_used=total_tokens or None,
             latency_ms=latency_ms,
-        )
-        _enqueue_usage(
-            usage_writer,
-            uid=uid,
-            credential_id=None,
-            provider="openai",
-            model=settings.llm_model,
-            total_tokens=tokens.total_tokens,
-            prompt_tokens=tokens.prompt_tokens,
-            completion_tokens=tokens.completion_tokens,
-            api_calls=tokens.llm_calls or 1,
         )
         return ChatResponse(answer=answer, sources=sources[:5])
     except HTTPException:
@@ -197,29 +259,28 @@ async def ask_agentic(
 
     try:
         await _preload_user_credentials(api_key_manager, uid, db)
-        answer, sources, messages, latency_ms, tokens = await _run_agent_turn(
-            request, uid=uid, db=db, agent_harness=agent_harness, ctx=ctx
+        credential_id, provider, model = _resolve_usage_metadata(uid, api_key_manager)
+        usage_callback = _make_usage_callback(
+            usage_writer, uid=uid, credential_id=credential_id,
+            provider=provider, model=model,
+        )
+        answer, sources, messages, latency_ms, uc = await _run_agent_turn(
+            request, uid=uid, db=db, agent_harness=agent_harness, ctx=ctx,
+            usage_callback=usage_callback,
         )
         reasoning_payload = extract_reasoning_steps(messages)
+        total_tokens = uc.total_tokens if uc else 0
+        logger.info(
+            f"[CHAT_ORCH] ask_agentic done: tokens={total_tokens} provider={provider} model={model}"
+        )
 
         await finalize_turn(
             db,
             assistant_msg_id=ctx.assistant_msg_id,
             content=answer,
             sources=sources[:5],
-            tokens_used=tokens.total_tokens or None,
+            tokens_used=total_tokens or None,
             latency_ms=latency_ms,
-        )
-        _enqueue_usage(
-            usage_writer,
-            uid=uid,
-            credential_id=None,
-            provider="openai",
-            model=settings.llm_model,
-            total_tokens=tokens.total_tokens,
-            prompt_tokens=tokens.prompt_tokens,
-            completion_tokens=tokens.completion_tokens,
-            api_calls=tokens.llm_calls or 1,
         )
         return AgenticChatResponse(
             answer=answer,
@@ -262,6 +323,7 @@ async def ask_stream(
 
     try:
         await _preload_user_credentials(api_key_manager, uid, db)
+        credential_id, provider, model = _resolve_usage_metadata(uid, api_key_manager)
         agent_name, agent_graph, input_state, run_config = await agent_stream_setup(
             request,
             uid=uid,
@@ -288,6 +350,9 @@ async def ask_stream(
         usage_writer=usage_writer,
         uid=uid,
         emit_route=False,
+        credential_id=credential_id,
+        provider=provider,
+        model=model,
     )
 
 
@@ -330,6 +395,7 @@ async def ask_agent_stream(
     )
 
     try:
+        credential_id, provider, model = _resolve_usage_metadata(uid, None)
         agent_name, agent_graph, input_state, run_config = await agent_stream_setup(
             request,
             uid=uid,
@@ -356,6 +422,9 @@ async def ask_agent_stream(
         usage_writer=usage_writer,
         uid=uid,
         emit_route=True,
+        credential_id=credential_id,
+        provider=provider,
+        model=model,
     )
 
 
@@ -370,13 +439,27 @@ async def _stream_agent_events(
     usage_writer: Any,
     uid: int,
     emit_route: bool,
+    credential_id: Optional[int] = None,
+    provider: str = "openai",
+    model: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Drive the agent stream, persist the result, enqueue usage."""
     from app.services.chat.sse import sse_event
+    from app.services.llm.usage_tracker import UsageTrackingCallback
 
-    token_handler = TokenUsageHandler()
+    # Attach a UsageTrackingCallback via run_config.  LangGraph propagates
+    # config callbacks to all child runnables (including the LLM), so
+    # on_llm_end fires per LLM call and the callback enqueues usage directly
+    # to the writer (cross-thread via run_coroutine_threadsafe).
+    usage_callback = UsageTrackingCallback(
+        uid=uid,
+        credential_id=credential_id,
+        provider=provider,
+        model=model,
+        writer=usage_writer,
+    )
     callbacks = list(run_config.get("callbacks") or [])
-    callbacks.append(token_handler)
+    callbacks.append(usage_callback)
     run_config = {**run_config, "callbacks": callbacks}
 
     streamer = AgentSSEStreamer()
@@ -401,24 +484,20 @@ async def _stream_agent_events(
     # render a spurious error after a successful answer.
     try:
         latency_ms = int((time.time() - start_time) * 1000)
+        total_tokens = usage_callback.total_tokens
+        logger.info(
+            f"[CHAT_ORCH] stream done: tokens={total_tokens} "
+            f"(prompt={usage_callback.prompt_tokens}, "
+            f"completion={usage_callback.completion_tokens}, "
+            f"calls={usage_callback.llm_calls}) provider={provider} model={model}"
+        )
         await finalize_turn(
             db,
             assistant_msg_id=ctx.assistant_msg_id,
             content=streamer.full_content,
             sources=streamer.sources[:5],
-            tokens_used=token_handler.total_tokens or None,
+            tokens_used=total_tokens or None,
             latency_ms=latency_ms,
         )
-        _enqueue_usage(
-            usage_writer,
-            uid=uid,
-            credential_id=None,
-            provider="openai",
-            model=settings.llm_model,
-            total_tokens=token_handler.total_tokens,
-            prompt_tokens=token_handler.prompt_tokens,
-            completion_tokens=token_handler.completion_tokens,
-            api_calls=token_handler.llm_calls or 1,
-        )
     except Exception:
-        logger.exception("Post-stream finalize/usage failed; answer already delivered to client")
+        logger.exception("Post-stream finalize failed; answer already delivered to client")

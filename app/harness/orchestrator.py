@@ -22,9 +22,13 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from app.services.chat.llm import infer_provider
+from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
+from app.services.llm.usage_tracker import UsageTrackingCallback
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +111,7 @@ class AgentOrchestrator:
 
     # ── routing ──────────────────────────────────────────────────────
 
-    async def route(self, query: str, **context: Any) -> str:
+    async def route(self, query: str, *, uid: Optional[int] = None, **context: Any) -> str:
         """Choose the best agent for a query. Returns agent name.
 
         1. If only one agent registered, return it immediately.
@@ -115,6 +119,12 @@ class AgentOrchestrator:
         3. Call LLM with temperature=0 and routing_timeout.
         4. Parse response with regex against registered agent names.
         5. Fallback to default agent on any failure.
+
+        Args:
+            query: User query to route.
+            uid: Optional user id for usage attribution. When provided, a
+                UsageTrackingCallback is attached to the routing LLM call.
+            **context: Extra context (currently unused by routing).
         """
         if not self._agents:
             logger.warning("[ORCHESTRATOR] no agents registered, returning empty")
@@ -129,8 +139,14 @@ class AgentOrchestrator:
                 SystemMessage(content=prompt),
                 HumanMessage(content=query),
             ]
+
+            callbacks = []
+            if uid is not None:
+                callbacks.append(self._make_usage_callback(uid))
+
+            config: dict[str, Any] = {"callbacks": callbacks} if callbacks else {}
             resp = await asyncio.wait_for(
-                self._llm.ainvoke(messages),
+                self._llm.ainvoke(messages, config=config),
                 timeout=self._routing_timeout,
             )
             text = (resp.content or "").strip()
@@ -154,6 +170,23 @@ class AgentOrchestrator:
             logger.warning("[ORCHESTRATOR] routing failed: %s", exc)
 
         return self._default_agent
+
+    def _make_usage_callback(self, uid: int) -> UsageTrackingCallback:
+        """Create a usage callback for the harness routing LLM."""
+        model = getattr(self._llm, "model_name", None) or getattr(
+            self._llm, "model", None
+        )
+        base_url = getattr(self._llm, "openai_api_base", None) or getattr(
+            self._llm, "base_url", None
+        )
+        provider = infer_provider(base_url)
+        return UsageTrackingCallback(
+            uid=uid,
+            credential_id=None,  # routing uses the system default LLM
+            provider=provider,
+            model=model,
+            writer=get_buffered_usage_writer(),
+        )
 
     # ── internal ─────────────────────────────────────────────────────
 

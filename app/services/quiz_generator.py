@@ -23,9 +23,7 @@ from app.config import settings
 from app.database import get_db_context
 from app.models import QuizSet, Collection, Video
 from app.repository import mongo_quiz_repository as mongo_quiz
-from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
-from app.services.llm.usage_tracker import UsageTrackingCallback
-from app.services.llm.provider_detect import detect_provider
+from app.services.chat.llm import build_llm
 from app.services.rag import RAGService
 
 
@@ -506,16 +504,13 @@ class QuizGeneratorService:
         )
 
     def _get_tracking_llm(self, *, uid: int, temperature: float) -> ChatOpenAI:
-        llm = self._get_llm(temperature=temperature)
-        provider = detect_provider(settings.openai_base_url)
-        writer = get_buffered_usage_writer()
-        tracker = UsageTrackingCallback(
-            uid=uid,
-            provider=provider,
-            model=settings.llm_model,
-            writer=writer,
-        )
-        llm.callbacks = [tracker]
+        """Build a per-user LLM with usage tracking for quiz generation.
+
+        ``build_llm`` already attaches a UsageTrackingCallback, so we only
+        need to set the desired temperature and return it.
+        """
+        llm = build_llm(uid=uid)
+        llm.temperature = temperature
         return llm
 
     def _validate_question(self, q: dict, chunks: list[dict]) -> bool:

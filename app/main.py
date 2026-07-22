@@ -538,6 +538,7 @@ def _get_harness_llm():
             base_url=settings.openai_base_url or None,
             model=settings.llm_model,
             temperature=0,
+            stream_usage=True,
         )
     except Exception as e:
         logger.warning("[HARNESS] failed to create LLM: {}", e)

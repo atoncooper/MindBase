@@ -15,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     JSON,
     Float,
+    Numeric,
     UniqueConstraint,
     ForeignKey,
     Index,
@@ -378,6 +379,7 @@ class CredentialUsage(Base):
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     api_calls = Column(Integer, default=1)
+    cost_estimate = Column(Numeric(12, 6), default=0.0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
