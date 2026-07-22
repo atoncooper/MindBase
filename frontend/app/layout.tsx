@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ZCOOL_XiaoWei, Noto_Sans_SC, Geist, Roboto } from "next/font/google";
+import { ZCOOL_XiaoWei, Noto_Sans_SC, Geist, Roboto, Fraunces, Hanken_Grotesk } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -26,6 +26,22 @@ const roboto = Roboto({
   variable: "--font-roboto",
 });
 
+// Editorial Atelier type pairing for the notes module (scoped via
+// --font-fraunces / --font-hanken in notes.css). Latin-only; CJK falls
+// back to Noto Sans SC (--font-body) / system serif.
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  style: ["normal", "italic"],
+  variable: "--font-fraunces",
+});
+
+const hanken = Hanken_Grotesk({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-hanken",
+});
+
 export const metadata: Metadata = {
   title: "MindBase - 知识库系统",
   description: "将你的 B站收藏夹变成可对话的知识库",
@@ -43,7 +59,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" className={cn("font-sans", "dark", geist.variable, roboto.variable)}>
-      <body className={`${display.variable} ${body.variable} ${roboto.variable} antialiased`}>
+      <body className={`${display.variable} ${body.variable} ${roboto.variable} ${fraunces.variable} ${hanken.variable} antialiased`}>
         <ThemeProvider>
           <AuthProvider>
             <RouteGuard>{children}</RouteGuard>

@@ -5,11 +5,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { notesApi, type NoteDetail } from "@/lib/api";
 import { saveDraft, getDraft, clearDraft } from "./draft-store";
+import { Share2, Trash2 } from "lucide-react";
+// TypeScript may not have a module declaration for CSS imports in this project.
+// @ts-ignore: allow importing CSS in TSX
 import "./notes.css";
 
 interface NoteEditorProps {
     note: NoteDetail;
     onChanged: () => void;
+    onShare: () => void;
+    onDelete: () => void;
 }
 
 type SaveStatus = "idle" | "saving" | "saved" | "error" | "conflict";
@@ -25,7 +30,7 @@ const STATUS_LABEL: Record<SaveStatus, string> = {
     conflict: "冲突 · 该笔记已在别处修改",
 };
 
-export default function NoteEditor({ note, onChanged }: NoteEditorProps) {
+export default function NoteEditor({ note, onChanged, onShare, onDelete }: NoteEditorProps) {
     const [title, setTitle] = useState(note.title);
     const [content, setContent] = useState(note.contentMd);
     const [status, setStatus] = useState<SaveStatus>("idle");
@@ -35,7 +40,12 @@ export default function NoteEditor({ note, onChanged }: NoteEditorProps) {
     const serverUpdatedAtRef = useRef<string | null>(note.updatedAt);
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Reset internal state when switching notes.
+    // Reset internal state ONLY when switching to a different note. We
+    // deliberately do NOT depend on note.contentMd / note.updatedAt here:
+    // re-running on every auto-save round-trip would clobber in-flight
+    // edits - the server returns the pre-debounce content, which would
+    // overwrite keystrokes the user typed during the await. Server-version
+    // sync is handled by the separate effect below.
     useEffect(() => {
         setTitle(note.title);
         setContent(note.contentMd);
@@ -49,7 +59,16 @@ export default function NoteEditor({ note, onChanged }: NoteEditorProps) {
                 setDraftPrompt(true);
             }
         });
-    }, [note.uuid, note.title, note.contentMd, note.updatedAt]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [note.uuid]);
+
+    // Keep serverUpdatedAtRef in sync when the server advances updated_at
+    // (after our own auto-save, or an external edit). Crucially, do NOT
+    // touch local title/content here - that would overwrite unsaved
+    // keystrokes typed during the save round-trip.
+    useEffect(() => {
+        serverUpdatedAtRef.current = note.updatedAt;
+    }, [note.uuid, note.updatedAt]);
 
     const isClean = title === note.title && content === note.contentMd;
 
@@ -156,79 +175,104 @@ export default function NoteEditor({ note, onChanged }: NoteEditorProps) {
         [wordCount],
     );
 
+    // Defensive: backend may send invalid date / missing revision count.
+    const updatedAtMs = new Date(note.updatedAt).getTime();
+    const dateText = Number.isFinite(updatedAtMs)
+        ? new Date(note.updatedAt).toLocaleDateString("zh-CN", {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+          })
+        : "暂无日期";
+    const revisionText = `${note.revisionCount ?? 0} 次修订`;
+
     return (
         <div className="notes-scope flex flex-col h-full note-fade-in">
             {/* Title + status */}
             <div
-                className="flex items-start gap-3 px-8 pt-6 pb-4"
+                className="px-28 pt-9 pb-6 grid grid-cols-[1fr_2fr_1fr] items-start gap-3"
                 style={{ borderBottom: "1px solid var(--note-line-soft)" }}
             >
-                <div className="flex-1 min-w-0">
+                <span />
+                <div className="min-w-0 flex flex-col items-center">
                     <input
                         type="text"
                         value={title}
                         onChange={(e) => setTitle(e.target.value)}
                         placeholder="无标题"
                         className="note-title-input"
+                        style={{ textAlign: "center" }}
                     />
-                    <div className="note-title-rule" />
                     <div
-                        className="flex items-center gap-2.5 mt-2"
+                        className="flex items-center gap-3 mt-3.5"
                         style={{ color: "var(--note-ink-faint)" }}
                     >
-                        <span className="note-eyebrow">
-                            {new Date(note.updatedAt).toLocaleDateString("zh-CN", {
-                                year: "numeric",
-                                month: "long",
-                                day: "numeric",
-                            })}
-                        </span>
-                        <span className="note-meta-sep">❧</span>
+                        <span className="note-eyebrow">{dateText}</span>
+                        <span className="note-meta-sep">·</span>
                         <span className="note-eyebrow">{wordCount} 字</span>
                         {readingMinutes > 0 && (
                             <>
-                                <span className="note-meta-sep">❧</span>
+                                <span className="note-meta-sep">·</span>
                                 <span className="note-eyebrow">约 {readingMinutes} 分钟</span>
                             </>
                         )}
-                        <span className="note-meta-sep">❧</span>
-                        <span className="note-eyebrow">
-                            {note.revisionCount} 次修订
-                        </span>
+                        <span className="note-meta-sep">·</span>
+                        <span className="note-eyebrow">{revisionText}</span>
                     </div>
                 </div>
-                <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                <div className="flex flex-col items-end gap-2 justify-self-end">
                     {showStatus && (
                         <span className={statusClass}>
                             <span className="dot" />
                             {STATUS_LABEL[status]}
                         </span>
                     )}
-                    <div className="note-seg" role="group" aria-label="视图模式">
+                    <div className="flex items-center gap-2">
                         <button
                             type="button"
-                            className={`note-seg-btn ${viewMode === "write" ? "is-active" : ""}`}
-                            onClick={() => setViewMode("write")}
-                            title="仅写作"
+                            onClick={onShare}
+                            className="note-btn is-ghost"
+                            title="分享"
+                            aria-label="分享"
                         >
-                            写作
+                            <Share2 className="w-3.5 h-3.5" />
                         </button>
                         <button
                             type="button"
-                            className={`note-seg-btn ${viewMode === "split" ? "is-active" : ""}`}
-                            onClick={() => setViewMode("split")}
-                            title="分屏"
+                            onClick={onDelete}
+                            className="note-btn is-ghost is-danger"
+                            title="删除"
+                            aria-label="删除"
                         >
-                            分屏
+                            <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                        <button
-                            type="button"
-                            className={`note-seg-btn ${viewMode === "read" ? "is-active" : ""}`}
-                            onClick={() => setViewMode("read")}
-                            title="仅阅读"
-                        >
-                            阅读
-                        </button>
+                        <span style={{ width: 1, height: 18, background: "var(--note-line)", flexShrink: 0 }} />
+                        <div className="note-seg" role="group" aria-label="视图模式">
+                            <button
+                                type="button"
+                                className={`note-seg-btn ${viewMode === "write" ? "is-active" : ""}`}
+                                onClick={() => setViewMode("write")}
+                                title="仅写作"
+                            >
+                                写作
+                            </button>
+                            <button
+                                type="button"
+                                className={`note-seg-btn ${viewMode === "split" ? "is-active" : ""}`}
+                                onClick={() => setViewMode("split")}
+                                title="分屏"
+                            >
+                                分屏
+                            </button>
+                            <button
+                                type="button"
+                                className={`note-seg-btn ${viewMode === "read" ? "is-active" : ""}`}
+                                onClick={() => setViewMode("read")}
+                                title="仅阅读"
+                            >
+                                阅读
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -267,22 +311,22 @@ export default function NoteEditor({ note, onChanged }: NoteEditorProps) {
             {/* Edit grid — write / split / read modes */}
             <div className={`flex-1 grid min-h-0 note-edit-grid is-${viewMode}`}>
                 <div
-                    className="overflow-auto px-8 py-5 note-pane-write"
+                    className="overflow-auto pl-32 pr-20 py-6 note-pane-write"
                     style={{
-                        borderRight: "1px solid var(--note-line-soft)",
+                        borderRight: "1px solid var(--note-line)",
                         background: "var(--note-paper)",
                     }}
                 >
                     <textarea
                         value={content}
                         onChange={(e) => setContent(e.target.value)}
-                        placeholder={"从此处开始落笔…\n\n支持完整 Markdown 语法。"}
+                        placeholder="从此处开始落笔…"
                         className="note-textarea"
                         spellCheck={false}
                     />
                 </div>
                 <div
-                    className="overflow-auto px-8 py-5 note-preview note-pane-preview"
+                    className="overflow-auto pl-28 pr-16 py-6 note-preview note-pane-preview"
                     style={{ background: "var(--note-paper-elev)" }}
                 >
                     {content ? (
@@ -293,11 +337,12 @@ export default function NoteEditor({ note, onChanged }: NoteEditorProps) {
                         <p
                             style={{
                                 color: "var(--note-ink-faint)",
-                                fontStyle: "italic",
-                                fontFamily: "var(--note-serif)",
+                                fontFamily: "var(--note-sans)",
+                                fontSize: 14,
+                                lineHeight: 1.6,
                             }}
                         >
-                            预览区
+                            编辑 Markdown 内容后，此处将实时展示预览效果
                         </p>
                     )}
                 </div>

@@ -3,8 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
     Plus,
-    Trash2,
-    Share2,
     Search,
     X,
 } from "lucide-react";
@@ -22,11 +20,12 @@ type TargetType = "video" | "cloud_file";
 
 function targetLabel(t: TargetType, id: string): string {
     if (t === "video") {
+        if (!id) return "速记";
         if (id.startsWith("scratch:")) return "速记";
         const [bvid, cid] = id.split(":");
         return cid ? `视频 ${bvid} · P${cid}` : `视频 ${bvid}`;
     }
-    return `云盘文件 #${id}`;
+    return id ? `云盘文件 #${id}` : "云盘文件";
 }
 
 function timeAgo(iso: string): string {
@@ -108,14 +107,18 @@ export default function NotesPanel() {
     }, [refreshDetail]);
 
     const createNew = async () => {
-        const created = await notesApi.create({
-            targetType: "video",
-            targetId: `scratch:${Date.now()}`,
-            title: "无标题",
-            contentMd: "",
-        });
-        await refreshList();
-        setSelectedUuid(created.uuid);
+        try {
+            const created = await notesApi.create({
+                targetType: "video",
+                targetId: `scratch:${Date.now()}`,
+                title: "无标题",
+                contentMd: "",
+            });
+            await refreshList();
+            setSelectedUuid(created.uuid);
+        } catch (e) {
+            alert("新建笔记失败:" + (e instanceof Error ? e.message : "请稍后重试"));
+        }
     };
 
     const remove = async (uuid: string) => {
@@ -128,8 +131,12 @@ export default function NotesPanel() {
     };
 
     const togglePin = async (note: NoteMeta) => {
-        await notesApi.update(note.uuid, { isPinned: !note.isPinned });
-        await refreshList();
+        try {
+            await notesApi.update(note.uuid, { isPinned: !note.isPinned });
+            await refreshList();
+        } catch (e) {
+            alert("置顶失败:" + (e instanceof Error ? e.message : "请稍后重试"));
+        }
     };
 
     const filtered = query.trim()
@@ -146,19 +153,6 @@ export default function NotesPanel() {
         if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
         return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
-
-    // Stable folio numbers: derived from the FULL list (unfiltered), so
-    // searching no longer renumbers every visible row. Pinned still sort
-    // first, so their folios reflect the canonical archive order.
-    const folioMap = useMemo(() => {
-        const full = [...notes].sort((a, b) => {
-            if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
-            return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-        });
-        const m = new Map<string, string>();
-        full.forEach((n, i) => m.set(n.uuid, String(i + 1).padStart(2, "0")));
-        return m;
-    }, [notes]);
 
     // Group visible notes: pinned first, then by recency bucket. Mirrors the
     // editorial-archive feel of the chat-history sidebar.
@@ -185,50 +179,34 @@ export default function NotesPanel() {
         <div className="notes-scope flex h-full bg-[var(--note-paper)]">
             {/* Sidebar */}
             <div
-                className="w-72 flex flex-col"
-                style={{ borderRight: "1px solid var(--note-line)" }}
+                className="w-64 flex flex-col"
+                style={{
+                    borderRight: "1px solid var(--note-line)",
+                    background: "var(--note-paper-sunken)",
+                }}
             >
                 {/* Header */}
                 <div
-                    className="px-5 pt-5 pb-4 flex items-center justify-between"
+                    className="px-5 pt-9 pb-6 grid grid-cols-3 items-center"
                     style={{ borderBottom: "1px solid var(--note-line-soft)" }}
                 >
-                    <div className="flex flex-col gap-1">
-                        <span
-                            className="note-eyebrow"
-                            style={{ color: "var(--note-folio)" }}
-                        >
-                            Atelier
-                        </span>
-                        <div className="flex items-baseline gap-2.5">
-                            <span
-                                style={{
-                                    fontFamily: "var(--note-serif)",
-                                    fontSize: 24,
-                                    fontWeight: 500,
-                                    color: "var(--note-ink)",
-                                    letterSpacing: "-0.018em",
-                                    fontVariationSettings: '"opsz" 48',
-                                }}
-                            >
-                                笔记
-                            </span>
-                            <span
-                                style={{
-                                    fontFamily: "var(--note-serif)",
-                                    fontStyle: "italic",
-                                    fontSize: 13,
-                                    color: "var(--note-folio)",
-                                    fontVariationSettings: '"opsz" 9',
-                                }}
-                            >
-                                №&nbsp;{String(notes.length).padStart(2, "0")}
-                            </span>
-                        </div>
-                    </div>
+                    <span />
+                    <span
+                        style={{
+                            fontFamily: "var(--note-sans)",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: "var(--note-ink-faint)",
+                            letterSpacing: "0.18em",
+                            textAlign: "center",
+                            textTransform: "uppercase",
+                        }}
+                    >
+                        笔记
+                    </span>
                     <button
                         onClick={createNew}
-                        className="note-btn is-ghost"
+                        className="note-btn is-ghost justify-self-end"
                         title="新建笔记"
                         aria-label="新建笔记"
                     >
@@ -237,22 +215,9 @@ export default function NotesPanel() {
                 </div>
 
                 {/* Search */}
-                <div className="px-4 py-3">
-                    <div
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
-                        style={{
-                            background: "var(--note-paper-sunken)",
-                            border: "1px solid transparent",
-                            transition: "border-color 180ms var(--note-ease)",
-                        }}
-                        onFocus={(e) =>
-                            (e.currentTarget.style.borderColor = "var(--note-line)")
-                        }
-                        onBlur={(e) =>
-                            (e.currentTarget.style.borderColor = "transparent")
-                        }
-                    >
-                        <Search className="w-3.5 h-3.5" style={{ color: "var(--note-ink-faint)" }} />
+                <div className="px-4 py-4">
+                    <div className="note-search">
+                        <Search className="w-4 h-4" style={{ color: "var(--note-ink-faint)" }} />
                         <input
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}
@@ -270,7 +235,7 @@ export default function NotesPanel() {
                                 aria-label="清除搜索"
                                 title="清除搜索"
                             >
-                                <X className="w-2.5 h-2.5" />
+                                <X className="w-3 h-3" />
                             </button>
                         )}
                     </div>
@@ -282,9 +247,6 @@ export default function NotesPanel() {
                         <>
                             {[0, 1, 2, 3].map((i) => (
                                 <div className="note-skel" key={i}>
-                                    <div className="note-skel-mark">
-                                        <span />
-                                    </div>
                                     <div className="note-skel-body">
                                         <div className="note-skel-line" />
                                         <div className="note-skel-line" />
@@ -296,23 +258,9 @@ export default function NotesPanel() {
                     )}
                     {!loading && sorted.length === 0 && (
                         <div
-                            className="px-5 py-10 flex flex-col items-start gap-1"
+                            className="px-5 pt-20 pb-10 flex flex-col items-start gap-1"
                             style={{ color: "var(--note-ink-faint)" }}
                         >
-                            <span
-                                style={{
-                                    fontFamily: "var(--note-serif)",
-                                    fontStyle: "italic",
-                                    fontSize: 40,
-                                    color: "var(--note-folio)",
-                                    opacity: 0.5,
-                                    lineHeight: 1,
-                                    marginBottom: 6,
-                                    fontVariationSettings: '"opsz" 144',
-                                }}
-                            >
-                                ❦
-                            </span>
                             {query ? (
                                 <>
                                     <span
@@ -334,27 +282,16 @@ export default function NotesPanel() {
                                     </span>
                                 </>
                             ) : (
-                                <>
-                                    <span className="note-eyebrow">Folio</span>
                                     <span
                                         style={{
-                                            fontFamily: "var(--note-serif)",
-                                            fontStyle: "italic",
+                                            fontFamily: "var(--note-sans)",
                                             fontSize: 15,
                                             color: "var(--note-ink-soft)",
-                                            fontVariationSettings: '"opsz" 24',
+                                            lineHeight: 1.5,
                                         }}
                                     >
                                         还没有笔记。落笔写下第一条吧。
                                     </span>
-                                    <button
-                                        onClick={createNew}
-                                        className="note-first-cta"
-                                    >
-                                        <Plus className="w-3.5 h-3.5" />
-                                        新建笔记
-                                    </button>
-                                </>
                             )}
                         </div>
                     )}
@@ -364,12 +301,11 @@ export default function NotesPanel() {
                                 <div className="note-group">
                                     <span>{g.label}</span>
                                     <span className="note-group-count">
-                                        {String(g.notes.length).padStart(2, "0")}
+                                        · {g.notes.length} 条
                                     </span>
                                 </div>
                                 {g.notes.map((n, i) => {
                                     const isSelected = selectedUuid === n.uuid;
-                                    const folio = folioMap.get(n.uuid) ?? "·";
                                     return (
                                         <div
                                             key={n.uuid}
@@ -385,7 +321,6 @@ export default function NotesPanel() {
                                             className={`note-row note-stagger ${isSelected ? "is-selected" : ""}`}
                                             style={{ animationDelay: `${Math.min(i * 24, 192)}ms` }}
                                         >
-                                            <span className="note-folio">§{folio}</span>
                                             <div className="note-row-body flex flex-col min-w-0">
                                                 <div className="flex items-start gap-2">
                                                     {n.isPinned && (
@@ -421,13 +356,7 @@ export default function NotesPanel() {
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div
-                                                    className="flex gap-1 mt-1.5 -ml-1"
-                                                    style={{
-                                                        opacity: isSelected ? 1 : 0,
-                                                        transition: "opacity 150ms var(--note-ease)",
-                                                    }}
-                                                >
+                                                <div className="note-row-actions flex gap-1 mt-1.5 -ml-1">
                                                     <button
                                                         onClick={(e) => {
                                                             e.stopPropagation();
@@ -437,16 +366,6 @@ export default function NotesPanel() {
                                                         style={{ fontSize: 10.5, padding: "2px 7px" }}
                                                     >
                                                         {n.isPinned ? "取消置顶" : "置顶"}
-                                                    </button>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            remove(n.uuid);
-                                                        }}
-                                                        className="note-btn is-ghost is-danger"
-                                                        style={{ fontSize: 10.5, padding: "2px 7px" }}
-                                                    >
-                                                        删除
                                                     </button>
                                                 </div>
                                             </div>
@@ -461,28 +380,12 @@ export default function NotesPanel() {
             {/* Editor pane */}
             <div className="flex-1 flex flex-col min-w-0">
                 {detail ? (
-                    <>
-                        <div
-                            className="flex items-center justify-end gap-1 px-5 py-2"
-                            style={{ borderBottom: "1px solid var(--note-line-soft)" }}
-                        >
-                            <button
-                                onClick={() => setShowShare(true)}
-                                className="note-btn"
-                            >
-                                <Share2 className="w-3.5 h-3.5" />
-                                {shareInfo ? "管理分享" : "分享"}
-                            </button>
-                            <button
-                                onClick={() => remove(detail.uuid)}
-                                className="note-btn is-danger"
-                            >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                删除
-                            </button>
-                        </div>
-                        <NoteEditor note={detail} onChanged={refreshDetail} />
-                    </>
+                    <NoteEditor
+                        note={detail}
+                        onChanged={refreshDetail}
+                        onShare={() => setShowShare(true)}
+                        onDelete={() => remove(detail.uuid)}
+                    />
                 ) : (
                     <div
                         className="flex-1 flex flex-col items-center justify-center gap-4"
@@ -490,31 +393,9 @@ export default function NotesPanel() {
                     >
                         <div
                             style={{
-                                fontFamily: "var(--note-serif)",
-                                fontStyle: "italic",
-                                fontSize: 84,
-                                color: "var(--note-folio)",
-                                opacity: 0.5,
-                                lineHeight: 1,
-                                fontVariationSettings: '"opsz" 144',
-                                marginBottom: 4,
-                            }}
-                        >
-                            ❦
-                        </div>
-                        <div
-                            className="note-eyebrow"
-                            style={{ color: "var(--note-folio)" }}
-                        >
-                            Folio
-                        </div>
-                        <div
-                            style={{
-                                fontFamily: "var(--note-serif)",
-                                fontStyle: "italic",
-                                fontSize: 17,
+                                fontFamily: "var(--note-sans)",
+                                fontSize: 15,
                                 color: "var(--note-ink-soft)",
-                                fontVariationSettings: '"opsz" 24',
                             }}
                         >
                             选择左侧笔记，或新建一条开始落笔

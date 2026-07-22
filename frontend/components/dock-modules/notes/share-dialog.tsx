@@ -82,10 +82,11 @@ export default function ShareDialog({
                         <h3
                             style={{
                                 fontFamily: "var(--note-serif)",
-                                fontSize: 22,
+                                fontSize: 19,
                                 fontWeight: 500,
                                 color: "var(--note-ink)",
-                                letterSpacing: "-0.01em",
+                                letterSpacing: "-0.005em",
+                                fontVariationSettings: '"opsz" 72',
                             }}
                         >
                             分享笔记
