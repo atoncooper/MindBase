@@ -137,6 +137,7 @@ async def ask_question_agent_stream(
         db=db,
         background_tasks=background_tasks,
         agent_harness=getattr(http_request.app.state, "agent_harness", None),
+        api_key_manager=getattr(http_request.app.state, "api_key_manager", None),
         usage_writer=getattr(http_request.app.state, "usage_writer", None),
     )
     return StreamingResponse(generator, media_type="text/event-stream")
