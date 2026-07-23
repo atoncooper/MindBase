@@ -452,6 +452,11 @@ app.include_router(quiz_router)
 app.include_router(notes_router)
 app.include_router(tasks_ws_router)
 
+# Agent runtime status - admin-only observability endpoint
+from app.routers.agent_runtime import router as agent_runtime_router  # noqa: E402
+
+app.include_router(agent_runtime_router)
+
 # Plan 0021: Cloud drive router (with graceful degradation)
 try:
     from app.routers.cloud import router as cloud_router
