@@ -15,10 +15,11 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+from app.agent.errors import ErrorCategory, classify_error
 from app.agent.lifecycle import AgentLifecycleManager
-from app.agent.memory.handlers import ErrorCategory, classify_error
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,19 @@ class AgentConfig:
     retry: AgentRetryConfig | None = None
 
 
+class TicketState(str, Enum):
+    """Lifecycle states for an :class:`InvocationTicket`.
+
+    ``str`` mixin keeps backwards-compatible string comparison
+    (``ticket.state == "queued"``) while making the states self-documenting.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class InvocationTicket:
     """One queued or scheduled invocation."""
@@ -96,6 +110,11 @@ class InvocationTicket:
     error: str | None = None
     cancelled: bool = False
     retry_count: int = 0
+    # Lifecycle state used by cancel(): "queued" -> "running" -> "done",
+    # or "queued" -> "cancelled".  Only tickets still in "queued" state
+    # can be cancelled - once a worker has started execution the scheduler
+    # cannot interrupt the underlying ``lifecycle.invoke``.
+    state: TicketState = TicketState.QUEUED
 
 
 @dataclass
@@ -136,6 +155,11 @@ class AgentScheduler:
         self._lifecycle = lifecycle
         self._slots: dict[str, AgentSlot] = {}
         self._scheduled: dict[str, asyncio.Task] = {}
+        # Registry of every live ticket keyed by job_id, so ``cancel()``
+        # can locate a queued/scheduled job without scanning asyncio.Queue
+        # (which is not iterable).  Entries are removed when the worker
+        # finishes or skips the ticket.
+        self._tickets: dict[str, InvocationTicket] = {}
         self._running = False
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -180,6 +204,10 @@ class AgentScheduler:
             w.cancel()
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
+
+        # Drop any tickets that never reached a worker (e.g. delayed jobs
+        # cancelled while sleeping) so a reused scheduler starts clean.
+        self._tickets.clear()
 
         logger.info("[AGENT_SCHED] shutdown complete")
 
@@ -229,6 +257,7 @@ class AgentScheduler:
             timeout=timeout,
             input=input,
         )
+        self._tickets[ticket.job_id] = ticket
 
         # Scheduled / delayed path
         if delay_seconds is not None or at_timestamp is not None:
@@ -262,6 +291,7 @@ class AgentScheduler:
                 session_id,
                 slot.config.max_queue,
             )
+            self._tickets.pop(ticket.job_id, None)
             return {"error": "queue full, try again later"}
 
         await event.wait()
@@ -277,33 +307,48 @@ class AgentScheduler:
     async def cancel(self, job_id: str) -> bool:
         """Cancel a queued or scheduled invocation by *job_id*.
 
-        Returns True if the job was found and cancelled.
+        Returns True only when the job was still pending - i.e. enqueued but
+        not yet picked up by a worker, or a delayed job still waiting to
+        fire.  Running or already-finished jobs return False: the scheduler
+        cannot interrupt an in-flight ``lifecycle.invoke``.
+
+        On success the waiting ``invoke()`` caller is unblocked (its ticket
+        event is set) and receives ``{"cancelled": True, "job_id": ...}``.
+
+        Note: this method is ``async`` for API symmetry with ``invoke()`` but
+        contains no ``await`` - it runs atomically w.r.t. the event loop, so
+        the state check and the cancellation flip cannot be interleaved by a
+        worker flipping ``state`` to ``running``.
         """
-        # Check scheduled tasks
+        ticket = self._tickets.get(job_id)
+        if ticket is None:
+            return False
+
+        # Only queued (not-yet-running) jobs are cancellable.
+        if ticket.state != TicketState.QUEUED:
+            return False
+
+        ticket.cancelled = True
+        ticket.state = TicketState.CANCELLED
+        if ticket.event is not None:
+            ticket.event.set()
+
+        # If a delayed job is still sleeping in _schedule_one, cancel the
+        # timer task too.  If it already fired into the queue, the worker
+        # will see ``ticket.cancelled`` and skip it.
         task = self._scheduled.get(job_id)
         if task is not None and not task.done():
             task.cancel()
-            logger.debug("[AGENT_SCHED] cancelled scheduled job=%s", job_id)
-            return True
 
-        # Check queues — O(n) per agent type. Acceptable for small queues.
-        for name, slot in self._slots.items():
-            cancelled = await self._cancel_in_queue(slot, job_id)
-            if cancelled:
-                logger.debug(
-                    "[AGENT_SCHED] cancelled queued job=%s agent=%s", job_id, name
-                )
-                return True
+        # Drop the ticket from the registry.  For delayed jobs that never
+        # reached the queue this is the only cleanup path; for queued jobs
+        # the worker also pops (idempotent).
+        self._tickets.pop(job_id, None)
 
-        return False
-
-    async def _cancel_in_queue(self, slot: AgentSlot, job_id: str) -> bool:
-        """Scan the queue and cancel a ticket by job_id."""
-        # asyncio.Queue is not iterable — we can't scan it directly.
-        # Instead we mark the ticket as cancelled when it's dequeued.
-        # For scheduled tasks we already handle it above.
-        # For queued-but-not-yet-processed, we can only cancel via scheduled path.
-        return False
+        logger.debug(
+            "[AGENT_SCHED] cancelled job=%s agent=%s", job_id, ticket.agent_name
+        )
+        return True
 
     # ── health ───────────────────────────────────────────────────────
 
@@ -384,10 +429,12 @@ class AgentScheduler:
             return
 
         if not self._running or ticket.cancelled:
+            self._tickets.pop(ticket.job_id, None)
             return
 
         slot = self._slots.get(ticket.agent_name)
         if slot is None:
+            self._tickets.pop(ticket.job_id, None)
             return
 
         event = asyncio.Event()
@@ -400,6 +447,7 @@ class AgentScheduler:
                 ticket.agent_name,
                 ticket.session_id,
             )
+            self._tickets.pop(ticket.job_id, None)
             return
 
         await event.wait()
@@ -424,26 +472,54 @@ class AgentScheduler:
             if not self._running:
                 break
 
+            if ticket.event is None:
+                ticket.event = asyncio.Event()
+
             if ticket.cancelled:
-                if ticket.event:
-                    ticket.event.set()
+                ticket.state = TicketState.CANCELLED
+                ticket.event.set()
+                self._tickets.pop(ticket.job_id, None)
                 continue
 
             async with slot.semaphore:
-                slot.active += 1
-                ticket.event = asyncio.Event() if ticket.event is None else ticket.event
-
-                result = await self._execute_with_retry(ticket, slot)
-
+                # Re-check cancellation after acquiring the slot: under
+                # multiple workers a job can be cancelled while waiting for
+                # the semaphore (single-worker is unaffected since acquire
+                # does not yield when the slot is free).
                 if ticket.cancelled:
-                    result = {"cancelled": True, "job_id": ticket.job_id}
+                    ticket.state = TicketState.CANCELLED
+                    if ticket.event is not None:
+                        ticket.event.set()
+                    self._tickets.pop(ticket.job_id, None)
+                    continue
+                slot.active += 1
+                ticket.state = TicketState.RUNNING
+                try:
+                    result = await self._execute_with_retry(ticket, slot)
 
-                if ticket.error:
-                    result = {"error": ticket.error}
+                    if ticket.cancelled:
+                        result = {"cancelled": True, "job_id": ticket.job_id}
 
-                ticket.result = result
-                ticket.event.set()
-                slot.active -= 1
+                    if ticket.error:
+                        result = {"error": ticket.error}
+
+                    ticket.result = result
+                    if ticket.state != TicketState.CANCELLED:
+                        ticket.state = TicketState.DONE
+                finally:
+                    # Guarantee the caller is unblocked and the slot count
+                    # is released even if the worker is cancelled
+                    # mid-execution (CancelledError is BaseException and is
+                    # NOT caught by _execute_with_retry's ``except Exception``).
+                    # If result was never set the worker was killed - surface
+                    # a sentinel so the caller can tell this apart from an
+                    # empty-but-successful result.
+                    if ticket.result is None:
+                        ticket.result = {"error": "worker cancelled"}
+                    if ticket.event is not None:
+                        ticket.event.set()
+                    slot.active -= 1
+                    self._tickets.pop(ticket.job_id, None)
 
         logger.debug("[AGENT_SCHED] worker stopped agent=%s", agent_name)
 
