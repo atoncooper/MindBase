@@ -590,7 +590,15 @@ export const chatApi = {
 
     // === 新增：流式接口（替代裸调 fetch）===
     askStream: async (payload: ChatRequestPayload): Promise<ReadableStream<Uint8Array>> => {
-        const res = await fetch(`${API_BASE_URL}/chat/ask/stream`, {
+        // Dev bypass: when API_BASE_URL is "" (browser + no NEXT_PUBLIC_API_URL),
+        // requests route through Next.js rewrites whose dev proxy buffers SSE,
+        // collapsing token-by-token streaming into one bulk delivery. Hit the
+        // backend directly. Prod sets NEXT_PUBLIC_API_URL (nginx), so this
+        // localhost fallback only applies in dev.
+        const streamBase =
+            API_BASE_URL ||
+            (typeof window !== "undefined" ? "http://localhost:8000" : "http://backend:8000");
+        const res = await fetch(`${streamBase}/chat/ask/agent/stream`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...getAuthHeaders() },
             body: JSON.stringify(payload),

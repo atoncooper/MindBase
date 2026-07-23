@@ -383,6 +383,7 @@ async def ask_agent_stream(
     db: AsyncSession,
     background_tasks: BackgroundTasks,
     agent_harness: Any,
+    api_key_manager: Any = None,
     usage_writer: Any = None,
 ) -> AsyncIterator[str]:
     """Handle POST /chat/ask/agent/stream — token-level SSE via AgentHarness."""
@@ -395,7 +396,8 @@ async def ask_agent_stream(
     )
 
     try:
-        credential_id, provider, model = _resolve_usage_metadata(uid, None)
+        await _preload_user_credentials(api_key_manager, uid, db)
+        credential_id, provider, model = _resolve_usage_metadata(uid, api_key_manager)
         agent_name, agent_graph, input_state, run_config = await agent_stream_setup(
             request,
             uid=uid,
@@ -484,6 +486,16 @@ async def _stream_agent_events(
     # render a spurious error after a successful answer.
     try:
         latency_ms = int((time.time() - start_time) * 1000)
+        if streamer.had_error:
+            # The streamer already emitted an `error` frame to the client.
+            # Mark the turn failed instead of finalize_turn, which would
+            # persist a partial answer as a successful message.
+            await fail_turn(
+                db,
+                assistant_msg_id=ctx.assistant_msg_id,
+                error=streamer.error_message or "stream failed",
+            )
+            return
         total_tokens = usage_callback.total_tokens
         logger.info(
             f"[CHAT_ORCH] stream done: tokens={total_tokens} "

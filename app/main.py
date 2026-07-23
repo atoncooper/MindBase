@@ -533,11 +533,18 @@ def _get_harness_llm():
         if not api_key:
             return None
 
+        # streaming=True so that astream_events(version="v2") receives
+        # per-token on_chat_model_stream events.  Without it, ChatOpenAI's
+        # _agenerate produces the whole answer in one shot, so the SSE
+        # streamer emits a single `chunk` frame with the full text and the
+        # frontend renders it non-incrementally.  stream_usage=True keeps
+        # token usage flowing in stream mode so usage tracking still works.
         return ChatOpenAI(
             api_key=api_key,
             base_url=settings.openai_base_url or None,
             model=settings.llm_model,
             temperature=0,
+            streaming=True,
             stream_usage=True,
         )
     except Exception as e:

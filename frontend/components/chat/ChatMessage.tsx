@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -36,6 +36,7 @@ interface ChatMessageProps {
   content: string;
   sources?: Source[] | null;
   reasoningSteps?: ReasoningStep[] | null;
+  agent?: string;
   status?: "pending" | "completed" | "failed";
   error?: string;
   timestamp?: string;
@@ -52,11 +53,12 @@ function domainOf(url?: string): string {
   }
 }
 
-export default function ChatMessage({
+function ChatMessage({
   role,
   content,
   sources,
   reasoningSteps,
+  agent,
   status = "completed",
   error,
 }: ChatMessageProps) {
@@ -65,6 +67,15 @@ export default function ChatMessage({
   const safeReasoningSteps = Array.isArray(reasoningSteps) ? reasoningSteps : [];
 
   const [showReasoning, setShowReasoning] = useState(false);
+  // Track manual toggle so auto-expand doesn't override the user's choice:
+  // while streaming (pending) with steps arriving, auto-expand; once the
+  // user toggles, respect their state.
+  const userToggledRef = useRef(false);
+  useEffect(() => {
+    if (!userToggledRef.current && safeReasoningSteps.length > 0 && status === "pending") {
+      setShowReasoning(true);
+    }
+  }, [safeReasoningSteps.length, status]);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
 
@@ -101,11 +112,21 @@ export default function ChatMessage({
       </div>
 
       <div className="msg-assistant-body">
+        {/* Route badge - which agent handled this turn */}
+        {agent && (
+          <div className="msg-route-badge" aria-label={`路由到 ${agent} agent`}>
+            <Sparkles className="w-3 h-3" aria-hidden="true" />
+            <span>经由 {agent} agent</span>
+          </div>
+        )}
         {/* Reasoning toggle — Gemini style chip, above content */}
         {safeReasoningSteps.length > 0 && (
           <button
             type="button"
-            onClick={() => setShowReasoning((v) => !v)}
+            onClick={() => {
+              userToggledRef.current = true;
+              setShowReasoning((v) => !v);
+            }}
             className="msg-reasoning-toggle"
             aria-expanded={showReasoning}
             aria-controls="reasoning-content"
@@ -186,6 +207,10 @@ export default function ChatMessage({
               <span className="msg-loading-dot" style={{ animationDelay: "180ms" }} />
               <span className="msg-loading-dot" style={{ animationDelay: "360ms" }} />
             </div>
+          ) : isPending ? (
+            // Streaming: render plain text to avoid re-parsing markdown on
+            // every token (the main cause of janky/non-incremental rendering).
+            <div className="markdown gemini-markdown">{content}</div>
           ) : (
             <ReactMarkdown className="markdown gemini-markdown" remarkPlugins={[remarkGfm]}>
               {content || ""}
@@ -282,3 +307,5 @@ export default function ChatMessage({
     </div>
   );
 }
+
+export default memo(ChatMessage);

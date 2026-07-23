@@ -16,12 +16,11 @@ The agent emits LangChain v2 events; we translate the relevant ones:
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any, AsyncIterator, Optional
 
-from app.services.chat.sse import sse_event
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from app.services.chat.sse import sse_event
 
 _PREVIEW_LIMIT = 200
 
@@ -84,6 +83,11 @@ class AgentSSEStreamer:
         self._step_no = 0
         self._tool_runs: dict[str, dict[str, Any]] = {}
         self._root_run_name: str = ""
+        # Error tracking: when stream() swallows an exception, these let the
+        # orchestrator fail_turn instead of finalize_turn (which would persist
+        # a partial answer as a successful message).
+        self.had_error: bool = False
+        self.error_message: str = ""
 
     async def stream(
         self,
@@ -93,15 +97,19 @@ class AgentSSEStreamer:
     ) -> AsyncIterator[str]:
         """Yield SSE frames; mutate ``self.full_content`` / ``self.sources``."""
         self._root_run_name = run_config.get("run_name", "LangGraph")
+        event_counts: dict[str, int] = {}
         try:
             async for event in agent_graph.astream_events(
                 input_state, config=run_config, version="v2"
             ):
                 kind = event.get("event", "")
+                event_counts[kind] = event_counts.get(kind, 0) + 1
                 frame: Optional[str] = None
 
                 if kind == "on_chat_model_stream":
                     frame = self._handle_token(event)
+                elif kind == "on_chat_model_start":
+                    frame = self._handle_model_start(event)
                 elif kind == "on_tool_start":
                     frame = self._handle_tool_start(event)
                 elif kind == "on_tool_end":
@@ -112,11 +120,36 @@ class AgentSSEStreamer:
                 if frame is not None:
                     yield frame
 
+            logger.info(
+                "[SSE_STREAMER] event_counts={} content_chars={} token_events={}",
+                event_counts,
+                len(self.full_content),
+                event_counts.get("on_chat_model_stream", 0),
+            )
             yield sse_event({"type": "sources", "sources": self.sources[:5]})
             yield sse_event({"type": "done"})
         except Exception as exc:
             logger.exception("Agent SSE stream failed")
+            self.had_error = True
+            self.error_message = str(exc)
             yield sse_event({"type": "error", "message": str(exc)})
+
+    def _handle_model_start(self, event: dict[str, Any]) -> Optional[str]:
+        """Reset accumulated content when a new LLM call begins mid-stream.
+
+        A second ``on_chat_model_start`` after content has already been
+        accumulated means the graph is re-running the LLM (e.g. a retryable
+        "peer closed connection" error triggered error_node -> agent). Without
+        a reset, the retry's tokens append to the partial first attempt,
+        producing garbled half+duplicate content both streamed to the client
+        and persisted. Emit a ``reset`` frame so the client clears its bubble,
+        and zero ``full_content`` so only the retried (complete) answer is
+        persisted.
+        """
+        if self.full_content:
+            self.full_content = ""
+            return sse_event({"type": "reset"})
+        return None
 
     def _capture_root_output(self, event: dict[str, Any]) -> None:
         """Extract token usage from the root graph's final state.
@@ -144,7 +177,7 @@ class AgentSSEStreamer:
 
         if self.total_tokens > 0:
             logger.info(
-                "[SSE_STREAMER] root chain end: tokens=%s (prompt=%s, completion=%s, calls=%s)",
+                "[SSE_STREAMER] root chain end: tokens={} (prompt={}, completion={}, calls={})",
                 self.total_tokens, self.prompt_tokens,
                 self.completion_tokens, self.llm_calls,
             )

@@ -75,6 +75,7 @@ export default function ChatContent({
                   content={message.content}
                   sources={message.sources}
                   reasoningSteps={message.reasoningSteps}
+                  agent={message.agent}
                   status={message.status}
                   error={message.error}
                   timestamp={message.timestamp}
