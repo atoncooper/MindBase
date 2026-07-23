@@ -20,6 +20,8 @@ export interface ChatMessageData {
   content: string;
   sources?: ChatSource[];
   reasoningSteps?: ReasoningStep[];
+  // Agent name routed to by AgentOrchestrator (from the `route` SSE frame).
+  agent?: string;
   status: MessageStatus;
   error?: string;
   timestamp: string;

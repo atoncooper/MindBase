@@ -8,11 +8,25 @@ export interface ChatSource {
   bvid?: string;
 }
 
+// One retrieval/tool step emitted by the agent stream.
+// Mirrors the backend `step` SSE frame payload (agent_sse.py).
+export interface StreamStep {
+  step: number;
+  action: string;
+  query?: string;
+  reasoning?: string;
+  sources?: ChatSource[];
+  content_preview?: string;
+}
+
 export interface StreamCallbacks {
   onChunk: (accumulated: string, delta: string) => void;
   onSources?: (sources: ChatSource[]) => void;
   onError?: (message: string) => void;
   onComplete?: () => void;
+  onStep?: (step: StreamStep) => void;
+  onRoute?: (agent: string) => void;
+  onReset?: () => void;
 }
 
 export interface StreamRequestParams {
@@ -60,6 +74,13 @@ export async function streamChat(
             callbacks.onChunk(accumulated, delta);
           } else if (data.type === "sources") {
             callbacks.onSources?.(Array.isArray(data.sources) ? data.sources : []);
+          } else if (data.type === "step") {
+            callbacks.onStep?.(data.step as StreamStep);
+          } else if (data.type === "route") {
+            callbacks.onRoute?.(data.agent as string);
+          } else if (data.type === "reset") {
+            accumulated = "";
+            callbacks.onReset?.();
           } else if (data.type === "error") {
             callbacks.onError?.(data.message || data.error || "请求失败");
           } else if (data.type === "done") {

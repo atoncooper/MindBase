@@ -207,6 +207,56 @@ export default function ChatPanel() {
             ),
           }));
         },
+        onRoute: (agent) => {
+          updateActiveSession((s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantMsgId ? { ...m, agent } : m
+            ),
+          }));
+        },
+        onReset: () => {
+          updateActiveSession((s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantMsgId ? { ...m, content: "" } : m
+            ),
+          }));
+        },
+        onStep: (step) => {
+          updateActiveSession((s) => ({
+            ...s,
+            messages: s.messages.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              const existing = m.reasoningSteps ?? [];
+              const idx = existing.findIndex((r) => r.step === step.step);
+              let next;
+              if (idx >= 0) {
+                // Merge: tool_start provides query, tool_end provides sources.
+                next = [...existing];
+                next[idx] = {
+                  ...next[idx],
+                  action: step.action || next[idx].action,
+                  query: step.query || next[idx].query,
+                  reasoning: step.reasoning || next[idx].reasoning,
+                  sources: step.sources?.length ? step.sources : next[idx].sources,
+                };
+              } else {
+                next = [
+                  ...existing,
+                  {
+                    step: step.step,
+                    action: step.action,
+                    query: step.query,
+                    reasoning: step.reasoning,
+                    sources: step.sources ?? [],
+                  },
+                ];
+              }
+              return { ...m, reasoningSteps: next };
+            }),
+          }));
+        },
         onError: (message) => {
           updateActiveSession((s) => ({
             ...s,
