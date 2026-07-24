@@ -111,7 +111,7 @@ def decrypt(ciphertext_b64: str) -> str:
 
 # ── Password hashing ──────────────────────────────────────────────
 
-import bcrypt
+import bcrypt  # noqa: E402  (grouped under password hashing)
 
 
 def hash_password(password: str) -> str:

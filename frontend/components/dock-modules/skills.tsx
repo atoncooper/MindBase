@@ -321,7 +321,6 @@ export default function SkillsPanel({ isOpen }: DockPanelProps) {
                 ) : browsingRepo ? (
                     <RepoBrowser
                         repo={browsingRepo}
-                        branch={browsingBranch}
                         path={browsePath}
                         contents={browseContents}
                         loading={browseLoading}
@@ -767,7 +766,6 @@ function CodeToolsBadge() {
 
 function RepoBrowser({
     repo,
-    branch,
     path,
     contents,
     loading,
@@ -778,7 +776,6 @@ function RepoBrowser({
     installBusy,
 }: {
     repo: string;
-    branch: string;
     path: string;
     contents: RepoContents | null;
     loading: boolean;

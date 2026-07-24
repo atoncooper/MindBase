@@ -35,7 +35,7 @@ from loguru import logger
 logger.remove()
 logger.add(sys.stderr, level="WARNING")
 
-from app.config import settings
+from app.config import settings  # noqa: E402  (after logger config)
 
 COLLECTION = "uid_eval"
 JUDGE_MODEL = "qwen-plus"  # 同源不同 model, 减偏倚 (生成用 settings.llm_model = qwen3-max)
