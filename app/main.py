@@ -457,6 +457,11 @@ from app.routers.agent_runtime import router as agent_runtime_router  # noqa: E4
 
 app.include_router(agent_runtime_router)
 
+# Skills - install/list/uninstall (MinIO-backed, never local disk)
+from app.routers.skills import router as skills_router  # noqa: E402
+
+app.include_router(skills_router)
+
 # Plan 0021: Cloud drive router (with graceful degradation)
 try:
     from app.routers.cloud import router as cloud_router

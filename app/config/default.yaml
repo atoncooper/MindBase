@@ -103,6 +103,14 @@ minio:
   # access_key / secret_key via env: MINIO__ACCESS_KEY, MINIO__SECRET_KEY
 
 
+# ---- Skill store - external third-party skill registry -------------
+skill_store:
+  enabled: false
+  topic: mindbase-skill              # GitHub topic identifying skill repos (marketplace)
+  timeout: 30
+  # api_key (GitHub token, optional) via env: SKILL_STORE__API_KEY
+
+
 # ---- Message queue — Celery + Redis Streams -----------------------
 mq:
   enabled: false

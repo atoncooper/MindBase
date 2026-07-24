@@ -47,7 +47,11 @@ def _has_tool_calls(msg: BaseMessage) -> bool:
 
 
 async def inject_context(
-    state: ChatAgentState, *, deps: Any, runtime: AgentRuntime
+    state: ChatAgentState,
+    *,
+    deps: Any,
+    runtime: AgentRuntime,
+    skill_manager: Any = None,
 ) -> dict[str, Any]:
     """1/4. Resolve data scope + inject system prompt with conversation context.
 
@@ -86,6 +90,9 @@ async def inject_context(
 
     from langchain_core.messages import HumanMessage, SystemMessage
 
+    skills_section = (
+        await skill_manager.index_text(state.uid) if skill_manager is not None else ""
+    )
     system = SystemMessage(
         content=build_system_prompt(
             state.query,
@@ -93,6 +100,7 @@ async def inject_context(
             cloud_has_data=cloud_has_data,
             conversation_context=conversation_context,
             has_context_tools=has_context_tools,
+            skills_section=skills_section,
         )
     )
     user = HumanMessage(content=state.query)
@@ -314,6 +322,7 @@ def build_chat_agent(
     llm: Any,
     deps: Any,
     circuit_breaker: CircuitBreaker | None = None,
+    skill_manager: Any = None,
 ) -> object:
     """Build the ReAct Chat Agent graph.
 
@@ -344,7 +353,9 @@ def build_chat_agent(
     async def inject_node(s: ChatAgentState) -> dict:
         if circuit_breaker and circuit_breaker.is_tripped:
             return {"result": "", "error": "circuit breaker open"}
-        return await _inject(s, deps=deps, runtime=runtime)
+        return await _inject(
+            s, deps=deps, runtime=runtime, skill_manager=skill_manager
+        )
 
     async def agent_node(s: ChatAgentState) -> dict:
         return await _agent(s, llm_with_tools=llm_with_tools)

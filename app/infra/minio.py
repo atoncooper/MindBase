@@ -324,6 +324,30 @@ class MinioClient:
                 raise FileNotFoundError(f"Object not found: {object_key}") from exc
             raise
 
+    async def put_object(
+        self, object_key: str, data: bytes, content_type: str = "application/octet-stream"
+    ) -> None:
+        """Upload a small object (in-memory bytes) to MinIO.
+
+        Used for skill packs and other small artifacts. Large uploads should
+        use the multipart API instead.
+        """
+        import io
+
+        self._ensure_client()
+        stream = io.BytesIO(data)
+        await _run_async(
+            self._client.put_object,
+            self.bucket,
+            object_key,
+            stream,
+            len(data),
+            content_type,
+        )
+        logger.info(
+            "[MINIO] put_object object_key={} size={}", object_key, len(data)
+        )
+
 
 # ---------------------------------------------------------------------------
 # module-level singleton

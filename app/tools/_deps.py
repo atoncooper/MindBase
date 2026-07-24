@@ -29,3 +29,4 @@ class ToolDeps:
     llm: Any = None
     db_deps: Any = None
     lifecycle: Any = None
+    skill_manager: Any = None

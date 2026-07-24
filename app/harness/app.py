@@ -19,6 +19,7 @@ from app.context import ContextManager
 from app.harness.orchestrator import AgentOrchestrator
 from app.harness.runtime import AgentRuntime
 from app.harness.scheduling.agent import AgentConfig, AgentScheduler
+from app.skills import SkillManager
 from app.tools import ToolDeps, ToolManager, ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class AgentHarness:
         self._lifecycle = AgentLifecycleManager()
         self._orchestrator = AgentOrchestrator(llm=llm)
         self._scheduler = AgentScheduler(self._lifecycle)
+        self._skill_manager = SkillManager(session_factory)
         self._tool_manager: ToolManager | None = None
         self._cleanup_task: asyncio.Task | None = None
         self._started = False
@@ -102,6 +104,10 @@ class AgentHarness:
     @property
     def scheduler(self) -> AgentScheduler:
         return self._scheduler
+
+    @property
+    def skill_manager(self) -> SkillManager:
+        return self._skill_manager
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -342,6 +348,7 @@ class AgentHarness:
             llm=self._llm,
             db_deps=db_deps,
             lifecycle=self._lifecycle,
+            skill_manager=self._skill_manager,
         )
 
         manager = ToolManager(deps)
@@ -398,6 +405,7 @@ class AgentHarness:
                 llm=self._llm,
                 deps=deps,
                 circuit_breaker=self._lifecycle.circuit,
+                skill_manager=self._skill_manager,
             )
             self._orchestrator.register(
                 "chat",

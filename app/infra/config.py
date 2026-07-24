@@ -226,6 +226,13 @@ class MinioSection(_Section):
     public_endpoint: str = ""  # e.g. https://example.com/minio-proxy
 
 
+class SkillStoreSection(_Section):
+    enabled: bool = False
+    topic: str = "mindbase-skill"  # GitHub topic identifying skill repos
+    api_key: SecretStr = SecretStr("")  # optional GitHub token (raises search rate limit when unset)
+    timeout: int = 30
+
+
 class MqSection(_Section):
     enabled: bool = False
     broker: str = "redis://localhost:6379/1"
@@ -373,6 +380,7 @@ class AppConfig(BaseSettings):
     mongo: MongoSection = Field(default_factory=MongoSection)
     redis: RedisSection = Field(default_factory=RedisSection)
     minio: MinioSection = Field(default_factory=MinioSection)
+    skill_store: SkillStoreSection = Field(default_factory=SkillStoreSection)
     mq: MqSection = Field(default_factory=MqSection)
     llm: LlmSection = Field(default_factory=LlmSection)
     embedding: EmbeddingSection = Field(default_factory=EmbeddingSection)

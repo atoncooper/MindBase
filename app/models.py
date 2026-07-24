@@ -924,3 +924,36 @@ class NoteShare(Base):
     view_count = Column(Integer, default=0)
     is_revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class InstalledSkill(Base):
+    """Installed Skill metadata (per-user) - the skill *content* (zip) lives
+    in MinIO, never on the local filesystem. Rows here are the index each
+    user's agent sees.
+
+    Skills are downloaded from an external skill store (or uploaded) into
+    MinIO at ``minio_key`` (``skills/{uid}/{skill_id}.zip``) and lazily
+    loaded by ``SkillManager`` when the agent calls ``load_skill``.
+    """
+
+    __tablename__ = "installed_skills"
+    __table_args__ = (
+        UniqueConstraint("uid", "skill_id", name="uq_installed_skills_uid_skill"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    skill_id = Column(String(128), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    version = Column(String(64), nullable=True)
+    source_store = Column(String(128), nullable=True)  # 'upload' | store base url
+    minio_key = Column(String(256), nullable=False)  # skills/{uid}/{skill_id}.zip
+    manifest = Column(JSON, nullable=True)  # {has_code_tools, resources, ...}
+    enabled = Column(Boolean, default=True, nullable=False)
+    installed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
