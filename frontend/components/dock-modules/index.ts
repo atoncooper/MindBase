@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, NotebookPen, Settings, User, Activity } from "lucide-react";
+import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, NotebookPen, Settings, Sparkles, User, Activity } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
 import ChatDockPanel from "@/components/chat/ChatDockPanel";
 import FavoritesPanel from "./favorites";
@@ -10,6 +10,7 @@ import BillingPanel from "./billing";
 import QuizPanel from "./quiz";
 import CloudDrivePanel from "./cloud-drive";
 import NotesPanel from "./notes";
+import SkillsPanel from "./skills";
 
 export const dockModules: DockModule[] = [
   {
@@ -81,5 +82,12 @@ export const dockModules: DockModule[] = [
     title: "用量计费",
     panel: BillingPanel,
     defaultSize: { width: 1156, height: 672 },
+  },
+  {
+    id: "skills",
+    icon: Sparkles,
+    title: "技能商店",
+    panel: SkillsPanel,
+    defaultSize: { width: 720, height: 640 },
   },
 ];

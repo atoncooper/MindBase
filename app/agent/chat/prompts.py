@@ -61,6 +61,8 @@ SYSTEM_PROMPT = """\
 
 {context_tools_section}
 
+{skills_section}
+
 ## 决策流程（必须遵循）
 
 ```
@@ -174,6 +176,7 @@ def build_system_prompt(
     cloud_has_data: bool = False,
     conversation_context: str = "",
     has_context_tools: bool = False,
+    skills_section: str = "",
 ) -> str:
     """Build the system prompt for the Chat Agent."""
     if has_data and cloud_has_data:
@@ -195,4 +198,5 @@ def build_system_prompt(
         date_status=date_status,
         conversation_context=conversation_context or "（无历史对话上下文）",
         context_tools_section=context_tools_section,
+        skills_section=skills_section,
     )
