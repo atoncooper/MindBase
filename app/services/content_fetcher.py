@@ -35,11 +35,11 @@ class ContentFetcher:
     1. 音频转写（ASR）
     2. 视频基本信息 (兜底)
     """
-    
+
     def __init__(self, bilibili_service: BilibiliService, asr_service: ASRService):
         self.bili = bilibili_service
         self.asr = asr_service
-    
+
     async def fetch_content(self, bvid: str, cid: int = None, title: str = None) -> VideoContent:
         """
         获取视频内容，自动降级
@@ -395,31 +395,31 @@ class ContentFetcher:
         return segment_paths
 
     async def _try_ai_summary(
-        self, 
-        bvid: str, 
-        cid: int, 
+        self,
+        bvid: str,
+        cid: int,
         up_mid: int = None
     ) -> Optional[dict]:
         """尝试获取 AI 摘要"""
         try:
             result = await self.bili.get_video_summary(bvid, cid, up_mid)
-            
+
             if not result:
                 return None
-            
+
             # 检查是否有有效摘要
             inner_code = result.get("code", -1)
             if inner_code != 0:
                 logger.debug(f"[{bvid}] AI 摘要不可用: code={inner_code}")
                 return None
-            
+
             model_result = result.get("model_result", {})
             summary = model_result.get("summary", "")
-            
+
             if not summary:
                 logger.debug(f"[{bvid}] AI 摘要为空")
                 return None
-            
+
             # 解析分段提纲
             outline = []
             for item in model_result.get("outline", []):
@@ -434,16 +434,16 @@ class ContentFetcher:
                         "timestamp": point.get("timestamp", 0)
                     })
                 outline.append(outline_item)
-            
+
             return {
                 "summary": summary,
                 "outline": outline
             }
-            
+
         except Exception as e:
             logger.warning(f"[{bvid}] 获取 AI 摘要失败: {e}")
             return None
-    
+
     async def _try_subtitle(self, bvid: str, cid: int, video_info: Optional[dict] = None) -> Optional[str]:
         """尝试获取字幕"""
         try:
@@ -540,14 +540,14 @@ class ContentFetcher:
 
             logger.info(f"[{bvid}] 没有可用字幕，回退到简介兜底")
             return None
-            
+
         except Exception as e:
             logger.warning(f"[{bvid}] 获取字幕失败: {e}")
             return None
-    
+
     async def fetch_all_videos_content(
-        self, 
-        videos: list, 
+        self,
+        videos: list,
         progress_callback=None
     ) -> list[VideoContent]:
         """
@@ -560,26 +560,26 @@ class ContentFetcher:
         Returns:
             VideoContent 列表
         """
-        
+
         results = []
         total = len(videos)
-        
+
         for i, video in enumerate(videos):
             bvid = video.get("bvid") or video.get("bv_id")
             title = video.get("title", "")
             cid = video.get("cid") or video.get("id")
-            
+
             if not bvid:
                 logger.warning(f"跳过无效视频: {video}")
                 continue
-            
+
             try:
                 content = await self.fetch_content(bvid, cid, title)
                 results.append(content)
-                
+
                 if progress_callback:
                     progress_callback(i + 1, total, title)
-                    
+
             except Exception as e:
                 logger.error(f"处理视频失败 [{bvid}]: {e}")
                 results.append(VideoContent(
@@ -588,8 +588,8 @@ class ContentFetcher:
                     content=f"处理失败: {str(e)}",
                     source=ContentSource.BASIC_INFO
                 ))
-            
+
             # 控制请求速率
             await asyncio.sleep(0.5)
-        
+
         return results

@@ -14,17 +14,17 @@ from app.services.wbi import wbi_signer
 
 class BilibiliService:
     """B站 API 服务封装"""
-    
+
     BASE_URL = "https://api.bilibili.com"
     PASSPORT_URL = "https://passport.bilibili.com"
-    
+
     # 通用请求头
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://www.bilibili.com/",
         "Origin": "https://www.bilibili.com"
     }
-    
+
     def __init__(self, sessdata: str = None, bili_jct: str = None, dedeuserid: str = None):
         """
         初始化 B站服务
@@ -38,7 +38,7 @@ class BilibiliService:
         self.bili_jct = bili_jct
         self.dedeuserid = dedeuserid
         self.client = httpx.AsyncClient(timeout=30.0, headers=self.HEADERS)
-    
+
     def _get_cookies(self) -> Dict[str, str]:
         """获取 Cookie"""
         cookies = {}
@@ -49,13 +49,13 @@ class BilibiliService:
         if self.dedeuserid:
             cookies["DedeUserID"] = self.dedeuserid
         return cookies
-    
+
     async def close(self):
         """关闭客户端"""
         await self.client.aclose()
-    
+
     # ==================== 登录相关 ====================
-    
+
     async def generate_qrcode(self) -> Dict[str, Any]:
         """
         生成登录二维码
@@ -70,30 +70,30 @@ class BilibiliService:
         url = f"{self.PASSPORT_URL}/x/passport-login/web/qrcode/generate"
         response = await self.client.get(url)
         data = response.json()
-        
+
         if data["code"] != 0:
             raise Exception(f"生成二维码失败: {data['message']}")
-        
+
         qrcode_key = data["data"]["qrcode_key"]
         qrcode_url = data["data"]["url"]
-        
+
         # 生成二维码图片
         qr = qrcode.QRCode(version=1, box_size=10, border=2)
         qr.add_data(qrcode_url)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
-        
+
         # 转为 base64
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
         img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        
+
         return {
             "qrcode_key": qrcode_key,
             "qrcode_url": qrcode_url,
             "qrcode_image_base64": f"data:image/png;base64,{img_base64}"
         }
-    
+
     async def poll_qrcode_status(self, qrcode_key: str) -> Dict[str, Any]:
         """
         轮询二维码登录状态
@@ -111,27 +111,27 @@ class BilibiliService:
         url = f"{self.PASSPORT_URL}/x/passport-login/web/qrcode/poll"
         response = await self.client.get(url, params={"qrcode_key": qrcode_key})
         data = response.json()
-        
+
         if data["code"] != 0:
             raise Exception(f"轮询二维码状态失败: {data['message']}")
-        
+
         inner_code = data["data"]["code"]
         message = data["data"]["message"]
-        
+
         status_map = {
             86101: ("waiting", "等待扫码"),
             86090: ("scanned", "已扫码，等待确认"),
             86038: ("expired", "二维码已过期"),
             0: ("confirmed", "登录成功")
         }
-        
+
         status, msg = status_map.get(inner_code, ("unknown", message))
-        
+
         result = {
             "status": status,
             "message": msg
         }
-        
+
         # On confirmed, extract cookies from multiple sources
         if status == "confirmed":
             cookies: dict = {}
@@ -155,9 +155,9 @@ class BilibiliService:
 
             result["cookies"] = cookies
             result["refresh_token"] = data["data"].get("refresh_token", "")
-        
+
         return result
-    
+
     async def get_user_info(self) -> Dict[str, Any]:
         """
         获取当前登录用户信息
@@ -168,14 +168,14 @@ class BilibiliService:
         url = f"{self.BASE_URL}/x/web-interface/nav"
         response = await self.client.get(url, cookies=self._get_cookies())
         data = response.json()
-        
+
         if data["code"] != 0:
             raise Exception(f"获取用户信息失败: {data['message']}")
-        
+
         return data["data"]
-    
+
     # ==================== 收藏夹相关 ====================
-    
+
     async def get_user_favorites(self, mid: int = None) -> List[Dict[str, Any]]:
         """
         获取用户的所有收藏夹
@@ -223,11 +223,11 @@ class BilibiliService:
             return []
 
         return inner_data.get("list") or []
-    
+
     async def get_favorite_content(
-        self, 
-        media_id: int, 
-        pn: int = 1, 
+        self,
+        media_id: int,
+        pn: int = 1,
         ps: int = 20
     ) -> Dict[str, Any]:
         """
@@ -252,19 +252,19 @@ class BilibiliService:
             "ps": min(ps, 20),
             "platform": "web"
         }
-        
+
         response = await self.client.get(url, params=params, cookies=self._get_cookies())
         data = response.json()
-        
+
         if data["code"] != 0:
             raise Exception(f"获取收藏夹内容失败: {data['message']}")
-        
+
         return {
             "info": data["data"]["info"],
             "medias": data["data"]["medias"] or [],
             "has_more": data["data"]["has_more"]
         }
-    
+
     async def get_all_favorite_videos(self, media_id: int) -> List[Dict[str, Any]]:
         """
         获取收藏夹的所有视频
@@ -277,19 +277,19 @@ class BilibiliService:
         """
         all_videos = []
         pn = 1
-        
+
         while True:
             result = await self.get_favorite_content(media_id, pn=pn, ps=20)
             all_videos.extend(result["medias"])
-            
+
             if not result["has_more"]:
                 break
             pn += 1
-            
+
             # 避免请求过快
             import asyncio
             await asyncio.sleep(0.3)
-        
+
         return all_videos
 
     async def move_favorite_resources(
@@ -342,9 +342,9 @@ class BilibiliService:
         if result.get("code") != 0:
             raise Exception(f"清理失效内容失败: {result.get('message')}")
         return result.get("data") or {}
-    
+
     # ==================== 视频信息相关 ====================
-    
+
     async def get_video_info(self, bvid: str) -> Dict[str, Any]:
         """
         获取视频详细信息
@@ -357,15 +357,15 @@ class BilibiliService:
         """
         url = f"{self.BASE_URL}/x/web-interface/view"
         params = {"bvid": bvid}
-        
+
         response = await self.client.get(url, params=params, cookies=self._get_cookies())
         data = response.json()
-        
+
         if data["code"] != 0:
             raise Exception(f"获取视频信息失败: {data['message']}")
-        
+
         return data["data"]
-    
+
     async def get_video_summary(self, bvid: str, cid: int, up_mid: int = None) -> Dict[str, Any]:
         """
         获取视频 AI 摘要
@@ -379,30 +379,30 @@ class BilibiliService:
             AI 摘要信息
         """
         url = f"{self.BASE_URL}/x/web-interface/view/conclusion/get"
-        
+
         params = {
             "bvid": bvid,
             "cid": cid,
         }
         if up_mid:
             params["up_mid"] = up_mid
-        
+
         # 需要 Wbi 签名
         signed_params = await wbi_signer.sign(params, cookies=self._get_cookies())
-        
+
         response = await self.client.get(
-            url, 
-            params=signed_params, 
+            url,
+            params=signed_params,
             cookies=self._get_cookies()
         )
         data = response.json()
-        
+
         if data["code"] != 0:
             logger.warning(f"获取视频摘要失败 [{bvid}]: {data.get('message', 'unknown error')}")
             return None
-        
+
         return data["data"]
-    
+
     async def get_player_info(self, bvid: str, cid: int, aid: int = None) -> Dict[str, Any]:
         """
         获取播放器信息（包含字幕信息）
@@ -536,17 +536,17 @@ class BilibiliService:
         # 处理协议
         if subtitle_url.startswith("//"):
             subtitle_url = "https:" + subtitle_url
-        
+
         response = await self.client.get(subtitle_url)
         data = response.json()
-        
+
         # 拼接字幕文本
         texts = []
         for item in data.get("body", []):
             content = item.get("content", "")
             if content:
                 texts.append(content)
-        
+
         return "\n".join(texts)
 
     async def download_audio_to_file(self, audio_url: str, file_path: str) -> bool:

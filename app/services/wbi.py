@@ -26,7 +26,7 @@ MIXIN_KEY_ENC_TAB = [
 
 class WbiSigner:
     """Wbi 签名器"""
-    
+
     def __init__(self):
         self.img_key: Optional[str] = None
         self.sub_key: Optional[str] = None
@@ -87,14 +87,14 @@ class WbiSigner:
             or time.time() - self.last_update > self.update_interval
         ):
             await self._fetch_wbi_keys(cookies=cookies)
-    
+
     def _filter_params(self, params: dict) -> dict:
         """过滤非法字符"""
         return {
             k: "".join(c for c in str(v) if c not in "!'()*")
             for k, v in params.items()
         }
-    
+
     async def sign(self, params: dict, cookies: Optional[Dict[str, str]] = None) -> dict:
         """对参数进行 Wbi 签名
         
@@ -106,20 +106,20 @@ class WbiSigner:
             签名后的参数（包含 w_rid 和 wts）
         """
         await self.ensure_keys(cookies=cookies)
-        
+
         # 过滤参数
         params = self._filter_params(params)
-        
+
         # 添加时间戳
         params["wts"] = int(time.time())
-        
+
         # 按 key 排序
         params = dict(sorted(params.items()))
-        
+
         # 拼接并计算 MD5
         query = urlencode(params)
         w_rid = hashlib.md5((query + self.mixin_key).encode()).hexdigest()
-        
+
         params["w_rid"] = w_rid
         return params
 

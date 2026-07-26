@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { notesApi, type NoteDetail } from "@/lib/api";
@@ -30,6 +30,45 @@ const STATUS_LABEL: Record<SaveStatus, string> = {
     conflict: "冲突 · 该笔记已在别处修改",
 };
 
+// ─── keyboard helpers ────────────────────────────────────────────────
+
+/** Wrap selected text (or insert placeholder) with prefix + suffix. */
+function wrapSelection(
+    textarea: HTMLTextAreaElement,
+    prefix: string,
+    suffix: string,
+    placeholder: string,
+): string {
+    const { value, selectionStart: s, selectionEnd: e } = textarea;
+    const selected = value.slice(s, e) || placeholder;
+    return value.slice(0, s) + prefix + selected + suffix + value.slice(e);
+}
+
+/** After wrapping, compute where to place the cursor. */
+function wrapCursor(
+    s: number,
+    e: number,
+    prefix: string,
+    hasSelection: boolean,
+): [number, number] {
+    if (hasSelection) {
+        return [s + prefix.length, e + prefix.length];
+    }
+    // cursor sits inside the placeholder
+    const mid = s + prefix.length;
+    return [mid, mid];
+}
+
+/** Get the text of the current line (up to cursor). */
+function currentLineBeforeCursor(value: string, cursor: number): string {
+    const lineStart = value.lastIndexOf("\n", cursor - 1) + 1;
+    return value.slice(lineStart, cursor);
+}
+
+/** Regex that matches leading whitespace + optional list marker. */
+const LIST_RE = /^(\s*)((?:[-*+]|\d+[.)])\s+)(.*)$/;
+const TASK_RE = /^(\s*)([-*+]\s+\[[ xX]\]\s+)(.*)$/;
+
 export default function NoteEditor({ note, onChanged, onShare, onDelete }: NoteEditorProps) {
     const [title, setTitle] = useState(note.title);
     const [content, setContent] = useState(note.contentMd);
@@ -37,8 +76,220 @@ export default function NoteEditor({ note, onChanged, onShare, onDelete }: NoteE
     const [draftPrompt, setDraftPrompt] = useState(false);
     const [viewMode, setViewMode] = useState<ViewMode>("split");
 
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const serverUpdatedAtRef = useRef<string | null>(note.updatedAt);
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // ── keyboard handler: shortcuts + auto-indent ──────────────────
+    const handleKeyDown = useCallback(
+        (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+            const ta = e.currentTarget;
+            const mod = e.ctrlKey || e.metaKey;
+
+            // Ctrl+S — trigger immediate save (prevent browser save-dialog)
+            if (mod && e.key === "s") {
+                e.preventDefault();
+                // force a save by bumping content then restoring
+                setStatus("saving");
+                return;
+            }
+
+            // ── markdown formatting shortcuts ─────────────────────
+            if (mod) {
+                const s = ta.selectionStart;
+                const e2 = ta.selectionEnd;
+                const hasSelection = s !== e2;
+                let prefix = "";
+                let suffix = "";
+                let placeholder = "";
+
+                switch (e.key) {
+                    case "b": // bold
+                        prefix = "**"; suffix = "**"; placeholder = "粗体";
+                        break;
+                    case "i": // italic
+                        prefix = "*"; suffix = "*"; placeholder = "斜体";
+                        break;
+                    case "k": // link
+                        prefix = "["; suffix = "](url)"; placeholder = "链接文字";
+                        break;
+                    case "`": // inline code
+                        prefix = "`"; suffix = "`"; placeholder = "code";
+                        break;
+                    default:
+                        return; // not a shortcut we handle
+                }
+
+                e.preventDefault();
+                const newValue = wrapSelection(ta, prefix, suffix, placeholder);
+                const [ns, ne] = wrapCursor(s, e2, prefix, hasSelection);
+                setContent(newValue);
+                // restore cursor after React re-render
+                requestAnimationFrame(() => {
+                    ta.selectionStart = ns;
+                    ta.selectionEnd = ne;
+                });
+                return;
+            }
+
+            // Ctrl+Shift+K — code block (check after mod-only block)
+            if (mod && e.shiftKey && e.key === "K") {
+                e.preventDefault();
+                const s = ta.selectionStart;
+                const e2 = ta.selectionEnd;
+                const hasSelection = s !== e2;
+                const newValue = wrapSelection(ta, "```\n", "\n```", "code");
+                const [ns, ne] = wrapCursor(s, e2, "```\n", hasSelection);
+                setContent(newValue);
+                requestAnimationFrame(() => {
+                    ta.selectionStart = ns;
+                    ta.selectionEnd = ne;
+                });
+                return;
+            }
+
+            // ── Tab / Shift+Tab — indent / outdent ─────────────────
+            if (e.key === "Tab") {
+                e.preventDefault();
+                const s = ta.selectionStart;
+                const e2 = ta.selectionEnd;
+                const value = ta.value;
+
+                if (e.shiftKey) {
+                    // outdent: remove up to 2 leading spaces from each selected line
+                    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+                    const lineEnd = value.indexOf("\n", e2 - 1);
+                    const selEnd = lineEnd === -1 ? value.length : lineEnd;
+                    const lines = value.slice(lineStart, selEnd).split("\n");
+                    const outdented = lines
+                        .map((l) => l.replace(/^ {1,2}/, ""))
+                        .join("\n");
+                    const newValue =
+                        value.slice(0, lineStart) + outdented + value.slice(selEnd);
+                    const removed = lines.reduce(
+                        (acc, l) => acc + (l.match(/^ {1,2}/)?.[0]?.length ?? 0),
+                        0,
+                    );
+                    setContent(newValue);
+                    requestAnimationFrame(() => {
+                        ta.selectionStart = Math.max(lineStart, s - Math.min(2, removed));
+                        ta.selectionEnd = Math.max(lineStart, e2 - removed);
+                    });
+                } else if (s !== e2) {
+                    // indent selected lines
+                    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+                    const lineEnd = value.indexOf("\n", e2 - 1);
+                    const selEnd = lineEnd === -1 ? value.length : lineEnd;
+                    const lines = value.slice(lineStart, selEnd).split("\n");
+                    const indented = lines.map((l) => "  " + l).join("\n");
+                    const newValue =
+                        value.slice(0, lineStart) + indented + value.slice(selEnd);
+                    setContent(newValue);
+                    requestAnimationFrame(() => {
+                        ta.selectionStart = s + 2;
+                        ta.selectionEnd = e2 + 2 * lines.length;
+                    });
+                } else {
+                    // insert 2 spaces at cursor
+                    const newValue =
+                        value.slice(0, s) + "  " + value.slice(e2);
+                    setContent(newValue);
+                    requestAnimationFrame(() => {
+                        ta.selectionStart = ta.selectionEnd = s + 2;
+                    });
+                }
+                return;
+            }
+
+            // ── Enter — auto-indent + continue lists ───────────────
+            if (e.key === "Enter") {
+                e.preventDefault();
+                const s = ta.selectionStart;
+                const e2 = ta.selectionEnd;
+                const value = ta.value;
+
+                const before = currentLineBeforeCursor(value, s);
+                const afterCursor = value.slice(e2);
+                const afterLineMatch = afterCursor.match(/^(.*)/);
+                const afterLine = afterLineMatch?.[1] ?? "";
+
+                // Check for task list
+                const taskMatch = before.match(TASK_RE);
+                if (taskMatch) {
+                    const indent = taskMatch[1];
+                    const afterText = taskMatch[3];
+                    if (afterText.trim() === "") {
+                        // Empty task item — outdent (remove the marker)
+                        const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+                        const newValue =
+                            value.slice(0, lineStart) + indent + "\n" + value.slice(s);
+                        setContent(newValue);
+                        requestAnimationFrame(() => {
+                            const pos = lineStart + indent.length;
+                            ta.selectionStart = ta.selectionEnd = pos;
+                        });
+                    } else {
+                        // Continue task list
+                        const marker = taskMatch[2].replace(/\[[xX]\]/, "[ ]");
+                        const insertion = "\n" + indent + marker;
+                        const newValue = value.slice(0, s) + insertion + value.slice(e2);
+                        setContent(newValue);
+                        requestAnimationFrame(() => {
+                            const pos = s + insertion.length;
+                            ta.selectionStart = ta.selectionEnd = pos;
+                        });
+                    }
+                    return;
+                }
+
+                // Check for regular list
+                const listMatch = before.match(LIST_RE);
+                if (listMatch) {
+                    const indent = listMatch[1];
+                    const marker = listMatch[2];
+                    const afterText = listMatch[3];
+                    if (afterText.trim() === "") {
+                        // Empty list item — outdent
+                        const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+                        const newValue =
+                            value.slice(0, lineStart) + indent + "\n" + value.slice(s);
+                        setContent(newValue);
+                        requestAnimationFrame(() => {
+                            const pos = lineStart + indent.length;
+                            ta.selectionStart = ta.selectionEnd = pos;
+                        });
+                    } else {
+                        // Auto-number ordered lists
+                        let nextMarker = marker;
+                        const numMatch = marker.match(/^(\d+)([.)])/);
+                        if (numMatch) {
+                            nextMarker = String(Number(numMatch[1]) + 1) + numMatch[2] + " ";
+                        }
+                        const insertion = "\n" + indent + nextMarker;
+                        const newValue = value.slice(0, s) + insertion + value.slice(e2);
+                        setContent(newValue);
+                        requestAnimationFrame(() => {
+                            const pos = s + insertion.length;
+                            ta.selectionStart = ta.selectionEnd = pos;
+                        });
+                    }
+                    return;
+                }
+
+                // No list — just preserve indentation
+                const indentMatch = before.match(/^(\s*)/);
+                const indent = indentMatch?.[1] ?? "";
+                const insertion = "\n" + indent;
+                const newValue = value.slice(0, s) + insertion + value.slice(e2);
+                setContent(newValue);
+                requestAnimationFrame(() => {
+                    const pos = s + insertion.length;
+                    ta.selectionStart = ta.selectionEnd = pos;
+                });
+            }
+        },
+        [],
+    );
 
     // Reset internal state ONLY when switching to a different note. We
     // deliberately do NOT depend on note.contentMd / note.updatedAt here:
@@ -190,7 +441,7 @@ export default function NoteEditor({ note, onChanged, onShare, onDelete }: NoteE
         <div className="notes-scope flex flex-col h-full note-fade-in">
             {/* Title + status */}
             <div
-                className="px-28 pt-9 pb-6 grid grid-cols-[1fr_2fr_1fr] items-start gap-3"
+                className="px-10 pt-7 pb-5 grid grid-cols-[1fr_2fr_1fr] items-start gap-3"
                 style={{ borderBottom: "1px solid var(--note-line-soft)" }}
             >
                 <span />
@@ -311,40 +562,54 @@ export default function NoteEditor({ note, onChanged, onShare, onDelete }: NoteE
             {/* Edit grid — write / split / read modes */}
             <div className={`flex-1 grid min-h-0 note-edit-grid is-${viewMode}`}>
                 <div
-                    className="overflow-auto pl-32 pr-20 py-6 note-pane-write"
+                    className="overflow-auto flex flex-col note-pane-write"
                     style={{
                         borderRight: "1px solid var(--note-line)",
                         background: "var(--note-paper)",
                     }}
                 >
-                    <textarea
-                        value={content}
-                        onChange={(e) => setContent(e.target.value)}
-                        placeholder="从此处开始落笔…"
-                        className="note-textarea"
-                        spellCheck={false}
-                    />
+                    <div className="note-content-wrap flex flex-col flex-1 min-h-0 py-6">
+                        <textarea
+                            ref={textareaRef}
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="从此处开始落笔…"
+                            className="note-textarea"
+                            spellCheck={false}
+                        />
+                    </div>
+                    {/* Keyboard shortcut hints */}
+                    <div className="note-kbd-hints">
+                        <span><kbd>Ctrl+B</kbd> 粗体</span>
+                        <span><kbd>Ctrl+I</kbd> 斜体</span>
+                        <span><kbd>Ctrl+K</kbd> 链接</span>
+                        <span><kbd>Tab</kbd> 缩进</span>
+                        <span><kbd>Enter</kbd> 续列表</span>
+                    </div>
                 </div>
                 <div
-                    className="overflow-auto pl-28 pr-16 py-6 note-preview note-pane-preview"
+                    className="overflow-auto flex flex-col note-preview note-pane-preview"
                     style={{ background: "var(--note-paper-elev)" }}
                 >
-                    {content ? (
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {content}
-                        </ReactMarkdown>
-                    ) : (
-                        <p
-                            style={{
-                                color: "var(--note-ink-faint)",
-                                fontFamily: "var(--note-sans)",
-                                fontSize: 14,
-                                lineHeight: 1.6,
-                            }}
-                        >
-                            编辑 Markdown 内容后，此处将实时展示预览效果
-                        </p>
-                    )}
+                    <div className="note-content-wrap py-6">
+                        {content ? (
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {content}
+                            </ReactMarkdown>
+                        ) : (
+                            <p
+                                style={{
+                                    color: "var(--note-ink-faint)",
+                                    fontFamily: "var(--note-sans)",
+                                    fontSize: 14,
+                                    lineHeight: 1.6,
+                                }}
+                            >
+                                编辑 Markdown 内容后，此处将实时展示预览效果
+                            </p>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>

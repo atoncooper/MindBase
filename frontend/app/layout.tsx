@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ZCOOL_XiaoWei, Noto_Sans_SC, Geist, Roboto, Fraunces, Hanken_Grotesk } from "next/font/google";
+import { ZCOOL_XiaoWei, Noto_Sans_SC, Geist, Roboto, Newsreader, DM_Sans } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -27,19 +27,21 @@ const roboto = Roboto({
 });
 
 // Editorial Atelier type pairing for the notes module (scoped via
-// --font-fraunces / --font-hanken in notes.css). Latin-only; CJK falls
+// --font-newsreader / --font-dm-sans in notes.css). Latin-only; CJK falls
 // back to Noto Sans SC (--font-body) / system serif.
-const fraunces = Fraunces({
+// Newsreader: warm editorial serif with optical sizing — beautiful at display sizes.
+// DM Sans: clean geometric sans with warmth — comfortable for long-form writing.
+const newsreader = Newsreader({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
   style: ["normal", "italic"],
-  variable: "--font-fraunces",
+  variable: "--font-newsreader",
 });
 
-const hanken = Hanken_Grotesk({
+const dmSans = DM_Sans({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-hanken",
+  variable: "--font-dm-sans",
 });
 
 export const metadata: Metadata = {
@@ -59,7 +61,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" className={cn("font-sans", "dark", geist.variable, roboto.variable)}>
-      <body className={`${display.variable} ${body.variable} ${roboto.variable} ${fraunces.variable} ${hanken.variable} antialiased`}>
+      <body className={`${display.variable} ${body.variable} ${roboto.variable} ${newsreader.variable} ${dmSans.variable} antialiased`}>
         <ThemeProvider>
           <AuthProvider>
             <RouteGuard>{children}</RouteGuard>
