@@ -1,0 +1,47 @@
+# ================================================================
+# MindBase — ServiceAccounts + RBAC
+# ================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mindbase-backend
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mindbase-spark
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+---
+# Spark driver needs pod create/delete for executors
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-driver
+  namespace: mindbase
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-driver-binding
+  namespace: mindbase
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-driver
+subjects:
+  - kind: ServiceAccount
+    name: mindbase-spark
+    namespace: mindbase

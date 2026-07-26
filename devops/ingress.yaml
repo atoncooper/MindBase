@@ -1,50 +1,78 @@
+# ================================================================
+# MindBase — Ingress
+# ================================================================
+# Requires: nginx-ingress or similar ingress controller.
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+#
+# For TLS, install cert-manager and add a Certificate resource.
+# ================================================================
+
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: mind-base-ingress
-  namespace: mind-base
+  name: mindbase
+  namespace: mindbase
   labels:
-    app.kubernetes.io/name: mind-base
+    app.kubernetes.io/part-of: mindbase
   annotations:
-    # 使用 nginx ingress controller
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    # WebSocket / SSE 支持（聊天流式返回）
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Ingress class (nginx)
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # SSE — disable buffering for chat streaming
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # CORS (optional, handled by backend)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    # TLS — uncomment when cert-manager is installed
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts:
+  #       - mindbase.example.com
+  #     secretName: mindbase-tls
   rules:
-    - host: mind-base.example.com  # 替换为实际域名
+    - host: mindbase.example.com       # <-- change to your domain
       http:
         paths:
-          # API 路由到后端
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: mind-base-backend
-                port:
-                  number: 8000
-          - path: /docs
-            pathType: Prefix
-            backend:
-              service:
-                name: mind-base-backend
-                port:
-                  number: 8000
+          # Health
           - path: /health
             pathType: Exact
             backend:
               service:
-                name: mind-base-backend
+                name: backend
                 port:
                   number: 8000
-          # 其余路由到前端
+          # API
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+          # Swagger docs
+          - path: /docs
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+          # MinIO console (admin)
+          - path: /minio
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9001
+          # Frontend — catch-all
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: mind-base-frontend
+                name: frontend
                 port:
                   number: 3000

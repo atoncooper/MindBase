@@ -1,6 +1,12 @@
+# ================================================================
+# MindBase — K8s Namespace
+# ================================================================
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: mind-base
+  name: mindbase
   labels:
-    app.kubernetes.io/name: mind-base
+    app.kubernetes.io/part-of: mindbase
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
