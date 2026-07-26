@@ -1,0 +1,433 @@
+# ================================================================
+# MindBase — Application Layer
+# ================================================================
+# Deploy:
+#   kubectl apply -f namespace.yaml -f secrets.yaml -f configmap.yaml
+#   kubectl apply -f mindbase-app.yaml
+#
+# Verify:
+#   kubectl -n mindbase get pods,svc,ingress
+#   kubectl -n mindbase logs -l app=backend --tail=50
+# ================================================================
+
+---
+# ==============================================================
+# Backend — FastAPI
+# ==============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: mindbase
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: mindbase
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0             # zero-downtime deploy
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        app.kubernetes.io/part-of: mindbase
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: mindbase-backend
+      # Topology spread across zones for HA
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: backend
+      containers:
+        - name: backend
+          image: ghcr.io/atoncooper/mind-base-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: mindbase-config
+            - secretRef:
+                name: mindbase-secrets
+          env:
+            # These are set via secret keys (see secrets.yaml)
+            - name: LLM__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: llm-api-key
+            - name: SESSION__SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: session-secret
+            - name: SECURITY__API_KEY_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: api-key-encryption-key
+            - name: MINIO__ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-user
+            - name: MINIO__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-password
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: backend-data
+              mountPath: /app/data
+            - name: backend-logs
+              mountPath: /app/logs
+      volumes:
+        - name: backend-data
+          persistentVolumeClaim:
+            claimName: backend-data-pvc
+        - name: backend-logs
+          persistentVolumeClaim:
+            claimName: backend-logs-pvc
+
+---
+# Backend data PVC — shared across replicas (ReadWriteMany preferred
+# for multi-replica deployments; fall back to RWO with single replica
+# or use a shared filesystem like EFS / NFS).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data-pvc
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+spec:
+  accessModes:
+    - ReadWriteOnce              # change to ReadWriteMany if >1 replica
+  storageClassName: mindbase-fast
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-logs-pvc
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: mindbase-standard
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: mindbase
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: mindbase
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+
+---
+# ==============================================================
+# Frontend — Next.js
+# ==============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: mindbase
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: mindbase
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        app.kubernetes.io/part-of: mindbase
+    spec:
+      terminationGracePeriodSeconds: 15
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: frontend
+      containers:
+        - name: frontend
+          image: ghcr.io/atoncooper/mind-base-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: NEXT_PUBLIC_API_URL
+              value: ""                 # browser reaches backend via Ingress
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: mindbase
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+
+---
+# ==============================================================
+# Nginx — reverse proxy + static cache
+# ==============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-conf
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+
+    events {
+        worker_connections 2048;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+        sendfile      on;
+        tcp_nopush    on;
+        gzip          on;
+        gzip_types    text/plain text/css application/json application/javascript text/xml application/xml;
+
+        # Rate limiting — 30 req/s per IP burst 50 for API
+        limit_req_zone $binary_remote_addr zone=api:10m rate=30r/s;
+        limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+
+        upstream backend {
+            server backend:8000;
+        }
+        upstream frontend {
+            server frontend:3000;
+        }
+
+        server {
+            listen 80;
+            server_name _;
+            client_max_body_size 100m;
+
+            # Health check (no rate limit)
+            location /health {
+                proxy_pass http://backend/health;
+            }
+
+            # API — rate limited
+            location /api/ {
+                limit_req zone=api burst=50 nodelay;
+                proxy_pass http://backend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout 120s;
+                proxy_send_timeout 120s;
+            }
+
+            # SSE (chat streaming) — no buffering
+            location /api/chat/ask/stream {
+                limit_req zone=api burst=50 nodelay;
+                proxy_pass http://backend;
+                proxy_buffering off;
+                proxy_cache off;
+                proxy_read_timeout 600s;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header Connection '';
+                proxy_http_version 1.1;
+                chunked_transfer_encoding off;
+            }
+
+            # Login endpoints — stricter rate limit
+            location /api/auth/ {
+                limit_req zone=login burst=3 nodelay;
+                proxy_pass http://backend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
+
+            # Frontend — everything else
+            location / {
+                proxy_pass http://frontend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: mindbase
+  labels:
+    app: nginx
+    app.kubernetes.io/part-of: mindbase
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: nginx-conf
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: mindbase
+  labels:
+    app: nginx
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
