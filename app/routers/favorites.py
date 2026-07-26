@@ -74,10 +74,10 @@ async def get_favorites_list(session_id: str = Query(..., description="会话ID"
     session = await get_session(session_id)
     if not session:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
-    
+
     cookies = session.get("cookies", {})
     user_info = session.get("user_info", {})
-    
+
     bili = BilibiliService(
         sessdata=cookies.get("SESSDATA"),
         bili_jct=cookies.get("bili_jct"),
@@ -126,9 +126,9 @@ async def get_favorite_videos(
     session = await get_session(session_id)
     if not session:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
-    
+
     cookies = session.get("cookies", {})
-    
+
     bili = BilibiliService(
         sessdata=cookies.get("SESSDATA"),
         bili_jct=cookies.get("bili_jct"),
@@ -179,9 +179,9 @@ async def get_all_favorite_videos(
     session = await get_session(session_id)
     if not session:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
-    
+
     cookies = session.get("cookies", {})
-    
+
     bili = BilibiliService(
         sessdata=cookies.get("SESSDATA"),
         bili_jct=cookies.get("bili_jct"),
