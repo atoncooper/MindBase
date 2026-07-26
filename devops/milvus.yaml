@@ -1,0 +1,237 @@
+# ================================================================
+# MindBase — Milvus Vector Database + etcd
+# ================================================================
+# Milvus standalone mode backed by MinIO (object storage) + etcd (metadata).
+# ================================================================
+
+---
+# ==============================================================
+# etcd — Milvus metadata store
+# ==============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: mindbase
+  labels:
+    app: etcd
+    app.kubernetes.io/part-of: mindbase
+spec:
+  clusterIP: None
+  selector:
+    app: etcd
+  ports:
+    - name: client
+      port: 2379
+      targetPort: 2379
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: mindbase
+  labels:
+    app: etcd
+    app.kubernetes.io/part-of: mindbase
+spec:
+  serviceName: etcd
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.14
+          command:
+            - etcd
+          args:
+            - -advertise-client-urls=http://etcd-0.etcd:2379
+            - -listen-client-urls=http://0.0.0.0:2379
+            - -data-dir=/etcd
+          ports:
+            - containerPort: 2379
+              name: client
+          env:
+            - name: ETCD_AUTO_COMPACTION_MODE
+              value: "revision"
+            - name: ETCD_AUTO_COMPACTION_RETENTION
+              value: "1000"
+            - name: ETCD_QUOTA_BACKEND_BYTES
+              value: "4294967296"
+            - name: ETCD_SNAPSHOT_COUNT
+              value: "50000"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            exec:
+              command:
+                - etcdctl
+                - endpoint
+                - health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - etcdctl
+                - endpoint
+                - health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /etcd
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: mindbase-fast
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+# ==============================================================
+# Milvus — Vector database (standalone)
+# ==============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus
+  namespace: mindbase
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: mindbase
+spec:
+  clusterIP: None
+  selector:
+    app: milvus
+  ports:
+    - name: api
+      port: 19530
+      targetPort: 19530
+    - name: grpc
+      port: 9091
+      targetPort: 9091
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: milvus
+  namespace: mindbase
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: mindbase
+spec:
+  serviceName: milvus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus
+  template:
+    metadata:
+      labels:
+        app: milvus
+    spec:
+      # Milvus needs to talk to etcd and MinIO before starting
+      initContainers:
+        - name: wait-for-etcd
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z etcd-0.etcd 2379; do
+                echo "waiting for etcd..."; sleep 2;
+              done
+              echo "etcd is ready"
+        - name: wait-for-minio
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z minio-0.minio 9000; do
+                echo "waiting for minio..."; sleep 2;
+              done
+              echo "minio is ready"
+      containers:
+        - name: milvus
+          image: milvusdb/milvus:v2.4.17
+          command:
+            - milvus
+          args:
+            - run
+            - standalone
+          ports:
+            - containerPort: 19530
+              name: api
+            - containerPort: 9091
+              name: grpc
+          env:
+            - name: ETCD_ENDPOINTS
+              value: "etcd-0.etcd:2379"
+            - name: MINIO_ADDRESS
+              value: "minio-0.minio:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-user
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-password
+            # Milvus internal MinIO bucket prefix
+            - name: MINIO_BUCKET_NAME
+              value: "a-bucket"
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9091
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9091
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/milvus
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: mindbase-fast
+        resources:
+          requests:
+            storage: 100Gi

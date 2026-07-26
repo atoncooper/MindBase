@@ -1,18 +1,29 @@
+# ================================================================
+# MindBase — Kustomization
+# ================================================================
+# Apply everything:
+#   kubectl apply -k devops/
+#
+# Apply with overlay (e.g. production):
+#   kubectl apply -k devops/overlays/production/
+# ================================================================
+
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: mind-base
+namespace: mindbase
 
 resources:
   - namespace.yaml
+  - storage-class.yaml
+  - secrets.yaml
   - configmap.yaml
-  - secret.yaml
-  - pvc.yaml
-  - backend-deployment.yaml
-  - backend-service.yaml
-  - frontend-deployment.yaml
-  - frontend-service.yaml
+  - rbac.yaml
+  - mindbase-app.yaml
+  - infra-statefulset.yaml
+  - milvus.yaml
+  - data-platform.yaml
   - ingress.yaml
 
 commonLabels:
-  app.kubernetes.io/part-of: mind-base
+  app.kubernetes.io/part-of: mindbase

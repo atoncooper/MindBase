@@ -1,34 +1,52 @@
+# ================================================================
+# MindBase — ConfigMap
+# ================================================================
+# Non-sensitive configuration. Secrets go in secrets.yaml.
+# ================================================================
+
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: mind-base-config
-  namespace: mind-base
+  name: mindbase-config
+  namespace: mindbase
   labels:
-    app.kubernetes.io/name: mind-base
+    app.kubernetes.io/part-of: mindbase
 data:
-  # App
-  APP_HOST: "0.0.0.0"
-  APP_PORT: "8000"
-  DEBUG: "false"
-  # Database
-  DATABASE_URL: "sqlite+aiosqlite:///./data/mind_base.db"
-  # LLM
-  OPENAI_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  LLM_MODEL: "qwen3-max"
-  EMBEDDING_MODEL: "text-embedding-v4"
-  # ASR
-  DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/api/v1"
-  ASR_MODEL: "paraformer-v2"
-  # LangSmith
-  LANGCHAIN_TRACING_V2: "false"
-  LANGSMITH_TRACING: "false"
-  LANGSMITH_PROJECT: "mind-base"
-  LANGSMITH_ENDPOINT: "https://api.smith.langchain.com"
-  # Chunking
-  CHUNK_TARGET_SIZE: "750"
-  CHUNK_MIN_SIZE: "300"
-  CHUNK_MAX_SIZE: "900"
-  CHUNK_OVERLAP: "100"
-  EMBEDDING_VERSION: "v1"
-  # Frontend
-  NEXT_PUBLIC_API_URL: "http://mind-base-backend:8000"
+  # ---- App ----
+  APP_DEBUG: "false"
+  APP_LOG_LEVEL: "INFO"
+  # ---- RDBMS ----
+  RDBMS__URL: "mysql+aiomysql://mind_base:$(MYSQL_PASSWORD)@mysql-0.mysql:3306/mind_base"
+  # ---- MongoDB ----
+  MONGO__URI: "mongodb://admin:$(MONGO_ROOT_PASSWORD)@mongo-0.mongo:27017/?authSource=admin"
+  # ---- Redis ----
+  REDIS__URL: "redis://:$(REDIS_PASSWORD)@redis-0.redis:6379/1"
+  # ---- Milvus ----
+  MILVUS__URI: "http://milvus-0.milvus:19530"
+  MILVUS__TOKEN: ""
+  # ---- LLM ----
+  LLM__MODEL: "qwen3-max"
+  # ---- Embedding ----
+  EMBEDDING__MODEL: "text-embedding-v4"
+  EMBEDDING__DIMENSION: "1536"
+  # ---- ASR ----
+  ASR__BASE_URL: "https://dashscope.aliyuncs.com/api/v1"
+  ASR__MODEL: "paraformer-v2"
+  # ---- LangSmith ----
+  LANGSMITH__PROJECT: "MindBase"
+  # ---- MinIO ----
+  MINIO__ENABLED: "true"
+  MINIO__ENDPOINT: "http://minio-0.minio:9000"
+  MINIO__BUCKET: "drive-videos"
+  MINIO__REGION: "us-east-1"
+  MINIO__SECURE: "false"
+  MINIO__PUBLIC_ENDPOINT: ""
+  # ---- Kafka ----
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-0.kafka:9092,kafka-1.kafka:9092,kafka-2.kafka:9092"
+  # ---- Iceberg ----
+  ICEBERG_CATALOG_URI: "http://iceberg-catalog:8181"
+  ICEBERG_WAREHOUSE: "s3://iceberg-warehouse"
+  # ---- Flink ----
+  FLINK_S3_ENDPOINT: "http://minio-0.minio:9000"
+  # ---- Spark ----
+  SPARK_S3_ENDPOINT: "http://minio-0.minio:9000"

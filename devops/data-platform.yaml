@@ -1,0 +1,493 @@
+# ================================================================
+# MindBase — Data Platform
+# ================================================================
+# Kafka (Strimzi operator)  — message queue + event streaming
+# Spark (Spark Operator)     — batch ETL + ML pipeline
+# Flink (Flink Kubernetes Operator) — stream processing
+# Iceberg (REST catalog)     — table format for the data lake
+# ================================================================
+# Prerequisites (install operators first):
+#   kubectl create -f 'https://strimzi.io/install/latest?namespace=mindbase'
+#   kubectl create -f 'https://github.com/apache/spark-operator/releases/latest'
+#   kubectl create -f 'https://github.com/apache/flink-kubernetes-operator/releases/latest'
+# ================================================================
+
+---
+# ==============================================================
+# Kafka — Strimzi Operator CRD
+# ==============================================================
+# Strimzi provides production-ready Kafka on K8s with:
+#   - Built-in metrics, Cruise Control for rebalancing
+#   - TLS + SASL/SCRAM authentication
+#   - Topic operator (manage topics via K8s CRDs)
+#   - User operator (manage credentials via K8s CRDs)
+# ==============================================================
+
+# Kafka cluster — 3 brokers, ephemeral + persistent storage
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: mindbase-kafka
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+spec:
+  kafka:
+    version: 3.8.0
+    replicas: 3
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+    config:
+      # General
+      auto.create.topics.enable: "false"
+      num.partitions: 6
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      # Log retention — 7 days, or 50 GB per partition
+      log.retention.hours: 168
+      log.retention.bytes: "53687091200"      # 50 GB
+      log.segment.bytes: "1073741824"         # 1 GB
+      # Network
+      compression.type: producer
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+    storage:
+      type: persistent-claim
+      size: 100Gi
+      class: mindbase-standard
+      deleteClaim: false
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    jvmOptions:
+      -Xms: 1g
+      -Xmx: 2g
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: kafka-metrics-config
+          key: metrics-config.yml
+  zookeeper:
+    replicas: 3
+    storage:
+      type: persistent-claim
+      size: 20Gi
+      class: mindbase-fast
+      deleteClaim: false
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+  entityOperator:
+    topicOperator:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+    userOperator:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+
+---
+# Kafka metrics config — JMX → Prometheus
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-metrics-config
+  namespace: mindbase
+data:
+  metrics-config.yml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: kafka.server<type=(.+), name=(.+)PerSec\w*><>Count
+        name: kafka_server_$1_$2_total
+      - pattern: kafka.server<type=(.+), name=(.+)PerSec\w*, topic=(.+)><>Count
+        name: kafka_server_$1_$2_total
+        labels:
+          topic: $3
+
+---
+# ==============================================================
+# Kafka Topics (managed by Strimzi Topic Operator)
+# ==============================================================
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: mindbase-events
+  namespace: mindbase
+  labels:
+    strimzi.io/cluster: mindbase-kafka
+    app.kubernetes.io/part-of: mindbase
+spec:
+  partitions: 6
+  replicas: 3
+  config:
+    retention.ms: 604800000            # 7 days
+    cleanup.policy: delete
+
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: mindbase-video-ingest
+  namespace: mindbase
+  labels:
+    strimzi.io/cluster: mindbase-kafka
+    app.kubernetes.io/part-of: mindbase
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    retention.ms: 2592000000           # 30 days
+    cleanup.policy: delete
+    compression.type: producer
+
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: mindbase-asr-tasks
+  namespace: mindbase
+  labels:
+    strimzi.io/cluster: mindbase-kafka
+    app.kubernetes.io/part-of: mindbase
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    retention.ms: 86400000             # 1 day (task queue)
+    cleanup.policy: delete
+
+---
+# ==============================================================
+# Iceberg REST Catalog
+# ==============================================================
+# Lightweight Java catalog server backed by JDBC (PostgreSQL/MySQL).
+# Alternative: use Polaris Catalog (Apache) for a cloud-native option.
+# ==============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: iceberg-catalog
+  namespace: mindbase
+  labels:
+    app: iceberg-catalog
+    app.kubernetes.io/part-of: mindbase
+spec:
+  type: ClusterIP
+  selector:
+    app: iceberg-catalog
+  ports:
+    - name: http
+      port: 8181
+      targetPort: 8181
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iceberg-catalog
+  namespace: mindbase
+  labels:
+    app: iceberg-catalog
+    app.kubernetes.io/part-of: mindbase
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iceberg-catalog
+  template:
+    metadata:
+      labels:
+        app: iceberg-catalog
+    spec:
+      containers:
+        - name: catalog
+          # Official Apache Iceberg REST catalog image (tabulario)
+          image: tabulario/iceberg-rest:0.8.0
+          ports:
+            - containerPort: 8181
+              name: http
+          env:
+            # Backend database for catalog metadata
+            - name: CATALOG_WAREHOUSE
+              value: "s3://iceberg-warehouse"
+            - name: CATALOG_IO__IMPL
+              value: "org.apache.iceberg.aws.s3.S3FileIO"
+            - name: CATALOG_S3_ENDPOINT
+              value: "http://minio-0.minio:9000"
+            - name: CATALOG_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-user
+            - name: CATALOG_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-password
+            - name: CATALOG_S3_PATH_STYLE_ACCESS
+              value: "true"
+            - name: CATALOG_JDBC_CATALOG__NAME
+              value: "mindbase"
+            - name: CATALOG_JDBC_USERNAME
+              value: "mind_base"
+            - name: CATALOG_JDBC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: mysql-password
+            - name: CATALOG_JDBC_URI
+              value: "jdbc:mysql://mysql-0.mysql:3306/mind_base"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /v1/config
+              port: 8181
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v1/config
+              port: 8181
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+---
+# ==============================================================
+# MinIO — Iceberg Warehouse Bucket provisioner
+# ==============================================================
+# Creates the Iceberg warehouse bucket on MinIO startup.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-provision-buckets
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-minio
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "until nc -z minio-0.minio 9000; do sleep 2; done"
+      containers:
+        - name: provision
+          image: minio/mc:latest
+          command:
+            - sh
+            - -c
+            - |
+              mc alias set local http://minio-0.minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+
+              # Drive bucket — user file uploads
+              mc mb --ignore-existing local/drive-videos
+              mc anonymous set download local/drive-videos
+
+              # Iceberg warehouse — data lake
+              mc mb --ignore-existing local/iceberg-warehouse
+
+              # Spark / Flink checkpointing
+              mc mb --ignore-existing local/spark-checkpoints
+              mc mb --ignore-existing local/flink-checkpoints
+
+              echo "Buckets provisioned successfully"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-password
+
+---
+# ==============================================================
+# Spark — SparkOperator CRD (batch ETL / ML pipelines)
+# ==============================================================
+# Deploy spark jobs like:
+#   kubectl apply -f spark-job-video-embedding.yaml
+#
+# Example SparkApplication for embedding batch processing:
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: video-embedding-batch
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: ghcr.io/atoncooper/mind-base-spark:latest   # <-- build this image
+  imagePullPolicy: Always
+  mainApplicationFile: local:///app/spark/embedding_job.py
+  arguments:
+    - "--input-table=mindbase.video_asr"
+    - "--output-table=mindbase.video_chunks"
+    - "--embedding-model=text-embedding-v4"
+  sparkVersion: 3.5.0
+  restartPolicy:
+    type: Never
+  driver:
+    cores: 1
+    coreLimit: "2"
+    memory: "2g"
+    serviceAccount: mindbase-spark
+    env:
+      - name: AWS_ENDPOINT_URL
+        value: "http://minio-0.minio:9000"
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: mindbase-secrets
+            key: minio-root-user
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: mindbase-secrets
+            key: minio-root-password
+  executor:
+    cores: 1
+    coreLimit: "2"
+    memory: "4g"
+    memoryOverhead: "1g"
+    instances: 2
+    env:
+      - name: AWS_ENDPOINT_URL
+        value: "http://minio-0.minio:9000"
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: mindbase-secrets
+            key: minio-root-user
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: mindbase-secrets
+            key: minio-root-password
+  sparkConf:
+    # Iceberg integration
+    spark.sql.extensions: "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+    spark.sql.catalog.mindbase: "org.apache.iceberg.spark.SparkCatalog"
+    spark.sql.catalog.mindbase.type: "rest"
+    spark.sql.catalog.mindbase.uri: "http://iceberg-catalog:8181"
+    spark.sql.catalog.mindbase.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
+    spark.sql.catalog.mindbase.warehouse: "s3://iceberg-warehouse"
+    spark.sql.catalog.mindbase.s3.endpoint: "http://minio-0.minio:9000"
+    # Event logging to MinIO
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://spark-checkpoints/events/"
+    spark.hadoop.fs.s3a.endpoint: "http://minio-0.minio:9000"
+    spark.hadoop.fs.s3a.access.key: "$(MINIO_ROOT_USER)"
+    spark.hadoop.fs.s3a.secret.key: "$(MINIO_ROOT_PASSWORD)"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+
+---
+# ==============================================================
+# Flink — FlinkDeployment CRD (stream processing)
+# ==============================================================
+# Requires: Flink Kubernetes Operator
+#   kubectl create -f https://github.com/apache/flink-kubernetes-operator/releases/latest
+# ==============================================================
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: video-ingest-stream
+  namespace: mindbase
+  labels:
+    app.kubernetes.io/part-of: mindbase
+spec:
+  image: ghcr.io/atoncooper/mind-base-flink:latest    # <-- build this image
+  flinkVersion: v1_19
+  flinkConfiguration:
+    # Checkpointing to MinIO via S3
+    state.backend.type: rocksdb
+    state.checkpoints.dir: s3://flink-checkpoints
+    state.savepoints.dir: s3://flink-checkpoints/savepoints
+    execution.checkpointing.interval: "60s"
+    execution.checkpointing.mode: EXACTLY_ONCE
+    execution.checkpointing.min-pause: "30s"
+    execution.checkpointing.timeout: "10min"
+    execution.checkpointing.max-concurrent-checkpoints: "1"
+    # S3 configuration
+    fs.s3a.endpoint: http://minio-0.minio:9000
+    fs.s3a.path.style.access: "true"
+    # Pipeline options
+    pipeline.object-reuse: "true"
+    taskmanager.memory.process.size: "2g"
+  serviceAccount: flink
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          env:
+            - name: AWS_ENDPOINT_URL
+              value: "http://minio-0.minio:9000"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-user
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-secrets
+                  key: minio-root-password
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "mindbase-kafka-kafka-bootstrap:9092"
+  jobManager:
+    resource:
+      memory: "1g"
+      cpu: 1
+  taskManager:
+    resource:
+      memory: "2g"
+      cpu: 1
+  job:
+    jarURI: local:///opt/flink/usrlib/video-ingest.jar
+    entryClass: com.mindbase.flink.VideoIngestJob
+    parallelism: 2
+    state: running
+    upgradeMode: savepoint
+    savepointTriggerNonce: 0
