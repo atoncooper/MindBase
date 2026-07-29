@@ -193,8 +193,7 @@ a {
   justify-content: space-between;
   padding: 18px 32px;
   border-bottom: 1px solid var(--border);
-  background: rgba(13, 17, 23, 0.9);
-  backdrop-filter: blur(10px);
+  background: #0d1117;
 }
 
 .app-footer {
@@ -954,14 +953,10 @@ html.dark * {
 
 @keyframes chat-input-streaming-pulse {
   0%, 100% {
-    box-shadow:
-      0 0 0 0 color-mix(in srgb, #ef4444 0%, transparent),
-      var(--gemini-shadow);
+    border-color: color-mix(in srgb, #ef4444 30%, var(--gemini-border));
   }
   50% {
-    box-shadow:
-      0 0 0 3px color-mix(in srgb, #ef4444 15%, transparent),
-      var(--gemini-shadow-md);
+    border-color: color-mix(in srgb, #ef4444 65%, var(--gemini-border));
   }
 }
 
@@ -1091,16 +1086,10 @@ html.dark * {
 
 @keyframes chat-input-stop-breath {
   0%, 100% {
-    box-shadow:
-      0 4px 12px rgba(239, 68, 68, 0.4),
-      inset 0 1px 0 rgba(255, 255, 255, 0.3),
-      inset 0 -1px 1px rgba(0, 0, 0, 0.15);
+    opacity: 1;
   }
   50% {
-    box-shadow:
-      0 4px 18px rgba(239, 68, 68, 0.6),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      inset 0 -1px 1px rgba(0, 0, 0, 0.15);
+    opacity: 0.72;
   }
 }
 
@@ -3680,8 +3669,7 @@ html.dark * {
   position: absolute;
   inset: 0;
   border-radius: 20px;
-  background: rgba(22, 27, 34, 0.6);
-  backdrop-filter: blur(20px) saturate(180%);
+  background: rgba(22, 27, 34, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
@@ -3821,6 +3809,303 @@ html:not(.dark) .orbit-node-label {
   z-index: 2;
   pointer-events: auto;
   transition: opacity 0.4s ease;
+}
+
+/* ============================================ */
+/* Wallpaper background (macOS-style, solid surfaces per Material pref) */
+/* ============================================ */
+.wallpaper-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: #0a0a0a;
+}
+.wallpaper-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  pointer-events: none;
+}
+.wallpaper-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0);
+  transition: background 0.4s ease;
+  pointer-events: none;
+}
+.wallpaper-layer.is-dimmed .wallpaper-overlay {
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+/* Right-click context menu (solid surface, no glass) */
+.wallpaper-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background: #1c1c1e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Wallpaper picker modal (solid surface) */
+.wallpaper-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wallpaper-picker {
+  width: min(680px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #1c1c1e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.picker-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #fff;
+}
+.picker-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.picker-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.picker-thumb {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.picker-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.picker-thumb-label {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  font-size: 12px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.picker-thumb.is-active {
+  border-color: var(--accent, #06b6d4);
+}
+.picker-upload {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.picker-upload-btn {
+  display: inline-block;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.picker-upload-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.picker-upload-btn.is-busy {
+  opacity: 0.6;
+  cursor: default;
+}
+.picker-current {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.picker-error {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* Light mode overrides for wallpaper UI */
+html:not(.dark) .wallpaper-layer {
+  background: #f5f5f7;
+}
+html:not(.dark) .wallpaper-context-menu,
+html:not(.dark) .wallpaper-picker {
+  background: #f5f5f7;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+html:not(.dark) .context-menu-item,
+html:not(.dark) .picker-header h3,
+html:not(.dark) .picker-close,
+html:not(.dark) .picker-upload-btn {
+  color: #1d1d1f;
+}
+html:not(.dark) .picker-close:hover,
+html:not(.dark) .context-menu-item:hover,
+html:not(.dark) .picker-upload-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ============================================ */
+/* Launchpad (macOS-style app grid)              */
+/* ============================================ */
+.launchpad-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background-color: rgba(0, 0, 0, 0.9);
+  background-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 30%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  overflow: auto;
+}
+.launchpad-search {
+  width: 320px;
+  max-width: 80vw;
+  margin-bottom: 48px;
+  padding: 8px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+}
+.launchpad-search::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+.launchpad-search:focus {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.14);
+}
+.launchpad-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 48px 24px;
+  max-width: 960px;
+  width: 100%;
+}
+.launchpad-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.launchpad-item-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.launchpad-item:hover .launchpad-item-icon {
+  transform: scale(1.12);
+  background: rgba(255, 255, 255, 0.14);
+}
+.launchpad-item-label {
+  font-size: 13px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+
+/* Light mode overrides for Launchpad */
+html:not(.dark) .launchpad-overlay {
+  background-color: rgba(245, 245, 247, 0.95);
+  background-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.06), transparent 30%);
+}
+html:not(.dark) .launchpad-search {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #1d1d1f;
+}
+html:not(.dark) .launchpad-search::placeholder {
+  color: rgba(0, 0, 0, 0.4);
+}
+html:not(.dark) .launchpad-item-icon {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #1d1d1f;
+}
+html:not(.dark) .launchpad-item:hover .launchpad-item-icon {
+  background: rgba(0, 0, 0, 0.09);
+}
+html:not(.dark) .launchpad-item-label {
+  color: #1d1d1f;
+  text-shadow: none;
+}
+
+/* Respect Reduce Motion (HIG) */
+@media (prefers-reduced-motion: reduce) {
+  .launchpad-item-icon {
+    transition: none;
+  }
 }
 
 /* ============================================ */

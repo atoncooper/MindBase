@@ -36,10 +36,26 @@ export default function ChatContent({
   // Input area is narrower than the messages area by default (Gemini style).
   const effectiveInputWidth = inputMaxWidth ?? maxWidth;
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRafRef = useRef<number | null>(null);
 
+  // Auto-scroll to newest message. Throttled to one rAF per frame and use
+  // "auto" (not "smooth") during streaming - a smooth scrollIntoView per token
+  // forces synchronous layout + animates each chunk, causing severe jank.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (scrollRafRef.current != null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      messagesEndRef.current?.scrollIntoView({
+        behavior: isStreaming ? "auto" : "smooth",
+      });
+    });
+    return () => {
+      if (scrollRafRef.current != null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, [messages, isStreaming]);
 
   // Centered content wrapper for messages.
   // Inline style guarantees the max-width is applied regardless of Tailwind

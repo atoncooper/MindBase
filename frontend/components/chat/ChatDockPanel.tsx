@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import ChatContent from "./ChatContent";
 import { chatApi, type ChatMessage as ApiChatMessage } from "@/lib/api";
 import { useDockContext } from "@/lib/dock-context";
@@ -34,6 +34,11 @@ export default function ChatDockPanel({ isOpen, onClose }: ChatDockPanelProps) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // rAF throttling for streaming chunks: coalesce per-token setMessages into
+  // at most one update per animation frame to avoid React reconciliation storms.
+  const streamContentRef = useRef<{ id: string; content: string } | null>(null);
+  const streamRafRef = useRef<number | null>(null);
 
   // isOpen/onClose are handled by the FloatingPanel wrapper; keep the
   // prop signature for the dock registry contract but no-op here.
@@ -112,11 +117,21 @@ export default function ChatDockPanel({ isOpen, onClose }: ChatDockPanelProps) {
 
       await streamChat(stream, {
         onChunk: (accumulated) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId ? { ...m, content: accumulated } : m
-            )
-          );
+          // Coalesce per-token updates into one setMessages per animation frame.
+          streamContentRef.current = { id: assistantMsgId, content: accumulated };
+          if (streamRafRef.current == null) {
+            streamRafRef.current = requestAnimationFrame(() => {
+              streamRafRef.current = null;
+              const pending = streamContentRef.current;
+              streamContentRef.current = null;
+              if (!pending) return;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === pending.id ? { ...m, content: pending.content } : m
+                )
+              );
+            });
+          }
         },
         onSources: (sources: ChatSource[]) => {
           setMessages((prev) =>
@@ -173,6 +188,11 @@ export default function ChatDockPanel({ isOpen, onClose }: ChatDockPanelProps) {
           );
         },
         onError: (message) => {
+          if (streamRafRef.current != null) {
+            cancelAnimationFrame(streamRafRef.current);
+            streamRafRef.current = null;
+          }
+          streamContentRef.current = null;
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId
@@ -182,12 +202,24 @@ export default function ChatDockPanel({ isOpen, onClose }: ChatDockPanelProps) {
           );
         },
         onComplete: () => {
+          // Flush any pending rAF chunk before marking complete.
+          if (streamRafRef.current != null) {
+            cancelAnimationFrame(streamRafRef.current);
+            streamRafRef.current = null;
+          }
+          const pending = streamContentRef.current;
+          streamContentRef.current = null;
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId && m.status === "pending"
-                ? { ...m, status: "completed" }
-                : m
-            )
+            prev.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              const content =
+                pending && pending.id === assistantMsgId
+                  ? pending.content
+                  : m.content;
+              return m.status === "pending"
+                ? { ...m, content, status: "completed" }
+                : { ...m, content };
+            })
           );
         },
       });

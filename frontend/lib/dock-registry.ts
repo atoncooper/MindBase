@@ -14,6 +14,8 @@ export interface DockModule {
   panel: ComponentType<DockPanelProps>;
   defaultSize?: { width: number; height: number };
   defaultPosition?: { x: number; y: number };
+  /** Where the module lives: "dock" (default) shows in the DockBar; "launchpad" shows in the Launchpad grid. */
+  placement?: "dock" | "launchpad";
 }
 
 const registry = new Map<string, DockModule>();

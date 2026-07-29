@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Pencil, Check, Eye, EyeOff, AtSign, Smartphone, Key, Globe } from "lucide-react";
+import { Pencil, Check, Eye, EyeOff, AtSign, Smartphone, Key, Globe, LogOut } from "lucide-react";
 import QRLoginModal from "@/components/QRLoginModal";
 import { userApi, type ProfileData, type SecurityOverview } from "@/lib/api";
 import type { DockPanelProps } from "@/lib/dock-registry";
+import { useAuth } from "@/lib/auth";
 
 /* ─── helpers ─── */
 
@@ -60,12 +61,22 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
   const [pwError, setPwError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
 
+  const { logout } = useAuth();
+
   const flash = (message: string, type: "success" | "error") => {
     setToast({ message, type });
     // Errors need more time to read; success is fleeting.
     const duration = type === "error" ? 6000 : 3200;
     setTimeout(() => setToast(null), duration);
   };
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await logout();
+    } catch {
+      /* best-effort: logout() clears local state regardless of network */
+    }
+  }, [logout]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -488,6 +499,17 @@ export default function AccountPanel({ isOpen }: DockPanelProps) {
               </span>
             </div>
           )}
+        </section>
+
+        <section className="ac-section">
+          <button
+            type="button"
+            className="ac-btn secondary"
+            style={{ color: "#ef4444", borderColor: "rgba(239,68,68,0.3)", width: "100%" }}
+            onClick={handleLogout}
+          >
+            <LogOut size={14} /> 退出登录
+          </button>
         </section>
       </div>
 

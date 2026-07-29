@@ -1,0 +1,103 @@
+/* WidgetLibrary picker modal (solid surface, portal to body). */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  width: min(480px, 92vw);
+  background: #1c1c1e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #fff;
+}
+.close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+}
+.item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  cursor: pointer;
+  color: #fff;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.item:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.icon {
+  font-size: 28px;
+}
+.name {
+  font-size: 13px;
+}
+.hint {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Light mode */
+:global(html:not(.dark)) .panel {
+  background: #f5f5f7;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+:global(html:not(.dark)) .header h3,
+:global(html:not(.dark)) .close,
+:global(html:not(.dark)) .item {
+  color: #1d1d1f;
+}
+:global(html:not(.dark)) .close:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+:global(html:not(.dark)) .item {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+:global(html:not(.dark)) .item:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+:global(html:not(.dark)) .hint {
+  color: rgba(0, 0, 0, 0.35);
+}

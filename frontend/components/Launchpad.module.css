@@ -1,0 +1,110 @@
+/* Launchpad styles as a CSS Module to bypass Turbopack global CSS
+   tree-shaking (which dropped these classes because Launchpad.tsx was a
+   new untracked file). Component-scoped import guarantees retention. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background-color: rgba(0, 0, 0, 0.9);
+  background-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent 30%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  overflow: auto;
+}
+
+.search {
+  width: 320px;
+  max-width: 80vw;
+  margin-bottom: 48px;
+  padding: 8px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+}
+.search::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+.search:focus {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 48px 24px;
+  max-width: 960px;
+  width: 100%;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.itemIcon {
+  width: 80px;
+  height: 80px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.item:hover .itemIcon {
+  transform: scale(1.12);
+  background: rgba(255, 255, 255, 0.14);
+}
+.itemLabel {
+  font-size: 13px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+
+/* Light mode overrides */
+:global(html:not(.dark)) .overlay {
+  background-color: rgba(245, 245, 247, 0.95);
+  background-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.06), transparent 30%);
+}
+:global(html:not(.dark)) .search {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #1d1d1f;
+}
+:global(html:not(.dark)) .search::placeholder {
+  color: rgba(0, 0, 0, 0.4);
+}
+:global(html:not(.dark)) .itemIcon {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #1d1d1f;
+}
+:global(html:not(.dark)) .item:hover .itemIcon {
+  background: rgba(0, 0, 0, 0.09);
+}
+:global(html:not(.dark)) .itemLabel {
+  color: #1d1d1f;
+  text-shadow: none;
+}
+
+/* Respect Reduce Motion (HIG) */
+@media (prefers-reduced-motion: reduce) {
+  .itemIcon {
+    transition: none;
+  }
+}
