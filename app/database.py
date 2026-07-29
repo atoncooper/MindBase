@@ -446,6 +446,19 @@ async def _migrate_add_columns():
                 INDEX ix_ns_token (share_token)
             )""",
         ),
+        # user_preferences - extensible KV preferences (wallpaper/theme/language)
+        (
+            "user_preferences",
+            """CREATE TABLE IF NOT EXISTS user_preferences (
+                uid BIGINT NOT NULL,
+                pref_key VARCHAR(64) NOT NULL,
+                pref_value TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (uid, pref_key),
+                FOREIGN KEY (uid) REFERENCES users(uid)
+            )""",
+        ),
     ]
 
     # Tables that need schema recreation (DROP + CREATE) because the old schema

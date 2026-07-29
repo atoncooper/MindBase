@@ -452,6 +452,16 @@ app.include_router(quiz_router)
 app.include_router(notes_router)
 app.include_router(tasks_ws_router)
 
+# Preferences - extensible KV (wallpaper/theme/language)
+from app.routers.preferences import router as preferences_router  # noqa: E402
+
+app.include_router(preferences_router)
+
+# Wallpaper - custom wallpaper upload/serve (MinIO-backed)
+from app.routers.wallpaper import router as wallpaper_router  # noqa: E402
+
+app.include_router(wallpaper_router)
+
 # Agent runtime status - admin-only observability endpoint
 from app.routers.agent_runtime import router as agent_runtime_router  # noqa: E402
 

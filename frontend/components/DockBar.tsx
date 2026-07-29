@@ -2,15 +2,17 @@
 
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { LayoutGrid } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
 
 interface DockBarProps {
   modules: DockModule[];
   activePanelId: string | null;
   onTogglePanel: (id: string, originEl: HTMLElement | null) => void;
+  onOpenLaunchpad?: () => void;
 }
 
-export default function DockBar({ modules, activePanelId, onTogglePanel }: DockBarProps) {
+export default function DockBar({ modules, activePanelId, onTogglePanel, onOpenLaunchpad }: DockBarProps) {
   const [isVisible, setIsVisible] = useState(false);
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMouseOnDock = useRef(false);
@@ -82,7 +84,7 @@ export default function DockBar({ modules, activePanelId, onTogglePanel }: DockB
           >
             <div className="dock-backdrop" />
             <div className="dock-items" role="toolbar" aria-label="功能面板">
-              {modules.map((mod, index) => (
+              {modules.filter((m) => m.placement !== "launchpad").map((mod, index) => (
                 <motion.div
                   key={mod.id}
                   initial={{ y: 20, opacity: 0 }}
@@ -108,6 +110,26 @@ export default function DockBar({ modules, activePanelId, onTogglePanel }: DockB
                   />
                 </motion.div>
               ))}
+              {onOpenLaunchpad && (
+                <motion.div
+                  key="launchpad"
+                  initial={{ y: 20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{
+                    delay: modules.length * 0.04,
+                    type: "spring",
+                    stiffness: 300,
+                    damping: 20,
+                  }}
+                >
+                  <DockIcon
+                    module={{ id: "launchpad", icon: LayoutGrid, title: "启动台" }}
+                    isActive={false}
+                    ref={() => {}}
+                    onClick={onOpenLaunchpad}
+                  />
+                </motion.div>
+              )}
             </div>
           </motion.nav>
         )}

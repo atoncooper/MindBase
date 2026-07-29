@@ -578,6 +578,25 @@ class UserProfile(Base):
     user = relationship("User", back_populates="profile")
 
 
+class UserPreference(Base):
+    """用户偏好 KV 表 - 可扩展存储 wallpaper / theme / language 等。
+
+    Keyed by (uid, pref_key). pref_value is a JSON string.
+    """
+
+    __tablename__ = "user_preferences"
+
+    uid = Column(BigInteger, ForeignKey("users.uid"), primary_key=True)
+    pref_key = Column(String(64), primary_key=True)
+    pref_value = Column(Text, nullable=False)  # JSON string
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class UserToken(Base):
     """Token 会话表（替代旧 user_sessions 的部分职责）"""
 

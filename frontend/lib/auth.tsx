@@ -17,6 +17,7 @@ interface AuthContextValue {
   status: AuthStatus;
   sessionToken: string | null;
   user: string | null;
+  uid: number | null;
   login: (token: string, user: UserInfo) => void;
   logout: () => Promise<void>;
 }
@@ -25,6 +26,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const SESSION_KEY = "bili_session";
 const USER_KEY = "bili_user";
+const UID_KEY = "bili_uid";
 const CHAT_SESSION_KEY = "bili_chat_session";
 
 function resolveDisplayName(user: UserInfo): string {
@@ -36,13 +38,15 @@ function resolveDisplayName(user: UserInfo): string {
  *
  * Token stays in localStorage (Bearer token, injected by api.ts getAuthHeaders).
  * This provider only mirrors it into React state so guarded routes and the home
- * page can react to login/logout/401 uniformly.
+ * page can react to login/logout/401 uniformly. Also persists the uid so
+ * per-user client caches (e.g. wallpaper) can key off it.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [user, setUser] = useState<string | null>(null);
+  const [uid, setUid] = useState<number | null>(null);
 
   // Initialize from localStorage on mount. Client-only to avoid hydration mismatch;
   // initial render is "loading" so protected content never flashes.
@@ -51,6 +55,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (token) {
       setSessionToken(token);
       setUser(localStorage.getItem(USER_KEY) || "用户");
+      const storedUid = localStorage.getItem(UID_KEY);
+      if (storedUid) setUid(Number(storedUid));
       setStatus("authenticated");
     } else {
       setStatus("unauthenticated");
@@ -63,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const onUnauthorized = () => {
       setSessionToken(null);
       setUser(null);
+      setUid(null);
       setStatus("unauthenticated");
       router.replace("/");
     };
@@ -72,10 +79,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback((token: string, userInfo: UserInfo) => {
     const name = resolveDisplayName(userInfo);
+    const resolvedUid = userInfo.uid ?? userInfo.mid ?? null;
     localStorage.setItem(SESSION_KEY, token);
     localStorage.setItem(USER_KEY, name);
+    if (resolvedUid != null) localStorage.setItem(UID_KEY, String(resolvedUid));
     setSessionToken(token);
     setUser(name);
+    setUid(resolvedUid ?? null);
     setStatus("authenticated");
   }, []);
 
@@ -89,14 +99,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(UID_KEY);
     localStorage.removeItem(CHAT_SESSION_KEY);
     setSessionToken(null);
     setUser(null);
+    setUid(null);
     setStatus("unauthenticated");
   }, [sessionToken]);
 
   return (
-    <AuthContext.Provider value={{ status, sessionToken, user, login, logout }}>
+    <AuthContext.Provider value={{ status, sessionToken, user, uid, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

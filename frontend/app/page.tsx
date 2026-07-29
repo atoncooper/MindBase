@@ -14,11 +14,15 @@ import { useAuth } from "@/lib/auth";
 import { ChatSidebarRenameDialog } from "@/components/chat-sidebar/ChatSidebarRenameDialog";
 import { ChatSidebarDeleteDialog } from "@/components/chat-sidebar/ChatSidebarDeleteDialog";
 import { useAppStore } from "@/stores/app-store";
-import ThreeJSScene from "@/components/three/ThreeJSScene";
+import WallpaperBackground from "@/components/WallpaperBackground";
+import Launchpad from "@/components/Launchpad";
+import DesktopWidget from "@/components/DesktopWidget";
+import WidgetLibrary from "@/components/WidgetLibrary";
+import { getWidgetType, type WidgetInstance } from "@/lib/widget-registry";
 import ThemeToggle from "@/components/ThemeToggle";
 
 export default function Home() {
-  const { user, sessionToken: session, login, logout } = useAuth();
+  const { sessionToken: session, login } = useAuth();
   const [showQRLogin, setShowQRLogin] = useState(false);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
@@ -38,6 +42,57 @@ export default function Home() {
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [panelOriginEl, setPanelOriginEl] = useState<HTMLElement | null>(null);
 
+  // 启动台(Launchpad):低频 dock 模块收入此处
+  const [isLaunchpadOpen, setIsLaunchpadOpen] = useState(false);
+  const launchpadModules = useMemo(
+    () => dockModules.filter((m) => m.placement === "launchpad"),
+    []
+  );
+
+  // 桌面组件实例(可拖拽 / 可拉伸 / 持久化)
+  const [widgets, setWidgets] = useState<WidgetInstance[]>([]);
+  const [widgetLibOpen, setWidgetLibOpen] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("desktop_widgets");
+    if (stored) {
+      try {
+        setWidgets(JSON.parse(stored));
+      } catch {}
+    }
+  }, []);
+
+  const persistWidgets = (next: WidgetInstance[]) => {
+    setWidgets(next);
+    localStorage.setItem("desktop_widgets", JSON.stringify(next));
+  };
+
+  const addWidget = (type: string) => {
+    const wt = getWidgetType(type);
+    if (!wt) return;
+    const id = `${type}-${Date.now()}`;
+    const offset = widgets.length * 24;
+    persistWidgets([
+      ...widgets,
+      {
+        id,
+        type,
+        x: 80 + offset,
+        y: 80 + offset,
+        width: wt.defaultSize.width,
+        height: wt.defaultSize.height,
+      },
+    ]);
+  };
+
+  const updateWidget = (id: string, patch: Partial<WidgetInstance>) => {
+    persistWidgets(widgets.map((w) => (w.id === id ? { ...w, ...patch } : w)));
+  };
+
+  const removeWidget = (id: string) => {
+    persistWidgets(widgets.filter((w) => w.id !== id));
+  };
+
   // ASR 弹窗状态
   const [asrModal, setAsrModal] = useState<{
     isOpen: boolean;
@@ -54,7 +109,14 @@ export default function Home() {
 
   // 初始化/恢复聊天会话
   useEffect(() => {
-    if (!session) return;
+    if (!session) {
+      // Logged out: clear session-scoped UI state (mirrors old onLogout)
+      setActiveChatSessionId(null);
+      setActivePanelId(null);
+      setSelectedFolderIds([]);
+      setWorkspacePages([]);
+      return;
+    }
     const init = async () => {
       let cid = localStorage.getItem("bili_chat_session");
       if (!cid) {
@@ -72,7 +134,7 @@ export default function Home() {
     init();
   }, [session]);
 
-  const handleCreateSession = async () => {
+  const handleCreateSession = useCallback(async () => {
     try {
       const res = await chatApi.createSession();
       const cid = res.chat_session_id;
@@ -82,27 +144,19 @@ export default function Home() {
     } catch (e) {
       console.error("创建会话失败", e);
     }
-  };
+  }, []);
 
-  const handleSelectSession = (cid: string) => {
+  const handleSelectSession = useCallback((cid: string) => {
     localStorage.setItem("bili_chat_session", cid);
     setActiveChatSessionId(cid);
     setActivePanelId("chat"); // auto-open chat panel
-  };
+  }, []);
 
   const onLogin = (sid: string, info: UserInfo) => {
     login(sid, info);
     setShowQRLogin(false);
     setShowPasswordLogin(false);
   };
-
-  const onLogout = useCallback(async () => {
-    await logout();
-    setActiveChatSessionId(null);
-    setActivePanelId(null);
-    setSelectedFolderIds([]);
-    setWorkspacePages([]);
-  }, [logout]);
 
   const onOpenASR = useCallback((bvid: string, cid: number, pageTitle: string, pageIndex: number = 0) => {
     setAsrModal({ isOpen: true, bvid, cid, pageIndex, pageTitle });
@@ -173,22 +227,19 @@ export default function Home() {
     setPanelOriginEl(null);
   }, []);
 
-  // 3D 场景点击 dock 节点时打开面板（无 DOM 原点用作动画起点）
-  const handle3DToggle = useCallback(
-    (id: string) => togglePanel(id, null),
-    [togglePanel],
-  );
-
-  // Escape 关闭面板
+  // Escape 关闭启动台 / 面板
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && activePanelId) {
+      if (e.key !== "Escape") return;
+      if (isLaunchpadOpen) {
+        setIsLaunchpadOpen(false);
+      } else if (activePanelId) {
         closePanel();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activePanelId, closePanel]);
+  }, [activePanelId, closePanel, isLaunchpadOpen]);
 
   const activeModule = activePanelId
     ? dockModules.find((m) => m.id === activePanelId)
@@ -224,45 +275,11 @@ export default function Home() {
   return (
     <DockContext.Provider value={dockContextValue}>
       <div className="app-shell">
-        <header className="app-topbar">
-          <div className="brand">
-            <div className="brand-mark">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-                <path d="M4 6h16M4 12h16M4 18h10" />
-              </svg>
-            </div>
-            <div>
-              <span className="brand-title">MindBase</span>
-              <span className="brand-subtitle">Save • Learn • Ask</span>
-            </div>
-          </div>
-
-          <div className="topbar-actions">
+        {!session && (
+          <div style={{ position: "fixed", top: 16, right: 16, zIndex: 20 }}>
             <ThemeToggle />
-            {user ? (
-              <>
-                <span className="user-chip">
-                  <span>已登录</span>
-                  <strong>{user}</strong>
-                </span>
-                <button onClick={onLogout} className="btn-icon" title="退出">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                  </svg>
-                </button>
-              </>
-            ) : (
-              <div className="flex items-center gap-2">
-                <button onClick={() => setShowQRLogin(true)} className="btn btn-primary">
-                  扫码登录
-                </button>
-                <button onClick={() => setShowPasswordLogin(true)} className="btn btn-outline">
-                  账号登录
-                </button>
-              </div>
-            )}
           </div>
-        </header>
+        )}
 
         <main className="app-main">
           {!session ? (
@@ -308,14 +325,23 @@ export default function Home() {
               </div>
             </section>
           ) : (
-            <ThreeJSScene
+            <WallpaperBackground
+              session={session}
               dimmed={!!activePanelId}
-              dockModules={dockModules}
-              activePanelId={activePanelId}
-              onTogglePanel={handle3DToggle}
+              onAddWidget={() => setWidgetLibOpen(true)}
             />
           )}
         </main>
+
+        {session &&
+          widgets.map((w) => (
+            <DesktopWidget
+              key={w.id}
+              instance={w}
+              onChange={updateWidget}
+              onRemove={removeWidget}
+            />
+          ))}
 
         {/* Dock 图标栏（已登录时显示） */}
         {session && (
@@ -323,6 +349,10 @@ export default function Home() {
             modules={dockModules}
             activePanelId={activePanelId}
             onTogglePanel={togglePanel}
+            onOpenLaunchpad={() => {
+              closePanel();
+              setIsLaunchpadOpen(true);
+            }}
           />
         )}
 
@@ -340,6 +370,22 @@ export default function Home() {
             <ActivePanel isOpen={!!activePanelId} onClose={closePanel} />
           </DockPanelWrapper>
         )}
+
+        <Launchpad
+          open={isLaunchpadOpen}
+          modules={launchpadModules}
+          onClose={() => setIsLaunchpadOpen(false)}
+          onLaunch={(mod, el) => {
+            setIsLaunchpadOpen(false);
+            togglePanel(mod.id, el);
+          }}
+        />
+
+        <WidgetLibrary
+          open={widgetLibOpen}
+          onClose={() => setWidgetLibOpen(false)}
+          onAdd={addWidget}
+        />
 
         <QRLoginModal isOpen={showQRLogin} onClose={() => setShowQRLogin(false)} onSuccess={onLogin} />
         <PasswordLoginModal

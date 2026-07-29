@@ -26,6 +26,7 @@ export const dockModules: DockModule[] = [
     title: "历史会话",
     panel: ChatHistoryPanel,
     defaultSize: { width: 640, height: 520 },
+    placement: "launchpad",
   },
   {
     id: "quiz",
@@ -33,6 +34,7 @@ export const dockModules: DockModule[] = [
     title: "题目练习",
     panel: QuizPanel,
     defaultSize: { width: 720, height: 700 },
+    placement: "launchpad",
   },
   {
     id: "notes",
@@ -75,6 +77,7 @@ export const dockModules: DockModule[] = [
     title: "任务监控",
     panel: TasksPanel,
     defaultSize: { width: 520, height: 560 },
+    placement: "launchpad",
   },
   {
     id: "billing",
@@ -82,6 +85,7 @@ export const dockModules: DockModule[] = [
     title: "用量计费",
     panel: BillingPanel,
     defaultSize: { width: 1156, height: 672 },
+    placement: "launchpad",
   },
   {
     id: "skills",
@@ -89,5 +93,6 @@ export const dockModules: DockModule[] = [
     title: "技能商店",
     panel: SkillsPanel,
     defaultSize: { width: 720, height: 640 },
+    placement: "launchpad",
   },
 ];
