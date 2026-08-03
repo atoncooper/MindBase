@@ -1,0 +1,42 @@
+# Daytona self-hosted code sandbox (for the code agent).
+#
+# Independent deployment - start separately from the main stack:
+#   1. Start the main stack first (creates the mind-base-net network):
+#        docker compose up -d
+#   2. Start Daytona:
+#        docker compose -f docker-compose.daytona.yml up -d
+#
+# After Daytona starts, generate an API key (via the Daytona CLI or the UI at
+# http://<host>:3800) and set it in the backend .env:
+#   DAYTONA__ENABLED=true
+#   DAYTONA__API_URL=http://daytona:3000          # from the backend container (internal)
+#   DAYTONA__API_KEY=<generated-key>
+#   DAYTONA__ORG_ID=                               # self-hosted: leave empty
+#
+# Ref: https://www.daytona.io/docs/installation/installation-self-hosted/
+
+services:
+  daytona:
+    image: daytonaio/daytona:latest
+    container_name: mind-base-daytona
+    ports:
+      # 3800 by default - avoids clashing with frontend dev server (3000).
+      # Override with DAYTONA_PORT if needed.
+      - "${DAYTONA_PORT:-3800}:3000"
+    volumes:
+      # Daytona creates sandbox containers via the host Docker daemon, so it
+      # needs access to the Docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - daytona-data:/root/.daytona
+    environment:
+      - DAYTONA_SERVER_PORT=3000
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+volumes:
+  daytona-data:
+
+networks:
+  mind-base-net:
+    external: true
