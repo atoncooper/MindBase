@@ -373,22 +373,61 @@ class AgentHarness:
         from app.agent.quiz import build_quiz_agent
 
         # ── Memory Agent (sub-agent, not top-level route target) ─────
+        from app.agent.memory.window_store import SessionWindowStore
+
         self._lifecycle.register(
             "memory",
             build_memory_agent,
             runtime=self._runtime,
             llm=self._llm,
-            circuit_breaker=self._lifecycle.circuit,
+            circuit_breaker=self._lifecycle.get_breaker("memory"),
+            window_store=SessionWindowStore(self._lifecycle.sessions),
         )
         # Not registered with orchestrator — called via delegate_to_agent tool
         logger.info("[HARNESS] registered agent 'memory' (sub-agent)")
+
+        # ── Note Agent (sub-agent, composes Markdown notes via save_note) ─
+        from app.agent.note import build_note_agent
+
+        self._lifecycle.register(
+            "note",
+            build_note_agent,
+            runtime=self._runtime,
+            llm=self._llm,
+            circuit_breaker=self._lifecycle.get_breaker("note"),
+        )
+        logger.info("[HARNESS] registered agent 'note' (sub-agent)")
+
+        # ── Code Agent (sub-agent, writes code and runs it in Daytona) ─
+        from app.agent.code import build_code_agent
+
+        self._lifecycle.register(
+            "code",
+            build_code_agent,
+            runtime=self._runtime,
+            llm=self._llm,
+            circuit_breaker=self._lifecycle.get_breaker("code"),
+        )
+        logger.info("[HARNESS] registered agent 'code' (sub-agent)")
+
+        # ── Search Agent (sub-agent, searches docs via Context7) ────────
+        from app.agent.search import build_search_agent
+
+        self._lifecycle.register(
+            "search",
+            build_search_agent,
+            runtime=self._runtime,
+            llm=self._llm,
+            circuit_breaker=self._lifecycle.get_breaker("search"),
+        )
+        logger.info("[HARNESS] registered agent 'search' (sub-agent)")
 
         # ── Quiz Agent (lifecycle-managed, not a chat route target) ───
         self._lifecycle.register(
             "quiz",
             build_quiz_agent,
             llm=self._llm,
-            circuit_breaker=self._lifecycle.circuit,
+            circuit_breaker=self._lifecycle.get_breaker("quiz"),
         )
         logger.info("[HARNESS] registered agent 'quiz'")
 
@@ -404,7 +443,7 @@ class AgentHarness:
                 runtime=self._runtime,
                 llm=self._llm,
                 deps=deps,
-                circuit_breaker=self._lifecycle.circuit,
+                circuit_breaker=self._lifecycle.get_breaker("chat"),
                 skill_manager=self._skill_manager,
             )
             self._orchestrator.register(

@@ -62,7 +62,9 @@ class AgentLifecycleManager:
         self._sessions = SessionManager()
         self._pool = AgentPool()
         self._hooks = LifecycleHookRegistry()
-        self._circuit_breaker = CircuitBreaker(name="global")
+        # Per-agent-type circuit breakers - a failure in one agent (e.g. code)
+        # must not trip the breaker for others (e.g. chat). See get_breaker().
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
 
         # registered agent factories: {name: (factory, kwargs)}
         self._factories: dict[str, tuple[AgentFactory, dict]] = {}
@@ -84,7 +86,22 @@ class AgentLifecycleManager:
 
     @property
     def circuit(self) -> CircuitBreaker:
-        return self._circuit_breaker
+        """Deprecated: returns the chat agent's breaker for backward compat.
+
+        Use :meth:`get_breaker` for per-agent-type isolation so a failure in
+        one agent does not trip the breaker for others.
+        """
+        return self.get_breaker("chat")
+
+    def get_breaker(self, agent_name: str) -> CircuitBreaker:
+        """Get or create the per-agent-type circuit breaker.
+
+        Each agent type gets its own breaker, so a failing sub-agent (e.g.
+        ``code``) trips only its own breaker, leaving ``chat`` unaffected.
+        """
+        if agent_name not in self._circuit_breakers:
+            self._circuit_breakers[agent_name] = CircuitBreaker(name=agent_name)
+        return self._circuit_breakers[agent_name]
 
     @property
     def registered_agents(self) -> list[str]:
@@ -151,7 +168,7 @@ class AgentLifecycleManager:
             raise RuntimeError("AgentLifecycleManager is shut down")
 
         # 1. Circuit breaker guard
-        if self._circuit_breaker.is_tripped:
+        if self.get_breaker(agent_name).is_tripped:
             logger.warning(
                 "[LIFECYCLE] circuit breaker open, rejecting %s/%s",
                 agent_name,
@@ -188,7 +205,7 @@ class AgentLifecycleManager:
         if self._closed:
             raise RuntimeError("AgentLifecycleManager is shut down")
 
-        if self._circuit_breaker.is_tripped:
+        if self.get_breaker(agent_name).is_tripped:
             logger.warning(
                 "[LIFECYCLE] circuit breaker open, rejecting %s/%s",
                 agent_name,
@@ -253,14 +270,14 @@ class AgentLifecycleManager:
             self._sessions.touch(session_id)
 
             # Record success on circuit breaker
-            self._circuit_breaker.record_success()
+            self.get_breaker(agent_name).record_success()
 
             return result
 
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
-            self._circuit_breaker.record_failure()
+            self.get_breaker(agent_name).record_failure()
             raise
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
@@ -270,7 +287,7 @@ class AgentLifecycleManager:
             self._hooks.on_invoke_error(session_id, agent_name, error_msg)
 
             # Record failure on circuit breaker
-            self._circuit_breaker.record_failure()
+            self.get_breaker(agent_name).record_failure()
 
             logger.error(
                 "[LIFECYCLE] %s/%s failed after %.0fms: %s",
@@ -322,7 +339,8 @@ class AgentLifecycleManager:
         self._closed = True
         self._pool.release_all()
         self._sessions.destroy_all()
-        self._circuit_breaker.reset()
+        for _cb in self._circuit_breakers.values():
+            _cb.reset()
         logger.info("[LIFECYCLE] shutdown complete")
 
     async def health(self) -> dict[str, Any]:
@@ -331,9 +349,9 @@ class AgentLifecycleManager:
             "status": "shutdown" if self._closed else "running",
             "sessions_active": self._sessions.active_count,
             "pool_size": self._pool.size,
-            "circuit_breaker": {
-                "state": self._circuit_breaker.state.value,
-                "failures": self._circuit_breaker.failure_count,
+            "circuit_breakers": {
+                name: {"state": cb.state.value, "failures": cb.failure_count}
+                for name, cb in self._circuit_breakers.items()
             },
             "registered_agents": list(self._factories.keys()),
         }

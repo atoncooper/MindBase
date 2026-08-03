@@ -87,6 +87,7 @@ async def inject_context(
     has_context_tools = (
         "search_chat_history" in registered or "get_recent_context" in registered
     )
+    has_delegate = "delegate_to_agent" in registered
 
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -100,6 +101,7 @@ async def inject_context(
             cloud_has_data=cloud_has_data,
             conversation_context=conversation_context,
             has_context_tools=has_context_tools,
+            has_delegate=has_delegate,
             skills_section=skills_section,
         )
     )
@@ -140,6 +142,13 @@ async def call_agent(state: ChatAgentState, *, llm_with_tools: Any) -> dict[str,
     return {"messages": [response]}
 
 
+# Short-circuit delegate_to_agent after this many failures for the same
+# agent_name within a single chat turn. Prevents the LLM from retrying a
+# failing sub-agent until max_steps is exhausted.
+DELEGATE_TOOL_NAME = "delegate_to_agent"
+DELEGATE_FAILURE_THRESHOLD = 2
+
+
 async def runtime_dispatch(
     state: ChatAgentState, *, runtime: AgentRuntime
 ) -> dict[str, Any]:
@@ -171,6 +180,8 @@ async def runtime_dispatch(
     implicit_kwargs: dict[str, Any] = {}
     if state.session_id:
         implicit_kwargs["chat_session_id"] = state.session_id
+    if state.assistant_msg_id:
+        implicit_kwargs["assistant_msg_id"] = state.assistant_msg_id
     if state.bvids:
         implicit_kwargs["_bvids"] = state.bvids
     if state.media_ids:
@@ -181,23 +192,60 @@ async def runtime_dispatch(
         implicit_kwargs["_workspace_pages"] = state.workspace_pages
     if state.upload_uuids:
         implicit_kwargs["_upload_uuids"] = state.upload_uuids
+    if state.delegate_depth:
+        implicit_kwargs["delegate_depth"] = state.delegate_depth
 
     if implicit_kwargs:
         pending = [
             {**tc, "args": {**tc.get("args", {}), **implicit_kwargs}} for tc in pending
         ]
 
-    tool_messages = await runtime.execute(
-        pending,
-        config={
-            "run_name": "chat_agent_tool_dispatch",
-            "tags": ["chat_agent", "tools"],
-            "metadata": {
-                "tool_names": [tc["name"] for tc in pending],
-                "step_count": state.step_count,
+    # Short-circuit delegate_to_agent calls whose target agent has already
+    # failed DELEGATE_FAILURE_THRESHOLD times this turn. Prevents the LLM
+    # from burning the whole ReAct budget retrying one failing sub-agent.
+    short_circuit_msgs: list[ToolMessage] = []
+    pending_to_run: list[dict] = []
+    for tc in pending:
+        if tc["name"] == DELEGATE_TOOL_NAME:
+            agent_name = tc.get("args", {}).get("agent_name", "")
+            failures = state.delegate_failures.get(agent_name, 0)
+            if failures >= DELEGATE_FAILURE_THRESHOLD:
+                short_circuit_msgs.append(
+                    ToolMessage(
+                        content=(
+                            f"委托已短路:{agent_name} 在本次对话中已连续失败 {failures} 次,"
+                            f"不再委托。请基于已有信息直接回答,或改用其他工具/方式。"
+                        ),
+                        tool_call_id=tc["id"],
+                    )
+                )
+                continue
+        pending_to_run.append(tc)
+
+    tool_messages: list[ToolMessage] = []
+    if pending_to_run:
+        tool_messages = await runtime.execute(
+            pending_to_run,
+            config={
+                "run_name": "chat_agent_tool_dispatch",
+                "tags": ["chat_agent", "tools"],
+                "metadata": {
+                    "tool_names": [tc["name"] for tc in pending_to_run],
+                    "step_count": state.step_count,
+                },
             },
-        },
-    )
+        )
+
+    # Detect delegate failures via the structured `failed` flag (set by
+    # DelegateToAgentTool, forwarded through additional_kwargs) and bump
+    # the per-agent counter so the next delegate to that agent short-circuits.
+    new_failures: dict[str, int] = dict(state.delegate_failures)
+    for tc, tm in zip(pending_to_run, tool_messages):
+        if tc["name"] == DELEGATE_TOOL_NAME:
+            extras = getattr(tm, "additional_kwargs", None) or {}
+            if extras.get("failed"):
+                agent_name = tc.get("args", {}).get("agent_name", "")
+                new_failures[agent_name] = new_failures.get(agent_name, 0) + 1
 
     # Harvest structured sources from ToolMessage.additional_kwargs so the
     # final ``format_result`` step has retrieval provenance to expose. The
@@ -211,11 +259,13 @@ async def runtime_dispatch(
             new_sources.extend(s for s in srcs if isinstance(s, dict))
 
     update: dict[str, Any] = {
-        "messages": tool_messages,
+        "messages": [*tool_messages, *short_circuit_msgs],
         "step_count": state.step_count + 1,
     }
     if new_sources:
         update["search_results"] = [*state.search_results, *new_sources]
+    if new_failures != state.delegate_failures:
+        update["delegate_failures"] = new_failures
     return update
 
 

@@ -35,6 +35,12 @@ class ChatAgentState(BaseModel):
     # ── immutable inputs ──────────────────────────────────────────────
     query: str = Field(description="User question.")
     session_id: str = Field(default="", description="Chat session ID.")
+    assistant_msg_id: str = Field(
+        default="",
+        description="Assistant message id (chat_messages.msg_id) for this turn; "
+        "threaded through to sub-agents so their tool calls (e.g. code "
+        "execution) can be associated back to this message.",
+    )
     uid: int | None = Field(default=None, description="User ID.")
     folder_ids: list[int] = Field(
         default_factory=list, description="Selected favorite folder IDs."
@@ -89,6 +95,14 @@ class ChatAgentState(BaseModel):
     # ── loop protection ───────────────────────────────────────────────
     step_count: int = Field(default=0, description="ReAct loop iteration counter.")
     max_steps: int = Field(default=10, description="Hard limit on ReAct iterations.")
+    delegate_failures: dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-agent_name delegate failure count this turn (for short-circuit).",
+    )
+    delegate_depth: int = Field(
+        default=0,
+        description="Current delegation nesting depth (0 = top-level chat).",
+    )
 
 
 class ChatAgentResult(BaseModel):

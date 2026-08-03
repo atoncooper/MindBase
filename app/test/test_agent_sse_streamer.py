@@ -17,6 +17,8 @@ from typing import AsyncIterator
 
 import pytest
 
+from langchain_core.messages import AIMessage, ToolMessage
+
 from app.services.chat.agent_sse import (
     AgentSSEStreamer,
     _content_preview,
@@ -315,3 +317,140 @@ class TestStream:
         # All 10 unique sources are accumulated internally; only the first
         # 5 hit the wire so the UI doesn't drown.
         assert len(streamer.sources) == 10
+
+
+class TestCaptureRootOutputArtifacts:
+    """Recover sources + artifacts from the final state.
+
+    AgentRuntime.execute() calls tool.run() directly (no LangChain
+    callbacks), so on_tool_* events never fire and _handle_tool_end is dead.
+    The streamer must instead recover structured outputs from the final
+    state's ToolMessages - including artifacts nested in a delegated
+    sub-agent's sub_steps (e.g. code agent's run_code).
+    """
+
+    @pytest.mark.asyncio
+    async def test_artifact_recovered_from_delegated_sub_steps(self) -> None:
+        artifact = {
+            "name": "heart.png",
+            "url": "https://minio/heart.png",
+            "minio_key": "code-artifacts/1/abc/heart.png",
+            "content_type": "image/png",
+            "size": 29924,
+        }
+        tool_msg = ToolMessage(
+            content="done",
+            tool_call_id="tc1",
+            name="delegate_to_agent",
+            additional_kwargs={
+                "sub_steps": [
+                    {"action": "run_code", "artifacts": [artifact]},
+                ],
+            },
+        )
+        events = [
+            {"event": "on_chat_model_stream", "data": {"chunk": _Chunk("ok")}},
+            {
+                "event": "on_chain_end",
+                "name": "root",
+                "data": {"output": {"messages": [AIMessage(content="ok"), tool_msg]}},
+            },
+        ]
+        streamer = AgentSSEStreamer()
+        frames = [
+            f async for f in streamer.stream(_FakeAgent(events), {}, {"run_name": "root"})
+        ]
+
+        parsed = [_parse_sse_frame(f) for f in frames]
+        art_frames = [p for p in parsed if p["type"] == "artifact"]
+        assert len(art_frames) == 1
+        assert art_frames[0]["artifact"]["url"] == "https://minio/heart.png"
+        assert art_frames[0]["artifact"]["name"] == "heart.png"
+        # Artifacts flushed before sources/done.
+        kinds = [p["type"] for p in parsed]
+        assert kinds.index("artifact") < kinds.index("sources")
+        assert kinds.index("artifact") < kinds.index("done")
+
+    @pytest.mark.asyncio
+    async def test_no_artifact_no_artifact_frame(self) -> None:
+        # A normal turn with no code artifacts emits no artifact frame.
+        events = [
+            {"event": "on_chat_model_stream", "data": {"chunk": _Chunk("hi")}},
+            {
+                "event": "on_chain_end",
+                "name": "root",
+                "data": {"output": {"messages": [AIMessage(content="hi")]}},
+            },
+        ]
+        frames = [
+            f async for f in AgentSSEStreamer().stream(
+                _FakeAgent(events), {}, {"run_name": "root"}
+            )
+        ]
+        kinds = [_parse_sse_frame(f)["type"] for f in frames]
+        assert "artifact" not in kinds
+
+    @pytest.mark.asyncio
+    async def test_failed_delegate_with_empty_sub_steps_does_not_crash(self) -> None:
+        # Regression: a delegate_to_agent ToolMessage with empty sub_steps
+        # (e.g. a failed delegation) previously crashed _parse_tool_output
+        # because the fallthrough passed the raw ToolMessage to
+        # _content_preview -> json.dumps(ToolMessage) -> TypeError, which
+        # aborted the whole SSE stream.
+        failed_tm = ToolMessage(
+            content="委托失败: ",
+            tool_call_id="c1",
+            name="delegate_to_agent",
+            additional_kwargs={"sub_steps": [], "failed": True},
+        )
+        # Must not raise.
+        srcs, _preview, arts = _parse_tool_output(failed_tm)
+        assert srcs == []
+        assert arts == []
+
+    @pytest.mark.asyncio
+    async def test_mixed_failed_and_successful_delegate_recovers_artifact(self) -> None:
+        # A failed delegate (empty sub_steps) alongside a successful one must
+        # not abort artifact recovery from the successful one, and the stream
+        # must complete normally (done frame, no error frame).
+        artifact = {
+            "name": "forest.png",
+            "url": "https://minio/forest.png",
+            "minio_key": "k/forest.png",
+            "content_type": "image/png",
+            "size": 59379,
+        }
+        failed_tm = ToolMessage(
+            content="委托失败: ",
+            tool_call_id="c1",
+            name="delegate_to_agent",
+            additional_kwargs={"sub_steps": [], "failed": True},
+        )
+        ok_tm = ToolMessage(
+            content="done",
+            tool_call_id="c2",
+            name="delegate_to_agent",
+            additional_kwargs={
+                "sub_steps": [{"action": "run_code", "artifacts": [artifact]}],
+            },
+        )
+        events = [
+            {"event": "on_chat_model_stream", "data": {"chunk": _Chunk("ok")}},
+            {
+                "event": "on_chain_end",
+                "name": "root",
+                "data": {
+                    "output": {"messages": [AIMessage(content="ok"), failed_tm, ok_tm]}
+                },
+            },
+        ]
+        streamer = AgentSSEStreamer()
+        frames = [
+            f async for f in streamer.stream(_FakeAgent(events), {}, {"run_name": "root"})
+        ]
+        parsed = [_parse_sse_frame(f) for f in frames]
+        art = [p for p in parsed if p["type"] == "artifact"]
+        assert len(art) == 1
+        assert art[0]["artifact"]["name"] == "forest.png"
+        assert any(p["type"] == "done" for p in parsed)
+        assert not any(p["type"] == "error" for p in parsed)

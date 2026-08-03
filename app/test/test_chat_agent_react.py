@@ -44,7 +44,7 @@ class MockDeps:
     def has_cloud_backend(self):
         return self._cloud
 
-    async def get_conversation_context(self, session_id):
+    async def get_conversation_context(self, session_id, uid):
         return ""
 
     async def get_video_context(self, media_ids, *, include_content=False, limit=None):
