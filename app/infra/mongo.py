@@ -86,6 +86,12 @@ INDEXES: dict[str, list[IndexModel]] = {
     "note_revisions": [
         IndexModel([("note_uuid", ASCENDING), ("created_at", DESCENDING)]),
     ],
+    "code_executions": [
+        IndexModel([("exec_id", ASCENDING)], unique=True),
+        IndexModel([("assistant_msg_id", ASCENDING), ("created_at", ASCENDING)]),
+        IndexModel([("chat_session_id", ASCENDING), ("created_at", ASCENDING)]),
+        IndexModel([("uid", ASCENDING), ("created_at", DESCENDING)]),
+    ],
 }
 
 

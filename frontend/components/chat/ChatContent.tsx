@@ -90,6 +90,7 @@ export default function ChatContent({
                   role={message.role}
                   content={message.content}
                   sources={message.sources}
+                  artifacts={message.artifacts}
                   reasoningSteps={message.reasoningSteps}
                   agent={message.agent}
                   status={message.status}

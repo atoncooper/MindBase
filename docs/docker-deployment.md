@@ -45,7 +45,7 @@ docker-compose.yml
 - **前端 UI**：`http://localhost:3000`
 
 **数据持久化通过 Docker Volumes：**
-- `backend_data`：SQLite 数据库 + Milvus 向量数据
+- `backend_data`：应用数据（默认 MySQL 数据目录）+ Milvus 向量数据
 - `backend_logs`：应用日志
 
 ---
@@ -201,7 +201,7 @@ Docker Compose 已配置了后端的 `healthcheck`，前端会在后端 healthy 
 2. 点击"登录"按钮能获取 B 站二维码
 3. 登录后能看到收藏夹列表
 4. 选中收藏夹后能进行入库操作
-5. 入库完成后能在右侧聊天面板进行问答
+5. 入库完成后点击 Dock 上的聊天图标，在弹出的聊天面板中进行问答
 
 ### 3. API 文档验证
 

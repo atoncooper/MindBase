@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator, Optional
 
+from langchain_core.messages import ToolMessage
 from loguru import logger
 
 from app.services.chat.sse import sse_event
@@ -44,22 +45,58 @@ def _primary_query(args: dict[str, Any] | None) -> str:
     return ""
 
 
-def _parse_tool_output(output: Any) -> tuple[list[dict], str]:
-    """Return ``(sources, preview)`` extracted from a tool's output payload."""
-    payload = output
-    if isinstance(payload, str):
+def _parse_tool_output(output: Any) -> tuple[list[dict], str, list[dict]]:
+    """Return ``(sources, preview, artifacts)`` from a tool's output payload.
+
+    ``artifacts`` are binary outputs (e.g. images) produced by sub-agents
+    such as the code agent; they are pulled out of ``sub_steps`` so the
+    streamer can emit dedicated ``type:artifact`` frames for the frontend
+    to render inline.
+    """
+    # Tools return dicts; the runtime splits them into ToolMessage.content
+    # (LLM-facing string) and ToolMessage.additional_kwargs (structured
+    # extras: sub_steps / sources / artifacts). Re-merge so the parsing
+    # below works uniformly for ToolMessage and raw dict/str payloads.
+    payload: Any = output
+    if isinstance(output, ToolMessage):
+        extras = getattr(output, "additional_kwargs", None) or {}
+        payload = {"content": getattr(output, "content", ""), **extras}
+    elif isinstance(payload, str):
         try:
             payload = json.loads(payload)
         except (TypeError, ValueError):
-            return [], _content_preview(output)
+            return [], _content_preview(output), []
 
     sources: list[dict] = []
+    artifacts: list[dict] = []
     if isinstance(payload, dict):
         raw_sources = payload.get("sources") or payload.get("results") or []
         if isinstance(raw_sources, list):
             sources = [s for s in raw_sources if isinstance(s, dict)]
 
-    return sources, _content_preview(output)
+        # Surface sub-agent internal steps (e.g. code agent's run_code).
+        sub_steps = payload.get("sub_steps")
+        if isinstance(sub_steps, list) and sub_steps:
+            lines = []
+            for ss in sub_steps:
+                act = ss.get("action", "unknown")
+                preview = ss.get("content_preview", "")
+                lines.append(f"  {act}: {preview}")
+                # Collect artifacts produced by this sub-step (e.g. images
+                # from run_code) so the frontend can render them inline.
+                step_artifacts = ss.get("artifacts")
+                if isinstance(step_artifacts, list):
+                    artifacts.extend(a for a in step_artifacts if isinstance(a, dict))
+            return sources, "子agent步骤:\n" + "\n".join(lines), artifacts
+
+        # Top-level artifacts (a tool returning artifacts directly).
+        raw_artifacts = payload.get("artifacts")
+        if isinstance(raw_artifacts, list):
+            artifacts = [a for a in raw_artifacts if isinstance(a, dict)]
+
+    # Use the normalized payload (dict/str), not the raw ``output`` which may
+    # be a ToolMessage that isn't JSON-serializable (crashes _content_preview).
+    return sources, _content_preview(payload), artifacts
 
 
 class AgentSSEStreamer:
@@ -75,6 +112,9 @@ class AgentSSEStreamer:
     def __init__(self) -> None:
         self.full_content: str = ""
         self.sources: list[dict] = []
+        # Binary artifacts (e.g. images) emitted by sub-agents; flushed as
+        # ``type:artifact`` frames near the end of the stream.
+        self.artifacts: list[dict] = []
         # Token usage accumulated from the final agent state.
         self.total_tokens: int = 0
         self.prompt_tokens: int = 0
@@ -126,6 +166,11 @@ class AgentSSEStreamer:
                 len(self.full_content),
                 event_counts.get("on_chat_model_stream", 0),
             )
+            # Flush artifacts (e.g. images produced by the code agent) before
+            # sources/done so the frontend can render them inline with the
+            # final answer.
+            for art in self.artifacts:
+                yield sse_event({"type": "artifact", "artifact": art})
             yield sse_event({"type": "sources", "sources": self.sources[:5]})
             yield sse_event({"type": "done"})
         except Exception as exc:
@@ -152,12 +197,20 @@ class AgentSSEStreamer:
         return None
 
     def _capture_root_output(self, event: dict[str, Any]) -> None:
-        """Extract token usage from the root graph's final state.
+        """Extract token usage + sources + artifacts from the root graph's final state.
 
         The root ``on_chain_end`` event carries ``data.output`` which is the
         full agent state dict, including the ``messages`` list.  Each AI
         message in this list has ``response_metadata.token_usage`` (from
         non-streaming ``ainvoke`` inside ReAct).
+
+        Sources and artifacts are recovered here from the final ToolMessages
+        because ``AgentRuntime.execute()`` calls ``tool.run()`` directly
+        (not via LangChain's callback-aware tool invocation), so ``on_tool_*``
+        events are never emitted and ``_handle_tool_end`` never fires.
+        Iterating the final ToolMessages - incl. delegated sub-agent
+        ``sub_steps`` (parsed by ``_parse_tool_output``) - is the only
+        reliable way to surface them to the SSE stream.
         """
         output = event.get("data", {}).get("output")
         if not isinstance(output, dict):
@@ -180,6 +233,41 @@ class AgentSSEStreamer:
                 "[SSE_STREAMER] root chain end: tokens={} (prompt={}, completion={}, calls={})",
                 self.total_tokens, self.prompt_tokens,
                 self.completion_tokens, self.llm_calls,
+            )
+
+        # Recover sources + artifacts from the final ToolMessages. This is
+        # the ONLY reliable extraction path: _handle_tool_end never fires
+        # because AgentRuntime executes tools via direct tool.run() (no
+        # on_tool_* events). _parse_tool_output handles both direct tools
+        # (top-level sources/artifacts) and delegated sub-agents (nested in
+        # sub_steps, e.g. code agent's run_code artifacts).
+        for msg in messages:
+            if not isinstance(msg, ToolMessage):
+                continue
+            try:
+                srcs, _, arts = _parse_tool_output(msg)
+            except Exception as exc:
+                # One unparseable ToolMessage must not abort the stream
+                # (and lose already-streamed tokens). Skip it, keep going.
+                logger.warning(
+                    "[SSE_STREAMER] skip unparseable ToolMessage: %s", exc
+                )
+                continue
+            for src in srcs:
+                if src not in self.sources:
+                    self.sources.append(src)
+            for art in arts:
+                key = art.get("minio_key") or art.get("url") or art.get("name")
+                if key and any(
+                    (a.get("minio_key") or a.get("url") or a.get("name")) == key
+                    for a in self.artifacts
+                ):
+                    continue
+                self.artifacts.append(art)
+        if self.artifacts:
+            logger.info(
+                "[SSE_STREAMER] recovered {} artifact(s) from final state",
+                len(self.artifacts),
             )
 
     # ── handlers ─────────────────────────────────────────────────────
@@ -220,10 +308,20 @@ class AgentSSEStreamer:
         run_id = event.get("run_id") or ""
         tracked = self._tool_runs.pop(run_id, None)
         output = event.get("data", {}).get("output")
-        sources, preview = _parse_tool_output(output)
+        sources, preview, artifacts = _parse_tool_output(output)
         for src in sources:
             if src not in self.sources:
                 self.sources.append(src)
+        for art in artifacts:
+            # Dedup by minio_key/url/name so a retried run_code doesn't
+            # double-render the same artifact.
+            key = art.get("minio_key") or art.get("url") or art.get("name")
+            if key and any(
+                (a.get("minio_key") or a.get("url") or a.get("name")) == key
+                for a in self.artifacts
+            ):
+                continue
+            self.artifacts.append(art)
 
         step_no = tracked["step"] if tracked else self._step_no
         action = tracked["name"] if tracked else event.get("name", "tool_call")

@@ -150,7 +150,7 @@ def _make_harness(deps=None, llm=None):
         build_memory_agent,
         runtime=harness._runtime,
         llm=llm,
-        circuit_breaker=harness._lifecycle.circuit,
+        circuit_breaker=harness._lifecycle.get_breaker("memory"),
     )
     harness._lifecycle.register(
         "chat",
@@ -158,13 +158,13 @@ def _make_harness(deps=None, llm=None):
         runtime=harness._runtime,
         llm=llm,
         deps=_deps,
-        circuit_breaker=harness._lifecycle.circuit,
+        circuit_breaker=harness._lifecycle.get_breaker("chat"),
     )
     harness._lifecycle.register(
         "quiz",
         build_quiz_agent,
         llm=llm,
-        circuit_breaker=harness._lifecycle.circuit,
+        circuit_breaker=harness._lifecycle.get_breaker("quiz"),
     )
 
     harness._started = True
@@ -344,7 +344,7 @@ class TestHarnessErrorHandling:
     @pytest.mark.asyncio
     async def test_circuit_breaker_blocks_invocation(self):
         harness = _make_harness()
-        cb = harness._lifecycle.circuit
+        cb = harness._lifecycle.get_breaker("chat")
         # Trip the circuit breaker
         for _ in range(cb._failure_threshold):
             cb.record_failure()

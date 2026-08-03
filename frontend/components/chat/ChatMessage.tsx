@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Sparkles,
 } from "lucide-react";
+import type { ChatArtifact } from "@/lib/chat-stream";
 
 interface Source {
   title: string;
@@ -35,6 +36,7 @@ interface ChatMessageProps {
   role: "user" | "assistant";
   content: string;
   sources?: Source[] | null;
+  artifacts?: ChatArtifact[] | null;
   reasoningSteps?: ReasoningStep[] | null;
   agent?: string;
   status?: "pending" | "completed" | "failed";
@@ -57,6 +59,7 @@ function ChatMessage({
   role,
   content,
   sources,
+  artifacts,
   reasoningSteps,
   agent,
   status = "completed",
@@ -64,6 +67,7 @@ function ChatMessage({
 }: ChatMessageProps) {
   // Normalize null/undefined → [] so .length and .map are always safe.
   const safeSources = Array.isArray(sources) ? sources : [];
+  const safeArtifacts = Array.isArray(artifacts) ? artifacts : [];
   const safeReasoningSteps = Array.isArray(reasoningSteps) ? reasoningSteps : [];
 
   const [showReasoning, setShowReasoning] = useState(false);
@@ -260,6 +264,48 @@ function ChatMessage({
               {safeSources.length > 6 && (
                 <div className="msg-source-more">+{safeSources.length - 6} 个来源</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Artifacts - images/files produced by sub-agents (e.g. code agent) */}
+        {safeArtifacts.length > 0 && (
+          <div className="msg-artifacts">
+            <div className="msg-sources-label">生成产物</div>
+            <div className="msg-artifacts-grid">
+              {safeArtifacts.map((art, i) => {
+                const isImage = art.content_type?.startsWith("image/");
+                return (
+                  <div key={i} className="msg-artifact-card">
+                    {isImage && art.url ? (
+                      <a
+                        href={art.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={art.name}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={art.url}
+                          alt={art.name}
+                          className="msg-artifact-image"
+                          loading="lazy"
+                        />
+                      </a>
+                    ) : (
+                      <a
+                        href={art.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="msg-artifact-file"
+                      >
+                        <span className="msg-artifact-name">{art.name}</span>
+                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                      </a>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

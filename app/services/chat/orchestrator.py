@@ -173,6 +173,7 @@ async def _run_agent_turn(
         agent_harness=agent_harness,
         session_id=ctx.chat_session_id,
         query=ctx.user_message,
+        assistant_msg_id=ctx.assistant_msg_id,
         callbacks=[usage_callback] if usage_callback else None,
     )
     latency_ms = int((time.time() - start_time) * 1000)
@@ -331,6 +332,7 @@ async def ask_stream(
             agent_harness=agent_harness,
             session_id=ctx.chat_session_id,
             query=ctx.user_message,
+            assistant_msg_id=ctx.assistant_msg_id,
         )
     except HTTPException:
         await cancel_turn(db, assistant_msg_id=ctx.assistant_msg_id)
@@ -405,6 +407,7 @@ async def ask_agent_stream(
             agent_harness=agent_harness,
             session_id=ctx.chat_session_id,
             query=ctx.user_message,
+            assistant_msg_id=ctx.assistant_msg_id,
         )
     except HTTPException:
         await cancel_turn(db, assistant_msg_id=ctx.assistant_msg_id)

@@ -1,6 +1,6 @@
 // Shared chat types used by ChatPanel, ChatDockPanel, and ChatContent.
 
-import type { ChatSource } from "@/lib/chat-stream";
+import type { ChatArtifact, ChatSource } from "@/lib/chat-stream";
 
 export interface ReasoningStep {
   step: number;
@@ -19,6 +19,9 @@ export interface ChatMessageData {
   role: "user" | "assistant";
   content: string;
   sources?: ChatSource[];
+  // Binary artifacts (e.g. images) produced by sub-agents like the code
+  // agent; rendered inline below the text answer.
+  artifacts?: ChatArtifact[];
   reasoningSteps?: ReasoningStep[];
   // Agent name routed to by AgentOrchestrator (from the `route` SSE frame).
   agent?: string;

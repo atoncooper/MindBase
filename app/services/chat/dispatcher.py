@@ -124,6 +124,7 @@ async def agent_run(
     agent_harness: Any,
     session_id: str,
     query: str,
+    assistant_msg_id: str = "",
     callbacks: Optional[list[Any]] = None,
 ) -> dict[str, Any]:
     """Dispatch a non-streaming agent run.
@@ -145,6 +146,7 @@ async def agent_run(
         workspace_pages=ctx["workspace_pages"],
         folder_ids=request.folder_ids or [],
         upload_uuids=ctx["upload_uuids"],
+        assistant_msg_id=assistant_msg_id,
     )
 
     return await agent_harness.dispatch(
@@ -163,6 +165,7 @@ async def agent_stream_setup(
     agent_harness: Any,
     session_id: str,
     query: str,
+    assistant_msg_id: str = "",
 ) -> tuple[str, Any, dict[str, Any], dict[str, Any]]:
     """Run the routing decision and prepare a streaming graph invocation.
 
@@ -186,6 +189,7 @@ async def agent_stream_setup(
     input_state: dict[str, Any] = {
         "query": query,
         "session_id": session_id,
+        "assistant_msg_id": assistant_msg_id,
         "uid": uid,
         "folder_ids": request.folder_ids or [],
         "bvids": ctx["bvids"],

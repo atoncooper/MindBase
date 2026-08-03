@@ -8,6 +8,16 @@ export interface ChatSource {
   bvid?: string;
 }
 
+// One binary artifact (e.g. image) produced by a sub-agent such as the
+// code agent. Mirrors the backend `artifact` SSE frame payload (agent_sse.py).
+export interface ChatArtifact {
+  name: string;
+  url?: string;
+  minio_key?: string;
+  content_type?: string;
+  size?: number;
+}
+
 // One retrieval/tool step emitted by the agent stream.
 // Mirrors the backend `step` SSE frame payload (agent_sse.py).
 export interface StreamStep {
@@ -27,6 +37,7 @@ export interface StreamCallbacks {
   onStep?: (step: StreamStep) => void;
   onRoute?: (agent: string) => void;
   onReset?: () => void;
+  onArtifact?: (artifact: ChatArtifact) => void;
 }
 
 export interface StreamRequestParams {
@@ -81,6 +92,8 @@ export async function streamChat(
           } else if (data.type === "reset") {
             accumulated = "";
             callbacks.onReset?.();
+          } else if (data.type === "artifact") {
+            callbacks.onArtifact?.(data.artifact as ChatArtifact);
           } else if (data.type === "error") {
             callbacks.onError?.(data.message || data.error || "请求失败");
           } else if (data.type === "done") {

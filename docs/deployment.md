@@ -22,6 +22,12 @@ This guide covers deploying MindBase in production — with HTTPS, monitoring, a
     ┌────────┐   ┌─────────┐   ┌──────────┐  ┌─────────┐
     │ MySQL  │   │  Redis  │   │  Milvus  │  │ MongoDB │
     └────────┘   └─────────┘   └──────────┘  └─────────┘
+         │              │               │          │
+         └──────────────┴───────┬───────┴──────────┘
+                                ▼
+                         ┌──────────────┐
+                         │    MinIO     │  ← wallpaper / cloud drive storage
+                         └──────────────┘
 ```
 
 ---
@@ -116,6 +122,14 @@ docker compose --profile storage up -d
 
 This starts: backend, frontend, MySQL, Redis, MongoDB, Milvus (+ etcd + MinIO).
 
+### Daytona code sandbox (optional, for code agent)
+
+```bash
+docker compose -f docker-compose.daytona.yml up -d
+```
+
+Configure in backend `.env`: `DAYTONA__ENABLED=true`, `DAYTONA__API_URL=http://daytona:3000`, `DAYTONA__API_KEY=<key>`.
+
 ### 5. Verify
 
 ```bash
@@ -139,6 +153,8 @@ your-domain.com {
     reverse_proxy /vec/* localhost:8000
     reverse_proxy /asr/* localhost:8000
     reverse_proxy /auth/* localhost:8000
+    reverse_proxy /wallpaper/* localhost:8000
+    reverse_proxy /preferences/* localhost:8000
     reverse_proxy localhost:3000
 }
 ```

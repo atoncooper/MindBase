@@ -39,6 +39,8 @@ from app.routers.billing import router as billing_router
 from app.routers.quiz import router as quiz_router
 from app.routers.notes import router as notes_router
 from app.routers.tasks_ws import router as tasks_ws_router
+from app.routers.code_executions import router as code_executions_router
+from app.routers.admin_code_executions import router as admin_code_executions_router
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +453,8 @@ app.include_router(billing_router)
 app.include_router(quiz_router)
 app.include_router(notes_router)
 app.include_router(tasks_ws_router)
+app.include_router(code_executions_router)
+app.include_router(admin_code_executions_router)
 
 # Preferences - extensible KV (wallpaper/theme/language)
 from app.routers.preferences import router as preferences_router  # noqa: E402

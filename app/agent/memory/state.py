@@ -75,6 +75,18 @@ class AgentState(BaseModel):
         default="",
         description="Which agent requested this search (for context).",
     )
+    # Caller's session_id, used to address the per-session window store.
+    # Named ``caller_session_id`` (not ``session_id``) to avoid colliding with
+    # ``invoke_reentrant``'s positional ``session_id`` argument when passed
+    # via **input.
+    caller_session_id: str = Field(
+        default="",
+        description="Calling agent's session_id for window-store lookup.",
+    )
+    delegate_depth: int = Field(
+        default=0,
+        description="Delegation nesting depth (set by caller via delegate_to_agent).",
+    )
 
     # ── messages (LangGraph reducer for tool-call accumulation) ───────
     messages: Annotated[list, add_messages] = Field(

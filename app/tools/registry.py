@@ -64,7 +64,7 @@ class ToolRegistry:
 
     # ── bridge ────────────────────────────────────────────────────────
 
-    def for_agent(self) -> list[StructuredTool]:
+    def for_agent(self, names: list[str] | None = None) -> list[StructuredTool]:
         """Return LangChain-compatible tool list for ``llm.bind_tools()``.
 
         Each tool is wrapped in a ``StructuredTool`` so the LLM can see its
@@ -73,6 +73,8 @@ class ToolRegistry:
         """
         result: list[StructuredTool] = []
         for name, tool in self._tools.items():
+            if names is not None and name not in names:
+                continue
             try:
                 params = tool.parameters()
                 args_schema = _build_args_schema(name, params)

@@ -94,11 +94,13 @@ class AgentRuntime:
 
     # ── bridge for agent graph ────────────────────────────────────────
 
-    def list_tool_defs(self) -> list[StructuredTool]:
+    def list_tool_defs(self, names: list[str] | None = None) -> list[StructuredTool]:
         """Return LangChain-compatible tool definitions for ``bind_tools()``.
 
         Cache and reuse — the tool definitions don't change at runtime.
         """
+        if names is not None:
+            return self._registry.for_agent(names=names)
         if self._tool_defs_cache is None:
             self._tool_defs_cache = self._registry.for_agent()
         return self._tool_defs_cache
