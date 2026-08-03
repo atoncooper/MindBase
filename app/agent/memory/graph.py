@@ -48,6 +48,7 @@ from app.agent.memory.state import (
     make_search_entry,
     push_search_window,
 )
+from app.agent.memory.window_store import MemoryWindowStore
 from app.harness.runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
@@ -67,9 +68,23 @@ def _has_tool_calls(msg: BaseMessage) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def inject_window(state: AgentState) -> dict[str, Any]:
-    """1/5. Build system prompt from 30-item search window + incoming query."""
-    search_window_text = format_search_window(state.search_window)
+async def inject_window(
+    state: AgentState,
+    *,
+    window_store: MemoryWindowStore | None = None,
+) -> dict[str, Any]:
+    """1/5. Build system prompt from 30-item search window + incoming query.
+
+    Loads the window from *window_store* (per-session, cross-invocation) so
+    that previous delegate calls' results are remembered.  Falls back to
+    ``state.search_window`` when no store or session_id is available.
+    """
+    if window_store is not None and state.caller_session_id:
+        loaded = await window_store.load(state.caller_session_id)
+    else:
+        loaded = state.search_window
+
+    search_window_text = format_search_window(loaded)
 
     system = SystemMessage(
         content=SYSTEM_PROMPT.format(
@@ -83,11 +98,12 @@ async def inject_window(state: AgentState) -> dict[str, Any]:
     logger.info(
         "[MEM_AGENT] inject_window query=%s window_size=%s target=%s",
         state.query[:80],
-        len(state.search_window),
+        len(loaded),
         state.target_agent,
     )
 
-    return {"messages": [system, user]}
+    # Sync the loaded window into state so update_window sees the current set.
+    return {"messages": [system, user], "search_window": loaded}
 
 
 async def call_agent(state: AgentState, llm_with_tools: Any) -> dict[str, Any]:
@@ -133,6 +149,14 @@ async def runtime_dispatch(state: AgentState, runtime: AgentRuntime) -> dict[str
     if not pending:
         return {}
 
+    # Inject delegate_depth so delegate_to_agent can track nesting depth
+    # (memory may itself delegate, e.g. to memory again).
+    if state.delegate_depth:
+        pending = [
+            {**tc, "args": {**tc.get("args", {}), "delegate_depth": state.delegate_depth}}
+            for tc in pending
+        ]
+
     tool_messages = await runtime.execute(
         pending,
         config={
@@ -147,8 +171,16 @@ async def runtime_dispatch(state: AgentState, runtime: AgentRuntime) -> dict[str
     return {"messages": tool_messages}
 
 
-async def update_window(state: AgentState) -> dict[str, Any]:
-    """5/5. Record the query + result into the 30-item sliding window."""
+async def update_window(
+    state: AgentState,
+    *,
+    window_store: MemoryWindowStore | None = None,
+) -> dict[str, Any]:
+    """5/5. Record the query + result into the 30-item sliding window.
+
+    Persists the new entry to *window_store* (per-session) so future
+    delegate calls within the same chat session can short-circuit on it.
+    """
     tools_used: list[str] = []
     for msg in state.messages:
         if isinstance(msg, BaseMessage) and hasattr(msg, "tool_calls"):
@@ -161,7 +193,11 @@ async def update_window(state: AgentState) -> dict[str, Any]:
         result=state.result or state.error or "",
         tools_used=tools_used,
     )
-    updated = push_search_window(state.search_window, entry)
+
+    if window_store is not None and state.caller_session_id:
+        updated = await window_store.append(state.caller_session_id, entry)
+    else:
+        updated = push_search_window(state.search_window, entry)
 
     logger.debug(
         "[MEM_AGENT] update_window query=%s window_size=%s",
@@ -241,6 +277,7 @@ def build_memory_agent(
     llm: Any,
     *,
     circuit_breaker: CircuitBreaker | None = None,
+    window_store: MemoryWindowStore | None = None,
 ) -> object:
     """Build a 5-node memory agent graph — tools executed by *runtime*.
 
@@ -278,7 +315,7 @@ def build_memory_agent(
     async def _inject(s):
         if circuit_breaker and circuit_breaker.is_tripped:
             return {"result": FALLBACK_RESULT, "error": "circuit breaker open"}
-        return await _inject_err(s)
+        return await _inject_err(s, window_store=window_store)
 
     async def _agent(s):
         return await _agent_err(s, llm_with_tools=llm_with_tools)
@@ -290,7 +327,7 @@ def build_memory_agent(
         return await error_node(s)
 
     async def _update(s):
-        return await _update_err(s)
+        return await _update_err(s, window_store=window_store)
 
     graph = StateGraph(AgentState)
 
