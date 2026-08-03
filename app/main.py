@@ -418,13 +418,20 @@ async def request_context_middleware(request: Request, call_next):
             )
 
 
-# CORS 中间件
+# CORS 中间件 - 显式白名单，禁止 allow_origins=["*"] + allow_credentials=True
+# (Starlette 会回显 Origin，导致任意站点可携凭证跨域请求)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该限制
+    allow_origins=settings.cors_allow_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "If-Match",
+        "X-Request-Id",
+    ],
+    expose_headers=["X-Total-Count"],
 )
 
 # Plan 0023: Rate limiting middleware (second line of defense after nginx).
