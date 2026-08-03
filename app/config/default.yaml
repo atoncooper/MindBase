@@ -223,6 +223,16 @@ session:
 # becomes undecryptable.
 # Generate: python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
 security:
+  # CORS allowlist - explicit origins permitted to call the API cross-origin.
+  # Override via env (comma-separated):
+  #   SECURITY__CORS__ALLOW_ORIGINS=https://app.example.com,https://admin.example.com
+  # NEVER use ["*"] together with allow_credentials=True: Starlette echoes the
+  # request Origin header, allowing any site to make credentialed cross-origin
+  # requests (CSRF / credential theft surface).
+  cors:
+    allow_origins:
+      - http://localhost:3000   # user frontend (Next.js dev server)
+
   # Plan 0028: per-endpoint rate limits + login cooldown.
   # All windows are seconds. Override via env:
   #   SECURITY__RATE_LIMIT__LOGIN__IP_MAX=20

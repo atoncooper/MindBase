@@ -64,6 +64,26 @@ class _Settings:
     def app_port(self) -> int:
         return int(_get("server", "port", default=8000))
 
+    # ── Security ────────────────────────────────────────────────
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        """CORS allowlist.
+
+        YAML stores a list; env overrides (``SECURITY__CORS__ALLOW_ORIGINS``)
+        arrive as a comma-separated string, so normalise both to a list.
+        """
+        origins = _get("security", "cors", "allow_origins",
+                       default=["http://localhost:3000"])
+        if isinstance(origins, str):
+            origins = [o.strip() for o in origins.split(",") if o.strip()]
+        if not origins:
+            # Empty env override or empty YAML list -> dev default.
+            # Production is same-origin behind nginx so CORS never fires;
+            # this only affects local dev (frontend :3000 -> backend :8000).
+            origins = ["http://localhost:3000"]
+        return list(origins)
+
     # ── RDBMS ────────────────────────────────────────────────────
 
     @property
