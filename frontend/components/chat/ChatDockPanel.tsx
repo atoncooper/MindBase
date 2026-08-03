@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import ChatContent from "./ChatContent";
 import { chatApi, type ChatMessage as ApiChatMessage } from "@/lib/api";
 import { useDockContext } from "@/lib/dock-context";
-import { streamChat, type ChatSource } from "@/lib/chat-stream";
+import { streamChat, type ChatSource, type ChatArtifact } from "@/lib/chat-stream";
 import type { ChatMessageData } from "./types";
 
 interface ChatDockPanelProps {
@@ -138,6 +138,20 @@ export default function ChatDockPanel({ isOpen, onClose }: ChatDockPanelProps) {
             prev.map((m) =>
               m.id === assistantMsgId ? { ...m, sources } : m
             )
+          );
+        },
+        onArtifact: (artifact: ChatArtifact) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              const existing = m.artifacts ?? [];
+              // Dedup by url/name so a retried run_code doesn't double-render.
+              const key = artifact.url || artifact.name;
+              if (key && existing.some((a) => (a.url || a.name) === key)) {
+                return m;
+              }
+              return { ...m, artifacts: [...existing, artifact] };
+            })
           );
         },
         onRoute: (agent) => {

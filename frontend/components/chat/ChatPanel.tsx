@@ -207,6 +207,21 @@ export default function ChatPanel() {
             ),
           }));
         },
+        onArtifact: (artifact) => {
+          updateActiveSession((s) => ({
+            ...s,
+            messages: s.messages.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              const existing = m.artifacts ?? [];
+              // Dedup by url/name so a retried run_code doesn't double-render.
+              const key = artifact.url || artifact.name;
+              if (key && existing.some((a) => (a.url || a.name) === key)) {
+                return m;
+              }
+              return { ...m, artifacts: [...existing, artifact] };
+            }),
+          }));
+        },
         onRoute: (agent) => {
           updateActiveSession((s) => ({
             ...s,
