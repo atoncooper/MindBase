@@ -226,6 +226,15 @@ class MinioSection(_Section):
     public_endpoint: str = ""  # e.g. https://example.com/minio-proxy
 
 
+class DaytonaSection(_Section):
+    enabled: bool = False
+    api_url: str = "https://app.daytona.io/api"
+    api_key: SecretStr = SecretStr("")
+    org_id: str = ""
+    network_block_all: bool = True  # sandbox default: block all network (prevent data exfiltration)
+    domain_allow_list: str = ""  # comma-separated allowed domains, e.g. "*.pypi.org,github.com"
+
+
 class SkillStoreSection(_Section):
     enabled: bool = False
     topic: str = "mindbase-skill"  # GitHub topic identifying skill repos
@@ -380,6 +389,7 @@ class AppConfig(BaseSettings):
     mongo: MongoSection = Field(default_factory=MongoSection)
     redis: RedisSection = Field(default_factory=RedisSection)
     minio: MinioSection = Field(default_factory=MinioSection)
+    daytona: DaytonaSection = Field(default_factory=DaytonaSection)
     skill_store: SkillStoreSection = Field(default_factory=SkillStoreSection)
     mq: MqSection = Field(default_factory=MqSection)
     llm: LlmSection = Field(default_factory=LlmSection)

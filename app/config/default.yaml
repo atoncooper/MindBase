@@ -103,6 +103,16 @@ minio:
   # access_key / secret_key via env: MINIO__ACCESS_KEY, MINIO__SECRET_KEY
 
 
+# ---- Daytona (code sandbox for code agent) ------------------------
+daytona:
+  enabled: false
+  api_url: https://app.daytona.io/api
+  org_id: ""
+  network_block_all: true        # 沙箱默认禁网（防数据外泄）；白名单域名可放行
+  domain_allow_list: ""          # 逗号分隔白名单域名，如 "*.pypi.org,github.com"
+  # api_key via env: DAYTONA__API_KEY
+
+
 # ---- Skill store - external third-party skill registry -------------
 skill_store:
   enabled: false

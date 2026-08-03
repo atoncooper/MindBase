@@ -234,7 +234,7 @@ transaction:
   readonly_hint: false
 ```
 
-### `mongo` / `redis` / `minio` / `mq` — Infrastructure (planned)
+### `mongo` / `redis` / `minio` / `mq` — Infrastructure (disabled by default; enable via `enabled: true` + env vars). `minio` stores wallpapers & cloud drive files; `daytona` is the code sandbox for the code agent. See `app/config/default.yaml` for full field listings.
 
 All disabled by default (`enabled: false`). Set `enabled: true` and provide connection details via env vars in production. See `app/config/default.yaml` for full field listings.
 

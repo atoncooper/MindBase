@@ -79,13 +79,17 @@ app/
 ├── infra/               # Infrastructure (MySQL, Milvus, Redis, Mongo, …)
 ├── config/              # YAML configuration (default.yaml)
 ├── response/            # Pydantic API schemas (request / response models)
+├── agent/               # LangGraph agents (chat / memory / note / code / quiz)
+├── harness/             # AgentHarness orchestration (orchestrator + runtime)
+├── tools/               # @register_tool auto-discovered tools
 └── models.py            # SQLAlchemy ORM models only
 
 frontend/
 ├── app/                 # Next.js App Router (page.tsx, layout.tsx)
 ├── components/          # React components
-│   └── three/           # Three.js 3D scene components
-└── lib/                 # API client (api.ts), shared utilities
+│   └── three/           # (deprecated - no longer rendered, code retained for rollback)
+├── lib/                 # API client (api.ts), auth, dock-context, widget-registry
+└── stores/              # Frontend state (app-store)
 
 docs/                    # Documentation
 ```
