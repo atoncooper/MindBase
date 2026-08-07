@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, NotebookPen, Settings, Sparkles, User, Activity } from "lucide-react";
+import { BarChart3, BookOpen, Cloud, FolderHeart, MessageCircle, MessageSquareText, NotebookPen, Settings, Sparkles, User, Activity, CalendarClock } from "lucide-react";
 import { DockModule } from "@/lib/dock-registry";
 import ChatDockPanel from "@/components/chat/ChatDockPanel";
 import FavoritesPanel from "./favorites";
@@ -11,6 +11,7 @@ import QuizPanel from "./quiz";
 import CloudDrivePanel from "./cloud-drive";
 import NotesPanel from "./notes";
 import SkillsPanel from "./skills";
+import TaskQuizPanel from "./task-quiz";
 
 export const dockModules: DockModule[] = [
   {
@@ -35,6 +36,13 @@ export const dockModules: DockModule[] = [
     panel: QuizPanel,
     defaultSize: { width: 720, height: 700 },
     placement: "launchpad",
+  },
+  {
+    id: "task-quiz",
+    icon: CalendarClock,
+    title: "定时出题",
+    panel: TaskQuizPanel,
+    defaultSize: { width: 560, height: 640 },
   },
   {
     id: "notes",

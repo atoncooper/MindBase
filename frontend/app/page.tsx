@@ -365,7 +365,7 @@ export default function Home() {
             title={activeModule.title}
             originEl={panelOriginEl}
             defaultSize={activeModule.defaultSize}
-            className={activeModule.id === "chat" ? "chat-panel" : undefined}
+            className={activeModule.id === "chat" ? "chat-panel" : activeModule.id === "task-quiz" ? "task-quiz-panel" : undefined}
           >
             <ActivePanel isOpen={!!activePanelId} onClose={closePanel} />
           </DockPanelWrapper>

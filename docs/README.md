@@ -6,6 +6,7 @@
 | [configuration.md](configuration.md) | All | Full YAML config reference, env vars, secrets |
 | [deployment.md](deployment.md) | DevOps / SRE | Production deployment: Docker, HTTPS, K8s, monitoring |
 | [docker-deployment.md](docker-deployment.md) | DevOps | Legacy Docker Compose guide (being replaced by deployment.md) |
+| [app-task.md](app-task.md) | Users / Ops | 定时出题任务：功能、启动、使用流程、配置、FAQ |
 
 ---
 
@@ -19,3 +20,4 @@
 | "How do I configure HTTPS?" | [deployment.md#https-with-caddy-recommended](deployment.md) |
 | "How do I switch the LLM provider?" | [configuration.md](configuration.md) |
 | "How do I change the chunk size?" | [configuration.md](configuration.md) |
+| "app-task 是什么？怎么启动？" | [app-task.md](app-task.md) |

@@ -752,3 +752,67 @@ create table note_shares
 
 create index ix_note_shares_note_uuid
     on note_shares (note_uuid);
+
+-- task-quiz（定时出题任务，app-task 执行器使用；表由主 app 管理）
+create table task_quiz_task
+(
+    id                 int auto_increment primary key,
+    task_id            varchar(64)  not null,
+    uid                bigint       not null,
+    user_email         varchar(255) not null,
+    cc_emails          json         not null,
+    prompt             varchar(500) not null,
+    difficulty         varchar(20)  default 'medium' not null,
+    incomplete_message text         null,
+    trigger_time       datetime     not null,
+    status             varchar(20)  default 'pending' not null,
+    xxl_job_id_a       varchar(64)  null,
+    xxl_job_id_b       varchar(64)  null,
+    deadline           datetime     null,
+    created_at         datetime     null,
+    updated_at         datetime     null,
+    constraint uq_task_quiz_task_task_id unique (task_id)
+);
+
+create index ix_task_quiz_task_uid on task_quiz_task (uid);
+-- Composite indexes for app-task scheduler polls (status + time range).
+-- Replaces the low-selectivity single-column status/trigger_time indexes:
+--   ListDuePending:  WHERE status='pending'  AND trigger_time <= NOW()
+--   ListOverdueSent: WHERE status='sent'     AND deadline <= NOW()
+--   ListGenerating:  WHERE status='generating' (covered by leftmost prefix)
+create index ix_task_quiz_task_status_trigger on task_quiz_task (status, trigger_time);
+create index ix_task_quiz_task_status_deadline on task_quiz_task (status, deadline);
+
+create table task_quiz_answer
+(
+    id           int auto_increment primary key,
+    task_id      varchar(64) not null,
+    uid          bigint      not null,
+    answer       text        not null,
+    is_correct   tinyint(1)  not null,
+    submitted_at datetime    null
+);
+
+create index ix_task_quiz_answer_task_id on task_quiz_answer (task_id);
+create index ix_task_quiz_answer_uid on task_quiz_answer (uid);
+
+create table task_quiz_notification
+(
+    id              int auto_increment primary key,
+    notification_id varchar(64)  not null,
+    task_id         varchar(64)  not null,
+    type            varchar(20)  not null,
+    recipient       varchar(255) not null,
+    cc_emails       json         null,
+    subject         varchar(255) not null,
+    body_html       text         not null,
+    status          varchar(20)  default 'pending' not null,
+    retry_count     int          default 0 not null,
+    last_error      text         null,
+    created_at      datetime     null,
+    sent_at         datetime     null,
+    constraint uq_task_quiz_notification_id unique (notification_id)
+);
+
+create index ix_task_quiz_notification_status on task_quiz_notification (status);
+create index ix_task_quiz_notification_task_id on task_quiz_notification (task_id);

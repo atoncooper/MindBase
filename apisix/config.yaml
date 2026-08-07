@@ -1,0 +1,19 @@
+# APISIX standalone mode configuration
+# -------------------------------------
+# Standalone role reads routes/upstreams/consumers from apisix.yaml at startup.
+# No etcd dependency - simplest setup for a small internal gateway.
+# Mount this file to /usr/local/apisix/conf/config.yaml in the container.
+
+deployment:
+  role: standalone
+  role_standalone:
+    config_provider: yaml
+
+apisix:
+  admin_key:
+    key: ${APISIX_ADMIN_KEY:-admin-key-change-me}
+    role: admin
+  # Control server: exposes /apisix/status for healthcheck (port 9090, in-container only)
+  control:
+    ip: 0.0.0.0
+    port: 9090

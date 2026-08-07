@@ -4,7 +4,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。
 
-除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）。前端提供 macOS 风格桌面：壁纸背景（静态/动态 mp4）、Dock 栏、Launchpad 启动台、可拖拽拉伸的桌面小组件（日期/时钟/日历/待办/便签）。
+除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，独立服务 + XXL-JOB 调度）。前端提供 macOS 风格桌面：壁纸背景（静态/动态 mp4）、Dock 栏、Launchpad 启动台、可拖拽拉伸的桌面小组件（日期/时钟/日历/待办/便签）。
 
 后端 FastAPI + LangGraph multi-agent（Chat / Memory / Note / Code / Quiz 五个 agent，经 delegate 按需调用）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Daytona（可选）。前端 Next.js 16。支持 OpenAI / DashScope / DeepSeek 多 LLM Provider。
 
@@ -228,6 +228,9 @@ docker compose --profile storage up -d
 
 # 全部（含工具）
 docker compose --profile full up -d
+
+# 定时出题任务栈（app-task + APISIX + XXL-JOB + 前端）
+docker compose --profile task up -d
 ```
 
 ### 生产 HTTPS（nginx + Let's Encrypt）
@@ -301,6 +304,14 @@ docker compose up -d --build
 - 按收藏夹/分 P 出题（结构化输出），提交批改、历史回看
 - 错题本 + 训练数据导出（JSONL / CSV / SFT）
 
+### 定时出题（app-task）
+
+- **入口**：`/task-quiz`（对话定义任务）+ `/tasks`（任务列表/答题）
+- 用户与 AI 对话定义"到某时间出一道题"，AI 按北京时间随机生成触发时间（避开睡觉/午休）
+- 到点自动 LLM 生成题目，HTML 邮件发给用户+抄送人，限时答题
+- 超时未答发"未完成语录"提醒；邮件不含链接，需登录答题
+- 独立服务（app-task + APISIX + XXL-JOB），详见 [`docs/app-task.md`](docs/app-task.md)
+
 ### 笔记
 
 - **入口**：Dock `笔记`
@@ -328,6 +339,7 @@ docker compose up -d --build
 | 向量化 | `/vec/page` | create / revector / status |
 | 笔记 | `/notes` | CRUD / anchors / revisions / share |
 | 题目 | `/quiz` | generate / submit / history / export |
+| 定时出题 | `/task-quiz` `/tasks` | chat（定义任务）/ register / answer / 列表 |
 | 云盘 | `/cloud` | upload / folders / files / stream |
 | 凭证 | `/credentials` | 多 Provider API Key CRUD |
 | 计费 | `/billing` | 用量统计 / by-provider / by-credential |
@@ -415,6 +427,9 @@ frontend/
   lib/                   api.ts / auth / dock-context / widget-registry
   stores/                前端状态 (app-store)
 
+app-task/                        定时出题任务执行器（FastAPI + pyxxl，独立服务）
+  repository/ services/ executor/ routers/ templates/ apisix/
+
 docker-compose.yml              主服务
 docker-compose.daytona.yml      Daytona 代码沙箱（可选）
 nginx/nginx.conf                nginx 反代 + 缓存配置
@@ -454,6 +469,7 @@ nginx/nginx.conf                nginx 反代 + 缓存配置
 - [快速入门](docs/getting-started.md)
 - [笔记系统](docs/notes.md)
 - [Quiz Harness](docs/quiz_harness.md)
+- [定时出题任务](docs/app-task.md)
 - [开发规范](CLAUDE.md)
 
 ---
