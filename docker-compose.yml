@@ -39,7 +39,7 @@ services:
       # Redis — override via .env for external Redis
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # LLM
-      - LLM__API_KEY=${LLM_API_KEY}
+      - LLM__API_KEY=${LLM__API_KEY:-}
       - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - LLM__MODEL=${LLM_MODEL:-qwen3-max}
       # Embedding
@@ -53,9 +53,9 @@ services:
       - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
       # Session
-      - SESSION__SECRET=${SESSION_SECRET}
+      - SESSION__SECRET=${SESSION__SECRET:-}
       # Security
-      - SECURITY__API_KEY_ENCRYPTION_KEY=${API_KEY_ENCRYPTION_KEY}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
       # Plan 0021: MinIO object storage
       - MINIO__ENABLED=${MINIO__ENABLED:-true}
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
@@ -97,7 +97,7 @@ services:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:9080}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     depends_on:
       backend:
         condition: service_healthy
@@ -118,6 +118,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/locations.conf:/etc/nginx/locations.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video   # Plan 0021
@@ -359,7 +360,7 @@ services:
       # Shared DB with main app (same db, task_quiz_* tables owned by main app)
       - APPTASK__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
       - APPTASK__MONGO__URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/?authSource=admin
-      - APPTASK__MONGO__DB_NAME=MindBase
+      - APPTASK__MONGO__DB_NAME=mind_base
       # Main app via APISIX gateway
       - APPTASK__APP__BASE_URL=http://apisix:9080
       - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
