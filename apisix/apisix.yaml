@@ -1,0 +1,265 @@
+# APISIX standalone routes - DOCKER variant (normalized)
+# ========================================================
+# Mounted to /usr/local/apisix/conf/apisix.yaml.
+#
+# Docker deployment: upstreams use service names backend:8000 / app-task:8001
+# (same mind-base-net). For local VM dev, use apisix.dev.yaml instead.
+#
+# ⚠️ Standalone mode: dashboard / Admin API writes do NOT persist. Edit THIS
+#    file and restart APISIX. Do NOT configure via the dashboard UI - changes
+#    are lost on restart (no etcd).
+#
+# Auth model:
+#   - User endpoints (/task-quiz/chat, /task-quiz/register, /tasks, /tasks/*):
+#       forward-auth -> backend /internal/auth/verify (validates bili_session,
+#       injects X-Uid). Backend/app-task read uid from X-Uid header.
+#   - Service-to-service (/internal/quiz/generate-llm, /tasks/register):
+#       key-auth (consumer "internal"). backend calls /tasks/register with apikey;
+#       uid passed in request body (agent already knows it).
+#
+# NOTE: standalone yaml does NOT interpolate ${ENV}. Replace the placeholder
+# key below with a real secret (or migrate to APISIX dashboard + etcd for
+# env-based config).
+#
+# Upstream normalization:
+#   - retries: 2 for normal APIs; 0 for SSE (replaying a half stream corrupts it)
+#   - timeout: connect/send 5s; read 30s normal / 300s SSE
+#   - keepalive_pool: reuse backend connections (size/idle_timeout/requests)
+#   - checks: active probes GET /health every 5s; passive observes real traffic.
+#     Both backends expose /health (FastAPI /health, app-task /health). Even a
+#     single node benefits: a failing node is marked unhealthy so APISIX returns
+#     503 fast instead of hanging on a dead backend.
+#
+# Route matching: higher priority wins; ties broken by path length (longer first).
+#   - /tasks/register (100) beats /tasks/* (10) so backend->app-task uses key-auth.
+#   - catch_all (1) is the fallback for /auth /chat /favorites ... -> backend.
+
+# ============================================================
+# Upstreams
+# ============================================================
+upstreams:
+  # Main app FastAPI - normal API (read timeout 30s)
+  - id: upstream-backend
+    name: backend
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "backend:8000": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+  # Main app FastAPI - SSE streaming (/task-quiz/chat)
+  - id: upstream-backend-sse
+    name: backend-sse
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 0  # SSE: never retry - replaying a half stream corrupts it
+    timeout:
+      connect: 5
+      send: 5
+      read: 300  # SSE streaming - keep long or the stream is cut at 30s
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "backend:8000": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+  # app-task Go executor - /tasks/* user endpoints + /tasks/register
+  - id: upstream-app-task
+    name: app-task
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-task:8001": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+# ============================================================
+# Routes
+# ============================================================
+routes:
+  # User <-> main app task-quiz agent chat (SSE; forward-auth verifies bili_session)
+  - id: task_quiz_chat
+    uri: /task-quiz/chat
+    methods: [POST]
+    priority: 50
+    upstream_id: upstream-backend-sse
+    plugins:
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # User -> main app task-quiz register form (forward-auth verifies bili_session)
+  - id: task_quiz_register
+    uri: /task-quiz/register
+    methods: [POST]
+    priority: 50
+    upstream_id: upstream-backend
+    plugins:
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # app-task -> main app generate quiz (async, service-to-service, key-auth)
+  - id: internal_quiz_generate
+    uri: /internal/quiz/generate-llm
+    methods: [POST]
+    priority: 50
+    upstream_id: upstream-backend
+    plugins:
+      key-auth: {}
+
+  # app-task -> main app poll quiz generation status (async A+B)
+  - id: internal_quiz_status
+    uri: /internal/quiz/status/*
+    methods: [GET]
+    priority: 50
+    upstream_id: upstream-backend
+    plugins:
+      key-auth: {}
+
+  # agent(backend) -> app-task register (service-to-service, key-auth; uid in body)
+  # priority 100 so /tasks/register is NOT shadowed by /tasks/* (forward-auth)
+  - id: tasks_register
+    uri: /tasks/register
+    methods: [POST]
+    priority: 100
+    upstream_id: upstream-app-task
+    plugins:
+      key-auth: {}
+
+  # User -> app-task task list (forward-auth, X-Uid injected)
+  - id: tasks_list
+    uri: /tasks
+    methods: [GET]
+    priority: 90
+    upstream_id: upstream-app-task
+    plugins:
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # User -> app-task task detail/answer (forward-auth, X-Uid injected)
+  - id: tasks_wildcard
+    uri: /tasks/*
+    methods: [GET, POST]
+    priority: 10
+    upstream_id: upstream-app-task
+    plugins:
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # Catch-all: other main app endpoints (/auth, /chat, /favorites, /knowledge, ...)
+  # -> backend (passthrough). Backend validates bili_session itself (get_current_uid).
+  - id: catch_all
+    uri: /*
+    priority: 1
+    upstream_id: upstream-backend
+
+# ============================================================
+# Consumers
+# ============================================================
+consumers:
+  - username: internal
+    plugins:
+      key-auth:
+        key: mindbase-internal-key-change-me  # TODO: replace with real secret; sync with .env APISIX_CONSUMER_KEY
+
+#END

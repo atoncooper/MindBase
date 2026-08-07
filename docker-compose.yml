@@ -1,10 +1,10 @@
 # ================================================================
 # MindBase — full-stack development / deployment
 # ================================================================
-# App only (external DB): docker compose --profile standalone up -d
-# App + infra:             docker compose up -d
-# App + infra + Milvus:    docker compose --profile storage up -d
-# Everything:              docker compose --profile full up -d
+# App + infra + task-quiz (apisix + app-task): docker compose up -d
+# + Milvus (向量库):                            docker compose --profile storage up -d
+# Everything (含 Milvus + task-quiz):           docker compose --profile full up -d
+# App only (external DB, 无 infra):             docker compose --profile standalone up -d
 
 services:
   # ==============================================================
@@ -12,7 +12,7 @@ services:
   # ==============================================================
 
   backend:
-    profiles: ["", "standalone", "storage", "full"]
+    profiles: ["", "standalone", "storage", "full", "task"]
     image: ${BACKEND_IMAGE:-ghcr.io/atoncooper/mind-base-backend:latest}
     build:
       context: .
@@ -65,6 +65,16 @@ services:
       - MINIO__REGION=${MINIO_REGION:-us-east-1}
       - MINIO__SECURE=${MINIO_SECURE:-false}
       - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
+      # Task-quiz agent (main app) -> app-task via APISIX
+      - APPTASK_BASE_URL=http://apisix:9080
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
@@ -76,18 +86,18 @@ services:
       - mind-base-net
 
   frontend:
-    profiles: ["", "standalone", "storage", "full"]
+    profiles: ["", "standalone", "storage", "full", "task"]
     image: ${FRONTEND_IMAGE:-ghcr.io/atoncooper/mind-base-frontend:latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: mind-base-frontend
-    # Port exposed only for direct debugging; in production nginx handles all traffic
-    # ports:
-    #   - "3000:3000"
+    # Port exposed for local access; in production nginx handles all traffic
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:9080}
     depends_on:
       backend:
         condition: service_healthy
@@ -299,9 +309,78 @@ services:
     networks:
       - mind-base-net
 
+  # ==============================================================
+  # Task scheduling stack (profile=task)
+  # Start: docker compose --profile task up -d
+  #   apisix            - API gateway (standalone mode, no etcd)
+  #   app-task          - task executor (Go + self-polling scheduler, no xxl-job)
+  # ==============================================================
+
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    container_name: mind-base-apisix
+    profiles: ["", "task", "full"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${APISIX_PORT:-9080}:9080"
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/apisix/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mind-base-net
+
+  app-task:
+    build:
+      context: ./app-task
+      dockerfile: Dockerfile
+    container_name: mind-base-app-task
+    profiles: ["", "task", "full"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      apisix:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Shared DB with main app (same db, task_quiz_* tables owned by main app)
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      - APPTASK__MONGO__URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/?authSource=admin
+      - APPTASK__MONGO__DB_NAME=MindBase
+      # Main app via APISIX gateway
+      - APPTASK__APP__BASE_URL=http://apisix:9080
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # Email
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      # Timezone
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      # Logging: both writes to stdout AND /app/logs/app-task.log (rotated via lumberjack)
+      - APPTASK__LOG__OUTPUT=both
+    ports:
+      - "${APP_TASK_PORT:-8001}:8001"
+    volumes:
+      - app_task_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
 volumes:
   backend_data:
   backend_logs:
+  app_task_logs:
   mysql_data:
   redis_data:
   mongo_data:
