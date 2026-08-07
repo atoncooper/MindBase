@@ -976,3 +976,82 @@ class InstalledSkill(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+# ==================== task-quiz（定时出题任务，app-task 执行器使用） ====================
+# Tables are owned by the main app (created via Base.metadata.create_all +
+# system.sql). app-task only reads/writes them and checks existence on startup.
+
+
+class TaskQuizTask(Base):
+    """定时出题任务（app-task 执行器）。状态机：pending->sent->completed|overdue|failed."""
+
+    __tablename__ = "task_quiz_task"
+    __table_args__ = (
+        # Composite indexes for app-task scheduler polls (30s DB polling).
+        # status alone is low-selectivity (5 values, "sent" dominates); pairing
+        # with the time column lets the scheduler find due/overdue rows without
+        # scanning every row of that status. Covers:
+        #   ListDuePending:  WHERE status='pending'  AND trigger_time <= NOW()
+        #   ListOverdueSent: WHERE status='sent'     AND deadline <= NOW()
+        #   ListGenerating:  WHERE status='generating' (leftmost-prefix of either)
+        Index("ix_task_quiz_task_status_trigger", "status", "trigger_time"),
+        Index("ix_task_quiz_task_status_deadline", "status", "deadline"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(64), unique=True, index=True, nullable=False)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    user_email = Column(String(255), nullable=False)
+    cc_emails = Column(JSON, nullable=False)  # ["a@x.com", "b@y.com"]
+    prompt = Column(String(500), nullable=False)  # 出题方向（粗粒度，如"数学1填空题"）
+    difficulty = Column(String(20), default="medium", nullable=False)  # easy/medium/hard（考研难度：简单/中等/压轴）
+    incomplete_message = Column(Text, nullable=True)  # 自定义未完成语录；null=用默认模板
+    trigger_time = Column(DateTime, nullable=False)  # 出题触发时间（UTC aware）
+    status = Column(
+        String(20), default="pending", nullable=False
+    )  # pending / sent / completed / overdue / failed
+    xxl_job_id_a = Column(String(64), nullable=True)  # legacy xxl-job ID (retained, unused after Go migration)
+    xxl_job_id_b = Column(String(64), nullable=True)  # legacy xxl-job ID (retained, unused after Go migration)
+    deadline = Column(DateTime, nullable=True)  # answer deadline (UTC aware); app-task scheduler polls it to trigger check_timeout
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class TaskQuizAnswer(Base):
+    """用户答题记录（app-task 执行器写入）。"""
+
+    __tablename__ = "task_quiz_answer"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(64), nullable=False, index=True)
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    answer = Column(Text, nullable=False)
+    is_correct = Column(Boolean, nullable=False)
+    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class TaskQuizNotification(Base):
+    """邮件通知队列 + 重试（app-task 写入，后台 worker 发送，保证可靠）。"""
+
+    __tablename__ = "task_quiz_notification"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    notification_id = Column(String(64), unique=True, index=True, nullable=False)
+    task_id = Column(String(64), nullable=False, index=True)
+    type = Column(String(20), nullable=False)  # quiz_email / overdue_email
+    recipient = Column(String(255), nullable=False)
+    cc_emails = Column(JSON, nullable=True)
+    subject = Column(String(255), nullable=False)
+    body_html = Column(Text, nullable=False)
+    status = Column(
+        String(20), default="pending", nullable=False
+    )  # pending / sent / failed
+    retry_count = Column(Integer, default=0, nullable=False)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    sent_at = Column(DateTime, nullable=True)

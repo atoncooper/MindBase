@@ -112,6 +112,8 @@ async def _migrate_add_columns():
         ("verification_codes", "attempts", "INTEGER DEFAULT 0"),
         # Plan 0035: real usage tracking with cost estimate
         ("credential_usage", "cost_estimate", "NUMERIC(12, 6) DEFAULT 0.0"),
+        # task-quiz: difficulty column (easy/medium/hard, default medium)
+        ("task_quiz_task", "difficulty", "VARCHAR(20) DEFAULT 'medium'"),
     ]
 
     # Column type modifications (widening VARCHAR, etc.)
@@ -579,6 +581,70 @@ async def _migrate_add_columns():
                 continue
             else:
                 logger.warning(f"[MIGRATION] Could not create index ix_quiz_sets_share_token: {e}")
+
+    # task_quiz_task: composite indexes for app-task scheduler polls (30s DB
+    # polling). status alone is low-selectivity (5 values, "sent" dominates);
+    # the old single-column status/trigger_time indexes degenerated to full
+    # scans as the table grew. (status, trigger_time) covers ListDuePending +
+    # ListGenerating; (status, deadline) covers ListOverdueSent.
+    await _ensure_index("ix_task_quiz_task_status_trigger", [
+        "CREATE INDEX IF NOT EXISTS ix_task_quiz_task_status_trigger ON task_quiz_task (status, trigger_time)",
+        "CREATE INDEX ix_task_quiz_task_status_trigger ON task_quiz_task (status, trigger_time)",
+    ])
+    await _ensure_index("ix_task_quiz_task_status_deadline", [
+        "CREATE INDEX IF NOT EXISTS ix_task_quiz_task_status_deadline ON task_quiz_task (status, deadline)",
+        "CREATE INDEX ix_task_quiz_task_status_deadline ON task_quiz_task (status, deadline)",
+    ])
+    # Drop the now-redundant single-column indexes (covered by the composites'
+    # leftmost prefix); avoids the optimizer picking the low-selectivity status
+    # index over the composite and saves write overhead.
+    await _drop_index_if_exists("ix_task_quiz_task_status", "task_quiz_task")
+    await _drop_index_if_exists("ix_task_quiz_task_trigger_time", "task_quiz_task")
+
+
+async def _ensure_index(name: str, statements: list[str]) -> None:
+    """Idempotently create an index. Tries each statement in order (IF NOT
+    EXISTS first, plain form as fallback for older MySQL); 'already exists'
+    (MySQL 1061) is treated as success."""
+    from loguru import logger
+    from sqlalchemy import text
+    for stmt in statements:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+            logger.info(f"[MIGRATION] Index ensured: {name}")
+            return
+        except Exception as e:
+            err = str(e).lower()
+            if "already exists" in err or "1061" in str(e):
+                logger.debug(f"[MIGRATION] Index {name} already exists, skipping")
+                return
+            if "syntax" in err or "1064" in str(e):
+                continue
+            logger.warning(f"[MIGRATION] Could not create index {name}: {e}")
+            return
+
+
+async def _drop_index_if_exists(name: str, table: str) -> None:
+    """Idempotently drop an index. MySQL: DROP INDEX name ON table; SQLite:
+    DROP INDEX IF EXISTS name. 'Unknown/missing index' = success (nothing to drop)."""
+    from loguru import logger
+    from sqlalchemy import text
+    for stmt in [f"DROP INDEX {name} ON {table}", f"DROP INDEX IF EXISTS {name}"]:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+            logger.info(f"[MIGRATION] Dropped index {name}")
+            return
+        except Exception as e:
+            err = str(e).lower()
+            if "can't drop" in err or "check that" in err or "1091" in str(e) or "unknown" in err or "1553" in str(e):
+                logger.debug(f"[MIGRATION] Index {name} not present, skipping drop")
+                return
+            if "syntax" in err or "1064" in str(e):
+                continue
+            logger.warning(f"[MIGRATION] Could not drop index {name}: {e}")
+            return
 
 
 async def _seed_default_data():
