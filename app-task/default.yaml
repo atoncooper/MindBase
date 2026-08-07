@@ -1,0 +1,67 @@
+# ============================================================
+# app-task (Go) - default configuration
+# ============================================================
+# Independent task executor. Does NOT import the main app.
+# Shares the main app's MySQL + MongoDB (same db, task_quiz_* tables).
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml                  <- this file (embedded in binary)
+#   2. Environment variables         <- prefix APPTASK__, double-underscore nesting:
+#        APPTASK__RDBMS__URL=mysql://...  -> rdbms.url
+# Secrets (api_key / url) MUST be injected via env, not YAML.
+# ============================================================
+
+app:
+  name: app-task
+  debug: false
+  base_url: ""               # inject via APPTASK__APP__BASE_URL (e.g. http://apisix:9080)
+  consumer_key: ""           # inject via APPTASK__APP__CONSUMER_KEY (APISIX key-auth)
+  generate_llm_path: /internal/quiz/generate-llm
+  timeout: 160               # seconds for calling main app (LLM generate-llm + retries can be slow)
+
+server:
+  host: 0.0.0.0
+  port: 8001
+
+timezone: Asia/Shanghai      # business timezone (Beijing); trigger_time/deadline stored UTC aware
+
+rdbms:
+  url: ""                    # inject via APPTASK__RDBMS__URL (mysql dsn, same db as main app)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800    # seconds
+
+mongo:
+  uri: ""                    # inject via APPTASK__MONGO__URI (same instance as main app)
+  db_name: MindBase
+  server_selection_timeout_ms: 5000
+
+email:
+  provider: resend
+  api_key: ""                # inject via APPTASK__EMAIL__API_KEY
+  from_email: "MindBase <onboarding@resend.dev>"
+  timeout: 30
+
+notification:
+  worker_interval_seconds: 30   # scan pending notifications every Ns
+  retry_max: 5                  # max retries before status=failed
+  retry_backoff_base: 2         # exponential backoff base (seconds): 2,4,8,16,32
+
+scheduler:
+  interval_seconds: 30          # DB poll interval for due tasks
+
+security:
+  cors:
+    allow_origins:
+      - http://localhost:3000
+
+log:
+  level: info       # debug|info|warn|error (APPTASK__LOG__LEVEL)
+  format: json      # text|json (APPTASK__LOG__FORMAT); json recommended for production log aggregation
+  output: stdout    # stdout|file|both (APPTASK__LOG__OUTPUT); file needs a writable volume at file.path
+  file:
+    path: /app/logs/app-task.log   # (APPTASK__LOG__FILE__PATH); mount a volume here in docker
+    max_size: 100       # MB per file (APPTASK__LOG__FILE__MAX_SIZE)
+    max_backups: 7      # old files kept (APPTASK__LOG__FILE__MAX_BACKUPS)
+    max_age: 30         # days retained (APPTASK__LOG__FILE__MAX_AGE)
+    compress: true      # gzip rotated files (APPTASK__LOG__FILE__COMPRESS)

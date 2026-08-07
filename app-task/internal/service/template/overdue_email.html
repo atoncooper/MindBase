@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>MindBase 任务未完成提醒</title></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px; color: #1f2329; background: #ffffff;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+    <tr>
+      <td style="padding-bottom: 20px; border-bottom: 2px solid #f53f3f;">
+        <span style="font-size: 18px; font-weight: 700; color: #1f2329; letter-spacing: 0.5px;">MindBase</span>
+        <span style="font-size: 13px; color: #86909c; margin-left: 8px;">任务未完成提醒</span>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 24px 0 16px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background: #fff7f0; border-radius: 8px; border-left: 3px solid #f53f3f;">
+          <tr><td style="padding: 16px 20px;">
+            <p style="margin: 0 0 8px; font-size: 12px; font-weight: 600; color: #f53f3f; letter-spacing: 1px;">提醒</p>
+            <p style="margin: 0; white-space: pre-wrap; font-size: 15px; line-height: 1.7;">{{.Message}}</p>
+          </td></tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 0 0 24px;">
+        <p style="margin: 0; font-size: 14px; color: #4e5969;">相关任务出题方向：<strong style="color: #1f2329;">{{.Prompt}}</strong></p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding-top: 16px; border-top: 1px solid #e5e6eb; font-size: 13px; color: #86909c; line-height: 1.7;">
+        该任务已超过答题时限。请登录 MindBase 查看任务详情。
+      </td>
+    </tr>
+    <tr>
+      <td style="padding-top: 16px; font-size: 12px; color: #c9cdd4;">
+        MindBase · 此邮件由系统自动发送，请勿直接回复
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
