@@ -1,0 +1,416 @@
+@import "tailwindcss";
+
+/*
+ * MindBase frontendv2 - Apple-inspired design system.
+ * Classic black & white with Apple blue (#0071e3) accent.
+ * Inter (Latin) + Noto Sans SC (CJK), set via next/font in layout.tsx.
+ */
+
+@theme {
+  /* Surfaces - Apple off-white / pure white / black */
+  --color-background: #fbfbfd;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-foreground: #1d1d1f;
+  --color-secondary: #86868b;
+  --color-tertiary: #aeaeb2;
+  --color-border: #d2d2d7;
+  --color-border-subtle: #f0f0f2;
+
+  /* Accent - Apple blue */
+  --color-accent: #0071e3;
+  --color-accent-hover: #0077ed;
+  --color-accent-foreground: #ffffff;
+  --color-accent-soft: rgba(0, 113, 227, 0.08);
+
+  /* Semantic */
+  --color-success: #34c759;
+  --color-warning: #ff9f0a;
+  --color-danger: #ff3b30;
+
+  /* Fonts - system-first so Apple devices render SF Pro / PingFang SC natively;
+     Inter + Noto Sans SC (next/font) remain as the non-Apple fallback. */
+  --font-sans: -apple-system, BlinkMacSystemFont, var(--font-inter), "Segoe UI", var(--font-noto-sans-sc), sans-serif;
+  --font-cjk: "PingFang SC", var(--font-noto-sans-sc), "Microsoft YaHei", sans-serif;
+
+  /* Radii - Apple uses generous rounding */
+  --radius: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 28px;
+  --radius-full: 980px;
+
+  /* Easings */
+  --ease-apple: cubic-bezier(0.28, 0.11, 0.32, 1);
+
+  /* Keyframes */
+  --animate-float: float 8s ease-in-out infinite;
+  --animate-float-slow: float 14s ease-in-out infinite;
+  --animate-fade-up: fade-up 0.9s var(--ease-apple) both;
+  --animate-shimmer: shimmer 6s linear infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0) translateX(0); }
+  50% { transform: translateY(-22px) translateX(10px); }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(28px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ==================== Base ==================== */
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  /* Inter optical tuning for that tight Apple feel */
+  font-feature-settings: "cv11", "ss01", "ss03";
+  letter-spacing: -0.011em;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-foreground);
+}
+
+/* Thin, Apple-style scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-tertiary) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--color-tertiary);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ==================== Components ==================== */
+
+/* Frosted top navigation - apple.com style translucent bar */
+.nav-blur {
+  background: rgba(251, 251, 253, 0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* Apple-style pill button */
+.btn-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: var(--radius-full);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  transition: all 0.28s var(--ease-apple);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-pill:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+}
+.btn-primary:hover:not(:disabled) { background: var(--color-accent-hover); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-accent);
+}
+.btn-ghost:hover:not(:disabled) { background: var(--color-accent-soft); }
+
+/* Apple-style input */
+.field {
+  width: 100%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.95rem;
+  font-size: 1rem;
+  color: var(--color-foreground);
+  transition: border-color 0.2s var(--ease-apple), box-shadow 0.2s var(--ease-apple);
+}
+.field::placeholder { color: var(--color-tertiary); }
+.field:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-accent-soft);
+}
+
+/* Nav link underline-on-hover (Apple style) */
+.nav-link {
+  position: relative;
+  color: var(--color-foreground);
+  opacity: 0.82;
+  transition: opacity 0.2s var(--ease-apple);
+}
+.nav-link:hover { opacity: 1; }
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -6px;
+  height: 2px;
+  background: var(--color-foreground);
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 0.28s var(--ease-apple);
+}
+.nav-link:hover::after { transform: scaleX(1); }
+
+/* Hero display heading - large, tight tracking */
+.display-hero {
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+}
+
+/* KaTeX math rendering (used by <Markdown>): block formulas scroll on
+   overflow instead of breaking layout; inline math scales with text. */
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.4em 0; }
+.katex { font-size: 1.05em; }
+
+/* Animated gradient text accent (used sparingly) */
+.text-gradient-ink {
+  background: linear-gradient(120deg, #1d1d1f 0%, #6e6e73 50%, #1d1d1f 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: var(--animate-shimmer);
+}
+
+/* ==================== Markdown body (assistant messages) ==================== */
+/* Hand-rolled prose styling - no @tailwindcss/typography dependency. Apple-clean:
+   tight spacing, monochrome, code in subtle surface chips. */
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+
+.md-body p { margin: 0.6em 0; }
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  margin: 1.2em 0 0.5em;
+}
+.md-body h1 { font-size: 1.4em; }
+.md-body h2 { font-size: 1.25em; }
+.md-body h3 { font-size: 1.1em; }
+.md-body h4 { font-size: 1em; }
+
+.md-body ul,
+.md-body ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin: 0.3em 0; }
+.md-body li > ul,
+.md-body li > ol { margin: 0.3em 0; }
+
+.md-body a {
+  color: var(--color-accent);
+  text-decoration: none;
+  word-break: break-word;
+}
+.md-body a:hover { text-decoration: underline; }
+
+.md-body strong { font-weight: 600; color: var(--color-foreground); }
+.md-body em { font-style: italic; }
+
+.md-body blockquote {
+  border-left: 3px solid var(--color-border);
+  margin: 0.8em 0;
+  padding: 0.2em 0 0.2em 1em;
+  color: var(--color-secondary);
+}
+
+/* Inline code chips. Scoped to code NOT inside a <pre> so fenced code blocks
+   (rendered via <CodeBlock>) keep their own surface styling. */
+.md-body :not(pre) > code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--color-border-subtle);
+  border-radius: 6px;
+  padding: 0.15em 0.4em;
+  color: var(--color-foreground);
+}
+
+/* Fenced code blocks are rendered by <CodeBlock> (language label + copy button
+   on a light gray surface). No global pre styling here to avoid conflicts. */
+
+.md-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.92em;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--color-border);
+  padding: 0.5em 0.7em;
+  text-align: left;
+}
+.md-body th { background: var(--color-border-subtle); font-weight: 600; }
+
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.2em 0;
+}
+
+.md-body img {
+  max-width: 100%;
+  border-radius: 10px;
+}
+
+/* ==================== Notes editor / prose (Typora × Apple) ==================== */
+/* Apple-clean document typography: all sans, tight tracking on headings,
+   generous line-height, light code blocks. Scoped to .note-prose (preview +
+   shared view) and .note-textarea (the writing surface). */
+
+.note-prose {
+  font-size: 16px;
+  line-height: 1.75;
+  color: var(--color-foreground);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-decoration: none;
+}
+.note-prose > *:first-child { margin-top: 0; }
+.note-prose > *:last-child { margin-bottom: 0; }
+
+.note-prose h1,
+.note-prose h2,
+.note-prose h3,
+.note-prose h4 {
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.25;
+  margin: 1.7em 0 0.5em;
+}
+.note-prose h1 { font-size: 1.75em; letter-spacing: -0.022em; }
+.note-prose h2 { font-size: 1.4em; }
+.note-prose h3 { font-size: 1.15em; }
+.note-prose h4 { font-size: 1em; }
+
+.note-prose p { margin: 0.9em 0; }
+
+.note-prose ul,
+.note-prose ol {
+  margin: 0.7em 0;
+  padding-left: 1.5em;
+}
+.note-prose ul { list-style: disc; }
+.note-prose ol { list-style: decimal; }
+.note-prose li { margin: 0.32em 0; }
+.note-prose li::marker { color: var(--color-tertiary); }
+.note-prose li > p { margin: 0; }
+
+.note-prose a {
+  color: var(--color-accent);
+  text-decoration: none;
+  word-break: break-word;
+}
+.note-prose a:hover { text-decoration: underline; }
+
+.note-prose strong { font-weight: 600; color: var(--color-foreground); }
+.note-prose em { font-style: italic; }
+
+.note-prose code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--color-border-subtle);
+  border-radius: 5px;
+  padding: 0.15em 0.4em;
+  color: var(--color-foreground);
+}
+
+.note-prose pre {
+  margin: 1em 0;
+  padding: 0.9em 1em;
+  background: var(--color-border-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+.note-prose pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  border-radius: 0;
+  color: var(--color-foreground);
+}
+
+.note-prose blockquote {
+  border-left: 3px solid var(--color-accent);
+  margin: 1em 0;
+  padding: 0.2em 0 0.2em 1em;
+  color: var(--color-secondary);
+}
+.note-prose blockquote p { margin: 0.3em 0; }
+
+.note-prose hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 2em 0;
+  height: 0;
+}
+
+.note-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.92em;
+}
+.note-prose th,
+.note-prose td {
+  border: 1px solid var(--color-border);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.note-prose th {
+  background: var(--color-border-subtle);
+  font-weight: 600;
+}
+
+.note-prose img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 1em 0;
+}
+
+/* The writing surface - matches prose metrics so write/split/read feel identical. */
+.note-textarea {
+  caret-color: var(--color-accent);
+  tab-size: 2;
+  font-variant-numeric: tabular-nums;
+}

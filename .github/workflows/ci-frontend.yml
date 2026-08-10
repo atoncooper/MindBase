@@ -1,20 +1,20 @@
-name: CI — Frontend
+name: CI - Frontend
 
 on:
   push:
     paths:
-      - "frontend/**"
+      - "frontendv2/**"
       - ".github/workflows/ci-frontend.yml"
   pull_request:
     paths:
-      - "frontend/**"
+      - "frontendv2/**"
 
 jobs:
   typecheck:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: frontend
+        working-directory: frontendv2
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: frontendv2/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: frontend
+        working-directory: frontendv2
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: frontendv2/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -55,7 +55,7 @@ jobs:
     needs: [typecheck, lint]
     defaults:
       run:
-        working-directory: frontend
+        working-directory: frontendv2
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +63,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: frontendv2/package-lock.json
 
       - name: Install dependencies
         run: npm ci

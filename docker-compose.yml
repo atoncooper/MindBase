@@ -89,8 +89,14 @@ services:
     profiles: ["", "standalone", "storage", "full", "task"]
     image: ${FRONTEND_IMAGE:-ghcr.io/atoncooper/mind-base-frontend:latest}
     build:
-      context: ./frontend
+      context: ./frontendv2
       dockerfile: Dockerfile
+      # Build-time env consumed by next.config.ts rewrites(). NEXT_PUBLIC_* vars
+      # are inlined at build time, so they must be passed here (runtime env has
+      # no effect on them). Source lives in frontendv2/ (frontend/ is deprecated).
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_APISIX_HOST: ${NEXT_PUBLIC_APISIX_HOST:-}
     container_name: mind-base-frontend
     # Port exposed for local access; in production nginx handles all traffic
     ports:
