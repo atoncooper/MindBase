@@ -741,6 +741,106 @@ async def get_document_preview(
         raise HTTPException(status_code=500, detail="Preview unavailable")
 
 
+def _classify_view_mode(mime_type: str) -> str:
+    """Classify a MIME type into a frontend view mode for the raw viewer.
+
+    - video / audio / image / pdf: browser-native rendering via presigned URL
+    - html / markdown / text:      raw content returned inline (avoids a
+                                   cross-origin fetch against MinIO)
+    - anything else:               download-only ("unsupported")
+    """
+    m = (mime_type or "").lower()
+    if m.startswith("video/"):
+        return "video"
+    if m.startswith("audio/"):
+        return "audio"
+    if m.startswith("image/"):
+        return "image"
+    if m == "application/pdf":
+        return "pdf"
+    if m == "text/html":
+        return "html"
+    if "markdown" in m or m == "text/x-markdown":
+        return "markdown"
+    if m.startswith("text/") or m in (
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-yaml",
+    ):
+        return "text"
+    return "unsupported"
+
+
+@router.get("/video/{upload_uuid}/raw")
+async def get_video_raw(
+    upload_uuid: str = Path(
+        ...,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Upload UUID - alphanumeric, underscore, dash only.",
+    ),
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the *original* uploaded file for in-browser viewing.
+
+    Generates a presigned MinIO GET URL (valid for ``presign_expire`` seconds)
+    so the browser can render the file natively (video / audio / image / PDF).
+    For text-like types the raw content is also returned inline so the frontend
+    avoids a cross-origin fetch against MinIO.
+    """
+    _check_minio()
+    try:
+        file_repo = _get_file_repo()
+        file = await file_repo.get_by_uuid(upload_uuid, uid, db)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        from app.infra.minio import get_minio_client
+
+        client = get_minio_client()
+        view_mode = _classify_view_mode(file.mime_type)
+
+        # Presigned GET URL - works for download and as <video>/<img>/<iframe> src.
+        url = await client.presigned_get(file.object_key)
+
+        # Inline text content for text-like files (<=5 MB) to avoid CORS fetch.
+        content: Optional[str] = None
+        if view_mode in ("text", "markdown", "html") and file.file_size <= 5_000_000:
+            try:
+                data = await client.get_object(file.object_key)
+                content = data.decode("utf-8", errors="replace")
+            except Exception:
+                logger.warning(
+                    "[CLOUD] raw: inline text read failed upload_uuid={}",
+                    upload_uuid,
+                )
+
+        logger.info(
+            "[CLOUD][AUDIT] raw uid=%s upload_uuid=%s mode=%s size=%s",
+            uid,
+            upload_uuid,
+            view_mode,
+            file.file_size,
+        )
+
+        return {
+            "url": url,
+            "content": content,
+            "mimeType": file.mime_type,
+            "fileName": file.original_name,
+            "fileSize": file.file_size,
+            "viewMode": view_mode,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("[CLOUD] raw failed upload_uuid=%s", upload_uuid)
+        raise HTTPException(status_code=500, detail="Raw file unavailable")
+
+
 async def _run_doc_reprocess(task_id: str, upload_uuid: str, uid: int):
     """Deprecated: use CloudProcessingService._run_doc_reprocess instead.
 
