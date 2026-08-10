@@ -4,7 +4,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。
 
-除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，独立服务 + XXL-JOB 调度）。前端提供 macOS 风格桌面：壁纸背景（静态/动态 mp4）、Dock 栏、Launchpad 启动台、可拖拽拉伸的桌面小组件（日期/时钟/日历/待办/便签）。
+除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务 + 自写 DB 轮询调度）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
 
 后端 FastAPI + LangGraph multi-agent（Chat / Memory / Note / Code / Quiz 五个 agent，经 delegate 按需调用）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Daytona（可选）。前端 Next.js 16。支持 OpenAI / DashScope / DeepSeek 多 LLM Provider。
 
@@ -19,7 +19,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 | 依赖 | 版本 | 说明 |
 |------|------|------|
 | Python | >= 3.10 | 后端运行环境 |
-| Node.js | >= 18 | 前端运行环境 |
+| Node.js | >= 20 | 前端运行环境（Next.js 16） |
 | ffmpeg | 任意 | ASR 音频处理依赖 |
 | Docker | >= 24（可选） | 容器化部署 / Milvus / MinIO |
 
@@ -37,7 +37,7 @@ conda activate mindbase
 pip install -r requirements.txt
 
 # 前端依赖
-cd frontend && npm install && cd ..
+cd frontendv2 && npm install && cd ..
 ```
 
 ### 2. 配置环境变量
@@ -126,7 +126,7 @@ curl http://localhost:8000/health
 ### 4. 启动前端
 
 ```bash
-cd frontend
+cd frontendv2
 npm run dev
 ```
 
@@ -143,9 +143,9 @@ export NEXT_PUBLIC_WS_URL="localhost:8000"
 
 ```
 1. 打开 http://localhost:3000 -> 扫码登录 B 站
-2. Dock -> 收藏夹 -> 同步 -> 选收藏夹 -> 构建（ASR + 向量化）
-3. 构建完成后 -> Dock -> 对话 -> 提问
-4. 右键桌面 -> 更换壁纸 / 添加组件
+2. 收藏夹 -> 同步 -> 选收藏夹 -> 构建（ASR + 向量化）
+3. 构建完成后 -> 对话 -> 提问
+4. 设置 -> 更换壁纸
 ```
 
 ---
@@ -229,7 +229,7 @@ docker compose --profile storage up -d
 # 全部（含工具）
 docker compose --profile full up -d
 
-# 定时出题任务栈（app-task + APISIX + XXL-JOB + 前端）
+# 定时出题任务栈（app-task + APISIX + 前端）
 docker compose --profile task up -d
 ```
 
@@ -281,26 +281,26 @@ docker compose up -d --build
 
 ### 对话（Agentic Chat）
 
-- **入口**：Dock `对话`
+- **入口**：导航栏 `对话`
 - **Agent**：Chat（默认路由）+ Memory / Note / Code（经 delegate 调用）
 - **流式 SSE**：route / chunk / step / sources / done / error 六种事件
 - **工具**：vector_search / list_videos / get_video_summaries / delegate_to_agent
 
 ### 收藏夹
 
-- **入口**：Dock `收藏夹`
+- **入口**：导航栏 `收藏夹`
 - 同步 B 站收藏夹与视频列表，分 P 查看、ASR 内容、向量化状态
 - 支持整理预览（清理无效视频）
 
 ### 云盘
 
-- **入口**：Dock `云盘`
+- **入口**：导航栏 `云盘`
 - 文件夹树、上传（分片直传 MinIO）、搜索、排序、批量处理
 - WebSocket 实时推送处理状态（ASR / 向量化）
 
 ### 题目练习
 
-- **入口**：Dock `题目练习`（或 Launchpad）
+- **入口**：导航栏 `题目练习`
 - 按收藏夹/分 P 出题（结构化输出），提交批改、历史回看
 - 错题本 + 训练数据导出（JSONL / CSV / SFT）
 
@@ -310,18 +310,18 @@ docker compose up -d --build
 - 用户与 AI 对话定义"到某时间出一道题"，AI 按北京时间随机生成触发时间（避开睡觉/午休）
 - 到点自动 LLM 生成题目，HTML 邮件发给用户+抄送人，限时答题
 - 超时未答发"未完成语录"提醒；邮件不含链接，需登录答题
-- 独立服务（app-task + APISIX + XXL-JOB），详见 [`docs/app-task.md`](docs/app-task.md)
+- 独立服务（app-task + APISIX），详见 [`docs/app-task.md`](docs/app-task.md)
 
 ### 笔记
 
-- **入口**：Dock `笔记`
+- **入口**：导航栏 `笔记`
 - Markdown 富文本（BlockNote 编辑器），锚点定位、修订历史
 - 公开分享（免登录只读），服务端二次消毒
 - 详见 [`docs/notes.md`](docs/notes.md)
 
 ### API 设置 / 个人中心
 
-- **入口**：Dock `API 设置` / `个人中心`
+- **入口**：导航栏 `API 设置` / `个人中心`
 - LLM / Embedding / ASR 多 Provider 凭证管理，默认凭证、连接测试
 - 个人资料、安全绑定（B 站/邮箱/密码）、退出登录
 
@@ -380,16 +380,15 @@ pytest app/test/ -v
 ### 前端测试
 
 ```bash
-cd frontend
+cd frontendv2
 npm run lint
-npm test
 ```
 
 ---
 
 ## 开发约束
 
-- **前端**：所有请求通过 `frontend/lib/api.ts`，组件内不直接 `fetch`
+- **前端**：所有请求通过 `frontendv2/lib/api/`，组件内不直接 `fetch`
 - **后端 Router**：只做参数解析 + 鉴权 + 调 service，不写业务逻辑
 - **分层**：router → service → repository → DB/Milvus/Mongo，禁止反向调用
 - **Agent**：新 agent 仿 memory/note 模式（5 节点 ReAct + handlers + `list_tool_defs(names=[...])` 过滤）
@@ -415,20 +414,15 @@ app/
   models.py              SQLAlchemy ORM 模型
   test/                  测试与诊断脚本
 
-frontend/
+frontendv2/                      当前前端（frontend/ 已废弃，仅存档）
   app/                   Next.js App Router (page.tsx / layout.tsx)
-  components/            UI 组件
-    dock-modules/        Dock 面板模块 (chat / favorites / notes / quiz / cloud ...)
-    WallpaperBackground  壁纸背景 (静态/动态)
-    Launchpad            启动台
-    DesktopWidget        桌面组件容器 (拖拽+拉伸)
-    *Widget              日期/时钟/日历/待办/便签
-    DockBar / DockPanelWrapper / FloatingPanel
-  lib/                   api.ts / auth / dock-context / widget-registry
-  stores/                前端状态 (app-store)
+  components/            UI 组件 (chat / account / settings / billing / notes / cloud-drive / quiz / task-quiz)
+  lib/api/               唯一 API 调用入口（分模块封装，禁止组件内直接 fetch）
+  lib/chat-stream.ts     SSE 流式响应解析
+  app/globals.css        Tailwind v4 主题 tokens + .md-body 排版
 
-app-task/                        定时出题任务执行器（FastAPI + pyxxl，独立服务）
-  repository/ services/ executor/ routers/ templates/ apisix/
+app-task/                        定时出题任务执行器（Go + Gin + GORM，独立服务）
+  internal/             config / db / mongo / model / repo / service / router
 
 docker-compose.yml              主服务
 docker-compose.daytona.yml      Daytona 代码沙箱（可选）
@@ -457,7 +451,7 @@ nginx/nginx.conf                nginx 反代 + 缓存配置
 
 ### Q: 如何切换 LLM Provider？
 
-前端 Dock → `API 设置` → 新建 Credential（Provider + API Key + Base URL），设为默认。支持 OpenAI / DashScope / DeepSeek / Custom。
+前端导航栏 → `API 设置` → 新建 Credential（Provider + API Key + Base URL），设为默认。支持 OpenAI / DashScope / DeepSeek / Custom。
 
 ---
 

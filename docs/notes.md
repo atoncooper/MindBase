@@ -163,9 +163,9 @@ diff 用轻量的字符级采样（非 Levenshtein），仅作快照触发启发
 
 ## 前端集成
 
-- 唯一 API 入口：`frontend/lib/api.ts` 的 `notesApi`（list / create / get / update / delete / anchors / revisions / share / shared）。
-- Dock 面板：`frontend/components/dock-modules/notes/`（编辑器 `editor.tsx` + 列表 `index.tsx` + 草稿本地存储 `draft-store.ts` + 分享弹窗 `share-dialog.tsx` + `notes.css`）。
-- 公开分享页：`frontend/app/notes/shared/[token]/page.tsx`（独立路由，无需登录态）。
+- 唯一 API 入口：`frontendv2/lib/api/` 的 `notesApi`（list / create / get / update / delete / anchors / revisions / share / shared）。
+- 笔记面板：`frontendv2/components/notes/`（列表 `notes-list.tsx` + 编辑器 `note-editor.tsx` + 视图 `notes-view.tsx` + 草稿本地存储 `draft-store.ts` + 分享弹窗 `share-dialog.tsx`）。
+- 公开分享页：`frontendv2/app/notes/shared/[token]/page.tsx`（独立路由，无需登录态）。
 - nginx 对 `/notes/shared/` 开启 `proxy_cache`（公开可缓存），对 `/notes`（鉴权端点）不缓存。
 
 ## 依赖

@@ -213,7 +213,7 @@ docker compose restart frontend
 前端 `package-lock.json` 指向了国内镜像。本地跑：
 
 ```bash
-cd frontend
+cd frontendv2
 sed -i 's|registry.npmmirror.com|registry.npmjs.org|g' package-lock.json
 ```
 
@@ -236,7 +236,7 @@ export MONGO__URI="mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin"
 uvicorn app.main:app --reload --port 8000
 
 # 前端（另开终端）
-cd frontend && npm install && npm run dev
+cd frontendv2 && npm install && npm run dev
 
 # 出题执行器（另开终端）
 go run ./app-task

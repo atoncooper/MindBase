@@ -33,7 +33,7 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8000
 
 # 4. Frontend (new terminal)
-cd frontend
+cd frontendv2
 npm install
 npm run dev
 ```
@@ -84,12 +84,11 @@ app/
 ├── tools/               # @register_tool auto-discovered tools
 └── models.py            # SQLAlchemy ORM models only
 
-frontend/
+frontendv2/              # current frontend (frontend/ is deprecated, archived only)
 ├── app/                 # Next.js App Router (page.tsx, layout.tsx)
-├── components/          # React components
-│   └── three/           # (deprecated - no longer rendered, code retained for rollback)
-├── lib/                 # API client (api.ts), auth, dock-context, widget-registry
-└── stores/              # Frontend state (app-store)
+├── components/          # React components (chat / account / settings / billing / notes / cloud-drive / quiz)
+├── lib/api/             # API client (modular, no direct fetch in components)
+└── lib/chat-stream.ts   # SSE stream parsing
 
 docs/                    # Documentation
 ```
@@ -112,7 +111,7 @@ ruff check app/
 mypy app/
 
 # Frontend
-cd frontend
+cd frontendv2
 npm run lint
 npx tsc --noEmit
 ```

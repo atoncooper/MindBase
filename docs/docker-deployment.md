@@ -37,7 +37,7 @@ docker-compose.yml
 ├── backend (mind-base-backend)    ← FastAPI :8000
 │   └── Dockerfile (项目根目录)
 └── frontend (mind-base-frontend)  ← Next.js :3000
-    └── Dockerfile (frontend/ 目录)
+    └── Dockerfile (frontendv2/ 目录)
 ```
 
 **两个容器均对外暴露端口：**
@@ -201,7 +201,7 @@ Docker Compose 已配置了后端的 `healthcheck`，前端会在后端 healthy 
 2. 点击"登录"按钮能获取 B 站二维码
 3. 登录后能看到收藏夹列表
 4. 选中收藏夹后能进行入库操作
-5. 入库完成后点击 Dock 上的聊天图标，在弹出的聊天面板中进行问答
+5. 入库完成后点击导航栏的「对话」入口，在弹出的聊天面板中进行问答
 
 ### 3. API 文档验证
 
