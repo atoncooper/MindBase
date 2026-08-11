@@ -108,7 +108,7 @@ services:
       # no effect on them). Source lives in frontendv2/ (frontend/ is deprecated).
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
-        NEXT_PUBLIC_APISIX_HOST: ${NEXT_PUBLIC_APISIX_HOST:-}
+        NEXT_PUBLIC_APISIX_HOST: nginx:80
     container_name: mind-base-frontend
     # Port exposed for local access; in production nginx handles all traffic
     ports:
@@ -116,6 +116,7 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_APISIX_HOST=nginx:80
     depends_on:
       backend:
         condition: service_healthy
@@ -362,8 +363,10 @@ services:
       # to be healthy first so APISIX doesn't crash on startup.
       etcd:
         condition: service_healthy
-    ports:
-      - "${APISIX_PORT:-9080}:9080"
+    # No host port mapping: apisix must only be reachable inside mind-base-net
+    # (nginx -> apisix -> backend). Exposing 9080 to the host lets external
+    # clients bypass nginx (SSL/cache/rate-limit). To debug apisix directly,
+    # `docker compose exec apisix ...` or temporarily re-add `ports: ["9080:9080"]`.
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
@@ -387,7 +390,7 @@ services:
       - no_proxy=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9090/apisix/status"]
+      test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
