@@ -67,6 +67,11 @@ class MilvusVectorStore:
         self._collection_name = collection_name
         self._is_cloud = collection_name == config.cloud_collection_name
         self._analyzer = analyzer  # override config.analyzer for this collection
+        # Whether the collection schema includes the BM25 full-text search
+        # fields (text analyzer + sparse_embedding + BM25 Function).  Requires
+        # Milvus 2.5+ (metric_type="BM25"); on 2.4.x keep hybrid_search=False
+        # so the schema stays dense-only and collection init succeeds.
+        self._hybrid_enabled = bool(getattr(config, "hybrid_search", False))
         # Set to True by _ensure_collection when an existing collection was
         # dropped + recreated (e.g. embedding dim mismatch after model
         # change).  Callers (RAGService startup) check this flag to reset
@@ -292,6 +297,17 @@ class MilvusVectorStore:
                 self._collection_name,
             )
             return []
+        # Fast path: when hybrid_search is disabled the collection has no
+        # sparse_embedding field, so delegate to dense search directly
+        # (avoids a guaranteed-to-fail RPC + fallback log noise).
+        if not self._hybrid_enabled:
+            return self.search(
+                query,
+                k=k,
+                filter=filter,
+                partition_dt_start=partition_dt_start,
+                partition_dt_end=partition_dt_end,
+            )
         from pymilvus import AnnSearchRequest, RRFRanker
 
         query_embedding = self._embedding_fn.embed_query(query)
@@ -631,27 +647,52 @@ class MilvusVectorStore:
                 # drop and recreate (e.g. after embedding model change).
                 desc = self._client.describe_collection(self._collection_name)
                 expected_dim = self._config.dimension
+                recreate_reason: str | None = None
+
+                # Embedding dim mismatch (e.g. after embedding model change)
+                field_names: set[str] = set()
                 for field in desc.get("fields", []):
-                    if field.get("name") == "embedding":
+                    name = field.get("name")
+                    if name:
+                        field_names.add(name)
+                    if name == "embedding":
                         params = field.get("params") or field.get("typeParams") or {}
                         try:
                             existing_dim = int(params.get("dim", 0))
                         except (TypeError, ValueError):
                             existing_dim = 0
                         if existing_dim not in (0, expected_dim):
-                            logger.warning(
-                                "[MILVUS] collection '{}' has dim={}, expected={}, dropping to recreate",
-                                self._collection_name,
-                                existing_dim,
-                                expected_dim,
+                            recreate_reason = (
+                                f"dim mismatch (existing={existing_dim}, expected={expected_dim})"
                             )
-                            self._client.drop_collection(self._collection_name)
-                            # Signal callers that all prior vectors are gone
-                            # — DB vectorization statuses must be reset so
-                            # files get re-vectorized instead of being
-                            # skipped by the idempotency check.
-                            self.was_recreated = True
-                            break
+
+                # Hybrid schema mismatch: presence of sparse_embedding must
+                # match the hybrid_search flag.  Recovers half-created
+                # collections (sparse field added but index creation failed,
+                # e.g. Milvus 2.4 rejecting metric_type="BM25") and handles
+                # toggling hybrid on/off without manual drops.
+                has_sparse = "sparse_embedding" in field_names
+                if has_sparse and not self._hybrid_enabled:
+                    recreate_reason = recreate_reason or (
+                        "collection has sparse_embedding but hybrid_search disabled"
+                    )
+                elif not has_sparse and self._hybrid_enabled:
+                    recreate_reason = recreate_reason or (
+                        "hybrid_search enabled but collection lacks sparse_embedding"
+                    )
+
+                if recreate_reason:
+                    logger.warning(
+                        "[MILVUS] collection '{}' recreate: {}",
+                        self._collection_name,
+                        recreate_reason,
+                    )
+                    self._client.drop_collection(self._collection_name)
+                    # Signal callers that all prior vectors are gone
+                    # — DB vectorization statuses must be reset so
+                    # files get re-vectorized instead of being
+                    # skipped by the idempotency check.
+                    self.was_recreated = True
                 else:
                     self._client.load_collection(self._collection_name)
                     logger.info(
@@ -704,24 +745,33 @@ class MilvusVectorStore:
         schema.add_field(field_name="section_title", datatype=DataType.VARCHAR, max_length=256)
         schema.add_field(field_name="content_type", datatype=DataType.VARCHAR, max_length=32)
         schema.add_field(field_name="url", datatype=DataType.VARCHAR, max_length=512)
-        # text field with Chinese analyzer -> enables BM25 full-text search
-        schema.add_field(
-            field_name="text",
-            datatype=DataType.VARCHAR,
-            max_length=65535,
-            enable_analyzer=True,
-            analyzer_params={"type": self._analyzer or getattr(self._config, "analyzer", "chinese")},
-        )
-        # sparse vector auto-generated from text by the BM25 function
-        schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
-        schema.add_function(
-            Function(
-                name="text_bm25",
-                input_field_names=["text"],
-                output_field_names=["sparse_embedding"],
-                function_type=FunctionType.BM25,
+        # text field: plain VARCHAR (dense-only) or analyzer-enabled (hybrid).
+        if self._hybrid_enabled:
+            # Full-text search: text analyzer + BM25 function -> sparse vector.
+            # Requires Milvus 2.5+ (metric_type="BM25"); on 2.4.x keep
+            # hybrid_search=False so this branch is skipped.
+            schema.add_field(
+                field_name="text",
+                datatype=DataType.VARCHAR,
+                max_length=65535,
+                enable_analyzer=True,
+                analyzer_params={"type": self._analyzer or getattr(self._config, "analyzer", "chinese")},
             )
-        )
+            schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
+            schema.add_function(
+                Function(
+                    name="text_bm25",
+                    input_field_names=["text"],
+                    output_field_names=["sparse_embedding"],
+                    function_type=FunctionType.BM25,
+                )
+            )
+        else:
+            schema.add_field(
+                field_name="text",
+                datatype=DataType.VARCHAR,
+                max_length=65535,
+            )
         schema.add_field(
             field_name="embedding",
             datatype=DataType.FLOAT_VECTOR,
@@ -743,24 +793,33 @@ class MilvusVectorStore:
         schema.add_field(field_name="source_type", datatype=DataType.VARCHAR, max_length=16)
         schema.add_field(field_name="section_title", datatype=DataType.VARCHAR, max_length=256)
         schema.add_field(field_name="content_type", datatype=DataType.VARCHAR, max_length=32)
-        # text field with Chinese analyzer -> enables BM25 full-text search
-        schema.add_field(
-            field_name="text",
-            datatype=DataType.VARCHAR,
-            max_length=65535,
-            enable_analyzer=True,
-            analyzer_params={"type": self._analyzer or getattr(self._config, "analyzer", "chinese")},
-        )
-        # sparse vector auto-generated from text by the BM25 function
-        schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
-        schema.add_function(
-            Function(
-                name="text_bm25",
-                input_field_names=["text"],
-                output_field_names=["sparse_embedding"],
-                function_type=FunctionType.BM25,
+        # text field: plain VARCHAR (dense-only) or analyzer-enabled (hybrid).
+        if self._hybrid_enabled:
+            # Full-text search: text analyzer + BM25 function -> sparse vector.
+            # Requires Milvus 2.5+ (metric_type="BM25"); on 2.4.x keep
+            # hybrid_search=False so this branch is skipped.
+            schema.add_field(
+                field_name="text",
+                datatype=DataType.VARCHAR,
+                max_length=65535,
+                enable_analyzer=True,
+                analyzer_params={"type": self._analyzer or getattr(self._config, "analyzer", "chinese")},
             )
-        )
+            schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
+            schema.add_function(
+                Function(
+                    name="text_bm25",
+                    input_field_names=["text"],
+                    output_field_names=["sparse_embedding"],
+                    function_type=FunctionType.BM25,
+                )
+            )
+        else:
+            schema.add_field(
+                field_name="text",
+                datatype=DataType.VARCHAR,
+                max_length=65535,
+            )
         schema.add_field(
             field_name="embedding",
             datatype=DataType.FLOAT_VECTOR,
@@ -778,12 +837,17 @@ class MilvusVectorStore:
             metric_type=self._config.metric_type,
             params=params,
         )
-        # sparse vector index for BM25 full-text search (hybrid retrieval)
-        index_params.add_index(
-            field_name="sparse_embedding",
-            index_type="SPARSE_INVERTED_INDEX",
-            metric_type="BM25",
-        )
+        # sparse vector index for BM25 full-text search (hybrid retrieval).
+        # Only added when hybrid_search is enabled; the sparse_embedding field
+        # exists in the schema only when _hybrid_enabled is True.  Milvus 2.4.x
+        # rejects metric_type="BM25" (only IP supported for sparse), so the
+        # flag must stay False on 2.4.x.
+        if self._hybrid_enabled:
+            index_params.add_index(
+                field_name="sparse_embedding",
+                index_type="SPARSE_INVERTED_INDEX",
+                metric_type="BM25",
+            )
         return index_params
 
     def _index_type_for_logging(self, collection_name: str, current_vector_count: int) -> str:

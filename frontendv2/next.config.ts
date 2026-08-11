@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-const APISIX_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "192.168.138.128:9080";
+const APISIX_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "localhost:9080";
 
 const nextConfig: NextConfig = {
   output: "standalone",

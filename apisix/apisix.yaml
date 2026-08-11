@@ -118,6 +118,48 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
+  # Main app FastAPI - WebSocket (/ws task notifications, long-lived)
+  # Same nodes as backend; read 86400s aligns with nginx proxy_read_timeout so
+  # idle WS isn't dropped. retries:0 - never retry a long-lived connection.
+  - id: upstream-backend-ws
+    name: backend-ws
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 0
+    timeout:
+      connect: 5
+      send: 5
+      read: 86400
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "backend:8000": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
   # app-task Go executor - /tasks/* user endpoints + /tasks/register
   - id: upstream-app-task
     name: app-task
@@ -245,6 +287,21 @@ routes:
         upstream_headers: [X-Uid]
         timeout: 5000
         status_code: 401
+
+  # User <-> main app chat (SSE under /chat/*; backend self-validates bili_session
+  # - no forward-auth, same as catch_all). Uses SSE upstream (retries:0, read 300s)
+  # so /chat/ask/stream isn't cut at catch_all's 30s read timeout.
+  - id: chat_sse
+    uris: [/chat, /chat/*]
+    priority: 50
+    upstream_id: upstream-backend-sse
+
+  # User <-> main app WebSocket (/ws task notifications, long-lived). WS upstream
+  # read 86400s aligns with nginx; APISIX passes Upgrade/Connection headers through.
+  - id: ws_notifications
+    uris: [/ws, /ws/*]
+    priority: 50
+    upstream_id: upstream-backend-ws
 
   # Catch-all: other main app endpoints (/auth, /chat, /favorites, /knowledge, ...)
   # -> backend (passthrough). Backend validates bili_session itself (get_current_uid).

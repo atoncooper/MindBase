@@ -1,12 +1,13 @@
-"""Rebuild Milvus collections with BM25 schema and reset vectorization statuses.
+"""Rebuild Milvus collections and reset vectorization statuses.
 
 Drop + recreate both bilibili_videos and cloud_drive collections so they pick
-up the BM25 sparse_embedding field required by hybrid_search, then reset every
-video page and cloud file back to "pending" so the next build re-vectorizes
-them with the new SemanticChunker.
+up the current schema (dense-only by default; BM25 sparse_embedding fields
+when MILVUS__HYBRID_SEARCH=true, which requires Milvus 2.5+), then reset
+every video page and cloud file back to "pending" so the next build
+re-vectorizes them.
 
 DESTRUCTIVE: all existing vectors are lost. Run only when switching chunker /
-embedding model / enabling hybrid_search.
+embedding model / toggling hybrid_search / recovering a broken collection.
 
 Usage:
     python scripts/rebuild_milvus.py
@@ -25,7 +26,7 @@ from app.services.rag import RAGService
 
 
 async def rebuild() -> None:
-    print("=== Rebuilding Milvus collections (BM25 schema) ===")
+    print("=== Rebuilding Milvus collections ===")
     rag = RAGService()
 
     if rag.vectorstore is None:
@@ -64,8 +65,8 @@ async def rebuild() -> None:
     print("Next steps:")
     print("  1. Re-vectorize: start the server, then POST /knowledge/build")
     print("     (or use the frontend knowledge-base panel)")
-    print("  2. Enable hybrid search: set MILVUS__HYBRID_SEARCH=true")
-    print("     (or add 'hybrid_search: true' under milvus: in config.yaml)")
+    print("  2. (Optional) Enable hybrid search: set MILVUS__HYBRID_SEARCH=true")
+    print("     (requires Milvus 2.5+; add 'hybrid_search: true' under milvus: in config.yaml)")
     print("  3. Verify: python -m app.test.rag.diagnose_rag")
 
 
