@@ -118,13 +118,11 @@ export const taskQuizApi = {
         handlers: TaskQuizStreamHandlers,
         signal?: AbortSignal,
     ): Promise<void> => {
-        const streamBase =
-            API_BASE_URL ||
-            (typeof window !== "undefined"
-                ? process.env.NEXT_PUBLIC_APISIX_HOST
-                    ? `http://${process.env.NEXT_PUBLIC_APISIX_HOST}`
-                    : "http://localhost:8000"
-                : "http://backend:8000");
+        // Use API_BASE_URL directly: browser "" (relative) -> nginx; SSR gets
+        // http://nginx:80. Do NOT fall back to NEXT_PUBLIC_APISIX_HOST - in
+        // docker prod it's the container name "nginx:80" which the browser
+        // can't DNS-resolve. Mirrors chatApi.askStream's stream-base resolution.
+        const streamBase = API_BASE_URL;
 
         const resp = await fetch(`${streamBase}/task-quiz/chat`, {
             method: "POST",
