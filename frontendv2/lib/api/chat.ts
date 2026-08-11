@@ -117,13 +117,14 @@ export const chatApi = {
         payload: ChatRequestPayload,
         signal?: AbortSignal
     ): Promise<ReadableStream<Uint8Array>> => {
-        const streamBase =
-            API_BASE_URL ||
-            (typeof window !== "undefined"
-                ? process.env.NEXT_PUBLIC_APISIX_HOST
-                    ? `http://${process.env.NEXT_PUBLIC_APISIX_HOST}`
-                    : "http://localhost:8000"
-                : "http://backend:8000");
+        // Use API_BASE_URL directly: in the browser it's "" (relative) so fetch
+        // hits the current origin (nginx in prod, which has proxy_buffering off
+        // for /chat); SSR gets the internal absolute URL (http://nginx:80). Do
+        // NOT fall back to NEXT_PUBLIC_APISIX_HOST - in docker prod it's the
+        // container name "nginx:80" which the browser can't DNS-resolve, which
+        // was the root cause of "生成失败". Dev: set NEXT_PUBLIC_API_URL to an
+        // absolute apisix URL to bypass dev-proxy SSE buffering.
+        const streamBase = API_BASE_URL;
         const res = await fetch(`${streamBase}/chat/ask/agent/stream`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...getAuthHeaders() },
