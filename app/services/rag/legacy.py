@@ -129,6 +129,19 @@ class RAGService:
                 logger.info(
                     "[RAG] vectorstore initialized: {}", config.milvus.collection_name
                 )
+                # If the collection was dropped+recreated (dim mismatch or
+                # hybrid_search schema mismatch), all prior vectors are gone.
+                # Reset every video page marked "done" back to "pending" so the
+                # next build re-vectorizes it - otherwise the idempotency guard
+                # in vectorize.py would skip them forever and pages stay
+                # unsearchable.  Mirrors the cloud_backend reset below.
+                if getattr(self.vectorstore, "was_recreated", False):
+                    logger.warning(
+                        "[RAG] bilibili_videos collection was recreated "
+                        "(dim/hybrid schema mismatch) - resetting is_vectorized "
+                        "for all done video pages to pending"
+                    )
+                    self._reset_video_vector_statuses()
             except Exception as e:
                 logger.warning(
                     "[RAG] vectorstore init failed: error_type={}",
@@ -896,6 +909,49 @@ class RAGService:
             # No running loop (e.g. constructing outside an event loop) —
             # run synchronously as a fallback.  This blocks init briefly
             # but guarantees the reset happens.
+            import asyncio as _aio
+
+            _aio.run(_reset())
+
+    def _reset_video_vector_statuses(self) -> None:
+        """Reset all video pages marked ``done`` back to ``pending``.
+
+        Mirrors :meth:`_reset_cloud_vector_statuses` for the bilibili_videos
+        collection.  Called from ``__init__`` when that collection was
+        recreated (dim mismatch or hybrid_search schema mismatch).
+        """
+        import asyncio
+
+        async def _reset() -> None:
+            from sqlalchemy import text
+            from app.database import async_session_factory
+
+            try:
+                async with async_session_factory() as session:
+                    result = await session.execute(
+                        text(
+                            "UPDATE video "
+                            "SET is_vectorized = 'pending', "
+                            "    vector_chunk_count = 0, "
+                            "    vector_error = NULL, "
+                            "    vector_asr_version = NULL "
+                            "WHERE is_vectorized = 'done'"
+                        )
+                    )
+                    await session.commit()
+                    logger.warning(
+                        "[RAG] reset {} video pages from done -> pending "
+                        "(collection was recreated, vectors lost)",
+                        result.rowcount,
+                    )
+            except Exception:
+                logger.exception("[RAG] failed to reset video vector statuses")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_reset())
+        except RuntimeError:
+            # No running loop - run synchronously as a fallback.
             import asyncio as _aio
 
             _aio.run(_reset())

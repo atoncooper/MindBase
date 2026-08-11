@@ -100,7 +100,7 @@ milvus:
   metric_type: COSINE                    # COSINE | L2 | IP
   nlist: 1024                            # IVF cluster count
   nprobe: 16                             # clusters searched per query
-  hybrid_search: false                   # dense+BM25 RRF fusion (requires BM25 schema; rebuild Milvus before enabling)
+  hybrid_search: true                   # dense+BM25 RRF fusion (requires Milvus 2.5+ for BM25 metric_type; rebuild Milvus before enabling)
 
 
 # ============================================================
@@ -137,7 +137,7 @@ redis:
 # MinIO / S3-compatible object storage
 # ============================================================
 minio:
-  enabled: false                         # enable when file uploads are needed
+  enabled: true                         # enable when file uploads are needed
   endpoint: http://localhost:9000
   region: us-east-1
   bucket: mind-base
