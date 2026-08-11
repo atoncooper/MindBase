@@ -160,7 +160,7 @@ export function LoginModal({ isOpen, onClose, onSuccess }: LoginModalProps) {
                   {qr && (qrStatus === "ready" || qrStatus === "scanned" || qrStatus === "success") && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={`data:image/png;base64,${qr.qrcode_image_base64}`}
+                      src={qr.qrcode_image_base64}
                       alt="登录二维码"
                       className={`h-full w-full object-contain transition-opacity ${
                         qrStatus === "scanned" || qrStatus === "success" ? "opacity-40" : "opacity-100"
