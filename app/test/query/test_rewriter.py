@@ -5,14 +5,56 @@ test_rewriter.py - QueryRewriter 主入口单元测试
 - 简单 query 跳过
 - 置信度阈值过滤
 - 策略选择
-- 路由推断
 """
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from app.services.query.rewriter import QueryRewriter
 from app.services.query.types import (
     RewriteType,
+    StepBackStructuredOutput,
+    SubQueryStructuredOutput,
 )
+
+# Mark every async test in this module for pytest-asyncio (strict mode).
+# Sync tests are unaffected - pytest-asyncio ignores the mark on non-coroutines.
+pytestmark = pytest.mark.asyncio
+
+
+def _bind_stepback_mock(rewriter: QueryRewriter, confidence: float = 0.85) -> MagicMock:
+    """Make rewriter.llm.with_structured_output return a StepBack result.
+
+    Strategies call ``self.llm.with_structured_output(Cls).ainvoke(prompt)``
+    and await the parsed Pydantic object, so we wire an AsyncMock on ``ainvoke``
+    rather than the legacy sync ``invoke`` + ``.content`` JSON path.
+    """
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(
+        return_value=StepBackStructuredOutput(
+            step_back_query="泛化",
+            specific_query="具体",
+            confidence=confidence,
+            reason="test",
+        )
+    )
+    rewriter.llm.with_structured_output = MagicMock(return_value=structured_llm)
+    return structured_llm
+
+
+def _bind_subquery_mock(rewriter: QueryRewriter, confidence: float = 0.9) -> MagicMock:
+    """Make rewriter.llm.with_structured_output return a SubQuery result."""
+    structured_llm = MagicMock()
+    structured_llm.ainvoke = AsyncMock(
+        return_value=SubQueryStructuredOutput(
+            is_multi_topic=True,
+            sub_queries=["主题一完整查询", "主题二完整查询"],
+            main_topic="main",
+            confidence=confidence,
+            reason="test",
+        )
+    )
+    rewriter.llm.with_structured_output = MagicMock(return_value=structured_llm)
+    return structured_llm
 
 
 class TestQueryRewriterSimpleQuerySkip:
@@ -41,7 +83,7 @@ class TestQueryRewriterSimpleQuerySkip:
         result = await rewriter.rewrite(query)
         assert result.rewrites == []
         assert result.needs_rewrite is False
-        assert result.suggested_route == "direct"
+        assert result.suggested_route is None
 
     @pytest.mark.parametrize(
         "query",
@@ -53,10 +95,7 @@ class TestQueryRewriterSimpleQuerySkip:
     )
     async def test_normal_queries_trigger_rewrite(self, rewriter, query):
         """正常长度 query 应触发改写流程"""
-        # Mock LLM 返回
-        mock_response = MagicMock()
-        mock_response.content = '{"step_back_query":"泛化","specific_query":"具体","confidence":0.85,"reason":"test"}'
-        rewriter.llm.invoke = MagicMock(return_value=mock_response)
+        _bind_stepback_mock(rewriter, confidence=0.85)
 
         result = await rewriter.rewrite(query)
         assert result.needs_rewrite is True
@@ -78,9 +117,7 @@ class TestQueryRewriterSimpleQuerySkip:
 
     async def test_exactly_five_chars(self, rewriter):
         """恰好5字符且非闲聊词应触发改写"""
-        mock_response = MagicMock()
-        mock_response.content = '{"step_back_query":"泛化","specific_query":"具体","confidence":0.85,"reason":"test"}'
-        rewriter.llm.invoke = MagicMock(return_value=mock_response)
+        _bind_stepback_mock(rewriter, confidence=0.85)
 
         result = await rewriter.rewrite("abcde")
         assert result.needs_rewrite is True
@@ -96,9 +133,7 @@ class TestQueryRewriterConfidenceThreshold:
 
     async def test_confidence_below_threshold_skipped(self, rewriter):
         """置信度低于 0.6 的改写结果应被忽略，降级为直接检索"""
-        mock_response = MagicMock()
-        mock_response.content = '{"step_back_query":"泛化","specific_query":"具体","confidence":0.4,"reason":"test"}'
-        rewriter.llm.invoke = MagicMock(return_value=mock_response)
+        _bind_stepback_mock(rewriter, confidence=0.4)
 
         result = await rewriter.rewrite("一个正常长度的 query")
         assert result.rewrites == []
@@ -106,9 +141,7 @@ class TestQueryRewriterConfidenceThreshold:
 
     async def test_confidence_at_threshold_accepted(self, rewriter):
         """置信度恰好等于 0.6 应被接受"""
-        mock_response = MagicMock()
-        mock_response.content = '{"step_back_query":"泛化","specific_query":"具体","confidence":0.6,"reason":"test"}'
-        rewriter.llm.invoke = MagicMock(return_value=mock_response)
+        _bind_stepback_mock(rewriter, confidence=0.6)
 
         result = await rewriter.rewrite("一个正常长度的 query")
         assert len(result.rewrites) == 1
@@ -117,9 +150,7 @@ class TestQueryRewriterConfidenceThreshold:
 
     async def test_confidence_above_threshold_accepted(self, rewriter):
         """置信度高于 0.6 应被接受"""
-        mock_response = MagicMock()
-        mock_response.content = '{"step_back_query":"泛化","specific_query":"具体","confidence":0.95,"reason":"test"}'
-        rewriter.llm.invoke = MagicMock(return_value=mock_response)
+        _bind_stepback_mock(rewriter, confidence=0.95)
 
         result = await rewriter.rewrite("一个正常长度的 query")
         assert len(result.rewrites) == 1
@@ -135,21 +166,15 @@ class TestQueryRewriterStrategySelection:
 
     async def test_first_applicable_strategy_returned(self, rewriter):
         """应只返回第一个适用的策略，不尝试后续策略"""
-        stepback_response = MagicMock()
-        stepback_response.content = '{"step_back_query":"泛化","specific_query":"具体","confidence":0.9,"reason":"test"}'
-
-        subquery_response = MagicMock()
-        subquery_response.content = '{"is_multi_topic":true,"sub_queries":["a","b"],"main_topic":"main","confidence":0.9,"reason":"test"}'
-
-        # 第一策略返回结果，第二策略不应被调用
-        rewriter.llm.invoke = MagicMock(return_value=stepback_response)
+        structured_llm = _bind_stepback_mock(rewriter, confidence=0.9)
 
         result = await rewriter.rewrite("王德峰和哲学")
 
         # StepBack 被调用
         assert result.rewrites[0].type == RewriteType.STEP_BACK
-        # LLM 只被调用一次（第一个策略就返回了）
-        assert rewriter.llm.invoke.call_count == 1
+        # LLM structured-output 只被调用一次（第一个策略就返回了）
+        assert rewriter.llm.with_structured_output.call_count == 1
+        assert structured_llm.ainvoke.await_count == 1
 
     async def test_no_applicable_strategy(self, rewriter):
         """无适用策略时返回空 rewrites"""
@@ -163,34 +188,14 @@ class TestQueryRewriterStrategySelection:
         assert result.needs_rewrite is False
 
     async def test_llm_parse_failure_falls_back(self, rewriter):
-        """LLM 返回非法 JSON 时降级为直接检索"""
-        rewriter.llm.invoke = MagicMock(return_value=MagicMock(content="not a json"))
+        """LLM 结构化输出失败时降级为直接检索"""
+        structured_llm = MagicMock()
+        structured_llm.ainvoke = AsyncMock(side_effect=RuntimeError("parse failed"))
+        rewriter.llm.with_structured_output = MagicMock(return_value=structured_llm)
 
         result = await rewriter.rewrite("一个正常长度的 query")
         assert result.rewrites == []
         assert result.needs_rewrite is False
-
-
-class TestQueryRewriterInferRoute:
-    """路由推断测试"""
-
-    @pytest.fixture
-    def rewriter(self):
-        with patch("langchain_openai.ChatOpenAI"):
-            return QueryRewriter()
-
-    @pytest.mark.parametrize(
-        "query,expected_route",
-        [
-            ("你好吗", "direct"),
-            ("有哪些 Rust 视频", "db_list"),
-            ("总结一下 Python", "db_content"),
-            ("Rust 所有权是什么", "vector"),
-        ],
-    )
-    async def test_route_inference(self, rewriter, query, expected_route):
-        result = await rewriter.rewrite(query)
-        assert result.suggested_route == expected_route
 
 
 class TestQueryRewriterIsSimpleQuery:
@@ -221,35 +226,6 @@ class TestQueryRewriterIsSimpleQuery:
         """空白字符处理"""
         assert rewriter._is_simple_query("   ") is True
         assert rewriter._is_simple_query("  hi  ") is True
-
-
-class TestQueryRewriterRouteInference:
-    """路由推断辅助方法测试"""
-
-    @pytest.fixture
-    def rewriter(self):
-        with patch("langchain_openai.ChatOpenAI"):
-            return QueryRewriter()
-
-    def test_direct_route_general_question(self, rewriter):
-        """通用闲聊问题"""
-        result = rewriter._infer_route("你好")
-        assert result == "direct"
-
-    def test_db_list_route(self, rewriter):
-        """列表类问题"""
-        result = rewriter._infer_route("有哪些 Rust 视频")
-        assert result == "db_list"
-
-    def test_db_content_route(self, rewriter):
-        """总结类问题"""
-        result = rewriter._infer_route("总结一下 Python")
-        assert result == "db_content"
-
-    def test_vector_route_default(self, rewriter):
-        """普通问题默认 vector"""
-        result = rewriter._infer_route("Rust 所有权是什么")
-        assert result == "vector"
 
 
 class TestQueryRewriterClose:

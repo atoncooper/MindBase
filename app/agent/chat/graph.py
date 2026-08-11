@@ -17,6 +17,7 @@ ReAct — not a deterministic pipeline.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -39,6 +40,16 @@ logger = logging.getLogger(__name__)
 
 def _has_tool_calls(msg: BaseMessage) -> bool:
     return bool(getattr(msg, "tool_calls", None))
+
+
+async def _noop_list() -> list:
+    """Placeholder coroutine for conditional asyncio.gather branches."""
+    return []
+
+
+async def _noop_str() -> str:
+    """Placeholder coroutine for conditional asyncio.gather branches."""
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -65,14 +76,33 @@ async def inject_context(
     uid = state.uid
     folder_ids = state.folder_ids
 
-    media_ids = await deps.get_media_ids(uid, folder_ids) if uid else []
+    # Run independent lookups concurrently: media_ids, conversation_context,
+    # and query rewrite (an LLM call) are mutually independent.  bvids depends
+    # on media_ids so it stays serial after the gather.  Rewrite failures are
+    # non-fatal (multi-path search is simply skipped); _safe_rewrite keeps that
+    # contract without letting an exception cancel the sibling lookups.
+    async def _safe_rewrite() -> Any:
+        try:
+            return await deps.rewrite_query(state.query)
+        except Exception:
+            logger.warning("[CHAT_AGENT] query rewrite skipped", exc_info=True)
+            return None
+
+    has_ctx = bool(state.session_id and state.uid)
+    media_ids, conversation_context, rewrite_result = await asyncio.gather(
+        deps.get_media_ids(uid, folder_ids) if uid else _noop_list(),
+        (
+            deps.get_conversation_context(state.session_id, state.uid)
+            if has_ctx
+            else _noop_str()
+        ),
+        _safe_rewrite(),
+    )
     bvids = await deps.get_bvids(media_ids) if media_ids else []
     has_data = len(bvids) > 0
     cloud_has_data = deps.has_cloud_backend()
 
-    conversation_context = ""
-    if state.session_id and state.uid:
-        conversation_context = await deps.get_conversation_context(state.session_id, state.uid)
+    if has_ctx:
         logger.info(
             "[CHAT_AGENT] conversation_context: session_id={} uid={} chars={}",
             state.session_id[:8] if state.session_id else "",
@@ -81,6 +111,15 @@ async def inject_context(
         )
         if conversation_context:
             logger.info("  context preview: {}", conversation_context[:200])
+
+    rewritten_queries: list[str] = []
+    if rewrite_result and rewrite_result.rewrites:
+        rewritten_queries = [rq.query for rq in rewrite_result.rewrites]
+        logger.info(
+            "[CHAT_AGENT] query rewrite: original='{}' rewrites={}",
+            state.query[:50],
+            rewritten_queries,
+        )
 
     # Detect context tools in the registry
     registered = runtime.list_tool_names()
@@ -114,6 +153,7 @@ async def inject_context(
         "has_data": has_data,
         "cloud_has_data": cloud_has_data,
         "conversation_context": conversation_context,
+        "rewritten_queries": rewritten_queries,
         "messages": [system, user],
     }
 
@@ -192,6 +232,8 @@ async def runtime_dispatch(
         implicit_kwargs["_workspace_pages"] = state.workspace_pages
     if state.upload_uuids:
         implicit_kwargs["_upload_uuids"] = state.upload_uuids
+    if state.rewritten_queries:
+        implicit_kwargs["_rewritten_queries"] = state.rewritten_queries
     if state.delegate_depth:
         implicit_kwargs["delegate_depth"] = state.delegate_depth
 

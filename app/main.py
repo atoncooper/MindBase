@@ -241,10 +241,10 @@ async def lifespan(app: FastAPI):
 
     app.state.usage_writer = await start_buffered_usage_writer()
 
-    # 初始化 QueryRewriter
-    from app.services.query import QueryRewriter
+    # 初始化 QueryRewriter (singleton; DBChatDeps also uses get_rewriter())
+    from app.services.query import get_rewriter
 
-    app.state.rewriter = QueryRewriter()
+    app.state.rewriter = get_rewriter()
     logger.info("[QUERY_REWRITE] QueryRewriter initialized")
 
     # === 崩溃恢复：扫描 pending 向量化任务 ===
