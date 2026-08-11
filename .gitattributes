@@ -1,0 +1,5 @@
+# APISIX YAML configs are bind-mounted into the Linux container. Enforce LF so
+# git's autocrlf doesn't convert them to CRLF on Windows checkout -- APISIX's
+# lua YAML parser mis-handles CRLF (init_etcd fails to read deployment.etcd,
+# routes in apisix.yaml may load with trailing \r).
+apisix/*.yaml text eol=lf

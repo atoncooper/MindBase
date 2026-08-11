@@ -1,29 +1,19 @@
-# APISIX standalone mode configuration
-# -------------------------------------
-# Standalone role reads routes/upstreams/consumers from apisix.yaml at startup.
-# No etcd dependency at runtime - simplest setup for a small internal gateway.
-# Mount this file to /usr/local/apisix/conf/config.yaml in the container.
+# APISIX standalone (yaml) mode configuration.
+# Routes/upstreams/consumers are read from apisix.yaml at startup; no etcd
+# dependency at runtime.
 #
-# deployment.etcd is required even in standalone mode: the image entrypoint
-# runs `apisix init_etcd` unconditionally, which crashes if etcd config is
-# absent. Pointing it at the shared etcd (also used by Milvus) lets init_etcd
-# connect and pass. Standalone runtime never uses etcd for routing - routes
-# come from apisix.yaml.
-
+# In APISIX 3.x, standalone = deployment.role "data_plane" +
+# role_data_plane.config_provider "yaml" (there is no "standalone" role).
+# With role=data_plane, the entrypoint skips `apisix init_etcd` entirely
+# (apisix/cli/ops.lua: `if env.deployment_role ~= "data_plane" then init_etcd`),
+# so no etcd section is needed. Admin API is disabled under yaml provider
+# (ops.lua dies if enable_admin && config_provider=="yaml"), so no admin_key.
 deployment:
-  role: standalone
-  role_standalone:
+  role: data_plane
+  role_data_plane:
     config_provider: yaml
-  etcd:
-    host:
-      - "http://etcd:2379"
-    prefix: /apisix
-    timeout: 30
 
 apisix:
-  admin_key:
-    key: ${APISIX_ADMIN_KEY:-admin-key-change-me}
-    role: admin
   # Control server: exposes /apisix/status for healthcheck (port 9090, in-container only)
   control:
     ip: 0.0.0.0
