@@ -128,6 +128,7 @@ class Video(Base):
     vectorized_at = Column(DateTime, nullable=True)
     vector_chunk_count = Column(Integer, default=0)
     vector_error = Column(Text, nullable=True)
+    vector_asr_version = Column(Integer, nullable=True)  # ASR version captured at last vectorization (change detection)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(

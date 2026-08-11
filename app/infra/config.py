@@ -192,6 +192,7 @@ class MilvusSection(_Section):
     metric_type: str = "COSINE"
     nlist: int = 1024
     nprobe: int = 16
+    hybrid_search: bool = False
 
 
 class MongoSection(_Section):

@@ -170,7 +170,12 @@ class MilvusVectorStore:
         upload_uuids: list[str] | None = None,
         partition_dt_start: datetime | None = None,
         partition_dt_end: datetime | None = None,
+        partition_names: list[str] | None = None,
     ) -> list[Document]:
+        """Dense vector search. ``partition_names`` (precomputed) takes
+        precedence over ``partition_dt_start/end`` and avoids recomputing
+        the partition list when called as a hybrid_search fallback.
+        """
         if self._client is None:
             logger.error(
                 "[MILVUS] search called on uninitialized client — returning empty results collection='{}'",
@@ -184,20 +189,12 @@ class MilvusVectorStore:
             "params": {"nprobe": self._config.nprobe},
         }
 
-        # Build partition list from date range
-        partition_names: list[str] | None = None
-        if partition_dt_start is not None and partition_dt_end is not None:
-            names = []
-            cur = partition_dt_start.replace(day=1)
-            end = partition_dt_end.replace(day=1)
-            while cur <= end:
-                names.append(cur.strftime("_%Y_%m"))
-                # next month
-                if cur.month == 12:
-                    cur = cur.replace(year=cur.year + 1, month=1)
-                else:
-                    cur = cur.replace(month=cur.month + 1)
-            partition_names = self._filter_existing_partitions(names)
+        # Build partition list from date range (or reuse precomputed list,
+        # e.g. when called as a hybrid_search fallback).
+        if partition_names is None and partition_dt_start is not None and partition_dt_end is not None:
+            partition_names = self._build_partition_names(
+                partition_dt_start, partition_dt_end
+            )
 
         # Build filter expression
         if bvids and self._is_cloud:
@@ -279,12 +276,15 @@ class MilvusVectorStore:
         k: int = 5,
         filter: dict[str, Any] | None = None,
         rrf_k: int = 60,
+        partition_dt_start: datetime | None = None,
+        partition_dt_end: datetime | None = None,
     ) -> list[Document]:
         """Hybrid retrieval: dense (semantic) + sparse (BM25) -> RRF fusion.
 
         Requires the collection to be created with the BM25 schema (text
-        analyzer + sparse_embedding + Function). Returns [] on legacy
-        collections lacking sparse_embedding.
+        analyzer + sparse_embedding + Function). On legacy collections
+        lacking sparse_embedding the underlying call raises; we catch and
+        fall back to dense-only ``search`` so callers always get results.
         """
         if self._client is None:
             logger.error(
@@ -303,6 +303,13 @@ class MilvusVectorStore:
         expr = self._build_filter_expr(filter) if filter else ""
         output_fields = _CLOUD_DRIVE_FIELDS if self._is_cloud else _BILIBILI_FIELDS
 
+        # Build partition list from date range (same as dense search)
+        partition_names: list[str] | None = None
+        if partition_dt_start is not None and partition_dt_end is not None:
+            partition_names = self._build_partition_names(
+                partition_dt_start, partition_dt_end
+            )
+
         dense_req = AnnSearchRequest(
             data=[query_embedding],
             anns_field="embedding",
@@ -318,18 +325,48 @@ class MilvusVectorStore:
             expr=expr,
         )
         logger.info(
-            "[MILVUS] hybrid_search collection='{}' k={} rrf_k={}",
+            "[MILVUS] hybrid_search collection='{}' k={} rrf_k={} partition_count={}",
             self._collection_name,
             k,
             rrf_k,
+            len(partition_names) if partition_names else 0,
         )
-        results = self._client.hybrid_search(
-            collection_name=self._collection_name,
-            reqs=[dense_req, sparse_req],
-            ranker=RRFRanker(rrf_k),
-            limit=k,
-            output_fields=output_fields,
-        )
+        hybrid_kwargs: dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "reqs": [dense_req, sparse_req],
+            "ranker": RRFRanker(rrf_k),
+            "limit": k,
+            "output_fields": output_fields,
+        }
+        if partition_names:
+            hybrid_kwargs["partition_names"] = partition_names
+        try:
+            results = self._client.hybrid_search(**hybrid_kwargs)
+        except Exception as e:
+            # Only fall back on schema mismatch (legacy collection without
+            # sparse_embedding field / BM25 function). Transient errors
+            # (network, auth, timeout) must propagate - a dense fallback
+            # would likely fail too and mask the real cause.
+            msg = str(e).lower()
+            schema_mismatch = any(
+                tok in msg
+                for tok in ("sparse_embedding", "function", "field", "schema")
+            )
+            if not schema_mismatch:
+                raise
+            logger.warning(
+                "[MILVUS] hybrid_search failed (legacy collection without "
+                "sparse_embedding?) - falling back to dense search: "
+                "collection='{}' error_type={}",
+                self._collection_name,
+                type(e).__name__,
+            )
+            return self.search(
+                query,
+                k=k,
+                filter=filter,
+                partition_names=partition_names,
+            )
         docs: list[Document] = []
         for topk in results:
             for hit in topk:
@@ -529,6 +566,22 @@ class MilvusVectorStore:
                 self._collection_name,
             )
         return existing
+
+    def _build_partition_names(
+        self, dt_start: datetime, dt_end: datetime
+    ) -> list[str] | None:
+        """Build month-based partition names (_YYYY_MM) from a date range,
+        filtered to partitions that actually exist in the collection."""
+        names: list[str] = []
+        cur = dt_start.replace(day=1)
+        end = dt_end.replace(day=1)
+        while cur <= end:
+            names.append(cur.strftime("_%Y_%m"))
+            if cur.month == 12:
+                cur = cur.replace(year=cur.year + 1, month=1)
+            else:
+                cur = cur.replace(month=cur.month + 1)
+        return self._filter_existing_partitions(names)
 
     # ── internals ─────────────────────────────────────────────────
 

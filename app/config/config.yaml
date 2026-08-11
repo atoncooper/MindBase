@@ -100,6 +100,7 @@ milvus:
   metric_type: COSINE                    # COSINE | L2 | IP
   nlist: 1024                            # IVF cluster count
   nprobe: 16                             # clusters searched per query
+  hybrid_search: false                   # dense+BM25 RRF fusion (requires BM25 schema; rebuild Milvus before enabling)
 
 
 # ============================================================

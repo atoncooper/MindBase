@@ -9,13 +9,18 @@ import re
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from app.config import settings
 from app.response.knowledge import VideoContent
+from app.services.rag.chunking import SemanticChunker
+from app.services.rag.prompts import (
+    fallback_system_prompt,
+    qa_system_prompt,
+    summary_system_prompt,
+)
 
 if TYPE_CHECKING:
     from app.services.llm.api_key_manager import ApiKeyManager
@@ -164,71 +169,14 @@ class RAGService:
             temperature=0.5,
         )
 
-        # 文本分割器
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " "],
-        )
+        # Semantic chunker (outline-aware, builds embedding_text with title
+        # prefix). Shared pattern with cloud-drive ingestion (vectorize.py).
+        self.chunker = SemanticChunker()
 
-        # 问答提示模板
-        self.qa_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """你是一个知识库助手，专门基于用户收藏的 B站视频内容来回答问题。
-
-请遵循以下规则：
-1. 根据提供的视频内容来回答问题
-2. 回答要自然、友好、有条理
-3. 可以引用相关的视频标题作为来源
-4. 如果多个视频涉及相同话题，请综合它们的内容
-
-视频内容：
-{context}
-""",
-                ),
-                ("human", "{question}"),
-            ]
-        )
-
-        # 无内容时的通用回复模板
-        self.fallback_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """你是一个友好的助手。用户在使用一个B站收藏夹知识库系统。
-
-当前情况：知识库中没有找到与用户问题相关的内容。
-
-请：
-1. 友好地回应用户的问题
-2. 如果能根据常识简单回答，可以简要回答
-3. 建议用户构建更多收藏夹内容，或者换个问法
-4. 保持自然、不要死板
-""",
-                ),
-                ("human", "{question}"),
-            ]
-        )
-
-        # 摘要提示模板
-        self.summary_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """你是一个内容总结专家。请对以下视频字幕内容进行总结。
-
-要求：
-1. 提取核心要点（3-5个）
-2. 生成一段简洁的总结（100-200字）
-3. 保持原意，不要添加额外信息
-
-字幕内容：""",
-                ),
-                ("human", "{content}"),
-            ]
-        )
+        # Prompt templates are sourced from app.services.rag.prompts at
+        # call time (qa_system_prompt / fallback_system_prompt /
+        # summary_system_prompt) to keep a single source of truth for the
+        # assistant role and safety constraints.
 
     def add_video_content(
         self,
@@ -247,58 +195,53 @@ class RAGService:
         Returns:
             添加的文档块数量
         """
-        # 构建完整内容（正文不带标题，避免标题相似度主导召回）
+        # Semantic chunking: outline-aware segmentation + embedding_text with
+        # title prefix for stronger semantic recall (matches cloud-drive path
+        # in vectorize.py). Outline is passed to the chunker so it can split
+        # by section boundaries instead of being concatenated into the text.
         title = video.title or "未知标题"
-        content_parts: List[str] = []
+        content = (video.content or "").strip()
 
-        if video.content and video.content.strip():
-            content_parts.append(video.content.strip())
-
-        # 如果有分段提纲，添加结构化信息
-        if video.outline:
-            outline_text = "\n## 内容提纲\n"
-            for item in video.outline:
-                item_title = item.get("title", "") or ""
-                outline_text += f"\n### {item_title}\n"
-                for point in item.get("points", []):
-                    point_content = point.get("content", "") or ""
-                    if point_content:
-                        outline_text += f"- {point_content}\n"
-            if outline_text.strip() != "## 内容提纲":
-                content_parts.append(outline_text)
-
-        full_content = "\n\n".join(content_parts).strip()
-
-        # 验证内容不为空
-        if not full_content or len(full_content.strip()) < 10:
+        if not content or len(content) < 10:
             logger.warning("内容太少，跳过: bvid_present={}", bool(video.bvid))
             return 0
 
-        # 分块
-        chunks = self.text_splitter.split_text(full_content)
-
+        chunks = self.chunker.chunk(
+            content,
+            video_title=title,
+            page_title=page_title or title,
+            outline=video.outline,
+        )
         if not chunks:
             logger.warning("没有生成文档块: bvid_present={}", bool(video.bvid))
             return 0
 
-        # 过滤空内容块
-        valid_chunks = [c for c in chunks if c and c.strip() and len(c.strip()) > 5]
+        # Filter out empty / too-short chunks
+        valid_chunks = [
+            c
+            for c in chunks
+            if c.embedding_text and c.embedding_text.strip() and len(c.embedding_text.strip()) > 5
+        ]
         if not valid_chunks:
             logger.warning("没有有效的文档块: bvid_present={}", bool(video.bvid))
             return 0
 
-        # 创建文档
+        # Build documents; page_content is the embedding_text (title-prefixed)
+        # so both embedding and BM25 text benefit from the title context.
         documents = []
         for i, chunk in enumerate(valid_chunks):
             doc = Document(
-                page_content=chunk.strip(),  # 确保是干净的字符串
+                page_content=chunk.embedding_text,
                 metadata={
                     "bvid": video.bvid,
-                    "title": title,
                     "page_index": page_index,
+                    "chunk_index": i,
+                    "chunk_id": f"{video.bvid}:{page_index}:{i}",
+                    "title": title,
                     "page_title": page_title or title,
                     "source": video.source.value,
-                    "chunk_index": i,
+                    "section_title": chunk.section_title or "",
+                    "content_type": chunk.content_type,
                     "url": f"https://www.bilibili.com/video/{video.bvid}?p={page_index + 1}",
                 },
             )
@@ -361,6 +304,186 @@ class RAGService:
 
         return {"success": success, "failed": failed, "chunks": total_chunks}
 
+    def _build_search_filter(
+        self,
+        query: str,
+        bvids: Optional[List[str]],
+        workspace_pages: Optional[List[dict]],
+    ) -> tuple[Optional[dict], list[str]]:
+        """Build the Milvus filter condition and extract filenames from the query.
+
+        Returns (filter_cond, filenames). In workspace mode the filter is a
+        bvid $in; page_index is refined later in-memory by _workspace_filter.
+        """
+        filenames = _extract_filenames(query)
+        if filenames:
+            logger.info("[RAG] detected filenames in query: count={}", len(filenames))
+
+        if workspace_pages:
+            for wp in workspace_pages:
+                bvid_val = wp.get("bvid")
+                page_idx = wp.get("page_index", 0)
+                if not isinstance(bvid_val, str):
+                    logger.warning(
+                        "[RAG_SEARCH_DEBUG] workspace_pages 中 bvid 类型异常: type={}",
+                        type(bvid_val).__name__,
+                    )
+                if not isinstance(page_idx, int):
+                    logger.warning(
+                        "[RAG_SEARCH_DEBUG] workspace_pages 中 page_index 类型异常: type={}",
+                        type(page_idx).__name__,
+                    )
+            try:
+                wp_bvids = list(set(wp.get("bvid") for wp in workspace_pages))
+            except TypeError as te:
+                logger.warning(
+                    "[RAG_SEARCH_DEBUG] wp_bvids set 构建失败: error_type={}",
+                    type(te).__name__,
+                )
+                raise
+            return {"bvid": {"$in": wp_bvids}}, filenames
+
+        if bvids:
+            return {"bvid": {"$in": bvids}}, filenames
+        return None, filenames
+
+    def _parallel_search(
+        self,
+        query: str,
+        filter_cond: Optional[dict],
+        filenames: list[str],
+        effective_k: int,
+        partition_start: datetime,
+        partition_end: datetime,
+        uid: Optional[int],
+        upload_uuids: Optional[List[str]],
+    ) -> List[Document]:
+        """Parallel search bilibili_videos + cloud_drive collections.
+
+        B站 search only runs when a scope filter is present - without one the
+        full-scan produces too much noise (embedding space shared with cloud).
+        Cloud search is filtered by uid + inherited upload_uuids + filename
+        title like-match.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from app.infra.config import config
+        use_hybrid = getattr(config.milvus, "hybrid_search", False)
+
+        search_kwargs: dict = {"k": effective_k}
+        if filter_cond:
+            search_kwargs["filter"] = filter_cond
+
+        docs: List[Document] = []
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bilibili_fut = None
+            if filter_cond and not filenames:
+                if use_hybrid:
+                    bilibili_fut = pool.submit(
+                        self.vectorstore.hybrid_search,
+                        query,
+                        k=effective_k,
+                        filter=filter_cond,
+                        partition_dt_start=partition_start,
+                        partition_dt_end=partition_end,
+                    )
+                else:
+                    bilibili_fut = pool.submit(
+                        self.vectorstore.search,
+                        query,
+                        partition_dt_start=partition_start,
+                        partition_dt_end=partition_end,
+                        **search_kwargs,
+                    )
+            cloud_fut = None
+            if self.cloud_backend is not None:
+                cloud_filter: dict | None = (
+                    {"uid": uid} if uid is not None else None
+                )
+                # Inherited scope from last turn: restrict to specific cloud docs
+                if upload_uuids:
+                    if cloud_filter is None:
+                        cloud_filter = {}
+                    cloud_filter["upload_uuid"] = {"$in": upload_uuids}
+                    logger.info(
+                        "[RAG] cloud search with inherited scope: upload_uuid count={}",
+                        len(upload_uuids),
+                    )
+                # When query mentions a filename, restrict cloud search by title
+                if filenames:
+                    if cloud_filter is None:
+                        cloud_filter = {}
+                    # Use like-match so "report.pdf" also matches
+                    # stored titles like "/path/to/report.pdf"
+                    cloud_filter["title"] = {"$like": f"%{filenames[0]}%"}
+                    logger.info(
+                        "[RAG] cloud search with title like-filter: filename_count={}",
+                        len(filenames),
+                    )
+                if use_hybrid:
+                    cloud_fut = pool.submit(
+                        self.cloud_backend.hybrid_search,
+                        query,
+                        k=effective_k,
+                        filter=cloud_filter,
+                    )
+                else:
+                    cloud_fut = pool.submit(
+                        self.cloud_backend.search,
+                        query,
+                        k=effective_k,
+                        filter=cloud_filter,
+                    )
+            else:
+                logger.info(
+                    "[RAG] cloud_backend is None - cloud document search SKIPPED (Milvus not connected?)"
+                )
+
+            if bilibili_fut:
+                try:
+                    docs.extend(bilibili_fut.result())
+                except Exception as e:
+                    logger.warning(
+                        "[RAG] bilibili search skipped: error_type={}",
+                        type(e).__name__,
+                    )
+            if cloud_fut:
+                try:
+                    cloud_docs = cloud_fut.result()
+                    logger.info(
+                        "[RAG] cloud_backend search: query_len={} uid_present={} -> {} results",
+                        len(query),
+                        uid is not None,
+                        len(cloud_docs),
+                    )
+                    docs.extend(cloud_docs)
+                except Exception as e:
+                    logger.warning(
+                        "[RAG] cloud_backend search skipped: error_type={}",
+                        type(e).__name__,
+                    )
+        # When querying by filename and no results found, do NOT fall back to
+        # unfiltered semantic search - it returns irrelevant docs and confuses
+        # the LLM. Instead return empty so the LLM can clearly say "file not
+        # found in knowledge base".
+        return docs
+
+    @staticmethod
+    def _workspace_filter(
+        docs: List[Document], workspace_pages: Optional[List[dict]]
+    ) -> List[Document]:
+        """Refine docs to the exact (bvid, page_index) pairs in workspace mode."""
+        if not workspace_pages:
+            return docs
+        wp_set = {
+            (wp.get("bvid"), wp.get("page_index", 0)) for wp in workspace_pages
+        }
+        return [
+            d
+            for d in docs
+            if (d.metadata.get("bvid"), d.metadata.get("page_index", 0)) in wp_set
+        ]
+
     def search(
         self,
         query: str,
@@ -384,6 +507,8 @@ class RAGService:
             uid: 可选，用户 ID，用于云盘搜索时隔离数据
             partition_start: 可选，分区起始日期，默认最近12个月
             partition_end: 可选，分区结束日期
+            upload_uuids: 可选，云盘文档范围（upload_uuid $in 过滤），
+                          通常继承上一轮检索的云盘命中
         """
         if not query or not query.strip():
             logger.warning("检索查询为空")
@@ -396,150 +521,32 @@ class RAGService:
             partition_end = datetime.now(timezone.utc)
 
         try:
-            # 构建过滤条件
-            filter_cond = None
-            filenames = _extract_filenames(query)
-            if filenames:
-                logger.info(
-                    "[RAG] detected filenames in query: count={}", len(filenames)
-                )
-
-            if workspace_pages:
-                # 工作区模式：精确匹配 bvid + page_index
-                conditions = []
-                for wp in workspace_pages:
-                    bvid_val = wp.get("bvid")
-                    page_idx = wp.get("page_index", 0)
-                    # 诊断：检查是否有异常类型
-                    if not isinstance(bvid_val, str):
-                        logger.warning(
-                            "[RAG_SEARCH_DEBUG] workspace_pages 中 bvid 类型异常: type={}",
-                            type(bvid_val).__name__,
-                        )
-                    if not isinstance(page_idx, int):
-                        logger.warning(
-                            "[RAG_SEARCH_DEBUG] workspace_pages 中 page_index 类型异常: type={}",
-                            type(page_idx).__name__,
-                        )
-                    conditions.append({"bvid": bvid_val, "page_index": page_idx})
-                if conditions:
-                    # Milvus $or is not yet needed — simplified bvid $in filter
-                    # 这里用简化的方式：先用 bvids 过滤，再在结果中过滤 page_index
-                    try:
-                        wp_bvids = list(set(wp.get("bvid") for wp in workspace_pages))
-                    except TypeError as te:
-                        logger.warning(
-                            "[RAG_SEARCH_DEBUG] wp_bvids set 构建失败: error_type={}",
-                            type(te).__name__,
-                        )
-                        raise
-                    filter_cond = {"bvid": {"$in": wp_bvids}}
-            elif bvids:
-                filter_cond = {"bvid": {"$in": bvids}}
-
-            # 并行搜索 Milvus bilibili_videos + cloud_drive
-            from concurrent.futures import ThreadPoolExecutor
+            filter_cond, filenames = self._build_search_filter(
+                query, bvids, workspace_pages
+            )
 
             # Over-recall so the reranker has a candidate pool to pick from.
-            # When rerank is disabled, recall exactly k (identical to before).
+            # When rerank is disabled, recall exactly k.
             if settings.rerank_enabled:
                 effective_k = max(getattr(settings, "rerank_top_n", 30), k)
             else:
                 effective_k = k
 
-            search_kwargs = {"k": effective_k}
-            if filter_cond:
-                search_kwargs["filter"] = filter_cond
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                # B站 search: only run when a scope filter is present
-                # (bvids / workspace_pages).  Without a filter, full-scan
-                # over all B站 videos produces too much noise — the
-                # embedding space is shared with cloud docs so unrelated
-                # video chunks frequently leak in.
-                bilibili_fut = None
-                has_bilibili_scope = bool(filter_cond) or bool(workspace_pages)
-                if has_bilibili_scope and not filenames:
-                    bilibili_fut = pool.submit(
-                        self.vectorstore.search,
-                        query,
-                        partition_dt_start=partition_start,
-                        partition_dt_end=partition_end,
-                        **search_kwargs,
-                    )
-                cloud_fut = None
-                if self.cloud_backend is not None:
-                    cloud_filter: dict | None = (
-                        {"uid": uid} if uid is not None else None
-                    )
-                    # Inherited scope from last turn: restrict to specific cloud docs
-                    if upload_uuids:
-                        if cloud_filter is None:
-                            cloud_filter = {}
-                        cloud_filter["upload_uuid"] = {"$in": upload_uuids}
-                        logger.info(
-                            "[RAG] cloud search with inherited scope: upload_uuid count={}",
-                            len(upload_uuids),
-                        )
-                    # When query mentions a filename, restrict cloud search by title
-                    if filenames:
-                        if cloud_filter is None:
-                            cloud_filter = {}
-                        # Use like-match so "report.pdf" also matches
-                        # stored titles like "/path/to/report.pdf"
-                        cloud_filter["title"] = {"$like": f"%{filenames[0]}%"}
-                        logger.info(
-                            "[RAG] cloud search with title like-filter: filename_count={}",
-                            len(filenames),
-                        )
-                    cloud_fut = pool.submit(
-                        self.cloud_backend.search,
-                        query,
-                        k=effective_k,
-                        filter=cloud_filter,
-                    )
-                else:
-                    logger.error(
-                        "[RAG] cloud_backend is None — cloud document search SKIPPED (Milvus not connected?)"
-                    )
-
-                docs = list(bilibili_fut.result()) if bilibili_fut else []
-                if cloud_fut:
-                    try:
-                        cloud_docs = cloud_fut.result()
-                        logger.info(
-                            "[RAG] cloud_backend search: query_len={} uid_present={} → {} results",
-                            len(query),
-                            uid is not None,
-                            len(cloud_docs),
-                        )
-                        docs.extend(cloud_docs)
-                    except Exception as e:
-                        logger.warning(
-                            "[RAG] cloud_backend search skipped: error_type={}",
-                            type(e).__name__,
-                        )
-
-                # When querying by filename and no results found,
-                # do NOT fall back to unfiltered semantic search — it returns
-                # irrelevant docs and confuses the LLM.  Instead return empty
-                # so the LLM can clearly say "file not found in knowledge base".
-
-            # 工作区模式：进一步按 page_index 精确过滤
-            if workspace_pages:
-                wp_set = {
-                    (wp.get("bvid"), wp.get("page_index", 0)) for wp in workspace_pages
-                }
-                docs = [
-                    d
-                    for d in docs
-                    if (d.metadata.get("bvid"), d.metadata.get("page_index", 0))
-                    in wp_set
-                ]
+            docs = self._parallel_search(
+                query,
+                filter_cond,
+                filenames,
+                effective_k,
+                partition_start,
+                partition_end,
+                uid,
+                upload_uuids,
+            )
+            docs = self._workspace_filter(docs, workspace_pages)
 
             # Rerank stage. Runs after merge + workspace filter so the
             # reranker sees the same candidate pool the consumer would have
-            # seen — minus the k-cut. NullReranker just slices, so this is
+            # seen - minus the k-cut. NullReranker just slices, so this is
             # safe to call unconditionally; we keep the flag check only to
             # avoid the cost when disabled.
             from app.services.rag.rerank import get_reranker
@@ -559,8 +566,8 @@ class RAGService:
                 )
 
             return docs
-        except Exception as e:
-            logger.warning("向量检索失败: error_type={}", type(e).__name__)
+        except Exception:
+            logger.warning("向量检索失败", exc_info=True)
             return []
 
     async def _fallback_answer(self, question: str, reason: str = "") -> dict:
@@ -575,9 +582,12 @@ class RAGService:
             回答结果
         """
         try:
+            system_prompt = fallback_system_prompt(reason=reason)
             chain = (
                 {"question": RunnablePassthrough()}
-                | self.fallback_prompt
+                | ChatPromptTemplate.from_messages(
+                    [("system", system_prompt), ("human", "{question}")]
+                )
                 | self.llm
                 | StrOutputParser()
             )
@@ -665,9 +675,12 @@ class RAGService:
 
         # 构建链并执行
         try:
+            system_prompt = qa_system_prompt(context)
             chain = (
-                {"context": lambda _: context, "question": RunnablePassthrough()}
-                | self.qa_prompt
+                {"question": RunnablePassthrough()}
+                | ChatPromptTemplate.from_messages(
+                    [("system", system_prompt), ("human", "{question}")]
+                )
                 | self.llm
                 | StrOutputParser()
             )
@@ -694,9 +707,12 @@ class RAGService:
         if len(content) > max_length:
             content = content[:max_length] + "\n...(内容已截断)"
 
+        system_prompt = summary_system_prompt()
         chain = (
             {"content": RunnablePassthrough()}
-            | self.summary_prompt
+            | ChatPromptTemplate.from_messages(
+                [("system", system_prompt), ("human", "{content}")]
+            )
             | self.llm
             | StrOutputParser()
         )
