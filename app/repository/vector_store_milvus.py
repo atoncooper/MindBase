@@ -694,7 +694,36 @@ class MilvusVectorStore:
                     # skipped by the idempotency check.
                     self.was_recreated = True
                 else:
-                    self._client.load_collection(self._collection_name)
+                    try:
+                        self._client.load_collection(self._collection_name)
+                    except Exception as load_err:
+                        # Half-created collection: the sparse_embedding field
+                        # exists but its BM25 index was never created (e.g.
+                        # index creation failed/interrupted on first create).
+                        # Create the missing index and retry load once.
+                        if (
+                            self._hybrid_enabled
+                            and "sparse_embedding" in str(load_err)
+                            and "index" in str(load_err)
+                        ):
+                            logger.warning(
+                                "[MILVUS] collection '{}' missing sparse_embedding "
+                                "index - creating SPARSE_INVERTED_INDEX (BM25), retrying load...",
+                                self._collection_name,
+                            )
+                            repair_idx = self._client.prepare_index_params()
+                            repair_idx.add_index(
+                                field_name="sparse_embedding",
+                                index_type="SPARSE_INVERTED_INDEX",
+                                metric_type="BM25",
+                            )
+                            self._client.create_index(
+                                collection_name=self._collection_name,
+                                index_params=repair_idx,
+                            )
+                            self._client.load_collection(self._collection_name)
+                        else:
+                            raise
                     logger.info(
                         "[MILVUS] collection '{}' loaded ({} entities)",
                         self._collection_name,
