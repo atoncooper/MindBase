@@ -1,13 +1,24 @@
 # APISIX standalone mode configuration
 # -------------------------------------
 # Standalone role reads routes/upstreams/consumers from apisix.yaml at startup.
-# No etcd dependency - simplest setup for a small internal gateway.
+# No etcd dependency at runtime - simplest setup for a small internal gateway.
 # Mount this file to /usr/local/apisix/conf/config.yaml in the container.
+#
+# deployment.etcd is required even in standalone mode: the image entrypoint
+# runs `apisix init_etcd` unconditionally, which crashes if etcd config is
+# absent. Pointing it at the shared etcd (also used by Milvus) lets init_etcd
+# connect and pass. Standalone runtime never uses etcd for routing - routes
+# come from apisix.yaml.
 
 deployment:
   role: standalone
   role_standalone:
     config_provider: yaml
+  etcd:
+    host:
+      - "http://etcd:2379"
+    prefix: /apisix
+    timeout: 30
 
 apisix:
   admin_key:
