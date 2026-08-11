@@ -8,7 +8,10 @@ The graph builder injects concrete implementations at build time.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from app.services.query.types import RewriteResult
 
 
 @runtime_checkable
@@ -33,3 +36,5 @@ class ChatDeps(Protocol):
         media_ids: list[int],
         question: str,
     ) -> bool: ...
+
+    async def rewrite_query(self, query: str) -> RewriteResult | None: ...

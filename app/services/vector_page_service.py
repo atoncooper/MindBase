@@ -97,6 +97,9 @@ class VectorPageService:
             page.is_vectorized = "done"
             page.vectorized_at = datetime.now(timezone.utc)
             page.vector_chunk_count = actual_count
+            # Record the ASR version the existing vectors correspond to, so
+            # future content changes are detectable (_content_changed).
+            page.vector_asr_version = page.version
             need_commit = True
             vector_exists = True
 
@@ -395,6 +398,10 @@ class VectorPageService:
                 page = result.scalar_one_or_none()
                 if not page:
                     raise Exception(f"Video not found: bvid={bvid}, cid={cid}")
+                # Capture the ASR version whose content we are about to
+                # vectorize, so Phase 5 records the correct version even if
+                # ASR is re-triggered in between.
+                content_version = page.version
 
                 text = ""
                 from app.infra.mongo import is_enabled as _mongo_ok
@@ -435,6 +442,7 @@ class VectorPageService:
                 page.is_vectorized = "done"
                 page.vectorized_at = datetime.now(timezone.utc)
                 page.vector_chunk_count = chunk_count
+                page.vector_asr_version = content_version
                 await db.commit()
 
             await self.tracker.complete(task_id, result={"chunk_count": chunk_count})
@@ -489,5 +497,12 @@ class VectorPageService:
         self.rag.delete_page_vectors(bvid, page_index)
 
     def _content_changed(self, page: Video) -> bool:
-        """Check if content has changed (for idempotency)."""
-        return False  # Future: compare content hash
+        """Check if ASR content has changed since last vectorization.
+
+        Compares the current ASR version against the version captured when
+        vectors were last written. Returns False for legacy rows where no
+        version was recorded (trust existing vectors, avoid mass re-vector).
+        """
+        if page.vector_asr_version is None:
+            return False
+        return page.version != page.vector_asr_version

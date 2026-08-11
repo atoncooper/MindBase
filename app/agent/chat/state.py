@@ -67,6 +67,10 @@ class ChatAgentState(BaseModel):
     conversation_context: str = Field(
         default="", description="Injected conversation context."
     )
+    rewritten_queries: list[str] = Field(
+        default_factory=list,
+        description="Rewritten queries from QueryRewriter (multi-path vector search).",
+    )
 
     # ── messages (LangGraph reducer for tool-call accumulation) ───────
     messages: Annotated[list, add_messages] = Field(

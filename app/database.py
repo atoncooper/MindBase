@@ -55,6 +55,7 @@ async def _migrate_add_columns():
         ("video", "vectorized_at", "TIMESTAMP"),
         ("video", "vector_chunk_count", "INTEGER DEFAULT 0"),
         ("video", "vector_error", "TEXT"),
+        ("video", "vector_asr_version", "INTEGER"),
         # Plan 0012: Quiz pages mode columns
         ("quiz_sets", "source_type", "VARCHAR(20) DEFAULT 'folder'"),
         ("quiz_sets", "source_pages", "TEXT"),

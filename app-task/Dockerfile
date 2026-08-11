@@ -4,6 +4,11 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /src
 
+# Use China mirror for Go modules (goproxy.cn) with direct fallback.
+# GOSUMDB off: sum.golang.org is often unreachable behind GFW.
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+
 # Cache deps first
 COPY go.mod go.sum* ./
 RUN go mod download || true

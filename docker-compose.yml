@@ -2,6 +2,18 @@
 # MindBase — full-stack development / deployment
 # ================================================================
 # App + infra + task-quiz (apisix + app-task): docker compose up -d
+# NOTE: services tagged with "" profile start by default, so plain
+# `docker compose up` actually starts the FULL stack (incl. Milvus). Named
+# profiles are additive only when no --profile is given; once you pass
+# --profile X, "" services no longer auto-start. Profile membership below is
+# set so every depends_on target is present in each profile its dependents
+# run in.
+#
+# Full stack (app + infra + Milvus + apisix + app-task):  docker compose up -d
+# Task-quiz only (app + apisix + app-task, no Milvus):    docker compose --profile task up -d
+# + Milvus, no task-quiz:                                 docker compose --profile storage up -d
+# App only (external DB):                                 docker compose --profile standalone up -d
+# Everything + admin tools (redis-commander, mongo-express): docker compose --profile full up -d
 # + Milvus (向量库):                            docker compose --profile storage up -d
 # Everything (含 Milvus + task-quiz):           docker compose --profile full up -d
 # App only (external DB, 无 infra):             docker compose --profile standalone up -d
@@ -134,6 +146,14 @@ services:
         condition: service_started
       backend:
         condition: service_healthy
+      # nginx proxies apisix (upstream) + minio (direct proxy_pass in
+      # locations.conf). Both hostnames are resolved at nginx startup; if
+      # either container isn't running yet nginx crashes with
+      # "host not found in upstream". Wait for them to be ready first.
+      apisix:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -210,7 +230,7 @@ services:
   milvus:
     image: milvusdb/milvus:v2.4.17
     container_name: mind-base-milvus
-    profiles: ["storage", "full"]
+    profiles: ["", "storage", "full"]
     command: milvus run standalone
     ports:
       - "${MILVUS_PORT:-19530}:19530"
@@ -234,7 +254,10 @@ services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
     container_name: mind-base-etcd
-    profiles: ["storage", "full"]
+    # APISIX (init_etcd) and Milvus both depend on etcd, so etcd must be
+    # available in every profile where either runs: "", standalone, storage,
+    # task, full.
+    profiles: ["", "standalone", "storage", "task", "full"]
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -259,7 +282,9 @@ services:
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
     container_name: mind-base-minio
-    profiles: ["storage", "full"]
+    # nginx (proxy_pass) and Milvus both depend on minio; add standalone so
+    # nginx's standalone profile doesn't break the dependency graph.
+    profiles: ["", "standalone", "storage", "full"]
     ports:
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
@@ -319,22 +344,47 @@ services:
   # ==============================================================
   # Task scheduling stack (profile=task)
   # Start: docker compose --profile task up -d
-  #   apisix            - API gateway (standalone mode, no etcd)
+  #   apisix            - API gateway (standalone mode; init_etcd needs etcd,
+  #                       which is included in the task profile)
   #   app-task          - task executor (Go + self-polling scheduler, no xxl-job)
   # ==============================================================
 
   apisix:
     image: apache/apisix:3.11.0-debian
     container_name: mind-base-apisix
-    profiles: ["", "task", "full"]
+    # nginx depends on apisix in "", standalone, storage, full; app-task needs
+    # it in task. Share all of nginx's profiles plus task to cover both paths.
+    profiles: ["", "standalone", "storage", "task", "full"]
     depends_on:
       backend:
+        condition: service_healthy
+      # init_etcd (run by the entrypoint) connects to etcd:2379; wait for it
+      # to be healthy first so APISIX doesn't crash on startup.
+      etcd:
         condition: service_healthy
     ports:
       - "${APISIX_PORT:-9080}:9080"
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+    # APISIX's lua-http client honors HTTP_PROXY. The host's
+    # ~/.docker/config.json injects HTTP_PROXY at runtime with higher priority
+    # than compose environment, which misroutes internal etcd traffic to the
+    # proxy and fails with "connection reset by peer". The compose environment
+    # HTTP_PROXY= below is NOT enough (docker treats empty string as unset, so
+    # config.json's default wins). Override the entrypoint to unset proxy vars
+    # before exec'ing the original entrypoint - guarantees the APISIX process
+    # env has no proxy regardless of config.json, making the fix self-contained.
+    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; exec /docker-entrypoint.sh docker-start"]
+    environment:
+      # Belt-and-suspenders: also clear via environment (documents intent;
+      # may not override config.json runtime injection on its own).
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/apisix/status"]

@@ -62,8 +62,8 @@ class RewriteResult:
     """QueryRewriter 返回的完整改写结果"""
     original: str                   # 用户原始 query
     rewrites: List[RewrittenQuery]  # 改写结果列表，按 confidence 降序
-    suggested_route: str            # 建议路由："direct" | "db_list" | "db_content" | "vector"
-    needs_rewrite: bool           # 是否需要改写（简单 query 可跳过）
+    needs_rewrite: bool             # 是否需要改写（简单 query 可跳过）
+    suggested_route: Optional[str] = None  # legacy 路由提示（已废弃，AgentHarness 全权路由；保留字段向后兼容）
 
 
 # ---------------------------------------------------------------------------

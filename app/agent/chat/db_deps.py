@@ -8,13 +8,16 @@ without depending on the router layer.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Collection, FavoriteFolder
 from app.services.rag import get_rag_service
+
+if TYPE_CHECKING:
+    from app.services.query.types import RewriteResult
 
 logger = logging.getLogger(__name__)
 
@@ -197,3 +200,19 @@ class DBChatDeps:
     ) -> bool:
         # Heuristic: if we have media_ids, the question is likely related
         return bool(media_ids)
+
+    async def rewrite_query(self, query: str) -> RewriteResult | None:
+        """Rewrite the user query to improve retrieval recall.
+
+        Returns a RewriteResult or None on failure. inject_context extracts
+        the rewritten query strings for multi-path vector search.
+        """
+        if not query or not query.strip():
+            return None
+        from app.services.query import get_rewriter
+
+        try:
+            return await get_rewriter().rewrite(query)
+        except Exception:
+            logger.warning("[CHAT_DEPS] query rewrite failed, skipping", exc_info=True)
+            return None

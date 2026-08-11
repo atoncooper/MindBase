@@ -15,8 +15,24 @@ from app.services.query.types import (
     CONFIDENCE_THRESHOLD,
 )
 
+_rewriter: "QueryRewriter | None" = None
+
+
+def get_rewriter() -> "QueryRewriter":
+    """Return the process-wide QueryRewriter singleton (lazy-init).
+
+    Lets DBChatDeps / inject_context access the rewriter without a FastAPI
+    app.state dependency.
+    """
+    global _rewriter
+    if _rewriter is None:
+        _rewriter = QueryRewriter()
+    return _rewriter
+
+
 __all__ = [
     "QueryRewriter",
+    "get_rewriter",
     "RewriteType",
     "RewriteResult",
     "RewrittenQuery",

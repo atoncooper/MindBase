@@ -3,7 +3,6 @@ Query Rewriter - Main Service Entry
 
 QueryRewriter 主入口：协调多个改写策略，对用户 query 进行改写。
 """
-import re
 from typing import List
 
 from app.config import settings
@@ -47,7 +46,6 @@ class QueryRewriter:
             return RewriteResult(
                 original=query,
                 rewrites=[],
-                suggested_route=self._infer_route(query),
                 needs_rewrite=False,
             )
 
@@ -59,7 +57,6 @@ class QueryRewriter:
                     return RewriteResult(
                         original=query,
                         rewrites=[result],
-                        suggested_route=self._infer_route(query),
                         needs_rewrite=True,
                     )
                 # 命中策略但置信度不足 → 降级为直接检索
@@ -73,7 +70,6 @@ class QueryRewriter:
         return RewriteResult(
             original=query,
             rewrites=[],
-            suggested_route=self._infer_route(query),
             needs_rewrite=False,
         )
 
@@ -83,36 +79,6 @@ class QueryRewriter:
             return True
         general_terms = ["你好", "嗨", "哈喽", "谢谢", "在吗", "你是谁"]
         return any(term in query for term in general_terms)
-
-    def _infer_route(self, query: str) -> str:
-        """根据 query 特征推断建议路由（作为 chat.py 路由的辅助参考）"""
-        if self._is_general_question(query):
-            return "direct"
-        if self._is_list_question(query):
-            return "db_list"
-        if self._is_summary_question(query):
-            return "db_content"
-        return "vector"
-
-    def _is_general_question(self, query: str) -> bool:
-        """通用闲聊/与收藏无关的问题"""
-        general_terms = ["你好", "嗨", "哈喽", "hello", "hi", "在吗", "你是谁", "你能做什么", "谢谢", "晚安", "早安", "早上好"]
-        cleaned = re.sub(r"[\W_]+", "", query, flags=re.UNICODE)
-        lowered = cleaned.lower()
-        residual = lowered
-        for term in general_terms:
-            residual = residual.replace(term.lower(), "")
-        return residual == ""
-
-    def _is_list_question(self, query: str) -> bool:
-        """列表/清单类问题"""
-        list_terms = ["有哪些", "有什么", "列表", "清单", "目录", "都有哪些", "列出", "罗列", "多少个", "几个"]
-        return any(term in query for term in list_terms)
-
-    def _is_summary_question(self, query: str) -> bool:
-        """总结/概括类问题"""
-        summary_terms = ["总结", "概述", "概括", "分析", "梳理", "提炼", "回顾", "复盘", "要点", "重点", "关键点", "核心", "讲了什么", "讲些什么"]
-        return any(term in query for term in summary_terms)
 
     async def close(self):
         """关闭服务，清理资源（lifespan 关闭时调用）"""
