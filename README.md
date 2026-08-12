@@ -1,3 +1,5 @@
+
+
 # MindBase 知识库
 
 MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转化为可检索、可问答、可复习的知识。
@@ -377,7 +379,7 @@ pytest app/test/real_agent_harness -v -s
 pytest app/test/ -v
 ```
 
-### 前端测试
+### 前端 Lint
 
 ```bash
 cd frontendv2
