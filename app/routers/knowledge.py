@@ -19,8 +19,6 @@ from app.database import get_db, get_db_context
 from app.infra.errors import internal_error
 from app.response.knowledge import VideoInfo, VideosResponse
 from app.services.bilibili import BilibiliService
-from app.services.asr import ASRService
-from app.services.content_fetcher import ContentFetcher
 from app.services.rag import get_rag_service
 from app.routers.auth import get_current_uid, require_admin, _get_bili_cookies_by_uid
 from app.utils.cache import cache_dependency_singleton

@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import subprocess
-import threading
 import time
 from http import HTTPStatus
 from typing import Optional, Any
