@@ -87,7 +87,7 @@ rdbms:
 # Milvus — vector database
 # ============================================================
 # Start standalone: docker run -d --name milvus-standalone \
-#     -p 19530:19530 -p 9091:9091 milvusdb/milvus:v2.4.17
+#     -p 19530:19530 -p 9091:9091 milvusdb/milvus:v2.6.22
 milvus:
   enabled: true
   uri: ""                                # e.g. http://milvus-host:19530 — inject via MILVUS__URI
@@ -95,7 +95,7 @@ milvus:
   db_name: mind_base
   collection_name: bilibili_videos
   cloud_collection_name: cloud_drive
-  dimension: 1536                        # must match embedding.dimension
+  dimension: 1024                        # must match embedding.dimension
   index_type: IVF_FLAT                   # IVF_FLAT | IVF_SQ8 | HNSW
   metric_type: COSINE                    # COSINE | L2 | IP
   nlist: 1024                            # IVF cluster count
@@ -182,9 +182,9 @@ llm:
 # Embedding — text-to-vector model
 # ============================================================
 embedding:
-  model: text-embedding-v4               # DashScope, 1536-dimensional
+  model: text-embedding-v4               # DashScope, 1024-dim (default; v4 supports 1024/1536/2048)
   batch_size: 100                        # texts per embedding API call
-  dimension: 1536                        # must match Milvus dimension
+  dimension: 1024                        # must match Milvus dimension
   version: v1                            # bump when changing model or chunk strategy
                                           # (triggers full re-index of existing vectors)
 
@@ -213,10 +213,13 @@ agentic:
 asr:
   provider: dashscope                    # dashscope | whisper | funasr
   base_url: https://dashscope.aliyuncs.com/api/v1
-  model: paraformer-realtime-v2          # 本地直传 Recognition 接口支持
+  model: paraformer-realtime-v2          # Recognition (sync, realtime) model — short audio only
   model_local: paraformer-realtime-v2    # streaming / real-time model
+  transcription_model: paraformer-v2     # async Transcription model — long audio (>= realtime_max_seconds)
   input_format: pcm                      # audio format sent to ASR API
-  timeout: 600                           # per-task timeout (seconds)
+  timeout: 600                           # per-task timeout for async Transcription (seconds)
+  realtime_max_seconds: 60               # above this, split into chunks (single Recognition call hangs on long audio)
+  recognition_timeout: 90               # forced-stop timeout for a single Recognition call (WebSocket stall guard)
   # api_key via env: ASR__API_KEY
   # If ASR__API_KEY is unset, falls back to LLM__API_KEY.
 
