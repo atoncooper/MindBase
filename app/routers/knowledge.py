@@ -158,51 +158,35 @@ async def get_vectorized_pages(
     return [VectorizedPageItem(**r) for r in rows]
 
 
-@router.post("/folders/sync", response_model=List[SyncResult])
+@router.post("/folders/sync")
 async def sync_folders(
     request: SyncRequest,
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """同步收藏夹到向量库"""
-    from app.services.knowledge_build import KnowledgeSyncService
+    """同步收藏夹到向量库（后台任务，与 /knowledge/build 同路径）。
+
+    历史实现在 HTTP 请求内串行 await sync_folder，收藏夹稍大即超过
+    网关超时。现改为立即返回 task_id，前端轮询 /knowledge/build/status/{id}。
+    """
+    from app.services.knowledge_build import get_build_service
 
     bili, bili_mid = await _get_bili_cookies_by_uid(uid, db)
-    rag = get_rag_service()
-    asr_service = ASRService()
-    content_fetcher = ContentFetcher(bili, asr_service)
-    sync_service = KnowledgeSyncService()
-
+    sessdata = bili.sessdata
     try:
-        folder_ids = request.folder_ids or []
+        folder_ids = list(request.folder_ids or [])
         if not folder_ids:
             folders = await bili.get_user_favorites(mid=bili_mid)
             folder_ids = [f.get("id") for f in folders if f.get("id")]
-
-        results: List[SyncResult] = []
-        for folder_id in folder_ids:
-            try:
-                result = await sync_service.sync_folder(
-                    db, bili, rag, content_fetcher, uid, folder_id
-                )
-                results.append(SyncResult(**result))
-            except Exception as e:
-                logger.exception("Folder sync failed folder_id={}", folder_id)
-                results.append(
-                    SyncResult(
-                        folder_id=folder_id,
-                        total=0,
-                        added=0,
-                        removed=0,
-                        indexed=0,
-                        message=f"同步失败: {e}",
-                        last_sync_at=None,
-                    )
-                )
-
-        return results
     finally:
         await bili.close()
+
+    return await get_build_service().try_start_build(
+        uid=uid,
+        folder_ids=folder_ids,
+        exclude_bvids=[],
+        sessdata=sessdata,
+    )
 
 
 @router.post("/build")
