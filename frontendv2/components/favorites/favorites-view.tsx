@@ -138,7 +138,7 @@ export function FavoritesView() {
                         total: s.total_videos,
                         message: s.message,
                     });
-                    if (s.status === "completed") {
+                    if (s.status === "done" || s.status === "completed") {
                         setBuild(null);
                         setSelectedIds(new Set());
                         setBuildError(null);

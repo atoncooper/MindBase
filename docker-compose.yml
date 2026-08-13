@@ -56,11 +56,11 @@ services:
       - LLM__MODEL=${LLM_MODEL:-qwen3-max}
       # Embedding
       - EMBEDDING__MODEL=${EMBEDDING_MODEL:-text-embedding-v4}
-      - EMBEDDING__DIMENSION=${EMBEDDING_DIMENSION:-1536}
+      - EMBEDDING__DIMENSION=${EMBEDDING_DIMENSION:-1024}
       # ASR
       - ASR__API_KEY=${ASR_API_KEY:-}
       - ASR__BASE_URL=${ASR_BASE_URL:-https://dashscope.aliyuncs.com/api/v1}
-      - ASR__MODEL=${ASR_MODEL:-paraformer-v2}
+      - ASR__MODEL=${ASR_MODEL:-paraformer-realtime-v2}
       # LangSmith
       - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
@@ -229,7 +229,7 @@ services:
       - mind-base-net
 
   milvus:
-    image: milvusdb/milvus:v2.4.17
+    image: milvusdb/milvus:v2.6.22
     container_name: mind-base-milvus
     profiles: ["", "storage", "full"]
     command: milvus run standalone
@@ -399,6 +399,7 @@ services:
       - mind-base-net
 
   app-task:
+    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/mind-base-app-task:latest}
     build:
       context: ./app-task
       dockerfile: Dockerfile

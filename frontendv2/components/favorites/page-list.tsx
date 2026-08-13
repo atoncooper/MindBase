@@ -22,8 +22,8 @@ interface PageListProps {
     bvid: string;
 }
 
-const POLL_INTERVAL_MS = 1500;
-const POLL_MAX_ATTEMPTS = 80; // ~2 min ceiling, ASR/vectorize can be slow
+const POLL_INTERVAL_MS = 3000;
+const POLL_MAX_ATTEMPTS = 200; // ~10 min ceiling, ASR/vectorize can be slow
 
 export function PageList({ bvid }: PageListProps) {
     const [pages, setPages] = useState<VideoPageItemV2[]>([]);
@@ -96,8 +96,12 @@ export function PageList({ bvid }: PageListProps) {
                     // Network blip - keep polling until ceiling.
                 }
                 if (attempts >= POLL_MAX_ATTEMPTS) {
-                    setOverrides((prev) => ({ ...prev, [cid]: "failed" }));
-                    setPageErrors((prev) => ({ ...prev, [cid]: "向量化超时" }));
+                    // 轮询超时 ≠ 失败：任务仍在后台处理，保留 processing 状态，
+                    // 提示用户稍后刷新查看真实状态。
+                    setPageErrors((prev) => ({
+                        ...prev,
+                        [cid]: "向量化仍在后台处理中，请稍后刷新查看",
+                    }));
                     setBusyCids((prev) => {
                         const next = new Set(prev);
                         next.delete(cid);

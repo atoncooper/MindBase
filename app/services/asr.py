@@ -35,12 +35,20 @@ class ASRService:
         model: Optional[str] = None,
         timeout: Optional[int] = None,
     ):
-        self.api_key = api_key or settings.openai_api_key
-        self.base_url = base_url or getattr(settings, "dashscope_base_url", None)
-        self.model = model or getattr(settings, "asr_model", "fun-asr")
-        self.timeout = timeout or getattr(settings, "asr_timeout", 600)
-        self.local_model = getattr(settings, "asr_model_local", self.model)
-        self.input_format = getattr(settings, "asr_input_format", "pcm")
+        # Prefer ASR__API_KEY, then LLM__API_KEY (shared DashScope account).
+        self.api_key = api_key or settings.asr_api_key
+        self.base_url = base_url or settings.dashscope_base_url
+        self.model = model or settings.asr_model
+        self.timeout = timeout or settings.asr_timeout
+        self.local_model = settings.asr_model_local or self.model
+        self.input_format = settings.asr_input_format
+        # Long-audio: prefer async Transcription (transcription_model); fall
+        # back to timed PCM chunk Recognition if upload/Transcription fails.
+        # Recognition.call() has no SDK timeout and stalls on multi-minute
+        # files — never feed long audio to a single Recognition call.
+        self.transcription_model = settings.asr_transcription_model
+        self.realtime_max_seconds = settings.asr_realtime_max_seconds
+        self.recognition_timeout = settings.asr_recognition_timeout
 
     def _configure(self) -> None:
         if not self.api_key:
@@ -130,6 +138,64 @@ class ASRService:
             logger.warning(f"转码 WAV 异常: {e}")
             return None
 
+    def _probe_duration(self, file_path: str) -> Optional[float]:
+        """Probe audio duration in seconds via ffprobe. Returns None on failure."""
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    file_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                return float(result.stdout.strip())
+        except Exception as e:
+            logger.debug(f"ffprobe 探测时长失败: {e}")
+        return None
+
+    @staticmethod
+    def _safe_stop(recognizer: Recognition) -> None:
+        """Force-stop a Recognition call to unblock a stalled WebSocket."""
+        try:
+            recognizer.stop()
+        except Exception:
+            pass
+
+    def _recognize_with_timeout(
+        self, recognizer: Recognition, input_path: str
+    ) -> Optional[Any]:
+        """Call recognizer.call() with a hard, reliable timeout.
+
+        The SDK's call() has no timeout, and recognizer.stop() joins the
+        worker thread -- which also blocks on a stalled WebSocket -- so a
+        Timer+stop cannot unblock it. We run call() in a worker thread and
+        use future.result(timeout) instead: on timeout the chunk loop moves
+        on and the stalled thread is abandoned (one leak per rare stall,
+        acceptable). Returns the RecognitionResult, or None on timeout.
+        """
+        from concurrent.futures import (
+            ThreadPoolExecutor,
+            TimeoutError as FuturesTimeout,
+        )
+
+        ex = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(recognizer.call, input_path)
+        try:
+            return future.result(timeout=self.recognition_timeout)
+        except FuturesTimeout:
+            logger.warning(
+                f"ASR Recognition 超时({self.recognition_timeout}s), 放弃该调用"
+            )
+            self._safe_stop(recognizer)  # best-effort; may also block, in a leaked thread
+            return None
+        finally:
+            ex.shutdown(wait=False)  # never block on a possibly-hung worker
+
     def _prepare_recognition_input(self, file_path: str) -> Optional[str]:
         """按输入格式准备 Recognition 文件"""
         fmt = (self.input_format or "pcm").lower()
@@ -167,7 +233,13 @@ class ASRService:
                 format=(self.input_format or "pcm"),
                 sample_rate=16000,
             )
-            result = recognizer.call(input_path)
+            # Hard timeout: the SDK's call() blocks forever on a stalled
+            # WebSocket; _recognize_with_timeout abandons the call after
+            # recognition_timeout so the task fails fast instead of hanging.
+            result = self._recognize_with_timeout(recognizer, input_path)
+            if result is None:
+                logger.warning("ASR Recognition 超时或无结果")
+                return None
             t2 = time.time()
             logger.info(f"[ASR_PERF] 云端识别完成: 耗时={(t2-t1):.1f}s")
             logger.info(
@@ -443,9 +515,169 @@ class ASRService:
     async def transcribe_url(self, audio_url: str) -> Optional[str]:
         return await asyncio.to_thread(self._transcribe_sync, audio_url)
 
+    def _recognize_pcm_chunk(self, chunk_path: str) -> Optional[str]:
+        """Recognize a single short PCM chunk via Recognition (with timeout).
+
+        Each chunk is <= realtime_max_seconds, so the real-time API handles
+        it without hanging. The forced-stop timer is a belt-and-suspenders
+        guard against rare WebSocket stalls.
+        """
+        try:
+            recognizer = Recognition(
+                model=self.model,
+                callback=None,
+                format="pcm",
+                sample_rate=16000,
+            )
+            result = self._recognize_with_timeout(recognizer, chunk_path)
+            if result is None:
+                logger.warning(f"ASR 块识别超时或无结果: {os.path.basename(chunk_path)}")
+                return None
+            if getattr(result, "status_code", None) != HTTPStatus.OK:
+                logger.warning(
+                    f"ASR 块识别非 200: status={getattr(result, 'status_code', None)}, "
+                    f"code={getattr(result, 'code', None)}, msg={getattr(result, 'message', None)}"
+                )
+                return None
+            sentences = result.get_sentence() or []
+            if isinstance(sentences, dict):
+                sentences = [sentences]
+            texts = [
+                s.get("text", "")
+                for s in sentences
+                if isinstance(s, dict) and s.get("text")
+            ]
+            return "\n".join(texts).strip() if texts else None
+        except Exception as e:
+            logger.warning(f"ASR 块识别异常: {e}")
+            return None
+
+    def _transcribe_local_chunked(self, file_path: str) -> Optional[str]:
+        """Transcribe a long local file by splitting into timed PCM chunks.
+
+        The real-time Recognition API hangs on multi-minute files (its
+        WebSocket duplex stream stalls with no timeout). We transcode to
+        PCM once, split into <= realtime_max_seconds chunks, and recognize
+        each chunk separately, concatenating the results. A failed chunk
+        is skipped rather than failing the whole file.
+        """
+        self._configure()
+        if not os.path.exists(file_path):
+            logger.warning(f"ASR 本地文件不存在: {file_path}")
+            return None
+
+        t0 = time.time()
+        pcm_path = self._transcode_audio_to_pcm(file_path)
+        if not pcm_path or not os.path.exists(pcm_path):
+            logger.warning("ASR 长音频转码 PCM 失败")
+            return None
+
+        try:
+            pcm_size = os.path.getsize(pcm_path)
+            bytes_per_sec = 16000 * 2  # 16kHz, 16-bit mono
+            chunk_bytes = self.realtime_max_seconds * bytes_per_sec
+            total_chunks = (pcm_size + chunk_bytes - 1) // chunk_bytes
+            duration = pcm_size / bytes_per_sec
+            logger.info(
+                f"[ASR_PERF] 长音频切块: 时长={duration:.0f}s, "
+                f"块数={total_chunks}, 块大小={self.realtime_max_seconds}s"
+            )
+
+            texts: list[str] = []
+            chunk_idx = 0
+            with open(pcm_path, "rb") as f:
+                while True:
+                    chunk_data = f.read(chunk_bytes)
+                    if not chunk_data:
+                        break
+                    chunk_idx += 1
+                    chunk_file = f"{pcm_path}.chunk{chunk_idx}"
+                    with open(chunk_file, "wb") as cf:
+                        cf.write(chunk_data)
+                    try:
+                        tc = time.time()
+                        text = self._recognize_pcm_chunk(chunk_file)
+                        tc2 = time.time()
+                        if text:
+                            texts.append(text)
+                            logger.info(
+                                f"[ASR_PERF] 块 {chunk_idx}/{total_chunks} 完成: "
+                                f"耗时={tc2-tc:.1f}s, 长度={len(text)}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[ASR_PERF] 块 {chunk_idx}/{total_chunks} 无文本, "
+                                f"耗时={tc2-tc:.1f}s"
+                            )
+                    finally:
+                        try:
+                            os.remove(chunk_file)
+                        except Exception:
+                            pass
+
+            text = "\n".join(texts).strip()
+            t1 = time.time()
+            logger.info(
+                f"[ASR_PERF] 长音频切块识别完成: 总耗时={t1-t0:.1f}s, "
+                f"成功块={len(texts)}/{total_chunks}, 总长度={len(text)}"
+            )
+            return text if text else None
+        finally:
+            # Clean up the transcoded PCM (the original file is managed by
+            # the caller, asr_page_service, which deletes it in its finally).
+            try:
+                if pcm_path and os.path.exists(pcm_path):
+                    os.remove(pcm_path)
+            except Exception:
+                logger.debug(f"ASR PCM 清理失败: {pcm_path}")
+
+    def _transcribe_local_via_transcription(self, file_path: str) -> Optional[str]:
+        """Upload local file to DashScope OSS and run async Transcription.
+
+        One-shot path for long audio — avoids Recognition WebSocket stalls
+        and the N×serial cost of PCM chunk Recognition.
+        """
+        if not os.path.exists(file_path):
+            logger.warning(f"ASR 本地文件不存在: {file_path}")
+            return None
+        oss_url = self._upload_temp_file(file_path, model=self.transcription_model)
+        if not oss_url:
+            return None
+        logger.info(
+            f"[ASR] 长音频走 Transcription model={self.transcription_model}"
+        )
+        return self._transcribe_sync_with_model(oss_url, self.transcription_model)
+
     async def transcribe_local_file(self, file_path: str) -> Optional[str]:
-        """本地文件直传识别（Recognition）"""
-        return await asyncio.to_thread(self._recognize_local_file, file_path)
+        """Transcribe a local audio file, routing by duration.
+
+        Short audio (<= realtime_max_seconds): sync Recognition (single call).
+        Long audio / unknown duration:
+          1) async Transcription via OSS upload (fast, no hang)
+          2) fallback: timed PCM chunk Recognition with hard per-chunk timeout
+        """
+        duration = self._probe_duration(file_path)
+        if duration is not None:
+            logger.info(
+                f"[ASR] 本地文件时长={duration:.1f}s, 阈值={self.realtime_max_seconds}s"
+            )
+            if duration <= self.realtime_max_seconds:
+                return await asyncio.to_thread(self._recognize_local_file, file_path)
+        else:
+            logger.warning(
+                "[ASR] ffprobe 探测时长失败，按长音频处理（避免 Recognition 挂死）"
+            )
+
+        text = await asyncio.to_thread(
+            self._transcribe_local_via_transcription, file_path
+        )
+        if text:
+            return text
+        logger.warning(
+            "[ASR] Transcription 失败，回退到 PCM 切块 Recognition"
+        )
+        return await asyncio.to_thread(self._transcribe_local_chunked, file_path)
+
 
     def _transcribe_sync_with_model(self, audio_url: str, model: str) -> Optional[str]:
         """使用指定模型转写（用于本地文件上传）"""

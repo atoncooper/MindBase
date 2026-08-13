@@ -1,3 +1,11 @@
+-- Schema bootstrap for fresh MySQL volume (docker-entrypoint-initdb.d).
+-- Tables are declared in alphabetical order, but foreign keys may reference
+-- tables defined later in this file (e.g. credential_usage -> users). Disable
+-- FK checks during bootstrap so creation order does not matter; all referenced
+-- tables exist by the time the script ends, so FKs resolve correctly. This is
+-- the same pattern mysqldump uses. Re-enabled at end of file.
+SET FOREIGN_KEY_CHECKS=0;
+
 create table async_tasks
 (
     id           int auto_increment
@@ -816,3 +824,5 @@ create table task_quiz_notification
 
 create index ix_task_quiz_notification_status on task_quiz_notification (status);
 create index ix_task_quiz_notification_task_id on task_quiz_notification (task_id);
+
+SET FOREIGN_KEY_CHECKS=1;

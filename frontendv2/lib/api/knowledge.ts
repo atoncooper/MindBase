@@ -11,7 +11,7 @@ export interface BuildRequest {
 
 export interface BuildStatus {
     task_id: string;
-    status: "pending" | "running" | "completed" | "failed";
+    status: "pending" | "processing" | "running" | "done" | "completed" | "failed";
     progress: number;
     current_step: string;
     total_videos: number;
@@ -79,8 +79,9 @@ export const knowledgeApi = {
         }),
 
     // 同步收藏夹到向量库 (v2: Bearer token auth; session_id 已移除)
+    // 返回单个后台任务描述 { task_id, message, reused }，前端轮询 /knowledge/build/status/{task_id}
     syncFolders: (data: SyncRequest) =>
-        request<SyncResult[]>("/knowledge/folders/sync", {
+        request<{ task_id: string; message: string; reused?: boolean }>("/knowledge/folders/sync", {
             headers: getAuthHeaders(),
             method: "POST",
             body: JSON.stringify(data),

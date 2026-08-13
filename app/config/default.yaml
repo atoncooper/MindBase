@@ -60,7 +60,7 @@ milvus:
   db_name: MindBase
   collection_name: bilibili_videos
   cloud_collection_name: cloud_drive
-  dimension: 1536
+  dimension: 1024
   index_type: IVF_FLAT
   metric_type: COSINE
   analyzer: chinese              # text analyzer: chinese (jieba) for B站中文, standard for English
@@ -149,9 +149,9 @@ llm:
 
 # ---- Embedding ----------------------------------------------------
 embedding:
-  model: text-embedding-v4            # DashScope, 1536-dim
+  model: text-embedding-v4            # DashScope, 1024-dim (default; v4 supports 1024/1536/2048)
   batch_size: 100
-  dimension: 1536
+  dimension: 1024
   version: v1                         # bump when changing chunk strategy or model
 
 
@@ -191,10 +191,13 @@ rerank:
 asr:
   provider: dashscope                 # dashscope | whisper | funasr
   base_url: https://dashscope.aliyuncs.com/api/v1
-  model: paraformer-v2                # offline model
+  model: paraformer-realtime-v2       # Recognition (sync) API model; paraformer-v2 is for async Transcription API
   model_local: paraformer-realtime-v2 # streaming model
+  transcription_model: paraformer-v2  # async Transcription model - long audio (>= realtime_max_seconds)
   input_format: pcm
-  timeout: 600                        # per-task timeout (seconds)
+  timeout: 600                        # per-task timeout for async Transcription (seconds)
+  realtime_max_seconds: 60            # above this, route to async Transcription (Recognition hangs on long audio)
+  recognition_timeout: 90            # forced-stop timeout for a single Recognition call (WebSocket stall guard)
   # api_key via env: ASR__API_KEY; falls back to LLM__API_KEY
 
 
