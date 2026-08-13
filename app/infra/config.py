@@ -296,8 +296,19 @@ class AsrSection(_Section):
     base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     model: str = "paraformer-v2"
     model_local: str = "paraformer-realtime-v2"
+    # Async Transcription API model for long audio (supports hours).
+    # Recognition (realtime) hangs on multi-minute files; long audio is
+    # uploaded to DashScope OSS then transcribed via this model.
+    transcription_model: str = "paraformer-v2"
     input_format: str = "pcm"
     timeout: int = 600
+    # Audio above this duration (seconds) uses async Transcription instead
+    # of sync Recognition, which hangs on long files.
+    realtime_max_seconds: int = 60
+    # Forced-stop timeout (seconds) for a single Recognition call. If the
+    # WebSocket stalls, the call is abandoned (via ThreadPoolExecutor) so
+    # the task progresses instead of hanging.
+    recognition_timeout: int = 90
     api_key: SecretStr = Field(
         default=SecretStr(""),
         validation_alias=AliasChoices("ASR__API_KEY", "DASHSCOPE_API_KEY"),

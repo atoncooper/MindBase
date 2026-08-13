@@ -426,7 +426,12 @@ class ASRPageService:
                     )
                     page = result.scalar_one_or_none()
                     if page:
-                        page.is_processed = True  # 标记为已处理（即使失败）
+                        # ASR failed: no content was written to MongoDB. Keep
+                        # unprocessed so the next vectorization attempt re-runs
+                        # ASR instead of failing on missing Mongo content (avoids
+                        # the MySQL=True / Mongo=empty mismatch that the
+                        # VideoService cross-store check would otherwise heal).
+                        page.is_processed = False
                         await db.commit()
             except Exception as db_err:
                 logger.error(f"[ASR] 更新数据库失败: {db_err}")

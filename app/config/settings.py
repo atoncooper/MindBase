@@ -168,6 +168,24 @@ class _Settings:
     def asr_input_format(self) -> str:
         return str(_get("asr", "input_format", default="pcm"))
 
+    @property
+    def asr_transcription_model(self) -> str:
+        return str(_get("asr", "transcription_model", default="paraformer-v2"))
+
+    @property
+    def asr_realtime_max_seconds(self) -> int:
+        return int(_get("asr", "realtime_max_seconds", default=60))
+
+    @property
+    def asr_recognition_timeout(self) -> int:
+        return int(_get("asr", "recognition_timeout", default=90))
+
+    @property
+    def asr_api_key(self) -> str:
+        """ASR key; falls back to LLM key when ASR__API_KEY is unset."""
+        key = str(_get("asr", "api_key", default="") or "")
+        return key or self.openai_api_key
+
     # ── LangSmith ────────────────────────────────────────────────
 
     @property

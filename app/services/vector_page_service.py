@@ -358,9 +358,11 @@ class VectorPageService:
                     raise Exception(f"Video not found: bvid={bvid}, cid={cid}")
 
                 if page.is_vectorized == "processing":
-                    logger.info(f"[VecPage] already in progress: bvid={bvid}, cid={cid}")
-                    await self.tracker.complete(task_id, result={"skipped": True, "message": "Already in progress"})
-                    return
+                    # Stale lock from a killed worker would block forever;
+                    # reclaim and continue (explicit create/revector owns this task).
+                    logger.warning(
+                        f"[VecPage] reclaiming stale processing lock: bvid={bvid}, cid={cid}"
+                    )
 
                 if page.is_vectorized == "done" and not self._content_changed(page):
                     await self.tracker.complete(task_id, result={"skipped": True, "message": "Already up to date"})
@@ -471,7 +473,12 @@ class VectorPageService:
             raise
 
     async def _run_asr(self, bvid: str, cid: int, page_index: int, page_title: str):
-        """Run ASR via ASRPageService (poll for completion, max 5 minutes)."""
+        """Run ASR via ASRPageService with a real wall-clock timeout.
+
+        process_page already waits until ASR done/failed, so a post-await
+        poll loop is dead code. Wrap the await in asyncio.wait_for instead.
+        """
+        from app.config import settings
         from app.services.asr_page_service import ASRPageService
         from app.services.async_task.asr_task_registry import asr_tasks, create_task
 
@@ -479,18 +486,30 @@ class VectorPageService:
         task_id = create_task()
         asr_tasks[task_id].update({"message": "ASR task created"})
 
-        await service.process_page(
-            task_id=task_id, bvid=bvid, cid=cid,
-            page_index=page_index, page_title=page_title,
-        )
+        # asr.timeout covers Transcription; add headroom for download/transcode.
+        timeout = float(settings.asr_timeout) + 120.0
+        try:
+            await asyncio.wait_for(
+                service.process_page(
+                    task_id=task_id,
+                    bvid=bvid,
+                    cid=cid,
+                    page_index=page_index,
+                    page_title=page_title,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as e:
+            asr_tasks[task_id]["status"] = "failed"
+            asr_tasks[task_id]["message"] = f"ASR timed out after {timeout:.0f}s"
+            raise Exception(
+                f"ASR timed out after {timeout:.0f}s: bvid={bvid}, cid={cid}"
+            ) from e
 
-        for _ in range(300):
-            task = asr_tasks.get(task_id)
-            if task and task["status"] in ("done", "failed"):
-                if task["status"] == "failed":
-                    raise Exception(f"ASR failed: {task.get('message', 'unknown')}")
-                break
-            await asyncio.sleep(1)
+        task = asr_tasks.get(task_id) or {}
+        if task.get("status") == "failed":
+            raise Exception(f"ASR failed: {task.get('message', 'unknown')}")
+
 
     def _delete_page_vectors(self, bvid: str, page_index: int):
         """Delete vectors for a specific page (not the entire bvid)."""
