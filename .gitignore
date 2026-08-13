@@ -93,3 +93,6 @@ app/test/rag/data/
 
 # Stray dev screenshots at repo root
 /forgot-password-light.png
+
+# reasonix
+reasonix.toml

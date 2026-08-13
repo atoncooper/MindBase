@@ -399,6 +399,7 @@ services:
       - mind-base-net
 
   app-task:
+    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/mind-base-app-task:latest}
     build:
       context: ./app-task
       dockerfile: Dockerfile
