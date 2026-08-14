@@ -49,6 +49,8 @@ class ASRService:
         self.transcription_model = settings.asr_transcription_model
         self.realtime_max_seconds = settings.asr_realtime_max_seconds
         self.recognition_timeout = settings.asr_recognition_timeout
+        # 长音频 PCM 切块并行识别并发数（DashScope 并发限流约束）。
+        self.chunk_concurrency = settings.ingest_asr_chunk_concurrency
 
     def _configure(self) -> None:
         if not self.api_key:
@@ -583,7 +585,8 @@ class ASRService:
                 f"块数={total_chunks}, 块大小={self.realtime_max_seconds}s"
             )
 
-            texts: list[str] = []
+            # 1) 切块写入临时 PCM 文件
+            chunk_files: list[str] = []
             chunk_idx = 0
             with open(pcm_path, "rb") as f:
                 while True:
@@ -594,26 +597,33 @@ class ASRService:
                     chunk_file = f"{pcm_path}.chunk{chunk_idx}"
                     with open(chunk_file, "wb") as cf:
                         cf.write(chunk_data)
+                    chunk_files.append(chunk_file)
+
+            # 2) 并行识别：块之间无依赖，天然可并行。并发度受 DashScope
+            #    并发限流约束，由 ingest.asr_chunk_concurrency 控制。
+            #    ThreadPoolExecutor.map 保持结果与块顺序一致。
+            from concurrent.futures import ThreadPoolExecutor
+
+            texts: list[str] = []
+            try:
+                with ThreadPoolExecutor(max_workers=self.chunk_concurrency) as ex:
+                    results = list(ex.map(self._recognize_pcm_chunk, chunk_files))
+                for idx, text in enumerate(results, start=1):
+                    if text:
+                        texts.append(text)
+                        logger.info(
+                            f"[ASR_PERF] 块 {idx}/{total_chunks} 完成, 长度={len(text)}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[ASR_PERF] 块 {idx}/{total_chunks} 无文本"
+                        )
+            finally:
+                for chunk_file in chunk_files:
                     try:
-                        tc = time.time()
-                        text = self._recognize_pcm_chunk(chunk_file)
-                        tc2 = time.time()
-                        if text:
-                            texts.append(text)
-                            logger.info(
-                                f"[ASR_PERF] 块 {chunk_idx}/{total_chunks} 完成: "
-                                f"耗时={tc2-tc:.1f}s, 长度={len(text)}"
-                            )
-                        else:
-                            logger.warning(
-                                f"[ASR_PERF] 块 {chunk_idx}/{total_chunks} 无文本, "
-                                f"耗时={tc2-tc:.1f}s"
-                            )
-                    finally:
-                        try:
-                            os.remove(chunk_file)
-                        except Exception:
-                            pass
+                        os.remove(chunk_file)
+                    except Exception:
+                        pass
 
             text = "\n".join(texts).strip()
             t1 = time.time()
