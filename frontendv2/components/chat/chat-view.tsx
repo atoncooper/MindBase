@@ -406,7 +406,14 @@ export function ChatView() {
 
   const handleSessionSelect = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
-    setSidebarOpen(false); // collapse on mobile after pick
+    // 桌面端（md+，≥768px）侧边栏常驻，选中会话不能把它收起变窄；
+    // 仅移动端覆盖式抽屉需要选中后自动关闭。
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 767px)").matches
+    ) {
+      setSidebarOpen(false);
+    }
   }, []);
 
   const handleDeleteSession = useCallback(
