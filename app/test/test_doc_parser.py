@@ -240,6 +240,47 @@ class TestDocxParser:
 
 
 # ====================================================================
+# Plain Text Parser
+# ====================================================================
+
+class TestPlainTextParser:
+    def test_can_parse_txt_mime(self):
+        from app.services.doc_parser.plain_text_parser import PlainTextParser
+        p = PlainTextParser()
+        assert p.can_parse("text/plain", "notes.txt")
+        assert p.can_parse("text/plain", "notes.TXT")
+        assert p.can_parse("text/plain", "notes.text")
+        # Extension fallback when MIME is generic
+        assert p.can_parse("application/octet-stream", "notes.txt")
+        assert not p.can_parse("text/markdown", "notes.md")
+        assert not p.can_parse("text/html", "page.html")
+
+    def test_basic_utf8(self):
+        from app.services.doc_parser.plain_text_parser import PlainTextParser
+        p = PlainTextParser()
+        result = p._parse_sync("Hello 世界".encode("utf-8"), "test.txt")
+        assert "Hello 世界" in result.text
+
+    def test_gbk_fallback(self):
+        from app.services.doc_parser.plain_text_parser import PlainTextParser
+        p = PlainTextParser()
+        result = p._parse_sync("中文内容测试".encode("gbk"), "test.txt")
+        assert "中文内容测试" in result.text
+
+    def test_metadata_title(self):
+        from app.services.doc_parser.plain_text_parser import PlainTextParser
+        p = PlainTextParser()
+        result = p._parse_sync(b"content", "mydoc.txt")
+        assert result.metadata.get("title") == "mydoc.txt"
+
+    def test_empty_document(self):
+        from app.services.doc_parser.plain_text_parser import PlainTextParser
+        p = PlainTextParser()
+        result = p._parse_sync(b"", "empty.txt")
+        assert result.text == ""
+
+
+# ====================================================================
 # Text Cleaner
 # ====================================================================
 
@@ -306,6 +347,11 @@ class TestParserRegistry:
         p = get_parser("application/pdf", "doc.pdf")
         assert p is not None
         assert p.name == "pdf"
+
+    def test_get_parser_returns_plain_text(self):
+        p = get_parser("text/plain", "notes.txt")
+        assert p is not None
+        assert p.name == "plain_text"
 
     def test_get_parser_returns_none_for_unknown(self):
         p = get_parser("application/zip", "archive.zip")
