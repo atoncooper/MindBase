@@ -22,27 +22,25 @@ export function TaskQuizView() {
     const [detail, setDetail] = useState<TaskQuizDetail | null>(null);
     const [loadingDetail, setLoadingDetail] = useState(false);
     const [dialogOpen, setDialogOpen] = useState(false);
-    const [mobileDetail, setMobileDetail] = useState(false);
 
-    const refreshList = useCallback(
-        async (autoSelect: boolean) => {
-            setLoading(true);
-            try {
-                const list = await taskQuizApi.listTasks();
-                // Newest trigger first.
-                list.sort((a, b) => b.triggerTime.localeCompare(a.triggerTime));
-                setTasks(list);
-                if (autoSelect && list.length > 0 && !selectedTaskId) {
-                    setSelectedTaskId(list[0].taskId);
-                }
-            } catch {
-                // Empty list is a valid state.
-            } finally {
-                setLoading(false);
+    const refreshList = useCallback(async (autoSelect: boolean) => {
+        setLoading(true);
+        try {
+            const list = await taskQuizApi.listTasks();
+            // Newest trigger first.
+            list.sort((a, b) => b.triggerTime.localeCompare(a.triggerTime));
+            setTasks(list);
+            if (autoSelect && list.length > 0) {
+                // 只在尚未选中任何任务时自动选中第一个（函数式更新，
+                // 不依赖 selectedTaskId，避免点击任务时列表被整表重拉）。
+                setSelectedTaskId((prev) => prev ?? list[0].taskId);
             }
-        },
-        [selectedTaskId],
-    );
+        } catch {
+            // Empty list is a valid state.
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
     const refreshDetail = useCallback(async (taskId: string) => {
         setLoadingDetail(true);
@@ -79,11 +77,20 @@ export function TaskQuizView() {
         return () => clearInterval(t);
     }, [selectedTaskId, refreshDetail]);
 
-    const handleSelect = useCallback((taskId: string) => {
-        setSelectedTaskId(taskId);
-        setDetail(null); // clear stale so loader shows
-        setMobileDetail(true);
-    }, []);
+    const handleSelect = useCallback(
+        (taskId: string) => {
+            if (selectedTaskId === taskId) {
+                // 重复点击当前选中的任务：不清空详情，直接重新拉取，
+                // 否则详情被置空后 selectedTaskId 不变、fetch effect 不触发，
+                // 右侧面板会永远停留在空状态。
+                void refreshDetail(taskId);
+                return;
+            }
+            setSelectedTaskId(taskId);
+            setDetail(null); // clear stale so loader shows
+        },
+        [selectedTaskId, refreshDetail],
+    );
 
     const handleNew = useCallback(() => setDialogOpen(true), []);
 
@@ -93,17 +100,18 @@ export function TaskQuizView() {
 
     const handleAnswered = useCallback(() => {
         if (selectedTaskId) void refreshDetail(selectedTaskId);
-    }, [selectedTaskId, refreshDetail]);
-
-    const handleBack = useCallback(() => setMobileDetail(false), []);
+        // 答题后任务状态变为 completed，同步刷新侧边栏列表的状态与分组。
+        void refreshList(false);
+    }, [selectedTaskId, refreshDetail, refreshList]);
 
     return (
         <div className="flex h-[calc(100dvh-3rem)]">
-            {/* Left list */}
+            {/* Left list — 任何宽度下都常驻显示，点击任务绝不收起/变窄；
+                窄屏(<sm)只把宽度收窄到 240px，而不是隐藏 */}
             <aside
                 className={cn(
                     "w-[320px] shrink-0 border-r border-border-subtle",
-                    mobileDetail && "hidden md:flex",
+                    "max-sm:w-[240px]",
                 )}
             >
                 <TaskQuizList
@@ -115,18 +123,12 @@ export function TaskQuizView() {
                 />
             </aside>
 
-            {/* Right detail */}
-            <section
-                className={cn(
-                    "min-w-0 flex-1",
-                    !mobileDetail && "hidden md:block",
-                )}
-            >
+            {/* Right detail — 始终与侧边栏并排 */}
+            <section className="min-w-0 flex-1">
                 <TaskQuizDetailPanel
                     detail={detail}
                     loading={loadingDetail}
                     onAnswered={handleAnswered}
-                    onBack={handleBack}
                 />
             </section>
 
