@@ -230,12 +230,28 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User -> app-task task detail/answer (forward-auth, X-Uid injected)
+  # User -> app-task task detail (forward-auth, X-Uid injected)
   - id: tasks_wildcard
     uri: /tasks/*
     methods: [GET, POST]
     priority: 10
     upstream_id: upstream-app-task
+    plugins:
+      forward-auth:
+        uri: "http://192.168.138.1:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # User -> main app submit answer (forward-auth, X-Uid injected).
+  # 判题/入库/状态流转是业务逻辑，归主 app（app-task 只做调度+通知）。
+  # priority 100 so /tasks/{id}/answer is NOT shadowed by /tasks/* (app-task).
+  - id: tasks_answer
+    uri: /tasks/*/answer
+    methods: [POST]
+    priority: 100
+    upstream_id: upstream-backend
     plugins:
       forward-auth:
         uri: "http://192.168.138.1:8000/internal/auth/verify"
