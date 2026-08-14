@@ -7,6 +7,7 @@ from app.services.doc_parser.markdown_parser import MarkdownParser
 from app.services.doc_parser.html_parser import HtmlParser
 from app.services.doc_parser.docx_parser import DocxParser
 from app.services.doc_parser.pdf_parser import PdfParser
+from app.services.doc_parser.plain_text_parser import PlainTextParser
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ _PARSERS: list[DocParser] = [
     HtmlParser(),
     DocxParser(),
     PdfParser(),
+    PlainTextParser(),
 ]
 
 MAX_DOC_SIZE = 100 * 1024 * 1024  # 100 MB
