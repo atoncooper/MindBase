@@ -245,11 +245,18 @@ class KnowledgeSyncService:
                     logger.info(
                         f"[{bvid}] queue {len(todo)}/{len(pages)} page(s) for vectorization"
                     )
-                    for p_idx, p in enumerate(todo):
+                    # 分P 并发处理：信号量限流（B站 SESSDATA 并发下载会被 RST，
+                    # 见 build_service 单例锁注释），并发度由 ingest.page_concurrency
+                    # 控制。process_page_vectorization 内部使用独立 DB session +
+                    # 独立 task_id，并发安全；原分P 间 _human_pause 由信号量节流替代。
+                    from app.config import settings as _settings
+
+                    page_sem = asyncio.Semaphore(_settings.ingest_page_concurrency)
+
+                    async def _vectorize_page(p: dict) -> None:
                         cid = p["cid"]
                         page_index = p["page_index"]
                         page_title = p.get("page_title") or f"P{page_index + 1}"
-
                         vec_task_id = await page_tracker.create(
                             uid=uid,
                             task_type="vec_page",
@@ -261,21 +268,23 @@ class KnowledgeSyncService:
                             },
                         )
                         try:
-                            await vector_service.process_page_vectorization(
-                                task_id=vec_task_id,
-                                bvid=bvid,
-                                cid=cid,
-                                page_index=page_index,
-                                page_title=page_title,
-                            )
+                            async with page_sem:
+                                await vector_service.process_page_vectorization(
+                                    task_id=vec_task_id,
+                                    bvid=bvid,
+                                    cid=cid,
+                                    page_index=page_index,
+                                    page_title=page_title,
+                                )
                         except Exception as page_err:
                             logger.warning(
                                 f"[{bvid}] page cid={cid} idx={page_index} failed: {page_err}"
                             )
                             failed_pages.append((bvid, cid))
 
-                        if p_idx < len(todo) - 1:
-                            await _human_pause(1.0, 3.0)
+                    await asyncio.gather(
+                        *(_vectorize_page(p) for p in todo)
+                    )
             except Exception as e:
                 logger.warning(f"[{bvid}] enumerate/process pages failed: {e}")
                 failed_pages.append((bvid, -1))

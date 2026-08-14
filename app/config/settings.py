@@ -186,6 +186,18 @@ class _Settings:
         key = str(_get("asr", "api_key", default="") or "")
         return key or self.openai_api_key
 
+    # ── Ingest ───────────────────────────────────────────────────
+
+    @property
+    def ingest_page_concurrency(self) -> int:
+        """收藏夹同步时同 bvid 的分P 并发数（B站 SESSDATA 限流保守值）。"""
+        return int(_get("ingest", "page_concurrency", default=3))
+
+    @property
+    def ingest_asr_chunk_concurrency(self) -> int:
+        """长音频 PCM 切块并行识别数（DashScope 并发限流）。"""
+        return int(_get("ingest", "asr_chunk_concurrency", default=3))
+
     # ── LangSmith ────────────────────────────────────────────────
 
     @property

@@ -201,6 +201,12 @@ asr:
   # api_key via env: ASR__API_KEY; falls back to LLM__API_KEY
 
 
+# ---- Ingest — 入库并发控制 --------------------------------------
+ingest:
+  page_concurrency: 3               # 收藏夹同步时同 bvid 的分P 并发数（B站 SESSDATA 限流保守值）
+  asr_chunk_concurrency: 3          # 长音频 PCM 切块并行识别数（DashScope 并发限流）
+
+
 # ---- LangSmith tracing --------------------------------------------
 # Set enabled=true + LANGSMITH__API_KEY env var to activate.
 langsmith:
