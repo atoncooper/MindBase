@@ -44,6 +44,7 @@ from app.routers.admin_code_executions import router as admin_code_executions_ro
 from app.routers.internal_quiz import router as internal_quiz_router
 from app.routers.internal_auth import router as internal_auth_router
 from app.routers.task_quiz import router as task_quiz_router
+from app.routers.task_answer import router as task_answer_router
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +469,8 @@ app.include_router(admin_code_executions_router)
 app.include_router(internal_quiz_router)
 app.include_router(internal_auth_router)
 app.include_router(task_quiz_router)
+# 定时出题答题提交（判题/入库业务在主 app；app-task 只做调度+通知）
+app.include_router(task_answer_router)
 
 # Preferences - extensible KV (wallpaper/theme/language)
 from app.routers.preferences import router as preferences_router  # noqa: E402

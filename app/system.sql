@@ -771,6 +771,7 @@ create table task_quiz_task
     cc_emails          json         not null,
     prompt             varchar(500) not null,
     difficulty         varchar(20)  default 'medium' not null,
+    question_count     int          default 1 not null,
     incomplete_message text         null,
     trigger_time       datetime     not null,
     status             varchar(20)  default 'pending' not null,
@@ -793,12 +794,14 @@ create index ix_task_quiz_task_status_deadline on task_quiz_task (status, deadli
 
 create table task_quiz_answer
 (
-    id           int auto_increment primary key,
-    task_id      varchar(64) not null,
-    uid          bigint      not null,
-    answer       text        not null,
-    is_correct   tinyint(1)  not null,
-    submitted_at datetime    null
+    id             int auto_increment primary key,
+    task_id        varchar(64) not null,
+    uid            bigint      not null,
+    question_index int         default 0 not null,
+    answer         text        not null,
+    is_correct     tinyint(1)  not null,
+    submitted_at   datetime    null,
+    constraint uq_task_quiz_answer_task_question unique (task_id, question_index)
 );
 
 create index ix_task_quiz_answer_task_id on task_quiz_answer (task_id);

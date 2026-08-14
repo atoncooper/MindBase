@@ -115,6 +115,9 @@ async def _migrate_add_columns():
         ("credential_usage", "cost_estimate", "NUMERIC(12, 6) DEFAULT 0.0"),
         # task-quiz: difficulty column (easy/medium/hard, default medium)
         ("task_quiz_task", "difficulty", "VARCHAR(20) DEFAULT 'medium'"),
+        # task-quiz: multi-question support (one task can generate N questions)
+        ("task_quiz_task", "question_count", "INTEGER DEFAULT 1"),
+        ("task_quiz_answer", "question_index", "INTEGER DEFAULT 0"),
     ]
 
     # Column type modifications (widening VARCHAR, etc.)

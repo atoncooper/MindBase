@@ -97,6 +97,8 @@ async def test_register_forwards_to_app_task(monkeypatch):
     assert fake_client.captured_json["user_email"] == "u@x.com"
     assert fake_client.captured_json["difficulty"] == "hard"
     assert fake_client.captured_json["cc_emails"] == ["a@x.com"]
+    # 题目数量默认 1（一次任务可出多题 1~5）
+    assert fake_client.captured_json["question_count"] == 1
     # apikey header set (APISIX key-auth)
     assert "apikey" in fake_client.captured_headers
 

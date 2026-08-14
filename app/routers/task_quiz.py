@@ -80,6 +80,7 @@ class TaskRegisterRequest(BaseModel):
     """User-facing task registration form (APISIX forward-auth injects X-Uid)."""
     prompt: str = Field(..., max_length=500)
     difficulty: str = Field("medium", pattern="^(easy|medium|hard)$")  # 考研难度：简单/中等/压轴
+    question_count: int = Field(1, ge=1, le=5)  # 本次任务出题数量（1~5）
     trigger_time: str  # ISO8601 UTC
     cc_emails: list[str] = Field(default_factory=list)
     incomplete_message: str | None = None
@@ -113,6 +114,7 @@ async def register(request: Request, req: TaskRegisterRequest):
         "cc_emails": req.cc_emails,
         "prompt": req.prompt,
         "difficulty": req.difficulty,
+        "question_count": req.question_count,
         "trigger_time": req.trigger_time,
         "incomplete_message": req.incomplete_message,
     }

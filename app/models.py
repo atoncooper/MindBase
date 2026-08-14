@@ -1007,6 +1007,7 @@ class TaskQuizTask(Base):
     cc_emails = Column(JSON, nullable=False)  # ["a@x.com", "b@y.com"]
     prompt = Column(String(500), nullable=False)  # 出题方向（粗粒度，如"数学1填空题"）
     difficulty = Column(String(20), default="medium", nullable=False)  # easy/medium/hard（考研难度：简单/中等/压轴）
+    question_count = Column(Integer, default=1, nullable=False)  # 本次任务出题数量（1~5）
     incomplete_message = Column(Text, nullable=True)  # 自定义未完成语录；null=用默认模板
     trigger_time = Column(DateTime, nullable=False)  # 出题触发时间（UTC aware）
     status = Column(
@@ -1031,6 +1032,7 @@ class TaskQuizAnswer(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(String(64), nullable=False, index=True)
     uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    question_index = Column(Integer, default=0, nullable=False)  # 0-based；一道任务多题时每题一行
     answer = Column(Text, nullable=False)
     is_correct = Column(Boolean, nullable=False)
     submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
