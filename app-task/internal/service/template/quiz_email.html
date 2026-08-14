@@ -11,14 +11,16 @@
     </tr>
     <tr>
       <td style="padding: 24px 0 8px;">
-        <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7;">您预约的定时出题任务已生成，请在答题时限内登录系统完成作答。</p>
+        <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7;">您预约的定时出题任务已生成，共 <strong>{{.Count}}</strong> 道题，请在答题时限内登录系统完成作答。</p>
       </td>
     </tr>
+    {{if .ShowDetail}}
+    {{range .Questions}}
     <tr>
       <td style="padding: 0 0 16px;">
         <table width="100%" cellpadding="0" cellspacing="0" style="background: #f7f8fa; border-radius: 8px; border: 1px solid #e5e6eb;">
           <tr><td style="padding: 20px;">
-            <p style="margin: 0 0 12px; font-size: 12px; font-weight: 600; color: #86909c; letter-spacing: 1px;">题目</p>
+            <p style="margin: 0 0 12px; font-size: 12px; font-weight: 600; color: #86909c; letter-spacing: 1px;">第 {{.Index}} 题</p>
             <p style="margin: 0 0 16px; font-size: 16px; font-weight: 600; line-height: 1.6;">{{.Question}}</p>
             {{if and (eq .QuestionType "choice") .Options}}
             <ol type="A" style="margin: 0 0 0 20px; padding: 0; line-height: 2; font-size: 15px;">
@@ -33,6 +35,20 @@
         </table>
       </td>
     </tr>
+    {{end}}
+    {{else}}
+    <tr>
+      <td style="padding: 0 0 16px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background: #f7f8fa; border-radius: 8px; border: 1px solid #e5e6eb;">
+          <tr><td style="padding: 20px;">
+            <p style="margin: 0 0 8px; font-size: 12px; font-weight: 600; color: #86909c; letter-spacing: 1px;">出题方向</p>
+            <p style="margin: 0; font-size: 15px; line-height: 1.6;">{{.Prompt}}</p>
+            <p style="margin: 14px 0 0; font-size: 14px; color: #4e5969; line-height: 1.7;">本次共生成 <strong>{{.Count}}</strong> 道题，具体题目请在登录 MindBase 后查看。</p>
+          </td></tr>
+        </table>
+      </td>
+    </tr>
+    {{end}}
     <tr>
       <td style="padding: 8px 0 24px;">
         <table width="100%" cellpadding="0" cellspacing="0" style="background: #e8f3ff; border-radius: 6px; border-left: 3px solid #3370ff;">

@@ -41,8 +41,15 @@ type QuizGenResponse struct {
 	Error  string `json:"error,omitempty"`  // present when status=failed
 }
 
-// Quiz is the generated quiz content (when status=ready).
+// Quiz is the generated quiz content (when status=ready). A task can hold
+// multiple questions (question_count 1..5); the main app always returns the
+// normalized {questions: [...]} shape.
 type Quiz struct {
+	Questions []QuizQuestion `json:"questions"`
+}
+
+// QuizQuestion is one question inside a quiz set.
+type QuizQuestion struct {
 	Question               string   `json:"question"`
 	QuestionType           string   `json:"question_type"`
 	Options                []string `json:"options"`
@@ -54,16 +61,17 @@ type Quiz struct {
 // RequestQuiz POSTs /generate-llm asynchronously. Returns immediately with
 // the status (generating/ready). Idempotent: main app checks task_id and won't
 // re-invoke the LLM if already generating/ready.
-func (c *AppClient) RequestQuiz(taskID, prompt string, uid int64, difficulty string) (*QuizGenResponse, error) {
+func (c *AppClient) RequestQuiz(taskID, prompt string, uid int64, difficulty string, questionCount int) (*QuizGenResponse, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("app base_url not configured")
 	}
 	url := strings.TrimRight(c.baseURL, "/") + c.llmPath
 	body, _ := json.Marshal(map[string]any{
-		"task_id":    taskID,
-		"prompt":     prompt,
-		"uid":        uid,
-		"difficulty": difficulty,
+		"task_id":        taskID,
+		"prompt":         prompt,
+		"uid":            uid,
+		"difficulty":     difficulty,
+		"question_count": questionCount,
 	})
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {

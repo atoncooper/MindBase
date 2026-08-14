@@ -22,13 +22,16 @@ func TestRequestQuiz_Success(t *testing.T) {
 		if body["difficulty"] != "hard" {
 			t.Errorf("difficulty = %v", body["difficulty"])
 		}
+		if body["question_count"] != float64(3) {
+			t.Errorf("question_count = %v, want 3", body["question_count"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"status": "generating"})
 	}))
 	defer srv.Close()
 
 	c := &AppClient{baseURL: srv.URL, apiKey: "test-key", llmPath: "/internal/quiz/generate-llm", statusPath: "/internal/quiz/status/", httpClient: srv.Client()}
-	resp, err := c.RequestQuiz("t1", "prompt", 1, "hard")
+	resp, err := c.RequestQuiz("t1", "prompt", 1, "hard", 3)
 	if err != nil {
 		t.Fatalf("RequestQuiz: %v", err)
 	}
@@ -43,22 +46,24 @@ func TestRequestQuiz_Ready(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"status": "ready",
 			"quiz": map[string]any{
-				"question": "q", "answer": "A", "answer_time_limit_seconds": 600,
+				"questions": []any{
+					map[string]any{"question": "q", "answer": "A", "answer_time_limit_seconds": 600},
+				},
 			},
 		})
 	}))
 	defer srv.Close()
 
 	c := &AppClient{baseURL: srv.URL, apiKey: "k", llmPath: "/p", statusPath: "/s/", httpClient: srv.Client()}
-	resp, err := c.RequestQuiz("t1", "p", 1, "medium")
+	resp, err := c.RequestQuiz("t1", "p", 1, "medium", 1)
 	if err != nil {
 		t.Fatalf("RequestQuiz: %v", err)
 	}
 	if resp.Status != "ready" {
 		t.Errorf("status = %q, want ready", resp.Status)
 	}
-	if resp.Quiz == nil || resp.Quiz.Answer != "A" {
-		t.Errorf("quiz = %+v, want answer A", resp.Quiz)
+	if resp.Quiz == nil || len(resp.Quiz.Questions) != 1 || resp.Quiz.Questions[0].Answer != "A" {
+		t.Errorf("quiz = %+v, want 1 question with answer A", resp.Quiz)
 	}
 }
 
@@ -69,7 +74,7 @@ func TestRequestQuiz_Non200(t *testing.T) {
 	defer srv.Close()
 
 	c := &AppClient{baseURL: srv.URL, apiKey: "k", llmPath: "/p", statusPath: "/s/", httpClient: srv.Client()}
-	_, err := c.RequestQuiz("t1", "p", 1, "medium")
+	_, err := c.RequestQuiz("t1", "p", 1, "medium", 1)
 	if err == nil {
 		t.Fatal("want error on 500")
 	}
@@ -77,7 +82,7 @@ func TestRequestQuiz_Non200(t *testing.T) {
 
 func TestRequestQuiz_NotConfigured(t *testing.T) {
 	c := &AppClient{baseURL: "", apiKey: "k", llmPath: "/p", statusPath: "/s/", httpClient: &http.Client{}}
-	_, err := c.RequestQuiz("t1", "p", 1, "medium")
+	_, err := c.RequestQuiz("t1", "p", 1, "medium", 1)
 	if err == nil {
 		t.Fatal("want error when baseURL empty")
 	}
@@ -93,7 +98,11 @@ func TestGetQuizStatus_Ready(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"status": "ready",
-			"quiz":   map[string]any{"question": "q", "answer": "A"},
+			"quiz": map[string]any{
+				"questions": []any{
+					map[string]any{"question": "q", "answer": "A"},
+				},
+			},
 		})
 	}))
 	defer srv.Close()

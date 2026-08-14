@@ -10,7 +10,7 @@ import (
 // registerDueTask creates a pending task whose trigger_time has already passed.
 func registerDueTask(t *testing.T, svc *TaskService, uid int64, prompt string) string {
 	t.Helper()
-	taskID, err := svc.RegisterTask(uid, "u@x.com", nil, prompt, "medium", time.Now().UTC().Add(-time.Minute), "")
+	taskID, err := svc.RegisterTask(uid, "u@x.com", nil, prompt, "medium", 1, time.Now().UTC().Add(-time.Minute), "")
 	if err != nil {
 		t.Fatalf("RegisterTask: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestScheduler_TickExecutesDuePending(t *testing.T) {
 func TestScheduler_TickSkipsFutureTask(t *testing.T) {
 	setupTestDB(t)
 	svc := NewTaskService(&mockAppClient{requestStatus: "ready", requestQuiz: testQuiz})
-	taskID, _ := svc.RegisterTask(1, "u@x.com", nil, "p", "medium", time.Now().UTC().Add(time.Hour), "")
+	taskID, _ := svc.RegisterTask(1, "u@x.com", nil, "p", "medium", 1, time.Now().UTC().Add(time.Hour), "")
 
 	sched := NewScheduler(svc, 30)
 	sched.tick()

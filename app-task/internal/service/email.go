@@ -16,10 +16,18 @@ import (
 //go:embed template/*.html template/*.txt
 var templateFS embed.FS
 
+type quizEmailQuestion struct {
+	Index        int // 1-based
+	Question     string
+	QuestionType string
+	Options      []string
+}
+
 type quizEmailData struct {
-	Question       string
-	QuestionType   string
-	Options        []string
+	Count          int
+	ShowDetail     bool // 题数 <= 2 时邮件内联展示题目；否则只显示数量
+	Prompt         string
+	Questions      []quizEmailQuestion
 	AnswerDeadline string
 }
 
@@ -29,11 +37,24 @@ type overdueEmailData struct {
 }
 
 // EnqueueQuizEmail renders the quiz email HTML and enqueues a pending notification.
-func EnqueueQuizEmail(taskID, recipient string, ccEmails []string, quiz map[string]any, deadlineStr string) error {
+// 多题策略：≤2 道在邮件里内联展示具体题目；>2 道只提示"共 N 道题，请登录系统查看"，
+// 避免邮件过长。
+func EnqueueQuizEmail(taskID, recipient string, ccEmails []string, prompt string, questions []QuizQuestion, deadlineStr string) error {
+	showDetail := len(questions) <= 2
+	qs := make([]quizEmailQuestion, 0, len(questions))
+	for i, q := range questions {
+		qs = append(qs, quizEmailQuestion{
+			Index:        i + 1,
+			Question:     latexToText(q.Question),
+			QuestionType: q.QuestionType,
+			Options:      latexToTextSlice(q.Options),
+		})
+	}
 	html, err := renderTemplate("template/quiz_email.html", quizEmailData{
-		Question:       latexToText(str(quiz["question"])),
-		QuestionType:   str(quiz["question_type"]),
-		Options:        latexToTextSlice(toStringSlice(quiz["options"])),
+		Count:          len(questions),
+		ShowDetail:     showDetail,
+		Prompt:         prompt,
+		Questions:      qs,
 		AnswerDeadline: deadlineStr,
 	})
 	if err != nil {
