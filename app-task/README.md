@@ -23,7 +23,8 @@ MindBase **定时出题任务执行器**(Go,自写 DB 轮询调度,无 xxl-job/p
 app-task --HTTP /internal/quiz/generate-llm (经 APISIX)--> 主 app (纯 LLM 出题)
 app-task --渲染 HTML + 入队--> notification worker --Resend--> 用户+抄送人
 app-task --设 deadline + mark sent--> scheduler 轮询 deadline 到期
-用户登录 --> /tasks/{id}/answer --> app-task 判定完成 / 超时发未完成语录
+用户登录 --> /tasks/{id}/answer --> 主 app (判题/入库/状态流转 sent->completed)
+app-task --scheduler 轮询 deadline--> 超时 mark overdue + 未完成语录
 ```
 
 ## 目录结构
@@ -42,11 +43,11 @@ app-task/
 │   ├── model/model.go         # GORM 模型(task_quiz_task/answer/notification)
 │   ├── repo/
 │   │   ├── task.go            # CRUD + conditional_update 状态机 + list_due/list_overdue
-│   │   ├── answer.go
+│   │   ├── answer.go            # 读 task_quiz_answer（主 app 写入；app-task 只读供详情）
 │   │   ├── notification.go    # queue scan + mark_sent/failed
 │   │   └── quiz.go            # Mongo task_quiz_questions
 │   ├── service/
-│   │   ├── task_service.go    # register/execute/submit/timeout + judge
+│   │   ├── task_service.go    # register/execute/timeout（判题已移到主 app）
 │   │   ├── app_client.go      # 调主 app /internal/quiz/generate-llm
 │   │   ├── email.go           # html/template 渲染 + 入队
 │   │   ├── scheduler.go       # DB 轮询调度(30s tick)
@@ -100,10 +101,13 @@ APPTASK__TIMEZONE=Asia/Shanghai
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/tasks/register` | 主 app agent 调用,注册任务(uid/prompt/trigger_time/cc_emails/incomplete_message) |
-| POST | `/tasks/{task_id}/answer` | 用户答题提交(校验 uid = task.uid) |
 | GET | `/tasks/{task_id}` | 任务详情(task + quiz + answer),X-Uid 鉴权 |
 | GET | `/tasks` | 用户任务列表,X-Uid 鉴权 |
 | GET | `/health` | 健康检查 |
+
+> ⚠️ `POST /tasks/{task_id}/answer`（答题提交）已由主 app 提供（判题/入库/状态流转
+> 属业务逻辑），经 APISIX `/tasks/*/answer`（priority 100, forward-auth）转发到 backend。
+> app-task 只负责调度执行与通知，不处理答题。
 
 ## 调度模型(自写,无 xxl-job)
 
