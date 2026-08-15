@@ -14,6 +14,7 @@ import (
 	"app-task/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // New builds the Gin engine with all routes registered.
@@ -45,7 +46,6 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 
 	tasks := e.Group("/tasks")
 	tasks.POST("/register", r.register)
-	tasks.POST("/:task_id/answer", r.answer)
 	tasks.GET("/:task_id", r.detail)
 	tasks.GET("", r.list)
 }
@@ -57,12 +57,16 @@ func (r *Router) register(c *gin.Context) {
 		CCEmails          []string `json:"cc_emails"`
 		Prompt            string   `json:"prompt" binding:"required,max=500"`
 		Difficulty        string   `json:"difficulty"`
+		QuestionCount     int      `json:"question_count"`
 		TriggerTime       string   `json:"trigger_time" binding:"required"`
 		IncompleteMessage *string  `json:"incomplete_message"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
+	}
+	if req.QuestionCount < 1 || req.QuestionCount > 5 {
+		req.QuestionCount = 1
 	}
 	triggerTime, err := parseISO8601(req.TriggerTime)
 	if err != nil {
@@ -73,41 +77,12 @@ func (r *Router) register(c *gin.Context) {
 	if req.IncompleteMessage != nil {
 		incomplete = *req.IncompleteMessage
 	}
-	taskID, err := r.taskSvc.RegisterTask(req.UID, req.UserEmail, req.CCEmails, req.Prompt, req.Difficulty, triggerTime, incomplete)
+	taskID, err := r.taskSvc.RegisterTask(req.UID, req.UserEmail, req.CCEmails, req.Prompt, req.Difficulty, req.QuestionCount, triggerTime, incomplete)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "register failed: " + err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"task_id": taskID, "status": "pending"})
-}
-
-func (r *Router) answer(c *gin.Context) {
-	uid, ok := uidFromHeader(c)
-	if !ok {
-		return
-	}
-	taskID := c.Param("task_id")
-	var req struct {
-		Answer string `json:"answer" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
-		return
-	}
-	result, err := r.taskSvc.SubmitAnswer(taskID, uid, req.Answer)
-	if err == service.ErrNotFound {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "task not found"})
-		return
-	}
-	if err == service.ErrForbidden {
-		c.JSON(http.StatusForbidden, gin.H{"detail": "not the task owner"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, result)
 }
 
 func (r *Router) detail(c *gin.Context) {
@@ -130,25 +105,61 @@ func (r *Router) detail(c *gin.Context) {
 		return
 	}
 	quiz, _ := repo.GetQuizByTaskID(c.Request.Context(), taskID)
-	ans, _ := repo.GetAnswerByTaskID(taskID)
+	answers, _ := repo.GetAnswersByTaskID(taskID)
 	resp := gin.H{
-		"task_id":      task.TaskID,
-		"uid":          task.UID,
-		"prompt":       task.Prompt,
-		"status":       task.Status,
-		"trigger_time": task.TriggerTime.Format(time.RFC3339),
-		"cc_emails":    task.CCEmails,
-		"quiz":         quiz,
-		"answer":       nil,
+		"task_id":        task.TaskID,
+		"uid":            task.UID,
+		"prompt":         task.Prompt,
+		"status":         task.Status,
+		"trigger_time":   task.TriggerTime.Format(time.RFC3339),
+		"cc_emails":      task.CCEmails,
+		"question_count": task.QuestionCount,
+		"quiz":           gin.H{"questions": normalizeQuizQuestions(quiz)},
+		"answers":        []gin.H{},
 	}
-	if ans != nil {
-		resp["answer"] = gin.H{
-			"answer":       ans.Answer,
-			"is_correct":   ans.IsCorrect,
-			"submitted_at": ans.SubmittedAt.Format(time.RFC3339),
-		}
+	for _, a := range answers {
+		resp["answers"] = append(resp["answers"].([]gin.H), gin.H{
+			"question_index": a.QuestionIndex,
+			"answer":         a.Answer,
+			"is_correct":     a.IsCorrect,
+			"submitted_at":   a.SubmittedAt.Format(time.RFC3339),
+		})
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// normalizeQuizQuestions normalizes the quiz doc to a {questions: [...]} list.
+// New docs store a questions array; legacy single-question docs keep flat
+// fields (question/question_type/options/answer/...), which we wrap here so the
+// frontend always sees the same array shape.
+//
+// NOTE: bson decode produces primitive.A (named []any), NOT []any — a plain
+// `.([]any)` assertion on it fails silently, so both shapes are handled.
+func normalizeQuizQuestions(quiz map[string]any) []any {
+	if quiz == nil {
+		return []any{}
+	}
+	if qs, ok := quiz["questions"]; ok {
+		if arr, ok := qs.([]any); ok && len(arr) > 0 {
+			return arr
+		}
+		if arr, ok := qs.(primitive.A); ok && len(arr) > 0 {
+			return []any(arr)
+		}
+	}
+	single := map[string]any{}
+	for _, k := range []string{
+		"question", "question_type", "options", "answer", "difficulty",
+		"answer_time_limit_seconds",
+	} {
+		if v, ok := quiz[k]; ok {
+			single[k] = v
+		}
+	}
+	if single["question"] == nil {
+		return []any{}
+	}
+	return []any{single}
 }
 
 func (r *Router) list(c *gin.Context) {

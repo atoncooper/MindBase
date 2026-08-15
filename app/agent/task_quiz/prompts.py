@@ -34,7 +34,11 @@ QUIZ_GEN_SYS_PROMPT = (
     "【格式要求】\n"
     "1. question_type 只能是 fill_blank / choice / short_answer 之一；\n"
     "2. difficulty 必须等于用户指定的难度值，不要自行更改；\n"
-    "3. 选择题必须给出 options（2-4 个）并确保 answer 是其中一项；填空题/简答题 options 留空；\n"
+    "3. 必须输出恰好“出题数量”道题（questions 数组长度等于出题数量），每题都是独立对象，且：\n"
+    "   - 选择题必须给出 4 个选项，且 answer 必须填写正确选项的完整文本，与 options 中某一项逐字完全一致，禁止只填字母编号（如 'B'）或简写；\n"
+    "   - 每个选择题的四个选项中必须恰好只有一个是正确答案，其余为明显错误或干扰项，绝不允许出现两个及以上正确选项（可用数值代入或反例检验）；\n"
+    "   - 多道题之间不得重复或雷同，覆盖不同知识点；\n"
+    "   填空题/简答题 options 留空；\n"
     "4. answer_time_limit_seconds 按难度给：easy≈600、medium≈1200、hard≈1800。\n"
     "返回结构化结果。"
 )

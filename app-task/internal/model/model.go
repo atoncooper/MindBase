@@ -22,6 +22,7 @@ type TaskQuizTask struct {
 	CCEmails          datatypes.JSON `gorm:"column:cc_emails;type:json;not null" json:"cc_emails"`
 	Prompt            string         `gorm:"column:prompt;size:500;not null" json:"prompt"`
 	Difficulty        string         `gorm:"column:difficulty;size:20;default:medium;not null" json:"difficulty"` // easy/medium/hard (考研难度: 简单/中等/压轴)
+	QuestionCount     int            `gorm:"column:question_count;default:1;not null" json:"question_count"`      // 本次任务出题数量 (1~5)
 	IncompleteMessage *string        `gorm:"column:incomplete_message;type:text" json:"incomplete_message,omitempty"`
 	TriggerTime       time.Time      `gorm:"column:trigger_time;not null" json:"trigger_time"`
 	Status            string         `gorm:"column:status;size:20;default:pending;not null" json:"status"`
@@ -34,14 +35,16 @@ type TaskQuizTask struct {
 
 func (TaskQuizTask) TableName() string { return "task_quiz_task" }
 
-// TaskQuizAnswer: user's answer to a quiz task.
+// TaskQuizAnswer: user's answer to a quiz task (one row per question when
+// question_count > 1; question_index is 0-based).
 type TaskQuizAnswer struct {
-	ID          int64     `gorm:"primaryKey;autoIncrement" json:"-"`
-	TaskID      string    `gorm:"column:task_id;index;not null" json:"task_id"`
-	UID         int64     `gorm:"column:uid;index;not null" json:"uid"`
-	Answer      string    `gorm:"column:answer;type:text;not null" json:"answer"`
-	IsCorrect   bool      `gorm:"column:is_correct;not null" json:"is_correct"`
-	SubmittedAt time.Time `gorm:"column:submitted_at;autoCreateTime" json:"submitted_at"`
+	ID            int64     `gorm:"primaryKey;autoIncrement" json:"-"`
+	TaskID        string    `gorm:"column:task_id;index;not null" json:"task_id"`
+	UID           int64     `gorm:"column:uid;index;not null" json:"uid"`
+	QuestionIndex int       `gorm:"column:question_index;default:0;not null" json:"question_index"`
+	Answer        string    `gorm:"column:answer;type:text;not null" json:"answer"`
+	IsCorrect     bool      `gorm:"column:is_correct;not null" json:"is_correct"`
+	SubmittedAt   time.Time `gorm:"column:submitted_at;autoCreateTime" json:"submitted_at"`
 }
 
 func (TaskQuizAnswer) TableName() string { return "task_quiz_answer" }

@@ -82,6 +82,7 @@ function DialogBody({
 }) {
     const [prompt, setPrompt] = useState("");
     const [difficulty, setDifficulty] = useState<string>("medium");
+    const [questionCount, setQuestionCount] = useState(1);
     const [triggerTime, setTriggerTime] = useState("");
     const [ccEmails, setCcEmails] = useState("");
     const [incomplete, setIncomplete] = useState("");
@@ -113,6 +114,7 @@ function DialogBody({
                 ccEmails: ccs,
                 incompleteMessage: incomplete.trim() || null,
                 difficulty,
+                questionCount,
             });
             onCreated();
             onClose();
@@ -190,6 +192,33 @@ function DialogBody({
                                 </button>
                             );
                         })}
+                    </div>
+                </div>
+
+                {/* Question count */}
+                <div className="mb-4">
+                    <label className="mb-1.5 block text-[13px] font-medium text-secondary">
+                        题目数量
+                        <span className="ml-1.5 font-normal text-tertiary">
+                            （一次生成多道题，最多 5 道）
+                        </span>
+                    </label>
+                    <div className="grid grid-cols-5 gap-2">
+                        {[1, 2, 3, 4, 5].map((c) => (
+                            <button
+                                key={c}
+                                type="button"
+                                onClick={() => setQuestionCount(c)}
+                                className={cn(
+                                    "h-10 rounded-lg border text-[13px] font-medium transition-all",
+                                    questionCount === c
+                                        ? "border-accent bg-accent-soft text-accent"
+                                        : "border-border bg-surface text-foreground hover:border-tertiary",
+                                )}
+                            >
+                                {c}
+                            </button>
+                        ))}
                     </div>
                 </div>
 

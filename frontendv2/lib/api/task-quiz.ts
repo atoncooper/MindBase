@@ -27,14 +27,15 @@ export interface TaskQuizListItem {
 
 export interface TaskQuizQuestion {
     question: string;
-    questionType: string;            // single_choice / multiple_choice / fill_blank / short_answer ...
+    questionType: string;            // choice / fill_blank / short_answer
     options: string[] | null;        // choice types only
-    answer: string;                  // correct answer (choice index/text, or fill-in text)
+    answer: string;                  // correct answer (choice text/letter, or fill-in text)
     difficulty: string;              // easy / medium / hard
     answerTimeLimitSeconds: number;
 }
 
-export interface TaskQuizAnswer {
+export interface TaskQuizAnswerItem {
+    questionIndex: number;           // 0-based, 与 questions 数组下标对应
     answer: string;
     isCorrect: boolean;
     submittedAt: string;
@@ -47,9 +48,10 @@ export interface TaskQuizDetail {
     status: TaskQuizStatus;
     triggerTime: string;
     ccEmails: string[];
+    questionCount: number;           // 本次任务出题数量（1~5）
     deadline?: string | null;        // armed on send; used for the answer countdown
-    quiz: TaskQuizQuestion | null;
-    answer: TaskQuizAnswer | null;
+    quiz: { questions: TaskQuizQuestion[] } | null;
+    answers: TaskQuizAnswerItem[];   // 空数组 = 未作答
 }
 
 export interface RegisterTaskParams {
@@ -58,6 +60,7 @@ export interface RegisterTaskParams {
     ccEmails: string[];
     incompleteMessage?: string | null;
     difficulty: string;              // easy / medium / hard
+    questionCount: number;           // 1~5
 }
 
 export interface RegisterTaskResponse {
@@ -65,9 +68,15 @@ export interface RegisterTaskResponse {
     status: string;
 }
 
+export interface SubmitAnswerItem {
+    question_index: number; // wire format (snake_case)
+    answer: string;
+}
+
 export interface SubmitAnswerResponse {
     status: string;
     isCorrect: boolean;
+    results: { questionIndex: number; answer: string; isCorrect: boolean }[];
 }
 
 export interface TaskQuizStreamHandlers {
@@ -88,6 +97,7 @@ export const taskQuizApi = {
                 cc_emails: params.ccEmails,
                 incomplete_message: params.incompleteMessage ?? null,
                 difficulty: params.difficulty,
+                question_count: params.questionCount,
             }),
         }),
 
@@ -101,11 +111,11 @@ export const taskQuizApi = {
     getTask: (taskId: string) =>
         requestCamel<TaskQuizDetail>(`/tasks/${taskId}`),
 
-    /** Submit answer for a sent task. */
-    submitAnswer: (taskId: string, answer: string) =>
+    /** Submit answers for a sent task (one entry per question, index 0-based). */
+    submitAnswer: (taskId: string, answers: SubmitAnswerItem[]) =>
         requestCamel<SubmitAnswerResponse>(`/tasks/${taskId}/answer`, {
             method: "POST",
-            body: JSON.stringify({ answer }),
+            body: JSON.stringify({ answers }),
         }),
 
     /**

@@ -96,3 +96,9 @@ app/test/rag/data/
 
 # reasonix
 reasonix.toml
+# Go test cache (sandbox can't write to user AppData; keep local & persistent)
+.gocache/
+.gopath/
+.gotmp/
+.gocache/
+.pip-tmp/

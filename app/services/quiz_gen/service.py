@@ -27,7 +27,7 @@ _background_tasks: set = set()
 
 
 class QuizGenerateResult(BaseModel):
-    """Structured output schema enforced on the LLM."""
+    """单题结构化输出 schema（一道任务可含多题）。"""
 
     question: str = Field(..., description="题干")
     question_type: str = Field(..., description="fill_blank / choice / short_answer")
@@ -35,6 +35,33 @@ class QuizGenerateResult(BaseModel):
     answer: str = Field(..., description="正确答案")
     difficulty: str = Field(..., description="easy / medium / hard")
     answer_time_limit_seconds: int = Field(..., description="建议答题时限（秒）")
+
+
+class QuizSetGenerateResult(BaseModel):
+    """一道任务多题的结构化输出（LLM 一次返回 N 道题）。"""
+
+    questions: list[QuizGenerateResult] = Field(..., min_length=1, max_length=5)
+
+
+_QUESTION_FIELDS = (
+    "question",
+    "question_type",
+    "options",
+    "answer",
+    "difficulty",
+    "answer_time_limit_seconds",
+)
+
+
+def _quiz_from_doc(doc: dict) -> dict:
+    """把题库文档归一化为 {questions: [...]}。
+
+    新文档存 questions 数组；兼容历史单题文档（question 等平铺字段）。
+    """
+    qs = doc.get("questions")
+    if isinstance(qs, list) and qs:
+        return {"questions": qs}
+    return {"questions": [{k: doc.get(k) for k in _QUESTION_FIELDS}]}
 
 
 def _quiz_coll():
@@ -51,24 +78,28 @@ async def _get_quiz_doc(task_id: str) -> dict | None:
 
 
 def _quiz_from_doc(doc: dict) -> dict:
-    return {
-        "question": doc.get("question"),
-        "question_type": doc.get("question_type"),
-        "options": doc.get("options"),
-        "answer": doc.get("answer"),
-        "difficulty": doc.get("difficulty"),
-        "answer_time_limit_seconds": doc.get("answer_time_limit_seconds"),
-    }
+    """把题库文档归一化为 {questions: [...]}。
+
+    新文档存 questions 数组；兼容历史单题文档（question 等平铺字段）。
+    """
+    qs = doc.get("questions")
+    if isinstance(qs, list) and qs:
+        return {"questions": qs}
+    return {"questions": [{k: doc.get(k) for k in _QUESTION_FIELDS}]}
 
 
 class QuizGenService:
     """Async + idempotent quiz generation. Called by the internal_quiz router."""
 
     @staticmethod
-    async def generate(task_id: str, prompt: str, difficulty: str, uid: int | None) -> dict:
+    async def generate(
+        task_id: str, prompt: str, difficulty: str, uid: int | None, question_count: int = 1
+    ) -> dict:
         """Returns {status: generating|ready, quiz?}. Launches background LLM if needed."""
         if not prompt.strip():
             raise ValueError("prompt required")
+        if not 1 <= question_count <= 5:
+            raise ValueError("question_count must be 1..5")
         if not settings.openai_api_key:
             raise RuntimeError("LLM not configured (openai_api_key empty)")
 
@@ -89,10 +120,10 @@ class QuizGenService:
             "task_id": task_id, "uid": uid,
             "status": "generating", "created_at": time.time(),
         })
-        task = asyncio.create_task(_generate_quiz_bg(task_id, prompt, difficulty, uid))
+        task = asyncio.create_task(_generate_quiz_bg(task_id, prompt, difficulty, uid, question_count))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
-        logger.info("[INTERNAL_QUIZ] started generation task_id={} difficulty={}", task_id, difficulty)
+        logger.info("[INTERNAL_QUIZ] started generation task_id={} difficulty={} count={}", task_id, difficulty, question_count)
         return {"status": "generating"}
 
     @staticmethod
@@ -110,7 +141,9 @@ class QuizGenService:
         return {"status": "generating"}
 
 
-async def _generate_quiz_bg(task_id: str, prompt: str, difficulty: str, uid: int | None):
+async def _generate_quiz_bg(
+    task_id: str, prompt: str, difficulty: str, uid: int | None, question_count: int
+):
     """Background coroutine: invoke LLM and store result in Mongo."""
     try:
         llm = ChatOpenAI(
@@ -119,34 +152,36 @@ async def _generate_quiz_bg(task_id: str, prompt: str, difficulty: str, uid: int
             model=settings.llm_model,
             temperature=0.7,
         )
-        structured_llm = llm.with_structured_output(QuizGenerateResult)
+        structured_llm = llm.with_structured_output(QuizSetGenerateResult)
 
         last_err: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                result: QuizGenerateResult = await structured_llm.ainvoke(
+                result: QuizSetGenerateResult = await structured_llm.ainvoke(
                     [
                         {"role": "system", "content": QUIZ_GEN_SYS_PROMPT},
-                        {"role": "user", "content": f"出题方向：{prompt}\n难度：{difficulty}"},
+                        {
+                            "role": "user",
+                            "content": f"出题方向：{prompt}\n难度：{difficulty}\n出题数量：{question_count}",
+                        },
                     ]
                 )
-                limit = int(result.answer_time_limit_seconds)
+                if not result.questions:
+                    raise ValueError("LLM returned empty questions")
+                # 任务级答题时限取第一题的建议值（各题可能不同，deadline 是任务级的）
+                limit = int(result.questions[0].answer_time_limit_seconds)
                 if limit <= 0:
-                    limit = _DIFFICULTY_LIMITS.get(result.difficulty, 1200)
+                    limit = _DIFFICULTY_LIMITS.get(result.questions[0].difficulty, 1200)
                 logger.info(
-                    "[INTERNAL_QUIZ] generated task_id={} type={} difficulty={} (attempt={})",
-                    task_id, result.question_type, result.difficulty, attempt,
+                    "[INTERNAL_QUIZ] generated task_id={} count={} difficulty={} (attempt={})",
+                    task_id, len(result.questions), result.questions[0].difficulty, attempt,
                 )
                 await _quiz_coll().update_one(
                     {"task_id": task_id},
                     {"$set": {
                         "status": "ready",
-                        "question": result.question,
-                        "question_type": result.question_type,
-                        "options": result.options,
-                        "answer": result.answer,
-                        "difficulty": result.difficulty,
-                        "answer_time_limit_seconds": limit,
+                        "questions": [q.model_dump() for q in result.questions],
+                        "difficulty": result.questions[0].difficulty,
                         "generated_at": time.time(),
                     }},
                 )

@@ -18,7 +18,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
-    ArrowLeft,
     CalendarClock,
     Clock,
     CheckCircle2,
@@ -27,11 +26,12 @@ import {
     Loader2,
     Mail,
     Hourglass,
-    Sparkles,
 } from "lucide-react";
 import {
     taskQuizApi,
+    type TaskQuizAnswerItem,
     type TaskQuizDetail as TaskQuizDetailData,
+    type TaskQuizQuestion,
     type TaskQuizStatus,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -41,7 +41,6 @@ interface TaskQuizDetailProps {
     detail: TaskQuizDetailData | null;
     loading: boolean;
     onAnswered: () => void;
-    onBack: () => void;
 }
 
 const STATUS_BADGE: Record<TaskQuizStatus, { label: string; cls: string }> = {
@@ -72,17 +71,31 @@ function formatCountdown(ms: number): string {
     return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+/**
+ * Whether an option matches a quiz answer. The LLM may output the answer as
+ * the full option text ("马原") or just its letter ("A"); options may carry a
+ * letter prefix ("A. 马原"). Tolerate both shapes so reveal-highlighting works.
+ */
+function matchesAnswer(opt: string, answer: string): boolean {
+    const o = opt.trim();
+    const a = answer.trim();
+    if (!o || !a) return false;
+    if (o === a) return true;
+    const letter = a.toUpperCase();
+    if (/^[A-F]$/.test(letter)) {
+        return new RegExp(`^${letter}[.、)）:\\s]`, "i").test(o);
+    }
+    return false;
+}
+
 export function TaskQuizDetail({
     detail,
     loading,
     onAnswered,
-    onBack,
 }: TaskQuizDetailProps) {
     if (loading && !detail) return <DetailSkeleton />;
     if (!detail) return <EmptyDetail />;
-    return (
-        <DetailBody detail={detail} onAnswered={onAnswered} onBack={onBack} />
-    );
+    return <DetailBody detail={detail} onAnswered={onAnswered} />;
 }
 
 /* ─── Empty / loading ─── */
@@ -121,11 +134,9 @@ function DetailSkeleton() {
 function DetailBody({
     detail,
     onAnswered,
-    onBack,
 }: {
     detail: TaskQuizDetailData;
     onAnswered: () => void;
-    onBack: () => void;
 }) {
     const badge = STATUS_BADGE[detail.status];
     const quiz = detail.quiz;
@@ -134,14 +145,6 @@ function DetailBody({
         <div className="flex h-full flex-col">
             {/* Header */}
             <div className="flex items-start gap-3 border-b border-border-subtle px-5 py-4 md:px-8">
-                <button
-                    type="button"
-                    onClick={onBack}
-                    aria-label="返回列表"
-                    className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground md:hidden"
-                >
-                    <ArrowLeft className="h-4 w-4" />
-                </button>
                 <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                         <span
@@ -243,7 +246,7 @@ function FailedState() {
     );
 }
 
-/* ─── Quiz card + answer form ─── */
+/* ─── Quiz card + answer form (multi-question) ─── */
 
 function QuizCard({
     detail,
@@ -252,16 +255,12 @@ function QuizCard({
     detail: TaskQuizDetailData;
     onAnswered: () => void;
 }) {
-    const quiz = detail.quiz!;
-    const answered = detail.answer != null;
-    const isChoice = !!quiz.options && quiz.options.length > 0;
-    const isMultiple = quiz.questionType.toLowerCase().includes("multiple");
+    const questions = detail.quiz?.questions ?? [];
+    const submitted = detail.answers ?? []; // 防御：旧后端可能缺字段
+    const answered = submitted.length > 0;
 
-    const [selectedOption, setSelectedOption] = useState<string | null>(null);
-    const [selectedOptions, setSelectedOptions] = useState<Set<string>>(
-        new Set(),
-    );
-    const [textAnswer, setTextAnswer] = useState("");
+    // 每题一个答案字符串（选择题=选项文本，填空/简答=输入文本），按下标存
+    const [answers, setAnswers] = useState<Record<number, string>>({});
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -282,29 +281,20 @@ function QuizCard({
         return () => clearInterval(t);
     }, [detail.deadline, answered]);
 
-    function toggleOption(opt: string) {
-        setSelectedOptions((prev) => {
-            const next = new Set(prev);
-            if (next.has(opt)) next.delete(opt);
-            else next.add(opt);
-            return next;
-        });
+    function setAnswer(idx: number, val: string) {
+        setAnswers((prev) => ({ ...prev, [idx]: val }));
     }
 
     async function submit() {
-        let answerStr = "";
-        if (isChoice) {
-            answerStr = isMultiple
-                ? Array.from(selectedOptions).join(", ")
-                : selectedOption ?? "";
-        } else {
-            answerStr = textAnswer.trim();
-        }
-        if (!answerStr) return;
+        const items = questions.map((_, i) => ({
+            question_index: i,
+            answer: (answers[i] ?? "").trim(),
+        }));
+        if (items.some((it) => !it.answer)) return;
         setSubmitting(true);
         setError(null);
         try {
-            await taskQuizApi.submitAnswer(detail.taskId, answerStr);
+            await taskQuizApi.submitAnswer(detail.taskId, items);
             onAnswered();
         } catch (e) {
             setError(e instanceof Error ? e.message : "提交失败");
@@ -312,12 +302,11 @@ function QuizCard({
         setSubmitting(false);
     }
 
-    const canSubmit = isChoice
-        ? isMultiple
-            ? selectedOptions.size > 0
-            : selectedOption != null
-        : textAnswer.trim().length > 0;
-
+    const answeredCount = questions.filter((_, i) =>
+        (answers[i] ?? "").trim(),
+    ).length;
+    const canSubmit =
+        questions.length > 0 && answeredCount === questions.length;
     const inputLocked = submitting || detail.status === "overdue";
 
     return (
@@ -347,94 +336,136 @@ function QuizCard({
                 </div>
             )}
 
-            {/* Question card */}
-            <div className="rounded-2xl border border-border bg-surface p-5 md:p-6">
-                <div className="mb-3 flex items-center gap-2">
-                    <span className="rounded-md bg-border-subtle px-2 py-0.5 text-[11px] font-medium text-secondary">
-                        {quiz.difficulty}
-                    </span>
-                    <span className="text-[11px] text-tertiary">
-                        {quiz.questionType}
-                    </span>
-                    {isMultiple && (
-                        <span className="text-[11px] text-tertiary">· 多选</span>
-                    )}
-                </div>
-                <div className="md-body text-[15px] leading-relaxed text-foreground">
-                    <Markdown>{quiz.question}</Markdown>
-                </div>
+            {/* Question list */}
+            <div className="space-y-5">
+                {questions.map((q, i) => {
+                    const myAns = answered
+                        ? submitted.find((a) => a.questionIndex === i)
+                        : undefined;
+                    return (
+                        <div
+                            key={i}
+                            className="rounded-2xl border border-border bg-surface p-5 md:p-6"
+                        >
+                            <div className="mb-3 flex flex-wrap items-center gap-2">
+                                <span className="rounded-md bg-border-subtle px-2 py-0.5 text-[11px] font-medium text-secondary">
+                                    第 {i + 1} 题
+                                </span>
+                                <span className="rounded-md bg-border-subtle px-2 py-0.5 text-[11px] font-medium text-secondary">
+                                    {q.difficulty}
+                                </span>
+                                <span className="text-[11px] text-tertiary">
+                                    {q.questionType}
+                                </span>
+                            </div>
+                            <div className="md-body text-[15px] leading-relaxed text-foreground">
+                                <Markdown>{q.question}</Markdown>
+                            </div>
 
-                {/* Choice options (input mode) */}
-                {isChoice && !answered && (
-                    <div className="mt-4 space-y-2">
-                        {quiz.options!.map((opt, i) => {
-                            const active = isMultiple
-                                ? selectedOptions.has(opt)
-                                : selectedOption === opt;
-                            return (
-                                <button
-                                    key={i}
-                                    type="button"
+                            {/* Choice options — always visible; interactive before
+                                answering, read-only reveal (correct/wrong) after */}
+                            {q.options && q.options.length > 0 ? (
+                                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                                    {q.options.map((opt, oi) => {
+                                        const letter = String.fromCharCode(65 + oi);
+                                        const isUserPick = answered
+                                            ? matchesAnswer(opt, myAns?.answer ?? "")
+                                            : answers[i] === opt;
+                                        const isCorrectOpt =
+                                            answered && matchesAnswer(opt, q.answer);
+
+                                        const optState:
+                                            | "idle"
+                                            | "selected"
+                                            | "correct"
+                                            | "wrong" = answered
+                                            ? isCorrectOpt
+                                                ? "correct"
+                                                : isUserPick
+                                                  ? "wrong"
+                                                  : "idle"
+                                            : isUserPick
+                                              ? "selected"
+                                              : "idle";
+
+                                        return (
+                                            <button
+                                                key={oi}
+                                                type="button"
+                                                disabled={inputLocked || answered}
+                                                onClick={() => setAnswer(i, opt)}
+                                                className={cn(
+                                                    "flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left text-[14px] transition-all",
+                                                    optState === "correct" &&
+                                                        "border-success/40 bg-success/10",
+                                                    optState === "wrong" &&
+                                                        "border-danger/40 bg-danger/10",
+                                                    optState === "selected" &&
+                                                        "border-foreground bg-surface text-foreground",
+                                                    optState === "idle" &&
+                                                        (answered
+                                                            ? "border-border bg-surface text-foreground/70"
+                                                            : "border-border bg-surface text-foreground/90 hover:border-tertiary"),
+                                                    inputLocked && "opacity-60",
+                                                )}
+                                            >
+                                                <span
+                                                    className={cn(
+                                                        "grid h-5 w-5 shrink-0 place-items-center border text-[11px] font-medium",
+                                                        "rounded-full",
+                                                        optState === "correct" &&
+                                                            "border-success bg-success text-surface",
+                                                        optState === "wrong" &&
+                                                            "border-danger bg-danger text-surface",
+                                                        optState === "selected" &&
+                                                            "border-foreground bg-foreground text-surface",
+                                                        optState === "idle" &&
+                                                            (answered
+                                                                ? "border-tertiary/50 text-tertiary"
+                                                                : "border-tertiary text-tertiary"),
+                                                    )}
+                                                >
+                                                    {letter}
+                                                </span>
+                                                <span className="min-w-0 flex-1">
+                                                    <Markdown inline>{opt}</Markdown>
+                                                </span>
+                                                {optState === "correct" && (
+                                                    <span className="ml-auto shrink-0 text-[11px] font-medium text-success">
+                                                        ✓ 正确答案
+                                                    </span>
+                                                )}
+                                                {optState === "wrong" && (
+                                                    <span className="ml-auto shrink-0 text-[11px] font-medium text-danger">
+                                                        你的答案
+                                                    </span>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : !answered ? (
+                                /* Fill-in / short answer input (input mode) */
+                                <textarea
+                                    value={answers[i] ?? ""}
+                                    onChange={(e) => setAnswer(i, e.target.value)}
                                     disabled={inputLocked}
-                                    onClick={() =>
-                                        isMultiple
-                                            ? toggleOption(opt)
-                                            : setSelectedOption(opt)
-                                    }
-                                    className={cn(
-                                        "flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left text-[14px] transition-all",
-                                        active
-                                            ? "border-foreground bg-surface text-foreground"
-                                            : "border-border bg-surface text-foreground/90 hover:border-tertiary",
-                                        inputLocked && "opacity-60",
-                                    )}
-                                >
-                                    <span
-                                        className={cn(
-                                            "grid h-5 w-5 shrink-0 place-items-center border text-[11px] font-medium",
-                                            isMultiple ? "rounded-[6px]" : "rounded-full",
-                                            active
-                                                ? "border-foreground bg-foreground text-surface"
-                                                : "border-tertiary text-tertiary",
-                                        )}
-                                    >
-                                        {active && <CheckCircle2 className="h-3.5 w-3.5" />}
-                                    </span>
-                                    <span className="min-w-0 flex-1">
-                                        <Markdown inline>{opt}</Markdown>
-                                    </span>
-                                </button>
-                            );
-                        })}
-                    </div>
-                )}
-
-                {/* Fill-in input (input mode) */}
-                {!isChoice && !answered && (
-                    <textarea
-                        value={textAnswer}
-                        onChange={(e) => setTextAnswer(e.target.value)}
-                        disabled={inputLocked}
-                        className="field mt-4 resize-none"
-                        rows={4}
-                        placeholder="输入你的答案…"
-                    />
-                )}
+                                    className="field mt-4 resize-none"
+                                    rows={3}
+                                    placeholder="输入你的答案…"
+                                />
+                            ) : null}
+                        </div>
+                    );
+                })}
             </div>
 
-            {/* Result (answered) */}
-            {answered && detail.answer && (
-                <ResultCard
-                    answer={detail.answer.answer}
-                    isCorrect={detail.answer.isCorrect}
-                    correctAnswer={quiz.answer}
-                    submittedAt={detail.answer.submittedAt}
-                />
-            )}
+            {/* Result summary (answered) */}
+            {answered && <ResultSummary answers={submitted} questions={questions} />}
 
             {/* Submit */}
             {!answered && detail.status === "sent" && (
-                <div className="mt-4">
+                <div className="mt-5">
                     {error && (
                         <div className="mb-3 flex items-center gap-2 rounded-lg border-l-2 border-foreground bg-border-subtle px-3.5 py-2.5 text-[13px] text-foreground">
                             <AlertCircle className="h-4 w-4 shrink-0" />
@@ -448,7 +479,7 @@ function QuizCard({
                         className="btn-pill btn-primary h-10 px-6 text-[14px]"
                     >
                         {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                        提交答案
+                        提交答案 · {answeredCount}/{questions.length}
                     </button>
                 </div>
             )}
@@ -456,19 +487,18 @@ function QuizCard({
     );
 }
 
-/* ─── Result card ─── */
+/* ─── Result summary (per-question verdicts) ─── */
 
-function ResultCard({
-    answer,
-    isCorrect,
-    correctAnswer,
-    submittedAt,
+function ResultSummary({
+    answers,
+    questions,
 }: {
-    answer: string;
-    isCorrect: boolean;
-    correctAnswer: string;
-    submittedAt: string;
+    answers: TaskQuizAnswerItem[];
+    questions: TaskQuizQuestion[];
 }) {
+    const allCorrect = answers.length > 0 && answers.every((a) => a.isCorrect);
+    const correctCount = answers.filter((a) => a.isCorrect).length;
+
     return (
         <motion.div
             initial={{ opacity: 0, y: 8 }}
@@ -478,41 +508,58 @@ function ResultCard({
         >
             {/* Verdict - flat monochrome row, no color box */}
             <div className="flex items-center gap-2.5 border-b border-border-subtle pb-3">
-                {isCorrect ? (
+                {allCorrect ? (
                     <CheckCircle2 className="h-5 w-5 text-foreground" />
                 ) : (
                     <XCircle className="h-5 w-5 text-foreground" />
                 )}
                 <span className="text-[15px] font-semibold tracking-tight text-foreground">
-                    {isCorrect ? "回答正确" : "回答错误"}
+                    {allCorrect
+                        ? "全部回答正确"
+                        : `答对 ${correctCount}/${questions.length}`}
                 </span>
-                <span className="ml-auto text-[11px] text-tertiary">
-                    {formatDateTime(submittedAt)} 提交
-                </span>
+                {answers[0] && (
+                    <span className="ml-auto text-[11px] text-tertiary">
+                        {formatDateTime(answers[0].submittedAt)} 提交
+                    </span>
+                )}
             </div>
 
-            {/* My answer */}
-            <div className="mt-4">
-                <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-tertiary">
-                    我的答案
-                </div>
-                <div className="md-body text-[14px] leading-relaxed text-foreground">
-                    <Markdown>{answer || "（空）"}</Markdown>
-                </div>
+            {/* Per-question my/correct answers */}
+            <div className="mt-4 space-y-4">
+                {questions.map((q, i) => {
+                    const r = answers.find((a) => a.questionIndex === i);
+                    if (!r) return null;
+                    return (
+                        <div key={i} className="rounded-xl border border-border bg-surface p-4">
+                            <div className="flex items-center gap-2">
+                                {r.isCorrect ? (
+                                    <CheckCircle2 className="h-4 w-4 text-success" />
+                                ) : (
+                                    <XCircle className="h-4 w-4 text-danger" />
+                                )}
+                                <span className="text-[13px] font-medium tracking-tight text-foreground">
+                                    第 {i + 1} 题
+                                </span>
+                            </div>
+                            <div className="mt-2 text-[14px] leading-relaxed">
+                                <span className="text-tertiary">我的答案：</span>
+                                <span className="text-foreground">
+                                    <Markdown inline>{r.answer || "（空）"}</Markdown>
+                                </span>
+                            </div>
+                            {!r.isCorrect && (
+                                <div className="mt-1 text-[14px] leading-relaxed">
+                                    <span className="text-tertiary">正确答案：</span>
+                                    <span className="font-medium text-foreground">
+                                        <Markdown inline>{q.answer}</Markdown>
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
             </div>
-
-            {/* Correct answer */}
-            {!isCorrect && (
-                <div className="mt-4">
-                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-tertiary">
-                        <Sparkles className="h-3 w-3" />
-                        正确答案
-                    </div>
-                    <div className="md-body text-[14px] leading-relaxed text-foreground">
-                        <Markdown>{correctAnswer}</Markdown>
-                    </div>
-                </div>
-            )}
         </motion.div>
     );
 }
