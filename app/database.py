@@ -118,6 +118,8 @@ async def _migrate_add_columns():
         # task-quiz: multi-question support (one task can generate N questions)
         ("task_quiz_task", "question_count", "INTEGER DEFAULT 1"),
         ("task_quiz_answer", "question_index", "INTEGER DEFAULT 0"),
+        # session-summary quizzes — provenance back to the source chat session
+        ("quiz_sets", "chat_session_id", "VARCHAR(64)"),
     ]
 
     # Column type modifications (widening VARCHAR, etc.)
@@ -598,6 +600,11 @@ async def _migrate_add_columns():
     await _ensure_index("ix_task_quiz_task_status_deadline", [
         "CREATE INDEX IF NOT EXISTS ix_task_quiz_task_status_deadline ON task_quiz_task (status, deadline)",
         "CREATE INDEX ix_task_quiz_task_status_deadline ON task_quiz_task (status, deadline)",
+    ])
+    # quiz_sets.chat_session_id lookup (session → quizzes provenance)
+    await _ensure_index("ix_quiz_sets_chat_session_id", [
+        "CREATE INDEX IF NOT EXISTS ix_quiz_sets_chat_session_id ON quiz_sets (chat_session_id)",
+        "CREATE INDEX ix_quiz_sets_chat_session_id ON quiz_sets (chat_session_id)",
     ])
     # Drop the now-redundant single-column indexes (covered by the composites'
     # leftmost prefix); avoids the optimizer picking the low-selectivity status

@@ -147,6 +147,7 @@ async def agent_run(
         folder_ids=request.folder_ids or [],
         upload_uuids=ctx["upload_uuids"],
         assistant_msg_id=assistant_msg_id,
+        skill_ids=request.skill_ids or [],
     )
 
     return await agent_harness.dispatch(
@@ -184,6 +185,7 @@ async def agent_stream_setup(
         workspace_pages=ctx["workspace_pages"],
         folder_ids=request.folder_ids or [],
         upload_uuids=ctx["upload_uuids"],
+        skill_ids=request.skill_ids or [],
     )
 
     input_state: dict[str, Any] = {
@@ -196,6 +198,7 @@ async def agent_stream_setup(
         "media_ids": ctx["media_ids"],
         "workspace_pages": ctx["workspace_pages"] or [],
         "upload_uuids": ctx["upload_uuids"] or [],
+        "skill_ids": request.skill_ids or [],
     }
     run_config: dict[str, Any] = {
         "run_name": f"{agent_name}_agent_stream",

@@ -8,15 +8,24 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Body, Depends, BackgroundTasks, Response
+from fastapi import APIRouter, HTTPException, Query, Body, Depends, BackgroundTasks, Request, Response
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, get_db_context
-from app.response.quiz import QuizGeneratePage, QuizSubmissionRequest
+from app.response.quiz import (
+    QuizFromSummaryGenerateRequest,
+    QuizGeneratePage,
+    QuizSubmissionRequest,
+)
 from app.routers.auth import get_current_uid
 from app.services.quiz_delete import QuizDeleteError, QuizDeleteService
+from app.services.quiz_from_summary import (
+    QuizFromSummaryService,
+    prepare_summary_generation,
+    run_summary_quiz_generation,
+)
 from app.services.quiz_generator import (
     QuizGeneratorService,
     get_quiz_set,
@@ -91,11 +100,18 @@ async def generate_quiz(
     if not preflight.ok:
         raise HTTPException(400, preflight.reason)
 
-    # Per-uid daily quota — fail-open if Redis is down.
-    from app.services.llm.quiz_quota import QuizQuotaExceeded, check_and_consume
+    # Quota, two-phase: peek BEFORE creating the row (a denied request must
+    # not leave a phantom quiz row), consume AFTER creation succeeded so a
+    # failed create does not burn the user's daily quota. Fail-open if Redis
+    # is down.
+    from app.services.llm.quiz_quota import (
+        QuizQuotaExceeded,
+        check_and_consume,
+        check_quota,
+    )
 
     try:
-        await check_and_consume(uid, "generate")
+        await check_quota(uid, "generate")
     except QuizQuotaExceeded as e:
         raise HTTPException(429, f"今日出题次数已达上限（{e.limit} 次/天）")
 
@@ -111,6 +127,15 @@ async def generate_quiz(
         title=title,
     )
 
+    try:
+        await check_and_consume(uid, "generate")
+    except QuizQuotaExceeded:
+        # Rare race: another concurrent request took the last slot between
+        # peek and here. The row already exists — let generation run.
+        logger.warning(
+            "[QUIZ] quota race after row creation quiz_uuid={}", quiz_uuid
+        )
+
     from app.services.quiz_queue import enqueue_generation
 
     enqueue_generation(
@@ -122,6 +147,73 @@ async def generate_quiz(
         question_count=question_count,
         difficulty=difficulty,
         title=title,
+    )
+
+    return {
+        "quiz_uuid": quiz_uuid,
+        "status": "generating",
+    }
+
+
+@router.post("/generate-from-summary")
+async def generate_quiz_from_summary(
+    body: QuizFromSummaryGenerateRequest,
+    request: Request,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Generate a quiz from the chat session's summary — on-demand, not scheduled.
+
+    Reuses the persisted session summary, auto-generating one via the
+    registered ``summary`` agent when absent (the summary modal shares the
+    same persisted document). Poll GET /quiz/{quiz_uuid} until status
+    becomes "done" / "partial" / "failed".
+    """
+    agent_harness = getattr(request.app.state, "agent_harness", None)
+    await prepare_summary_generation(db, uid, body.chat_session_id, agent_harness)
+
+    # Quota, two-phase: peek BEFORE creating the row (a denied request must
+    # not leave a phantom quiz row), consume AFTER creation succeeded so a
+    # failed create does not burn the user's daily quota. Fail-open if Redis
+    # is down.
+    from app.services.llm.quiz_quota import (
+        QuizQuotaExceeded,
+        check_and_consume,
+        check_quota,
+    )
+
+    try:
+        await check_quota(uid, "generate")
+    except QuizQuotaExceeded as e:
+        raise HTTPException(429, f"今日出题次数已达上限（{e.limit} 次/天）")
+
+    service = QuizFromSummaryService()
+    quiz_uuid = await service.create_quiz_set(
+        uid=uid,
+        chat_session_id=body.chat_session_id,
+        question_count=body.question_count,
+        difficulty=body.difficulty,
+        title=body.title,
+    )
+
+    try:
+        await check_and_consume(uid, "generate")
+    except QuizQuotaExceeded:
+        # Rare race: another concurrent request took the last slot between
+        # peek and here. The row already exists — let generation run.
+        logger.warning(
+            "[QUIZ] quota race after row creation quiz_uuid={}", quiz_uuid
+        )
+
+    background_tasks.add_task(
+        run_summary_quiz_generation,
+        quiz_uuid=quiz_uuid,
+        uid=uid,
+        chat_session_id=body.chat_session_id,
+        question_count=body.question_count,
+        difficulty=body.difficulty,
+        agent_harness=agent_harness,
     )
 
     return {

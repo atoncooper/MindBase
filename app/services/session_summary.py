@@ -11,6 +11,8 @@ NOT a chat route target). Layering mirrors the chat orchestrator:
   from the root ``on_chain_end`` event (same technique as AgentSSEStreamer)
   and persists the finished summary to MongoDB ``session_summaries``.
 * ``get_latest_summary`` — newest persisted summary for a session.
+* ``get_or_create_summary`` — non-streaming entry reused by quiz-from-summary
+  generation; persists its result so both features share one summary.
 
 The pooled agent is acquired under an independent session key
 (``summary:<chat_session_id>``) so a concurrent chat turn on the same
@@ -81,6 +83,80 @@ async def prepare_summary(
     return agent, input_state, run_config
 
 
+async def _insert_summary_record(
+    uid: int,
+    chat_session_id: str,
+    content: str,
+    final_state: dict[str, Any],
+) -> tuple[Optional[str], int]:
+    """Persist a finished summary; return ``(summary_id, message_count)``.
+
+    Shared by the SSE flow (content = streamed tokens) and the non-streaming
+    ``get_or_create_summary`` path (content = agent result). Persistence
+    failure raises — callers decide how to surface it.
+    """
+    message_count = int(final_state.get("message_count") or 0)
+    summary_id = await mongo_summary.insert_summary(
+        chat_session_id=chat_session_id,
+        uid=uid,
+        content=content,
+        message_count=message_count,
+        first_message_at=final_state.get("first_message_at"),
+        last_message_at=final_state.get("last_message_at"),
+    )
+    return summary_id, message_count
+
+
+async def get_or_create_summary(
+    uid: int,
+    chat_session_id: str,
+    agent_harness: Any,
+) -> str:
+    """Return the latest persisted summary content, generating one if absent.
+
+    Non-streaming counterpart to the SSE summary flow, used by
+    quiz-from-summary generation: when no persisted summary exists the
+    registered ``summary`` agent is invoked via the lifecycle and its result
+    is persisted, so the summary modal (GET latest) shows the same document
+    afterwards — both features share one summary per session.
+
+    Raises RuntimeError when the agent fails or produces no usable content.
+    """
+    latest = await mongo_summary.get_latest_summary_for_user(chat_session_id, uid)
+    if latest and str(latest.get("content") or "").strip():
+        return str(latest["content"])
+
+    from app.agent.summary.prompts import EMPTY_RESULT, FALLBACK_RESULT
+
+    result_state = await agent_harness.lifecycle.invoke(
+        "summary",
+        f"summary:{chat_session_id}",
+        timeout=120.0,
+        chat_session_id=chat_session_id,
+        uid=uid,
+        query=DEFAULT_QUERY,
+    )
+    result_state = result_state or {}
+    error = str(result_state.get("error") or "").strip()
+    if error:
+        raise RuntimeError(f"会话总结生成失败: {error[:200]}")
+
+    content = str(result_state.get("result") or "").strip()
+    if not content or content in (FALLBACK_RESULT, EMPTY_RESULT):
+        raise RuntimeError("会话总结生成失败，请稍后重试")
+
+    try:
+        await _insert_summary_record(uid, chat_session_id, content, result_state)
+    except Exception:
+        # The content itself is usable; persistence failure must not abort
+        # quiz generation — the modal simply won't see this summary.
+        logger.exception(
+            "[SESSION_SUMMARY] persist (non-stream) failed session=%s",
+            chat_session_id[:8],
+        )
+    return content
+
+
 async def stream_summary(
     agent: Any,
     input_state: dict[str, Any],
@@ -125,15 +201,9 @@ async def stream_summary(
         yield _sse({"type": "error", "message": result or error or "总结生成失败"})
         return
 
-    message_count = int(final_state.get("message_count") or 0)
     try:
-        summary_id = await mongo_summary.insert_summary(
-            chat_session_id=chat_session_id,
-            uid=uid,
-            content=accumulated.strip(),
-            message_count=message_count,
-            first_message_at=final_state.get("first_message_at"),
-            last_message_at=final_state.get("last_message_at"),
+        summary_id, message_count = await _insert_summary_record(
+            uid, chat_session_id, accumulated.strip(), final_state
         )
     except Exception:
         # The summary itself reached the user; a persistence failure must

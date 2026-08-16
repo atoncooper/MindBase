@@ -23,6 +23,11 @@ class ChatRequest(BaseModel):
     folder_ids: Optional[list[int]] = None
     workspace_pages: Optional[list[WorkspacePage]] = None  # B站 page-level filter
     workspace_id: Optional[int] = None  # Plan 0023: cloud drive workspace filter
+    skill_ids: Optional[list[str]] = Field(
+        default=None,
+        max_length=10,
+        description="User-selected skills to force-inject (full body) into this turn's system prompt.",
+    )
     mode: str = Field(
         default="standard",
         deprecated="Routing is owned by AgentHarness; this field is ignored.",

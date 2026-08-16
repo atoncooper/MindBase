@@ -147,6 +147,7 @@ create table quiz_sets
     folder_ids        json         null,
     source_type       varchar(20)  null,
     source_pages      json         null,
+    chat_session_id   varchar(64)  null,
     bvid_count        int          null,
     status            varchar(20)  null,
     error_message     text         null,
@@ -165,6 +166,13 @@ create table quiz_sets
     constraint uq_quiz_sets_share_token
         unique (share_token)
 );
+
+create index ix_quiz_sets_chat_session_id
+    on quiz_sets (chat_session_id);
+
+-- 存量库迁移（新部署执行上方建表即可，无需执行）：
+-- ALTER TABLE quiz_sets ADD COLUMN chat_session_id VARCHAR(64) NULL;
+-- CREATE INDEX ix_quiz_sets_chat_session_id ON quiz_sets (chat_session_id);
 
 create table quiz_submissions
 (

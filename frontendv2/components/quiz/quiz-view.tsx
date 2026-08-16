@@ -11,7 +11,7 @@
  * A quiz with no questions (failed / still generating / data lost) never
  * enters taking - a banner on the list explains why.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, AlertCircle, X } from "lucide-react";
 import {
     quizApi,
@@ -103,6 +103,19 @@ export function QuizView() {
         setUserAnswers(null);
         setView("taking");
     }, []);
+
+    // Deep link: /quiz?quiz=<uuid> auto-opens that quiz once (e.g. the
+    // chat page's quiz-from-summary dialog "去答题" button). Read from
+    // window.location so no Suspense boundary is required around this page.
+    const deepLinkedRef = useRef(false);
+    useEffect(() => {
+        if (deepLinkedRef.current) return;
+        const param = new URLSearchParams(window.location.search).get("quiz");
+        if (!param) return;
+        deepLinkedRef.current = true;
+        // handleSelect identity is stable (no deps); call after mount.
+        void handleSelect(param);
+    }, [handleSelect]);
 
     return (
         <>

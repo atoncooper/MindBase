@@ -93,6 +93,7 @@ export interface ChatRequestPayload {
     folder_ids?: number[];
     workspace_pages?: WorkspacePage[];
     workspace_id?: number;  // Plan 0023: cloud drive workspace
+    skill_ids?: string[];  // 强制注入本次对话的已安装技能（全文进 system prompt）
 }
 
 export const chatApi = {
