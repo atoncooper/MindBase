@@ -102,3 +102,6 @@ reasonix.toml
 .gotmp/
 .gocache/
 .pip-tmp/
+
+# zcode
+.zcode/
