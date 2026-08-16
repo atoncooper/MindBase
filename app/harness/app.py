@@ -41,7 +41,7 @@ class AgentHarness:
         from langchain_openai import ChatOpenAI
 
         ctx_mgr = init_context_manager()
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.4)
 
         harness = AgentHarness(
             context_manager=ctx_mgr,

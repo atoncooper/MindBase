@@ -44,7 +44,9 @@ class VectorSearchTool:
             "2. 上下文补全：结合对话历史补全省略信息\n"
             "3. 具体化：模糊问题变精确，不要泛泛而搜\n"
             "4. 多视角：分多次调用不同 query 覆盖不同角度\n"
-            "适用于深度问题、具体观点查找、需要内容支撑的回答。"
+            "适用于深度问题、具体观点查找、需要内容支撑的回答。\n"
+            "深度/综合性问题建议传 k=10-15，获取更充分的回答素材；"
+            "回答需要详尽展开，素材不足时先加大 k 再考虑补搜。"
         )
 
     def parameters(self) -> dict[str, Any]:
@@ -57,13 +59,13 @@ class VectorSearchTool:
                 },
                 "k": {
                     "type": "integer",
-                    "description": "返回结果数量，默认5",
+                    "description": "返回结果数量，默认8；深度/综合性问题建议 10-15",
                 },
             },
             "required": ["query"],
         }
 
-    async def run(self, *, query: str, k: int = 5, **kwargs: Any) -> dict[str, Any]:
+    async def run(self, *, query: str, k: int = 8, **kwargs: Any) -> dict[str, Any]:
         """Execute vector search.
 
         Returns a dict ``{"content": <text>, "sources": [<source dict>, ...]}``
@@ -170,7 +172,7 @@ def _rrf_fuse(per_query_docs: list[list[Document]], k: int) -> list[Document]:
     return ranked[:k]
 
 
-def _format_docs(docs: list[Document], per_video_k: int = 3) -> str:
+def _format_docs(docs: list[Document], per_video_k: int = 6) -> str:
     """Format documents into readable text, deduplicating by video."""
     grouped: dict[str, list[Document]] = defaultdict(list)
     for doc in docs:
