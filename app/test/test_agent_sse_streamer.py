@@ -106,28 +106,28 @@ class TestPrimaryQuery:
 
 class TestParseToolOutput:
     def test_dict_with_sources_field(self) -> None:
-        sources, preview = _parse_tool_output(
+        sources, preview, _ = _parse_tool_output(
             {"content": "x", "sources": [{"bvid": "BV1"}]}
         )
         assert sources == [{"bvid": "BV1"}]
         assert preview  # any truthy preview
 
     def test_dict_with_results_field(self) -> None:
-        sources, _ = _parse_tool_output({"results": [{"bvid": "BV1"}]})
+        sources, _, _ = _parse_tool_output({"results": [{"bvid": "BV1"}]})
         assert sources == [{"bvid": "BV1"}]
 
     def test_json_string_parsed(self) -> None:
         payload = json.dumps({"sources": [{"bvid": "BV1"}]})
-        sources, _ = _parse_tool_output(payload)
+        sources, _, _ = _parse_tool_output(payload)
         assert sources == [{"bvid": "BV1"}]
 
     def test_invalid_json_string_yields_empty_sources(self) -> None:
-        sources, preview = _parse_tool_output("not json")
+        sources, preview, _ = _parse_tool_output("not json")
         assert sources == []
         assert preview == "not json"
 
     def test_non_dict_in_sources_filtered(self) -> None:
-        sources, _ = _parse_tool_output(
+        sources, _, _ = _parse_tool_output(
             {"sources": [{"bvid": "BV1"}, "garbage", 42]}
         )
         assert sources == [{"bvid": "BV1"}]
