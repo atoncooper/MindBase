@@ -92,6 +92,11 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("chat_session_id", ASCENDING), ("created_at", ASCENDING)]),
         IndexModel([("uid", ASCENDING), ("created_at", DESCENDING)]),
     ],
+    "session_summaries": [
+        IndexModel([("summary_id", ASCENDING)], unique=True),
+        IndexModel([("chat_session_id", ASCENDING), ("created_at", DESCENDING)]),
+        IndexModel([("uid", ASCENDING), ("created_at", DESCENDING)]),
+    ],
 }
 
 
