@@ -1,0 +1,410 @@
+# ================================================================
+# MindBase — China-optimized Docker Compose
+# ================================================================
+# All images that were on ghcr.io / gcr.io / quay.io have been replaced
+# with either local builds (China-optimized Dockerfiles in this folder)
+# or Docker Hub equivalents that are accessible from mainland China.
+#
+# Usage (from this directory):
+#   cp ../../.env .env          # copy project-root env (at least LLM__API_KEY)
+#   docker compose up -d --build
+#
+# ────────────────────────────────────────────────────────────────────────
+# Registry substitutions vs the original docker-compose.yml:
+#
+#   ghcr.io/atoncooper/mind-base-backend  → local build (Dockerfile.backend)
+#   ghcr.io/atoncooper/mind-base-frontend → local build (Dockerfile.frontend)
+#   ghcr.io/atoncooper/mind-base-app-task → local build (Dockerfile.app-task)
+#   quay.io/coreos/etcd:v3.5.14           → bitnami/etcd:3.5 (Docker Hub)
+#   gcr.io/distroless (app-task runtime)   → alpine:3.21 (Docker Hub)
+#
+# Everything else (mysql, redis, mongo, minio, milvus, nginx, APISIX)
+# stays on Docker Hub — accessible from China, sometimes slow.
+# ────────────────────────────────────────────────────────────────────────
+#
+# Profile semantics (same as the original):
+# Full stack (app + infra + Milvus + apisix + app-task):  docker compose up -d
+# Task-quiz only (app + apisix + app-task, no Milvus):    docker compose --profile task up -d
+# + Milvus, no task-quiz:                                 docker compose --profile storage up -d
+# App only (external DB):                                 docker compose --profile standalone up -d
+# Everything + admin tools:                                docker compose --profile full up -d
+
+services:
+  # ==============================================================
+  # Application
+  # ==============================================================
+
+  backend:
+    profiles: ["", "standalone", "storage", "full", "task"]
+    build:
+      context: ../..
+      dockerfile: deploy/china/Dockerfile.backend
+    container_name: mind-base-backend
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - backend_data:/app/data
+      - backend_logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
+      - MILVUS__TOKEN=${MILVUS__TOKEN:-}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - LLM__API_KEY=${LLM__API_KEY:-}
+      - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      - LLM__MODEL=${LLM_MODEL:-qwen3-max}
+      - EMBEDDING__MODEL=${EMBEDDING_MODEL:-text-embedding-v4}
+      - EMBEDDING__DIMENSION=${EMBEDDING_DIMENSION:-1024}
+      - ASR__API_KEY=${ASR_API_KEY:-}
+      - ASR__BASE_URL=${ASR_BASE_URL:-https://dashscope.aliyuncs.com/api/v1}
+      - ASR__MODEL=${ASR_MODEL:-paraformer-realtime-v2}
+      - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
+      - SESSION__SECRET=${SESSION__SECRET:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - MINIO__ENABLED=${MINIO__ENABLED:-true}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - MINIO__REGION=${MINIO_REGION:-us-east-1}
+      - MINIO__SECURE=${MINIO_SECURE:-false}
+      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
+      - APPTASK_BASE_URL=http://apisix:9080
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  frontend:
+    profiles: ["", "standalone", "storage", "full", "task"]
+    build:
+      context: ../../frontendv2
+      dockerfile: ../deploy/china/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_APISIX_HOST: nginx:80
+    container_name: mind-base-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_APISIX_HOST=nginx:80
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Reverse Proxy (Nginx)
+  # ==============================================================
+
+  nginx:
+    profiles: ["", "standalone", "storage", "full"]
+    image: nginx:alpine
+    container_name: mind-base-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../nginx/locations.conf:/etc/nginx/locations.conf:ro
+      - ../../nginx/certs:/etc/nginx/certs:ro
+      - certbot_www:/var/www/certbot
+      - nginx_video_cache:/var/cache/nginx/video
+      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+      apisix:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Infrastructure
+  # ==============================================================
+
+  mysql:
+    image: mysql:8.4
+    container_name: mind-base-mysql
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=mind_base
+      - MYSQL_USER=${MYSQL_USER:-mind_base}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../../app/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: mind-base-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-mind-base}
+      --notify-keyspace-events Ex
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
+  mongo:
+    image: mongo:7
+    container_name: mind-base-mongo
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
+  milvus:
+    image: milvusdb/milvus:v2.6.22
+    container_name: mind-base-milvus
+    profiles: ["", "storage", "full"]
+    command: milvus run standalone
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_GRPC_PORT:-9091}:9091"
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    restart: unless-stopped
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - mind-base-net
+
+  # ── etcd (bitnami/etcd replaces quay.io/coreos/etcd, accessible in China) ──
+  etcd:
+    image: bitnami/etcd:3.5
+    container_name: mind-base-etcd
+    profiles: ["", "standalone", "storage", "task", "full"]
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+    volumes:
+      - etcd_data:/bitnami/etcd
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/opt/bitnami/etcd/bin/etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    container_name: mind-base-minio
+    profiles: ["", "standalone", "storage", "full"]
+    ports:
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
+      - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
+      - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
+      - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Optional tools
+  # ==============================================================
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: mind-base-redis-ui
+    profiles: ["tools", "full"]
+    ports:
+      - "${REDIS_UI_PORT:-8081}:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-mind-base}
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mind-base-mongo-ui
+    profiles: ["tools", "full"]
+    ports:
+      - "${MONGO_UI_PORT:-8082}:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_USER:-admin}
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASSWORD:-mind-base}
+      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/
+      - ME_CONFIG_BASICAUTH=false
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Task scheduling stack (profile=task)
+  # ==============================================================
+
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    container_name: mind-base-apisix
+    profiles: ["", "standalone", "storage", "task", "full"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+    volumes:
+      - ../../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ../../apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; exec /docker-entrypoint.sh docker-start"]
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mind-base-net
+
+  app-task:
+    build:
+      context: ../../app-task
+      dockerfile: ../deploy/china/Dockerfile.app-task
+    container_name: mind-base-app-task
+    profiles: ["", "task", "full"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      apisix:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      - APPTASK__MONGO__URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/?authSource=admin
+      - APPTASK__MONGO__DB_NAME=mind_base
+      - APPTASK__APP__BASE_URL=http://apisix:9080
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      - APPTASK__LOG__OUTPUT=both
+    ports:
+      - "${APP_TASK_PORT:-8001}:8001"
+    volumes:
+      - app_task_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+volumes:
+  backend_data:
+  backend_logs:
+  app_task_logs:
+  mysql_data:
+  redis_data:
+  mongo_data:
+  milvus_data:
+  etcd_data:
+  minio_data:
+  certbot_www:
+  nginx_video_cache:
+  nginx_wallpaper_cache:
+
+networks:
+  mind-base-net:
+    driver: bridge

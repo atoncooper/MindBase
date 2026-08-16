@@ -129,3 +129,14 @@ class ChatHistoryResponse(BaseModel):
     page: int
     page_size: int
     has_more: bool
+
+
+class SessionSummaryResponse(BaseModel):
+    """GET /chat/sessions/{id}/summary response — latest persisted summary."""
+    summary_id: str
+    chat_session_id: str
+    content: str
+    message_count: int = 0
+    first_message_at: Optional[datetime] = None
+    last_message_at: Optional[datetime] = None
+    created_at: datetime

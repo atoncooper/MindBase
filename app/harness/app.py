@@ -431,6 +431,19 @@ class AgentHarness:
         )
         logger.info("[HARNESS] registered agent 'quiz'")
 
+        # ── Summary Agent (lifecycle-managed, not a chat route target) ─
+        # Button-triggered via POST /chat/sessions/{id}/summary; persisted
+        # summaries may later feed the quiz agent.
+        from app.agent.summary import build_summary_agent
+
+        self._lifecycle.register(
+            "summary",
+            build_summary_agent,
+            llm=self._llm,
+            circuit_breaker=self._lifecycle.get_breaker("summary"),
+        )
+        logger.info("[HARNESS] registered agent 'summary'")
+
         # ── Chat Agent ───────────────────────────────────────────────
         if self._session_factory:
             from app.agent.chat import build_chat_agent

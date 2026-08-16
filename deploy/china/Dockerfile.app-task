@@ -1,0 +1,38 @@
+# ====== app-task: independent task executor (Go, China-optimized) ======
+# Based on app-task/Dockerfile.  Replaces gcr.io/distroless (blocked in
+# China) with Alpine from Docker Hub.  Build context MUST be app-task/ (../../app-task).
+
+# ── Builder ──────────────────────────────────────────────────────────
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /src
+
+# China Go module mirror; GOSUMDB off (sum.golang.org often unreachable).
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+
+COPY go.mod go.sum* ./
+RUN go mod download || true
+
+COPY . .
+
+# Static build (CGO disabled for Alpine runtime).
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/app-task .
+
+# ── Runtime: Alpine (replaces gcr.io/distroless, blocked in China) ──
+FROM alpine:3.21
+
+LABEL app="mind-base-app-task"
+
+# ca-certificates required for HTTPS calls to APISIX / main app.
+RUN apk add --no-cache ca-certificates
+
+# Replicate distroless nonroot user (uid 65532, gid 65532).
+RUN addgroup -g 65532 -S nonroot && adduser -S nonroot -u 65532 -G nonroot
+
+COPY --from=builder /out/app-task /app-task
+
+EXPOSE 8001
+USER nonroot:nonroot
+
+ENTRYPOINT ["/app-task"]

@@ -6,6 +6,7 @@ import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
 import { ChatInput } from "./chat-input";
 import { ChatEmpty } from "./chat-empty";
+import { SummaryModal } from "./summary-modal";
 import { chatApi, type ChatSession, type ChatMessage as ApiChatMessage } from "@/lib/api";
 import { streamChat, type ChatSource, type ChatArtifact, type StreamStep } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
@@ -56,6 +57,7 @@ export function ChatView() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [summaryOpen, setSummaryOpen] = useState(false);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const messages = activeSession?.messages ?? EMPTY_MESSAGES;
@@ -502,6 +504,7 @@ export function ChatView() {
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onClearChat={handleClearChat}
+          onSummarize={() => setSummaryOpen(true)}
         />
 
         {loadError && (
@@ -552,6 +555,12 @@ export function ChatView() {
           </div>
         </div>
       </main>
+
+      <SummaryModal
+        open={summaryOpen}
+        onClose={() => setSummaryOpen(false)}
+        chatSessionId={activeSessionId}
+      />
     </div>
   );
 }

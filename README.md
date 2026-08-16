@@ -277,6 +277,27 @@ docker compose up -d --build
 
 详见 [`docs/deployment.md`](docs/deployment.md)。
 
+### 🇨🇳 中国大陆用户部署
+
+大陆网络环境下，默认 Docker 配置会因 `ghcr.io` / `gcr.io` / `quay.io` 被墙而构建失败。项目提供中国区专用部署文件（`deploy/china/`），全部镜像源替换为国内可达方案：
+
+| 原版来源 | 中国区替代 |
+|---------|-----------|
+| `ghcr.io` 预构建镜像 | 本地构建（阿里云 apt + 清华 pip + npmmirror + goproxy.cn） |
+| GitHub Releases（ffmpeg） | `ghfast.top` 代理下载（含 apt 备用方案） |
+| `quay.io/coreos/etcd` | `bitnami/etcd`（Docker Hub） |
+| `gcr.io/distroless`（app-task 运行时） | `alpine`（Docker Hub） |
+
+```bash
+cd deploy/china
+cp ../../.env .env          # 复用项目根环境变量（至少填 LLM__API_KEY）
+docker compose up -d --build
+```
+
+> ⚠️ Docker Hub 直连在中国大陆不稳定，部署前请先按文档配置 Docker 镜像加速器（阿里云/腾讯云个人加速器最稳定）。
+
+完整说明（镜像加速器配置、与原版差异、常见问题）见 [`deploy/china/README.md`](deploy/china/README.md)。有稳定代理的用户可直接使用项目根的原始 `docker-compose.yml`。
+
 ## 功能模块
 
 ### 对话（Agentic Chat）
