@@ -21,8 +21,9 @@ openai==2.51.0
 dashscope==1.20.0
 langsmith==0.10.14
 
-# QR code + encryption
+# QR code + captcha image rendering + encryption
 qrcode[pil]==8.1
+Pillow>=10.0
 cryptography>=42.0
 
 # Settings & validation
@@ -49,6 +50,9 @@ loguru==0.7.2
 
 # Password hashing
 bcrypt>=4.0
+
+# Aliyun SMS (dysmsapi) — phone verification codes / phone login
+alibabacloud-dysmsapi20170525>=3.0
 
 # User-Agent parsing — device fingerprint metadata extraction
 ua-parser>=1.0

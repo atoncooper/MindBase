@@ -15,6 +15,7 @@ const PUBLIC_EXACT = ["/"];
 const PUBLIC_PREFIXES = [
   "/forgot-password",
   "/reset-password",
+  "/oauth/wechat/callback",
   "/notes/shared",
   "/quiz/share-view",
 ];

@@ -56,6 +56,8 @@ class UserOAuthRepository:
         refresh_token: Optional[str] = None,
         expires_at=None,
         raw_data: Optional[str] = None,
+        union_id: Optional[str] = None,
+        email: Optional[str] = None,
         is_primary: bool = False,
     ) -> UserOAuth:
         record = UserOAuth(
@@ -66,6 +68,8 @@ class UserOAuthRepository:
             refresh_token=refresh_token,
             expires_at=expires_at,
             raw_data=raw_data,
+            union_id=union_id,
+            email=email,
             is_primary=is_primary,
         )
         db.add(record)
@@ -83,6 +87,8 @@ class UserOAuthRepository:
         refresh_token: Optional[str] = None,
         expires_at=None,
         raw_data: Optional[str] = None,
+        union_id: Optional[str] = None,
+        email: Optional[str] = None,
     ) -> UserOAuth:
         """Update token fields on an existing OAuth binding (partial update)."""
         if access_token is not None:
@@ -93,6 +99,10 @@ class UserOAuthRepository:
             record.expires_at = expires_at
         if raw_data is not None:
             record.raw_data = raw_data
+        if union_id is not None:
+            record.union_id = union_id
+        if email is not None:
+            record.email = email
         await db.commit()
         await db.refresh(record)
         return record
@@ -107,6 +117,8 @@ class UserOAuthRepository:
         refresh_token: Optional[str] = None,
         expires_at=None,
         raw_data: Optional[str] = None,
+        union_id: Optional[str] = None,
+        email: Optional[str] = None,
     ) -> UserOAuth:
         record.provider_uid = provider_uid
         return await self.update_tokens(
@@ -116,6 +128,8 @@ class UserOAuthRepository:
             refresh_token=refresh_token,
             expires_at=expires_at,
             raw_data=raw_data,
+            union_id=union_id,
+            email=email,
         )
 
     async def list_by_uid(self, uid: int, db: AsyncSession) -> list[UserOAuth]:

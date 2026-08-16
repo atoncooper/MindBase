@@ -107,3 +107,6 @@ _tmp/
 _uvcache/
 _uvtools/
 _tmp2/
+
+#zcode
+.zcode/

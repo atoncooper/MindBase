@@ -282,6 +282,24 @@ class _Settings:
     def email_max_verify_attempts(self) -> int:
         return int(_get("email", "max_verify_attempts", default=5))
 
+    # ── WeChat open platform login ───────────────────────────────
+
+    @property
+    def wechat_enabled(self) -> bool:
+        return bool(_get("wechat", "enabled", default=False))
+
+    @property
+    def wechat_app_id(self) -> str:
+        return str(_get("wechat", "app_id", default=""))
+
+    @property
+    def wechat_app_secret(self) -> str:
+        return str(_get("wechat", "app_secret", default=""))
+
+    @property
+    def wechat_redirect_uri(self) -> str:
+        return str(_get("wechat", "redirect_uri", default=""))
+
     # ── Security: rate_limit (Plan 0028) ────────────────────────
 
     def _rl(self, endpoint: str, key: str, default: int) -> int:
@@ -366,6 +384,106 @@ class _Settings:
     @property
     def rl_email_verify_ip_window(self) -> int:
         return self._rl("email_verify", "ip_window", 60)
+
+    @property
+    def rl_register_send_ip_max(self) -> int:
+        return self._rl("register_send", "ip_max", 5)
+
+    @property
+    def rl_register_send_ip_window(self) -> int:
+        return self._rl("register_send", "ip_window", 3600)
+
+    @property
+    def rl_register_send_email_max(self) -> int:
+        return self._rl("register_send", "email_max", 3)
+
+    @property
+    def rl_register_send_email_window(self) -> int:
+        return self._rl("register_send", "email_window", 3600)
+
+    @property
+    def rl_register_ip_max(self) -> int:
+        return self._rl("register", "ip_max", 10)
+
+    @property
+    def rl_register_ip_window(self) -> int:
+        return self._rl("register", "ip_window", 3600)
+
+    @property
+    def rl_phone_send_ip_max(self) -> int:
+        return self._rl("phone_send", "ip_max", 10)
+
+    @property
+    def rl_phone_send_ip_window(self) -> int:
+        return self._rl("phone_send", "ip_window", 60)
+
+    @property
+    def rl_phone_send_phone_max(self) -> int:
+        return self._rl("phone_send", "phone_max", 5)
+
+    @property
+    def rl_phone_send_phone_window(self) -> int:
+        return self._rl("phone_send", "phone_window", 600)
+
+    @property
+    def rl_phone_login_ip_max(self) -> int:
+        return self._rl("phone_login", "ip_max", 10)
+
+    @property
+    def rl_phone_login_ip_window(self) -> int:
+        return self._rl("phone_login", "ip_window", 60)
+
+    @property
+    def rl_phone_login_phone_max(self) -> int:
+        return self._rl("phone_login", "phone_max", 5)
+
+    @property
+    def rl_phone_login_phone_window(self) -> int:
+        return self._rl("phone_login", "phone_window", 300)
+
+    # ── SMS (aliyun dysmsapi) ─────────────────────────────────────
+
+    @property
+    def sms_enabled(self) -> bool:
+        return bool(_get("sms", "enabled", default=False))
+
+    @property
+    def sms_access_key_id(self) -> str:
+        return str(_get("sms", "access_key_id", default=""))
+
+    @property
+    def sms_access_key_secret(self) -> str:
+        return str(_get("sms", "access_key_secret", default=""))
+
+    @property
+    def sms_sign_name(self) -> str:
+        return str(_get("sms", "sign_name", default=""))
+
+    @property
+    def sms_template_code(self) -> str:
+        return str(_get("sms", "template_code", default=""))
+
+    # ── Security: captcha (anti-bot, login etc.) ─────────────────
+
+    @property
+    def captcha_enabled(self) -> bool:
+        return bool(_get("security", "captcha", "enabled", default=True))
+
+    @property
+    def captcha_length(self) -> int:
+        return int(_get("security", "captcha", "length", default=4))
+
+    @property
+    def captcha_ttl_seconds(self) -> int:
+        return int(_get("security", "captcha", "ttl_seconds", default=300))
+
+    @property
+    def captcha_image_width(self) -> int:
+        return int(_get("security", "captcha", "image_width", default=160))
+
+    @property
+    def captcha_image_height(self) -> int:
+        return int(_get("security", "captcha", "image_height", default=56))
 
     # ── Rerank ────────────────────────────────────────────────────
 

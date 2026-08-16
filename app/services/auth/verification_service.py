@@ -4,15 +4,19 @@ Responsibilities:
   - Generate 6-digit codes (or reset tokens)
   - Persist via VerificationCodeRepository
   - Enforce rate limits (per-target cooldown + per-uid window)
-  - Send via EmailService
+  - Send via EmailService (email channel) or SmsService (sms channel)
   - Verify user-supplied codes (single-use, expiry, brute-force cap)
   - Orchestrate multi-step auth flows (change password with 2FA, bind email,
     reset password with token) — owns the transaction boundary for these.
 
 Valid purposes:
-  - bind_email     — bind/change email (requires login)
-  - reset_password — forgot password flow (public)
-  - twofa          — sensitive operation second factor (requires login)
+  - bind_email     — bind/change email (requires login)          [email]
+  - reset_password — forgot password flow (public)               [email]
+  - twofa          — sensitive operation second factor (login)   [email]
+  - register       — email self-registration (public, uid=None)  [email]
+  - login          — phone SMS-code login/register (public, uid=None) [sms]
+  - bind_phone     — bind/verify phone (requires login)          [sms]
+  - twofa_sms      — sensitive operation second factor (login)   [sms]
 
 This service does NOT know about HTTP or sessions; it raises ValueError
 on business-rule violations and the router converts to HTTPException.
@@ -25,6 +29,7 @@ instantiate collaborating services (UserService) with the tx session.
 """
 from __future__ import annotations
 
+import re
 import secrets
 import string
 from datetime import datetime, timedelta, timezone
@@ -43,13 +48,18 @@ from app.repository.verification_code_repository import (
 from app.repository.user_repository import get_user_repository
 from app.services.auth.user_service import UserService
 from app.services.email_service import send_verification_code, EmailServiceError
+from app.services.sms_service import send_sms_code, SmsServiceError
 
 
-VALID_PURPOSES = {"bind_email", "reset_password", "twofa"}
+VALID_PURPOSES = {"bind_email", "reset_password", "twofa", "register", "login", "bind_phone", "twofa_sms"}
+EMAIL_PURPOSES = {"bind_email", "reset_password", "twofa", "register"}
+SMS_PURPOSES = {"login", "bind_phone", "twofa_sms"}
+
+_PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 
 
 class VerificationService:
-    """Stateless orchestration of email verification codes.
+    """Stateless orchestration of email/SMS verification codes.
 
     Methods accept db per-call; no instance session state. Standalone
     writes own their transaction; composable methods participate in the
@@ -65,23 +75,29 @@ class VerificationService:
         self,
         db: AsyncSession,
         *,
-        uid: int,
+        uid: Optional[int],
         target: str,
         purpose: str,
     ) -> None:
-        """Generate, persist, and email a verification code.
+        """Generate, persist, and deliver a verification code.
+
+        Channel is derived from the purpose (email vs sms). uid=None is
+        allowed for pre-registration flows (register / phone login).
 
         Rate limits:
           - Same target: at most 1 send per `rate_limit_target_seconds` (default 60s)
-          - Same uid: at most `rate_limit_uid_max` sends in
+          - Same uid (when known): at most `rate_limit_uid_max` sends in
             `rate_limit_uid_minutes` window (default 5 / 10 min)
 
-        Raises ValueError on rate-limit or email failure.
+        Raises ValueError on rate-limit or delivery failure.
         """
         if purpose not in VALID_PURPOSES:
             raise ValueError(f"无效的验证用途: {purpose}")
         if not target:
-            raise ValueError("邮箱不能为空")
+            raise ValueError("接收方不能为空")
+        channel = "sms" if purpose in SMS_PURPOSES else "email"
+        if channel == "sms" and not _PHONE_RE.match(target):
+            raise ValueError("手机号格式不正确")
 
         code = _generate_numeric_code(settings.email_code_length)
         async with transactional_scope() as tx_db:
@@ -98,22 +114,33 @@ class VerificationService:
                 purpose=purpose,
                 code=code,
                 ttl_seconds=settings.email_code_ttl_seconds,
+                type=channel,
             )
 
-        # Email send is outside tx — can't roll back, and a sent email with
+        # Delivery is outside tx — can't roll back, and a sent message with
         # a persisted code is recoverable (user can retry, rate limit gates).
-        try:
-            await send_verification_code(target, code, purpose)
-        except EmailServiceError as e:
-            logger.warning(
-                "[VERIFY] email send failed uid=%s target=%s purpose=%s err=%s",
-                uid, target, purpose, e,
-            )
-            raise ValueError(str(e)) from e
+        if channel == "sms":
+            try:
+                await send_sms_code(target, code)
+            except SmsServiceError as e:
+                logger.warning(
+                    "[VERIFY] sms send failed uid=%s target=%s purpose=%s err=%s",
+                    uid, target, purpose, e,
+                )
+                raise ValueError(str(e)) from e
+        else:
+            try:
+                await send_verification_code(target, code, purpose)
+            except EmailServiceError as e:
+                logger.warning(
+                    "[VERIFY] email send failed uid=%s target=%s purpose=%s err=%s",
+                    uid, target, purpose, e,
+                )
+                raise ValueError(str(e)) from e
 
         logger.info(
-            "[VERIFY] code sent uid=%s target=%s purpose=%s",
-            uid, target, purpose,
+            "[VERIFY] code sent channel=%s uid=%s target=%s purpose=%s",
+            channel, uid, target, purpose,
         )
 
     async def send_reset_token(self, db: AsyncSession, *, target: str) -> None:
@@ -160,7 +187,7 @@ class VerificationService:
         self,
         db: AsyncSession,
         *,
-        uid: int,
+        uid: Optional[int],
         target: str,
         purpose: str,
         code: str,
@@ -172,6 +199,8 @@ class VerificationService:
         (e.g. password change, email bind) succeeds, so that a failure in
         the business step leaves the code reusable for retry.
 
+        uid=None (pre-registration flows) skips the uid binding check.
+
         Raises ValueError on:
           - no matching code found (expired or never sent)
           - wrong code (also increments attempt counter)
@@ -182,7 +211,7 @@ class VerificationService:
         )
         if vc is None:
             raise ValueError("验证码已过期或未发送，请重新获取")
-        if vc.uid != uid:
+        if uid is not None and vc.uid != uid:
             # Code was issued to a different uid — treat as invalid.
             raise ValueError("验证码无效")
 
@@ -290,6 +319,56 @@ class VerificationService:
             if vc_id is not None:
                 await self.consume_code(tx_db, vc_id)
 
+    async def verify_and_set_password(
+        self,
+        db: AsyncSession,
+        *,
+        uid: int,
+        new_password: str,
+        email_code: Optional[str],
+        sms_code: Optional[str],
+        sf: Any,
+    ) -> None:
+        """First-time password set with a mandatory second factor.
+
+        A bare session is NOT enough to plant a persistent credential on
+        the account (session hijack → attacker-known password): unlike
+        change_password there is no old-password knowledge factor, so a
+        verification code is always required — email_code when a verified
+        email exists, sms_code when only a verified phone exists. With
+        neither verified contact the set is refused (the user must bind
+        one first, which is also their password-recovery channel).
+        """
+        async with transactional_scope() as tx_db:
+            user = await get_user_repository().get_by_uid(uid, tx_db)
+            if not user:
+                raise ValueError("用户不存在")
+            if user.email_verified and user.email:
+                if not email_code:
+                    raise ValueError("设置密码需要邮箱验证码")
+                vc_id = await self.verify_code(
+                    tx_db,
+                    uid=uid,
+                    target=user.email,
+                    purpose="twofa",
+                    code=email_code,
+                )
+            elif user.phone_verified and user.phone:
+                if not sms_code:
+                    raise ValueError("设置密码需要短信验证码")
+                vc_id = await self.verify_code(
+                    tx_db,
+                    uid=uid,
+                    target=user.phone,
+                    purpose="twofa_sms",
+                    code=sms_code,
+                )
+            else:
+                raise ValueError("请先绑定并验证邮箱或手机号，再设置密码")
+            user_service = UserService(tx_db, sf)
+            await user_service.set_password(uid, new_password)
+            await self.consume_code(tx_db, vc_id)
+
     async def verify_and_bind_email(
         self,
         db: AsyncSession,
@@ -329,7 +408,7 @@ class VerificationService:
     # ── Rate limit enforcement ────────────────────────────────────
 
     async def _enforce_rate_limits(
-        self, db: AsyncSession, uid: int, target: str
+        self, db: AsyncSession, uid: Optional[int], target: str
     ) -> None:
         """Raise ValueError if rate limits would be exceeded."""
         now = datetime.now(timezone.utc)
@@ -345,7 +424,10 @@ class VerificationService:
                 f"请求过于频繁，请 {settings.email_rate_limit_target_seconds} 秒后重试"
             )
 
-        # Per-uid window: at most N sends in M minutes.
+        # Per-uid window: at most N sends in M minutes (unknown uid — e.g.
+        # pre-registration — only has the per-target cooldown above).
+        if uid is None:
+            return
         recent_uid_count = await self.repo.count_recent_by_uid(
             db,
             uid=uid,

@@ -57,6 +57,10 @@ export interface ProfileUpdateParams {
 
 export interface PasswordSetParams {
     password: string;
+    /** 首次设置密码强制二次验证：已验证邮箱时必填 */
+    email_code?: string;
+    /** 仅有已验证手机时必填 */
+    sms_code?: string;
 }
 
 export interface PasswordChangeParams {
@@ -72,6 +76,8 @@ export interface EmailBindParams {
 export interface EmailSendCodeParams {
     email: string;
     purpose: "bind_email" | "twofa";
+    captcha_id?: string;
+    captcha_code?: string;
 }
 
 export interface EmailVerifyParams {
@@ -82,6 +88,8 @@ export interface EmailVerifyParams {
 
 export interface PasswordResetRequestParams {
     email: string;
+    captcha_id?: string;
+    captcha_code?: string;
 }
 
 export interface PasswordResetConfirmParams {
@@ -160,6 +168,14 @@ export const userApi = {
     bindPhone: (data: PhoneBindParams) =>
         request<{ message: string; phone: string }>("/auth/phone", {
             method: "PUT",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    // 短信验证码验证并绑定手机号（需先 phoneSendCode purpose=bind 发码）
+    verifyPhone: (data: { phone: string; code: string }) =>
+        request<{ message: string; phone: string }>("/auth/phone/verify", {
+            method: "POST",
             headers: getAuthHeaders(),
             body: JSON.stringify(data),
         }),

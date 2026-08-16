@@ -109,6 +109,8 @@ class UserService:
                     refresh_token=refresh_token_enc,
                     expires_at=provider_data.get("expires_at"),
                     raw_data=provider_data.get("raw_data"),
+                    union_id=provider_data.get("union_id"),
+                    email=provider_data.get("email"),
                 )
             if profile:
                 await profile_repo.upsert(uid, self.db, **self._pick_profile(profile))
@@ -134,6 +136,8 @@ class UserService:
                 ),
                 expires_at=provider_data.get("expires_at") if provider_data else None,
                 raw_data=provider_data.get("raw_data") if provider_data else None,
+                union_id=provider_data.get("union_id") if provider_data else None,
+                email=provider_data.get("email") if provider_data else None,
                 is_primary=True,
             )
             await profile_repo.upsert(
@@ -155,6 +159,104 @@ class UserService:
                 uid=uid, device_id=device_id, device_meta=device_meta
             )
         return uid, token
+
+    # ── Self registration & phone login ───────────────────────────
+
+    async def register_with_email(
+        self,
+        email: str,
+        password: str,
+        *,
+        device_id: str | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[int, UserToken]:
+        """Create a password account with a verified email.
+
+        Caller must have verified email ownership via a `register` purpose
+        verification code before invoking this. Raises ValueError when the
+        email is already taken or the password fails the strength policy.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        from app.services.auth.security import hash_password
+
+        _validate_password_strength(password)
+        repo = get_user_repository()
+        if await repo.find_by_email(email, self.db):
+            raise ValueError("该邮箱已注册")
+
+        uid = await self.snowflake.next_id()
+        await repo.create(uid, self.db)
+        try:
+            await repo.update(
+                uid,
+                self.db,
+                email=email,
+                password_hash=hash_password(password),
+                email_verified=True,
+            )
+        except IntegrityError:
+            raise ValueError("该邮箱已注册")
+        await get_user_profile_repository().upsert(uid, self.db)
+        await get_rbac_repository().grant_role(uid, DEFAULT_ROLE, self.db, granted_by=0)
+
+        token = await create_token(
+            self.db,
+            uid=uid,
+            device_id=device_id,
+            ip=ip,
+            user_agent=user_agent,
+        )
+        logger.info(f"[USER] registered uid={uid} via email")
+        return uid, token
+
+    async def login_or_register_by_phone(
+        self,
+        phone: str,
+        *,
+        device_id: str | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[int, UserToken, bool]:
+        """Phone SMS-code login; registers on first use.
+
+        Returns (uid, token, newly_created). The caller must have verified
+        the SMS code (`login` purpose) before invoking this.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        repo = get_user_repository()
+        user = await repo.find_by_phone(phone, self.db)
+        if user:
+            token = await create_token(
+                self.db,
+                uid=user.uid,
+                device_id=device_id,
+                ip=ip,
+                user_agent=user_agent,
+            )
+            logger.info(f"[USER] phone login uid={user.uid}")
+            return user.uid, token, False
+
+        uid = await self.snowflake.next_id()
+        await repo.create(uid, self.db)
+        try:
+            await repo.update(uid, self.db, phone=phone, phone_verified=True)
+        except IntegrityError:
+            raise ValueError("该手机号已注册")
+        await get_user_profile_repository().upsert(uid, self.db)
+        await get_rbac_repository().grant_role(uid, DEFAULT_ROLE, self.db, granted_by=0)
+
+        token = await create_token(
+            self.db,
+            uid=uid,
+            device_id=device_id,
+            ip=ip,
+            user_agent=user_agent,
+        )
+        logger.info(f"[USER] registered uid={uid} via phone")
+        return uid, token, True
 
     # ── Queries ──────────────────────────────────────────────────
 
@@ -238,6 +340,8 @@ class UserService:
                 refresh_token=refresh_token_enc,
                 expires_at=provider_data.get("expires_at") if provider_data else None,
                 raw_data=provider_data.get("raw_data") if provider_data else None,
+                union_id=provider_data.get("union_id") if provider_data else None,
+                email=provider_data.get("email") if provider_data else None,
             )
         else:
             current_binding = await oauth_repo.find_by_uid_provider(
@@ -254,6 +358,8 @@ class UserService:
                         provider_data.get("expires_at") if provider_data else None
                     ),
                     raw_data=provider_data.get("raw_data") if provider_data else None,
+                    union_id=provider_data.get("union_id") if provider_data else None,
+                    email=provider_data.get("email") if provider_data else None,
                 )
             else:
                 await oauth_repo.create(
@@ -267,6 +373,8 @@ class UserService:
                         provider_data.get("expires_at") if provider_data else None
                     ),
                     raw_data=provider_data.get("raw_data") if provider_data else None,
+                    union_id=provider_data.get("union_id") if provider_data else None,
+                    email=provider_data.get("email") if provider_data else None,
                     is_primary=False,
                 )
 
@@ -298,19 +406,22 @@ class UserService:
 
     async def login_with_password(
         self,
-        email: str,
+        identifier: str,
         password: str,
         *,
         device_id: str | None = None,
         ip: str | None = None,
         user_agent: str | None = None,
     ) -> tuple[int, UserToken]:
-        """Login via email + password. Raises ValueError on failure."""
+        """Login via email OR phone + password. Raises ValueError on failure."""
         from app.services.auth.security import verify_password as _verify
 
-        user = await get_user_repository().find_by_email(email, self.db)
+        repo = get_user_repository()
+        user = await repo.find_by_email(identifier, self.db)
+        if user is None:
+            user = await repo.find_by_phone(identifier, self.db)
         if not user or not user.password_hash:
-            raise ValueError("邮箱未注册或未设置密码")
+            raise ValueError("账号未注册或未设置密码")
         if not _verify(password, user.password_hash):
             raise ValueError("密码不正确")
         token = await create_token(
@@ -524,6 +635,28 @@ class UserService:
             raise ValueError("该邮箱已被其他账号绑定")
         await self._invalidate_user_cache(uid)
         logger.info(f"[USER] email verified for uid={uid}")
+
+    async def apply_verified_phone(self, uid: int, phone: str) -> None:
+        """Bind phone AND mark phone_verified=true.
+
+        Called by the verify-phone flow after the user has proven control
+        of the number via SMS code. Rejects phones already taken.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            user = await get_user_repository().update(
+                uid,
+                self.db,
+                phone=phone,
+                phone_verified=True,
+            )
+            if not user:
+                raise ValueError("用户不存在")
+        except IntegrityError:
+            raise ValueError("该手机号已被其他账号绑定")
+        await self._invalidate_user_cache(uid)
+        logger.info(f"[USER] phone verified for uid={uid}")
 
     async def bind_phone(self, uid: int, phone: str) -> None:
         """Directly bind/change phone (no verification)."""

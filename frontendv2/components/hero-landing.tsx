@@ -6,6 +6,7 @@ import { AnimatedVisual } from "./animated-visual";
 interface HeroLandingProps {
   onShowQRLogin: () => void;
   onShowPasswordLogin: () => void;
+  onShowRegister: () => void;
   onShowDemo: () => void;
 }
 
@@ -25,7 +26,7 @@ const item = {
   show: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.28, 0.11, 0.32, 1] as const } },
 };
 
-export function HeroLanding({ onShowQRLogin, onShowPasswordLogin, onShowDemo }: HeroLandingProps) {
+export function HeroLanding({ onShowQRLogin, onShowPasswordLogin, onShowRegister, onShowDemo }: HeroLandingProps) {
   return (
     <section className="relative flex flex-1 flex-col">
       {/* Animated visual sits behind/around the hero copy */}
@@ -70,6 +71,9 @@ export function HeroLanding({ onShowQRLogin, onShowPasswordLogin, onShowDemo }: 
           </button>
           <button onClick={onShowPasswordLogin} className="btn-pill btn-ghost h-11 px-6 text-[15px]">
             账号登录
+          </button>
+          <button onClick={onShowRegister} className="btn-pill btn-ghost h-11 px-6 text-[15px]">
+            注册
           </button>
           <button onClick={onShowDemo} className="btn-pill btn-ghost h-11 px-6 text-[15px]">
             体验检索流程

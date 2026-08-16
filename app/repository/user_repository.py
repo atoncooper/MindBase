@@ -28,6 +28,12 @@ class UserRepository:
         )
         return result.scalar_one_or_none()
 
+    async def find_by_phone(self, phone: str, db: AsyncSession) -> Optional[User]:
+        result = await db.execute(
+            select(User).where(User.phone == phone, User.deleted_at.is_(None))
+        )
+        return result.scalar_one_or_none()
+
     async def create(self, uid: int, db: AsyncSession) -> User:
         user = User(uid=uid, status="active")
         db.add(user)
