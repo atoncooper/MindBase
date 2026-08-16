@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Home, PanelLeft, Trash2 } from "lucide-react";
+import { Home, PanelLeft, ScrollText, Trash2 } from "lucide-react";
 
 interface ChatHeaderProps {
   title: string;
@@ -9,6 +9,7 @@ interface ChatHeaderProps {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   onClearChat: () => void;
+  onSummarize?: () => void;
 }
 
 export function ChatHeader({
@@ -17,6 +18,7 @@ export function ChatHeader({
   sidebarOpen,
   onToggleSidebar,
   onClearChat,
+  onSummarize,
 }: ChatHeaderProps) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-3">
@@ -46,6 +48,17 @@ export function ChatHeader({
       </div>
 
       <div className="flex items-center gap-0.5">
+        {hasMessages && onSummarize && (
+          <button
+            type="button"
+            onClick={onSummarize}
+            className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+            title="总结会话"
+            aria-label="总结会话"
+          >
+            <ScrollText className="h-[17px] w-[17px]" />
+          </button>
+        )}
         {hasMessages && (
           <button
             type="button"
