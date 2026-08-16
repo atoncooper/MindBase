@@ -107,6 +107,7 @@ class ChatMessageResponse(BaseModel):
     content: str
     status: str = "completed"
     sources: Optional[list[dict]] = None
+    artifacts: Optional[list[dict]] = None  # binary outputs (run_code images); url is a fresh presigned link
     tokens_used: Optional[int] = None
     model: Optional[str] = None
     latency_ms: Optional[int] = None

@@ -77,6 +77,7 @@ services:
       - MINIO__REGION=${MINIO_REGION:-us-east-1}
       - MINIO__SECURE=${MINIO_SECURE:-false}
       - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
+      - MINIO__PUBLIC_HOST=${MINIO__PUBLIC_HOST:-}
       # Task-quiz agent (main app) -> app-task via APISIX
       - APPTASK_BASE_URL=http://apisix:9080
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}

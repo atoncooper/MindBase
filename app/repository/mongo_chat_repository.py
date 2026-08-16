@@ -14,6 +14,8 @@ Document:
         "content":          str,
         "status":           "pending" | "completed" | "failed",
         "sources":          [dict] | null,
+        "artifacts":        [dict] | null,  // binary outputs (e.g. images from run_code);
+        //                            stored with minio_key; url is refreshed on read
         "tokens_used":      int | null,
         "model":            str | null,
         "latency_ms":        int | null,

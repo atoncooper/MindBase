@@ -126,6 +126,31 @@ def _endpoint_host(endpoint: str) -> str:
     return parsed.netloc or endpoint
 
 
+def _resolve_public_base() -> str:
+    """Resolve the browser-reachable MinIO base (via nginx /minio-proxy).
+
+    Fallback chain:
+      1. ``config.minio.public_endpoint`` — full URL (domain scenario),
+         e.g. ``https://mindbase.example.com/minio-proxy``
+      2. ``config.minio.public_host`` — host only (public/private IP or
+         domain); auto-prefixed: ``{scheme}://{host}/minio-proxy``
+      3. local development default: ``http://localhost/minio-proxy``
+
+    The resolved base is the nginx prefix that proxies to the MinIO
+    container. Presigned signatures only cover the host header, which
+    nginx rewrites back to ``minio:9000``, so signatures stay valid
+    regardless of which host the browser actually uses.
+    """
+    public = config.minio.public_endpoint.strip().rstrip("/")
+    if public:
+        return public
+    host = config.minio.public_host.strip().strip("/")
+    if host:
+        scheme = "https" if config.minio.secure else "http"
+        return f"{scheme}://{host}/minio-proxy"
+    return "http://localhost/minio-proxy"
+
+
 # ---------------------------------------------------------------------------
 # MinioClient
 # ---------------------------------------------------------------------------
@@ -165,7 +190,7 @@ class MinioClient:
         return self._client
 
     def _public_url(self, internal_url: str) -> str:
-        public = config.minio.public_endpoint.rstrip("/")
+        public = _resolve_public_base()
         if not public:
             return internal_url
         internal = config.minio.endpoint.rstrip("/")

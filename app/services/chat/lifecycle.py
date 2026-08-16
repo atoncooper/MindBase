@@ -70,6 +70,7 @@ async def finalize_turn(
     assistant_msg_id: str,
     content: str,
     sources: list[dict],
+    artifacts: Optional[list[dict]] = None,
     tokens_used: Optional[int],
     latency_ms: int,
 ) -> None:
@@ -78,6 +79,7 @@ async def finalize_turn(
         msg_id=assistant_msg_id,
         content=content,
         sources=sources[:5],
+        artifacts=artifacts,
         tokens_used=tokens_used,
         latency_ms=latency_ms,
     )

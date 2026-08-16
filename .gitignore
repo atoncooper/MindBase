@@ -102,3 +102,8 @@ reasonix.toml
 .gotmp/
 .gocache/
 .pip-tmp/
+# Local test scratch dirs (sandbox temp artifacts)
+_tmp/
+_uvcache/
+_uvtools/
+_tmp2/

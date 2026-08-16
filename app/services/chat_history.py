@@ -311,6 +311,7 @@ def _messages_from_rows(rows: list[dict]) -> list[ChatMessageResponse]:
             content=r.get("content", ""),
             status=r.get("status", "completed"),
             sources=r.get("sources"),
+            artifacts=r.get("artifacts"),
             tokens_used=r.get("tokens_used"),
             model=r.get("model"),
             latency_ms=r.get("latency_ms"),
@@ -319,6 +320,40 @@ def _messages_from_rows(rows: list[dict]) -> list[ChatMessageResponse]:
         )
         for r in rows
     ]
+
+
+async def _refresh_artifact_urls(
+    messages: list[ChatMessageResponse],
+) -> None:
+    """Refresh presigned URLs for persisted artifacts in-place.
+
+    Artifacts are stored with their authoritative ``minio_key``; the
+    originally-generated presigned ``url`` expires after
+    ``config.minio.presign_expire`` seconds, so every history read mints a
+    fresh URL.  Best-effort: MinIO disabled or a presign failure keeps the
+    stored url (graceful degradation, never raised).
+    """
+    from app.infra.minio import get_minio_client, is_enabled as minio_enabled
+
+    if not minio_enabled() or not messages:
+        return
+    client = get_minio_client()
+    for msg in messages:
+        arts = msg.artifacts
+        if not isinstance(arts, list) or not arts:
+            continue
+        for art in arts:
+            if not isinstance(art, dict):
+                continue
+            key = art.get("minio_key")
+            if not key:
+                continue
+            try:
+                art["url"] = await client.presigned_get(key)
+            except Exception as exc:
+                logger.warning(
+                    "[CHAT_HISTORY] artifact url refresh failed key=%s: %s", key, exc
+                )
 
 
 async def save_user_message(
@@ -386,18 +421,22 @@ async def complete_assistant_message(
     msg_id: str,
     content: str,
     sources: Optional[list[dict]] = None,
+    artifacts: Optional[list[dict]] = None,
     tokens_used: Optional[int] = None,
     latency_ms: Optional[int] = None,
 ) -> None:
     """Finalise a pending assistant message after the LLM response arrives.
 
     Updates the MongoDB document in-place: sets status=completed, fills
-    content / sources / tokens_used / latency_ms.
+    content / sources / tokens_used / latency_ms.  *artifacts* (binary
+    outputs such as run_code images) are persisted as-is - the stored
+    ``minio_key`` is authoritative and the ``url`` is refreshed on read.
     """
     await mongo_chat.update_message_content(
         msg_id,
         content=content,
         sources=sources,
+        artifacts=artifacts,
         tokens_used=tokens_used,
         latency_ms=latency_ms,
     )
@@ -447,6 +486,7 @@ async def _unsafe_get_history(
         chat_session_id, page=page, page_size=page_size
     )
     messages = _messages_from_rows(rows)
+    await _refresh_artifact_urls(messages)
     return messages, total
 
 
@@ -487,7 +527,9 @@ async def get_history_for_user(
     rows, total = await mongo_chat.get_messages_for_user(
         chat_session_id, uid, page=page, page_size=page_size
     )
-    return _messages_from_rows(rows), total
+    messages = _messages_from_rows(rows)
+    await _refresh_artifact_urls(messages)
+    return messages, total
 
 
 async def _unsafe_clear_history(
