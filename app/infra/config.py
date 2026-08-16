@@ -224,7 +224,8 @@ class MinioSection(_Section):
     presign_expire: int = 3600
     access_key: SecretStr = SecretStr("")
     secret_key: SecretStr = SecretStr("")
-    public_endpoint: str = ""  # e.g. https://example.com/minio-proxy
+    public_endpoint: str = ""  # full public base, e.g. https://example.com/minio-proxy
+    public_host: str = ""  # host only (domain or IP); auto-prefixed with /minio-proxy
 
 
 class DaytonaSection(_Section):

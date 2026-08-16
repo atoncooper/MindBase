@@ -6,8 +6,10 @@ in the ``installed_skills`` MySQL table. When an agent calls
 ``load_skill(name)``, the manager fetches the zip from MinIO, parses it in
 memory, caches it (LRU, per uid+skill_id), and returns the instructions.
 
-Skill code tools (``manifest.has_code_tools``) are **not executed** yet -
-sandbox support is pending.
+Skill code tools (``manifest.has_code_tools`` + a ``tools/`` dir in the zip)
+are executed in a Daytona sandbox by the ``run_skill_code`` tool when
+``DAYTONA__ENABLED`` is on; otherwise ``load_skill`` reports them as
+unavailable.
 """
 
 from __future__ import annotations
@@ -139,6 +141,8 @@ class SkillManager:
             "body": info["body"],
             "manifest": manifest,
             "files": info["files"],
+            "code_tools": info["code_tools"],  # list of runnable tools/ files
+            "entry": info["entry"],  # default entrypoint (tools/ relpath)
         }
 
     # ── install / uninstall ────────────────────────────────────────────

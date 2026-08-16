@@ -15,11 +15,13 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.infra.config import config
 from app.models import Base
 from app.skills.manager import SkillManager
 from app.skills.zip_parser import (
     Skill,
     build_skill_zip,
+    inspect_zip,
     parse_skill_zip,
     read_manifest,
 )
@@ -72,16 +74,20 @@ async def mock_minio():
     return m
 
 
-def _make_zip(*, body: str = "# Skill\n步骤1\n", has_code_tools: bool = False, name: str = "demo") -> bytes:
+def _make_zip(*, body: str = "# Skill\n步骤1\n", has_code_tools: bool = False, name: str = "demo", code_tools: dict | None = None, entry: str | None = None) -> bytes:
+    manifest: dict = {
+        "skill_id": name,
+        "name": name,
+        "description": f"{name} description",
+        "version": "1.0",
+        "has_code_tools": has_code_tools,
+    }
+    if entry:
+        manifest["entry"] = entry
     return build_skill_zip(
         skill_md=body,
-        manifest={
-            "skill_id": name,
-            "name": name,
-            "description": f"{name} description",
-            "version": "1.0",
-            "has_code_tools": has_code_tools,
-        },
+        manifest=manifest,
+        code_tools=code_tools,
     )
 
 
@@ -109,6 +115,38 @@ class TestZipParser:
         )
         skill = parse_skill_zip(zip_bytes, skill_id="x", name="X")
         assert skill.body == "正文"
+
+    def test_parse_skill_zip_extracts_code_tools(self) -> None:
+        zip_bytes = build_skill_zip(
+            skill_md="# Skill\nbody",
+            manifest={"has_code_tools": True, "entry": "main.py"},
+            code_tools={"main.py": "print(1)", "utils.py": "def f(): return 1"},
+        )
+        skill = parse_skill_zip(zip_bytes, skill_id="x", name="X")
+        assert skill.has_code_tools is True
+        assert skill.code_tools == {"main.py": "print(1)", "utils.py": "def f(): return 1"}
+        assert skill.entry == "main.py"
+
+    def test_parse_skill_zip_code_tools_imply_flag(self) -> None:
+        # tools/ present but manifest does not claim has_code_tools
+        zip_bytes = build_skill_zip(
+            skill_md="# Skill\nbody",
+            manifest={},
+            code_tools={"main.py": "print(1)"},
+        )
+        skill = parse_skill_zip(zip_bytes, skill_id="x", name="X")
+        assert skill.has_code_tools is True
+        assert "main.py" in skill.code_tools
+
+    def test_inspect_zip_lists_code_tools(self) -> None:
+        zip_bytes = build_skill_zip(
+            skill_md="# Skill\nbody",
+            manifest={"entry": "main.py"},
+            code_tools={"main.py": "print(1)", "helper.py": "x = 1"},
+        )
+        info = inspect_zip(zip_bytes)
+        assert info["code_tools"] == ["helper.py", "main.py"]
+        assert info["entry"] == "main.py"
 
     def test_read_manifest_returns_dict(self) -> None:
         zip_bytes = _make_zip(name="abc")
@@ -339,18 +377,49 @@ class TestLoadSkillTool:
         assert "video-summary" in result
 
     @pytest.mark.asyncio
-    async def test_code_tools_warning(self, session_factory, mock_minio) -> None:
+    async def test_code_tools_unavailable_when_daytona_off(
+        self, session_factory, mock_minio, monkeypatch
+    ) -> None:
+        # Force DAYTONA__ENABLED=false (repo .env may set it true) -> code
+        # tools reported unavailable.
+        monkeypatch.setattr(config.daytona, "enabled", False)
         mgr = SkillManager(session_factory, mock_minio)
         await mgr.install(
             uid=UID, skill_id="code", name="code", description="", version=None,
             source_store="upload",
-            zip_bytes=_make_zip(body="body", has_code_tools=True),
+            zip_bytes=_make_zip(
+                body="body", has_code_tools=True, code_tools={"main.py": "print(1)"}
+            ),
             manifest={"has_code_tools": True},
         )
         tool = LoadSkillTool(mgr)
         result = await tool.run(name="code", _uid=UID)
         assert "代码工具" in result
-        assert "沙箱" in result
+        assert "暂不可执行" in result
+
+    @pytest.mark.asyncio
+    async def test_code_tools_executable_when_daytona_on(
+        self, session_factory, mock_minio, monkeypatch
+    ) -> None:
+        # DAYTONA__ENABLED=true -> agent is told to use run_skill_code.
+        monkeypatch.setattr(config.daytona, "enabled", True)
+        mgr = SkillManager(session_factory, mock_minio)
+        await mgr.install(
+            uid=UID, skill_id="code", name="code", description="", version=None,
+            source_store="upload",
+            zip_bytes=_make_zip(
+                body="body", has_code_tools=True,
+                code_tools={"main.py": "print(1)", "helper.py": "x = 1"},
+                entry="main.py",
+            ),
+            manifest={"has_code_tools": True, "entry": "main.py"},
+        )
+        tool = LoadSkillTool(mgr)
+        result = await tool.run(name="code", _uid=UID)
+        assert "run_skill_code" in result
+        assert "main.py" in result
+        assert "helper.py" in result
+        assert "暂不可执行" not in result
 
     def test_from_deps_returns_none_when_no_skill_manager(self) -> None:
         assert LoadSkillTool.from_deps(ToolDeps()) is None

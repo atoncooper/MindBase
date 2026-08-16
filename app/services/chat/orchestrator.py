@@ -511,6 +511,7 @@ async def _stream_agent_events(
             assistant_msg_id=ctx.assistant_msg_id,
             content=streamer.full_content,
             sources=streamer.sources[:5],
+            artifacts=streamer.artifacts,
             tokens_used=total_tokens or None,
             latency_ms=latency_ms,
         )

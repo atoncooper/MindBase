@@ -42,6 +42,16 @@ with open("heart.png", "rb") as f:
 5. 可输出多个产物（多个标记段）
 6. 纯文本结果（无文件产物）无需此标记，正常 print 即可
 
+## 绘图规范（用 matplotlib 等绘图库生成图表时必须遵守）
+1. **图表内文字一律使用英文**：title（标题）、xlabel/ylabel（坐标轴标签）、
+   legend（图例）、刻度标签（tick labels）、annotate/text 注释等全部使用英文，
+   例如 "Normal Distribution"、"Probability Density"、"Value"、"Frequency"。
+2. **禁止使用中文作为图表文字**：matplotlib 默认字体不包含中文字符集，
+   沙箱环境也未配置中文字体，中文会渲染成方块（豆腐块），导致图表不可读。
+3. **文件名建议用英文或拼音**：如 normal_distribution.png，避免中文文件名
+   在对象存储/URL 中产生编码问题。
+4. 图内其他可见文本（数据标签、图注、坐标刻度值等）同样优先使用英文。
+
 ## run_code 工具
 - code: 代码字符串
 - language: "python"（默认）/ "javascript" / "typescript"

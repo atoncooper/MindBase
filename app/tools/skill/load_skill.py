@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.infra.config import config
 from app.skills.manager import SkillManager
 from app.tools import ToolDeps, register_tool
 
@@ -67,8 +68,28 @@ class LoadSkillTool:
         logger.info("[LOAD_SKILL] uid=%s loaded skill='%s'", uid, name)
         msg = f"# 技能: {skill.name}\n\n{skill.body}"
         if skill.has_code_tools:
-            msg += (
-                "\n\n⚠️ 该技能含代码工具，需沙箱支持，当前暂不可执行。"
-                "请仅按上述指令使用已有工具完成任务。"
-            )
+            msg += self._code_tools_section(skill)
         return msg
+
+    @staticmethod
+    def _code_tools_section(skill: Any) -> str:
+        """Describe the skill code tools and how to execute them.
+
+        When Daytona is enabled (``DAYTONA__ENABLED``) the agent is told to
+        use ``run_skill_code`` to run the tools in a sandbox; otherwise it
+        gets the old "unavailable" notice so it does not fabricate results.
+        """
+        files = ", ".join(sorted(skill.code_tools)) if skill.code_tools else "(无)"
+        entry = skill.entry or "main.py"
+        if config.daytona.enabled:
+            return (
+                "\n\n## 代码工具\n该技能含以下可执行脚本（tools/ 目录）: " + files + "\n"
+                "默认入口: " + entry + "（可用 run_skill_code 的 entry 参数覆盖）\n"
+                "执行方式: 调用 run_skill_code 工具，传入 skill_id、entry、args\n"
+                "代码将在 Daytona 沙箱中运行，返回 stdout 与 exitCode。"
+            )
+        return (
+            "\n\n⚠️ 该技能含代码工具，需 Daytona 沙箱支持（DAYTONA__ENABLED=true 时启用），"
+            "当前暂不可执行。请仅按上述指令使用已有工具完成任务。"
+        )
+
