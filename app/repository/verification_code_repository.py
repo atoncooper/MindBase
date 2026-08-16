@@ -22,18 +22,23 @@ class VerificationCodeRepository:
         self,
         db: AsyncSession,
         *,
-        uid: int,
+        uid: Optional[int],
         target: str,
         purpose: str,
         code: str,
         ttl_seconds: int,
+        type: str = "email",
     ) -> VerificationCode:
-        """Insert a new code, return the persisted row."""
+        """Insert a new code, return the persisted row.
+
+        uid is None for pre-registration codes (register / phone login),
+        where the target's owner does not exist yet.
+        """
         now = datetime.now(timezone.utc)
         vc = VerificationCode(
             uid=uid,
             target=target,
-            type="email",
+            type=type,
             purpose=purpose,
             code=code,
             expires_at=now + timedelta(seconds=ttl_seconds),
@@ -43,8 +48,8 @@ class VerificationCodeRepository:
         db.add(vc)
         await db.flush()
         logger.info(
-            "[VC_REPO] created uid=%s target=%s purpose=%s expires_in=%ss",
-            uid, target, purpose, ttl_seconds,
+            "[VC_REPO] created uid=%s target=%s type=%s purpose=%s expires_in=%ss",
+            uid, target, type, purpose, ttl_seconds,
         )
         return vc
 

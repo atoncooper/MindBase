@@ -651,7 +651,8 @@ class VerificationCode(Base):
     __tablename__ = "verification_codes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False)
+    # nullable：注册前发码时用户尚不存在（uid=None）；登录后场景必填
+    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=True)
     target = Column(String(200), nullable=False)  # email or phone
     type = Column(String(20), nullable=False)  # email / sms
     purpose = Column(String(32), nullable=False)  # bind_email / reset_password / twofa

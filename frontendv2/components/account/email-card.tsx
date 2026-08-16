@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Check, Pencil } from "lucide-react";
-import { userApi, type ProfileData } from "@/lib/api";
+import { userApi, type CaptchaValue, type ProfileData } from "@/lib/api";
+import { CaptchaField } from "@/components/captcha-field";
 import {
     FormCard,
     EditButton,
@@ -25,6 +26,11 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
     const [cooldown, setCooldown] = useState(0);
     const [verifying, setVerifying] = useState(false);
 
+    // Captcha for the send-code request. Bumping captchaKey remounts
+    // CaptchaField with a fresh image (each send consumes the captcha).
+    const [captcha, setCaptcha] = useState<CaptchaValue>({ captcha_id: "", captcha_code: "" });
+    const [captchaKey, setCaptchaKey] = useState(0);
+
     useEffect(() => {
         if (cooldown <= 0) return;
         const t = setInterval(() => setCooldown((v) => Math.max(0, v - 1)), 1000);
@@ -42,13 +48,20 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
         if (!emailVal.trim() || cooldown > 0) return;
         setSending(true);
         try {
-            await userApi.sendEmailCode({ email: emailVal.trim(), purpose: "bind_email" });
+            await userApi.sendEmailCode({
+                email: emailVal.trim(),
+                purpose: "bind_email",
+                captcha_id: captcha.captcha_id || undefined,
+                captcha_code: captcha.captcha_code || undefined,
+            });
             setCooldown(60);
             onToast("验证码已发送，请查收邮件", "success");
         } catch (e) {
             onToast(e instanceof Error ? e.message : "发送失败", "error");
         } finally {
             setSending(false);
+            // The captcha was consumed regardless of outcome.
+            setCaptchaKey((k) => k + 1);
         }
     }
 
@@ -140,6 +153,7 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
                             {cooldown > 0 ? `${cooldown}s` : sending ? "发送中…" : "发送验证码"}
                         </button>
                     </div>
+                    <CaptchaField key={captchaKey} onChange={setCaptcha} />
                 </div>
             ) : (
                 <div className="flex items-center gap-3 px-5 py-3.5">

@@ -68,6 +68,17 @@ services:
       - SESSION__SECRET=${SESSION__SECRET:-}
       # Security
       - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      # WeChat open platform login (website app snsapi_login)
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      # Aliyun SMS (phone code login/register)
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
       # Plan 0021: MinIO object storage
       - MINIO__ENABLED=${MINIO__ENABLED:-true}
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}

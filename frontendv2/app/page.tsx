@@ -11,6 +11,8 @@ import { LoginModal } from "@/components/login-modal";
 export default function Home() {
   const { status, login } = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
+  const [loginTab, setLoginTab] = useState<"qr" | "password">("qr");
+  const [loginMode, setLoginMode] = useState<"password" | "register">("password");
 
   const handleLogin = (token: string, user: UserInfo) => {
     login(token, user);
@@ -21,18 +23,21 @@ export default function Home() {
 
   return (
     <>
-      <NavBar onLoginClick={() => setLoginOpen(true)} />
+      <NavBar onLoginClick={() => { setLoginTab("qr"); setLoginMode("password"); setLoginOpen(true); }} />
 
       {isAuthed ? <DashboardShell /> : <HeroLanding
-        onShowQRLogin={() => setLoginOpen(true)}
-        onShowPasswordLogin={() => setLoginOpen(true)}
-        onShowDemo={() => setLoginOpen(true)}
+        onShowQRLogin={() => { setLoginTab("qr"); setLoginMode("password"); setLoginOpen(true); }}
+        onShowPasswordLogin={() => { setLoginTab("password"); setLoginMode("password"); setLoginOpen(true); }}
+        onShowRegister={() => { setLoginTab("password"); setLoginMode("register"); setLoginOpen(true); }}
+        onShowDemo={() => { setLoginTab("qr"); setLoginMode("password"); setLoginOpen(true); }}
       />}
 
       <LoginModal
         isOpen={loginOpen}
         onClose={() => setLoginOpen(false)}
         onSuccess={handleLogin}
+        initialTab={loginTab}
+        initialMode={loginMode}
       />
     </>
   );

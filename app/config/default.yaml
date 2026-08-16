@@ -272,6 +272,36 @@ security:
     email_verify:
       ip_max: 20
       ip_window: 60
+    register_send:
+      ip_max: 5                # per-IP per hour
+      ip_window: 3600
+      email_max: 3             # per-email per hour (plus 60s cooldown in service)
+      email_window: 3600
+    register:
+      ip_max: 10
+      ip_window: 3600
+    phone_send:
+      ip_max: 10
+      ip_window: 60
+      phone_max: 5             # per-phone per 10 min (plus 60s cooldown)
+      phone_window: 600
+    phone_login:
+      ip_max: 10
+      ip_window: 60
+      phone_max: 5             # per-phone per 5 min
+      phone_window: 300
+
+  # Graphical captcha (anti-bot) for login / password reset request /
+  # email send-code. Single-use per attempt, Redis-backed (fails open
+  # when Redis is unavailable; rate limits remain the backstop).
+  # Override via env:
+  #   SECURITY__CAPTCHA__ENABLED=false
+  captcha:
+    enabled: true
+    length: 4                  # visible characters (confusable chars excluded)
+    ttl_seconds: 300           # validity window per captcha
+    image_width: 160
+    image_height: 56
 
 
 # ---- Email (verification + password reset) ------------------------
@@ -292,6 +322,35 @@ email:
   rate_limit_uid_minutes: 10        # window for per-uid send count
   rate_limit_uid_max: 5             # max sends per uid in window
   max_verify_attempts: 5            # wrong code attempts before code is voided
+
+
+# ---- WeChat open platform login (网站应用 snsapi_login) ------------
+# Production requires an approved website app on open.weixin.qq.com
+# (enterprise-verified account). For local testing use the Open Platform
+# 测试账号 — its 授权回调域名 supports localhost. Inject via env:
+#   WECHAT__APP_ID / WECHAT__APP_SECRET / WECHAT__REDIRECT_URI
+# redirect_uri points at the frontend callback page (NOT under /auth —
+# nginx proxies that prefix to the backend), e.g.
+#   http://localhost:3000/oauth/wechat/callback
+wechat:
+  enabled: false                    # set true once credentials are configured
+  app_id: ""                        # inject via WECHAT__APP_ID
+  app_secret: ""                    # inject via WECHAT__APP_SECRET
+  redirect_uri: ""                  # inject via WECHAT__REDIRECT_URI
+
+
+# ---- SMS (aliyun dysmsapi) — phone code login/register -------------
+# Requires an Aliyun SMS signature + template (个人可用公众号资质申请).
+# The template must declare a ${code} parameter.
+# Inject via env: SMS__ENABLED / SMS__ACCESS_KEY_ID / SMS__ACCESS_KEY_SECRET /
+# SMS__SIGN_NAME / SMS__TEMPLATE_CODE. When disabled, all phone login/
+# register entry points are hidden (GET /auth/features reports false).
+sms:
+  enabled: false
+  access_key_id: ""                 # inject via SMS__ACCESS_KEY_ID
+  access_key_secret: ""             # inject via SMS__ACCESS_KEY_SECRET
+  sign_name: ""                     # inject via SMS__SIGN_NAME
+  template_code: ""                 # inject via SMS__TEMPLATE_CODE
 
 
 # ---- Rate limiting ------------------------------------------------

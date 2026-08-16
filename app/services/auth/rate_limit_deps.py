@@ -51,7 +51,8 @@ async def login_rate_limit_dep(
     req: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Combined per-IP + per-email + DB cooldown check for /auth/login."""
+    """Combined per-IP + per-identifier + DB cooldown check for /auth/login."""
+    identifier = req.email or req.phone or ""
     ip = get_client_ip(request)
     try:
         await rate_limit_service.check_ip(
@@ -64,11 +65,11 @@ async def login_rate_limit_dep(
         await rate_limit_service.check_target(
             db,
             endpoint="login",
-            target=req.email,
+            target=identifier,
             max_count=settings.rl_login_email_max,
             window_sec=settings.rl_login_email_window,
         )
-        await rate_limit_service.check_login_cooldown(db, email=req.email)
+        await rate_limit_service.check_login_cooldown(db, email=identifier)
     except RateLimitExceeded as e:
         _raise_429(e.retry_after)
     except LoginCooldown as e:
@@ -212,6 +213,131 @@ async def email_verify_rate_limit_dep(
             ip=ip,
             max_count=settings.rl_email_verify_ip_max,
             window_sec=settings.rl_email_verify_ip_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+# ── /auth/register/* ────────────────────────────────────────────────
+
+
+async def register_send_code_rate_limit_dep(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Per-IP limiter for register send-code. Per-email is inline
+    (``register_send_code_email_rate_limit``). No request body here —
+    see the note on password_reset_request_rate_limit_dep."""
+    ip = get_client_ip(request)
+    try:
+        await rate_limit_service.check_ip(
+            db,
+            endpoint="register_send",
+            ip=ip,
+            max_count=settings.rl_register_send_ip_max,
+            window_sec=settings.rl_register_send_ip_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+async def register_send_code_email_rate_limit(email: str, db: AsyncSession) -> None:
+    """Per-email limiter for register send-code. Called by router inline."""
+    try:
+        await rate_limit_service.check_target(
+            db,
+            endpoint="register_send",
+            target=email,
+            max_count=settings.rl_register_send_email_max,
+            window_sec=settings.rl_register_send_email_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+async def register_rate_limit_dep(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Per-IP limiter for the register submit itself."""
+    ip = get_client_ip(request)
+    try:
+        await rate_limit_service.check_ip(
+            db,
+            endpoint="register",
+            ip=ip,
+            max_count=settings.rl_register_ip_max,
+            window_sec=settings.rl_register_ip_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+# ── /auth/phone/* ───────────────────────────────────────────────────
+
+
+async def phone_send_code_rate_limit_dep(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Per-IP limiter for phone send-code. Per-phone is inline
+    (``phone_send_code_phone_rate_limit``)."""
+    ip = get_client_ip(request)
+    try:
+        await rate_limit_service.check_ip(
+            db,
+            endpoint="phone_send",
+            ip=ip,
+            max_count=settings.rl_phone_send_ip_max,
+            window_sec=settings.rl_phone_send_ip_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+async def phone_send_code_phone_rate_limit(phone: str, db: AsyncSession) -> None:
+    """Per-phone limiter for phone send-code. Called by router inline."""
+    try:
+        await rate_limit_service.check_target(
+            db,
+            endpoint="phone_send",
+            target=phone,
+            max_count=settings.rl_phone_send_phone_max,
+            window_sec=settings.rl_phone_send_phone_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+async def phone_login_rate_limit_dep(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Per-IP limiter for phone login. Per-phone + lockout are enforced by
+    the router inline (phone is in the body — see the double-body note on
+    password_reset_request_rate_limit_dep)."""
+    ip = get_client_ip(request)
+    try:
+        await rate_limit_service.check_ip(
+            db,
+            endpoint="phone_login",
+            ip=ip,
+            max_count=settings.rl_phone_login_ip_max,
+            window_sec=settings.rl_phone_login_ip_window,
+        )
+    except RateLimitExceeded as e:
+        _raise_429(e.retry_after)
+
+
+async def phone_login_phone_rate_limit(phone: str, db: AsyncSession) -> None:
+    """Per-phone limiter for phone login. Called by router inline."""
+    try:
+        await rate_limit_service.check_target(
+            db,
+            endpoint="phone_login",
+            target=phone,
+            max_count=settings.rl_phone_login_phone_max,
+            window_sec=settings.rl_phone_login_phone_window,
         )
     except RateLimitExceeded as e:
         _raise_429(e.retry_after)

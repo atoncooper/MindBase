@@ -5,12 +5,15 @@ Login writes to new tables (users / user_oauth / user_profile /
 user_token / rbac_user_role). The legacy user_sessions table has been removed.
 """
 
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Header, Query, Request
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db, get_db_context
 from app.infra.transaction import transactional_scope
 from app.utils.request_meta import (
@@ -21,9 +24,18 @@ from app.utils.request_meta import (
 from app.response import (
     LoginRequest,
     QRCodeResponse,
+    CaptchaResponse,
+    WeChatQRResponse,
+    WeChatLoginRequest,
     LoginStatusResponse,
     TokenResponse,
     UserInfoResponse,
+    RegisterSendCodeRequest,
+    RegisterRequest,
+    PhoneSendCodeRequest,
+    PhoneLoginRequest,
+    PhoneVerifyRequest,
+    FeaturesResponse,
     ProfileUpdateRequest,
     ProfileResponse,
     PasswordSetRequest,
@@ -38,6 +50,8 @@ from app.response import (
 )
 from app.services.bilibili import BilibiliService
 from app.services.auth import UserService, validate_token as _validate_token
+from app.services.auth import wechat_service
+from app.services.auth.captcha_service import generate_captcha, verify_captcha
 from app.services.auth.security import decrypt as _decrypt
 from app.services.auth.verification_service import VerificationService
 from app.services.auth.rate_limit_deps import (
@@ -48,6 +62,13 @@ from app.services.auth.rate_limit_deps import (
     password_reset_rate_limit_dep,
     password_reset_request_email_rate_limit,
     password_reset_request_rate_limit_dep,
+    phone_login_phone_rate_limit,
+    phone_login_rate_limit_dep,
+    phone_send_code_phone_rate_limit,
+    phone_send_code_rate_limit_dep,
+    register_rate_limit_dep,
+    register_send_code_email_rate_limit,
+    register_send_code_rate_limit_dep,
     send_code_uid_rate_limit,
 )
 
@@ -303,6 +324,192 @@ async def poll_qrcode_status(
         raise HTTPException(status_code=500, detail="二维码轮询失败，请稍后重试")
 
 
+# ── WeChat login (open platform website app, snsapi_login) ──────
+
+
+@router.get("/wechat/qrcode", response_model=WeChatQRResponse)
+async def get_wechat_qrcode(
+    purpose: Optional[str] = Query(None),
+    token_str: Optional[str] = Depends(get_session_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """微信扫码登录参数（wxLogin.js 初始化所需）+ 一次性 state。
+
+    未配置凭据（或 Redis 不可用无法签发 state）时返回 enabled=False，
+    前端隐藏微信登录 tab。purpose=bind 签发绑定用途的 state（需登录态）。
+    """
+    if not settings.wechat_enabled:
+        return WeChatQRResponse()
+
+    state_purpose = wechat_service.STATE_LOGIN
+    if purpose == "bind":
+        current_uid = await _validate_token(db, token_str) if token_str else None
+        if current_uid is None:
+            raise HTTPException(status_code=401, detail="绑定操作需要登录")
+        state_purpose = wechat_service.STATE_BIND
+
+    try:
+        state = await wechat_service.issue_state(state_purpose)
+    except Exception:
+        logger.warning("[AUTH] wechat state issue failed (redis down?)")
+        return WeChatQRResponse()
+
+    return WeChatQRResponse(
+        enabled=True,
+        app_id=settings.wechat_app_id,
+        redirect_uri=settings.wechat_redirect_uri,
+        state=state,
+    )
+
+
+async def _resolve_wechat_identity(code: str, state: str, purpose: str) -> tuple[dict, dict | None]:
+    """Consume the state, exchange the code, fetch best-effort profile.
+
+    Returns (token_info, profile). Raises HTTPException on any failure.
+    """
+    if not settings.wechat_enabled:
+        raise HTTPException(status_code=400, detail="微信登录未启用")
+    if not await wechat_service.consume_state(state, purpose):
+        raise HTTPException(status_code=400, detail="登录状态已过期，请重新扫码")
+
+    svc = wechat_service.WeChatService()
+    try:
+        token_info = await svc.exchange_code(code)
+    except wechat_service.WeChatServiceError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    if not token_info.get("openid"):
+        logger.error("[AUTH] wechat exchange returned no openid")
+        raise HTTPException(status_code=502, detail="微信登录失败，请重试")
+
+    # Profile is best-effort — login proceeds even if userinfo fails.
+    profile: dict | None = None
+    try:
+        info = await svc.get_user_info(token_info.get("access_token", ""), token_info["openid"])
+        profile = {"nickname": info.get("nickname"), "avatar": info.get("headimgurl")}
+    except wechat_service.WeChatServiceError:
+        logger.warning("[AUTH] wechat userinfo failed, continuing without profile")
+
+    return token_info, profile
+
+
+def _wechat_provider_data(token_info: dict) -> dict:
+    expires_at = None
+    if token_info.get("expires_in"):
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=int(token_info["expires_in"])
+        )
+    return {
+        "access_token": token_info.get("access_token"),
+        "refresh_token": token_info.get("refresh_token"),
+        "expires_at": expires_at,
+        "union_id": token_info.get("unionid"),
+        "raw_data": json.dumps(token_info, ensure_ascii=False, default=str),
+    }
+
+
+@router.post("/wechat/login", response_model=TokenResponse)
+async def login_with_wechat(req: WeChatLoginRequest, request: Request):
+    """微信扫码登录（注册）：code 换 openid，首次自动建号（free 角色）。
+
+    重放面极小：state 与 code 均为一次性，且受 /auth 前缀双层限流保护。
+    """
+    token_info, profile = await _resolve_wechat_identity(
+        req.code, req.state, wechat_service.STATE_LOGIN
+    )
+    openid = str(token_info["openid"])
+
+    async with transactional_scope() as db:
+        user_service = UserService(db, (await _get_sf()))
+        uid, user_token = await user_service.ensure_user_from_oauth(
+            provider="wechat",
+            provider_uid=openid,
+            provider_data=_wechat_provider_data(token_info),
+            profile=profile,
+            device_id=_get_device_id(request),
+            ip=_get_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            device_meta=_extract_device_meta(request),
+        )
+        info = await user_service.get_user_by_uid(uid)
+        roles = await user_service.get_user_roles(uid)
+
+    logger.info("[AUTH] wechat login ok uid={}", uid)
+    return TokenResponse(
+        session_token=user_token.session_token,
+        token_type="access",
+        expires_at=user_token.expires_at,
+        user_info=UserInfoResponse(
+            uid=uid,
+            nickname=info.get("nickname") if info else None,
+            avatar=info.get("avatar") if info else None,
+            status=info.get("status", "active") if info else "active",
+            roles=roles,
+        ),
+    )
+
+
+@router.post("/wechat/bind")
+async def bind_wechat(
+    req: WeChatLoginRequest,
+    uid: int = Depends(get_current_uid),
+):
+    """将微信账号绑定到当前登录用户（为设置页预留，当前前端未接入）。"""
+    token_info, profile = await _resolve_wechat_identity(
+        req.code, req.state, wechat_service.STATE_BIND
+    )
+
+    async with transactional_scope() as db:
+        user_service = UserService(db, (await _get_sf()))
+        await user_service.bind_oauth_to_user(
+            uid=uid,
+            provider="wechat",
+            provider_uid=str(token_info["openid"]),
+            provider_data=_wechat_provider_data(token_info),
+            profile=profile,
+        )
+    return {"message": "微信账号绑定成功"}
+
+
+# ── Captcha ──────────────────────────────────────────────────────
+
+
+async def _require_captcha(
+    captcha_id: Optional[str],
+    captcha_code: Optional[str],
+    *,
+    ip: str,
+    endpoint: str,
+) -> None:
+    """Verify the graphical captcha or raise a friendly 400.
+
+    Each captcha is single-use (consumed on success and failure), so the
+    frontend refreshes the image after every submit.
+    """
+    if await verify_captcha(captcha_id, captcha_code):
+        return
+    logger.warning("[AUTH] captcha failed ip={} endpoint={}", ip, endpoint)
+    if captcha_id and captcha_code:
+        raise HTTPException(status_code=400, detail="图形验证码错误或已过期")
+    raise HTTPException(status_code=400, detail="请输入图形验证码")
+
+
+@router.get("/captcha", response_model=CaptchaResponse)
+async def get_captcha():
+    """获取图形验证码（data URL），用于登录 / 密码重置 / 邮箱验证码发送的人机校验。
+
+    Redis 不可用或功能关闭时返回 required=False（前端隐藏验证码输入，
+    后端校验 fail-open，由限流层兜底）。
+    """
+    result = await generate_captcha()
+    return CaptchaResponse(
+        captcha_id=result.captcha_id,
+        image_base64=result.image_data_url,
+        expires_in=result.expires_in,
+        required=result.required,
+    )
+
+
 # ── Password login ──────────────────────────────────────────────
 
 
@@ -312,19 +519,22 @@ async def login_with_password(
     request: Request,
     _rl: None = Depends(login_rate_limit_dep),
 ):
-    """Login with email + password. Returns session token on success.
+    """Login with email/phone + password. Returns session token on success.
 
     Brute-force defense:
       1. Per-IP rate limit (middleware/rate_limit.py, /auth prefix)
-      2. Per-email lockout — 5 failed attempts → 15-min hard lockout
+      2. Per-identifier lockout — 5 failed attempts → 15-min hard lockout
          (services/auth/login_throttle.py, Redis-backed).
+      3. Single-use graphical captcha (services/auth/captcha_service.py).
     """
     from app.services.auth.login_throttle import (
         check_login_allowed,
     )
 
-    # Per-email lockout check — must happen before the password check.
-    allowed, retry_after = await check_login_allowed(req.email)
+    identifier = req.email or req.phone or ""
+
+    # Per-identifier lockout check — must happen before the password check.
+    allowed, retry_after = await check_login_allowed(identifier)
     if not allowed:
         raise HTTPException(
             status_code=429,
@@ -336,11 +546,16 @@ async def login_with_password(
     ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent")
 
+    # Anti-bot gate before any DB / bcrypt work.
+    await _require_captcha(
+        req.captcha_id, req.captcha_code, ip=ip, endpoint="login"
+    )
+
     try:
         async with transactional_scope() as db:
             user_service = UserService(db, (await _get_sf()))
             uid, user_token = await user_service.login_with_password(
-                req.email,
+                identifier,
                 req.password,
                 device_id=device_id,
                 ip=ip,
@@ -354,13 +569,15 @@ async def login_with_password(
         await rate_limit_service.record_login_attempt(
             db,
             uid=None,
-            email=req.email,
+            # login_attempts has a single identifier column (email); phone
+            # logins reuse it — String(200) fits both.
+            email=identifier,
             ip=ip,
             device_id=device_id,
             success=False,
             failure_reason="invalid_credentials",
         )
-        raise HTTPException(status_code=401, detail="邮箱或密码不正确")
+        raise HTTPException(status_code=401, detail="账号或密码不正确")
 
     # Record successful login for audit.
     from app.services.auth.rate_limit_service import rate_limit_service
@@ -368,7 +585,7 @@ async def login_with_password(
         await rate_limit_service.record_login_attempt(
             db,
             uid=uid,
-            email=req.email,
+            email=identifier,
             ip=ip,
             device_id=device_id,
             success=True,
@@ -412,6 +629,106 @@ async def login_with_password(
     except Exception:
         logger.exception("[AUTH] device record failed uid={}", uid)
 
+    return TokenResponse(
+        session_token=user_token.session_token,
+        token_type="access",
+        expires_at=user_token.expires_at,
+        user_info=UserInfoResponse(
+            uid=uid,
+            nickname=info.get("nickname") if info else None,
+            avatar=info.get("avatar") if info else None,
+            status=info.get("status", "active") if info else "active",
+            roles=roles,
+        ),
+    )
+
+
+# ── Registration & phone login ───────────────────────────────────
+
+
+@router.get("/features", response_model=FeaturesResponse)
+async def get_auth_features():
+    """登录/注册能力探测（公开、轻量）。
+
+    前端据此显隐入口：sms 未配置时隐藏手机登录/绑定，邮件服务未配置时
+    隐藏邮箱注册。
+    """
+    return FeaturesResponse(
+        email_register_enabled=settings.email_enabled,
+        sms_enabled=settings.sms_enabled,
+    )
+
+
+@router.post("/register/email/send-code")
+async def register_send_email_code(
+    body: RegisterSendCodeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(register_send_code_rate_limit_dep),
+):
+    """公开接口：发送邮箱注册验证码（purpose=register）。
+
+    注册场景无法防枚举：邮箱已注册直接返回 409，让用户去登录/找回密码。
+    """
+    await _require_captcha(
+        body.captcha_id,
+        body.captcha_code,
+        ip=_get_client_ip(request),
+        endpoint="register_send",
+    )
+    await register_send_code_email_rate_limit(body.email, db)
+
+    from app.repository.user_repository import get_user_repository
+
+    if await get_user_repository().find_by_email(body.email, db):
+        raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录")
+
+    vs = VerificationService()
+    try:
+        await vs.send_code(db, uid=None, target=body.email, purpose="register")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "注册验证码已发送，请查收邮件"}
+
+
+@router.post("/register/email", response_model=TokenResponse)
+async def register_with_email(
+    req: RegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(register_rate_limit_dep),
+):
+    """公开接口：邮箱注册（验证码已验证所有权）→ 注册即登录。"""
+    ip = _get_client_ip(request)
+    await _require_captcha(
+        req.captcha_id, req.captcha_code, ip=ip, endpoint="register"
+    )
+
+    vs = VerificationService()
+    try:
+        async with transactional_scope() as tx_db:
+            vc_id = await vs.verify_code(
+                tx_db,
+                uid=None,
+                target=req.email,
+                purpose="register",
+                code=req.code,
+            )
+            user_service = UserService(tx_db, (await _get_sf()))
+            uid, user_token = await user_service.register_with_email(
+                req.email,
+                req.password,
+                device_id=_get_device_id(request),
+                ip=ip,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await vs.consume_code(tx_db, vc_id)
+            info = await user_service.get_user_by_uid(uid)
+            roles = await user_service.get_user_roles(uid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    logger.info("[AUTH] email register ok uid={}", uid)
     return TokenResponse(
         session_token=user_token.session_token,
         token_type="access",
@@ -537,10 +854,23 @@ async def set_password(
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
 ):
-    """首次设置密码（仅限未设置密码的用户）"""
-    user_service = UserService(db, await _get_sf())
+    """首次设置密码（仅限未设置密码的用户，强制二次验证）。
+
+    与修改密码不同，首次设置没有旧密码这一知识因子，单靠会话 token
+    不足以植入持久凭证（会话劫持场景）——因此强制验证码：已验证邮箱
+    用邮箱验证码，仅有已验证手机用短信验证码，都没有则要求先绑定。
+    """
+    await _change_pw_rl(uid, db)
+    vs = VerificationService()
     try:
-        await user_service.set_password(uid, body.password)
+        await vs.verify_and_set_password(
+            db,
+            uid=uid,
+            new_password=body.password,
+            email_code=body.email_code,
+            sms_code=body.sms_code,
+            sf=await _get_sf(),
+        )
     except ValueError as e:
         logger.warning("[AUTH] set_password failed uid={} reason={}", uid, e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -578,6 +908,7 @@ async def change_password(
 @router.post("/password/reset-request")
 async def reset_password_request(
     body: PasswordResetRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _rl: None = Depends(password_reset_request_rate_limit_dep),
 ):
@@ -585,6 +916,12 @@ async def reset_password_request(
 
     即便邮箱未注册也返回相同成功信息（不泄漏账号是否存在）。
     """
+    await _require_captcha(
+        body.captcha_id,
+        body.captcha_code,
+        ip=_get_client_ip(request),
+        endpoint="password_reset_request",
+    )
     await password_reset_request_email_rate_limit(body.email, db)
     vs = VerificationService()
     try:
@@ -653,6 +990,7 @@ async def unbind_email(
 @router.post("/email/send-code")
 async def send_email_code(
     body: EmailSendCodeRequest,
+    request: Request,
     uid: int = Depends(get_current_uid),
     db: AsyncSession = Depends(get_db),
     _rl: None = Depends(email_send_code_rate_limit_dep),
@@ -663,6 +1001,14 @@ async def send_email_code(
       - bind_email: 绑定/换邮箱前验证邮箱所有权
       - twofa: 敏感操作（如改密码）二次验证
     """
+    # Anti-bot gate (email-bombing) before per-uid rate limit.
+    await _require_captcha(
+        body.captcha_id,
+        body.captcha_code,
+        ip=_get_client_ip(request),
+        endpoint="email_send_code",
+    )
+
     # Per-uid rate limit (inline — dep would need get_current_uid → cycle).
     await send_code_uid_rate_limit(uid, db)
 
@@ -735,15 +1081,117 @@ async def unbind_phone(
 
 
 @router.post("/phone/send-code")
-async def send_phone_code(uid: int = Depends(get_current_uid)):
-    """[预留] 发送短信验证码"""
-    raise HTTPException(status_code=501, detail="短信验证功能即将上线")
+async def send_phone_code(
+    body: PhoneSendCodeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token_str: Optional[str] = Depends(get_session_token),
+    _rl: None = Depends(phone_send_code_rate_limit_dep),
+):
+    """发送短信验证码。
+
+    purpose=login（公开）：手机验证码登录/注册；
+    purpose=bind / twofa（需登录态）：绑定手机号 / 敏感操作二次验证
+    （如首次设置密码）。
+    """
+    ip = _get_client_ip(request)
+    await _require_captcha(
+        body.captcha_id, body.captcha_code, ip=ip, endpoint="phone_send"
+    )
+    await phone_send_code_phone_rate_limit(body.phone, db)
+
+    uid: Optional[int] = None
+    purpose = "login"
+    if body.purpose in ("bind", "twofa"):
+        uid = await _validate_token(db, token_str) if token_str else None
+        if uid is None:
+            raise HTTPException(status_code=401, detail="该操作需要登录")
+        purpose = "bind_phone" if body.purpose == "bind" else "twofa_sms"
+
+    vs = VerificationService()
+    try:
+        await vs.send_code(db, uid=uid, target=body.phone, purpose=purpose)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "短信验证码已发送"}
+
+
+@router.post("/phone/login", response_model=TokenResponse)
+async def login_with_phone(
+    req: PhoneLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(phone_login_rate_limit_dep),
+):
+    """公开接口：手机号验证码登录（首次自动注册，注册登录一体）。"""
+    ip = _get_client_ip(request)
+    await _require_captcha(
+        req.captcha_id, req.captcha_code, ip=ip, endpoint="phone_login"
+    )
+    await phone_login_phone_rate_limit(req.phone, db)
+
+    vs = VerificationService()
+    try:
+        async with transactional_scope() as tx_db:
+            vc_id = await vs.verify_code(
+                tx_db,
+                uid=None,
+                target=req.phone,
+                purpose="login",
+                code=req.code,
+            )
+            user_service = UserService(tx_db, (await _get_sf()))
+            uid, user_token, _created = await user_service.login_or_register_by_phone(
+                req.phone,
+                device_id=_get_device_id(request),
+                ip=ip,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await vs.consume_code(tx_db, vc_id)
+            info = await user_service.get_user_by_uid(uid)
+            roles = await user_service.get_user_roles(uid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    logger.info("[AUTH] phone code login ok uid={}", uid)
+    return TokenResponse(
+        session_token=user_token.session_token,
+        token_type="access",
+        expires_at=user_token.expires_at,
+        user_info=UserInfoResponse(
+            uid=uid,
+            nickname=info.get("nickname") if info else None,
+            avatar=info.get("avatar") if info else None,
+            status=info.get("status", "active") if info else "active",
+            roles=roles,
+        ),
+    )
 
 
 @router.post("/phone/verify")
-async def verify_phone(uid: int = Depends(get_current_uid)):
-    """[预留] 验证手机号并绑定"""
-    raise HTTPException(status_code=501, detail="短信验证功能即将上线")
+async def verify_phone(
+    body: PhoneVerifyRequest,
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(email_verify_rate_limit_dep),
+):
+    """验证短信验证码并绑定手机号（登录态）。"""
+    vs = VerificationService()
+    try:
+        async with transactional_scope() as tx_db:
+            vc_id = await vs.verify_code(
+                tx_db,
+                uid=uid,
+                target=body.phone,
+                purpose="bind_phone",
+                code=body.code,
+            )
+            user_service = UserService(tx_db, await _get_sf())
+            await user_service.apply_verified_phone(uid, body.phone)
+            await vs.consume_code(tx_db, vc_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": "手机号验证成功", "phone": body.phone}
 
 
 # ── Security overview ────────────────────────────────────────────

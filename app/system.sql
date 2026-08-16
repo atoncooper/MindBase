@@ -412,7 +412,7 @@ create table verification_codes
 (
     id         int auto_increment
         primary key,
-    uid        bigint       not null,
+    uid        bigint       null,
     target     varchar(200) not null,
     type       varchar(20)  not null,
     purpose    varchar(32)  not null,

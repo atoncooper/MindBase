@@ -83,6 +83,7 @@ _PURPOSE_LABEL = {
     "bind_email": "绑定邮箱",
     "reset_password": "重置密码",
     "twofa": "二次验证",
+    "register": "注册",
 }
 
 

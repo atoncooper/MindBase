@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Check, Eye, EyeOff, Pencil } from "lucide-react";
-import { userApi, type ProfileData, type SecurityOverview } from "@/lib/api";
+import { userApi, authApi, type CaptchaValue, type ProfileData, type SecurityOverview } from "@/lib/api";
+import { CaptchaField } from "@/components/captcha-field";
 import {
     FormCard,
     EditButton,
@@ -29,9 +30,22 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // 2FA code required when changing an existing password with a verified email.
-    const needs2FA =
-        security.has_password && !!profile.email_verified && !!profile.email;
+    // Captcha for the 2FA send-code request. Bumping captchaKey remounts
+    // CaptchaField with a fresh image (each send consumes the captcha).
+    const [captcha, setCaptcha] = useState<CaptchaValue>({ captcha_id: "", captcha_code: "" });
+    const [captchaKey, setCaptchaKey] = useState(0);
+
+    // 二次验证（与后端对齐）：
+    //   修改密码 —— 有已验证邮箱时要求邮箱验证码；
+    //   首次设置 —— 没有旧密码这一知识因子，同样强制验证码：
+    //               优先邮箱，仅有已验证手机时用短信；都没有则先绑定。
+    const isChange = security.has_password;
+    const hasVerifiedEmail = !!profile.email_verified && !!profile.email;
+    const hasVerifiedPhone = !!profile.phone_verified && !!profile.phone;
+    const needsEmailCode = hasVerifiedEmail;
+    const needsSmsCode = !isChange && !hasVerifiedEmail && hasVerifiedPhone;
+    const needsCode = needsEmailCode || needsSmsCode;
+    const noVerifiedContact = !isChange && !hasVerifiedEmail && !hasVerifiedPhone;
 
     useEffect(() => {
         if (cooldown <= 0) return;
@@ -59,16 +73,35 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     }
 
     async function sendCode() {
-        if (!profile.email || cooldown > 0) return;
+        if (cooldown > 0) return;
+        if (needsEmailCode && !profile.email) return;
+        if (needsSmsCode && !profile.phone) return;
         setSending(true);
         try {
-            await userApi.sendEmailCode({ email: profile.email, purpose: "twofa" });
+            if (needsEmailCode) {
+                await userApi.sendEmailCode({
+                    email: profile.email!,
+                    purpose: "twofa",
+                    captcha_id: captcha.captcha_id,
+                    captcha_code: captcha.captcha_code,
+                });
+                onToast("验证码已发送至邮箱", "success");
+            } else {
+                await authApi.phoneSendCode({
+                    phone: profile.phone!,
+                    purpose: "twofa",
+                    captcha_id: captcha.captcha_id,
+                    captcha_code: captcha.captcha_code,
+                });
+                onToast("短信验证码已发送", "success");
+            }
             setCooldown(60);
-            onToast("验证码已发送至邮箱", "success");
         } catch (e) {
             onToast(e instanceof Error ? e.message : "发送失败", "error");
         } finally {
             setSending(false);
+            // The captcha was consumed regardless of outcome.
+            setCaptchaKey((k) => k + 1);
         }
     }
 
@@ -79,12 +112,20 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                 setError("请填写当前密码和新密码");
                 return;
             }
-            if (needs2FA && !code.trim()) {
+            if (needsEmailCode && !code.trim()) {
                 setError("请输入邮箱验证码");
                 return;
             }
         } else if (!newPw) {
             setError("请输入新密码");
+            return;
+        }
+        if (noVerifiedContact) {
+            setError("请先绑定并验证邮箱或手机号，再设置密码");
+            return;
+        }
+        if (!security.has_password && needsCode && !code.trim()) {
+            setError(needsEmailCode ? "请输入邮箱验证码" : "请输入短信验证码");
             return;
         }
         setSaving(true);
@@ -93,10 +134,14 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                 await userApi.changePassword({
                     old_password: oldPw,
                     new_password: newPw,
-                    email_code: needs2FA ? code.trim() : undefined,
+                    email_code: needsEmailCode ? code.trim() : undefined,
                 });
             } else {
-                await userApi.setPassword({ password: newPw });
+                await userApi.setPassword({
+                    password: newPw,
+                    email_code: needsEmailCode ? code.trim() : undefined,
+                    sms_code: needsSmsCode ? code.trim() : undefined,
+                });
             }
             reset();
             onToast(security.has_password ? "密码已修改" : "密码已设置", "success");
@@ -170,7 +215,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                         }}
                         placeholder="新密码（8 位以上，含字母和数字）"
                     />
-                    {needs2FA && (
+                    {needsCode && (
                         <>
                             <div className="flex gap-2">
                                 <input
@@ -180,7 +225,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                                         setCode(e.target.value);
                                         setError(null);
                                     }}
-                                    placeholder="邮箱验证码（二次验证）"
+                                    placeholder={needsEmailCode ? "邮箱验证码（二次验证）" : "短信验证码（二次验证）"}
                                 />
                                 <button
                                     type="button"
@@ -191,10 +236,16 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                                     {cooldown > 0 ? `${cooldown}s` : sending ? "发送中…" : "发送验证码"}
                                 </button>
                             </div>
+                            <CaptchaField key={captchaKey} onChange={setCaptcha} />
                             <p className="text-[12px] text-tertiary">
-                                验证码将发送至 {profile.email}
+                                验证码将发送至 {needsEmailCode ? profile.email : profile.phone}
                             </p>
                         </>
+                    )}
+                    {noVerifiedContact && (
+                        <p className="rounded-md border border-border bg-border-subtle px-3 py-2 text-[12px] text-secondary">
+                            账号尚未绑定任何已验证联系方式，无法设置密码——请先在上方绑定并验证邮箱或手机号。
+                        </p>
                     )}
                     {error && (
                         <div className="rounded-md border border-danger/20 bg-danger/5 px-3 py-2 text-[12px] text-danger">
