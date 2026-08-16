@@ -2,6 +2,7 @@
  * Chat API - 问答 / 流式 / 会话管理 / 历史消息.
  */
 import { request, getAuthHeaders, API_BASE_URL } from "./client";
+import type { ChatArtifact } from "@/lib/chat-stream";
 
 export interface ChatResponse {
     answer: string;
@@ -55,6 +56,9 @@ export interface ChatMessage {
     content: string;
     status: "pending" | "completed" | "failed";
     sources?: Array<{ bvid: string; title: string; url?: string }>;
+    // Binary outputs (e.g. run_code images) persisted with the message;
+    // url is a freshly presigned link refreshed by the history endpoint.
+    artifacts?: ChatArtifact[];
     tokens_used?: number;
     model?: string;
     latency_ms?: number;

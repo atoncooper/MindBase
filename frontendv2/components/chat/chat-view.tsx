@@ -30,6 +30,9 @@ function toUIMessage(m: ApiChatMessage): ChatMessageData {
     content: m.content,
     // Backend may return null; normalize to array.
     sources: Array.isArray(m.sources) ? m.sources : undefined,
+    // Binary outputs (run_code images) persisted on the message; without
+    // this mapping, reloading history loses the images (SSE-only display).
+    artifacts: Array.isArray(m.artifacts) ? m.artifacts : undefined,
     status: m.status,
     error: m.error,
     timestamp: m.created_at,
