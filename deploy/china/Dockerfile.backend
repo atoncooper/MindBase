@@ -1,0 +1,61 @@
+# ====== Backend: FastAPI (China-optimized) ======
+# Based on the project-root Dockerfile with all downloads routed through
+# China-accessible mirrors.  Build context MUST be the project root (../../).
+FROM python:3.12-slim
+
+LABEL app="mind-base-backend"
+
+# ── Apt: Aliyun mirror (replaces mirrors.debian.org) ────────────────
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    xz-utils \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Static ffmpeg (China-optimized) ──────────────────────────────────
+# ghfast.top is a free GitHub release proxy; falls back to the original
+# URL when the proxy is unreachable.  If even the proxy fails, uncomment
+# the apt fallback block below (larger image ~450 MB but guaranteed to
+# work through Aliyun mirrors).
+#
+# Original URL (for users with their own proxy):
+#   https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 60 \
+        https://ghfast.top/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+        -o /tmp/ffmpeg.tar.xz \
+    && tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ \
+    && cp /tmp/ffmpeg-*/bin/ffmpeg /tmp/ffmpeg-*/bin/ffprobe /usr/local/bin/ \
+    && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
+    && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-* \
+    && ffmpeg -version | head -1
+
+# # ── Fallback: apt ffmpeg (~450 MB, reliable via Aliyun) ────────────
+# # Uncomment the block above and comment the curl block if ghfast.top
+# # is unavailable in your region.
+# RUN apt-get update \
+#     && apt-get install -y --no-install-recommends ffmpeg \
+#     && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── Python deps: Tsinghua mirror ────────────────────────────────────
+COPY requirements.txt .
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+# Copy application code
+COPY app/ ./app/
+
+# Create data directories
+RUN mkdir -p /app/data /app/logs
+
+# Non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
