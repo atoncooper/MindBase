@@ -16,11 +16,12 @@ interface SummaryModalProps {
 type SummaryStatus = "streaming" | "done" | "error";
 
 /**
- * Session-summary dialog: streams a fresh detailed summary of the current
- * chat session (summary agent, POST /chat/sessions/{id}/summary SSE) and
- * renders it with the shared Markdown component. Copy / regenerate actions;
- * never writes into the conversation itself. Apple-alert styling mirrors
- * ConfirmDialog, widened to a reading layout.
+ * Session-summary dialog: shows the latest persisted summary
+ * (GET /chat/sessions/{id}/summary) when one exists, otherwise streams a
+ * fresh generation (summary agent, POST …/summary SSE) and renders it with
+ * the shared Markdown component. Copy / regenerate actions; never writes
+ * into the conversation itself. Apple-alert styling mirrors ConfirmDialog,
+ * widened to a reading layout.
  */
 export function SummaryModal({ open, onClose, chatSessionId }: SummaryModalProps) {
   const [content, setContent] = useState("");
@@ -69,12 +70,39 @@ export function SummaryModal({ open, onClose, chatSessionId }: SummaryModalProps
     };
   }, [chatSessionId]);
 
-  // Start a fresh summary each time the dialog opens.
+  // On open, show the latest persisted summary when one exists; only
+  // generate a fresh one when the session has none yet. Regeneration is
+  // the explicit "重新生成" action.
   useEffect(() => {
     if (!open) return;
-    const cancel = startStream();
-    return cancel;
-  }, [open, startStream]);
+    let cancelled = false;
+    let cancelStream: (() => void) | undefined;
+
+    void (async () => {
+      try {
+        const latest = chatSessionId
+          ? await sessionSummaryApi.getLatest(chatSessionId)
+          : null;
+        if (cancelled) return;
+        if (latest?.content) {
+          setContent(latest.content);
+          setStatus("done");
+          setCopied(false);
+          setError(null);
+          return;
+        }
+      } catch {
+        /* lookup failed — fall through to generating */
+      }
+      if (cancelled) return;
+      cancelStream = startStream();
+    })();
+
+    return () => {
+      cancelled = true;
+      cancelStream?.();
+    };
+  }, [open, chatSessionId, startStream]);
 
   // Escape to close (disabled mid-stream to avoid losing the generation).
   useEffect(() => {
