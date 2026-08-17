@@ -40,6 +40,30 @@ def _bucket_key(uid: int, kind: str) -> str:
     return k("quiz_quota", kind, str(uid), today)
 
 
+async def check_quota(uid: int, kind: str) -> None:
+    """Raise if the daily quota is already exhausted, WITHOUT consuming.
+
+    Peek-only counterpart to ``check_and_consume``: call before any
+    side-effectful work (e.g. creating a quiz row) so a denied request
+    costs neither quota nor a phantom DB row, then consume after the work
+    succeeded. Fail-open when Redis is unavailable.
+    """
+    if _redis is None:
+        return
+    try:
+        count = int(await _redis.get(_bucket_key(uid, kind)) or 0)
+        limit = _daily_limit(kind)
+        if count >= limit:
+            logger.warning(
+                f"[QUIZ_QUOTA] uid={uid} kind={kind} count={count} >= limit={limit} (peek)"
+            )
+            raise QuizQuotaExceeded(kind, limit)
+    except QuizQuotaExceeded:
+        raise
+    except Exception as e:
+        logger.warning(f"[QUIZ_QUOTA] peek failed (fail-open): {e}")
+
+
 async def check_and_consume(uid: int, kind: str) -> None:
     """Increment the daily counter for ``uid``/``kind``; raise if over limit.
 

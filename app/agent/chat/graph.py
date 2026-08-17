@@ -52,6 +52,44 @@ async def _noop_str() -> str:
     return ""
 
 
+async def _load_forced_skills(
+    skill_manager: Any, uid: int | None, skill_ids: list[str]
+) -> str:
+    """Build the forced-skills prompt section from full SKILL.md bodies.
+
+    Unlike the index-only section (skill_manager.index_text), the selected
+    skills' full bodies are embedded so the agent follows them this turn
+    without calling load_skill. Unknown / uninstalled / failed ids are
+    skipped with a warning — one bad id must not break the turn.
+    """
+    if uid is None:
+        return ""
+    sections: list[str] = []
+    for skill_id in dict.fromkeys(skill_ids):
+        if not skill_id:
+            continue
+        try:
+            skill = await skill_manager.load_skill(uid, skill_id)
+        except Exception:
+            logger.warning(
+                "[CHAT_AGENT] forced skill load failed id=%s", skill_id, exc_info=True
+            )
+            skill = None
+        if skill is None or not getattr(skill, "body", ""):
+            logger.warning(
+                "[CHAT_AGENT] forced skill unavailable, skipped id=%s", skill_id
+            )
+            continue
+        sections.append(f"### 技能：{skill.name}（{skill_id}）\n\n{skill.body}")
+    if not sections:
+        return ""
+    return (
+        "## 用户指定技能（本次对话必须遵循）\n\n"
+        "以下技能由用户显式选择注入。本次对话必须按这些技能的指令执行，"
+        "无需再调用 load_skill 加载它们：\n\n" + "\n\n---\n\n".join(sections)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
@@ -133,6 +171,17 @@ async def inject_context(
     skills_section = (
         await skill_manager.index_text(state.uid) if skill_manager is not None else ""
     )
+    forced_skills_section = (
+        await _load_forced_skills(skill_manager, state.uid, state.skill_ids)
+        if (skill_manager is not None and state.skill_ids)
+        else ""
+    )
+    if forced_skills_section:
+        logger.info(
+            "[CHAT_AGENT] forced skills injected count={} ids={}",
+            len(state.skill_ids),
+            state.skill_ids,
+        )
     system = SystemMessage(
         content=build_system_prompt(
             state.query,
@@ -142,6 +191,7 @@ async def inject_context(
             has_context_tools=has_context_tools,
             has_delegate=has_delegate,
             skills_section=skills_section,
+            forced_skills_section=forced_skills_section,
         )
     )
     user = HumanMessage(content=state.query)

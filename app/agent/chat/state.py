@@ -51,6 +51,11 @@ class ChatAgentState(BaseModel):
     workspace_id: str | None = Field(
         default=None, description="Cloud drive workspace ID."
     )
+    skill_ids: list[str] = Field(
+        default_factory=list,
+        description="User-forced skill IDs — full SKILL.md bodies are injected "
+        "into the system prompt for this turn (no load_skill call needed).",
+    )
 
     # ── intermediate: data resolution (set by inject_context) ──────────
     media_ids: list[int] = Field(

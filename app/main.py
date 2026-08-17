@@ -582,11 +582,13 @@ def _get_harness_llm():
         # streamer emits a single `chunk` frame with the full text and the
         # frontend renders it non-incrementally.  stream_usage=True keeps
         # token usage flowing in stream mode so usage tracking still works.
+        # temperature=0.4: temperature=0 输出过于保守简短；0.4 在保持稳定的
+        # 同时让回答更舒展（该 LLM 被所有 agent 共享，勿再调高）。
         return ChatOpenAI(
             api_key=api_key,
             base_url=settings.openai_base_url or None,
             model=settings.llm_model,
-            temperature=0,
+            temperature=0.4,
             streaming=True,
             stream_usage=True,
         )

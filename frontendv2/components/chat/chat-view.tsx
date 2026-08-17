@@ -4,9 +4,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
-import { ChatInput } from "./chat-input";
+import { ChatInput, type SelectedSkill } from "./chat-input";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
+import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
 import { chatApi, type ChatSession, type ChatMessage as ApiChatMessage } from "@/lib/api";
 import { streamChat, type ChatSource, type ChatArtifact, type StreamStep } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
@@ -58,6 +59,8 @@ export function ChatView() {
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [quizDialogOpen, setQuizDialogOpen] = useState(false);
+  const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const messages = activeSession?.messages ?? EMPTY_MESSAGES;
@@ -198,7 +201,7 @@ export function ChatView() {
 
   // ---- Core: stream a question into the active session ----
   const streamQuestion = useCallback(
-    async (question: string, assistantMsgId: string) => {
+    async (question: string, assistantMsgId: string, skillIds?: string[]) => {
       if (!activeSessionId) return;
       setIsStreaming(true);
       const controller = new AbortController();
@@ -209,6 +212,7 @@ export function ChatView() {
           {
             question,
             chat_session_id: activeSessionId,
+            ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
           },
           controller.signal
         );
@@ -336,9 +340,9 @@ export function ChatView() {
     [activeSessionId, updateActiveSession, refreshSessions]
   );
 
-  // ---- Send a message ----
+  // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
   const handleSend = useCallback(
-    (userMessage: string) => {
+    (userMessage: string, skillIds?: string[]) => {
       if (!activeSessionId) return;
 
       const userMsgId = `user-${Date.now()}`;
@@ -355,10 +359,21 @@ export function ChatView() {
         ],
       }));
 
-      void streamQuestion(userMessage, assistantMsgId);
+      void streamQuestion(userMessage, assistantMsgId, skillIds);
+      // Skills are per-turn (Claude-Code-style): consumed by this message.
+      if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
     [activeSessionId, updateActiveSession, streamQuestion]
   );
+
+  // ---- Slash-menu skill toggle (chips above the input) ----
+  const handleToggleSkill = useCallback((skill: SelectedSkill) => {
+    setSelectedSkills((prev) =>
+      prev.some((s) => s.skill_id === skill.skill_id)
+        ? prev.filter((s) => s.skill_id !== skill.skill_id)
+        : [...prev, skill]
+    );
+  }, []);
 
   // ---- Regenerate: re-ask the last user question, replacing the assistant msg ----
   const handleRegenerate = useCallback(
@@ -551,6 +566,9 @@ export function ChatView() {
               disabled={isStreaming || !activeSessionId}
               isStreaming={isStreaming}
               onStop={handleStop}
+              selectedSkills={selectedSkills}
+              onToggleSkill={handleToggleSkill}
+              onOpenQuizWizard={() => setQuizDialogOpen(true)}
             />
           </div>
         </div>
@@ -559,6 +577,12 @@ export function ChatView() {
       <SummaryModal
         open={summaryOpen}
         onClose={() => setSummaryOpen(false)}
+        chatSessionId={activeSessionId}
+      />
+
+      <QuizFromSummaryDialog
+        open={quizDialogOpen}
+        onClose={() => setQuizDialogOpen(false)}
         chatSessionId={activeSessionId}
       />
     </div>

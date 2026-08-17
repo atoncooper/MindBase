@@ -4,8 +4,8 @@ Pydantic schemas for quiz API — request / response models.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
-from pydantic import BaseModel
+from typing import Literal, Optional
+from pydantic import BaseModel, Field
 
 
 class QuestionType(str, Enum):
@@ -38,6 +38,14 @@ class QuizGenerateResponse(BaseModel):
     quiz_uuid: str
     question_count: int
     estimated_cost_tokens: int
+
+
+class QuizFromSummaryGenerateRequest(BaseModel):
+    """POST /quiz/generate-from-summary request (on-demand, not scheduled)."""
+    chat_session_id: str
+    question_count: int = Field(default=5, ge=1, le=20)
+    difficulty: Literal["easy", "medium", "hard"] = "medium"
+    title: Optional[str] = None
 
 
 class QuizQuestionResponse(BaseModel):

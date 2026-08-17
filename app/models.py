@@ -406,10 +406,12 @@ class QuizSet(Base):
     )  # {"single_choice": 3, "multi_choice": 2, ...}
     difficulty = Column(String(20), default="medium")  # easy / medium / hard
     folder_ids = Column(JSON, nullable=True)  # [1, 2, 3]
-    source_type = Column(String(20), default="folder")  # "folder" / "pages"
+    source_type = Column(String(20), default="folder")  # "folder" / "pages" / "session_summary"
     source_pages = Column(
         JSON, nullable=True
     )  # [{"bvid":"BVxxx","cid":123,"page_index":0,"page_title":"P1"}]
+    # Provenance for session_summary quizzes — which chat session it came from.
+    chat_session_id = Column(String(64), nullable=True, index=True)
     bvid_count = Column(Integer, default=0)
     status = Column(String(20), default="generating")  # generating / done / failed
     error_message = Column(Text, nullable=True)

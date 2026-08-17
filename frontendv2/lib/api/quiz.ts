@@ -178,6 +178,19 @@ export const quizApi = {
     getQuiz: (quizUuid: string, includeAnswers = false) =>
         request<QuizSetData>(`/quiz/${quizUuid}${includeAnswers ? "?include_answers=true" : ""}`),
 
+    // 基于聊天会话总结出题（非定时）：复用持久化总结，无总结时后端自动生成
+    generateFromSummary: (params: {
+        chat_session_id: string;
+        question_count: number;
+        difficulty: string;
+        title?: string;
+    }) =>
+        request<{ quiz_uuid: string; status: string }>("/quiz/generate-from-summary", {
+            method: "POST",
+            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify(params),
+        }),
+
     submit: (params: {
         quiz_uuid: string;
         answers: QuizAnswerItem[];
