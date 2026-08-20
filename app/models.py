@@ -1,4 +1,4 @@
-"""
+﻿"""
 MindBase 知识库系统
 
 数据模型定义
@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     ForeignKey,
     Index,
+    text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -982,82 +983,44 @@ class InstalledSkill(Base):
     )
 
 
-# ==================== task-quiz（定时出题任务，app-task 执行器使用） ====================
-# Tables are owned by the main app (created via Base.metadata.create_all +
-# system.sql). app-task only reads/writes them and checks existence on startup.
+# ==================== 定时出题业务（主 app 作为 executor 的业务状态） ====================
+# task 由 app-task 调度；业务生命周期（出题→答题→超时）在此管理。
 
+class QuizTask(Base):
+    """定时出题业务行：关联 app-task 的 task_id，业务状态独立于调度状态。"""
 
-class TaskQuizTask(Base):
-    """定时出题任务（app-task 执行器）。状态机：pending->sent->completed|overdue|failed."""
-
-    __tablename__ = "task_quiz_task"
+    __tablename__ = "quiz_task"
     __table_args__ = (
-        # Composite indexes for app-task scheduler polls (30s DB polling).
-        # status alone is low-selectivity (5 values, "sent" dominates); pairing
-        # with the time column lets the scheduler find due/overdue rows without
-        # scanning every row of that status. Covers:
-        #   ListDuePending:  WHERE status='pending'  AND trigger_time <= NOW()
-        #   ListOverdueSent: WHERE status='sent'     AND deadline <= NOW()
-        #   ListGenerating:  WHERE status='generating' (leftmost-prefix of either)
-        Index("ix_task_quiz_task_status_trigger", "status", "trigger_time"),
-        Index("ix_task_quiz_task_status_deadline", "status", "deadline"),
+        Index("ix_quiz_task_status_deadline", "status", "deadline"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(String(64), unique=True, index=True, nullable=False)
+    task_id = Column(String(64), unique=True, index=True, nullable=False)  # app-task task 关联
     uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
+    prompt = Column(String(500), nullable=False)
+    difficulty = Column(String(20), default="medium", nullable=False)
+    question_count = Column(Integer, default=1, nullable=False)
     user_email = Column(String(255), nullable=False)
-    cc_emails = Column(JSON, nullable=False)  # ["a@x.com", "b@y.com"]
-    prompt = Column(String(500), nullable=False)  # 出题方向（粗粒度，如"数学1填空题"）
-    difficulty = Column(String(20), default="medium", nullable=False)  # easy/medium/hard（考研难度：简单/中等/压轴）
-    question_count = Column(Integer, default=1, nullable=False)  # 本次任务出题数量（1~5）
-    incomplete_message = Column(Text, nullable=True)  # 自定义未完成语录；null=用默认模板
-    trigger_time = Column(DateTime, nullable=False)  # 出题触发时间（UTC aware）
-    status = Column(
-        String(20), default="pending", nullable=False
-    )  # pending / sent / completed / overdue / failed
-    xxl_job_id_a = Column(String(64), nullable=True)  # legacy xxl-job ID (retained, unused after Go migration)
-    xxl_job_id_b = Column(String(64), nullable=True)  # legacy xxl-job ID (retained, unused after Go migration)
-    deadline = Column(DateTime, nullable=True)  # answer deadline (UTC aware); app-task scheduler polls it to trigger check_timeout
+    cc_emails = Column(JSON, nullable=True)
+    incomplete_message = Column(Text, nullable=True)  # 未完成语录；null/空=默认模板
+    deadline = Column(DateTime, nullable=True)  # 出题完成后 = now + 答题时限
+    status = Column(String(20), default="generating", nullable=False)  # generating/awaiting_answer/completed/overdue/failed
+    overdue_emailed = Column(Boolean, default=False, server_default=text("0"), nullable=False)  # 语录幂等
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
-class TaskQuizAnswer(Base):
-    """用户答题记录（app-task 执行器写入）。"""
+class QuizTaskAnswer(Base):
+    """定时出题答题记录（主 app 判题后写入）。"""
 
-    __tablename__ = "task_quiz_answer"
+    __tablename__ = "quiz_task_answer"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(String(64), nullable=False, index=True)
-    uid = Column(BigInteger, ForeignKey("users.uid"), nullable=False, index=True)
-    question_index = Column(Integer, default=0, nullable=False)  # 0-based；一道任务多题时每题一行
+    uid = Column(BigInteger, nullable=False, index=True)
+    question_index = Column(Integer, default=0, nullable=False)
     answer = Column(Text, nullable=False)
     is_correct = Column(Boolean, nullable=False)
     submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-class TaskQuizNotification(Base):
-    """邮件通知队列 + 重试（app-task 写入，后台 worker 发送，保证可靠）。"""
-
-    __tablename__ = "task_quiz_notification"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    notification_id = Column(String(64), unique=True, index=True, nullable=False)
-    task_id = Column(String(64), nullable=False, index=True)
-    type = Column(String(20), nullable=False)  # quiz_email / overdue_email
-    recipient = Column(String(255), nullable=False)
-    cc_emails = Column(JSON, nullable=True)
-    subject = Column(String(255), nullable=False)
-    body_html = Column(Text, nullable=False)
-    status = Column(
-        String(20), default="pending", nullable=False
-    )  # pending / sent / failed
-    retry_count = Column(Integer, default=0, nullable=False)
-    last_error = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    sent_at = Column(DateTime, nullable=True)

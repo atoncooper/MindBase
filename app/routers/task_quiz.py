@@ -1,4 +1,4 @@
-"""task-quiz agent SSE endpoint: POST /task-quiz/chat.
+﻿"""task-quiz agent SSE endpoint: POST /task-quiz/chat.
 
 Auth: APISIX forward-auth validates bili_session and injects X-Uid header.
 This endpoint reads uid from X-Uid (trusts APISIX) and resolves user_email
@@ -108,15 +108,26 @@ async def register(request: Request, req: TaskRegisterRequest):
 
     base = os.environ.get("APPTASK_BASE_URL", "http://apisix:9080").rstrip("/")
     key = os.environ.get("APISIX_CONSUMER_KEY", "")
+    # 纯调度：注册 task（executor = 本 app 出题端点，异步；业务字段进 payload）
     payload = {
         "uid": uid,
-        "user_email": user_email,
-        "cc_emails": req.cc_emails,
-        "prompt": req.prompt,
-        "difficulty": req.difficulty,
-        "question_count": req.question_count,
+        "task_type": "http",
+        "payload": {
+            # uid 必须进 payload：HTTP executor 原样 POST 给 generate-llm，
+            # 业务行按此 uid 归属，/tasks/{id}/detail 才查得到（缺了会落 uid=0）
+            "uid": uid,
+            "prompt": req.prompt,
+            "difficulty": req.difficulty or "medium",
+            "question_count": req.question_count or 1,
+            "user_email": user_email,
+            "cc_emails": req.cc_emails or [],
+            "incomplete_message": req.incomplete_message or "",
+        },
+        "executor_url": os.environ.get(
+            "QUIZ_EXECUTOR_URL", "http://backend:8000/internal/quiz/generate-llm"
+        ),
+        "async": True,
         "trigger_time": req.trigger_time,
-        "incomplete_message": req.incomplete_message,
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:

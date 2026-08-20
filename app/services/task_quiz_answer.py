@@ -1,8 +1,12 @@
 """定时出题 - 答题提交 + 判题（业务逻辑归主 app）。
 
-架构定位（CLAUDE.md §2.7）：app-task 是纯调度执行器，负责到点触发生成、
-轮询状态、发通知、超时检测；答题判题/入库/状态流转属于业务逻辑，必须在
-主 app。本模块被 app/routers/task_answer.py 调用。
+架构定位（CLAUDE.md §2.7）：app-task 是调度执行器，负责到点触发生成、
+轮询状态、发通知、超时检测；答题判题属于业务逻辑，在本模块。
+
+存储解耦（独立 MySQL）：app-task 拥有自己的数据库，主 app 不再直写
+共享的 task_quiz_task / task_quiz_answer。本模块判题后，把结果经 APISIX
+POST 到 app-task 的 /internal/answer（key-auth），由 app-task 落库并流转
+sent -> completed（归属校验与幂等也在 app-task 侧）。
 
 判题规则：
 - choice（选择题）：兼容 LLM 两种存法——answer 为完整选项文本（"B. 收敛"）
@@ -14,14 +18,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import os
 
-from sqlalchemy import text
-
-from app.database import get_db_context
 from app.infra.mongo import coll
+from app.services.quiz_task_service import (
+    get_quiz_task_by_uid,
+    save_answers,
+)
 
 TASK_QUIZ_QUESTIONS = "task_quiz_questions"
+
+_APPTASK_BASE = os.environ.get("APPTASK_BASE_URL", "http://apisix:9080").rstrip("/")
+_APPTASK_KEY = os.environ.get("APISIX_CONSUMER_KEY", "")
 
 
 class TaskQuizNotFound(Exception):
@@ -108,102 +116,39 @@ def _quiz_questions(quiz_doc: dict | None) -> list:
 async def submit_task_quiz_answer(
     task_id: str, uid: int, answers: list[dict]
 ) -> dict:
-    """用户答题：归属校验 -> 幂等 -> 逐题判题 -> 入库 -> 状态流转。
+    """用户答题：判题（主 app）-> 结果经 APISIX 提交 app-task 落库 + 状态流转。
+
+    存储解耦：app-task 拥有独立 MySQL，本模块不再直写共享的 task_quiz_task /
+    task_quiz_answer。归属校验与幂等由 app-task 的 /internal/answer 处理
+    （主 app 重复提交时返回既有结果）。
 
     answers: [{"question_index": 0, "answer": "..."}, ...]
     返回 {"status": ..., "results": [{"question_index", "answer", "is_correct"}],
           "is_correct": 全部正确}，与前端 task-quiz-api 契约一致。
     """
-    async with get_db_context() as db:
-        # 1. 任务存在性 + 归属（X-Uid 由 APISIX forward-auth 注入）
-        row = (
-            await db.execute(
-                text(
-                    "SELECT task_id, uid, status FROM task_quiz_task "
-                    "WHERE task_id = :tid"
-                ),
-                {"tid": task_id},
-            )
-        ).mappings().first()
-        if row is None:
-            raise TaskQuizNotFound()
-        if int(row["uid"]) != uid:
-            raise TaskQuizForbidden()
+    # 1. 取题目（主 app 自己的 Mongo 权威数据）并逐题判题
+    quiz_doc = await coll(TASK_QUIZ_QUESTIONS).find_one({"task_id": task_id})
+    questions = _quiz_questions(quiz_doc)
 
-        # 2. 幂等：已答过直接返回既有结果（按题号）
-        existing = (
-            await db.execute(
-                text(
-                    "SELECT question_index, answer, is_correct "
-                    "FROM task_quiz_answer WHERE task_id = :tid "
-                    "ORDER BY question_index"
-                ),
-                {"tid": task_id},
-            )
-        ).mappings().all()
-        if existing:
-            return {
-                "status": row["status"],
-                "is_correct": all(bool(e["is_correct"]) for e in existing),
-                "results": [
-                    {
-                        "question_index": int(e["question_index"]),
-                        "answer": e["answer"],
-                        "is_correct": bool(e["is_correct"]),
-                    }
-                    for e in existing
-                ],
-            }
+    results: list[dict] = []
+    for item in answers:
+        idx = int(item.get("question_index", 0))
+        ans = (item.get("answer") or "").strip()
+        q = questions[idx] if 0 <= idx < len(questions) else None
+        is_correct = judge_task_quiz_answer(q, ans)
+        results.append(
+            {"question_index": idx, "answer": ans, "is_correct": is_correct}
+        )
 
-        # 3. 取题目（主 app 的 Mongo 权威数据）并逐题判题
-        quiz_doc = await coll(TASK_QUIZ_QUESTIONS).find_one({"task_id": task_id})
-        questions = _quiz_questions(quiz_doc)
-        now = datetime.now(timezone.utc)
+    # 2. 归属校验（业务行）
+    task = await get_quiz_task_by_uid(task_id, uid)
+    if task is None:
+        raise TaskQuizNotFound()
 
-        results: list[dict] = []
-        for item in answers:
-            idx = int(item.get("question_index", 0))
-            ans = (item.get("answer") or "").strip()
-            q = questions[idx] if 0 <= idx < len(questions) else None
-            is_correct = judge_task_quiz_answer(q, ans)
-            results.append(
-                {"question_index": idx, "answer": ans, "is_correct": is_correct}
-            )
-
-        # 4. 写答案记录（每题一行）
-        for r in results:
-            await db.execute(
-                text(
-                    "INSERT INTO task_quiz_answer "
-                    "(task_id, uid, question_index, answer, is_correct, submitted_at) "
-                    "VALUES (:tid, :uid, :qidx, :ans, :correct, :ts)"
-                ),
-                {
-                    "tid": task_id,
-                    "uid": uid,
-                    "qidx": r["question_index"],
-                    "ans": r["answer"],
-                    "correct": r["is_correct"],
-                    "ts": now,
-                },
-            )
-
-        # 5. 状态流转 sent -> completed（条件更新防与超时检测竞态）
-        updated = (
-            await db.execute(
-                text(
-                    "UPDATE task_quiz_task SET status = 'completed', updated_at = :ts "
-                    "WHERE task_id = :tid AND status = 'sent'"
-                ),
-                {"tid": task_id, "ts": now},
-            )
-        ).rowcount
-
-        await db.commit()
-
-        status = "completed" if updated else row["status"]
-        return {
-            "status": status,
-            "is_correct": all(r["is_correct"] for r in results),
-            "results": results,
-        }
+    # 3. 判题结果存业务库（主 app executor 侧）
+    await save_answers(task_id, uid, results)
+    return {
+        "status": "completed",
+        "is_correct": all(r["is_correct"] for r in results),
+        "results": results,
+    }
