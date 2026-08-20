@@ -1,206 +1,97 @@
-// Package router wires Gin routes + handlers. Auth model: APISIX forward-auth
-// injects X-Uid for user endpoints; /tasks/register trusts key-auth (uid in body).
+// Package router wires the Gin engine and HTTP handlers.
+//
+// File layout (one concern per file):
+//   router.go   — engine assembly: New / Router / routes / CORS
+//   task.go      — task endpoints (/tasks/*) + shared helpers
+//   complete.go — async callback from third-party executors
+//   script.go   — Lua script management (/scripts*)
 package router
 
 import (
+	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	"app-task/internal/config"
+	"app-task/internal/executor"
 	"app-task/internal/logger"
-	"app-task/internal/repo"
 	"app-task/internal/service"
 
 	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// New builds the Gin engine with all routes registered.
-func New(taskSvc *service.TaskService, cfg *config.Config) *gin.Engine {
+func New(taskSvc *service.TaskService, emailSvc *service.EmailService, luaExec *executor.LuaExecutor, cfg *config.Config) *gin.Engine {
 	if !cfg.App.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	e := gin.New()
+	// Trust no proxy: the webui login throttle keys on c.ClientIP(), and gin's
+	// default (trust everything) lets any client spoof X-Forwarded-For to
+	// sidestep it. With no trusted proxy the peer address is always used.
+	// Side effect: audit-log source_ip for APISIX-routed calls shows the
+	// apisix container IP instead of the end user - accepted tradeoff.
+	_ = e.SetTrustedProxies(nil)
 	e.Use(logger.GinLogger())
 	e.Use(logger.GinRecovery())
+	e.Use(securityHeaders())
 	e.Use(corsMiddleware(cfg.Security.CORS.AllowOrigins))
 
-	r := &Router{taskSvc: taskSvc}
+	if cfg.WebUI.Enabled && cfg.WebUI.Token == "" {
+		slog.Warn("webui master token not set (optional API key); console login is " +
+			"username/password — the default admin/app-task-admin account is active, " +
+			"change its password in the console account page")
+	}
+
+	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, luaExec: luaExec, cfg: cfg}
 	r.registerRoutes(e)
 	return e
 }
 
 type Router struct {
-	taskSvc *service.TaskService
+	taskSvc   *service.TaskService
+	emailSvc *service.EmailService
+	luaExec  *executor.LuaExecutor
+	cfg      *config.Config
 }
 
 func (r *Router) registerRoutes(e *gin.Engine) {
 	e.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "healthy", "service": "app-task"})
 	})
-	e.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"service": "app-task", "version": "0.2.0", "status": "running"})
-	})
 
+	// Admin console (single binary): dedicated /login page + gated SPA at /
+	// and /assets/*, backed by the /api/* endpoints below. Disabled entirely
+	// (pages + API) when webui.enabled=false.
+	if r.cfg.WebUI.Enabled {
+		auth := newWebuiAuthenticator(r.cfg.WebUI.Token, r.cfg.WebUI.SessionTTLMinutes)
+		registerWebRoutes(e, r.cfg, auth)
+		r.registerWebuiRoutes(e, r.cfg, auth)
+	}
+
+	// Task endpoints: register / detail / list. A task is a pure scheduling
+	// definition (task_type + payload + executor_url + cron + retry + weight);
+	// the scheduler dispatches it to a third-party executor and records the
+	// outcome in task_log.
 	tasks := e.Group("/tasks")
 	tasks.POST("/register", r.register)
 	tasks.GET("/:task_id", r.detail)
 	tasks.GET("", r.list)
-}
 
-func (r *Router) register(c *gin.Context) {
-	var req struct {
-		UID               int64    `json:"uid" binding:"required"`
-		UserEmail         string   `json:"user_email" binding:"required"`
-		CCEmails          []string `json:"cc_emails"`
-		Prompt            string   `json:"prompt" binding:"required,max=500"`
-		Difficulty        string   `json:"difficulty"`
-		QuestionCount     int      `json:"question_count"`
-		TriggerTime       string   `json:"trigger_time" binding:"required"`
-		IncompleteMessage *string  `json:"incomplete_message"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
-		return
-	}
-	if req.QuestionCount < 1 || req.QuestionCount > 5 {
-		req.QuestionCount = 1
-	}
-	triggerTime, err := parseISO8601(req.TriggerTime)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid trigger_time (expect ISO8601)"})
-		return
-	}
-	incomplete := ""
-	if req.IncompleteMessage != nil {
-		incomplete = *req.IncompleteMessage
-	}
-	taskID, err := r.taskSvc.RegisterTask(req.UID, req.UserEmail, req.CCEmails, req.Prompt, req.Difficulty, req.QuestionCount, triggerTime, incomplete)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "register failed: " + err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"task_id": taskID, "status": "pending"})
-}
+	// Async callback: a third-party executor that accepted a task (202) reports
+	// the final outcome here (key-auth). running -> completed | failed.
+	e.POST("/internal/task/:task_id/complete", r.completeTask)
 
-func (r *Router) detail(c *gin.Context) {
-	uid, ok := uidFromHeader(c)
-	if !ok {
-		return
-	}
-	taskID := c.Param("task_id")
-	task, err := repo.GetTaskByID(taskID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	if task == nil {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "task not found"})
-		return
-	}
-	if task.UID != uid {
-		c.JSON(http.StatusForbidden, gin.H{"detail": "not the task owner"})
-		return
-	}
-	quiz, _ := repo.GetQuizByTaskID(c.Request.Context(), taskID)
-	answers, _ := repo.GetAnswersByTaskID(taskID)
-	resp := gin.H{
-		"task_id":        task.TaskID,
-		"uid":            task.UID,
-		"prompt":         task.Prompt,
-		"status":         task.Status,
-		"trigger_time":   task.TriggerTime.Format(time.RFC3339),
-		"cc_emails":      task.CCEmails,
-		"question_count": task.QuestionCount,
-		"quiz":           gin.H{"questions": normalizeQuizQuestions(quiz)},
-		"answers":        []gin.H{},
-	}
-	for _, a := range answers {
-		resp["answers"] = append(resp["answers"].([]gin.H), gin.H{
-			"question_index": a.QuestionIndex,
-			"answer":         a.Answer,
-			"is_correct":     a.IsCorrect,
-			"submitted_at":   a.SubmittedAt.Format(time.RFC3339),
-		})
-	}
-	c.JSON(http.StatusOK, resp)
-}
+	// Mail delivery (platform capability): a third-party executor posts a
+	// standardized email (to/cc/subject/html) here; app-task queues + delivers
+	// it with retries (key-auth).
+	e.POST("/internal/email/send", r.sendEmail)
 
-// normalizeQuizQuestions normalizes the quiz doc to a {questions: [...]} list.
-// New docs store a questions array; legacy single-question docs keep flat
-// fields (question/question_type/options/answer/...), which we wrap here so the
-// frontend always sees the same array shape.
-//
-// NOTE: bson decode produces primitive.A (named []any), NOT []any — a plain
-// `.([]any)` assertion on it fails silently, so both shapes are handled.
-func normalizeQuizQuestions(quiz map[string]any) []any {
-	if quiz == nil {
-		return []any{}
-	}
-	if qs, ok := quiz["questions"]; ok {
-		if arr, ok := qs.([]any); ok && len(arr) > 0 {
-			return arr
-		}
-		if arr, ok := qs.(primitive.A); ok && len(arr) > 0 {
-			return []any(arr)
-		}
-	}
-	single := map[string]any{}
-	for _, k := range []string{
-		"question", "question_type", "options", "answer", "difficulty",
-		"answer_time_limit_seconds",
-	} {
-		if v, ok := quiz[k]; ok {
-			single[k] = v
-		}
-	}
-	if single["question"] == nil {
-		return []any{}
-	}
-	return []any{single}
-}
-
-func (r *Router) list(c *gin.Context) {
-	uid, ok := uidFromHeader(c)
-	if !ok {
-		return
-	}
-	tasks, err := repo.ListTasksByUID(uid, 50, 0)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	out := make([]gin.H, 0, len(tasks))
-	for _, t := range tasks {
-		out = append(out, gin.H{
-			"task_id":      t.TaskID,
-			"prompt":       t.Prompt,
-			"status":       t.Status,
-			"trigger_time": t.TriggerTime.Format(time.RFC3339),
-		})
-	}
-	c.JSON(http.StatusOK, gin.H{"tasks": out})
-}
-
-func uidFromHeader(c *gin.Context) (int64, bool) {
-	s := c.GetHeader("X-Uid")
-	if s == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"detail": "unauthorized (X-Uid missing)"})
-		return 0, false
-	}
-	uid, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"detail": "invalid X-Uid"})
-		return 0, false
-	}
-	return uid, true
-}
-
-func parseISO8601(s string) (time.Time, error) {
-	s = strings.Replace(s, "Z", "+00:00", 1)
-	return time.Parse(time.RFC3339, s)
+	// Lua scripts (optional built-in executor, xxl-task GLUE-style): upload =
+	// new version, takes effect immediately. Auth via APISIX key-auth; every
+	// change is audit-logged.
+	e.POST("/scripts", r.uploadScript)
+	e.GET("/scripts", r.listScripts)
+	e.GET("/scripts/logs", r.scriptLogs)
 }
 
 func corsMiddleware(allowOrigins []string) gin.HandlerFunc {
@@ -214,11 +105,33 @@ func corsMiddleware(allowOrigins []string) gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Credentials", "true")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id")
+			// X-WebUI-Token/X-Operator are the console's own headers; without
+			// them here a cross-origin browser client fails CORS preflight.
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, X-WebUI-Token, X-Operator")
+			c.Header("Access-Control-Max-Age", "600")
+			// The origin is reflected, so caches must not share responses
+			// across origins.
+			c.Header("Vary", "Origin")
 		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
+		}
+		c.Next()
+	}
+}
+
+// securityHeaders adds baseline hardening for the admin console: no framing
+// (clickjacking), no MIME sniffing, no referrer leakage, and no-store so
+// admin data never lands in shared caches.
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Content-Security-Policy", "frame-ancestors 'none'")
+		c.Header("Referrer-Policy", "no-referrer")
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Header("Cache-Control", "no-store")
 		}
 		c.Next()
 	}

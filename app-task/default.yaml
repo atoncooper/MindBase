@@ -14,10 +14,6 @@
 app:
   name: app-task
   debug: false
-  base_url: ""               # inject via APPTASK__APP__BASE_URL (e.g. http://apisix:9080)
-  consumer_key: ""           # inject via APPTASK__APP__CONSUMER_KEY (APISIX key-auth)
-  generate_llm_path: /internal/quiz/generate-llm
-  timeout: 160               # seconds for calling main app (LLM generate-llm + retries can be slow)
 
 server:
   host: 0.0.0.0
@@ -26,29 +22,44 @@ server:
 timezone: Asia/Shanghai      # business timezone (Beijing); trigger_time/deadline stored UTC aware
 
 rdbms:
-  url: ""                    # inject via APPTASK__RDBMS__URL (mysql dsn, same db as main app)
+  url: ""                    # inject via APPTASK__RDBMS__URL (mysql dsn of app-task's OWN instance/db)
   max_open_conns: 10
   max_idle_conns: 5
   conn_max_lifetime: 1800    # seconds
 
-mongo:
-  uri: ""                    # inject via APPTASK__MONGO__URI (same instance as main app)
-  db_name: MindBase
-  server_selection_timeout_ms: 5000
+scheduler:
+  interval_seconds: 30          # DB poll interval for due tasks
 
 email:
   provider: resend
-  api_key: ""                # inject via APPTASK__EMAIL__API_KEY
+  api_key: ""                # inject via APPTASK__EMAIL__API_KEY / APPTASK_EMAIL_API_KEY
   from_email: "MindBase <onboarding@resend.dev>"
-  timeout: 30
 
 notification:
-  worker_interval_seconds: 30   # scan pending notifications every Ns
-  retry_max: 5                  # max retries before status=failed
-  retry_backoff_base: 2         # exponential backoff base (seconds): 2,4,8,16,32
+  worker_interval_seconds: 30   # 邮件投递 worker 扫描间隔
+  retry_max: 5                  # 发送失败最大重试
+  retry_backoff_base: 2         # 指数退避基数(秒): 2,4,8,16,32
 
-scheduler:
-  interval_seconds: 30          # DB poll interval for due tasks
+# 嵌入式管理控制台（Gin 直接提供 /，无独立前端服务）
+webui:
+  enabled: true                 # 是否挂载 / 管理界面与 /api/* 管理端点
+  token: ""                     # 可选：master API 密钥（APPTASK__WEBUI__TOKEN 注入），
+                                # 供脚本/API 调用 /api/* 用（等价 admin）；控制台登录一律走账户密码
+  session_ttl_minutes: 720      # 登录会话有效期（分钟）；登录成功签发 HttpOnly 会话 Cookie
+  # 账户（用户名+密码，bcrypt 存 app-task 自己的 MySQL webui_user 表）：
+  # 首次启动自动创建默认管理员 admin / app-task-admin，仅 admin 可管理账户；
+  # 生产务必在控制台「账户」页修改默认密码或添加自己的账户
+
+http_executor:
+  timeout_seconds: 30            # 单次调用 executor 超时
+  insecure_skip_verify: false   # 仅自签名内网 executor 才开(生产禁用)
+  ca_file: ""                   # 私有 CA PEM 路径(可选)
+
+lua:
+  timeout_seconds: 30           # 单次脚本执行超时
+  max_idle_vm: 4                # 空闲 VM 池大小
+  max_source_len: 65536         # 脚本源码上限（字节）
+  http_timeout_seconds: 15      # ctx.http_get/post 超时
 
 security:
   cors:
