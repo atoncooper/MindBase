@@ -3,17 +3,19 @@
 /**
  * TaskQuizDetail - right pane of the task-quiz view.
  *
- * Renders one task by status:
- *  - pending:   scheduled card (waiting for trigger time)
- *  - sent:      quiz + answer form (single/multiple choice or fill-in) with a
- *               live countdown to the deadline
- *  - completed: quiz + my answer + correct answer + correctness badge
- *  - overdue:   quiz + timeout banner (+ my answer if submitted just-in-time)
- *  - failed:    failure card
+ * Renders one task by business status (main app /tasks/{id}/detail; pending
+ * fallback is synthesized client-side from the list item):
+ *  - pending / running: scheduled card (waiting for trigger time)
+ *  - generating:        spinner card (quiz being generated)
+ *  - awaiting_answer:   quiz + answer form (single/multiple choice or fill-in)
+ *                       with a live countdown to the deadline
+ *  - completed:         quiz + my answer + correct answer + correctness badge
+ *  - overdue:           quiz + timeout banner (+ my answer if submitted just-in-time)
+ *  - failed:            failure card
  *
- * Answer submission sends a plain string (choice text joined by ", " for
- * multiple, typed text for fill-in). The backend judges isCorrect; we do not
- * reveal the correct answer until the user has submitted.
+ * Answer submission sends one entry per question (choice text or typed text).
+ * The backend judges isCorrect; we do not reveal the correct answer until the
+ * user has submitted.
  */
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
@@ -45,7 +47,9 @@ interface TaskQuizDetailProps {
 
 const STATUS_BADGE: Record<TaskQuizStatus, { label: string; cls: string }> = {
     pending: { label: "待触发", cls: "bg-border-subtle text-secondary" },
-    sent: { label: "待答题", cls: "bg-warning/10 text-warning" },
+    running: { label: "执行中", cls: "bg-accent-soft text-accent" },
+    generating: { label: "出题中", cls: "bg-accent-soft text-accent" },
+    awaiting_answer: { label: "待作答", cls: "bg-warning/10 text-warning" },
     completed: { label: "已完成", cls: "bg-success/10 text-success" },
     overdue: { label: "已超时", cls: "bg-tertiary/20 text-secondary" },
     failed: { label: "失败", cls: "bg-danger/10 text-danger" },
@@ -155,9 +159,16 @@ function DetailBody({
                         >
                             {badge.label}
                         </span>
-                        <span className="text-[11px] text-tertiary">
-                            {formatDateTime(detail.triggerTime)} 触发
-                        </span>
+                        {detail.triggerTime && (
+                            <span className="text-[11px] text-tertiary">
+                                {formatDateTime(detail.triggerTime)} 触发
+                            </span>
+                        )}
+                        {detail.deadline && (
+                            <span className="text-[11px] text-tertiary">
+                                {formatDateTime(detail.deadline)} 答题截止
+                            </span>
+                        )}
                     </div>
                     <h2 className="mt-1.5 text-[17px] font-semibold leading-snug tracking-tight text-foreground">
                         {detail.prompt}
@@ -176,9 +187,10 @@ function DetailBody({
                 <div className="mx-auto max-w-[680px]">
                     {detail.status === "pending" && <PendingState detail={detail} />}
                     {detail.status === "failed" && <FailedState />}
-                    {detail.status === "sent" && !quiz && <GeneratingState />}
+                    {(detail.status === "generating" || detail.status === "running") &&
+                        !quiz && <GeneratingState />}
                     {quiz &&
-                        (detail.status === "sent" ||
+                        (detail.status === "awaiting_answer" ||
                             detail.status === "completed" ||
                             detail.status === "overdue") && (
                             <QuizCard detail={detail} onAnswered={onAnswered} />
@@ -206,7 +218,9 @@ function PendingState({ detail }: { detail: TaskQuizDetailData }) {
                 任务已排期
             </h3>
             <p className="mt-1.5 text-[13px] leading-relaxed text-secondary">
-                将在 {formatDateTime(detail.triggerTime)} 自动出题，
+                {detail.triggerTime
+                    ? `将在 ${formatDateTime(detail.triggerTime)} 自动出题，`
+                    : "到点将自动出题，"}
                 <br />
                 届时题目会发送至你的邮箱。
             </p>
@@ -464,7 +478,7 @@ function QuizCard({
             {answered && <ResultSummary answers={submitted} questions={questions} />}
 
             {/* Submit */}
-            {!answered && detail.status === "sent" && (
+            {!answered && detail.status === "awaiting_answer" && (
                 <div className="mt-5">
                     {error && (
                         <div className="mb-3 flex items-center gap-2 rounded-lg border-l-2 border-foreground bg-border-subtle px-3.5 py-2.5 text-[13px] text-foreground">

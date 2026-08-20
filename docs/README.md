@@ -2,6 +2,7 @@
 
 | Document | Audience | Description |
 |----------|----------|-------------|
+| [setup-guide.md](setup-guide.md) | Users / Ops | ⭐ 用 Docker 直接本地跑起来：装 Docker → 配置 → 启动 → 验证 → 开始用 |
 | [getting-started.md](getting-started.md) | Developers | Local setup, project structure, workflow |
 | [configuration.md](configuration.md) | All | Full YAML config reference, env vars, secrets |
 | [deployment.md](deployment.md) | DevOps / SRE | Production deployment: Docker, HTTPS, K8s, monitoring |

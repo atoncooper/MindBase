@@ -1,4 +1,4 @@
-# APISIX standalone routes - DOCKER variant (normalized)
+﻿# APISIX standalone routes - DOCKER variant (normalized)
 # ========================================================
 # Mounted to /usr/local/apisix/conf/apisix.yaml.
 #
@@ -252,6 +252,48 @@ routes:
 
   # agent(backend) -> app-task register (service-to-service, key-auth; uid in body)
   # priority 100 so /tasks/register is NOT shadowed by /tasks/* (forward-auth)
+  # Lua scripts: upload/list/logs (service-to-service, key-auth). Script
+  # uploads change executable code, so this MUST stay key-protected.
+  - id: scripts_upload
+    uri: /scripts*
+    methods: [POST, GET]
+    priority: 60
+    upstream_id: upstream-app-task
+    plugins:
+      key-auth: {}
+
+  # main app -> app-task async callback + mail delivery (service-to-service,
+  # key-auth): executors report task completion and request email delivery.
+  - id: internal_task_complete
+    uri: /internal/task/*/complete
+    methods: [POST]
+    priority: 50
+    upstream_id: upstream-app-task
+    plugins:
+      key-auth: {}
+
+  - id: internal_email_send
+    uri: /internal/email/send
+    methods: [POST]
+    priority: 50
+    upstream_id: upstream-app-task
+    plugins:
+      key-auth: {}
+
+  # User -> main app quiz-task business detail (forward-auth, X-Uid injected)
+  - id: tasks_detail
+    uri: /tasks/*/detail
+    methods: [GET]
+    priority: 100
+    upstream_id: upstream-backend
+    plugins:
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
   - id: tasks_register
     uri: /tasks/register
     methods: [POST]

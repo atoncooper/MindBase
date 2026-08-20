@@ -13,16 +13,18 @@ import (
 )
 
 type Config struct {
-	App          AppConfig          `yaml:"app"`
-	Server       ServerConfig       `yaml:"server"`
-	Timezone     string             `yaml:"timezone"`
-	RDBMS        RDBMSConfig        `yaml:"rdbms"`
-	Mongo        MongoConfig        `yaml:"mongo"`
+	App       AppConfig       `yaml:"app"`
+	Server    ServerConfig    `yaml:"server"`
+	Timezone  string          `yaml:"timezone"`
+	RDBMS     RDBMSConfig     `yaml:"rdbms"`
+	Scheduler    SchedulerConfig    `yaml:"scheduler"`
+	Lua          LuaConfig          `yaml:"lua"`
+	HTTPExecutor HTTPExecutorConfig `yaml:"http_executor"`
 	Email        EmailConfig        `yaml:"email"`
 	Notification NotificationConfig `yaml:"notification"`
-	Scheduler    SchedulerConfig    `yaml:"scheduler"`
-	Security     SecurityConfig     `yaml:"security"`
-	Log          LogConfig          `yaml:"log"`
+	WebUI        WebUIConfig        `yaml:"webui"`
+	Security  SecurityConfig  `yaml:"security"`
+	Log       LogConfig       `yaml:"log"`
 }
 
 type LogConfig struct {
@@ -41,12 +43,8 @@ type LogFileConfig struct {
 }
 
 type AppConfig struct {
-	Name            string `yaml:"name"`
-	Debug           bool   `yaml:"debug"`
-	BaseURL         string `yaml:"base_url"`
-	ConsumerKey     string `yaml:"consumer_key"`
-	GenerateLLMPath string `yaml:"generate_llm_path"`
-	Timeout         int    `yaml:"timeout"`
+	Name  string `yaml:"name"`
+	Debug bool   `yaml:"debug"`
 }
 
 type ServerConfig struct {
@@ -61,27 +59,45 @@ type RDBMSConfig struct {
 	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`
 }
 
-type MongoConfig struct {
-	URI                      string `yaml:"uri"`
-	DBName                   string `yaml:"db_name"`
-	ServerSelectionTimeoutMS int    `yaml:"server_selection_timeout_ms"`
+type SchedulerConfig struct {
+	IntervalSeconds int `yaml:"interval_seconds"`
 }
 
+// EmailConfig configures the mail delivery service (platform capability).
 type EmailConfig struct {
 	Provider string `yaml:"provider"`
 	APIKey   string `yaml:"api_key"`
 	From     string `yaml:"from_email"`
-	Timeout  int    `yaml:"timeout"`
 }
 
+// NotificationConfig configures the mail delivery worker (retries).
 type NotificationConfig struct {
 	WorkerIntervalSeconds int `yaml:"worker_interval_seconds"`
 	RetryMax              int `yaml:"retry_max"`
 	RetryBackoffBase      int `yaml:"retry_backoff_base"`
 }
 
-type SchedulerConfig struct {
-	IntervalSeconds int `yaml:"interval_seconds"`
+// WebUIConfig configures the embedded admin console (served by Gin at /).
+// Token empty = no auth (dev only); production MUST set APPTASK__WEBUI__TOKEN.
+type WebUIConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	Token             string `yaml:"token"`
+	SessionTTLMinutes int    `yaml:"session_ttl_minutes"` // login session lifetime (0 = default 12h)
+}
+
+// HTTPExecutorConfig configures the HTTP(S) executor transport.
+type HTTPExecutorConfig struct {
+	TimeoutSeconds     int    `yaml:"timeout_seconds"`      // per-request timeout
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // opt out of TLS cert validation (self-signed only)
+	CAFile             string `yaml:"ca_file"`              // PEM private CA to trust
+}
+
+// LuaConfig configures the Lua executor (dynamic scripts, GLUE-style).
+type LuaConfig struct {
+	TimeoutSeconds     int `yaml:"timeout_seconds"`      // per-script execution timeout
+	MaxIdleVM          int `yaml:"max_idle_vm"`           // idle VM pool size
+	MaxSourceLen       int `yaml:"max_source_len"`        // max script source bytes
+	HTTPTimeoutSeconds int `yaml:"http_timeout_seconds"`  // ctx.http_get/post timeout
 }
 
 type SecurityConfig struct {
@@ -116,34 +132,29 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 
-	if v := get("APPTASK__APP__BASE_URL"); v != "" {
-		cfg.App.BaseURL = v
-	}
-	if v := get("APPTASK__APP__CONSUMER_KEY"); v != "" {
-		cfg.App.ConsumerKey = v
-	}
-	atoi("APPTASK__APP__TIMEOUT", &cfg.App.Timeout)
 	if v := get("APPTASK__RDBMS__URL"); v != "" {
 		cfg.RDBMS.URL = v
 	}
-	if v := get("APPTASK__MONGO__URI"); v != "" {
-		cfg.Mongo.URI = v
-	}
-	if v := get("APPTASK__MONGO__DB_NAME"); v != "" {
-		cfg.Mongo.DBName = v
-	}
-	// Email API key: APPTASK__EMAIL__API_KEY preferred, fall back to
-	// APPTASK_EMAIL_API_KEY (shared env name in .env.example).
 	if v := get("APPTASK__EMAIL__API_KEY"); v != "" {
 		cfg.Email.APIKey = v
 	}
 	if v := get("APPTASK_EMAIL_API_KEY"); v != "" {
 		cfg.Email.APIKey = v
 	}
+	if v := get("APPTASK__EMAIL__FROM"); v != "" {
+		cfg.Email.From = v
+	}
 	if v := get("APPTASK__TIMEZONE"); v != "" {
 		cfg.Timezone = v
 	}
 	atoi("APPTASK__SERVER__PORT", &cfg.Server.Port)
+	if v := get("APPTASK__WEBUI__ENABLED"); v != "" {
+		cfg.WebUI.Enabled = v == "true" || v == "1"
+	}
+	if v := get("APPTASK__WEBUI__TOKEN"); v != "" {
+		cfg.WebUI.Token = v
+	}
+	atoi("APPTASK__WEBUI__SESSION_TTL_MINUTES", &cfg.WebUI.SessionTTLMinutes)
 	if v := get("APPTASK__LOG__LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
@@ -164,16 +175,10 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
-// Validate checks critical config required for the service to function. Returns
-// an error when missing values would silently break the pipeline (every task
-// failing quiz requests, or APISIX key-auth rejecting all /internal/quiz calls).
-// Soft issues (no API key, test from-email) are logged by the caller, not fatal.
+// Validate checks critical config required for the service to function. The
+// pure-scheduler has no hard requirements beyond the DB DSN (enforced at
+// startup by db.Init), so this is a no-op placeholder for future checks.
 func Validate(cfg *Config) error {
-	if cfg.App.BaseURL == "" {
-		return fmt.Errorf("app.base_url is empty: set APPTASK__APP__BASE_URL (e.g. http://apisix:9080); without it every task fails to request quiz generation")
-	}
-	if cfg.App.ConsumerKey == "" {
-		return fmt.Errorf("app.consumer_key is empty: set APPTASK__APP__CONSUMER_KEY (must match APISIX consumer); without it APISIX key-auth rejects all /internal/quiz calls")
-	}
+	_ = cfg
 	return nil
 }

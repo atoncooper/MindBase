@@ -1,28 +1,48 @@
 /**
  * Task-quiz API - 定时出题：注册任务 / 任务列表 / 详情 / 答题 / agent 对话.
  *
- * Two backends are involved (see CLAUDE.md §2.7):
- *  - Main app:  POST /task-quiz/register (form register), POST /task-quiz/chat (agent SSE)
- *  - app-task:  GET /tasks, GET /tasks/{id}, POST /tasks/{id}/answer (REST, X-Uid via APISIX)
- * Both are routed through APISIX with bili_session Bearer auth; the caller does
+ * Three backends are involved (see CLAUDE.md §2.7):
+ *  - Main app:  POST /task-quiz/register (form register), POST /task-quiz/chat (agent SSE),
+ *               GET /tasks/{id}/detail + POST /tasks/{id}/answer (business detail & judging)
+ *  - app-task:  GET /tasks (scheduler list), GET /tasks/{id} (scheduler view)
+ * All routed through APISIX with bili_session Bearer auth; the caller does
  * NOT pass uid - identity comes from the session.
  *
  * Responses are snake_case from the backend and converted to camelCase here.
  */
 import { requestCamel, getAuthHeaders, API_BASE_URL } from "./client";
 
+/**
+ * Two status vocabularies exist after the app-task decoupling:
+ *  - Scheduler (app-task list /tasks): pending -> running -> completed | failed
+ *  - Business (main app /tasks/{id}/detail): generating -> awaiting_answer ->
+ *    completed, plus overdue / failed
+ * The union covers both; which one you see depends on the endpoint.
+ */
 export type TaskQuizStatus =
-    | "pending"      // registered, waiting for trigger_time
-    | "sent"         // quiz generated + email sent, waiting for answer (deadline armed)
-    | "completed"    // user answered
-    | "overdue"      // deadline passed without answer
-    | "failed";      // quiz generation failed
+    | "pending"         // scheduler: registered, waiting for trigger_time
+    | "running"         // scheduler: executor dispatched
+    | "generating"      // business: quiz being generated
+    | "awaiting_answer" // business: quiz sent, waiting for answer (deadline armed)
+    | "completed"
+    | "overdue"         // business: deadline passed without answer
+    | "failed";
 
 export interface TaskQuizListItem {
     taskId: string;
-    prompt: string;
-    status: TaskQuizStatus;
+    taskType: string;       // scheduler task type (e.g. "http")
+    status: TaskQuizStatus; // scheduler view: pending/running/completed/failed
     triggerTime: string;
+    executorUrl?: string;
+    async?: boolean;
+    /** Opaque payload passed through by the scheduler for display; quiz tasks
+     *  carry prompt/difficulty/questionCount/ccEmails (never interpreted). */
+    payload?: {
+        prompt?: string;
+        difficulty?: string;
+        questionCount?: number;
+        ccEmails?: string[];
+    } | null;
 }
 
 export interface TaskQuizQuestion {
@@ -43,13 +63,15 @@ export interface TaskQuizAnswerItem {
 
 export interface TaskQuizDetail {
     taskId: string;
-    uid: number;
     prompt: string;
-    status: TaskQuizStatus;
-    triggerTime: string;
+    difficulty: string;              // easy / medium / hard
+    status: TaskQuizStatus;          // business view: generating/awaiting_answer/completed/overdue/failed
+    deadline: string | null;         // armed on send; countdown base (null before send)
     ccEmails: string[];
-    questionCount: number;           // 本次任务出题数量（1~5）
-    deadline?: string | null;        // armed on send; used for the answer countdown
+    /** Backend /detail has no trigger_time; only set on the client-side
+     *  fallback detail synthesized from a list item (business row 404s
+     *  before the trigger fires). Optional everywhere else. */
+    triggerTime?: string | null;
     quiz: { questions: TaskQuizQuestion[] } | null;
     answers: TaskQuizAnswerItem[];   // 空数组 = 未作答
 }
@@ -107,11 +129,16 @@ export const taskQuizApi = {
         return res.tasks ?? [];
     },
 
-    /** Get task detail (task + quiz + answer). */
+    /**
+     * Get the business detail (quiz + answers + business status) from the main
+     * app. Note: the business row is only created at generation time, so this
+     * 404s for tasks whose trigger time has not fired yet - callers should
+     * fall back to a scheduled view built from the list item.
+     */
     getTask: (taskId: string) =>
-        requestCamel<TaskQuizDetail>(`/tasks/${taskId}`),
+        requestCamel<TaskQuizDetail>(`/tasks/${taskId}/detail`),
 
-    /** Submit answers for a sent task (one entry per question, index 0-based). */
+    /** Submit answers for an awaiting_answer task (one entry per question, index 0-based). */
     submitAnswer: (taskId: string, answers: SubmitAnswerItem[]) =>
         requestCamel<SubmitAnswerResponse>(`/tasks/${taskId}/answer`, {
             method: "POST",

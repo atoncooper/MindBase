@@ -29,7 +29,9 @@ interface Group {
 
 const STATUS_DOT: Record<TaskQuizStatus, string> = {
     pending: "bg-tertiary",
-    sent: "bg-warning",
+    running: "bg-accent",
+    generating: "bg-accent",
+    awaiting_answer: "bg-warning",
     completed: "bg-success",
     overdue: "bg-secondary",
     failed: "bg-danger",
@@ -37,19 +39,27 @@ const STATUS_DOT: Record<TaskQuizStatus, string> = {
 
 const STATUS_LABEL: Record<TaskQuizStatus, string> = {
     pending: "待触发",
-    sent: "待答题",
+    running: "执行中",
+    generating: "出题中",
+    awaiting_answer: "待作答",
     completed: "已完成",
     overdue: "已超时",
     failed: "失败",
 };
 
 const GROUP_ORDER: { key: TaskQuizStatus; label: string }[] = [
-    { key: "sent", label: "待答题" },
+    { key: "awaiting_answer", label: "待作答" },
     { key: "pending", label: "待触发" },
+    { key: "running", label: "执行中" },
     { key: "overdue", label: "已超时" },
     { key: "failed", label: "失败" },
     { key: "completed", label: "已完成" },
 ];
+
+/** Row title: quiz prompt from the scheduler's opaque payload, else task type. */
+function listTitle(t: TaskQuizListItem): string {
+    return t.payload?.prompt || t.taskType;
+}
 
 function formatTrigger(iso: string): string {
     const d = new Date(iso);
@@ -100,7 +110,7 @@ export function TaskQuizList({
     const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
         if (!q) return tasks;
-        return tasks.filter((t) => t.prompt.toLowerCase().includes(q));
+        return tasks.filter((t) => listTitle(t).toLowerCase().includes(q));
     }, [tasks, query]);
 
     const groups = useMemo(() => groupTasks(filtered), [filtered]);
@@ -248,7 +258,7 @@ export function TaskQuizList({
                                                         : "text-foreground/90",
                                                 )}
                                             >
-                                                {task.prompt}
+                                                {listTitle(task)}
                                             </p>
                                             <div className="mt-1 flex items-center gap-1.5">
                                                 <span

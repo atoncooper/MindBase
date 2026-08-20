@@ -1,4 +1,4 @@
-"""Tools for the task-quiz agent.
+﻿"""Tools for the task-quiz agent.
 
 random_time_generator - generate a future random time (Beijing), avoiding sleep/nap
 submit_task           - register a task on app-task (via APISIX)
@@ -62,15 +62,24 @@ async def submit_task(
     uid: int,
     user_email: str,
 ) -> str:
-    """提交定时出题任务到 app-task。trigger_time_utc 为 ISO8601 UTC（来自 random_time_generator）。
-    prompt 为出题方向；incomplete_message 留空字符串则用默认模板。"""
+    """提交定时出题任务到 app-task（纯调度器，出题由主 app 作为 executor 执行）。
+    trigger_time_utc 为 ISO8601 UTC；prompt 出题方向；incomplete_message 留空用默认模板。"""
     payload = {
         "uid": uid,
-        "user_email": user_email,
-        "cc_emails": cc_emails or [],
-        "prompt": prompt,
+        "task_type": "http",
+        "payload": {
+            "prompt": prompt,
+            "question_count": 1,
+            "user_email": user_email,
+            "cc_emails": cc_emails or [],
+            "incomplete_message": incomplete_message or "",
+        },
+        # 主 app 出题端点（executor）；docker 内 app-task → backend 直连
+        "executor_url": os.environ.get(
+            "QUIZ_EXECUTOR_URL", "http://backend:8000/internal/quiz/generate-llm"
+        ),
+        "async": True,  # 出题完成后主 app 回调 app-task 报告结果
         "trigger_time": trigger_time_utc,
-        "incomplete_message": incomplete_message or None,
     }
     headers = {"apikey": _APPTASK_KEY, "Content-Type": "application/json"}
     try:
@@ -84,7 +93,7 @@ async def submit_task(
         return f"提交失败: status={resp.status_code} body={resp.text[:200]}"
     data = resp.json()
     logger.info("[TASK_QUIZ_AGENT] submitted task_id={}", data.get("task_id"))
-    return f"提交成功！task_id={data['task_id']}，状态=pending。到时间后会自动出题并发邮件。"
+    return f"提交成功！task_id={data['task_id']}，状态=pending。到时间后自动出题并邮件通知。"
 
 
 @tool
@@ -95,7 +104,6 @@ async def query_task(task_id: str, uid: int) -> str:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 f"{_APPTASK_BASE}/tasks/{task_id}",
-                params={"uid": uid},
                 headers=headers,
             )
     except Exception as e:

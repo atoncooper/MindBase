@@ -5,8 +5,9 @@
  *
  * Owns the list + detail state machine: loads the task list, fetches detail on
  * selection, handles new-task creation. Layout is a left list + right detail
- * (Apple Notes/Mail two-pane); on mobile only one pane shows at a time. Sent
- * tasks auto-refresh their detail every 30s so the answer countdown stays live.
+ * (Apple Notes/Mail two-pane); on mobile only one pane shows at a time. Tasks
+ * awaiting an answer auto-refresh their detail every 30s so the countdown and
+ * status transitions (awaiting_answer -> overdue) stay live.
  */
 import { useCallback, useEffect, useState } from "react";
 import { taskQuizApi, type TaskQuizListItem, type TaskQuizDetail } from "@/lib/api";
@@ -48,11 +49,38 @@ export function TaskQuizView() {
             const d = await taskQuizApi.getTask(taskId);
             setDetail(d);
         } catch {
-            // Keep stale detail on transient error.
+            // The business row behind /detail is only created at generation
+            // time, so tasks whose trigger has not fired yet 404. Fall back to
+            // a scheduled view synthesized from the list item; keep any stale
+            // detail for this task on transient errors so a loaded quiz never
+            // regresses to the fallback.
+            setDetail((prev) => {
+                if (prev && prev.taskId === taskId) return prev;
+                const item = tasks.find((t) => t.taskId === taskId);
+                if (!item) return prev;
+                return {
+                    taskId: item.taskId,
+                    prompt: item.payload?.prompt ?? item.taskType,
+                    difficulty: item.payload?.difficulty ?? "",
+                    // Scheduler -> business mapping: running/completed mean the
+                    // executor phase (quiz generating); pending stays pending.
+                    status:
+                        item.status === "running" || item.status === "completed"
+                            ? "generating"
+                            : item.status === "failed"
+                              ? "failed"
+                              : "pending",
+                    deadline: null,
+                    triggerTime: item.triggerTime,
+                    ccEmails: item.payload?.ccEmails ?? [],
+                    quiz: null,
+                    answers: [],
+                };
+            });
         } finally {
             setLoadingDetail(false);
         }
-    }, []);
+    }, [tasks]);
 
     // Initial load.
     useEffect(() => {

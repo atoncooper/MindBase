@@ -1,4 +1,4 @@
-"""Async LLM quiz generation service.
+﻿"""Async LLM quiz generation service.
 
 Business logic for /internal/quiz/generate-llm + /status. Generates quiz via
 LLM in a background asyncio task, stores result in MongoDB. Idempotent by
@@ -9,6 +9,7 @@ Called by app/routers/internal_quiz.py (router only does param parsing).
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 from langchain_openai import ChatOpenAI
 from loguru import logger
@@ -17,6 +18,12 @@ from pydantic import BaseModel, Field
 from app.agent.task_quiz.prompts import QUIZ_GEN_SYS_PROMPT
 from app.config import settings
 from app.infra.mongo import coll, is_enabled
+from app.services.quiz_task_service import (
+    deliver_email,
+    mark_generated,
+    render_quiz_email,
+    report_task_complete,
+)
 
 MAX_RETRIES = 3
 QUIZ_COLLECTION = "task_quiz_questions"
@@ -93,7 +100,9 @@ class QuizGenService:
 
     @staticmethod
     async def generate(
-        task_id: str, prompt: str, difficulty: str, uid: int | None, question_count: int = 1
+        task_id: str, prompt: str, difficulty: str, uid: int | None, question_count: int = 1,
+        user_email: str = "", cc_emails: list | None = None,
+        incomplete_message: str | None = None,
     ) -> dict:
         """Returns {status: generating|ready, quiz?}. Launches background LLM if needed."""
         if not prompt.strip():
@@ -120,7 +129,10 @@ class QuizGenService:
             "task_id": task_id, "uid": uid,
             "status": "generating", "created_at": time.time(),
         })
-        task = asyncio.create_task(_generate_quiz_bg(task_id, prompt, difficulty, uid, question_count))
+        task = asyncio.create_task(_generate_quiz_bg(
+            task_id, prompt, difficulty, uid, question_count,
+            user_email, cc_emails, incomplete_message,
+        ))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
         logger.info("[INTERNAL_QUIZ] started generation task_id={} difficulty={} count={}", task_id, difficulty, question_count)
@@ -142,7 +154,9 @@ class QuizGenService:
 
 
 async def _generate_quiz_bg(
-    task_id: str, prompt: str, difficulty: str, uid: int | None, question_count: int
+    task_id: str, prompt: str, difficulty: str, uid: int | None, question_count: int,
+    user_email: str = "", cc_emails: list | None = None,
+    incomplete_message: str | None = None,
 ):
     """Background coroutine: invoke LLM and store result in Mongo."""
     try:
@@ -185,6 +199,21 @@ async def _generate_quiz_bg(
                         "generated_at": time.time(),
                     }},
                 )
+                # 业务收尾（executor 侧）：更新业务行 + 发题目邮件（经 app-task）+ 报告 task 完成
+                try:
+                    qs = [q.model_dump() for q in result.questions]
+                    limit = int(qs[0]["answer_time_limit_seconds"] or 0)
+                    if limit <= 0:
+                        limit = _DIFFICULTY_LIMITS.get(qs[0].get("difficulty", "medium"), 1200)
+                    deadline = datetime.now(timezone.utc) + timedelta(seconds=limit)
+                    await mark_generated(task_id, deadline, len(qs))
+                    deadline_bj = (deadline + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+                    subject, body = render_quiz_email(prompt, qs, f"{deadline_bj}（北京时间）")
+                    if user_email:
+                        await deliver_email([user_email], cc_emails or [], subject, body, task_id)
+                    await report_task_complete(task_id, "completed", f"quiz ready ({len(qs)}q)")
+                except Exception as notify_err:
+                    logger.warning("[INTERNAL_QUIZ] post-generation notify failed task_id={}: {}", task_id, notify_err)
                 return
             except Exception as e:
                 last_err = e

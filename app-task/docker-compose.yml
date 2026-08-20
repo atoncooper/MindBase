@@ -1,0 +1,95 @@
+# ================================================================
+# app-task 独立部署（不依赖项目根的主栈）
+# ================================================================
+# 在 app-task/ 目录下单独启动：
+#   cd app-task && docker compose up -d --build
+#
+# 只包含两个服务：
+#   app-task-mysql  - app-task 自有 MySQL（utf8mb4；schema 由启动时
+#                     db.Migrate() 自建；数据在独立 volume，不与主栈
+#                     mind-base-mysql / mind-base-app-task-mysql 共享）
+#   app-task        - 任务执行器（Go + Gin + WebUI 控制台，:8001）
+#
+# 主 app / APISIX 不在此启动：app-task 启动期不再依赖它们，出站调用
+# 发生在任务执行期（http 模式按任务自带的 executor_url，或 lua 脚本）。
+# 若 executor_url 需要指向主栈的 apisix/backend 主机名，见底部
+# networks 段的 mind-base-net 注释。
+#
+# 与主栈同时运行会冲突 8001 端口（两边都用 APP_TASK_PORT）：先停掉
+# 主栈的 app-task（项目根 `docker compose stop app-task`）或改端口。
+#
+# 可选配置：复制 .env.example 为 .env（compose 自动加载——既用于
+# 本文件的 ${} 替换，也注入 app-task 容器环境变量；文件不存在也行）。
+
+services:
+  app-task:
+    image: ${APPTASK_IMAGE:-app-task:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app-task
+    depends_on:
+      app-task-mysql:
+        condition: service_healthy
+    env_file:
+      # app-task/.env（可选）：注入 APPTASK__* 覆盖项，如
+      # APPTASK__EMAIL__API_KEY / APPTASK__WEBUI__TOKEN / APPTASK__TIMEZONE。
+      # 下方 environment: 固定的两项始终优先于 .env。
+      - path: .env
+        required: false
+    environment:
+      # 指向本文件自带的 MySQL（与主栈 compose 中 app-task 的 DSN 同构）
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
+      # WebUI 控制台：登录走用户名+密码（首次启动自动创建默认管理员
+      # admin / app-task-admin，登录后才进控制台）。下面的 APPTASK__WEBUI__TOKEN
+      # 是可选 master API 密钥（供脚本/API 直接调 /api/*，等价 admin），
+      # 默认自带一个开发用值，可用 .env 覆盖或留空。
+      # ⚠️ 生产务必在控制台「账户」页改掉默认 admin 密码。
+      - APPTASK__WEBUI__TOKEN=${APPTASK__WEBUI__TOKEN:-b5ff9f9853fc6b26285c8177ac7282c4}
+      # stdout + /app/logs/app-task.log（lumberjack 轮转，volume 见下）
+      - APPTASK__LOG__OUTPUT=both
+    ports:
+      - "${APP_TASK_PORT:-8001}:8001"
+    volumes:
+      - logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - app-task-net
+      # 取消注释（并同步底部 networks 段）以加入主栈网络，使
+      # executor_url 可直接指向 http://apisix:9080/... 或 http://backend:8000/...：
+      # - mind-base-net
+
+  app-task-mysql:
+    image: mysql:8.4
+    container_name: app-task-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_task
+      - MYSQL_USER=${APPTASK_MYSQL_USER:-app_task}
+      - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${APPTASK_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-task-net
+
+volumes:
+  mysql_data:
+  logs:
+
+networks:
+  app-task-net:
+    driver: bridge
+  # 取消注释以接入主栈网络（要求主栈正在运行；网络名 = 根 compose
+  # 项目名 bilibili-rag + mind-base-net；若根目录改名需同步调整）：
+  # mind-base-net:
+  #   name: bilibili-rag_mind-base-net
+  #   external: true

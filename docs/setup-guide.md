@@ -144,6 +144,14 @@ curl http://localhost:8001/health
 
 如果 `/health` 报错，最常见是 `.env` 没填全或填错变量名（回第 4 步检查）。
 
+**app-task 控制台**：`http://localhost:8001/` 是内置管理界面，**需要登录**——默认账户 `admin` / `app-task-admin`（首次启动自动创建，登录后请在「账户」页改密；连续输错会被限流）。
+
+**只跑 app-task（不拉起整个主栈）**：
+
+```bash
+cd app-task && docker compose up -d --build   # app-task + 它自己的 MySQL
+```
+
 ---
 
 ## 第 8 步：开始用

@@ -113,11 +113,6 @@ async def _migrate_add_columns():
         ("verification_codes", "attempts", "INTEGER DEFAULT 0"),
         # Plan 0035: real usage tracking with cost estimate
         ("credential_usage", "cost_estimate", "NUMERIC(12, 6) DEFAULT 0.0"),
-        # task-quiz: difficulty column (easy/medium/hard, default medium)
-        ("task_quiz_task", "difficulty", "VARCHAR(20) DEFAULT 'medium'"),
-        # task-quiz: multi-question support (one task can generate N questions)
-        ("task_quiz_task", "question_count", "INTEGER DEFAULT 1"),
-        ("task_quiz_answer", "question_index", "INTEGER DEFAULT 0"),
         # session-summary quizzes — provenance back to the source chat session
         ("quiz_sets", "chat_session_id", "VARCHAR(64)"),
     ]
@@ -588,29 +583,13 @@ async def _migrate_add_columns():
             else:
                 logger.warning(f"[MIGRATION] Could not create index ix_quiz_sets_share_token: {e}")
 
-    # task_quiz_task: composite indexes for app-task scheduler polls (30s DB
-    # polling). status alone is low-selectivity (5 values, "sent" dominates);
-    # the old single-column status/trigger_time indexes degenerated to full
-    # scans as the table grew. (status, trigger_time) covers ListDuePending +
-    # ListGenerating; (status, deadline) covers ListOverdueSent.
-    await _ensure_index("ix_task_quiz_task_status_trigger", [
-        "CREATE INDEX IF NOT EXISTS ix_task_quiz_task_status_trigger ON task_quiz_task (status, trigger_time)",
-        "CREATE INDEX ix_task_quiz_task_status_trigger ON task_quiz_task (status, trigger_time)",
-    ])
-    await _ensure_index("ix_task_quiz_task_status_deadline", [
-        "CREATE INDEX IF NOT EXISTS ix_task_quiz_task_status_deadline ON task_quiz_task (status, deadline)",
-        "CREATE INDEX ix_task_quiz_task_status_deadline ON task_quiz_task (status, deadline)",
-    ])
     # quiz_sets.chat_session_id lookup (session → quizzes provenance)
+    # (task_quiz_* tables moved to app-task's own MySQL instance; their schema
+    # and indexes are created by app-task's db.Migrate, not by the main app.)
     await _ensure_index("ix_quiz_sets_chat_session_id", [
         "CREATE INDEX IF NOT EXISTS ix_quiz_sets_chat_session_id ON quiz_sets (chat_session_id)",
         "CREATE INDEX ix_quiz_sets_chat_session_id ON quiz_sets (chat_session_id)",
     ])
-    # Drop the now-redundant single-column indexes (covered by the composites'
-    # leftmost prefix); avoids the optimizer picking the low-selectivity status
-    # index over the composite and saves write overhead.
-    await _drop_index_if_exists("ix_task_quiz_task_status", "task_quiz_task")
-    await _drop_index_if_exists("ix_task_quiz_task_trigger_time", "task_quiz_task")
 
 
 async def _ensure_index(name: str, statements: list[str]) -> None:

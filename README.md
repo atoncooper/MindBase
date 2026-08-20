@@ -12,291 +12,37 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 ---
 
-## 快速启动（本地开发）
+## 部署与启动
 
-### 前置要求
+详细的本地开发与生产部署步骤已拆到 `docs/`（README 只保留入口与最简命令，避免与 docs 重复漂移）。按场景选文档：
 
-| 依赖 | 版本 | 说明 |
-|------|------|------|
-| Python | >= 3.10 | 后端运行环境 |
-| Node.js | >= 20 | 前端运行环境（Next.js 16） |
-| ffmpeg | 任意 | ASR 音频处理依赖 |
-| Docker | >= 24（可选） | 容器化部署 / Milvus / MinIO |
+| 场景 | 文档 |
+|------|------|
+| **直接用 Docker 本地跑起来（⭐ 普通用户入口：装 Docker → 拉代码 → 申请 API Key → 配 .env → 启动 → 验证 → 开始用）** | [`docs/setup-guide.md`](docs/setup-guide.md) |
+| **本地开发**（前置 → 克隆/依赖 → 配 .env → 起后端/前端 → 验证全链路） | [`docs/getting-started.md`](docs/getting-started.md) |
+| **环境变量 / 配置参考**（完整变量表、YAML 分层加载、密钥） | [`docs/configuration.md`](docs/configuration.md) |
+| **Docker 生产部署**（一键启动、profiles、HTTPS、监控、备份） | [`docs/deployment.md`](docs/deployment.md) |
+| **中国大陆镜像部署**（`ghcr.io`/`gcr.io`/`quay.io` 被墙时的替代方案） | [`deploy/china/README.md`](deploy/china/README.md) |
+| **定时出题任务 app-task**（功能 / 独立启动 / WebUI 登录 / 配置） | [`docs/app-task.md`](docs/app-task.md) |
 
-### 1. 克隆 + 创建 conda 环境 + 安装依赖
-
-```bash
-git clone https://github.com/atoncooper/MindBase.git
-cd MindBase
-
-# 创建 conda 环境（Python 3.10+）
-conda create -n mindbase python=3.10 -y
-conda activate mindbase
-
-# 后端依赖
-pip install -r requirements.txt
-
-# 前端依赖
-cd frontendv2 && npm install && cd ..
-```
-
-### 2. 配置环境变量
-
-创建 `.env`（参考 `.env.example`）。最小可运行配置（SQLite + LLM）：
+### 最简命令（TL;DR）
 
 ```bash
-# .env
-LLM__API_KEY=sk-你的key
-RDBMS__URL=sqlite+aiosqlite:///./data/mind_base.db
+# 本地开发
+uvicorn app.main:app --reload --port 8000    # 终端 1：后端 → http://localhost:8000/docs
+cd frontendv2 && npm run dev                  # 终端 2：前端 → http://localhost:3000
+
+# Docker 生产部署
+cp .env.example .env                          # 至少填 LLM__API_KEY
+docker compose up -d --build
+
+# 定时出题（可选，独立拉起 app-task；WebUI 控制台 http://localhost:8001/ 登录 admin / app-task-admin）
+cd app-task && docker compose up -d --build
 ```
 
-使用 DashScope（通义千问）：
-
-```bash
-LLM__API_KEY=你的DashScope Key
-LLM__MODEL=qwen-plus
-LLM__BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-RDBMS__URL=sqlite+aiosqlite:///./data/mind_base.db
-```
-
-启用完整功能（Milvus + Mongo + MinIO）：
-
-```bash
-LLM__API_KEY=sk-xxx
-RDBMS__URL=mysql+aiomysql://root:password@127.0.0.1:3306/mindbase
-MILVUS__ENABLED=true
-MILVUS__URI=http://localhost:19530
-MONGO__ENABLED=true
-MONGO__URI=mongodb://localhost:27017
-REDIS__ENABLED=true
-REDIS__URL=redis://localhost:6379/0
-MINIO__ENABLED=true
-MINIO__ACCESS_KEY=minioadmin
-MINIO__SECRET_KEY=minioadmin
-```
-
-配置加载顺序（后者覆盖前者）：
-
-```text
-app/config/default.yaml  ->  app/config/config.yaml  ->  local.yaml  ->  环境变量(.env)
-```
-
-环境变量双下划线映射：`段__键` -> `config["段"]["键"]`。
-
-<details>
-<summary>完整环境变量表</summary>
-
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `LLM__API_KEY` | LLM API 密钥 | `sk-xxx` |
-| `LLM__MODEL` | 模型名 | `qwen-plus` |
-| `LLM__BASE_URL` | LLM API 地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `RDBMS__URL` | 数据库连接 | `sqlite+aiosqlite:///./data/mind_base.db` |
-| `MILVUS__ENABLED` | 启用 Milvus | `true` |
-| `MILVUS__URI` | Milvus 地址 | `http://localhost:19530` |
-| `MONGO__ENABLED` | 启用 MongoDB | `true` |
-| `MONGO__URI` | MongoDB 地址 | `mongodb://localhost:27017` |
-| `REDIS__ENABLED` | 启用 Redis | `true` |
-| `REDIS__URL` | Redis 地址 | `redis://localhost:6379/0` |
-| `MINIO__ENABLED` | 启用 MinIO | `true` |
-| `MINIO__ACCESS_KEY` | MinIO Access Key | `minioadmin` |
-| `MINIO__SECRET_KEY` | MinIO Secret Key | `minioadmin` |
-| `DAYTONA__ENABLED` | 启用 Daytona | `true` |
-| `DAYTONA__API_URL` | Daytona 沙箱地址 | `http://daytona:3000` |
-| `DAYTONA__API_KEY` | Daytona API Key | `xxx` |
-
-</details>
-
-完整配置见 [`docs/configuration.md`](docs/configuration.md)。
-
-### 3. 启动后端
-
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-验证：
-
-```bash
-curl http://localhost:8000/health
-# {"status": "healthy"}
-# Swagger UI: http://localhost:8000/docs
-```
-
-### 4. 启动前端
-
-```bash
-cd frontendv2
-npm run dev
-```
-
-验证：浏览器打开 `http://localhost:3000`，应看到登录页。
-
-前后端不同 origin 时：
-
-```bash
-export NEXT_PUBLIC_API_URL="http://localhost:8000"
-export NEXT_PUBLIC_WS_URL="localhost:8000"
-```
-
-### 5. 快速验证全链路
-
-```
-1. 打开 http://localhost:3000 -> 扫码登录 B 站
-2. 收藏夹 -> 同步 -> 选收藏夹 -> 构建（ASR + 向量化）
-3. 构建完成后 -> 对话 -> 提问
-4. 设置 -> 更换壁纸
-```
+> ⚠️ 环境变量、profile 服务范围（`--profile storage/full/task`）、HTTPS/TLS、故障排查、Daytona 代码沙箱等细节请在对应的 docs/ 文档中查阅，README 不再重复维护。
 
 ---
-
-## Docker 部署（生产级）
-
-### 一键启动
-
-```bash
-# 1. 复制配置
-cp .env.example .env
-# 编辑 .env：至少填 LLM__API_KEY
-
-# 2. 启动全部服务
-docker compose up -d --build
-
-# 3. 查看状态
-docker compose ps
-
-# 4. 查看日志
-docker compose logs -f backend
-```
-
-启动的服务：
-
-| 服务 | 端口 | 说明 |
-|------|------|------|
-| nginx | 80 / 443 | 反代 + TLS + 壁纸缓存 |
-| frontend | 3000（内部） | Next.js standalone |
-| backend | 8000（内部） | FastAPI |
-| MySQL | 3306 | 结构化数据 |
-| Redis | 6379 | 缓存 / 异步任务 |
-| MongoDB | 27017 | 聊天历史 / 笔记正文 / ASR 文档 |
-| Milvus | 19530 | 向量检索 |
-| MinIO | 9001（控制台） | 文件 / 壁纸存储 |
-
-### 验证
-
-```bash
-# 健康检查
-curl http://localhost/health
-# {"status": "healthy"}
-
-# 前端
-curl -s http://localhost | head -5
-# <!DOCTYPE html>...
-
-# Swagger
-# 浏览器打开 http://localhost/docs
-```
-
-### Daytona 代码沙箱（可选）
-
-Code Agent 的 `run_code` 工具需要 Daytona 沙箱运行代码。未配置时 code agent 自动降级（其他 agent 不受影响）。
-
-```bash
-# 1. 先起主服务（创建 mind-base-net 网络）
-docker compose up -d
-
-# 2. 独立起 Daytona
-docker compose -f docker-compose.daytona.yml up -d
-
-# 3. 在 .env 加配置
-# DAYTONA__ENABLED=true
-# DAYTONA__API_URL=http://daytona:3000
-# DAYTONA__API_KEY=<你的 Daytona API Key>
-
-# 4. 重启 backend
-docker compose restart backend
-```
-
-### 使用 profile 控制服务范围
-
-```bash
-# 仅前端 + 后端 + 数据库（最小，无向量库/对象存储）
-docker compose --profile "" up -d
-
-# 含存储栈（Milvus + MinIO）
-docker compose --profile storage up -d
-
-# 全部（含工具）
-docker compose --profile full up -d
-
-# 定时出题任务栈（app-task + APISIX + 前端）
-docker compose --profile task up -d
-```
-
-### 生产 HTTPS（nginx + Let's Encrypt）
-
-项目自带 nginx 配置（`nginx/nginx.conf`），支持 HTTPS + ACME 自动证书：
-
-```bash
-# 1. 将域名 DNS 指向服务器
-# 2. 把证书放 nginx/certs/（或用 certbot 自动申请）
-# 3. docker compose up -d
-# nginx 自动监听 80/443，80 -> 301 -> 443
-```
-
-nginx 已配置：
-- `/wallpaper/*` `/wallpapers/*` -> proxy_cache wallpaper_cache（7 天）
-- `/_next/static` -> expires 1y immutable
-- SSE `/chat/ask/stream` -> proxy_buffering off
-- 上传 `/cloud/*` -> client_max_body_size 5g
-
-### 故障排查
-
-```bash
-# 后端启动失败
-docker compose logs backend | tail -50
-
-# 前端构建失败
-docker compose logs frontend | tail -50
-
-# Milvus 连不上
-docker compose logs milvus
-# 确认 MILVUS__ENABLED=true 且 etcd 正常
-
-# MongoDB 连不上（笔记/聊天历史报错）
-docker compose logs mongo
-# 确认 MONGO__ENABLED=true
-
-# 数据库迁移
-# 后端启动时自动执行 CREATE TABLE IF NOT EXISTS + 列迁移，无需手动操作
-
-# 清理重来
-docker compose down -v   # -v 删除数据卷（谨慎！）
-docker compose up -d --build
-```
-
-详见 [`docs/deployment.md`](docs/deployment.md)。
-
-### 🇨🇳 中国大陆用户部署
-
-大陆网络环境下，默认 Docker 配置会因 `ghcr.io` / `gcr.io` / `quay.io` 被墙而构建失败。项目提供中国区专用部署文件（`deploy/china/`），全部镜像源替换为国内可达方案：
-
-| 原版来源 | 中国区替代 |
-|---------|-----------|
-| `ghcr.io` 预构建镜像 | 本地构建（阿里云 apt + 清华 pip + npmmirror + goproxy.cn） |
-| GitHub Releases（ffmpeg） | `ghfast.top` 代理下载（含 apt 备用方案） |
-| `quay.io/coreos/etcd` | `bitnami/etcd`（Docker Hub） |
-| `gcr.io/distroless`（app-task 运行时） | `alpine`（Docker Hub） |
-
-```bash
-cd deploy/china
-cp ../../.env .env          # 复用项目根环境变量（至少填 LLM__API_KEY）
-docker compose up -d --build
-```
-
-> ⚠️ Docker Hub 直连在中国大陆不稳定，部署前请先按文档配置 Docker 镜像加速器（阿里云/腾讯云个人加速器最稳定）。
-
-完整说明（镜像加速器配置、与原版差异、常见问题）见 [`deploy/china/README.md`](deploy/china/README.md)。有稳定代理的用户可直接使用项目根的原始 `docker-compose.yml`。
 
 ## 功能模块
 
@@ -331,7 +77,7 @@ docker compose up -d --build
 - 用户与 AI 对话定义"到某时间出一道题"，AI 按北京时间随机生成触发时间（避开睡觉/午休）
 - 到点自动 LLM 生成题目，HTML 邮件发给用户+抄送人，限时答题
 - 超时未答发"未完成语录"提醒；邮件不含链接，需登录答题
-- 独立服务（app-task + APISIX），详见 [`docs/app-task.md`](docs/app-task.md)
+- 独立服务（app-task + APISIX），内置管理控制台 `http://localhost:8001/`（**登录 = 用户名+密码**，默认 `admin` / `app-task-admin`，生产务必改密），详见 [`docs/app-task.md`](docs/app-task.md)
 
 ### 笔记
 
@@ -442,8 +188,9 @@ frontendv2/                      当前前端（frontend/ 已废弃，仅存档�
   lib/chat-stream.ts     SSE 流式响应解析
   app/globals.css        Tailwind v4 主题 tokens + .md-body 排版
 
-app-task/                        定时出题任务执行器（Go + Gin + GORM，独立服务）
-  internal/             config / db / mongo / model / repo / service / router
+app-task/                        定时出题任务执行器（Go + Gin + GORM，独立服务；docker-compose.yml 可单独拉起）
+  web/                 嵌入式 WebUI 控制台（go:embed，登录 = 用户名+密码，默认 admin / app-task-admin）
+  internal/             config / db / model / repo / service / executor / queue / router
 
 docker-compose.yml              主服务
 docker-compose.daytona.yml      Daytona 代码沙箱（可选）

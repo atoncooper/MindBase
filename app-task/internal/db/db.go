@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"app-task/internal/logger"
+	"app-task/internal/model"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -42,6 +43,27 @@ func Close() error {
 		return err
 	}
 	return sqlDB.Close()
+}
+
+// Migrate creates the app-task owned schema (tables + composite indexes) on
+// its own MySQL instance. app-task no longer shares a database with the main
+// app, so it must create its tables itself at startup.
+//
+// Indexes are declared via GORM struct tags on the models (see model.go), so
+// AutoMigrate creates them — do NOT hand-write "CREATE INDEX IF NOT EXISTS"
+// here: that is SQLite syntax and MySQL 8 rejects it.
+func Migrate() error {
+	if err := DB.AutoMigrate(
+		&model.Task{},
+		&model.TaskLog{},
+		&model.EmailMessage{},
+		&model.Script{},
+		&model.ScriptLog{},
+		&model.WebUIUser{},
+	); err != nil {
+		return fmt.Errorf("auto migrate: %w", err)
+	}
+	return nil
 }
 
 // toGormDSN converts mysql+aiomysql://user:pass@host:port/db
