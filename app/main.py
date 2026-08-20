@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
+import asyncio
 import sys
 import os
 import uuid
@@ -211,6 +212,21 @@ async def lifespan(app: FastAPI):
 
     start_cache_refresher(settings.database_url)
 
+    # 定时出题：超时未答扫描（每 60s，经 app-task 发未完成语录）
+    from app.services.quiz_task_service import scan_overdue as _scan_overdue
+
+    async def _quiz_overdue_loop():
+        while True:
+            try:
+                n = await _scan_overdue()
+                if n:
+                    logger.info(f"[QUIZ_TASK] overdue scan sent {n} incomplete emails")
+            except Exception as _e:
+                logger.warning(f"[QUIZ_TASK] overdue scan error: {_e}")
+            await asyncio.sleep(60)
+
+    app.state.quiz_overdue_task = asyncio.create_task(_quiz_overdue_loop())
+
     # LangSmith 追踪诊断
     diagnose_langsmith()
 
@@ -250,7 +266,6 @@ async def lifespan(app: FastAPI):
     logger.info("[QUERY_REWRITE] QueryRewriter initialized")
 
     # === 崩溃恢复：扫描 pending 向量化任务 ===
-    import asyncio
     from app.services.async_task.tracker import TaskTracker
     from app.services.vector_page_service import VectorPageService
 
@@ -362,6 +377,10 @@ async def lifespan(app: FastAPI):
         from app.services.async_task.cache import stop_cache_refresher
 
         stop_cache_refresher()
+
+        _od = getattr(app.state, "quiz_overdue_task", None)
+        if _od:
+            _od.cancel()
 
         logger.info("👋 应用关闭")
     except _asyncio.CancelledError:
