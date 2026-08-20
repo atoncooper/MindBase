@@ -197,6 +197,31 @@ services:
     networks:
       - mind-base-net
 
+  # app-task's OWN MySQL instance — app-task does not share a database with
+  # the main app anymore (decoupled). Schema is created by app-task's db.Migrate.
+  app-task-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-task-mysql
+    profiles: ["", "task", "full"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_task
+      - MYSQL_USER=${APPTASK_MYSQL_USER:-app_task}
+      - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - app_task_mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${APPTASK_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
   redis:
     image: redis:7-alpine
     container_name: mind-base-redis
@@ -422,17 +447,13 @@ services:
         condition: service_healthy
       apisix:
         condition: service_healthy
-      mysql:
-        condition: service_healthy
-      mongo:
+      app-task-mysql:
         condition: service_healthy
     env_file:
       - .env
     environment:
-      # Shared DB with main app (same db, task_quiz_* tables owned by main app)
-      - APPTASK__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      - APPTASK__MONGO__URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/?authSource=admin
-      - APPTASK__MONGO__DB_NAME=mind_base
+      # Own database: independent MySQL instance (schema created by db.Migrate)
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
       # Main app via APISIX gateway
       - APPTASK__APP__BASE_URL=http://apisix:9080
       - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
@@ -454,6 +475,7 @@ volumes:
   backend_data:
   backend_logs:
   app_task_logs:
+  app_task_mysql_data:
   mysql_data:
   redis_data:
   mongo_data:
