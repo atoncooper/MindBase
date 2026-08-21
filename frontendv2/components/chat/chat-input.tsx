@@ -26,7 +26,12 @@ interface ChatInputProps {
 // Apple-style chat input - a single rounded card that grows with content up to
 // MAX_HEIGHT, then scrolls internally. Send button is a filled accent circle.
 // Typing "/" as the first character opens the slash menu (commands + skills).
-const MIN_HEIGHT = 24;
+// MIN_HEIGHT = one 24px line (leading-6) + py-1 (4px x 2) = 32px, which equals
+// the send button's h-8: with the flex items-end row, a single-line input is
+// then exactly as tall as the button, so the text sits vertically centered in
+// the card (previously a 24px textarea bottom-aligned against a 32px button
+// left ~4px more space above the text than below -> text looked shifted down).
+const MIN_HEIGHT = 32;
 const MAX_HEIGHT = 200;
 // input starts with "/" followed by no whitespace → slash menu is active
 const SLASH_RE = /^\/(\S*)$/;
@@ -210,7 +215,7 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none bg-transparent text-[15px] leading-relaxed text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50"
+          className="flex-1 resize-none bg-transparent py-1 text-[15px] leading-6 text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50"
           style={{ minHeight: `${MIN_HEIGHT}px`, maxHeight: `${MAX_HEIGHT}px` }}
           aria-label="聊天消息输入"
           aria-disabled={disabled}
