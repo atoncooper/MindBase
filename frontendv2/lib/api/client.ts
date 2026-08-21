@@ -11,18 +11,24 @@
 
 import { sanitizeError } from "@/lib/error-utils";
 
-// SSR base URL: when NEXT_PUBLIC_API_URL is unset (relative-path mode), the
-// browser uses "" (current origin = nginx). But Next.js server-side fetches
-// (SSR/RSC) have no origin, so they need an absolute internal URL. Route them
-// through nginx too (NOT direct backend:8000) so SSR traffic stays behind the
-// nginx -> apisix -> backend chain and benefits from load balancing.
+// SSR base URL: Next.js server-side fetches (SSR/RSC) have no origin, so they
+// always need an absolute internal URL. Route them through nginx (NOT direct
+// backend:8000) so SSR traffic stays behind the nginx -> apisix -> backend
+// chain and benefits from load balancing.
 // NEXT_PUBLIC_APISIX_HOST is inlined at build time: docker-compose sets it to
 // "nginx:80"; local dev falls back to "localhost:9080" (apisix on host/VM).
 const INTERNAL_API_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "localhost:9080";
 
+// Browser base URL: NEXT_PUBLIC_API_URL (set at build time) points the browser
+// straight at the gateway (e.g. http://localhost -> nginx:80), bypassing the
+// Next.js server entirely - its rewrites proxy buffers SSE, collapsing
+// token-by-token streaming into one bulk delivery. Unset = "" (same-origin).
+// It must NOT be used for SSR: inside the frontend container "localhost" is
+// the Next server itself, not the gateway.
 export const API_BASE_URL =
-    process.env.NEXT_PUBLIC_API_URL ||
-    (typeof window !== "undefined" ? "" : `http://${INTERNAL_API_HOST}`);
+    typeof window !== "undefined"
+        ? process.env.NEXT_PUBLIC_API_URL || ""
+        : `http://${INTERNAL_API_HOST}`;
 
 // Authorization header built from the bili_session token in localStorage.
 export function getAuthHeaders(): Record<string, string> {

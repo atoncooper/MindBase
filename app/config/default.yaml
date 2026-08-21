@@ -241,6 +241,7 @@ security:
   cors:
     allow_origins:
       - http://localhost:3000   # user frontend (Next.js dev server)
+      - http://127.0.0.1:3000   # same frontend via loopback IP
 
   # Plan 0028: per-endpoint rate limits + login cooldown.
   # All windows are seconds. Override via env:
