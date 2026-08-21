@@ -38,12 +38,12 @@ SYSTEM_PROMPT = """\
 - web_crawl: url(完整 URL 如 https://react.dev/reference/useEffect)
 
 ## 常见文档站点参考（构造 URL 用）
-- React: https://react.dev/reference/{api}
-- Vue: https://vuejs.org/api/{api}.html
-- Next.js: https://nextjs.org/docs/{path}
-- FastAPI: https://fastapi.tiangolo.com/{path}
-- LangChain: https://python.langchain.com/docs/{path}
-- Tailwind: https://tailwindcss.com/docs/{path}
+- React: https://react.dev/reference/{{api}}
+- Vue: https://vuejs.org/api/{{api}}.html
+- Next.js: https://nextjs.org/docs/{{path}}
+- FastAPI: https://fastapi.tiangolo.com/{{path}}
+- LangChain: https://python.langchain.com/docs/{{path}}
+- Tailwind: https://tailwindcss.com/docs/{{path}}
 
 ## 当前请求
 {query}
