@@ -18,3 +18,21 @@ apisix:
   control:
     ip: 0.0.0.0
     port: 9090
+
+# Custom nginx directives.
+# proxy_buffering off: /chat/* and /task-quiz/chat are SSE streams. APISIX
+# (nginx-based) buffers upstream responses by default, which collapses
+# token-by-token streaming into one bulk delivery.
+#
+# NOTE: `nginx_config.http.proxy_buffering` is NOT a supported key — APISIX
+# silently ignores it (verified: absent from ngx_tpl.lua and from the
+# generated nginx.conf). Arbitrary directives must go through a
+# *_configuration_snippet slot; this one lands `proxy_buffering off;` inside
+# every location block of the generated nginx.conf (verified with
+# `apisix test` + grep). The backend also sends `X-Accel-Buffering: no` on
+# SSE responses (app/routers/streaming.py) as a per-response belt-and-braces
+# that survives even if this directive is removed.
+nginx_config:
+  http_server_location_configuration_snippet: |
+    proxy_buffering off;
+

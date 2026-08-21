@@ -9,7 +9,6 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from loguru import logger
 
 import os
@@ -20,6 +19,7 @@ from pydantic import BaseModel, Field
 from app.agent.task_quiz.graph import get_agent
 from app.database import get_db_context
 from app.routers.auth import _get_sf
+from app.routers.streaming import sse_streaming_response
 from app.services.auth import UserService
 
 router = APIRouter(prefix="/task-quiz", tags=["task-quiz"])
@@ -73,7 +73,7 @@ async def chat(request: Request):
             logger.exception("[TASK_QUIZ] stream error")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return sse_streaming_response(stream())
 
 
 class TaskRegisterRequest(BaseModel):

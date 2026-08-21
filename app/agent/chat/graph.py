@@ -114,27 +114,23 @@ async def inject_context(
     uid = state.uid
     folder_ids = state.folder_ids
 
-    # Run independent lookups concurrently: media_ids, conversation_context,
-    # and query rewrite (an LLM call) are mutually independent.  bvids depends
-    # on media_ids so it stays serial after the gather.  Rewrite failures are
-    # non-fatal (multi-path search is simply skipped); _safe_rewrite keeps that
-    # contract without letting an exception cancel the sibling lookups.
-    async def _safe_rewrite() -> Any:
-        try:
-            return await deps.rewrite_query(state.query)
-        except Exception:
-            logger.warning("[CHAT_AGENT] query rewrite skipped", exc_info=True)
-            return None
-
+    # Run independent lookups concurrently: media_ids and conversation_context
+    # are mutually independent.  bvids depends on media_ids so it stays serial
+    # after the gather.
+    #
+    # Query rewrite has been REMOVED: the ReAct LLM already optimizes its own
+    # retrieval queries (vector_search.description instructs it to disambiguate
+    # pronouns / complete context / search from multiple angles), so the extra
+    # forced rewrite LLM call only added latency before the first token without
+    # improving recall. The LLM decides when and how to rewrite.
     has_ctx = bool(state.session_id and state.uid)
-    media_ids, conversation_context, rewrite_result = await asyncio.gather(
+    media_ids, conversation_context = await asyncio.gather(
         deps.get_media_ids(uid, folder_ids) if uid else _noop_list(),
         (
             deps.get_conversation_context(state.session_id, state.uid)
             if has_ctx
             else _noop_str()
         ),
-        _safe_rewrite(),
     )
     bvids = await deps.get_bvids(media_ids) if media_ids else []
     has_data = len(bvids) > 0
@@ -150,14 +146,10 @@ async def inject_context(
         if conversation_context:
             logger.info("  context preview: {}", conversation_context[:200])
 
+    # Always empty: outer rewrite is disabled. Kept as an empty list so
+    # runtime_dispatch / vector_search's multi-path (which skips empty
+    # rewritten_queries and falls back to a single-query search) is unchanged.
     rewritten_queries: list[str] = []
-    if rewrite_result and rewrite_result.rewrites:
-        rewritten_queries = [rq.query for rq in rewrite_result.rewrites]
-        logger.info(
-            "[CHAT_AGENT] query rewrite: original='{}' rewrites={}",
-            state.query[:50],
-            rewritten_queries,
-        )
 
     # Detect context tools in the registry
     registered = runtime.list_tool_names()

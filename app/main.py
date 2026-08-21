@@ -454,6 +454,9 @@ app.add_middleware(
         "Content-Type",
         "If-Match",
         "X-Request-Id",
+        # frontendv2 marks every API fetch with this header so page navigation
+        # and API calls can be told apart; cross-origin preflights declare it.
+        "X-Requested-With",
     ],
     expose_headers=["X-Total-Count"],
 )
