@@ -37,6 +37,12 @@ Quick start::
 """
 
 from .cache import invalidate as invalidate_cache
+from .auto_compress import (
+    SessionCompressorRegistry,
+    get_auto_compressor,
+    init_auto_compressor,
+    reset_auto_compressor,
+)
 from .compressor import (
     PREVIOUS_SUMMARY_SECTION,
     CompressionResult,
@@ -46,9 +52,11 @@ from .compressor import (
     SUMMARIZE_SYSTEM_PROMPT,
     SUMMARIZE_USER_TEMPLATE,
     SummarizeFn,
+    TokenThreshold,
     TurnThreshold,
     build_summarize_fn,
 )
+from .tokens import estimate_message_tokens, estimate_messages_tokens, estimate_tokens
 from .config import ContextConfig, DEFAULT_CONFIG
 from .dependency import get_context_manager, init_context_manager, reset_context_manager
 from .manager import ContextManager
@@ -80,7 +88,12 @@ __all__ = [
     # window
     "FixedSizeWindow",
     "SlidingTurnWindow",
+    "TokenBudgetWindow",
     "WindowStrategy",
+    # tokens
+    "estimate_message_tokens",
+    "estimate_messages_tokens",
+    "estimate_tokens",
     # compressor
     "CompressCondition",
     "CompressionResult",
@@ -90,6 +103,7 @@ __all__ = [
     "SUMMARIZE_SYSTEM_PROMPT",
     "SUMMARIZE_USER_TEMPLATE",
     "SummarizeFn",
+    "TokenThreshold",
     "TurnThreshold",
     "build_summarize_fn",
     # retriever
@@ -103,6 +117,11 @@ __all__ = [
     "get_context_manager",
     "init_context_manager",
     "reset_context_manager",
+    # auto-compression wiring
+    "SessionCompressorRegistry",
+    "get_auto_compressor",
+    "init_auto_compressor",
+    "reset_auto_compressor",
     # tools
     "create_context_tools",
 ]

@@ -315,6 +315,12 @@ async def lifespan(app: FastAPI):
             await _harness.start()
             app.state.agent_harness = _harness
             app.state.agent_harness_status = "started"
+            # Wire the context-compression pipeline (ContextManager writes +
+            # threshold-triggered summarization).  No-op for chat requests
+            # until a turn completes; degrades gracefully when Redis is down.
+            from app.context.auto_compress import init_auto_compressor
+
+            init_auto_compressor(context_manager=ctx_mgr, llm=_llm_for_harness)
             logger.info(
                 "[HARNESS] started agents={} tools={}",
                 _harness.lifecycle.registered_agents,

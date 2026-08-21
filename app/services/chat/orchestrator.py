@@ -151,6 +151,28 @@ def _normalize_agent_result(result: Any) -> tuple[str, list[dict], list[BaseMess
     return answer, [s for s in sources if isinstance(s, dict)], messages
 
 
+def _record_turn_context(
+    chat_session_id: Optional[str], user_message: str, assistant_content: str
+) -> None:
+    """Fire-and-forget: hand the completed turn to the context-compression
+    pipeline (ContextManager + auto-compressor, see ``app/context/``).
+
+    Never raises and never blocks the response.  No-op when the pipeline
+    isn't initialised (e.g. harness skipped for missing LLM config) or the
+    turn has no chat session / empty answer.
+    """
+    if not chat_session_id or not assistant_content:
+        return
+    try:
+        from app.context.auto_compress import get_auto_compressor
+
+        registry = get_auto_compressor()
+        if registry is not None:
+            registry.record_turn(chat_session_id, user_message, assistant_content)
+    except Exception:
+        logger.warning("[CHAT_ORCH] context turn record failed", exc_info=True)
+
+
 async def _run_agent_turn(
     request: ChatRequest,
     *,
@@ -226,6 +248,7 @@ async def ask(
             tokens_used=total_tokens or None,
             latency_ms=latency_ms,
         )
+        _record_turn_context(ctx.chat_session_id, ctx.user_message, answer)
         return ChatResponse(answer=answer, sources=sources[:5])
     except HTTPException:
         # Service-level failure (e.g. harness 503) before generation started:
@@ -283,6 +306,7 @@ async def ask_agentic(
             tokens_used=total_tokens or None,
             latency_ms=latency_ms,
         )
+        _record_turn_context(ctx.chat_session_id, ctx.user_message, answer)
         return AgenticChatResponse(
             answer=answer,
             sources=sources[:5],
@@ -514,6 +538,9 @@ async def _stream_agent_events(
             artifacts=streamer.artifacts,
             tokens_used=total_tokens or None,
             latency_ms=latency_ms,
+        )
+        _record_turn_context(
+            ctx.chat_session_id, ctx.user_message, streamer.full_content
         )
     except Exception:
         logger.exception("Post-stream finalize failed; answer already delivered to client")

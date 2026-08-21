@@ -77,15 +77,37 @@ class DBChatDeps:
         return rag.cloud_backend is not None
 
     async def get_conversation_context(self, session_id: str, uid: int | None) -> str:
-        """Inject last 3 turns of conversation as short-term context.
+        """Inject conversation history as short-term context.
 
-        Detailed long-term retrieval is handled by context tools
-        (search_chat_history, get_recent_context, etc.), but we always
-        inject the most recent turns so the agent doesn't "forget" what
-        was just said in the same conversation.
+        Two layers (see ``app/context/auto_compress.py`` for the write path):
+
+        - 历史摘要: structured summary of turns older than the raw window,
+          produced by the auto-compression pipeline and mirrored in Redis.
+          Empty until a session crosses the compression threshold or when
+          Redis is unavailable.
+        - Raw turns: last 3 turns (6 messages) verbatim from MySQL.
+
+        Detailed long-term retrieval is still handled by context tools
+        (search_chat_history, get_recent_context, etc.).
         """
         if not session_id or uid is None:
             return ""
+
+        # Compressed memory of older turns (best-effort; never blocks the
+        # turn on cache problems).
+        summary_block = ""
+        try:
+            from app.context.cache import get_cached as _get_cached_summary
+
+            cached = await _get_cached_summary(session_id)
+            if cached and cached.summary:
+                summary_block = (
+                    "【历史摘要】以下是本次会话更早对话的压缩记忆，"
+                    "与近期对话共同构成完整上下文：\n"
+                    f"{cached.summary}\n\n"
+                )
+        except Exception:
+            pass
 
         from app.services import chat_history as chat_history_service
 
@@ -98,7 +120,7 @@ class DBChatDeps:
             )
 
         if not messages:
-            return ""
+            return summary_block or ""
 
         # Format: [User] xxx\n[Assistant] yyy
         parts = []
@@ -106,7 +128,8 @@ class DBChatDeps:
             role_display = "用户" if msg.role == "user" else "助手"
             parts.append(f"[{role_display}] {msg.content}")
 
-        return "\n".join(parts) if parts else ""
+        raw_block = "\n".join(parts)
+        return summary_block + raw_block if summary_block else raw_block
 
     async def get_video_context(
         self,

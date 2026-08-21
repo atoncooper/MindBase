@@ -1,0 +1,257 @@
+[
+  {
+    "scenario_id": "T1-entity-absorbed",
+    "description": "实体事实在旧段被吸收进摘要后仍存活（关键词断言）",
+    "config": {"token_budget": 60, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录你收藏了这个视频"},
+      {"role": "user", "content": "这一轮是用于推高上下文的日常填充内容，不含关键事实"},
+      {"role": "assistant", "content": "这一轮是用于推高上下文的日常填充内容，不含关键事实"},
+      {"role": "user", "content": "继续填充对话内容用来累计token数量"},
+      {"role": "assistant", "content": "继续填充对话内容用来累计token数量"}
+    ],
+    "injected_facts": [
+      {"id": "F1", "type": "entity", "text": "收藏了《王德峰讲阳明心学》"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["王德峰"],
+      "summary_not_contains": [],
+      "store_max_messages": 4
+    }
+  },
+  {
+    "scenario_id": "T1c-number-fact",
+    "description": "数字型事实（时间）被吸收进摘要",
+    "config": {"token_budget": 60, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "明早9点提醒我出题任务"},
+      {"role": "assistant", "content": "好的，已登记明早9点的出题提醒"},
+      {"role": "user", "content": "这一轮是用于推高上下文的日常填充内容，不含关键事实"},
+      {"role": "assistant", "content": "这一轮是用于推高上下文的日常填充内容，不含关键事实"},
+      {"role": "user", "content": "继续填充对话内容用来累计token数量"},
+      {"role": "assistant", "content": "继续填充对话内容用来累计token数量"}
+    ],
+    "injected_facts": [
+      {"id": "F1", "type": "temporal", "text": "明早9点出题提醒"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["9点"],
+      "summary_not_contains": [],
+      "store_max_messages": 4
+    }
+  },
+  {
+    "scenario_id": "T3-double-compression-merge",
+    "description": "两次压缩：事实A在第一轮摘要、事实B在第二轮摘要，增量合并后两者都存活",
+    "config": {"token_budget": 40, "max_recent_turns": 1, "min_turns": 2, "cooldown_turns": 0},
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录你收藏了这个视频"},
+      {"role": "user", "content": "我还收藏了朱熹理学导论的课程"},
+      {"role": "assistant", "content": "好的，朱熹理学导论也记下了"},
+      {"role": "user", "content": "填充内容继续推高上下文长度"},
+      {"role": "assistant", "content": "填充内容继续推高上下文长度"}
+    ],
+    "injected_facts": [
+      {"id": "F1", "type": "entity", "text": "收藏了《王德峰讲阳明心学》"},
+      {"id": "F2", "type": "entity", "text": "收藏了朱熹理学导论课程"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["王德峰", "朱熹"],
+      "summary_not_contains": [],
+      "store_max_messages": 2
+    }
+  },
+  {
+    "scenario_id": "T2-recent-boundary-kept",
+    "description": "事实位于保留窗口内：以原文形式存在，不被错误吸收进摘要",
+    "config": {"token_budget": 150, "max_recent_turns": 3, "min_turns": 2, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "第一轮填充：包含比较多的日常对话内容用来推高token计数"},
+      {"role": "assistant", "content": "第一轮填充：包含比较多的日常对话内容用来推高token计数"},
+      {"role": "user", "content": "第二轮填充：更多日常对话内容继续推高上下文计数"},
+      {"role": "assistant", "content": "第二轮填充：更多日常对话内容继续推高上下文计数"},
+      {"role": "user", "content": "第三轮填充：继续增加上下文的累计token数量"},
+      {"role": "assistant", "content": "第三轮填充：继续增加上下文的累计token数量"},
+      {"role": "user", "content": "我最近收藏了《王德峰讲阳明心学》这个视频"},
+      {"role": "assistant", "content": "好的，《王德峰讲阳明心学》已记录"}
+    ],
+    "injected_facts": [
+      {"id": "F1", "type": "entity", "text": "最近收藏了《王德峰讲阳明心学》"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["填充"],
+      "summary_not_contains": ["王德峰"],
+      "store_max_messages": 8,
+      "store_contains_fact_text": "王德峰讲阳明心学"
+    }
+  },
+  {
+    "scenario_id": "T4-correction-absorbed",
+    "description": "纠正流：先说答案A后改成B，压缩后纠正事件进入摘要",
+    "config": {"token_budget": 40, "max_recent_turns": 1, "min_turns": 2, "cooldown_turns": 0},
+    "turns": [
+      {"role": "user", "content": "我这道题的答案是A"},
+      {"role": "assistant", "content": "收到，你的答案是A"},
+      {"role": "user", "content": "更正一下，这道题的答案是B不是A"},
+      {"role": "assistant", "content": "好的，已更正为B"},
+      {"role": "user", "content": "填充内容用来推高上下文触发压缩"},
+      {"role": "assistant", "content": "填充内容用来推高上下文触发压缩"}
+    ],
+    "injected_facts": [
+      {"id": "F1", "type": "correction", "text": "答案由A改为B"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["更正为B"],
+      "summary_not_contains": [],
+      "store_max_messages": 2
+    }
+  },
+  {
+    "scenario_id": "T5-similar-entities",
+    "description": "近似干扰：两个相近哲学实体都被保留且不互相覆盖",
+    "config": {"token_budget": 40, "max_recent_turns": 1, "min_turns": 2, "cooldown_turns": 0},
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录"},
+      {"role": "user", "content": "我还收藏了《朱熹理学思想》的公开课"},
+      {"role": "assistant", "content": "好的，也记录了"},
+      {"role": "user", "content": "填充内容继续推高上下文触发压缩机制"},
+      {"role": "assistant", "content": "填充内容继续推高上下文触发压缩机制"}
+    ],
+    "injected_facts": [
+      {"id": "F1", "type": "entity", "text": "《王德峰讲阳明心学》"},
+      {"id": "F2", "type": "entity", "text": "《朱熹理学思想》公开课"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["王德峰", "朱熹"],
+      "summary_not_contains": [],
+      "store_max_messages": 4
+    }
+  },
+  {
+    "scenario_id": "T7-summarizer-down-fallback",
+    "description": "摘要 LLM 故障（wrapped）：build_summarize_fn 内部降级为截断，压缩不中断",
+    "config": {"token_budget": 50, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "inject_fault": "summarize_raise_wrapped",
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录你收藏了这个视频"},
+      {"role": "user", "content": "填充内容用来在摘要故障时触发压缩降级路径"},
+      {"role": "assistant", "content": "填充内容用来在摘要故障时触发压缩降级路径"},
+      {"role": "user", "content": "继续填充验证故障期间系统仍然工作"},
+      {"role": "assistant", "content": "继续填充验证故障期间系统仍然工作"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["收藏"],
+      "summary_not_contains": [],
+      "store_max_messages": 4
+    }
+  },
+  {
+    "scenario_id": "T7b-summarizer-down-direct",
+    "description": "摘要函数直接抛异常（direct）：外层守卫兜住，存储不再裁剪但管线存活",
+    "config": {"token_budget": 50, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "inject_fault": "summarize_raise_direct",
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录你收藏了这个视频"},
+      {"role": "user", "content": "填充内容用来触发直接抛异常的压缩路径"},
+      {"role": "assistant", "content": "填充内容用来触发直接抛异常的压缩路径"},
+      {"role": "user", "content": "继续填充验证异常不会逃逸影响后续记录"},
+      {"role": "assistant", "content": "继续填充验证异常不会逃逸影响后续记录"}
+    ],
+    "layer1": {
+      "expect_compression": false,
+      "summary_contains": [],
+      "summary_not_contains": [],
+      "store_max_messages": null,
+      "expect_store_grows_unbounded": true
+    }
+  },
+  {
+    "scenario_id": "E-min-turns-guard",
+    "description": "单条超长消息超预算但轮数不足下限：不得触发压缩",
+    "config": {"token_budget": 50, "max_recent_turns": 2, "min_turns": 5, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "这是一条极长的单轮消息用来撑爆token预算但轮数不足五轮所以不应该触发压缩机制"},
+      {"role": "assistant", "content": "这是一条极长的单轮消息用来撑爆token预算但轮数不足五轮所以不应该触发压缩机制的回复"}
+    ],
+    "layer1": {
+      "expect_compression": false,
+      "summary_contains": [],
+      "summary_not_contains": [],
+      "store_max_messages": null,
+      "expect_store_grows_unbounded": true
+    }
+  },
+  {
+    "scenario_id": "E-budget-respected-large",
+    "description": "显式大预算：多轮小消息累计也不得触发压缩",
+    "config": {"token_budget": 100000, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "小消息一"},
+      {"role": "assistant", "content": "小消息一回复"},
+      {"role": "user", "content": "小消息二"},
+      {"role": "assistant", "content": "小消息二回复"},
+      {"role": "user", "content": "小消息三"},
+      {"role": "assistant", "content": "小消息三回复"},
+      {"role": "user", "content": "小消息四"},
+      {"role": "assistant", "content": "小消息四回复"}
+    ],
+    "layer1": {
+      "expect_compression": false,
+      "summary_contains": [],
+      "summary_not_contains": [],
+      "store_max_messages": null,
+      "expect_store_grows_unbounded": true
+    }
+  },
+  {
+    "scenario_id": "E-cache-write-on-fire",
+    "description": "压缩发生时摘要必须写入缓存层（恰好一次）",
+    "config": {"token_budget": 60, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录你收藏了这个视频"},
+      {"role": "user", "content": "填充内容用来触发一次压缩并验证缓存写入"},
+      {"role": "assistant", "content": "填充内容用来触发一次压缩并验证缓存写入"},
+      {"role": "user", "content": "再填充一轮确保只触发一次压缩"},
+      {"role": "assistant", "content": "再填充一轮确保只触发一次压缩"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["王德峰"],
+      "summary_not_contains": [],
+      "store_max_messages": 4,
+      "expect_set_cached_calls": 1
+    }
+  },
+  {
+    "scenario_id": "E-canonical-smoke",
+    "description": "基线冒烟：标准配置下单次压缩全流程",
+    "config": {"token_budget": 60, "max_recent_turns": 2, "min_turns": 2, "cooldown_turns": 2},
+    "turns": [
+      {"role": "user", "content": "我收藏了《王德峰讲阳明心学》"},
+      {"role": "assistant", "content": "好的，已记录你收藏了这个视频"},
+      {"role": "user", "content": "基线冒烟填充内容用于触发标准压缩流程"},
+      {"role": "assistant", "content": "基线冒烟填充内容用于触发标准压缩流程"},
+      {"role": "user", "content": "基线冒烟继续填充验证最终状态一致"},
+      {"role": "assistant", "content": "基线冒烟继续填充验证最终状态一致"}
+    ],
+    "layer1": {
+      "expect_compression": true,
+      "summary_contains": ["王德峰"],
+      "summary_not_contains": [],
+      "store_max_messages": 4
+    }
+  }
+]

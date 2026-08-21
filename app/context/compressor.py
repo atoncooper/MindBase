@@ -72,6 +72,9 @@ class TurnThreshold:
 
     Only fires if at least *cooldown_turns* have elapsed since the last
     compression to avoid summarising on every single message.
+
+    Prefer :class:`TokenThreshold` for new code — turn count is a weak proxy
+    for the thing that actually matters (tokens), with huge per-turn variance.
     """
 
     max_turns: int = 25
@@ -86,6 +89,42 @@ class TurnThreshold:
     ) -> bool:
         turns = count_turns(messages)
         if turns <= self.max_turns:
+            return False
+        # Cooldown only applies after the FIRST compression
+        if last_compressed_at is not None and turns_since_last < self.cooldown_turns:
+            return False
+        return True
+
+
+@dataclass
+class TokenThreshold:
+    """Trigger when the estimated token size of the history exceeds *max_tokens*.
+
+    Token-based triggering matches how cost/latency/window actually accrue —
+    a "turn" can be 50 tokens of chat or 10k of tool output, so turn counts
+    control the wrong variable.  *min_turns* guards against compressing very
+    short conversations where the summarization LLM call would cost more than
+    it saves.  Cooldown semantics match :class:`TurnThreshold`.
+
+    Estimates come from ``app.context.tokens`` (CJK-aware heuristic, ±30%).
+    """
+
+    max_tokens: int = 12000
+    min_turns: int = 4
+    cooldown_turns: int = 10
+
+    def __call__(
+        self,
+        messages: list[ConversationMessage],
+        summary: str | None,
+        turns_since_last: int,
+        last_compressed_at: float | None,
+    ) -> bool:
+        from .tokens import estimate_messages_tokens
+
+        if estimate_messages_tokens(messages) <= self.max_tokens:
+            return False
+        if count_turns(messages) < self.min_turns:
             return False
         # Cooldown only applies after the FIRST compression
         if last_compressed_at is not None and turns_since_last < self.cooldown_turns:
@@ -364,6 +403,16 @@ class ConversationCompressor:
     def summary(self) -> str | None:
         """Current accumulated summary (None if no compression has run)."""
         return self._summary
+
+    def restore(self, summary: str | None) -> None:
+        """Seed the accumulated summary from external state.
+
+        Used when a compressor is recreated for an ongoing session (e.g.
+        after a process restart): the previous summary is loaded from the
+        Redis cache so the next compression merges into it instead of
+        starting over and losing memory continuity.
+        """
+        self._summary = summary
 
     def reset(self) -> None:
         """Clear internal compression state."""
