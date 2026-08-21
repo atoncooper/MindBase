@@ -105,6 +105,37 @@ class _Settings:
         return str(_get("llm", "model", default="qwen3-max"))
 
     @property
+    def llm_provider(self) -> str:
+        """Which provider serves conversational LLM calls (see
+        ``app/services/llm/providers.py``): ``dashscope`` | ``openrouter``."""
+        return str(_get("llm", "provider", default="dashscope"))
+
+    @property
+    def llm_context_window(self) -> int:
+        """Context window (tokens) of the active chat model.
+
+        0 = auto: resolved from the built-in model registry
+        (``app/services/llm/providers.resolve_context_window``).  Set a
+        positive value only to pin a model that is not in the registry.
+        Drives the conversation-history compression budget (≈ 50%).
+        """
+        return int(_get("llm", "context_window", default=0))
+
+    # ── OpenRouter (alternative OpenAI-compatible gateway) ──────────
+
+    @property
+    def openrouter_api_key(self) -> str:
+        return str(_get("openrouter", "api_key", default=""))
+
+    @property
+    def openrouter_base_url(self) -> str:
+        return str(_get("openrouter", "base_url", default="https://openrouter.ai/api/v1"))
+
+    @property
+    def openrouter_model(self) -> str:
+        return str(_get("openrouter", "model", default=""))
+
+    @property
     def eval_llm_model(self) -> str:
         return str(_get("llm", "eval_model", default="gpt-4o-mini"))
 

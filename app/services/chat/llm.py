@@ -9,40 +9,35 @@ from typing import Optional
 from fastapi import HTTPException
 from langchain_openai import ChatOpenAI
 
-from app.config import settings
 from app.security.url_validation import validate_public_http_url
 from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
+from app.services.llm.providers import infer_provider as _infer_provider
+from app.services.llm.providers import resolve_llm_config
 from app.services.llm.usage_tracker import attach_usage_tracking
 
 
 def infer_provider(base_url: Optional[str]) -> str:
-    """Infer the provider name from a base URL."""
-    if not base_url:
-        return "openai"
-    url = base_url.lower()
-    if "anthropic" in url:
-        return "anthropic"
-    if "deepseek" in url:
-        return "deepseek"
-    if "dashscope" in url or "aliyun" in url:
-        return "dashscope"
-    if "moonshot" in url or "kimi" in url:
-        return "moonshot"
-    if "openai" in url:
-        return "openai"
-    return "custom"
+    """Infer the provider name from a base URL.
+
+    Thin delegate to the canonical implementation in
+    ``app.services.llm.providers`` (kept here so existing import paths
+    ``app.services.chat.llm`` / ``app.services.chat`` keep working).
+    """
+    return _infer_provider(base_url)
 
 
 def build_llm(uid: Optional[int] = None) -> ChatOpenAI:
     """Build a LangChain LLM instance.
 
     Reads the user's default credential synchronously from
-    ``ApiKeyManager``'s cache. Falls back to the system default API key on
-    a cache miss (which incurs cost).
+    ``ApiKeyManager``'s cache. Falls back to the system default — resolved
+    through the provider layer (``llm.provider`` selects DashScope or
+    OpenRouter) — on a cache miss (which incurs cost).
     """
-    api_key = settings.openai_api_key
-    base_url = settings.openai_base_url
-    model = settings.llm_model
+    cfg = resolve_llm_config()
+    api_key = cfg.api_key
+    base_url = cfg.base_url
+    model = cfg.model
     credential_id: Optional[int] = None  # None = system default
 
     if uid is not None:
@@ -75,6 +70,8 @@ def build_llm(uid: Optional[int] = None) -> ChatOpenAI:
         model=model,
         temperature=0.5,
         stream_usage=True,
+        # OpenRouter attribution headers (empty for DashScope)
+        **({"default_headers": dict(cfg.default_headers)} if cfg.default_headers else {}),
     )
     provider = infer_provider(base_url)
     setattr(llm, "_credential_id", credential_id)

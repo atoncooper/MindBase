@@ -136,15 +136,28 @@ mq:
   rabbitmq_url: ""                    # set to switch broker to RabbitMQ
 
 
-# ---- LLM (OpenAI-compatible; currently Aliyun DashScope) ----------
+# ---- LLM (OpenAI-compatible; DashScope | OpenRouter) --------------
 llm:
-  provider: dashscope                 # dashscope | openai | anthropic | custom
+  provider: dashscope                 # dashscope | openrouter（切换对话类 LLM 网关，
+                                      # 解析逻辑见 app/services/llm/providers.py；
+                                      # embedding/rerank 不受此开关影响，仍走 DashScope）
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   model: qwen3-max
+  context_window: 0                   # 0=auto：按内置模型表自动匹配（providers.py 的
+                                      # MODEL_CONTEXT_WINDOWS，覆盖 qwen/gpt/claude/
+                                      # gemini/deepseek/glm/kimi 等）；历史压缩预算 ≈ 窗口×50%。
+                                      # 表里没有的模型才需要手填窗口值
   eval_model: gpt-4o-mini             # auxiliary model for eval / quiz generation
   timeout: 60
   max_retries: 3
   # api_key via env: LLM__API_KEY (legacy: DASHSCOPE_API_KEY, OPENAI_API_KEY)
+
+# OpenRouter（OpenAI 兼容聚合网关）。llm.provider=openrouter 时启用。
+# 模型名带厂商前缀，如 qwen/qwen3-max、anthropic/claude-sonnet-4.5、deepseek/deepseek-chat
+openrouter:
+  base_url: https://openrouter.ai/api/v1
+  model: z-ai/glm-5.2:free
+  # api_key via env: OPENROUTER__API_KEY
 
 
 # ---- Embedding ----------------------------------------------------
