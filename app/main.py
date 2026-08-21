@@ -315,6 +315,12 @@ async def lifespan(app: FastAPI):
             await _harness.start()
             app.state.agent_harness = _harness
             app.state.agent_harness_status = "started"
+            # Wire the context-compression pipeline (ContextManager writes +
+            # threshold-triggered summarization).  No-op for chat requests
+            # until a turn completes; degrades gracefully when Redis is down.
+            from app.context.auto_compress import init_auto_compressor
+
+            init_auto_compressor(context_manager=ctx_mgr, llm=_llm_for_harness)
             logger.info(
                 "[HARNESS] started agents={} tools={}",
                 _harness.lifecycle.registered_agents,
@@ -594,8 +600,10 @@ def _get_harness_llm():
     try:
         from langchain_openai import ChatOpenAI
 
-        api_key = settings.openai_api_key
-        if not api_key:
+        from app.services.llm.providers import resolve_llm_config
+
+        cfg = resolve_llm_config()
+        if not cfg.api_key:
             return None
 
         # streaming=True so that astream_events(version="v2") receives
@@ -607,12 +615,13 @@ def _get_harness_llm():
         # temperature=0.4: temperature=0 输出过于保守简短；0.4 在保持稳定的
         # 同时让回答更舒展（该 LLM 被所有 agent 共享，勿再调高）。
         return ChatOpenAI(
-            api_key=api_key,
-            base_url=settings.openai_base_url or None,
-            model=settings.llm_model,
+            api_key=cfg.api_key,
+            base_url=cfg.base_url or None,
+            model=cfg.model,
             temperature=0.4,
             streaming=True,
             stream_usage=True,
+            **({"default_headers": dict(cfg.default_headers)} if cfg.default_headers else {}),
         )
     except Exception as e:
         logger.warning("[HARNESS] failed to create LLM: {}", e)

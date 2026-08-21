@@ -54,6 +54,11 @@ services:
       - LLM__API_KEY=${LLM__API_KEY:-}
       - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - LLM__MODEL=${LLM_MODEL:-qwen3-max}
+      # 对话类 LLM 网关切换（dashscope | openrouter），见 app/services/llm/providers.py
+      - LLM__PROVIDER=${LLM__PROVIDER:-dashscope}
+      - OPENROUTER__API_KEY=${OPENROUTER__API_KEY:-}
+      - OPENROUTER__BASE_URL=${OPENROUTER__BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENROUTER__MODEL=${OPENROUTER__MODEL:-}
       # Embedding
       - EMBEDDING__MODEL=${EMBEDDING_MODEL:-text-embedding-v4}
       - EMBEDDING__DIMENSION=${EMBEDDING_DIMENSION:-1024}

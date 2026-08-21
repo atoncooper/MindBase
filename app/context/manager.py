@@ -70,9 +70,14 @@ class ContextManager:
         return list(ctx.messages)
 
     async def add_message(self, session_id: str, message: ConversationMessage) -> None:
-        """Append a single message to the session context."""
+        """Append a single message to the session context.
+
+        Deliberately does NOT invalidate the compressed-summary cache: the
+        summary describes already-absorbed old turns, which appends cannot
+        change.  Invalidating here would wipe the summary after every turn
+        and the read path would lose it between compressions.
+        """
         await self._store.append(session_id, message)
-        await self._invalidate_cache(session_id)
 
     async def add_user_message(self, session_id: str, content: str) -> None:
         """Shorthand for appending a user message."""
@@ -93,6 +98,9 @@ class ContextManager:
 
         Both messages share the same timestamp for ordering consistency
         and are written in a single lock acquisition via append_batch.
+
+        Like :meth:`add_message`, this does not invalidate the
+        compressed-summary cache (appends never change the summary).
         """
         ts = time.time()
         user_msg = ConversationMessage(role="user", content=user_content, timestamp=ts)
@@ -100,7 +108,6 @@ class ContextManager:
             role="assistant", content=assistant_content, timestamp=ts
         )
         await self._store.append_batch(session_id, [user_msg, assistant_msg])
-        await self._invalidate_cache(session_id)
 
     async def replace_all(
         self, session_id: str, messages: list[ConversationMessage]
