@@ -12,12 +12,12 @@ endpoint.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.response.chat import SessionSummaryResponse
 from app.routers.auth import get_current_uid
+from app.routers.streaming import sse_streaming_response
 from app.services import session_summary as session_summary_service
 
 router = APIRouter(prefix="/chat", tags=["会话总结"])
@@ -35,11 +35,10 @@ async def summarize_session(
     agent, input_state, run_config = await session_summary_service.prepare_summary(
         db, uid, chat_session_id, agent_harness
     )
-    return StreamingResponse(
+    return sse_streaming_response(
         session_summary_service.stream_summary(
             agent, input_state, run_config, uid=uid, chat_session_id=chat_session_id
-        ),
-        media_type="text/event-stream",
+        )
     )
 
 

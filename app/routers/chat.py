@@ -26,6 +26,7 @@ from app.response import (
 )
 from app.routers.auth import get_current_uid
 from app.routers.knowledge import get_rag_service
+from app.routers.streaming import sse_streaming_response
 from app.services import chat_history as chat_history_service
 from app.services.chat import orchestrator as chat_orchestrator
 
@@ -98,7 +99,7 @@ async def ask_question_stream(
         api_key_manager=getattr(http_request.app.state, "api_key_manager", None),
         usage_writer=getattr(http_request.app.state, "usage_writer", None),
     )
-    return StreamingResponse(generator, media_type="text/event-stream")
+    return sse_streaming_response(generator)
 
 
 @router.post("/ask/agent", response_model=ChatResponse)
@@ -140,7 +141,7 @@ async def ask_question_agent_stream(
         api_key_manager=getattr(http_request.app.state, "api_key_manager", None),
         usage_writer=getattr(http_request.app.state, "usage_writer", None),
     )
-    return StreamingResponse(generator, media_type="text/event-stream")
+    return sse_streaming_response(generator)
 
 
 @router.post("/search")
