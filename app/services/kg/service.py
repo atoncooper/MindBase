@@ -380,6 +380,117 @@ class KgService:
     # 删除级联 / 统计
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Graph visualization subgraph (added in Plan 1.0.6)
+    # ------------------------------------------------------------------
+
+    async def subgraph(
+        self,
+        center_eid: str | None = None,
+        depth: int = 2,
+        max_nodes: int = 80,
+    ) -> dict[str, Any]:
+        """Visualization subgraph. Without center: overview (head entities +
+        their internal edges); with center: BFS expansion.
+
+        Returns {available, center, nodes: [{eid,name,type,description,degree}],
+        edges: [{src,dst,rel_type}]}.
+        """
+        if not self.is_available():
+            return {"available": False, "center": None, "nodes": [], "edges": []}
+        if center_eid:
+            return await self._subgraph_centered(center_eid, depth, max_nodes)
+        return await self._subgraph_overview(max_nodes)
+
+    async def _subgraph_overview(self, max_nodes: int) -> dict[str, Any]:
+        tops = await self._graph.top_entities(limit=max_nodes)
+        if not tops:
+            return {"available": True, "center": None, "nodes": [], "edges": []}
+        eids = [t["eid"] for t in tops]
+        rows = await self._graph.edges_among(eids)
+        nodes = [
+            {
+                "eid": t["eid"],
+                "name": t["name"],
+                "type": t.get("type") or "other",
+                "description": t.get("description") or "",
+                "degree": 0,
+            }
+            for t in tops
+        ]
+        edges = [
+            {
+                "src": r["src_eid"],
+                "dst": r["dst_eid"],
+                "rel_type": r.get("rel_type") or "关联",
+            }
+            for r in rows
+        ]
+        return self._finalize_subgraph(None, nodes, edges)
+
+    async def _subgraph_centered(
+        self, center_eid: str, depth: int, max_nodes: int
+    ) -> dict[str, Any]:
+        base = await self._graph.entities_by_eids([center_eid])
+        if not base:
+            return {"available": True, "center": None, "nodes": [], "edges": []}
+
+        node_info: dict[str, dict[str, Any]] = {
+            center_eid: {
+                "eid": center_eid,
+                "name": base[0].get("name", ""),
+                "type": base[0].get("type") or "other",
+                "description": base[0].get("description") or "",
+                "degree": 0,
+            }
+        }
+        edge_set: set[tuple[str, str, str]] = set()
+        visited = {center_eid}
+        frontier = [center_eid]
+
+        for _ in range(max(depth, 0)):
+            if not frontier or len(visited) >= max_nodes:
+                break
+            rows = await self._graph.neighbors(frontier, list(visited), limit=max_nodes)
+            next_frontier: list[str] = []
+            for r in rows:
+                pair_key = tuple(sorted((r["from_eid"], r["eid"]))) + (
+                    (r.get("rel_type") or "关联"),
+                )
+                edge_set.add(pair_key)
+                if r["eid"] not in visited and len(visited) < max_nodes:
+                    visited.add(r["eid"])
+                    node_info[r["eid"]] = {
+                        "eid": r["eid"],
+                        "name": r.get("name", ""),
+                        "type": r.get("type") or "other",
+                        "description": r.get("description") or "",
+                        "degree": 0,
+                    }
+                    next_frontier.append(r["eid"])
+            frontier = next_frontier
+
+        nodes = list(node_info.values())
+        edges = [
+            {"src": s, "dst": d, "rel_type": rt} for s, d, rt in edge_set
+        ]
+        return self._finalize_subgraph(center_eid, nodes, edges)
+
+    @staticmethod
+    def _finalize_subgraph(
+        center: str | None, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Overwrite node degrees with in-subgraph connection counts (drives
+        frontend node sizing)."""
+        degree: dict[str, int] = {}
+        for e in edges:
+            degree[e["src"]] = degree.get(e["src"], 0) + 1
+            degree[e["dst"]] = degree.get(e["dst"], 0) + 1
+        for n in nodes:
+            n["degree"] = degree.get(n["eid"], 0)
+        nodes.sort(key=lambda x: -x["degree"])
+        return {"available": True, "center": center, "nodes": nodes, "edges": edges}
+
     async def delete_video_data(self, bvid: str) -> dict[str, int]:
         """视频删除时的图谱级联清理（best-effort，不抛异常）。"""
         if not neo4j_ok():

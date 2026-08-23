@@ -16,6 +16,7 @@ export * from "./auth";
 export * from "./favorites";
 export * from "./knowledge";
 export * from "./kg";
+export * from "./blindspot";
 export * from "./chat";
 export * from "./session-summary";
 export * from "./code-executions";

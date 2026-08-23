@@ -10,6 +10,8 @@ import {
   Activity,
   BarChart3,
   Sparkles,
+  Target,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 
@@ -39,6 +41,8 @@ export const navItems: NavItem[] = [
   { id: "task-quiz", label: "定时出题", href: "/task-quiz", icon: CalendarClock, placement: "primary" },
   // Low-frequency modules collapsed under "更多"
   { id: "tasks", label: "任务监控", href: "/tasks", icon: Activity, placement: "more" },
+  { id: "graph", label: "知识图谱", href: "/graph", icon: Waypoints, placement: "more" },
+  { id: "blindspot", label: "知识盲区", href: "/blindspot", icon: Target, placement: "more" },
   { id: "billing", label: "用量计费", href: "/billing", icon: BarChart3, placement: "more" },
   { id: "skills", label: "技能商店", href: "/skills", icon: Sparkles, placement: "more" },
   // Right-side account area

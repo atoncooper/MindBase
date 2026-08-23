@@ -156,6 +156,24 @@ async def get_messages_for_user(
     )
 
 
+async def recent_user_texts_for_user(uid: int, limit: int = 300) -> list[str]:
+    """Blind-spot map probed signal (Plan 1.0.6): the latest N user message
+    texts, newest first.
+
+    Best-effort: returns [] when Mongo is disabled.
+    """
+    if not is_enabled():
+        return []
+    cursor = (
+        coll(COLLECTION)
+        .find({"uid": uid, "role": "user"}, {"content": 1, "_id": 0})
+        .sort("created_at", -1)
+        .limit(limit)
+    )
+    rows = await cursor.to_list(length=limit)
+    return [r["content"] for r in rows if r.get("content")]
+
+
 async def _get_messages_by_query(
     query: dict[str, Any],
     *,
