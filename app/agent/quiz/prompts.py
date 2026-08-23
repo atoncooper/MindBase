@@ -16,6 +16,11 @@ QUIZ_BATCH_SYSTEM_PROMPT = """你是一个专业的习题出题专家。你的�
 - short_answer: 必须填写 keywords(3~5个关键词)、answer_template(30-100字参考答案)、explanation
 - essay: 必须填写 model_answer(参考答案)、scoring_rubric(分步骤评分标准，每项含 step/points/keywords)、explanation
 
+related_entities 规范：
+- 填写本题实际考查的 0~3 个核心概念/实体名（如 "RAG"、"Milvus"）
+- 必须使用知识片段中出现的原文叫法；片段没有具体概念时留空数组
+- 只填名词性概念，不要填动词短语或完整句子
+
 必须通过工具调用返回结构化结果，不要省略当前题型的必填字段。"""
 
 QUIZ_BATCH_USER_PROMPT = """基于以下 {chunk_count} 个知识片段，生成 {total_count} 道题。

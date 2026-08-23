@@ -14,6 +14,10 @@ class BaseQuizQuestionOutput(BaseModel):
     source_chunk_index: int = Field(ge=0)
     question: str = Field(min_length=1, max_length=300)
     explanation: str = Field(min_length=1, max_length=500)
+    # Plan 1.0.6 blind-spot attribution: core concepts the question tests
+    # (picked from the source chunk). Empty list is valid; downstream
+    # attribution links questions to KG entities via these names.
+    related_entities: list[str] = Field(default_factory=list, max_length=5)
 
 
 class SingleChoiceQuestionOutput(BaseQuizQuestionOutput):
