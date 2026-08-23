@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -414,6 +414,24 @@ async def get_kg_stats(uid: int = Depends(get_current_uid)):
 
     try:
         return await get_kg_service().stats()
+    except Exception as e:
+        raise internal_error(e)
+
+
+@router.get("/kg/subgraph")
+async def get_kg_subgraph(
+    center: Optional[str] = Query(None, max_length=64, description="center entity eid"),
+    depth: int = Query(2, ge=1, le=3, description="BFS hops (center mode)"),
+    max_nodes: int = Query(80, ge=5, le=200, description="node cap"),
+    uid: int = Depends(get_current_uid),
+):
+    """Visualization subgraph: overview without center; BFS expansion with one."""
+    from app.services.kg import get_kg_service
+
+    try:
+        return await get_kg_service().subgraph(
+            center_eid=center, depth=depth, max_nodes=max_nodes
+        )
     except Exception as e:
         raise internal_error(e)
 

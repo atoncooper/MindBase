@@ -315,22 +315,95 @@ class KgGraphRepository:
         async with neo4j.session() as s:
             return await neo4j.run(s, cypher, names=cleaned, limit=limit)
 
+    async def entity_exposure(
+        self, bvids: list[str], limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Blind-spot map exposure aggregation (Plan 1.0.6): APPEARS_IN page
+        count per entity within scope.
+
+        Returns head entities sorted by pages desc; each item carries up to 5
+        evidence samples for review-path rendering. Empty bvids returns [] --
+        callers must ensure a non-empty scope (different semantics from
+        fetch_evidence where empty means "no filter").
+        """
+        if not bvids:
+            return []
+        cypher = """
+        MATCH (e:Entity)-[ev:APPEARS_IN]->(v:Video)
+        WHERE v.bvid IN $bvids
+        WITH e, count(ev) AS pages,
+             collect({bvid: v.bvid, page_index: ev.page_index, quote: ev.quote})[..5]
+             AS evidence_sample
+        RETURN e.eid AS eid, e.name AS name, e.type AS type,
+               e.description AS description,
+               pages, evidence_sample
+        ORDER BY pages DESC
+        LIMIT $limit
+        """
+        async with neo4j.session() as s:
+            return await neo4j.run(s, cypher, bvids=bvids, limit=limit)
+
+    async def entity_appearances(
+        self, eid: str, bvids: list[str], limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """All appearances of one entity (entity-detail review path)."""
+        cypher = """
+        MATCH (e:Entity {eid: $eid})-[ev:APPEARS_IN]->(v:Video)
+        WHERE size($bvids) = 0 OR v.bvid IN $bvids
+        RETURN v.bvid AS bvid, ev.page_index AS page_index,
+               ev.quote AS quote
+        ORDER BY v.bvid, ev.page_index
+        LIMIT $limit
+        """
+        async with neo4j.session() as s:
+            return await neo4j.run(
+                s, cypher, eid=eid, bvids=bvids or [], limit=limit
+            )
+
+    async def top_entities(self, limit: int = 80) -> list[dict[str, Any]]:
+        """Head entities ranked by RELATES degree (graph overview mode)."""
+        cypher = """
+        MATCH (e:Entity)-[r:RELATES]-()
+        RETURN e.eid AS eid, e.name AS name, e.type AS type,
+               e.description AS description, count(r) AS degree
+        ORDER BY degree DESC
+        LIMIT $limit
+        """
+        async with neo4j.session() as s:
+            return await neo4j.run(s, cypher, limit=limit)
+
+    async def edges_among(self, eids: list[str]) -> list[dict[str, Any]]:
+        """Directed relation edges inside an entity set (undirected dedup is
+        the caller's job)."""
+        if len(eids) < 2:
+            return []
+        cypher = """
+        UNWIND $eids AS eid
+        MATCH (a:Entity {eid: eid})-[r:RELATES]->(b:Entity)
+        WHERE b.eid IN $eids
+        RETURN DISTINCT a.eid AS src_eid, b.eid AS dst_eid,
+               r.rel_type AS rel_type
+        """
+        async with neo4j.session() as s:
+            return await neo4j.run(s, cypher, eids=eids)
+
     # ------------------------------------------------------------------
     # 统计 / 运维
     # ------------------------------------------------------------------
 
     async def stats(self) -> dict[str, int]:
+        # CALL () { ... }: Neo4j 5.23+ requires the scope clause; bare CALL {} is deprecated
         cypher = """
-        CALL {
+        CALL () {
             MATCH (e:Entity) RETURN count(e) AS entities
         }
-        CALL {
+        CALL () {
             MATCH ()-[r:RELATES]->() RETURN count(r) AS relations
         }
-        CALL {
+        CALL () {
             MATCH ()-[a:APPEARS_IN]->() RETURN count(a) as evidence
         }
-        CALL {
+        CALL () {
             MATCH (v:Video) RETURN count(v) AS videos
         }
         RETURN entities, relations, evidence, videos
