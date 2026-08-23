@@ -21,7 +21,6 @@ Neo4j/Milvus 不可用时端点报 unavailable，绝不阻塞主链路。
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger

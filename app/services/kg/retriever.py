@@ -209,8 +209,6 @@ def _format_content(
     limit: int,
 ) -> str:
     """组装 LLM 可读的实体卡片文本。"""
-    ent_by_id = {e["eid"]: e for e in entities}
-
     rel_by_src: dict[str, list[dict]] = {}
     for rel in relations:
         rel_by_src.setdefault(rel["src_eid"], []).append(rel)
