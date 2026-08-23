@@ -59,6 +59,8 @@ SYSTEM_PROMPT = """\
 - 「总结一下我的收藏夹」→ get_video_summaries()
 - 「概述收藏夹里哲学类视频」→ 先 get_video_summaries()，再按需 vector_search
 
+{kg_section}
+
 {context_tools_section}
 
 {skills_section}
@@ -96,6 +98,7 @@ SYSTEM_PROMPT = """\
   │      必须告诉用户"代码执行失败/超时，未生成结果"，禁止编造"已生成图片""已保存 xxx.png"
   │      "图像特点：蓝色直线…"等任何执行结果。只有工具明确返回了产物/输出，才能据实描述。
   │
+{kg_decision}
   └─ 具体深度问题 → vector_search
       关键信号：涉及具体观点、概念、论据、细节
       信息不足时：换个 query 再搜（最多 3 轮）
@@ -231,6 +234,29 @@ _CONTEXT_TOOLS_SECTION = """\
 """
 
 
+_KG_TOOLS_SECTION = """\
+### kg_search — 知识图谱检索（实体关联）
+**何时使用**：需要跨视频聚合、实体关系、关联路径的问题
+- 「RAG 在哪些视频里被讲到过」→ kg_search(query="RAG")
+- 「LangChain 和 LlamaIndex 有什么关系/对比」→ kg_search(query="LangChain 和 LlamaIndex 对比")
+- 「XX 提出的方法还有谁讲过」→ 先 kg_search(query="XX")，再按需 vector_search
+
+**注意**：
+- query 传入具体实体名或概念词，效果最好
+- 返回的是实体卡片 + 关系 + 出处引文；需要更细的内容细节时再配合 vector_search
+"""
+
+
+# 决策树中 KG 分支（仅当 kg_search 已注册时注入）
+_KG_DECISION = (
+    "  ├─ 实体/关系/跨视频聚合类问题 → kg_search\n"
+    "  │   关键信号：「哪些视频提到」「和…有什么关系」「有什么区别」「对比」"
+    "「都讲过什么」「关联」\n"
+    "  │   配合：kg_search 定位视频与关系后，可用 vector_search 深挖具体内容\n"
+    "  │\n"
+)
+
+
 def build_system_prompt(
     query: str,
     *,
@@ -239,6 +265,7 @@ def build_system_prompt(
     conversation_context: str = "",
     has_context_tools: bool = False,
     has_delegate: bool = False,
+    has_kg_tools: bool = False,
     skills_section: str = "",
     forced_skills_section: str = "",
 ) -> str:
@@ -255,6 +282,8 @@ def build_system_prompt(
     date_status = f"当前日期：{datetime.now().strftime('%Y年%m月%d日')}"
 
     context_tools_section = _CONTEXT_TOOLS_SECTION if (has_context_tools or has_delegate) else ""
+    kg_section = _KG_TOOLS_SECTION if has_kg_tools else ""
+    kg_decision = _KG_DECISION if has_kg_tools else ""
 
     return SYSTEM_PROMPT.format(
         query=query,
@@ -262,6 +291,8 @@ def build_system_prompt(
         date_status=date_status,
         conversation_context=conversation_context or "（无历史对话上下文）",
         context_tools_section=context_tools_section,
+        kg_section=kg_section,
+        kg_decision=kg_decision,
         skills_section=skills_section,
         forced_skills_section=forced_skills_section,
     )

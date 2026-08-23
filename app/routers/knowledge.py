@@ -304,9 +304,116 @@ async def delete_video_from_knowledge(
 
         rag = get_rag_service()
         rag.delete_video(bvid)
+
+        # Plan 1.0.5: 知识图谱级联清理（best-effort，失败不影响向量删除结果）
+        try:
+            from app.services.kg import get_kg_service
+
+            await get_kg_service().delete_video_data(bvid)
+        except Exception as kg_err:
+            logger.warning(f"[KG] graph cascade cleanup failed bvid={bvid}: {kg_err}")
+
         return {"message": f"已删除视频 {bvid}"}
     except HTTPException:
         raise
+    except Exception as e:
+        raise internal_error(e)
+
+
+# ==================== 知识图谱（Plan 1.0.5: Neo4j + MySQL） ====================
+
+
+class KgBuildRequest(BaseModel):
+    """知识图谱构建请求（作用域与 /knowledge/build 一致）。"""
+
+    folder_ids: List[int]
+
+
+@router.post("/kg/build")
+async def build_knowledge_graph(
+    request: KgBuildRequest,
+    uid: int = Depends(get_current_uid),
+):
+    """触发收藏夹范围的知识图谱抽取（后台任务）。
+
+    幂等：内容未变更的分P 自动跳过；已有活跃任务时复用其 task_id。
+    """
+    from app.services.kg import get_kg_service
+
+    service = get_kg_service()
+    if not service.is_available():
+        raise HTTPException(
+            status_code=503, detail="知识图谱存储不可用（Neo4j 未连接）"
+        )
+    try:
+        return await service.try_start_build(uid=uid, folder_ids=request.folder_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise internal_error(e)
+
+
+@router.get("/kg/active")
+async def get_active_kg_task(uid: int = Depends(get_current_uid)):
+    """查询当前是否有活跃的 KG 构建任务（前端禁用按钮 / 复用 task_id）。"""
+    from app.repository.knowledge_repository import get_knowledge_repository
+    from app.services.kg import get_kg_service
+
+    task_id = get_kg_service().get_active_task_id()
+    if task_id is None:
+        return {"task_id": None}
+    try:
+        async with get_db_context() as db:
+            row = await get_knowledge_repository().get_build_status_row(
+                task_id, uid, db
+            )
+        if row is None:
+            # 不属于当前用户的活跃任务：对调用方不可见
+            return {"task_id": None}
+    except Exception:
+        return {"task_id": None}
+    return {"task_id": task_id}
+
+
+@router.get("/kg/status/{task_id}")
+async def get_kg_build_status(task_id: str, uid: int = Depends(get_current_uid)):
+    """获取 KG 构建任务状态（async_tasks 表，uid 归属校验防 IDOR）。"""
+    from app.repository.knowledge_repository import get_knowledge_repository
+
+    try:
+        async with get_db_context() as db:
+            row = await get_knowledge_repository().get_build_status_row(
+                task_id, uid, db
+            )
+    except Exception as e:
+        logger.warning(f"[KG] status read failed: {e}")
+        raise internal_error(e)
+    if row is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    current_step = ""
+    if row.steps:
+        last = row.steps[-1] if row.steps else {}
+        current_step = last.get("name", "")
+    return {
+        "task_id": task_id,
+        "status": row.status or "pending",
+        "progress": row.progress or 0,
+        "current_step": current_step,
+        "result": row.result or {},
+        "error": row.error or "",
+    }
+
+
+@router.get("/kg/stats")
+async def get_kg_stats(uid: int = Depends(get_current_uid)):
+    """图谱统计：实体/关系/证据/视频计数 + 实体向量数 + 待抽取分P数。"""
+    from app.services.kg import get_kg_service
+
+    try:
+        return await get_kg_service().stats()
     except Exception as e:
         raise internal_error(e)
 

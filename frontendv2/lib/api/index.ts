@@ -15,6 +15,7 @@ export { API_BASE_URL } from "./client";
 export * from "./auth";
 export * from "./favorites";
 export * from "./knowledge";
+export * from "./kg";
 export * from "./chat";
 export * from "./session-summary";
 export * from "./code-executions";

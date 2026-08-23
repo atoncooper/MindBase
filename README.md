@@ -2,11 +2,11 @@
 
 MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转化为可检索、可问答、可复习的知识。
 
-核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。
+核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。可选知识图谱：LLM 从转写稿抽取实体与关系写入 Neo4j（带原文引文防幻觉），问答时支持跨视频实体关联检索。
 
 除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务 + 自写 DB 轮询调度）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
 
-后端 FastAPI + LangGraph multi-agent（Chat / Memory / Note / Code / Quiz 五个 agent，经 delegate 按需调用）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Daytona（可选）。前端 Next.js 16。支持 OpenAI / DashScope / DeepSeek 多 LLM Provider。
+后端 FastAPI + LangGraph multi-agent（Chat / Memory / Note / Code / Quiz 五个 agent，经 delegate 按需调用）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。支持 OpenAI / DashScope / DeepSeek 多 LLM Provider。
 
 适合「收藏了很多但没时间整理」的学习者，把碎片化收藏变成可用的知识库。
 
@@ -51,13 +51,20 @@ cd app-task && docker compose up -d --build
 - **入口**：导航栏 `对话`
 - **Agent**：Chat（默认路由）+ Memory / Note / Code（经 delegate 调用）
 - **流式 SSE**：route / chunk / step / sources / done / error 六种事件
-- **工具**：vector_search / list_videos / get_video_summaries / delegate_to_agent
+- **工具**：vector_search / kg_search（知识图谱实体关联检索，Neo4j 可用时注册）/ list_videos / get_video_summaries / delegate_to_agent
 
 ### 收藏夹
 
 - **入口**：导航栏 `收藏夹`
 - 同步 B 站收藏夹与视频列表，分 P 查看、ASR 内容、向量化状态
 - 支持整理预览（清理无效视频）
+- **知识图谱面板**：一键从视频转写稿抽取实体与关系写入 Neo4j（幂等，内容未变自动跳过），展示实体 / 关系 / 证据 / 覆盖视频统计与构建进度；未连接 Neo4j 时自动降级为不可用态
+
+### 知识图谱（kg_search）
+
+- 构建链路：收藏夹 → 圈定已转写分P → LLM 结构化抽取（每条关系必须携带原文引文）→ 校验防幻觉边 → 写 Neo4j + 实体向量进 Milvus
+- 查询链路：query 实体链接 → 子图多跳扩展 → 证据回捞（按用户收藏范围过滤），擅长「XX 在哪些视频里讲过」「A 和 B 有什么关联」类跨视频聚合问题
+- 与 vector_search 协同：实体/关系/聚合类问题走图谱，内容细节走向量检索
 
 ### 云盘
 
@@ -100,7 +107,7 @@ cd app-task && docker compose up -d --build
 |------|------|---------|
 | 认证 | `/auth` | 扫码登录 / 密码登录 / token 管理 |
 | 收藏夹 | `/favorites` | 列表 / 同步 / 整理 |
-| 知识库 | `/knowledge` | 构建 / 状态 / 清空 |
+| 知识库 | `/knowledge` | 构建 / 状态 / 清空 / 知识图谱 kg（build / active / status / stats） |
 | 聊天 | `/chat` | ask / ask/stream / sessions / history |
 | ASR | `/asr` | create / update / reasr / versions |
 | 向量化 | `/vec/page` | create / revector / status |
@@ -172,10 +179,10 @@ app/
   agent/                 LangGraph agents (chat / memory / note / code / quiz)
   harness/               AgentHarness (orchestrator + runtime + lifecycle + scheduler)
   routers/               FastAPI 路由（薄层）
-  services/              业务服务 (rag / auth / notes / wallpaper / preferences / quiz / cloud ...)
-  repository/            数据访问 (MySQL / Mongo / Milvus)
-  tools/                 Agent 工具 (chat / notes / code / harness / context / skill)
-  infra/                 基础设施 (config / minio / cache / redis / mongo)
+  services/              业务服务 (rag / auth / notes / kg 知识图谱 / wallpaper / preferences / quiz / cloud ...)
+  repository/            数据访问 (MySQL / Mongo / Milvus / Neo4j)
+  tools/                 Agent 工具 (chat 含 vector_search/kg_search / notes / code / harness / context / skill)
+  infra/                 基础设施 (config / minio / cache / redis / mongo / neo4j)
   config/                YAML 配置 (default.yaml / config.yaml)
   response/              Pydantic 请求/响应 schema
   models.py              SQLAlchemy ORM 模型
@@ -216,6 +223,10 @@ nginx/nginx.conf                nginx 反代 + 缓存配置
 ### Q: 笔记功能需要 MongoDB 吗？
 
 是。笔记正文和修订存 MongoDB，元数据存 MySQL。未连接 MongoDB 时创建/更新笔记抛 `RuntimeError`。
+
+### Q: 知识图谱需要 Neo4j 吗？
+
+是。构建与检索都依赖 Neo4j（docker compose 已内置 `neo4j` 服务，storage/full profile 自动拉起）。未连接时系统自动降级：`kg_search` 工具不注册、收藏夹页图谱面板显示不可用，其余功能不受影响。密码经 `.env` 的 `NEO4J_PASSWORD` 与后端 `KG__PASSWORD` 共享。
 
 ### Q: 如何切换 LLM Provider？
 

@@ -220,6 +220,28 @@ ingest:
   asr_chunk_concurrency: 3          # 长音频 PCM 切块并行识别数（DashScope 并发限流）
 
 
+# ---- Knowledge Graph (Neo4j + MySQL, plan/1.0.5-KnowledgeGraph) ---
+# Derived store: entities/relations extracted from Mongo ASR documents.
+# Rebuildable at any time; failures degrade gracefully (kg_search tool
+# simply won't register / endpoints report unavailable).
+# Start (docker): included in ""/storage/full profiles alongside Milvus.
+kg:
+  enabled: true
+  uri: ""                               # inject via KG__URI env var; docker: bolt://neo4j:7687
+  username: neo4j                       # password via env: KG__PASSWORD
+  database: neo4j                       # Neo4j database name (community edition = neo4j)
+  entity_collection_name: kg_entities   # Milvus collection for semantic entity linking
+  extract_model: qwen-flash             # LLM for entity/relation extraction (structured output)
+  max_text_chars: 8000                  # truncate ASR text before extraction (cost guard)
+  seed_top_n: 5                         # entity-linking candidates per query
+  link_score_threshold: 0.55            # min cosine similarity for query->entity linking
+  max_hops: 2                           # subgraph expansion depth over RELATES edges
+  expand_limit_per_hop: 50              # per-hop neighbor cap (super-node guard)
+  evidence_limit: 100                   # max APPEARS_IN evidence rows returned per retrieval
+  concurrency: 2                        # parallel page extractions (LLM QPS guard)
+  page_batch_size: 50                   # max pages processed per build run
+
+
 # ---- LangSmith tracing --------------------------------------------
 # Set enabled=true + LANGSMITH__API_KEY env var to activate.
 langsmith:

@@ -30,3 +30,4 @@ class ToolDeps:
     db_deps: Any = None
     lifecycle: Any = None
     skill_manager: Any = None
+    kg: Any = None  # Plan 1.0.5: KgService（知识图谱检索/构建）

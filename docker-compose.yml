@@ -48,6 +48,9 @@ services:
       - MILVUS__TOKEN=${MILVUS__TOKEN:-}
       # MongoDB — override via .env for external Mongo
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      # Knowledge graph (Neo4j) — password shares NEO4J_PASSWORD with the neo4j service
+      - KG__URI=${KG__URI:-bolt://neo4j:7687}
+      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
       # Redis — override via .env for external Redis
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # LLM
@@ -294,6 +297,31 @@ services:
     networks:
       - mind-base-net
 
+  # Knowledge graph store (KG feature, plan/1.0.5-KnowledgeGraph).
+  # Optional at runtime: the backend degrades gracefully when it is down or
+  # kg.enabled=false (kg_search tool simply won't register).
+  neo4j:
+    image: neo4j:5-community
+    container_name: mind-base-neo4j
+    profiles: ["", "storage", "full"]
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"   # Browser UI (dev/debug only)
+      - "${NEO4J_BOLT_PORT:-7687}:7687"   # Bolt protocol (app connects here)
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-mind-base}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - mind-base-net
+
   etcd:
     image: quay.io/coreos/etcd:v3.5.14
     container_name: mind-base-etcd
@@ -486,6 +514,8 @@ volumes:
   mongo_data:
   milvus_data:
   etcd_data:
+  neo4j_data:
+  neo4j_logs:
   minio_data:
   certbot_www:
   nginx_video_cache:

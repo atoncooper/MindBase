@@ -23,6 +23,7 @@ import { favoritesV2Api, type FavoriteFolderV2 } from "@/lib/api/favorites";
 import { knowledgeApi, type BuildStatus, type FolderStatus } from "@/lib/api/knowledge";
 import { cn } from "@/lib/utils";
 import { FolderCard } from "./folder-card";
+import { KgPanel } from "./kg-panel";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -296,6 +297,9 @@ export function FavoritesView() {
                     />
                 ))}
             </div>
+
+            {/* Knowledge graph panel (Plan 1.0.5) - build scope follows folder selection */}
+            <KgPanel selectedFolderIds={Array.from(selectedIds)} />
 
             {/* Build bar - sticky bottom, slides up when there's a selection or active build */}
             <AnimatePresence>

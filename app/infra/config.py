@@ -381,6 +381,33 @@ class QuizSection(_Section):
     queue: QuizQueueSection = Field(default_factory=QuizQueueSection)
 
 
+class KgSection(_Section):
+    """Knowledge graph (plan/1.0.5): Neo4j graph store + Milvus entity index.
+
+    Optional dependency — when unreachable the kg_search tool is skipped and
+    /knowledge/kg endpoints report unavailable; nothing else is affected.
+    """
+
+    enabled: bool = True
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    database: str = "neo4j"
+    password: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("KG__PASSWORD", "NEO4J_PASSWORD"),
+    )
+    entity_collection_name: str = "kg_entities"
+    extract_model: str = "qwen-flash"
+    max_text_chars: int = 8000
+    seed_top_n: int = 5
+    link_score_threshold: float = 0.55
+    max_hops: int = 2
+    expand_limit_per_hop: int = 50
+    evidence_limit: int = 100
+    concurrency: int = 2
+    page_batch_size: int = 50
+
+
 # ---------------------------------------------------------------------------
 # Top-level aggregator
 # ---------------------------------------------------------------------------
@@ -417,6 +444,7 @@ class AppConfig(BaseSettings):
     slow_sql: SlowSqlSection = Field(default_factory=SlowSqlSection)
     transaction: TransactionSection = Field(default_factory=TransactionSection)
     quiz: QuizSection = Field(default_factory=QuizSection)
+    kg: KgSection = Field(default_factory=KgSection)
 
     model_config = SettingsConfigDict(
         env_file=".env",

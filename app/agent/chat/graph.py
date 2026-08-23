@@ -157,6 +157,8 @@ async def inject_context(
         "search_chat_history" in registered or "get_recent_context" in registered
     )
     has_delegate = "delegate_to_agent" in registered
+    # Plan 1.0.5: knowledge graph tool (only registered when Neo4j is up)
+    has_kg_tools = "kg_search" in registered
 
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -182,6 +184,7 @@ async def inject_context(
             conversation_context=conversation_context,
             has_context_tools=has_context_tools,
             has_delegate=has_delegate,
+            has_kg_tools=has_kg_tools,
             skills_section=skills_section,
             forced_skills_section=forced_skills_section,
         )

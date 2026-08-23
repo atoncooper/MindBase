@@ -342,6 +342,21 @@ class AgentHarness:
         except Exception:
             logger.exception("[HARNESS] failed to acquire RAG service")
 
+        # Plan 1.0.5: knowledge graph service (optional; None when Neo4j down)
+        kg: Any = None
+        try:
+            from app.services.kg import get_kg_service
+
+            kg_service = get_kg_service()
+            if kg_service.is_available():
+                kg = kg_service
+            else:
+                logger.warning(
+                    "[HARNESS] KG unavailable (Neo4j not connected) — kg_search skipped"
+                )
+        except Exception:
+            logger.exception("[HARNESS] failed to acquire KG service")
+
         deps = ToolDeps(
             rag=rag,
             ctx_mgr=self._ctx_mgr,
@@ -349,6 +364,7 @@ class AgentHarness:
             db_deps=db_deps,
             lifecycle=self._lifecycle,
             skill_manager=self._skill_manager,
+            kg=kg,
         )
 
         manager = ToolManager(deps)

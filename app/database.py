@@ -56,6 +56,10 @@ async def _migrate_add_columns():
         ("video", "vector_chunk_count", "INTEGER DEFAULT 0"),
         ("video", "vector_error", "TEXT"),
         ("video", "vector_asr_version", "INTEGER"),
+        # Plan 1.0.5: knowledge graph extraction status (derived, independent
+        # of is_vectorized flow; no Milvus rebuild needed — new collection only)
+        ("video", "kg_status", "VARCHAR(20) DEFAULT 'none'"),
+        ("video", "kg_version", "INTEGER"),
         # Plan 0012: Quiz pages mode columns
         ("quiz_sets", "source_type", "VARCHAR(20) DEFAULT 'folder'"),
         ("quiz_sets", "source_pages", "TEXT"),
