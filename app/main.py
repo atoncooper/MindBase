@@ -34,6 +34,7 @@ if settings.langsmith_endpoint:
 from app.database import init_db
 from app.routers import auth, favorites_v2, knowledge, chat, settings as settings_router
 from app.routers.asr import router as asr_router
+from app.routers.blindspot import router as blindspot_router
 from app.routers.vector_page import router as vector_page_router
 from app.routers.credentials import router as credentials_router
 from app.routers.billing import router as billing_router
@@ -496,6 +497,7 @@ except Exception as e:
 app.include_router(auth.router)
 app.include_router(favorites_v2.router)
 app.include_router(knowledge.router)
+app.include_router(blindspot_router)
 app.include_router(chat.router)
 app.include_router(settings_router.router)
 app.include_router(asr_router)

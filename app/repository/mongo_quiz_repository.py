@@ -55,6 +55,7 @@ async def insert_questions(
         _correct = q.get("correct_answer")
         _keywords = q.get("keywords")
         _rubric = q.get("scoring_rubric")
+        _related = q.get("related_entities")  # Plan 1.0.6 blind-spot attribution tags
 
         docs.append(
             {
@@ -88,6 +89,11 @@ async def insert_questions(
                 "bvid": q.get("bvid"),
                 "source_segment": q.get("source_segment"),
                 "chunk_id": str(q.get("source_chunk_index", "")),
+                "related_entities": (
+                    json.dumps(_related)
+                    if _related is not None and not isinstance(_related, str)
+                    else (_related or json.dumps([]))
+                ),
                 "is_valid": True,
                 "created_at": _now(),
             }
@@ -167,6 +173,45 @@ async def count_questions(quiz_uuid: str) -> int:
     return await coll(COLLECTION).count_documents(
         {"quiz_uuid": quiz_uuid, "is_valid": True}
     )
+
+
+async def get_question_attributions(quiz_uuids: list[str]) -> list[dict]:
+    """Blind-spot map (Plan 1.0.6): batch-read question entity attributions.
+
+    Returns [{question_uuid, quiz_uuid, related_entities(list), question_text}].
+    Empty related_entities means the caller can fall back to vector attribution
+    on question_text.
+    """
+    if not quiz_uuids or not is_enabled():
+        return []
+    cursor = coll(COLLECTION).find(
+        {"quiz_uuid": {"$in": list(quiz_uuids)}, "is_valid": True},
+        {
+            "question_uuid": 1,
+            "quiz_uuid": 1,
+            "related_entities": 1,
+            "question_text": 1,
+            "_id": 0,
+        },
+    )
+    results = await cursor.to_list(length=1000)
+    out: list[dict] = []
+    for r in results:
+        raw = r.get("related_entities")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = []
+        out.append(
+            {
+                "question_uuid": r.get("question_uuid", ""),
+                "quiz_uuid": r.get("quiz_uuid", ""),
+                "related_entities": raw if isinstance(raw, list) else [],
+                "question_text": r.get("question_text", ""),
+            }
+        )
+    return out
 
 
 async def delete_by_quiz(
