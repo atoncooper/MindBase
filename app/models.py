@@ -131,6 +131,12 @@ class Video(Base):
     vector_error = Column(Text, nullable=True)
     vector_asr_version = Column(Integer, nullable=True)  # ASR version captured at last vectorization (change detection)
 
+    # 知识图谱状态（Plan 1.0.5）——派生自 Mongo ASR 正文，独立于向量化流转
+    kg_status = Column(
+        String(20), default="none"
+    )  # none / pending / processing / done / failed
+    kg_version = Column(Integer, nullable=True)  # content version captured at last KG extraction
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

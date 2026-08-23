@@ -242,6 +242,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[MAIN] MinIO init failed (cloud drive disabled): {e}")
 
+    # Plan 1.0.5: Knowledge graph (Neo4j) — optional dependency, degrades gracefully
+    try:
+        from app.infra.neo4j import init as neo4j_init
+
+        await neo4j_init()
+    except Exception as e:
+        logger.warning(f"[MAIN] Neo4j init failed (KG features degraded): {e}")
+
     # 初始化 ApiKeyManager（用户自定义 API Key 加密服务）
     from app.services.llm.api_key_manager import ApiKeyManager
 
@@ -375,6 +383,10 @@ async def lifespan(app: FastAPI):
         from app.infra.mongo import close as close_mongo
 
         await _asyncio.shield(close_mongo())
+
+        from app.infra.neo4j import close as close_neo4j
+
+        await _asyncio.shield(close_neo4j())
 
         from app.infra.milvus import close as close_milvus
 

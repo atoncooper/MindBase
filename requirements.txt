@@ -37,6 +37,7 @@ PyYAML>=6.0
 motor>=3.6
 redis[hiredis]>=5.0
 pymilvus>=2.4.0
+neo4j>=5.0
 matplotlib>=3.7
 datasets>=2.14
 ragas>=0.1
