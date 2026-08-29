@@ -1,0 +1,69 @@
+name: Desktop Release
+
+# 推送 mind-base-desktop-v* 形式的 tag 时自动：拉取 ffmpeg sidecar →
+# 前端 + Rust 编译 → 创建 GitHub Release 并上传 NSIS/MSI 安装包。
+# 应用内更新器按该前缀识别版本（strip 后与 tauri.conf.json 的 version 比较），
+# 附件文件名保持 tauri 默认命名（含 x64、以 -setup.exe 结尾）即可被识别。
+
+on:
+  push:
+    tags:
+      - "mind-base-desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mind-base-desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mind-base-desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mind-base-desktop/src-tauri
+
+      - name: Provision FFmpeg sidecar
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
+
+      - name: Verify tag matches app version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME              # mind-base-desktop-v0.1.0
+          $expected = $tag -replace '^mind-base-desktop-v', ''
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($conf.version -ne $expected) {
+            Write-Error "tag 版本($expected) 与 tauri.conf.json 版本($($conf.version)) 不一致，请先改版本号再打 tag"
+            exit 1
+          }
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build Tauri app
+        run: npm run tauri build
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $files = @(
+            (Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe")
+            (Get-ChildItem "src-tauri/target/release/bundle/msi/*.msi")
+          ) | ForEach-Object { $_.FullName }
+          if ($files.Count -eq 0) { Write-Error "未找到构建产物"; exit 1 }
+          gh release create $env:GITHUB_REF_NAME @files `
+            --title "MindBase Desktop $env:GITHUB_REF_NAME" `
+            --generate-notes

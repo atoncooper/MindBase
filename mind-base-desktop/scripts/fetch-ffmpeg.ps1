@@ -1,4 +1,4 @@
-# fetch-ffmpeg.ps1 - Provision the FFmpeg sidecar binaries bundled with MindBase Desktop.
+﻿# fetch-ffmpeg.ps1 - Provision the FFmpeg sidecar binaries bundled with MindBase Desktop.
 #
 # Copies (or downloads) ffmpeg.exe / ffprobe.exe into src-tauri/binaries/ using the
 # "-{target-triple}" naming required by Tauri's `bundle.externalBin`.
@@ -78,36 +78,67 @@ if ($locals.Count -gt 0) {
     exit 0
 }
 
-# --- Strategy B: download the gyan.dev release essentials zip -----------------
-Write-Host "[fetch-ffmpeg] strategy B: no local ffmpeg under $LocalSourceRoot, downloading $DownloadUrl"
+# --- Strategy B: download a known-good Windows build --------------------------
+# 首选 BtbN 的 GitHub 托管构建（Actions 环境下下载快且无 UA/防盗链问题），
+# gyan.dev 作为备用源。两者解压后都是 <文件夹>/bin/ffmpeg.exe 结构。
+$DefaultUrls = @(
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+)
+$DownloadUrls = if ($DownloadUrl -ne "" -and $DownloadUrl -ne $DefaultUrls[1]) {
+    @($DownloadUrl) + $DefaultUrls
+} else {
+    $DefaultUrls
+}
+Write-Host "[fetch-ffmpeg] strategy B: no local ffmpeg under $LocalSourceRoot"
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mindbase-ffmpeg-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 try {
-    $zipPath = Join-Path $tempRoot "ffmpeg-release-essentials.zip"
-    $downloadArgs = @{
-        Uri = $DownloadUrl
-        OutFile = $zipPath
-        UseBasicParsing = $true
-    }
-    if ($Proxy -ne "") {
-        $downloadArgs["Proxy"] = $Proxy
-        Write-Host "[fetch-ffmpeg] using proxy $Proxy"
-    }
-    Invoke-WebRequest @downloadArgs
-    if (-not (Test-NonEmptyFile $zipPath)) {
-        throw "[fetch-ffmpeg] downloaded archive is missing or empty: $zipPath"
-    }
-
     $extractDir = Join-Path $tempRoot "extracted"
-    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+    $lastError = "no attempt made"
+    foreach ($url in $DownloadUrls) {
+        $zipPath = Join-Path $tempRoot ("ffmpeg-" + [Guid]::NewGuid().ToString("N").Substring(0, 8) + ".zip")
+        Write-Host "[fetch-ffmpeg] downloading $url"
+        try {
+            $downloadArgs = @{
+                Uri = $url
+                OutFile = $zipPath
+                UseBasicParsing = $true
+                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MindBase-fetch-ffmpeg"
+            }
+            if ($Proxy -ne "") {
+                $downloadArgs["Proxy"] = $Proxy
+                Write-Host "[fetch-ffmpeg] using proxy $Proxy"
+            }
+            Invoke-WebRequest @downloadArgs
+            if (-not (Test-NonEmptyFile $zipPath)) {
+                $lastError = "downloaded archive is missing or empty: $url"
+                Write-Host "[fetch-ffmpeg] $lastError, trying next source"
+                continue
+            }
 
-    $zipped = @(Get-ChildItem -Path (Join-Path $extractDir "*") -Recurse -Filter "ffmpeg.exe" `
-        -File -ErrorAction SilentlyContinue)
-    if ($zipped.Count -eq 0) {
-        throw "[fetch-ffmpeg] ffmpeg.exe not found inside downloaded archive"
+            Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+
+            $zipped = @(Get-ChildItem -Path $extractDir -Recurse -Filter "ffmpeg.exe" `
+                -File -ErrorAction SilentlyContinue)
+            if ($zipped.Count -eq 0) {
+                # 诊断输出：列出解压根的两层结构，找出"找不到"的真实原因。
+                $tree = Get-ChildItem -Path $extractDir -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+                    Select-Object -First 25 -ExpandProperty FullName
+                $lastError = "ffmpeg.exe not found inside $url; extracted tree:`n" + ($tree -join "`n")
+                Write-Host "[fetch-ffmpeg] $lastError"
+                continue
+            }
+            Copy-BinariesFrom -BinDir $zipped[0].DirectoryName
+            exit 0
+        }
+        catch {
+            $lastError = "$url : $($_.Exception.Message)"
+            Write-Host "[fetch-ffmpeg] source failed: $lastError, trying next source"
+        }
     }
-    Copy-BinariesFrom -BinDir $zipped[0].DirectoryName
+    throw "[fetch-ffmpeg] all download sources failed; last error: $lastError"
 }
 finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
