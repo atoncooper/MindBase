@@ -1,0 +1,4577 @@
+/*
+ * MindBase Desktop — design system (Codex-style).
+ *
+ * Strict monochrome on plain white (light) / terminal inversion (dark).
+ * Structure comes from hairline rules and monospace micro-labels only —
+ * no color, no gradients, no textures, no glass. Quiet until you look
+ * closely.
+ */
+
+:root {
+  --paper: #ffffff;
+  --surface: #ffffff;
+  /* 雅黑：softened near-black — crisp for text, gentle for solid surfaces. */
+  --ink: #1f1f1e;
+  --ink-2: #6e6e6a;
+  --line: #e9e9e8;
+  --line-strong: #cbcbc7;
+  --wash: #f5f5f4;
+  /* Quiet-paper layering: rails/sidebars separate from the paper by tone,
+     not by hairline borders. */
+  --rail: #f5f5f3;
+  --shadow-lift: 0 6px 20px rgba(31, 31, 30, 0.08);
+  /* Semantic status colors — the only color in the system. */
+  --ok: #1e8e3e;
+  --ok-bg: #e7f3ea;
+  --danger: #d93025;
+  --danger-bg: #fcebe9;
+  /* 用户消息气泡（Gemini 风浅蓝容器）。 */
+  --user-bubble: #d3e3fd;
+  --user-bubble-ink: #102e56;
+
+  --font-sans:
+    "Geist Sans", "PingFang SC", "Noto Sans SC", "Microsoft YaHei",
+    -apple-system, sans-serif;
+  --font-mono:
+    "Geist Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
+  /* 书写面专用：霞鹜文楷屏幕版（内置子集）优先，缺字回退系统黑体。
+     楷体字形舒展、字重轻盈，是中文长文读写的最优解。 */
+  --font-editor:
+    "LXGW WenKai Screen", "PingFang SC", "HarmonyOS Sans SC", "MiSans",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+
+/* 暗色主题：由 lib/theme.ts 把解析结果写到 <html data-theme>，浅色档与
+   系统档浅色都不带属性，天然落在 :root 默认变量上。 */
+:root[data-theme="dark"] {
+  --paper: #131312;
+  --surface: #1b1b1a;
+  --ink: #ececea;
+  --ink-2: #8b8b86;
+  --line: #282827;
+  --line-strong: #40403e;
+  --wash: #222221;
+  --rail: #181817;
+  --shadow-lift: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --ok: #6dd58c;
+  --ok-bg: #1f2d22;
+  --danger: #f28b82;
+  --danger-bg: #38211e;
+  --user-bubble: #0842a0;
+  --user-bubble-ink: #d3e3fd;
+}
+
+body {
+  margin: 0;
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--ink);
+  color: var(--paper);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Layout -------------------------------------------------------------- */
+
+.shell {
+  max-width: 660px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Favorites gets a wider column — media lists need the room (frontendv2
+   uses 860px for the same view). */
+.shell--wide {
+  max-width: 920px;
+}
+
+/* 全幅视图：铺满整个主栏（不设居中窄栏），并整体适当放大排版。
+   知识库 / 文件入库 / 测验 / 技能 / 收藏夹 / 设置都走这一档。 */
+.shell--full {
+  max-width: none;
+  padding: 30px 44px 56px;
+  font-size: 14px;
+}
+
+.shell--full .header__title {
+  font-size: 21px;
+  line-height: 28px;
+}
+
+.shell--full .header__subtitle {
+  font-size: 13px;
+}
+
+.shell--full .header__badge {
+  width: 50px;
+  height: 50px;
+  border-radius: 11px;
+  font-size: 15px;
+}
+
+.shell--full .card {
+  padding: 22px 28px 24px;
+  border-radius: 12px;
+}
+
+.shell--full .card__title {
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.shell--full .hint-text {
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.shell--full .cfg-label {
+  font-size: 13px;
+}
+
+/* Staggered reveal on load; each card rises a beat after the previous one. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.shell > * {
+  animation: rise 0.55s cubic-bezier(0.21, 0.6, 0.35, 1) both;
+}
+
+.shell > *:nth-child(1) { animation-delay: 0.02s; }
+.shell > *:nth-child(2) { animation-delay: 0.08s; }
+.shell > *:nth-child(3) { animation-delay: 0.14s; }
+.shell > *:nth-child(4) { animation-delay: 0.2s; }
+.shell > *:nth-child(5) { animation-delay: 0.26s; }
+
+/* Header --------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 18px;
+}
+
+.header__badge {
+  width: 42px;
+  height: 42px;
+  border-radius: 9px;
+  background-color: var(--ink);
+  color: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  flex-shrink: 0;
+}
+
+.header__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.header__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 24px;
+}
+
+.header__subtitle {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+
+.chip {
+  align-self: center;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* Settings tabs — quiet segmented pills (no rule underneath). ------------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 3px;
+  background-color: var(--wash);
+  border-radius: 9px;
+}
+
+.tab {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab--active {
+  color: var(--ink);
+  font-weight: 500;
+  background-color: var(--paper);
+  box-shadow: 0 1px 3px rgba(31, 31, 30, 0.1);
+}
+
+/* Panes keep their own stack rhythm; [hidden] beats display:flex. */
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-pane[hidden] {
+  display: none;
+}
+
+/* Left navigation rail ------------------------------------------------------ */
+
+/* Slim icon column at the far left; navigation lives top-left. In-flow, no
+   fixed/transform/z-index — same structural rule as the app frame. */
+.nav-rail {
+  flex-shrink: 0;
+  width: 56px;
+  background-color: var(--rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 0;
+  overflow-y: auto;
+}
+
+/* 弹性占位：主导航与底部设置组之间的空隙，把设置推到最下方。 */
+.nav-rail__spacer {
+  flex: 1 1 auto;
+  min-height: 10px;
+}
+
+/* 设置组顶部的细分隔线，视觉上与主导航分组。 */
+.nav-rail__spacer + .rail-btn {
+  position: relative;
+}
+.nav-rail__spacer + .rail-btn::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background-color: var(--line-strong);
+}
+
+.rail-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 10px;
+  background-color: transparent;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.rail-btn:hover:not(:disabled) {
+  color: var(--ink);
+  background-color: var(--wash);
+}
+
+.rail-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* Active route: full inversion — the one loud state in the system. */
+.rail-btn--active,
+.rail-btn--active:hover {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.rail-btn svg {
+  width: 19px;
+  height: 19px;
+}
+
+/* Cards ---------------------------------------------------------------- */
+
+.card {
+  background-color: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 18px 20px 20px;
+}
+
+.card:hover {
+  box-shadow: var(--shadow-lift);
+}
+
+.card__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* Section index ("01") sits in ink; the title runs out into a hairline. */
+.card__index {
+  color: var(--ink);
+  letter-spacing: 0.08em;
+}
+
+.card__title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background-color: var(--line);
+}
+
+/* Key-value rows -------------------------------------------------------- */
+
+.rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Inverted card — full tonal flip: ink surface on the light theme, paper
+   surface on the dark theme. Used as provider flip-card FRONT faces so
+   credentials feel like "the vault". Every nested component re-derives
+   from --paper mixes. */
+.card--invert {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+/* Rotary vault — all provider cards live on one 3D ring inside a single
+   stage; the side arrows rotate the ring and the next card swings in from
+   that direction. The active card itself flips front(status)/back(edit). */
+/* API 密钥档案索引：一行一个提供方，收起即状态摘要，展开即编辑表单。
+   替代旧 3D 轮播——配置管理需要一屏总览全部状态，而非串行翻页。 */
+.vault-ledger {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ledger-row {
+  border-bottom: 1px solid var(--line);
+}
+
+.ledger-row__head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 13px 6px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 0.15s ease;
+}
+
+.ledger-row__head:hover {
+  background-color: var(--wash);
+}
+
+.ledger-row__head:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.ledger-row__index {
+  flex-shrink: 0;
+  width: 22px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  transition: color 0.15s ease;
+}
+
+.ledger-row__head:hover .ledger-row__index {
+  color: var(--ink);
+}
+
+.ledger-row__id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ledger-row__name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.ledger-row__group {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.ledger-row__state {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ledger-row__model {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+/* 掩码 key：mono 实底 chip；未配置：虚线 chip——缺口一扫即知。 */
+.ledger-row__mask {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  background-color: var(--wash);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+
+.ledger-row__unset {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: 5px;
+  padding: 1px 7px;
+}
+
+/* 「默认」徽标：小墨牌。 */
+.ledger-row__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+}
+
+.ledger-row__chevron {
+  width: 14px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1;
+  color: var(--ink-2);
+  text-align: center;
+  transition:
+    transform 0.25s ease,
+    color 0.15s ease;
+}
+
+.ledger-row__head:hover .ledger-row__chevron {
+  color: var(--ink);
+}
+
+.ledger-row.is-open .ledger-row__chevron {
+  transform: rotate(90deg);
+}
+
+/* 展开动画：grid 0fr→1fr，内容随高度自然生长。 */
+.ledger-row__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.33, 0.9, 0.25, 1);
+}
+
+.ledger-row.is-open .ledger-row__panel {
+  grid-template-rows: 1fr;
+}
+
+.ledger-row__panel-inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 左缩进与行头序号后的内容对齐。 */
+  padding: 0 6px 0 42px;
+  transition: padding-bottom 0.3s cubic-bezier(0.33, 0.9, 0.25, 1);
+}
+
+.ledger-row.is-open .ledger-row__panel-inner {
+  padding-bottom: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ledger-row__panel,
+  .ledger-row__panel-inner,
+  .ledger-row__chevron {
+    transition: none;
+  }
+}
+
+/* ASR 提供方切换（云端 API / 本地部署）：展开面板顶部的分段选择器。 */
+.asr-mode-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 10px;
+}
+
+.asr-mode-switch__options {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.asr-mode-switch__option {
+  border: none;
+  background-color: transparent;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.asr-mode-switch__option + .asr-mode-switch__option {
+  border-left: 1px solid var(--line-strong);
+}
+
+.asr-mode-switch__option.is-active {
+  background-color: var(--ink);
+  color: var(--paper);
+}
+
+.asr-mode-switch__option:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.asr-mode-switch__local {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 「本地 ASR 模型」卡片：逐模型一行，含状态徽标与下载进度。 */
+.model-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 9px 2px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.model-item:last-child {
+  border-bottom: none;
+}
+
+.model-item__info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-item__name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.model-item__meta {
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.model-item__state {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-item__progress {
+  flex-basis: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background-color: var(--line);
+  overflow: hidden;
+}
+
+.model-item__progress-fill {
+  height: 100%;
+  background-color: var(--ink);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-item__progress-fill {
+    transition: none;
+  }
+}
+
+/* Composer 提供方选择器：发送按钮旁的小图标。 */
+.provider-picker {
+  position: relative;
+  flex-shrink: 0;
+  align-self: flex-end;
+}
+
+.provider-icon {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  background-color: transparent;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.provider-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.provider-icon:hover:not(:disabled) {
+  color: var(--ink);
+  background-color: var(--wash);
+}
+
+/* 手动选择了非默认提供方时，图标右上角亮一颗小点。 */
+.provider-icon__dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--ink);
+}
+
+.provider-menu {
+  bottom: calc(100% + 10px);
+  left: auto;
+  right: 0;
+  min-width: 190px;
+}
+
+.provider-menu {
+  position: absolute;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--paper);
+  box-shadow: var(--shadow-lift);
+  z-index: 30;
+}
+
+.provider-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 11px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.provider-menu__item:hover {
+  background-color: var(--wash);
+}
+
+.provider-menu__item--active {
+  font-weight: 600;
+  background-color: var(--wash);
+}
+
+.provider-menu__item--active::after {
+  content: "✓";
+  float: right;
+  color: var(--ink-2);
+}
+
+.provider-menu__empty {
+  margin: 0;
+  padding: 8px 11px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.card--invert .card__index {
+  color: var(--paper);
+}
+
+.card--invert .card__title::after {
+  background-color: color-mix(in srgb, var(--paper) 16%, transparent);
+}
+
+.card--invert .card-hint {
+  color: color-mix(in srgb, var(--paper) 52%, transparent);
+}
+
+/* Group micro-headers inside the inverted card. */
+.key-group {
+  margin-top: 20px;
+}
+
+.key-group:first-of-type {
+  margin-top: 2px;
+}
+
+.key-group__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.key-group__hint {
+  margin: 2px 0 6px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.card--invert .key-group__title {
+  color: var(--paper);
+}
+
+.card--invert .key-group__hint {
+  color: color-mix(in srgb, var(--paper) 46%, transparent);
+}
+
+.card--invert .key-row__label {
+  color: var(--paper);
+}
+
+.card--invert .cfg-label {
+  color: color-mix(in srgb, var(--paper) 52%, transparent);
+}
+
+.card--invert .cfg-row:focus-within .cfg-label {
+  color: var(--paper);
+}
+
+.card--invert .cfg-input {
+  color: var(--paper);
+  caret-color: var(--paper);
+  border-bottom-color: color-mix(in srgb, var(--paper) 26%, transparent);
+}
+
+.card--invert .cfg-input:hover:not(:disabled) {
+  border-bottom-color: color-mix(in srgb, var(--paper) 46%, transparent);
+}
+
+.card--invert .cfg-input:focus {
+  border-bottom-color: var(--paper);
+  box-shadow: 0 1px 0 var(--paper);
+}
+
+.card--invert .cfg-input::placeholder {
+  color: color-mix(in srgb, var(--paper) 36%, transparent);
+}
+
+.card--invert .icon-button {
+  color: color-mix(in srgb, var(--paper) 68%, transparent);
+}
+
+.card--invert .icon-button:hover:not(:disabled) {
+  color: var(--paper);
+  background-color: color-mix(in srgb, var(--paper) 10%, transparent);
+}
+
+.card--invert .status {
+  border-color: color-mix(in srgb, var(--paper) 30%, transparent);
+  color: color-mix(in srgb, var(--paper) 62%, transparent);
+}
+
+/* Semantic colors flip to their bright variants for contrast on ink. */
+.card--invert .status--ok {
+  background-color: transparent;
+  color: #6dd58c;
+}
+
+.card--invert .button {
+  border-color: color-mix(in srgb, var(--paper) 34%, transparent);
+  color: var(--paper);
+}
+
+.card--invert .button:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--paper) 10%, transparent);
+}
+
+.card--invert .button--primary {
+  background-color: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
+}
+
+.card--invert .button--primary:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--paper) 88%, var(--ink));
+}
+
+.card--invert .hint-text {
+  color: color-mix(in srgb, var(--paper) 52%, transparent);
+}
+
+.card--invert .error-text {
+  background-color: rgba(242, 139, 130, 0.12);
+  color: #f28b82;
+}
+
+.card--invert .placeholder {
+  color: color-mix(in srgb, var(--paper) 52%, transparent);
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+}
+
+.row__label {
+  flex-shrink: 0;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+
+.row__value {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: right;
+}
+
+.row__value--path {
+  word-break: break-all;
+  line-height: 1.6;
+}
+
+/* Text inputs inside the settings rows (local ASR form). The row value is
+   right-aligned by default, but editable fields need a left-aligned, bounded
+   box so the caret lands predictably. */
+.text-input {
+  width: 260px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: var(--ink-2);
+  box-shadow: 0 0 0 2px var(--line);
+}
+
+.text-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.text-input--narrow {
+  width: 110px;
+}
+
+/* Status badges: hairline pills, monochrome semantics via glyphs.
+   default = hollow dot (pending), --ok = filled dot, --error = × glyph,
+   --info = inverted block (the one loud state in the system). */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1.25px solid currentColor;
+  flex-shrink: 0;
+}
+
+/* Ready / success: the green voice. */
+.status--ok {
+  background-color: var(--ok-bg);
+  border-color: transparent;
+  color: var(--ok);
+}
+
+.status--ok::before {
+  background-color: currentColor;
+}
+
+/* Loading state: the hollow dot breathes until replaced by a verdict. */
+@keyframes breathe {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.status--live::before {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.status--error {
+  background-color: var(--danger-bg);
+  border-color: transparent;
+  color: var(--danger);
+}
+
+.status--error::before {
+  width: auto;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  background: none;
+  content: "×";
+  font-weight: 600;
+  line-height: 1;
+}
+
+.status--info {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.status--info::before {
+  border-color: var(--paper);
+}
+
+/* Buttons ---------------------------------------------------------------- */
+
+.button {
+  height: 34px;
+  padding: 0 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background-color: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.12s ease,
+    box-shadow 0.15s ease;
+}
+
+.button:hover:not(:disabled) {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.button--primary {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.button--primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lift);
+}
+
+.button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+/* Update banner ------------------------------------------------------------ */
+
+.update-banner {
+  border-left: 3px solid var(--ink);
+}
+
+.update-banner__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-banner__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.update-banner__title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.update-banner__notes {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.update-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* Misc ------------------------------------------------------------------ */
+
+.placeholder {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.hint-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+.card__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 4px;
+}
+
+/* Relocation option: copy existing data vs start fresh. */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-row input {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1.25px solid var(--ink);
+  border-radius: 4px;
+  background-color: transparent;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.checkbox-row input:checked {
+  background-color: var(--ink);
+}
+
+.checkbox-row input:checked::after {
+  content: "";
+  width: 8px;
+  height: 4px;
+  border-left: 1.5px solid var(--paper);
+  border-bottom: 1.5px solid var(--paper);
+  transform: rotate(-45deg) translateY(-1px);
+}
+
+/* API key rows ----------------------------------------------------------- */
+
+.card-hint {
+  margin: 0 0 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.key-row {
+  padding: 12px 0;
+}
+
+.key-row:last-of-type {
+  padding-bottom: 2px;
+}
+
+.key-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.key-row__label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Config-file field rows -------------------------------------------------
+   Each setting reads like a line in a dotfile: fixed mono label column,
+   frameless underline input, optional trailing control. */
+
+.cfg-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.cfg-row + .cfg-row {
+  margin-top: 6px;
+}
+
+.cfg-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+/* Typing anywhere in the row lights its label up to full ink. */
+.cfg-row:focus-within .cfg-label {
+  color: var(--ink);
+}
+
+.cfg-input {
+  min-width: 0;
+  height: 30px;
+  padding: 0 2px;
+  border: none;
+  /* Resting underline sits quieter than the row separators above it. */
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background-color: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  caret-color: var(--ink);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.cfg-input:hover:not(:disabled) {
+  border-bottom-color: var(--line-strong);
+}
+
+/* Focus draws a firmer double-weight rule; that plus the lit label is the
+   entire focus affordance — no outlines, no glow. */
+.cfg-input:focus {
+  outline: none;
+  border-bottom-color: var(--ink);
+  box-shadow: 0 1px 0 var(--ink);
+}
+
+.cfg-input::placeholder {
+  color: var(--ink-2);
+  opacity: 0.55;
+}
+
+.cfg-input:disabled {
+  opacity: 0.45;
+}
+
+/* Keep webkit autofill from painting its default pale-yellow plate. */
+.cfg-input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px var(--surface) inset;
+  -webkit-text-fill-color: var(--ink);
+  transition: background-color 9999s ease-out;
+}
+
+/* Ghost icon control (visibility toggle) at the row's tail. */
+.icon-button {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background-color: transparent;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--ink);
+  background-color: var(--wash);
+}
+
+.icon-button:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.icon-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.cfg-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 14px;
+}
+
+.cfg-actions__spacer {
+  flex: 1;
+}
+
+/* Errors use the red voice; success uses green. Navigation stays ink. */
+.error-text {
+  margin: 12px 0 0;
+  padding: 10px 13px;
+  border-radius: 7px;
+  background-color: var(--danger-bg);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* Bilibili: login dialog -------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(31, 31, 30, 0.42);
+  display: grid;
+  place-items: center;
+  /* Above every app surface (panel 12, corner buttons 10) by an order of
+     magnitude — dialogs must never lose a stacking fight. */
+  z-index: 2000;
+}
+
+.modal {
+  width: 320px;
+  padding: 18px 20px 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background-color: var(--surface);
+  box-shadow: var(--shadow-lift);
+}
+
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.modal__hint {
+  margin: 14px 0 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+/* QR canvas sits on a fixed white plate; overlays (expired/error) cover it. */
+.qr-stage {
+  position: relative;
+  margin-top: 14px;
+  display: grid;
+  place-items: center;
+  min-height: 224px;
+}
+
+.qr-stage__canvas {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: #ffffff;
+}
+
+.qr-stage__overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.94);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 0 20px;
+}
+
+.qr-stage__overlay p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.qr-stage__detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+/* Bilibili: account row --------------------------------------------------- */
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 12px;
+
+}
+
+.account-row--expired .account-row__name {
+  color: var(--ink-2);
+}
+
+.account-row__avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.account-row__avatar--empty {
+  display: inline-block;
+  background-color: var(--wash);
+}
+
+/* Compact avatar variant used in the favorites view's account strip. */
+.account-row__avatar--sm {
+  width: 24px;
+  height: 24px;
+}
+
+/* Favorites main view: account profile banner above the folder cards. */
+.fav-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--wash);
+}
+
+.fav-profile__avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--line-strong);
+  object-fit: cover;
+  flex-shrink: 0;
+  background-color: var(--surface);
+}
+
+.fav-profile__avatar--empty {
+  display: inline-block;
+}
+
+.fav-profile__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fav-profile__name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fav-profile__sub {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+.fav-profile__tag {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background-color: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.account-row__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-row__name {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-row__sub {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+
+/* Bilibili: favorites (folder cards à la frontendv2) ------------------------ */
+
+.fav-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One folder = one card row; the video list expands inside it. */
+.fav-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--surface);
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.fav-card--open {
+  border-color: var(--line-strong);
+}
+
+.fav-card__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  background-color: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.fav-card__head:hover {
+  background-color: var(--wash);
+}
+
+.fav-card__icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background-color: var(--wash);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  flex-shrink: 0;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.fav-card__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.fav-card--open .fav-card__icon {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.fav-card__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fav-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fav-card__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fav-card__badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background-color: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+
+.fav-card__meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+/* Right-hand video count chip: number + label, reads as a stat. */
+.fav-card__count {
+  flex-shrink: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background-color: var(--wash);
+  border: 1px solid var(--line);
+}
+
+.fav-card__count-num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fav-card__count-label {
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.fav-card__chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--ink-2);
+  transition: transform 0.2s ease;
+}
+
+.fav-card__chevron--open {
+  transform: rotate(180deg);
+}
+
+/* Expandable region: grid 0fr→1fr gives a height-auto animation with no JS
+   measurement and no transform (nothing that could disturb fixed layers). */
+.fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.24s ease;
+}
+
+.fold--open {
+  grid-template-rows: 1fr;
+}
+
+.fold__inner {
+  overflow: hidden;
+  min-height: 0;
+  border-top: 1px solid transparent;
+  transition: border-color 0.24s ease;
+}
+
+.fold--open .fold__inner {
+  border-top-color: var(--line);
+}
+
+/* Video list inside an expanded folder. */
+.vlist__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+.vlist__meta-count {
+  color: var(--ink-2);
+}
+
+.vlist__meta-invalid {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: var(--danger-bg);
+  color: var(--danger);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+.vlist__note {
+  margin: 0;
+  padding: 10px 12px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.vlist__error {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--danger);
+  word-break: break-all;
+}
+
+.vlist__fail {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.vlist__items {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0 4px;
+}
+
+.vrow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background-color: transparent;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.vrow:hover,
+.vrow--open {
+  background-color: var(--wash);
+}
+
+.vrow--invalid .vrow__title,
+.vrow--invalid .vrow__sub,
+.vrow__title--invalid {
+  color: var(--danger);
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+  opacity: 0.75;
+}
+
+.vrow__chevron {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--ink-2);
+  transition: transform 0.2s ease;
+}
+
+.vrow__chevron--open {
+  transform: rotate(180deg);
+}
+
+.vrow__cover-wrap {
+  position: relative;
+  width: 72px;
+  height: 45px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.vrow__cover {
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  object-fit: cover;
+  display: block;
+  background-color: var(--wash);
+}
+
+.vrow__cover--empty {
+  display: block;
+}
+
+/* Play glyph shown on hover over the cover. */
+.vrow__play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background-color: color-mix(in srgb, var(--ink) 42%, transparent);
+  color: var(--paper);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.vrow__play svg {
+  width: 16px;
+  height: 16px;
+}
+
+.vrow__cover-wrap:hover .vrow__play,
+.vrow--open .vrow__play {
+  opacity: 1;
+}
+
+/* Duration chip pinned to the cover's bottom-right corner. */
+.vrow__dur {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--ink) 72%, transparent);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.vrow__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vrow__title {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vrow__sub {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+.vlist__more {
+  display: grid;
+  place-items: center;
+  padding: 8px 0 10px;
+}
+
+.vlist__more .button {
+  height: 28px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+/* 分P list (third drill-down level, inside an expanded video row) ---------- */
+
+.fold__inner--nested {
+  background-color: var(--wash);
+}
+
+.pages__items {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.prow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 14px 7px 24px;
+  border-radius: 6px;
+  margin: 0 8px;
+  transition: background-color 0.12s ease;
+}
+
+.prow:hover {
+  background-color: var(--surface);
+}
+
+.prow__index {
+  flex-shrink: 0;
+  min-width: 30px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--paper);
+  background-color: var(--ink-2);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.prow__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prow__duration {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: var(--wash);
+  border: 1px solid var(--line);
+}
+
+/* Per-分P ingest button inside each page row (compact, right-aligned). */
+.prow__ingest {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+/* App frame: in-flow two-column layout ------------------------------------- */
+
+/* The sidebar PUSHES the main column instead of overlaying it — plain
+   document flow, no fixed/transform/z-index, so no stacking or hit-testing
+   surprises (the previous overlay drawer's failure mode). */
+.app-frame {
+  display: flex;
+  height: 100vh;
+}
+
+.main-col {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+
+/* Reduced motion: keep the layout, drop the choreography. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+/* Ingest panel (favorites → video fold) ------------------------------------ */
+
+.ingest {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px 22px;
+
+}
+
+.ingest__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ingest__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ingest__lines {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--wash);
+  border-radius: 8px;
+}
+
+.ingest__lines li {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* Ingest loading: a small monochrome spinning ring + a breathing status row,
+   so a long ASR/OSS-upload phase never looks frozen. Strict monochrome — the
+   ring is an ink-outline circle, the pulse is opacity only. */
+.ingest__spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: ingest-spin 0.8s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes ingest-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Always-animated status bar shown while any ingest run is in flight. */
+.ingest__busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--wash);
+  font-size: 12px;
+  color: var(--ink);
+}
+.ingest__busy .ingest__spinner {
+  width: 14px;
+  height: 14px;
+  margin-right: 0;
+}
+.ingest__busy__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--ink);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+.ingest__busy__text {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+/* Progress bar inside the busy strip (ASR / Python provision / transcribe). */
+.ingest__busy {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.ingest__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.ingest__bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ink);
+  transition: width 0.3s ease;
+}
+.ingest__bar--indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--ink);
+  animation: ingest-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes ingest-indeterminate {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+/* Workspace: search / documents --------------------------------------------- */
+
+.ws-search {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ws-search .cfg-input {
+  flex: 1;
+}
+
+.ws-hits {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ws-hit {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-hit__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ws-hit__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-hit__content {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ws-docs {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ws-doc {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.ws-doc__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ws-doc__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-doc__pages {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-doc__page {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ws-doc__page-title {
+  flex-shrink: 0;
+  max-width: 45%;
+  font-size: 11.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-doc__page-meta {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-doc__page-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ws-answer {
+  margin-top: 12px;
+  padding-top: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ws-chip,
+.ws-answer__text,
+.ws-answer__meta {
+  /* Shared with the chat view (source chips). */
+}
+
+.ws-chip {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.ws-chip:hover {
+  border-color: var(--line-strong);
+}
+
+/* ===========================================================================
+   Chat workspace (home) — full-bleed conversation surface.
+   The chat skips the .shell card entirely: sidebar + message column own the
+   whole main area edge to edge. Reading measure is capped at 780px so lines
+   stay editorial; every other pixel stays quiet paper.
+   =========================================================================== */
+
+.main-col--chat {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* Session rail --------------------------------------------------------------- */
+
+.chat-sidebar {
+  width: 248px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background-color: var(--rail);
+  padding: 16px 12px;
+  min-height: 0;
+  /* 展开 ⇄ 收起的平滑过渡（见 SessionSidebar 组件注释：单树常驻才能过渡） */
+  overflow: hidden;
+  transition:
+    width 0.22s cubic-bezier(0.21, 0.6, 0.35, 1),
+    padding 0.22s cubic-bezier(0.21, 0.6, 0.35, 1);
+}
+
+/* 展开态内容块；收起时整块让位给窄脊。 */
+.chat-sidebar__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.chat-sidebar--collapsed .chat-sidebar__body {
+  display: none;
+}
+
+/* 收起态内容块（窄脊）：与展开块互斥显隐，宽度动画由 <aside> 承担。 */
+.chat-sidebar__spine {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+.chat-sidebar--collapsed .chat-sidebar__spine {
+  display: flex;
+}
+
+.chat-sidebar__new {
+  width: 100%;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.chat-sidebar__new:hover:not(:disabled) {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.chat-sidebar__empty {
+  margin: 10px 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.session-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  animation: rise 0.4s cubic-bezier(0.21, 0.6, 0.35, 1) both;
+  transition: background-color 0.12s ease;
+}
+
+.session-item:hover {
+  background-color: var(--wash);
+}
+
+/* Active session: hairline ink bar docked on the left edge. */
+.session-item--active,
+.session-item--active:hover {
+  background-color: var(--wash);
+}
+
+.session-item--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background-color: var(--ink);
+}
+
+.session-item__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 8px 6px 8px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-item__title {
+  max-width: 100%;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.12s ease;
+}
+
+.session-item:hover .session-item__title,
+.session-item--active .session-item__title {
+  color: var(--ink);
+}
+
+.session-item--active .session-item__title {
+  font-weight: 600;
+}
+
+.session-item__time {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.session-item__actions {
+  flex-shrink: 0;
+  display: none;
+  gap: 2px;
+  padding-right: 5px;
+}
+
+.session-item:hover .session-item__actions {
+  display: inline-flex;
+}
+
+.session-item__input {
+  flex: 1;
+  margin: 4px 6px;
+  font-size: 12px;
+}
+
+/* Message column -------------------------------------------------------------- */
+
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.msg-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.msg-list {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 30px 36px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* New messages arrive with one quiet beat of motion — never bouncy. */
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.msg-row {
+  display: flex;
+  animation: msg-in 0.32s cubic-bezier(0.21, 0.6, 0.35, 1) both;
+}
+
+.msg-row--user {
+  justify-content: flex-end;
+}
+
+.msg-row--assistant {
+  justify-content: flex-start;
+}
+
+/* User turn: a compact ink pill, tail-corner clipped for direction. */
+.bubble--user {
+  max-width: 72%;
+  border-radius: 14px 14px 4px 14px;
+  padding: 9px 14px;
+  background-color: var(--user-bubble);
+  color: var(--user-bubble-ink);
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 用户消息 hover 操作条：编辑 / 复制，贴气泡右下，默认隐形。 */
+.msg-user__actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.msg-row--user:hover .msg-user__actions,
+.msg-user__actions:focus-within {
+  opacity: 1;
+}
+
+.msg-user__actions .icon-button {
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+}
+
+/* 用户消息行内编辑（Gemini 式「编辑并重新发送」）。 */
+.user-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(72%, 560px);
+}
+
+.user-edit__input {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.65;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+}
+
+.user-edit__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* Assistant turn: no bubble — an open editorial text block. */
+.assistant-block {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+/* Assistant markdown：复用 .markdown-body 排版，但作为消息块内的行内流，
+   不做滚动容器、不保留源码空白（换行由 remark-breaks 处理）。 */
+.md-content.markdown-body {
+  overflow: visible;
+}
+
+.assistant-block .md-content > :first-child {
+  margin-top: 0;
+}
+
+.assistant-block--error .md-content {
+  color: var(--ink-2);
+}
+
+/* 流式光标画在最后一个块级元素的 ::after 上，始终贴住生成文本末尾
+   （ChatGPT 风格），无需往 markdown 源里注入字符。 */
+.md-content.is-streaming > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  background-color: var(--ink-2);
+  animation: cursor-blink 0.9s steps(2) infinite;
+}
+
+.assistant-block--error::before {
+  content: "";
+  display: block;
+  width: 28px;
+  height: 2px;
+  background-color: var(--danger);
+  margin-bottom: 8px;
+}
+
+.assistant-block .error-text {
+  margin: 8px 0 0;
+}
+
+/* Harness steps: terminal log inside a collapsible <details>; the left rule
+   runs through both the collapsed summary and the expanded log. */
+.msg-steps {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 12px;
+  border-left: 1px solid var(--line);
+}
+
+/* Collapsed summary: deduped tool list + step count, mono terminal style. */
+.msg-steps summary {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.msg-steps summary::-webkit-details-marker {
+  display: none;
+}
+
+.msg-steps summary::before {
+  content: "▸ ";
+  color: var(--line-strong);
+}
+
+.msg-steps[open] summary::before {
+  content: "▾ ";
+}
+
+.msg-steps summary:hover {
+  color: var(--ink);
+}
+
+.msg-steps ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.msg-steps li {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+}
+
+.msg-steps li::before {
+  content: "› ";
+  color: var(--line-strong);
+}
+
+/* Sub-agent rounds arrive as prefixed lines; indent them under the parent. */
+.msg-steps li.sub-step {
+  padding-left: 14px;
+}
+
+.msg-steps li.sub-step::before {
+  content: "↳ ";
+}
+
+/* ChatGPT-style waiting indicator: three rising dots while the turn has
+   not produced its first token yet. */
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 0 4px;
+}
+
+.typing-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--ink-2);
+  animation: dot-rise 1.2s infinite ease-in-out;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes dot-rise {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Retry affordance under a failed assistant turn. */
+.msg-retry {
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.msg-retry:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  background-color: var(--ink-2);
+  animation: cursor-blink 0.9s steps(2) infinite;
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.msg-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.msg-sources .ws-chip {
+  background-color: var(--surface);
+}
+
+/* Empty-state hero ------------------------------------------------------------- */
+
+.chat-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+}
+
+.chat-empty__kicker {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.22em;
+  color: var(--ink-2);
+  animation: rise 0.5s cubic-bezier(0.21, 0.6, 0.35, 1) both;
+}
+
+.chat-empty__title {
+  margin: 0;
+  font-size: 27px;
+  font-weight: 300;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  animation: rise 0.55s cubic-bezier(0.21, 0.6, 0.35, 1) 0.06s both;
+}
+
+.chat-empty__text {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  animation: rise 0.55s cubic-bezier(0.21, 0.6, 0.35, 1) 0.12s both;
+}
+
+.chat-empty__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+  animation: rise 0.55s cubic-bezier(0.21, 0.6, 0.35, 1) 0.18s both;
+}
+
+.suggest-chip {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 7px 15px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.suggest-chip:hover {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+/* Composer ----------------------------------------------------------------------- */
+
+.composer-wrap {
+  flex-shrink: 0;
+  padding: 6px 36px 18px;
+}
+
+.composer-wrap > .composer,
+.composer-wrap .error-text {
+  max-width: 780px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.composer-wrap .error-text {
+  margin-bottom: 6px;
+}
+
+.composer {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  padding: 10px 10px 10px 16px;
+  background-color: var(--surface);
+  box-shadow: var(--shadow-lift);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.2s ease;
+}
+
+/* hover 预备态：边框先行加深，提示可输入。 */
+.composer:hover:not(:focus-within) {
+  border-color: var(--ink-2);
+}
+
+/* 聚焦态：墨色描边 + 一圈极淡的光环，与全局 focus 语言一致。 */
+.composer:focus-within {
+  border-color: var(--ink);
+  box-shadow:
+    var(--shadow-lift),
+    0 0 0 3px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.composer__input {
+  flex: 1;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  max-height: 160px;
+  /* 上下 7px padding 让单行文本在 36px 高度内垂直居中（22px 行高 + 14px）。 */
+  min-height: 36px;
+  padding: 7px 0;
+  /* 自动增高（ChatView 逐键同步 height）跟随内容平滑伸缩。 */
+  transition: height 0.12s ease;
+}
+
+.composer__input::placeholder {
+  color: var(--ink-2);
+}
+
+/* 生成中禁用：文字降灰，光标明确。 */
+.composer__input:disabled {
+  color: var(--ink-2);
+  cursor: not-allowed;
+}
+
+/* 多行输入的细滚动条（max-height 160px 触发时）。 */
+.composer__input::-webkit-scrollbar {
+  width: 6px;
+}
+
+.composer__input::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background-color: var(--line-strong);
+}
+
+.composer__input::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* "/" 技能快选菜单：浮在 composer 上方的档案式列表。 */
+.skill-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background-color: var(--surface);
+  box-shadow: var(--shadow-lift);
+  padding: 6px;
+  z-index: 30;
+}
+
+.skill-menu__hint {
+  margin: 2px 6px 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.skill-menu__empty {
+  margin: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.skill-menu__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.skill-menu__item.is-active {
+  background-color: var(--wash);
+}
+
+.skill-menu__name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.skill-menu__desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 附加技能 chip：composer 上方的一行墨牌。 */
+.skill-chip-row {
+  max-width: 780px;
+  margin: 0 auto 6px;
+}
+
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: var(--wash);
+}
+
+.skill-chip__label {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.skill-chip__note {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.skill-chip__remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--ink-2);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.skill-chip__remove:hover {
+  background-color: var(--ink);
+  color: var(--paper);
+}
+
+.composer .button {
+  flex-shrink: 0;
+  margin-bottom: 2px;
+}
+
+/* 圆形发送按钮：墨色纸飞机，与 rail 反色语言一致；空输入降透明提示不可发。 */
+.composer__send {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 2px;
+  border: none;
+  border-radius: 999px;
+  background-color: var(--ink);
+  color: var(--paper);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    opacity 0.15s ease,
+    transform 0.12s ease,
+    background-color 0.15s ease;
+}
+
+.composer__send:hover:not(:disabled) {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+.composer__send:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.composer__send:disabled {
+  cursor: not-allowed;
+}
+
+.composer__send--muted {
+  opacity: 0.45;
+}
+
+.composer__send svg {
+  width: 19px;
+  height: 19px;
+}
+
+/* 按钮内的 spinner 去掉外边距以居中。 */
+.composer__send .ingest__spinner {
+  margin-right: 0;
+}
+
+/* 澄清卡片：AI 不确定时发起的交互卡（左侧墨色竖线 + 浅底 + 可点选项）。 */
+.clarify-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 640px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--ink);
+  border-radius: 10px;
+  background-color: var(--wash);
+  padding: 12px 16px;
+}
+
+.clarify-card__question {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.clarify-card__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clarify-card__option {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: var(--surface);
+  color: var(--ink);
+  padding: 6px 14px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.clarify-card__option:hover:not(:disabled) {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.clarify-card__option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.clarify-card__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+/* 中断按钮：危险色，点击后等待本轮落库期间轻微变暗。 */
+.composer__send--stop {
+  background-color: var(--danger);
+  color: #fff;
+  opacity: 0.92;
+}
+
+.composer__send--stop:disabled {
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-cursor,
+  .md-content.is-streaming > :last-child::after,
+  .msg-row,
+  .session-item,
+  .chat-empty__kicker,
+  .chat-empty__title,
+  .chat-empty__text,
+  .chat-empty__suggestions {
+    animation: none !important;
+  }
+}
+
+/* The update banner floats as an inset strip on the full-bleed chat surface. */
+.main-col--chat .update-banner {
+  margin: 12px 16px 0;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+/* Collapsed history rail ("spine") — same 56px rhythm as the nav rail. ------ */
+
+.chat-sidebar--collapsed {
+  width: 56px;
+  padding: 16px 8px;
+  align-items: center;
+}
+
+.spine-btn {
+  width: 36px;
+  height: 36px;
+}
+
+.chat-sidebar--collapsed .spine-btn:hover:not(:disabled) {
+  background-color: var(--wash);
+  color: var(--ink);
+}
+
+.spine-divider {
+  width: 20px;
+  height: 1px;
+  background-color: var(--line-strong);
+  margin: 4px 0;
+  flex-shrink: 0;
+}
+
+.spine-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+  width: 100%;
+}
+
+/* First-glyph tile per session; active = full inversion. */
+.spine-item {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    background-color 0.13s ease,
+    color 0.13s ease,
+    border-color 0.13s ease;
+  overflow: hidden;
+}
+
+.spine-item:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.spine-item--active,
+.spine-item--active:hover {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+/* ===========================================================================
+   Notes — two-pane workspace (list + markdown editor).
+   Lives inside the .shell--wide card; hairline split, monochrome preview.
+   =========================================================================== */
+
+.notes-layout {
+  display: flex;
+  gap: 14px;
+  min-height: 420px;
+  align-items: stretch;
+}
+
+/* List pane ------------------------------------------------------------------ */
+
+.notes-list {
+  width: 250px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: var(--rail);
+  padding: 12px 12px 12px 14px;
+  border-radius: 0 14px 14px 0;
+}
+
+.notes-list__top {
+  display: flex;
+  gap: 6px;
+}
+
+.notes-list__search {
+  flex: 1;
+  min-width: 0;
+}
+
+.notes-list__empty {
+  margin: 10px 2px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+.notes-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.note-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  transition: background-color 0.12s ease;
+}
+
+.note-item:hover {
+  background-color: var(--wash);
+}
+
+.note-item--active {
+  background-color: var(--wash);
+}
+
+.note-item--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background-color: var(--ink);
+}
+
+.note-item__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 7px 6px 7px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.note-item__title {
+  max-width: 100%;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.12s ease;
+}
+
+.note-item:hover .note-item__title,
+.note-item--active .note-item__title {
+  color: var(--ink);
+}
+
+.note-item--active .note-item__title {
+  font-weight: 600;
+}
+
+.note-item__pin {
+  margin-right: 4px;
+  font-size: 11px;
+}
+
+.note-item__snippet {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-item__meta {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.note-item__actions {
+  flex-shrink: 0;
+  display: none;
+  gap: 2px;
+  padding-right: 5px;
+}
+
+.note-item:hover .note-item__actions {
+  display: inline-flex;
+}
+
+/* Editor pane ------------------------------------------------------------------ */
+
+.note-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.note-editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note-editor__title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 15.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  padding: 2px 0;
+}
+
+.note-editor__title::placeholder {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.note-editor__mode {
+  padding: 3px 10px;
+}
+
+.note-editor__modes {
+  display: inline-flex;
+  gap: 2px;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px;
+}
+
+.note-mode {
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    background-color 0.13s ease,
+    color 0.13s ease;
+}
+
+.note-mode:hover {
+  color: var(--ink);
+}
+
+.note-mode--active {
+  background-color: var(--ink);
+  color: var(--paper);
+}
+
+/* Anchors strip ----------------------------------------------------------------- */
+
+.anchors {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 8px;
+
+}
+
+.anchors__label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+}
+
+.anchors__input {
+  flex: 1;
+  min-width: 180px;
+  font-size: 11.5px;
+}
+
+.anchor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.anchor-chip button:first-child {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  color: var(--ink);
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.anchor-chip__del {
+  border: none;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+}
+
+.anchor-chip__del:hover {
+  color: var(--danger);
+}
+
+/* Body area: write / split / read -------------------------------------------------- */
+
+.note-body {
+  flex: 1;
+  min-height: 300px;
+  display: flex;
+  gap: 12px;
+}
+
+.note-body__source {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--wash);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--ink);
+  outline: none;
+}
+
+.note-body__source:focus {
+  border-color: var(--line-strong);
+}
+
+.note-body--write .note-body__source {
+  flex: 1;
+}
+
+.note-body--split .note-body__source,
+.note-body--split .markdown-body {
+  flex: 1;
+}
+
+.markdown-body {
+  overflow-y: auto;
+  font-size: 13.5px;
+  line-height: 1.78;
+  color: var(--ink);
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.markdown-body h1 {
+  font-size: 19px;
+  margin-top: 0.2em;
+}
+
+.markdown-body h2 {
+  font-size: 16px;
+}
+
+.markdown-body h3 {
+  font-size: 14px;
+}
+
+.markdown-body p {
+  margin: 0.55em 0;
+}
+
+.markdown-body a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background-color: var(--wash);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.markdown-body pre {
+  background-color: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+/* 代码块容器：复制按钮悬浮右上角。 */
+.code-block {
+  position: relative;
+}
+
+.code-block__copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background-color: var(--surface);
+  color: var(--ink-2);
+  padding: 2px 9px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  opacity: 0.75;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.code-block__copy:hover {
+  opacity: 1;
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-body blockquote {
+  margin: 0.6em 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--ink-2);
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 22px;
+  margin: 0.5em 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--line-strong);
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1em 0;
+}
+
+/* Revisions drawer ------------------------------------------------------------------ */
+
+.revisions {
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.revisions__head {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink-2);
+}
+
+.revisions__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.revisions__meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+/* Quiz panel ------------------------------------------------------------------ */
+
+.quiz-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quiz-select {
+  max-width: 140px;
+}
+
+.quiz-type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.quiz-questions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.quiz-question {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quiz-question__stem {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.quiz-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.quiz-free {
+  min-height: 60px;
+}
+
+.quiz-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quiz-result {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quiz-result__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.quiz-result__q {
+  font-size: 13px;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.quiz-result__given {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.quiz-result__feedback {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.quiz-result__explain {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+/* ===========================================================================
+   Notes — edit / preview dual mode.
+   Edit is a full-height seamless textarea (native undo, IME-safe); preview
+   renders markdown on the paper column. Status strip sits at the bottom.
+   =========================================================================== */
+
+.typ-editor {
+  gap: 8px;
+}
+
+.typ-toolbar {
+  display: flex;
+  align-items: center;
+}
+
+/* Scroll column -------------------------------------------------------------- */
+
+.typ-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.typ-paper {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 26px 40px 40px;
+}
+
+/* Notes preview rides on the same kai reading face as the editor, so
+   switching modes doesn't change the voice of the text. */
+.typ-paper.markdown-body {
+  font-family: var(--font-editor);
+  font-size: 15px;
+  line-height: 1.9;
+  letter-spacing: 0.02em;
+}
+
+/* Document-level title: an oversized borderless input, Typora-style. */
+.typ-title {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-editor);
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  padding: 2px 0 10px;
+  margin-bottom: 6px;
+  margin-bottom: 10px;
+}
+
+.typ-title::placeholder {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.markdown-body p {
+  margin: 0.55em 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  margin: 1em 0 0.4em;
+}
+
+/* Edit mode: one seamless writing surface in the kai reading face. */
+.note-editor__body {
+  display: block;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  border: none;
+  outline: none;
+  resize: none;
+  background-color: transparent;
+  padding: 18px 40px 40px;
+  font-family: var(--font-editor);
+  font-size: 15.5px;
+  line-height: 1.95;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  caret-color: var(--ink);
+}
+
+.note-editor__body::placeholder {
+  color: var(--ink-2);
+}
+
+/* Shortcut hint row under the editor (edit mode only). */
+.typ-hint {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.typ-hint span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.typ-hint .kbd {
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background-color: var(--wash);
+}
+
+/* Summary modal — streams the summary agent's markdown output. */
+.summary-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 48px));
+  height: min(78vh, 720px);
+  padding: 0;
+}
+
+.summary-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  background-color: var(--rail);
+  border-radius: 14px 14px 0 0;
+}
+
+.summary-modal__head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.summary-modal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+/* 嵌套的 .md-content.markdown-body 默认 13.5px；总结弹窗保持更大的阅读字号。 */
+.summary-modal__body .markdown-body {
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+/* 上次生成时间戳：mono 小字，钉在总结正文顶部。 */
+.summary-modal__stamp {
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+/* 技能卡片：档案行 + 墨色迷你开关（黑白体系，无彩色）。 */
+.skills-card__actions {
+  margin: 2px 0 10px;
+}
+
+/* 技能页：商店搜索行（输入 + 按钮）。 */
+.skills-view__search {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 2px 0 12px;
+}
+
+.skills-view__search .cfg-input {
+  flex: 1;
+  margin: 0;
+}
+
+/* 自由安装行（owner/repo + 分支 + 按钮）。 */
+.skills-view__manual {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.skills-view__manual .cfg-input {
+  flex: 1;
+  margin: 0;
+}
+
+.skills-view__manual .cfg-input--branch {
+  flex: 0 0 140px;
+}
+
+/* 商店结果列表：档案行 + ★ + 安装。 */
+.store-list {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.store-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 14px;
+}
+
+.store-row + .store-row {
+  border-top: 1px solid var(--line);
+}
+
+.store-row__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.store-row__name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.store-row__desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.store-row__side {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.store-row__stars {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+/* 已安装行：开关 + 卸载按钮并排。 */
+.skill-row__side {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skill-row__remove {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+/* Ctrl+K 命令面板：顶部悬浮的档案式搜索（黑白体系）。 */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background-color: color-mix(in srgb, var(--ink) 28%, transparent);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.palette {
+  width: min(640px, calc(100vw - 48px));
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background-color: var(--surface);
+  box-shadow: var(--shadow-lift);
+  overflow: hidden;
+  animation: palette-in 0.16s ease both;
+}
+
+@keyframes palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.palette__input {
+  flex-shrink: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--ink);
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.palette__input::placeholder {
+  color: var(--ink-2);
+}
+
+.palette__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette__group {
+  margin: 8px 8px 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.palette__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.palette__item.is-active {
+  background-color: var(--wash);
+}
+
+.palette__item-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette__item-sub {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette__empty {
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.palette__foot {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 18px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .palette {
+    animation: none;
+  }
+}
+
+.skill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.skill-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.skill-row__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.skill-row__name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.skill-row__desc {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.skill-row__toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.skill-row__state {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  width: 42px;
+}
+
+/* 迷你开关：轨道/滑块全用既有单色变量。 */
+.skill-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border: none;
+  border-radius: 999px;
+  background-color: var(--line-strong);
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.skill-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--paper);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease;
+}
+
+.skill-switch:checked {
+  background-color: var(--ink);
+}
+
+.skill-switch:checked::after {
+  transform: translateX(14px);
+}
+
+.skill-switch:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.summary-modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+
+}
+
+/* Status strip ----------------------------------------------------------------- */
+
+.typ-status {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  padding-top: 2px;
+}
+
+.typ-status__right {
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+/* Notes full-bleed: the two-pane layout owns the whole main column. */
+.main-col--chat .notes-layout {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 20px 0;
+}
+
+.main-col--chat .notes-list {
+  padding: 4px 12px 12px;
+}
+
+.main-col--chat .note-editor {
+  min-height: 0;
+  padding-right: 8px;
+}
+
+/* Full-bleed alignment: chrome strips share the writing column's axis. */
+.note-editor > .note-editor__toolbar,
+.note-editor > .typ-toolbar,
+.note-editor > .anchors,
+.note-editor > .typ-status {
+  max-width: 900px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Anchors strip sits quietly between toolbar and body. */
+.note-editor > .anchors {
+  padding-bottom: 2px;
+}
+
+/* Global toast notifications ------------------------------------------------ */
+
+.toast-viewport {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background-color: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-lift);
+  pointer-events: auto;
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin-bottom: 2px;
+}
+
+.toast__message {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.toast--success .toast__title {
+  color: var(--ok);
+}
+
+.toast--warning .toast__title,
+.toast--error .toast__title {
+  color: var(--danger);
+}
+
+.toast__close {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 0;
+}
+
+.toast__close:hover {
+  color: var(--ink);
+  background-color: var(--wash);
+}
+
+.toast__details {
+  margin-top: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background-color: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.toast__details:hover {
+  background-color: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+/* Toast detail modal — full selectable/copyable error text. */
+.toast-detail {
+  width: min(520px, calc(100vw - 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.toast-detail__body {
+  margin: 0;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--wash);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.toast-detail__foot {
+  display: flex;
+  justify-content: flex-end;
+}

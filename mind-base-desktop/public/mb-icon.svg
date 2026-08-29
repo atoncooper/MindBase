@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- MindBase Desktop mark: ink tile, paper monogram -->
+  <rect width="32" height="32" rx="7" fill="#141413"/>
+  <path d="M8 22V10h2.4l3.6 6.2L17.6 10H20v12h-2.2v-7.8l-2.9 5h-1.8l-2.9-5V22H8z" fill="#fafaf8"/>
+  <rect x="22" y="19.4" width="3" height="2.6" fill="#fafaf8"/>
+</svg>

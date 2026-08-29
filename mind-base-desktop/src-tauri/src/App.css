@@ -1,0 +1,17 @@
+
+/* Harness step lines inside a streaming assistant bubble -------------------- */
+
+.msg-steps {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.msg-steps li {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
