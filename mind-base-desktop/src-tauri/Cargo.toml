@@ -1,0 +1,53 @@
+[package]
+name = "mind-base-desktop"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "mind_base_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+# Sidecar resolution for the bundled ffmpeg/ffprobe binaries.
+tauri-plugin-shell = "2"
+# Native folder picker for the data-directory relocation UI.
+tauri-plugin-dialog = "2"
+# System-wide Ctrl+K — the palette must work when the window is not focused.
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Lightweight blocking HTTP client for the GitHub update check.
+ureq = { version = "2.10", features = ["json"] }
+semver = "1"
+# MD5 for B站 WBI request signing (wbi.rs).
+md-5 = "0.10"
+# Skill-pack (zip) install — same archive format as the app/ skill store
+# (SKILL.md + manifest.json; deflate only, no bzip/zstd needed).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# WebSocket streaming ASR (DashScope api-ws real-time recognition).
+tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+http = "1"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
