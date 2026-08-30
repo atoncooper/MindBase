@@ -110,3 +110,5 @@ _tmp2/
 
 #zcode
 .zcode/
+# 根目录 reports/ 为一次性评测产物，不入库
+reports/
