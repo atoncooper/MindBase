@@ -300,13 +300,24 @@ class MinioClient:
 
     # ── object access ─────────────────────────────────────────
 
-    async def presigned_get(self, object_key: str) -> str:
+    async def presigned_get(
+        self, object_key: str, response_headers: Optional[dict] = None
+    ) -> str:
+        """Presigned GET URL.
+
+        ``response_headers`` (e.g. ``{"response-content-type": "application/pdf"}``)
+        is signed into the query string, so the object is served with the given
+        Content-Type regardless of how it was stored — needed when uploads
+        persisted a generic ``application/octet-stream`` and the browser must
+        render the file inline (PDF / video / image).
+        """
         self._ensure_client()
         url = await _run_async(
             self._client.presigned_get_object,
             self.bucket,
             object_key,
             expires=timedelta(seconds=config.minio.presign_expire),
+            response_headers=response_headers,
         )
         return self._public_url(url)
 
