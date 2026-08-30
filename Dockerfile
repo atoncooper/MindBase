@@ -1,5 +1,8 @@
 # ====== Backend: FastAPI ======
-FROM python:3.12-slim
+# digest 固定：buildkit 每次都会联网解析 tag 元数据，国内网络下常被掐断导致
+# 构建卡死；digest 引用可直接命中本地镜像，无需联网。升级基础镜像时更新 digest
+# （docker images --digests python）。
+FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
 
 LABEL app="mind-base-backend"
 
@@ -33,10 +36,11 @@ RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 30
 WORKDIR /app
 
 # Install Python dependencies
-# Tip: for faster downloads in China, uncomment the mirror line below
-#   --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# --default-timeout/--retries：清华源偶尔读超时（大包下载中断导致整层失败），
+# 放宽单请求超时到 120s 并自动重试，与 ffmpeg 下载的 --retry 策略保持一致。
 COPY requirements.txt .
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN pip install --no-cache-dir --timeout 120 --retries 5 \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # Copy application code
 COPY app/ ./app/

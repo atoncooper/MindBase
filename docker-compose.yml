@@ -129,6 +129,8 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
         NEXT_PUBLIC_APISIX_HOST: nginx:80
+        # rewrites 构建时固化，MinIO 同源代理目标必须是 build arg（非运行时 env）
+        MINIO_PROXY_DEST: http://nginx:80
     container_name: mind-base-frontend
     # Port exposed for local access; in production nginx handles all traffic
     ports:
@@ -137,6 +139,8 @@ services:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
       - NEXT_PUBLIC_APISIX_HOST=nginx:80
+      # MinIO 同源代理目标（rewrites 在服务端运行时读取，非 NEXT_PUBLIC）
+      - MINIO_PROXY_DEST=http://nginx:80
     depends_on:
       backend:
         condition: service_healthy

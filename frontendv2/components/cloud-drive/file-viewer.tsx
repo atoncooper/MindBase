@@ -7,20 +7,41 @@
  * Next 16 async-params dance, same convention as the shared-note page).
  *
  * Fetches a presigned MinIO GET URL (plus inline text for text-like types)
- * from /cloud/video/:uuid/raw and renders the file natively:
- *  - video / audio / image / pdf -> browser element with the presigned URL
- *  - html / markdown / text       -> inline content (no CORS fetch)
+ * from /cloud/video/:uuid/raw and renders the file:
+ *  - pdf                         -> auto-open in a NEW browser tab; the
+ *                                   browser's native PDF viewer takes over
+ *  - video / audio / image       -> browser element with the presigned URL
+ *  - html / markdown / text      -> inline content (no CORS fetch)
  *  - anything else                -> download link
  *
  * Layout: sticky frosted header (back + icon + name + size + download) + a
  * centered reading column.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Markdown } from "@/components/markdown";
 import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-react";
 import { cloudApi, formatBytes, type CloudRawFileResponse } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
+
+/**
+ * Normalize the presigned MinIO URL to a same-origin path when it goes
+ * through the nginx /minio-proxy prefix. Embedding the absolute proxy URL
+ * (e.g. http://localhost/minio-proxy/...) in an <iframe> trips nginx's
+ * X-Frame-Options: SAMEORIGIN whenever the page origin differs (page on
+ * :3000, proxy on :80). next.config.ts proxies the identical path through
+ * the Next server, so the relative form stays same-origin for every media
+ * element below. Non-proxy URLs (custom MINIO__PUBLIC_ENDPOINT) are kept.
+ */
+function toSameOriginUrl(url: string): string {
+    try {
+        const u = new URL(url, window.location.origin);
+        if (u.pathname.startsWith("/minio-proxy/")) return u.pathname + u.search;
+        return url;
+    } catch {
+        return url;
+    }
+}
 
 export function FileViewer() {
     const pathname = usePathname();
@@ -31,6 +52,18 @@ export function FileViewer() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    // PDF: open the file in a NEW tab and let the browser's native viewer
+    // take over; this page stays as a status card with manual links in case
+    // the popup is blocked. The ref guard keeps React StrictMode's dev
+    // double-invoke from opening two tabs.
+    const pdfAutoOpened = useRef(false);
+    useEffect(() => {
+        if (raw?.viewMode === "pdf" && raw.url && !pdfAutoOpened.current) {
+            pdfAutoOpened.current = true;
+            window.open(raw.url, "_blank");
+        }
+    }, [raw?.viewMode, raw?.url]);
+
     useEffect(() => {
         if (!uuid) return;
         let cancelled = false;
@@ -38,7 +71,7 @@ export function FileViewer() {
             try {
                 const r = await cloudApi.getRawFile(uuid);
                 if (!cancelled) {
-                    setRaw(r);
+                    setRaw({ ...r, url: toSameOriginUrl(r.url) });
                     setLoading(false);
                 }
             } catch (e) {
@@ -159,12 +192,31 @@ function RawContent({ raw }: { raw: CloudRawFileResponse }) {
                 />
             );
         case "pdf":
+            // The auto-open effect opened a new tab (native PDF viewer); this
+            // card covers the popup-blocked case with a real anchor link.
             return (
-                <iframe
-                    src={raw.url}
-                    title={raw.fileName}
-                    className="h-[80vh] w-full rounded-2xl border border-border-subtle"
-                />
+                <div className="flex flex-col items-center justify-center py-24 text-center">
+                    <span className="grid h-14 w-14 place-items-center rounded-2xl bg-border-subtle text-secondary">
+                        <FileText className="h-6 w-6" />
+                    </span>
+                    <p className="mt-4 text-[15px] font-medium text-foreground">PDF 已在新标签页打开</p>
+                    <p className="mt-1.5 max-w-xs text-[13px] text-secondary">
+                        由浏览器内置查看器展示；若新标签页未出现，点击下方链接手动打开。
+                    </p>
+                    <a
+                        href={raw.url}
+                        target="_blank"
+                        rel="noopener"
+                        className="btn-pill btn-primary mt-5 h-9 px-5 text-[13px]"
+                    >
+                        <FileText className="h-4 w-4" />
+                        在新标签页打开 PDF
+                    </a>
+                    <a href={raw.url} download={raw.fileName} className="btn-pill btn-ghost mt-2 h-9 px-5 text-[13px]">
+                        <Download className="h-4 w-4" />
+                        下载原文件
+                    </a>
+                </div>
             );
         case "html":
             if (raw.content == null) return <TooLargeDownload raw={raw} />;

@@ -804,7 +804,15 @@ async def get_video_raw(
         view_mode = _classify_view_mode(file.mime_type)
 
         # Presigned GET URL - works for download and as <video>/<img>/<iframe> src.
-        url = await client.presigned_get(file.object_key)
+        # Binary view modes need the real MIME signed into the response: uploads
+        # may have persisted application/octet-stream, and with nosniff in the
+        # chain the browser refuses to sniff PDF/media, leaving the viewer blank.
+        response_headers = (
+            {"response-content-type": file.mime_type}
+            if view_mode in ("pdf", "video", "audio", "image")
+            else None
+        )
+        url = await client.presigned_get(file.object_key, response_headers)
 
         # Inline text content for text-like files (<=5 MB) to avoid CORS fetch.
         content: Optional[str] = None
