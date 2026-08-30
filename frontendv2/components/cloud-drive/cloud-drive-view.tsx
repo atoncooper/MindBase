@@ -261,11 +261,19 @@ export function CloudDriveView() {
     );
 
     const handleCreateFolder = useCallback(
-        async (name: string) => {
-            await cloudApi.createFolder({ parentId: selectedFolderId, name });
+        async (name: string, parentId: number | null) => {
+            await cloudApi.createFolder({ parentId, name });
             await refreshFolders();
         },
-        [selectedFolderId, refreshFolders]
+        [refreshFolders]
+    );
+
+    const handleRenameFolder = useCallback(
+        async (id: number, name: string) => {
+            await cloudApi.updateFolder(id, { name });
+            await refreshFolders();
+        },
+        [refreshFolders]
     );
 
     const handleDeleteFolder = useCallback(async () => {
@@ -348,6 +356,7 @@ export function CloudDriveView() {
                     totalCount={videosLoading ? 0 : totalFiles}
                     onSelect={handleSelectFolder}
                     onCreateFolder={handleCreateFolder}
+                    onRenameFolder={handleRenameFolder}
                     onDeleteFolder={setDeleteFolderTarget}
                 />
             </aside>
