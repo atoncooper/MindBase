@@ -1,6 +1,6 @@
 [package]
 name = "mind-base-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -42,6 +42,11 @@ tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 http = "1"
+
+# Test-only: backdate mtimes to exercise LRU eviction order and the grace window.
+# (cross-platform mtime setting isn't exposed by std)
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+filetime = "0.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

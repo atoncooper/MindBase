@@ -493,6 +493,28 @@ fn run_ingestion(
         }
     }
 
+    // Enforce the media-cache LRU quota after the run. The downloaded
+    // audio/video + WAV are kept for inspection but must not grow without
+    // bound; a cleanup failure must never fail the ingestion itself, so the
+    // quota degrades to the built-in default when config is unreadable.
+    let quota_bytes = match db.conn.lock() {
+        Ok(conn) => crate::config::load(&conn)
+            .map(|cfg| u64::from(cfg.media_cache_max_mb) * 1024 * 1024)
+            .unwrap_or(crate::media_cache::DEFAULT_FALLBACK_QUOTA_BYTES),
+        Err(_) => crate::media_cache::DEFAULT_FALLBACK_QUOTA_BYTES,
+    };
+    match crate::media_cache::evict_to_quota(&media_dir, quota_bytes) {
+        Ok(report) if report.removed_files > 0 => crate::logging::info(
+            "ingest",
+            &format!(
+                "media cache evicted files={} freed_bytes={}",
+                report.removed_files, report.freed_bytes
+            ),
+        ),
+        Ok(_) => {}
+        Err(err) => crate::logging::warn("ingest", &format!("media cache eviction failed: {err}")),
+    }
+
     emit(&IngestEvent::Done { ok, failed }, channel);
     Ok(IngestSummary { ok, failed })
 }

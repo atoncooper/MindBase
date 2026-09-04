@@ -140,6 +140,10 @@ pub struct AppConfig {
     /// 本地 faster-whisper-server 设置（方案 A）。缺省反序列化为默认值。
     #[serde(default)]
     pub local_asr: LocalAsrConfig,
+    /// 媒体缓存（下载的音频/视频 + 抽出的 WAV）LRU 配额上限，单位 MB。
+    /// 0 = 禁用清理。每次入库结束后按文件 mtime 从旧到新删除直到总量达标。
+    #[serde(default = "default_media_cache_max_mb")]
+    pub media_cache_max_mb: u32,
 }
 
 impl Default for AppConfig {
@@ -152,8 +156,14 @@ impl Default for AppConfig {
             ffmpeg_path_override: None,
             default_chat_provider: None,
             local_asr: LocalAsrConfig::default(),
+            media_cache_max_mb: default_media_cache_max_mb(),
         }
     }
+}
+
+/// Default media-cache quota: 2 GiB, enough to inspect several recent runs.
+fn default_media_cache_max_mb() -> u32 {
+    2048
 }
 
 /// Read the raw JSON payload stored under [`CONFIG_KEY`], if any.
