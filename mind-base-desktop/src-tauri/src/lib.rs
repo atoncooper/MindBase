@@ -13,6 +13,7 @@ mod harness;
 mod ingest;
 mod llm_chat;
 mod logging;
+mod media_cache;
 mod notes;
 mod python_runtime;
 mod quiz;
