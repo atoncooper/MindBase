@@ -15,6 +15,7 @@ mod llm_chat;
 mod logging;
 mod media_cache;
 mod notes;
+mod ocr_server;
 mod python_runtime;
 mod quiz;
 mod skills;
@@ -144,6 +145,8 @@ pub fn run() {
             bilibili::favorites::bili_video_pages,
             whisper_server::local_asr_model_status,
             whisper_server::local_asr_model_download,
+            ocr_server::local_ocr_model_status,
+            ocr_server::local_ocr_model_download,
             ingest::ingest_video,
             ingest::delete_document,
             ingest::list_documents,
