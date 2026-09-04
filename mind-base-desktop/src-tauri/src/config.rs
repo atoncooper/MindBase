@@ -118,6 +118,41 @@ impl Default for LocalAsrConfig {
     }
 }
 
+/// Local OCR settings. Mirrors the local-ASR block: when enabled, text
+/// recognition (images / screenshots / PDF pages) routes to a locally
+/// provisioned RapidOCR (PP-OCRv4 ONNX) pipeline instead of a cloud
+/// provider. The model bundle is downloaded via the `local_ocr_model_*`
+/// commands into `<data_dir>/ocr-models/<bundle>`; the inference wiring is
+/// delivered separately, the block exists so stored configs already carry it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LocalOcrConfig {
+    /// When true, OCR workloads prefer the local model over the cloud slot.
+    pub enabled: bool,
+    /// Model bundle id (see `ocr_server::KNOWN_MODELS`, default `pp-ocrv4-mobile`).
+    pub model: String,
+    /// Extra arguments reserved for the future OCR pipeline launch.
+    pub extra_args: String,
+    /// Compute device for the future OCR runtime: `auto` (prefer GPU when
+    /// detected, fall back CPU), `cpu`, or `cuda` (NVIDIA, requires
+    /// onnxruntime-gpu + CUDA/cuDNN; runtime falls back when unavailable).
+    pub device: String,
+    /// Wall-clock cap for waiting on pipeline readiness (seconds).
+    pub ready_timeout_secs: u64,
+}
+
+impl Default for LocalOcrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: "pp-ocrv4-mobile".to_string(),
+            extra_args: String::new(),
+            device: "auto".to_string(),
+            ready_timeout_secs: 300,
+        }
+    }
+}
+
 /// Typed application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +175,9 @@ pub struct AppConfig {
     /// 本地 faster-whisper-server 设置（方案 A）。缺省反序列化为默认值。
     #[serde(default)]
     pub local_asr: LocalAsrConfig,
+    /// 本地 OCR（RapidOCR / PP-OCRv4）设置。缺省反序列化为默认值。
+    #[serde(default)]
+    pub local_ocr: LocalOcrConfig,
     /// 媒体缓存（下载的音频/视频 + 抽出的 WAV）LRU 配额上限，单位 MB。
     /// 0 = 禁用清理。每次入库结束后按文件 mtime 从旧到新删除直到总量达标。
     #[serde(default = "default_media_cache_max_mb")]
@@ -156,6 +194,7 @@ impl Default for AppConfig {
             ffmpeg_path_override: None,
             default_chat_provider: None,
             local_asr: LocalAsrConfig::default(),
+            local_ocr: LocalOcrConfig::default(),
             media_cache_max_mb: default_media_cache_max_mb(),
         }
     }
@@ -187,10 +226,14 @@ fn read_stored_payload(conn: &rusqlite::Connection) -> Result<Option<String>, St
 /// Real database errors still propagate as `Err`.
 pub fn load(conn: &rusqlite::Connection) -> Result<AppConfig, String> {
     match read_stored_payload(conn)? {
-        Some(payload) => Ok(serde_json::from_str::<AppConfig>(&payload).unwrap_or_else(|err| {
-            eprintln!("[config] stored config is invalid ({err}); using defaults until next save");
-            AppConfig::default()
-        })),
+        Some(payload) => Ok(
+            serde_json::from_str::<AppConfig>(&payload).unwrap_or_else(|err| {
+                eprintln!(
+                    "[config] stored config is invalid ({err}); using defaults until next save"
+                );
+                AppConfig::default()
+            }),
+        ),
         None => Ok(AppConfig::default()),
     }
 }
@@ -230,13 +273,35 @@ fn normalize_local_asr(mut local_asr: LocalAsrConfig) -> LocalAsrConfig {
     local_asr
 }
 
+/// Normalize the local OCR block: an unknown/empty bundle id falls back to
+/// the default, an unknown/empty device to `auto`, and a zero readiness
+/// timeout to 300s.
+fn normalize_local_ocr(mut local_ocr: LocalOcrConfig) -> LocalOcrConfig {
+    let known = crate::ocr_server::KNOWN_MODELS
+        .iter()
+        .any(|(id, _, _, _)| *id == local_ocr.model);
+    if local_ocr.model.trim().is_empty() || !known {
+        local_ocr.model = LocalOcrConfig::default().model;
+    }
+    let device = local_ocr.device.trim().to_ascii_lowercase();
+    if !matches!(device.as_str(), "auto" | "cpu" | "cuda") {
+        local_ocr.device = LocalOcrConfig::default().device;
+    } else {
+        local_ocr.device = device;
+    }
+    if local_ocr.ready_timeout_secs == 0 {
+        local_ocr.ready_timeout_secs = LocalOcrConfig::default().ready_timeout_secs;
+    }
+    local_ocr
+}
+
 /// Return the current application configuration.
 #[tauri::command]
 pub fn get_config(db: State<'_, Db>) -> Result<AppConfig, String> {
-    let conn =
-        db.conn
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     load(&conn)
 }
 
@@ -249,6 +314,7 @@ pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, Str
     let config = AppConfig {
         update_repo,
         local_asr: normalize_local_asr(config.local_asr),
+        local_ocr: normalize_local_ocr(config.local_ocr),
         ..config
     };
     crate::logging::info(
@@ -259,10 +325,10 @@ pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, Str
         ),
     );
 
-    let conn =
-        db.conn
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     save(&conn, &config)?;
     Ok(config)
 }
@@ -330,5 +396,42 @@ mod tests {
         assert_eq!(normalized.model, "medium");
         assert_eq!(normalized.ready_timeout_secs, 120);
         assert_eq!(normalized.extra_args, "--device cpu");
+    }
+
+    #[test]
+    fn local_ocr_defaults_and_normalization() {
+        let cfg = LocalOcrConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.model, "pp-ocrv4-mobile");
+        assert_eq!(cfg.ready_timeout_secs, 300);
+
+        // Unknown bundle ids fall back to the default (guards against stale
+        // stored configs pointing at a removed model).
+        let unknown = normalize_local_ocr(LocalOcrConfig {
+            enabled: true,
+            model: "pp-ocrv9".to_string(),
+            extra_args: String::new(),
+            device: "auto".to_string(),
+            ready_timeout_secs: 0,
+        });
+        assert_eq!(unknown.model, "pp-ocrv4-mobile");
+        assert_eq!(unknown.ready_timeout_secs, 300);
+
+        // A known bundle id is kept as-is.
+        let known = normalize_local_ocr(LocalOcrConfig {
+            model: "pp-ocrv4-server".to_string(),
+            ..LocalOcrConfig::default()
+        });
+        assert_eq!(known.model, "pp-ocrv4-server");
+
+        // Device normalizes: empty/unknown → auto, known values kept (trimmed,
+        // lowercased).
+        for (raw, expected) in [("", "auto"), ("CUDA", "cuda"), ("  cpu  ", "cpu"), ("tpu", "auto")] {
+            let got = normalize_local_ocr(LocalOcrConfig {
+                device: raw.to_string(),
+                ..LocalOcrConfig::default()
+            });
+            assert_eq!(got.device, expected, "device {raw:?}");
+        }
     }
 }

@@ -276,12 +276,19 @@ pub fn start_model_download(data_dir: PathBuf, model: String) -> Result<(), Stri
             _ => {
                 downloads.insert(
                     model.clone(),
-                    DownloadState { downloaded_bytes: 0, total_bytes: 0, error: None },
+                    DownloadState {
+                        downloaded_bytes: 0,
+                        total_bytes: 0,
+                        error: None,
+                    },
                 );
             }
         }
     }
-    logging::info("whisper", &format!("开始下载本地 ASR 模型：{model}（{label}）"));
+    logging::info(
+        "whisper",
+        &format!("开始下载本地 ASR 模型：{model}（{label}）"),
+    );
     std::thread::spawn(move || {
         let outcome = download_model(&data_dir, &model);
         let mut downloads = downloads_slot()
@@ -296,7 +303,11 @@ pub fn start_model_download(data_dir: PathBuf, model: String) -> Result<(), Stri
                 logging::error("whisper", &format!("本地 ASR 模型下载失败 {model}：{err}"));
                 downloads.insert(
                     model.clone(),
-                    DownloadState { downloaded_bytes: 0, total_bytes: 0, error: Some(err) },
+                    DownloadState {
+                        downloaded_bytes: 0,
+                        total_bytes: 0,
+                        error: Some(err),
+                    },
                 );
             }
         }
@@ -307,13 +318,14 @@ pub fn start_model_download(data_dir: PathBuf, model: String) -> Result<(), Stri
 /// Direct (no-proxy) and optional proxied agents for model downloads. The
 /// hf-mirror + HF CDN hosts answer fine directly on mainland networks while
 /// an overseas-exit proxy stalls the big files, so direct is preferred; the
-/// proxy is the fallback for networks that need it.
-struct DownloadAgents {
-    direct: ureq::Agent,
-    via_proxy: Option<ureq::Agent>,
+/// proxy is the fallback for networks that need it. Also reused by the
+/// local-OCR model downloader (`ocr_server`).
+pub(crate) struct DownloadAgents {
+    pub(crate) direct: ureq::Agent,
+    pub(crate) via_proxy: Option<ureq::Agent>,
 }
 
-fn download_agents() -> Result<DownloadAgents, String> {
+pub(crate) fn download_agents() -> Result<DownloadAgents, String> {
     // Read timeouts must be per-read (streaming a multi-GB body), not overall.
     let builder = || {
         ureq::AgentBuilder::new()
@@ -329,8 +341,9 @@ fn download_agents() -> Result<DownloadAgents, String> {
 }
 
 /// Download one repo file into `dest` with resume support (`.part` suffix).
-/// `on_progress` receives (downloaded, total) for the whole file.
-fn download_file(
+/// `on_progress` receives (downloaded, total) for the whole file. Shared
+/// with the local-OCR model downloader.
+pub(crate) fn download_file(
     agents: &DownloadAgents,
     url: &str,
     dest: &Path,
@@ -362,8 +375,7 @@ fn download_file(
             Ok(resp) => resp,
             Err(ureq::Error::Status(416, _)) => {
                 // Range not satisfiable = the .part already holds everything.
-                std::fs::rename(&part, dest)
-                    .map_err(|err| format!("完成文件重命名失败：{err}"))?;
+                std::fs::rename(&part, dest).map_err(|err| format!("完成文件重命名失败：{err}"))?;
                 return Ok(());
             }
             Err(ureq::Error::Status(code, resp)) => {
@@ -432,7 +444,10 @@ fn download_file(
                 }
             }
         }
-        last_err = format!("下载中断：{}", io_err.map(|e| e.to_string()).unwrap_or_default());
+        last_err = format!(
+            "下载中断：{}",
+            io_err.map(|e| e.to_string()).unwrap_or_default()
+        );
     }
     Err(format!("下载失败（{max_attempts} 次尝试后）：{last_err}"))
 }
@@ -441,7 +456,8 @@ fn download_file(
 /// tracking progress in the global registry. Runs on a worker thread.
 fn download_model(data_dir: &Path, model: &str) -> Result<(), String> {
     let dir = model_dir(data_dir, model);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("无法创建模型目录 {}：{err}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("无法创建模型目录 {}：{err}", dir.display()))?;
     let agents = download_agents()?;
     let base = format!("https://hf-mirror.com/Systran/faster-whisper-{model}/resolve/main");
 
@@ -471,7 +487,10 @@ fn download_model(data_dir: &Path, model: &str) -> Result<(), String> {
             local = have;
         });
         match result {
-            Ok(()) => logging::info("whisper", &format!("模型文件完成：{model}/{name}（{local} 字节）")),
+            Ok(()) => logging::info(
+                "whisper",
+                &format!("模型文件完成：{model}/{name}（{local} 字节）"),
+            ),
             Err(err) => {
                 // Optional file (404-style failures after retries): skip it.
                 logging::warn("whisper", &format!("模型文件跳过：{model}/{name}（{err}）"));
@@ -497,11 +516,7 @@ fn download_model(data_dir: &Path, model: &str) -> Result<(), String> {
 /// Launch command for the server script. Exposed for tests. The `--model`
 /// argument is the **local model directory** when the model has been
 /// downloaded (faster-whisper accepts a dir directly), else the bare name.
-fn server_command(
-    exe: &Path,
-    cfg: &LocalAsrConfig,
-    data_dir: &Path,
-) -> StdCommand {
+fn server_command(exe: &Path, cfg: &LocalAsrConfig, data_dir: &Path) -> StdCommand {
     let script = script_path();
     let model_arg = resolve_model_path(data_dir, &cfg.model)
         .map(|p| p.to_string_lossy().to_string())
@@ -549,9 +564,12 @@ fn script_path() -> PathBuf {
 /// The model id the local server on `port` reports via `/health`, `None`
 /// when it is not reachable or the field is missing.
 fn health_model(port: u16) -> Option<String> {
-    health_snapshot(port)
-        .ok()
-        .and_then(|value| value.get("model").and_then(|m| m.as_str()).map(String::from))
+    health_snapshot(port).ok().and_then(|value| {
+        value
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(String::from)
+    })
 }
 
 /// Ensure a local ASR server is running and ready, returning its base URL
@@ -595,7 +613,10 @@ pub fn ensure_running(cfg: &LocalAsrConfig, data_dir: &Path) -> Result<String, S
                         );
                     }
                 }
-                logging::info("whisper", &format!("本地 ASR 服务已在运行，直接复用端口 {port}"));
+                logging::info(
+                    "whisper",
+                    &format!("本地 ASR 服务已在运行，直接复用端口 {port}"),
+                );
                 return Ok(local_base_url(port));
             }
             Some(other_model) => {
@@ -611,7 +632,10 @@ pub fn ensure_running(cfg: &LocalAsrConfig, data_dir: &Path) -> Result<String, S
                 if ours {
                     logging::info(
                         "whisper",
-                        &format!("模型已切换为 {}，重启本地 ASR 服务（原 {}）", cfg.model, other_model),
+                        &format!(
+                            "模型已切换为 {}，重启本地 ASR 服务（原 {}）",
+                            cfg.model, other_model
+                        ),
                     );
                     kill_managed();
                 } else {
@@ -622,7 +646,10 @@ pub fn ensure_running(cfg: &LocalAsrConfig, data_dir: &Path) -> Result<String, S
             }
             None => {
                 // /health reachable but no model field: treat as compatible.
-                logging::info("whisper", &format!("本地 ASR 服务已在运行，直接复用端口 {port}"));
+                logging::info(
+                    "whisper",
+                    &format!("本地 ASR 服务已在运行，直接复用端口 {port}"),
+                );
                 return Ok(local_base_url(port));
             }
         },
@@ -699,7 +726,11 @@ pub fn ensure_running(cfg: &LocalAsrConfig, data_dir: &Path) -> Result<String, S
         let mut guard = child_slot()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        *guard = Some(ManagedChild { port, model: cfg.model.clone(), child });
+        *guard = Some(ManagedChild {
+            port,
+            model: cfg.model.clone(),
+            child,
+        });
         drop(guard);
     }
 
@@ -796,11 +827,12 @@ pub fn startup_spawn(app: &tauri::AppHandle) {
     }
     // Off the startup path: provisioning (download + pip) can take minutes.
     let cfg = cfg.local_asr.clone();
-    std::thread::spawn(move || {
-        match ensure_running(&cfg, &data_dir) {
-            Ok(base) => logging::info("whisper", &format!("启动时本地 ASR 已就绪：{base}")),
-            Err(err) => logging::warn("whisper", &format!("启动本地 ASR 未成功（入库时会重试）：{err}")),
-        }
+    std::thread::spawn(move || match ensure_running(&cfg, &data_dir) {
+        Ok(base) => logging::info("whisper", &format!("启动时本地 ASR 已就绪：{base}")),
+        Err(err) => logging::warn(
+            "whisper",
+            &format!("启动本地 ASR 未成功（入库时会重试）：{err}"),
+        ),
     });
 }
 
@@ -899,8 +931,12 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert!(args.windows(2).any(|w| w[0] == "--device" && w[1] == "cuda"));
-        assert!(args.windows(2).any(|w| w[0] == "--beam-size" && w[1] == "5"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--device" && w[1] == "cuda"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--beam-size" && w[1] == "5"));
     }
 
     #[test]
@@ -922,7 +958,10 @@ mod tests {
         std::fs::write(plain.join("model.bin.part"), b"y").unwrap();
         assert!(resolve_model_path(&dir, "small").is_some());
         // Legacy HF-hub layout resolves via refs/main -> snapshots/<sha>.
-        let repo = dir.join("whisper-models").join("hub").join("models--Systran--faster-whisper-tiny");
+        let repo = dir
+            .join("whisper-models")
+            .join("hub")
+            .join("models--Systran--faster-whisper-tiny");
         let snap = repo.join("snapshots").join("abc123");
         std::fs::create_dir_all(&snap).unwrap();
         std::fs::create_dir_all(repo.join("refs")).unwrap();
@@ -958,7 +997,10 @@ mod tests {
         }
         let path = resolve_model_path(&dir, "tiny").expect("tiny model should download");
         let size = std::fs::metadata(path.join("model.bin")).unwrap().len();
-        assert!(size > 60_000_000, "tiny model.bin implausibly small: {size}");
+        assert!(
+            size > 60_000_000,
+            "tiny model.bin implausibly small: {size}"
+        );
         let status = model_status_list(&dir);
         let tiny = status.iter().find(|s| s.model == "tiny").unwrap();
         assert!(tiny.downloaded && !tiny.downloading && tiny.error.is_none());

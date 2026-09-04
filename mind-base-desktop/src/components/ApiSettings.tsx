@@ -19,12 +19,17 @@ import {
 } from "../lib/api-keys";
 import type { ProviderStatus } from "../lib/api-keys";
 import { getConfig, setConfig as persistConfig } from "../lib/config";
-import type { AppConfig, LocalAsrConfig } from "../lib/config";
+import type { AppConfig, LocalAsrConfig, LocalOcrConfig } from "../lib/config";
 import {
   getLocalAsrModelStatus,
   downloadLocalAsrModel,
 } from "../lib/local-asr";
 import type { LocalAsrModelStatus } from "../lib/local-asr";
+import {
+  getLocalOcrModelStatus,
+  downloadLocalOcrModel,
+} from "../lib/local-ocr";
+import type { LocalOcrModelStatus } from "../lib/local-ocr";
 import { toErrorMessage } from "../lib/updater";
 import BiliAccountCard from "./BiliAccountCard";
 import type { ItemState, Feedback } from "../lib/ui-state";
@@ -36,6 +41,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek（深度求索）",
   asr: "ASR 语音转写",
   embedding: "向量化 Embedding",
+  ocr: "OCR 文字识别",
 };
 
 function providerLabel(provider: string): string {
@@ -49,6 +55,7 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   deepseek: "https://api.deepseek.com/v1",
   asr: "https://dashscope.aliyuncs.com/api/v1",
   embedding: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  ocr: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 };
 
 /** Well-known model suggestions per provider (free-text is allowed). */
@@ -70,6 +77,7 @@ const MODEL_SUGGESTIONS: Record<string, string[]> = {
     "openai/text-embedding-3-small",
     "openai/text-embedding-3-large",
   ],
+  ocr: ["qwen-vl-ocr", "qwen-vl-ocr-latest"],
 };
 
 /** Human-readable byte size (模型卡片与选择器共用). */
@@ -103,6 +111,11 @@ const PROVIDER_GROUPS: Array<{
     title: "向量化 Embedding",
     hint: "知识库入库与检索的向量化；支持任意 OpenAI 兼容 Embedding 端点（DashScope/OpenRouter/OpenAI 等）。Base URL 留空用 DashScope 默认，未配置时回退 DashScope 密钥",
     providers: ["embedding"],
+  },
+  {
+    title: "OCR 文字识别",
+    hint: "图片 / 截图 / PDF 页面的文字识别；云端走 OpenAI 兼容多模态端点（DashScope qwen-vl-ocr 等），Base URL 留空用 DashScope 默认，未配置时回退 DashScope 密钥",
+    providers: ["ocr"],
   },
 ];
 
@@ -155,6 +168,15 @@ const LOCAL_ASR_DEFAULTS: LocalAsrConfig = {
   readyTimeoutSecs: 300,
 };
 
+/** Fallback local-OCR defaults mirroring the Rust `LocalOcrConfig::default`. */
+const LOCAL_OCR_DEFAULTS: LocalOcrConfig = {
+  enabled: false,
+  model: "pp-ocrv4-mobile",
+  extraArgs: "",
+  device: "auto",
+  readyTimeoutSecs: 300,
+};
+
 interface ApiSettingsProps {
   /** Visibility is owned by the parent tab switcher; state stays mounted. */
   hidden: boolean;
@@ -172,16 +194,23 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
   const [openProvider, setOpenProvider] = useState<string | null>(null);
   // 操作结果按提供方行内显示，不共享一条全局提示。
   const [rowFeedback, setRowFeedback] = useState<Record<string, Feedback>>({});
-  // App config (for the ASR provider-mode switch); loaded alongside providers.
+  // App config (for the ASR/OCR provider-mode switches); loaded alongside providers.
   const [appConfig, setAppConfig] = useState<ItemState<AppConfig>>({ status: "loading" });
   const [localAsrFeedback, setLocalAsrFeedback] = useState<Feedback>(null);
   // 自动保存去抖定时器（本地 ASR 文本输入 500ms 合并写库；切换即时保存）。
   const localAsrTimer = useRef<number | null>(null);
+  const [localOcrFeedback, setLocalOcrFeedback] = useState<Feedback>(null);
+  const localOcrTimer = useRef<number | null>(null);
   // 本地 ASR 模型下载状态（面板可见时每 2s 轮询，驱动进度条）。
   const [modelStatuses, setModelStatuses] = useState<ItemState<LocalAsrModelStatus[]>>({
     status: "loading",
   });
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
+  // 本地 OCR 模型下载状态（与 ASR 模型卡片同一轮询节奏）。
+  const [ocrModelStatuses, setOcrModelStatuses] = useState<ItemState<LocalOcrModelStatus[]>>({
+    status: "loading",
+  });
+  const [downloadingOcrModel, setDownloadingOcrModel] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -268,10 +297,52 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
     }
   }
 
+  /** Persist the whole local-OCR block (enabled + model) and surface the
+   *  save result on the OCR row's feedback line. */
+  async function persistLocalOcr(next: LocalOcrConfig): Promise<void> {
+    setLocalOcrFeedback(null);
+    try {
+      const base =
+        appConfig.status === "ok"
+          ? appConfig.value
+          : await getConfig();
+      const saved = await persistConfig({
+        ...base,
+        localOcr: next,
+      });
+      setAppConfig({ status: "ok", value: saved });
+      setLocalOcrFeedback({ kind: "ok", text: "✓ 已保存" });
+    } catch (err) {
+      setLocalOcrFeedback({ kind: "error", text: `保存失败：${toErrorMessage(err)}` });
+    }
+  }
+
+  /** Patch one field of the local OCR config; the enable switch saves
+   *  immediately, other inputs debounce 500ms. */
+  function patchLocalOcr(patch: Partial<LocalOcrConfig>, immediate = false): void {
+    if (appConfig.status !== "ok") return;
+    const current = appConfig.value.localOcr ?? LOCAL_OCR_DEFAULTS;
+    const next: LocalOcrConfig = {
+      ...current,
+      ...patch,
+      // model falls back to the default bundle when emptied (backend
+      // normalizes too).
+      model: (patch.model ?? current.model).trim() || LOCAL_OCR_DEFAULTS.model,
+    };
+    setAppConfig({ status: "ok", value: { ...appConfig.value, localOcr: next } });
+    if (localOcrTimer.current !== null) window.clearTimeout(localOcrTimer.current);
+    if (immediate) {
+      void persistLocalOcr(next);
+    } else {
+      localOcrTimer.current = window.setTimeout(() => void persistLocalOcr(next), 500);
+    }
+  }
+
   // 卸载时清理未触发的去抖定时器。
   useEffect(() => {
     return () => {
       if (localAsrTimer.current !== null) window.clearTimeout(localAsrTimer.current);
+      if (localOcrTimer.current !== null) window.clearTimeout(localOcrTimer.current);
     };
   }, []);
 
@@ -290,6 +361,16 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
         () => {
           if (cancelled) return;
           setModelStatuses({ status: "error" });
+        },
+      );
+      void getLocalOcrModelStatus().then(
+        (list) => {
+          if (cancelled) return;
+          setOcrModelStatuses({ status: "ok", value: list });
+        },
+        () => {
+          if (cancelled) return;
+          setOcrModelStatuses({ status: "error" });
         },
       );
     };
@@ -529,6 +610,216 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
     );
   }
 
+  /** 启动一个本地 OCR 模型包的后台下载；进度由 2s 轮询的 status 驱动。 */
+  async function handleDownloadOcrModel(model: string): Promise<void> {
+    setDownloadingOcrModel(model);
+    try {
+      await downloadLocalOcrModel(model);
+    } catch (err) {
+      setRowFeedback((prev) => ({
+        ...prev,
+        __localOcrModel: { kind: "error", text: `下载启动失败：${toErrorMessage(err)}` },
+      }));
+    } finally {
+      setDownloadingOcrModel(null);
+    }
+  }
+
+  /** OCR 提供方切换：云端 API / 本地部署（与 ASR 模式切换同构）。 */
+  function renderOcrModeSwitch(): React.JSX.Element | null {
+    if (appConfig.status !== "ok") return null;
+    const localOcr = appConfig.value.localOcr ?? LOCAL_OCR_DEFAULTS;
+    const ocrStatus = providers.status === "ok"
+      ? providers.value.find((entry) => entry.provider === "ocr")
+      : undefined;
+    const hasCloudKey = ocrStatus?.hasKey ?? false;
+
+    return (
+      <div className="asr-mode-switch">
+        <div className="asr-mode-switch__options" role="radiogroup" aria-label="OCR 提供方">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!localOcr.enabled}
+            className={`asr-mode-switch__option${!localOcr.enabled ? " is-active" : ""}`}
+            onClick={() => patchLocalOcr({ enabled: false }, true)}
+          >
+            云端 API（DashScope）
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={localOcr.enabled}
+            className={`asr-mode-switch__option${localOcr.enabled ? " is-active" : ""}`}
+            onClick={() => patchLocalOcr({ enabled: true }, true)}
+          >
+            本地部署（RapidOCR）
+          </button>
+        </div>
+
+        {localOcr.enabled ? (
+          <div className="asr-mode-switch__local">
+            <div className="cfg-row">
+              <span className="cfg-label" id="label-local-ocr-model">
+                模型
+              </span>
+              {(() => {
+                const statuses = ocrModelStatuses.status === "ok" ? ocrModelStatuses.value : [];
+                const downloaded = statuses.filter((s) => s.downloaded).map((s) => s.model);
+                const current = localOcr.model;
+                // 只允许选择已下载的模型包；当前配置的模型尚未下载时保留展示
+                // （标注「未下载」），推理接入后后端也会拦截并给出明确提示。
+                const options =
+                  current !== "" && !downloaded.includes(current)
+                    ? [current, ...downloaded]
+                    : downloaded;
+                const hints: Record<string, string> = {
+                  "pp-ocrv4-mobile": "推荐，CPU 快",
+                  "pp-ocrv4-server": "更准，较慢",
+                };
+                return (
+                  <select
+                    className="cfg-input"
+                    aria-labelledby="label-local-ocr-model"
+                    value={options.includes(current) ? current : ""}
+                    onChange={(event) => patchLocalOcr({ model: event.target.value }, true)}
+                  >
+                    {options.length === 0 && <option value="">（尚无已下载模型）</option>}
+                    {options.map((model) => {
+                      const isDownloaded = downloaded.includes(model);
+                      const hint = hints[model] ?? "";
+                      return (
+                        <option value={model} key={model}>
+                          {model}
+                          {isDownloaded ? "" : "（未下载）"}
+                          {hint !== "" ? ` · ${hint}` : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
+                );
+              })()}
+            </div>
+            <div className="cfg-row">
+              <span className="cfg-label" id="label-local-ocr-device">
+                计算设备
+              </span>
+              <select
+                className="cfg-input"
+                aria-labelledby="label-local-ocr-device"
+                value={localOcr.device || "auto"}
+                onChange={(event) => patchLocalOcr({ device: event.target.value }, true)}
+              >
+                <option value="auto">自动（检测到 GPU 则优先）</option>
+                <option value="cpu">CPU</option>
+                <option value="cuda">CUDA（NVIDIA）</option>
+              </select>
+            </div>
+            <p className="hint-text">
+              仅可选择已下载的模型包，模型在下方「本地
+              OCR 模型」卡片中下载，无需任何云端 API Key。CUDA 需要本机装有
+              NVIDIA 驱动与 CUDA 环境，不可用时运行时会自动回退 CPU。
+            </p>
+            {localOcrFeedback !== null && (
+              <p className={localOcrFeedback.kind === "error" ? "error-text" : "hint-text"}>
+                {localOcrFeedback.text}
+              </p>
+            )}
+          </div>
+        ) : (
+          !hasCloudKey && (
+            <p className="hint-text">
+              尚未配置云端 OCR 的 API Key。填写下方 Key，或切换到「本地部署」用本地模型识别。
+            </p>
+          )
+        )}
+      </div>
+    );
+  }
+
+  /** 「本地 OCR 模型」卡片：每个模型包一行，与本地 ASR 模型卡片同构。 */
+  function renderLocalOcrModelCard(): React.JSX.Element {
+    const downloadNote = rowFeedback["__localOcrModel"] ?? null;
+    return (
+      <section className="card">
+        <h2 className="card__title">
+          <span className="card__index">04</span>本地 OCR 模型
+        </h2>
+        {ocrModelStatuses.status !== "ok" ? (
+          <p className="placeholder">
+            {ocrModelStatuses.status === "loading" ? "加载中…" : "模型状态读取失败"}
+          </p>
+        ) : (
+          <>
+            <p className="card-hint">
+              RapidOCR（PP-OCRv4）模型包，包含识别 / 检测 / 分类三个 ONNX 文件，下载到本机数据目录后供本地
+              OCR 使用（推理接入在后续版本提供）。下载支持断点续传，失败后可重新点击。
+            </p>
+            <div className="model-list">
+              {ocrModelStatuses.value.map((entry) => {
+                const busy = downloadingOcrModel !== null || entry.downloading;
+                const percent =
+                  entry.downloading && entry.totalBytes > 0
+                    ? Math.min(100, Math.round((entry.downloadedBytes / entry.totalBytes) * 100))
+                    : null;
+                return (
+                  <div className="model-item" key={entry.model}>
+                    <div className="model-item__info">
+                      <span className="model-item__name">{entry.model}</span>
+                      <span className="model-item__meta">
+                        {entry.label} · 约 {formatBytes(entry.approxSizeBytes)}
+                      </span>
+                    </div>
+                    <div className="model-item__state">
+                      {entry.downloaded ? (
+                        <span className="status status--ok">已下载</span>
+                      ) : entry.downloading ? (
+                        <span className="status status--info">
+                          {percent !== null ? `下载中 ${percent}%` : "下载中…"}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="button"
+                          disabled={busy}
+                          onClick={() => void handleDownloadOcrModel(entry.model)}
+                        >
+                          下载
+                        </button>
+                      )}
+                    </div>
+                    {entry.downloading && (
+                      <div
+                        className="model-item__progress"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={percent ?? undefined}
+                      >
+                        <div
+                          className="model-item__progress-fill"
+                          style={{ width: `${percent ?? 0}%` }}
+                        />
+                      </div>
+                    )}
+                    {entry.error !== null && !entry.downloading && (
+                      <p className="error-text">上次下载失败：{entry.error}（可重试）</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {downloadNote !== null && (
+              <p className={downloadNote.kind === "error" ? "error-text" : "hint-text"}>
+                {downloadNote.text}
+              </p>
+            )}
+          </>
+        )}
+      </section>
+    );
+  }
+
   /** ASR 提供方切换：云端 API / 本地部署。 */
   function renderAsrModeSwitch(): React.JSX.Element | null {
     if (appConfig.status !== "ok") return null;
@@ -653,7 +944,12 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
     const headId = `ledger-head-${entry.provider}`;
     const panelId = `ledger-panel-${entry.provider}`;
     const isAsr = entry.provider === "asr";
+    const isOcr = entry.provider === "ocr";
     const localEnabled = appConfig.status === "ok" && (appConfig.value.localAsr?.enabled ?? false);
+    const ocrLocalEnabled =
+      appConfig.status === "ok" && (appConfig.value.localOcr?.enabled ?? false);
+    // 本地模式（ASR / OCR）下行内隐藏云端 Key 表单与保存/测试动作。
+    const hideCloudForm = (isAsr && localEnabled) || (isOcr && ocrLocalEnabled);
 
     return (
       <div key={entry.provider} className={open ? "ledger-row is-open" : "ledger-row"}>
@@ -673,9 +969,15 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
             {group !== "" && <span className="ledger-row__group">{group}</span>}
           </span>
           <span className="ledger-row__state">
-            {isAsr && (
-              <span className={localEnabled ? "status status--ok" : "status status--info"}>
-                {localEnabled ? "本地部署" : "云端"}
+            {(isAsr || isOcr) && (
+              <span
+                className={
+                  (isAsr ? localEnabled : ocrLocalEnabled)
+                    ? "status status--ok"
+                    : "status status--info"
+                }
+              >
+                {(isAsr ? localEnabled : ocrLocalEnabled) ? "本地部署" : "云端"}
               </span>
             )}
             {modelText !== "" && (
@@ -683,7 +985,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
                 {modelText}
               </span>
             )}
-            {isAsr && localEnabled ? (
+            {(isAsr || isOcr) && (isAsr ? localEnabled : ocrLocalEnabled) ? (
               <span className="ledger-row__unset">无需 Key</span>
             ) : entry.hasKey ? (
               <code className="ledger-row__mask">{entry.maskedKey ?? "已配置"}</code>
@@ -700,8 +1002,9 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
         <div className="ledger-row__panel" id={panelId} role="region" aria-labelledby={headId}>
           <div className="ledger-row__panel-inner">
             {isAsr && renderAsrModeSwitch()}
+            {isOcr && renderOcrModeSwitch()}
 
-            {!isAsr || !localEnabled ? (
+            {!hideCloudForm ? (
               <>
                 <div className="cfg-row">
                   <span className="cfg-label" id={`label-key-${entry.provider}`}>
@@ -774,7 +1077,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
             ) : null}
 
             <div className="cfg-actions">
-              {!isAsr || !localEnabled ? (
+              {!hideCloudForm ? (
                 <>
                   <button
                     type="button"
@@ -811,7 +1114,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
                 </button>
               )}
               <span className="cfg-actions__spacer" />
-              {!isAsr || !localEnabled ? (
+              {!hideCloudForm ? (
                 entry.hasKey ? (
                   <button
                     type="button"
@@ -861,6 +1164,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
       </section>
 
       {renderLocalAsrModelCard()}
+      {renderLocalOcrModelCard()}
     </div>
   );
 }

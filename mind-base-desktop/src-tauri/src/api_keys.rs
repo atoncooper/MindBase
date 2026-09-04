@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
@@ -27,7 +27,14 @@ use crate::db::Db;
 /// Providers that may hold a stored configuration. `asr` / `embedding` are
 /// purpose slots: they override the conversational DashScope key for their
 /// specific pipeline and fall back to it when unset.
-const KNOWN_PROVIDERS: [&str; 5] = ["dashscope", "openrouter", "deepseek", "asr", "embedding"];
+const KNOWN_PROVIDERS: [&str; 6] = [
+    "dashscope",
+    "openrouter",
+    "deepseek",
+    "asr",
+    "embedding",
+    "ocr",
+];
 
 /// Upper bound for any accepted key; real provider keys stay far below this.
 const MAX_KEY_LEN: usize = 256;
@@ -48,12 +55,21 @@ const MASK_TAIL: usize = 4;
 const MASK_MIN_LEN: usize = MASK_HEAD + MASK_TAIL + 4;
 
 /// Official OpenAI-compatible endpoints used when no custom Base URL is set.
-const DEFAULT_ENDPOINTS: [(&str, &str); 5] = [
-    ("dashscope", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+const DEFAULT_ENDPOINTS: [(&str, &str); 6] = [
+    (
+        "dashscope",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ),
     ("openrouter", "https://openrouter.ai/api/v1"),
     ("deepseek", "https://api.deepseek.com/v1"),
     ("asr", "https://dashscope.aliyuncs.com/api/v1"),
-    ("embedding", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    (
+        "embedding",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ),
+    // OCR 走 DashScope 兼容模式的多模态端点（qwen-vl-ocr 系列模型），
+    // /models 探针与其他兼容模式提供方一致。
+    ("ocr", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 ];
 
 /// Path appended to an endpoint to reach its cheap auth-check resource;
@@ -162,9 +178,7 @@ fn validate_base_url(url: &str) -> Result<String, String> {
         || trimmed.starts_with("ws://")
         || trimmed.starts_with("wss://"))
     {
-        return Err(
-            "Base URL 必须以 http://、https://、ws:// 或 wss:// 开头".to_string(),
-        );
+        return Err("Base URL 必须以 http://、https://、ws:// 或 wss:// 开头".to_string());
     }
     Ok(trimmed.to_string())
 }
@@ -368,9 +382,10 @@ fn describe_status(status: u16, model_count: Option<usize>) -> (bool, String) {
         401 | 403 => (false, "鉴权失败：API Key 无效或已过期".to_string()),
         404 => (false, "端点不存在：请检查 Base URL 是否正确".to_string()),
         429 => (false, "请求过于频繁或额度受限（HTTP 429）".to_string()),
-        code if (500..600).contains(&code) => {
-            (false, format!("提供方服务端错误（HTTP {code}），请稍后重试"))
-        }
+        code if (500..600).contains(&code) => (
+            false,
+            format!("提供方服务端错误（HTTP {code}），请稍后重试"),
+        ),
         code => (false, format!("意外的 HTTP 状态码 {code}")),
     }
 }
@@ -404,9 +419,8 @@ fn proxy_from_env() -> Option<String> {
 fn http_agent(timeout: Duration, proxy_url: Option<&str>) -> Result<ureq::Agent, String> {
     let builder = ureq::AgentBuilder::new().timeout(timeout);
     let builder = match proxy_url {
-        Some(url) => builder.proxy(
-            ureq::Proxy::new(url).map_err(|err| format!("invalid proxy url {url}: {err}"))?,
-        ),
+        Some(url) => builder
+            .proxy(ureq::Proxy::new(url).map_err(|err| format!("invalid proxy url {url}: {err}"))?),
         None => builder,
     };
     Ok(builder.build())
@@ -437,7 +451,11 @@ pub(crate) fn proxied_agent(timeout: Duration) -> Result<Option<ureq::Agent>, St
 /// Returns the HTTP status plus the advertised model count when the body was
 /// parseable JSON. Transport failures (DNS / connect / timeout) become `Err`;
 /// the key never appears in any error text.
-fn request_models(agent: &ureq::Agent, url: &str, key: &str) -> Result<(u16, Option<usize>), String> {
+fn request_models(
+    agent: &ureq::Agent,
+    url: &str,
+    key: &str,
+) -> Result<(u16, Option<usize>), String> {
     let response = agent
         .get(url)
         .set("Authorization", &format!("Bearer {key}"))
@@ -705,16 +723,14 @@ fn run_asr_e2e(
     model: String,
     ffmpeg_path: Option<PathBuf>,
 ) -> Result<ProviderTestResult, String> {
-    use crate::asr::{AsrClient, AsrMode, detect_mode};
+    use crate::asr::{detect_mode, AsrClient, AsrMode};
     let mut result = base;
 
-    let mode = detect_mode(
-        &if base_url.trim().is_empty() {
-            crate::asr::resolve_default_base()
-        } else {
-            base_url.clone()
-        },
-    );
+    let mode = detect_mode(&if base_url.trim().is_empty() {
+        crate::asr::resolve_default_base()
+    } else {
+        base_url.clone()
+    });
 
     // Model-existence check against the advertised `/models` list. This is
     // only meaningful for OpenAI-compatible endpoints: DashScope ASR models
@@ -761,13 +777,22 @@ fn run_asr_e2e(
                 let model_check = if mode == AsrMode::OpenAICompatible {
                     format!(
                         "模型 {} 校验{} · ",
-                        if model.trim().is_empty() { "(默认)" } else { &model },
-                        if model_ok { "通过" } else { "未找到（仍尝试）" },
+                        if model.trim().is_empty() {
+                            "(默认)"
+                        } else {
+                            &model
+                        },
+                        if model_ok {
+                            "通过"
+                        } else {
+                            "未找到（仍尝试）"
+                        },
                     )
                 } else {
                     String::new()
                 };
-                result.detail = format!("连接成功 · {model_list_part}{model_check}真实转写：{note}");
+                result.detail =
+                    format!("连接成功 · {model_list_part}{model_check}真实转写：{note}");
                 result.asr_note = Some(note);
                 // A successful real transcription probe confirms the endpoint
                 // + key + model all work end-to-end.
@@ -965,7 +990,10 @@ pub fn save_provider_config(
 
 /// Clear one provider's stored key, keeping base URL / model; idempotent.
 #[tauri::command]
-pub fn clear_provider_key(provider: String, db: State<'_, Db>) -> Result<Vec<ProviderStatus>, String> {
+pub fn clear_provider_key(
+    provider: String,
+    db: State<'_, Db>,
+) -> Result<Vec<ProviderStatus>, String> {
     let provider = validate_provider(&provider)?;
 
     let conn = db
@@ -997,8 +1025,14 @@ mod tests {
 
     #[test]
     fn provider_allowlist_normalizes_case_and_space() {
-        assert_eq!(validate_provider(" DashScope "), Ok("dashscope".to_string()));
-        assert_eq!(validate_provider("OPENROUTER"), Ok("openrouter".to_string()));
+        assert_eq!(
+            validate_provider(" DashScope "),
+            Ok("dashscope".to_string())
+        );
+        assert_eq!(
+            validate_provider("OPENROUTER"),
+            Ok("openrouter".to_string())
+        );
     }
 
     #[test]
@@ -1042,7 +1076,10 @@ mod tests {
     #[test]
     fn model_accepts_common_identifiers_and_empty() {
         assert_eq!(validate_model(" qwen-max "), Ok("qwen-max".to_string()));
-        assert_eq!(validate_model("openai/gpt-4o"), Ok("openai/gpt-4o".to_string()));
+        assert_eq!(
+            validate_model("openai/gpt-4o"),
+            Ok("openai/gpt-4o".to_string())
+        );
         assert_eq!(validate_model(""), Ok(String::new()));
     }
 
@@ -1073,10 +1110,7 @@ mod tests {
     fn asr_probe_url_rewrites_transcription_endpoint() {
         // OpenRouter transcription base → strip the resource, probe the models list.
         assert_eq!(
-            build_models_url(
-                "https://openrouter.ai/api/v1/audio/transcriptions",
-                "asr",
-            ),
+            build_models_url("https://openrouter.ai/api/v1/audio/transcriptions", "asr",),
             Some("https://openrouter.ai/api/v1/models".to_string())
         );
         // DashScope async base → compatible-mode models list.
@@ -1111,11 +1145,23 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         conn.execute_batch(crate::db::SCHEMA_SQL).expect("schema");
 
-        upsert_config(&conn, "dashscope", Some("sk-abcdef1234567890"), "", "qwen-max")
-            .expect("initial save");
+        upsert_config(
+            &conn,
+            "dashscope",
+            Some("sk-abcdef1234567890"),
+            "",
+            "qwen-max",
+        )
+        .expect("initial save");
         // Config-only edit: key=None must keep the stored credential.
-        upsert_config(&conn, "dashscope", None, "https://proxy.local/v1", "qwen-plus")
-            .expect("config-only save");
+        upsert_config(
+            &conn,
+            "dashscope",
+            None,
+            "https://proxy.local/v1",
+            "qwen-plus",
+        )
+        .expect("config-only save");
 
         let status = read_status(&conn, "dashscope").expect("read back");
         assert!(status.has_key, "key must survive a config-only save");
