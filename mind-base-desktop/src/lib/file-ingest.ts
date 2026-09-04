@@ -9,7 +9,8 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-/** Extensions accepted by the backend scan (keep in sync with file_ingest.rs). */
+/** Extensions accepted by the backend scan (keep in sync with file_ingest.rs).
+ *  图片（jpg/png/bmp/webp）走本地 OCR 识别入库。 */
 export const IMPORT_EXTENSIONS = [
   "txt",
   "md",
@@ -18,6 +19,11 @@ export const IMPORT_EXTENSIONS = [
   "docx",
   "html",
   "htm",
+  "jpg",
+  "jpeg",
+  "png",
+  "bmp",
+  "webp",
 ] as const;
 
 /** Run kicked off for one selection batch. */
