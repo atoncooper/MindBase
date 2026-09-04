@@ -1,9 +1,13 @@
 name: Desktop Release
 
 # 推送 mind-base-desktop-v* 形式的 tag 时自动：拉取 ffmpeg sidecar →
-# 前端 + Rust 编译 → 创建 GitHub Release 并上传 NSIS/MSI 安装包。
+# 前端 + Rust 编译 → 创建 GitHub Release 并上传安装包。
 # 应用内更新器按该前缀识别版本（strip 后与 tauri.conf.json 的 version 比较），
 # 附件文件名保持 tauri 默认命名（含 x64、以 -setup.exe 结尾）即可被识别。
+#
+# 平台矩阵：Windows（NSIS/MSI，Windows job 创建 Release）与 macOS（Apple
+# Silicon .dmg，Beta）。macOS job 等待 Release 出现后上传附件，避免与
+# Windows job 的创建竞争。
 
 on:
   push:
@@ -15,7 +19,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: mind-base-desktop
@@ -34,19 +46,41 @@ jobs:
         with:
           workspaces: mind-base-desktop/src-tauri
 
-      - name: Provision FFmpeg sidecar
+      - name: Provision FFmpeg sidecar (Windows)
+        if: matrix.platform == 'windows'
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
 
-      - name: Verify tag matches app version
-        shell: pwsh
+      # evermeet.cx 静态构建（GPL，同 gyan.dev 的许可注意项）。下载两个
+      # 单二进制 zip 并按 Tauri externalBin 要求以 target triple 命名。
+      - name: Provision FFmpeg sidecar (macOS)
+        if: matrix.platform == 'macos'
         run: |
-          $tag = $env:GITHUB_REF_NAME              # mind-base-desktop-v0.1.0
-          $expected = $tag -replace '^mind-base-desktop-v', ''
-          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          if ($conf.version -ne $expected) {
-            Write-Error "tag 版本($expected) 与 tauri.conf.json 版本($($conf.version)) 不一致，请先改版本号再打 tag"
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          triple="aarch64-apple-darwin"
+          for tool in ffmpeg ffprobe; do
+            case "$tool" in
+              ffmpeg)  url="https://evermeet.cx/ffmpeg/getrelease/zip" ;;
+              ffprobe) url="https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ;;
+            esac
+            curl -fL --retry 3 -o "${tool}.zip" "$url"
+            unzip -o -j "${tool}.zip" "${tool}"
+            mv "${tool}" "src-tauri/binaries/${tool}-${triple}"
+            rm "${tool}.zip"
+            chmod +x "src-tauri/binaries/${tool}-${triple}"
+          done
+
+      - name: Verify tag matches app version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"                          # mind-base-desktop-v0.1.0
+          expected="${tag#mind-base-desktop-v}"
+          actual=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$actual" != "$expected" ]; then
+            echo "tag 版本($expected) 与 tauri.conf.json 版本($actual) 不一致，请先改版本号再打 tag"
             exit 1
-          }
+          fi
 
       - name: Install frontend deps
         run: npm ci
@@ -54,7 +88,8 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build
 
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release (Windows)
+        if: matrix.platform == 'windows'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
@@ -67,3 +102,20 @@ jobs:
           gh release create $env:GITHUB_REF_NAME @files `
             --title "MindBase Desktop $env:GITHUB_REF_NAME" `
             --generate-notes
+
+      - name: Upload macOS artifacts
+        if: matrix.platform == 'macos'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          files=$(ls src-tauri/target/release/bundle/dmg/*.dmg)
+          if [ -z "$files" ]; then echo "未找到构建产物"; exit 1; fi
+          # Windows job 负责创建 Release；这里轮询等待它出现（最多 ~40 分钟）。
+          for i in $(seq 1 40); do
+            if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then break; fi
+            echo "waiting for release to be created by the Windows job... ($i/40)"
+            sleep 60
+          done
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || { echo "Release 仍未创建"; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" $files --clobber
