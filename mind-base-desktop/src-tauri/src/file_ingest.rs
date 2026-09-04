@@ -21,8 +21,14 @@ use crate::db::Db;
 use crate::embeddings::{embed_client_from_conn, EmbedClient};
 use crate::vectors;
 
-/// Extensions accepted for ingestion (lowercase, without the dot).
-const ALLOWED_EXT: &[&str] = &["txt", "md", "markdown", "pdf", "docx", "html", "htm"];
+/// Extensions accepted for ingestion (lowercase, without the dot). Images
+/// are ingested through local OCR (`scripts/ocr_extract.py`); scanned PDFs
+/// fall back to it when their text layer is empty.
+const ALLOWED_EXT: &[&str] = &[
+    "txt", "md", "markdown", "pdf", "docx", "html", "htm", "jpg", "jpeg", "png", "bmp", "webp",
+];
+/// Extensions ingested purely through local OCR.
+const IMAGE_EXT: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp"];
 /// Per-file size cap — a bigger file is almost certainly data, not prose.
 const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// Batch cap so a folder pick can't enqueue the whole disk.
@@ -377,6 +383,22 @@ fn script_path() -> PathBuf {
         .to_path_buf()
 }
 
+/// Parse the one-JSON-line verdict printed by `doc_extract.py` /
+/// `ocr_extract.py` (the verdict is the LAST non-empty stdout line — libs
+/// like pymupdf may print warnings above it).
+fn parse_extract_payload(stdout: &str) -> Result<ExtractPayload, String> {
+    let line = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|text| !text.is_empty())
+        .unwrap_or("");
+    serde_json::from_str(line).map_err(|err| {
+        let snippet: String = line.chars().take(120).collect();
+        format!("解析器输出无法读取：{err}（输出片段：{snippet}）")
+    })
+}
+
 /// Run `doc_extract.py` on one file and parse its JSON verdict.
 fn extract_text(exe: &Path, file: &Path) -> Result<Extracted, String> {
     let script = script_path();
@@ -405,23 +427,113 @@ fn extract_text(exe: &Path, file: &Path) -> Result<Extracted, String> {
     if !output.status.success() && output.stdout.is_empty() {
         return Err(format!("解析器异常退出（退出码 {}）", output.status));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // The extractor prints exactly one JSON line on stdout, but libraries it
-    // loads may emit warnings to stdout as well (pymupdf's `fitz` shim does)
-    // — the verdict is therefore the LAST non-empty line, never the first.
-    let line = stdout
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|text| !text.is_empty())
-        .unwrap_or("");
-    let payload: ExtractPayload = serde_json::from_str(line).map_err(|err| {
-        let snippet: String = line.chars().take(120).collect();
-        format!("解析器输出无法读取：{err}（输出片段：{snippet}）")
-    })?;
+    let payload = parse_extract_payload(&String::from_utf8_lossy(&output.stdout))?;
     if !payload.ok {
         return Err(if payload.error.is_empty() {
             "解析失败（未知原因）".to_string()
+        } else {
+            payload.error
+        });
+    }
+    Ok(Extracted {
+        title: payload.title,
+        text: payload.text,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// OCR fallback (local RapidOCR, see `ocr_server.rs` + `scripts/ocr_extract.py`)
+// ---------------------------------------------------------------------------
+
+/// Availability of the local OCR runtime for one ingestion run.
+enum OcrStatus {
+    /// Everything needed to run `ocr_extract.py` is in place.
+    Ready {
+        exe: PathBuf,
+        model_dir: PathBuf,
+        device: String,
+    },
+    /// The user has not switched OCR to 本地部署.
+    Disabled,
+    /// Local OCR is on but the configured bundle is not downloaded.
+    NoModel { model: String },
+    /// Local OCR is on but the environment could not be provisioned.
+    Failed(String),
+}
+
+impl OcrStatus {
+    /// The user-facing reason OCR cannot run right now.
+    fn unavailable_reason(&self, for_image: bool) -> String {
+        let subject = if for_image {
+            "图片入库走本地 OCR 识别"
+        } else {
+            "该 PDF 是扫描版（无文本层），需要 OCR 识别"
+        };
+        match self {
+            OcrStatus::Ready { .. } => String::new(),
+            OcrStatus::Disabled => format!(
+                "{subject}。请到「API 设置 → OCR 文字识别」切换到本地部署并下载模型后重试"
+            ),
+            OcrStatus::NoModel { model } => format!(
+                "{subject}。本地 OCR 模型「{model}」尚未下载：请在「API 设置 → 本地 OCR 模型」卡片下载"
+            ),
+            OcrStatus::Failed(err) => format!("{subject}，但本地 OCR 环境不可用：{err}"),
+        }
+    }
+}
+
+/// `true` when the extractor error is the scanned-PDF verdict (no text
+/// layer) that should trigger the OCR fallback.
+fn is_scanned_pdf_error(error: &str) -> bool {
+    error.contains("没有可提取的文本层")
+}
+
+/// Path of the OCR script, shipped as a resource next to the binary.
+fn ocr_script_path() -> PathBuf {
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("ocr_extract.py");
+    if dev.exists() {
+        return dev;
+    }
+    std::path::Path::new("scripts").join("ocr_extract.py").to_path_buf()
+}
+
+/// Run `ocr_extract.py` on one image / scanned PDF and parse its verdict.
+fn ocr_extract(ctx: (&Path, &Path, &str), file: &Path) -> Result<Extracted, String> {
+    let (exe, model_dir, device) = ctx;
+    let script = ocr_script_path();
+    if !script.is_file() {
+        return Err(format!("OCR 脚本缺失：{}", script.display()));
+    }
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = StdCommand::new(exe);
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = StdCommand::new(exe);
+    let output = cmd
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .arg(&script)
+        .arg(file)
+        .arg(model_dir)
+        .arg(device)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|err| format!("无法运行 OCR（{}）：{err}", exe.display()))?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err(format!("OCR 异常退出（退出码 {}）", output.status));
+    }
+    let payload = parse_extract_payload(&String::from_utf8_lossy(&output.stdout))?;
+    if !payload.ok {
+        return Err(if payload.error.is_empty() {
+            "OCR 识别失败（未知原因）".to_string()
         } else {
             payload.error
         });
@@ -500,9 +612,10 @@ pub async fn ingest_files(
             .map(|dir| dir.clone())
             .map_err(|err| format!("failed to acquire data dir lock: {err}"))?
     };
+    let data_dir_for_doc = data_dir.clone();
     let python_exe = tauri::async_runtime::spawn_blocking(move || {
         crate::python_runtime::ensure_doc_extract_python(
-            &data_dir,
+            &data_dir_for_doc,
             need_pdf,
             need_docx,
             need_readability,
@@ -511,12 +624,57 @@ pub async fn ingest_files(
     .await
     .map_err(|err| format!("解析环境准备任务失败：{err}"))??;
 
+    // Local OCR state for this run: images always OCR, scanned PDFs fall
+    // back to it. Provisioning (embedded Python + rapidocr) happens only
+    // when local OCR is enabled and the batch can actually use it. The DB
+    // lock is read in a scoped block and released before any await.
+    let ocr = {
+        let (ocr_cfg, any_image, any_pdf) = {
+            let db = app.state::<Db>();
+            let conn = db
+                .conn
+                .lock()
+                .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+            let config = crate::config::load(&conn)?;
+            (
+                config.local_ocr.clone(),
+                files.iter().any(|file| IMAGE_EXT.contains(&file.ext.as_str())),
+                files.iter().any(|file| file.ext == "pdf"),
+            )
+        };
+        if !ocr_cfg.enabled || (!any_image && !any_pdf) {
+            OcrStatus::Disabled
+        } else if crate::ocr_server::resolve_model_dir(&data_dir, &ocr_cfg.model).is_none() {
+            OcrStatus::NoModel { model: ocr_cfg.model.clone() }
+        } else {
+            let data_dir2 = data_dir.clone();
+            let device = ocr_cfg.device.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                crate::python_runtime::ensure_ocr_python(&data_dir2, any_pdf, &device)
+            })
+            .await
+            .map_err(|err| format!("OCR 环境准备任务失败：{err}"))?
+            {
+                Ok(exe) => OcrStatus::Ready {
+                    exe,
+                    model_dir: crate::ocr_server::resolve_model_dir(
+                        &data_dir,
+                        &ocr_cfg.model,
+                    )
+                    .unwrap_or_default(),
+                    device: ocr_cfg.device,
+                },
+                Err(err) => OcrStatus::Failed(err),
+            }
+        }
+    };
+
     // `State` borrows the app; the blocking worker re-resolves it from a
     // cloned handle instead of moving the borrow into a 'static closure.
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let db = handle.state::<Db>();
-        run_file_ingestion(&files, &python_exe, &embed_client, &on_event, &db)
+        run_file_ingestion(&files, &python_exe, &embed_client, &ocr, &on_event, &db)
     })
     .await
     .map_err(|err| format!("task failed: {err}"))?
@@ -526,6 +684,7 @@ fn run_file_ingestion(
     files: &[ScannedFile],
     python_exe: &Path,
     embed_client: &EmbedClient,
+    ocr: &OcrStatus,
     channel: &Channel<FileIngestEvent>,
     db: &State<'_, Db>,
 ) -> Result<FileIngestSummary, String> {
@@ -613,7 +772,7 @@ fn run_file_ingestion(
             )?;
         }
 
-        match ingest_one_file(&path, file, python_exe, embed_client, index, channel) {
+        match ingest_one_file(&path, file, python_exe, embed_client, ocr, index, channel) {
             Ok(outcome) => {
                 // Single short-lock transaction: vectors + documents flip together.
                 let conn = db
@@ -697,6 +856,7 @@ fn ingest_one_file(
     file: &ScannedFile,
     python_exe: &Path,
     embed_client: &EmbedClient,
+    ocr: &OcrStatus,
     index: i64,
     channel: &Channel<FileIngestEvent>,
 ) -> Result<FileOutcome, String> {
@@ -711,7 +871,51 @@ fn ingest_one_file(
         "file_ingest",
         &format!("parse start path={} ext={}", file.path, file.ext),
     );
-    let extracted = extract_text(python_exe, path)?;
+    let extracted = if IMAGE_EXT.contains(&file.ext.as_str()) {
+        // Images have no text layer to parse — OCR is the only path.
+        match ocr {
+            OcrStatus::Ready { exe, model_dir, device } => {
+                emit(
+                    &FileIngestEvent::FileStep {
+                        index,
+                        step: "ocr".to_string(),
+                    },
+                    channel,
+                );
+                crate::logging::info(
+                    "file_ingest",
+                    &format!("ocr start (image) path={}", file.path),
+                );
+                ocr_extract((exe, model_dir, device), path)?
+            }
+            other => return Err(other.unavailable_reason(true)),
+        }
+    } else {
+        match extract_text(python_exe, path) {
+            Ok(extracted) => extracted,
+            Err(error) if file.ext == "pdf" && is_scanned_pdf_error(&error) => {
+                // Scanned PDF: no text layer — try the local OCR fallback.
+                match ocr {
+                    OcrStatus::Ready { exe, model_dir, device } => {
+                        emit(
+                            &FileIngestEvent::FileStep {
+                                index,
+                                step: "ocr".to_string(),
+                            },
+                            channel,
+                        );
+                        crate::logging::info(
+                            "file_ingest",
+                            &format!("ocr fallback (scanned pdf) path={}", file.path),
+                        );
+                        ocr_extract((exe, model_dir, device), path)?
+                    }
+                    other => return Err(other.unavailable_reason(false)),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    };
     if extracted.text.trim().is_empty() {
         return Err("未提取到任何文本内容".to_string());
     }
@@ -796,8 +1000,32 @@ mod tests {
         assert!(is_allowed("pdf"));
         // `ext_of` lowercases before filtering, so only lowercase reaches here.
         assert!(is_allowed("md"));
+        // Images are OCR-ingestible.
+        assert!(is_allowed("png"));
+        assert!(is_allowed("jpeg"));
         assert!(!is_allowed("exe"));
         assert!(!is_allowed(""));
+    }
+
+    #[test]
+    fn scanned_pdf_errors_are_recognized() {
+        assert!(is_scanned_pdf_error(
+            "该 PDF 没有可提取的文本层（可能是扫描件），暂不支持 OCR"
+        ));
+        assert!(!is_scanned_pdf_error("无法打开 PDF：corrupt"));
+        assert!(!is_scanned_pdf_error("该 DOCX 没有可提取的正文"));
+    }
+
+    #[test]
+    fn ocr_unavailable_reasons_distinguish_states() {
+        let disabled = OcrStatus::Disabled;
+        let msg = disabled.unavailable_reason(false);
+        assert!(msg.contains("API 设置"), "disabled should point at settings: {msg}");
+        let no_model = OcrStatus::NoModel { model: "pp-ocrv4-mobile".to_string() };
+        let msg = no_model.unavailable_reason(true);
+        assert!(msg.contains("pp-ocrv4-mobile") && msg.contains("下载"), "{msg}");
+        let failed = OcrStatus::Failed("boom".to_string());
+        assert!(failed.unavailable_reason(false).contains("boom"));
     }
 
     #[test]

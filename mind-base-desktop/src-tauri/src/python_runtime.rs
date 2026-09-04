@@ -106,7 +106,10 @@ pub(crate) fn ensure_server_deps(data_dir: &Path) -> Result<PathBuf, String> {
     ensure_python_base(data_dir)?;
     let exe = python_exe(data_dir);
     if !REQUIRED.iter().all(|m| can_import(&exe, m)) {
-        crate::logging::info("python", "安装本地 ASR 服务依赖（faster-whisper / FastAPI）…");
+        crate::logging::info(
+            "python",
+            "安装本地 ASR 服务依赖（faster-whisper / FastAPI）…",
+        );
         install_packages(&exe, &python_dir(data_dir), PACKAGES)?;
         crate::logging::info("python", "本地 ASR 服务依赖安装完成");
     }
@@ -181,10 +184,117 @@ pub(crate) fn ensure_doc_extract_python(
     Ok(python_exe(data_dir))
 }
 
+/// Whether the installed onnxruntime exposes the CUDA execution provider.
+fn onnxruntime_has_cuda(exe: &Path) -> bool {
+    Command::new(exe)
+        .args([
+            "-c",
+            "import onnxruntime; print('CUDAExecutionProvider' in onnxruntime.get_available_providers())",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "True")
+        .unwrap_or(false)
+}
+
+/// Swap the CPU onnxruntime for the GPU build when the OCR device setting
+/// asks for CUDA. CPU and GPU builds must not coexist in one environment
+/// (double registration), and the GPU build alone still serves CPU — so the
+/// swap is one-way. A failed swap is not fatal: the OCR script degrades to
+/// CPU at runtime.
+fn ensure_onnxruntime_gpu(exe: &Path, py_dir: &Path) {
+    if onnxruntime_has_cuda(exe) {
+        return;
+    }
+    crate::logging::info("python", "OCR 设备为 CUDA：安装 onnxruntime-gpu…");
+    let uninstall = Command::new(exe)
+        .args(["-m", "pip", "uninstall", "-y", "onnxruntime"])
+        .current_dir(py_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !uninstall {
+        crate::logging::warn("python", "卸载 CPU onnxruntime 失败，CUDA 可能不可用");
+    }
+    if let Err(err) = install_packages(exe, py_dir, &["onnxruntime-gpu"]) {
+        crate::logging::warn(
+            "python",
+            &format!("onnxruntime-gpu 安装失败（将回退 CPU）：{err}"),
+        );
+        // Restore a CPU build so OCR keeps working.
+        let _ = install_packages(exe, py_dir, &["onnxruntime"]);
+        return;
+    }
+    if !onnxruntime_has_cuda(exe) {
+        crate::logging::warn(
+            "python",
+            "onnxruntime-gpu 已安装但 CUDA 提供方不可用（驱动/CUDA 环境？），运行时将回退 CPU",
+        );
+    }
+}
+
+/// Ensure an interpreter able to run `scripts/ocr_extract.py`: the embedded
+/// runtime with rapidocr-onnxruntime (+ pymupdf when a PDF may need page
+/// rendering). Returns the interpreter path.
+pub(crate) fn ensure_ocr_python(
+    data_dir: &Path,
+    need_pdf: bool,
+    device: &str,
+) -> Result<PathBuf, String> {
+    let mut required: Vec<&str> = vec!["rapidocr_onnxruntime"];
+    let mut packages: Vec<&str> = vec!["rapidocr-onnxruntime"];
+    if need_pdf {
+        required.push("fitz");
+        packages.push("pymupdf");
+    }
+    let exe = python_exe(data_dir);
+    if exe.is_file() && required.iter().all(|m| can_import(&exe, m)) {
+        if device == "cuda" {
+            ensure_onnxruntime_gpu(&exe, &python_dir(data_dir));
+        }
+        return Ok(exe);
+    }
+    ensure_python_base(data_dir)?;
+    let exe = python_exe(data_dir);
+    if !required.iter().all(|m| can_import(&exe, m)) {
+        crate::logging::info(
+            "python",
+            "安装本地 OCR 依赖（rapidocr-onnxruntime / pymupdf）…",
+        );
+        install_packages(&exe, &python_dir(data_dir), &packages)?;
+        crate::logging::info("python", "本地 OCR 依赖安装完成");
+    }
+    if device == "cuda" {
+        ensure_onnxruntime_gpu(&exe, &python_dir(data_dir));
+    }
+    if !required.iter().all(|m| can_import(&exe, m)) {
+        return Err("嵌入式 Python 已就绪但本地 OCR 依赖不可用".to_string());
+    }
+    Ok(exe)
+}
+
 /// Provision the embedded runtime skeleton (download, .pth, pip bootstrap)
 /// without installing any extra package. Shared by the dashscope (cloud ASR)
 /// and whisper-server (local ASR) paths. Returns the interpreter path.
-fn ensure_python_base(data_dir: &Path) -> Result<PathBuf, String> {    let exe = python_exe(data_dir);
+///
+/// Windows-only for now: the embeddable distribution and the pip bootstrap
+/// layout are Windows-specific. On macOS the caller degrades to a system
+/// `python3` where possible (plain text extraction) and the local ASR / OCR
+/// features report this error instead of a cryptic download failure.
+fn ensure_python_base(data_dir: &Path) -> Result<PathBuf, String> {
+    if cfg!(not(windows)) {
+        return Err(
+            "本地 Python 运行时暂未适配 macOS（本地 ASR / 本地 OCR / 带依赖的文档解析不可用），\
+             请使用云端模式"
+                .to_string(),
+        );
+    }
+    let exe = python_exe(data_dir);
     let py_dir = python_dir(data_dir);
     if !exe.is_file() {
         std::fs::create_dir_all(&py_dir)
@@ -202,11 +312,13 @@ fn ensure_python_base(data_dir: &Path) -> Result<PathBuf, String> {    let exe =
         crate::logging::info("python", "引导 pip…");
         let get_pip = download_bytes(GET_PIP_URLS)?;
         let tmp = py_dir.join("get-pip.py");
-        std::fs::write(&tmp, &get_pip)
-            .map_err(|err| format!("写入 get-pip.py 失败：{err}"))?;
+        std::fs::write(&tmp, &get_pip).map_err(|err| format!("写入 get-pip.py 失败：{err}"))?;
         let run_result = run_python(
             &exe,
-            &[tmp.to_string_lossy().to_string(), "--no-warn-script-location".to_string()],
+            &[
+                tmp.to_string_lossy().to_string(),
+                "--no-warn-script-location".to_string(),
+            ],
             &py_dir,
         );
         let _ = std::fs::remove_file(&tmp);
@@ -318,8 +430,7 @@ fn download_one(url: &str) -> Result<Vec<u8>, String> {
 /// Extract a zip archive into `target_dir` with a zip-slip guard.
 fn extract_zip(target_dir: &Path, bytes: &[u8]) -> Result<(), String> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|err| format!("zip 解析失败：{err}"))?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|err| format!("zip 解析失败：{err}"))?;
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)

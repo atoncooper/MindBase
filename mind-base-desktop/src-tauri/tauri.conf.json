@@ -25,7 +25,7 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
-    "resources": ["scripts/whisper_server.py", "scripts/doc_extract.py"],
+    "resources": ["scripts/whisper_server.py", "scripts/doc_extract.py", "scripts/ocr_extract.py"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",
