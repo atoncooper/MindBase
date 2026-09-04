@@ -4575,3 +4575,33 @@ body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* ---------------------------------------------------------------------------
+   文件入库页：拖拽高亮、OCR 扩展名徽章、记录搜索。
+--------------------------------------------------------------------------- */
+
+/* Dropping files anywhere on the import page is supported; the selection
+   card lights up while a drag is over the window. */
+.dropzone.is-active {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 2px var(--user-bubble), var(--shadow-lift);
+}
+
+/* Small pill marking image files that go through local OCR. */
+.ext-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink-2);
+  vertical-align: 1px;
+}
+
+/* Search box for the 入库记录 list. */
+.import-filter {
+  margin-bottom: 10px;
+}
