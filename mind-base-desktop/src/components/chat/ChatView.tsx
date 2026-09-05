@@ -262,7 +262,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
   // Codex 式澄清候选：最后一条消息是「已完成」的助手回复且命中澄清协议
   // 时，在输入框上方展示可点选的方向，点选即作为新消息发送。生成中 /
-  // 用户已追问（最后一条是 user）时自动消失。
+  // 用户已追问（最后一条是 user）时自动消失；✕ 可手动收起（同一问题
+  // 不再弹出，换新问题会重新出现）。
   const lastMessage = messages[messages.length - 1];
   const clarify =
     !busy &&
@@ -271,6 +272,9 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     lastMessage.status === "completed"
       ? parseClarify(lastMessage.content)
       : null;
+  const clarifyKey = clarify === null ? "" : `${clarify.question}|${clarify.options.join("|")}`;
+  const [dismissedClarifyKey, setDismissedClarifyKey] = useState("");
+  const clarifyVisible = clarify !== null && dismissedClarifyKey !== clarifyKey;
 
   function selectSession(sessionId: string): void {
     if (sessionId === activeId) return;
@@ -520,11 +524,25 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         />
         <div className="composer-wrap">
         {loadError !== "" && <p className="error-text composer__error">{loadError}</p>}
-        {clarify !== null && (
+        {clarifyVisible && clarify !== null && (
           <div className="clarify-bar" role="group" aria-label="澄清选项">
-            {clarify.question !== "" && (
-              <span className="clarify-bar__question">{clarify.question}</span>
-            )}
+            <div className="clarify-bar__head">
+              <span className="clarify-bar__badge" aria-hidden="true">
+                ?
+              </span>
+              <span className="clarify-bar__question">
+                {clarify.question !== "" ? clarify.question : "请选择一个方向继续，或直接输入说明"}
+              </span>
+              <button
+                type="button"
+                className="clarify-bar__dismiss"
+                aria-label="收起选项"
+                title="收起"
+                onClick={() => setDismissedClarifyKey(clarifyKey)}
+              >
+                ✕
+              </button>
+            </div>
             <div className="clarify-bar__options">
               {clarify.options.map((option, index) => (
                 <button
@@ -534,7 +552,10 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
                   title={`就「${option}」继续`}
                   onClick={() => void send(option)}
                 >
-                  {option}
+                  <span className="clarify-bar__num" aria-hidden="true">
+                    {index + 1}
+                  </span>
+                  <span className="clarify-bar__text">{option}</span>
                 </button>
               ))}
             </div>
