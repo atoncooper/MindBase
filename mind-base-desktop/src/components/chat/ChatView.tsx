@@ -23,7 +23,7 @@ import { listProviders, type ProviderStatus } from "../../lib/api-keys";
 import { listSkills, type SkillMeta } from "../../lib/skills";
 import { toErrorMessage } from "../../lib/updater";
 import SessionSidebar from "./SessionSidebar";
-import MessageList from "./MessageList";
+import MessageList, { parseClarify } from "./MessageList";
 import SummaryModal from "./SummaryModal";
 import SkillMenu from "./SkillMenu";
 import type { UiMessage } from "./MessageList";
@@ -259,6 +259,18 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     },
     [],
   );
+
+  // Codex 式澄清候选：最后一条消息是「已完成」的助手回复且命中澄清协议
+  // 时，在输入框上方展示可点选的方向，点选即作为新消息发送。生成中 /
+  // 用户已追问（最后一条是 user）时自动消失。
+  const lastMessage = messages[messages.length - 1];
+  const clarify =
+    !busy &&
+    lastMessage !== undefined &&
+    lastMessage.role === "assistant" &&
+    lastMessage.status === "completed"
+      ? parseClarify(lastMessage.content)
+      : null;
 
   function selectSession(sessionId: string): void {
     if (sessionId === activeId) return;
@@ -505,10 +517,29 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           onSuggestion={(text) => setInput(text)}
           onRetry={retry}
           onEditResend={editResend}
-          onClarify={(text) => void send(text)}
         />
         <div className="composer-wrap">
         {loadError !== "" && <p className="error-text composer__error">{loadError}</p>}
+        {clarify !== null && (
+          <div className="clarify-bar" role="group" aria-label="澄清选项">
+            {clarify.question !== "" && (
+              <span className="clarify-bar__question">{clarify.question}</span>
+            )}
+            <div className="clarify-bar__options">
+              {clarify.options.map((option, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  className="clarify-bar__option"
+                  title={`就「${option}」继续`}
+                  onClick={() => void send(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {attachedSkill !== null && (
           <div className="skill-chip-row">
             <span className="skill-chip" title="该技能全文将随下一条消息强制注入">

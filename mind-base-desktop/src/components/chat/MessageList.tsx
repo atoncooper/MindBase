@@ -42,18 +42,26 @@ interface ClarifyPayload {
 }
 
 /**
- * 识别澄清协议（agents.rs 澄清协议约定）：以【需要澄清】开头，后跟
- * 「问题：…」与「选项：」下的编号/破折号列表。不匹配时返回 null，消息
+ * 识别澄清协议（agents.rs 澄清协议约定）：消息含【需要澄清】标记，后跟
+ * 「问题：…」与「选项：」下的编号/破折号列表。从**最后一个**标记处解析——
+ * 模型偶尔会在标记前先说一句话（如「好的，」）。不匹配时返回 null，消息
  * 按普通 Markdown 渲染。
+ *
+ * 导出给 ChatView：可点选的候选项渲染在输入框上方（Codex 式），消息体内
+ * 只做静态展示。
  */
-function parseClarify(content: string): ClarifyPayload | null {
-  const trimmed = content.trim();
-  if (!trimmed.startsWith("【需要澄清】")) return null;
+export function parseClarify(content: string): ClarifyPayload | null {
+  const marker = content.lastIndexOf("【需要澄清】");
+  if (marker === -1) return null;
+  const trimmed = content
+    .slice(marker + "【需要澄清】".length)
+    .replace(/^\*+/, "")
+    .trim();
   let question = "";
   let inOptions = false;
   const options: string[] = [];
-  for (const raw of trimmed.split(/\r?\n/).slice(1)) {
-    const line = raw.trim();
+  for (const raw of trimmed.split(/\r?\n/).slice(0, 20)) {
+    const line = raw.trim().replace(/^\*+|\*+$/g, "");
     if (line === "") continue;
     if (!inOptions && /^问题[:：]?/.test(line)) {
       question = line.replace(/^问题[:：]?\s*/, "");
@@ -66,22 +74,19 @@ function parseClarify(content: string): ClarifyPayload | null {
     const match = /^(?:\d+\s*[、.)．)]|[-•*])\s*(.+)$/.exec(line);
     if (inOptions && match !== null) {
       options.push(match[1].trim());
+      if (options.length >= 4) break;
     }
   }
   if (question === "" && options.length === 0) return null;
   return { question, options };
 }
 
-/** 澄清卡片：问题 + 可点选的方向；点选即作为新消息发送。 */
-function ClarifyCard({
-  payload,
-  pending,
-  onClarify,
-}: {
-  payload: ClarifyPayload;
-  pending: boolean;
-  onClarify: (text: string) => void;
-}): React.JSX.Element {
+/**
+ * 澄清卡片（消息体内）：只展示问题与方向，**不可点选**——可点选的候选
+ * 统一渲染在输入框上方（ClarifyBar，见 ChatView），避免点击区域被消息
+ * 布局吞掉、也避免历史消息里的过期选项误导。
+ */
+function ClarifyCard({ payload }: { payload: ClarifyPayload }): React.JSX.Element {
   return (
     <div className="clarify-card">
       <span className="status status--info">需要澄清</span>
@@ -89,20 +94,13 @@ function ClarifyCard({
       {payload.options.length > 0 && (
         <div className="clarify-card__options">
           {payload.options.map((option, index) => (
-            <button
-              key={index}
-              type="button"
-              className="clarify-card__option"
-              disabled={pending}
-              title={pending ? "生成中…" : `就「${option}」继续`}
-              onClick={() => onClarify(option)}
-            >
+            <span key={index} className="clarify-card__option clarify-card__option--static">
               {option}
-            </button>
+            </span>
           ))}
         </div>
       )}
-      <p className="clarify-card__hint">点选一个方向继续，或在下方输入框直接补充说明。</p>
+      <p className="clarify-card__hint">在下方输入框上方的选项里点一个方向继续，或直接输入说明。</p>
     </div>
   );
 }
@@ -297,13 +295,11 @@ const MessageRow = memo(
     showCursor,
     onRetry,
     onEditResend,
-    onClarify,
   }: {
     message: UiMessage;
     showCursor: boolean;
     onRetry: (messageId: string) => void;
     onEditResend: (messageId: string, text: string) => void;
-    onClarify: (text: string) => void;
   }): React.JSX.Element {
     return message.role === "user" ? (
       <UserRow message={message} onEditResend={onEditResend} />
@@ -325,16 +321,10 @@ const MessageRow = memo(
             </span>
           ) : (
             ((): React.JSX.Element => {
-              // 澄清协议命中 → 交互卡片（流式期间选项逐步出现、置灰）。
+              // 澄清协议命中 → 静态展示卡片（可点选候选在输入框上方）。
               const clarify = parseClarify(message.content);
               if (clarify !== null) {
-                return (
-                  <ClarifyCard
-                    payload={clarify}
-                    pending={message.status === "pending"}
-                    onClarify={onClarify}
-                  />
-                );
+                return <ClarifyCard payload={clarify} />;
               }
               return <MarkdownContent content={message.content} streaming={showCursor} />;
             })()
@@ -364,8 +354,6 @@ interface MessageListProps {
   onRetry: (messageId: string) => void;
   /** 编辑一条用户消息并重新发送（丢弃其后所有消息）。 */
   onEditResend: (messageId: string, text: string) => void;
-  /** 回应澄清卡片：把所选方向作为新消息发送。 */
-  onClarify: (text: string) => void;
 }
 
 function MessageList({
@@ -374,7 +362,6 @@ function MessageList({
   onSuggestion,
   onRetry,
   onEditResend,
-  onClarify,
 }: MessageListProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0);
@@ -430,7 +417,6 @@ function MessageList({
             showCursor={showCursor && message === lastMessage}
             onRetry={onRetry}
             onEditResend={onEditResend}
-            onClarify={onClarify}
           />
         ))}
       </div>
