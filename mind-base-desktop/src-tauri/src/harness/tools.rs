@@ -45,7 +45,9 @@ fn fetch_vector_hits(
             .ok_or("向量检索不可用：当前未配置向量化（Embedding）密钥，请基于已有资料或历史对话回答")?;
     let vector = embed_client.embed_query(query)?;
     let conn = ctx.db.conn.lock().map_err(lock_err)?;
-    let raw = crate::vectors::search_conn(&conn, &vector, SEARCH_K, None)?;
+    // Hybrid: cosine + BM25 fused — exact terms (错误码、专有名词) stop
+    // getting buried under merely-similar chunks.
+    let raw = crate::vectors::hybrid_search_conn(&conn, &vector, query, SEARCH_K, None)?;
     crate::ingest::join_metadata(&conn, raw)
 }
 
@@ -1086,6 +1088,406 @@ fn truncate_chars(text: &str, cap: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Conversation-integrated artifact tools (resume / slides)
+// ---------------------------------------------------------------------------
+
+/// Generate a resume from the FULL chat history and write it under
+/// <data_dir>/exports/. Long-running (multi-pass LLM map-reduce) but blocking
+/// is fine: the runtime executes tools on scoped threads with no timeout.
+pub(crate) struct GenerateResumeTool;
+
+impl LocalTool for GenerateResumeTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_GENERATE_RESUME
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let target_role = value
+            .get("target_role")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        // 用户给了保存位置（如「存到桌面」）时写到那里，否则落 exports。
+        let save_path = value
+            .get("save_path")
+            .and_then(|p| p.as_str())
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let client = ctx.chat_client.ok_or(
+            "简历生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key",
+        )?;
+        // Lock discipline: history read + data_dir resolve under one short
+        // lock, then the LLM work runs lock-free.
+        let path = {
+            let conn = ctx.db.conn.lock().map_err(lock_err)?;
+            let data_dir = ctx
+                .db
+                .data_dir
+                .lock()
+                .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
+            crate::resume::generate_resume_to_file(&conn, client, &data_dir, target_role, save_path)?
+        };
+        Ok(ToolOutput::text(format!(
+            "简历已生成并保存到：{}。请告知用户文件路径，并简要说明简历结构（技能/项目/经历板块）；             提示用户可继续对话补充信息后重新生成（聊得越多越详细）。",
+            path.display()
+        )))
+    }
+}
+
+static SPEC_GENERATE_RESUME: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "generate_resume",
+        "把用户与助手聊过的全部历史对话提炼成一份 Markdown 简历，保存为文件并返回路径。         使用规则：① 求职方向不明时，先用【需要澄清】格式问清方向再调用；         ② 历史对话里用户聊过的项目/经历明显不足时，先提示用户多聊几句项目细节、         技术栈与量化成果（聊得越多简历越详细），再生成；         ③ 生成完成后必须告知文件保存路径、概述简历结构（技能/项目/经历板块），         并提醒：继续对话补充信息后可再次生成，内容会更充实。",
+        json!({
+            "type": "object",
+            "properties": {
+                "target_role": { "type": "string", "description": "求职方向（可选），如「前端工程师」，影响内容取舍" }
+            }
+        }),
+    )
+});
+
+/// Generate a slide deck (.pptx) for one topic and write it under
+/// <data_dir>/exports/. Outline via LLM, rendering via the python-pptx
+/// sidecar (first run provisions dependencies, later runs are fast).
+pub(crate) struct GenerateSlidesTool;
+
+impl LocalTool for GenerateSlidesTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_GENERATE_SLIDES
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let topic = value
+            .get("topic")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .ok_or("topic 不能为空")?
+            .to_string();
+        let slide_count = value
+            .get("slide_count")
+            .and_then(|n| n.as_u64())
+            .map(|n| (n as usize).clamp(crate::slides::MIN_SLIDES, crate::slides::MAX_SLIDES))
+            .unwrap_or(crate::slides::DEFAULT_SLIDES);
+        let audience = value
+            .get("audience")
+            .and_then(|a| a.as_str())
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
+        let style = value
+            .get("style")
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let client = ctx.chat_client.ok_or(
+            "PPT 生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key",
+        )?;
+        // Ground the outline in knowledge-base material by default — the
+        // single biggest lever on deck quality (opt out via use_knowledge=false).
+        let mut context_block = String::new();
+        if value.get("use_knowledge").and_then(|u| u.as_bool()) != Some(false) {
+            if let Some(embed_client) = ctx.embed_client {
+                if let Ok(query_vector) = embed_client.embed_query(&topic) {
+                    let conn = ctx.db.conn.lock().map_err(lock_err)?;
+                    if let Ok(raw) =
+                        crate::vectors::hybrid_search_conn(&conn, &query_vector, &topic, 6, None)
+                    {
+                        if let Ok(joined_hits) = crate::ingest::join_metadata(&conn, raw) {
+                        let joined = crate::chat::format_context_blocks(&joined_hits);
+                        if !joined.is_empty() {
+                            context_block = format!("参考知识片段：
+{joined}
+
+");
+                        }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data_dir = ctx
+            .db
+            .data_dir
+            .lock()
+            .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
+        // 先出大纲（含可选知识库素材作为背景），再渲染成 pptx 文件。
+        let outline = crate::slides::generate_outline_core(
+            client,
+            &topic,
+            slide_count,
+            audience,
+            style,
+            &context_block,
+        )?;
+        // 用户给了保存位置时写到那里，否则落 exports（有生成记录可查）。
+        let save_dir = value
+            .get("save_path")
+            .and_then(|p| p.as_str())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from);
+        let dir = save_dir.unwrap_or_else(|| crate::resume::exports_dir(&data_dir));
+        std::fs::create_dir_all(&dir).map_err(|err| format!("创建目录失败（{}）：{err}", dir.display()))?;
+        let path = dir.join(crate::resume::export_file_name(
+            &format!("PPT-{}", outline.title),
+            "pptx",
+        ));
+        crate::slides::render_pptx_to_path(
+            &data_dir,
+            &outline,
+            path.to_str().unwrap_or_default(),
+        )?;
+
+        let mut summary = String::new();
+        for (index, slide) in outline.slides.iter().enumerate() {
+            summary.push_str(&format!("{}. {}
+", index + 1, slide.title));
+        }
+        Ok(ToolOutput::text(format!(
+            "PPT 已生成并保存到：{}。
+大纲：
+{}请告知用户文件路径与页数，并给出每页标题的概览。",
+            path.display(),
+            summary
+        )))
+    }
+}
+
+static SPEC_GENERATE_SLIDES: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "generate_slides",
+        "按主题生成一套完整演示文稿（.pptx 文件）：封面 + 每页 3-6 条具体要点 + 讲者备注，         默认先检索知识库取材，可直接用 PowerPoint/WPS 打开。         使用规则：① 主题范围过大、受众（面试官/客户/新人）、页数、侧重不明时，         先用【需要澄清】格式问 1-3 个关键问题再调用；         ② 生成完成后必须告知文件保存路径，并逐页给出大纲概览；         ③ 内容单薄时主动建议：结合知识库资料（use_knowledge 默认已开启）或补充背景后重新生成。",
+        json!({
+            "type": "object",
+            "required": ["topic"],
+            "properties": {
+                "topic": { "type": "string", "description": "演示主题" },
+                "slide_count": { "type": "integer", "description": "正文页数（3-15，默认 8）" },
+                "audience": { "type": "string", "description": "目标受众（可选），如「技术面试官」" },
+                "style": { "type": "string", "description": "内容风格（可选），如「深入浅出」" },
+                "use_knowledge": { "type": "boolean", "description": "是否检索知识库素材作为大纲背景（默认 true；用户明确不需要时传 false）" },
+                "save_path": { "type": "string", "description": "保存位置（可选，绝对路径；用户说「存到桌面/D盘某目录」时传入），缺省存 exports" }
+            }
+        }),
+    )
+});
+
+// ---------------------------------------------------------------------------
+// General file-system tools (read / write / list — the agent's hands)
+// ---------------------------------------------------------------------------
+
+/// 单文件读取上限：简历/文档/代码足够，防误读巨型二进制拖爆上下文。
+const FILE_READ_CAP: u64 = 2 * 1024 * 1024;
+/// 单次写入上限。
+const FILE_WRITE_CAP: usize = 8 * 1024 * 1024;
+/// 目录列举条目上限。
+const LIST_DIR_CAP: usize = 200;
+
+pub(crate) struct ReadFileTool;
+
+impl LocalTool for ReadFileTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_READ_FILE
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let _ = ctx;
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let path = value
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .ok_or("path 不能为空")?;
+        let path = std::path::Path::new(path);
+        let metadata = std::fs::metadata(path)
+            .map_err(|err| format!("无法读取文件信息（{}）：{err}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("{} 不是文件（目录请用 list_dir）", path.display()));
+        }
+        if metadata.len() > FILE_READ_CAP {
+            return Err(format!(
+                "文件过大（{} 字节，上限 {}）：只支持文本文件，且请用 list_dir 先确认目标",
+                metadata.len(),
+                FILE_READ_CAP
+            ));
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|err| format!("读取失败（{}）：{err}", path.display()))?;
+        if bytes.contains(&0) {
+            return Err("这是二进制文件，无法按文本读取".to_string());
+        }
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        let line_count = content.lines().count();
+        Ok(ToolOutput::text(format!(
+            "已读取 {}（{} 字符 / {line_count} 行）：
+{content}",
+            path.display(),
+            content.chars().count()
+        )))
+    }
+}
+
+static SPEC_READ_FILE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "read_file",
+        "读取用户文件系统里的一个文本文件（代码/笔记/文档/配置等，上限 2MB）。         path 必须是绝对路径；用户提到某个文件时用它读取内容再处理。",
+        json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": { "type": "string", "description": "文件绝对路径" }
+            }
+        }),
+    )
+});
+
+pub(crate) struct WriteFileTool;
+
+impl LocalTool for WriteFileTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_WRITE_FILE
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let _ = ctx;
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let path = value
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .ok_or("path 不能为空")?;
+        let content = value
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default();
+        let append = value.get("append").and_then(|a| a.as_bool()) == Some(true);
+        if content.len() > FILE_WRITE_CAP {
+            return Err(format!("内容过大（{} 字节，上限 {FILE_WRITE_CAP}）", content.len()));
+        }
+        let path = std::path::Path::new(path);
+        if path.is_dir() {
+            return Err(format!("{} 是目录，请给出完整的文件路径", path.display()));
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("创建目录失败（{}）：{err}", parent.display()))?;
+        }
+        let written = if append {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|err| format!("打开文件失败（{}）：{err}", path.display()))?;
+            file.write_all(content.as_bytes())
+                .map_err(|err| format!("写入失败：{err}"))?;
+            content.len()
+        } else {
+            std::fs::write(path, content)
+                .map_err(|err| format!("写入失败（{}）：{err}", path.display()))?;
+            content.len()
+        };
+        Ok(ToolOutput::text(format!(
+            "已{} {}（{written} 字节）",
+            if append { "追加写入" } else { "写入" },
+            path.display()
+        )))
+    }
+}
+
+static SPEC_WRITE_FILE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "write_file",
+        "把文本内容写入用户文件系统的指定路径（覆盖或追加，自动创建父目录）。         path 必须是绝对路径。用户说「保存到 XX」「导出到 XX」且给了位置时用它；         用户没指定位置的生成类产物仍交给 generate_resume / generate_slides。         覆盖已有文件前先向用户确认。",
+        json!({
+            "type": "object",
+            "required": ["path", "content"],
+            "properties": {
+                "path": { "type": "string", "description": "目标文件绝对路径" },
+                "content": { "type": "string", "description": "要写入的完整文本内容" },
+                "append": { "type": "boolean", "description": "true=追加到文件末尾（默认覆盖）" }
+            }
+        }),
+    )
+});
+
+pub(crate) struct ListDirTool;
+
+impl LocalTool for ListDirTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_LIST_DIR
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let _ = ctx;
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let path = value
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .ok_or("path 不能为空")?;
+        let entries = std::fs::read_dir(std::path::Path::new(path))
+            .map_err(|err| format!("无法列出目录（{path}）：{err}"))?;
+        let mut lines: Vec<String> = Vec::new();
+        for entry in entries.take(LIST_DIR_CAP + 1) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            if lines.len() == LIST_DIR_CAP {
+                lines.push(format!("…（超过 {LIST_DIR_CAP} 项，已截断）"));
+                break;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            match entry.metadata() {
+                Ok(meta) if meta.is_dir() => lines.push(format!("[目录] {name}")),
+                Ok(meta) => lines.push(format!(
+                    "[文件] {name}（{} 字节）",
+                    meta.len()
+                )),
+                Err(_) => lines.push(format!("[?] {name}")),
+            }
+        }
+        if lines.is_empty() {
+            return Ok(ToolOutput::text(format!("{path} 是空目录")));
+        }
+        Ok(ToolOutput::text(format!(
+            "{}：
+{}",
+            path,
+            lines.join("
+")
+        )))
+    }
+}
+
+static SPEC_LIST_DIR: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "list_dir",
+        "列出一个目录下的文件与子目录（上限 200 项）。用于探测用户提到的位置、         寻找文件，或确认保存路径是否存在。",
+        json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": { "type": "string", "description": "目录绝对路径" }
+            }
+        }),
+    )
+});
 
 #[cfg(test)]
 mod tests {

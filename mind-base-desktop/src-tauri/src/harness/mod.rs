@@ -100,6 +100,17 @@ impl Harness {
         // Optional-network enhancement tools (search agent).
         runtime.registry_mut().register(Box::new(tools::SearchDocsTool));
         runtime.registry_mut().register(Box::new(tools::WebCrawlTool));
+        // Conversation-integrated artifact generation (chat agent).
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::GenerateResumeTool));
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::GenerateSlidesTool));
+        // General file-system access (the agent's hands, not just exports).
+        runtime.registry_mut().register(Box::new(tools::ReadFileTool));
+        runtime.registry_mut().register(Box::new(tools::WriteFileTool));
+        runtime.registry_mut().register(Box::new(tools::ListDirTool));
 
         let mut orchestrator = orchestrator::Orchestrator::new();
         // Only chat is routable today — identical to the production backend;
@@ -203,7 +214,7 @@ pub(crate) fn react_loop(
                     .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
                 crate::skills::enabled_skills_digest(&conn, &dir)
             };
-            agents::chat_system_prompt(&skills_text)
+            agents::chat_system_prompt(&skills_text, kind.tools())
         }
         AgentKind::Memory => {
             let window_text = match memory_window {

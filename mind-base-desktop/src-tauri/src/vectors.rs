@@ -162,6 +162,19 @@ pub(crate) fn upsert_chunks_conn(
                 ],
             )
             .map_err(|err| format!("failed to store chunk: {err}"))?;
+        // Keep the BM25 index in lockstep (caller owns the transaction, so
+        // vector + FTS rows commit or roll back together).
+        let tokens = index_tokens(&chunk.content).join(" ");
+        conn.execute(
+            "DELETE FROM vectors_fts WHERE doc_id = ?1 AND chunk_index = ?2",
+            params![doc_id.trim(), chunk.index],
+        )
+        .map_err(|err| format!("failed to sync fts index: {err}"))?;
+        conn.execute(
+            "INSERT INTO vectors_fts(content, doc_id, chunk_index) VALUES(?1, ?2, ?3)",
+            params![tokens, doc_id.trim(), chunk.index],
+        )
+        .map_err(|err| format!("failed to sync fts index: {err}"))?;
         written += affected;
     }
     Ok(written)
@@ -251,6 +264,183 @@ pub(crate) fn search_conn(
     Ok(hits)
 }
 
+// ---------------------------------------------------------------------------
+// Hybrid retrieval: BM25 (FTS5) fused with the vector channel via RRF
+// ---------------------------------------------------------------------------
+
+/// `true` for CJK ideograph ranges (the characters bigram tokenization is for).
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF | 0x20000..=0x2A6DF
+    )
+}
+
+/// Tokenize text for BM25 matching: CJK runs become character bigrams (a
+/// lone CJK char stays whole), ASCII runs become lowercased words, everything
+/// else separates. The FTS5 default tokenizer splits on the spaces we join
+/// with, so plain `unicode61` handles Chinese without a custom tokenizer —
+/// critical because unicode61 alone treats a whole CJK sentence as ONE token
+/// and Chinese queries would never match.
+pub(crate) fn index_tokens(text: &str) -> Vec<String> {
+    fn flush_ascii(ascii: &mut String, tokens: &mut Vec<String>) {
+        if !ascii.is_empty() {
+            tokens.push(std::mem::take(ascii).to_lowercase());
+        }
+    }
+    fn flush_cjk(cjk: &mut Vec<char>, tokens: &mut Vec<String>) {
+        if cjk.len() == 1 {
+            tokens.push(cjk[0].to_string());
+        } else {
+            for pair in cjk.windows(2) {
+                tokens.push(pair.iter().collect());
+            }
+        }
+        cjk.clear();
+    }
+
+    let mut tokens = Vec::new();
+    let mut ascii = String::new();
+    let mut cjk: Vec<char> = Vec::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            flush_cjk(&mut cjk, &mut tokens);
+            ascii.push(ch);
+        } else if is_cjk(ch) {
+            flush_ascii(&mut ascii, &mut tokens);
+            cjk.push(ch);
+        } else {
+            flush_ascii(&mut ascii, &mut tokens);
+            flush_cjk(&mut cjk, &mut tokens);
+        }
+    }
+    flush_ascii(&mut ascii, &mut tokens);
+    flush_cjk(&mut cjk, &mut tokens);
+    tokens
+}
+
+/// Build the FTS5 MATCH expression for a query: each token double-quoted and
+/// OR-joined. OR favors recall — the vector channel supplies precision, and
+/// bm25() ranks documents matching more/longer tokens above the rest.
+fn fts_match_expression(query: &str) -> Option<String> {
+    let tokens = index_tokens(query);
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(
+        tokens
+            .iter()
+            .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
+}
+
+/// BM25 keyword search over the FTS index; returns chunk keys ranked by
+/// bm25 (best first). Empty when the query has no usable tokens.
+fn fts_search_conn(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+    doc_ids: Option<&[String]>,
+) -> Result<Vec<(String, i64, String)>, String> {
+    let Some(match_query) = fts_match_expression(query) else {
+        return Ok(Vec::new());
+    };
+    // SQL shape depends on the filter; both branches share the ordering.
+    let sql = if doc_ids.is_some() {
+        "SELECT v.doc_id, v.chunk_index, v.content
+         FROM vectors_fts f
+         JOIN vectors v ON v.doc_id = f.doc_id AND v.chunk_index = f.chunk_index
+         WHERE vectors_fts MATCH ?1 AND v.doc_id IN (SELECT value FROM json_each(?2))
+         ORDER BY bm25(vectors_fts)
+         LIMIT ?3"
+    } else {
+        "SELECT v.doc_id, v.chunk_index, v.content
+         FROM vectors_fts f
+         JOIN vectors v ON v.doc_id = f.doc_id AND v.chunk_index = f.chunk_index
+         WHERE vectors_fts MATCH ?1
+         ORDER BY bm25(vectors_fts)
+         LIMIT ?3"
+    };
+    let mut statement = conn
+        .prepare(sql)
+        .map_err(|err| format!("failed to prepare fts search: {err}"))?;
+    let json_filter = serde_json::to_string(&doc_ids.unwrap_or(&[])).unwrap_or_default();
+    let rows = statement
+        .query_map(
+            rusqlite::params![match_query, json_filter, limit as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|err| format!("failed to run fts search: {err}"))?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// Hybrid retrieval: vector cosine + FTS5 BM25, fused with Reciprocal Rank
+/// Fusion. BM25 rescues exact-term matches (错误码、专有名词、代码标识符)
+/// that embeddings blur away; RRF (`1 / (60 + rank)`) merges both rankings
+/// without any score-scale tuning. Either channel failing alone degrades
+/// gracefully to the other.
+pub(crate) fn hybrid_search_conn(
+    conn: &Connection,
+    query_embedding: &[f32],
+    query_text: &str,
+    top_k: u32,
+    doc_ids: Option<&[String]>,
+) -> Result<Vec<SearchHit>, String> {
+    let top_k = top_k.clamp(1, MAX_TOP_K) as usize;
+    /// Candidates fetched per channel before fusion.
+    const FUSION_POOL: usize = 20;
+    /// Classic RRF smoothing constant (from the paper).
+    const RRF_K: f32 = 60.0;
+
+    let vector_hits = search_conn(conn, query_embedding, FUSION_POOL as u32, doc_ids)?;
+    let fts_hits = fts_search_conn(conn, query_text, FUSION_POOL, doc_ids)?;
+    if fts_hits.is_empty() {
+        return Ok(vector_hits.into_iter().take(top_k).collect());
+    }
+
+    let mut scores: std::collections::HashMap<(String, i64), f32> =
+        std::collections::HashMap::new();
+    let mut contents: std::collections::HashMap<(String, i64), String> =
+        std::collections::HashMap::new();
+    for (rank, hit) in vector_hits.iter().enumerate() {
+        *scores
+            .entry((hit.doc_id.clone(), hit.chunk_index))
+            .or_default() += 1.0 / (RRF_K + rank as f32);
+    }
+    for (rank, (doc_id, chunk_index, content)) in fts_hits.iter().enumerate() {
+        *scores
+            .entry((doc_id.clone(), *chunk_index))
+            .or_default() += 1.0 / (RRF_K + rank as f32);
+        contents.entry((doc_id.clone(), *chunk_index)).or_insert_with(|| content.clone());
+    }
+
+    let mut fused: Vec<((String, i64), f32)> = scores.into_iter().collect();
+    fused.sort_by(|a, b| b.1.total_cmp(&a.1));
+    fused.truncate(top_k);
+    Ok(fused
+        .into_iter()
+        .map(|((doc_id, chunk_index), score)| {
+            let content = contents.get(&(doc_id.clone(), chunk_index)).cloned();
+            SearchHit {
+                doc_id,
+                chunk_index,
+                // Vector-channel hits carry content in their payload; FTS-only
+                // hits got it from the join above.
+                content: content.unwrap_or_default(),
+                score,
+            }
+        })
+        .collect())
+}
+
 /// Brute-force cosine search over every stored row of matching dimension.
 #[tauri::command]
 pub fn search_vectors(
@@ -268,11 +458,18 @@ pub fn search_vectors(
 
 /// Delete every chunk of one document; returns the number removed.
 pub(crate) fn delete_doc_conn(conn: &Connection, doc_id: &str) -> Result<usize, String> {
+    let removed = conn
+        .execute(
+            "DELETE FROM vectors WHERE doc_id = ?1",
+            params![doc_id.trim()],
+        )
+        .map_err(|err| format!("failed to delete document vectors: {err}"))?;
     conn.execute(
-        "DELETE FROM vectors WHERE doc_id = ?1",
+        "DELETE FROM vectors_fts WHERE doc_id = ?1",
         params![doc_id.trim()],
     )
-    .map_err(|err| format!("failed to delete document vectors: {err}"))
+    .map_err(|err| format!("failed to delete fts index: {err}"))?;
+    Ok(removed)
 }
 
 /// Delete every chunk of one document; returns the number removed.
@@ -552,5 +749,106 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM vectors", [], |row| row.get(0))
             .expect("count");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn index_tokens_bigrams_cjk_and_ascii_words() {
+        assert_eq!(
+            index_tokens("向量检索 RAG"),
+            vec!["向量", "量检", "检索", "rag"]
+        );
+        // A lone CJK char stays whole instead of vanishing.
+        assert_eq!(index_tokens("问"), vec!["问"]);
+        // ASCII words lowercase; punctuation and spaces only separate.
+        assert_eq!(index_tokens("HTTP-2!"), vec!["http", "2"]);
+        assert!(index_tokens("。。。！！").is_empty());
+    }
+
+    #[test]
+    fn fts_sync_and_hybrid_fusion_rank_exact_hits() {
+        let conn = memory_db();
+
+        // Doc A: semantically closest to the query vector, but never mentions
+        // the exact term. Doc B: orthogonal to the query vector — ONLY
+        // reachable through the BM25 channel via its exact-term marker.
+        upsert_chunks_conn(
+            &conn,
+            "doc-a",
+            &[UpsertChunk {
+                index: 0,
+                content: "模型通过相似度找到相关内容".into(),
+                embedding: sample(1.0, 0.02, 0.0),
+            }],
+        )
+        .expect("doc-a");
+        upsert_chunks_conn(
+            &conn,
+            "doc-b",
+            &[UpsertChunk {
+                index: 0,
+                content: "错误码 ERR_RAG_40412 表示检索服务不可用".into(),
+                embedding: sample(0.0, 1.0, 0.0),
+            }],
+        )
+        .expect("doc-b");
+
+        // The exact term "ERR_RAG_40412" is invisible to cosine but BM25
+        // must surface doc-b, and RRF places it alongside doc-a.
+        let hits = hybrid_search_conn(
+            &conn,
+            &sample(1.0, 0.0, 0.0),
+            "ERR_RAG_40412 是什么",
+            5,
+            None,
+        )
+        .expect("hybrid search");
+        assert_eq!(hits.len(), 2, "both channels feed the fusion");
+        let docs: Vec<&str> = hits.iter().map(|hit| hit.doc_id.as_str()).collect();
+        assert!(docs.contains(&"doc-b"), "bm25-only hit must survive fusion");
+
+        // Re-upsert replaces the FTS row instead of duplicating it: the BM25
+        // channel alone must stop matching the removed marker.
+        upsert_chunks_conn(
+            &conn,
+            "doc-b",
+            &[UpsertChunk {
+                index: 0,
+                content: "换成别的内容 no marker anymore".into(),
+                embedding: sample(0.0, 1.0, 0.0),
+            }],
+        )
+        .expect("doc-b rewrite");
+        let fts_hits = fts_search_conn(&conn, "ERR_RAG_40412", 5, None).expect("fts after rewrite");
+        assert!(
+            !fts_hits.iter().any(|(doc_id, _, _)| doc_id == "doc-b"),
+            "stale FTS rows must not survive a rewrite"
+        );
+
+        // Deleting a document drops its FTS rows too.
+        delete_doc_conn(&conn, "doc-b").expect("delete doc-b");
+        let fts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vectors_fts", [], |row| row.get(0))
+            .expect("fts count");
+        assert_eq!(fts_count, 1, "only doc-a's row remains indexed");
+    }
+
+    #[test]
+    fn hybrid_degrades_to_vector_channel_on_tokenless_query() {
+        let conn = memory_db();
+        upsert_chunks_conn(
+            &conn,
+            "doc",
+            &[UpsertChunk {
+                index: 0,
+                content: "some content".into(),
+                embedding: sample(1.0, 0.0, 0.0),
+            }],
+        )
+        .expect("seed");
+        // "！！？" tokenizes to nothing → FTS skips, vector results pass through.
+        let hits =
+            hybrid_search_conn(&conn, &sample(1.0, 0.0, 0.0), "！！？", 5, None).expect("hybrid");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, "doc");
     }
 }

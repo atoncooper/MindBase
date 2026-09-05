@@ -23,7 +23,7 @@ import { listProviders, type ProviderStatus } from "../../lib/api-keys";
 import { listSkills, type SkillMeta } from "../../lib/skills";
 import { toErrorMessage } from "../../lib/updater";
 import SessionSidebar from "./SessionSidebar";
-import MessageList from "./MessageList";
+import MessageList, { parseClarify } from "./MessageList";
 import SummaryModal from "./SummaryModal";
 import SkillMenu from "./SkillMenu";
 import type { UiMessage } from "./MessageList";
@@ -150,6 +150,16 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [input]);
 
+  // 薄入口页（简历/PPT）经 sessionStorage 带来的草稿：mount 时取走一次，
+  // 预填进输入框（不自动发送——用户可能想先补充说明）。
+  useEffect(() => {
+    const draft = window.sessionStorage.getItem("mb-draft-input");
+    if (draft === null || draft === "") return;
+    window.sessionStorage.removeItem("mb-draft-input");
+    setInput(draft);
+    inputRef.current?.focus();
+  }, []);
+
   // Persist the fold decision.
   useEffect(() => {
     window.localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
@@ -193,11 +203,22 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   // pending——不属于本视图的 kind 必须原样放行，绝不能消费。
   useEffect(() => {
     if (pending === null) return;
-    if (pending.kind !== "open-session" && pending.kind !== "new-session") return;
+    if (
+      pending.kind !== "open-session" &&
+      pending.kind !== "new-session" &&
+      pending.kind !== "draft"
+    ) {
+      return;
+    }
     if (pending.kind === "open-session" && pending.id !== "") {
       selectSession(pending.id);
     } else if (pending.kind === "new-session") {
       startDraft();
+    } else if (pending.kind === "draft") {
+      // 薄入口页（简历/PPT）把生成请求带进对话：切回草稿态并预填输入框。
+      startDraft();
+      setInput(pending.text);
+      inputRef.current?.focus();
     }
     onPendingConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pending 变化即消费一次
@@ -238,6 +259,31 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     },
     [],
   );
+
+  // Codex 式澄清候选：最后一条消息是「已完成」的助手回复且命中澄清协议
+  // 时，在输入框上方展示可点选的方向，点选即作为新消息发送。生成中 /
+  // 用户已追问（最后一条是 user）时自动消失；✕ 可手动收起（同一问题
+  // 不再弹出，换新问题会重新出现）。
+  const lastMessage = messages[messages.length - 1];
+  const clarify =
+    !busy &&
+    lastMessage !== undefined &&
+    lastMessage.role === "assistant" &&
+    lastMessage.status === "completed"
+      ? parseClarify(lastMessage.content)
+      : null;
+  const clarifyKey = clarify === null ? "" : `${clarify.question}|${clarify.options.join("|")}`;
+  const [dismissedClarifyKey, setDismissedClarifyKey] = useState("");
+  const clarifyVisible = clarify !== null && dismissedClarifyKey !== clarifyKey;
+  // Codex 式两段交互：点候选 = 选中（行高亮 + 填入输入框），发送仍走输入框
+  // 的回车/按钮——用户在选中后还能改写内容。换新问题时选中态作废。
+  const [picked, setPicked] = useState<{ key: string; index: number } | null>(null);
+  const pickedIndex = clarifyVisible && picked !== null && picked.key === clarifyKey ? picked.index : -1;
+  function pickClarifyOption(index: number, option: string): void {
+    setPicked({ key: clarifyKey, index });
+    setInput(option);
+    inputRef.current?.focus();
+  }
 
   function selectSession(sessionId: string): void {
     if (sessionId === activeId) return;
@@ -484,10 +530,53 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           onSuggestion={(text) => setInput(text)}
           onRetry={retry}
           onEditResend={editResend}
-          onClarify={(text) => void send(text)}
         />
         <div className="composer-wrap">
         {loadError !== "" && <p className="error-text composer__error">{loadError}</p>}
+        {clarifyVisible && clarify !== null && (
+          <div className="clarify-bar" role="group" aria-label="澄清选项">
+            <div className="clarify-bar__head">
+              <span className="clarify-bar__badge" aria-hidden="true">
+                ?
+              </span>
+              <span className="clarify-bar__question">
+                {clarify.question !== "" ? clarify.question : "请选择一个方向继续，或直接输入说明"}
+              </span>
+              <button
+                type="button"
+                className="clarify-bar__dismiss"
+                aria-label="收起选项"
+                title="收起"
+                onClick={() => setDismissedClarifyKey(clarifyKey)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="clarify-bar__options">
+              {clarify.options.map((option, index) => {
+                const selected = index === pickedIndex;
+                return (
+                  <button
+                    key={index}
+                    type="button"
+                    className={
+                      selected
+                        ? "clarify-bar__option clarify-bar__option--selected"
+                        : "clarify-bar__option"
+                    }
+                    title="选中并填入输入框，可修改后回车发送"
+                    onClick={() => pickClarifyOption(index, option)}
+                  >
+                    <span className="clarify-bar__num" aria-hidden="true">
+                      {selected ? "✓" : index + 1}
+                    </span>
+                    <span className="clarify-bar__text">{option}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {attachedSkill !== null && (
           <div className="skill-chip-row">
             <span className="skill-chip" title="该技能全文将随下一条消息强制注入">

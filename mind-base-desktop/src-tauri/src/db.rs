@@ -199,6 +199,11 @@ pub(crate) const SCHEMA_SQL: &str =
          graded         INTEGER NOT NULL DEFAULT 0,
          total_score    REAL    NOT NULL DEFAULT 0,
          total_max      REAL    NOT NULL DEFAULT 0
+     );
+     CREATE VIRTUAL TABLE IF NOT EXISTS vectors_fts USING fts5(
+         content,                                      -- tokenized text (CJK bigrams + ASCII words)
+         doc_id UNINDEXED,
+         chunk_index UNINDEXED
      );";
 
 /// Additive column migrations for databases created by older builds.
@@ -403,7 +408,64 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|err| format!("failed to initialize schema: {err}"))?;
     run_column_migrations(conn);
     migrate_quiz_records_to_sets(conn);
+    backfill_vectors_fts(conn);
     Ok(())
+}
+
+/// Keep the FTS index aligned with the `vectors` table.
+///
+/// The live sync happens inside `vectors::upsert_chunks_conn` /
+/// `delete_doc_conn`; this startup pass repairs drift (e.g. rows written by
+/// an older build before FTS existed). Count mismatch = full rebuild — the
+/// mapping is strictly 1:1, so a rebuild is always correct and cheap at
+/// personal-knowledge-base scale.
+fn backfill_vectors_fts(conn: &Connection) {
+    let vector_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM vectors", [], |row| row.get(0))
+        .unwrap_or(0);
+    let fts_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM vectors_fts", [], |row| row.get(0))
+        .unwrap_or(0);
+    if vector_count == fts_count {
+        return;
+    }
+    let rebuild = || -> Result<(), String> {
+        conn.execute("DELETE FROM vectors_fts", [])
+            .map_err(|err| err.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        {
+            let mut statement = conn
+                .prepare("SELECT doc_id, chunk_index, content FROM vectors")
+                .map_err(|err| err.to_string())?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|err| err.to_string())?;
+            for row in rows {
+                let (doc_id, chunk_index, content) = row.map_err(|err| err.to_string())?;
+                let tokens = crate::vectors::index_tokens(&content).join(" ");
+                tx.execute(
+                    "INSERT INTO vectors_fts(content, doc_id, chunk_index) VALUES(?1, ?2, ?3)",
+                    rusqlite::params![tokens, doc_id, chunk_index],
+                )
+                .map_err(|err| err.to_string())?;
+            }
+        }
+        tx.commit().map_err(|err| err.to_string())
+    };
+    match rebuild() {
+        Ok(()) => eprintln!(
+            "[db] vectors_fts rebuilt ({vector_count} rows, was {fts_count})"
+        ),
+        Err(err) => eprintln!("[db] vectors_fts rebuild failed: {err}"),
+    }
 }
 
 /// Open (or create) the database under `dir` and prepare it for use.

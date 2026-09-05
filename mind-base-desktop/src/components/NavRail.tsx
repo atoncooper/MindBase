@@ -12,9 +12,11 @@ import {
   KNOWLEDGE_HASH,
   QUIZ_HASH,
   NOTES_HASH,
+  RESUME_HASH,
   SETTINGS_API_HASH,
   SETTINGS_SYSTEM_HASH,
   SKILLS_HASH,
+  SLIDES_HASH,
   navigate,
 } from "../lib/router";
 import type { Route } from "../lib/router";
@@ -114,6 +116,31 @@ function PuzzleIcon(): React.JSX.Element {
   );
 }
 
+/** Document glyph for the resume generator view. */
+function ResumeIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M6 3h9l4 4v14H6z" />
+      <path d="M15 3v4h4" />
+      <path d="M9 12h6" />
+      <path d="M9 16h6" />
+    </svg>
+  );
+}
+
+/** Presentation glyph for the slides agent view. */
+function SlidesIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M3 4h18" />
+      <rect x="4" y="4" width="16" height="11" rx="1" />
+      <path d="M12 15v3" />
+      <path d="M8 21l4-3 4 3" />
+      <path d="M8 9l2.5 2L15 7.5" />
+    </svg>
+  );
+}
+
 interface RailItem {
   id: string;
   label: string;
@@ -126,6 +153,8 @@ interface RailItem {
 const MAIN_RAIL_ITEMS: ReadonlyArray<RailItem> = [
   { id: "home", label: "对话", hash: HOME_HASH, icon: ChatIcon, active: (r) => r.view === "home" },
   { id: "quiz", label: "测验", hash: QUIZ_HASH, icon: TargetIcon, active: (r) => r.view === "quiz" || r.view === "quiz-set" },
+  { id: "resume", label: "简历", hash: RESUME_HASH, icon: ResumeIcon, active: (r) => r.view === "resume" },
+  { id: "slides", label: "PPT", hash: SLIDES_HASH, icon: SlidesIcon, active: (r) => r.view === "slides" },
   { id: "notes", label: "笔记", hash: NOTES_HASH, icon: NoteIcon, active: (r) => r.view === "notes" },
   { id: "knowledge", label: "知识库", hash: KNOWLEDGE_HASH, icon: LibraryIcon, active: (r) => r.view === "knowledge" },
   { id: "import", label: "文件入库", hash: IMPORT_HASH, icon: ImportIcon, active: (r) => r.view === "import" },
