@@ -125,7 +125,7 @@ interface RailItem {
 /** Primary navigation, rendered top-down. */
 const MAIN_RAIL_ITEMS: ReadonlyArray<RailItem> = [
   { id: "home", label: "对话", hash: HOME_HASH, icon: ChatIcon, active: (r) => r.view === "home" },
-  { id: "quiz", label: "测验", hash: QUIZ_HASH, icon: TargetIcon, active: (r) => r.view === "quiz" },
+  { id: "quiz", label: "测验", hash: QUIZ_HASH, icon: TargetIcon, active: (r) => r.view === "quiz" || r.view === "quiz-set" },
   { id: "notes", label: "笔记", hash: NOTES_HASH, icon: NoteIcon, active: (r) => r.view === "notes" },
   { id: "knowledge", label: "知识库", hash: KNOWLEDGE_HASH, icon: LibraryIcon, active: (r) => r.view === "knowledge" },
   { id: "import", label: "文件入库", hash: IMPORT_HASH, icon: ImportIcon, active: (r) => r.view === "import" },
