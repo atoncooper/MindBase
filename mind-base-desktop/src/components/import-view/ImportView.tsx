@@ -95,6 +95,9 @@ const RECORD_STATUS_LABELS: Record<DocumentRow["status"], string> = {
 /** Extensions ingested through local OCR (keep in sync with file_ingest.rs). */
 const OCR_IMAGE_EXTS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "bmp", "webp"]);
 
+/** URL textarea grows with content up to this height (~12 lines), then scrolls. */
+const URL_INPUT_MAX_HEIGHT = 264;
+
 /** One parsed line of the URL textarea. */
 interface ParsedUrl {
   /** Normalized URL (missing https:// is added automatically). */
@@ -170,6 +173,20 @@ function ImportView() {
   // Filter query for the 入库记录 list (matches title or path).
   const [recordQuery, setRecordQuery] = useState("");
   const toast = useToast();
+  // URL textarea: auto-grows with content (3 → 12 lines), see autoGrowUrlInput.
+  const urlInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  /** Resize the URL textarea to fit its content, clamped to a scrollable max. */
+  function autoGrowUrlInput(el: HTMLTextAreaElement): void {
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, URL_INPUT_MAX_HEIGHT)}px`;
+  }
+
+  // Restore the grown height when the view remounts with persisted text.
+  useEffect(() => {
+    if (urlInputRef.current !== null) autoGrowUrlInput(urlInputRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -508,22 +525,56 @@ function ImportView() {
         </div>
 
         <label className="cfg-label" htmlFor="webpage-urls">
-          网页链接入库（每行一个网址，抓取正文后进入下方队列）
+          网页链接入库（每行一个网址，抓取正文后进入下方队列；Ctrl+Enter 直接抓取）
         </label>
-        <textarea
-          id="webpage-urls"
-          className="cfg-input"
-          rows={3}
-          placeholder={"https://example.com/article-one\nhttps://example.com/article-two\n（不带 https:// 也会自动补全）"}
-          value={urlText}
-          disabled={capturing || running}
-          onChange={(event) => {
-            setUrlText(event.target.value);
-            // Stale per-URL outcomes would mislead against edited input.
-            if (captureResults.length > 0) setCaptureResults([]);
-            if (captureNote !== "") setCaptureNote("");
-          }}
-        />
+        <div className="url-input-row">
+          <textarea
+            id="webpage-urls"
+            className="cfg-input url-input"
+            rows={3}
+            placeholder={"https://example.com/article-one\nhttps://example.com/article-two\n（不带 https:// 的也会自动补全）"}
+            value={urlText}
+            disabled={capturing || running}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            ref={urlInputRef}
+            onChange={(event) => {
+              setUrlText(event.target.value);
+              autoGrowUrlInput(event.target);
+              // Stale per-URL outcomes would mislead against edited input.
+              if (captureResults.length > 0) setCaptureResults([]);
+              if (captureNote !== "") setCaptureNote("");
+            }}
+            onKeyDown={(event) => {
+              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                event.preventDefault();
+                if (!capturing && !running && parseUrlLines(urlText).valid.length > 0) {
+                  void captureWebpages();
+                }
+              }
+            }}
+          />
+          {urlText !== "" && !capturing && !running && (
+            <button
+              type="button"
+              className="icon-button url-input__clear"
+              aria-label="清空网址"
+              title="清空"
+              onClick={() => {
+                setUrlText("");
+                setCaptureResults([]);
+                setCaptureNote("");
+                if (urlInputRef.current !== null) {
+                  autoGrowUrlInput(urlInputRef.current);
+                  urlInputRef.current.focus();
+                }
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
         {(() => {
           const { valid, invalid } = parseUrlLines(urlText);
           const failed = captureResults.filter((item) => item.state === "failed").length;

@@ -82,6 +82,34 @@ body {
   border-radius: 4px;
 }
 
+/* ── 全局滚动条 ────────────────────────────────────────────────────
+   WebView 默认滚动条粗重突兀（约 17px 实心轨道），与纸面极简风不符。
+   统一替换为：透明轨道 + 圆角细滑块，颜色走主题变量（深浅色自动跟随）。
+   滑块四周留 2px 透明边（background-clip: padding-box），视觉宽度收窄到
+   ~6px；悬停加深，提示可拖拽。作用于全部滚动容器（含横向）。
+   注意：勿再叠加 scrollbar-width: thin——新 Chromium 会令该声明覆盖
+   ::-webkit-scrollbar 定制，导致整套样式失效。 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--line-strong);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ink-2);
+}
+
 /* Layout -------------------------------------------------------------- */
 
 .shell {
@@ -1311,6 +1339,36 @@ body {
 
 .cfg-input:disabled {
   opacity: 0.45;
+}
+
+/* Multi-line URL textarea (网页链接入库): cfg-input is sized for one-line
+   inputs (height:30px, no padding) — a textarea on it would squeeze 3 rows
+   into ~1 line. Override the box, keep the underline language; the wrapper
+   row hosts an inline clear button at the tail. */
+.url-input-row {
+  position: relative;
+}
+
+.url-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  height: auto;
+  min-height: 72px; /* ~3 rows */
+  max-height: 264px; /* ~12 rows, then it scrolls */
+  padding: 8px 30px 8px 2px; /* right rail leaves room for the clear button */
+  overflow-y: auto;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.url-input__clear {
+  position: absolute;
+  top: 6px;
+  right: 2px;
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
 }
 
 /* Keep webkit autofill from painting its default pale-yellow plate. */
@@ -2961,20 +3019,6 @@ body {
 .composer__input:disabled {
   color: var(--ink-2);
   cursor: not-allowed;
-}
-
-/* 多行输入的细滚动条（max-height 160px 触发时）。 */
-.composer__input::-webkit-scrollbar {
-  width: 6px;
-}
-
-.composer__input::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background-color: var(--line-strong);
-}
-
-.composer__input::-webkit-scrollbar-track {
-  background: transparent;
 }
 
 /* "/" 技能快选菜单：浮在 composer 上方的档案式列表。 */

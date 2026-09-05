@@ -186,6 +186,19 @@ pub(crate) const SCHEMA_SQL: &str =
          total_score    REAL    NOT NULL DEFAULT 0,
          total_max      REAL    NOT NULL DEFAULT 0,
          details        TEXT    NOT NULL DEFAULT '[]'   -- JSON of per-question outcomes
+     );
+     CREATE TABLE IF NOT EXISTS quiz_sets(
+         id             TEXT PRIMARY KEY,               -- 32-hex local id
+         created_at     INTEGER NOT NULL,
+         difficulty     TEXT    NOT NULL DEFAULT '',
+         question_count INTEGER NOT NULL DEFAULT 0,
+         config         TEXT    NOT NULL DEFAULT '',    -- JSON: generation config
+         questions      TEXT    NOT NULL DEFAULT '[]',  -- JSON of QuizQuestion
+         answers        TEXT    NOT NULL DEFAULT '{}',  -- JSON: questionId -> answer
+         results        TEXT    NOT NULL DEFAULT '',    -- JSON [QuizRecordItem]; '' = not graded
+         graded         INTEGER NOT NULL DEFAULT 0,
+         total_score    REAL    NOT NULL DEFAULT 0,
+         total_max      REAL    NOT NULL DEFAULT 0
      );";
 
 /// Additive column migrations for databases created by older builds.
@@ -211,6 +224,67 @@ fn run_column_migrations(conn: &Connection) {
                 continue;
             }
             eprintln!("[db] column migration failed ({statement}): {text}");
+        }
+    }
+}
+
+/// One-time data migration: graded sessions previously stored only in
+/// `quiz_records` become read-only rows in `quiz_sets`, so the quiz history
+/// keeps one source of truth. Question bodies were never persisted for those,
+/// so they render from their stored results only. Deterministic ids
+/// (`rec-<old id>`) + INSERT OR IGNORE keep this idempotent.
+fn migrate_quiz_records_to_sets(conn: &Connection) {
+    // An interim dev build created a single-row quiz_draft table; the
+    // superseding quiz_sets design dropped it. The table never shipped.
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS quiz_draft;");
+    let mut rows = match conn.prepare(
+        "SELECT id, created_at, difficulty, question_count, total_score, total_max, details
+         FROM quiz_records",
+    ) {
+        Ok(statement) => statement,
+        Err(err) => {
+            eprintln!("[db] quiz record migration failed to prepare: {err}");
+            return;
+        }
+    };
+    let records = match rows.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, String>(6)?,
+        ))
+    }) {
+        Ok(rows) => rows.filter_map(Result::ok).collect::<Vec<_>>(),
+        Err(err) => {
+            eprintln!("[db] quiz record migration failed to read: {err}");
+            return;
+        }
+    };
+    for (id, created_at, difficulty, question_count, total_score, total_max, details) in records {
+        let config = format!(
+            "{{\"count\":{question_count},\"types\":[],\"difficulty\":{difficulty:?},\"topic\":null}}"
+        );
+        if let Err(err) = conn.execute(
+            "INSERT OR IGNORE INTO quiz_sets(
+                 id, created_at, difficulty, question_count, config,
+                 questions, answers, results, graded, total_score, total_max)
+             VALUES(?1, ?2, ?3, ?4, ?5, '[]', '{}', ?6, 1, ?7, ?8)",
+            rusqlite::params![
+                format!("rec-{id}"),
+                created_at,
+                difficulty,
+                question_count,
+                config,
+                details,
+                total_score,
+                total_max
+            ],
+        ) {
+            eprintln!("[db] quiz record migration failed to insert ({id}): {err}");
         }
     }
 }
@@ -328,6 +402,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|err| format!("failed to initialize schema: {err}"))?;
     run_column_migrations(conn);
+    migrate_quiz_records_to_sets(conn);
     Ok(())
 }
 

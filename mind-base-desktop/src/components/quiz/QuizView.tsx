@@ -1,28 +1,16 @@
 /**
- * 测验面板：配置 → 出题 → 逐题作答 → 批改结果。
+ * 测验面板：配置 → 出题 → 历史题集列表。
  *
- * 题型交互：single=单选组 / multi=多选组 / short+essay=文本域。
- * 提交后逐题调用 quiz_grade（选择题本地判分、essay 走 LLM 评分），
- * 结果页给出每题对错/得分/解析与总分，可一键再来一组。
+ * 出题成功即持久化为一个题集（quiz_sets，无论之后答不答），并直接跳转
+ * 到该题集的路由页（#/quiz/set/:id）作答；历史列表点任意一次生成的
+ * 题目同样跳过去查看 / 继续作答。批改后的成绩存在同一个题集上。
  */
 
 import { useEffect, useState } from "react";
-import {
-  deleteQuizRecord,
-  generateQuiz,
-  gradeQuestion,
-  listQuizRecords,
-  saveQuizRecord,
-} from "../../lib/quiz";
-import type {
-  GradeOutcome,
-  QuizDifficulty,
-  QuizGenEvent,
-  QuizQuestion,
-  QuizRecord,
-  QuizRecordItem,
-  QuizType,
-} from "../../lib/quiz";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { navigate, quizSetHash } from "../../lib/router";
+import { createQuizSet, deleteQuizSet, generateQuiz, listQuizSets } from "../../lib/quiz";
+import type { QuizDifficulty, QuizGenEvent, QuizSetMeta, QuizType } from "../../lib/quiz";
 import { toErrorMessage } from "../../lib/updater";
 import { useToast } from "../../lib/toast";
 
@@ -39,12 +27,7 @@ const DIFF_LABELS: Record<QuizDifficulty, string> = {
   hard: "困难",
 };
 
-interface AnsweredResult extends GradeOutcome {
-  question: QuizQuestion;
-  given: string;
-}
-
-type Phase = "config" | "generating" | "answering" | "grading" | "results";
+type Phase = "config" | "generating";
 
 function QuizView(): React.JSX.Element {
   const [count, setCount] = useState(5);
@@ -53,25 +36,21 @@ function QuizView(): React.JSX.Element {
   const [topic, setTopic] = useState("");
 
   const [phase, setPhase] = useState<Phase>("config");
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [results, setResults] = useState<AnsweredResult[] | null>(null);
   const [error, setError] = useState("");
   /** 生成阶段文案（选题材 → 出题中），随 Channel 事件切换。 */
   const [genStage, setGenStage] = useState("");
   const toast = useToast();
-  // 历史记录（测验存档），答完自动刷新。
-  const [records, setRecords] = useState<QuizRecord[] | null>(null);
-  const [expandedRecord, setExpandedRecord] = useState<string | null>(null);
+  // 历史题集（每次生成的批次，答题与否都在）。
+  const [sets, setSets] = useState<QuizSetMeta[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void listQuizRecords().then(
+    void listQuizSets().then(
       (rows) => {
-        if (!cancelled) setRecords(rows);
+        if (!cancelled) setSets(rows);
       },
       () => {
-        if (!cancelled) setRecords([]);
+        if (!cancelled) setSets([]);
       },
     );
     return () => {
@@ -94,17 +73,20 @@ function QuizView(): React.JSX.Element {
     setGenStage("正在从知识库选题材…");
     setPhase("generating");
     try {
-      const result = await generateQuiz(
-        { count, types, difficulty, topic: topic.trim() || undefined },
-        (event: QuizGenEvent) => {
-          if (event.type === "sampling") setGenStage("正在从知识库选题材…");
-          if (event.type === "generating") setGenStage("正在出题（含查重与避旧）…");
-        },
-      );
-      setQuestions(result.questions);
-      setAnswers({});
-      setResults(null);
-      setPhase("answering");
+      const request = { count, types, difficulty, topic: topic.trim() || undefined };
+      const result = await generateQuiz(request, (event: QuizGenEvent) => {
+        if (event.type === "sampling") setGenStage("正在从知识库选题材…");
+        if (event.type === "generating") setGenStage("正在出题（含查重与避旧）…");
+      });
+      if (result.questions.length === 0) {
+        setError("模型没有产出可用题目，请重试");
+        setPhase("config");
+        return;
+      }
+      // 出题即持久化成题集，然后跳到它的页面作答——之后随时可以从
+      // 历史列表回来继续，不依赖组件内存 state。
+      const setId = await createQuizSet(request, result.questions);
+      navigate(quizSetHash(setId));
       if (result.duplicatesSkipped > 0) {
         toast.success(
           `已生成 ${result.questions.length} 题（自动去重跳过 ${result.duplicatesSkipped} 道重复）`,
@@ -117,54 +99,37 @@ function QuizView(): React.JSX.Element {
     }
   }
 
-  async function submit(): Promise<void> {
-    setPhase("grading");
-    setError("");
-    const answered: AnsweredResult[] = [];
+  async function removeSet(row: QuizSetMeta): Promise<void> {
+    // 删除不可恢复（题目、作答、批改结果一并没了），先弹原生对话框确认；
+    // window.confirm 在 Tauri WebView 下不可靠，统一走 dialog 插件。
+    const confirmed = await confirm(
+      `删除 ${new Date(row.createdAt * 1000).toLocaleString()} 生成的这组 ${row.questionCount} 道题？作答与批改结果会一并删除，不可恢复。`,
+      { title: "删除题集", kind: "warning" },
+    );
+    if (!confirmed) return;
     try {
-      for (const question of questions) {
-        const outcome = await gradeQuestion(question, answers[question.questionId] ?? "");
-        answered.push({ ...outcome, question, given: answers[question.questionId] ?? "" });
-      }
-      setResults(answered);
-      setPhase("results");
-      // 存档本次测验（明细含每题作答与反馈），失败静默——存档不应打断结果页。
-      const items: QuizRecordItem[] = answered.map((result) => ({
-        questionType: result.question.questionType,
-        question: result.question.question,
-        given: result.given,
-        correct: result.correct,
-        score: result.score,
-        maxScore: result.maxScore,
-        feedback: result.feedback,
-      }));
-      try {
-        await saveQuizRecord(difficulty, items);
-        const rows = await listQuizRecords().catch(() => null);
-        if (rows !== null) setRecords(rows);
-        toast.success("本次测验已存入历史记录", { title: "已存档" });
-      } catch (saveErr) {
-        console.warn("[quiz] save record failed", saveErr);
-      }
-    } catch (err) {
-      setError(toErrorMessage(err));
-      setPhase("answering");
-    }
-  }
-
-  async function removeRecord(id: string): Promise<void> {
-    try {
-      await deleteQuizRecord(id);
-      setRecords((prev) => (prev ? prev.filter((record) => record.id !== id) : prev));
+      await deleteQuizSet(row.id);
+      setSets((prev) => (prev ? prev.filter((item) => item.id !== row.id) : prev));
     } catch (err) {
       toast.error(toErrorMessage(err), { title: "删除失败" });
     }
   }
 
-  // ── config ────────────────────────────────────────────────────────────
-  if (phase === "config") {
+  // ── generating：分阶段进度（选题材 → 出题中） ─────────────────────────
+  if (phase === "generating") {
     return (
-      <>
+      <section className="card quiz-pane">
+        <p className="placeholder" role="status" aria-live="polite">
+          <span className="ingest__spinner" /> {genStage !== "" ? genStage : "正在出题…"}
+          （从知识库随机选题材，查重避开已出过的题目）
+        </p>
+      </section>
+    );
+  }
+
+  // ── config + history ─────────────────────────────────────────────────
+  return (
+    <>
       <section className="card quiz-pane">
         <h2 className="card__title">
           <span className="card__index">QZ</span>知识测验
@@ -240,250 +205,65 @@ function QuizView(): React.JSX.Element {
 
       <section className="card">
         <h2 className="card__title">
-          <span className="card__index">⏱</span>历史记录
+          <span className="card__index">⏱</span>历史题集
           <span className="hint-text" style={{ marginLeft: "auto", fontWeight: 400 }}>
-            {records !== null ? `${records.length} 次测验` : ""}
+            {sets !== null ? `${sets.length} 次生成` : ""}
           </span>
         </h2>
-        {records !== null && records.length === 0 && (
-          <p className="hint-text">还没有测验记录。完成一次测验后会自动存档在这里。</p>
+        {sets !== null && sets.length === 0 && (
+          <p className="hint-text">
+            还没有生成过题目。每次出题都会保存在这里，点开即可查看或继续作答。
+          </p>
         )}
-        {records !== null && records.length > 0 && (
+        {sets !== null && sets.length > 0 && (
           <ul className="ws-docs">
-            {records.map((record) => {
-              const expanded = expandedRecord === record.id;
+            {sets.map((row) => {
               const ratio =
-                record.totalMax > 0 ? Math.round((record.totalScore / record.totalMax) * 100) : 0;
+                row.totalMax > 0 ? Math.round((row.totalScore / row.totalMax) * 100) : 0;
               return (
-                <li key={record.id} className="ws-doc">
+                <li key={row.id} className="ws-doc">
                   <div
                     className="ws-doc__head"
                     style={{ cursor: "pointer" }}
-                    onClick={() => setExpandedRecord(expanded ? null : record.id)}
-                    title={expanded ? "收起明细" : "展开明细"}
+                    onClick={() => navigate(quizSetHash(row.id))}
+                    title="点开查看题目"
                   >
                     <span className="ws-doc__title">
-                      {new Date(record.createdAt * 1000).toLocaleString()}
+                      {new Date(row.createdAt * 1000).toLocaleString()}
                     </span>
                     <span className="ws-doc__page-meta">
-                      {DIFF_LABELS[record.difficulty as QuizDifficulty] ?? record.difficulty} ·{" "}
-                      {record.questionCount} 题 · {record.totalScore.toFixed(1)}/
-                      {record.totalMax.toFixed(0)} 分（{ratio}%）
+                      {DIFF_LABELS[row.difficulty as QuizDifficulty] ?? row.difficulty} ·{" "}
+                      {row.questionCount} 题 ·{" "}
+                      {row.graded
+                        ? `${row.totalScore.toFixed(1)}/${row.totalMax.toFixed(0)} 分（${ratio}%）`
+                        : `已答 ${row.answeredCount} / ${row.questionCount}`}
                     </span>
                   </div>
                   <div className="ws-doc__page">
                     <span className="ws-doc__page-meta">
-                      {expanded ? "点击标题收起" : "点击标题展开每题明细"}
+                      {row.graded ? "已批改 · 点击查看" : "进行中 · 点击继续作答"}
                     </span>
                     <span className="ws-doc__page-actions">
-                      <span className={ratio >= 60 ? "status status--ok" : "status status--error"}>
-                        {ratio >= 60 ? "通过" : "未通过"}
+                      <span className={row.graded ? (ratio >= 60 ? "status status--ok" : "status status--error") : "status status--info"}>
+                        {row.graded ? (ratio >= 60 ? "通过" : "未通过") : "未批改"}
                       </span>
                       <button
                         type="button"
                         className="icon-button"
-                        aria-label="删除记录"
-                        onClick={() => void removeRecord(record.id)}
+                        aria-label="删除题集"
+                        onClick={() => void removeSet(row)}
                       >
                         ✕
                       </button>
                     </span>
                   </div>
-                  {expanded && (
-                    <ol className="quiz-results" style={{ marginTop: 8 }}>
-                      {record.items.map((item, index) => (
-                        <li key={index} className="quiz-result">
-                          <div className="quiz-result__head">
-                            <span className="quiz-result__q">
-                              {index + 1}. {item.question}
-                            </span>
-                            <span className={item.correct ? "status status--ok" : "status status--error"}>
-                              {item.correct ? "✓" : "✗"} {item.score.toFixed(1)}/{item.maxScore.toFixed(0)}
-                            </span>
-                          </div>
-                          <p className="quiz-result__given">
-                            我的作答：{item.given !== "" ? item.given : "（未作答）"}
-                          </p>
-                          {item.feedback !== "" && <p className="quiz-result__feedback">{item.feedback}</p>}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
                 </li>
               );
             })}
           </ul>
         )}
       </section>
-      </>
-    );
-  }
-
-  // ── generating：分阶段进度（选题材 → 出题中） ─────────────────────────
-  if (phase === "generating") {
-    return (
-      <section className="card quiz-pane">
-        <p className="placeholder" role="status" aria-live="polite">
-          <span className="ingest__spinner" /> {genStage !== "" ? genStage : "正在出题…"}
-          （从知识库随机选题材，查重避开已出过的题目）
-        </p>
-      </section>
-    );
-  }
-
-  // ── grading spinner ───────────────────────────────────────────────────
-  if (phase === "grading") {
-    return (
-      <section className="card quiz-pane">
-        <p className="placeholder">
-          批改中…（论述题由 AI 按评分标准打分，可能需要几秒）
-        </p>
-      </section>
-    );
-  }
-
-  // ── results ───────────────────────────────────────────────────────────
-  if (phase === "results" && results !== null) {
-    const totalScore = results.reduce((sum, r) => sum + r.score, 0);
-    const totalMax = results.reduce((sum, r) => sum + r.maxScore, 0);
-    return (
-      <section className="card quiz-pane">
-        <h2 className="card__title">
-          <span className="card__index">✓</span>测验结果
-          <span className={totalScore >= totalMax * 0.6 ? "status status--ok" : "status status--info"}>
-            总分 {totalScore.toFixed(1)} / {totalMax.toFixed(0)}
-          </span>
-        </h2>
-        <ol className="quiz-results">
-          {results.map((result, index) => (
-            <li key={result.questionId} className="quiz-result">
-              <div className="quiz-result__head">
-                <span className="quiz-result__q">
-                  {index + 1}. {result.question.question}
-                </span>
-                <span className={result.correct ? "status status--ok" : "status status--error"}>
-                  {result.score.toFixed(1)} / {result.maxScore.toFixed(0)}
-                </span>
-              </div>
-              <p className="quiz-result__given">
-                你的答案：
-                {result.given !== "" ? result.given : "（未作答）"}
-                {result.question.correctAnswer !== undefined && result.question.options !== undefined && (
-                  <>
-                    {" "}· 正确：{String(
-                      typeof result.question.correctAnswer === "string"
-                        ? result.question.correctAnswer
-                        : JSON.stringify(result.question.correctAnswer),
-                    )}
-                  </>
-                )}
-              </p>
-              {result.feedback !== "" && <p className="quiz-result__feedback">{result.feedback}</p>}
-              {result.question.explanation !== "" && (
-                <p className="quiz-result__explain">解析：{result.question.explanation}</p>
-              )}
-              {result.question.lowConfidence && (
-                <p className="hint-text">⚠ 本题与知识片段匹配度较低，请自行甄别。</p>
-              )}
-            </li>
-          ))}
-        </ol>
-        <div className="card__actions">
-          <button type="button" className="button button--primary" onClick={() => setPhase("config")}>
-            再来一组
-          </button>
-        </div>
-      </section>
-    );
-  }
-
-  // ── answering ─────────────────────────────────────────────────────────
-  return (
-    <section className="card quiz-pane">
-      <h2 className="card__title">
-        <span className="card__index">QZ</span>答题中 · {questions.length} 题
-      </h2>
-      {error !== "" && <p className="error-text">{error}</p>}
-      <ol className="quiz-questions">
-        {questions.map((question, index) => (
-          <li key={question.questionId} className="quiz-question">
-            <p className="quiz-question__stem">
-              {index + 1}. [{TYPE_LABELS[question.questionType]} ·{" "}
-              {DIFF_LABELS[question.difficulty as QuizDifficulty] ?? question.difficulty}]{" "}
-              {question.question}
-            </p>
-            {question.questionType === "single_choice" &&
-              (question.options ?? []).map((option, optionIndex) => {
-                const letter = String.fromCharCode(65 + optionIndex);
-                return (
-                  <label key={letter} className="checkbox-row quiz-option">
-                    <input
-                      type="radio"
-                      name={question.questionId}
-                      checked={(answers[question.questionId] ?? "") === letter}
-                      onChange={() =>
-                        setAnswers((prev) => ({ ...prev, [question.questionId]: letter }))
-                      }
-                    />
-                    {letter}. {option}
-                  </label>
-                );
-              })}
-            {question.questionType === "multi_choice" &&
-              (question.options ?? []).map((option, optionIndex) => {
-                const letter = String.fromCharCode(65 + optionIndex);
-                const current = answers[question.questionId] ?? "";
-                const selected = current.includes(letter);
-                return (
-                  <label key={letter} className="checkbox-row quiz-option">
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onChange={() => {
-                        const next = selected
-                          ? current.split(",").filter((l) => l !== letter)
-                          : [...current.split(",").filter(Boolean), letter];
-                        setAnswers((prev) => ({
-                          ...prev,
-                          [question.questionId]: next.sort().join(","),
-                        }));
-                      }}
-                    />
-                    {letter}. {option}
-                  </label>
-                );
-              })}
-            {(question.questionType === "short_answer" ||
-              question.questionType === "essay") && (
-              <textarea
-                className="note-body__source quiz-free"
-                rows={question.questionType === "essay" ? 5 : 2}
-                placeholder="输入你的回答…"
-                value={answers[question.questionId] ?? ""}
-                onChange={(event) =>
-                  setAnswers((prev) => ({
-                    ...prev,
-                    [question.questionId]: event.target.value,
-                  }))
-                }
-              />
-            )}
-          </li>
-        ))}
-      </ol>
-      <div className="card__actions">
-        <button
-          type="button"
-          className="button button--primary"
-          onClick={() => void submit()}
-        >
-          提交全部答案
-        </button>
-        <button type="button" className="button" onClick={() => setPhase("config")}>
-          返回配置
-        </button>
-      </div>
-    </section>
+    </>
   );
 }
 

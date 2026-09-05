@@ -1024,6 +1024,70 @@ mod tests {
         assert!(!miss.correct);
         assert!(miss.feedback.contains("未覆盖关键词"));
     }
+
+    /// A persisted set travels DB-ward as JSON and back — the
+    /// `skip_serializing_if` attrs on QuizQuestion must not drop anything the
+    /// reload needs.
+    #[test]
+    fn set_round_trips_through_json() {
+        let question = normalize_question(&sample_raw(TYPE_SINGLE), "easy", &[chunk("x")]).unwrap();
+        let config = QuizGenerateRequest {
+            count: 5,
+            types: vec![TYPE_SINGLE.into()],
+            difficulty: "medium".into(),
+            topic: Some("向量检索".into()),
+        };
+        let mut answers = std::collections::HashMap::new();
+        answers.insert(question.question_id.clone(), "A".to_string());
+        let set = QuizSet {
+            id: "s1".into(),
+            created_at: 42,
+            difficulty: "medium".into(),
+            question_count: 1,
+            config: config.clone(),
+            questions: vec![question],
+            answers: answers.clone(),
+            results: vec![QuizRecordItem {
+                question_type: TYPE_SINGLE.into(),
+                question: "RAG 中向量检索的作用是什么？".into(),
+                given: "A".into(),
+                correct: true,
+                score: 1.0,
+                max_score: 1.0,
+                feedback: String::new(),
+            }],
+            graded: true,
+            total_score: 1.0,
+            total_max: 1.0,
+        };
+
+        let json = serde_json::to_string(&set).unwrap();
+        let parsed: QuizSet = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.config.count, 5);
+        assert_eq!(parsed.config.topic.as_deref(), Some("向量检索"));
+        assert_eq!(parsed.questions.len(), 1);
+        assert_eq!(parsed.questions[0].question_type, TYPE_SINGLE);
+        assert_eq!(
+            parsed.answers.get(&parsed.questions[0].question_id).map(String::as_str),
+            Some("A")
+        );
+        assert!(parsed.graded);
+        assert_eq!(parsed.results.len(), 1);
+        assert!(parsed.results[0].correct);
+
+        // topic: null (never set) must deserialize back to None via serde(default).
+        let config_json = serde_json::to_string(&config).unwrap();
+        let without_topic = config_json.replace("\"topic\":\"向量检索\"", "\"topic\":null");
+        let parsed_null: QuizSetCreateRequest = serde_json::from_str(
+            &format!(
+                "{{\"config\":{without_topic},\"questions\":{}}}",
+                serde_json::to_string(&set.questions).unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(parsed_null.config.topic.is_none());
+        assert_eq!(parsed_null.questions.len(), 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,7 +1097,7 @@ mod tests {
 use tauri::{AppHandle, Manager};
 
 /// Panel-facing generation parameters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuizGenerateRequest {
     pub count: usize,
@@ -1141,7 +1205,7 @@ pub async fn quiz_generate(
     let _ = on_event.send(QuizGenEvent::Sampling);
     let handle = app.clone();
     let topic = request.topic.clone();
-    let (result, recent_stems, history_size) =
+    let (result, history_size) =
         tauri::async_runtime::spawn_blocking(move || {
             let chunks = fetch_chunks(
                 handle.state::<Db>().inner(),
@@ -1182,11 +1246,7 @@ pub async fn quiz_generate(
                     .map_err(|err| format!("failed to acquire database lock: {err}"))?;
                 record_questions(&conn, &batch.questions)
             };
-            Ok::<_, String>((
-                batch,
-                recent_stems.len(),
-                history_size + inserted,
-            ))
+            Ok::<_, String>((batch, history_size + inserted))
         })
         .await
         .map_err(|err| format!("task failed: {err}"))??;
@@ -1221,10 +1281,10 @@ pub async fn quiz_grade(
 }
 
 // ---------------------------------------------------------------------------
-// Quiz history (user-visible records of graded sessions)
+// Quiz sets (persisted history: every generated batch, answered or not)
 // ---------------------------------------------------------------------------
 
-/// One answered question inside a saved record.
+/// One answered question inside a graded set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuizRecordItem {
@@ -1237,47 +1297,68 @@ pub struct QuizRecordItem {
     pub feedback: String,
 }
 
-/// One graded quiz session, as saved and listed.
-#[derive(Debug, Clone, Serialize)]
+/// A generated question set as listed in history.
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct QuizRecord {
+pub struct QuizSetMeta {
     pub id: String,
     pub created_at: i64,
     pub difficulty: String,
     pub question_count: i64,
+    /// Non-empty answers among the stored answer map.
+    pub answered_count: i64,
+    pub graded: bool,
     pub total_score: f64,
     pub total_max: f64,
-    pub items: Vec<QuizRecordItem>,
 }
 
-/// Payload from the UI after grading completes (totals computed server-side).
+/// A generated question set in full (history detail view).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizSet {
+    pub id: String,
+    pub created_at: i64,
+    pub difficulty: String,
+    pub question_count: i64,
+    pub config: QuizGenerateRequest,
+    pub questions: Vec<QuizQuestion>,
+    /// question_id -> the answer currently typed in (answering may be ongoing).
+    pub answers: std::collections::HashMap<String, String>,
+    /// Grading outcomes in question order; empty while ungraded.
+    pub results: Vec<QuizRecordItem>,
+    pub graded: bool,
+    pub total_score: f64,
+    pub total_max: f64,
+}
+
+/// Payload for [`quiz_set_create`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct QuizRecordSaveRequest {
-    pub difficulty: String,
-    pub items: Vec<QuizRecordItem>,
+pub struct QuizSetCreateRequest {
+    pub config: QuizGenerateRequest,
+    pub questions: Vec<QuizQuestion>,
 }
 
-/// Save one graded session; returns the record id.
+/// Persist one freshly generated batch as a new set; returns the set id.
 #[tauri::command]
-pub async fn quiz_record_save(
+pub async fn quiz_set_create(
     app: AppHandle,
-    request: QuizRecordSaveRequest,
+    request: QuizSetCreateRequest,
 ) -> Result<String, String> {
     use tauri::Manager;
 
-    if request.items.is_empty() {
-        return Err("没有可保存的答题记录".to_string());
+    if request.questions.is_empty() {
+        return Err("题集没有题目，无需保存".to_string());
     }
     let id = crate::db::local_id();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default();
-    let total_score: f64 = request.items.iter().map(|item| item.score).sum();
-    let total_max: f64 = request.items.iter().map(|item| item.max_score).sum();
-    let details = serde_json::to_string(&request.items)
-        .map_err(|err| format!("序列化答题明细失败：{err}"))?;
+    let config = serde_json::to_string(&request.config)
+        .map_err(|err| format!("序列化出题配置失败：{err}"))?;
+    let questions = serde_json::to_string(&request.questions)
+        .map_err(|err| format!("序列化题目失败：{err}"))?;
 
     let db = app.state::<Db>();
     let conn = db
@@ -1285,31 +1366,30 @@ pub async fn quiz_record_save(
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     conn.execute(
-        "INSERT INTO quiz_records(id, created_at, difficulty, question_count, total_score, total_max, details)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO quiz_sets(id, created_at, difficulty, question_count, config, questions)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             id,
             now,
-            request.difficulty,
-            request.items.len() as i64,
-            total_score,
-            total_max,
-            details
+            request.config.difficulty,
+            request.questions.len() as i64,
+            config,
+            questions
         ],
     )
-    .map_err(|err| format!("failed to save quiz record: {err}"))?;
+    .map_err(|err| format!("failed to save quiz set: {err}"))?;
     Ok(id)
 }
 
-/// List recent graded sessions, newest first.
+/// List sets, newest first.
 #[tauri::command]
-pub async fn quiz_record_list(
+pub async fn quiz_set_list(
     app: AppHandle,
     limit: Option<usize>,
-) -> Result<Vec<QuizRecord>, String> {
+) -> Result<Vec<QuizSetMeta>, String> {
     use tauri::Manager;
 
-    let limit = limit.unwrap_or(20).clamp(1, 100) as i64;
+    let limit = limit.unwrap_or(50).clamp(1, 200) as i64;
     let db = app.state::<Db>();
     let conn = db
         .conn
@@ -1317,10 +1397,10 @@ pub async fn quiz_record_list(
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     let mut statement = conn
         .prepare(
-            "SELECT id, created_at, difficulty, question_count, total_score, total_max, details
-             FROM quiz_records ORDER BY created_at DESC, rowid DESC LIMIT ?1",
+            "SELECT id, created_at, difficulty, question_count, answers, graded, total_score, total_max
+             FROM quiz_sets ORDER BY created_at DESC, rowid DESC LIMIT ?1",
         )
-        .map_err(|err| format!("failed to list quiz records: {err}"))?;
+        .map_err(|err| format!("failed to list quiz sets: {err}"))?;
     let rows = statement
         .query_map(rusqlite::params![limit], |row| {
             Ok((
@@ -1328,33 +1408,43 @@ pub async fn quiz_record_list(
                 row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, String>(6)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, f64>(7)?,
             ))
         })
-        .map_err(|err| format!("failed to list quiz records: {err}"))?;
-    let mut records = Vec::new();
+        .map_err(|err| format!("failed to list quiz sets: {err}"))?;
+    let mut sets = Vec::new();
     for row in rows {
-        let (id, created_at, difficulty, question_count, total_score, total_max, details) =
-            row.map_err(|err| format!("failed to read quiz record: {err}"))?;
-        let items: Vec<QuizRecordItem> = serde_json::from_str(&details).unwrap_or_default();
-        records.push(QuizRecord {
+        let (id, created_at, difficulty, question_count, answers, graded, total_score, total_max) =
+            row.map_err(|err| format!("failed to read quiz set: {err}"))?;
+        let answered_count = serde_json::from_str::<std::collections::HashMap<String, String>>(
+            &answers,
+        )
+        .map(|map| {
+            map.values()
+                .filter(|answer| !answer.trim().is_empty())
+                .count() as i64
+        })
+        .unwrap_or(0);
+        sets.push(QuizSetMeta {
             id,
             created_at,
             difficulty,
             question_count,
+            answered_count,
+            graded: graded != 0,
             total_score,
             total_max,
-            items,
         });
     }
-    Ok(records)
+    Ok(sets)
 }
 
-/// Delete one graded session.
+/// Load one set in full. Returns None when the id is unknown.
 #[tauri::command]
-pub async fn quiz_record_delete(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn quiz_set_get(app: AppHandle, id: String) -> Result<Option<QuizSet>, String> {
     use tauri::Manager;
 
     let db = app.state::<Db>();
@@ -1362,7 +1452,150 @@ pub async fn quiz_record_delete(app: AppHandle, id: String) -> Result<(), String
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    conn.execute("DELETE FROM quiz_records WHERE id = ?1", rusqlite::params![id.trim()])
-        .map_err(|err| format!("failed to delete quiz record: {err}"))?;
+    let row = conn.query_row(
+        "SELECT id, created_at, difficulty, question_count, config, questions, answers,
+                results, graded, total_score, total_max
+         FROM quiz_sets WHERE id = ?1",
+        rusqlite::params![id.trim()],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, f64>(9)?,
+                row.get::<_, f64>(10)?,
+            ))
+        },
+    );
+    let (
+        id,
+        created_at,
+        difficulty,
+        question_count,
+        config,
+        questions,
+        answers,
+        results,
+        graded,
+        total_score,
+        total_max,
+    ) = match row {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(err) => return Err(format!("failed to load quiz set: {err}")),
+    };
+    // Migrated rows (from old quiz_records) carry an empty config string —
+    // their count/difficulty columns still describe the batch.
+    let config: QuizGenerateRequest = if config.trim().is_empty() {
+        QuizGenerateRequest {
+            count: question_count.max(0) as usize,
+            types: Vec::new(),
+            difficulty: difficulty.clone(),
+            topic: None,
+        }
+    } else {
+        serde_json::from_str(&config).map_err(|err| format!("解析出题配置失败：{err}"))?
+    };
+    let questions: Vec<QuizQuestion> = serde_json::from_str(&questions)
+        .map_err(|err| format!("解析题目失败：{err}"))?;
+    let answers: std::collections::HashMap<String, String> = serde_json::from_str(&answers)
+        .map_err(|err| format!("解析作答失败：{err}"))?;
+    let results: Vec<QuizRecordItem> = if results.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&results).map_err(|err| format!("解析批改结果失败：{err}"))?
+    };
+    Ok(Some(QuizSet {
+        id,
+        created_at,
+        difficulty,
+        question_count,
+        config,
+        questions,
+        answers,
+        results,
+        graded: graded != 0,
+        total_score,
+        total_max,
+    }))
+}
+
+/// Persist in-progress answers for one set (debounced by the UI).
+#[tauri::command]
+pub async fn quiz_set_save_answers(
+    app: AppHandle,
+    id: String,
+    answers: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+
+    let answers = serde_json::to_string(&answers)
+        .map_err(|err| format!("序列化作答失败：{err}"))?;
+    let db = app.state::<Db>();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    conn.execute(
+        "UPDATE quiz_sets SET answers = ?2 WHERE id = ?1",
+        rusqlite::params![id.trim(), answers],
+    )
+    .map_err(|err| format!("failed to save answers: {err}"))?;
+    Ok(())
+}
+
+/// Finish one set: store grading outcomes (question order) and totals.
+#[tauri::command]
+pub async fn quiz_set_finish(
+    app: AppHandle,
+    id: String,
+    items: Vec<QuizRecordItem>,
+) -> Result<(), String> {
+    use tauri::Manager;
+
+    if items.is_empty() {
+        return Err("没有可保存的批改结果".to_string());
+    }
+    let results = serde_json::to_string(&items)
+        .map_err(|err| format!("序列化批改结果失败：{err}"))?;
+    let total_score: f64 = items.iter().map(|item| item.score).sum();
+    let total_max: f64 = items.iter().map(|item| item.max_score).sum();
+    let db = app.state::<Db>();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    let changed = conn
+        .execute(
+            "UPDATE quiz_sets
+             SET results = ?2, graded = 1, total_score = ?3, total_max = ?4
+             WHERE id = ?1",
+            rusqlite::params![id.trim(), results, total_score, total_max],
+        )
+        .map_err(|err| format!("failed to finish quiz set: {err}"))?;
+    if changed == 0 {
+        return Err("题集不存在".to_string());
+    }
+    Ok(())
+}
+
+/// Delete one set.
+#[tauri::command]
+pub async fn quiz_set_delete(app: AppHandle, id: String) -> Result<(), String> {
+    use tauri::Manager;
+
+    let db = app.state::<Db>();
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    conn.execute("DELETE FROM quiz_sets WHERE id = ?1", rusqlite::params![id.trim()])
+        .map_err(|err| format!("failed to delete quiz set: {err}"))?;
     Ok(())
 }

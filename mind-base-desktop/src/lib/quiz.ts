@@ -78,9 +78,9 @@ export function gradeQuestion(question: QuizQuestion, answer: string): Promise<G
   return invoke<GradeOutcome>("quiz_grade", { question, answer });
 }
 
-// --- 测验历史记录（graded sessions） --------------------------------------
+// --- 历史题集（quiz_sets：每次生成的批次都持久保存，答题与否均可） ----------
 
-/** One answered question inside a saved record. */
+/** One answered question inside a graded set. */
 export interface QuizRecordItem {
   questionType: QuizType;
   question: string;
@@ -91,28 +91,64 @@ export interface QuizRecordItem {
   feedback: string;
 }
 
-/** One graded quiz session, as listed in history. */
-export interface QuizRecord {
+/** A generated question set as listed in history. */
+export interface QuizSetMeta {
   id: string;
   createdAt: number;
   difficulty: string;
   questionCount: number;
+  /** Non-empty answers among the stored answer map. */
+  answeredCount: number;
+  graded: boolean;
   totalScore: number;
   totalMax: number;
-  items: QuizRecordItem[];
 }
 
-/** Save one graded session; totals are computed server-side. */
-export function saveQuizRecord(difficulty: QuizDifficulty, items: QuizRecordItem[]): Promise<string> {
-  return invoke<string>("quiz_record_save", { request: { difficulty, items } });
+/** A generated question set in full (history detail view). */
+export interface QuizSet {
+  id: string;
+  createdAt: number;
+  difficulty: string;
+  questionCount: number;
+  config: GenerateRequest;
+  questions: QuizQuestion[];
+  answers: Record<string, string>;
+  /** Grading outcomes in question order; empty while ungraded. */
+  results: QuizRecordItem[];
+  graded: boolean;
+  totalScore: number;
+  totalMax: number;
 }
 
-/** List recent graded sessions, newest first. */
-export function listQuizRecords(limit?: number): Promise<QuizRecord[]> {
-  return invoke<QuizRecord[]>("quiz_record_list", { limit: limit ?? null });
+/** Persist one freshly generated batch as a new set; returns the set id. */
+export function createQuizSet(
+  config: GenerateRequest,
+  questions: QuizQuestion[],
+): Promise<string> {
+  return invoke<string>("quiz_set_create", { request: { config, questions } });
 }
 
-/** Delete one graded session. */
-export function deleteQuizRecord(id: string): Promise<void> {
-  return invoke<void>("quiz_record_delete", { id });
+/** List sets, newest first. */
+export function listQuizSets(limit?: number): Promise<QuizSetMeta[]> {
+  return invoke<QuizSetMeta[]>("quiz_set_list", { limit: limit ?? null });
+}
+
+/** Load one set in full; null when the id is unknown. */
+export function getQuizSet(id: string): Promise<QuizSet | null> {
+  return invoke<QuizSet | null>("quiz_set_get", { id });
+}
+
+/** Persist in-progress answers for one set (debounced by the UI). */
+export function saveQuizSetAnswers(id: string, answers: Record<string, string>): Promise<void> {
+  return invoke<void>("quiz_set_save_answers", { id, answers });
+}
+
+/** Finish one set: store grading outcomes (question order) and totals. */
+export function finishQuizSet(id: string, items: QuizRecordItem[]): Promise<void> {
+  return invoke<void>("quiz_set_finish", { id, items });
+}
+
+/** Delete one set. */
+export function deleteQuizSet(id: string): Promise<void> {
+  return invoke<void>("quiz_set_delete", { id });
 }

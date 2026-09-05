@@ -8,6 +8,8 @@
  * - `#/import`               → local file ingestion (文件入库)
  * - `#/favorites`            → favorites browsing (main area)
  * - `#/skills`               → skill manager (store install + installed list)
+ * - `#/quiz`                 → quiz config + generation + set history
+ * - `#/quiz/set/:id`         → one persisted quiz set (view / answer / answers toggle)
  * - `#/settings/system`      → settings, 系统设置 tab
  * - `#/settings/api`         → settings, API 设置 tab
  *
@@ -23,6 +25,7 @@ export type Route =
   | { view: "home" }
   | { view: "notes" }
   | { view: "quiz" }
+  | { view: "quiz-set"; setId: string }
   | { view: "knowledge" }
   | { view: "import" }
   | { view: "favorites" }
@@ -39,6 +42,11 @@ export const SKILLS_HASH = "#/skills";
 export const SETTINGS_SYSTEM_HASH = "#/settings/system";
 export const SETTINGS_API_HASH = "#/settings/api";
 
+/** Hash of one persisted quiz set's detail page. */
+export function quizSetHash(id: string): string {
+  return `#/quiz/set/${encodeURIComponent(id)}`;
+}
+
 /** Parse the current location hash into a [`Route`]. */
 export function parseHash(): Route {
   const match = /^#\/settings\/(system|api)\/?$/.exec(window.location.hash);
@@ -50,6 +58,10 @@ export function parseHash(): Route {
   }
   if (/^#\/notes\/?$/.test(window.location.hash)) {
     return { view: "notes" };
+  }
+  const quizSetMatch = /^#\/quiz\/set\/([^/]+)\/?$/.exec(window.location.hash);
+  if (quizSetMatch !== null) {
+    return { view: "quiz-set", setId: decodeURIComponent(quizSetMatch[1]) };
   }
   if (/^#\/quiz\/?$/.test(window.location.hash)) {
     return { view: "quiz" };
