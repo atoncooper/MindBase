@@ -45,7 +45,9 @@ fn fetch_vector_hits(
             .ok_or("向量检索不可用：当前未配置向量化（Embedding）密钥，请基于已有资料或历史对话回答")?;
     let vector = embed_client.embed_query(query)?;
     let conn = ctx.db.conn.lock().map_err(lock_err)?;
-    let raw = crate::vectors::search_conn(&conn, &vector, SEARCH_K, None)?;
+    // Hybrid: cosine + BM25 fused — exact terms (错误码、专有名词) stop
+    // getting buried under merely-similar chunks.
+    let raw = crate::vectors::hybrid_search_conn(&conn, &vector, query, SEARCH_K, None)?;
     crate::ingest::join_metadata(&conn, raw)
 }
 

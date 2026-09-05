@@ -26,6 +26,8 @@ export type Route =
   | { view: "notes" }
   | { view: "quiz" }
   | { view: "quiz-set"; setId: string }
+  | { view: "resume" }
+  | { view: "slides" }
   | { view: "knowledge" }
   | { view: "import" }
   | { view: "favorites" }
@@ -35,6 +37,8 @@ export type Route =
 export const HOME_HASH = "#/";
 export const NOTES_HASH = "#/notes";
 export const QUIZ_HASH = "#/quiz";
+export const RESUME_HASH = "#/resume";
+export const SLIDES_HASH = "#/slides";
 export const KNOWLEDGE_HASH = "#/knowledge";
 export const IMPORT_HASH = "#/import";
 export const FAVORITES_HASH = "#/favorites";
@@ -65,6 +69,12 @@ export function parseHash(): Route {
   }
   if (/^#\/quiz\/?$/.test(window.location.hash)) {
     return { view: "quiz" };
+  }
+  if (/^#\/resume\/?$/.test(window.location.hash)) {
+    return { view: "resume" };
+  }
+  if (/^#\/slides\/?$/.test(window.location.hash)) {
+    return { view: "slides" };
   }
   if (/^#\/knowledge\/?$/.test(window.location.hash)) {
     return { view: "knowledge" };

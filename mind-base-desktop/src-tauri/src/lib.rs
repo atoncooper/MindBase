@@ -18,6 +18,8 @@ mod notes;
 mod ocr_server;
 mod python_runtime;
 mod quiz;
+mod resume;
+mod slides;
 mod skills;
 mod updater;
 mod vectors;
@@ -183,6 +185,10 @@ pub fn run() {
             quiz::quiz_set_save_answers,
             quiz::quiz_set_finish,
             quiz::quiz_set_delete,
+            resume::resume_generate,
+            resume::export_text_file,
+            slides::slides_outline,
+            slides::slides_export,
             harness::harness_health,
             chat::chat_summarize,
             chat::chat_summary_get,

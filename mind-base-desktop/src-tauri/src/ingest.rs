@@ -1078,7 +1078,8 @@ pub(crate) fn join_metadata(
         .collect())
 }
 
-/// Semantic workspace search: query → embedding → cosine top-k + metadata.
+/// Semantic workspace search: query → embedding → hybrid (cosine + BM25 RRF
+/// fusion) top-k + metadata.
 #[tauri::command]
 pub async fn search_knowledge(
     app: AppHandle,
@@ -1107,7 +1108,7 @@ pub async fn search_knowledge(
             .conn
             .lock()
             .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        let hits = vectors::search_conn(&conn, &vector, top_k, None)?;
+        let hits = vectors::hybrid_search_conn(&conn, &vector, &query, top_k, None)?;
         join_metadata(&conn, hits)
     })
     .await
