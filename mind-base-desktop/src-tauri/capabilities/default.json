@@ -9,7 +9,21 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "opener:allow-open-path",
-    "opener:allow-reveal-item-in-dir"
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    }
   ]
 }
