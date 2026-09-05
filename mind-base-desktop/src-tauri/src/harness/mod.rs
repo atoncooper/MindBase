@@ -210,7 +210,7 @@ pub(crate) fn react_loop(
                     .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
                 crate::skills::enabled_skills_digest(&conn, &dir)
             };
-            agents::chat_system_prompt(&skills_text)
+            agents::chat_system_prompt(&skills_text, kind.tools())
         }
         AgentKind::Memory => {
             let window_text = match memory_window {

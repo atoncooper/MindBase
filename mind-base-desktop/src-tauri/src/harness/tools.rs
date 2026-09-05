@@ -1135,7 +1135,7 @@ impl LocalTool for GenerateResumeTool {
 static SPEC_GENERATE_RESUME: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "generate_resume",
-        "把全部历史对话提炼成一份 Markdown 简历并保存为文件（基于用户与助手聊过的项目/技能/经历；聊得越多越详细）。         调用前若不知道求职方向、或用户经历信息明显不足，先向用户提问澄清；生成完成后告知文件路径。",
+        "把用户与助手聊过的全部历史对话提炼成一份 Markdown 简历，保存为文件并返回路径。         使用规则：① 求职方向不明时，先用【需要澄清】格式问清方向再调用；         ② 历史对话里用户聊过的项目/经历明显不足时，先提示用户多聊几句项目细节、         技术栈与量化成果（聊得越多简历越详细），再生成；         ③ 生成完成后必须告知文件保存路径、概述简历结构（技能/项目/经历板块），         并提醒：继续对话补充信息后可再次生成，内容会更充实。",
         json!({
             "type": "object",
             "properties": {
@@ -1183,9 +1183,10 @@ impl LocalTool for GenerateSlidesTool {
         let client = ctx.chat_client.ok_or(
             "PPT 生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key",
         )?;
-        // Optionally ground the outline in knowledge-base material first.
+        // Ground the outline in knowledge-base material by default — the
+        // single biggest lever on deck quality (opt out via use_knowledge=false).
         let mut context_block = String::new();
-        if value.get("use_knowledge").and_then(|u| u.as_bool()) == Some(true) {
+        if value.get("use_knowledge").and_then(|u| u.as_bool()) != Some(false) {
             if let Some(embed_client) = ctx.embed_client {
                 if let Ok(query_vector) = embed_client.embed_query(&topic) {
                     let conn = ctx.db.conn.lock().map_err(lock_err)?;
@@ -1250,7 +1251,7 @@ impl LocalTool for GenerateSlidesTool {
 static SPEC_GENERATE_SLIDES: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "generate_slides",
-        "按主题生成一套演示文稿（.pptx 文件），含封面、每页要点与讲者备注，可直接用 PowerPoint/WPS 打开。         调用前若主题范围过大、受众/页数/侧重不明，先向用户提问澄清；生成完成后告知文件路径并给出大纲概览。",
+        "按主题生成一套完整演示文稿（.pptx 文件）：封面 + 每页 3-6 条具体要点 + 讲者备注，         默认先检索知识库取材，可直接用 PowerPoint/WPS 打开。         使用规则：① 主题范围过大、受众（面试官/客户/新人）、页数、侧重不明时，         先用【需要澄清】格式问 1-3 个关键问题再调用；         ② 生成完成后必须告知文件保存路径，并逐页给出大纲概览；         ③ 内容单薄时主动建议：结合知识库资料（use_knowledge 默认已开启）或补充背景后重新生成。",
         json!({
             "type": "object",
             "required": ["topic"],
@@ -1259,7 +1260,7 @@ static SPEC_GENERATE_SLIDES: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock
                 "slide_count": { "type": "integer", "description": "正文页数（3-15，默认 8）" },
                 "audience": { "type": "string", "description": "目标受众（可选），如「技术面试官」" },
                 "style": { "type": "string", "description": "内容风格（可选），如「深入浅出」" },
-                "use_knowledge": { "type": "boolean", "description": "是否先检索知识库素材作为大纲背景（默认 false）" }
+                "use_knowledge": { "type": "boolean", "description": "是否检索知识库素材作为大纲背景（默认 true；用户明确不需要时传 false）" }
             }
         }),
     )

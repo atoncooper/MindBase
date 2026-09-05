@@ -549,8 +549,13 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
                   key={index}
                   type="button"
                   className="clarify-bar__option"
-                  title={`就「${option}」继续`}
-                  onClick={() => void send(option)}
+                  title="填入输入框，可修改后发送"
+                  onClick={() => {
+                    // Codex 式：候选项只是起点——填入输入框而非直接发送，
+                    // 用户可增删改后自行提交（自主输入优先）。
+                    setInput(option);
+                    inputRef.current?.focus();
+                  }}
                 >
                   <span className="clarify-bar__num" aria-hidden="true">
                     {index + 1}

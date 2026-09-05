@@ -185,6 +185,7 @@ pub fn run() {
             quiz::quiz_set_save_answers,
             quiz::quiz_set_finish,
             quiz::quiz_set_delete,
+            resume::exports_list,
             harness::harness_health,
             chat::chat_summarize,
             chat::chat_summary_get,

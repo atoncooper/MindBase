@@ -100,7 +100,7 @@ function ClarifyCard({ payload }: { payload: ClarifyPayload }): React.JSX.Elemen
           ))}
         </div>
       )}
-      <p className="clarify-card__hint">在下方输入框上方的选项里点一个方向继续，或直接输入说明。</p>
+      <p className="clarify-card__hint">在下方输入框上方点选一个方向（可修改后发送），或直接输入你的说明。</p>
     </div>
   );
 }

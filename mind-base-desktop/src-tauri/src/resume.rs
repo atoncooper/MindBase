@@ -5,6 +5,10 @@
 //! 额外开关。历史过大时分段数有上限，超出部分优先保留最近的对话（旧的先丢）。
 //! 单段提炼失败不致命（best-effort 跳过），全部失败才报错。
 
+use serde::Serialize;
+use tauri::AppHandle;
+
+use crate::db::Db;
 use crate::llm_chat::{ChatClient, ChatMessage};
 
 /// 用户消息少于这个数时不生成——几轮寒暄提炼不出可靠履历。
@@ -213,6 +217,85 @@ pub(crate) fn generate_resume_to_file(
     std::fs::write(&path, &markdown)
         .map_err(|err| format!("写入简历文件失败（{}）：{err}", path.display()))?;
     Ok(path)
+}
+
+// ---------------------------------------------------------------------------
+// 生成记录（exports 目录清单，入口页展示 / 打开）
+// ---------------------------------------------------------------------------
+
+/// One generated artifact in the exports directory.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportEntry {
+    pub name: String,
+    pub path: String,
+    /// "markdown" | "pptx" | raw extension for anything else.
+    pub kind: String,
+    pub size_bytes: u64,
+    /// File mtime, epoch seconds.
+    pub modified_at: i64,
+}
+
+/// List generated artifacts (exports dir), newest first.
+#[tauri::command]
+pub async fn exports_list(app: AppHandle) -> Result<Vec<ExportEntry>, String> {
+    use tauri::Manager;
+
+    let dir = exports_dir(&{
+        let db = app.state::<Db>();
+        let guard = db
+            .data_dir
+            .lock()
+            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+        guard.clone()
+    });
+    let entries = tauri::async_runtime::spawn_blocking(move || list_exports_dir(&dir))
+        .await
+        .map_err(|err| format!("task failed: {err}"))?;
+    Ok(entries)
+}
+
+/// Sync directory scan behind [`exports_list`]; missing dir = empty list.
+fn list_exports_dir(dir: &std::path::Path) -> Vec<ExportEntry> {
+    let read = std::fs::read_dir(dir);
+    let Ok(read) = read else {
+        return Vec::new();
+    };
+    let mut entries: Vec<ExportEntry> = read
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let ext = name
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .to_lowercase();
+            let kind = match ext.as_str() {
+                "md" | "markdown" => "markdown",
+                "pptx" => "pptx",
+                other => other,
+            };
+            let modified_at = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|delta| delta.as_secs() as i64)
+                .unwrap_or_default();
+            Some(ExportEntry {
+                path: entry.path().display().to_string(),
+                name,
+                kind: kind.to_string(),
+                size_bytes: metadata.len(),
+                modified_at,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    entries
 }
 
 #[cfg(test)]
