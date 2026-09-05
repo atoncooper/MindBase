@@ -6,16 +6,13 @@
 //! JSON 判定」sidecar 协议。
 
 use serde::{Deserialize, Serialize};
-use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager};
 
-use crate::db::Db;
-use crate::llm_chat::ChatMessage;
+use crate::llm_chat::{ChatClient, ChatMessage};
 
 /// Panel-facing caps: the outline stays in a presentable size.
-const MIN_SLIDES: usize = 3;
-const MAX_SLIDES: usize = 15;
-const DEFAULT_SLIDES: usize = 8;
+pub(crate) const MIN_SLIDES: usize = 3;
+pub(crate) const MAX_SLIDES: usize = 15;
+pub(crate) const DEFAULT_SLIDES: usize = 8;
 const MAX_BULLETS: usize = 6;
 const BULLET_CHARS: usize = 80;
 const OUTLINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -38,27 +35,6 @@ pub struct SlidesOutline {
     #[serde(default)]
     pub subtitle: String,
     pub slides: Vec<SlideDraft>,
-}
-
-/// Panel-facing outline parameters.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SlidesOutlineRequest {
-    pub topic: String,
-    #[serde(default)]
-    pub slide_count: Option<usize>,
-    /// Optional audience hint (e.g. 面试官 / 新人培训 / 客户汇报).
-    #[serde(default)]
-    pub audience: Option<String>,
-    #[serde(default)]
-    pub style: Option<String>,
-}
-
-/// Progress pushed while the outline generates.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum SlidesEvent {
-    Outlining,
 }
 
 /// Parse the strict-JSON outline reply, tolerating code fences (same
@@ -150,115 +126,68 @@ fn normalize_outline(mut outline: SlidesOutline, max_slides: usize) -> SlidesOut
     outline
 }
 
-/// Generate a deck outline for one topic; returns the structured outline.
-#[tauri::command]
-pub async fn slides_outline(
-    app: AppHandle,
-    request: SlidesOutlineRequest,
-    on_event: Channel<SlidesEvent>,
+/// Core outline generation — shared by the standalone command and the
+/// harness tool. Blocking; retries parse failures once.
+pub(crate) fn generate_outline_core(
+    client: &ChatClient,
+    topic: &str,
+    slide_count: usize,
+    audience: Option<&str>,
+    style: Option<&str>,
+    context_block: &str,
 ) -> Result<SlidesOutline, String> {
-    let topic = request.topic.trim().to_string();
-    if topic.is_empty() {
-        return Err("请输入演示主题".to_string());
-    }
-    let slide_count = request
-        .slide_count
-        .unwrap_or(DEFAULT_SLIDES)
-        .clamp(MIN_SLIDES, MAX_SLIDES);
-    let client = {
-        let db = app.state::<Db>();
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        crate::llm_chat::chat_client_from_conn(&conn)?.ok_or_else(|| {
-            "未配置对话模型，请先在「API 设置」中填写 DashScope 或 OpenRouter Key".to_string()
-        })?
-    };
-
-    let audience_line = request
-        .audience
-        .as_deref()
+    let audience_line = audience
         .map(|a| format!("目标受众：{a}。"))
         .unwrap_or_default();
-    let style_line = request
-        .style
-        .as_deref()
-        .map(|s| format!("内容风格：{s}。"))
-        .unwrap_or_default();
+    let style_line = style.map(|s| format!("内容风格：{s}。")).unwrap_or_default();
     let system = "你是专业的演示文稿策划师。只输出一个 JSON 对象，不解释、不加代码围栏，形如：\n\
                   {\"title\":\"…\",\"subtitle\":\"…\",\"slides\":[{\"title\":\"…\",\
                   \"bullets\":[\"…\"],\"note\":\"讲者备注\"}]}\n\
                   规则：结构完整（开场/主体/收尾），每页 2-6 条要点，每条 ≤60 字，\
                   要点是陈述而非问句；note 是给演讲者的一两句话提示。";
     let user = format!(
-        "主题：{topic}\n页数：{slide_count} 页（正文页，不含封面）。\n{audience_line}{style_line}请生成大纲。"
+        "{context_block}主题：{topic}\n页数：{slide_count} 页（正文页，不含封面）。\n{audience_line}{style_line}请生成大纲。"
     );
-
-    let _ = on_event.send(SlidesEvent::Outlining);
-    tauri::async_runtime::spawn_blocking(move || {
-        let messages = [
-            ChatMessage::new("system", system),
-            ChatMessage::new("user", user),
-        ];
-        let mut last_error = String::new();
-        for _ in 0..2 {
-            match client
-                .complete_turn(OUTLINE_TIMEOUT, &messages)
-                .and_then(|reply| parse_outline(&reply))
-            {
-                Ok(outline) => {
-                    return Ok(normalize_outline(outline, slide_count + 2));
-                }
-                Err(err) => last_error = err,
-            }
+    let messages = [
+        ChatMessage::new("system", system),
+        ChatMessage::new("user", user),
+    ];
+    let mut last_error = String::new();
+    for _ in 0..2 {
+        match client
+            .complete_turn(OUTLINE_TIMEOUT, &messages)
+            .and_then(|reply| parse_outline(&reply))
+        {
+            Ok(outline) => return Ok(normalize_outline(outline, slide_count + 2)),
+            Err(err) => last_error = err,
         }
-        Err(format!("大纲生成失败：{last_error}"))
-    })
-    .await
-    .map_err(|err| format!("task failed: {err}"))?
+    }
+    Err(format!("大纲生成失败：{last_error}"))
 }
 
-/// Payload for [`slides_export`].
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SlidesExportRequest {
-    pub outline: SlidesOutline,
-    pub path: String,
-}
-
-/// Render an outline to a .pptx file via the python-pptx sidecar.
-#[tauri::command]
-pub async fn slides_export(app: AppHandle, request: SlidesExportRequest) -> Result<(), String> {
+/// Core .pptx rendering via the python sidecar — blocking, AppHandle-free.
+/// `path` is the absolute output file (a `.pptx` suffix is appended if
+/// missing). First call may provision the embedded Python + python-pptx
+/// (minutes); later calls are instant.
+pub(crate) fn render_pptx_to_path(
+    data_dir: &std::path::Path,
+    outline: &SlidesOutline,
+    path: &str,
+) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command as StdCommand, Stdio};
 
-    let mut path = request.path.trim().to_string();
+    let mut path = path.trim().to_string();
     if path.is_empty() {
         return Err("保存路径为空".to_string());
     }
     if !path.to_lowercase().ends_with(".pptx") {
         path.push_str(".pptx");
     }
-    if request.outline.slides.is_empty() {
+    if outline.slides.is_empty() {
         return Err("大纲没有页面，无法导出".to_string());
     }
-
-    let data_dir = {
-        let db = app.state::<Db>();
-        let dir = db
-            .data_dir
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        dir.clone()
-    };
-    // Provisioning may download the embedded runtime / python-pptx (minutes on
-    // first run) — run it off the async runtime.
-    let exe = tauri::async_runtime::spawn_blocking(move || {
-        crate::python_runtime::ensure_pptx_python(&data_dir)
-    })
-    .await
-    .map_err(|err| format!("task failed: {err}"))??;
+    let exe = crate::python_runtime::ensure_pptx_python(data_dir)?;
 
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
@@ -274,9 +203,9 @@ pub async fn slides_export(app: AppHandle, request: SlidesExportRequest) -> Resu
 
     let payload = serde_json::json!({
         "path": path,
-        "title": request.outline.title,
-        "subtitle": request.outline.subtitle,
-        "slides": request.outline.slides,
+        "title": outline.title,
+        "subtitle": outline.subtitle,
+        "slides": outline.slides,
     });
 
     #[cfg(windows)]
@@ -298,10 +227,7 @@ pub async fn slides_export(app: AppHandle, request: SlidesExportRequest) -> Resu
         .spawn()
         .map_err(|err| format!("无法运行渲染器（{}）：{err}", exe.display()))?;
     {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or("渲染器 stdin 不可用")?;
+        let stdin = child.stdin.as_mut().ok_or("渲染器 stdin 不可用")?;
         stdin
             .write_all(
                 serde_json::to_string(&payload)
@@ -321,11 +247,10 @@ pub async fn slides_export(app: AppHandle, request: SlidesExportRequest) -> Resu
         .map(str::trim)
         .find(|text| !text.is_empty())
         .unwrap_or("");
-    let value: serde_json::Value = serde_json::from_str(line)
-        .map_err(|err| format!("渲染器输出无法读取：{err}（片段：{}）", {
-            let snippet: String = line.chars().take(120).collect();
-            snippet
-        }))?;
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|err| {
+        let snippet: String = line.chars().take(120).collect();
+        format!("渲染器输出无法读取：{err}（片段：{snippet}）")
+    })?;
     if value.get("ok").and_then(|ok| ok.as_bool()) != Some(true) {
         let error = value
             .get("error")

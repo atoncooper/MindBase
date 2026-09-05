@@ -67,6 +67,8 @@ impl AgentKind {
                 "get_compressed_summary",
                 "delegate_to_agent",
                 "load_skill",
+                "generate_resume",
+                "generate_slides",
             ],
             // Memory binds everything (backend behavior) minus delegation.
             AgentKind::Memory => &[
@@ -164,7 +166,14 @@ pub(crate) fn chat_system_prompt(skills_text: &str) -> String {
          - vector_search：需要具体内容支撑的深度问题（某个观点/细节讲过什么）\n\
          - list_documents：用户询问库里有哪些视频、入库情况等概览类问题\n\
          - get_recent_context / get_full_history / get_compressed_summary：用户引用对话上下文时优先自查\n\
-         - delegate_to_agent：把独立子任务交给专职代理。target=memory 检索过往对话细节；target=note 创建或修改笔记；target=code 编写代码（仅生成不执行）；target=search 查技术库/框架官方文档。委托时用一句清晰的自包含 query 描述任务。\n\n\
+         - delegate_to_agent：把独立子任务交给专职代理。target=memory 检索过往对话细节；target=note 创建或修改笔记；target=code 编写代码（仅生成不执行）；target=search 查技术库/框架官方文档。委托时用一句清晰的自包含 query 描述任务。\n\
+         - generate_resume：用户想生成简历/求职材料时调用。把全部历史对话提炼成 Markdown 简历并保存为文件。\n\
+         - generate_slides：用户想做 PPT/演示文稿/汇报材料时调用。按主题生成 .pptx 文件（含每页要点与讲者备注）。\n\n\
+         ## 文档生成工具的澄清协议（重要）\n\
+         调用 generate_resume / generate_slides 之前，若关键信息缺失，**必须先用【需要澄清】格式向用户提问**，不要凭猜测生成：\n\
+         - 简历：求职方向不明（前端/后端/算法…）、用户聊过的经历明显不够时，先问方向、建议多聊项目细节\n\
+         - PPT：主题范围过大、受众（面试官/客户/新人）、页数偏好、是否要用知识库素材（use_knowledge）不明时，先问 1-3 个关键问题\n\
+         信息齐全才调用工具；生成完成后告知文件保存路径、给出内容概览，并说明「继续对话补充信息后可重新生成，会更详细」。\n\n\
          ## 何时联网委托（重要）\n\
          - 用户要求「搜索」「搜一下」「查一下」「联网」「最新版本」「官方文档」时，必须 delegate_to_agent(agent_name=\"search\", query=\"...\")\n\
          - 涉及你记忆可能过时的外部技术内容（新框架、新 API、版本号、发布信息），也必须委托 search 核实，不要凭记忆作答\n\

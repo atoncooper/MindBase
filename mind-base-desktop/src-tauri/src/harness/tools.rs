@@ -1089,6 +1089,182 @@ fn truncate_chars(text: &str, cap: usize) -> String {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Conversation-integrated artifact tools (resume / slides)
+// ---------------------------------------------------------------------------
+
+/// Generate a resume from the FULL chat history and write it under
+/// <data_dir>/exports/. Long-running (multi-pass LLM map-reduce) but blocking
+/// is fine: the runtime executes tools on scoped threads with no timeout.
+pub(crate) struct GenerateResumeTool;
+
+impl LocalTool for GenerateResumeTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_GENERATE_RESUME
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let target_role = value
+            .get("target_role")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        let client = ctx.chat_client.ok_or(
+            "简历生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key",
+        )?;
+        // Lock discipline: history read + data_dir resolve under one short
+        // lock, then the LLM work runs lock-free.
+        let path = {
+            let conn = ctx.db.conn.lock().map_err(lock_err)?;
+            let data_dir = ctx
+                .db
+                .data_dir
+                .lock()
+                .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
+            crate::resume::generate_resume_to_file(&conn, client, &data_dir, target_role)?
+        };
+        Ok(ToolOutput::text(format!(
+            "简历已生成并保存到：{}。请告知用户文件路径，并简要说明简历结构（技能/项目/经历板块）；             提示用户可继续对话补充信息后重新生成（聊得越多越详细）。",
+            path.display()
+        )))
+    }
+}
+
+static SPEC_GENERATE_RESUME: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "generate_resume",
+        "把全部历史对话提炼成一份 Markdown 简历并保存为文件（基于用户与助手聊过的项目/技能/经历；聊得越多越详细）。         调用前若不知道求职方向、或用户经历信息明显不足，先向用户提问澄清；生成完成后告知文件路径。",
+        json!({
+            "type": "object",
+            "properties": {
+                "target_role": { "type": "string", "description": "求职方向（可选），如「前端工程师」，影响内容取舍" }
+            }
+        }),
+    )
+});
+
+/// Generate a slide deck (.pptx) for one topic and write it under
+/// <data_dir>/exports/. Outline via LLM, rendering via the python-pptx
+/// sidecar (first run provisions dependencies, later runs are fast).
+pub(crate) struct GenerateSlidesTool;
+
+impl LocalTool for GenerateSlidesTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_GENERATE_SLIDES
+    }
+
+    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        let value: Value = serde_json::from_str(arguments)
+            .map_err(|err| format!("工具参数解析失败：{err}"))?;
+        let topic = value
+            .get("topic")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .ok_or("topic 不能为空")?
+            .to_string();
+        let slide_count = value
+            .get("slide_count")
+            .and_then(|n| n.as_u64())
+            .map(|n| (n as usize).clamp(crate::slides::MIN_SLIDES, crate::slides::MAX_SLIDES))
+            .unwrap_or(crate::slides::DEFAULT_SLIDES);
+        let audience = value
+            .get("audience")
+            .and_then(|a| a.as_str())
+            .map(str::trim)
+            .filter(|a| !a.is_empty());
+        let style = value
+            .get("style")
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let client = ctx.chat_client.ok_or(
+            "PPT 生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key",
+        )?;
+        // Optionally ground the outline in knowledge-base material first.
+        let mut context_block = String::new();
+        if value.get("use_knowledge").and_then(|u| u.as_bool()) == Some(true) {
+            if let Some(embed_client) = ctx.embed_client {
+                if let Ok(query_vector) = embed_client.embed_query(&topic) {
+                    let conn = ctx.db.conn.lock().map_err(lock_err)?;
+                    if let Ok(raw) =
+                        crate::vectors::hybrid_search_conn(&conn, &query_vector, &topic, 6, None)
+                    {
+                        if let Ok(joined_hits) = crate::ingest::join_metadata(&conn, raw) {
+                        let joined = crate::chat::format_context_blocks(&joined_hits);
+                        if !joined.is_empty() {
+                            context_block = format!("参考知识片段：
+{joined}
+
+");
+                        }
+                        }
+                    }
+                }
+            }
+        }
+
+        let data_dir = ctx
+            .db
+            .data_dir
+            .lock()
+            .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
+        // 先出大纲（含可选知识库素材作为背景），再渲染成 pptx 文件。
+        let outline = crate::slides::generate_outline_core(
+            client,
+            &topic,
+            slide_count,
+            audience,
+            style,
+            &context_block,
+        )?;
+        let dir = crate::resume::exports_dir(&data_dir);
+        std::fs::create_dir_all(&dir).map_err(|err| format!("创建导出目录失败：{err}"))?;
+        let path = dir.join(crate::resume::export_file_name(
+            &format!("PPT-{}", outline.title),
+            "pptx",
+        ));
+        crate::slides::render_pptx_to_path(
+            &data_dir,
+            &outline,
+            path.to_str().unwrap_or_default(),
+        )?;
+
+        let mut summary = String::new();
+        for (index, slide) in outline.slides.iter().enumerate() {
+            summary.push_str(&format!("{}. {}
+", index + 1, slide.title));
+        }
+        Ok(ToolOutput::text(format!(
+            "PPT 已生成并保存到：{}。
+大纲：
+{}请告知用户文件路径与页数，并给出每页标题的概览。",
+            path.display(),
+            summary
+        )))
+    }
+}
+
+static SPEC_GENERATE_SLIDES: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "generate_slides",
+        "按主题生成一套演示文稿（.pptx 文件），含封面、每页要点与讲者备注，可直接用 PowerPoint/WPS 打开。         调用前若主题范围过大、受众/页数/侧重不明，先向用户提问澄清；生成完成后告知文件路径并给出大纲概览。",
+        json!({
+            "type": "object",
+            "required": ["topic"],
+            "properties": {
+                "topic": { "type": "string", "description": "演示主题" },
+                "slide_count": { "type": "integer", "description": "正文页数（3-15，默认 8）" },
+                "audience": { "type": "string", "description": "目标受众（可选），如「技术面试官」" },
+                "style": { "type": "string", "description": "内容风格（可选），如「深入浅出」" },
+                "use_knowledge": { "type": "boolean", "description": "是否先检索知识库素材作为大纲背景（默认 false）" }
+            }
+        }),
+    )
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;

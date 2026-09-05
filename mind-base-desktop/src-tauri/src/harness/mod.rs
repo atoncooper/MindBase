@@ -100,6 +100,13 @@ impl Harness {
         // Optional-network enhancement tools (search agent).
         runtime.registry_mut().register(Box::new(tools::SearchDocsTool));
         runtime.registry_mut().register(Box::new(tools::WebCrawlTool));
+        // Conversation-integrated artifact generation (chat agent).
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::GenerateResumeTool));
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::GenerateSlidesTool));
 
         let mut orchestrator = orchestrator::Orchestrator::new();
         // Only chat is routable today — identical to the production backend;

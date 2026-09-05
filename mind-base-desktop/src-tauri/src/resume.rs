@@ -5,11 +5,6 @@
 //! 额外开关。历史过大时分段数有上限，超出部分优先保留最近的对话（旧的先丢）。
 //! 单段提炼失败不致命（best-effort 跳过），全部失败才报错。
 
-use serde::{Deserialize, Serialize};
-use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager};
-
-use crate::db::Db;
 use crate::llm_chat::{ChatClient, ChatMessage};
 
 /// 用户消息少于这个数时不生成——几轮寒暄提炼不出可靠履历。
@@ -22,27 +17,6 @@ const MAX_SEGMENTS: usize = 12;
 const MESSAGE_CHARS: usize = 500;
 /// 每段提炼 / 最终撰写的 LLM 超时。
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-
-/// Progress pushed to the frontend during one resume run.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum ResumeEvent {
-    /// Reading chat history; carries the message count found.
-    Collecting { messages: usize },
-    /// Extracting facts from segment `index` (0-based) of `total`.
-    Extracting { index: usize, total: usize },
-    /// All facts gathered; composing the final resume.
-    Writing,
-}
-
-/// Panel-facing generation parameters.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResumeGenerateRequest {
-    /// Optional target role — shifts the resume's emphasis when present.
-    #[serde(default)]
-    pub target_role: Option<String>,
-}
 
 /// Read the full chat history as transcript lines ("用户：…/助手：…"),
 /// oldest first. Completed messages only; each clamped to [`MESSAGE_CHARS`].
@@ -158,73 +132,87 @@ fn compose_resume(
     )
 }
 
-/// Generate a resume from the full chat history; returns Markdown.
-#[tauri::command]
-pub async fn resume_generate(
-    app: AppHandle,
-    request: ResumeGenerateRequest,
-    on_event: Channel<ResumeEvent>,
+// ---------------------------------------------------------------------------
+// Harness tool entry (conversation-integrated generation)
+// ---------------------------------------------------------------------------
+
+/// Core map-reduce over transcript lines — shared by the standalone command
+/// and the harness tool. `on_event` receives progress (best-effort).
+pub(crate) fn generate_resume_from_lines(
+    client: &ChatClient,
+    lines: &[String],
+    target_role: Option<&str>,
 ) -> Result<String, String> {
-    let client = {
-        let db = app.state::<Db>();
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        crate::llm_chat::chat_client_from_conn(&conn)?.ok_or_else(|| {
-            "未配置对话模型，请先在「API 设置」中填写 DashScope 或 OpenRouter Key".to_string()
-        })?
-    };
+    let user_messages = lines.iter().filter(|line| line.starts_with("用户：")).count();
+    if user_messages < MIN_USER_MESSAGES {
+        return Err(format!(
+            "历史对话太少（仅 {user_messages} 条用户消息，至少需要 {MIN_USER_MESSAGES} 条）。\
+             建议先与用户多聊几个项目与技能细节再生成"
+        ));
+    }
 
-    let handle = app.clone();
-    let target_role = request.target_role;
-    tauri::async_runtime::spawn_blocking(move || {
-        let db = handle.state::<Db>();
-        let lines = {
-            let conn = db
-                .conn
-                .lock()
-                .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-            load_transcript(&conn)?
-        };
-        let user_messages = lines.iter().filter(|line| line.starts_with("用户：")).count();
-        if user_messages < MIN_USER_MESSAGES {
-            return Err(format!(
-                "历史对话太少（仅 {user_messages} 条用户消息，至少需要 {MIN_USER_MESSAGES} 条）。\
-                 先多和助手聊聊你的项目与技能，简历会越聊越详细"
-            ));
+    let segments = pack_segments(lines);
+    let mut facts: Vec<String> = Vec::new();
+    for segment in &segments {
+        // 单段失败不阻塞整体（best-effort）。
+        if let Ok(Some(segment_facts)) = extract_segment_facts(client, segment) {
+            facts.extend(segment_facts);
         }
-        let _ = on_event.send(ResumeEvent::Collecting { messages: lines.len() });
-
-        let segments = pack_segments(&lines);
-        let total = segments.len();
-        let mut facts: Vec<String> = Vec::new();
-        for (index, segment) in segments.iter().enumerate() {
-            let _ = on_event.send(ResumeEvent::Extracting { index, total });
-            // 单段失败不阻塞整体（best-effort）。
-            if let Ok(Some(segment_facts)) = extract_segment_facts(&client, segment) {
-                facts.extend(segment_facts);
-            }
-        }
-        if facts.is_empty() {
-            return Err("没能从历史对话中提炼出可用素材，无法生成简历".to_string());
-        }
-        let _ = on_event.send(ResumeEvent::Writing);
-        compose_resume(&client, &facts, target_role.as_deref())
-    })
-    .await
-    .map_err(|err| format!("task failed: {err}"))?
+    }
+    if facts.is_empty() {
+        return Err("没能从历史对话中提炼出可用素材，无法生成简历".to_string());
+    }
+    compose_resume(client, &facts, target_role)
 }
 
-/// Write Markdown/text content to a user-chosen path (export button).
-#[tauri::command]
-pub async fn export_text_file(path: String, contents: String) -> Result<(), String> {
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Err("保存路径为空".to_string());
-    }
-    std::fs::write(&path, contents)
-        .map_err(|err| format!("写入文件失败（{path}）：{err}"))
+/// Where tool-generated files land: `<data_dir>/exports/`.
+pub(crate) fn exports_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("exports")
+}
+
+/// File-system-safe, collision-avoiding name for an exported artifact.
+pub(crate) fn export_file_name(stem: &str, ext: &str) -> String {
+    let safe: String = stem
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == '.' { ch } else { '_' })
+        .take(60)
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    format!(
+        "{}{}.{}",
+        if safe.is_empty() { "export".to_string() } else { safe },
+        stamp,
+        ext
+    )
+}
+
+/// Generate a resume from chat history and write it to
+/// `<data_dir>/exports/<title>.md`; returns the absolute path.
+///
+/// Harness-tool flavor: no Channel, blocking, errors are user-actionable
+/// strings (the ReAct loop feeds them straight back to the model).
+pub(crate) fn generate_resume_to_file(
+    conn: &rusqlite::Connection,
+    client: &ChatClient,
+    data_dir: &std::path::Path,
+    target_role: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let lines = load_transcript(conn)?;
+    let markdown = generate_resume_from_lines(client, &lines, target_role)?;
+    let title = markdown
+        .lines()
+        .find_map(|line| line.strip_prefix("# ").map(str::trim))
+        .filter(|t| !t.is_empty())
+        .unwrap_or("我的简历");
+    let dir = exports_dir(data_dir);
+    std::fs::create_dir_all(&dir).map_err(|err| format!("创建导出目录失败：{err}"))?;
+    let path = dir.join(export_file_name(&format!("简历-{title}"), "md"));
+    std::fs::write(&path, &markdown)
+        .map_err(|err| format!("写入简历文件失败（{}）：{err}", path.display()))?;
+    Ok(path)
 }
 
 #[cfg(test)]

@@ -117,4 +117,5 @@ export type PendingJump =
   | { kind: "new-session" }
   | { kind: "open-note"; id: string }
   | { kind: "new-note" }
+  | { kind: "draft"; text: string }
   | { kind: "view"; hash: string };

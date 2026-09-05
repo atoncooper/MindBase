@@ -150,6 +150,16 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [input]);
 
+  // 薄入口页（简历/PPT）经 sessionStorage 带来的草稿：mount 时取走一次，
+  // 预填进输入框（不自动发送——用户可能想先补充说明）。
+  useEffect(() => {
+    const draft = window.sessionStorage.getItem("mb-draft-input");
+    if (draft === null || draft === "") return;
+    window.sessionStorage.removeItem("mb-draft-input");
+    setInput(draft);
+    inputRef.current?.focus();
+  }, []);
+
   // Persist the fold decision.
   useEffect(() => {
     window.localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
@@ -193,11 +203,22 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   // pending——不属于本视图的 kind 必须原样放行，绝不能消费。
   useEffect(() => {
     if (pending === null) return;
-    if (pending.kind !== "open-session" && pending.kind !== "new-session") return;
+    if (
+      pending.kind !== "open-session" &&
+      pending.kind !== "new-session" &&
+      pending.kind !== "draft"
+    ) {
+      return;
+    }
     if (pending.kind === "open-session" && pending.id !== "") {
       selectSession(pending.id);
     } else if (pending.kind === "new-session") {
       startDraft();
+    } else if (pending.kind === "draft") {
+      // 薄入口页（简历/PPT）把生成请求带进对话：切回草稿态并预填输入框。
+      startDraft();
+      setInput(pending.text);
+      inputRef.current?.focus();
     }
     onPendingConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pending 变化即消费一次
