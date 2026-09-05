@@ -3363,6 +3363,14 @@ body {
   border-color: var(--line-strong);
 }
 
+/* 选中态（Codex 式两段交互：先选中 → 输入框回车发送）。 */
+.clarify-bar__option--selected,
+.clarify-bar__option--selected:hover {
+  background-color: var(--user-bubble);
+  border-color: var(--user-bubble-ink);
+  color: var(--user-bubble-ink);
+}
+
 .clarify-bar__num {
   flex-shrink: 0;
   width: 18px;

@@ -275,6 +275,15 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const clarifyKey = clarify === null ? "" : `${clarify.question}|${clarify.options.join("|")}`;
   const [dismissedClarifyKey, setDismissedClarifyKey] = useState("");
   const clarifyVisible = clarify !== null && dismissedClarifyKey !== clarifyKey;
+  // Codex 式两段交互：点候选 = 选中（行高亮 + 填入输入框），发送仍走输入框
+  // 的回车/按钮——用户在选中后还能改写内容。换新问题时选中态作废。
+  const [picked, setPicked] = useState<{ key: string; index: number } | null>(null);
+  const pickedIndex = clarifyVisible && picked !== null && picked.key === clarifyKey ? picked.index : -1;
+  function pickClarifyOption(index: number, option: string): void {
+    setPicked({ key: clarifyKey, index });
+    setInput(option);
+    inputRef.current?.focus();
+  }
 
   function selectSession(sessionId: string): void {
     if (sessionId === activeId) return;
@@ -544,25 +553,27 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
               </button>
             </div>
             <div className="clarify-bar__options">
-              {clarify.options.map((option, index) => (
-                <button
-                  key={index}
-                  type="button"
-                  className="clarify-bar__option"
-                  title="填入输入框，可修改后发送"
-                  onClick={() => {
-                    // Codex 式：候选项只是起点——填入输入框而非直接发送，
-                    // 用户可增删改后自行提交（自主输入优先）。
-                    setInput(option);
-                    inputRef.current?.focus();
-                  }}
-                >
-                  <span className="clarify-bar__num" aria-hidden="true">
-                    {index + 1}
-                  </span>
-                  <span className="clarify-bar__text">{option}</span>
-                </button>
-              ))}
+              {clarify.options.map((option, index) => {
+                const selected = index === pickedIndex;
+                return (
+                  <button
+                    key={index}
+                    type="button"
+                    className={
+                      selected
+                        ? "clarify-bar__option clarify-bar__option--selected"
+                        : "clarify-bar__option"
+                    }
+                    title="选中并填入输入框，可修改后回车发送"
+                    onClick={() => pickClarifyOption(index, option)}
+                  >
+                    <span className="clarify-bar__num" aria-hidden="true">
+                      {selected ? "✓" : index + 1}
+                    </span>
+                    <span className="clarify-bar__text">{option}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
