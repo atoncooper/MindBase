@@ -203,6 +203,7 @@ pub(crate) fn generate_resume_to_file(
     client: &ChatClient,
     data_dir: &std::path::Path,
     target_role: Option<&str>,
+    save_path: Option<&str>,
 ) -> Result<std::path::PathBuf, String> {
     let lines = load_transcript(conn)?;
     let markdown = generate_resume_from_lines(client, &lines, target_role)?;
@@ -211,9 +212,26 @@ pub(crate) fn generate_resume_to_file(
         .find_map(|line| line.strip_prefix("# ").map(str::trim))
         .filter(|t| !t.is_empty())
         .unwrap_or("我的简历");
-    let dir = exports_dir(data_dir);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建导出目录失败：{err}"))?;
-    let path = dir.join(export_file_name(&format!("简历-{title}"), "md"));
+
+    // 用户指定位置（绝对路径）优先；否则落 exports（有生成记录可查）。
+    let path = match save_path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(custom) => {
+            let mut path = std::path::PathBuf::from(custom);
+            if path.extension().is_none() {
+                path.set_extension("md");
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("创建目录失败（{}）：{err}", parent.display()))?;
+            }
+            path
+        }
+        None => {
+            let dir = exports_dir(data_dir);
+            std::fs::create_dir_all(&dir).map_err(|err| format!("创建导出目录失败：{err}"))?;
+            dir.join(export_file_name(&format!("简历-{title}"), "md"))
+        }
+    };
     std::fs::write(&path, &markdown)
         .map_err(|err| format!("写入简历文件失败（{}）：{err}", path.display()))?;
     Ok(path)

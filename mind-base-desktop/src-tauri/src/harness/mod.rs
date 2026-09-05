@@ -107,6 +107,10 @@ impl Harness {
         runtime
             .registry_mut()
             .register(Box::new(tools::GenerateSlidesTool));
+        // General file-system access (the agent's hands, not just exports).
+        runtime.registry_mut().register(Box::new(tools::ReadFileTool));
+        runtime.registry_mut().register(Box::new(tools::WriteFileTool));
+        runtime.registry_mut().register(Box::new(tools::ListDirTool));
 
         let mut orchestrator = orchestrator::Orchestrator::new();
         // Only chat is routable today — identical to the production backend;

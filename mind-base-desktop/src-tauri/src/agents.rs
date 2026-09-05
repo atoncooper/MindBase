@@ -69,6 +69,9 @@ impl AgentKind {
                 "load_skill",
                 "generate_resume",
                 "generate_slides",
+                "read_file",
+                "write_file",
+                "list_dir",
             ],
             // Memory binds everything (backend behavior) minus delegation.
             AgentKind::Memory => &[
