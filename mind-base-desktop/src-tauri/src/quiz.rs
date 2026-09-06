@@ -241,7 +241,8 @@ pub(crate) fn fetch_chunks(
 
     if let (Some(embed_client), Some(topic)) = (embed_client, query.filter(|q| !q.trim().is_empty())) {
         let vector = embed_client.embed_query(topic)?;
-        let hits = crate::vectors::search_conn(&conn, &vector, count as u32, None)?;
+        let hits =
+            crate::vectors::hybrid_search_conn(&conn, &vector, topic, count as u32, None)?;
         return Ok(hits
             .into_iter()
             .map(|hit| KnowledgeChunk {

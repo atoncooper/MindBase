@@ -18,6 +18,8 @@ import ImportView from "./components/import-view/ImportView";
 import NotesView from "./components/notes/NotesView";
 import QuizView from "./components/quiz/QuizView";
 import QuizSetView from "./components/quiz/QuizSetView";
+import ResumeView from "./components/resume/ResumeView";
+import SlidesView from "./components/slides/SlidesView";
 import FavoritesView from "./components/FavoritesView";
 import SkillsView from "./components/SkillsView";
 import NavRail from "./components/NavRail";
@@ -53,6 +55,10 @@ function viewMeta(route: ReturnType<typeof useHashRoute>): { subtitle: string } 
       return { subtitle: "知识测验" };
     case "quiz-set":
       return { subtitle: "历史题集" };
+    case "resume":
+      return { subtitle: "简历生成" };
+    case "slides":
+      return { subtitle: "PPT 制作" };
     case "skills":
       return { subtitle: "技能管理" };
     default:
@@ -201,6 +207,10 @@ function App() {
             <QuizView />
           ) : route.view === "quiz-set" ? (
             <QuizSetView setId={route.setId} />
+          ) : route.view === "resume" ? (
+            <ResumeView />
+          ) : route.view === "slides" ? (
+            <SlidesView />
           ) : route.view === "skills" ? (
             <SkillsView />
           ) : (

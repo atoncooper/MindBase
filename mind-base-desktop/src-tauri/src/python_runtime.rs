@@ -184,6 +184,28 @@ pub(crate) fn ensure_doc_extract_python(
     Ok(python_exe(data_dir))
 }
 
+/// Ensure the embedded Python can run the PPT renderer (`python-pptx`),
+/// installing it on first use. Returns the interpreter path.
+pub(crate) fn ensure_pptx_python(data_dir: &Path) -> Result<PathBuf, String> {
+    const REQUIRED: &[&str] = &["pptx"];
+    const PACKAGES: &[&str] = &["python-pptx"];
+    let exe = python_exe(data_dir);
+    if exe.is_file() && REQUIRED.iter().all(|m| can_import(&exe, m)) {
+        return Ok(exe);
+    }
+    ensure_python_base(data_dir)?;
+    let exe = python_exe(data_dir);
+    if !REQUIRED.iter().all(|m| can_import(&exe, m)) {
+        crate::logging::info("python", "安装 PPT 渲染依赖（python-pptx）…");
+        install_packages(&exe, &python_dir(data_dir), PACKAGES)?;
+        crate::logging::info("python", "PPT 渲染依赖安装完成");
+    }
+    if !REQUIRED.iter().all(|m| can_import(&exe, m)) {
+        return Err("嵌入式 Python 已就绪但 python-pptx 不可用".to_string());
+    }
+    Ok(exe)
+}
+
 /// Whether the installed onnxruntime exposes the CUDA execution provider.
 fn onnxruntime_has_cuda(exe: &Path) -> bool {
     Command::new(exe)
