@@ -204,7 +204,25 @@ pub(crate) const SCHEMA_SQL: &str =
          content,                                      -- tokenized text (CJK bigrams + ASCII words)
          doc_id UNINDEXED,
          chunk_index UNINDEXED
-     );";
+     );
+     CREATE TABLE IF NOT EXISTS mind_maps(
+         id         TEXT PRIMARY KEY,                -- 32-hex local id
+         title      TEXT    NOT NULL DEFAULT '未命名导图',
+         kind       TEXT    NOT NULL DEFAULT 'mindmap', -- mindmap | whiteboard
+         data       TEXT    NOT NULL DEFAULT '',     -- JSON: 导图树或白板场景
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_mind_maps_updated ON mind_maps(updated_at DESC);
+     CREATE TABLE IF NOT EXISTS mind_map_snapshots(
+         id         TEXT PRIMARY KEY,                -- 32-hex local id
+         map_id     TEXT    NOT NULL,                -- 所属 mind_maps.id
+         title      TEXT    NOT NULL DEFAULT '',     -- 快照名（自动/手动/回滚备份）
+         data       TEXT    NOT NULL DEFAULT '',     -- 快照时刻的整卡 JSON
+         created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_mind_map_snapshots
+         ON mind_map_snapshots(map_id, created_at DESC);";
 
 /// Additive column migrations for databases created by older builds.
 ///
@@ -212,12 +230,13 @@ pub(crate) const SCHEMA_SQL: &str =
 /// runs on its own and "duplicate column" failures are silently accepted —
 /// that error *is* the success state for an already-migrated database.
 /// Anything else is logged but never fatal (startup must self-heal).
-const COLUMN_MIGRATIONS: [&str; 5] = [
+const COLUMN_MIGRATIONS: [&str; 6] = [
     "ALTER TABLE api_keys ADD COLUMN base_url TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE api_keys ADD COLUMN model TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE documents ADD COLUMN source_type TEXT NOT NULL DEFAULT 'video';",
     "ALTER TABLE documents ADD COLUMN file_path TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE documents ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE mind_maps ADD COLUMN kind TEXT NOT NULL DEFAULT 'mindmap';",
 ];
 
 /// Apply [`COLUMN_MIGRATIONS`], tolerating already-applied ones.

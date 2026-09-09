@@ -1,6 +1,6 @@
 [package]
 name = "mind-base-desktop"
-version = "0.1.6"
+version = "0.1.7"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -34,6 +34,8 @@ ureq = { version = "2.10", features = ["json"] }
 semver = "1"
 # MD5 for B站 WBI request signing (wbi.rs).
 md-5 = "0.10"
+# Mind map exports arrive from the webview base64-encoded (PNG/SVG/MD → exports/).
+base64 = "0.22"
 # Skill-pack (zip) install — same archive format as the app/ skill store
 # (SKILL.md + manifest.json; deflate only, no bzip/zstd needed).
 zip = { version = "2", default-features = false, features = ["deflate"] }
