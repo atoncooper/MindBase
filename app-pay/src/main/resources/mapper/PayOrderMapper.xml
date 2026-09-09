@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 订单手写 SQL：仅放 MyBatis-Plus BaseMapper/LambdaWrapper 表达不了的语句。
+     状态机的条件更新集中于此（plan/1.0.7-Pay §4）：WHERE 带当前状态，
+     受影响行数判定流转成败——并发/重复回调下只有一次生效。 -->
+<mapper namespace="com.mindbase.pay.mapper.PayOrderMapper">
+
+    <update id="markPaid">
+        UPDATE pay_order
+        SET status           = 'PAID',
+            channel_trade_no = #{tradeNo},
+            paid_at          = #{paidAt},
+            updated_at       = #{paidAt},
+            version          = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'CREATED'
+    </update>
+
+    <!-- 关单后到账补单（ChannelQueryJob/回调确认已收款时触发）：CLOSED -> PAID，
+         钱已收是事实，M4 退款路径负责逆向；仅渠道验签/查单确认后才允许调用 -->
+    <update id="markPaidAfterClose">
+        UPDATE pay_order
+        SET status           = 'PAID',
+            channel_trade_no = #{tradeNo},
+            paid_at          = #{paidAt},
+            updated_at       = #{paidAt},
+            fail_reason      = NULL,
+            version          = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'CLOSED'
+    </update>
+
+    <update id="markDelivered">
+        UPDATE pay_order
+        SET status     = 'DELIVERED',
+            updated_at = #{now},
+            version    = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'PAID'
+    </update>
+
+    <update id="closeOrder">
+        UPDATE pay_order
+        SET status      = 'CLOSED',
+            closed_at   = #{now},
+            updated_at  = #{now},
+            fail_reason = #{reason},
+            version     = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'CREATED'
+    </update>
+
+    <update id="closeExpired">
+        UPDATE pay_order
+        SET status      = 'CLOSED',
+            closed_at   = #{now},
+            updated_at  = #{now},
+            fail_reason = 'PAY_TIMEOUT',
+            version     = version + 1
+        WHERE status = 'CREATED'
+          AND expires_at &lt; #{now}
+    </update>
+
+    <!-- app-task 超时委托的 executor（plan/1.0.8）：携带注册时版本 v1 执行，
+         版本不匹配（订单已支付等更新）或状态非 CREATED → 0 行受影响 → 委托作废 -->
+    <update id="closeOrderAtVersion">
+        UPDATE pay_order
+        SET status      = 'CLOSED',
+            closed_at   = #{now},
+            updated_at  = #{now},
+            fail_reason = 'PAY_TIMEOUT',
+            version     = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'CREATED'
+          AND version = #{version}
+    </update>
+</mapper>

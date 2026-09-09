@@ -1,0 +1,24 @@
+# 生产容器形态（compose command 激活 docker profile）：
+# 容器网络内地址、MOCK 关闭、测试入口关闭、正式支付宝网关。
+# 密钥/口令经占位符引用 .env（容器由 env_file 注入），不进 git。
+pay:
+  rdbms:
+    url: jdbc:mysql://app-pay-mysql:3306/app_pay?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
+    username: ${PAY_MYSQL_USER:app_pay}
+    password: ${PAY_MYSQL_PASSWORD:app-pay}
+  mock:
+    # 生产红线：MOCK 渠道必须关闭
+    enabled: false
+  alipay:
+    enabled: ${ALIPAY_ENABLED:false}
+    gateway-url: ${ALIPAY_GATEWAY_URL:https://openapi.alipay.com/gateway.do}
+    app-id: ${ALIPAY_APP_ID:}
+    # 应用私钥（签名请求）；platform-public-key = 支付宝公钥（平台提供，验签响应/回调，非应用公钥）
+    app-private-key: ${ALIPAY_APP_PRIVATE_KEY:}
+    platform-public-key: ${ALIPAY_PLATFORM_PUBLIC_KEY:}
+    notify-url: ${ALIPAY_NOTIFY_URL:}
+  test:
+    enabled: false
+  apptask:
+    base-url: ${APPTASK_BASE_URL:http://apisix:9080}
+    executor-base-url: ${PAY_EXECUTOR_BASE_URL:https://app-pay:8002}
