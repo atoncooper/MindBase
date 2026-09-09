@@ -158,6 +158,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPTASK__LOG__LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
+	if v := get("APPTASK__HTTP_EXECUTOR__CA_FILE"); v != "" {
+		cfg.HTTPExecutor.CAFile = v
+	}
+	if v := get("APPTASK__HTTP_EXECUTOR__INSECURE_SKIP_VERIFY"); v != "" {
+		cfg.HTTPExecutor.InsecureSkipVerify = v == "true" || v == "1"
+	}
 	if v := get("APPTASK__LOG__FORMAT"); v != "" {
 		cfg.Log.Format = v
 	}

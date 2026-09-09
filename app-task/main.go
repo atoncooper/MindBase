@@ -101,15 +101,12 @@ func main() {
 	// HTTP executor: dispatches tasks to third-party executors (the default
 	// task_type). Supports http:// and https:// (private CA via ca_file,
 	// self-signed via insecure_skip_verify). Lua: optional built-in executor.
-	httpExec, err := executor.NewHTTPExecutor(executor.HTTPOptions{
+	// CA 文件惰性加载（首次派发时读取），构造期不做 IO。
+	httpExec := executor.NewHTTPExecutor(executor.HTTPOptions{
 		Timeout:            time.Duration(cfg.HTTPExecutor.TimeoutSeconds) * time.Second,
 		InsecureSkipVerify: cfg.HTTPExecutor.InsecureSkipVerify,
 		CAFile:             cfg.HTTPExecutor.CAFile,
 	})
-	if err != nil {
-		slog.Error("init http executor", "err", err)
-		os.Exit(1)
-	}
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{
 		Timeout:      time.Duration(cfg.Lua.TimeoutSeconds) * time.Second,
 		MaxIdleVM:    cfg.Lua.MaxIdleVM,

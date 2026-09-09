@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 会员手写 SQL：仅放 MyBatis-Plus BaseMapper/LambdaWrapper 表达不了的语句。 -->
+<mapper namespace="com.mindbase.pay.mapper.PayMembershipMapper">
+
+    <!-- 顺延计算前锁会员行（悲观锁），串行化同一用户并发交付 -->
+    <select id="selectByUidForUpdate" resultType="com.mindbase.pay.model.PayMembership">
+        SELECT *
+        FROM pay_membership
+        WHERE uid = #{uid}
+          FOR UPDATE
+    </select>
+</mapper>

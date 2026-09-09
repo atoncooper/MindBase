@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>app-pay 端到端测试控制台</title>
+<style>
+  :root {
+    --primary: #2563eb; --primary-weak: #dbeafe;
+    --ok: #16a34a; --ok-weak: #dcfce7;
+    --warn: #d97706; --warn-weak: #fef3c7;
+    --bad: #dc2626; --bad-weak: #fee2e2;
+    --ink: #1e293b; --muted: #64748b; --line: #e2e8f0; --bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: #0f172a; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; display: inline-block; margin-right: 5px; }
+  header .dot.ok { background: #4ade80; } header .dot.bad { background: #f87171; }
+  header input { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+  header button { background: #334155; color: #e2e8f0; border: none; }
+  header label { font-size: 12px; color: #94a3b8; }
+  main { max-width: 1100px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(15,23,42,.08); }
+  .card h3 { margin: 0 0 12px; font-size: 14px; color: var(--muted); font-weight: 600; letter-spacing: .05em; }
+  .card.wide { grid-column: 1 / -1; }
+  input, select, button { font-size: 13px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: #fff; }
+  button { cursor: pointer; background: var(--primary); color: #fff; border: none; }
+  button.ghost { background: #fff; color: var(--primary); border: 1px solid var(--primary); }
+  button:hover { filter: brightness(1.08); } button:disabled { opacity: .5; cursor: not-allowed; }
+  pre { background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; overflow: auto; max-height: 240px; margin: 8px 0 0; }
+  .tip { color: var(--muted); font-size: 12px; }
+  .cards { display: flex; gap: 10px; flex-wrap: wrap; }
+  .pcard { border: 2px solid var(--line); border-radius: 10px; padding: 10px 14px; cursor: pointer; min-width: 130px; }
+  .pcard.sel { border-color: var(--primary); background: var(--primary-weak); }
+  .pcard .t { font-weight: 600; } .pcard .p { color: var(--primary); font-weight: 700; font-size: 16px; }
+  .pcard .d { color: var(--muted); font-size: 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .b-CREATED { background: var(--warn-weak); color: var(--warn); }
+  .b-PAID { background: var(--primary-weak); color: var(--primary); }
+  .b-DELIVERED { background: var(--ok-weak); color: var(--ok); }
+  .b-CLOSED { background: var(--bad-weak); color: var(--bad); }
+  .b-on { background: var(--ok-weak); color: var(--ok); } .b-off { background: var(--bad-weak); color: var(--bad); }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+  .chip { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 16px; text-align: center; }
+  .chip .v { font-size: 20px; font-weight: 700; } .chip .l { font-size: 11px; color: var(--muted); }
+  table.logt { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.logt th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  table.logt td { padding: 4px 8px; border-bottom: 1px solid #f1f5f9; }
+  code.tid { background: var(--primary-weak); color: var(--primary); padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+  #toast { position: fixed; right: 20px; bottom: 20px; background: #0f172a; color: #fff; padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .3s; pointer-events: none; font-size: 13px; }
+  #toast.show { opacity: .95; }
+  .row { margin: 6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>app-pay 端到端测试控制台</h1>
+  <span class="tip">仅本机回环 · 生产容器不可见</span>
+  <span style="margin-left:auto"></span>
+  <label>uid</label><input id="uid" class="narrow" value="10086">
+  <label>令牌</label><input id="token" value="" placeholder="未配置=默认通过">
+  <button onclick="localStorage.setItem('payTestToken',document.getElementById('token').value);toast('令牌已保存')">保存</button>
+  <button class="ghost" onclick="health()">健康检查</button>
+  <span class="tip"><span class="dot" id="healthDot"></span><span id="healthText">未检测</span></span>
+</header>
+<main>
+  <div class="card">
+    <h3>① 商品（点击选中）</h3>
+    <div class="cards" id="productCards"><span class="tip">加载中…</span></div>
+  </div>
+
+  <div class="card">
+    <h3>② 下单与支付（端到端闭环）</h3>
+    <div class="row">
+      渠道 <select id="channel"><option>MOCK</option><option>ALIPAY</option></select>
+      <button onclick="createOrder()">创建订单</button>
+      <button id="mockBtn" style="display:none" onclick="mockPay()">模拟支付成功</button>
+    </div>
+    <div id="orderPanel"><span class="tip">选择商品后创建订单</span></div>
+    <div id="qrBox"></div>
+  </div>
+
+  <div class="card">
+    <h3>③ 查询</h3>
+    <div class="row">
+      orderNo <input id="qOrder" class="wide">
+      <button onclick="queryOrder()">查订单</button>
+      <button class="ghost" onclick="queryMember()">查会员</button>
+      <button class="ghost" onclick="listOrders()">最近订单</button>
+    </div>
+    <div id="queryPanel"><span class="tip">查询结果显示</span></div>
+  </div>
+
+  <div class="card">
+    <h3>④ 高并发模拟（服务端 burst · 闩锁同时起跑）</h3>
+    <div class="row">
+      模式 <select id="burstMode">
+        <option value="PAY_SAME">并发支付同一订单（幂等）</option>
+        <option value="CREATE_ORDERS">并发创建订单（写入压测）</option>
+      </select>
+      并发数 <input id="burstCount" class="narrow" value="20">
+      <button onclick="burst()">启动</button>
+    </div>
+    <div id="burstPanel"><span class="tip">PAY_SAME 验证幂等：DELIVERED 应恰好 1 次，其余 DUPLICATE</span></div>
+  </div>
+
+  <div class="card wide">
+    <h3>⑤ 请求日志（最新 30 条 · 点击 traceId 复制）</h3>
+    <button class="ghost" onclick="$('logBody').innerHTML=''">清空</button>
+    <table class="logt">
+      <thead><tr><th>时间</th><th>状态</th><th>路径</th><th>traceId</th><th>耗时</th></tr></thead>
+      <tbody id="logBody"></tbody>
+    </table>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const token = () => localStorage.getItem('payTestToken') || '';
+$('token').value = token();
+window.selSku = 'VIP_MONTHLY';
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1600);
+}
+function fmtYuan(cents) { return '¥' + (cents / 100).toFixed(2); }
+function badge(status) { return '<span class="badge b-' + status + '">' + status + '</span>'; }
+
+async function api(path, opt = {}) {
+  opt.headers = Object.assign({'X-Test-Token': token(), 'Content-Type': 'application/json'}, opt.headers || {});
+  const t0 = performance.now();
+  let r;
+  try {
+    r = await fetch(path, opt);
+  } catch (e) {
+    // 网络层失败（后端未启动/代理黑洞）：请求日志记红色 0 行，异常继续上抛由调用方展示
+    logRequest(0, path + ' · ' + (e && e.message ? e.message : '网络错误'), '-',
+      Math.round(performance.now() - t0));
+    throw e;
+  }
+  const ms = Math.round(performance.now() - t0);
+  const tid = r.headers.get('X-Trace-Id') || '-';
+  const t = await r.text();
+  let body; try { body = JSON.parse(t); } catch (e) { body = t; }
+  logRequest(r.status, path, tid, ms);
+  return body;
+}
+function logRequest(status, path, tid, ms) {
+  const cls = status === 0 ? 's5x' : status < 300 ? 's2x' : status < 500 ? 's4x' : 's5x';
+  const tr = document.createElement('tr');
+  tr.innerHTML = '<td>' + new Date().toLocaleTimeString() + '</td><td class="' + cls + '">' + status
+    + '</td><td>' + path + '</td><td><code class="tid" onclick="copyTid(\'' + tid + '\')">' + tid
+    + '</code></td><td>' + ms + 'ms</td>';
+  const tb = $('logBody'); tb.insertBefore(tr, tb.firstChild);
+  while (tb.rows.length > 30) tb.deleteRow(-1);
+}
+function copyTid(tid) { navigator.clipboard.writeText(tid); toast('traceId 已复制: ' + tid); }
+
+async function health() {
+  const r = await fetch('/health');
+  const ok = r.ok; const dot = $('healthDot'), tx = $('healthText');
+  dot.className = 'dot ' + (ok ? 'ok' : 'bad'); tx.textContent = ok ? '服务正常' : '异常 ' + r.status;
+  logRequest(r.status, '/health', r.headers.get('X-Trace-Id') || '-', 0);
+}
+async function loadProducts() {
+  let list;
+  try {
+    list = await api('/test/pay/products');
+  } catch (e) {
+    // 网络层失败绝不静默：商品区直接报错，避免永远停在"加载中"
+    $('productCards').innerHTML = '<span class="tip">商品加载失败：后端未响应（'
+      + ((e && e.message) || '网络错误') + '）</span>';
+    return;
+  }
+  const box = $('productCards'); box.innerHTML = '';
+  (Array.isArray(list) ? list : []).forEach(p => {
+    const d = document.createElement('div');
+    d.className = 'pcard' + (p.code === window.selSku ? ' sel' : '');
+    d.innerHTML = '<div class="t">' + p.title + '</div><div class="p">' + fmtYuan(p.priceCents)
+      + '</div><div class="d">' + p.code + ' · ' + p.durationDays + ' 天</div>';
+    d.onclick = () => { window.selSku = p.code; Array.from(box.children).forEach(c => c.classList.remove('sel')); d.classList.add('sel'); };
+    box.appendChild(d);
+  });
+  if (!box.children.length) box.innerHTML = '<span class="tip">无在售商品</span>';
+}
+async function createOrder() {
+  $('qrBox').innerHTML = ''; $('mockBtn').style.display = 'none';
+  const body = {uid: +$('uid').value, skuCode: window.selSku, channel: $('channel').value};
+  const o = await api('/test/pay/orders', {method: 'POST', body: JSON.stringify(body)});
+  window.lastOrder = o;
+  if (o && o.order) {
+    $('orderPanel').innerHTML = '<div class="kv"><span class="k">订单号</span>'
+      + '<span><code class="tid" onclick="copyTid(\'' + o.order.orderNo + '\')">' + o.order.orderNo + '</code></span>'
+      + '<span class="k">状态</span><span>' + badge(o.order.status) + '</span>'
+      + '<span class="k">金额</span><span>' + fmtYuan(o.order.amountCents) + '</span>'
+      + '<span class="k">支付截止</span><span>' + (o.order.expiresAt || '-') + '</span></div>';
+    const pp = o.payParams || {};
+    if (pp.type === 'alipay_qr') {
+      $('qrBox').innerHTML = '<p class="tip">支付宝沙箱二维码（ChannelQueryJob ≤60s 自动查单确认）：</p>'
+        + '<img class="qr" src="/test/pay/qr?token=' + encodeURIComponent(token())
+        + '&text=' + encodeURIComponent(pp.qrCode) + '">';
+    } else if (pp.type === 'mock') { $('mockBtn').style.display = 'inline'; }
+  } else { $('orderPanel').innerHTML = '<pre>' + JSON.stringify(o, null, 2) + '</pre>'; }
+}
+async function mockPay() {
+  if (!window.lastOrder || !window.lastOrder.order) return toast('请先下单');
+  const o = await api('/test/pay/mock-pay', {method: 'POST',
+    body: JSON.stringify({uid: +$('uid').value, orderNo: window.lastOrder.order.orderNo})});
+  if (o && o.status) {
+    $('orderPanel').innerHTML = '<div class="kv"><span class="k">订单号</span><span>' + o.orderNo + '</span>'
+      + '<span class="k">状态</span><span>' + badge(o.status) + '</span>'
+      + '<span class="k">金额</span><span>' + fmtYuan(o.amountCents) + '</span></div>';
+    if (o.status === 'DELIVERED') toast('支付成功，会员已开通 ✓');
+  } else { $('orderPanel').innerHTML = '<pre>' + JSON.stringify(o, null, 2) + '</pre>'; }
+}
+async function queryOrder() {
+  const o = await api('/test/pay/order/' + $('qOrder').value.trim() + '?uid=' + $('uid').value);
+  $('queryPanel').innerHTML = o && o.orderNo
+    ? '<div class="kv"><span class="k">订单号</span><span>' + o.orderNo + '</span>'
+      + '<span class="k">状态</span><span>' + badge(o.status) + '</span>'
+      + '<span class="k">金额</span><span>' + fmtYuan(o.amountCents) + '</span>'
+      + '<span class="k">渠道</span><span>' + o.channel + '</span></div>'
+    : '<pre>' + JSON.stringify(o, null, 2) + '</pre>';
+}
+async function queryMember() {
+  const m = await api('/test/pay/membership/' + $('uid').value);
+  $('queryPanel').innerHTML = m && m.tier
+    ? '<div class="kv"><span class="k">等级</span><span>' + m.tier + '</span>'
+      + '<span class="k">状态</span><span><span class="badge ' + (m.active ? 'b-on' : 'b-off') + '">'
+      + (m.active ? '生效中' : '未生效') + '</span></span>'
+      + '<span class="k">到期</span><span>' + (m.expireAt || '-') + '</span></div>'
+    : '<pre>' + JSON.stringify(m, null, 2) + '</pre>';
+}
+async function listOrders() {
+  const list = await api('/test/pay/orders?uid=' + $('uid').value);
+  if (!Array.isArray(list)) { $('queryPanel').innerHTML = '<pre>' + JSON.stringify(list, null, 2) + '</pre>'; return; }
+  $('queryPanel').innerHTML = list.length
+    ? '<table class="logt"><thead><tr><th>订单号</th><th>SKU</th><th>金额</th><th>状态</th><th>创建</th></tr></thead><tbody>'
+      + list.map(o => '<tr><td><code class="tid" onclick="copyTid(\'' + o.orderNo + '\');'
+        + 'document.getElementById(\'qOrder\').value=\'' + o.orderNo + '\'">'
+        + o.orderNo.slice(0, 14) + '…</code></td><td>' + o.skuCode + '</td><td>' + fmtYuan(o.amountCents)
+        + '</td><td>' + badge(o.status) + '</td><td>' + (o.createdAt || '').replace('T', ' ').slice(0, 19) + '</td></tr>').join('')
+      + '</tbody></table>'
+    : '<span class="tip">该 uid 暂无订单</span>';
+}
+async function burst() {
+  const body = {mode: $('burstMode').value, count: +$('burstCount').value, uid: +$('uid').value,
+                skuCode: window.selSku,
+                orderNo: window.lastOrder && window.lastOrder.order ? window.lastOrder.order.orderNo : ''};
+  if (body.mode === 'PAY_SAME' && !body.orderNo) return toast('PAY_SAME 需要订单号：请先下单');
+  $('burstPanel').innerHTML = '<span class="tip">执行中… ' + body.count + ' 线程闩锁同时起跑</span>';
+  const r = await api('/test/pay/burst', {method: 'POST', body: JSON.stringify(body)});
+  if (r && r.stats) {
+    let chips = '<div class="chips"><div class="chip"><div class="v">' + body.count
+      + '</div><div class="l">并发数</div></div><div class="chip"><div class="v">' + r.elapsed_ms
+      + '</div><div class="l">总耗时 ms</div></div>';
+    Object.entries(r.stats).forEach(([k, v]) => {
+      chips += '<div class="chip"><div class="v">' + v + '</div><div class="l">' + k + '</div></div>';
+    });
+    chips += '</div>';
+    $('burstPanel').innerHTML = chips + '<pre>' + JSON.stringify(r.results, null, 2) + '</pre>';
+  } else { $('burstPanel').innerHTML = '<pre>' + JSON.stringify(r, null, 2) + '</pre>'; }
+}
+health();
+loadProducts();
+</script>
+</body>
+</html>

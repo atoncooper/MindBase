@@ -22,6 +22,10 @@ wheels/
 .ruff_cache/
 .pytest_cache/
 
+# Java
+*target/
+
+
 # 虚拟环境
 venv/
 ENV/
@@ -66,6 +70,9 @@ node_modules/
 nginx/certs/*
 !nginx/certs/.gitkeep
 certbot_www/
+
+# app-pay TLS certs（scripts/gen-dev-cert.* 生成的开发证书与私钥，敏感）
+app-pay/certs/
 
 
 # CLAUDE

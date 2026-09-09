@@ -156,6 +156,51 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
+  # app-pay Spring Boot payment/membership service (host, loopback-published 8002)
+  # 服务端 HTTPS-only（自签名开发证书，app-pay/scripts/gen-dev-cert.* 生成，
+  # 证书 SAN 已含宿主 IP 192.168.138.1）。tls.verify=false = 只加密不校验身份。
+  - id: upstream-app-pay
+    name: app-pay
+    type: roundrobin
+    scheme: https
+    tls:
+      verify: false
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "192.168.138.1:8002": 1
+    checks:
+      active:
+        type: https
+        https_verify_certificate: false
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
 # ============================================================
 # Routes
 # ============================================================
@@ -299,6 +344,37 @@ routes:
         upstream_headers: [X-Uid]
         timeout: 5000
         status_code: 401
+
+  # User -> app-pay products/orders/membership (forward-auth, X-Uid injected).
+  # /pay/callback/* is served by pay_callback below (priority 60, no forward-auth).
+  - id: pay_user
+    uri: /pay/*
+    methods: [GET, POST]
+    priority: 50
+    upstream_id: upstream-app-pay
+    plugins:
+      forward-auth:
+        uri: "http://192.168.138.1:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # 支付渠道异步回调（M2）：免登录态，伪造请求由渠道验签拒绝；掉单兜底以 ChannelQueryJob 为主
+  - id: pay_callback
+    uri: /pay/callback/*
+    methods: [POST]
+    priority: 60
+    upstream_id: upstream-app-pay
+
+  # main app / ops -> app-pay membership query & grant (service-to-service, key-auth)
+  - id: pay_internal
+    uri: /internal/pay/*
+    methods: [GET, POST]
+    priority: 50
+    upstream_id: upstream-app-pay
+    plugins:
+      key-auth: {}
 
   # Catch-all: other main app endpoints (/auth, /chat, /favorites, /knowledge, ...)
   # -> backend (passthrough). Backend validates bili_session itself (get_current_uid).

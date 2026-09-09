@@ -1,0 +1,24 @@
+# 测试/本地容器形态（compose command 激活 test profile）：
+# 独立库 app_pay_test、MOCK 渠道开启、本机测试入口开启、订单超时缩到 2min。
+# 生产实例不带 test profile，天然不受本文件影响。
+pay:
+  rdbms:
+    url: jdbc:mysql://app-pay-test-mysql:3306/app_pay_test?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
+    username: app_pay_test
+    password: app-pay-test
+  mock:
+    enabled: true
+  order:
+    timeout-minutes: 2
+  test:
+    enabled: true
+    token: ${PAY_TEST_TOKEN:local-test-token}
+  apptask:
+    # 容器网络内经 APISIX 注册；委托回调指向测试实例（与生产委托天然隔离）。
+    # executor-base-url https：app-task 信任开发 CA（compose 注入）后校验证书
+    base-url: http://apisix:9080
+    executor-base-url: https://app-pay-test:8002
+  alipay:
+    # 沙箱联调：置 true 并在 .env 配 ALIPAY_* 沙箱密钥（网关已指向沙箱）
+    enabled: false
+    gateway-url: https://openapi-sandbox.dl.alipaydev.com/gateway.do

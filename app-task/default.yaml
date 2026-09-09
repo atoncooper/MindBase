@@ -53,7 +53,7 @@ webui:
 http_executor:
   timeout_seconds: 30            # 单次调用 executor 超时
   insecure_skip_verify: false   # 仅自签名内网 executor 才开(生产禁用)
-  ca_file: ""                   # 私有 CA PEM 路径(可选)
+  ca_file: ""                   # 私有 CA PEM 路径(可选;容器部署由 compose 注入 APPTASK__HTTP_EXECUTOR__CA_FILE=/app/pay-certs/ca.crt 信任 app-pay 开发 CA,惰性加载,文件缺失不阻塞启动)
 
 lua:
   timeout_seconds: 30           # 单次脚本执行超时

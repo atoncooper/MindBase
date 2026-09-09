@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 仅 Docker 构建期使用（挂到 /root/.m2/settings.xml）：central 走阿里云镜像，防国内下载超时。
+     宿主机 mvn 开发不使用本文件，走你本机 ~/.m2/settings.xml。 -->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+    <mirrors>
+        <mirror>
+            <id>aliyun-public</id>
+            <mirrorOf>central</mirrorOf>
+            <name>Aliyun Maven Public</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+        </mirror>
+    </mirrors>
+</settings>

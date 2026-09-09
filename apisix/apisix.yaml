@@ -13,6 +13,9 @@
 #   - User endpoints (/task-quiz/chat, /task-quiz/register, /tasks, /tasks/*):
 #       forward-auth -> backend /internal/auth/verify (validates bili_session,
 #       injects X-Uid). Backend/app-task read uid from X-Uid header.
+#   - User pay endpoints (/pay/*): forward-auth -> X-Uid -> app-pay (same model).
+#   - app-pay service-to-service (/internal/pay/*): key-auth. M2 channel callbacks
+#     (/pay/callback/*) carry gateway-channel signature instead of user auth.
 #   - Service-to-service (/internal/quiz/generate-llm, /tasks/register):
 #       key-auth (consumer "internal"). backend calls /tasks/register with apikey;
 #       uid passed in request body (agent already knows it).
@@ -200,6 +203,53 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
+  # app-pay Spring Boot payment/membership service - /pay/* + /internal/pay/*
+  # 服务端 HTTPS-only（自签名开发证书，app-pay/scripts/gen-dev-cert.* 生成）。
+  # tls.verify=false = 只加密不校验身份：避免 ssl_trusted_certificate 覆盖公共 CA
+  # 影响其他 cosocket；生产换正式 CA 后建议收紧为 verify:true + 挂载 CA。
+  # 健康检查同步走 https（https_verify_certificate=false 对应自签名）。
+  - id: upstream-app-pay
+    name: app-pay
+    type: roundrobin
+    scheme: https
+    tls:
+      verify: false
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-pay:8002": 1
+    checks:
+      active:
+        type: https
+        https_verify_certificate: false
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
 # ============================================================
 # Routes
 # ============================================================
@@ -345,6 +395,37 @@ routes:
         upstream_headers: [X-Uid]
         timeout: 5000
         status_code: 401
+
+  # User -> app-pay products/orders/membership (forward-auth, X-Uid injected).
+  # /pay/callback/* is served by pay_callback below (priority 60, no forward-auth).
+  - id: pay_user
+    uri: /pay/*
+    methods: [GET, POST]
+    priority: 50
+    upstream_id: upstream-app-pay
+    plugins:
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
+
+  # 支付渠道异步回调（M2）：免登录态，伪造请求由渠道验签拒绝；掉单兜底以 ChannelQueryJob 为主
+  - id: pay_callback
+    uri: /pay/callback/*
+    methods: [POST]
+    priority: 60
+    upstream_id: upstream-app-pay
+
+  # main app / ops -> app-pay membership query & grant (service-to-service, key-auth)
+  - id: pay_internal
+    uri: /internal/pay/*
+    methods: [GET, POST]
+    priority: 50
+    upstream_id: upstream-app-pay
+    plugins:
+      key-auth: {}
 
   # User <-> main app chat (SSE under /chat/*; backend self-validates bili_session
   # - no forward-auth, same as catch_all). Uses SSE upstream (retries:0, read 300s)

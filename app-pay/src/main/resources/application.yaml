@@ -1,0 +1,89 @@
+server:
+  port: 8002
+  ssl:
+    # 全链路 HTTPS（含本地启动）：交易/会员数据不允许明文上线。
+    # 证书 = PEM（CA 签发）。开发/测试证书由 app-pay/scripts/gen-dev-cert.sh|.ps1 生成到
+    # app-pay/certs/（gitignored），默认相对路径对两种形态都成立：
+    #   - 本地 IDE/mvn 启动（workdir=app-pay/）→ app-pay/certs/*
+    #   - 容器启动（WORKDIR=/app，compose 挂载 app-pay/certs:/app/certs:ro）→ /app/certs/*
+    # 生产换正式证书：挂载后用 PAY_TLS_CERT / PAY_TLS_KEY 覆盖路径。
+    # 应急逃生：PAY_TLS_ENABLED=false 回退明文（仅限本机排查，生产禁止）。
+    enabled: ${PAY_TLS_ENABLED:true}
+    certificate: ${PAY_TLS_CERT:certs/pay.crt}
+    certificate-private-key: ${PAY_TLS_KEY:certs/pay.key}
+
+spring:
+  application:
+    name: app-pay
+  http:
+    client:
+      # 出站 HTTP 全局快速失败（超时委托注册在请求线程 afterCommit 里执行，必须限时）
+      connect-timeout: 2s
+      read-timeout: 3s
+  sql:
+    init:
+      # 启动执行 schema.sql（全部 CREATE TABLE IF NOT EXISTS，幂等）；M4 引入 Flyway 后改为 baseline
+      mode: always
+  jackson:
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+mybatis-plus:
+  configuration:
+    # 实体驼峰 ↔ 表下划线自动映射（order_no ↔ orderNo）
+    map-underscore-to-camel-case: true
+  # 手写 SQL 集中在 XML（resources/mapper/*.xml），与 Mapper 接口方法 id 一一对应
+  mapper-locations: classpath*:/mapper/**/*.xml
+
+pay:
+  rdbms:
+    # 【本文件 = 本地开发形态】直连宿主机映射端口 3307（app-pay-mysql 容器）；
+    # Docker 容器形态在 application-docker.yaml（compose command 激活 docker profile）
+    # 连接参数：PreparedStatement 客户端缓存（MyBatis 语句重复执行收益明显）
+    url: jdbc:mysql://127.0.0.1:3307/app_pay?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
+    # 口令占位符引用 .env（与 MySQL 容器共用同名变量）；默认值与 compose 一致，开箱即用
+    username: ${PAY_MYSQL_USER:app_pay}
+    password: ${PAY_MYSQL_PASSWORD:app-pay}
+  mock:
+    # 本地开发默认开启（M1 mock 渠道闭环）；容器形态在 application-docker/test.yaml 收敛
+    enabled: true
+  order:
+    # CREATED 订单支付截止（分钟），超时由 OrderTimeoutJob 关单
+    timeout-minutes: 30
+  alipay:
+    # 沙箱网关（本地联调友好）；生产在 application-docker.yaml 覆盖为正式网关
+    enabled: ${ALIPAY_ENABLED:false}
+    gateway-url: ${ALIPAY_GATEWAY_URL:https://openapi-sandbox.dl.alipaydev.com/gateway.do}
+    app-id: ${ALIPAY_APP_ID:}
+    # 应用私钥（商户密钥工具生成，签名请求）
+    app-private-key: ${ALIPAY_APP_PRIVATE_KEY:}
+    # 支付宝公钥（平台控制台"接口加签方式"提供，验证平台响应/回调——不是你生成的应用公钥）
+    platform-public-key: ${ALIPAY_PLATFORM_PUBLIC_KEY:}
+    # 公网可达的异步通知地址；留空 = 不依赖回调，以 ChannelQueryJob 查单为主
+    notify-url: ${ALIPAY_NOTIFY_URL:}
+  test:
+    # 本地开发形态默认开启（base 即"开发者=测试者"）；生产容器由 docker profile 固化关闭。
+    # 控制：/test/pay/* 接口 + 根路径重定向到控制台
+    enabled: true
+    token: ${PAY_TEST_TOKEN:}
+  apptask:
+    # 超时委托注册（plan/1.0.8）：下单事务提交后向 app-task 注册精确定时任务；
+    # 注册失败不阻塞下单，兜底轮询接管。本地开发 APISIX 经宿主端口可达。
+    # executor-base-url 随服务端 HTTPS 化改为 https（app-task 经 CA 证书校验回调）
+    base-url: ${APPTASK_BASE_URL:http://127.0.0.1:9080}
+    consumer-key: ${APISIX_CONSUMER_KEY:mindbase-internal-key-change-me}
+    register-enabled: true
+    executor-base-url: ${PAY_EXECUTOR_BASE_URL:https://127.0.0.1:8002}
+  job:
+    # executor 并发自守：worker 数锚定 DB 连接池（Hikari 10 → 8），队列满 503 快速失败
+    executor-workers: 8
+    executor-queue-capacity: 10000
+    # 兜底轮询（JitteredBackoffTrigger）：base + 空跑退避 cap；query 不退避（掉单要及时）
+    timeout-base-seconds: 120
+    timeout-cap-seconds: 600
+    delivery-base-seconds: 60
+    delivery-cap-seconds: 300
+    query-base-seconds: 60
+
+# 日志体系（运行日志 + 资金审计 JSONL）统一在 logback-spring.xml 配置，
+# 含 traceId/uid MDC 注入；此处不再重复定义 pattern。

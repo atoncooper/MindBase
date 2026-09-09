@@ -234,6 +234,33 @@ services:
     networks:
       - mind-base-net
 
+  # app-pay MySQL —— 交易/会员服务独立实例（Spring Boot，plan/1.0.7-Pay）
+  app-pay-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-pay-mysql
+    profiles: ["", "pay", "full"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_pay
+      - MYSQL_USER=${PAY_MYSQL_USER:-app_pay}
+      - MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      # 仅回环暴露供本地 IDE 调试；生产不暴露
+      - "127.0.0.1:${PAY_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - app_pay_mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${PAY_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
   redis:
     image: redis:7-alpine
     container_name: mind-base-redis
@@ -494,6 +521,9 @@ services:
       # Main app via APISIX gateway
       - APPTASK__APP__BASE_URL=http://apisix:9080
       - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # app-pay 超时委托回调（executor_url=https://app-pay:8002/...）的证书校验 CA：
+      # executor 惰性加载，纯调度栈（无 app-pay）不受影响；可用 PAY_EXECUTOR_CA_FILE 覆盖
+      - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
       # Email
       - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
       # Timezone
@@ -504,6 +534,92 @@ services:
       - "${APP_TASK_PORT:-8001}:8001"
     volumes:
       - app_task_logs:/app/logs
+      # app-pay 开发 CA（app-pay/certs/ 由 scripts/gen-dev-cert.* 生成；缺失时目录为空，
+      # 只有 https 委托回调会报错并由兜底轮询接管，不影响 app-task 启动）
+      - ./app-pay/certs:/app/pay-certs:ro
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-pay —— 交易/会员服务（Spring Boot 3;模式对齐 app-task）
+  app-pay:
+    image: ${APP_PAY_IMAGE:-ghcr.io/atoncooper/mind-base-app-pay:latest}
+    build:
+      context: ./app-pay
+      dockerfile: Dockerfile
+    container_name: mind-base-app-pay
+    profiles: ["", "pay", "full"]
+    depends_on:
+      app-pay-mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    # 配置唯一入口 = app-pay 的 application.yaml（+ profile 变体）：
+    # docker profile = 容器生产形态（容器内 DB 地址 / MOCK 关闭 / 正式网关）；
+    # 密钥/口令经 yaml 占位符从 env_file 读取（.env 的 PAY_MYSQL_* / ALIPAY_*），不进 git
+    command: ["--spring.profiles.active=docker"]
+    ports:
+      # 仅回环：app-pay 不允许绕过 APISIX 鉴权直达
+      - "127.0.0.1:${APP_PAY_PORT:-8002}:8002"
+    volumes:
+      # 运行日志 + 资金审计 JSONL（pay-audit.jsonl 保留 365 天，对账/取证）
+      - app_pay_logs:/app/logs
+      # TLS 证书：服务端 HTTPS-only（application.yaml server.ssl，默认相对路径 certs/*，
+      # WORKDIR=/app 对齐 /app/certs）。证书由 app-pay/scripts/gen-dev-cert.* 生成（gitignored），
+      # 缺失时 app-pay 启动自检明确报错；生产挂载正式证书后用 PAY_TLS_CERT/PAY_TLS_KEY 覆盖
+      - ./app-pay/certs:/app/certs:ro
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-pay 测试环境（--profile pay-test 按需拉起，不随主栈默认启动）：
+  # 与生产完全隔离——独立 MySQL 实例/整库(app_pay_test)、独立卷/端口(仅回环 18002)、
+  # MOCK 渠道 + 测试入口开启（全部固化在 application-test.yaml，不读 .env 的生产值）。
+  # 订单超时缩到 2min 便于测关单 job。
+  app-pay-test-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-pay-test-mysql
+    profiles: ["pay-test", "full"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=root123
+      - MYSQL_DATABASE=app_pay_test
+      - MYSQL_USER=app_pay_test
+      - MYSQL_PASSWORD=app-pay-test
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:18306:3306"
+    volumes:
+      - app_pay_test_mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-net
+
+  app-pay-test:
+    image: ${APP_PAY_IMAGE:-ghcr.io/atoncooper/mind-base-app-pay:latest}
+    build:
+      context: ./app-pay
+      dockerfile: Dockerfile
+    container_name: mind-base-app-pay-test
+    profiles: ["pay-test", "full"]
+    depends_on:
+      app-pay-test-mysql:
+        condition: service_healthy
+    # 配置唯一入口 = application-test.yaml（独立库/账号/MOCK/测试入口/超时 2min 全部固化，
+    # 不读 .env 的生产值）；委托回调指向本测试实例
+    command: ["--spring.profiles.active=test"]
+    ports:
+      - "127.0.0.1:${APP_PAY_TEST_PORT:-18002}:8002"
+    volumes:
+      - app_pay_test_logs:/app/logs
+      # TLS 证书（同 app-pay：HTTPS-only，开发 CA + 证书脚本生成）
+      - ./app-pay/certs:/app/certs:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -513,6 +629,10 @@ volumes:
   backend_logs:
   app_task_logs:
   app_task_mysql_data:
+  app_pay_mysql_data:
+  app_pay_logs:
+  app_pay_test_mysql_data:
+  app_pay_test_logs:
   mysql_data:
   redis_data:
   mongo_data:

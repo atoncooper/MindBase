@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 支付系统日志：运行日志(console+文件) 与 资金审计(JSONL 独立文件) 分离。
+     审计文件只记资金事实、保留 365 天（对账/取证）；运行日志 30 天。 -->
+<configuration>
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [PAY] [%X{traceId:-}] [%X{uid:-}] %logger{24} - %msg%n"/>
+    <property name="LOG_HOME" value="logs"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <appender name="APP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_HOME}/app-pay.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/app-pay.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 资金审计：PayAuditLogger 输出的 JSONL，每行一条资金事实 -->
+    <appender name="AUDIT_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_HOME}/pay-audit.jsonl</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/pay-audit.%d{yyyy-MM-dd}.%i.jsonl.gz</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>365</maxHistory>
+            <totalSizeCap>5GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <logger name="PAY_AUDIT" level="INFO" additivity="false">
+        <appender-ref ref="AUDIT_FILE"/>
+    </logger>
+
+    <!-- 支付宝 SDK 自带日志与适配器业务日志完全重复：biz.err 对每个"业务失败"响应（如轮询未支付订单的
+         ACQ.TRADE_NOT_EXIST）按 ERROR 全量 dump 报文，biz.info 对每个成功调用 dump 全量参数（含中文商品名），
+         comm.err 对传输层错误（沙箱网关间歇 404 等）dump 整页 HTML+堆栈——三者皆为噪音：
+         适配器 catch 后已按单行摘要以 ERROR 落日志（含 traceId/uid）。全部关闭，真实异常不丢信号。 -->
+    <logger name="sdk.biz.err" level="off"/>
+    <logger name="sdk.biz.info" level="off"/>
+    <logger name="sdk.comm.err" level="off"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="APP_FILE"/>
+    </root>
+</configuration>
