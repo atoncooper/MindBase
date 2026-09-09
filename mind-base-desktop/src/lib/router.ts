@@ -10,6 +10,8 @@
  * - `#/skills`               → skill manager (store install + installed list)
  * - `#/quiz`                 → quiz config + generation + set history
  * - `#/quiz/set/:id`         → one persisted quiz set (view / answer / answers toggle)
+ * - `#/mindmap`              → knowledge mind maps (library)
+ * - `#/mindmap/:id`          → one mind map editor (full-bleed canvas)
  * - `#/settings/system`      → settings, 系统设置 tab
  * - `#/settings/api`         → settings, API 设置 tab
  *
@@ -26,6 +28,8 @@ export type Route =
   | { view: "notes" }
   | { view: "quiz" }
   | { view: "quiz-set"; setId: string }
+  | { view: "mindmap" }
+  | { view: "mindmap-edit"; mapId: string }
   | { view: "resume" }
   | { view: "slides" }
   | { view: "knowledge" }
@@ -37,6 +41,7 @@ export type Route =
 export const HOME_HASH = "#/";
 export const NOTES_HASH = "#/notes";
 export const QUIZ_HASH = "#/quiz";
+export const MINDMAP_HASH = "#/mindmap";
 export const RESUME_HASH = "#/resume";
 export const SLIDES_HASH = "#/slides";
 export const KNOWLEDGE_HASH = "#/knowledge";
@@ -51,6 +56,11 @@ export function quizSetHash(id: string): string {
   return `#/quiz/set/${encodeURIComponent(id)}`;
 }
 
+/** Hash of one mind map's editor page. */
+export function mindMapHash(id: string): string {
+  return `#/mindmap/${encodeURIComponent(id)}`;
+}
+
 /** Parse the current location hash into a [`Route`]. */
 export function parseHash(): Route {
   const match = /^#\/settings\/(system|api)\/?$/.exec(window.location.hash);
@@ -62,6 +72,13 @@ export function parseHash(): Route {
   }
   if (/^#\/notes\/?$/.test(window.location.hash)) {
     return { view: "notes" };
+  }
+  const mindMapMatch = /^#\/mindmap\/([^/]+)\/?$/.exec(window.location.hash);
+  if (mindMapMatch !== null) {
+    return { view: "mindmap-edit", mapId: decodeURIComponent(mindMapMatch[1]) };
+  }
+  if (/^#\/mindmap\/?$/.test(window.location.hash)) {
+    return { view: "mindmap" };
   }
   const quizSetMatch = /^#\/quiz\/set\/([^/]+)\/?$/.exec(window.location.hash);
   if (quizSetMatch !== null) {

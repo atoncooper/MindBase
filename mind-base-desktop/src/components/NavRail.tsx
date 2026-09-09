@@ -10,6 +10,7 @@ import {
   HOME_HASH,
   IMPORT_HASH,
   KNOWLEDGE_HASH,
+  MINDMAP_HASH,
   QUIZ_HASH,
   NOTES_HASH,
   RESUME_HASH,
@@ -141,6 +142,21 @@ function SlidesIcon(): React.JSX.Element {
   );
 }
 
+/** Node-and-branches glyph for the mind map view. */
+function MindMapIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <rect x="9" y="9.5" width="6" height="5" rx="1.2" />
+      <circle cx="4.6" cy="5.4" r="1.9" />
+      <circle cx="19.4" cy="5.4" r="1.9" />
+      <circle cx="4.6" cy="18.6" r="1.9" />
+      <path d="M10.2 9.2 6 6.7" />
+      <path d="M13.8 9.2 18 6.7" />
+      <path d="M10.2 14.8 6 17.3" />
+    </svg>
+  );
+}
+
 interface RailItem {
   id: string;
   label: string;
@@ -157,6 +173,7 @@ const MAIN_RAIL_ITEMS: ReadonlyArray<RailItem> = [
   { id: "slides", label: "PPT", hash: SLIDES_HASH, icon: SlidesIcon, active: (r) => r.view === "slides" },
   { id: "notes", label: "笔记", hash: NOTES_HASH, icon: NoteIcon, active: (r) => r.view === "notes" },
   { id: "knowledge", label: "知识库", hash: KNOWLEDGE_HASH, icon: LibraryIcon, active: (r) => r.view === "knowledge" },
+  { id: "mindmap", label: "导图", hash: MINDMAP_HASH, icon: MindMapIcon, active: (r) => r.view === "mindmap" || r.view === "mindmap-edit" },
   { id: "import", label: "文件入库", hash: IMPORT_HASH, icon: ImportIcon, active: (r) => r.view === "import" },
   { id: "favorites", label: "收藏夹", hash: FAVORITES_HASH, icon: StarIcon, active: (r) => r.view === "favorites" },
   { id: "skills", label: "技能", hash: SKILLS_HASH, icon: PuzzleIcon, active: (r) => r.view === "skills" },

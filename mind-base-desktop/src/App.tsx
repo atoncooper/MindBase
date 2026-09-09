@@ -20,6 +20,8 @@ import QuizView from "./components/quiz/QuizView";
 import QuizSetView from "./components/quiz/QuizSetView";
 import ResumeView from "./components/resume/ResumeView";
 import SlidesView from "./components/slides/SlidesView";
+import MindMapView from "./components/mindmap/MindMapView";
+import MindMapEditorView from "./components/mindmap/MindMapEditorView";
 import FavoritesView from "./components/FavoritesView";
 import SkillsView from "./components/SkillsView";
 import NavRail from "./components/NavRail";
@@ -59,6 +61,10 @@ function viewMeta(route: ReturnType<typeof useHashRoute>): { subtitle: string } 
       return { subtitle: "简历生成" };
     case "slides":
       return { subtitle: "PPT 制作" };
+    case "mindmap":
+      return { subtitle: "知识导图" };
+    case "mindmap-edit":
+      return { subtitle: "知识导图" };
     case "skills":
       return { subtitle: "技能管理" };
     default:
@@ -75,7 +81,7 @@ function App() {
   const inSettings = route.view === "settings";
   // The chat workspace is full-bleed: it skips the .shell card entirely and
   // owns every pixel of the main column (sidebar + streaming conversation).
-  const inFull = route.view === "home" || route.view === "notes";
+  const inFull = route.view === "home" || route.view === "notes" || route.view === "mindmap-edit";
   const meta = viewMeta(route);
   // Ctrl+K 命令面板 + 跨视图跳转的 pending 状态（由目标视图消费）。
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -152,6 +158,8 @@ function App() {
           <UpdateBanner info={updateState.update} onDismiss={updateState.dismiss} />
           {route.view === "notes" ? (
             <NotesView pending={pending} onPendingConsumed={() => setPending(null)} />
+          ) : route.view === "mindmap-edit" ? (
+            <MindMapEditorView mapId={route.mapId} />
           ) : (
             <ChatView pending={pending} onPendingConsumed={() => setPending(null)} />
           )}
@@ -211,6 +219,8 @@ function App() {
             <ResumeView />
           ) : route.view === "slides" ? (
             <SlidesView />
+          ) : route.view === "mindmap" ? (
+            <MindMapView />
           ) : route.view === "skills" ? (
             <SkillsView />
           ) : (

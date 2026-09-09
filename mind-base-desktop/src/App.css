@@ -4805,3 +4805,1194 @@ body {
 .import-filter {
   margin-bottom: 10px;
 }
+
+/* ---------------------------------------------------------------------------
+   知识导图：入口页复用卡片/ws-doc 体系；编辑器为全幅画布布局。
+--------------------------------------------------------------------------- */
+
+/* 编辑器全幅：main-col--chat 为纵向 flex，工具栏 + 画布各占一行。 */
+.mm-frame {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 导图 / 白板 类型 Tab（列表页） ───────────────────────────────── */
+
+.mm-kind-tabs {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--rail);
+}
+
+.mm-kind-tab {
+  padding: 4px 14px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mm-kind-tab:hover {
+  color: var(--ink);
+}
+
+.mm-kind-tab--active {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--paper);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* ── 自由白板（Excalidraw）编辑器 ────────────────────────────────── */
+
+.wb-frame {
+  background: var(--paper);
+}
+
+/* Excalidraw 需要一个确定的布局尺寸；内部面板配色由组件主题接管，
+   这里只做容器的样式隔离（字体跟随应用）。 */
+.wb-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.wb-canvas .excalidraw {
+  --ui-font: inherit;
+}
+
+/* ── 编辑器工具浮层：搜索 / 历史 / 快捷键 / 小地图 / 模板 ─────────── */
+
+.mm-tool-panel {
+  position: absolute;
+  z-index: 60;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+}
+
+.mm-search-panel {
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(520px, calc(100% - 24px));
+}
+
+.mm-search-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mm-search-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 48px;
+  text-align: center;
+}
+
+.mm-history-panel,
+.mm-shortcut-panel {
+  top: 56px;
+  right: 12px;
+  width: 330px;
+  max-height: calc(100% - 80px);
+  display: flex;
+  flex-direction: column;
+}
+
+.mm-history-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mm-history-body,
+.mm-shortcut-body {
+  overflow: auto;
+  padding: 6px 10px 10px;
+}
+
+.mm-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.mm-history-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.mm-history-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mm-shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.mm-shortcut-row kbd {
+  min-width: 130px;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: var(--rail);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.mm-minimap-panel {
+  bottom: 12px;
+  right: 12px;
+  padding: 8px 10px 10px;
+}
+
+.mm-minimap-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--rail);
+}
+
+.mm-minimap-canvas {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+}
+
+.mm-minimap-canvas svg {
+  display: block;
+}
+
+.mm-minimap-viewport {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px solid var(--accent, #4a6fa5);
+  background: rgba(74, 111, 165, 0.12);
+  border-radius: 2px;
+}
+
+/* 模板选择对话框（新建导图时） */
+.mm-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.mm-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  background: var(--rail);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.mm-template-card:hover {
+  border-color: var(--ink-2);
+}
+
+.mm-template-name {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 13.5px;
+}
+
+.mm-template-hint {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.mm-template-card--user {
+  flex-direction: row;
+  align-items: center;
+}
+
+.mm-template-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+
+.mm-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--rail);
+}
+
+.mm-title-input {
+  flex: 0 1 260px;
+  min-width: 120px;
+  padding: 4px 8px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.mm-title-input:hover,
+.mm-title-input:focus {
+  border-color: var(--line-strong);
+  outline: none;
+}
+
+.mm-save-state {
+  flex: none;
+  min-width: 56px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-save-state[data-state="pending"] {
+  color: var(--danger);
+}
+
+.mm-topbar__spacer {
+  flex: 1 1 8px;
+}
+
+.mm-topbar__divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px;
+  background: var(--line);
+}
+
+.mm-btn {
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mm-btn:hover:not(:disabled) {
+  background: var(--wash);
+}
+
+/* 激活态需压过 :hover 的底色，否则激活按钮悬停时会变成浅底浅字。 */
+.mm-btn.mm-btn--active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.mm-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mm-select {
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+/* 画布容器：库在 .mm-canvas 内自建 SVG，必须有确定的布局尺寸。 */
+.mm-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.mm-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ── 画布内富文本样式隔离 ──
+   节点文字经 foreignObject 以 HTML 渲染，会继承 body 的 1.55 行高；而库按
+   1.2 行高测量节点尺寸，两边不一致会把文字压到节点下半部。<p> 的浏览器
+   默认外边距也会把文本顶下去。这里把画布内文本收回到库的测量基线。 */
+.mm-canvas foreignObject,
+.mm-canvas foreignObject div,
+.mm-canvas foreignObject p,
+.mm-canvas foreignObject span {
+  line-height: 1.2;
+}
+
+.mm-canvas foreignObject p,
+.mm-canvas foreignObject div {
+  margin: 0;
+}
+
+/* 代码节点：代码按行渲染（p.smm-code-line，与普通富文本同路径，
+   避开 pre 在 foreignObject 下的渲染不确定性），浅底色连成代码卡片。 */
+.mm-canvas foreignObject p.smm-code-lang {
+  margin: 4px 0 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.mm-canvas foreignObject p.smm-code-line {
+  margin: 0;
+  padding: 1px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre;
+  background: var(--wash);
+}
+
+.mm-canvas foreignObject .token.comment,
+.mm-canvas foreignObject .token.prolog,
+.mm-canvas foreignObject .token.doctype,
+.mm-canvas foreignObject .token.cdata {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.mm-canvas foreignObject .token.punctuation,
+.mm-canvas foreignObject .token.operator {
+  color: var(--ink-2);
+}
+
+.mm-canvas foreignObject .token.keyword,
+.mm-canvas foreignObject .token.boolean,
+.mm-canvas foreignObject .token.builtin {
+  color: #4a6fa5;
+  font-weight: 600;
+}
+
+.mm-canvas foreignObject .token.string,
+.mm-canvas foreignObject .token.char,
+.mm-canvas foreignObject .token.attr-value {
+  color: #2e8b74;
+}
+
+.mm-canvas foreignObject .token.number,
+.mm-canvas foreignObject .token.tag,
+.mm-canvas foreignObject .token.attr-name,
+.mm-canvas foreignObject .token.constant {
+  color: #b0673f;
+}
+
+.mm-canvas foreignObject .token.function,
+.mm-canvas foreignObject .token.class-name {
+  color: #4a6fa5;
+}
+
+/* ── 节点四向调节手柄（选中单个节点时出现） ── */
+.mm-resize-box {
+  position: absolute;
+  z-index: 30;
+  border: 1px dashed var(--ink-2);
+  pointer-events: none;
+}
+
+.mm-resize-handle {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform 0.08s ease;
+}
+
+.mm-resize-handle:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 3px var(--wash);
+}
+
+.mm-resize-handle--left {
+  left: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.mm-resize-handle--right {
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.mm-resize-handle--top {
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.mm-resize-handle--bottom {
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+/* ── 知识导图浮层：右键菜单 / 图标选择 / 样式面板 / 对话框 ──────────── */
+
+.mm-ctx-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 168px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 5px 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mm-ctx-item:hover:not(:disabled) {
+  background: var(--wash);
+}
+
+.mm-ctx-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mm-ctx-hint {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-ctx-header {
+  padding: 6px 10px 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+
+.mm-ctx-menu > .mm-ctx-header:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+
+.mm-ctx-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
+.mm-icon-panel {
+  position: fixed;
+  z-index: 60;
+  width: 268px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-icon-group-title {
+  margin: 8px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 2px;
+}
+
+.mm-icon-btn {
+  width: 34px;
+  height: 30px;
+  padding: 3px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mm-icon-btn svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mm-icon-btn:hover {
+  background: var(--wash);
+}
+
+.mm-icon-btn--active {
+  border-color: var(--ink);
+  background: var(--wash);
+}
+
+.mm-style-panel {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  z-index: 40;
+  width: 224px;
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-style-panel__section {
+  margin: 8px 0 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-style-panel__title {
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-style-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.mm-style-label {
+  flex: none;
+  width: 32px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.mm-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mm-swatch--empty {
+  background-image: linear-gradient(
+    135deg,
+    transparent 46%,
+    var(--line-strong) 46%,
+    var(--line-strong) 54%,
+    transparent 54%
+  );
+}
+
+.mm-swatch--none {
+  background-image: linear-gradient(
+    135deg,
+    transparent 46%,
+    var(--danger) 46%,
+    var(--danger) 54%,
+    transparent 54%
+  );
+}
+
+.mm-swatch--active {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.mm-style-mini {
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mm-style-mini--active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.mm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.mm-dialog {
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-dialog__title {
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mm-dialog .cfg-input,
+.mm-dialog textarea {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+.mm-dialog textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.mm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mm-note-view {
+  max-height: 50vh;
+  margin: 0;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.mm-dialog .mm-formula-input {
+  display: block;
+  width: 100%;
+  min-height: 84px;
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.mm-dialog--wide {
+  width: 660px;
+}
+
+.mm-dialog__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mm-dialog__title-row .mm-dialog__title {
+  margin-bottom: 0;
+}
+
+.mm-code-lang-select {
+  width: auto !important;
+  margin-bottom: 0 !important;
+}
+
+/* 语言选择器：带搜索的分组下拉。 */
+.mm-lang-select {
+  position: relative;
+}
+
+.mm-lang-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 150px;
+  padding: 5px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mm-lang-trigger:hover {
+  border-color: var(--ink);
+}
+
+.mm-lang-caret {
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-lang-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  width: 236px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-lang-search {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.mm-lang-group {
+  margin: 6px 0 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.mm-lang-item {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mm-lang-item:hover {
+  background: var(--wash);
+}
+
+.mm-lang-item--active {
+  background: var(--wash);
+  font-weight: 600;
+}
+
+.mm-code-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mm-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.mm-btn-danger:hover {
+  background: var(--danger-bg);
+}
+
+/* 代码输入区：行号栏 + 高亮层/代码域叠放，行高严格一致（12px × 1.6）以对齐行号。 */
+.mm-code-editor {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 300px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+.mm-code-gutter {
+  flex: none;
+  width: 46px;
+  margin: 0;
+  padding: 8px 8px 8px 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  text-align: right;
+  white-space: pre;
+  background: var(--wash);
+  border-right: 1px solid var(--line);
+  user-select: none;
+}
+
+/* 高亮层在下（着色文本），代码域在上（透明文本 + 可见光标），两层像素对齐。 */
+.mm-code-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.mm-code-highlight,
+.mm-code-area {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  border: none;
+}
+
+.mm-code-highlight {
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--ink);
+}
+
+.mm-code-area {
+  color: transparent;
+  caret-color: var(--ink);
+  background: transparent;
+  outline: none;
+  resize: none;
+}
+
+.mm-code-area::selection {
+  background: var(--user-bubble);
+  color: transparent;
+}
+
+/* 语法高亮配色：克制取自应用强调色（靛/青/赭 + 灰注释）。 */
+.mm-code-highlight .token.comment,
+.mm-code-highlight .token.prolog,
+.mm-code-highlight .token.doctype,
+.mm-code-highlight .token.cdata {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.mm-code-highlight .token.punctuation,
+.mm-code-highlight .token.operator {
+  color: var(--ink-2);
+}
+
+.mm-code-highlight .token.keyword,
+.mm-code-highlight .token.boolean,
+.mm-code-highlight .token.builtin {
+  color: #4a6fa5;
+  font-weight: 600;
+}
+
+.mm-code-highlight .token.string,
+.mm-code-highlight .token.char,
+.mm-code-highlight .token.attr-value,
+.mm-code-highlight .token.attr-value .token.punctuation {
+  color: #2e8b74;
+}
+
+.mm-code-highlight .token.number,
+.mm-code-highlight .token.tag,
+.mm-code-highlight .token.attr-name,
+.mm-code-highlight .token.constant {
+  color: #b0673f;
+}
+
+.mm-code-highlight .token.function,
+.mm-code-highlight .token.class-name {
+  color: #4a6fa5;
+}
+
+/* 节点内代码块（富文本 <pre>，foreignObject 内渲染）。 */
+.mm-canvas foreignObject pre.smm-code-block {
+  display: block;
+  max-width: 100%;
+  margin: 5px 0 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre;
+  overflow-x: auto;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.mm-canvas foreignObject pre.smm-code-block code {
+  font-family: var(--font-mono);
+}
+
+.mm-canvas foreignObject .smm-code-lang {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+/* 大纲面板：可折叠树，单击定位 / 双击重命名（视图态折叠不影响画布）。 */
+.mm-outline-panel {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: 264px;
+  max-height: calc(100% - 64px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-outline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mm-outline-body {
+  overflow-y: auto;
+  padding: 6px 4px 8px;
+}
+
+.mm-outline-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.mm-outline-row:hover {
+  background: var(--wash);
+}
+
+.mm-outline-arrow {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.mm-outline-arrow--leaf {
+  visibility: hidden;
+}
+
+.mm-outline-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.mm-style-panel--shifted {
+  right: 264px;
+}
+
+/* 图形库侧边栏：内置图标分组 + 用户导入的图形包。 */
+.mm-shapes-panel {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: 248px;
+  max-height: calc(100% - 64px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-shapes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mm-shapes-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mm-shapes-body {
+  overflow-y: auto;
+  padding: 8px 10px;
+}
+
+.mm-shapes-body section {
+  margin-bottom: 10px;
+}
+
+.mm-pack-delete {
+  display: inline-block;
+  margin-top: 2px;
+  margin-right: 6px;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: 10px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mm-pack-delete:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.mm-icon-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mm-outline-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

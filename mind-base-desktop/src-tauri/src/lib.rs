@@ -14,6 +14,7 @@ mod ingest;
 mod llm_chat;
 mod logging;
 mod media_cache;
+mod mindmap;
 mod notes;
 mod ocr_server;
 mod python_runtime;
@@ -186,6 +187,22 @@ pub fn run() {
             quiz::quiz_set_finish,
             quiz::quiz_set_delete,
             resume::exports_list,
+            mindmap::mindmap_create,
+            mindmap::mindmap_list,
+            mindmap::mindmap_get,
+            mindmap::mindmap_save,
+            mindmap::mindmap_rename,
+            mindmap::mindmap_delete,
+            mindmap::mindmap_export_save,
+            mindmap::mindmap_icon_pack_save,
+            mindmap::mindmap_icon_pack_list,
+            mindmap::mindmap_icon_pack_delete,
+            mindmap::mindmap_snapshot_create,
+            mindmap::mindmap_snapshot_list,
+            mindmap::mindmap_snapshot_restore,
+            mindmap::mindmap_template_save,
+            mindmap::mindmap_template_list,
+            mindmap::mindmap_template_delete,
             harness::harness_health,
             chat::chat_summarize,
             chat::chat_summary_get,
