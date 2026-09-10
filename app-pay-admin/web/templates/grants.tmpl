@@ -1,0 +1,50 @@
+{{define "content"}}
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-body">
+      <h2 class="panel-title">运营补偿开通 / 延期</h2>
+      {{if .User.IsAdmin}}
+      <form method="post" action="/grants" class="form">
+        <label class="field">
+          <span>uid</span>
+          <input name="uid" required placeholder="用户 uid" inputmode="numeric">
+        </label>
+        <label class="field">
+          <span>天数（1–3650）</span>
+          <input name="duration_days" value="30" required inputmode="numeric">
+        </label>
+        <label class="field">
+          <span>原因（必填，审计留痕；记录时自动加 [操作人] 前缀）</span>
+          <textarea name="reason" rows="3" required maxlength="160" placeholder="如：客诉补偿，工单 #1234"></textarea>
+        </label>
+        <div class="form-actions">
+          <button class="btn primary" type="submit">确认补偿开通</button>
+        </div>
+      </form>
+      {{else}}
+      <div class="notice">当前账户为 viewer 角色，仅可查看；补偿开通需要 admin 角色登录。</div>
+      {{end}}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2 class="panel-title">最近的 ADMIN_GRANT 记录</h2></div>
+    <table class="tbl">
+      <thead><tr><th>时间</th><th>uid</th><th>天数</th><th>变更前 → 变更后</th><th>原因</th></tr></thead>
+      <tbody>
+      {{range .Recent}}
+        <tr>
+          <td>{{.CreatedAt}}</td>
+          <td>{{.UID}}</td>
+          <td>{{.Days}}</td>
+          <td>{{.ExpireBefore}} → {{.ExpireAfter}}</td>
+          <td class="reason">{{if .Reason}}{{.Reason}}{{else}}-{{end}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="5" class="empty">暂无补偿开通记录</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

@@ -29,6 +29,18 @@ jobs:
             dockerfile: frontendv2/Dockerfile
             image: ghcr.io/${{ github.repository_owner }}/bilirag-frontend
             name: frontend
+          - context: ./app-pay-admin
+            dockerfile: app-pay-admin/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/mind-base-app-pay-admin
+            name: app-pay-admin
+          - context: ./app-pay
+            dockerfile: app-pay/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/mind-base-app-pay
+            name: app-pay
+          - context: ./app-task
+            dockerfile: app-task/Dockerfile
+            image: ghcr.io/${{ github.repository_owner }}/mind-base-app-task
+            name: app-task
     steps:
       - uses: actions/checkout@v4
 

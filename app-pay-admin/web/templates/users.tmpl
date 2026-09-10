@@ -1,0 +1,58 @@
+{{define "content"}}
+<div class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">控制台账户</h2>
+    <details class="new-user">
+      <summary class="btn primary sm">添加账户</summary>
+      <form method="post" action="/users" class="form form-card">
+        <label class="field">
+          <span>用户名（2–64 字符）</span>
+          <input name="username" required minlength="2" maxlength="64" placeholder="如 zhang">
+        </label>
+        <label class="field">
+          <span>角色</span>
+          <select name="role">
+            <option value="viewer">viewer（只读）</option>
+            <option value="admin">admin（含补偿开通）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>密码（至少 8 位）</span>
+          <input type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password">
+        </label>
+        <div class="form-actions">
+          <button class="btn primary sm" type="submit">创建</button>
+        </div>
+      </form>
+    </details>
+  </div>
+
+  <table class="tbl">
+    <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>创建时间</th><th class="op-col">操作</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td>{{.ID}}</td>
+        <td class="strong">{{.Username}}</td>
+        <td><span class="st {{if .IsAdmin}}st-blue{{else}}st-gray{{end}}"><i></i>{{.Role}}</span></td>
+        <td>{{.CreatedAt}}</td>
+        <td class="op-cell">
+          <form method="post" action="/users/{{.ID}}/password" class="row-form">
+            <input type="password" name="password" required minlength="8" maxlength="128" placeholder="新密码（≥8 位）" autocomplete="new-password">
+            <button class="btn sm" type="submit">改密</button>
+          </form>
+          {{if .Deletable}}
+          <form method="post" action="/users/{{.ID}}/delete" class="row-form" onsubmit="return confirm('确认删除账户 {{.Username}}？')">
+            <button class="btn sm danger" type="submit">删除</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">暂无账户</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="panel-note">admin：全部权限（补偿开通 + 账户管理）；viewer：只读查询。不能删除自己或最后一个 admin。</div>
+</div>
+{{end}}

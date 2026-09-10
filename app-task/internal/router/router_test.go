@@ -94,7 +94,9 @@ func TestTasksDetailAndList(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	var reg struct{ TaskID string `json:"task_id"` }
+	var reg struct {
+		TaskID string `json:"task_id"`
+	}
 	json.Unmarshal(w.Body.Bytes(), &reg)
 
 	// detail (owner)

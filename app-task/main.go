@@ -1,4 +1,4 @@
-﻿// app-task entrypoint: load config, init DB, start scheduler + Gin HTTP server,
+// app-task entrypoint: load config, init DB, start scheduler + Gin HTTP server,
 // graceful shutdown. Pure scheduler: dispatch tasks to third-party executors,
 // record outcomes. Run from project root: go run ./app-task
 package main

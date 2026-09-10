@@ -1,0 +1,19 @@
+# ═══════════════════════════════════════════════════════════════
+# Docker 形态覆盖层（由 Dockerfile COPY 进镜像，compose command 显式指定）
+# ------------------------------------------------------------
+# rdbms.url 留空：由 compose 注入 PAYADMIN__RDBMS__URL
+# （复用 .env 的 PAY_MYSQL_USER/PASSWORD 连 app-pay-mysql:3306/app_pay）。
+# PAYADMIN__ 环境变量优先级高于本文件，可随时覆盖任意项。
+# ═══════════════════════════════════════════════════════════════
+
+server:
+  host: 0.0.0.0
+  # 如需容器内 HTTPS：挂载证书卷并在 .env 设置
+  # PAYADMIN__SERVER__TLS__ENABLED=true / PAYADMIN__SERVER__TLS__CERT=/app/certs/admin.crt
+  # PAYADMIN__SERVER__TLS__KEY=/app/certs/admin.key（默认关闭 = 纯 HTTP 回环）。
+
+log:
+  output: both           # 容器内同时落 /app/logs 卷（docker compose logs 也能看）
+
+audit:
+  file: "/app/logs/pay-admin-audit.jsonl"

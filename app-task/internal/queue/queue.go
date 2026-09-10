@@ -1,4 +1,4 @@
-﻿// Package queue implements a persistent weighted FIFO queue based on
+// Package queue implements a persistent weighted FIFO queue based on
 // Self-Clocked Fair Queueing (SCFQ), a practical, event-driven form of
 // Weighted Fair Queuing (WFQ).
 //

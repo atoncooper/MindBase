@@ -1,4 +1,4 @@
-﻿package service
+package service
 
 import (
 	"context"
@@ -21,10 +21,11 @@ import (
 // task state machine.
 //
 // State machine:
-//   pending -> completed            (sync 2xx)
-//   pending -> running -> completed | failed   (async callback)
-//   pending/failed -> pending       (retry with next_retry_at)
-//   running > 10m without callback  -> failed (timeout)
+//
+//	pending -> completed            (sync 2xx)
+//	pending -> running -> completed | failed   (async callback)
+//	pending/failed -> pending       (retry with next_retry_at)
+//	running > 10m without callback  -> failed (timeout)
 type Scheduler struct {
 	registry *executor.Registry
 	interval time.Duration
@@ -163,7 +164,7 @@ func (s *Scheduler) writeLog(task *model.Task, status string, durationMS int64, 
 	}
 	_ = repo.CreateTaskLog(&model.TaskLog{
 		LogID:      uuid.NewString(),
-		TaskID:      task.TaskID,
+		TaskID:     task.TaskID,
 		Executor:   executorName(task),
 		Request:    truncate(string(task.Payload), 1000),
 		Response:   truncate(response, 2000),
@@ -192,11 +193,11 @@ func taskFromTask(j *model.Task) executor.Task {
 		Meta: map[string]any{
 			"uid":          j.UID,
 			"status":       j.Status,
-			"task_type":     j.TaskType,
+			"task_type":    j.TaskType,
 			"executor_url": j.ExecutorURL,
 			"async":        j.Async,
 			"retry_count":  j.RetryCount,
-		},	
+		},
 	}
 }
 

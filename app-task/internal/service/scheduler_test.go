@@ -1,4 +1,4 @@
-﻿package service
+package service
 
 import (
 	"net/http"
@@ -41,11 +41,7 @@ func mustRegister(t *testing.T, svc *TaskService, uid int64, taskType, payload, 
 
 func mustHTTPExecutor(t *testing.T) *executor.HTTPExecutor {
 	t.Helper()
-	e, err := executor.NewHTTPExecutor(executor.HTTPOptions{Timeout: 5 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return e
+	return executor.NewHTTPExecutor(executor.HTTPOptions{Timeout: 5 * time.Second})
 }
 
 func newSched(t *testing.T) *Scheduler {

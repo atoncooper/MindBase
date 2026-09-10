@@ -1,4 +1,4 @@
-﻿package router
+package router
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ import (
 func (r *Router) register(c *gin.Context) {
 	var req struct {
 		UID         int64           `json:"uid" binding:"required"`
-		TaskType     string          `json:"task_type"`     // http (default) / lua
+		TaskType    string          `json:"task_type"`    // http (default) / lua
 		Payload     json.RawMessage `json:"payload"`      // opaque task parameters
 		ExecutorURL string          `json:"executor_url"` // http mode: third-party executor endpoint
 		Async       bool            `json:"async"`        // true: executor replies 202 + callback
@@ -84,9 +84,9 @@ func (r *Router) detail(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"task_id":       task.TaskID,
+		"task_id":      task.TaskID,
 		"uid":          task.UID,
-		"task_type":     task.TaskType,
+		"task_type":    task.TaskType,
 		"status":       task.Status,
 		"trigger_time": task.TriggerTime.Format(time.RFC3339),
 		"executor_url": task.ExecutorURL,
@@ -113,8 +113,8 @@ func (r *Router) list(c *gin.Context) {
 	out := make([]gin.H, 0, len(tasks))
 	for _, j := range tasks {
 		out = append(out, gin.H{
-			"task_id":       j.TaskID,
-			"task_type":     j.TaskType,
+			"task_id":      j.TaskID,
+			"task_type":    j.TaskType,
 			"status":       j.Status,
 			"trigger_time": j.TriggerTime.Format(time.RFC3339),
 			"executor_url": j.ExecutorURL,

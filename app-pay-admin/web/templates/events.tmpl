@@ -1,0 +1,37 @@
+{{define "content"}}
+<form method="get" action="/events" class="filter-bar">
+  <label>uid<input name="uid" value="{{.UID}}" class="w-xs" placeholder="全部用户"></label>
+  <label>类型<select name="type" class="w-xs">
+    <option value="">全部</option>
+    {{range .TypeOptions}}<option value="{{.V}}" {{if .Sel}}selected{{end}}>{{.T}}</option>{{end}}
+  </select></label>
+  <button class="btn primary" type="submit">查询</button>
+  <a class="btn" href="/events">重置</a>
+</form>
+
+<div class="panel">
+  <table class="tbl">
+    <thead><tr><th>时间</th><th>uid</th><th>类型</th><th>天数</th><th>变更前 → 变更后</th><th>关联订单</th><th>原因</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td>{{.CreatedAt}}</td>
+        <td>{{.UID}}</td>
+        <td><span class="st st-{{.TypeClass}}"><i></i>{{.TypeText}}</span></td>
+        <td>{{.Days}}</td>
+        <td>{{.ExpireBefore}} → {{.ExpireAfter}}</td>
+        <td class="mono">{{if .OrderNo}}{{.OrderNo}}{{else}}-{{end}}</td>
+        <td class="reason">{{if .Reason}}{{.Reason}}{{else}}-{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">暂无权益变更记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="pager">
+    <span>共 {{.Total}} 条 · 第 {{.Page}} 页</span>
+    {{if .HasPrev}}<a class="btn sm" href="{{.PrevURL}}">上一页</a>{{else}}<span class="btn sm disabled">上一页</span>{{end}}
+    {{if .HasNext}}<a class="btn sm" href="{{.NextURL}}">下一页</a>{{else}}<span class="btn sm disabled">下一页</span>{{end}}
+  </div>
+</div>
+{{end}}

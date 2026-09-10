@@ -1,10 +1,11 @@
 // Package router wires the Gin engine and HTTP handlers.
 //
 // File layout (one concern per file):
-//   router.go   — engine assembly: New / Router / routes / CORS
-//   task.go      — task endpoints (/tasks/*) + shared helpers
-//   complete.go — async callback from third-party executors
-//   script.go   — Lua script management (/scripts*)
+//
+//	router.go   — engine assembly: New / Router / routes / CORS
+//	task.go      — task endpoints (/tasks/*) + shared helpers
+//	complete.go — async callback from third-party executors
+//	script.go   — Lua script management (/scripts*)
 package router
 
 import (
@@ -48,7 +49,7 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, luaExec *
 }
 
 type Router struct {
-	taskSvc   *service.TaskService
+	taskSvc  *service.TaskService
 	emailSvc *service.EmailService
 	luaExec  *executor.LuaExecutor
 	cfg      *config.Config

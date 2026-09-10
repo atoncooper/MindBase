@@ -13,24 +13,24 @@ import (
 )
 
 type Config struct {
-	App       AppConfig       `yaml:"app"`
-	Server    ServerConfig    `yaml:"server"`
-	Timezone  string          `yaml:"timezone"`
-	RDBMS     RDBMSConfig     `yaml:"rdbms"`
+	App          AppConfig          `yaml:"app"`
+	Server       ServerConfig       `yaml:"server"`
+	Timezone     string             `yaml:"timezone"`
+	RDBMS        RDBMSConfig        `yaml:"rdbms"`
 	Scheduler    SchedulerConfig    `yaml:"scheduler"`
 	Lua          LuaConfig          `yaml:"lua"`
 	HTTPExecutor HTTPExecutorConfig `yaml:"http_executor"`
 	Email        EmailConfig        `yaml:"email"`
 	Notification NotificationConfig `yaml:"notification"`
 	WebUI        WebUIConfig        `yaml:"webui"`
-	Security  SecurityConfig  `yaml:"security"`
-	Log       LogConfig       `yaml:"log"`
+	Security     SecurityConfig     `yaml:"security"`
+	Log          LogConfig          `yaml:"log"`
 }
 
 type LogConfig struct {
-	Level  string        `yaml:"level"`   // debug|info|warn|error (default info)
-	Format string        `yaml:"format"`  // text|json (default text)
-	Output string        `yaml:"output"`  // stdout|file|both (default stdout)
+	Level  string        `yaml:"level"`  // debug|info|warn|error (default info)
+	Format string        `yaml:"format"` // text|json (default text)
+	Output string        `yaml:"output"` // stdout|file|both (default stdout)
 	File   LogFileConfig `yaml:"file"`
 }
 
@@ -39,7 +39,7 @@ type LogFileConfig struct {
 	MaxSize    int    `yaml:"max_size"`    // max MB per file (default 100)
 	MaxBackups int    `yaml:"max_backups"` // old files kept (default 7)
 	MaxAge     int    `yaml:"max_age"`     // days retained (default 30)
-	Compress   bool   `yaml:"compress"`   // gzip rotated files
+	Compress   bool   `yaml:"compress"`    // gzip rotated files
 }
 
 type AppConfig struct {
@@ -95,9 +95,9 @@ type HTTPExecutorConfig struct {
 // LuaConfig configures the Lua executor (dynamic scripts, GLUE-style).
 type LuaConfig struct {
 	TimeoutSeconds     int `yaml:"timeout_seconds"`      // per-script execution timeout
-	MaxIdleVM          int `yaml:"max_idle_vm"`           // idle VM pool size
-	MaxSourceLen       int `yaml:"max_source_len"`        // max script source bytes
-	HTTPTimeoutSeconds int `yaml:"http_timeout_seconds"`  // ctx.http_get/post timeout
+	MaxIdleVM          int `yaml:"max_idle_vm"`          // idle VM pool size
+	MaxSourceLen       int `yaml:"max_source_len"`       // max script source bytes
+	HTTPTimeoutSeconds int `yaml:"http_timeout_seconds"` // ctx.http_get/post timeout
 }
 
 type SecurityConfig struct {

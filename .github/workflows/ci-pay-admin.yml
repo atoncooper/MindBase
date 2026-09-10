@@ -1,0 +1,38 @@
+name: CI - Pay Admin
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-pay-admin/**"
+      - ".github/workflows/ci-pay-admin.yml"
+  pull_request:
+    paths:
+      - "app-pay-admin/**"
+      - ".github/workflows/ci-pay-admin.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-pay-admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app-pay-admin/go.mod
+          cache-dependency-path: app-pay-admin/go.sum
+
+      - name: Gofmt check
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test -count=1 ./...
+
+      - name: Build
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/app-pay-admin .

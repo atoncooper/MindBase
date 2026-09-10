@@ -1,4 +1,4 @@
-﻿// Package executor provides the task-handler registry that decouples the
+// Package executor provides the task-handler registry that decouples the
 // scheduler from business logic (M2). A task's task_type maps to a Handler;
 // the scheduler only knows how to dispatch, never what a task does.
 //
@@ -41,11 +41,11 @@ type Task struct {
 // Handler processes one task trigger. It must be idempotent (the scheduler may
 // re-dispatch the same trigger after a crash). Return values:
 //
-//   nil       — success; the task reached a terminal state (or is being
-//               finalized by the poller on the success path)
-//   ErrAsync  — the task moved to an async phase; a poller finalizes it
-//   ErrRetry  — transient failure; apply retry policy
-//   other err — hard failure; apply retry policy (may fail the task)
+//	nil       — success; the task reached a terminal state (or is being
+//	            finalized by the poller on the success path)
+//	ErrAsync  — the task moved to an async phase; a poller finalizes it
+//	ErrRetry  — transient failure; apply retry policy
+//	other err — hard failure; apply retry policy (may fail the task)
 type Handler func(ctx context.Context, task Task) error
 
 // Registry maps task types to handlers.

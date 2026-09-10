@@ -119,8 +119,8 @@ func ResetEmailForRetry(emailID string) (bool, error) {
 	tx := db.DB.Model(&model.EmailMessage{}).
 		Where("email_id = ? AND status = ?", emailID, "failed").
 		Updates(map[string]any{
-			"status":       "pending",
-			"retry_count":  0,
+			"status":        "pending",
+			"retry_count":   0,
 			"next_retry_at": nil,
 			"last_error":    nil,
 		})
