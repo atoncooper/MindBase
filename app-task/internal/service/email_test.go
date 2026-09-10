@@ -1,4 +1,4 @@
-﻿package service
+package service
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ import (
 )
 
 // stubSender records sends and can fail on demand.
-type stubSender struct{
+type stubSender struct {
 	calls int
 	fail  bool
 }

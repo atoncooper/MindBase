@@ -1,4 +1,4 @@
-﻿// Package service: the scheduler's business-neutral services. app-task only
+// Package service: the scheduler's business-neutral services. app-task only
 // registers tasks, dispatches them to executors, and records outcomes — all
 // business logic lives in third-party executors.
 package service
@@ -50,9 +50,9 @@ func (s *TaskService) RegisterTask(uid int64, taskType string, payload []byte, e
 	}
 	taskID := uuid.NewString()
 	task := &model.Task{
-		TaskID:       taskID,
+		TaskID:      taskID,
 		UID:         uid,
-		TaskType:     taskType,
+		TaskType:    taskType,
 		TriggerTime: triggerTime,
 		Status:      "pending",
 		MaxRetry:    maxRetry,
@@ -116,7 +116,7 @@ func (s *TaskService) CompleteTask(taskID, status, result, errMsg string) (strin
 	}
 	_ = repo.CreateTaskLog(&model.TaskLog{
 		LogID:    uuid.NewString(),
-		TaskID:    taskID,
+		TaskID:   taskID,
 		Executor: task.ExecutorURL,
 		Response: result,
 		Status:   toStatus,

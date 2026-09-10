@@ -111,10 +111,10 @@ func (r *Router) listScripts(c *gin.Context) {
 	out := make([]gin.H, 0, len(scripts))
 	for _, s := range scripts {
 		out = append(out, gin.H{
-			"script_id": s.ScriptID,
-			"name":      s.Name,
-			"version":   s.Version,
-			"enabled":   s.Enabled,
+			"script_id":  s.ScriptID,
+			"name":       s.Name,
+			"version":    s.Version,
+			"enabled":    s.Enabled,
 			"updated_at": s.UpdatedAt.Format(time.RFC3339),
 		})
 	}
@@ -156,4 +156,3 @@ func (r *Router) scriptLogs(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"script_id": scriptID, "logs": out})
 }
-

@@ -1,4 +1,4 @@
-﻿package router
+package router
 
 import (
 	"net/http"
@@ -9,7 +9,7 @@ import (
 // sendEmail accepts a standardized email from a third-party executor and
 // queues it for delivery (email_queue + worker with retries). Contract:
 //
-	//   {"to":["a@x.com"], "cc":["c@x.com"], "subject":"...", "html":"<div>...</div>", "reference_id":"task-xxx"}
+//	{"to":["a@x.com"], "cc":["c@x.com"], "subject":"...", "html":"<div>...</div>", "reference_id":"task-xxx"}
 //
 // to/subject/html are required; cc and reference_id optional. The scheduler
 // platform only understands this mail format — the executor renders the

@@ -190,7 +190,7 @@ func (a *webuiAuthenticator) login(c *gin.Context) {
 		Value:    sid,
 		Path:     "/",
 		MaxAge:   int(a.ttl.Seconds()),
-		HttpOnly: true,                  // JS can never read it (XSS-proof storage)
+		HttpOnly: true,                    // JS can never read it (XSS-proof storage)
 		SameSite: http.SameSiteStrictMode, // cross-site requests never carry it (CSRF)
 		Secure:   c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https",
 	})

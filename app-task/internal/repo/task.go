@@ -122,11 +122,11 @@ func ListCronTasksToExtend(limit int) ([]model.Task, error) {
 func CreateNextCronTask(src *model.Task, triggerTime time.Time) (string, error) {
 	taskID := uuid.NewString()
 	j := &model.Task{
-		TaskID:       taskID,
+		TaskID:      taskID,
 		UID:         src.UID,
 		TriggerTime: triggerTime,
 		Status:      "pending",
-		TaskType:     src.TaskType,
+		TaskType:    src.TaskType,
 		Payload:     src.Payload,
 		ExecutorURL: src.ExecutorURL,
 		Async:       src.Async,

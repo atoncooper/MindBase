@@ -81,8 +81,8 @@ func ListScripts() ([]model.Script, error) {
 	var out []model.Script
 	err := db.DB.Raw(
 		`SELECT s.* FROM script s` +
-		` JOIN (SELECT script_id, MAX(version) AS v FROM script GROUP BY script_id) m` +
-		` ON m.script_id = s.script_id AND m.v = s.version ORDER BY s.name`,
+			` JOIN (SELECT script_id, MAX(version) AS v FROM script GROUP BY script_id) m` +
+			` ON m.script_id = s.script_id AND m.v = s.version ORDER BY s.name`,
 	).Scan(&out).Error
 	return out, err
 }

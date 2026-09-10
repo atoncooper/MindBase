@@ -29,10 +29,11 @@ import (
 // app-pay 侧证书晚于 app-task 就绪时委托回调也能自愈。
 //
 // Execution model (per task):
-//   sync  (async=false): 2xx response = success; other status = failure
-//   async (async=true):  202 accepted → ErrAsync (task goes running, the
-//                        executor reports the outcome via the callback
-//                        endpoint /internal/task/{id}/complete)
+//
+//	sync  (async=false): 2xx response = success; other status = failure
+//	async (async=true):  202 accepted → ErrAsync (task goes running, the
+//	                     executor reports the outcome via the callback
+//	                     endpoint /internal/task/{id}/complete)
 type HTTPExecutor struct {
 	opts HTTPOptions
 
