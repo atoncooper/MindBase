@@ -1,0 +1,28 @@
+# ═══════════════════════════════════════════════════════════════
+# 本地 dev 覆盖层（`go run . -config config.dev.yaml`）
+# ------------------------------------------------------------
+# 只写与 default.yaml(嵌入) 不同的项；未写的键沿用嵌入默认值。
+# 优先级：default.yaml(嵌入) < 本文件 < PAYADMIN__ 环境变量
+# （docker 镜像不包含本文件，compose 用 config.docker.yaml）
+# ═══════════════════════════════════════════════════════════════
+
+app:
+  debug: true            # gin debug 模式 + GORM 逐条 SQL 日志
+
+server:
+  host: 127.0.0.1
+  port: 8003
+
+rdbms:
+  # 本地 docker 发布的 app-pay-mysql 宿主端口
+  # （compose: "127.0.0.1:${PAY_MYSQL_PORT:-3307}:3306"）
+  # 口令 = 项目根 .env 的 PAY_MYSQL_PASSWORD（默认 app-pay）
+  url: "mysql+aiomysql://app_pay:app-pay@127.0.0.1:3307/app_pay"
+
+log:
+  output: stdout
+  format: text           # 本地开发看纯文本更直观
+
+audit:
+  # 本地审计 JSONL（相对工作目录，目录不存在会自动创建）
+  file: "logs/pay-admin-audit.jsonl"

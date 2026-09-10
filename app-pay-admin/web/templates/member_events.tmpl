@@ -1,0 +1,28 @@
+{{define "content"}}
+<div class="detail-top"><a class="lnk" href="/memberships">← 返回会员列表</a></div>
+<div class="panel">
+  <table class="tbl">
+    <thead><tr><th>时间</th><th>类型</th><th>天数</th><th>变更前</th><th>变更后</th><th>关联订单</th><th>原因</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td>{{.CreatedAt}}</td>
+        <td><span class="st st-{{.TypeClass}}"><i></i>{{.TypeText}}</span></td>
+        <td>{{.Days}}</td>
+        <td>{{.ExpireBefore}}</td>
+        <td>{{.ExpireAfter}}</td>
+        <td class="mono">{{if .OrderNo}}{{.OrderNo}}{{else}}-{{end}}</td>
+        <td class="reason">{{if .Reason}}{{.Reason}}{{else}}-{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">该会员暂无权益变更记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="pager">
+    <span>共 {{.Total}} 条 · 第 {{.Page}} 页</span>
+    {{if .HasPrev}}<a class="btn sm" href="{{.PrevURL}}">上一页</a>{{else}}<span class="btn sm disabled">上一页</span>{{end}}
+    {{if .HasNext}}<a class="btn sm" href="{{.NextURL}}">下一页</a>{{else}}<span class="btn sm disabled">下一页</span>{{end}}
+  </div>
+</div>
+{{end}}

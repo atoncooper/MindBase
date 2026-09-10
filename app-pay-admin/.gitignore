@@ -1,0 +1,4 @@
+# TLS 开发证书（scripts/gen-dev-cert.* 生成）
+certs/
+# 本地运行日志（log.output=file/both 时）
+logs/

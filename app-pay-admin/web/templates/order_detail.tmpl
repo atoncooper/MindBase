@@ -1,0 +1,42 @@
+{{define "content"}}
+<div class="detail-top"><a class="lnk" href="/orders">← 返回订单列表</a></div>
+
+<div class="panel">
+  <dl class="kv">
+    <dt>订单号</dt><dd class="mono strong">{{.Order.OrderNo}}</dd>
+    <dt>状态 / 版本</dt><dd><span class="st st-{{.Order.StatusClass}}"><i></i>{{.Order.StatusText}}</span> <span class="mono dim">v{{.Order.Version}}</span></dd>
+    <dt>uid</dt><dd>{{.Order.UID}}</dd>
+    <dt>商品</dt><dd>{{.Order.ProductTitle}}（<span class="mono">{{.Order.SkuCode}}</span>，{{.Order.DurationDays}} 天）</dd>
+    <dt>金额</dt><dd class="mono strong">{{.Order.Amount}}</dd>
+    <dt>渠道</dt><dd><span class="mono">{{.Order.Channel}}</span>{{if .Order.ChannelTradeNo}}<span class="mono dim"> · {{.Order.ChannelTradeNo}}</span>{{end}}</dd>
+    <dt>幂等键</dt><dd class="mono">{{if .Order.IdempotencyKey}}{{.Order.IdempotencyKey}}{{else}}-{{end}}</dd>
+    <dt>失败原因</dt><dd>{{if .Order.FailReason}}<span class="err-text">{{.Order.FailReason}}</span>{{else}}-{{end}}</dd>
+    <dt>创建时间</dt><dd>{{.Order.CreatedAt}}</dd>
+    <dt>支付时间</dt><dd>{{.Order.PaidAt}}</dd>
+    <dt>关闭时间</dt><dd>{{.Order.ClosedAt}}</dd>
+    <dt>过期时间</dt><dd>{{.Order.ExpiresAt}}</dd>
+    <dt>更新时间</dt><dd>{{.Order.UpdatedAt}}</dd>
+  </dl>
+</div>
+
+<h2 class="sec-title">渠道回调流水（{{len .Callbacks}}）</h2>
+<div class="panel">
+  <table class="tbl">
+    <thead><tr><th>时间</th><th>渠道</th><th>验签</th><th>处理</th><th>消息</th><th>报文（脱敏）</th></tr></thead>
+    <tbody>
+    {{range .Callbacks}}
+      <tr>
+        <td>{{.CreatedAt}}</td>
+        <td class="mono">{{.Channel}}</td>
+        <td><span class="st st-{{.SigClass}}"><i></i>{{.SignatureResult}}</span></td>
+        <td><span class="st st-{{.HandleClass}}"><i></i>{{.HandleResult}}</span></td>
+        <td>{{if .Message}}{{.Message}}{{else}}-{{end}}</td>
+        <td class="mono payload">{{if .Payload}}{{.Payload}}{{else}}-{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">无回调记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

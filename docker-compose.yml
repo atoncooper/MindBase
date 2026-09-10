@@ -238,7 +238,8 @@ services:
   app-pay-mysql:
     image: mysql:8.4
     container_name: mind-base-app-pay-mysql
-    profiles: ["", "pay", "full"]
+    # "pay-admin"：让 `--profile pay-admin up` 能连带拉起其依赖的 MySQL
+    profiles: ["", "pay", "pay-admin", "full"]
     environment:
       - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
       - MYSQL_DATABASE=app_pay
@@ -624,6 +625,40 @@ services:
     networks:
       - mind-base-net
 
+  # app-pay-admin —— 支付后台管理（Go + Gin，plan/1.0.9-PayAdmin）
+  # 全直连 app_pay 库（读查询 + 唯一写操作：会员补偿开通，事务内复刻 app-pay
+  # MembershipService.extend 语义），运行时不依赖 app-pay/APISIX。自带账户体系
+  # （payadmin_user + bcrypt），仅回环暴露，不经 APISIX（同 app-task WebUI 先例）。
+  app-pay-admin:
+    build:
+      context: ./app-pay-admin
+      dockerfile: Dockerfile
+    container_name: mind-base-app-pay-admin
+    profiles: ["pay-admin", "full"]
+    depends_on:
+      app-pay-mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    # 配置分层：default.yaml(嵌入) < config.docker.yaml(-config 指定) < PAYADMIN__ 环境变量
+    # rdbms.url 由下方 environment 注入（复用 .env 的 PAY_MYSQL_*），改口令两边自动对齐
+    command: ["-config", "config.docker.yaml"]
+    environment:
+      - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
+    ports:
+      # 仅回环：管理后台不对公网暴露，本机浏览器直连 http://127.0.0.1:8003
+      - "127.0.0.1:${APP_PAY_ADMIN_PORT:-8003}:8003"
+    volumes:
+      # 运行日志 + 资金审计 JSONL（pay-admin-audit.jsonl，补偿开通留痕）
+      - app_pay_admin_logs:/app/logs
+      # 启用容器内 HTTPS：.env 设 PAYADMIN__SERVER__TLS__ENABLED=true 即可
+      # （不配 cert/key 时容器启动自动生成自签证书写入 /app/certs；挂卷持久化，
+      #  重建容器不再换证书）。显式指定文件用 PAYADMIN__SERVER__TLS__CERT/KEY。
+      - ./app-pay-admin/certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
 volumes:
   backend_data:
   backend_logs:
@@ -633,6 +668,7 @@ volumes:
   app_pay_logs:
   app_pay_test_mysql_data:
   app_pay_test_logs:
+  app_pay_admin_logs:
   mysql_data:
   redis_data:
   mongo_data:

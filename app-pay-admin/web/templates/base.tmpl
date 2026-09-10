@@ -1,0 +1,47 @@
+{{define "content"}}{{end}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.PageTitle}} · MindBase 支付后台</title>
+<link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo-img" src="/assets/logo.svg" alt="">
+      <span class="brand-name">MindBase 支付后台</span>
+      <span class="brand-tag">app-pay-admin</span>
+    </div>
+    <div class="top-actions">
+      <span class="ver">{{.Version}}</span>
+      <span class="sep"></span>
+      <span class="user">{{.User.Username}}<i class="role">{{if .User.IsAdmin}}admin{{else}}viewer{{end}}</i></span>
+      <form method="post" action="/logout" class="inline"><button class="btn ghost sm" type="submit">退出</button></form>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <div class="tabs-inner">
+      <a href="/orders" {{if eq .Active "orders"}}class="active"{{end}}>订单</a>
+      <a href="/memberships" {{if eq .Active "memberships"}}class="active"{{end}}>会员</a>
+      <a href="/events" {{if eq .Active "events"}}class="active"{{end}}>事件流水</a>
+      <a href="/products" {{if eq .Active "products"}}class="active"{{end}}>SKU 商品</a>
+      <a href="/grants" {{if eq .Active "grants"}}class="active"{{end}}>补偿开通</a>
+      {{if .User.IsAdmin}}<a href="/users" {{if eq .Active "users"}}class="active"{{end}}>账户</a>{{end}}
+    </div>
+  </nav>
+
+  <div class="page">
+    <div class="page-head">
+      <h1>{{.PageTitle}}</h1>
+      {{if .PageDesc}}<p>{{.PageDesc}}</p>{{end}}
+    </div>
+    {{with .Flash}}<div class="flash flash-{{.Kind}}" role="alert">{{.Msg}}</div>{{end}}
+    {{block "content" .}}{{end}}
+  </div>
+</div>
+</body>
+</html>

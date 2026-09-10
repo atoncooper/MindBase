@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · MindBase 支付后台</title>
+<link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="login-body">
+<div class="login-split">
+  <!-- 品牌侧栏（MinIO 式分栏左翼） -->
+  <aside class="login-side">
+    <img class="side-logo" src="/assets/logo.svg" alt="MindBase 支付后台">
+    <h1 class="side-title">MindBase 支付后台</h1>
+    <p class="side-sub">交易 · 会员 · 审计 —— 支付域统一运营入口</p>
+    <img class="side-art" src="/assets/login-art.svg" alt="">
+    <p class="side-foot">app-pay-admin · 所有操作留痕审计</p>
+  </aside>
+
+  <!-- 登录表单 -->
+  <main class="login-main">
+    <div class="login-box">
+      <div class="login-brand">
+        <img src="/assets/logo.svg" alt="">
+        <span>MindBase 支付后台</span>
+      </div>
+      <h2>登录</h2>
+      <p class="login-sub">仅限授权运营人员使用</p>
+      {{if .Error}}<div class="flash flash-err" role="alert">{{.Error}}</div>{{end}}
+      <form method="post" action="/login">
+        <label class="field">
+          <span>用户名</span>
+          <input name="username" value="{{.Username}}" required autofocus autocomplete="username">
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input type="password" name="password" required autocomplete="current-password">
+        </label>
+        <button class="btn primary block lg" type="submit">登 录</button>
+      </form>
+      <p class="login-hint">登录后可在「账户」页管理运营账户；所有操作均记录操作人并留痕审计。</p>
+    </div>
+  </main>
+</div>
+</body>
+</html>

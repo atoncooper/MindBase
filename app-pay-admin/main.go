@@ -1,0 +1,178 @@
+// app-pay-admin entrypoint: load config, init DB (app_pay on app-pay-mysql),
+// seed the console admin account, serve the embedded web console, graceful
+// shutdown. Read-mostly admin for the pay domain with one controlled write
+// (membership grant). Run from project root: go run ./app-pay-admin
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	_ "embed" // embed default.yaml via //go:embed below
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	_ "time/tzdata" // embed IANA tz database so Asia/Shanghai works in distroless
+
+	"app-pay-admin/internal/certgen"
+	"app-pay-admin/internal/config"
+	"app-pay-admin/internal/db"
+	"app-pay-admin/internal/logger"
+	"app-pay-admin/internal/repo"
+	"app-pay-admin/internal/router"
+	"app-pay-admin/internal/service"
+)
+
+//go:embed default.yaml
+var defaultYAML []byte
+
+func main() {
+	// Config overlay file resolution (documented in README):
+	//   1. -config flag (docker: compose passes config.docker.yaml);
+	//   2. a single positional argument (PowerShell-friendly: `go run . config.dev.yaml`);
+	//   3. auto-detect config.dev.yaml in the working directory — plain
+	//      `go run .` just works for local dev. The Docker image never
+	//      contains that file (only config.docker.yaml is COPYed), so
+	//      auto-detection cannot leak into the container.
+	configFile := flag.String("config", "", "overlay config file merged over the embedded default.yaml (e.g. config.dev.yaml)")
+	flag.Parse()
+
+	overlayPath := *configFile
+	if overlayPath == "" && flag.NArg() > 0 {
+		overlayPath = flag.Arg(0)
+	}
+	autoDetected := false
+	if overlayPath == "" {
+		if _, err := os.Stat("config.dev.yaml"); err == nil {
+			overlayPath = "config.dev.yaml"
+			autoDetected = true
+		}
+	}
+
+	cfg, err := config.Load(defaultYAML, overlayPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Logging (slog; level/format from log config, debug flag bumps info->debug)
+	logLevel := cfg.Log.Level
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	if cfg.App.Debug && logLevel == "info" {
+		logLevel = "debug"
+	}
+	logger.Init(logger.Options{
+		Level:  logLevel,
+		Format: cfg.Log.Format,
+		Output: cfg.Log.Output,
+		File: logger.FileOptions{
+			Path:       cfg.Log.File.Path,
+			MaxSize:    cfg.Log.File.MaxSize,
+			MaxBackups: cfg.Log.File.MaxBackups,
+			MaxAge:     cfg.Log.File.MaxAge,
+			Compress:   cfg.Log.File.Compress,
+		},
+	})
+	if overlayPath != "" {
+		slog.Info("[CONFIG] overlay loaded", "file", overlayPath, "auto_detected", autoDetected)
+	}
+	slog.Info("app-pay-admin starting", "port", cfg.Server.Port, "tz", cfg.Timezone)
+
+	// Validate critical config: fail loud instead of silently broken.
+	if err := config.Validate(cfg); err != nil {
+		slog.Error("config validation failed", "err", err)
+		os.Exit(1)
+	}
+
+	// MySQL (GORM): the app_pay database on the app-pay-mysql instance.
+	// pay_* schema is Java-owned — db.Migrate only creates payadmin_user.
+	if err := db.Init(cfg.RDBMS.URL, cfg.RDBMS.MaxOpenConns, cfg.RDBMS.MaxIdleConns, cfg.RDBMS.ConnMaxLifetime, cfg.App.Debug); err != nil {
+		slog.Error("init mysql failed", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		slog.Error("db migrate failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Seed the default console admin account on first boot so the console is
+	// always login-gated (username/password auth, see repo/user.go).
+	if err := repo.EnsureDefaultAdmin(); err != nil {
+		slog.Error("seed default console admin failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Business timezone: app-pay stores DATETIME wall-clock in Asia/Shanghai
+	// (pinned JVM timezone). Setting time.Local to the same zone + DSN
+	// loc=Local keeps DATETIME semantics identical on the Go side.
+	if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
+		time.Local = loc
+	} else {
+		slog.Warn("invalid timezone, falling back to UTC", "tz", cfg.Timezone, "err", err)
+	}
+
+	// JSONL audit trail for money-touching operations (mirrors app-pay's
+	// pay-audit.jsonl; direct-DB writes bypass the Java-side PayAuditLogger).
+	audit := service.NewAudit(cfg.Audit.File)
+	defer audit.Close()
+	grants := service.NewGrantService(audit)
+
+	// HTTP server (Gin): embedded admin console + /api/*.
+	handler := router.New(cfg, grants)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	srv := &http.Server{Addr: addr, Handler: handler}
+
+	// TLS 可选：启用时整站 HTTPS（cookie 的 Secure 标志随 c.Request.TLS 自动置位）。
+	// cert/key 成对提供=用指定文件（外部续期后自动重载）；双双留空=自动生成自签开发
+	// 证书并保存（certgen）。Rotator 后台巡检：自动模式余量 <30 天重生成并热切换，
+	// 显式模式文件变化重载——均无需重启。
+	scheme := "http"
+	serve := func() error { return srv.ListenAndServe() }
+	if cfg.Server.TLS.Enabled {
+		rot, err := certgen.NewRotator(cfg.Server.TLS.Cert, cfg.Server.TLS.Key, cfg.Server.TLS.CertDir)
+		if err != nil {
+			slog.Error("tls certificate setup failed", "err", err)
+			os.Exit(1)
+		}
+		autoGenerated := cfg.Server.TLS.Cert == "" && cfg.Server.TLS.Key == ""
+		slog.Info("[TLS] certificate ready", "cert", rot.CertPath(), "auto_generated", autoGenerated,
+			"auto_rotate", autoGenerated)
+		stopRotator := make(chan struct{})
+		defer close(stopRotator)
+		rot.Start(stopRotator)
+		srv.TLSConfig = &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: rot.GetCertificate,
+		}
+		scheme = "https"
+		serve = func() error { return srv.ListenAndServeTLS("", "") }
+	}
+
+	go func() {
+		slog.Info("app-pay-admin listening", "addr", addr, "scheme", scheme)
+		if err := serve(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server stopped", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	slog.Info("shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("shutdown error", "err", err)
+	}
+	slog.Info("app-pay-admin stopped")
+}

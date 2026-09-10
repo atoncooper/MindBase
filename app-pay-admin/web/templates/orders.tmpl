@@ -1,0 +1,49 @@
+{{define "content"}}
+<form method="get" action="/orders" class="filter-bar">
+  <label>uid<input name="uid" value="{{.F.UID}}" placeholder="用户 uid" class="w-xs"></label>
+  <label>状态<select name="status" class="w-xs">
+    <option value="">全部</option>
+    {{range .StatusOptions}}<option value="{{.V}}" {{if .Sel}}selected{{end}}>{{.T}}</option>{{end}}
+  </select></label>
+  <label>渠道<select name="channel" class="w-xs">
+    <option value="">全部</option>
+    {{range .ChannelOptions}}<option value="{{.V}}" {{if .Sel}}selected{{end}}>{{.V}}</option>{{end}}
+  </select></label>
+  <label>SKU<input name="sku" value="{{.F.Sku}}" placeholder="VIP_MONTHLY"></label>
+  <label>订单号<input name="order_no" value="{{.F.OrderNo}}" class="mono"></label>
+  <label>渠道流水号<input name="trade_no" value="{{.F.TradeNo}}" class="mono"></label>
+  <label>创建时间起<input type="datetime-local" name="created_from" value="{{.F.CreatedFrom}}"></label>
+  <label>创建时间止<input type="datetime-local" name="created_to" value="{{.F.CreatedTo}}"></label>
+  <button class="btn primary" type="submit">查询</button>
+  <a class="btn" href="/orders">重置</a>
+</form>
+
+<div class="panel">
+  <table class="tbl">
+    <thead><tr>
+      <th>订单号</th><th>uid</th><th>商品</th><th class="num">金额</th><th>渠道</th><th>状态</th><th>支付时间</th><th>创建时间</th>
+    </tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td><a class="lnk mono" href="/orders/{{.OrderNo}}">{{.OrderNo}}</a></td>
+        <td>{{.UID}}</td>
+        <td>{{.ProductTitle}}<div class="cell-sub mono">{{.SkuCode}}</div></td>
+        <td class="num mono">{{.Amount}}</td>
+        <td class="mono">{{.Channel}}</td>
+        <td><span class="st st-{{.StatusClass}}"><i></i>{{.StatusText}}</span></td>
+        <td>{{.PaidAt}}</td>
+        <td>{{.CreatedAt}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">暂无符合条件的订单</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="pager">
+    <span>共 {{.Total}} 条 · 第 {{.Page}} 页</span>
+    {{if .HasPrev}}<a class="btn sm" href="{{.PrevURL}}">上一页</a>{{else}}<span class="btn sm disabled">上一页</span>{{end}}
+    {{if .HasNext}}<a class="btn sm" href="{{.NextURL}}">下一页</a>{{else}}<span class="btn sm disabled">下一页</span>{{end}}
+  </div>
+</div>
+{{end}}

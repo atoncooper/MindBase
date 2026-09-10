@@ -1,0 +1,55 @@
+# app-pay-admin default config, embedded into the binary via //go:embed.
+# Environment overrides use the PAYADMIN__ prefix (double underscore = nesting),
+# e.g. PAYADMIN__RDBMS__URL. Precedence: real env > project-root .env > yaml.
+app:
+  name: app-pay-admin
+  debug: false
+server:
+  host: 0.0.0.0
+  port: 8003
+  # TLS 可选（默认关闭 = 纯 HTTP）。启用后整站 HTTPS，登录 cookie 自动带 Secure。
+  # cert/key 成对提供=用指定文件（外部换发后每日巡检自动重载，临期仅告警）；
+  # 双双留空=启动时自动生成自签开发证书并保存到 cert_dir（auto.crt/auto.key，
+  # 825 天有效，未到期重启复用；浏览器需信任该证书才无告警）。
+  # 运行期自动轮换（Rotator，每日巡检）：自动模式余量 <30 天或文件丢失 → 重生成
+  # 并热切换（GetCertificate，新连接立即生效，无需重启）；显式模式文件变化 → 重载。
+  # env 覆盖：PAYADMIN__SERVER__TLS__ENABLED/CERT/KEY/CERT_DIR。
+  # 无告警的 mini-CA 流程（可选）：scripts/gen-dev-cert.sh|.ps1。
+  tls:
+    enabled: false
+    cert: ""
+    key: ""
+    cert_dir: "certs"
+timezone: Asia/Shanghai
+# app_pay lives on the dedicated app-pay-mysql instance (host port 3307);
+# the URL is injected by docker-compose from PAY_MYSQL_USER/PASSWORD.
+rdbms:
+  url: ""
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+webui:
+  enabled: true
+  token: ""                  # optional master API key (admin identity); console login is username/password
+  session_ttl_minutes: 720   # login session lifetime (0 = default 12h)
+# Money-touching operations (membership grant) are appended here as JSONL,
+# mirroring app-pay's pay-audit.jsonl convention (direct-DB writes bypass the
+# Java-side PayAuditLogger, so this service keeps its own durable trail).
+audit:
+  file: "/app/logs/pay-admin-audit.jsonl"
+security:
+  cors:
+    # 跨域白名单（精确匹配 Origin）。控制台本身同源无需 CORS；只有跨域前端
+    # /工具页要带 cookie 调 /api/* 时才配置。env 覆盖（逗号分隔）：
+    # PAYADMIN__SECURITY__CORS__ALLOW_ORIGINS=https://a.example.com,https://b.example.com
+    allow_origins: []
+log:
+  level: info          # debug|info|warn|error
+  format: json         # text|json
+  output: stdout       # stdout|file|both
+  file:
+    path: /app/logs/app-pay-admin.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

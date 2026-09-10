@@ -1,0 +1,306 @@
+/* app-pay-admin 控制台样式：服务端渲染（html/template），无前端框架。
+   结构参照 MinIO 控制台（顶栏 + 水平 Tab 导航），信息密度与控件规范参照
+   阿里云控制台（白底高密度表格 / 筛选条 / 状态点 / 描述列表）。
+   刻意克制：无渐变、无玻璃拟态、无大圆角、无动效堆砌。 */
+
+:root {
+  /* 主操作色 = 石墨黑（Apple 式中性 chrome）：按钮/激活 Tab/焦点态一律无彩色，
+     蓝色仅存在于品牌 logo 与表格链接（--link, Google 式深蓝），避免"AI 蓝"。 */
+  --primary: #1f2329;
+  --primary-hover: #101317;
+  --primary-bg: #f0f1f3;
+  --link: #0b57d0;
+  --text-1: #1d2129;
+  --text-2: #4e5969;
+  --text-3: #86909c;
+  --border: #e5e6eb;
+  --divider: #f0f1f3;
+  --fill: #f7f8fa;
+  --page-bg: #f5f5f7;
+  --green: #0fa964;
+  --red: #f54a45;
+  --orange: #ff8d1a;
+  --purple: #722ed1;
+  --gray-dot: #a9aeb8;
+  --mono: Consolas, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  color: var(--text-1);
+  background: var(--page-bg);
+}
+a { color: var(--link); text-decoration: none; }
+h1, h2, p, dl { margin: 0; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.strong { font-weight: 600; }
+.dim { color: var(--text-3); }
+.lnk { color: var(--link); }
+.lnk:hover { text-decoration: underline; }
+.err-text { color: #cb2634; }
+
+/* ── 顶栏 ─────────────────────────────────────── */
+.topbar {
+  height: 48px; background: #fff; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px;
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.logo-img { width: 26px; height: 26px; display: block; }
+.brand-name { font-size: 15px; font-weight: 600; }
+.brand-tag {
+  font-family: var(--mono); font-size: 11px; color: var(--text-3);
+  background: var(--fill); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 6px;
+}
+.top-actions { display: flex; align-items: center; gap: 12px; }
+.ver { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.sep { width: 1px; height: 16px; background: var(--border); }
+.user { font-size: 12.5px; color: var(--text-2); display: inline-flex; align-items: center; gap: 6px; }
+.user .role {
+  font-style: normal; font-size: 11px; color: var(--text-3);
+  background: var(--fill); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px;
+}
+form.inline { display: inline; margin: 0; }
+
+/* ── Tab 导航（MinIO 式） ─────────────────────── */
+.tabs { background: #fff; border-bottom: 1px solid var(--border); }
+.tabs-inner {
+  max-width: 1440px; margin: 0 auto; padding: 0 20px;
+  display: flex; gap: 4px;
+}
+.tabs a {
+  position: relative; display: inline-block; padding: 0 16px;
+  line-height: 40px; font-size: 13.5px; color: var(--text-2);
+}
+.tabs a:hover { color: var(--text-1); }
+.tabs a.active { color: var(--primary); font-weight: 500; }
+.tabs a.active::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: 0;
+  height: 2px; background: var(--primary); border-radius: 2px 2px 0 0;
+}
+
+/* ── 页面骨架 ─────────────────────────────────── */
+.page { max-width: 1440px; margin: 0 auto; padding: 20px 20px 40px; width: 100%; }
+.page-head { margin-bottom: 14px; }
+.page-head h1 { font-size: 18px; font-weight: 600; }
+.page-head p { font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
+
+.flash {
+  /* 顶部居中浮动消息条（toast 式）：成功/警告自动淡出，错误常驻 */
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 100; display: flex; align-items: center; gap: 8px;
+  background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 16px; font-size: 13px; color: var(--text-1);
+  box-shadow: 0 6px 20px rgba(29, 33, 41, 0.14);
+  max-width: 70vw;
+  animation: flash-out 0.4s ease 4s forwards;
+}
+.flash::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--gray-dot); flex: none; }
+.flash-ok::before   { background: var(--green); }
+.flash-warn::before { background: var(--orange); }
+.flash-err { border-color: #f3b9b6; animation: none; }
+.flash-err::before { background: var(--red); }
+@keyframes flash-out { to { opacity: 0; visibility: hidden; } }
+.notice {
+  background: #fff7e8; color: #d25f00;
+  padding: 9px 14px; border-radius: 4px; font-size: 13px;
+}
+
+/* ── 筛选条（阿里云列表页式） ─────────────────── */
+.filter-bar {
+  background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 14px 16px 15px; margin-bottom: 14px;
+  display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
+}
+.filter-bar label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--text-3);
+}
+.filter-bar input, .filter-bar select {
+  height: 30px; padding: 4px 9px; font-size: 13px; color: var(--text-1);
+  border: 1px solid var(--border); border-radius: 4px; background: #fff;
+  width: 170px; font-family: inherit;
+}
+.filter-bar input.mono { font-family: var(--mono); font-size: 12.5px; }
+.filter-bar .w-xs { width: 128px; }
+.filter-bar input:focus, .filter-bar select:focus,
+.field input:focus, .field select:focus, .field textarea:focus,
+.row-form input:focus {
+  outline: none; border-color: #6b7280;
+  box-shadow: 0 0 0 2px rgba(31, 35, 41, 0.10);
+}
+
+/* ── 面板 / 表格 ──────────────────────────────── */
+.panel {
+  background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  margin-bottom: 14px;
+}
+/* 表格圆角（面板不再 overflow:hidden，避免裁掉下拉浮层） */
+.panel > .tbl { border-collapse: separate; border-spacing: 0; }
+.panel > .tbl th:first-child { border-top-left-radius: 6px; }
+.panel > .tbl th:last-child { border-top-right-radius: 6px; }
+.panel > .tbl tr:last-child td:first-child { border-bottom-left-radius: 6px; }
+.panel > .tbl tr:last-child td:last-child { border-bottom-right-radius: 6px; }
+.panel-body { padding: 14px 16px 16px; }
+.panel-title { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--divider);
+}
+.panel-head .panel-title { margin: 0; }
+.panel-note {
+  font-size: 12px; color: var(--text-3);
+  padding: 10px 16px; border-top: 1px solid var(--divider);
+}
+.grid-2 { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 14px; align-items: start; }
+
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th {
+  text-align: left; font-size: 12px; font-weight: 500; color: var(--text-3);
+  background: #fafafa; padding: 8px 14px; white-space: nowrap;
+}
+.tbl td {
+  padding: 10px 14px; border-top: 1px solid var(--divider);
+  vertical-align: top; font-size: 13px; word-break: break-word;
+}
+.tbl tbody tr:hover td { background: var(--fill); }
+.tbl .num { text-align: right; }
+.tbl .empty { text-align: center; color: var(--text-3); padding: 32px 0; }
+.cell-sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.payload {
+  max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-2);
+}
+.reason { max-width: 260px; }
+.sec-title { font-size: 14px; font-weight: 600; margin: 16px 0 10px; }
+.detail-top { margin-bottom: 12px; font-size: 13px; }
+
+/* ── 状态点（阿里云式：点 + 文本） ─────────────── */
+.st { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.st i { width: 6px; height: 6px; border-radius: 50%; background: var(--gray-dot); flex: none; }
+.st-green  i { background: var(--green); }
+.st-blue   i { background: #4a7dc9; }
+.st-red    i { background: var(--red); }
+.st-orange i { background: var(--orange); }
+.st-purple i { background: var(--purple); }
+.st-gray   i { background: var(--gray-dot); }
+
+/* ── 分页 ─────────────────────────────────────── */
+.pager {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  padding: 10px 14px; border-top: 1px solid var(--divider);
+  font-size: 12.5px; color: var(--text-3);
+}
+
+/* ── 按钮 ─────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 30px; padding: 0 14px; font-size: 13px; font-family: inherit;
+  color: var(--text-1); background: #fff;
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { color: var(--text-1); border-color: #b9bec7; background: var(--fill); }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn.ghost { border-color: transparent; background: none; color: var(--text-2); }
+.btn.ghost:hover { background: var(--fill); color: var(--text-1); }
+.btn.danger { color: #cb2634; border-color: #f3b9b6; }
+.btn.danger:hover { background: #ffece8; border-color: var(--red); color: #cb2634; }
+.btn.sm { height: 26px; padding: 0 10px; font-size: 12px; }
+.btn.lg { height: 38px; font-size: 14px; }
+.btn.block { width: 100%; }
+.btn.disabled { color: var(--text-3); background: var(--fill); border-color: var(--divider); cursor: default; }
+a.btn.disabled:hover { color: var(--text-3); }
+
+/* ── 描述列表（详情页） ───────────────────────── */
+.kv {
+  display: grid; grid-template-columns: 130px minmax(0, 1fr); column-gap: 14px;
+  padding: 6px 16px 10px;
+}
+.kv dt { font-size: 12.5px; color: var(--text-3); padding-top: 8px; }
+.kv dd { margin: 0; font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--divider); }
+.kv dt:nth-last-of-type(1), .kv dd:last-of-type { border-bottom: none; }
+.kv .strong { font-size: 13px; }
+
+/* ── 表单（补偿开通 / 账户） ──────────────────── */
+.form { padding: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.field > span { font-size: 12.5px; color: var(--text-2); }
+.field input, .field select, .field textarea {
+  width: 100%; height: 30px; padding: 4px 10px; font-size: 13px; font-family: inherit;
+  color: var(--text-1); border: 1px solid var(--border); border-radius: 4px; background: #fff;
+}
+.field textarea { height: auto; padding: 7px 10px; resize: vertical; }
+.form-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+.form-card {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 20;
+  width: 300px; background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(29, 33, 41, 0.14); padding: 16px;
+}
+
+/* 账户页行内操作 */
+.new-user { position: relative; }
+.new-user summary { list-style: none; }
+.new-user summary::-webkit-details-marker { display: none; }
+.op-col { width: 1%; }
+.op-cell { white-space: nowrap; }
+.row-form { display: inline-flex; align-items: center; gap: 6px; margin: 0 8px 4px 0; }
+.row-form input {
+  height: 26px; width: 150px; padding: 2px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 4px; font-family: inherit;
+}
+
+/* ── 登录页（MinIO 式分栏：左品牌侧栏 + 右表单） ────── */
+.login-body { background: #fff; }
+.login-split { display: flex; min-height: 100vh; }
+.login-side {
+  width: 44%; min-width: 380px; background: #0d2f6e; color: #fff;
+  display: flex; flex-direction: column;
+  padding: 44px 48px 30px;
+}
+.side-logo { width: 46px; height: 46px; display: block; }
+.side-title { font-size: 22px; font-weight: 600; margin: 18px 0 6px; }
+.side-sub {
+  font-size: 13px; color: rgba(255, 255, 255, 0.65);
+  margin: 0 0 10px; letter-spacing: 0.5px;
+}
+.side-art { width: 100%; max-width: 460px; margin: auto 0; }
+.side-foot {
+  font-size: 12px; color: rgba(255, 255, 255, 0.45);
+  font-family: var(--mono); margin: 12px 0 0;
+}
+.login-main {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 40px 32px;
+}
+.login-box { width: 340px; }
+.login-brand {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600; color: var(--text-1);
+  margin-bottom: 28px;
+}
+.login-brand img { width: 24px; height: 24px; display: block; }
+.login-box h2 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+.login-box .login-sub { font-size: 13px; color: var(--text-3); margin: 0 0 24px; }
+.login-box .field { margin-bottom: 16px; }
+.login-box .field > span { font-size: 12.5px; color: var(--text-2); }
+.login-box .field input { height: 38px; font-size: 14px; }
+.login-box .btn.lg { margin-top: 10px; height: 40px; font-size: 14.5px; }
+.login-hint {
+  margin: 18px 0 0; font-size: 12px; color: var(--text-3); line-height: 1.7;
+  padding-top: 14px; border-top: 1px solid var(--divider);
+}
+
+@media (max-width: 880px) {
+  .login-side { display: none; }
+}
+
+/* ── 响应式 ───────────────────────────────────── */
+@media (max-width: 900px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .filter-bar input, .filter-bar select { width: 140px; }
+}

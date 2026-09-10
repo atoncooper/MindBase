@@ -1,0 +1,48 @@
+{{define "content"}}
+<form method="get" action="/memberships" class="filter-bar">
+  <label>uid 精确查询<input name="uid" value="{{.UID}}" class="w-xs" placeholder="用户 uid"></label>
+  <button class="btn primary" type="submit">查询</button>
+  <a class="btn" href="/memberships">重置</a>
+</form>
+
+{{if .Matched}}
+<div class="panel">
+  <dl class="kv kv-half">
+    <dt>uid</dt><dd>{{.Matched.UID}}</dd>
+    <dt>档位</dt><dd>{{.Matched.Tier}}</dd>
+    <dt>状态</dt><dd><span class="st {{if .Matched.Active}}st-green{{else}}st-gray{{end}}"><i></i>{{if .Matched.Active}}生效中{{else}}已过期{{end}}</span></dd>
+    <dt>到期时间</dt><dd>{{.Matched.ExpireAt}}</dd>
+    <dt>自动续费</dt><dd>{{if .Matched.AutoRenew}}是{{else}}否{{end}}</dd>
+    <dt>最近订单</dt><dd class="mono">{{if .Matched.LastOrderNo}}{{.Matched.LastOrderNo}}{{else}}-{{end}}</dd>
+  </dl>
+</div>
+{{else if .Searched}}
+<div class="flash flash-warn">该 uid 无会员记录</div>
+{{end}}
+
+<div class="panel">
+  <table class="tbl">
+    <thead><tr><th>uid</th><th>档位</th><th>状态</th><th>到期时间</th><th>最近订单</th><th>更新时间</th><th>事件</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td>{{.UID}}</td>
+        <td>{{.Tier}}</td>
+        <td><span class="st {{if .Active}}st-green{{else}}st-gray{{end}}"><i></i>{{if .Active}}生效中{{else}}已过期{{end}}</span></td>
+        <td>{{.ExpireAt}}</td>
+        <td class="mono">{{if .LastOrderNo}}{{.LastOrderNo}}{{else}}-{{end}}</td>
+        <td>{{.UpdatedAt}}</td>
+        <td><a class="lnk" href="/memberships/{{.UID}}/events">事件流水</a></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">暂无会员</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="pager">
+    <span>共 {{.Total}} 条 · 第 {{.Page}} 页</span>
+    {{if .HasPrev}}<a class="btn sm" href="{{.PrevURL}}">上一页</a>{{else}}<span class="btn sm disabled">上一页</span>{{end}}
+    {{if .HasNext}}<a class="btn sm" href="{{.NextURL}}">下一页</a>{{else}}<span class="btn sm disabled">下一页</span>{{end}}
+  </div>
+</div>
+{{end}}
