@@ -630,6 +630,7 @@ services:
   # MembershipService.extend 语义），运行时不依赖 app-pay/APISIX。自带账户体系
   # （payadmin_user + bcrypt），仅回环暴露，不经 APISIX（同 app-task WebUI 先例）。
   app-pay-admin:
+    image: ${APP_PAY_ADMIN_IMAGE:-ghcr.io/atoncooper/mind-base-app-pay-admin:latest}
     build:
       context: ./app-pay-admin
       dockerfile: Dockerfile
