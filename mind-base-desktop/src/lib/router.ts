@@ -21,7 +21,7 @@
 
 import { useEffect, useState } from "react";
 
-export type SettingsTab = "system" | "api";
+export type SettingsTab = "system" | "api" | "agent";
 
 export type Route =
   | { view: "home" }
@@ -50,6 +50,7 @@ export const FAVORITES_HASH = "#/favorites";
 export const SKILLS_HASH = "#/skills";
 export const SETTINGS_SYSTEM_HASH = "#/settings/system";
 export const SETTINGS_API_HASH = "#/settings/api";
+export const SETTINGS_AGENT_HASH = "#/settings/agent";
 
 /** Hash of one persisted quiz set's detail page. */
 export function quizSetHash(id: string): string {
@@ -63,7 +64,7 @@ export function mindMapHash(id: string): string {
 
 /** Parse the current location hash into a [`Route`]. */
 export function parseHash(): Route {
-  const match = /^#\/settings\/(system|api)\/?$/.exec(window.location.hash);
+  const match = /^#\/settings\/(system|api|agent)\/?$/.exec(window.location.hash);
   if (match !== null) {
     return { view: "settings", tab: match[1] as SettingsTab };
   }

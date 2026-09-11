@@ -6012,3 +6012,189 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   Agent 状态面板 — 任务行与工具清单。
+   --------------------------------------------------------------------------- */
+
+.agent-task {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.agent-task__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-task__meta {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+.agent-badge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink-2);
+}
+
+.agent-task__inject {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.agent-task__inject .cfg-input {
+  flex: 1;
+}
+
+.tool-row {
+  padding: 8px 0;
+  border-top: 1px dashed var(--line);
+}
+
+.tool-row:first-of-type {
+  border-top: none;
+}
+
+.tool-row__name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.tool-row__agents {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin: 4px 0 0;
+}
+
+.tool-row__desc {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+/* cfg-row 宽标签变体（网络代理卡片的「HTTPS 代理地址」等长标签）。 */
+.cfg-row--wide {
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+}
+
+/* 按钮行后的提示文字留呼吸感。 */
+.card__actions + .hint-text {
+  margin-top: 12px;
+}
+
+.hint-text + .hint-text {
+  margin-top: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+   对话中的 agent 实时状态条（流式生成期间显示谁在干活）。
+   --------------------------------------------------------------------------- */
+
+.agent-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.agent-live__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3ba55d;
+  animation: agent-live-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes agent-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.agent-live__name {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+
+.agent-live__action {
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   任务计划面板（plan 工具的检查点清单，对话内与 Agent 面板共用样式）。
+   --------------------------------------------------------------------------- */
+
+.plan-panel {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.plan-panel__head {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  margin-bottom: 4px;
+}
+
+.plan-panel__steps {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+}
+
+.plan-step {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.plan-step__mark {
+  font-family: var(--font-mono);
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.plan-step--done .plan-step__desc {
+  color: var(--ink-2);
+  text-decoration: line-through;
+}
+
+.plan-step--in_progress .plan-step__desc {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.plan-step__note {
+  color: var(--ink-2);
+  font-size: 11px;
+}

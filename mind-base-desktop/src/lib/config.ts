@@ -26,6 +26,8 @@ export interface AppConfig {
   proxyHttp?: string | null;
   /** 出口代理（https:// 目标），如 socks5://127.0.0.1:10808；空 = 直连。 */
   proxyHttps?: string | null;
+  /** 视觉读图开关：命中的图片文档原图随上下文发给支持视觉的模型（默认关）。 */
+  visionEnabled?: boolean;
 }
 
 /** 本地 whisper 服务设置（与 Rust `LocalAsrConfig` 对齐）。服务由应用通过

@@ -27,20 +27,15 @@ pub(crate) struct ToolOutput {
     pub content: String,
     pub hits: Vec<KnowledgeHit>,
     pub sub_steps: Vec<SubStep>,
+    /// Vision attachments (image data URLs) — carried onto the tool-result
+    /// message for vision-capable models (视觉模型读图).
+    pub images: Vec<String>,
 }
 
 impl ToolOutput {
     pub(crate) fn text(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
-            ..Default::default()
-        }
-    }
-
-    pub(crate) fn with_hits(content: String, hits: Vec<KnowledgeHit>) -> Self {
-        Self {
-            content,
-            hits,
             ..Default::default()
         }
     }
@@ -64,6 +59,9 @@ pub(crate) struct ToolContext<'a> {
     /// that themselves call an LLM (compressed-summary generation).
     pub chat_client: Option<&'a crate::llm_chat::ChatClient>,
     pub session_id: &'a str,
+    /// Which agent's ReAct loop this context serves — scopes agent-owned
+    /// resources (load_prompt reads this agent's own prompt tree).
+    pub agent: crate::agents::AgentKind,
     /// Present only while the chat agent's ReAct loop is running.
     pub delegate: Option<&'a DelegateFn>,
 }
@@ -92,7 +90,11 @@ pub(crate) struct ToolRegistry {
 impl ToolRegistry {
     pub(crate) fn register(&mut self, tool: Box<dyn LocalTool>) {
         let name = tool.spec().name;
-        if self.tools.iter().any(|existing| existing.spec().name == name) {
+        if self
+            .tools
+            .iter()
+            .any(|existing| existing.spec().name == name)
+        {
             eprintln!("[REGISTRY] tool `{name}` registered twice; overwriting");
             self.tools.retain(|existing| existing.spec().name != name);
         }
@@ -109,12 +111,18 @@ impl ToolRegistry {
     pub(crate) fn names(&self) -> Vec<&'static str> {
         self.tools.iter().map(|tool| tool.spec().name).collect()
     }
+
+    /// Full wire specs of every registered tool (name + description) — used
+    /// by the agent-status UI and the `harness_tools` command.
+    pub(crate) fn specs(&self) -> Vec<ToolSpec> {
+        self.tools.iter().map(|tool| tool.spec().clone()).collect()
+    }
 }
 
 /// Parse the required string argument `name` out of raw tool arguments.
 pub(crate) fn require_string_arg(arguments: &str, name: &str) -> Result<String, String> {
-    let value: Value = serde_json::from_str(arguments)
-        .map_err(|err| format!("工具参数解析失败：{err}"))?;
+    let value: Value =
+        serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
     let parsed = value
         .get(name)
         .and_then(|v| v.as_str())

@@ -12,7 +12,20 @@ import { memo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+
+/**
+ * react-markdown 默认会把"非安全协议"的 href 清空（Windows 盘符 `D:/` 会被
+ * 当作未知协议丢掉）。这里放行两类链接：http(s)/file 与 Windows 盘符/根路径；
+ * 其余协议（javascript: 等）一律清空——点击处理器会 preventDefault，
+ * 但仍从源头掐掉危险协议。
+ */
+function allowUrl(url: string): string {
+  if (/^(https?|file):/i.test(url)) return url;
+  if (/^[a-zA-Z]:[\\/]/.test(url) || url.startsWith("/")) return url;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) return url; // 无协议 = 相对路径
+  return "";
+}
 
 const MD_PLUGINS = [remarkGfm, remarkBreaks];
 
@@ -80,7 +93,12 @@ const MD_COMPONENTS: Components = {
         onClick={(event) => {
           if (href === undefined || href === "") return;
           event.preventDefault();
-          void openUrl(href);
+          if (/^https?:/i.test(href)) {
+            void openUrl(href);
+          } else {
+            // 本地文件链接（agent 代码交付等）：用系统默认程序打开。
+            void openPath(href);
+          }
         }}
       >
         {children}
@@ -101,7 +119,11 @@ function MarkdownContentImpl({
 }: MarkdownContentProps): React.JSX.Element {
   return (
     <div className={streaming ? "md-content markdown-body is-streaming" : "md-content markdown-body"}>
-      <ReactMarkdown remarkPlugins={MD_PLUGINS} components={MD_COMPONENTS}>
+      <ReactMarkdown
+        remarkPlugins={MD_PLUGINS}
+        urlTransform={allowUrl}
+        components={MD_COMPONENTS}
+      >
         {content}
       </ReactMarkdown>
     </div>

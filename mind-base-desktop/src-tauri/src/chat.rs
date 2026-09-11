@@ -18,10 +18,10 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
+use crate::agents::AgentKind;
 use crate::db::{self, Db};
 use crate::embeddings::embed_client_from_conn_opt;
 use crate::ingest::KnowledgeHit;
-use crate::agents::AgentKind;
 use crate::llm_chat::{chat_client_from_conn, ChatClient, ChatMessage};
 
 /// How many completed history messages ride along as conversation context
@@ -135,7 +135,11 @@ pub struct ChatSource {
 
 /// One progress frame pushed during `chat_ask`.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ChatEvent {
     /// Harness executed one tool round (`action` = vector_search).
     Step {
@@ -149,6 +153,11 @@ pub enum ChatEvent {
         agent: String,
         action: String,
         query: String,
+    },
+    /// 任务计划的创建/更新（plan 工具）：前端渲染实时计划清单。
+    Plan {
+        version: u32,
+        steps: Vec<crate::harness::PlanStepView>,
     },
     Chunk {
         content: String,
@@ -397,7 +406,13 @@ pub(crate) fn format_context_blocks(hits: &[KnowledgeHit]) -> String {
         let body = group
             .iter()
             .take(PER_VIDEO_CHUNKS)
-            .map(|hit| format!("【{heading}】(相关度: {:.2})\n{}", hit.score, hit.content.trim()))
+            .map(|hit| {
+                format!(
+                    "【{heading}】(相关度: {:.2})\n{}",
+                    hit.score,
+                    hit.content.trim()
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         blocks.push(body);
@@ -415,7 +430,10 @@ pub(crate) fn sanitize_title(raw: &str) -> String {
     }
     let trimmed: String = text
         .trim_matches(|c: char| {
-            matches!(c, '"' | '\'' | '《' | '》' | '「' | '」' | '『' | '』' | '。' | '！' | '？' | ' ')
+            matches!(
+                c,
+                '"' | '\'' | '《' | '》' | '「' | '」' | '『' | '』' | '。' | '！' | '？' | ' '
+            )
         })
         .chars()
         .filter(|c| !c.is_whitespace())
@@ -426,7 +444,10 @@ pub(crate) fn sanitize_title(raw: &str) -> String {
 
 /// Fallback title: first non-space chars of the first message.
 pub(crate) fn fallback_title(first_message: &str) -> String {
-    let squeezed: String = first_message.split_whitespace().collect::<Vec<_>>().join("");
+    let squeezed: String = first_message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("");
     let title: String = squeezed.chars().take(TITLE_MAX_CHARS).collect();
     if title.is_empty() {
         "新对话".to_string()
@@ -469,7 +490,10 @@ pub(crate) fn collect_sources(hits: &[KnowledgeHit]) -> Vec<ChatSource> {
             None => best.push((key, source)),
         }
     }
-    best.into_iter().map(|(_, source)| source).take(SOURCE_CAP).collect()
+    best.into_iter()
+        .map(|(_, source)| source)
+        .take(SOURCE_CAP)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +510,10 @@ pub fn chat_sessions_list(db: State<'_, Db>) -> Result<Vec<ChatSessionRow>, Stri
 }
 
 #[tauri::command]
-pub fn chat_session_create(db: State<'_, Db>, title: Option<String>) -> Result<ChatSessionRow, String> {
+pub fn chat_session_create(
+    db: State<'_, Db>,
+    title: Option<String>,
+) -> Result<ChatSessionRow, String> {
     let session_id = db::local_id();
     let title = match title {
         Some(title) if !title.trim().is_empty() => title.trim().to_string(),
@@ -497,12 +524,15 @@ pub fn chat_session_create(db: State<'_, Db>, title: Option<String>) -> Result<C
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     insert_session_conn(&conn, &session_id, &title)?;
-    get_session_conn(&conn, &session_id)?
-        .ok_or_else(|| "会话创建失败".to_string())
+    get_session_conn(&conn, &session_id)?.ok_or_else(|| "会话创建失败".to_string())
 }
 
 #[tauri::command]
-pub fn chat_session_rename(db: State<'_, Db>, session_id: String, title: String) -> Result<(), String> {
+pub fn chat_session_rename(
+    db: State<'_, Db>,
+    session_id: String,
+    title: String,
+) -> Result<(), String> {
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("标题不能为空".to_string());
@@ -530,22 +560,9 @@ pub fn chat_session_delete(db: State<'_, Db>, session_id: String) -> Result<(), 
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|err| format!("failed to begin transaction: {err}"))?;
-    tx.execute(
-        "DELETE FROM chat_messages WHERE chat_session_id = ?1",
-        params![session_id],
-    )
-    .map_err(|err| format!("failed to delete messages: {err}"))?;
-    tx.execute(
-        "DELETE FROM chat_sessions WHERE chat_session_id = ?1",
-        params![session_id],
-    )
-    .map_err(|err| format!("failed to delete chat session: {err}"))?;
-    tx.commit()
-        .map_err(|err| format!("failed to commit delete: {err}"))?;
-    Ok(())
+    // Cascades to summaries / summary docs / blackboard findings — no memory
+    // layer may outlive its session (plan/1.0.10-AgentMemory §8.5).
+    crate::db::delete_session_cascade(&conn, &session_id)
 }
 
 #[tauri::command]
@@ -662,10 +679,15 @@ pub async fn chat_summarize(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut answer = String::new();
         let mut batcher = DeltaBatcher::new(stream_channel);
-        let outcome = client.stream_turn(&messages, None, &mut |delta| {
-            answer.push_str(delta);
-            batcher.push(delta);
-        }, None);
+        let outcome = client.stream_turn(
+            &messages,
+            None,
+            &mut |delta| {
+                answer.push_str(delta);
+                batcher.push(delta);
+            },
+            None,
+        );
         batcher.flush();
         outcome.map(|_| answer)
     })
@@ -695,14 +717,27 @@ pub async fn chat_summarize(
                         .map_err(|err| format!("failed to persist summary: {err}"))
                     });
                 if let Err(error) = persist {
-                    eprintln!("[SUMMARY] persist failed session={}: {error}", &session_id[..8.min(session_id.len())]);
+                    eprintln!(
+                        "[SUMMARY] persist failed session={}: {error}",
+                        &session_id[..8.min(session_id.len())]
+                    );
                 }
             }
-            emit(&ChatEvent::Done { msg_id: String::new() }, &on_event);
+            emit(
+                &ChatEvent::Done {
+                    msg_id: String::new(),
+                },
+                &on_event,
+            );
             Ok(())
         }
         Err(error) => {
-            emit(&ChatEvent::Error { message: error.clone() }, &on_event);
+            emit(
+                &ChatEvent::Error {
+                    message: error.clone(),
+                },
+                &on_event,
+            );
             Err(error)
         }
     }
@@ -772,8 +807,8 @@ pub async fn chat_ask(
             .conn
             .lock()
             .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        let session = get_session_conn(&conn, &session_id)?
-            .ok_or_else(|| "会话不存在".to_string())?;
+        let session =
+            get_session_conn(&conn, &session_id)?.ok_or_else(|| "会话不存在".to_string())?;
         let history = recent_history_conn(&conn, &session_id, HISTORY_WINDOW)?;
         // 向量化客户端可选：只配了对话密钥（如仅 OpenRouter）时跳过检索，
         // vector_search 工具会自行给出友好提示。
@@ -782,9 +817,7 @@ pub async fn chat_ask(
             Some(p) if !p.is_empty() => Some(crate::llm_chat::chat_client_for(&conn, p)?),
             _ => chat_client_from_conn(&conn)?,
         }
-        .ok_or_else(|| {
-            "未配置任何对话模型，请先在「API 设置」中填写提供方密钥".to_string()
-        })?;
+        .ok_or_else(|| "未配置任何对话模型，请先在「API 设置」中填写提供方密钥".to_string())?;
         // 强制注入技能：显式选择无效（不存在/被禁用）时整轮报错，不静默忽略。
         let skill_body = match skill.as_deref().map(str::trim) {
             Some(name) if !name.is_empty() => {
@@ -796,7 +829,13 @@ pub async fn chat_ask(
             }
             _ => None,
         };
-        (history, embed_client, chat_client, is_default_title(&session.title), skill_body)
+        (
+            history,
+            embed_client,
+            chat_client,
+            is_default_title(&session.title),
+            skill_body,
+        )
     };
 
     let assistant_msg_id = db::local_id();
@@ -811,7 +850,15 @@ pub async fn chat_ask(
         let tx = conn
             .unchecked_transaction()
             .map_err(|err| format!("failed to begin transaction: {err}"))?;
-        insert_message_conn(&tx, &db::local_id(), &session_id, "user", &question, "completed", "")?;
+        insert_message_conn(
+            &tx,
+            &db::local_id(),
+            &session_id,
+            "user",
+            &question,
+            "completed",
+            "",
+        )?;
         insert_message_conn(
             &tx,
             &assistant_msg_id,
@@ -833,7 +880,12 @@ pub async fn chat_ask(
             .map_err(|err| format!("failed to begin turn: {err}"))?;
 
         if was_default_title {
-            emit(&ChatEvent::Title { title: instant_title }, &on_event);
+            emit(
+                &ChatEvent::Title {
+                    title: instant_title,
+                },
+                &on_event,
+            );
         }
     }
 
@@ -881,6 +933,9 @@ pub async fn chat_ask(
     let event_channel = on_event.clone();
     let model_name = chat_client.model_name().to_string();
     let session_for_finalize = session_id.clone();
+    // The file store (L1 transcript) needs the raw question after the
+    // closure below has moved `question`.
+    let question_for_store = question.clone();
     let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<
         crate::harness::ReactOutcome,
@@ -926,6 +981,7 @@ pub async fn chat_ask(
                 "note" => AgentKind::Note,
                 "code" => AgentKind::Code,
                 "search" => AgentKind::Search,
+                "academic" => AgentKind::Academic,
                 other => return Err(format!("不可委托的目标：{other}")),
             };
             // Forward each child tool round to the UI as it happens so the
@@ -950,11 +1006,22 @@ pub async fn chat_ask(
                 query,
                 &mut on_child_step,
             ) {
-                Ok(pair) => {
+                Ok((answer, _sub_steps)) => {
                     crate::harness::harness()
                         .lifecycle
                         .reset_delegate_failures(&bridge_session, agent_name);
-                    Ok(pair)
+                    // Blackboard auto-deposit (plan/1.0.10-AgentMemory §5):
+                    // every successful delegation leaves a signed structured
+                    // finding the whole session can read back. Best-effort —
+                    // a blackboard write failure never fails the delegation.
+                    crate::harness::tools::deposit_session_finding(
+                        &bridge_handle,
+                        &bridge_session,
+                        agent_name,
+                        query,
+                        &answer,
+                    );
+                    Ok((answer, _sub_steps))
                 }
                 Err(error) => Err(error),
             }
@@ -966,6 +1033,7 @@ pub async fn chat_ask(
             embed_client: embed_client.as_ref(),
             chat_client: Some(&chat_client),
             session_id: &session_id,
+            agent: crate::agents::AgentKind::Chat,
             delegate: Some(delegate_box.as_ref()),
         };
 
@@ -975,6 +1043,18 @@ pub async fn chat_ask(
         // the flag is a one-way latch, no ordering with other data matters.
         let stop_flag = cancel_token.clone();
         let should_stop = move || stop_flag.load(Ordering::Relaxed);
+
+        // plan 状态变化 → 推送计划清单事件（前端实时渲染计划面板）。
+        let plan_channel = event_channel.clone();
+        let on_plan = move |snapshot: &crate::harness::PlanSnapshot| {
+            emit(
+                &ChatEvent::Plan {
+                    version: snapshot.version,
+                    steps: snapshot.steps.clone(),
+                },
+                &plan_channel,
+            );
+        };
 
         let mut callbacks = crate::harness::ReactCallbacks {
             on_step: &mut |step_no, action, query| {
@@ -989,6 +1069,9 @@ pub async fn chat_ask(
             },
             on_delta: &mut |delta| batcher.push(delta),
             should_stop: Some(&should_stop),
+            on_plan: Some(&on_plan),
+            mailbox: None,
+            step_budget: None,
         };
 
         let outcome = crate::harness::react_loop(
@@ -1022,7 +1105,12 @@ pub async fn chat_ask(
         Ok(result) => {
             let sources = collect_sources(&result.hits);
             if !sources.is_empty() {
-                emit(&ChatEvent::Sources { sources: sources.clone() }, &on_event);
+                emit(
+                    &ChatEvent::Sources {
+                        sources: sources.clone(),
+                    },
+                    &on_event,
+                );
             }
             let db = app.state::<Db>();
             let conn = db
@@ -1040,17 +1128,37 @@ pub async fn chat_ask(
             } else {
                 result.answer
             };
-            complete_assistant_message_tx(
-                &tx,
-                &assistant_msg_id,
-                &answer,
-                &sources,
-                &model_name,
-            )?;
+            complete_assistant_message_tx(&tx, &assistant_msg_id, &answer, &sources, &model_name)?;
             touch_session_conn(&tx, &session_for_finalize)?;
             tx.commit()
                 .map_err(|err| format!("failed to finalize turn: {err}"))?;
-            emit(&ChatEvent::Done { msg_id: assistant_msg_id.clone() }, &on_event);
+            // L1 conversation stream (plan/1.0.10-AgentMemory §4): the
+            // agent-facing memory of the turn. Best-effort — the SQLite row
+            // above stays the UI truth during the transition.
+            {
+                let data_dir = db
+                    .data_dir
+                    .lock()
+                    .map(|dir| dir.clone())
+                    .unwrap_or_default();
+                let root = data_dir.join("conversations").join(&session_for_finalize);
+                if let Err(err) = crate::store::append_turn(
+                    &root,
+                    "chat",
+                    "question",
+                    &question_for_store,
+                    &answer,
+                    serde_json::json!({}),
+                ) {
+                    eprintln!("[STORE] turn append failed: {err}");
+                }
+            }
+            emit(
+                &ChatEvent::Done {
+                    msg_id: assistant_msg_id.clone(),
+                },
+                &on_event,
+            );
             Ok(ChatTurnResult {
                 msg_id: assistant_msg_id,
                 answer,
@@ -1063,7 +1171,26 @@ pub async fn chat_ask(
                 .lock()
                 .map_err(|err| format!("failed to acquire database lock: {err}"))?;
             fail_assistant_message_conn(&conn, &assistant_msg_id, &error)?;
-            emit(&ChatEvent::Error { message: error.clone() }, &on_event);
+            // The failed turn also enters the error stream (traceability:
+            // what failed, when, with which message — plan/1.0.10 §7).
+            if let Ok(data_dir) = db.data_dir.lock() {
+                let root = data_dir.join("conversations").join(&session_for_finalize);
+                let _ = crate::store::append_error(
+                    &root,
+                    &session_for_finalize,
+                    0,
+                    "chat",
+                    "runtime",
+                    &error,
+                    &error,
+                );
+            }
+            emit(
+                &ChatEvent::Error {
+                    message: error.clone(),
+                },
+                &on_event,
+            );
             Err(error)
         }
     }
@@ -1077,8 +1204,7 @@ fn complete_assistant_message_tx(
     sources: &[ChatSource],
     model: &str,
 ) -> Result<(), String> {
-    let sources_json =
-        serde_json::to_string(sources).unwrap_or_else(|_| "[]".to_string());
+    let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".to_string());
     conn.execute(
         "UPDATE chat_messages SET status = 'completed', content = ?2, sources = ?3, model = ?4
          WHERE msg_id = ?1",
@@ -1134,7 +1260,14 @@ fn spawn_title_refinement(
 mod tests {
     use super::*;
 
-    fn hit(doc_id: &str, bvid: &str, title: &str, page: &str, score: f32, content: &str) -> KnowledgeHit {
+    fn hit(
+        doc_id: &str,
+        bvid: &str,
+        title: &str,
+        page: &str,
+        score: f32,
+        content: &str,
+    ) -> KnowledgeHit {
         KnowledgeHit {
             doc_id: doc_id.to_string(),
             chunk_index: 0,
@@ -1159,8 +1292,14 @@ mod tests {
         assert!(blocks.contains("【视频A · P1】"));
         assert!(blocks.contains("【视频B】"));
         assert!(blocks.contains("---"));
-        assert!(blocks.starts_with("【视频A · P1】"), "highest-score group first content");
-        assert!(blocks.find("A低").unwrap() > blocks.find("A高").unwrap(), "sorted by score in group");
+        assert!(
+            blocks.starts_with("【视频A · P1】"),
+            "highest-score group first content"
+        );
+        assert!(
+            blocks.find("A低").unwrap() > blocks.find("A高").unwrap(),
+            "sorted by score in group"
+        );
     }
 
     #[test]
@@ -1181,7 +1320,10 @@ mod tests {
     fn fallback_title_squeezes_and_truncates() {
         assert_eq!(fallback_title("你好 世界"), "你好世界");
         assert_eq!(fallback_title(""), "新对话");
-        assert_eq!(fallback_title(&"字 ".repeat(20)).chars().count(), TITLE_MAX_CHARS);
+        assert_eq!(
+            fallback_title(&"字 ".repeat(20)).chars().count(),
+            TITLE_MAX_CHARS
+        );
     }
 
     #[test]

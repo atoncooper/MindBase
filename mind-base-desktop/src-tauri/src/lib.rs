@@ -17,11 +17,13 @@ mod media_cache;
 mod mindmap;
 mod notes;
 mod ocr_server;
+mod prompts;
 mod python_runtime;
 mod quiz;
 mod resume;
 mod skills;
 mod slides;
+mod store;
 mod updater;
 mod vectors;
 mod wbi;
@@ -71,9 +73,20 @@ pub fn run() {
             // set.
             let db = db::init(app.handle())?;
             // Initialise the file logger under the active data dir so ASR and
-            // pipeline failures can be inspected on disk.
+            // pipeline failures can be inspected on disk, and seed the
+            // editable agent-prompt defaults (<data>/prompts/**.md).
             if let Ok(dir) = db.data_dir.lock() {
                 logging::init(&dir);
+                prompts::seed_defaults(&dir);
+            }
+            // Cache the ffmpeg binary for vision-attachment downscaling
+            // (resolved with the user's override from the stored config).
+            if let Ok(conn) = db.conn.lock() {
+                let override_path = config::load(&conn)
+                    .ok()
+                    .and_then(|cfg| cfg.ffmpeg_path_override);
+                drop(conn);
+                ffmpeg::cache_ffmpeg_path(app.handle(), override_path.as_deref());
             }
             // Seed the process-wide egress-proxy snapshot from the stored
             // config so outbound requests route correctly from the first use.
@@ -210,6 +223,7 @@ pub fn run() {
             mindmap::mindmap_template_list,
             mindmap::mindmap_template_delete,
             harness::harness_health,
+            harness::harness_tools,
             chat::chat_summarize,
             chat::chat_summary_get,
             skills::skills_list,
@@ -221,6 +235,11 @@ pub fn run() {
             skills::skills_store_install,
             skills::skills_uninstall,
             api_keys::set_default_provider,
+            harness::tasks::agent_task_spawn,
+            harness::tasks::agent_task_inject,
+            harness::tasks::agent_task_stop,
+            harness::tasks::agent_task_get,
+            harness::tasks::agent_task_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

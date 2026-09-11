@@ -47,6 +47,11 @@ export interface ChatMessageRow {
 export type ChatEvent =
   | { type: "step"; step: number; action: string; query: string }
   | { type: "subStep"; step: number; agent: string; action: string; query: string }
+  | {
+      type: "plan";
+      version: number;
+      steps: { desc: string; status: string; note: string }[];
+    }
   | { type: "chunk"; content: string }
   | { type: "sources"; sources: ChatSource[] }
   | { type: "title"; title: string }

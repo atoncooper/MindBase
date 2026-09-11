@@ -12,6 +12,7 @@ import "./App.css";
 import UpdateBanner from "./components/UpdateBanner";
 import SystemSettings from "./components/SystemSettings";
 import ApiSettings from "./components/ApiSettings";
+import AgentStatusView from "./components/AgentStatusView";
 import ChatView from "./components/chat/ChatView";
 import KnowledgeView from "./components/KnowledgeView";
 import ImportView from "./components/import-view/ImportView";
@@ -28,6 +29,7 @@ import NavRail from "./components/NavRail";
 import {
   SETTINGS_API_HASH,
   SETTINGS_SYSTEM_HASH,
+  SETTINGS_AGENT_HASH,
   navigate,
   useHashRoute,
 } from "./lib/router";
@@ -42,6 +44,7 @@ import CommandPalette from "./components/CommandPalette";
 const TABS: ReadonlyArray<{ id: SettingsTab; label: string; hash: string }> = [
   { id: "system", label: "系统设置", hash: SETTINGS_SYSTEM_HASH },
   { id: "api", label: "API 设置", hash: SETTINGS_API_HASH },
+  { id: "agent", label: "Agent", hash: SETTINGS_AGENT_HASH },
 ];
 
 /** Per-view subtitle for the non-chat routes（全幅布局，不再分宽窄栏）。 */
@@ -206,6 +209,7 @@ function App() {
               </nav>
               <SystemSettings hidden={route.tab !== "system"} updateState={updateState} />
               <ApiSettings hidden={route.tab !== "api"} />
+              <AgentStatusView hidden={route.tab !== "agent"} />
             </>
           ) : route.view === "knowledge" ? (
             <KnowledgeView />
