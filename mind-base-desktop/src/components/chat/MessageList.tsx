@@ -293,11 +293,15 @@ const MessageRow = memo(
   function MessageRow({
     message,
     showCursor,
+    liveAgent,
+    planView,
     onRetry,
     onEditResend,
   }: {
     message: UiMessage;
     showCursor: boolean;
+    liveAgent: LiveAgentStatus | null;
+    planView: PlanView | null;
     onRetry: (messageId: string) => void;
     onEditResend: (messageId: string, text: string) => void;
   }): React.JSX.Element {
@@ -310,6 +314,42 @@ const MessageRow = memo(
             message.status === "failed" ? "assistant-block assistant-block--error" : "assistant-block"
           }
         >
+          {message.status === "pending" && liveAgent !== null && (
+            <div className="agent-live" role="status">
+              <span className="agent-live__dot" aria-hidden="true" />
+              <span className="agent-live__name">{liveAgent.name}</span>
+              <span className="agent-live__action">
+                {liveAgent.step > 0 ? `第 ${liveAgent.step} 步 · ` : ""}
+                {liveAgent.action}
+              </span>
+            </div>
+          )}
+          {message.status === "pending" && planView !== null && (
+            <div className="plan-panel" role="status">
+              <div className="plan-panel__head">
+                任务计划 v{planView.version} ·{" "}
+                {
+                  planView.steps.filter(
+                    (s) => s.status === "done" || s.status === "skipped",
+                  ).length
+                }
+                /{planView.steps.length} 完成
+              </div>
+              <ol className="plan-panel__steps">
+                {planView.steps.map((step, i) => (
+                  <li key={i} className={`plan-step plan-step--${step.status}`}>
+                    <span className="plan-step__mark">
+                      {PLAN_MARKS[step.status] ?? "·"}
+                    </span>
+                    <span className="plan-step__desc">{step.desc}</span>
+                    {step.note !== "" && (
+                      <span className="plan-step__note"> — {step.note}</span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
           {message.steps.length > 0 && (
             <StepLog steps={message.steps} pending={message.status === "pending"} />
           )}
@@ -345,10 +385,41 @@ const MessageRow = memo(
   (a, b) => a.message === b.message && a.showCursor === b.showCursor,
 );
 
+export interface PlanStepView {
+  desc: string;
+  status: string;
+  note: string;
+}
+
+export interface PlanView {
+  version: number;
+  steps: PlanStepView[];
+}
+
+const PLAN_MARKS: Record<string, string> = {
+  done: "✓",
+  in_progress: "▶",
+  failed: "✗",
+  skipped: "⊘",
+  pending: "·",
+};
+
+export interface LiveAgentStatus {
+  /** 展示名（含子代理标注）。 */
+  name: string;
+  /** 正在执行的动作描述。 */
+  action: string;
+  step: number;
+}
+
 interface MessageListProps {
   messages: UiMessage[];
   /** True while a turn is streaming — drives the typing cursor + autoscroll. */
   busy: boolean;
+  /** 对话进行中的实时 agent 状态（谁在干活/正在做什么）；null = 空闲。 */
+  liveAgent: LiveAgentStatus | null;
+  /** 任务计划面板（plan 工具维护的检查点清单）。 */
+  planView: PlanView | null;
   onSuggestion: (text: string) => void;
   /** 重试一条失败的回复（沿用其上方用户消息重新生成）。 */
   onRetry: (messageId: string) => void;
@@ -359,6 +430,8 @@ interface MessageListProps {
 function MessageList({
   messages,
   busy,
+  liveAgent,
+  planView,
   onSuggestion,
   onRetry,
   onEditResend,
@@ -415,6 +488,8 @@ function MessageList({
             key={message.id}
             message={message}
             showCursor={showCursor && message === lastMessage}
+            liveAgent={message === lastMessage ? liveAgent : null}
+            planView={message === lastMessage ? planView : null}
             onRetry={onRetry}
             onEditResend={onEditResend}
           />

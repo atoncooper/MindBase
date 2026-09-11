@@ -189,6 +189,10 @@ pub struct AppConfig {
     /// 出口代理（https:// 目标）。None/空 = 直连。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_https: Option<String>,
+    /// 视觉读图开关：开启后，知识库命中的图片文档会把原图（缩放后）作为附件
+    /// 发给支持视觉的对话模型（默认关——原图会以 base64 发往云端，涉及隐私取舍）。
+    #[serde(default)]
+    pub vision_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -205,6 +209,7 @@ impl Default for AppConfig {
             media_cache_max_mb: default_media_cache_max_mb(),
             proxy_http: None,
             proxy_https: None,
+            vision_enabled: false,
         }
     }
 }

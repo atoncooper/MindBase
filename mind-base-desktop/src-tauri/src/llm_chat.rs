@@ -31,6 +31,11 @@ pub(crate) struct ChatMessage {
     pub tool_calls: Option<serde_json::Value>,
     /// Tool-result-only: the id of the call this message answers.
     pub tool_call_id: Option<String>,
+    /// Multimodal attachments (data URLs, e.g. `data:image/jpeg;base64,...`).
+    /// Non-empty → the request body carries content as a parts array
+    /// (text + image_url) instead of a plain string. Only set on
+    /// tool-result / user messages by the vision pipeline.
+    pub images: Vec<String>,
 }
 
 impl ChatMessage {
@@ -40,6 +45,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            images: Vec::new(),
         }
     }
 
@@ -53,6 +59,7 @@ impl ChatMessage {
             content,
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            images: Vec::new(),
         }
     }
 
@@ -63,12 +70,43 @@ impl ChatMessage {
             content,
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
+            images: Vec::new(),
         }
+    }
+
+    /// Tool execution result that additionally carries vision attachments
+    /// (image data URLs fetched from image/PDF knowledge-base documents).
+    pub(crate) fn tool_result_with_images(
+        tool_call_id: String,
+        content: String,
+        images: Vec<String>,
+    ) -> Self {
+        let mut message = Self::tool_result(tool_call_id, content);
+        message.images = images;
+        message
     }
 
     /// Request-body JSON for this message.
     fn to_payload(&self) -> serde_json::Value {
-        let mut value = serde_json::json!({ "role": self.role, "content": self.content });
+        // Multimodal form: text part + image parts (OpenAI-compatible
+        // content array; DashScope compatible-mode accepts the same shape
+        // for its VL models).
+        let content = if self.images.is_empty() {
+            serde_json::Value::String(self.content.clone())
+        } else {
+            let mut parts = vec![serde_json::json!({
+                "type": "text",
+                "text": self.content,
+            })];
+            for url in &self.images {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": url },
+                }));
+            }
+            serde_json::Value::Array(parts)
+        };
+        let mut value = serde_json::json!({ "role": self.role, "content": content });
         if let Some(calls) = &self.tool_calls {
             value["tool_calls"] = calls.clone();
         }
@@ -77,6 +115,57 @@ impl ChatMessage {
         }
         value
     }
+}
+
+/// Conservative name-based vision capability heuristic. Models whose name
+/// matches any of these fragments are treated as able to consume image
+/// parts; everything else stays text-only.
+pub(crate) fn model_supports_vision(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    [
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "qvq",
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "chatgpt-4o",
+        "o3",
+        "o4",
+        "claude-3",
+        "claude-sonnet",
+        "claude-opus",
+        "claude-haiku",
+        "gemini",
+        "glm-4v",
+        "glm-4.5v",
+        "pixtral",
+        "llava",
+        "internvl",
+        "doubao-1.5-vision",
+        "doubao-seed",
+    ]
+    .iter()
+    .any(|marker| model.contains(marker))
+}
+
+/// Does any message in the sequence carry image attachments?
+fn has_images(messages: &[ChatMessage]) -> bool {
+    messages.iter().any(|message| !message.images.is_empty())
+}
+
+/// Clone the sequence with every image attachment removed — the fallback
+/// shape used when a provider rejects multimodal content.
+fn strip_images(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    messages
+        .iter()
+        .map(|message| {
+            let mut stripped = message.clone();
+            stripped.images = Vec::new();
+            stripped
+        })
+        .collect()
 }
 
 /// One assembled tool call from a streamed assistant turn.
@@ -360,8 +449,8 @@ impl ChatClient {
         messages: &[ChatMessage],
     ) -> Result<String, String> {
         let (primary, fallback) = api_keys::egress_agents(timeout, &self.endpoint)?;
-        let attempt = |agent: &ureq::Agent| -> Result<String, String> {
-            let mut payload = build_stream_payload(self.model_name(), messages);
+        let attempt = |agent: &ureq::Agent, msgs: &[ChatMessage]| -> Result<String, String> {
+            let mut payload = build_stream_payload(self.model_name(), msgs);
             payload["stream"] = serde_json::Value::Bool(false);
             let response = agent
                 .post(&self.endpoint)
@@ -384,13 +473,33 @@ impl ChatClient {
                 .map_err(|err| format!("读取对话响应失败：{err}"))?;
             parse_chat_content(&body)
         };
-        match attempt(&primary) {
+        match attempt(&primary, messages) {
             Ok(body) => Ok(body),
-            Err(first_err) => match &fallback {
-                Some(agent) => attempt(agent)
-                    .map_err(|retry_err| format!("{first_err}；回退重试仍失败：{retry_err}")),
-                None => Err(first_err),
-            },
+            Err(first_err) => {
+                // 视觉回退：带图请求被不支持多模态的模型以 HTTP 4xx 拒绝时，
+                // 去图在同路由重试一次，再走直连回退。
+                if has_images(messages) {
+                    let stripped = strip_images(messages);
+                    if let Ok(body) = attempt(&primary, &stripped) {
+                        return Ok(body);
+                    }
+                }
+                match &fallback {
+                    Some(agent) => {
+                        if let Ok(body) = attempt(agent, messages) {
+                            return Ok(body);
+                        }
+                        if has_images(messages) {
+                            let stripped = strip_images(messages);
+                            if let Ok(body) = attempt(agent, &stripped) {
+                                return Ok(body);
+                            }
+                        }
+                        Err(first_err)
+                    }
+                    None => Err(first_err),
+                }
+            }
         }
     }
 
@@ -415,88 +524,108 @@ impl ChatClient {
         // Err payload: (message, retryable-with-proxy). Declared `mut`: the
         // closure forwards through `&mut on_delta`, so re-invoking it for the
         // proxy retry needs a mutable binding.
-        let mut run = |agent: &ureq::Agent| -> Result<StreamTurn, (String, bool)> {
-            let mut payload = build_stream_payload(&self.model, messages);
-            if let Some(tools) = tools.clone() {
-                payload["tools"] = tools;
-            }
-            let response = agent
-                .post(&self.endpoint)
-                .timeout(STREAM_TIMEOUT)
-                .set("Authorization", &format!("Bearer {}", self.api_key))
-                .set("Content-Type", "application/json")
-                .send_json(payload)
-                .map_err(|err| {
-                    let message = match err {
-                        ureq::Error::Status(code, response) => {
-                            let detail = response.into_string().unwrap_or_default();
-                            format!(
-                                "对话模型调用失败（{}，HTTP {code}）：{}",
-                                self.provider.as_str(),
-                                truncate(&detail, 200)
-                            )
-                        }
-                        other => format!("对话模型请求失败：{other}"),
+        let mut run =
+            |agent: &ureq::Agent, msgs: &[ChatMessage]| -> Result<StreamTurn, (String, bool)> {
+                let mut payload = build_stream_payload(&self.model, msgs);
+                if let Some(tools) = tools.clone() {
+                    payload["tools"] = tools;
+                }
+                let response = agent
+                    .post(&self.endpoint)
+                    .timeout(STREAM_TIMEOUT)
+                    .set("Authorization", &format!("Bearer {}", self.api_key))
+                    .set("Content-Type", "application/json")
+                    .send_json(payload)
+                    .map_err(|err| {
+                        let message = match err {
+                            ureq::Error::Status(code, response) => {
+                                let detail = response.into_string().unwrap_or_default();
+                                format!(
+                                    "对话模型调用失败（{}，HTTP {code}）：{}",
+                                    self.provider.as_str(),
+                                    truncate(&detail, 200)
+                                )
+                            }
+                            other => format!("对话模型请求失败：{other}"),
+                        };
+                        (message, true)
+                    })?;
+                let status = response.status();
+                if status != 200 {
+                    let detail = response.into_string().unwrap_or_default();
+                    return Err((
+                        format!(
+                            "对话模型调用失败（HTTP {status}）：{}",
+                            truncate(&detail, 200)
+                        ),
+                        true,
+                    ));
+                }
+
+                let reader = response.into_reader();
+                let buffered = std::io::BufReader::new(reader);
+                let mut turn = StreamTurn::default();
+                let mut emitted = false;
+                for line in buffered.lines() {
+                    // Cancellation is checked per SSE frame: the frame in
+                    // flight still applies, then the stream is cut and the
+                    // partial turn is returned as-is.
+                    if should_stop.is_some_and(|check| check()) {
+                        turn.interrupted = true;
+                        break;
+                    }
+                    let line = line.map_err(|err| (format!("读取流式响应中断：{err}"), emitted))?;
+                    let Some(payload) = line.strip_prefix("data:") else {
+                        continue; // blank separators / comments / non-data frames
                     };
-                    (message, true)
-                })?;
-            let status = response.status();
-            if status != 200 {
-                let detail = response.into_string().unwrap_or_default();
-                return Err((
-                    format!(
-                        "对话模型调用失败（HTTP {status}）：{}",
-                        truncate(&detail, 200)
-                    ),
-                    true,
-                ));
-            }
+                    if payload.trim() == "[DONE]" {
+                        break;
+                    }
+                    let Ok(chunk) = serde_json::from_str::<serde_json::Value>(payload) else {
+                        continue; // provider keep-alives / unparsable frames
+                    };
+                    // Forward newly arrived text through the callback.
+                    let before = turn.content.len();
+                    turn.apply_chunk(&chunk);
+                    if turn.content.len() > before {
+                        emitted = true;
+                        on_delta(&turn.content[before..]);
+                    }
+                }
+                turn.tool_calls = turn.take_tool_calls();
+                if !turn.interrupted && turn.content.is_empty() && turn.tool_calls.is_empty() {
+                    // Clean end with no content and no calls is authoritative.
+                    return Err(("对话模型返回了空内容".to_string(), false));
+                }
+                Ok(turn)
+            };
 
-            let reader = response.into_reader();
-            let buffered = std::io::BufReader::new(reader);
-            let mut turn = StreamTurn::default();
-            let mut emitted = false;
-            for line in buffered.lines() {
-                // Cancellation is checked per SSE frame: the frame in
-                // flight still applies, then the stream is cut and the
-                // partial turn is returned as-is.
-                if should_stop.is_some_and(|check| check()) {
-                    turn.interrupted = true;
-                    break;
-                }
-                let line = line.map_err(|err| (format!("读取流式响应中断：{err}"), emitted))?;
-                let Some(payload) = line.strip_prefix("data:") else {
-                    continue; // blank separators / comments / non-data frames
-                };
-                if payload.trim() == "[DONE]" {
-                    break;
-                }
-                let Ok(chunk) = serde_json::from_str::<serde_json::Value>(payload) else {
-                    continue; // provider keep-alives / unparsable frames
-                };
-                // Forward newly arrived text through the callback.
-                let before = turn.content.len();
-                turn.apply_chunk(&chunk);
-                if turn.content.len() > before {
-                    emitted = true;
-                    on_delta(&turn.content[before..]);
-                }
-            }
-            turn.tool_calls = turn.take_tool_calls();
-            if !turn.interrupted && turn.content.is_empty() && turn.tool_calls.is_empty() {
-                // Clean end with no content and no calls is authoritative.
-                return Err(("对话模型返回了空内容".to_string(), false));
-            }
-            Ok(turn)
-        };
-
-        match run(&primary) {
+        match run(&primary, messages) {
             Ok(turn) => Ok(turn),
-            Err((first_msg, retryable)) => match (&fallback, retryable) {
-                (Some(agent), true) => run(agent)
-                    .map_err(|(retry_msg, _)| format!("{first_msg}；回退重试仍失败：{retry_msg}")),
-                _ => Err(first_msg),
-            },
+            Err((first_msg, retryable)) => {
+                // 视觉回退：带图请求被不支持多模态的模型以 HTTP 4xx 拒绝时，
+                // 去图在同路由重试一次，再走直连回退。
+                if retryable && has_images(messages) {
+                    let stripped = strip_images(messages);
+                    match run(&primary, &stripped) {
+                        Ok(turn) => return Ok(turn),
+                        Err((_, true)) => {
+                            if let Some(agent) = &fallback {
+                                if let Ok(turn) = run(agent, &stripped) {
+                                    return Ok(turn);
+                                }
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                match (&fallback, retryable) {
+                    (Some(agent), true) => run(agent, messages).map_err(|(retry_msg, _)| {
+                        format!("{first_msg}；回退重试仍失败：{retry_msg}")
+                    }),
+                    _ => Err(first_msg),
+                }
+            }
         }
     }
 }

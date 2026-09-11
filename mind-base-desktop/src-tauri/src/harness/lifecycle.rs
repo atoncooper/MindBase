@@ -69,9 +69,7 @@ impl CircuitBreaker {
     pub(crate) fn record_failure(&mut self) -> bool {
         let was_half_open = self.state() == CircuitState::HalfOpen;
         self.failures += 1;
-        if was_half_open
-            || (self.failures >= self.failure_threshold && self.opened_at.is_none())
-        {
+        if was_half_open || (self.failures >= self.failure_threshold && self.opened_at.is_none()) {
             self.opened_at = Some(Instant::now());
             return true;
         }
@@ -89,8 +87,6 @@ pub(crate) struct SessionEntry {
     pub lock: Arc<Mutex<()>>,
     /// Per-agent consecutive delegate failure counts (chat-side short-circuit).
     pub delegate_failures: HashMap<String, u32>,
-    /// Memory-agent retrieval window (30 entries max, newest last).
-    pub memory_window: Vec<crate::agents::SearchWindowEntry>,
 }
 
 impl Default for SessionEntry {
@@ -99,24 +95,13 @@ impl Default for SessionEntry {
             last_active: Instant::now(),
             lock: Arc::new(Mutex::new(())),
             delegate_failures: HashMap::new(),
-            memory_window: Vec::new(),
         }
     }
 }
 
-const MEMORY_WINDOW_MAX: usize = 30;
-
 impl SessionEntry {
     pub(crate) fn touch(&mut self) {
         self.last_active = Instant::now();
-    }
-
-    pub(crate) fn push_memory_window(&mut self, entry: crate::agents::SearchWindowEntry) {
-        self.memory_window.push(entry);
-        if self.memory_window.len() > MEMORY_WINDOW_MAX {
-            let overflow = self.memory_window.len() - MEMORY_WINDOW_MAX;
-            self.memory_window.drain(0..overflow);
-        }
     }
 }
 
@@ -150,10 +135,7 @@ impl LifecycleManager {
         let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
         let breaker = inner.breakers.entry(agent_name.to_string()).or_default();
         let tripped = breaker.is_tripped();
-        let session = inner
-            .sessions
-            .entry(session_id.to_string())
-            .or_default();
+        let session = inner.sessions.entry(session_id.to_string()).or_default();
         session.touch();
         SessionGate {
             breaker_tripped: tripped,
@@ -185,11 +167,11 @@ impl LifecycleManager {
     /// consecutive-failure count after recording one failure.
     pub(crate) fn bump_delegate_failure(&self, session_id: &str, agent_name: &str) -> u32 {
         let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
-        let session = inner
-            .sessions
-            .entry(session_id.to_string())
-            .or_default();
-        let count = session.delegate_failures.entry(agent_name.to_string()).or_insert(0);
+        let session = inner.sessions.entry(session_id.to_string()).or_default();
+        let count = session
+            .delegate_failures
+            .entry(agent_name.to_string())
+            .or_insert(0);
         *count += 1;
         *count
     }
@@ -202,7 +184,9 @@ impl LifecycleManager {
     }
 
     /// Per-agent breaker snapshot for the health view.
-    pub(crate) fn breaker_snapshot(&self) -> Vec<(String, crate::harness::lifecycle::CircuitState, u32)> {
+    pub(crate) fn breaker_snapshot(
+        &self,
+    ) -> Vec<(String, crate::harness::lifecycle::CircuitState, u32)> {
         self.inner
             .lock()
             .expect("lifecycle mutex poisoned")
@@ -210,33 +194,6 @@ impl LifecycleManager {
             .iter()
             .map(|(name, breaker)| (name.clone(), breaker.state(), breaker.failure_count()))
             .collect()
-    }
-
-    /// Snapshot of the memory retrieval window for one session.
-    pub(crate) fn memory_window(
-        &self,
-        session_id: &str,
-    ) -> Vec<crate::agents::SearchWindowEntry> {
-        self.inner
-            .lock()
-            .expect("lifecycle mutex poisoned")
-            .sessions
-            .get(session_id)
-            .map(|session| session.memory_window.clone())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn append_memory_window(
-        &self,
-        session_id: &str,
-        entry: crate::agents::SearchWindowEntry,
-    ) {
-        let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
-        inner
-            .sessions
-            .entry(session_id.to_string())
-            .or_default()
-            .push_memory_window(entry);
     }
 
     /// Drop idle sessions; returns how many were removed.
@@ -250,7 +207,11 @@ impl LifecycleManager {
     }
 
     pub(crate) fn active_sessions(&self) -> usize {
-        self.inner.lock().expect("lifecycle mutex poisoned").sessions.len()
+        self.inner
+            .lock()
+            .expect("lifecycle mutex poisoned")
+            .sessions
+            .len()
     }
 }
 
@@ -317,19 +278,12 @@ mod tests {
     }
 
     #[test]
-    fn session_lifecycle_tracks_locks_windows_and_expiry() {
+    fn session_lifecycle_tracks_locks_and_expiry() {
         let manager = LifecycleManager::new();
         {
             let gate = manager.enter("chat", "s1");
             assert!(!gate.breaker_tripped);
         }
-        manager.append_memory_window("s1", crate::agents::SearchWindowEntry {
-            query: "q".into(),
-            result_preview: "r".into(),
-            tools_used: vec!["vector_search".into()],
-            timestamp: "12:00".into(),
-        });
-        assert_eq!(manager.memory_window("s1").len(), 1);
 
         // The turn lock is stable across enters for the same session…
         let first_ptr = { manager.enter("memory", "s1").session_lock.clone() };
@@ -350,7 +304,10 @@ mod tests {
                 session.last_active = Instant::now() - Duration::from_secs(SESSION_TTL_SECS + 10);
             }
         }
-        assert_eq!(manager.cleanup_expired(Duration::from_secs(SESSION_TTL_SECS)), 1);
+        assert_eq!(
+            manager.cleanup_expired(Duration::from_secs(SESSION_TTL_SECS)),
+            1
+        );
         assert_eq!(manager.active_sessions(), 0);
     }
 
@@ -359,8 +316,16 @@ mod tests {
         let manager = LifecycleManager::new();
         assert_eq!(manager.bump_delegate_failure("s1", "memory"), 1);
         assert_eq!(manager.bump_delegate_failure("s1", "memory"), 2);
-        assert_eq!(manager.bump_delegate_failure("s2", "memory"), 1, "other session isolated");
-        assert_eq!(manager.bump_delegate_failure("s1", "note"), 1, "other agent isolated");
+        assert_eq!(
+            manager.bump_delegate_failure("s2", "memory"),
+            1,
+            "other session isolated"
+        );
+        assert_eq!(
+            manager.bump_delegate_failure("s1", "note"),
+            1,
+            "other agent isolated"
+        );
         manager.reset_delegate_failures("s1", "memory");
         assert_eq!(manager.bump_delegate_failure("s1", "memory"), 1);
     }

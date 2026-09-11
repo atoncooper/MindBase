@@ -88,6 +88,15 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const [sessions, setSessions] = useState<ChatSessionRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  // 对话进行中实时展示「现在是谁在干活」：step/subStep 事件驱动，收尾清空。
+  const [liveAgent, setLiveAgent] = useState<{ name: string; action: string; step: number } | null>(
+    null,
+  );
+  // 任务计划面板状态：plan 事件驱动（创建/更新/修订），收尾清空。
+  const [planView, setPlanView] = useState<{
+    version: number;
+    steps: { desc: string; status: string; note: string }[];
+  } | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   // True between pressing 停止 and the turn actually finishing.
@@ -345,6 +354,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   function applyEvent(event: ChatEvent): void {
     switch (event.type) {
       case "step":
+        setLiveAgent({ name: "chat 主力", action: describeStep(event.action, event.query), step: event.step });
         setMessages((prev) => {
           if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
           const next = [...prev];
@@ -356,7 +366,15 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           return next;
         });
         break;
+      case "plan":
+        setPlanView({ version: event.version, steps: event.steps });
+        break;
       case "subStep":
+        setLiveAgent({
+          name: `${event.agent}（子代理）`,
+          action: describeStep(event.action, event.query),
+          step: event.step,
+        });
         setMessages((prev) => {
           if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
           const next = [...prev];
@@ -409,9 +427,13 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           return next;
         });
         interruptRequestedRef.current = false;
+        setLiveAgent(null);
+        setPlanView(null);
         break;
       case "error":
         patchLastAssistant({ status: "failed", error: event.message });
+        setLiveAgent(null);
+        setPlanView(null);
         break;
     }
   }
@@ -422,6 +444,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
     setInput("");
     localCounter.current += 1;
+    setLiveAgent({ name: "chat 主力", action: "思考中…", step: 0 });
+    setPlanView(null);
 
     // Resolve or create the target conversation first.
     let sid = activeId;
@@ -527,6 +551,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         <MessageList
           messages={messages}
           busy={busy}
+          liveAgent={liveAgent}
+          planView={planView}
           onSuggestion={(text) => setInput(text)}
           onRetry={retry}
           onEditResend={editResend}

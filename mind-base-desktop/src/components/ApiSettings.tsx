@@ -196,6 +196,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
   const [rowFeedback, setRowFeedback] = useState<Record<string, Feedback>>({});
   // App config (for the ASR/OCR provider-mode switches); loaded alongside providers.
   const [appConfig, setAppConfig] = useState<ItemState<AppConfig>>({ status: "loading" });
+  const [visionFeedback, setVisionFeedback] = useState<Feedback>(null);
   const [localAsrFeedback, setLocalAsrFeedback] = useState<Feedback>(null);
   // 自动保存去抖定时器（本地 ASR 文本输入 500ms 合并写库；切换即时保存）。
   const localAsrTimer = useRef<number | null>(null);
@@ -255,6 +256,23 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
       cancelled = true;
     };
   }, []);
+
+  /** Toggle 视觉读图：立即持久化到 AppConfig（命中图片文档时原图随上下文
+   *  发给支持视觉的模型；默认关——原图会以 base64 发往云端）。 */
+  async function toggleVisionEnabled(enabled: boolean): Promise<void> {
+    setVisionFeedback(null);
+    try {
+      const base = appConfig.status === "ok" ? appConfig.value : (await getConfig());
+      const saved = await persistConfig({ ...base, visionEnabled: enabled });
+      setAppConfig({ status: "ok", value: saved });
+      setVisionFeedback({
+        kind: "ok",
+        text: enabled ? "✓ 已开启：命中的图片文档原图将随上下文发给视觉模型" : "已关闭",
+      });
+    } catch (err) {
+      setVisionFeedback({ kind: "error", text: `保存失败：${toErrorMessage(err)}` });
+    }
+  }
 
   /** Persist the whole local-ASR block (enabled + model + port) and surface
    *  the save result on the ASR row's feedback line. */
@@ -1140,6 +1158,31 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
   return (
     <div className="settings-pane" hidden={hidden}>
       <BiliAccountCard />
+
+      <section className="card">
+        <h2 className="card__title">
+          <span className="card__index">01b</span>视觉读图
+        </h2>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={appConfig.status === "ok" && (appConfig.value.visionEnabled ?? false)}
+            disabled={appConfig.status !== "ok"}
+            onChange={(event) => void toggleVisionEnabled(event.target.checked)}
+          />
+          命中的图片文档原图随上下文发给支持视觉的模型
+        </label>
+        <p className="hint-text">
+          仅当对话模型本身支持视觉（qwen-vl / gpt-4o / claude 等）时生效；
+          图片会缩放后以 base64 发往模型服务商（隐私取舍），默认关闭。
+          视觉模型无法处理的请求会自动回退纯文本。
+        </p>
+        {visionFeedback !== null && (
+          <p className={visionFeedback.kind === "error" ? "error-text" : "hint-text"}>
+            {visionFeedback.text}
+          </p>
+        )}
+      </section>
 
       <section className="card">
         <h2 className="card__title">

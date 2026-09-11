@@ -109,7 +109,9 @@ where
 
 /// Time still left in the probe budget; zero once the deadline has passed.
 fn remaining(deadline: Instant) -> Duration {
-    deadline.checked_duration_since(Instant::now()).unwrap_or_default()
+    deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or_default()
 }
 
 /// Collect a drained pipe, giving up (with empty output) once the caller's
@@ -276,12 +278,31 @@ pub async fn ffmpeg_status(app: AppHandle, db: State<'_, Db>) -> Result<FfmpegSt
 /// user-configured absolute binary path (may be `None`); the resolution chain
 /// is override → bundled sidecar → system PATH. Reuses the probe so only a
 /// genuinely working binary is returned.
+use std::sync::OnceLock;
+
 pub fn resolve_ffmpeg_path(
     app: &AppHandle,
     override_path: Option<&str>,
 ) -> Result<PathBuf, String> {
     let status = resolve_status(app, override_path)?;
     Ok(PathBuf::from(status.path))
+}
+
+/// Process-wide cache of the resolved ffmpeg binary (vision attachments
+/// downscale knowledge-base images through it without re-probing per call).
+static CACHED_FFMPEG: OnceLock<PathBuf> = OnceLock::new();
+
+/// Resolve once at startup and remember. A failed resolution leaves the
+/// cache empty — vision attachment simply stays off.
+pub(crate) fn cache_ffmpeg_path(app: &AppHandle, override_path: Option<&str>) {
+    if let Ok(path) = resolve_ffmpeg_path(app, override_path) {
+        let _ = CACHED_FFMPEG.set(path);
+    }
+}
+
+/// The cached ffmpeg path, if resolution succeeded at startup.
+pub(crate) fn cached_ffmpeg_path() -> Option<PathBuf> {
+    CACHED_FFMPEG.get().cloned()
 }
 
 #[cfg(test)]
@@ -292,7 +313,10 @@ mod tests {
     fn parses_gyan_essentials_version_line() {
         let output = "ffmpeg version 7.1.1-essentials_build-www.gyan.dev \
                       Copyright (c) 2000-2025 the FFmpeg developers";
-        assert_eq!(parse_ffmpeg_version(output).as_deref(), Some("7.1.1-essentials"));
+        assert_eq!(
+            parse_ffmpeg_version(output).as_deref(),
+            Some("7.1.1-essentials")
+        );
     }
 
     #[test]

@@ -47,6 +47,11 @@ impl AgentRuntime {
         &mut self.registry
     }
 
+    /// Wire specs of every registered tool (agent-status UI / tool listing).
+    pub(crate) fn tool_specs(&self) -> Vec<super::registry::ToolSpec> {
+        self.registry.specs()
+    }
+
     /// OpenAI tools array restricted to an explicit allow-list — one agent
     /// binds only its own subset of the registry.
     pub(crate) fn schema_for_names(&self, allowed: &[&str]) -> serde_json::Value {
@@ -92,30 +97,29 @@ impl AgentRuntime {
             return Vec::new();
         }
 
-        let outputs: Vec<(f64, Result<ToolOutput, String>)> =
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = calls
-                    .iter()
-                    .map(|call| {
-                        scope.spawn(move || {
-                            let started = Instant::now();
-                            let outcome = match self.registry.get(&call.name) {
-                                Some(tool) => tool.execute(ctx, &call.arguments),
-                                None => Err(format!(
-                                    "未知工具：{}（可用：{}）",
-                                    call.name,
-                                    self.registry.names().join(", ")
-                                )),
-                            };
-                            ((started.elapsed().as_secs_f64() * 1000.0), outcome)
-                        })
+        let outputs: Vec<(f64, Result<ToolOutput, String>)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = calls
+                .iter()
+                .map(|call| {
+                    scope.spawn(move || {
+                        let started = Instant::now();
+                        let outcome = match self.registry.get(&call.name) {
+                            Some(tool) => tool.execute(ctx, &call.arguments),
+                            None => Err(format!(
+                                "未知工具：{}（可用：{}）",
+                                call.name,
+                                self.registry.names().join(", ")
+                            )),
+                        };
+                        ((started.elapsed().as_secs_f64() * 1000.0), outcome)
                     })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|handle| handle.join().expect("tool thread panicked"))
-                    .collect()
-            });
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("tool thread panicked"))
+                .collect()
+        });
 
         calls
             .iter()
@@ -127,8 +131,8 @@ impl AgentRuntime {
                 }
                 // Sibling isolation: an execution error degrades to plain text
                 // so the remaining calls stay meaningful to the model.
-                let isolated =
-                    outcome.unwrap_or_else(|error| ToolOutput::text(format!("工具执行失败: {error}")));
+                let isolated = outcome
+                    .unwrap_or_else(|error| ToolOutput::text(format!("工具执行失败: {error}")));
                 ExecutedCall {
                     call: call.clone(),
                     outcome: Ok(isolated),
@@ -221,8 +225,12 @@ mod tests {
     #[test]
     fn sibling_isolation_keeps_other_results_alive() {
         let mut runtime = AgentRuntime::new();
-        runtime.registry_mut().register(scripted("ok_tool", false, 0));
-        runtime.registry_mut().register(scripted("bad_tool", true, 0));
+        runtime
+            .registry_mut()
+            .register(scripted("ok_tool", false, 0));
+        runtime
+            .registry_mut()
+            .register(scripted("bad_tool", true, 0));
 
         let db = memory_db();
         let ctx = ToolContext {
@@ -230,6 +238,7 @@ mod tests {
             embed_client: None,
             chat_client: None,
             session_id: "s",
+            agent: crate::agents::AgentKind::Chat,
             delegate: None,
         };
         let calls = vec![
@@ -255,7 +264,10 @@ mod tests {
             .content
             .starts_with("工具执行失败: "));
         // …while its sibling still succeeds.
-        assert_eq!(executed[1].outcome.as_ref().unwrap().content, "done:{\"x\":\"2\"}");
+        assert_eq!(
+            executed[1].outcome.as_ref().unwrap().content,
+            "done:{\"x\":\"2\"}"
+        );
 
         let monitor = runtime.monitor();
         assert_eq!(monitor["totals"]["callCount"], 2);
@@ -272,6 +284,7 @@ mod tests {
             embed_client: None,
             chat_client: None,
             session_id: "s",
+            agent: crate::agents::AgentKind::Chat,
             delegate: None,
         };
         let executed = runtime.execute(
@@ -290,8 +303,12 @@ mod tests {
     #[test]
     fn concurrent_execution_overlaps_sleeps() {
         let mut runtime = AgentRuntime::new();
-        runtime.registry_mut().register(scripted("slow_a", false, 120));
-        runtime.registry_mut().register(scripted("slow_b", false, 120));
+        runtime
+            .registry_mut()
+            .register(scripted("slow_a", false, 120));
+        runtime
+            .registry_mut()
+            .register(scripted("slow_b", false, 120));
 
         let db = memory_db();
         let ctx = ToolContext {
@@ -299,14 +316,23 @@ mod tests {
             embed_client: None,
             chat_client: None,
             session_id: "s",
+            agent: crate::agents::AgentKind::Chat,
             delegate: None,
         };
         let started = Instant::now();
         let executed = runtime.execute(
             &ctx,
             &[
-                ToolCallReq { id: "a".into(), name: "slow_a".into(), arguments: "{}".into() },
-                ToolCallReq { id: "b".into(), name: "slow_b".into(), arguments: "{}".into() },
+                ToolCallReq {
+                    id: "a".into(),
+                    name: "slow_a".into(),
+                    arguments: "{}".into(),
+                },
+                ToolCallReq {
+                    id: "b".into(),
+                    name: "slow_b".into(),
+                    arguments: "{}".into(),
+                },
             ],
         );
         assert_eq!(executed.len(), 2);
