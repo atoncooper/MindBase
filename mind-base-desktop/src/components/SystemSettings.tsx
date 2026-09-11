@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../lib/config";
 import type { AppConfig } from "../lib/config";
 import {
@@ -39,6 +40,14 @@ const THEME_LABELS: Record<string, string> = {
 const LANGUAGE_LABELS: Record<string, string> = {
   "zh-CN": "简体中文",
 };
+
+/** Outcome of the `test_proxy` command (mirrors the Rust struct). */
+interface ProxyTestResult {
+  ok: boolean;
+  latencyMs: number;
+  httpStatus: number | null;
+  detail: string;
+}
 
 function themeLabel(theme: string): string {
   return THEME_LABELS[theme] ?? theme;
@@ -123,6 +132,14 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
   const [storageFeedback, setStorageFeedback] = useState<Feedback>(null);
   // Built-in vector store: read-only facts for the status row.
   const [vectors, setVectors] = useState<ItemState<VectorStats>>({ status: "loading" });
+  // 网络代理：草稿（config 就绪后种子一次）、保存与测试的进行中/结果状态。
+  const [proxyDraft, setProxyDraft] = useState<{ http: string; https: string } | null>(null);
+  const [proxySaving, setProxySaving] = useState(false);
+  const [proxyFeedback, setProxyFeedback] = useState<Feedback>(null);
+  const [proxyTesting, setProxyTesting] = useState(false);
+  const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -160,6 +177,54 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
       setConfig({ status: "ok", value: stored });
     } catch (err) {
       setStorageFeedback({ kind: "error", text: `主题保存失败：${toErrorMessage(err)}` });
+    }
+  }
+
+  useEffect(() => {
+    if (config.status === "ok" && proxyDraft === null) {
+      setProxyDraft({
+        http: config.value.proxyHttp ?? "",
+        https: config.value.proxyHttps ?? "",
+      });
+    }
+  }, [config, proxyDraft]);
+
+  /** 保存代理设置：留空归一为 null（直连），后端校验格式并即时生效。 */
+  async function handleSaveProxy(): Promise<void> {
+    if (config.status !== "ok" || proxyDraft === null) return;
+    setProxySaving(true);
+    setProxyFeedback(null);
+    try {
+      const stored = await persistConfig({
+        ...config.value,
+        proxyHttp: proxyDraft.http.trim() === "" ? null : proxyDraft.http.trim(),
+        proxyHttps: proxyDraft.https.trim() === "" ? null : proxyDraft.https.trim(),
+      });
+      setConfig({ status: "ok", value: stored });
+      setProxyDraft({ http: stored.proxyHttp ?? "", https: stored.proxyHttps ?? "" });
+      setProxyFeedback({ kind: "ok", text: "✓ 代理设置已保存，对新请求立即生效" });
+    } catch (err) {
+      setProxyFeedback({ kind: "error", text: `保存失败：${toErrorMessage(err)}` });
+    } finally {
+      setProxySaving(false);
+    }
+  }
+
+  /** 用输入框当前值实测代理连通性（无需先保存）。 */
+  async function handleTestProxy(): Promise<void> {
+    if (proxyDraft === null) return;
+    setProxyTesting(true);
+    setProxyTestResult(null);
+    try {
+      const result = await invoke<ProxyTestResult>("test_proxy", {
+        proxyHttp: proxyDraft.http.trim() === "" ? null : proxyDraft.http.trim(),
+        proxyHttps: proxyDraft.https.trim() === "" ? null : proxyDraft.https.trim(),
+      });
+      setProxyTestResult({ ok: result.ok, text: result.detail });
+    } catch (err) {
+      setProxyTestResult({ ok: false, text: toErrorMessage(err) });
+    } finally {
+      setProxyTesting(false);
     }
   }
 
@@ -354,7 +419,80 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
 
       <section className="card">
         <h2 className="card__title">
-          <span className="card__index">04</span>配置摘要
+          <span className="card__index">04</span>网络代理
+        </h2>
+        {proxyDraft === null ? (
+          <p className="placeholder">
+            {config.status === "loading" ? "加载中…" : "配置读取失败"}
+          </p>
+        ) : (
+          <>
+            <div className="cfg-row cfg-row--wide">
+              <span className="cfg-label">HTTP 代理地址</span>
+              <input
+                className="cfg-input"
+                type="text"
+                value={proxyDraft.http}
+                placeholder="http://127.0.0.1:10808"
+                onChange={(event) =>
+                  setProxyDraft({ ...proxyDraft, http: event.target.value })
+                }
+              />
+            </div>
+            <div className="cfg-row cfg-row--wide">
+              <span className="cfg-label">HTTPS 代理地址</span>
+              <input
+                className="cfg-input"
+                type="text"
+                value={proxyDraft.https}
+                placeholder="socks5://127.0.0.1:10808"
+                onChange={(event) =>
+                  setProxyDraft({ ...proxyDraft, https: event.target.value })
+                }
+              />
+            </div>
+            <div className="card__actions">
+              <button
+                type="button"
+                className="button button--primary"
+                disabled={proxySaving}
+                onClick={() => void handleSaveProxy()}
+              >
+                {proxySaving ? "保存中…" : "保存"}
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={
+                  proxyTesting ||
+                  (proxyDraft.http.trim() === "" && proxyDraft.https.trim() === "")
+                }
+                onClick={() => void handleTestProxy()}
+              >
+                {proxyTesting ? "测试中…" : "测试连接"}
+              </button>
+              {proxyTestResult !== null && (
+                <span className={proxyTestResult.ok ? "hint-text" : "error-text"}>
+                  {proxyTestResult.text}
+                </span>
+              )}
+            </div>
+            {proxyFeedback !== null && (
+              <p className={proxyFeedback.kind === "error" ? "error-text" : "hint-text"}>
+                {proxyFeedback.text}
+              </p>
+            )}
+            <p className="hint-text">
+              留空时所有外部请求直连；两个地址支持只填一个，未填的协议沿用另一个地址。填写后，外部请求（模型调用、更新检查、模型下载、网页抓取等）优先经代理、失败自动回退直连；
+              B 站与 hf-mirror、ModelScope 等国内镜像始终直连。不会读取系统环境变量。
+            </p>
+          </>
+        )}
+      </section>
+
+      <section className="card">
+        <h2 className="card__title">
+          <span className="card__index">05</span>配置摘要
         </h2>
         {config.status !== "ok" ? (
           <p className="placeholder">
@@ -376,6 +514,23 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
                 <span className={config.value.autoCheckUpdates ? "status status--ok" : "status"}>
                   {config.value.autoCheckUpdates ? "已开启" : "已关闭"}
                 </span>
+              </dd>
+            </div>
+            <div className="row">
+              <dt className="row__label">网络代理</dt>
+              <dd className="row__value">
+                {config.value.proxyHttp || config.value.proxyHttps ? (
+                  <span
+                    className="status status--info"
+                    title={[config.value.proxyHttp, config.value.proxyHttps]
+                      .filter(Boolean)
+                      .join(" / ")}
+                  >
+                    已启用
+                  </span>
+                ) : (
+                  <span className="status">直连</span>
+                )}
               </dd>
             </div>
           </dl>

@@ -16,6 +16,7 @@
 //! across MindBase: DashScope (first-party) and OpenRouter (fallback).
 
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -390,29 +391,195 @@ fn describe_status(status: u16, model_count: Option<usize>) -> (bool, String) {
     }
 }
 
-/// Normalize a raw proxy env value into a URL ureq accepts (mirrors updater).
-fn normalize_proxy_url(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.contains("://") {
-        Some(trimmed.to_string())
-    } else {
-        Some(format!("http://{trimmed}"))
+// ---------------------------------------------------------------------------
+// Egress proxy — the single source of truth for all outbound HTTP traffic.
+//
+// The user configures up to two addresses in the settings UI (`proxy_http`
+// for http:// targets, `proxy_https` for https:// targets). System
+// environment variables are deliberately ignored: the setting is the only
+// knob. When a proxy is configured for the target scheme, requests go
+// through it FIRST and fall back to a direct connection on transport
+// errors — a refused proxy fails in milliseconds while a direct attempt to
+// a blocked host can hang for the full timeout. Destinations on the
+// direct-connect bypass list (domestic mirrors, loopback) never proxy.
+// ---------------------------------------------------------------------------
+
+/// Upper bound for a user-entered proxy address.
+const MAX_PROXY_ADDR_LEN: usize = 256;
+
+/// A configured egress proxy pair; `None` per scheme = direct connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProxySetting {
+    pub http: Option<String>,
+    pub https: Option<String>,
+}
+
+static PROXY_SETTING: OnceLock<RwLock<ProxySetting>> = OnceLock::new();
+
+/// Hosts that must always connect directly: domestic mirrors an overseas
+/// proxy would only slow down (large model downloads), domestic LLM
+/// endpoints, plus loopback.
+const DIRECT_HOST_SUFFIXES: [&str; 8] = [
+    "bilibili.com",
+    "hf-mirror.com",
+    "modelscope.cn",
+    "huaweicloud.com",
+    "tuna.tsinghua.edu.cn",
+    "aliyun.com",
+    "aliyuncs.com",
+    "deepseek.com",
+];
+
+/// Overwrite the process-wide proxy setting (startup init + config saves).
+pub(crate) fn set_proxy_setting(setting: ProxySetting) {
+    let cell = PROXY_SETTING.get_or_init(|| RwLock::new(ProxySetting::default()));
+    if let Ok(mut guard) = cell.write() {
+        *guard = setting;
     }
 }
 
-/// First usable proxy URL from the environment (HTTPS before HTTP).
-fn proxy_from_env() -> Option<String> {
-    for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
-        if let Ok(value) = std::env::var(key) {
-            if let Some(url) = normalize_proxy_url(&value) {
-                return Some(url);
-            }
+/// Re-read the proxy fields from the app config and refresh the global.
+pub(crate) fn refresh_proxy_setting(conn: &Connection) {
+    let setting = crate::config::load(conn)
+        .map(|cfg| ProxySetting {
+            http: cfg.proxy_http.clone(),
+            https: cfg.proxy_https.clone(),
+        })
+        .unwrap_or_default();
+    set_proxy_setting(setting);
+}
+
+/// Snapshot of the current setting (defaults to all-direct when unset).
+pub(crate) fn proxy_setting() -> ProxySetting {
+    PROXY_SETTING
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+/// `(name, value)` proxy env pairs for child processes that do their own
+/// networking (pip, the embedded Python ASR worker). Nothing configured →
+/// empty (children stay direct). Configured → `HTTP_PROXY`/`HTTPS_PROXY`
+/// (either filled address covers both schemes, mirroring
+/// [`proxy_for_url`]) plus `NO_PROXY` carrying the bypass hosts, so
+/// domestic mirrors keep their direct fast path inside children too.
+/// socks5:// addresses stay Rust-side only: pip/requests need an extra
+/// package for SOCKS and would fail the install outright.
+pub(crate) fn child_proxy_env() -> Vec<(String, String)> {
+    let setting = proxy_setting();
+    let http_addr = setting
+        .http
+        .clone()
+        .or_else(|| setting.https.clone())
+        .filter(|url| url.starts_with("http://"));
+    let https_addr = setting
+        .https
+        .clone()
+        .or_else(|| setting.http.clone())
+        .filter(|url| url.starts_with("http://"));
+    if http_addr.is_none() && https_addr.is_none() {
+        return Vec::new();
+    }
+    let mut vars: Vec<(String, String)> = Vec::new();
+    if let Some(http) = &http_addr {
+        for name in ["HTTP_PROXY", "http_proxy"] {
+            vars.push((name.to_string(), http.clone()));
         }
     }
-    None
+    if let Some(https) = &https_addr {
+        for name in ["HTTPS_PROXY", "https_proxy"] {
+            vars.push((name.to_string(), https.clone()));
+        }
+    }
+    let no_proxy = DIRECT_HOST_SUFFIXES
+        .iter()
+        .copied()
+        .chain(["localhost", "127.0.0.1", "::1"])
+        .collect::<Vec<_>>()
+        .join(",");
+    for name in ["NO_PROXY", "no_proxy"] {
+        vars.push((name.to_string(), no_proxy.clone()));
+    }
+    vars
+}
+
+/// Host part of a URL authority with userinfo / port / IPv6 brackets
+/// stripped (`user@[::1]:8080` → `::1`).
+fn host_of_authority(authority: &str) -> &str {
+    let authority = match authority.rsplit_once('@') {
+        Some((_, host)) => host,
+        None => authority,
+    };
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(authority);
+    }
+    authority.split(':').next().unwrap_or(authority)
+}
+
+/// Whether `host` must always connect directly.
+fn host_bypasses_proxy(host: &str) -> bool {
+    let host = host
+        .trim()
+        .trim_end_matches('.')
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_ascii_lowercase();
+    if host == "localhost" || host == "::1" {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    DIRECT_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+}
+
+/// The configured proxy URL for a target URL (scheme-routed, bypass-aware).
+/// Each scheme prefers its own field and falls back to the other one, so a
+/// single filled address covers both protocols. `None` = connect directly.
+pub(crate) fn proxy_for_url(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = host_of_authority(authority);
+    if host.is_empty() || host_bypasses_proxy(host) {
+        return None;
+    }
+    let setting = proxy_setting();
+    match scheme.to_ascii_lowercase().as_str() {
+        "https" => setting.https.or(setting.http),
+        "http" => setting.http.or(setting.https),
+        _ => None,
+    }
+}
+
+/// Validate and normalize a user-entered proxy address. A bare `host:port`
+/// gains the `http://` scheme; only `http://` and `socks5://` are accepted
+/// (ureq's proxy stack has no TLS-to-proxy scheme), and any path is dropped.
+pub(crate) fn normalize_proxy_addr(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("代理地址不能为空".to_string());
+    }
+    if trimmed.chars().count() > MAX_PROXY_ADDR_LEN {
+        return Err("代理地址过长".to_string());
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let lower = candidate.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("socks5://") {
+        return Err("代理地址仅支持 http:// 或 socks5://".to_string());
+    }
+    let (scheme, authority_full) = candidate.split_once("://").expect("scheme checked above");
+    let scheme = scheme.to_ascii_lowercase();
+    let authority = authority_full.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err("代理地址缺少主机部分".to_string());
+    }
+    Ok(format!("{scheme}://{authority}"))
 }
 
 /// Build a ureq agent with the given timeout, attaching a proxy if given.
@@ -426,23 +593,22 @@ fn http_agent(timeout: Duration, proxy_url: Option<&str>) -> Result<ureq::Agent,
     Ok(builder.build())
 }
 
-/// Build a ureq agent with the probe timeout, attaching a proxy if given.
-fn build_probe_agent(proxy_url: Option<&str>) -> Result<ureq::Agent, String> {
-    http_agent(PROBE_TIMEOUT, proxy_url)
-}
-
-/// Direct (no-proxy) agent for provider API traffic — embeddings / ASR /
-/// chat. Callers mirror the probe convention: attempt direct first, then
-/// retry once through [`proxied_agent`] when the env proxy exists.
-pub(crate) fn direct_agent(timeout: Duration) -> Result<ureq::Agent, String> {
-    http_agent(timeout, None)
-}
-
-/// Agent routed through the env proxy; `None` when no proxy is configured.
-pub(crate) fn proxied_agent(timeout: Duration) -> Result<Option<ureq::Agent>, String> {
-    match proxy_from_env() {
-        Some(url) => http_agent(timeout, Some(&url)).map(Some),
-        None => Ok(None),
+/// Build the agents for one outbound request: `(primary, fallback)`.
+///
+/// Proxy configured for the target → proxy first with a direct fallback;
+/// nothing configured → direct only (`fallback == None`). A transport error
+/// on the primary is the caller's trigger to try the fallback once.
+pub(crate) fn egress_agents(
+    timeout: Duration,
+    url: &str,
+) -> Result<(ureq::Agent, Option<ureq::Agent>), String> {
+    match proxy_for_url(url) {
+        Some(proxy_url) => {
+            let primary = http_agent(timeout, Some(&proxy_url))?;
+            let fallback = http_agent(timeout, None)?;
+            Ok((primary, Some(fallback)))
+        }
+        None => Ok((http_agent(timeout, None)?, None)),
     }
 }
 
@@ -481,18 +647,17 @@ fn request_models(
     }
 }
 
-/// Probe direct first; retry once through the env proxy on transport errors
-/// (same resilience rule as the update check, for users behind proxies).
+/// Probe through the configured egress route; on transport errors retry
+/// once via the fallback (direct) — same resilience rule as before, now
+/// sourced from the user's proxy setting instead of the environment.
 fn run_probe(provider: String, url: String, key: String) -> Result<ProviderTestResult, String> {
     let started = Instant::now();
-    let outcome = build_probe_agent(None)
-        .and_then(|agent| request_models(&agent, &url, &key))
-        .or_else(|direct_err| {
-            let proxy_url = proxy_from_env().ok_or_else(|| direct_err.clone())?;
-            build_probe_agent(Some(&proxy_url))
-                .and_then(|agent| request_models(&agent, &url, &key))
-                .map_err(|retry_err| format!("direct: {direct_err}; via proxy: {retry_err}"))
-        });
+    let (primary, fallback) = egress_agents(PROBE_TIMEOUT, &url)?;
+    let outcome = request_models(&primary, &url, &key).or_else(|first_err| {
+        let fallback = fallback.ok_or_else(|| first_err.clone())?;
+        request_models(&fallback, &url, &key)
+            .map_err(|retry_err| format!("{first_err}; fallback: {retry_err}"))
+    });
 
     let latency_ms = started.elapsed().as_millis() as u64;
     match outcome {
@@ -524,6 +689,95 @@ fn run_probe(provider: String, url: String, key: String) -> Result<ProviderTestR
             embedding_note: None,
         }),
     }
+}
+
+/// Outcome of probing the user-configured egress proxy, safe for the UI.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyTestResult {
+    pub ok: bool,
+    /// Round-trip latency in milliseconds.
+    pub latency_ms: u64,
+    /// HTTP status when the request succeeded end-to-end; `None` on failure.
+    pub http_status: Option<u16>,
+    /// Human-readable conclusion in Chinese for the settings UI.
+    pub detail: String,
+}
+
+/// Target used to verify the proxy end-to-end. api.github.com/zen answers
+/// 200 through any healthy proxy (and is the destination users most often
+/// need the proxy for). Deliberately a single https target: some
+/// rule-based / captive proxies 404 plain-http probe hosts like
+/// msftconnecttest, which would read as a false failure.
+const PROXY_TEST_HTTPS_URL: &str = "https://api.github.com/zen";
+
+const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn probe_via_proxy(addr: &str, target: &str) -> ProxyTestResult {
+    let started = Instant::now();
+    let outcome = http_agent(PROXY_TEST_TIMEOUT, Some(addr)).and_then(|agent| {
+        match agent
+            .get(target)
+            .set("User-Agent", "mindbase-desktop")
+            .call()
+        {
+            Ok(resp) => Ok(resp.status()),
+            Err(ureq::Error::Status(code, _)) => Ok(code),
+            Err(ureq::Error::Transport(transport)) => Err(transport.to_string()),
+        }
+    });
+    let latency_ms = started.elapsed().as_millis() as u64;
+    match outcome {
+        Ok(status) => {
+            let ok = (200..300).contains(&status);
+            let detail = if ok {
+                format!("代理可用（HTTP {status}，耗时 {latency_ms}ms）")
+            } else {
+                format!("代理已连通，但目标返回 HTTP {status}")
+            };
+            ProxyTestResult {
+                ok,
+                latency_ms,
+                http_status: Some(status),
+                detail,
+            }
+        }
+        Err(err) => ProxyTestResult {
+            ok: false,
+            latency_ms,
+            http_status: None,
+            detail: format!("代理不可达，请确认代理软件已启动：{err}"),
+        },
+    }
+}
+
+/// Validate the addresses entered in the proxy settings card and probe one
+/// of them end-to-end. The https address wins when both are set; with only
+/// the http address set, that one is probed against the same https target —
+/// matching the routing rule where a single filled address serves both
+/// schemes. Probing verifies that the proxy app is reachable AND that it
+/// forwards. Blocking IO stays on a worker thread.
+#[tauri::command]
+pub async fn test_proxy(
+    proxy_http: Option<String>,
+    proxy_https: Option<String>,
+) -> Result<ProxyTestResult, String> {
+    let http_addr = match proxy_http.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(value) => Some(normalize_proxy_addr(value)?),
+    };
+    let https_addr = match proxy_https.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(value) => Some(normalize_proxy_addr(value)?),
+    };
+    let addr = match (https_addr, http_addr) {
+        (Some(https), _) => https,
+        (None, Some(http)) => http,
+        (None, None) => return Err("请先填写至少一个代理地址".to_string()),
+    };
+    tauri::async_runtime::spawn_blocking(move || probe_via_proxy(&addr, PROXY_TEST_HTTPS_URL))
+        .await
+        .map_err(|err| format!("probe task failed: {err}"))
 }
 
 /// Probe one provider's stored configuration and report whether it works.
@@ -819,30 +1073,36 @@ fn run_asr_e2e(
 
 /// Fetch the raw model id list from an OpenAI-compatible `/models` endpoint.
 fn fetch_model_ids(models_url: &str, key: &str) -> Result<Vec<String>, String> {
-    let agent = build_probe_agent(None)?;
-    let response = agent
-        .get(models_url)
-        .set("Authorization", &format!("Bearer {key}"))
-        .set("Accept", "application/json")
-        .call()
-        .map_err(|err| format!("查询模型列表失败：{err}"))?;
-    let body = response
-        .into_string()
-        .map_err(|err| format!("读取模型列表失败：{err}"))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&body).map_err(|err| format!("解析模型列表失败：{err}"))?;
-    let ids = value
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
-                .map(|s| s.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(ids)
+    let (primary, fallback) = egress_agents(PROBE_TIMEOUT, models_url)?;
+    let fetch = |agent: &ureq::Agent| -> Result<Vec<String>, String> {
+        let response = agent
+            .get(models_url)
+            .set("Authorization", &format!("Bearer {key}"))
+            .set("Accept", "application/json")
+            .call()
+            .map_err(|err| format!("查询模型列表失败：{err}"))?;
+        let body = response
+            .into_string()
+            .map_err(|err| format!("读取模型列表失败：{err}"))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|err| format!("解析模型列表失败：{err}"))?;
+        let ids = value
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ids)
+    };
+    fetch(&primary).or_else(|first_err| {
+        let fallback = fallback.ok_or_else(|| first_err.clone())?;
+        fetch(&fallback).map_err(|retry_err| format!("{first_err}; fallback: {retry_err}"))
+    })
 }
 
 /// Extend the generic models-list probe into a full embedding check: make
@@ -1180,5 +1440,102 @@ mod tests {
         assert_eq!(status.base_url, "");
         assert_eq!(status.model, "");
         assert_eq!(status.updated_at, None);
+    }
+
+    #[test]
+    fn proxy_addr_normalizes_bare_host_and_strips_path() {
+        assert_eq!(
+            normalize_proxy_addr(" 127.0.0.1:10808 "),
+            Ok("http://127.0.0.1:10808".to_string())
+        );
+        assert_eq!(
+            normalize_proxy_addr("HTTP://LocalHost:8080/base/path"),
+            Ok("http://LocalHost:8080".to_string())
+        );
+        assert_eq!(
+            normalize_proxy_addr("socks5://127.0.0.1:10808/"),
+            Ok("socks5://127.0.0.1:10808".to_string())
+        );
+    }
+
+    #[test]
+    fn proxy_addr_rejects_unsupported_schemes_and_garbage() {
+        assert!(normalize_proxy_addr("").is_err());
+        assert!(normalize_proxy_addr("   ").is_err());
+        assert!(normalize_proxy_addr("https://127.0.0.1:10808").is_err());
+        assert!(normalize_proxy_addr("ftp://x").is_err());
+        assert!(normalize_proxy_addr("http://").is_err());
+        let oversized = "h".repeat(MAX_PROXY_ADDR_LEN + 1);
+        assert!(normalize_proxy_addr(&oversized).is_err());
+    }
+
+    #[test]
+    fn host_bypass_list_matches_suffix_and_loopback() {
+        assert!(host_bypasses_proxy("api.bilibili.com"));
+        assert!(host_bypasses_proxy("hf-mirror.com"));
+        assert!(host_bypasses_proxy("HF-Mirror.COM.")); // case + trailing dot
+        assert!(host_bypasses_proxy("mirrors.tuna.tsinghua.edu.cn"));
+        assert!(host_bypasses_proxy("dashscope.aliyuncs.com"));
+        assert!(host_bypasses_proxy("api.deepseek.com"));
+        assert!(host_bypasses_proxy("localhost"));
+        assert!(host_bypasses_proxy("127.0.0.1"));
+        assert!(host_bypasses_proxy("[::1]"));
+        assert!(!host_bypasses_proxy("api.github.com"));
+        assert!(!host_bypasses_proxy("evil-hf-mirror.com.attacker.net"));
+    }
+
+    #[test]
+    fn host_of_authority_strips_port_userinfo_and_brackets() {
+        assert_eq!(host_of_authority("api.github.com"), "api.github.com");
+        assert_eq!(host_of_authority("api.github.com:443"), "api.github.com");
+        assert_eq!(
+            host_of_authority("user:pw@host.example:8080"),
+            "host.example"
+        );
+        assert_eq!(host_of_authority("[::1]:8080"), "::1");
+    }
+
+    #[test]
+    fn proxy_for_url_routes_by_scheme_and_bypass() {
+        // Single test body for the process-global setting so parallel test
+        // threads never interleave mutations of PROXY_SETTING.
+        set_proxy_setting(ProxySetting {
+            http: Some("http://proxy.local:1".to_string()),
+            https: Some("socks5://proxy.local:2".to_string()),
+        });
+        assert_eq!(
+            proxy_for_url("https://api.github.com/zen"),
+            Some("socks5://proxy.local:2".to_string())
+        );
+        assert_eq!(
+            proxy_for_url("http://example.com/x?y=1"),
+            Some("http://proxy.local:1".to_string())
+        );
+        // Bypass list wins even with a proxy configured.
+        assert_eq!(proxy_for_url("https://hf-mirror.com/big-model.bin"), None);
+        assert_eq!(proxy_for_url("https://api.bilibili.com/x"), None);
+        assert_eq!(proxy_for_url("http://127.0.0.1:9123/health"), None);
+        // Unknown scheme (ws://) is never proxied by the HTTP helper.
+        assert_eq!(proxy_for_url("ws://example.com/socket"), None);
+        // Scheme fallback: one filled address covers both protocols.
+        set_proxy_setting(ProxySetting {
+            http: Some("http://proxy.local:1".to_string()),
+            https: None,
+        });
+        assert_eq!(
+            proxy_for_url("https://api.github.com/zen"),
+            Some("http://proxy.local:1".to_string())
+        );
+        set_proxy_setting(ProxySetting {
+            http: None,
+            https: Some("socks5://proxy.local:2".to_string()),
+        });
+        assert_eq!(
+            proxy_for_url("http://example.com/x"),
+            Some("socks5://proxy.local:2".to_string())
+        );
+        // All-direct default.
+        set_proxy_setting(ProxySetting::default());
+        assert_eq!(proxy_for_url("https://api.github.com/zen"), None);
     }
 }

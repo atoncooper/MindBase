@@ -182,6 +182,13 @@ pub struct AppConfig {
     /// 0 = 禁用清理。每次入库结束后按文件 mtime 从旧到新删除直到总量达标。
     #[serde(default = "default_media_cache_max_mb")]
     pub media_cache_max_mb: u32,
+    /// 出口代理（http:// 目标）：仅来自设置，不读系统环境变量；
+    /// None/空 = 直连。路由与回退语义见 `api_keys` 的代理模块。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_http: Option<String>,
+    /// 出口代理（https:// 目标）。None/空 = 直连。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_https: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -196,6 +203,8 @@ impl Default for AppConfig {
             local_asr: LocalAsrConfig::default(),
             local_ocr: LocalOcrConfig::default(),
             media_cache_max_mb: default_media_cache_max_mb(),
+            proxy_http: None,
+            proxy_https: None,
         }
     }
 }
@@ -305,14 +314,29 @@ pub fn get_config(db: State<'_, Db>) -> Result<AppConfig, String> {
     load(&conn)
 }
 
+/// Validate an optional user-entered proxy address; an empty/whitespace
+/// value normalizes to `None` (direct connection). Format rules live in
+/// `api_keys::normalize_proxy_addr`.
+fn validate_proxy_addr(raw: Option<&str>) -> Result<Option<String>, String> {
+    match raw {
+        None => Ok(None),
+        Some(value) if value.trim().is_empty() => Ok(None),
+        Some(value) => Ok(Some(crate::api_keys::normalize_proxy_addr(value)?)),
+    }
+}
+
 /// Persist the provided config and return the stored value.
 #[tauri::command]
 pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, String> {
     // Reject invalid repository slugs before anything touches the database;
     // the validated (trimmed) value is what gets stored.
     let update_repo = validate_update_repo(&config.update_repo)?;
+    let proxy_http = validate_proxy_addr(config.proxy_http.as_deref())?;
+    let proxy_https = validate_proxy_addr(config.proxy_https.as_deref())?;
     let config = AppConfig {
         update_repo,
+        proxy_http,
+        proxy_https,
         local_asr: normalize_local_asr(config.local_asr),
         local_ocr: normalize_local_ocr(config.local_ocr),
         ..config
@@ -330,6 +354,10 @@ pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, Str
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     save(&conn, &config)?;
+    // Agents are built per request, so refreshing the in-process proxy
+    // snapshot makes the new setting take effect on the next request —
+    // no restart needed.
+    crate::api_keys::refresh_proxy_setting(&conn);
     Ok(config)
 }
 
@@ -426,12 +454,35 @@ mod tests {
 
         // Device normalizes: empty/unknown → auto, known values kept (trimmed,
         // lowercased).
-        for (raw, expected) in [("", "auto"), ("CUDA", "cuda"), ("  cpu  ", "cpu"), ("tpu", "auto")] {
+        for (raw, expected) in [
+            ("", "auto"),
+            ("CUDA", "cuda"),
+            ("  cpu  ", "cpu"),
+            ("tpu", "auto"),
+        ] {
             let got = normalize_local_ocr(LocalOcrConfig {
                 device: raw.to_string(),
                 ..LocalOcrConfig::default()
             });
             assert_eq!(got.device, expected, "device {raw:?}");
         }
+    }
+
+    #[test]
+    fn proxy_addr_empty_is_none_and_invalid_is_rejected() {
+        assert_eq!(validate_proxy_addr(None), Ok(None));
+        assert_eq!(validate_proxy_addr(Some("  ")), Ok(None));
+        assert_eq!(
+            validate_proxy_addr(Some("127.0.0.1:10808")),
+            Ok(Some("http://127.0.0.1:10808".to_string()))
+        );
+        assert!(validate_proxy_addr(Some("https://x:1")).is_err());
+    }
+
+    #[test]
+    fn app_config_defaults_have_no_proxy() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.proxy_http, None);
+        assert_eq!(cfg.proxy_https, None);
     }
 }

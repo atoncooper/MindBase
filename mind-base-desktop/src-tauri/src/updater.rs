@@ -111,50 +111,19 @@ fn is_newer_version(tag: &str, current: &str) -> bool {
     }
 }
 
-/// Normalize a raw proxy env value into a URL ureq accepts, adding the
-/// `http://` scheme when it is missing (e.g. `127.0.0.1:10808`).
-fn normalize_proxy_url(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.contains("://") {
-        Some(trimmed.to_string())
-    } else {
-        Some(format!("http://{trimmed}"))
-    }
-}
-
-/// Read the first usable proxy URL from the environment (HTTPS before HTTP).
-fn proxy_from_env() -> Option<String> {
-    for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
-        if let Ok(value) = std::env::var(key) {
-            if let Some(url) = normalize_proxy_url(&value) {
-                return Some(url);
-            }
+/// Perform one release-metadata request through the configured egress route:
+/// proxy first when the user set one for https targets, one direct fallback
+/// retry when (and only when) the transport itself failed.
+fn request_release_routed(url: &str) -> Result<GithubRelease, String> {
+    let (primary, fallback) = crate::api_keys::egress_agents(REQUEST_TIMEOUT, url)?;
+    match request_release(&primary, url) {
+        Ok(release) => Ok(release),
+        Err(err) if is_transport_error(err.as_ref()) => {
+            let fallback = fallback.ok_or_else(|| err.to_string())?;
+            request_release(&fallback, url).map_err(|retry| format!("{err}; fallback: {retry}"))
         }
+        Err(err) => Err(err.to_string()),
     }
-    None
-}
-
-/// Build a ureq agent, attaching the proxy when one is provided.
-fn build_agent(proxy_url: Option<&str>) -> Result<ureq::Agent, String> {
-    build_agent_with_timeout(proxy_url, REQUEST_TIMEOUT)
-}
-
-/// [`build_agent`] with a caller-chosen timeout (downloads need minutes, not
-/// the 5 s metadata budget).
-fn build_agent_with_timeout(
-    proxy_url: Option<&str>,
-    timeout: Duration,
-) -> Result<ureq::Agent, String> {
-    let builder = ureq::AgentBuilder::new().timeout(timeout);
-    let builder = match proxy_url {
-        Some(url) => builder
-            .proxy(ureq::Proxy::new(url).map_err(|err| format!("invalid proxy url {url}: {err}"))?),
-        None => builder,
-    };
-    Ok(builder.build())
 }
 
 /// Perform a single release request with a prebuilt agent.
@@ -181,21 +150,10 @@ fn is_transport_error(err: &(dyn std::error::Error + 'static)) -> bool {
         .is_some_and(|inner| matches!(inner, ureq::Error::Transport(_)))
 }
 
-/// Fetch the latest release: direct connection first, then one retry through
-/// the environment proxy if (and only if) the transport itself failed.
+/// Fetch the latest release through the configured egress route.
 fn fetch_latest_release(repo: &str) -> Result<GithubRelease, String> {
     let url = format!("{GITHUB_API_BASE}/repos/{repo}/releases/latest");
-    let direct_agent = build_agent(None)?;
-    match request_release(&direct_agent, &url) {
-        Ok(release) => Ok(release),
-        Err(err) if is_transport_error(err.as_ref()) => {
-            let proxy_url = proxy_from_env().ok_or_else(|| err.to_string())?;
-            let proxy_agent = build_agent(Some(&proxy_url))?;
-            request_release(&proxy_agent, &url)
-                .map_err(|retry| format!("direct: {err}; via proxy: {retry}"))
-        }
-        Err(err) => Err(err.to_string()),
-    }
+    request_release_routed(&url)
 }
 
 /// Whitelist the release page URL before it reaches the frontend.
@@ -217,10 +175,10 @@ fn safe_release_url(html_url: &str) -> String {
 #[tauri::command]
 pub async fn check_update(app: AppHandle, db: State<'_, Db>) -> Result<UpdateInfo, String> {
     let repo = {
-        let conn =
-            db.conn
-                .lock()
-                .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+        let conn = db
+            .conn
+            .lock()
+            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
         config::load(&conn)?.update_repo
     };
     // Same shared rule that guards writes in `set_config`; re-checking here
@@ -250,12 +208,24 @@ pub async fn check_update(app: AppHandle, db: State<'_, Db>) -> Result<UpdateInf
 
 /// Progress pushed to the frontend while an installer downloads.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum UpdateDownloadEvent {
-    Start { total_bytes: u64 },
+    Start {
+        total_bytes: u64,
+    },
     /// Heartbeat with running totals (throttled to ~4 per second).
-    Progress { received: u64, total_bytes: u64 },
-    Done { path: String, bytes: u64 },
+    Progress {
+        received: u64,
+        total_bytes: u64,
+    },
+    Done {
+        path: String,
+        bytes: u64,
+    },
 }
 
 /// Outcome of one installer download.
@@ -271,7 +241,8 @@ pub struct UpdateDownloadSummary {
 /// Preference: the NSIS `-setup.exe` (has an embedded uninstaller and needs
 /// no admin), then the `.msi`. Non-x64 builds are never selected.
 fn pick_windows_installer(assets: &[GithubAsset]) -> Option<&GithubAsset> {
-    let is_x64 = |name: &str| name.to_lowercase().contains("x64") || name.to_lowercase().contains("x86_64");
+    let is_x64 =
+        |name: &str| name.to_lowercase().contains("x64") || name.to_lowercase().contains("x86_64");
     let setup = assets
         .iter()
         .find(|asset| is_x64(&asset.name) && asset.name.to_lowercase().ends_with("-setup.exe"));
@@ -313,12 +284,26 @@ fn download_asset(
     dest: &std::path::Path,
     channel: &Channel<UpdateDownloadEvent>,
 ) -> Result<u64, String> {
-    let agent = build_agent_with_timeout(proxy_from_env().as_deref(), DOWNLOAD_TIMEOUT)?;
-    let mut response = agent
+    let (primary, fallback) =
+        crate::api_keys::egress_agents(DOWNLOAD_TIMEOUT, &asset.browser_download_url)?;
+    // The fallback only covers the initial connect: once bytes start flowing
+    // the download is committed to the chosen route (a mid-stream retry would
+    // restart the file from zero anyway).
+    let response = match primary
         .get(&asset.browser_download_url)
         .set("User-Agent", USER_AGENT)
         .call()
-        .map_err(|err| format!("安装包下载失败：{err}"))?;
+    {
+        Ok(response) => response,
+        Err(err) => match &fallback {
+            Some(agent) => agent
+                .get(&asset.browser_download_url)
+                .set("User-Agent", USER_AGENT)
+                .call()
+                .map_err(|retry| format!("安装包下载失败：{err}；回退重试仍失败：{retry}"))?,
+            None => return Err(format!("安装包下载失败：{err}")),
+        },
+    };
     if response.status() != 200 {
         return Err(format!("安装包下载失败：HTTP {}", response.status()));
     }
@@ -342,7 +327,10 @@ fn download_asset(
             .map_err(|err| format!("写入下载文件失败：{err}"))?;
         received += read as u64;
         if last_emit.elapsed() >= Duration::from_millis(250) {
-            let _ = channel.send(UpdateDownloadEvent::Progress { received, total_bytes: total });
+            let _ = channel.send(UpdateDownloadEvent::Progress {
+                received,
+                total_bytes: total,
+            });
             last_emit = std::time::Instant::now();
         }
     }
@@ -355,8 +343,7 @@ fn download_asset(
             received, total
         ));
     }
-    std::fs::rename(&part_path, dest)
-        .map_err(|err| format!("无法完成下载文件：{err}"))?;
+    std::fs::rename(&part_path, dest).map_err(|err| format!("无法完成下载文件：{err}"))?;
     let _ = channel.send(UpdateDownloadEvent::Done {
         path: dest.to_string_lossy().to_string(),
         bytes: received,
@@ -387,17 +374,15 @@ pub async fn download_update(
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        let agent = build_agent(proxy_from_env().as_deref())?;
         let url = format!("{GITHUB_API_BASE}/repos/{repo}/releases/tags/{tag}");
-        let release = request_release(&agent, &url).map_err(|err| err.to_string())?;
+        let release = request_release_routed(&url)?;
         let asset = pick_windows_installer(&release.assets)
             .ok_or_else(|| "该版本没有提供 Windows x64 安装包，请到发布页手动下载".to_string())?;
 
         let _ = on_event.send(UpdateDownloadEvent::Start {
             total_bytes: asset.size,
         });
-        std::fs::create_dir_all(&updates_dir)
-            .map_err(|err| format!("无法创建更新目录：{err}"))?;
+        std::fs::create_dir_all(&updates_dir).map_err(|err| format!("无法创建更新目录：{err}"))?;
         let dest = updates_dir.join(&asset.name);
         let bytes = download_asset(asset, &dest, &on_event)?;
         Ok(UpdateDownloadSummary {
@@ -472,11 +457,11 @@ mod tests {
         let picked = pick_windows_installer(&assets).unwrap();
         assert!(picked.name.ends_with("x64-setup.exe"));
 
-        let msi_only = vec![
-            asset("app_0.2.0_x64_en-US.msi"),
-            asset("latest.json"),
-        ];
-        assert_eq!(pick_windows_installer(&msi_only).unwrap().name, "app_0.2.0_x64_en-US.msi");
+        let msi_only = vec![asset("app_0.2.0_x64_en-US.msi"), asset("latest.json")];
+        assert_eq!(
+            pick_windows_installer(&msi_only).unwrap().name,
+            "app_0.2.0_x64_en-US.msi"
+        );
 
         let none = vec![asset("latest.json")];
         assert!(pick_windows_installer(&none).is_none());

@@ -34,9 +34,7 @@ const EMBED_INPUT_CHAR_BUDGET: usize = 400;
 /// `embedding` slot wins when configured; otherwise fall back to the shared
 /// DashScope credential (chat key doubles as the embedding key).
 /// `None` = 没有任何可用密钥——对话轮次据此跳过检索，入库则直接报错。
-pub(crate) fn embed_client_from_conn_opt(
-    conn: &Connection,
-) -> Result<Option<EmbedClient>, String> {
+pub(crate) fn embed_client_from_conn_opt(conn: &Connection) -> Result<Option<EmbedClient>, String> {
     let from_slot = api_keys::read_raw_config(conn, "embedding")?;
     let (api_key, custom_base, provider) = match from_slot {
         Some((key, base)) => (key, base, "embedding"),
@@ -67,11 +65,12 @@ pub(crate) fn embed_client_from_conn(conn: &Connection) -> Result<EmbedClient, S
     })
 }
 
-/// Blocking embeddings client with the standard direct-then-proxy retry.
+/// Blocking embeddings client routed through the configured egress proxy
+/// (proxy-first with a direct fallback; direct-only when unset).
 #[derive(Clone)]
 pub(crate) struct EmbedClient {
-    direct: ureq::Agent,
-    via_proxy: Option<ureq::Agent>,
+    primary: ureq::Agent,
+    fallback: Option<ureq::Agent>,
     base_url: String,
     api_key: String,
     model: String,
@@ -79,9 +78,11 @@ pub(crate) struct EmbedClient {
 
 impl EmbedClient {
     fn new(base_url: String, api_key: String, model: String) -> Result<Self, String> {
+        let endpoint = format!("{base_url}/embeddings");
+        let (primary, fallback) = api_keys::egress_agents(HTTP_TIMEOUT, &endpoint)?;
         Ok(Self {
-            direct: api_keys::direct_agent(HTTP_TIMEOUT)?,
-            via_proxy: api_keys::proxied_agent(HTTP_TIMEOUT)?,
+            primary,
+            fallback,
             base_url,
             api_key,
             model,
@@ -115,10 +116,11 @@ impl EmbedClient {
                 .send_json(payload)
                 .map_err(|err| match err {
                     ureq::Error::Status(code, response) => {
-                        let detail = response
-                            .into_string()
-                            .unwrap_or_default();
-                        format!("Embedding 调用失败（HTTP {code}）：{}", truncate(&detail, 200))
+                        let detail = response.into_string().unwrap_or_default();
+                        format!(
+                            "Embedding 调用失败（HTTP {code}）：{}",
+                            truncate(&detail, 200)
+                        )
                     }
                     other => format!("Embedding 请求失败：{other}"),
                 })?;
@@ -126,12 +128,12 @@ impl EmbedClient {
                 .into_string()
                 .map_err(|err| format!("读取 Embedding 响应失败：{err}"))
         };
-        let body = match attempt(&self.direct) {
+        let body = match attempt(&self.primary) {
             Ok(body) => body,
-            Err(direct_err) => match &self.via_proxy {
-                Some(proxy_agent) => attempt(proxy_agent)
-                    .map_err(|proxy_err| format!("{direct_err}；经代理重试仍失败：{proxy_err}"))?,
-                None => return Err(direct_err),
+            Err(first_err) => match &self.fallback {
+                Some(agent) => attempt(agent)
+                    .map_err(|retry_err| format!("{first_err}；回退重试仍失败：{retry_err}"))?,
+                None => return Err(first_err),
             },
         };
         parse_embeddings_response(&body, texts.len())
@@ -274,7 +276,11 @@ pub(crate) fn probe_embedding(
 fn parse_embeddings_response(body: &str, expected: usize) -> Result<Vec<Vec<f32>>, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|err| format!("解析 Embedding 响应失败：{err}"))?;
-    if let Some(message) = value.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+    if let Some(message) = value
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+    {
         return Err(format!("Embedding 接口报错：{message}"));
     }
     let items = value
@@ -360,7 +366,10 @@ mod tests {
         let pieces = split_for_embedding(text, 10);
         assert!(pieces.len() >= 3);
         for piece in pieces.iter().take(pieces.len() - 1) {
-            assert!(piece.ends_with(' '), "piece should end at a break: {piece:?}");
+            assert!(
+                piece.ends_with(' '),
+                "piece should end at a break: {piece:?}"
+            );
         }
         assert_eq!(pieces.concat(), text);
     }
@@ -387,12 +396,11 @@ mod tests {
 
     #[test]
     fn response_errors_surface_and_counts_validate() {
-        assert!(parse_embeddings_response(
-            r#"{"error": {"message": "quota exceeded"}}"#,
-            1
-        )
-        .unwrap_err()
-        .contains("quota exceeded"));
+        assert!(
+            parse_embeddings_response(r#"{"error": {"message": "quota exceeded"}}"#, 1)
+                .unwrap_err()
+                .contains("quota exceeded")
+        );
         assert!(parse_embeddings_response(r#"{"data": []}"#, 1).is_err());
         assert!(parse_embeddings_response(
             r#"{"data": [{"index": 0, "embedding": [1, 2]}, {"index": 1, "embedding": [1]}]}"#,
@@ -422,7 +430,10 @@ mod tests {
             resolve_embed_model("liquid/lfm-2.5-embedding-350m:free"),
             "liquid/lfm-2.5-embedding-350m:free"
         );
-        assert_eq!(resolve_embed_model("text-embedding-v4"), "text-embedding-v4");
+        assert_eq!(
+            resolve_embed_model("text-embedding-v4"),
+            "text-embedding-v4"
+        );
         // Empty / whitespace falls back to the DashScope default.
         assert_eq!(resolve_embed_model(""), EMBED_MODEL_DEFAULT);
         assert_eq!(resolve_embed_model("  "), EMBED_MODEL_DEFAULT);

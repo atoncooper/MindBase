@@ -129,9 +129,9 @@ fn find_skill_file(folder_dir: &Path) -> Option<PathBuf> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.file_name().map(|n| n == SKILL_FILE).unwrap_or(false)
-                && best
-                    .as_ref()
-                    .map_or(true, |best| path.components().count() < best.components().count())
+                && best.as_ref().map_or(true, |best| {
+                    path.components().count() < best.components().count()
+                })
             {
                 best = Some(path);
             }
@@ -190,7 +190,9 @@ fn load_enabled_map(conn: &Connection) -> Result<std::collections::HashMap<Strin
         .prepare("SELECT name, enabled FROM skill_settings")
         .map_err(|err| format!("failed to read skill settings: {err}"))?;
     let rows = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+        })
         .map_err(|err| format!("failed to read skill settings: {err}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("failed to read skill settings: {err}"))?;
@@ -244,10 +246,7 @@ pub(crate) fn read_skill_body(
             if !enabled {
                 return Err(format!("技能 `{name}` 已被禁用，请先在设置中启用"));
             }
-            return Ok(format!(
-                "# 技能：{}\n\n{}",
-                parsed.name, parsed.body
-            ));
+            return Ok(format!("# 技能：{}\n\n{}", parsed.name, parsed.body));
         }
     }
     Err(format!("未找到技能 `{name}`；可用技能见系统提示中的清单"))
@@ -312,7 +311,8 @@ pub fn skills_open_dir(app: AppHandle) -> Result<String, String> {
         guard.clone()
     };
     let skills = skills_dir(&dir);
-    std::fs::create_dir_all(&skills).map_err(|err| format!("failed to create skills dir: {err}"))?;
+    std::fs::create_dir_all(&skills)
+        .map_err(|err| format!("failed to create skills dir: {err}"))?;
     let sample = skills.join(SAMPLE_DIR_NAME);
     if !sample.exists() {
         std::fs::create_dir_all(&sample)
@@ -358,15 +358,14 @@ description: 示例技能——按固定结构整理笔记。可参考本文件�
 // ---------------------------------------------------------------------------
 // GitHub skill store — same protocol as app/skills/store/client.py: search
 // repositories by query/topic, install by downloading the zipball (the repo
-// is ONE skill pack). Direct connection first, then a fallback local proxy
-// (GitHub is unreachable from some networks without it).
+// is ONE skill pack). Routed through the user-configured egress proxy
+// (proxy first, direct fallback) — see `api_keys::egress_agents`.
 // ---------------------------------------------------------------------------
 
 const GITHUB_API: &str = "https://api.github.com";
 /// Default search topic when the query is empty (backend parity).
 const STORE_TOPIC: &str = "mindbase-skill";
 const STORE_TIMEOUT: Duration = Duration::from_secs(30);
-const FALLBACK_PROXY: &str = "http://127.0.0.1:10808";
 
 /// One GitHub repository returned by the store search.
 #[derive(Debug, Clone, Serialize)]
@@ -379,74 +378,52 @@ pub struct StoreRepo {
     pub html_url: String,
 }
 
-fn store_agent(proxy: Option<&str>) -> Result<ureq::Agent, String> {
-    let builder = ureq::AgentBuilder::new().timeout(STORE_TIMEOUT);
-    let builder = match proxy {
-        Some(url) => builder
-            .proxy(ureq::Proxy::new(url).map_err(|err| format!("invalid proxy url: {err}"))?),
-        None => builder,
-    };
-    Ok(builder.build())
-}
-
-/// GET `{GITHUB_API}{path}`. Proxy-first attempt order (env HTTPS_PROXY →
-/// local fallback proxy → direct): with the proxy off, a refused connection
-/// fails in milliseconds, while a *direct* attempt to GitHub can hang for
-/// the full timeout (os error 10060) — so direct is the last resort, not
-/// the first try. Read-phase errors participate in the same fallback (a
-/// TCP handshake may "succeed" through GFW interference and still stall on
-/// read). 4xx/5xx statuses fail fast — proxying won't change them.
+/// GET `{GITHUB_API}{path}` through the configured egress route: proxy first
+/// when the user set one for https targets, direct as the fallback — with
+/// the proxy off, a refused connection fails in milliseconds, while a
+/// *direct* attempt to GitHub can hang for the full timeout (os error
+/// 10060) — so direct is the last resort, not the first try. Read-phase
+/// errors participate in the same fallback (a TCP handshake may "succeed"
+/// through GFW interference and still stall on read). 4xx/5xx statuses fail
+/// fast — proxying won't change them.
 fn github_get(path: &str) -> Result<Vec<u8>, String> {
-    let env_proxy = std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let attempts: [Option<String>; 3] = [
-        env_proxy,
-        Some(FALLBACK_PROXY.to_string()),
-        None,
-    ];
-    let mut last_error = String::from("GitHub 无法访问");
-    for proxy in attempts.into_iter().flatten() {
-        let agent = match store_agent(Some(&proxy)) {
-            Ok(agent) => agent,
-            Err(err) => {
-                last_error = err;
-                continue;
-            }
-        };
-        let url = format!("{GITHUB_API}{path}");
-        let attempt = (|| -> Result<Vec<u8>, String> {
-            use std::io::Read;
-            let response = agent
-                .get(&url)
-                .set("User-Agent", "mindbase-desktop-skills")
-                .set("Accept", "application/vnd.github+json")
-                .call()
-                .map_err(|err| match err {
-                    ureq::Error::Status(code, _) => format!("HTTP {code}"),
-                    other => format!("连接失败：{other}"),
-                })?;
-            let mut bytes = Vec::new();
-            response
-                .into_reader()
-                .take(64 * 1024 * 1024)
-                .read_to_end(&mut bytes)
-                .map_err(|err| format!("读取响应失败：{err}"))?;
-            Ok(bytes)
-        })();
-        match attempt {
-            Ok(bytes) => return Ok(bytes),
-            Err(err) if err.starts_with("HTTP ") => return Err(format!("GitHub {err}")),
-            Err(err) => {
-                last_error = format!("{proxy} → {err}");
-                continue;
-            }
+    let url = format!("{GITHUB_API}{path}");
+    let (primary, fallback) = crate::api_keys::egress_agents(STORE_TIMEOUT, &url)?;
+    let attempt = |agent: &ureq::Agent| -> Result<Vec<u8>, String> {
+        use std::io::Read;
+        let response = agent
+            .get(&url)
+            .set("User-Agent", "mindbase-desktop-skills")
+            .set("Accept", "application/vnd.github+json")
+            .call()
+            .map_err(|err| match err {
+                ureq::Error::Status(code, _) => format!("HTTP {code}"),
+                other => format!("连接失败：{other}"),
+            })?;
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take(64 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .map_err(|err| format!("读取响应失败：{err}"))?;
+        Ok(bytes)
+    };
+    match attempt(&primary) {
+        Ok(bytes) => Ok(bytes),
+        Err(err) if err.starts_with("HTTP ") => Err(format!("GitHub {err}")),
+        Err(first_err) => {
+            let last_error = match &fallback {
+                Some(agent) => match attempt(agent) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(retry_err) => format!("{first_err}；回退直连仍失败：{retry_err}"),
+                },
+                None => first_err,
+            };
+            Err(format!(
+                "{last_error}\n（代理与直连均失败；请确认代理软件已开启，或在「系统设置 → 网络代理」填入可用代理地址）"
+            ))
         }
     }
-    Err(format!(
-        "{last_error}\n（已尝试本地代理与直连均失败；请确认代理软件已开启，或切换到可访问 GitHub 的网络后重试）"
-    ))
 }
 
 /// Minimal percent-encoding for GitHub search queries.
@@ -471,7 +448,10 @@ pub fn skills_store_search(query: Option<String>) -> Result<Vec<StoreRepo>, Stri
         Some(text) if !text.is_empty() => text.to_string(),
         _ => format!("topic:{STORE_TOPIC}"),
     };
-    let body = github_get(&format!("/search/repositories?q={}&per_page=30", url_encode(&q)))?;
+    let body = github_get(&format!(
+        "/search/repositories?q={}&per_page=30",
+        url_encode(&q)
+    ))?;
     let value: serde_json::Value =
         serde_json::from_slice(&body).map_err(|err| format!("GitHub 响应解析失败：{err}"))?;
     let items = value
@@ -493,7 +473,10 @@ pub fn skills_store_search(query: Option<String>) -> Result<Vec<StoreRepo>, Stri
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                stargazers_count: item.get("stargazers_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                stargazers_count: item
+                    .get("stargazers_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
                 default_branch: item
                     .get("default_branch")
                     .and_then(|v| v.as_str())
@@ -519,7 +502,11 @@ pub fn skills_store_install(
 ) -> Result<SkillMeta, String> {
     let repo = repo.trim().trim_matches('/').to_string();
     let parts: Vec<&str> = repo.split('/').collect();
-    if parts.len() != 2 || parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+    if parts.len() != 2
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
         return Err("仓库格式应为 owner/repo".to_string());
     }
     let branch = branch
@@ -548,7 +535,11 @@ pub fn skills_store_install(
             .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
         skills_dir(&dir)
     };
-    install_zip_bytes(&target_root, Path::new(&format!("{safe_repo_name}.zip")), &bytes)
+    install_zip_bytes(
+        &target_root,
+        Path::new(&format!("{safe_repo_name}.zip")),
+        &bytes,
+    )
 }
 
 /// Uninstall one skill: delete its folder and drop the persisted flag.
@@ -577,8 +568,11 @@ pub fn skills_uninstall(app: AppHandle, folder: String) -> Result<(), String> {
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    conn.execute("DELETE FROM skill_settings WHERE name = ?1", params![folder])
-        .map_err(|err| format!("failed to clean skill setting: {err}"))?;
+    conn.execute(
+        "DELETE FROM skill_settings WHERE name = ?1",
+        params![folder],
+    )
+    .map_err(|err| format!("failed to clean skill setting: {err}"))?;
     Ok(())
 }
 
@@ -590,15 +584,16 @@ mod tests {
     fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let buf = std::io::Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(buf);
-        let options =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
         for (name, data) in entries {
             zip.start_file(*name, options).unwrap();
             std::io::Write::write_all(&mut zip, data).unwrap();
         }
         zip.finish().unwrap().into_inner()
     }
-    const SKILL_MD: &str = "---\nname: front-name\ndescription: front desc\n---\n\n# 正文\n\n按步骤执行。";
+    const SKILL_MD: &str =
+        "---\nname: front-name\ndescription: front desc\n---\n\n# 正文\n\n按步骤执行。";
 
     #[test]
     fn flat_zip_manifest_wins_and_extracts_all_files() {
@@ -618,7 +613,11 @@ mod tests {
         assert_eq!(meta.folder, "manifest-name");
         assert!(meta.enabled);
         assert!(tmp.join("manifest-name").join("SKILL.md").is_file());
-        assert!(tmp.join("manifest-name").join("resources").join("guide.md").is_file());
+        assert!(tmp
+            .join("manifest-name")
+            .join("resources")
+            .join("guide.md")
+            .is_file());
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -631,7 +630,8 @@ mod tests {
         ]);
         let tmp = std::env::temp_dir().join(format!("mb-skills-test-zb-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let meta = install_zip_bytes(&tmp, Path::new("atoncooper-skillx-ab12f.zip"), &bytes).unwrap();
+        let meta =
+            install_zip_bytes(&tmp, Path::new("atoncooper-skillx-ab12f.zip"), &bytes).unwrap();
         assert_eq!(meta.name, "front-name", "no manifest → frontmatter name");
         assert_eq!(meta.description, "front desc");
         assert_eq!(meta.folder, "front-name");
@@ -640,7 +640,10 @@ mod tests {
             tmp.join("front-name").join("SKILL.md").is_file(),
             "zipball prefix must be stripped so SKILL.md lands at folder root"
         );
-        assert!(!tmp.join("front-name").join("atoncooper-skillx-ab12f").exists());
+        assert!(!tmp
+            .join("front-name")
+            .join("atoncooper-skillx-ab12f")
+            .exists());
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -678,12 +681,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         install_zip_bytes(&tmp, Path::new("dup.zip"), &bytes).unwrap();
         let second = install_zip_bytes(&tmp, Path::new("dup.zip"), &bytes);
-        assert!(second.is_err(), "second install must fail on existing folder");
+        assert!(
+            second.is_err(),
+            "second install must fail on existing folder"
+        );
 
         // zip-slip: an entry escaping the target aborts and cleans up.
         let mut evil_zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let options =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
         evil_zip.start_file("../evil.txt", options).unwrap();
         std::io::Write::write_all(&mut evil_zip, b"x").unwrap();
         let evil_bytes = evil_zip.finish().unwrap().into_inner();
@@ -709,7 +715,8 @@ mod tests {
     /// 否则出现「安装成功但列表不显示」。
     #[test]
     fn skill_md_without_frontmatter_is_discovered() {
-        let parsed = parse_skill("# 我的技能\n\n按步骤执行。", "my-skill").expect("plain body is a valid skill");
+        let parsed = parse_skill("# 我的技能\n\n按步骤执行。", "my-skill")
+            .expect("plain body is a valid skill");
         assert_eq!(parsed.name, "my-skill", "name falls back to folder");
         assert_eq!(parsed.description, "");
         assert!(parsed.body.contains("按步骤执行"));
@@ -737,7 +744,8 @@ mod tests {
     #[ignore = "requires network access to api.github.com"]
     fn store_search_live_returns_repos() {
         // 普通关键词搜索必有结果；topic:mindbase-skill 目前生态为空，空结果合法。
-        let repos = skills_store_search(Some("rust cli".to_string())).expect("store search should succeed");
+        let repos =
+            skills_store_search(Some("rust cli".to_string())).expect("store search should succeed");
         assert!(!repos.is_empty(), "keyword search should return results");
         assert!(repos[0].full_name.contains('/'));
         // 空查询走 topic 回落，协议应同样成功（可能为空列表）。
@@ -758,7 +766,9 @@ pub fn skills_install_from_path(app: AppHandle, source: String) -> Result<SkillM
     let raw = std::fs::read_to_string(source_path.join(SKILL_FILE))
         .map_err(|_| format!("所选文件夹缺少 {SKILL_FILE}，无法作为技能安装"))?;
     let Some(parsed) = parse_skill(&raw, "") else {
-        return Err("SKILL.md 解析失败：需要 frontmatter（name / description）与指令正文".to_string());
+        return Err(
+            "SKILL.md 解析失败：需要 frontmatter（name / description）与指令正文".to_string(),
+        );
     };
     let Some(folder) = source_path.file_name().and_then(|n| n.to_str()) else {
         return Err("无法读取文件夹名称".to_string());
@@ -787,8 +797,7 @@ pub fn skills_install_from_path(app: AppHandle, source: String) -> Result<SkillM
             "技能 `{folder}` 已存在；请先在技能文件夹中删除或重命名后再安装"
         ));
     }
-    copy_dir_recursive(&source_path, &target)
-        .map_err(|err| format!("安装失败：{err}"))?;
+    copy_dir_recursive(&source_path, &target).map_err(|err| format!("安装失败：{err}"))?;
     Ok(SkillMeta {
         name: if parsed.name.is_empty() {
             folder.to_string()
@@ -881,8 +890,7 @@ fn install_zip_bytes(
     bytes: &[u8],
 ) -> Result<SkillMeta, String> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|err| format!("zip 解析失败：{err}"))?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|err| format!("zip 解析失败：{err}"))?;
 
     let names_owned: Vec<String> = (0..archive.len())
         .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
@@ -913,8 +921,8 @@ fn install_zip_bytes(
         }
     }
 
-    let skill_entry =
-        find_entry(&names, SKILL_FILE).ok_or_else(|| format!("zip 中缺少 {SKILL_FILE}，无法作为技能安装"))?;
+    let skill_entry = find_entry(&names, SKILL_FILE)
+        .ok_or_else(|| format!("zip 中缺少 {SKILL_FILE}，无法作为技能安装"))?;
     let (front_name, front_description, body_nonempty) = {
         let mut file = archive
             .by_name(skill_entry)
@@ -1013,13 +1021,11 @@ fn install_zip_bytes(
         }
         let out_path = target.join(&rel);
         if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("创建子目录失败：{err}"))?;
+            std::fs::create_dir_all(parent).map_err(|err| format!("创建子目录失败：{err}"))?;
         }
-        let mut out_file = std::fs::File::create(&out_path)
-            .map_err(|err| format!("写入文件失败：{err}"))?;
-        std::io::copy(&mut file, &mut out_file)
-            .map_err(|err| format!("解压失败：{err}"))?;
+        let mut out_file =
+            std::fs::File::create(&out_path).map_err(|err| format!("写入文件失败：{err}"))?;
+        std::io::copy(&mut file, &mut out_file).map_err(|err| format!("解压失败：{err}"))?;
     }
 
     Ok(SkillMeta {

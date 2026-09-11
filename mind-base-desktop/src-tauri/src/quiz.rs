@@ -128,14 +128,15 @@ fn record_questions(conn: &rusqlite::Connection, questions: &[QuizQuestion]) -> 
 
 /// Stems of the most recent history entries, oldest-last (prompt avoid-list).
 fn recent_question_texts(conn: &rusqlite::Connection, limit: usize) -> Vec<String> {
-    let mut statement = match conn
-        .prepare("SELECT question_text FROM quiz_history ORDER BY rowid DESC LIMIT ?1")
-    {
-        Ok(statement) => statement,
-        Err(_) => return Vec::new(),
-    };
+    let mut statement =
+        match conn.prepare("SELECT question_text FROM quiz_history ORDER BY rowid DESC LIMIT ?1") {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
     let rows = statement
-        .query_map(rusqlite::params![limit as i64], |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params![limit as i64], |row| {
+            row.get::<_, String>(0)
+        })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default();
     rows
@@ -237,12 +238,16 @@ pub(crate) fn fetch_chunks(
     query: Option<&str>,
     count: usize,
 ) -> Result<Vec<KnowledgeChunk>, String> {
-    let conn = db.conn.lock().map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
 
-    if let (Some(embed_client), Some(topic)) = (embed_client, query.filter(|q| !q.trim().is_empty())) {
+    if let (Some(embed_client), Some(topic)) =
+        (embed_client, query.filter(|q| !q.trim().is_empty()))
+    {
         let vector = embed_client.embed_query(topic)?;
-        let hits =
-            crate::vectors::hybrid_search_conn(&conn, &vector, topic, count as u32, None)?;
+        let hits = crate::vectors::hybrid_search_conn(&conn, &vector, topic, count as u32, None)?;
         return Ok(hits
             .into_iter()
             .map(|hit| KnowledgeChunk {
@@ -264,12 +269,16 @@ pub(crate) fn fetch_chunks(
     let rows = statement
         .query_map([], |row| {
             Ok(KnowledgeChunk {
-                title: row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "未命名".into()),
+                title: row
+                    .get::<_, Option<String>>(0)?
+                    .unwrap_or_else(|| "未命名".into()),
                 content: row.get(1)?,
             })
         })
         .map_err(|err| format!("failed to query chunks: {err}"))?;
-    let all = rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?;
+    let all = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
 
     // Randomized spread sampling: shuffle document order and start each
     // document at a random chunk, so two consecutive runs feed the generator
@@ -392,7 +401,8 @@ pub(crate) fn parse_questions_reply(reply: &str) -> Result<Vec<Value>, String> {
         .trim_start_matches('\n')
         .trim_end_matches("```")
         .trim();
-    let value: Value = serde_json::from_str(body).map_err(|err| format!("解析出题 JSON 失败：{err}"))?;
+    let value: Value =
+        serde_json::from_str(body).map_err(|err| format!("解析出题 JSON 失败：{err}"))?;
     let questions = value
         .get("questions")
         .and_then(|q| q.as_array())
@@ -687,7 +697,10 @@ pub(crate) fn generate_batch(
                 }
                 if !questions.is_empty() {
                     let _ = downgrade_notice;
-                    return Ok(BatchResult { questions, duplicates_skipped });
+                    return Ok(BatchResult {
+                        questions,
+                        duplicates_skipped,
+                    });
                 }
                 let _ = attempt;
             }
@@ -797,12 +810,7 @@ fn grade_essay(chat_client: &ChatClient, question: &QuizQuestion, answer: &str) 
                 .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    format!(
-                        "{}. {}（{}分）",
-                        i + 1,
-                        item.description,
-                        item.max_points
-                    )
+                    format!("{}. {}（{}分）", i + 1, item.description, item.max_points)
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -821,7 +829,13 @@ fn grade_essay(chat_client: &ChatClient, question: &QuizQuestion, answer: &str) 
         clamp_chars(answer, 4000)
     );
 
-    let agent_result = crate::api_keys::direct_agent(std::time::Duration::from_secs(60));
+    // Grading failure is surfaced to the caller for a manual retry, so only
+    // the primary egress route (proxy when configured) is attempted here.
+    let agent_result = crate::api_keys::egress_agents(
+        std::time::Duration::from_secs(60),
+        chat_client.endpoint_url(),
+    )
+    .map(|(primary, _)| primary);
     let outcome = (|| -> Result<(bool, f64, String), String> {
         let agent = agent_result?;
         let messages = [
@@ -829,9 +843,12 @@ fn grade_essay(chat_client: &ChatClient, question: &QuizQuestion, answer: &str) 
             ChatMessage::new("user", user),
         ];
         let reply = chat_client.complete_with(&agent, &messages)?;
-        let value: Value = serde_json::from_str(&reply)
-            .map_err(|err| format!("解析评分失败：{err}"))?;
-        let total = value.get("total_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let value: Value =
+            serde_json::from_str(&reply).map_err(|err| format!("解析评分失败：{err}"))?;
+        let total = value
+            .get("total_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         let total = total.clamp(0.0, max_score);
         let feedback = value
             .get("feedback")
@@ -885,8 +902,14 @@ mod tests {
 
     #[test]
     fn question_hash_collapses_whitespace_and_case() {
-        assert_eq!(question_hash("什么是 向量检索？"), question_hash("什么是向量检索？"));
-        assert_eq!(question_hash("  What Is  RAG? "), question_hash("what is rag?"));
+        assert_eq!(
+            question_hash("什么是 向量检索？"),
+            question_hash("什么是向量检索？")
+        );
+        assert_eq!(
+            question_hash("  What Is  RAG? "),
+            question_hash("what is rag?")
+        );
         assert_ne!(question_hash("题目甲"), question_hash("题目乙"));
     }
 
@@ -965,7 +988,10 @@ mod tests {
         assert!(normalize_question(&raw, "easy", &[chunk("x")]).is_err());
         raw["correct_answer"] = json!(["A", "C"]);
         let question = normalize_question(&raw, "easy", &[chunk("x")]).unwrap();
-        assert_eq!(question.correct_answer.unwrap(), Value::String("A,C".into()));
+        assert_eq!(
+            question.correct_answer.unwrap(),
+            Value::String("A,C".into())
+        );
     }
 
     #[test]
@@ -998,7 +1024,8 @@ mod tests {
 
     #[test]
     fn reply_parser_tolerates_code_fences() {
-        let fenced = "```json\n{\"questions\":[{\"type\":\"single_choice\",\"question\":\"q\"}]}\n```";
+        let fenced =
+            "```json\n{\"questions\":[{\"type\":\"single_choice\",\"question\":\"q\"}]}\n```";
         assert_eq!(parse_questions_reply(fenced).unwrap().len(), 1);
         assert!(parse_questions_reply("no json").is_err());
     }
@@ -1015,7 +1042,8 @@ mod tests {
 
     #[test]
     fn short_answer_grading_by_keyword_coverage() {
-        let mut question = normalize_question(&sample_raw(TYPE_SHORT), "medium", &[chunk("x")]).unwrap();
+        let mut question =
+            normalize_question(&sample_raw(TYPE_SHORT), "medium", &[chunk("x")]).unwrap();
         question.keywords = vec!["语义".into(), "召回".into(), "重排".into()];
         // Two of three covered → passes at the 60% line.
         let outcome = grade_question(None, &question, "先做语义召回，然后重排");
@@ -1069,7 +1097,10 @@ mod tests {
         assert_eq!(parsed.questions.len(), 1);
         assert_eq!(parsed.questions[0].question_type, TYPE_SINGLE);
         assert_eq!(
-            parsed.answers.get(&parsed.questions[0].question_id).map(String::as_str),
+            parsed
+                .answers
+                .get(&parsed.questions[0].question_id)
+                .map(String::as_str),
             Some("A")
         );
         assert!(parsed.graded);
@@ -1079,12 +1110,10 @@ mod tests {
         // topic: null (never set) must deserialize back to None via serde(default).
         let config_json = serde_json::to_string(&config).unwrap();
         let without_topic = config_json.replace("\"topic\":\"向量检索\"", "\"topic\":null");
-        let parsed_null: QuizSetCreateRequest = serde_json::from_str(
-            &format!(
-                "{{\"config\":{without_topic},\"questions\":{}}}",
-                serde_json::to_string(&set.questions).unwrap()
-            ),
-        )
+        let parsed_null: QuizSetCreateRequest = serde_json::from_str(&format!(
+            "{{\"config\":{without_topic},\"questions\":{}}}",
+            serde_json::to_string(&set.questions).unwrap()
+        ))
         .unwrap();
         assert!(parsed_null.config.topic.is_none());
         assert_eq!(parsed_null.questions.len(), 1);
@@ -1151,7 +1180,12 @@ pub async fn quiz_source_chunks(
     let handle = app.clone();
     let topic_owned = topic.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        fetch_chunks(handle.state::<Db>().inner(), embed_client.as_ref(), topic_owned.as_deref(), count)
+        fetch_chunks(
+            handle.state::<Db>().inner(),
+            embed_client.as_ref(),
+            topic_owned.as_deref(),
+            count,
+        )
     })
     .await
     .map_err(|err| format!("task failed: {err}"))?
@@ -1206,51 +1240,50 @@ pub async fn quiz_generate(
     let _ = on_event.send(QuizGenEvent::Sampling);
     let handle = app.clone();
     let topic = request.topic.clone();
-    let (result, history_size) =
-        tauri::async_runtime::spawn_blocking(move || {
-            let chunks = fetch_chunks(
-                handle.state::<Db>().inner(),
-                embed_client.as_ref(),
-                topic.as_deref(),
-                count,
-            )?;
-            // Avoid-list (prompt) + hard filter (all history hashes) both
-            // come from quiz_history.
-            let (recent_stems, history_hashes) = {
-                let db = handle.state::<Db>();
-                let conn = db
-                    .conn
-                    .lock()
-                    .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-                (
-                    recent_question_texts(&conn, HISTORY_AVOID_IN_PROMPT),
-                    all_question_hashes(&conn),
-                )
-            };
-            let history_size = history_hashes.len();
-            let _ = on_event.send(QuizGenEvent::Generating);
-            let batch = generate_batch(
-                &chat_client,
-                &chunks,
-                count,
-                &types,
-                &request.difficulty,
-                &recent_stems,
-                &history_hashes,
-            )?;
-            // Record the fresh stems so the NEXT run avoids them.
-            let inserted = {
-                let db = handle.state::<Db>();
-                let conn = db
-                    .conn
-                    .lock()
-                    .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-                record_questions(&conn, &batch.questions)
-            };
-            Ok::<_, String>((batch, history_size + inserted))
-        })
-        .await
-        .map_err(|err| format!("task failed: {err}"))??;
+    let (result, history_size) = tauri::async_runtime::spawn_blocking(move || {
+        let chunks = fetch_chunks(
+            handle.state::<Db>().inner(),
+            embed_client.as_ref(),
+            topic.as_deref(),
+            count,
+        )?;
+        // Avoid-list (prompt) + hard filter (all history hashes) both
+        // come from quiz_history.
+        let (recent_stems, history_hashes) = {
+            let db = handle.state::<Db>();
+            let conn = db
+                .conn
+                .lock()
+                .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+            (
+                recent_question_texts(&conn, HISTORY_AVOID_IN_PROMPT),
+                all_question_hashes(&conn),
+            )
+        };
+        let history_size = history_hashes.len();
+        let _ = on_event.send(QuizGenEvent::Generating);
+        let batch = generate_batch(
+            &chat_client,
+            &chunks,
+            count,
+            &types,
+            &request.difficulty,
+            &recent_stems,
+            &history_hashes,
+        )?;
+        // Record the fresh stems so the NEXT run avoids them.
+        let inserted = {
+            let db = handle.state::<Db>();
+            let conn = db
+                .conn
+                .lock()
+                .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+            record_questions(&conn, &batch.questions)
+        };
+        Ok::<_, String>((batch, history_size + inserted))
+    })
+    .await
+    .map_err(|err| format!("task failed: {err}"))??;
 
     Ok(QuizGenerateResult {
         questions: result.questions,
@@ -1420,15 +1453,14 @@ pub async fn quiz_set_list(
     for row in rows {
         let (id, created_at, difficulty, question_count, answers, graded, total_score, total_max) =
             row.map_err(|err| format!("failed to read quiz set: {err}"))?;
-        let answered_count = serde_json::from_str::<std::collections::HashMap<String, String>>(
-            &answers,
-        )
-        .map(|map| {
-            map.values()
-                .filter(|answer| !answer.trim().is_empty())
-                .count() as i64
-        })
-        .unwrap_or(0);
+        let answered_count =
+            serde_json::from_str::<std::collections::HashMap<String, String>>(&answers)
+                .map(|map| {
+                    map.values()
+                        .filter(|answer| !answer.trim().is_empty())
+                        .count() as i64
+                })
+                .unwrap_or(0);
         sets.push(QuizSetMeta {
             id,
             created_at,
@@ -1503,10 +1535,10 @@ pub async fn quiz_set_get(app: AppHandle, id: String) -> Result<Option<QuizSet>,
     } else {
         serde_json::from_str(&config).map_err(|err| format!("解析出题配置失败：{err}"))?
     };
-    let questions: Vec<QuizQuestion> = serde_json::from_str(&questions)
-        .map_err(|err| format!("解析题目失败：{err}"))?;
-    let answers: std::collections::HashMap<String, String> = serde_json::from_str(&answers)
-        .map_err(|err| format!("解析作答失败：{err}"))?;
+    let questions: Vec<QuizQuestion> =
+        serde_json::from_str(&questions).map_err(|err| format!("解析题目失败：{err}"))?;
+    let answers: std::collections::HashMap<String, String> =
+        serde_json::from_str(&answers).map_err(|err| format!("解析作答失败：{err}"))?;
     let results: Vec<QuizRecordItem> = if results.trim().is_empty() {
         Vec::new()
     } else {
@@ -1536,8 +1568,8 @@ pub async fn quiz_set_save_answers(
 ) -> Result<(), String> {
     use tauri::Manager;
 
-    let answers = serde_json::to_string(&answers)
-        .map_err(|err| format!("序列化作答失败：{err}"))?;
+    let answers =
+        serde_json::to_string(&answers).map_err(|err| format!("序列化作答失败：{err}"))?;
     let db = app.state::<Db>();
     let conn = db
         .conn
@@ -1563,8 +1595,8 @@ pub async fn quiz_set_finish(
     if items.is_empty() {
         return Err("没有可保存的批改结果".to_string());
     }
-    let results = serde_json::to_string(&items)
-        .map_err(|err| format!("序列化批改结果失败：{err}"))?;
+    let results =
+        serde_json::to_string(&items).map_err(|err| format!("序列化批改结果失败：{err}"))?;
     let total_score: f64 = items.iter().map(|item| item.score).sum();
     let total_max: f64 = items.iter().map(|item| item.max_score).sum();
     let db = app.state::<Db>();
@@ -1596,7 +1628,10 @@ pub async fn quiz_set_delete(app: AppHandle, id: String) -> Result<(), String> {
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    conn.execute("DELETE FROM quiz_sets WHERE id = ?1", rusqlite::params![id.trim()])
-        .map_err(|err| format!("failed to delete quiz set: {err}"))?;
+    conn.execute(
+        "DELETE FROM quiz_sets WHERE id = ?1",
+        rusqlite::params![id.trim()],
+    )
+    .map_err(|err| format!("failed to delete quiz set: {err}"))?;
     Ok(())
 }

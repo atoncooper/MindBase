@@ -376,12 +376,19 @@ pub(crate) fn ensure_python(data_dir: &Path, on_stage: &StageLog) -> Result<Path
 
 /// Run the embedded interpreter with the given arguments, capturing nothing.
 fn run_python(exe: &Path, args: &[String], cwd: &Path) -> Result<(), String> {
-    let status = Command::new(exe)
-        .args(args)
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // pip derives its proxy from the environment; forward the user's egress
+    // proxy setting when one is configured (domestic mirrors stay direct
+    // via NO_PROXY).
+    for (name, value) in crate::api_keys::child_proxy_env() {
+        cmd.env(name, value);
+    }
+    let status = cmd
         .status()
         .map_err(|err| format!("运行 {} 失败：{err}", exe.display()))?;
     if !status.success() {
@@ -432,21 +439,27 @@ fn download_bytes(urls: &[&str]) -> Result<Vec<u8>, String> {
 
 /// Download a single URL into memory with a generous timeout.
 fn download_one(url: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(300))
-        .user_agent(USER_AGENT)
-        .build();
-    let response = agent
-        .get(url)
-        .call()
-        .map_err(|err| format!("下载失败：{err}"))?;
-    let mut bytes: Vec<u8> = Vec::new();
-    response
-        .into_reader()
-        .take(512 * 1024 * 1024)
-        .read_to_end(&mut bytes)
-        .map_err(|err| format!("读取下载内容失败：{err}"))?;
-    Ok(bytes)
+    let (primary, fallback) = crate::api_keys::egress_agents(Duration::from_secs(300), url)?;
+    let fetch = |agent: &ureq::Agent| -> Result<Vec<u8>, String> {
+        let response = agent
+            .get(url)
+            .set("User-Agent", USER_AGENT)
+            .call()
+            .map_err(|err| format!("下载失败：{err}"))?;
+        let mut bytes: Vec<u8> = Vec::new();
+        response
+            .into_reader()
+            .take(512 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .map_err(|err| format!("读取下载内容失败：{err}"))?;
+        Ok(bytes)
+    };
+    fetch(&primary).or_else(|first_err| match &fallback {
+        Some(agent) => {
+            fetch(agent).map_err(|retry_err| format!("{first_err}；回退直连仍失败：{retry_err}"))
+        }
+        None => Err(first_err),
+    })
 }
 
 /// Extract a zip archive into `target_dir` with a zip-slip guard.
