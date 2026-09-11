@@ -22,6 +22,10 @@ export interface AppConfig {
   localAsr?: LocalAsrConfig;
   /** 本地 OCR（RapidOCR / PP-OCRv4）设置。 */
   localOcr?: LocalOcrConfig;
+  /** 出口代理（http:// 目标），如 http://127.0.0.1:10808；空 = 直连。 */
+  proxyHttp?: string | null;
+  /** 出口代理（https:// 目标），如 socks5://127.0.0.1:10808；空 = 直连。 */
+  proxyHttps?: string | null;
 }
 
 /** 本地 whisper 服务设置（与 Rust `LocalAsrConfig` 对齐）。服务由应用通过

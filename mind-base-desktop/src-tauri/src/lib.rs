@@ -20,8 +20,8 @@ mod ocr_server;
 mod python_runtime;
 mod quiz;
 mod resume;
-mod slides;
 mod skills;
+mod slides;
 mod updater;
 mod vectors;
 mod wbi;
@@ -75,6 +75,11 @@ pub fn run() {
             if let Ok(dir) = db.data_dir.lock() {
                 logging::init(&dir);
             }
+            // Seed the process-wide egress-proxy snapshot from the stored
+            // config so outbound requests route correctly from the first use.
+            if let Ok(conn) = db.conn.lock() {
+                api_keys::refresh_proxy_setting(&conn);
+            }
             app.manage(db);
             logging::info("main", "MindBase desktop started");
 
@@ -125,6 +130,7 @@ pub fn run() {
             api_keys::save_provider_config,
             api_keys::clear_provider_key,
             api_keys::test_provider_config,
+            api_keys::test_proxy,
             config::get_config,
             config::set_config,
             db::get_data_dir,

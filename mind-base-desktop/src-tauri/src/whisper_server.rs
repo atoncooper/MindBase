@@ -333,11 +333,22 @@ pub(crate) fn download_agents() -> Result<DownloadAgents, String> {
             .timeout_read(Duration::from_secs(60))
     };
     let direct = builder().build();
-    let via_proxy = crate::api_keys::proxied_agent(Duration::from_secs(60))?;
-    Ok(DownloadAgents {
-        direct,
-        via_proxy: via_proxy.map(|_| builder().build()),
-    })
+    // Proxy source is the user's egress setting — never the environment, and
+    // deliberately NOT `proxy_for_url`: the model hosts sit on the
+    // direct-connect bypass list (an overseas proxy stalls the big files),
+    // and this downloader manages its own direct/proxy alternation instead
+    // of proxy-first. Model URLs are https, so the https address applies,
+    // falling back to the http address when only that one is filled.
+    let setting = crate::api_keys::proxy_setting();
+    let via_proxy = match setting.https.or(setting.http) {
+        Some(url) => {
+            let proxy =
+                ureq::Proxy::new(&url).map_err(|err| format!("invalid proxy url {url}: {err}"))?;
+            Some(builder().proxy(proxy).build())
+        }
+        None => None,
+    };
+    Ok(DownloadAgents { direct, via_proxy })
 }
 
 /// Download one repo file into `dest` with resume support (`.part` suffix).
@@ -540,8 +551,13 @@ fn server_command(exe: &Path, cfg: &LocalAsrConfig, data_dir: &Path) -> StdComma
     for token in cfg.extra_args.split_whitespace() {
         cmd.arg(token);
     }
-    cmd.env("PYTHONIOENCODING", "utf-8")
-        .stdin(Stdio::null())
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    // The worker's huggingface_hub downloads inherit the user's egress proxy
+    // when one is configured; domestic mirrors stay direct via NO_PROXY.
+    for (name, value) in crate::api_keys::child_proxy_env() {
+        cmd.env(name, value);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     cmd

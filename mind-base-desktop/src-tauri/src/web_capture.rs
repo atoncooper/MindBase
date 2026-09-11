@@ -55,17 +55,29 @@ const ANTIBOT_MARKERS: &[&str] = &[
 
 /// One progress update pushed to the frontend during capture.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum WebCaptureEvent {
-    Start { total: usize },
+    Start {
+        total: usize,
+    },
     UrlDone {
         index: i64,
         path: String,
         name: String,
         bytes: u64,
     },
-    UrlFailed { index: i64, error: String },
-    Done { ok: usize, failed: usize },
+    UrlFailed {
+        index: i64,
+        error: String,
+    },
+    Done {
+        ok: usize,
+        failed: usize,
+    },
 }
 
 fn emit(event: &WebCaptureEvent, channel: &Channel<WebCaptureEvent>) {
@@ -141,29 +153,38 @@ fn looks_like_challenge(body: &[u8]) -> bool {
 
 /// Fetch one URL with browser-like headers, returning the HTML body.
 fn fetch_html(url: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(FETCH_TIMEOUT)
-        .user_agent(BROWSER_UA)
-        .build();
-    let response = match agent
-        .get(url)
-        .set(
-            "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        )
-        .set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-        .set("Upgrade-Insecure-Requests", "1")
-        .call()
-    {
+    let (primary, fallback) = crate::api_keys::egress_agents(FETCH_TIMEOUT, url)?;
+    // Status errors are authoritative (a retry can't fix a 403), so only
+    // transport failures qualify for the direct fallback retry.
+    let request = |agent: &ureq::Agent| -> Result<ureq::Response, (String, bool)> {
+        agent
+            .get(url)
+            .set("User-Agent", BROWSER_UA)
+            .set(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            )
+            .set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .set("Upgrade-Insecure-Requests", "1")
+            .call()
+            .map_err(|err| match err {
+                ureq::Error::Status(code, _) => {
+                    let hint = match code {
+                        403 | 429 | 503 => "（疑似被目标网站反爬拦截）".to_string(),
+                        _ => String::new(),
+                    };
+                    (format!("网页请求失败：HTTP {code}{hint}"), false)
+                }
+                other => (format!("网页请求失败：{other}"), true),
+            })
+    };
+    let response = match request(&primary) {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, _)) => {
-            let hint = match code {
-                403 | 429 | 503 => "（疑似被目标网站反爬拦截）".to_string(),
-                _ => String::new(),
-            };
-            return Err(format!("网页请求失败：HTTP {code}{hint}"));
-        }
-        Err(other) => return Err(format!("网页请求失败：{other}")),
+        Err((first_err, retryable)) => match (&fallback, retryable) {
+            (Some(agent), true) => request(agent)
+                .map_err(|(retry_err, _)| format!("{first_err}；回退直连仍失败：{retry_err}"))?,
+            _ => return Err(first_err),
+        },
     };
     let content_type = response.content_type().to_lowercase();
     if !content_type.contains("html") && !content_type.contains("xml") {
@@ -313,7 +334,10 @@ mod tests {
 
     #[test]
     fn display_name_prefers_last_path_segment() {
-        assert_eq!(display_name("https://a.com/x/y/article.html"), "a.com · article.html");
+        assert_eq!(
+            display_name("https://a.com/x/y/article.html"),
+            "a.com · article.html"
+        );
         assert_eq!(display_name("https://a.com/"), "a.com");
         assert_eq!(display_name("https://a.com"), "a.com");
     }
@@ -321,7 +345,9 @@ mod tests {
     #[test]
     fn challenge_markers_are_detected() {
         assert!(looks_like_challenge(b"<html>Just a moment...</html>"));
-        assert!(looks_like_challenge(b"<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate\"></script>"));
+        assert!(looks_like_challenge(
+            b"<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate\"></script>"
+        ));
         assert!(!looks_like_challenge(
             "<html><body><h1>Redis 分片研究</h1></body></html>".as_bytes()
         ));

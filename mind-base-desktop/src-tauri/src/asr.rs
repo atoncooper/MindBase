@@ -161,9 +161,7 @@ impl TaskState {
     fn from_status(status: &str, error_message: Option<String>) -> TaskState {
         match status {
             "SUCCEEDED" => TaskState::Succeeded,
-            "FAILED" => TaskState::Failed(
-                error_message.unwrap_or_else(|| "未知错误".to_string()),
-            ),
+            "FAILED" => TaskState::Failed(error_message.unwrap_or_else(|| "未知错误".to_string())),
             "RUNNING" => TaskState::Running,
             // PENDING / unknown → keep waiting.
             _ => TaskState::Pending,
@@ -204,7 +202,11 @@ fn parse_task_state(body: &str) -> Result<TaskState, String> {
             output
                 .pointer("/results/0/error_message")
                 .and_then(|v| v.as_str())
-                .or_else(|| output.pointer("/results/0/message").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    output
+                        .pointer("/results/0/message")
+                        .and_then(|v| v.as_str())
+                })
                 .map(str::to_string)
         });
     Ok(TaskState::from_status(status, error_message))
@@ -341,9 +343,7 @@ impl UploadCertificate {
             .get("output")
             .or_else(|| value.get("data"))
             .ok_or("上传凭证响应缺少数据")?;
-        let obj = info
-            .as_object()
-            .ok_or("上传凭证响应不是对象")?;
+        let obj = info.as_object().ok_or("上传凭证响应不是对象")?;
 
         let str_field = |names: &[&str]| -> Result<String, String> {
             for name in names {
@@ -359,9 +359,18 @@ impl UploadCertificate {
 
         // Fields consumed structurally (not POSTed verbatim as form data).
         const CONSUMED: &[&str] = &[
-            "dir", "upload_dir", "host", "upload_host", "expire", "request_id",
-            "accessid", "oss_access_key_id", "access_id", "OSSAccessKeyId",
-            "signature", "policy",
+            "dir",
+            "upload_dir",
+            "host",
+            "upload_host",
+            "expire",
+            "request_id",
+            "accessid",
+            "oss_access_key_id",
+            "access_id",
+            "OSSAccessKeyId",
+            "signature",
+            "policy",
         ];
         let mut extra: Vec<(String, String)> = Vec::new();
         for (k, v) in obj {
@@ -382,7 +391,12 @@ impl UploadCertificate {
         }
 
         Ok(Self {
-            access_key_id: str_field(&["accessid", "oss_access_key_id", "access_id", "OSSAccessKeyId"])?,
+            access_key_id: str_field(&[
+                "accessid",
+                "oss_access_key_id",
+                "access_id",
+                "OSSAccessKeyId",
+            ])?,
             signature: str_field(&["signature"])?,
             policy: str_field(&["policy"])?,
             upload_dir: str_field(&["dir", "upload_dir"])?,
@@ -448,14 +462,14 @@ fn multipart_body(
     body
 }
 
-
 /// Blocking DashScope client shared by every call of one ingestion run.
 ///
-/// Transport follows the api_keys probe convention: direct attempt first,
-/// one retry through the env proxy when present.
+/// Transport follows the egress-proxy convention: through the user's proxy
+/// when one is configured for the endpoint scheme, one direct fallback retry
+/// on transport failures; direct-only when no proxy is configured.
 pub(crate) struct AsrClient {
-    direct: ureq::Agent,
-    via_proxy: Option<ureq::Agent>,
+    primary: ureq::Agent,
+    fallback: Option<ureq::Agent>,
     api_key: String,
     /// Resolved at construction: the dedicated `asr` slot's model or the
     /// real-time Recognition default (`paraformer-realtime-v2`). Drives the
@@ -490,9 +504,10 @@ impl AsrClient {
             .filter(|b| !b.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_ASR_BASE.to_string());
         let mode = detect_mode(&base_url);
+        let (primary, fallback) = api_keys::egress_agents(HTTP_TIMEOUT, &base_url)?;
         Ok(Self {
-            direct: api_keys::direct_agent(HTTP_TIMEOUT)?,
-            via_proxy: api_keys::proxied_agent(HTTP_TIMEOUT)?,
+            primary,
+            fallback,
             api_key,
             model,
             mode,
@@ -502,19 +517,18 @@ impl AsrClient {
         })
     }
 
-    /// Run `request` against the direct agent, retrying once via proxy on any
-    /// transport-level failure.
+    /// Run `request` against the primary agent (proxy when configured),
+    /// retrying once via the direct fallback on any transport-level failure.
     fn with_retry<T>(
         &self,
         request: impl Fn(&ureq::Agent) -> Result<T, String>,
     ) -> Result<T, String> {
-        match request(&self.direct) {
+        match request(&self.primary) {
             Ok(value) => Ok(value),
-            Err(direct_err) => match &self.via_proxy {
-                Some(proxy_agent) => request(proxy_agent).map_err(|proxy_err| {
-                    format!("{direct_err}；经代理重试仍失败：{proxy_err}")
-                }),
-                None => Err(direct_err),
+            Err(first_err) => match &self.fallback {
+                Some(agent) => request(agent)
+                    .map_err(|retry_err| format!("{first_err}；回退重试仍失败：{retry_err}")),
+                None => Err(first_err),
             },
         }
     }
@@ -703,10 +717,8 @@ impl AsrClient {
         // file part, last.
         body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
         body.extend_from_slice(
-            format!(
-                "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n"
-            )
-            .as_bytes(),
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+                .as_bytes(),
         );
         body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
         body.extend_from_slice(bytes);
@@ -721,7 +733,10 @@ impl AsrClient {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         if text.is_empty() {
-            let hint = value.get("error").map(|e| e.to_string()).unwrap_or_default();
+            let hint = value
+                .get("error")
+                .map(|e| e.to_string())
+                .unwrap_or_default();
             return Err(format!("转写结果为空（{hint}）"));
         }
         Ok(text)
@@ -743,7 +758,10 @@ impl AsrClient {
                 .timeout(UPLOAD_TIMEOUT)
                 .set("Authorization", &format!("Bearer {}", self.api_key))
                 .set("Accept", "application/json")
-                .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+                .set(
+                    "Content-Type",
+                    &format!("multipart/form-data; boundary={boundary}"),
+                )
                 .send_bytes(body)
                 .map_err(|err| format!("转写请求失败：{err}"))?
                 .into_string()
@@ -771,11 +789,9 @@ impl AsrClient {
             // DashScope real-time Recognition call — a genuine, billing-
             // consuming ASR probe (mirrors the OpenAI/WebSocket branches).
             let dir = std::env::temp_dir().join("mindbase-desktop");
-            std::fs::create_dir_all(&dir)
-                .map_err(|err| format!("无法创建临时目录：{err}"))?;
+            std::fs::create_dir_all(&dir).map_err(|err| format!("无法创建临时目录：{err}"))?;
             let path = dir.join(format!("mb-asr-probe-{}.wav", std::process::id()));
-            std::fs::write(&path, tiny_wav())
-                .map_err(|err| format!("写入测试音频失败：{err}"))?;
+            std::fs::write(&path, tiny_wav()).map_err(|err| format!("写入测试音频失败：{err}"))?;
             let outcome = self.transcribe_local_file(
                 &path,
                 Duration::from_secs(90),
@@ -784,9 +800,7 @@ impl AsrClient {
             );
             let _ = std::fs::remove_file(&path);
             return match outcome {
-                Ok(text) if !text.trim().is_empty() => {
-                    Ok(format!("转写成功，识别到：{text}"))
-                }
+                Ok(text) if !text.trim().is_empty() => Ok(format!("转写成功，识别到：{text}")),
                 Ok(_) => Ok("转写请求已被接受（测试音频无语音内容）".to_string()),
                 Err(err) => Err(err),
             };
@@ -808,7 +822,9 @@ impl AsrClient {
         body.extend_from_slice(self.model.as_bytes());
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
-        body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"probe.wav\"\r\n");
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"probe.wav\"\r\n",
+        );
         body.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
         body.extend_from_slice(&wav);
         body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
@@ -969,9 +985,7 @@ impl AsrClient {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                             collect_transcript(&value, &mut texts);
                             // Run completed — stop waiting for further frames.
-                            if value
-                                .pointer("/header/action")
-                                .and_then(|a| a.as_str())
+                            if value.pointer("/header/action").and_then(|a| a.as_str())
                                 == Some("task-finished")
                             {
                                 break;
@@ -1184,8 +1198,8 @@ impl AsrClient {
         let input = dir.join(format!("{tag}.{ext}"));
         let output = dir.join(format!("{tag}.pcm"));
 
-        let mut file = std::fs::File::create(&input)
-            .map_err(|err| format!("创建临时音频失败：{err}"))?;
+        let mut file =
+            std::fs::File::create(&input).map_err(|err| format!("创建临时音频失败：{err}"))?;
         file.write_all(bytes)
             .map_err(|err| format!("写入临时音频失败：{err}"))?;
         drop(file);
@@ -1655,7 +1669,9 @@ fn ws_variants(model: &str) -> Vec<WsVariant> {
             payload: base_payload(serde_json::json!({})),
         },
         WsVariant {
-            parameter: Some(serde_json::json!({ "input": { "format": "pcm", "sample_rate": 16000 } })),
+            parameter: Some(
+                serde_json::json!({ "input": { "format": "pcm", "sample_rate": 16000 } }),
+            ),
             payload: base_payload(serde_json::json!({})),
         },
         WsVariant {
@@ -1839,7 +1855,10 @@ mod tests {
             detect_mode("https://openrouter.ai/api/v1/audio/transcriptions"),
             AsrMode::OpenAICompatible
         );
-        assert_eq!(detect_mode("http://127.0.0.1:8000/v1"), AsrMode::OpenAICompatible);
+        assert_eq!(
+            detect_mode("http://127.0.0.1:8000/v1"),
+            AsrMode::OpenAICompatible
+        );
     }
 
     #[test]
@@ -1875,10 +1894,9 @@ mod tests {
         assert_eq!(running, TaskState::Running);
         let pending = parse_task_state(r#"{"output": {"task_status": "PENDING"}}"#).unwrap();
         assert_eq!(pending, TaskState::Pending);
-        let failed = parse_task_state(
-            r#"{"output": {"task_status": "FAILED", "message": "bad audio"}}"#,
-        )
-        .unwrap();
+        let failed =
+            parse_task_state(r#"{"output": {"task_status": "FAILED", "message": "bad audio"}}"#)
+                .unwrap();
         assert_eq!(failed, TaskState::Failed("bad audio".into()));
         // Unknown status keeps waiting rather than aborting.
         let weird = parse_task_state(r#"{"output": {"task_status": "???"}}"#).unwrap();
@@ -1963,7 +1981,10 @@ mod tests {
             }
         }"#;
         let cert = UploadCertificate::parse(body).expect("parse");
-        assert_eq!(cert.object_key("a.m4s"), "dashscope-instant/paraformer/uid/a.m4s");
+        assert_eq!(
+            cert.object_key("a.m4s"),
+            "dashscope-instant/paraformer/uid/a.m4s"
+        );
 
         let key = cert.object_key("a.m4s");
         let fields = cert.form_fields(&key, "audio/mp4");
@@ -1979,13 +2000,19 @@ mod tests {
             "x-oss-object-acl",
             "x-oss-forbid-overwrite",
         ] {
-            assert!(names.contains(&required), "missing field {required}: {names:?}");
+            assert!(
+                names.contains(&required),
+                "missing field {required}: {names:?}"
+            );
         }
     }
 
     #[test]
     fn multipart_body_layout_has_file_last() {
-        let fields = vec![("policy".to_string(), "pol".to_string()), ("key".to_string(), "k".to_string())];
+        let fields = vec![
+            ("policy".to_string(), "pol".to_string()),
+            ("key".to_string(), "k".to_string()),
+        ];
         let body = multipart_body(&fields, "BND", "file", "a.m4s", "audio/mp4", b"\x00\x01");
 
         let text = String::from_utf8_lossy(&body);

@@ -44,7 +44,10 @@ impl ChatMessage {
     }
 
     /// Assistant message carrying requested tool calls (request shape).
-    pub(crate) fn assistant_with_tool_calls(content: String, tool_calls: serde_json::Value) -> Self {
+    pub(crate) fn assistant_with_tool_calls(
+        content: String,
+        tool_calls: serde_json::Value,
+    ) -> Self {
         Self {
             role: "assistant".to_string(),
             content,
@@ -112,13 +115,25 @@ impl StreamTurn {
                 self.finish_reason = reason.to_string();
             }
         }
-        if let Some(content) = chunk.pointer("/choices/0/delta/content").and_then(|c| c.as_str()) {
+        if let Some(content) = chunk
+            .pointer("/choices/0/delta/content")
+            .and_then(|c| c.as_str())
+        {
             self.content.push_str(content);
         }
-        if let Some(fragments) = chunk.pointer("/choices/0/delta/tool_calls").and_then(|v| v.as_array()) {
+        if let Some(fragments) = chunk
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(|v| v.as_array())
+        {
             for fragment in fragments {
-                let index = fragment.get("index").and_then(|v| v.as_i64()).unwrap_or_default();
-                let id = fragment.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                let index = fragment
+                    .get("index")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or_default();
+                let id = fragment
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 let name = fragment
                     .pointer("/function/name")
                     .and_then(|v| v.as_str())
@@ -127,7 +142,11 @@ impl StreamTurn {
                     .pointer("/function/arguments")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                match self.fragments.iter_mut().find(|(existing, ..)| *existing == index) {
+                match self
+                    .fragments
+                    .iter_mut()
+                    .find(|(existing, ..)| *existing == index)
+                {
                     Some((_, existing_id, existing_name, existing_args)) => {
                         if !id.is_empty() {
                             *existing_id = id.to_string();
@@ -137,9 +156,12 @@ impl StreamTurn {
                         }
                         existing_args.push_str(arguments);
                     }
-                    None => self
-                        .fragments
-                        .push((index, id.to_string(), name.to_string(), arguments.to_string())),
+                    None => self.fragments.push((
+                        index,
+                        id.to_string(),
+                        name.to_string(),
+                        arguments.to_string(),
+                    )),
                 }
             }
         }
@@ -151,7 +173,11 @@ impl StreamTurn {
             .fragments
             .drain(..)
             .filter(|(_, id, name, _)| !id.is_empty() && !name.is_empty())
-            .map(|(_, id, name, arguments)| ToolCallReq { id, name, arguments })
+            .map(|(_, id, name, arguments)| ToolCallReq {
+                id,
+                name,
+                arguments,
+            })
             .collect();
         calls.sort_by_key(|call| call.id.clone());
         calls
@@ -226,10 +252,7 @@ fn chat_provider_configured(conn: &Connection, provider: &str) -> Result<bool, S
 
 /// 为「指定」的对话提供方构建客户端（对话界面的手动选择走这里）。
 /// 未配置密钥时直接报错，让用户去对应卡片填写。
-pub(crate) fn chat_client_for(
-    conn: &Connection,
-    provider: &str,
-) -> Result<ChatClient, String> {
+pub(crate) fn chat_client_for(conn: &Connection, provider: &str) -> Result<ChatClient, String> {
     let kind = match provider {
         "dashscope" => ChatProvider::DashScope,
         "deepseek" => ChatProvider::DeepSeek,
@@ -258,7 +281,8 @@ pub(crate) fn chat_client_for(
     ChatClient::new(kind, custom_base, api_key, model)
 }
 
-/// Blocking chat client with the standard direct-then-proxy retry.
+/// Blocking chat client routed through the configured egress proxy
+/// (proxy-first with a direct fallback; direct-only when unset).
 #[derive(Clone)]
 pub(crate) struct ChatClient {
     endpoint: String,
@@ -284,6 +308,13 @@ impl ChatClient {
 
     pub(crate) fn model_name(&self) -> &str {
         &self.model
+    }
+
+    /// The resolved chat endpoint URL — lets callers (orchestrator routing,
+    /// quiz grading) build egress agents for the same route this client
+    /// posts to.
+    pub(crate) fn endpoint_url(&self) -> &str {
+        &self.endpoint
     }
 
     /// One completion through a caller-supplied agent — used for auxiliary
@@ -319,16 +350,16 @@ impl ChatClient {
         parse_chat_content(&body)
     }
 
-    /// Non-streaming completion with the standard direct-then-proxy retry and
-    /// an explicit timeout — used by short auxiliary jobs (title naming) that
-    /// must survive networks where the direct route is blocked.
+    /// Non-streaming completion through the configured egress route with the
+    /// standard proxy-first-then-direct fallback and an explicit timeout —
+    /// used by short auxiliary jobs (title naming) that must survive
+    /// networks where the direct route is blocked.
     pub(crate) fn complete_turn(
         &self,
         timeout: Duration,
         messages: &[ChatMessage],
     ) -> Result<String, String> {
-        let direct = api_keys::direct_agent(timeout)?;
-        let via_proxy = api_keys::proxied_agent(timeout)?;
+        let (primary, fallback) = api_keys::egress_agents(timeout, &self.endpoint)?;
         let attempt = |agent: &ureq::Agent| -> Result<String, String> {
             let mut payload = build_stream_payload(self.model_name(), messages);
             payload["stream"] = serde_json::Value::Bool(false);
@@ -353,12 +384,12 @@ impl ChatClient {
                 .map_err(|err| format!("读取对话响应失败：{err}"))?;
             parse_chat_content(&body)
         };
-        match attempt(&direct) {
+        match attempt(&primary) {
             Ok(body) => Ok(body),
-            Err(direct_err) => match &via_proxy {
-                Some(proxy_agent) => attempt(proxy_agent)
-                    .map_err(|proxy_err| format!("{direct_err}；经代理重试仍失败：{proxy_err}")),
-                None => Err(direct_err),
+            Err(first_err) => match &fallback {
+                Some(agent) => attempt(agent)
+                    .map_err(|retry_err| format!("{first_err}；回退重试仍失败：{retry_err}")),
+                None => Err(first_err),
             },
         }
     }
@@ -379,96 +410,92 @@ impl ChatClient {
     ) -> Result<StreamTurn, String> {
         // Fresh long-timeout agents: the shared HTTP_TIMEOUT would cut off
         // generations longer than two minutes mid-stream.
-        let direct = api_keys::direct_agent(STREAM_TIMEOUT)?;
-        let via_proxy = api_keys::proxied_agent(STREAM_TIMEOUT)?;
+        let (primary, fallback) = api_keys::egress_agents(STREAM_TIMEOUT, &self.endpoint)?;
 
         // Err payload: (message, retryable-with-proxy). Declared `mut`: the
         // closure forwards through `&mut on_delta`, so re-invoking it for the
         // proxy retry needs a mutable binding.
-        let mut run =
-            |agent: &ureq::Agent| -> Result<StreamTurn, (String, bool)> {
-                let mut payload = build_stream_payload(&self.model, messages);
-                if let Some(tools) = tools.clone() {
-                    payload["tools"] = tools;
-                }
-                let response = agent
-                    .post(&self.endpoint)
-                    .timeout(STREAM_TIMEOUT)
-                    .set("Authorization", &format!("Bearer {}", self.api_key))
-                    .set("Content-Type", "application/json")
-                    .send_json(payload)
-                    .map_err(|err| {
-                        let message = match err {
-                            ureq::Error::Status(code, response) => {
-                                let detail = response.into_string().unwrap_or_default();
-                                format!(
-                                    "对话模型调用失败（{}，HTTP {code}）：{}",
-                                    self.provider.as_str(),
-                                    truncate(&detail, 200)
-                                )
-                            }
-                            other => format!("对话模型请求失败：{other}"),
-                        };
-                        (message, true)
-                    })?;
-                let status = response.status();
-                if status != 200 {
-                    let detail = response.into_string().unwrap_or_default();
-                    return Err((
-                        format!(
-                            "对话模型调用失败（HTTP {status}）：{}",
-                            truncate(&detail, 200)
-                        ),
-                        true,
-                    ));
-                }
-
-                let reader = response.into_reader();
-                let buffered = std::io::BufReader::new(reader);
-                let mut turn = StreamTurn::default();
-                let mut emitted = false;
-                for line in buffered.lines() {
-                    // Cancellation is checked per SSE frame: the frame in
-                    // flight still applies, then the stream is cut and the
-                    // partial turn is returned as-is.
-                    if should_stop.is_some_and(|check| check()) {
-                        turn.interrupted = true;
-                        break;
-                    }
-                    let line =
-                        line.map_err(|err| (format!("读取流式响应中断：{err}"), emitted))?;
-                    let Some(payload) = line.strip_prefix("data:") else {
-                        continue; // blank separators / comments / non-data frames
+        let mut run = |agent: &ureq::Agent| -> Result<StreamTurn, (String, bool)> {
+            let mut payload = build_stream_payload(&self.model, messages);
+            if let Some(tools) = tools.clone() {
+                payload["tools"] = tools;
+            }
+            let response = agent
+                .post(&self.endpoint)
+                .timeout(STREAM_TIMEOUT)
+                .set("Authorization", &format!("Bearer {}", self.api_key))
+                .set("Content-Type", "application/json")
+                .send_json(payload)
+                .map_err(|err| {
+                    let message = match err {
+                        ureq::Error::Status(code, response) => {
+                            let detail = response.into_string().unwrap_or_default();
+                            format!(
+                                "对话模型调用失败（{}，HTTP {code}）：{}",
+                                self.provider.as_str(),
+                                truncate(&detail, 200)
+                            )
+                        }
+                        other => format!("对话模型请求失败：{other}"),
                     };
-                    if payload.trim() == "[DONE]" {
-                        break;
-                    }
-                    let Ok(chunk) = serde_json::from_str::<serde_json::Value>(payload) else {
-                        continue; // provider keep-alives / unparsable frames
-                    };
-                    // Forward newly arrived text through the callback.
-                    let before = turn.content.len();
-                    turn.apply_chunk(&chunk);
-                    if turn.content.len() > before {
-                        emitted = true;
-                        on_delta(&turn.content[before..]);
-                    }
-                }
-                turn.tool_calls = turn.take_tool_calls();
-                if !turn.interrupted && turn.content.is_empty() && turn.tool_calls.is_empty() {
-                    // Clean end with no content and no calls is authoritative.
-                    return Err(("对话模型返回了空内容".to_string(), false));
-                }
-                Ok(turn)
-            };
+                    (message, true)
+                })?;
+            let status = response.status();
+            if status != 200 {
+                let detail = response.into_string().unwrap_or_default();
+                return Err((
+                    format!(
+                        "对话模型调用失败（HTTP {status}）：{}",
+                        truncate(&detail, 200)
+                    ),
+                    true,
+                ));
+            }
 
-        match run(&direct) {
+            let reader = response.into_reader();
+            let buffered = std::io::BufReader::new(reader);
+            let mut turn = StreamTurn::default();
+            let mut emitted = false;
+            for line in buffered.lines() {
+                // Cancellation is checked per SSE frame: the frame in
+                // flight still applies, then the stream is cut and the
+                // partial turn is returned as-is.
+                if should_stop.is_some_and(|check| check()) {
+                    turn.interrupted = true;
+                    break;
+                }
+                let line = line.map_err(|err| (format!("读取流式响应中断：{err}"), emitted))?;
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue; // blank separators / comments / non-data frames
+                };
+                if payload.trim() == "[DONE]" {
+                    break;
+                }
+                let Ok(chunk) = serde_json::from_str::<serde_json::Value>(payload) else {
+                    continue; // provider keep-alives / unparsable frames
+                };
+                // Forward newly arrived text through the callback.
+                let before = turn.content.len();
+                turn.apply_chunk(&chunk);
+                if turn.content.len() > before {
+                    emitted = true;
+                    on_delta(&turn.content[before..]);
+                }
+            }
+            turn.tool_calls = turn.take_tool_calls();
+            if !turn.interrupted && turn.content.is_empty() && turn.tool_calls.is_empty() {
+                // Clean end with no content and no calls is authoritative.
+                return Err(("对话模型返回了空内容".to_string(), false));
+            }
+            Ok(turn)
+        };
+
+        match run(&primary) {
             Ok(turn) => Ok(turn),
-            Err((direct_msg, retryable)) => match (&via_proxy, retryable) {
-                (Some(proxy_agent), true) => run(proxy_agent).map_err(|(proxy_msg, _)| {
-                    format!("{direct_msg}；经代理重试仍失败：{proxy_msg}")
-                }),
-                _ => Err(direct_msg),
+            Err((first_msg, retryable)) => match (&fallback, retryable) {
+                (Some(agent), true) => run(agent)
+                    .map_err(|(retry_msg, _)| format!("{first_msg}；回退重试仍失败：{retry_msg}")),
+                _ => Err(first_msg),
             },
         }
     }
@@ -478,10 +505,7 @@ impl ChatClient {
 fn parse_chat_content(body: &str) -> Result<String, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|err| format!("解析对话响应失败：{err}"))?;
-    if let Some(message) = value
-        .pointer("/error/message")
-        .and_then(|m| m.as_str())
-    {
+    if let Some(message) = value.pointer("/error/message").and_then(|m| m.as_str()) {
         return Err(format!("对话接口报错：{message}"));
     }
     let content = value

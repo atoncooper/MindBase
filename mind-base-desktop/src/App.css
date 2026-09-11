@@ -1190,6 +1190,16 @@ body {
   word-break: break-all;
 }
 
+/* Breathing room when a hint (or two stacked hints) follows the action row —
+   .hint-text itself is margin-free so it stays tight under cfg-rows. */
+.card__actions + .hint-text {
+  margin-top: 12px;
+}
+
+.hint-text + .hint-text {
+  margin-top: 6px;
+}
+
 .card__actions {
   display: flex;
   align-items: center;
@@ -1285,6 +1295,12 @@ body {
 
 .cfg-row + .cfg-row {
   margin-top: 6px;
+}
+
+/* Rows with longer labels (e.g. the proxy card's「HTTPS 代理地址」) need a
+   wider label column so the label and the input don't crowd each other. */
+.cfg-row--wide {
+  grid-template-columns: 132px minmax(0, 1fr) auto;
 }
 
 .cfg-label {

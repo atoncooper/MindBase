@@ -15,6 +15,9 @@ pub(crate) const DEFAULT_AGENT: &str = "chat";
 /// Minimal completion surface the router needs — lets tests substitute
 /// scripted replies instead of constructing real provider clients.
 pub(crate) trait CompletionClient {
+    /// The LLM endpoint this client posts to (egress proxy routing input).
+    fn endpoint_url(&self) -> &str;
+
     fn complete_with_agent(
         &self,
         agent: &ureq::Agent,
@@ -23,6 +26,10 @@ pub(crate) trait CompletionClient {
 }
 
 impl CompletionClient for ChatClient {
+    fn endpoint_url(&self) -> &str {
+        ChatClient::endpoint_url(self)
+    }
+
     fn complete_with_agent(
         &self,
         agent: &ureq::Agent,
@@ -96,8 +103,8 @@ impl Orchestrator {
         while let Some(found) = haystack_lower[search_from..].find(name) {
             let start = search_from + found;
             let end = start + name.len();
-            let before_ok = start == 0
-                || !haystack_lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+            let before_ok =
+                start == 0 || !haystack_lower.as_bytes()[start - 1].is_ascii_alphanumeric();
             let after_ok = end >= haystack_lower.len()
                 || !haystack_lower.as_bytes()[end].is_ascii_alphanumeric();
             if before_ok && after_ok {
@@ -132,8 +139,11 @@ impl Orchestrator {
         }
 
         // A dedicated 3s-budget agent keeps routing from inheriting the
-        // streaming client's long timeouts.
-        let Ok(agent) = crate::api_keys::direct_agent(ROUTING_TIMEOUT) else {
+        // streaming client's long timeouts. Proxy first when the user has
+        // one configured for this endpoint's scheme; every failure mode
+        // lands on the default agent anyway, so no fallback retry here.
+        let Ok((agent, _)) = crate::api_keys::egress_agents(ROUTING_TIMEOUT, client.endpoint_url())
+        else {
             return self.default_agent.clone();
         };
         let messages = [
@@ -154,10 +164,7 @@ mod tests {
 
     fn two_agents() -> Orchestrator {
         let mut orchestrator = Orchestrator::new();
-        orchestrator.register(
-            "memory",
-            "记忆检索助手。检索历史对话、压缩摘要与上下文。",
-        );
+        orchestrator.register("memory", "记忆检索助手。检索历史对话、压缩摘要与上下文。");
         orchestrator.register(
             "chat",
             "收藏夹知识库助手。使用ReAct模式回答用户关于B站视频内容的问题。",
@@ -169,6 +176,9 @@ mod tests {
         reply: &'static str,
     }
     impl CompletionClient for ScriptedClient {
+        fn endpoint_url(&self) -> &str {
+            "https://routing.test/v1/chat/completions"
+        }
         fn complete_with_agent(
             &self,
             _agent: &ureq::Agent,
@@ -190,6 +200,9 @@ mod tests {
 
     struct NeverClient;
     impl CompletionClient for NeverClient {
+        fn endpoint_url(&self) -> &str {
+            "https://routing.test/v1/chat/completions"
+        }
         fn complete_with_agent(
             &self,
             _agent: &ureq::Agent,
@@ -221,12 +234,17 @@ mod tests {
         assert_eq!(orchestrator.route(&client, "我们之前聊过什么？"), "memory");
 
         // …while an unrelated reply falls back to chat.
-        let fallback_client = ScriptedClient { reply: "完全无关的回答" };
+        let fallback_client = ScriptedClient {
+            reply: "完全无关的回答",
+        };
         assert_eq!(orchestrator.route(&fallback_client, "问题"), "chat");
 
         // An erroring client also lands on the default.
         struct ErroringClient;
         impl CompletionClient for ErroringClient {
+            fn endpoint_url(&self) -> &str {
+                "https://routing.test/v1/chat/completions"
+            }
             fn complete_with_agent(
                 &self,
                 _: &ureq::Agent,
