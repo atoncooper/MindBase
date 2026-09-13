@@ -1,0 +1,78 @@
+# ============================================================
+# app-board (Go) - default configuration
+# ============================================================
+# Content store for mind maps & whiteboards (no agent, no LLM).
+# Shares the main app's MySQL (mind_base.board) + MongoDB (MindBase
+# board_documents); schema owned by app-board (db.Migrate at startup).
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml                    <- this file (embedded in binary)
+#   2. Environment variables           <- prefix APPBOARD__, double-underscore nesting:
+#        APPBOARD__RDBMS__URL=mysql://...  -> rdbms.url
+# Secrets (dsn / uri) MUST be injected via env, not YAML.
+# ============================================================
+
+app:
+  name: app-board
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8004
+  # HTTP 连接/超时策略（net/http；零值在 config.Defaults 兜底，不会意外关闭超时）：
+  # read_header  = TLS 握手 + 请求行解析上限（防 slowloris 慢连接占用）
+  # read         = 完整请求上限（8MB 导图正文慢速上传留余量）
+  # write        = 响应写回上限（含 TLS 开销）
+  # idle         = keep-alive 连接池空闲回收时间（网关长连接复用窗口）
+  # max_header   = 请求行+请求头字节上限
+  read_header_timeout_seconds: 10
+  read_timeout_seconds: 60
+  write_timeout_seconds: 120
+  idle_timeout_seconds: 120
+  max_header_bytes: 1048576
+  tls:
+    enabled: true          # HTTPS-only; false 仅限本机排障（日志告警）
+    cert_dir: certs        # 自动模式工作目录（容器内由 compose 覆盖为 /app/certs）
+    cert: ""               # 显式模式证书路径；留空 = 自动生成 dev-CA + 叶子证书
+    key: ""                # 显式模式私钥路径；与 cert 须同时提供或同时留空
+
+rdbms:
+  url: ""                  # inject via APPBOARD__RDBMS__URL (main app MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800  # seconds
+
+mongo:
+  uri: ""                  # inject via APPBOARD__MONGO__URI (main app Mongo uri)
+  db_name: MindBase        # main app's Mongo database
+  timeout_seconds: 10
+
+# 可选读缓存：列表/详情读路径 cache-aside，写路径直接落 MySQL（version 权威不缓存），
+# 写后立即失效受影响 key，TTL 仅作兜底。url 留空 = 缓存关闭；Redis 挂了自动降级直查。
+# 用独立 DB index /2，避免与主 app 的 /1 冲突。
+redis:
+  url: ""                  # inject via APPBOARD__REDIS__URL (redis://:pass@redis:6379/2)
+  cache_ttl_seconds: 300   # APPBOARD__REDIS__CACHE_TTL_SECONDS
+
+# CORS：浏览器直连 :3000（绕过 nginx 同源入口）时 API 基址是跨域的，
+# 白名单须覆盖两个前端入口。追加用 APPBOARD__SECURITY__CORS__ALLOW_ORIGINS（逗号分隔）。
+security:
+  cors:
+    allow_origins:
+      - http://localhost:3000
+      - http://127.0.0.1:3000
+      - https://localhost
+      - https://127.0.0.1
+      - http://localhost
+      - http://127.0.0.1
+
+log:
+  level: info       # debug|info|warn|error (APPBOARD__LOG__LEVEL)
+  format: json      # text|json (APPBOARD__LOG__FORMAT)
+  output: stdout    # stdout|file|both (APPBOARD__LOG__OUTPUT)
+  file:
+    path: /app/logs/app-board.log   # (APPBOARD__LOG__FILE__PATH); mount a volume in docker
+    max_size: 100       # MB per file (APPBOARD__LOG__FILE__MAX_SIZE)
+    max_backups: 7      # old files kept (APPBOARD__LOG__FILE__MAX_BACKUPS)
+    max_age: 30         # days retained (APPBOARD__LOG__FILE__MAX_AGE)
+    compress: true      # gzip rotated files (APPBOARD__LOG__FILE__COMPRESS)
