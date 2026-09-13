@@ -170,13 +170,13 @@ diff 用轻量的字符级采样（非 Levenshtein），仅作快照触发启发
 
 ## 依赖
 
-- **MongoDB 必须启用**：正文与修订均存 Mongo，`MILVUS__ENABLED` 之外需确保 Mongo 连接。Mongo 未连接时，创建/更新会抛 `RuntimeError`，读取降级为空。
+- **MongoDB 必须启用**：正文与修订均存 Mongo。Mongo 未连接时，创建/更新会抛 `RuntimeError`，读取降级为空。
 - 表结构在 `app/system.sql`（`notes` / `note_anchors` / `note_shares`）。
 
 ## 测试
 
 ```bash
-python -m pytest app/test/test_notes_service.py app/test/test_notes_markdown_safety.py -q
+python -m pytest app/test/notes/test_notes_service.py app/test/notes/test_notes_markdown_safety.py -q
 ```
 
 - `test_notes_service.py`：CRUD / 锚点 / 修订 / 分享 / 并发冲突 / 权限。

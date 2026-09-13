@@ -1,6 +1,6 @@
 ﻿# app-task — 纯调度器
 
-app-task 是 **纯任务调度器**(xxl-task 调度中心 + 远程执行器模式):只负责**调度、调用执行、记录结果**。
+app-task 是 **纯任务调度器**(自写 DB 轮询 scheduler + 远程执行器模式,无 xxl-job 等外部调度中心):只负责**调度、调用执行、记录结果**。
 一切业务执行逻辑(出题、发邮件、推送、判题……)都由**第三方 executor** 承担——app-task 到点把 task 的
 payload 通过 HTTP 发给 executor,执行成功记录 completed,失败按重试策略处理。
 
@@ -64,8 +64,10 @@ app-task 内置 **go:embed 单二进制的管理控制台**(`/`,纯 HTML/CSS/JS,
 | GET | `/tasks/{task_id}` | task 详情 + 最近执行日志 | forward-auth(X-Uid) |
 | GET | `/tasks` | 用户 task 列表 | forward-auth(X-Uid) |
 | POST | `/internal/task/{task_id}/complete` | **异步回调**:executor 报告结果(running→completed/failed) | APISIX key-auth |
+| POST | `/internal/email/send` | **邮件投递**:executor 提交标准邮件格式,入队可靠投递(见下节) | APISIX key-auth |
 | POST | `/scripts` | 上传 Lua 脚本(版本+1,编译校验,审计留痕) | APISIX key-auth |
 | GET | `/scripts` / `/scripts/logs` | 脚本列表 / 上传审计 | APISIX key-auth |
+| GET | `/health` | 探活 | 无 |
 
 ## 调度模型(自写 DB 轮询)
 
@@ -142,7 +144,20 @@ agent → POST /tasks/register（key-auth）→ app-task（task 存 DB）
 | 超时语录 | 主 app 后台每 60s 扫 deadline → 未答发语录（overdue_emailed 幂等）→ overdue |
 | 注册 | agent `submit_task` → `/tasks/register`（executor_url=主 app 出题端点, async=true） |
 
-> 说明：`/tasks/{task_id}` 详情是 forward-auth 用户端点；agent 内部查询走 key-auth 需 APISIX 另行配置（当前未配）。前端任务列表/详情路径已从 `/tasks` 迁到 `/tasks`。
+> 说明：`/tasks/{task_id}` 详情是 forward-auth 用户端点；agent 内部查询走 key-auth 需 APISIX 另行配置（当前未配）。前端任务列表/详情页路径为 `/tasks`。
+
+## 已接入的 executor（app-pay 超时委托）
+
+app-pay 把「订单超时关单」注册为 app-task 的精确定时任务（`task_type=http`，task id `PAYTIMEOUT-{orderNo}-v{version}`，trigger_time=订单 expires_at，max_retry 3）：
+
+- 到点 app-task POST `https://app-pay:8002/internal/pay/timeout/execute`（payload `{orderNo, version}`）
+- app-pay 校验 version（不匹配=已支付，委托作废）；执行队列满回 503，app-task 按 `next_retry_at` 退避重试
+- HTTPS 私有 CA：主栈 compose 把 `app-pay/certs` 挂进 app-task，经 `APPTASK__HTTP_EXECUTOR__CA_FILE` 严格校验
+- 注册失败只落审计（TIMER_REGISTER_FAILED），由 app-pay 侧 `OrderTimeoutJob` 兜底轮询关单
+
+## 死配置说明（勿再引用）
+
+以下环境变量**不被 Go 代码消费**（历史遗留，仅在根 compose 中注入、`.env.example` 已标注 deprecated）：`APPTASK__APP__BASE_URL`、`APPTASK__APP__CONSUMER_KEY`、`APPTASK__MONGO__URI`、`APPTASK__MONGO__DB_NAME`。app-task 不连主 app 的库，也不直连 Mongo。
 
 ## 配置
 
@@ -157,8 +172,8 @@ APPTASK__TIMEZONE=Asia/Shanghai
 ## 启动
 
 ```bash
-# 与主栈一起（apisix + app-task + app-task-mysql + backend）
-docker compose --profile task up -d --build
+# 与主栈一起（app-task 在默认 profile 里，裸 up 已包含；--profile task 仅显式圈选时用）
+docker compose up -d --build
 
 # 独立启动（不拉起主栈：只起 app-task + 自有 MySQL）
 cd app-task && docker compose up -d --build

@@ -77,13 +77,15 @@ server:
 
 ```yaml
 rdbms:
-  url: sqlite+aiosqlite:///./data/mind_base.db
+  url: ""                  # ⚠️ no default — inject via RDBMS__URL env var
   echo: false
   pool_size: 20
   max_overflow: 10
   pool_timeout: 30
   pool_recycle: 1800
 ```
+
+Docker compose injects MySQL (`mysql+aiomysql://...@mysql:3306/mind_base`) automatically.
 
 To switch to PostgreSQL:
 
@@ -103,22 +105,49 @@ RDBMS__URL=postgresql+asyncpg://user:pass@host:5432/mind_base
 
 ```yaml
 milvus:
-  host: localhost
-  port: 19530
+  enabled: true
+  uri: ""                            # inject via MILVUS__URI env var (e.g. http://localhost:19530)
+  token: ""
+  db_name: MindBase
   collection_name: bilibili_videos
   cloud_collection_name: cloud_drive
+  dimension: 1024
+  index_type: IVF_FLAT
+```
+
+### `kg` — Knowledge graph (Neo4j, optional; degrades gracefully when unreachable)
+
+```yaml
+kg:
+  enabled: true
+  uri: ""                            # inject via KG__URI env var; docker: bolt://neo4j:7687
+  username: neo4j                    # password via env: KG__PASSWORD (share NEO4J_PASSWORD)
+  database: neo4j
+  entity_collection_name: kg_entities  # Milvus collection for semantic entity linking
+  extract_model: qwen-flash
+  max_hops: 2
 ```
 
 ### `llm` — Language model (OpenAI-compatible)
 
 ```yaml
 llm:
-  provider: dashscope     # dashscope / openai / anthropic / custom
+  provider: dashscope     # dashscope | openrouter (dialogue LLMs only;
+                          # embedding/rerank/ASR always go through DashScope)
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   model: qwen3-max
+  context_window: 0       # 0=auto from built-in model table (providers.py)
   eval_model: gpt-4o-mini
   timeout: 60
   max_retries: 3
+```
+
+```yaml
+# OpenRouter alternative gateway (used when llm.provider: openrouter)
+openrouter:
+  base_url: https://openrouter.ai/api/v1
+  model: z-ai/glm-5.2:free
+  # api_key via env: OPENROUTER__API_KEY
 ```
 
 `api_key` is **never** in YAML — inject via env:
@@ -131,10 +160,24 @@ LLM__API_KEY=sk-your-key
 
 ```yaml
 embedding:
-  model: text-embedding-v4    # DashScope 1536-dim
+  model: text-embedding-v4    # DashScope, 1024-dim default (v4 supports 1024/1536/2048)
   batch_size: 100
-  dimension: 1536
+  dimension: 1024
   version: v1                 # bump after changing model or chunk strategy
+```
+
+> ⚠️ Changing the embedding model or dimension makes existing Milvus vectors incompatible — rebuild the collections and bump `version`.
+
+### `rerank` — Two-stage retrieval reranking
+
+```yaml
+rerank:
+  enabled: true               # false -> NullReranker passthrough
+  provider: dashscope         # gte-rerank-v2 cross-encoder via DashScope
+  model: gte-rerank-v2
+  timeout: 30
+  top_n: 30                   # over-recall count fed to the reranker
+  # api_key via env: RERANK__API_KEY (falls back to LLM__API_KEY)
 ```
 
 ### `chunk` — Text chunking
@@ -153,10 +196,12 @@ chunk:
 asr:
   provider: dashscope
   base_url: https://dashscope.aliyuncs.com/api/v1
-  model: paraformer-v2
-  model_local: paraformer-realtime-v2
+  model: paraformer-realtime-v2        # sync Recognition API
+  transcription_model: paraformer-v2   # async Transcription API (audio >= 60s)
+  realtime_max_seconds: 60             # above this, route to async Transcription
   input_format: pcm
   timeout: 600
+  # api_key via env: ASR__API_KEY; falls back to LLM__API_KEY
 ```
 
 ### `langsmith` — Tracing
@@ -204,7 +249,7 @@ Generate: `python -c "import base64, os; print(base64.b64encode(os.urandom(32)).
 - If unset: tokens are stored as plaintext (fine for local dev, not for production).
 - If set: **do not change after deployment** — existing encrypted data becomes unreadable.
 
-### `ratelimit` — Rate limiting (planned)
+### `ratelimit` — Rate limiting (Redis-backed middleware)
 
 ```yaml
 ratelimit:
@@ -212,6 +257,8 @@ ratelimit:
   asr_per_hour: 100
   quiz_per_day: 50
 ```
+
+Per-endpoint limits (login/register/captcha…) live under `security.rate_limit`. Redis down = pass-through (fail-open), noted as a known risk.
 
 ### `slow_sql` — Slow query logging
 
@@ -234,9 +281,28 @@ transaction:
   readonly_hint: false
 ```
 
-### `mongo` / `redis` / `minio` / `mq` — Infrastructure (disabled by default; enable via `enabled: true` + env vars). `minio` stores wallpapers & cloud drive files; `daytona` is the code sandbox for the code agent. See `app/config/default.yaml` for full field listings.
+### `mongo` / `redis` / `minio` / `daytona` / `skill_store` / `mq` — Infrastructure
 
-All disabled by default (`enabled: false`). Set `enabled: true` and provide connection details via env vars in production. See `app/config/default.yaml` for full field listings.
+- `minio` — wallpapers, cloud drive files, skill packages, code artifacts (Docker deploy enables it by default)
+- `daytona` — code sandbox for the code agent and skill code (`DAYTONA__ENABLED`, `DAYTONA__API_URL`, `DAYTONA__API_KEY`)
+- `skill_store` — external skill marketplace (GitHub topic `mindbase-skill`), disabled by default
+- `mq` — Celery + Redis Streams queue config (reserved)
+- `wechat` / `sms` / `email` — WeChat scan login / Aliyun SMS / Resend email, all disabled by default (endpoints hidden until enabled, surfaced via `GET /auth/features`)
+
+See `app/config/default.yaml` for full field listings.
+
+---
+
+## 独立服务的配置
+
+各微服务有独立的配置入口（均读项目根 `.env`），不在主 `default.yaml` 里：
+
+| 服务 | 配置入口 | 环境前缀 | 文档 |
+|------|---------|---------|------|
+| app-task | `app-task/default.yaml`（嵌入） | `APPTASK__` | [app-task.md](app-task.md) |
+| app-pay | `application.yaml`（+ docker/test profile） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
+| app-pay-admin | 嵌入 `default.yaml` + 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
+| app-board | 嵌入 `default.yaml` | `APPBOARD__` | [app-board.md](app-board.md) |
 
 ---
 

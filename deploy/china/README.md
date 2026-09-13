@@ -88,21 +88,14 @@ docker compose logs -f backend
 ### Profile 用法（与原版一致）
 
 ```bash
-# 全栈（app + infra + Milvus + apisix + app-task）
+# 全栈（app + infra + Milvus + apisix + app-task）——裸 up 即全栈
 docker compose up -d --build
-
-# 仅定时出题（app + apisix + app-task，无 Milvus）
-docker compose --profile task up -d --build
-
-# 含向量库（Milvus + MinIO），无定时出题
-docker compose --profile storage up -d --build
-
-# 最小（前端 + 后端 + 数据库，无向量库/对象存储）
-docker compose --profile standalone up -d --build
 
 # 全部 + 管理工具（redis-commander、mongo-express）
 docker compose --profile full up -d --build
 ```
+
+> 注意：本目录的 compose 是从根 `docker-compose.yml` 派生的快照，核心服务（Milvus、app-task 等）都在默认 profile 里——**裸 `docker compose up -d` 已经是全栈**，profile 只用于追加管理工具等可选项。逐项范围以 `deploy/china/docker-compose.yml` 头部注释与各服务 `profiles:` 为准。
 
 ---
 

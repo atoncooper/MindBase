@@ -32,21 +32,24 @@
 
 ## 项目 Docker 架构
 
+> ⚠️ 本文档为 legacy 存档，编写时 compose 只有 2 个服务；**现在的完整服务清单、端口、profile、路由请以 [architecture.md](architecture.md) 为准**（约 20 个服务：backend/frontend/nginx/APISIX/MySQL×3/Mongo/Redis/MinIO/Milvus/Neo4j/etcd/app-task/app-pay/app-pay-admin/app-board）。
+
 ```
-docker-compose.yml
-├── backend (mind-base-backend)    ← FastAPI :8000
-│   └── Dockerfile (项目根目录)
-└── frontend (mind-base-frontend)  ← Next.js :3000
-    └── Dockerfile (frontendv2/ 目录)
+docker-compose.yml（节选）
+├── backend  ← FastAPI :8000（Dockerfile 在项目根目录）
+├── frontend ← Next.js :3000（frontendv2/ 构建）
+├── nginx    ← 统一入口 :80/:443
+├── apisix   ← API 网关 :9080（容器内）
+└── mysql / mongo / redis / minio / etcd / milvus / neo4j / app-task / app-board ...
 ```
 
-**两个容器均对外暴露端口：**
+**主要访问入口：**
+- **统一入口（nginx）**：`http://localhost:3000`（前端容器）或 nginx `:80` / `:443`
 - **后端 API**：`http://localhost:8000`（Swagger Docs：`http://localhost:8000/docs`）
-- **前端 UI**：`http://localhost:3000`
 
-**数据持久化通过 Docker Volumes：**
-- `backend_data`：应用数据（默认 MySQL 数据目录）+ Milvus 向量数据
-- `backend_logs`：应用日志
+**数据持久化通过 Docker Volumes（各存储独立）：**
+- `mysql_data` / `mongo_data` / `redis_data` / `minio_data` / `milvus_data` / `neo4j_data`：各基础设施
+- `backend_data`：后端应用数据目录（非数据库）；`backend_logs`：应用日志
 
 ---
 
@@ -58,7 +61,8 @@ cd mind-base
 
 # 2. 复制并编辑环境变量
 cp .env.example .env
-# 编辑 .env，至少填入 LLM__API_KEY 和 SESSION__SECRET
+# 编辑 .env，至少填入 LLM__API_KEY、SESSION__SECRET、
+# SECURITY__API_KEY_ENCRYPTION_KEY、APISIX_CONSUMER_KEY（变量名用双下划线）
 
 # 3. 构建并启动所有服务（后台运行）
 docker compose up -d --build
@@ -102,7 +106,8 @@ SECURITY__API_KEY_ENCRYPTION_KEY=your-generated-encryption-key
 | **可观测** | `LANGSMITH_API_KEY` | LangSmith Trace Key | 空 |
 | **可观测** | `LANGCHAIN_TRACING_V2` | 启用 LangChain Trace | true |
 | **可观测** | `LANGSMITH_TRACING` | 启用 LangSmith Trace | true |
-| **前端** | `NEXT_PUBLIC_API_URL` | 前端访问后端的地址（容器内通信） | http://backend:8000 |
+| **前端** | `NEXT_PUBLIC_API_URL` | 浏览器端请求的网关地址（走 nginx/APISIX，不是 backend:8000） | 空（同源） |
+| **前端** | `NEXT_PUBLIC_APISIX_HOST` | SSR 请求用的 APISIX 地址（构建期固化） | nginx:80 |
 | **应用** | `APP_PORT` | 后端对外端口 | 8000 |
 
 > **配置优先级**：环境变量 > `app/config/local.yaml` > `app/config/config.yaml` > `app/config/default.yaml`。
@@ -332,12 +337,14 @@ RUN npm ci --registry=https://registry.npmmirror.com
 
 ### Q: 前端无法连接后端？
 
-检查 `docker-compose.yml` 中前端的环境变量：
+检查前端构建参数（`docker-compose.yml`，**rewrites 在构建期固化**，改完要 rebuild）：
 ```yaml
-NEXT_PUBLIC_API_URL=http://backend:8000
+NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}      # 浏览器端 API 地址；留空=同源（经 nginx）
+NEXT_PUBLIC_APISIX_HOST: nginx:80                  # SSR 请求走容器网络
+MINIO_PROXY_DEST: http://nginx:80                  # MinIO 同源代理
 ```
 
-容器内服务间通信使用 Docker 服务名（`backend`）而非 `localhost`。浏览器端的前端代码会读取 `NEXT_PUBLIC_API_URL` 来发请求，确保该值能从浏览器端访问（通常是 `http://localhost:8000` 或你的域名）。
+容器内服务间通信使用 Docker 服务名（`nginx` / `apisix`）而非 `localhost`。浏览器端的请求统一走网关（nginx → APISIX → backend），不要直连 `backend:8000`（forward-auth 鉴权在网关层）。
 
 ### Q: ASR 服务不可用？
 

@@ -2,32 +2,36 @@
 
 This guide covers deploying MindBase in production — with HTTPS, monitoring, and high availability.
 
+> 服务/端口/路由全表见 [architecture.md](architecture.md)。
+
 ---
 
 ## Architecture
 
 ```
-                    ┌──────────────┐
-                    │  Caddy/Nginx │  ← TLS termination
-                    └──────┬───────┘
-           ┌───────────────┼───────────────┐
-           ▼               ▼               ▼
-    ┌──────────┐   ┌──────────┐   ┌──────────┐
-    │ Frontend │   │ Backend  │   │  Backend │
-    │  :3000   │   │  :8000   │   │  :8001   │
-    └──────────┘   └────┬─────┘   └────┬─────┘
-                        │               │
-         ┌──────────────┼───────────────┼──────────┐
-         ▼              ▼               ▼          ▼
-    ┌────────┐   ┌─────────┐   ┌──────────┐  ┌─────────┐
-    │ MySQL  │   │  Redis  │   │  Milvus  │  │ MongoDB │
-    └────────┘   └─────────┘   └──────────┘  └─────────┘
-         │              │               │          │
-         └──────────────┴───────┬───────┴──────────┘
-                                ▼
-                         ┌──────────────┐
-                         │    MinIO     │  ← wallpaper / cloud drive storage
-                         └──────────────┘
+                     Browser
+                        │
+                        ▼
+              ┌──────────────────┐
+              │   nginx :80/:443 │  ← TLS termination + SPA 分发 + 缓存
+              └────────┬─────────┘
+                       │ API 前缀
+                       ▼
+              ┌──────────────────┐
+              │  APISIX :9080    │  ← 鉴权（forward-auth → X-Uid / key-auth）+ 路由
+              └──┬─────┬─────┬───┘
+                 ▼     ▼     ▼
+        ┌─────────┐ ┌─────────┐ ┌─────────────┐ ┌──────────────┐
+        │ backend │ │app-task │ │ app-pay     │ │ app-board    │
+        │  :8000  │ │ :8001   │ │ :8002(https)│ │ :8004(https) │
+        └────┬────┘ └────┬────┘ └──────┬──────┘ └──────┬───────┘
+             │           │             │               │
+   ┌─────────┼───────────┼─────────────┴───────────────┘
+   ▼         ▼           ▼
+┌────────┐ ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌───────┐ ┌───────┐ ┌─────────┐
+│ MySQL  │ │  Redis  │ │  Milvus  │ │ MongoDB  │ │ Neo4j │ │ MinIO │ │ 独立MySQL │
+└────────┘ └─────────┘ └──────────┘ └──────────┘ └───────┘ └───────┘ └─────────┘
+ mind_base   缓存/限流    向量库        正文/题目      知识图谱   文件存储   app_task/app_pay
 ```
 
 ---
@@ -62,15 +66,17 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
-Create `.env`:
+Create `.env` (also generate `APISIX_CONSUMER_KEY` with the same `token_urlsafe(32)` command — required for service-to-service auth):
 
 ```env
 LLM__API_KEY=sk-your-production-key
 SESSION__SECRET=<output-from-above>
 SECURITY__API_KEY_ENCRYPTION_KEY=<output-from-above>
+APISIX_CONSUMER_KEY=<output-from-above>
 RDBMS__URL=mysql+aiomysql://mind_base:strongpassword@mysql:3306/mind_base
 MONGO__URI=mongodb://admin:strongpassword@mongo:27017/?authSource=admin
 REDIS__URL=redis://:strongpassword@redis:6379/1
+NEO4J_PASSWORD=strongpassword          # 与 compose 的 neo4j 服务共享
 
 # LangSmith (optional)
 LANGSMITH_API_KEY=lsv2_pt_xxx
@@ -101,11 +107,6 @@ mongo:
 redis:
   enabled: true
 
-mongo:
-  enabled: true
-redis:
-  enabled: true
-
 ratelimit:
   chat_per_minute: 30
   asr_per_hour: 50
@@ -117,10 +118,10 @@ langsmith:
 ### 4. Start
 
 ```bash
-docker compose --profile storage up -d
+docker compose up -d          # 默认 profile = 全栈（含 nginx/APISIX/Milvus/Neo4j/app-task/app-board）
 ```
 
-This starts: backend, frontend, MySQL, Redis, MongoDB, Milvus (+ etcd + MinIO).
+Optional add-ons: `--profile pay`（交易/会员）、`--profile pay-admin`（支付后台）、`--profile full`（全部）。各服务的部署与配置见 [app-pay.md](app-pay.md) / [app-pay-admin.md](app-pay-admin.md) / [app-board.md](app-board.md) / [app-task.md](app-task.md)。
 
 ### Daytona code sandbox (optional, for code agent)
 
@@ -133,12 +134,15 @@ Configure in backend `.env`: `DAYTONA__ENABLED=true`, `DAYTONA__API_URL=http://d
 ### 5. Verify
 
 ```bash
-curl http://localhost:8000/health
-# {"status": "healthy"}
+curl http://localhost:8000/health      # backend（直连）
+curl http://localhost/health           # 经 nginx → APISIX 的完整链路
+curl http://localhost:8001/health      # app-task
+# 返回 {"status": "healthy"} 即正常；/health 携带 agent_harness 状态
 
-curl http://localhost:3000
-# HTML response
+curl http://localhost:3000             # HTML response（或直接走 nginx 80/443）
 ```
+
+> 生产入口建议统一走 nginx（80/443）。compose 中 APISIX/app-board/app-pay 仅容器网络或回环可达，不直接对公网暴露。
 
 ---
 
@@ -337,17 +341,25 @@ GET /cache/stats → {"l1_hits": ..., "l2_hits": ..., "misses": ...}
 ## Backup & restore
 
 ```bash
-# Database (MySQL)
-docker compose exec mysql mysqldump -u root -p mind_base > backup.sql
+# Relational data (MySQL): mind_base 元数据 + app_task / app_pay
+docker compose exec mysql mysqldump -u root -p mind_base > backup-mind_base.sql
+docker compose exec app-task-mysql mysqldump -u root -p app_task > backup-app_task.sql   # 若启用了 app-task
+docker compose exec app-pay-mysql mysqldump -u root -p app_pay > backup-app_pay.sql      # 若启用了 app-pay
 
-# Volumes
+# Document stores (Mongo): 聊天/笔记正文/ASR/题目/板内容
+docker compose exec mongo mongodump --db MindBase --archive > backup-mongo.archive
+
+# Graph store (Neo4j): 知识图谱
+docker compose exec neo4j neo4j-admin database dump neo4j --to-stdout > backup-neo4j.dump
+
+# Files (MinIO) / vectors (Milvus) volumes
 docker run --rm \
-  -v mind-base_backend_data:/data \
+  -v mind-base_minio_data:/data \
   -v $(pwd):/backup \
-  alpine tar czf /backup/data-backup-$(date +%F).tar.gz -C /data .
+  alpine tar czf /backup/minio-backup-$(date +%F).tar.gz -C /data .
 
 # Restore MySQL
-docker compose exec -T mysql mysql -u root -p mind_base < backup.sql
+docker compose exec -T mysql mysql -u root -p mind_base < backup-mind_base.sql
 ```
 
 ---
@@ -357,7 +369,7 @@ docker compose exec -T mysql mysql -u root -p mind_base < backup.sql
 ```bash
 cd /opt/mind-base
 git pull
-docker compose --profile storage up -d --build
+docker compose up -d --build
 ```
 
 If the embedding model or chunk strategy changed, bump `embedding.version` in config and rebuild vector indexes.

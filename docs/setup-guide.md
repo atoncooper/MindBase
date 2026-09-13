@@ -107,11 +107,12 @@ email:
 ## 第 6 步：启动
 
 ```bash
-docker compose --profile full up -d --build
+docker compose up -d --build
 ```
 
-- `--profile full` 启动全部服务（含向量库 Milvus、出题执行器 app-task）
-- `--build` 首次或改了代码要加，会编译后端、前端、app-task
+- **裸 `docker compose up -d` 就是全栈**：后端、前端、nginx、APISIX 网关、MySQL、MongoDB、Redis、MinIO、Milvus、Neo4j、出题执行器 app-task、思维导图服务 app-board 全部包含
+- 可选追加：`--profile pay` 交易/会员服务、`--profile pay-test` 支付测试实例、`--profile pay-admin` 支付后台、`--profile full` 以上全部
+- `--build` 首次或改了代码要加，会编译后端、前端、app-task、app-board
 
 首次跑要几分钟（拉镜像 + 编译）。完成后看状态：
 
@@ -162,6 +163,7 @@ cd app-task && docker compose up -d --build   # app-task + 它自己的 MySQL
 4. 触发知识库构建（会做语音识别 + 向量化，等几分钟）
 5. 构建完就能在对话框问收藏夹里的内容了
 6. 定时出题：进「定时出题」，填出题方向（如"数学一填空题"）+ 触发时间，到点自动出题并发邮件到你的邮箱
+7. 思维导图：进「思维导图」创建导图，支持自动保存与版本并发保护
 
 ---
 
@@ -182,8 +184,8 @@ docker compose logs backend | tail -50
 ```
 
 最常见原因：
-- `.env` 的 `LLM_API_KEY` / `SESSION_SECRET` / `API_KEY_ENCRYPTION_KEY` 没填或填成了双下划线（应该是 `LLM_API_KEY` 不是 `LLM__API_KEY`）
-- `API_KEY_ENCRYPTION_KEY` 不是合法的 base64（重新用第 4 步的命令生成）
+- `.env` 必填项没填：`LLM__API_KEY` / `SESSION__SECRET` / `SECURITY__API_KEY_ENCRYPTION_KEY` / `APISIX_CONSUMER_KEY`——注意变量名用**双下划线**（`LLM__API_KEY`，不是 `LLM_API_KEY`）
+- `SECURITY__API_KEY_ENCRYPTION_KEY` 不是合法的 base64（重新用第 4 步的命令生成）
 
 ### app-task 启动失败 `config validation failed`
 
@@ -232,9 +234,8 @@ sed -i 's|registry.npmmirror.com|registry.npmjs.org|g' package-lock.json
 需要自己起 MySQL / MongoDB / Redis / Milvus（可以只起这些 infra 用 Docker，程序本地跑）。
 
 ```bash
-# 起 infra
-docker compose up -d mysql mongo redis
-docker compose --profile storage up -d milvus
+# 起 infra（milvus 依赖 etcd + minio，会自动带上）
+docker compose up -d mysql mongo redis milvus neo4j
 
 # 后端
 python -m pip install -r requirements.txt
@@ -258,8 +259,8 @@ go run ./app-task
 
 ```bash
 # 停止所有服务（保留数据）
-docker compose --profile full down
+docker compose down
 
 # 彻底清理（删所有数据，慎用）
-docker compose --profile full down -v
+docker compose down -v
 ```

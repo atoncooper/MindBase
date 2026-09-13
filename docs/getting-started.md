@@ -11,7 +11,7 @@ Run MindBase on your machine for development.
 | Python | >= 3.11 | `python --version` |
 | Node.js | >= 18 | `node --version` |
 | ffmpeg | any recent | `ffmpeg -version` |
-| MySQL | 8.x | optional — defaults to SQLite if absent |
+| MySQL | 8.x | required — provide via `RDBMS__URL` (no SQLite fallback in defaults) |
 | Git | 2.x | `git --version` |
 
 > **Windows users**: install ffmpeg via `winget install ffmpeg` or [ffmpeg.org](https://ffmpeg.org). Ensure `ffmpeg.exe` is on your PATH.
@@ -54,15 +54,13 @@ LLM__API_KEY=sk-your-dashscope-key
 
 ## Database
 
-If MySQL is not available, change `rdbms.url` in a `config.yaml`:
+`rdbms.url` has **no default** — inject it via env:
 
-```yaml
-# app/config/config.yaml
-rdbms:
-  url: sqlite+aiosqlite:///./data/mind_base.db
+```env
+RDBMS__URL=mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base
 ```
 
-By default the project uses MySQL (`mysql+aiomysql://...`). SQLite is fine for local dev.
+The easiest local setup is the MySQL container from the compose file (`docker compose up -d mysql`), or point `RDBMS__URL` at any MySQL/PostgreSQL instance. SQLite (`sqlite+aiosqlite:///./data/mind_base.db`) also works for pure local dev if you set it explicitly.
 
 ---
 
@@ -79,7 +77,7 @@ app/
 ├── infra/               # Infrastructure (MySQL, Milvus, Redis, Mongo, …)
 ├── config/              # YAML configuration (default.yaml)
 ├── response/            # Pydantic API schemas (request / response models)
-├── agent/               # LangGraph agents (chat / memory / note / code / quiz)
+├── agent/               # LangGraph agents (chat / memory / note / code / search / summary / quiz)
 ├── harness/             # AgentHarness orchestration (orchestrator + runtime)
 ├── tools/               # @register_tool auto-discovered tools
 └── models.py            # SQLAlchemy ORM models only
@@ -121,12 +119,14 @@ npx tsc --noEmit
 ## Running with Docker (dev)
 
 ```bash
-# Minimal stack (backend + frontend + MySQL + Redis + Mongo)
+# Full stack (default profile): backend, frontend, nginx, APISIX, MySQL, Redis,
+# Mongo, MinIO, Milvus, Neo4j, app-task, app-board
 docker compose up -d
 
-# With Milvus
-docker compose --profile storage up -d
-
-# Full stack with admin UIs
-docker compose --profile full up -d
+# Optional extras on top of the full stack
+docker compose --profile pay up -d         # + payment/membership service (app-pay)
+docker compose --profile pay-admin up -d   # + payment admin console (app-pay-admin)
+docker compose --profile tools up -d       # + redis-commander / mongo-express
 ```
+
+See [architecture.md](architecture.md) for the complete service/port/profile table.
