@@ -34,5 +34,6 @@ export * from "./tasks";
 export * from "./cloud";
 export * from "./workspace";
 export * from "./notes";
+export * from "./boards";
 export * from "./skills";
 export * from "./preferences";

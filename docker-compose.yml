@@ -472,6 +472,9 @@ services:
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+      # app-board dev-CA（app-board 自动模式首次启动生成）：只读挂入，
+      # entrypoint 将其与系统 CA 池拼成 ssl_trusted_certificate 的 ca-bundle.crt
+      - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
     # APISIX's lua-http client honors HTTP_PROXY. The host's
     # ~/.docker/config.json injects HTTP_PROXY at runtime with higher priority
     # than compose environment, which misroutes internal etcd traffic to the
@@ -480,7 +483,7 @@ services:
     # config.json's default wins). Override the entrypoint to unset proxy vars
     # before exec'ing the original entrypoint - guarantees the APISIX process
     # env has no proxy regardless of config.json, making the fix self-contained.
-    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; exec /docker-entrypoint.sh docker-start"]
+    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
       # Belt-and-suspenders: also clear via environment (documents intent;
       # may not override config.json runtime injection on its own).
@@ -488,8 +491,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
-      - no_proxy=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - NO_PROXY=etcd,backend,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,backend,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
@@ -569,6 +572,49 @@ services:
       # WORKDIR=/app 对齐 /app/certs）。证书由 app-pay/scripts/gen-dev-cert.* 生成（gitignored），
       # 缺失时 app-pay 启动自检明确报错；生产挂载正式证书后用 PAY_TLS_CERT/PAY_TLS_KEY 覆盖
       - ./app-pay/certs:/app/certs:ro
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-board —— 思维导图/白板内容存储（Go 独立服务）
+  # 共享主 app 的 MySQL(mind_base.board,服务自建 schema)与 Mongo(MindBase.board_documents)。
+  # 鉴权:APISIX forward-auth 验 bili_session 注入 X-Uid,服务信任该头。
+  # HTTPS-only:自动生成 dev-CA+叶子证书(自愈+自动续期),dev-ca.crt 只读挂进 apisix
+  # 作为 upstream tls_verify 的信任锚(见 apisix config.yaml ssl_trusted_certificate)。
+  # 注意:首次启动生成证书后若 apisix 先于其启动,需 `docker compose restart apisix` 重载 CA bundle。
+  app-board:
+    image: ${APPBOARD_IMAGE:-ghcr.io/atoncooper/mind-base-app-board:latest}
+    build:
+      context: ./app-board
+      dockerfile: Dockerfile
+    container_name: mind-base-app-board
+    profiles: ["", "board", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # 读缓存（列表/详情 cache-aside；写路径仍直落 MySQL）：独立 DB index /2，
+      # 主 app 用 /1；Redis 故障自动降级直查，不影响正确性
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      # 共享主 app MySQL（board 表 schema 由服务启动 db.Migrate 自建）
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      # 共享主 app Mongo（正文 collection board_documents）
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      # Logging: stdout + /app/logs/app-board.log（lumberjack 轮转）
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+    # 无宿主端口映射：只能经 APISIX 访问（与 app-task 8001 同策略）
+    volumes:
+      - app_board_logs:/app/logs
+      # TLS 证书目录：自动模式首次启动生成 dev-CA+叶子并持久化（apisix 只读挂其中的 dev-ca.crt）
+      - ./app-board/certs:/app/certs
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -664,6 +710,7 @@ volumes:
   backend_data:
   backend_logs:
   app_task_logs:
+  app_board_logs:
   app_task_mysql_data:
   app_pay_mysql_data:
   app_pay_logs:
