@@ -18,6 +18,18 @@ apisix:
   control:
     ip: 0.0.0.0
     port: 9090
+  # Trust anchors for upstream TLS verification (cosocket ssl.verify).
+  # ca-bundle.crt = system CA pool + app-board dev CA (concatenated by the
+  # compose entrypoint into /tmp at container start — the image's conf/certs
+  # dir is not writable by the runtime user). The system pool MUST be included:
+  # ssl_trusted_certificate REPLACES the default verification pool, so a bare
+  # dev-ca.crt here would break every other https cosocket — the exact trap
+  # documented on upstream-app-pay (which works around it with verify:false;
+  # app-board keeps verification on). If app-board has not generated its CA
+  # yet (cold start ordering), the entrypoint falls back to the system pool
+  # and `docker compose restart apisix` after first app-board boot reloads it.
+  ssl:
+    ssl_trusted_certificate: /tmp/ca-bundle.crt
 
 # Custom nginx directives.
 # proxy_buffering off: /chat/* and /task-quiz/chat are SSE streams. APISIX

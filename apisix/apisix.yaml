@@ -250,6 +250,54 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
+  # app-board Go content store - mind maps & whiteboards (/board/*).
+  # 服务端 HTTPS-only（自动生成 dev-CA + 叶子，自愈+自动续期，见 app-board/internal/tls）。
+  # ⚠️ APISIX 3.11 限制：upstream tls.verify 仅支持 kafka upstream（schema_def.lua 注释
+  # 明示），普通 https upstream 配 tls 对象会走 mTLS 路径且 client_cert 为 nil 直接 500。
+  # 且 ngx_tpl 从不设 proxy_ssl_verify —— 本版本无 http upstream 身份校验旋钮。
+  # 因此这里与 app-pay 同姿态：TLS 加密 on、证书校验暂不可用，待 APISIX 升级后收紧。
+  # ca-bundle.crt（系统池+dev-CA）保留在 /tmp，供 lua_ssl_trusted_certificate 使用。
+  # 节点名 app-board 即 SNI，命中叶子证书 SAN。健康检查走 https 但不验证书（探活无数据）。
+  - id: upstream-app-board
+    name: app-board
+    type: roundrobin
+    scheme: https
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-board:8004": 1
+    checks:
+      active:
+        type: https
+        http_path: /health
+        https_verify_certificate: false
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
 # ============================================================
 # Routes
 # ============================================================
@@ -426,6 +474,35 @@ routes:
     upstream_id: upstream-app-pay
     plugins:
       key-auth: {}
+
+  # CORS preflight for /board/*: browsers strip Authorization on preflight,
+  # so this route MUST NOT carry forward-auth (it would 401) — app-board's
+  # corsMiddleware answers 204 + CORS headers directly. priority above board_user.
+  - id: board_preflight
+    uri: /board/*
+    methods: [OPTIONS]
+    priority: 60
+    upstream_id: upstream-app-board
+
+  # User -> app-board mind-map/whiteboard CRUD (forward-auth verifies
+  # bili_session, injects X-Uid; app-board enforces per-uid ownership).
+  # request-id plugin: assigns X-Request-Id (honors client-supplied value,
+  # echoes in response) so gateway + app-board logs share one trace id.
+  # Rollout note: other routes generate their own ids per-service; extending
+  # request-id to all routes is a separate one-line-per-route change.
+  - id: board_user
+    uri: /board/*
+    methods: [GET, POST, PUT, DELETE, PATCH]
+    priority: 50
+    upstream_id: upstream-app-board
+    plugins:
+      request-id: {}
+      forward-auth:
+        uri: "http://backend:8000/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid]
+        timeout: 5000
+        status_code: 401
 
   # User <-> main app chat (SSE under /chat/*; backend self-validates bili_session
   # - no forward-auth, same as catch_all). Uses SSE upstream (retries:0, read 300s)
