@@ -74,6 +74,9 @@ certbot_www/
 # app-pay TLS certs（scripts/gen-dev-cert.* 生成的开发证书与私钥，敏感）
 app-pay/certs/
 
+# app-board TLS certs（自动生成的 dev-CA + 叶子证书与私钥，敏感）
+app-board/certs/
+
 
 # CLAUDE
 .claude/
