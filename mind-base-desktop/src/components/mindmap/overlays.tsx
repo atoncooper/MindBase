@@ -7,11 +7,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import type { MindMapNodeInstance } from "simple-mind-map";
 import type { MindMapNodeData, MindMapIconPack } from "../../lib/mindmap";
 import { nodeIconList } from "simple-mind-map/src/svg/icons.js";
 import type { MindMapIconGroup } from "simple-mind-map/src/svg/icons.js";
 import { highlightCode, LANGUAGE_GROUPS } from "./codeBlock";
+import { MD_COMPONENTS, MD_PLUGINS, MD_URL_TRANSFORM } from "./mdCard";
 
 // ── 可选项（"" = 清除本节点的覆盖，回到主题默认） ──────────────────────
 
@@ -609,8 +611,18 @@ function LangSelect({ value, onChange }: {
   );
 }
 
+/** 括号/引号配对表（VSCode 默认手感：自动补对、越过闭合符、空对回删）。 */
+const CODE_PAIRS: Record<string, string> = {
+  "(": ")",
+  "[": "]",
+  "{": "}",
+  '"': '"',
+  "'": "'",
+  "`": "`",
+};
+
 /** 高亮代码编辑区：行号栏 + Prism 高亮层 + 透明文本域（代码块/公式对话框共用）。 */
-function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, placeholder }: {
+function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, placeholder, fontSize = 13, onCaretMove }: {
   value: string;
   onChange: (value: string) => void;
   language: string;
@@ -618,6 +630,10 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
   onSubmit?: () => void;
   height: number;
   placeholder: string;
+  /** 编辑器字号（px）：与对话框写入的 --code-font-size 变量保持一致，光标行条换算用。 */
+  fontSize?: number;
+  /** 光标移动/内容变化时上报（Ln 从 1 起、Col 从 1 起）。 */
+  onCaretMove?: (ln: number, col: number) => void;
 }): React.JSX.Element {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const gutterRef = useRef<HTMLPreElement | null>(null);
@@ -625,11 +641,45 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
   const lineCount = Math.max(value.split("\n").length, 1);
   // 高亮层比代码区多渲染一个换行，保证末尾空行也能撑起高度。
   const highlighted = useMemo(() => `${highlightCode(value, language)}\n`, [value, language]);
+  // 光标行（0 基）与纵向滚动：当前行横条按 body 坐标绘制，滚动时平移。
+  const [caretLine, setCaretLine] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const lineHeight = fontSize * 1.6;
 
   // 挂载即聚焦，不依赖 autoFocus 时序（双击节点打开对话框的场景）。
   useEffect(() => {
     taRef.current?.focus();
+    updateCaret();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** 从文本域当前选区算光标行列；code 参数供 onChange 场景传新值（props 还未更新）。 */
+  function updateCaret(code: string = value): void {
+    const ta = taRef.current;
+    if (ta === null) return;
+    const start = ta.selectionStart;
+    const before = code.slice(0, start);
+    const lineStart = before.lastIndexOf("\n") + 1;
+    const ln = before.split("\n").length;
+    setCaretLine(ln - 1);
+    onCaretMove?.(ln, start - lineStart + 1);
+  }
+
+  /** 设值 + 还原选区（自动补对/缩进等改写共用）。 */
+  function applyEdit(next: string, selStart: number, selEnd: number = selStart): void {
+    onChange(next);
+    setCaretLine(next.slice(0, selStart).split("\n").length - 1);
+    onCaretMove?.(
+      next.slice(0, selStart).split("\n").length,
+      selStart - (next.slice(0, selStart).lastIndexOf("\n") + 1) + 1,
+    );
+    requestAnimationFrame(() => {
+      if (taRef.current !== null) {
+        taRef.current.selectionStart = selStart;
+        taRef.current.selectionEnd = selEnd;
+      }
+    });
+  }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
     // 输入法组合中的 Enter 是"选词确认"（keyCode 229 / key=Process），不处理。
@@ -644,19 +694,72 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
       if (value.trim() !== "") onSubmit();
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    // ── 括号/引号（对标 VSCode 默认手感，AltGr=Ctrl+Alt 的特殊符号键不受影响） ──
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && start === end) {
+      const charAtCaret = value[start] ?? "";
+      const isPairCloser = event.key === ")" || event.key === "]" || event.key === "}";
+      const isQuoteKey = event.key === '"' || event.key === "'" || event.key === "`";
+      // 越过闭合符：光标处已是键入的同名闭合符/引号时直接越过，不重复插入。
+      if ((isPairCloser || isQuoteKey) && charAtCaret === event.key) {
+        event.preventDefault();
+        applyEdit(value, start + 1);
+        return;
+      }
+    }
+    const pairOpener = !event.ctrlKey && !event.metaKey && !event.altKey ? CODE_PAIRS[event.key] : undefined;
+    if (pairOpener !== undefined) {
+      const selected = value.slice(start, end);
+      const nextChar = value[start] ?? "";
+      const prevChar = value[start - 1] ?? "";
+      const isQuote = event.key === '"' || event.key === "'" || event.key === "`";
+      // 贴词场景不补对（don't 的撇号、a"b、a(b 之类），让默认的单字符插入生效；
+      // 有选区时总是包裹选区。
+      const skipPair = selected === "" && ((isQuote && /\w/.test(prevChar)) || /\w/.test(nextChar));
+      if (skipPair) {
+        return;
+      }
+      event.preventDefault();
+      if (selected !== "") {
+        applyEdit(
+          `${value.slice(0, start)}${event.key}${selected}${pairOpener}${value.slice(end)}`,
+          start + 1,
+          start + 1 + selected.length,
+        );
+      } else {
+        applyEdit(`${value.slice(0, start)}${event.key}${pairOpener}${value.slice(end)}`, start + 1);
+      }
+      return;
+    }
+    // 空对回删：() [] {} "" 等成对符号中间按 Backspace 一次删两个。
+    if (event.key === "Backspace" && start === end && start > 0) {
+      const prev = value[start - 1] ?? "";
+      if (prev !== "" && CODE_PAIRS[prev] === (value[start] ?? "")) {
+        event.preventDefault();
+        applyEdit(value.slice(0, start - 1) + value.slice(start + 1), start - 1);
+        return;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey && start === end) {
+      // 成对括号间回车 → 两行缩进，光标落中间行（VSCode 行为）。
+      const prev = value[start - 1] ?? "";
+      if (prev !== "" && CODE_PAIRS[prev] === (value[start] ?? "") && prev !== (value[start] ?? "")) {
+        event.preventDefault();
+        const lineStart = value.slice(0, start).lastIndexOf("\n") + 1;
+        const indent = /^[ \t]*/.exec(value.slice(lineStart, start))?.[0] ?? "";
+        applyEdit(
+          `${value.slice(0, start)}\n${indent}  \n${indent}${value.slice(end)}`,
+          start + 1 + indent.length + 2,
+        );
+        return;
+      }
+      // 普通回车：继承当前行缩进，行尾开括号再加一级。
       event.preventDefault();
       const before = value.slice(0, start);
       const lineStart = before.lastIndexOf("\n") + 1;
       const indent = /^[ \t]*/.exec(before.slice(lineStart))?.[0] ?? "";
       const extra = /[{([]\s*$/.test(before.slice(lineStart)) ? "  " : "";
       const insert = `\n${indent}${extra}`;
-      onChange(before + insert + value.slice(end));
-      requestAnimationFrame(() => {
-        if (taRef.current !== null) {
-          taRef.current.selectionStart = taRef.current.selectionEnd = start + insert.length;
-        }
-      });
+      applyEdit(before + insert + value.slice(end), start + insert.length);
       return;
     }
     if (event.key !== "Tab") return;
@@ -666,19 +769,9 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
       const selected = value.slice(lineStart, end);
       const dedented = selected.replace(/^ {1,2}/gm, "");
       const removed = selected.length - dedented.length;
-      onChange(value.slice(0, lineStart) + dedented + value.slice(end));
-      requestAnimationFrame(() => {
-        if (taRef.current !== null) {
-          taRef.current.selectionStart = taRef.current.selectionEnd = Math.max(lineStart, start - removed);
-        }
-      });
+      applyEdit(value.slice(0, lineStart) + dedented + value.slice(end), Math.max(lineStart, start - removed));
     } else {
-      onChange(`${value.slice(0, start)}  ${value.slice(end)}`);
-      requestAnimationFrame(() => {
-        if (taRef.current !== null) {
-          taRef.current.selectionStart = taRef.current.selectionEnd = start + 2;
-        }
-      });
+      applyEdit(`${value.slice(0, start)}  ${value.slice(end)}`, start + 2);
     }
   }
 
@@ -690,6 +783,7 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
       highlightRef.current.scrollTop = ta.scrollTop;
       highlightRef.current.scrollLeft = ta.scrollLeft;
     }
+    setScrollTop(ta.scrollTop);
   }
 
   return (
@@ -706,6 +800,11 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
         {Array.from({ length: lineCount }, (_, index) => index + 1).join("\n")}
       </pre>
       <div className="mm-code-body">
+        <div
+          className="mm-code-caretline"
+          style={{ top: 8 + caretLine * lineHeight - scrollTop }}
+          aria-hidden="true"
+        />
         <pre
           className="mm-code-highlight"
           ref={highlightRef}
@@ -721,13 +820,53 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            onChange(event.target.value);
+            updateCaret(event.target.value);
+          }}
           onScroll={syncScroll}
           onKeyDown={handleKeyDown}
+          onClick={() => updateCaret()}
+          onKeyUp={() => updateCaret()}
         />
       </div>
     </div>
   );
+}
+
+// ── 代码编辑偏好：字号 / 编辑区高度（localStorage 持久化） ─────────────
+
+const CODE_FONT_KEY = "mb-code-font-size";
+const CODE_HEIGHT_KEY = "mb-code-editor-height";
+const CODE_FONT_RANGE = [11, 20] as const;
+const CODE_HEIGHT_RANGE = [160, 640] as const;
+
+function clampNum(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function loadCodeFontSize(): number {
+  try {
+    const parsed = Number(window.localStorage.getItem(CODE_FONT_KEY));
+    if (Number.isFinite(parsed)) {
+      return clampNum(Math.round(parsed), ...CODE_FONT_RANGE);
+    }
+  } catch {
+    // 存储拒绝只影响默认值。
+  }
+  return 13;
+}
+
+function loadCodeEditorHeight(): number {
+  try {
+    const parsed = Number(window.localStorage.getItem(CODE_HEIGHT_KEY));
+    if (Number.isFinite(parsed)) {
+      return clampNum(Math.round(parsed), ...CODE_HEIGHT_RANGE);
+    }
+  } catch {
+    // 存储拒绝只影响默认值。
+  }
+  return 300;
 }
 
 export function CodeBlockDialog({ initialCode, initialLanguage, onSave, onDelete, onClose }: {
@@ -740,35 +879,123 @@ export function CodeBlockDialog({ initialCode, initialLanguage, onSave, onDelete
   onClose: () => void;
 }): React.JSX.Element {
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const editorWrapRef = useRef<HTMLDivElement | null>(null);
+  const heightRef = useRef(loadCodeEditorHeight());
   const [code, setCode] = useState(initialCode);
   const [language, setLanguage] = useState(initialLanguage);
+  const [fontSize, setFontSizeState] = useState(loadCodeFontSize);
+  const [editorHeight, setEditorHeightState] = useState(heightRef.current);
+  const [caret, setCaret] = useState({ ln: 1, col: 1 });
   useOutsideClose(boxRef, onClose);
   const isEditing = initialCode !== "";
   const lineCount = Math.max(code.split("\n").length, 1);
 
+  function setFontSize(next: number): void {
+    const nextClamped = clampNum(Math.round(next), ...CODE_FONT_RANGE);
+    setFontSizeState(nextClamped);
+    try {
+      window.localStorage.setItem(CODE_FONT_KEY, String(nextClamped));
+    } catch {
+      // 存储拒绝只影响下次打开的记忆。
+    }
+  }
+
+  /** 拖拽中实时应用（不落库），pointerup 时持久化一次。 */
+  function applyEditorHeight(next: number): void {
+    const nextClamped = clampNum(Math.round(next), ...CODE_HEIGHT_RANGE);
+    heightRef.current = nextClamped;
+    setEditorHeightState(nextClamped);
+  }
+
+  function persistEditorHeight(): void {
+    try {
+      window.localStorage.setItem(CODE_HEIGHT_KEY, String(heightRef.current));
+    } catch {
+      // 存储拒绝只影响下次打开的记忆。
+    }
+  }
+
+  // 编辑区内 Ctrl/Cmd+滚轮 调字号（VSCode 手感）；非被动监听才能
+  // preventDefault 拦掉 WebView 自身页面缩放。
+  useEffect(() => {
+    const el = editorWrapRef.current;
+    if (el === null) return;
+    const onWheel = (event: WheelEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      setFontSize(fontSize + (event.deltaY < 0 ? 1 : -1));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [fontSize]);
+
+  function beginHeightDrag(event: React.PointerEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = heightRef.current;
+    const onMove = (move: PointerEvent): void => {
+      applyEditorHeight(startHeight + (move.clientY - startY));
+    };
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      persistEditorHeight();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
   return (
     <div className="mm-overlay">
-      <div className="mm-dialog mm-dialog--wide" ref={boxRef}>
+      <div
+        className="mm-dialog mm-dialog--wide"
+        ref={boxRef}
+        style={{ "--code-font-size": `${fontSize}px` } as React.CSSProperties}
+      >
         <div className="mm-dialog__title-row">
           <h3 className="mm-dialog__title">{isEditing ? "编辑代码块" : "插入代码块"}</h3>
+          <div className="mm-code-fontctl">
+            <button
+              type="button"
+              title="减小字号"
+              disabled={fontSize <= CODE_FONT_RANGE[0]}
+              onClick={() => setFontSize(fontSize - 1)}
+            >
+              A−
+            </button>
+            <span className="mm-code-fontval">{fontSize}px</span>
+            <button
+              type="button"
+              title="增大字号（编辑区内 Ctrl+滚轮 同效）"
+              disabled={fontSize >= CODE_FONT_RANGE[1]}
+              onClick={() => setFontSize(fontSize + 1)}
+            >
+              A+
+            </button>
+          </div>
           <LangSelect value={language} onChange={setLanguage} />
         </div>
-        <HighlightedCodeEditor
-          value={code}
-          onChange={setCode}
-          language={language}
-          onSubmit={() => {
-            if (code.trim() !== "") onSave(code, language);
-          }}
-          height={300}
-          placeholder="粘贴或输入代码…（Tab 缩进，回车自动继承缩进，Ctrl+Enter 保存）"
-        />
+        <div ref={editorWrapRef}>
+          <HighlightedCodeEditor
+            value={code}
+            onChange={setCode}
+            language={language}
+            onSubmit={() => {
+              if (code.trim() !== "") onSave(code, language);
+            }}
+            height={editorHeight}
+            fontSize={fontSize}
+            onCaretMove={(ln, col) => setCaret({ ln, col })}
+            placeholder="粘贴或输入代码…（Tab 缩进，回车自动继承缩进，Ctrl+Enter 保存）"
+          />
+          <div className="mm-code-resize" title="拖拽调整高度" onPointerDown={beginHeightDrag} />
+        </div>
         <div className="mm-code-meta">
           <span className="hint-text">
             {isEditing ? "保存后替换该节点的代码内容" : "在选中节点下创建代码块子节点"}
           </span>
           <span className="hint-text">
-            {lineCount} 行 · {code.length} 字符
+            Ln {caret.ln}, Col {caret.col} · {lineCount} 行 · {code.length} 字符
           </span>
         </div>
         <div className="mm-dialog__actions">
@@ -795,6 +1022,113 @@ export function CodeBlockDialog({ initialCode, initialLanguage, onSave, onDelete
   );
 }
 
+// ── Markdown 渲染节点对话框：左源码（高亮编辑器）· 右实时预览 ─────────
+
+export function MarkdownDialog({ initialSource, onSave, onDelete, onClose }: {
+  /** 编辑已有节点时的初始源码；空串表示新建节点。 */
+  initialSource: string;
+  onSave: (source: string) => void;
+  /** 编辑态传入后显示「删除 Markdown 节点」（整节点删除）。 */
+  onDelete?: () => void;
+  onClose: () => void;
+}): React.JSX.Element {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [source, setSource] = useState(initialSource);
+  const [fontSize, setFontSizeState] = useState(loadCodeFontSize);
+  useOutsideClose(boxRef, onClose);
+  const isEditing = initialSource !== "";
+
+  function setFontSize(next: number): void {
+    const nextClamped = clampNum(Math.round(next), ...CODE_FONT_RANGE);
+    setFontSizeState(nextClamped);
+    try {
+      window.localStorage.setItem(CODE_FONT_KEY, String(nextClamped));
+    } catch {
+      // 存储拒绝只影响下次打开的记忆。
+    }
+  }
+
+  return (
+    <div className="mm-overlay">
+      <div
+        className="mm-dialog mm-dialog--md"
+        ref={boxRef}
+        style={{ "--code-font-size": `${fontSize}px` } as React.CSSProperties}
+      >
+        <div className="mm-dialog__title-row">
+          <h3 className="mm-dialog__title">{isEditing ? "编辑 Markdown" : "插入 Markdown"}</h3>
+          <span className="hint-text">左源码 · 右实时预览（与画布渲染同源）</span>
+          <div className="mm-code-fontctl">
+            <button
+              type="button"
+              title="减小字号"
+              disabled={fontSize <= CODE_FONT_RANGE[0]}
+              onClick={() => setFontSize(fontSize - 1)}
+            >
+              A−
+            </button>
+            <span className="mm-code-fontval">{fontSize}px</span>
+            <button
+              type="button"
+              title="增大字号"
+              disabled={fontSize >= CODE_FONT_RANGE[1]}
+              onClick={() => setFontSize(fontSize + 1)}
+            >
+              A+
+            </button>
+          </div>
+        </div>
+        <div className="mm-md-split">
+          <HighlightedCodeEditor
+            value={source}
+            onChange={setSource}
+            language="markdown"
+            height={420}
+            fontSize={fontSize}
+            placeholder="粘贴或输入 Markdown…（支持表格 / 任务列表 / 代码块）"
+          />
+          <div className="mm-md-preview">
+            <div className="smm-md-card">
+              <Markdown
+                remarkPlugins={MD_PLUGINS}
+                urlTransform={MD_URL_TRANSFORM}
+                components={MD_COMPONENTS}
+              >
+                {source}
+              </Markdown>
+            </div>
+          </div>
+        </div>
+        <div className="mm-code-meta">
+          <span className="hint-text">
+            {isEditing ? "保存后替换该节点的渲染内容（源码存在节点数据里）" : "在选中节点下创建 Markdown 渲染子节点"}
+          </span>
+          <span className="hint-text">{source.length} 字符</span>
+        </div>
+        <div className="mm-dialog__actions">
+          {isEditing && onDelete !== undefined && (
+            <button type="button" className="button mm-btn-danger" onClick={onDelete}>
+              删除 Markdown 节点
+            </button>
+          )}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="button button--primary"
+            disabled={source.trim() === ""}
+            onClick={() => onSave(source)}
+          >
+            {isEditing ? "保存 Markdown" : "插入 Markdown"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 大纲面板（可编辑树：单击定位 / 双击重命名 / 悬停行操作） ──────────
 
 export interface OutlineNodeItem {
@@ -814,6 +1148,17 @@ export interface OutlineNodeItem {
   children: OutlineNodeItem[];
 }
 
+/** 富文本节点的 text 是 HTML（代码/MD 卡片是整块标记），大纲只显示剥离标签后的纯文本。 */
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 /** 把画布文档的根节点转成大纲树（uid 缺失的节点不可定位/重命名）。 */
 export function toOutlineTree(root: MindMapNodeData): OutlineNodeItem {
   const toItems = (node: MindMapNodeData, isRoot: boolean): OutlineNodeItem => {
@@ -826,7 +1171,7 @@ export function toOutlineTree(root: MindMapNodeData): OutlineNodeItem {
     });
     return {
       uid: String(node.data.uid ?? ""),
-      text: String(node.data.text ?? ""),
+      text: stripHtmlTags(String(node.data.text ?? "")),
       expand: node.data.expand !== false,
       hasChildren: children.length > 0,
       hasNote: String(node.data.note ?? "") !== "",
