@@ -182,6 +182,8 @@ const SHORTCUTS: ReadonlyArray<{ keys: string; desc: string }> = [
   { keys: "双击节点", desc: "编辑文本（代码块节点打开代码对话框）" },
   { keys: "双击空白", desc: "在根节点下新建子节点" },
   { keys: "空白左键拖拽", desc: "平移画布；Ctrl/Meta + 拖拽框选" },
+  { keys: "Ctrl+= / Ctrl+-", desc: "放大 / 缩小画布" },
+  { keys: "Ctrl+0", desc: "适应画布（点击右下角百分比复位 100%）" },
   { keys: "Ctrl+S", desc: "立即保存" },
 ];
 

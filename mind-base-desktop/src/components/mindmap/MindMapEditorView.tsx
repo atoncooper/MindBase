@@ -283,6 +283,20 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
         event.preventDefault();
         setSearchOpen(true);
       }
+      // 缩放快捷键：Ctrl+0 适应 / Ctrl+= 放大 / Ctrl+- 缩小（与右下角
+      // 缩放控件一致；preventDefault 拦掉 WebView 自身的页面缩放）。
+      if (event.ctrlKey || event.metaKey) {
+        if (event.key === "0") {
+          event.preventDefault();
+          instanceRef.current?.view.fit();
+        } else if (event.key === "=" || event.key === "+") {
+          event.preventDefault();
+          instanceRef.current?.view.enlarge();
+        } else if (event.key === "-") {
+          event.preventDefault();
+          instanceRef.current?.view.narrow();
+        }
+      }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -486,9 +500,23 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
 
   function buildNodeMenuItems(): ContextMenuItem[] {
     const node = ctxMenu?.node ?? null;
-    // 所有节点级动作显式以右键命中的节点为目标——不依赖当时的选中集，
+    // 所有节点级动作显式以目标集为操作对象——不依赖当时的选中集，
     // 消除"右键激活时序差导致点击菜单项无效"的竞态。
-    const targets = node !== null ? [node] : [];
+    // 右键命中选中集内的节点时，动作作用于整个选中集（配合框选批量
+    // 插入/删除）；命中未选中的节点则只作用于该节点。
+    const nodeUid = node !== null ? String(node.getData("uid") ?? "") : "";
+    const inSelection =
+      node !== null &&
+      nodeUid !== "" &&
+      activeNodesRef.current.some(
+        (item) => String(item.getData("uid") ?? "") === nodeUid,
+      );
+    const targets =
+      node === null
+        ? []
+        : inSelection && activeNodesRef.current.length > 1
+          ? [...activeNodesRef.current]
+          : [node];
     const isRoot = node?.isRoot === true;
     // 当前有激活（已单击选中）的关联线时：右键其他节点可将其改连/删除
     const activeLine = instanceRef.current?.associativeLine.activeLine ?? null;
@@ -713,6 +741,35 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
     if (node !== null) {
       exec("SET_NODE_TEXT", node, text);
     }
+  }
+
+  function findCanvasNode(uid: string): MindMapNodeInstance | null {
+    const instance = instanceRef.current;
+    if (instance === null || uid === "") return null;
+    return instance.renderer.findNodeByUid(uid);
+  }
+
+  /**
+   * 大纲行操作 → 画布命令（openEdit=false，不弹画布编辑框打断大纲流）。
+   * 命令触发 data_change，doc 镜像刷新后大纲树随之重建。
+   */
+  function insertFromOutline(uid: string, asChild: boolean): void {
+    const node = findCanvasNode(uid);
+    if (node === null) return;
+    if (asChild) exec("INSERT_CHILD_NODE", false, [node]);
+    else if (!node.isRoot) exec("INSERT_NODE", false, [node]);
+  }
+
+  function removeFromOutline(uid: string): void {
+    const node = findCanvasNode(uid);
+    if (node === null || node.isRoot) return;
+    exec("REMOVE_NODE", [node]);
+  }
+
+  function moveFromOutline(uid: string, up: boolean): void {
+    const node = findCanvasNode(uid);
+    if (node === null || node.isRoot) return;
+    exec(up ? "UP_NODE" : "DOWN_NODE", node);
   }
 
   function toggleRainbow(): void {
@@ -1416,6 +1473,11 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
           root={outlineRoot}
           onLocate={locateOutline}
           onRename={renameOutline}
+          onInsertChild={(uid) => insertFromOutline(uid, true)}
+          onInsertSibling={(uid) => insertFromOutline(uid, false)}
+          onRemove={(uid) => removeFromOutline(uid)}
+          onMoveUp={(uid) => moveFromOutline(uid, true)}
+          onMoveDown={(uid) => moveFromOutline(uid, false)}
           onClose={() => setOutlineOpen(false)}
         />
       )}

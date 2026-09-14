@@ -9,14 +9,26 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { MINDMAP_HASH, navigate } from "../../lib/router";
-import { getMindMap, saveMindMap, saveMindMapExport } from "../../lib/mindmap";
-import type { MindMapDetail, WhiteboardScene } from "../../lib/mindmap";
+import {
+  createMindMapSnapshot,
+  getMindMap,
+  listMindMapSnapshots,
+  restoreMindMapSnapshot,
+  saveMindMap,
+  saveMindMapExport,
+} from "../../lib/mindmap";
+import type { MindMapDetail, MindMapSnapshotMeta, WhiteboardScene } from "../../lib/mindmap";
 import { toErrorMessage } from "../../lib/updater";
 import { useToast } from "../../lib/toast";
 import { isAppDark } from "../mindmap/doc";
+import { HistoryPanel } from "../mindmap/toolPanels";
 
 type SaveState = "saved" | "pending" | "saving";
+
+/** 自动快照最小间隔：距上一版 ≥10 分钟且本次有落库才拍（与导图编辑器一致）。 */
+const AUTO_SNAPSHOT_INTERVAL_SEC = 600;
 
 type ExcalidrawModule = typeof import("./excalidrawBundle");
 
@@ -54,6 +66,12 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
   const [dark, setDark] = useState(isAppDark());
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [exporting, setExporting] = useState<string | null>(null);
+  /** 版本历史面板（快照机制与导图共用 mind_map_snapshots，按 kind 无关）。 */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [snapshots, setSnapshots] = useState<MindMapSnapshotMeta[] | null>(null);
+  const [snapshotSaving, setSnapshotSaving] = useState(false);
+  /** 回滚后递增：重载文档并重挂载 Excalidraw（initialData 只在挂载时读）。 */
+  const [reloadToken, setReloadToken] = useState(0);
   /** 动态分包的 Excalidraw 组件模块；加载失败时提示。 */
   const [lib, setLib] = useState<ExcalidrawModule | null>(null);
   const toast = useToast();
@@ -68,6 +86,10 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
   const lastSavedRef = useRef<string | null>(null);
   /** onChange 的最新一帧；flush 时才序列化。 */
   const pendingRef = useRef<PendingScene | null>(null);
+  /** 最近一次快照时间（秒）；自动快照按此判断间隔。 */
+  const lastSnapshotAtRef = useRef(0);
+  /** 回滚进行中：挡住 Excalidraw 持续 onChange 触发的尾部落库覆盖回滚结果。 */
+  const restoringRef = useRef(false);
 
   function scheduleSave(): void {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
@@ -84,6 +106,7 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
   }
 
   async function doFlush(): Promise<void> {
+    if (restoringRef.current) return;
     if (timerRef.current !== null) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -121,6 +144,12 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
       await saveMindMap(mapId, titleRef.current, scene);
       lastSavedRef.current = serialized;
       setSaveState("saved");
+      // 落库成功 → 距上一版超过间隔就顺手拍一版自动快照（失败静默）。
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec - lastSnapshotAtRef.current >= AUTO_SNAPSHOT_INTERVAL_SEC) {
+        lastSnapshotAtRef.current = nowSec;
+        void createMindMapSnapshot(mapId).catch(() => undefined);
+      }
     } catch (err) {
       dirtyRef.current = true;
       setSaveState("pending");
@@ -135,7 +164,8 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
   }
   doFlushRef.current = doFlush;
 
-  // 加载白板文档；卸载/换对象前兜底 flush。
+  // 加载白板文档；卸载/换对象前兜底 flush。回滚快照后经 reloadToken
+  // 重跑本 effect 重取内容，再以新 key 重挂 Excalidraw（initialData 只吃一次）。
   useEffect(() => {
     let cancelled = false;
     void getMindMap(mapId).then(
@@ -165,6 +195,14 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
           }
         }
         setPhase("ready");
+        // 回滚重载完成：恢复自动保存（见 restoringRef）。
+        restoringRef.current = false;
+        // 初始化自动快照的间隔基准（最新一版的时间）。
+        void listMindMapSnapshots(mapId)
+          .then((rows) => {
+            lastSnapshotAtRef.current = rows[0]?.createdAt ?? 0;
+          })
+          .catch(() => undefined);
       },
       () => {
         if (!cancelled) setPhase("missing");
@@ -174,7 +212,7 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
       cancelled = true;
       void doFlushRef.current();
     };
-  }, [mapId]);
+  }, [mapId, reloadToken]);
 
   // 动态加载 Excalidraw（单独分包）。
   useEffect(() => {
@@ -277,6 +315,60 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
     }
   }
 
+  // ── 版本历史（与导图共用快照机制） ───────────────────────────────────
+
+  async function refreshSnapshots(): Promise<void> {
+    try {
+      setSnapshots(await listMindMapSnapshots(mapId));
+    } catch {
+      setSnapshots([]);
+    }
+  }
+
+  function toggleHistory(): void {
+    setHistoryOpen((prev) => {
+      if (!prev) void refreshSnapshots();
+      return !prev;
+    });
+  }
+
+  async function manualSnapshot(): Promise<void> {
+    setSnapshotSaving(true);
+    try {
+      await doFlush();
+      const meta = await createMindMapSnapshot(mapId, "手动快照");
+      lastSnapshotAtRef.current = meta.createdAt;
+      await refreshSnapshots();
+      toast.success("已保存当前版本", { title: "存一版" });
+    } catch (err) {
+      toast.error(toErrorMessage(err), { title: "快照失败" });
+    } finally {
+      setSnapshotSaving(false);
+    }
+  }
+
+  async function restoreSnapshot(snapshot: MindMapSnapshotMeta): Promise<void> {
+    const confirmed = await confirm(
+      `回滚到「${snapshot.title}」（${new Date(snapshot.createdAt * 1000).toLocaleString()}）？当前内容会先自动备份成一版。`,
+      { title: "回滚确认", kind: "warning" },
+    );
+    if (!confirmed) return;
+    try {
+      await doFlush();
+      restoringRef.current = true;
+      await restoreMindMapSnapshot(snapshot.id);
+      setHistoryOpen(false);
+      // 先回 loading 再重取内容：Excalidraw 的 initialData 只在挂载时读，
+      // 直接换 key 会拿到旧场景；重跑加载 effect 后以新 key 重挂最稳。
+      setPhase("loading");
+      setReloadToken((token) => token + 1);
+      toast.success("已回滚；回滚前的内容在历史里以「回滚备份」存在", { title: "回滚完成" });
+    } catch (err) {
+      restoringRef.current = false;
+      toast.error(toErrorMessage(err), { title: "回滚失败" });
+    }
+  }
+
   async function goBack(): Promise<void> {
     await doFlush();
     navigate(MINDMAP_HASH);
@@ -327,6 +419,13 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
         <span className="mm-topbar__spacer" aria-hidden="true" />
         <button
           type="button"
+          className={historyOpen ? "mm-btn mm-btn--active" : "mm-btn"}
+          onClick={toggleHistory}
+        >
+          历史
+        </button>
+        <button
+          type="button"
           className="mm-btn"
           disabled={exporting !== null}
           onClick={() => lib !== null && void exportBoard(lib, "png")}
@@ -349,6 +448,7 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
           </p>
         ) : (
           <Excalidraw
+            key={reloadToken}
             theme={dark ? "dark" : "light"}
             langCode="zh-CN"
             initialData={
@@ -378,6 +478,15 @@ function WhiteboardEditorView({ mapId }: { mapId: string }): React.JSX.Element {
           />
         )}
       </div>
+      {historyOpen && (
+        <HistoryPanel
+          snapshots={snapshots}
+          saving={snapshotSaving}
+          onManualSnapshot={() => void manualSnapshot()}
+          onRestore={(snapshot) => void restoreSnapshot(snapshot)}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
     </div>
   );
 }
