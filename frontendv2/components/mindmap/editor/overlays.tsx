@@ -7,11 +7,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import type { MindMapNodeInstance } from "simple-mind-map";
 import type { MindMapNodeData, MindMapIconPack } from "@/lib/board-store";
 import { nodeIconList } from "simple-mind-map/src/svg/icons.js";
 import type { MindMapIconGroup } from "simple-mind-map/src/svg/icons.js";
 import { highlightCode, LANGUAGE_GROUPS } from "./codeBlock";
+import { MD_COMPONENTS, MD_PLUGINS, MD_URL_TRANSFORM } from "./mdCard";
 
 // ── 可选项（"" = 清除本节点的覆盖，回到主题默认） ──────────────────────
 
@@ -795,32 +797,145 @@ export function CodeBlockDialog({ initialCode, initialLanguage, onSave, onDelete
   );
 }
 
-// ── 大纲面板（可折叠树：单击定位，双击重命名） ───────────────────────
+// ── Markdown 渲染节点（左源码 / 右实时预览，与画布渲染同源） ─────────
+
+export function MarkdownDialog({ initialSource, onSave, onDelete, onClose }: {
+  /** 编辑已有节点时的初始源码；空串表示新建节点。 */
+  initialSource: string;
+  onSave: (source: string) => void;
+  /** 编辑态传入后显示「删除 Markdown 节点」（整节点删除）。 */
+  onDelete?: () => void;
+  onClose: () => void;
+}): React.JSX.Element {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [source, setSource] = useState(initialSource);
+  useOutsideClose(boxRef, onClose);
+  const isEditing = initialSource !== "";
+
+  return (
+    <div className="mm-overlay">
+      <div className="mm-dialog mm-dialog--md" ref={boxRef}>
+        <div className="mm-dialog__title-row">
+          <h3 className="mm-dialog__title">{isEditing ? "编辑 Markdown" : "插入 Markdown"}</h3>
+          <span className="hint-text">左源码 · 右实时预览（与画布渲染同源）</span>
+        </div>
+        <div className="mm-md-split">
+          <HighlightedCodeEditor
+            value={source}
+            onChange={setSource}
+            language="markdown"
+            height={420}
+            placeholder="粘贴或输入 Markdown…（支持表格 / 任务列表 / 代码块）"
+          />
+          <div className="mm-md-preview">
+            <div className="smm-md-card">
+              <Markdown
+                remarkPlugins={MD_PLUGINS}
+                urlTransform={MD_URL_TRANSFORM}
+                components={MD_COMPONENTS}
+              >
+                {source}
+              </Markdown>
+            </div>
+          </div>
+        </div>
+        <div className="mm-code-meta">
+          <span className="hint-text">
+            {isEditing ? "保存后替换该节点的渲染内容（源码存在节点数据里）" : "在选中节点下创建 Markdown 渲染子节点"}
+          </span>
+          <span className="hint-text">{source.length} 字符</span>
+        </div>
+        <div className="mm-dialog__actions">
+          {isEditing && onDelete !== undefined && (
+            <button type="button" className="button mm-btn-danger" onClick={onDelete}>
+              删除 Markdown 节点
+            </button>
+          )}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="button" onClick={onClose}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="button button--primary"
+            disabled={source.trim() === ""}
+            onClick={() => onSave(source)}
+          >
+            {isEditing ? "保存 Markdown" : "插入 Markdown"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 大纲面板（可编辑树：单击定位 / 双击重命名 / 悬停行操作） ──────────
 
 export interface OutlineNodeItem {
   uid: string;
   text: string;
   expand: boolean;
   hasChildren: boolean;
+  /** 附件角标：有备注 / 有链接 / 标签数 / 有图片。 */
+  hasNote: boolean;
+  hasLink: boolean;
+  tagCount: number;
+  hasImage: boolean;
+  /** 根节点：不可删除 / 不可插同级 / 不可移动。 */
+  isRoot: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   children: OutlineNodeItem[];
+}
+
+/** 富文本节点的 text 是 HTML（代码/MD 卡片是整块标记），大纲只显示剥离标签后的纯文本。 */
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 }
 
 /** 把画布文档的根节点转成大纲树（uid 缺失的节点不可定位/重命名）。 */
 export function toOutlineTree(root: MindMapNodeData): OutlineNodeItem {
-  const toItems = (node: MindMapNodeData): OutlineNodeItem => ({
-    uid: String(node.data.uid ?? ""),
-    text: String(node.data.text ?? ""),
-    expand: node.data.expand !== false,
-    hasChildren: (node.children?.length ?? 0) > 0,
-    children: (node.children ?? []).map(toItems),
-  });
-  return toItems(root);
+  const toItems = (node: MindMapNodeData, isRoot: boolean): OutlineNodeItem => {
+    const childNodes = node.children ?? [];
+    const children = childNodes.map((child, index) => {
+      const item = toItems(child, false);
+      item.canMoveUp = index > 0;
+      item.canMoveDown = index < childNodes.length - 1;
+      return item;
+    });
+    return {
+      uid: String(node.data.uid ?? ""),
+      text: stripHtmlTags(String(node.data.text ?? "")),
+      expand: node.data.expand !== false,
+      hasChildren: children.length > 0,
+      hasNote: String(node.data.note ?? "") !== "",
+      hasLink: String(node.data.hyperlink ?? "") !== "",
+      tagCount: Array.isArray(node.data.tag) ? node.data.tag.length : 0,
+      hasImage: Boolean(node.data.image),
+      isRoot,
+      canMoveUp: false,
+      canMoveDown: false,
+      children,
+    };
+  };
+  return toItems(root, true);
 }
 
-export function OutlinePanel({ root, onLocate, onRename, onClose }: {
+export function OutlinePanel({ root, onLocate, onRename, onInsertChild, onInsertSibling, onRemove, onMoveUp, onMoveDown, onClose }: {
   root: OutlineNodeItem;
   onLocate: (uid: string) => void;
   onRename: (uid: string, text: string) => void;
+  onInsertChild: (uid: string) => void;
+  onInsertSibling: (uid: string) => void;
+  onRemove: (uid: string) => void;
+  onMoveUp: (uid: string) => void;
+  onMoveDown: (uid: string) => void;
   onClose: () => void;
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -901,6 +1016,58 @@ export function OutlinePanel({ root, onLocate, onRename, onClose }: {
                 {item.text === "" ? "（空）" : item.text}
               </span>
             )}
+            {(item.hasNote || item.hasLink || item.tagCount > 0 || item.hasImage) && (
+              <span className="mm-outline-badges">
+                {item.hasImage && <span className="mm-outline-badge" title="包含图片">图</span>}
+                {item.hasNote && <span className="mm-outline-badge" title="有备注">注</span>}
+                {item.hasLink && <span className="mm-outline-badge" title="有链接">链</span>}
+                {item.tagCount > 0 && (
+                  <span className="mm-outline-badge" title={`标签 × ${item.tagCount}`}>
+                    #{item.tagCount}
+                  </span>
+                )}
+              </span>
+            )}
+            <span className="mm-outline-actions" onClick={(event) => event.stopPropagation()}>
+              <button type="button" title="插入子节点" onClick={() => onInsertChild(item.uid)}>
+                ＋
+              </button>
+              {!item.isRoot && (
+                <button type="button" title="插入同级节点" onClick={() => onInsertSibling(item.uid)}>
+                  ＋∥
+                </button>
+              )}
+              {!item.isRoot && (
+                <button
+                  type="button"
+                  title="上移"
+                  disabled={!item.canMoveUp}
+                  onClick={() => onMoveUp(item.uid)}
+                >
+                  ↑
+                </button>
+              )}
+              {!item.isRoot && (
+                <button
+                  type="button"
+                  title="下移"
+                  disabled={!item.canMoveDown}
+                  onClick={() => onMoveDown(item.uid)}
+                >
+                  ↓
+                </button>
+              )}
+              {!item.isRoot && (
+                <button
+                  type="button"
+                  title="删除节点及子级"
+                  className="mm-outline-action--danger"
+                  onClick={() => onRemove(item.uid)}
+                >
+                  ✕
+                </button>
+              )}
+            </span>
           </div>
           {item.hasChildren && !isCollapsed && renderItems(item.children, depth + 1)}
         </div>
@@ -911,7 +1078,7 @@ export function OutlinePanel({ root, onLocate, onRename, onClose }: {
   return (
     <div ref={ref} className="mm-outline-panel">
       <div className="mm-outline-head">
-        <span className="mm-style-panel__title">大纲 · 单击定位 / 双击重命名</span>
+        <span className="mm-style-panel__title">大纲 · 单击定位 / 双击重命名 / 悬停行操作</span>
         <button type="button" className="mm-btn" aria-label="收起大纲" onClick={onClose}>
           ✕
         </button>

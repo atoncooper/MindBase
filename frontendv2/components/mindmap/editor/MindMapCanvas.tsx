@@ -36,6 +36,7 @@ import "katex/dist/katex.min.css";
 import type { MindMapDoc } from "@/lib/board-store";
 import type { MindMapNodeInstance } from "simple-mind-map";
 import { isCodeBlockText } from "./codeBlock";
+import { isMdCardText } from "./mdCard";
 
 // 插件模块级注册一次：拖拽、导出（PDF = Export 先转 PNG 再经 ExportPDF/
 // pdf-lib 打包；XMind = ExportXMind 产 zip）、外框、关联线、框选多选、
@@ -82,6 +83,8 @@ interface MindMapCanvasProps {
   onNoteClick: (node: MindMapNodeInstance) => void;
   /** 双击代码块节点（已在捕获阶段拦掉库的 quill 文本编辑）。 */
   onCodeNodeDblClick: (node: MindMapNodeInstance) => void;
+  /** 双击 Markdown 渲染节点（同上，改开源码对话框）。 */
+  onMdNodeDblClick: (node: MindMapNodeInstance) => void;
 }
 
 function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
@@ -106,6 +109,8 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
   // 垂直拖拽（纵向内边距）实时应用的合帧句柄与最新值。
   const padRafRef = useRef(0);
   const pendingPaddingYRef = useRef<number | null>(null);
+  // 右下角缩放控件的百分比显示（view_data_change 携带最新 scale）。
+  const [scalePct, setScalePct] = useState(100);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -130,6 +135,9 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       iconList: nodeIconList,
       // 彩虹连线（分支按层级自动配色），工具栏可运行时开关。
       rainbowLinesConfig: { open: props.rainbow },
+      // 节点 hover/激活描边框颜色：库默认是亮青蓝，与画布主题不搭；
+      // 统一成应用强调蓝（与框选矩形同族），选中状态一眼可辨。
+      hoverRectColor: "rgb(0, 113, 227)",
     });
     if (props.doc.theme?.config !== undefined) {
       instance.setThemeConfig(props.doc.theme.config);
@@ -160,6 +168,13 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       // 平移 / 缩放 / 布局重排后，手柄框要跟着节点走。
       scheduleUpdateResizeBox();
     };
+    const onViewDataChange = (data: {
+      state?: { scale?: number };
+      transform?: { scaleX?: number };
+    }): void => {
+      const scale = data?.state?.scale ?? data?.transform?.scaleX ?? 1;
+      setScalePct(Math.round(scale * 100));
+    };
     instance.on("data_change", onTreeChange);
     instance.on("node_active", onActive);
     instance.on("back_forward", onHistory);
@@ -167,15 +182,36 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
     instance.on("node_note_click", onNoteClick);
     instance.on("node_mousedown", onNodeMousedown);
     instance.on("view_data_change", onViewOrRenderChange);
+    instance.on("view_data_change", onViewDataChange);
     instance.on("node_tree_render_end", onViewOrRenderChange);
     callbacksRef.current.onReady(instance);
 
     const onResize = (): void => instance.resize();
     window.addEventListener("resize", onResize);
-    // 双击：捕获阶段先于库的深层监听。代码节点双击 → 拦下库的 quill 编辑
-    // 改开代码对话框；空白双击 → 回调给编辑器就地新建节点（对标 ProcessOn）。
+    // 代码/Markdown 卡片内滚轮：卡片可滚时在捕获阶段拦下 wheel（库的缩放
+    // 监听在同一容器上、bubble 相，捕获先于 bubble 触发），滚动留给卡片
+    // 自身，不触发画布缩放。方向感知：卡片已滚到边界时放行给画布缩放。
+    const onWheelCapture = (event: WheelEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const scrollEl = target.closest(".smm-code-scroll, .smm-md-card");
+      if (scrollEl === null) return;
+      const atTop = scrollEl.scrollTop <= 0;
+      const atBottom = scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 1;
+      if (event.deltaY > 0 ? atBottom : atTop) return;
+      event.stopPropagation();
+    };
+    el.addEventListener("wheel", onWheelCapture, true);
+    // 双击：捕获阶段先于库的深层监听。代码/MD 节点双击 → 拦下库的 quill
+    // 编辑改开对话框；空白双击 → 回调给编辑器就地新建节点（对标 ProcessOn）。
     const onNativeDblClick = (event: MouseEvent): void => {
       const node = lastClickedNodeRef.current;
+      if (node !== null && isMdCardText(String(node.getData<string>("text") ?? ""))) {
+        event.preventDefault();
+        event.stopPropagation();
+        callbacksRef.current.onMdNodeDblClick(node);
+        return;
+      }
       if (node !== null && isCodeBlockText(String(node.getData<string>("text") ?? ""))) {
         event.preventDefault();
         event.stopPropagation();
@@ -194,6 +230,7 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
 
     return () => {
       window.removeEventListener("resize", onResize);
+      el.removeEventListener("wheel", onWheelCapture, true);
       el.removeEventListener("dblclick", onNativeDblClick, true);
       instance.off("data_change", onTreeChange);
       instance.off("node_active", onActive);
@@ -202,6 +239,7 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       instance.off("node_note_click", onNoteClick);
       instance.off("node_mousedown", onNodeMousedown);
       instance.off("view_data_change", onViewOrRenderChange);
+      instance.off("view_data_change", onViewDataChange);
       instance.off("node_tree_render_end", onViewOrRenderChange);
       instance.destroy();
       el.innerHTML = "";
@@ -364,6 +402,41 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       }}
     >
       <div className="mm-canvas" ref={containerRef} />
+      <div className="mm-zoom" role="group" aria-label="缩放控制">
+        <button
+          type="button"
+          className="mm-zoom__btn"
+          title="缩小（Ctrl+-）"
+          onClick={() => instanceRef.current?.view.narrow()}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="mm-zoom__pct"
+          title="点击恢复 100%"
+          onClick={() => instanceRef.current?.view.setScale(1)}
+        >
+          {scalePct}%
+        </button>
+        <button
+          type="button"
+          className="mm-zoom__btn"
+          title="放大（Ctrl+=）"
+          onClick={() => instanceRef.current?.view.enlarge()}
+        >
+          ＋
+        </button>
+        <span className="mm-zoom__divider" aria-hidden="true" />
+        <button
+          type="button"
+          className="mm-zoom__btn"
+          title="适应画布（Ctrl+0）"
+          onClick={() => instanceRef.current?.view.fit()}
+        >
+          ⛶
+        </button>
+      </div>
       {resizeBox !== null && (
         <div
           className="mm-resize-box"

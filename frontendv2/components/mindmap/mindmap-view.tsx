@@ -1,21 +1,28 @@
 "use client";
 
 /**
- * MindMapView - 思维导图页主视图（P2：列表 + 完整编辑器）。
+ * MindMapView - 思维导图/白板页主视图。
  *
- * 左侧栏沿用 Google Drive 式列表（搜索 / tonal 选中态 / 胶囊行）；选中后右侧
- * 挂载从桌面端移植的完整编辑器（MindMapEditorView，含主题/大纲/图形库/导出/
- * 快照等，经 web shim 走 boards API 持久化）。编辑器经 next/dynamic
- * ssr:false 懒加载（simple-mind-map 直接操作 DOM）。
+ * 左侧栏沿用 Google Drive 式列表（kind 切换 / 搜索 / tonal 选中态 / 胶囊行）；
+ * 选中后右侧挂载从桌面端移植的完整编辑器（MindMapEditorView：导图与白板
+ * 按 board kind 内部分发，经 web shim 走 boards API 持久化）。编辑器经
+ * next/dynamic ssr:false 懒加载（simple-mind-map 直接操作 DOM）。
+ *
+ * 导入：.md 按标题/列表层级转树（simple-mind-map markdownTo），.xmind 经
+ * 库解析器转树，均落成一张新导图。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Plus, Pin, Trash2, Network, Search, X } from "lucide-react";
-import { boardsApi, type BoardMeta } from "@/lib/api/boards";
+import { Plus, Pin, Trash2, Network, PenTool, Search, X, Upload } from "lucide-react";
+import { boardsApi, type BoardMeta, type BoardKind } from "@/lib/api/boards";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ToastProvider } from "./editor/toast";
+import { createMindMap, saveMindMap } from "@/lib/board-store";
+import { transformMarkdownTo } from "simple-mind-map/src/parse/markdownTo.js";
+import xmindParser from "simple-mind-map/src/parse/xmind.js";
+import { toErrorMessage } from "./editor/errmsg";
 
 const MindMapEditorView = dynamic(() => import("./editor/MindMapEditorView"), {
     ssr: false,
@@ -71,31 +78,40 @@ function IconButton({
 }
 
 export function MindMapView() {
+    const [kind, setKind] = useState<BoardKind>("mindmap");
     const [boards, setBoards] = useState<BoardMeta[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [selected, setSelected] = useState<BoardMeta | null>(null);
     const [query, setQuery] = useState("");
     const [creating, setCreating] = useState(false);
+    const [importing, setImporting] = useState(false);
+    const importInputRef = useRef<HTMLInputElement | null>(null);
     const [confirmDelete, setConfirmDelete] = useState<BoardMeta | null>(null);
     const [deleting, setDeleting] = useState(false);
 
-    const refreshList = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const result = await boardsApi.list({ kind: "mindmap" });
-            setBoards(result.items);
-        } catch (e) {
-            setError(e instanceof Error ? e.message : "加载失败");
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+    const refreshList = useCallback(
+        async (wantKind: BoardKind = kind) => {
+            setLoading(true);
+            setError(null);
+            try {
+                const result = await boardsApi.list({ kind: wantKind });
+                setBoards(result.items);
+            } catch (e) {
+                setError(e instanceof Error ? e.message : "加载失败");
+            } finally {
+                setLoading(false);
+            }
+        },
+        [kind],
+    );
 
     useEffect(() => {
-        void refreshList();
-    }, [refreshList]);
+        // kind 切换只清掉与当前 tab 类型不符的选中（转白板跳转时先改 kind
+        // 再 setSelected，effect 里保留同类型选中才不会把新板清掉）。
+        setSelected((prev) => (prev && prev.kind !== kind ? null : prev));
+        void refreshList(kind);
+    }, [kind, refreshList]);
 
     // 编辑器自动保存后同步列表的 updated_at（编辑器 flush 不回调，这里轮询节流）。
     useEffect(() => {
@@ -110,12 +126,18 @@ export function MindMapView() {
         return boards.filter((b) => b.title.toLowerCase().includes(q));
     }, [boards, query]);
 
-    // Google Drive 惯例：新建即创建"未命名导图"并打开。
+    const isBoard = kind === "whiteboard";
+    const noun = isBoard ? "白板" : "导图";
+
+    // Google Drive 惯例：新建即创建"未命名"并打开。
     const handleCreate = async () => {
         if (creating) return;
         setCreating(true);
         try {
-            const meta = await boardsApi.create({ title: "未命名导图", kind: "mindmap" });
+            const meta = await boardsApi.create({
+                title: `未命名${noun}`,
+                kind,
+            });
             await refreshList();
             setSelected(meta);
         } catch (e) {
@@ -124,6 +146,53 @@ export function MindMapView() {
             setCreating(false);
         }
     };
+
+    // ── 导入：.md 标题/列表层级 → 树；.xmind 经库解析 → 树 ──────────────
+    const handleImportFiles = async (files: FileList): Promise<void> => {
+        const file = files[0];
+        if (file === undefined) return;
+        setImporting(true);
+        try {
+            const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+            let tree: ReturnType<typeof transformMarkdownTo> | undefined;
+            if (ext === "xmind") {
+                tree = await xmindParser.parseXmindFile(file, false);
+            } else if (ext === "md" || ext === "markdown") {
+                tree = transformMarkdownTo(await file.text());
+            } else {
+                throw new Error("仅支持 .md / .markdown / .xmind 文件");
+            }
+            if (tree === undefined || tree.data === undefined) {
+                throw new Error("文件内容解析不出导图结构");
+            }
+            const baseName =
+                file.name.replace(/\.[^.]+$/, "").slice(0, 60) || "导入的导图";
+            const meta = await createMindMap(baseName, "mindmap");
+            await saveMindMap(meta.id, baseName, { root: tree });
+            await refreshList();
+            const row = boards.find((b) => b.uuid === meta.id) ?? null;
+            if (row !== null) setSelected(row);
+            else setSelected({ ...meta, uuid: meta.id, version: 1, isPinned: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as BoardMeta);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "导入失败");
+        } finally {
+            setImporting(false);
+        }
+    };
+
+    /** 转白板完成后打开新板（编辑器回调）：拉一次详情并选中。 */
+    const handleOpenBoard = useCallback(
+        async (id: string) => {
+            try {
+                const meta = await boardsApi.get(id);
+                setKind("whiteboard");
+                setSelected(meta);
+            } catch (e) {
+                setError(e instanceof Error ? e.message : "打开白板失败");
+            }
+        },
+        [],
+    );
 
     const handleTogglePin = async (board: BoardMeta) => {
         try {
@@ -152,11 +221,43 @@ export function MindMapView() {
     return (
         <ToastProvider>
             <div className="flex h-[calc(100vh-3rem)] overflow-hidden">
-                {/* ── 左侧栏：搜索 + 新建 + 文件列表 ────────────────── */}
+                {/* ── 左侧栏：kind 切换 + 搜索 + 新建 + 文件列表 ─────────── */}
                 <aside className="flex w-80 shrink-0 flex-col border-r border-border-subtle bg-surface">
                     <div className="flex items-baseline gap-2 px-5 pb-3 pt-4">
-                        <h1 className="text-[15px] font-medium tracking-tight">思维导图</h1>
+                        <h1 className="text-[15px] font-medium tracking-tight">知识导图</h1>
                         <span className="text-xs text-tertiary">{boards.length}</span>
+                    </div>
+
+                    {/* 导图 / 白板 kind 切换（桌面端同款分段控件） */}
+                    <div className="px-4 pb-3">
+                        <div
+                            role="tablist"
+                            aria-label="对象类型"
+                            className="flex rounded-full bg-border-subtle p-1"
+                        >
+                            {(
+                                [
+                                    { kind: "mindmap" as BoardKind, label: "导图", icon: Network },
+                                    { kind: "whiteboard" as BoardKind, label: "白板", icon: PenTool },
+                                ]
+                            ).map((tab) => (
+                                <button
+                                    key={tab.kind}
+                                    role="tab"
+                                    aria-selected={kind === tab.kind}
+                                    onClick={() => setKind(tab.kind)}
+                                    className={cn(
+                                        "flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full text-[13px] transition-colors",
+                                        kind === tab.kind
+                                            ? "bg-surface font-medium text-foreground shadow-sm"
+                                            : "text-secondary hover:text-foreground"
+                                    )}
+                                >
+                                    <tab.icon className="h-3.5 w-3.5" />
+                                    {tab.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
 
                     {/* 胶囊搜索框（Google search bar：灰底、聚焦浮白描边） */}
@@ -173,7 +274,7 @@ export function MindMapView() {
                             <input
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
-                                placeholder="搜索导图"
+                                placeholder={`搜索${noun}`}
                                 className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-tertiary"
                             />
                             {query && (
@@ -188,19 +289,33 @@ export function MindMapView() {
                         </div>
                     </div>
 
-                    {/* Filled 新建按钮（Google primary button） */}
-                    <div className="px-4 pb-3">
+                    {/* Filled 新建按钮（Google primary button）+ 导入 */}
+                    <div className="flex gap-2 px-4 pb-3">
                         <button
                             onClick={() => void handleCreate()}
                             disabled={creating}
                             className={cn(
-                                "flex h-10 w-full items-center justify-center gap-2 rounded-full bg-accent text-[13px] font-medium text-accent-foreground shadow-sm transition-all",
+                                "flex h-10 flex-1 items-center justify-center gap-2 rounded-full bg-accent text-[13px] font-medium text-accent-foreground shadow-sm transition-all",
                                 "hover:bg-accent-hover hover:shadow active:shadow-none disabled:opacity-60"
                             )}
                         >
                             <Plus className="h-4 w-4" />
-                            新建导图
+                            新建{noun}
                         </button>
+                        {!isBoard && (
+                            <button
+                                onClick={() => importInputRef.current?.click()}
+                                disabled={importing}
+                                title="导入 .md / .xmind 文件转成导图"
+                                className={cn(
+                                    "flex h-10 items-center justify-center gap-2 rounded-full border border-border bg-surface px-3.5 text-[13px] font-medium text-accent shadow-sm transition-colors hover:bg-accent-soft",
+                                    "disabled:opacity-60"
+                                )}
+                            >
+                                <Upload className="h-4 w-4" />
+                                {importing ? "导入中…" : "导入"}
+                            </button>
+                        )}
                     </div>
 
                     {/* 文件列表：tonal 选中态 + 胶囊行 */}
@@ -209,11 +324,15 @@ export function MindMapView() {
                             <div className="px-4 py-10 text-center text-[13px] text-secondary">加载中…</div>
                         ) : filtered.length === 0 ? (
                             <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
-                                <Network className="h-8 w-8 text-tertiary" strokeWidth={1.5} />
+                                {isBoard ? (
+                                    <PenTool className="h-8 w-8 text-tertiary" strokeWidth={1.5} />
+                                ) : (
+                                    <Network className="h-8 w-8 text-tertiary" strokeWidth={1.5} />
+                                )}
                                 <p className="text-[13px] text-secondary">
-                                    {query ? "没有匹配的导图" : "还没有导图"}
+                                    {query ? `没有匹配的${noun}` : `还没有${noun}`}
                                 </p>
-                                {!query && <p className="text-xs text-tertiary">点击上方「新建导图」开始</p>}
+                                {!query && <p className="text-xs text-tertiary">点击上方「新建{noun}」开始</p>}
                             </div>
                         ) : (
                             <ul className="space-y-0.5">
@@ -234,12 +353,21 @@ export function MindMapView() {
                                                     active ? "bg-accent-soft" : "hover:bg-border-subtle"
                                                 )}
                                             >
-                                                <Network
-                                                    className={cn(
-                                                        "h-4 w-4 shrink-0",
-                                                        active ? "text-accent" : "text-tertiary"
-                                                    )}
-                                                />
+                                                {b.kind === "whiteboard" ? (
+                                                    <PenTool
+                                                        className={cn(
+                                                            "h-4 w-4 shrink-0",
+                                                            active ? "text-accent" : "text-tertiary"
+                                                        )}
+                                                    />
+                                                ) : (
+                                                    <Network
+                                                        className={cn(
+                                                            "h-4 w-4 shrink-0",
+                                                            active ? "text-accent" : "text-tertiary"
+                                                        )}
+                                                    />
+                                                )}
                                                 <div className="min-w-0 flex-1">
                                                     <div
                                                         className={cn(
@@ -247,7 +375,7 @@ export function MindMapView() {
                                                             active ? "font-medium text-accent" : "text-foreground"
                                                         )}
                                                     >
-                                                        {b.title || "未命名导图"}
+                                                        {b.title || `未命名${b.kind === "whiteboard" ? "白板" : "导图"}`}
                                                     </div>
                                                     <div className="text-[11px] text-tertiary">
                                                         {timeAgo(b.updatedAt)}
@@ -283,37 +411,62 @@ export function MindMapView() {
                     </nav>
                 </aside>
 
-                {/* ── 右侧：完整编辑器（P2，桌面端移植） ─────────────── */}
+                {/* ── 右侧：完整编辑器（导图/白板按 board kind 内部分发） ── */}
                 <section className="relative flex min-w-0 flex-1 flex-col bg-background">
                     {error && (
                         <div className="bg-danger/10 px-5 py-2 text-[13px] text-danger">{error}</div>
                     )}
                     {selected === null ? (
                         <div className="flex h-full flex-col items-center justify-center gap-3 bg-border-subtle">
-                            <Network className="h-12 w-12 text-tertiary" strokeWidth={1} />
-                            <p className="text-sm text-secondary">从左侧选择一个导图</p>
+                            {isBoard ? (
+                                <PenTool className="h-12 w-12 text-tertiary" strokeWidth={1} />
+                            ) : (
+                                <Network className="h-12 w-12 text-tertiary" strokeWidth={1} />
+                            )}
+                            <p className="text-sm text-secondary">从左侧选择一个{noun}</p>
                             <button
                                 onClick={() => void handleCreate()}
                                 className="flex h-9 items-center gap-2 rounded-full border border-border bg-surface px-4 text-[13px] font-medium text-accent shadow-sm transition-colors hover:bg-accent-soft"
                             >
                                 <Plus className="h-4 w-4" />
-                                新建导图
+                                新建{noun}
                             </button>
                         </div>
                     ) : (
-                        <MindMapEditorView key={selected.uuid} mapId={selected.uuid} />
+                        <MindMapEditorView
+                            key={selected.uuid}
+                            mapId={selected.uuid}
+                            onExit={() => setSelected(null)}
+                            onOpenBoard={(id) => void handleOpenBoard(id)}
+                        />
                     )}
                 </section>
 
                 <ConfirmDialog
                     open={confirmDelete !== null}
-                    title="删除导图"
-                    message={confirmDelete ? `确定删除「${confirmDelete.title || "未命名导图"}」吗？` : ""}
+                    title={`删除${confirmDelete?.kind === "whiteboard" ? "白板" : "导图"}`}
+                    message={
+                        confirmDelete
+                            ? `确定删除「${confirmDelete.title || "未命名"}」吗？内容会一并删除，不可恢复。`
+                            : ""
+                    }
                     confirmLabel="删除"
                     danger
                     busy={deleting}
                     onConfirm={() => void handleDelete()}
                     onCancel={() => setConfirmDelete(null)}
+                />
+
+                <input
+                    ref={importInputRef}
+                    type="file"
+                    accept=".md,.markdown,.xmind"
+                    style={{ display: "none" }}
+                    onChange={(event) => {
+                        const files = event.target.files;
+                        event.target.value = "";
+                        if (files !== null && files.length > 0) void handleImportFiles(files);
+                    }}
                 />
             </div>
         </ToastProvider>

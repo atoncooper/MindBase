@@ -2,9 +2,10 @@
  * 可交互 HTML 导出：把导图打包成一个自包含的 HTML 文件。
  *
  * 内联 simple-mind-map 的全量 UMD 包（含拖拽/富文本/公式等全部插件）+
- * 样式，浏览器双击即可打开，无需任何网络依赖。查看器支持：空白处拖拽
- * 平移、滚轮缩放、点击节点箭头折叠/展开、拖节点到空白自由摆放、工具栏
- * 展开全部/收起全部/适应画布，公式按 KaTeX 渲染。
+ * 样式，浏览器双击即可打开，无需任何网络依赖。查看器为只读模式：双击
+ * 不进编辑、节点不可选中/拖拽/增删；支持空白处拖拽平移、滚轮缩放、
+ * 点击节点（或展开箭头）折叠/展开、工具栏展开全部/收起全部/适应画布，
+ * 公式按 KaTeX 渲染。
  */
 
 import type { MindMapDoc } from "@/lib/board-store";
@@ -50,7 +51,7 @@ html, body { margin: 0; height: 100%; }
   <button id="btn-collapse" type="button">收起全部</button>
   <button id="btn-fit" type="button">适应画布</button>
 </div>
-<div class="mm-hint">空白处拖拽平移 · 滚轮缩放 · 点击节点箭头折叠/展开 · 拖节点到空白可自由摆放</div>
+<div class="mm-hint">只读查看 · 点击节点或箭头展开/收起 · 空白处拖拽平移 · 滚轮缩放</div>
 <script>${umd}</script>
 <script>
 (function () {
@@ -68,7 +69,8 @@ html, body { margin: 0; height: 100%; }
     theme: "default",
     fit: true,
     mousewheelAction: "zoom",
-    enableFreeDrag: true,
+    // 只读查看器：双击不进编辑、节点不可选中/拖拽/增删（库的 readonly 模式）。
+    readonly: true,
     iconList: window.simpleMindMap.iconList || []
   });
   if (DATA.theme && DATA.theme.config) {
@@ -77,7 +79,14 @@ html, body { margin: 0; height: 100%; }
   document.getElementById("btn-expand").addEventListener("click", function () { mm.execCommand("EXPAND_ALL"); });
   document.getElementById("btn-collapse").addEventListener("click", function () { mm.execCommand("UNEXPAND_ALL"); });
   document.getElementById("btn-fit").addEventListener("click", function () { mm.view.fit(); });
-  // 与桌面端一致的画布手势：空白左键拖拽平移（Ctrl/Meta 留给框选）。
+  // 点击节点本体切换展开/收起（有子级时）；展开箭头本身也可点。
+  mm.on("node_click", function (node) {
+    var children = (node.nodeData && node.nodeData.children) || [];
+    if (children.length > 0) {
+      mm.execCommand("SET_NODE_EXPAND", node, node.getData("expand") === false);
+    }
+  });
+  // 与画布一致的查看手势：空白左键拖拽平移（Ctrl/Meta 留给框选，只读下同样无效）。
   var nodeDown = false;
   mm.on("node_mousedown", function () { nodeDown = true; });
   var el = document.getElementById("map");

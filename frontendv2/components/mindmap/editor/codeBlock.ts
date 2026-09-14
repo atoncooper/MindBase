@@ -115,7 +115,9 @@ export function highlightCode(code: string, language: string): string {
  *
  * 刻意不用 `<pre>`：节点富文本走 `<p>`/`<span>` 渲染路径（与普通节点
  * 一致，foreignObject 下表现可控），代码按行拆分为 `p.smm-code-line`，
- * 逐行做 Prism 高亮（空行用零宽空格保持行高）。
+ * 逐行做 Prism 高亮（空行用零宽空格保持行高）。行外包一层限高滚动容器
+ * `div.smm-code-scroll`：长代码卡片在画布上高度封顶、卡片内滚轮下翻
+ * （MindMapCanvas 在捕获阶段拦截卡片内 wheel，避免触发画布缩放）。
  */
 export function buildCodeBlockHtml(code: string, language: string): string {
   const langLabel =
@@ -127,7 +129,25 @@ export function buildCodeBlockHtml(code: string, language: string): string {
         ? `<p class="smm-code-line">\u200b</p>`
         : `<p class="smm-code-line">${highlightCode(line, language)}</p>`,
     );
-  return `${langLabel}${lines.join("")}`;
+  return `${langLabel}<div class="smm-code-scroll">${lines.join("")}</div>`;
+}
+
+/**
+ * 按最长行估算代码节点的合适宽度（px）：半角字符 ≈ 7.6px（0.85em ×
+ * 默认 14–16px 节点字号下的等宽字宽），全角/CJK 按 2 倍计，另加卡片
+ * 内边距。夹在 [260, 560]——过窄难读、过宽撑爆画布；超出上限的行由
+ * 画布端 pre-wrap 软换行承接。
+ */
+export function estimateCodeNodeWidth(code: string): number {
+  let maxUnits = 0;
+  for (const line of code.split("\n")) {
+    let units = 0;
+    for (const ch of line) {
+      units += ch.charCodeAt(0) > 0xff ? 2 : 1;
+    }
+    maxUnits = Math.max(maxUnits, units);
+  }
+  return Math.min(560, Math.max(260, Math.round(maxUnits * 7.6) + 24));
 }
 
 export interface CodeBlockExtract {
