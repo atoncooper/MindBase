@@ -36,6 +36,7 @@ import "katex/dist/katex.min.css";
 import type { MindMapDoc } from "../../lib/mindmap";
 import type { MindMapNodeInstance } from "simple-mind-map";
 import { isCodeBlockText } from "./codeBlock";
+import { isMdCardText } from "./mdCard";
 
 // 插件模块级注册一次：拖拽、导出（PDF = Export 先转 PNG 再经 ExportPDF/
 // pdf-lib 打包；XMind = ExportXMind 产 zip）、外框、关联线、框选多选、
@@ -82,6 +83,8 @@ interface MindMapCanvasProps {
   onNoteClick: (node: MindMapNodeInstance) => void;
   /** 双击代码块节点（已在捕获阶段拦掉库的 quill 文本编辑）。 */
   onCodeNodeDblClick: (node: MindMapNodeInstance) => void;
+  /** 双击 Markdown 渲染节点（同上，改开源码对话框）。 */
+  onMdNodeDblClick: (node: MindMapNodeInstance) => void;
 }
 
 function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
@@ -182,10 +185,27 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
 
     const onResize = (): void => instance.resize();
     window.addEventListener("resize", onResize);
+    // 代码卡片内滚轮：卡片可滚时在捕获阶段拦下 wheel（库的缩放监听在
+    // 同一容器上、bubble 相），滚动留给卡片自身，不触发画布缩放；
+    // 卡片不需滚动（内容不足）则放行给画布。Markdown 卡片同理。
+    const onWheelCapture = (event: WheelEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const scrollEl = target.closest(".smm-code-scroll, .smm-md-card");
+      if (scrollEl === null || scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+      event.stopPropagation();
+    };
+    el.addEventListener("wheel", onWheelCapture, true);
     // 双击：捕获阶段先于库的深层监听。代码节点双击 → 拦下库的 quill 编辑
     // 改开代码对话框；空白双击 → 回调给编辑器就地新建节点（对标 ProcessOn）。
     const onNativeDblClick = (event: MouseEvent): void => {
       const node = lastClickedNodeRef.current;
+      if (node !== null && isMdCardText(String(node.getData<string>("text") ?? ""))) {
+        event.preventDefault();
+        event.stopPropagation();
+        callbacksRef.current.onMdNodeDblClick(node);
+        return;
+      }
       if (node !== null && isCodeBlockText(String(node.getData<string>("text") ?? ""))) {
         event.preventDefault();
         event.stopPropagation();
@@ -204,6 +224,7 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
 
     return () => {
       window.removeEventListener("resize", onResize);
+      el.removeEventListener("wheel", onWheelCapture, true);
       el.removeEventListener("dblclick", onNativeDblClick, true);
       instance.off("data_change", onTreeChange);
       instance.off("node_active", onActive);

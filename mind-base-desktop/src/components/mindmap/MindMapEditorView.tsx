@@ -36,6 +36,7 @@ import {
   ContextMenu,
   FormulaDialog,
   IconPicker,
+  MarkdownDialog,
   NodeInfoDialog,
   NoteViewDialog,
   OutlinePanel,
@@ -45,7 +46,8 @@ import {
 } from "./overlays";
 import type { ContextMenuItem, NodeInfoValues } from "./overlays";
 import { buildInteractiveHtml } from "./exportHtml";
-import { buildCodeBlockHtml, extractCodeBlock } from "./codeBlock";
+import { buildCodeBlockHtml, estimateCodeNodeWidth, extractCodeBlock } from "./codeBlock";
+import { mdSourceFallback, renderMdCardHtml } from "./mdCard";
 import { LAYOUTS, LINE_PRESETS, buildThemeConfig, isAppDark, parseMindMapDoc } from "./doc";
 import { convertDocToWhiteboardScene } from "../whiteboard/convert";
 import {
@@ -111,6 +113,12 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
     node: MindMapNodeInstance;
     code: string;
     language: string;
+    isNew: boolean;
+  } | null>(null);
+  /** Markdown 渲染节点对话框上下文：源码存节点数据 mdSource 字段。 */
+  const [mdEdit, setMdEdit] = useState<{
+    node: MindMapNodeInstance;
+    source: string;
     isNew: boolean;
   } | null>(null);
   /** 大纲面板开合；彩虹连线为应用级偏好（localStorage 记忆）。 */
@@ -260,7 +268,7 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
   // 注意：恢复方法是 recovery()；restore() 是 save/restore 缓存交换对，
   // 不会复位 isPause，误用会导致画布快捷键永久失效。
   const dialogBlocking =
-    codeBlockEdit !== null || formulaDialogOpen || infoDialog !== null || noteView !== null;
+    codeBlockEdit !== null || mdEdit !== null || formulaDialogOpen || infoDialog !== null || noteView !== null;
   useEffect(() => {
     const instance = instanceRef.current;
     if (instance === null) return;
@@ -645,6 +653,11 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
               label: "添加代码块节点…",
               action: () => setCodeBlockEdit({ node, code: "", language: "", isNew: true }),
             },
+            {
+              key: "md",
+              label: "添加 Markdown 节点…",
+              action: () => setMdEdit({ node, source: "", isNew: true }),
+            },
           ]
         : []),
       {
@@ -979,10 +992,21 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
     if (node === null || instance === null) return;
     const html = buildCodeBlockHtml(code, language);
     if (edit !== null && edit.isNew) {
-      exec("INSERT_CHILD_NODE", false, [node], { text: html, richText: true });
+      // 按内容自动设节点宽度：长代码不再把节点撑到巨宽；超出上限的行
+      // 由画布端 pre-wrap 软换行承接。
+      exec("INSERT_CHILD_NODE", false, [node], {
+        text: html,
+        richText: true,
+        customTextWidth: estimateCodeNodeWidth(code),
+      });
       return;
     }
-    exec("SET_NODE_DATA", node, { text: html, richText: true });
+    // 编辑已有代码块：节点上已有手动调过的宽度则保留，否则按新内容重估。
+    const data: Record<string, unknown> = { text: html, richText: true };
+    if (typeof node.getData("customTextWidth") !== "number") {
+      data.customTextWidth = estimateCodeNodeWidth(code);
+    }
+    exec("SET_NODE_DATA", node, data);
     instance.render();
     // 直写节点数据不会触发 data_change：手动镜像最新文档并纳入自动保存。
     const snapshot = instance.getData(true);
@@ -999,6 +1023,52 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
     });
     if (!confirmed) return;
     setCodeBlockEdit(null);
+    exec("REMOVE_NODE", [node]);
+  }
+
+  /**
+   * Markdown 保存：isNew = 在右键节点下创建渲染子节点（源码进节点数据
+   * mdSource 字段，渲染 HTML 进 text）；否则替换编辑目标节点。宽度按源码
+   * 估算（渲染内容更紧凑，下限抬高到 340）。
+   */
+  function handleMdSave(source: string): void {
+    const edit = mdEdit;
+    setMdEdit(null);
+    const node = edit?.node ?? null;
+    const instance = instanceRef.current;
+    if (node === null || instance === null) return;
+    const html = renderMdCardHtml(source);
+    const width = Math.min(560, Math.max(340, estimateCodeNodeWidth(source)));
+    if (edit !== null && edit.isNew) {
+      exec("INSERT_CHILD_NODE", false, [node], {
+        text: html,
+        richText: true,
+        customTextWidth: width,
+        mdSource: source,
+      });
+      return;
+    }
+    const data: Record<string, unknown> = { text: html, richText: true, mdSource: source };
+    if (typeof node.getData("customTextWidth") !== "number") {
+      data.customTextWidth = width;
+    }
+    exec("SET_NODE_DATA", node, data);
+    instance.render();
+    // 直写节点数据不会触发 data_change：手动镜像最新文档并纳入自动保存。
+    const snapshot = instance.getData(true);
+    latestDocRef.current = snapshot;
+    setDoc(snapshot);
+    markDirtyAndSchedule();
+  }
+
+  /** 编辑对话框里的「删除 Markdown 节点」：整节点删除。 */
+  async function deleteMdNode(node: MindMapNodeInstance): Promise<void> {
+    const confirmed = await confirm("删除这个 Markdown 节点？它会从导图中移除，不可恢复。", {
+      title: "删除 Markdown 节点",
+      kind: "warning",
+    });
+    if (!confirmed) return;
+    setMdEdit(null);
     exec("REMOVE_NODE", [node]);
   }
 
@@ -1373,6 +1443,16 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
               isNew: false,
             });
           }}
+          onMdNodeDblClick={(node) => {
+            // 双击 Markdown 节点：源码存 mdSource 字段；旧节点缺失时从
+            // 渲染 HTML 抽纯文本兜底。
+            const stored = node.getData<string>("mdSource");
+            const source =
+              stored === undefined
+                ? mdSourceFallback(String(node.getData("text") ?? ""))
+                : stored;
+            setMdEdit({ node, source, isNew: false });
+          }}
         />
       ) : (
         <div className="mm-canvas-wrap">
@@ -1504,6 +1584,14 @@ function MindMapEditorView({ mapId }: { mapId: string }): React.JSX.Element {
           onSave={handleCodeBlockSave}
           onDelete={() => void deleteCodeBlockNode(codeBlockEdit.node)}
           onClose={() => setCodeBlockEdit(null)}
+        />
+      )}
+      {mdEdit !== null && (
+        <MarkdownDialog
+          initialSource={mdEdit.source}
+          onSave={handleMdSave}
+          onDelete={() => void deleteMdNode(mdEdit.node)}
+          onClose={() => setMdEdit(null)}
         />
       )}
     </div>
