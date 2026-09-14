@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 导出交互式 HTML 用的 UMD 资源（prebuild 从 node_modules 生成，不入 git）
+public/simple-mind-map/

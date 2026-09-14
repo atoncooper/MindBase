@@ -106,6 +106,11 @@ declare module "simple-mind-map" {
     view: {
       fit(): void;
       translateXY(x: number, y: number): void;
+      /** 缩放步进（Ctrl+= / Ctrl+- / 缩放控件），库内部按 scale 步长执行。 */
+      enlarge(): void;
+      narrow(): void;
+      /** 设为指定倍率（1 = 100%，缩放控件的百分比点击复位）。 */
+      setScale(scale: number): void;
       /** 当前变换状态（transform 为 SVG.js 矩阵，含 scaleX/translateX 等）。 */
       getTransformData(): {
         transform: { scaleX: number; scaleY: number; translateX: number; translateY: number };

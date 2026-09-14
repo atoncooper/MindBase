@@ -288,6 +288,24 @@
   flex-direction: column;
 }
 
+/* ── 自由白板（Excalidraw 集成） ─────────────────────────────────── */
+
+.wb-frame {
+  background: var(--paper);
+}
+
+/* Excalidraw 需要一个确定的布局尺寸；内部面板配色由组件主题接管，
+   这里只做容器的样式隔离（字体跟随应用）。 */
+.wb-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.wb-canvas .excalidraw {
+  --ui-font: inherit;
+}
+
 /* ── 编辑器工具浮层：搜索 / 历史 / 快捷键 / 小地图 / 模板 ─────────── */
 
 .mm-tool-panel {
@@ -580,6 +598,58 @@
   overflow: hidden;
 }
 
+/* 右下角缩放控件：缩小 / 百分比（点击复位 100%）/ 放大 / 适应画布。 */
+.mm-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-zoom__btn,
+.mm-zoom__pct {
+  height: 24px;
+  padding: 0 4px;
+  font: inherit;
+  line-height: 1;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.mm-zoom__btn {
+  min-width: 24px;
+  font-size: 13px;
+}
+
+.mm-zoom__pct {
+  min-width: 46px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mm-zoom__btn:hover,
+.mm-zoom__pct:hover {
+  background: var(--wash);
+}
+
+.mm-zoom__divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
 /* ── 画布内富文本样式隔离 ──
    节点文字经 foreignObject 以 HTML 渲染，会继承 body 的 1.55 行高；而库按
    1.2 行高测量节点尺寸，两边不一致会把文字压到节点下半部。<p> 的浏览器
@@ -610,11 +680,36 @@
   margin: 0;
   padding: 1px 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  /* 随节点字号缩放；pre-wrap 让超长行在节点宽度（保存时自动设
+     customTextWidth）内软换行，而不是溢出卡片背景被裁掉。 */
+  font-size: 0.85em;
   line-height: 1.5;
   color: var(--ink);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   background: var(--wash);
+}
+
+/* 代码卡片限高滚动容器：节点高度封顶，长代码在卡片内滚轮下翻
+   （滚轮拦截见 MindMapCanvas 的捕获监听）。选择器不带 foreignObject
+   前缀——库的离屏测量元素挂在 .mm-canvas 下（内容根带
+   .smm-richtext-node-wrap 类），测量与画布必须同一套限高，否则节点
+   盒比可视卡片高出一截。必须显式不透明底：foreignObject 内透明滚动
+   容器会被 GPU 栅格化成黑块。 */
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--wash);
+}
+
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
 }
 
 .mm-canvas foreignObject .token.comment,
@@ -653,6 +748,163 @@
 .mm-canvas foreignObject .token.function,
 .mm-canvas foreignObject .token.class-name {
   color: #4a6fa5;
+}
+
+/* ── Markdown 渲染卡片（smm-md-card）──
+   源码在节点数据 mdSource，画布文本 = react-markdown 渲染的静态 HTML。
+   排版双作用域：无前缀规则给对话框预览与离屏测量用，带 .mm-canvas
+   foreignObject 前缀的规则压过画布内的 p/div margin 复位并覆盖画布渲染。 */
+.smm-md-card,
+.mm-canvas foreignObject .smm-md-card {
+  font-family: var(--font-editor);
+  font-size: 0.9em;
+  line-height: 1.65;
+  color: var(--ink);
+}
+
+/* 画布上限高滚动（与代码卡片一致；滚轮拦截见 MindMapCanvas）。
+   同样用 .smm-richtext-node-wrap 作用域保证测量与画布同一套限高；
+   显式不透明底（foreignObject 滚动合成层黑块问题）。 */
+.mm-canvas .smm-richtext-node-wrap .smm-md-card {
+  display: block;
+  max-height: 420px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--paper);
+}
+
+.mm-canvas .smm-richtext-node-wrap .smm-md-card::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mm-canvas .smm-richtext-node-wrap .smm-md-card::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+
+.smm-md-card h1,
+.mm-canvas foreignObject .smm-md-card h1 {
+  margin: 10px 0 4px;
+  font-size: 1.35em;
+  font-weight: 600;
+}
+
+.smm-md-card h2,
+.mm-canvas foreignObject .smm-md-card h2 {
+  margin: 8px 0 4px;
+  font-size: 1.2em;
+  font-weight: 600;
+}
+
+.smm-md-card h3,
+.mm-canvas foreignObject .smm-md-card h3 {
+  margin: 6px 0 3px;
+  font-size: 1.08em;
+  font-weight: 600;
+}
+
+.smm-md-card h4,
+.smm-md-card h5,
+.smm-md-card h6,
+.mm-canvas foreignObject .smm-md-card h4,
+.mm-canvas foreignObject .smm-md-card h5,
+.mm-canvas foreignObject .smm-md-card h6 {
+  margin: 6px 0 3px;
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.smm-md-card p,
+.mm-canvas foreignObject .smm-md-card p {
+  margin: 4px 0;
+}
+
+.smm-md-card ul,
+.smm-md-card ol,
+.mm-canvas foreignObject .smm-md-card ul,
+.mm-canvas foreignObject .smm-md-card ol {
+  margin: 4px 0;
+  padding-left: 1.5em;
+}
+
+.smm-md-card li,
+.mm-canvas foreignObject .smm-md-card li {
+  margin: 2px 0;
+}
+
+.smm-md-card blockquote,
+.mm-canvas foreignObject .smm-md-card blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  color: var(--ink-2);
+  border-left: 3px solid var(--line-strong);
+}
+
+.smm-md-card code,
+.mm-canvas foreignObject .smm-md-card code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0 4px;
+  background: var(--wash);
+  border-radius: 3px;
+}
+
+.smm-md-card .smm-md-pre,
+.mm-canvas foreignObject .smm-md-card .smm-md-pre {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: var(--wash);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.smm-md-card .smm-md-pre code,
+.mm-canvas foreignObject .smm-md-card .smm-md-pre code {
+  padding: 0;
+  background: transparent;
+  white-space: pre-wrap;
+}
+
+.smm-md-card table,
+.mm-canvas foreignObject .smm-md-card table {
+  margin: 6px 0;
+  border-collapse: collapse;
+}
+
+.smm-md-card th,
+.smm-md-card td,
+.mm-canvas foreignObject .smm-md-card th,
+.mm-canvas foreignObject .smm-md-card td {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+}
+
+.smm-md-card hr,
+.mm-canvas foreignObject .smm-md-card hr {
+  margin: 8px 0;
+  border: none;
+  border-top: 1px solid var(--line);
+}
+
+.smm-md-card img,
+.mm-canvas foreignObject .smm-md-card img {
+  max-width: 100%;
+}
+
+.smm-md-card .smm-md-link,
+.mm-canvas foreignObject .smm-md-card .smm-md-link {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.smm-md-card input[type="checkbox"] {
+  pointer-events: none;
+}
+
+.smm-md-card > :first-child,
+.mm-canvas foreignObject .smm-md-card > :first-child {
+  margin-top: 0;
 }
 
 /* ── 节点四向调节手柄（选中单个节点时出现） ── */
@@ -1088,6 +1340,35 @@
   background: var(--danger-bg);
 }
 
+/* Markdown 对话框：更宽 + 左源码/右预览分栏。 */
+.mm-dialog--md {
+  width: min(940px, calc(100vw - 48px));
+}
+
+.mm-md-split {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  height: 420px;
+}
+
+.mm-md-split > .mm-code-editor {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+  height: auto;
+}
+
+.mm-md-preview {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
 /* 代码输入区：行号栏 + 高亮层/代码域叠放，行高严格一致（12px × 1.6）以对齐行号。 */
 .mm-code-editor {
   display: flex;
@@ -1381,6 +1662,65 @@
   white-space: nowrap;
 }
 
+/* 大纲行附件角标（图/注/链/#标签数）与悬停行操作（插入/移动/删除）。 */
+.mm-outline-badges {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.mm-outline-badge {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--ink-2);
+  background: var(--wash);
+  border-radius: 4px;
+}
+
+.mm-outline-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.mm-outline-row:hover .mm-outline-actions {
+  opacity: 1;
+}
+
+.mm-outline-actions button {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 3px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mm-outline-actions button:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.mm-outline-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mm-outline-actions button.mm-outline-action--danger:hover {
+  color: var(--danger);
+}
+
 .agent-task__inject .cfg-input {
   flex: 1;
 }
@@ -1415,6 +1755,9 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  /* 书写面（Markdown 卡片）：无内置文楷 webfont，回退系统字体栈。 */
+  --font-editor: "LXGW WenKai Screen", "PingFang SC", "MiSans",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 
 /* ── web 布局微调：编辑器嵌在右侧面板（左侧还有列表栏），宽度比桌面窗口

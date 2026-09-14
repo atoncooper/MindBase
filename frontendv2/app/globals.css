@@ -84,8 +84,10 @@ body {
 }
 
 ::selection {
-  background: var(--color-accent-soft);
-  color: var(--color-foreground);
+  /* 实色选区：macOS 式蓝底白字。此前用 8% 透明的 accent-soft，全选时
+     选区几乎不可见（"看不到选了什么"）。 */
+  background: var(--color-accent);
+  color: #ffffff;
 }
 
 /* Thin, Apple-style scrollbar */
