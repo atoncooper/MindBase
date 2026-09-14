@@ -106,6 +106,12 @@ declare module "simple-mind-map" {
     view: {
       fit(): void;
       translateXY(x: number, y: number): void;
+      /** 缩小一档（受 minZoomRatio 限制，默认 20%）。 */
+      narrow(cx?: number, cy?: number): void;
+      /** 放大一档（受 maxZoomRatio 限制，默认 400%）。 */
+      enlarge(cx?: number, cy?: number): void;
+      /** 设置精确缩放；1 = 100%。 */
+      setScale(scale: number, cx?: number, cy?: number): void;
       /** 当前变换状态（transform 为 SVG.js 矩阵，含 scaleX/translateX 等）。 */
       getTransformData(): {
         transform: { scaleX: number; scaleY: number; translateX: number; translateY: number };

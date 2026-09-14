@@ -106,6 +106,8 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
   // 垂直拖拽（纵向内边距）实时应用的合帧句柄与最新值。
   const padRafRef = useRef(0);
   const pendingPaddingYRef = useRef<number | null>(null);
+  // 右下角缩放控件的百分比显示（view_data_change 携带最新 scale）。
+  const [scalePct, setScalePct] = useState(100);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -160,6 +162,13 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       // 平移 / 缩放 / 布局重排后，手柄框要跟着节点走。
       scheduleUpdateResizeBox();
     };
+    const onViewDataChange = (data: {
+      state?: { scale?: number };
+      transform?: { scaleX?: number };
+    }): void => {
+      const scale = data?.state?.scale ?? data?.transform?.scaleX ?? 1;
+      setScalePct(Math.round(scale * 100));
+    };
     instance.on("data_change", onTreeChange);
     instance.on("node_active", onActive);
     instance.on("back_forward", onHistory);
@@ -167,6 +176,7 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
     instance.on("node_note_click", onNoteClick);
     instance.on("node_mousedown", onNodeMousedown);
     instance.on("view_data_change", onViewOrRenderChange);
+    instance.on("view_data_change", onViewDataChange);
     instance.on("node_tree_render_end", onViewOrRenderChange);
     callbacksRef.current.onReady(instance);
 
@@ -202,6 +212,7 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       instance.off("node_note_click", onNoteClick);
       instance.off("node_mousedown", onNodeMousedown);
       instance.off("view_data_change", onViewOrRenderChange);
+      instance.off("view_data_change", onViewDataChange);
       instance.off("node_tree_render_end", onViewOrRenderChange);
       instance.destroy();
       el.innerHTML = "";
@@ -364,6 +375,41 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       }}
     >
       <div className="mm-canvas" ref={containerRef} />
+      <div className="mm-zoom" role="group" aria-label="缩放控制">
+        <button
+          type="button"
+          className="mm-zoom__btn"
+          title="缩小（Ctrl+-）"
+          onClick={() => instanceRef.current?.view.narrow()}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="mm-zoom__pct"
+          title="点击恢复 100%"
+          onClick={() => instanceRef.current?.view.setScale(1)}
+        >
+          {scalePct}%
+        </button>
+        <button
+          type="button"
+          className="mm-zoom__btn"
+          title="放大（Ctrl+=）"
+          onClick={() => instanceRef.current?.view.enlarge()}
+        >
+          ＋
+        </button>
+        <span className="mm-zoom__divider" aria-hidden="true" />
+        <button
+          type="button"
+          className="mm-zoom__btn"
+          title="适应画布（Ctrl+0）"
+          onClick={() => instanceRef.current?.view.fit()}
+        >
+          ⛶
+        </button>
+      </div>
       {resizeBox !== null && (
         <div
           className="mm-resize-box"

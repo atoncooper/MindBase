@@ -5179,6 +5179,58 @@ body {
   overflow: hidden;
 }
 
+/* 右下角缩放控件：缩小 / 百分比（点击复位 100%）/ 放大 / 适应画布。 */
+.mm-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+
+.mm-zoom__btn,
+.mm-zoom__pct {
+  height: 24px;
+  padding: 0 4px;
+  font: inherit;
+  line-height: 1;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.mm-zoom__btn {
+  min-width: 24px;
+  font-size: 13px;
+}
+
+.mm-zoom__pct {
+  min-width: 46px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mm-zoom__btn:hover,
+.mm-zoom__pct:hover {
+  background: var(--wash);
+}
+
+.mm-zoom__divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
 /* ── 画布内富文本样式隔离 ──
    节点文字经 foreignObject 以 HTML 渲染，会继承 body 的 1.55 行高；而库按
    1.2 行高测量节点尺寸，两边不一致会把文字压到节点下半部。<p> 的浏览器
@@ -6011,6 +6063,65 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 大纲行附件角标（图/注/链/#标签数）与悬停行操作（插入/移动/删除）。 */
+.mm-outline-badges {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.mm-outline-badge {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--ink-2);
+  background: var(--wash);
+  border-radius: 4px;
+}
+
+.mm-outline-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.mm-outline-row:hover .mm-outline-actions {
+  opacity: 1;
+}
+
+.mm-outline-actions button {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 3px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mm-outline-actions button:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.mm-outline-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mm-outline-actions button.mm-outline-action--danger:hover {
+  color: var(--danger);
 }
 
 /* ---------------------------------------------------------------------------

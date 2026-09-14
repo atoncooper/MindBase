@@ -795,32 +795,62 @@ export function CodeBlockDialog({ initialCode, initialLanguage, onSave, onDelete
   );
 }
 
-// ── 大纲面板（可折叠树：单击定位，双击重命名） ───────────────────────
+// ── 大纲面板（可编辑树：单击定位 / 双击重命名 / 悬停行操作） ──────────
 
 export interface OutlineNodeItem {
   uid: string;
   text: string;
   expand: boolean;
   hasChildren: boolean;
+  /** 附件角标：有备注 / 有链接 / 标签数 / 有图片。 */
+  hasNote: boolean;
+  hasLink: boolean;
+  tagCount: number;
+  hasImage: boolean;
+  /** 根节点：不可删除 / 不可插同级 / 不可移动。 */
+  isRoot: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   children: OutlineNodeItem[];
 }
 
 /** 把画布文档的根节点转成大纲树（uid 缺失的节点不可定位/重命名）。 */
 export function toOutlineTree(root: MindMapNodeData): OutlineNodeItem {
-  const toItems = (node: MindMapNodeData): OutlineNodeItem => ({
-    uid: String(node.data.uid ?? ""),
-    text: String(node.data.text ?? ""),
-    expand: node.data.expand !== false,
-    hasChildren: (node.children?.length ?? 0) > 0,
-    children: (node.children ?? []).map(toItems),
-  });
-  return toItems(root);
+  const toItems = (node: MindMapNodeData, isRoot: boolean): OutlineNodeItem => {
+    const childNodes = node.children ?? [];
+    const children = childNodes.map((child, index) => {
+      const item = toItems(child, false);
+      item.canMoveUp = index > 0;
+      item.canMoveDown = index < childNodes.length - 1;
+      return item;
+    });
+    return {
+      uid: String(node.data.uid ?? ""),
+      text: String(node.data.text ?? ""),
+      expand: node.data.expand !== false,
+      hasChildren: children.length > 0,
+      hasNote: String(node.data.note ?? "") !== "",
+      hasLink: String(node.data.hyperlink ?? "") !== "",
+      tagCount: Array.isArray(node.data.tag) ? node.data.tag.length : 0,
+      hasImage: Boolean(node.data.image),
+      isRoot,
+      canMoveUp: false,
+      canMoveDown: false,
+      children,
+    };
+  };
+  return toItems(root, true);
 }
 
-export function OutlinePanel({ root, onLocate, onRename, onClose }: {
+export function OutlinePanel({ root, onLocate, onRename, onInsertChild, onInsertSibling, onRemove, onMoveUp, onMoveDown, onClose }: {
   root: OutlineNodeItem;
   onLocate: (uid: string) => void;
   onRename: (uid: string, text: string) => void;
+  onInsertChild: (uid: string) => void;
+  onInsertSibling: (uid: string) => void;
+  onRemove: (uid: string) => void;
+  onMoveUp: (uid: string) => void;
+  onMoveDown: (uid: string) => void;
   onClose: () => void;
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -901,6 +931,62 @@ export function OutlinePanel({ root, onLocate, onRename, onClose }: {
                 {item.text === "" ? "（空）" : item.text}
               </span>
             )}
+            {(item.hasNote || item.hasLink || item.tagCount > 0 || item.hasImage) && (
+              <span className="mm-outline-badges">
+                {item.hasImage && <span className="mm-outline-badge" title="包含图片">图</span>}
+                {item.hasNote && <span className="mm-outline-badge" title="有备注">注</span>}
+                {item.hasLink && <span className="mm-outline-badge" title="有链接">链</span>}
+                {item.tagCount > 0 && (
+                  <span className="mm-outline-badge" title={`标签 × ${item.tagCount}`}>
+                    #{item.tagCount}
+                  </span>
+                )}
+              </span>
+            )}
+            <span className="mm-outline-actions" onClick={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                title="插入子节点"
+                onClick={() => onInsertChild(item.uid)}
+              >
+                ＋
+              </button>
+              {!item.isRoot && (
+                <button type="button" title="插入同级节点" onClick={() => onInsertSibling(item.uid)}>
+                  ＋∥
+                </button>
+              )}
+              {!item.isRoot && (
+                <button
+                  type="button"
+                  title="上移"
+                  disabled={!item.canMoveUp}
+                  onClick={() => onMoveUp(item.uid)}
+                >
+                  ↑
+                </button>
+              )}
+              {!item.isRoot && (
+                <button
+                  type="button"
+                  title="下移"
+                  disabled={!item.canMoveDown}
+                  onClick={() => onMoveDown(item.uid)}
+                >
+                  ↓
+                </button>
+              )}
+              {!item.isRoot && (
+                <button
+                  type="button"
+                  title="删除节点及子级"
+                  className="mm-outline-action--danger"
+                  onClick={() => onRemove(item.uid)}
+                >
+                  ✕
+                </button>
+              )}
+            </span>
           </div>
           {item.hasChildren && !isCollapsed && renderItems(item.children, depth + 1)}
         </div>
@@ -911,7 +997,7 @@ export function OutlinePanel({ root, onLocate, onRename, onClose }: {
   return (
     <div ref={ref} className="mm-outline-panel">
       <div className="mm-outline-head">
-        <span className="mm-style-panel__title">大纲 · 单击定位 / 双击重命名</span>
+        <span className="mm-style-panel__title">大纲 · 单击定位 / 双击重命名 / 悬停行操作</span>
         <button type="button" className="mm-btn" aria-label="收起大纲" onClick={onClose}>
           ✕
         </button>
