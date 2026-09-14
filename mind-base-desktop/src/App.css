@@ -5288,26 +5288,29 @@ body {
 }
 
 /* 代码卡片限高滚动容器：节点高度封顶，长代码在卡片内滚轮下翻
-   （滚轮拦截见 MindMapCanvas 的捕获监听）。必须显式不透明底——
-   Chromium 对 foreignObject 内滚动合成层的已知黑块问题：透明背景
-   的滚动容器会被 GPU 栅格化成黑色矩形。 */
-.mm-canvas foreignObject .smm-code-scroll {
+   （滚轮拦截见 MindMapCanvas 的捕获监听）。选择器不带 foreignObject
+   前缀——库的离屏测量元素挂在 .mm-canvas 下（内容根带
+   .smm-richtext-node-wrap 类），测量与画布必须同一套限高，否则节点盒
+   比可视卡片高出一截。必须显式不透明底——Chromium 对 foreignObject
+   内滚动合成层的已知黑块问题：透明背景的滚动容器会被 GPU 栅格化成
+   黑色矩形。 */
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll {
   max-height: 360px;
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--wash);
 }
 
-.mm-canvas foreignObject .smm-code-scroll::-webkit-scrollbar {
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll::-webkit-scrollbar {
   width: 8px;
 }
 
-.mm-canvas foreignObject .smm-code-scroll::-webkit-scrollbar-thumb {
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll::-webkit-scrollbar-thumb {
   background: var(--line-strong);
   border-radius: 4px;
 }
 
-.mm-canvas foreignObject .smm-code-scroll::-webkit-scrollbar-track {
+.mm-canvas .smm-richtext-node-wrap .smm-code-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -5363,8 +5366,9 @@ body {
 }
 
 /* 画布上限高滚动（与代码卡片一致）；滚轮拦截见 MindMapCanvas。
-   同样必须显式不透明底（foreignObject 滚动合成层黑块问题）。 */
-.mm-canvas foreignObject .smm-md-card {
+   同样用 .smm-richtext-node-wrap 作用域保证测量与画布同一套限高；
+   显式不透明底（foreignObject 滚动合成层黑块问题）。 */
+.mm-canvas .smm-richtext-node-wrap .smm-md-card {
   display: block;
   max-height: 420px;
   overflow-y: auto;
@@ -5372,11 +5376,11 @@ body {
   background: var(--paper);
 }
 
-.mm-canvas foreignObject .smm-md-card::-webkit-scrollbar {
+.mm-canvas .smm-richtext-node-wrap .smm-md-card::-webkit-scrollbar {
   width: 8px;
 }
 
-.mm-canvas foreignObject .smm-md-card::-webkit-scrollbar-thumb {
+.mm-canvas .smm-richtext-node-wrap .smm-md-card::-webkit-scrollbar-thumb {
   background: var(--line-strong);
   border-radius: 4px;
 }

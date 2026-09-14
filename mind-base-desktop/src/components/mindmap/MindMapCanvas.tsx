@@ -186,13 +186,17 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
     const onResize = (): void => instance.resize();
     window.addEventListener("resize", onResize);
     // 代码卡片内滚轮：卡片可滚时在捕获阶段拦下 wheel（库的缩放监听在
-    // 同一容器上、bubble 相），滚动留给卡片自身，不触发画布缩放；
-    // 卡片不需滚动（内容不足）则放行给画布。Markdown 卡片同理。
+    // 同一容器上、bubble 相，捕获先于 bubble 触发），滚动留给卡片自身，
+    // 不触发画布缩放。方向感知：卡片已滚到边界时放行给画布缩放。
+    // Markdown 卡片同理。
     const onWheelCapture = (event: WheelEvent): void => {
       const target = event.target;
       if (!(target instanceof Element)) return;
       const scrollEl = target.closest(".smm-code-scroll, .smm-md-card");
-      if (scrollEl === null || scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+      if (scrollEl === null) return;
+      const atTop = scrollEl.scrollTop <= 0;
+      const atBottom = scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 1;
+      if (event.deltaY > 0 ? atBottom : atTop) return;
       event.stopPropagation();
     };
     el.addEventListener("wheel", onWheelCapture, true);
