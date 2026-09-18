@@ -4,7 +4,7 @@ Pydantic response models for credentials, settings, billing, and LLM configs.
 
 from datetime import date as date_type, datetime
 from typing import Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.security.url_validation import validate_public_http_url
 
@@ -28,8 +28,7 @@ class CredentialResponse(BaseModel):
     last_test_error: Optional[str] = None
     last_test_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TestResultResponse(BaseModel):
@@ -59,8 +58,7 @@ class EmbeddingConfigResponse(BaseModel):
     last_test_error: Optional[str] = None
     last_test_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ASRConfigResponse(BaseModel):
@@ -79,8 +77,7 @@ class ASRConfigResponse(BaseModel):
     last_test_error: Optional[str] = None
     last_test_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ApiKeyStatusResponse(BaseModel):

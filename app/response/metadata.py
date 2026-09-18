@@ -4,7 +4,7 @@ Pydantic response models for video metadata (arc_meta).
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class VideoMetadataResponse(BaseModel):
@@ -36,8 +36,7 @@ class VideoMetadataResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MetadataExtractResponse(BaseModel):
