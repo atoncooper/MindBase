@@ -1,0 +1,123 @@
+# Backend — FastAPI (port 8000, /health).
+# Secrets/config come from the mindbase-env Secret (envFrom = the .env file,
+# mirroring compose env_file). Non-secret service URLs are re-declared here
+# because compose `environment` overrides env_file the same way.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        - name: wait-datastores
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z mysql 3306 && nc -z mongo 27017 && nc -z redis 6379; do echo waiting for mysql/mongo/redis; sleep 3; done"]
+      containers:
+        - name: backend
+          image: ghcr.io/atoncooper/mind-base-backend:latest
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: mindbase-env
+          env:
+            - name: APP_DEBUG
+              value: "false"
+            - name: APP_LOG_LEVEL
+              value: INFO
+            # Redis cache DB index (/1) — compose overrides the .env /0 the
+            # same way; /2 belongs to app-board, /0 stays free.
+            - name: REDIS__URL
+              value: redis://:$(REDIS_PASSWORD)@redis:6379/1
+            - name: KG__URI
+              value: bolt://neo4j:7687
+            - name: KG__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: NEO4J_PASSWORD }
+            # AI gateway (single egress for all AI traffic)
+            - name: AI_GATEWAY__BASE_URL
+              value: http://higress:8080/v1
+            - name: LLM__MODEL
+              value: qwen3-max
+            - name: LANGSMITH__PROJECT
+              value: MindBase
+            # MinIO: compose maps single-underscore interpolation vars onto
+            # the app's double-underscore keys — replicate that here.
+            - name: MINIO__ENABLED
+              value: "true"
+            - name: MINIO__ENDPOINT
+              value: http://minio:9000
+            - name: MINIO__ACCESS_KEY
+              value: $(MINIO_ACCESS_KEY)
+            - name: MINIO__SECRET_KEY
+              value: $(MINIO_SECRET_KEY)
+            - name: MINIO__BUCKET
+              value: drive-videos
+            - name: MINIO__REGION
+              value: us-east-1
+            - name: MINIO__SECURE
+              value: "false"
+            # Task-quiz agent -> app-task via APISIX
+            - name: APPTASK_BASE_URL
+              value: http://apisix:9080
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: logs
+              mountPath: /app/logs
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 2Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: backend-data
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi

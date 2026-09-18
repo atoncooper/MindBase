@@ -85,31 +85,43 @@ def get_pricing_entry(provider: Optional[str], model: Optional[str]) -> Optional
     Falls back to a cross-provider model-name search so that a model is
     still priced correctly even when the provider was mis-detected (e.g.
     ``custom`` for a DashScope qwen model behind a proxy URL).
+
+    Platform-prefixed ids (``openai/gpt-4o-mini``, ``stealth/union-alpha``,
+    ...) retry with the vendor-suffix form — price tables are keyed by
+    vendor-native names, and the model id reaches this app verbatim
+    regardless of which platform serves it.
     """
     provider = (provider or "unknown").lower()
     model = (model or "unknown").lower()
 
-    provider_table = _PRICES.get(provider)
+    # Vendor-suffix retry keeps pricing platform-agnostic: whatever prefix a
+    # platform puts on the id, the suffix is the vendor-native model name.
+    candidates = [model]
+    if "/" in model:
+        candidates.append(model.rsplit("/", 1)[-1])
 
-    # Exact match in the detected provider's table.
-    if provider_table:
-        if model in provider_table:
-            return provider_table[model]
-        for known_model, entry in provider_table.items():
-            if model.startswith(known_model):
-                return entry
+    for candidate in candidates:
+        provider_table = _PRICES.get(provider)
 
-    # Cross-provider fallback: search every provider's table by model name.
-    # This handles the common case where the provider is "custom" (proxy)
-    # but the model is a well-known one (qwen-*, gpt-*, claude-*, ...).
-    for prov_table in _PRICES.values():
-        if not prov_table:
-            continue
-        if model in prov_table:
-            return prov_table[model]
-        for known_model, entry in prov_table.items():
-            if model.startswith(known_model):
-                return entry
+        # Exact match in the detected provider's table.
+        if provider_table:
+            if candidate in provider_table:
+                return provider_table[candidate]
+            for known_model, entry in provider_table.items():
+                if candidate.startswith(known_model):
+                    return entry
+
+        # Cross-provider fallback: search every provider's table by model name.
+        # This handles the common case where the provider is "custom" (proxy)
+        # but the model is a well-known one (qwen-*, gpt-*, claude-*, ...).
+        for prov_table in _PRICES.values():
+            if not prov_table:
+                continue
+            if candidate in prov_table:
+                return prov_table[candidate]
+            for known_model, entry in prov_table.items():
+                if candidate.startswith(known_model):
+                    return entry
 
     return None
 

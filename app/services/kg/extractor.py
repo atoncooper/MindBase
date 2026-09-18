@@ -91,12 +91,12 @@ class KgExtractor:
 
     def _get_structured_llm(self) -> Any:
         if self._structured_llm is None:
-            from langchain_openai import ChatOpenAI
+            from app.services.llm.factory import build_platform_llm
 
-            api_key = config.llm.api_key.get_secret_value()
-            llm = ChatOpenAI(
-                api_key=api_key,
-                base_url=config.llm.base_url,
+            # 连接/key 走统一 LLM 工厂（与主链路同源 env LLM__API_KEY，行为不变，
+            # 并获得 provider 切换与 AI 网关灰度）；KG 专用轻量模型仍取 kg.extract_model
+            llm = build_platform_llm(
+                purpose="kg",
                 model=config.kg.extract_model,
                 temperature=0,
                 timeout=120,

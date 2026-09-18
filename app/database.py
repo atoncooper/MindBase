@@ -66,6 +66,10 @@ async def _migrate_add_columns():
         # Plan 0021: session_id → uid migration
         ("user_credentials", "uid", "BIGINT DEFAULT 0"),
         ("credential_usage", "uid", "BIGINT DEFAULT 0"),
+        # Plan 1.0.11: AI 网关计量账单维度列（纯 MySQL，无 Milvus 影响）
+        ("credential_usage", "purpose", "VARCHAR(32)"),
+        ("credential_usage", "request_id", "VARCHAR(64)"),
+        ("credential_usage", "usage_source", "VARCHAR(24)"),
         # Plan 0021: soft-delete for user_credentials
         ("user_credentials", "deleted_at", "TIMESTAMP"),
         # Plan 0022: favorites v2 — uid-based design

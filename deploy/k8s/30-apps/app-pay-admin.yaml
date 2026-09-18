@@ -1,0 +1,72 @@
+# app-pay-admin — Go payment admin console (port 8003).
+# Cluster-internal only (mirrors compose loopback binding): access with
+# `kubectl -n mind-base port-forward svc/app-pay-admin 8003:8003`.
+# TLS auto-generates into /app/certs (emptyDir) when no cert/key is set.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-pay-admin
+  labels:
+    app: app-pay-admin
+spec:
+  selector:
+    app: app-pay-admin
+  ports:
+    - name: http
+      port: 8003
+      targetPort: 8003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-pay-admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-pay-admin
+  template:
+    metadata:
+      labels:
+        app: app-pay-admin
+    spec:
+      initContainers:
+        - name: wait-mysql
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z app-pay-mysql 3306; do echo waiting for app-pay-mysql; sleep 3; done"]
+      containers:
+        - name: app-pay-admin
+          image: ghcr.io/atoncooper/mind-base-app-pay-admin:latest
+          imagePullPolicy: Always
+          args: ["-config", "config.docker.yaml"]
+          envFrom:
+            - secretRef:
+                name: mindbase-env
+          env:
+            - name: PAYADMIN__RDBMS__URL
+              value: mysql+aiomysql://$(PAY_MYSQL_USER):$(PAY_MYSQL_PASSWORD)@app-pay-mysql:3306/app_pay
+          ports:
+            - containerPort: 8003
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: certs
+              mountPath: /app/certs
+          readinessProbe:
+            tcpSocket:
+              port: 8003
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8003
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 250m, memory: 512Mi }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: certs
+          emptyDir: {}

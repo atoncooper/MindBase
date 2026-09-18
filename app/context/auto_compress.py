@@ -243,19 +243,17 @@ def init_auto_compressor(
 
 
 def _schedule_dynamic_window_refresh() -> None:
-    """Best-effort: pull vendor-provided context_length metadata (OpenRouter
-    ``/models``) in the background so compression budgets use authoritative
-    numbers instead of the static fallback table.  No-op for providers whose
-    /models endpoint lacks window metadata (e.g. DashScope)."""
+    """Best-effort: pull vendor-provided context_length metadata (an
+    OpenRouter-style ``/models`` endpoint, reachable via the AI gateway) in
+    the background so compression budgets use authoritative numbers instead
+    of the static fallback table.  Endpoints without window metadata (e.g.
+    DashScope upstream) simply yield nothing — safe no-op."""
     try:
-        from app.config import settings as _settings
         from app.services.llm.providers import (
             refresh_dynamic_context_windows,
             resolve_llm_config,
         )
 
-        if _settings.llm_provider != "openrouter":
-            return
         cfg = resolve_llm_config()
         asyncio.get_running_loop().create_task(
             refresh_dynamic_context_windows(cfg.base_url, cfg.api_key)

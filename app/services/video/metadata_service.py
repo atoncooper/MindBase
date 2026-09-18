@@ -104,17 +104,11 @@ class MetadataService:
             content = content[:max_chars]
 
         # LLM extraction
-        from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage
-        from app.config import settings
+        from app.services.llm.factory import build_platform_llm
         import json
 
-        llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            model=settings.llm_model,
-            temperature=0.3,
-        )
+        llm = build_platform_llm(purpose="metadata", temperature=0.3)
 
         prompt = _EXTRACT_PROMPT.format(content=content)
         response = await llm.ainvoke([HumanMessage(content=prompt)])

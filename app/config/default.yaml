@@ -1,6 +1,10 @@
 # ============================================================
 # MindBase — default configuration
 # ============================================================
+# ============================================================
+# 1. App & server
+# ============================================================
+
 # This file is committed as live documentation and fallback defaults.
 #
 # Merge order (later overrides earlier):
@@ -12,7 +16,9 @@
 #
 # Conventions:
 #   - All keys lowercase, underscore-separated
-#   - Secrets (api_key / secret / password) MUST NOT go in YAML; env only
+#   - Secrets (api_key / secret / password) live in .env only; YAML declares
+#     them as ${VAR} placeholders (loader expands from the environment;
+#     unset without default → ""). Never write real secret values here.
 #   - Nested env vars use double-underscore: LLM__API_KEY → llm.api_key
 #   - Booleans: true / false (lowercase). PyYAML StrictBoolSafeLoader used
 #     so yes/no/on/off are NOT coerced to bool.
@@ -28,6 +34,7 @@ app:
   timezone: Asia/Shanghai
 
 
+
 server:
   host: 0.0.0.0
   port: 8000
@@ -39,15 +46,46 @@ server:
   # Set to true when behind a reverse proxy (nginx/Caddy) that handles TLS
   proxy_headers: true                 # trust X-Forwarded-* headers
 
+# ============================================================
+# 2. Data stores (relational / cache / documents / vectors / objects / graph)
+# ============================================================
+
+
 
 # ---- Relational database ------------------------------------------
 rdbms:
-  url: ""                               # inject via RDBMS__URL env var
+  url: ${RDBMS__URL}                    # connection string (with password) from .env
   echo: true                          # log all SQL (dev-friendly)
   pool_size: 20
   max_overflow: 10
   pool_timeout: 30
   pool_recycle: 1800                  # max connection lifetime (seconds)
+
+
+
+# ---- Redis (cache + streams + distributed lock) -------------------
+redis:
+  enabled: true
+  url: ${REDIS__URL}                    # connection URL (with password) from .env
+  max_connections: 50
+  socket_timeout: 5
+  socket_connect_timeout: 5
+  health_check_interval: 30
+  key_prefix: "mind-base:"
+
+
+
+# ---- MongoDB (document store) -------------------------------------
+# Collections: operation_log, chat_messages, quiz_questions, quiz_answers
+mongo:
+  enabled: true
+  uri: ${MONGO__URI}                    # full URI (with password) from .env
+  db_name: MindBase
+  max_pool_size: 100
+  min_pool_size: 10
+  server_selection_timeout_ms: 5000
+  connect_timeout_ms: 10000
+
 
 
 # ---- Milvus (vector store) ----------------------------------------
@@ -68,28 +106,6 @@ milvus:
   nprobe: 16
 
 
-# ---- MongoDB (document store) -------------------------------------
-# Collections: operation_log, chat_messages, quiz_questions, quiz_answers
-mongo:
-  enabled: true
-  uri: ""                               # inject via MONGO__URI env var
-  db_name: MindBase
-  max_pool_size: 100
-  min_pool_size: 10
-  server_selection_timeout_ms: 5000
-  connect_timeout_ms: 10000
-
-
-# ---- Redis (cache + streams + distributed lock) -------------------
-redis:
-  enabled: true
-  url: ""                               # inject via REDIS__URL env var
-  max_connections: 50
-  socket_timeout: 5
-  socket_connect_timeout: 5
-  health_check_interval: 30
-  key_prefix: "mind-base:"
-
 
 # ---- MinIO / S3 (object storage) ----------------------------------
 minio:
@@ -100,127 +116,12 @@ minio:
   secure: false                       # set true in production (HTTPS)
   presign_expire: 3600
   public_endpoint: ""                 # public-facing URL for presigned links, e.g. https://example.com/minio-proxy
-  # access_key / secret_key via env: MINIO__ACCESS_KEY, MINIO__SECRET_KEY
+  access_key: ${MINIO__ACCESS_KEY}    # credentials from .env
+  secret_key: ${MINIO__SECRET_KEY}
 
 
-# ---- Daytona (code sandbox for code agent) ------------------------
-daytona:
-  enabled: false
-  api_url: https://app.daytona.io/api
-  org_id: ""
-  network_block_all: true        # 沙箱默认禁网（防数据外泄）；白名单域名可放行
-  domain_allow_list: ""          # 逗号分隔白名单域名，如 "*.pypi.org,github.com"
-  # api_key via env: DAYTONA__API_KEY
 
-
-# ---- Skill store - external third-party skill registry -------------
-skill_store:
-  enabled: false
-  topic: mindbase-skill              # GitHub topic identifying skill repos (marketplace)
-  timeout: 30
-  # api_key (GitHub token, optional) via env: SKILL_STORE__API_KEY
-
-
-# ---- Message queue — Celery + Redis Streams -----------------------
-mq:
-  enabled: false
-  broker: redis://localhost:6379/1
-  backend: redis://localhost:6379/2
-  task_time_limit: 1800               # hard timeout (seconds)
-  task_soft_time_limit: 1500          # soft timeout (seconds)
-  task_acks_late: true                # ack after task completes
-  worker_prefetch: 1
-  result_expires: 86400               # result TTL (seconds)
-  stream_maxlen: 10000
-  stream_block_ms: 5000
-  rabbitmq_url: ""                    # set to switch broker to RabbitMQ
-
-
-# ---- LLM (OpenAI-compatible; DashScope | OpenRouter) --------------
-llm:
-  provider: dashscope                 # dashscope | openrouter（切换对话类 LLM 网关，
-                                      # 解析逻辑见 app/services/llm/providers.py；
-                                      # embedding/rerank 不受此开关影响，仍走 DashScope）
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  model: qwen3-max
-  context_window: 0                   # 0=auto：按内置模型表自动匹配（providers.py 的
-                                      # MODEL_CONTEXT_WINDOWS，覆盖 qwen/gpt/claude/
-                                      # gemini/deepseek/glm/kimi 等）；历史压缩预算 ≈ 窗口×50%。
-                                      # 表里没有的模型才需要手填窗口值
-  eval_model: gpt-4o-mini             # auxiliary model for eval / quiz generation
-  timeout: 60
-  max_retries: 3
-  # api_key via env: LLM__API_KEY (legacy: DASHSCOPE_API_KEY, OPENAI_API_KEY)
-
-# OpenRouter（OpenAI 兼容聚合网关）。llm.provider=openrouter 时启用。
-# 模型名带厂商前缀，如 qwen/qwen3-max、anthropic/claude-sonnet-4.5、deepseek/deepseek-chat
-openrouter:
-  base_url: https://openrouter.ai/api/v1
-  model: z-ai/glm-5.2:free
-  # api_key via env: OPENROUTER__API_KEY
-
-
-# ---- Embedding ----------------------------------------------------
-embedding:
-  model: text-embedding-v4            # DashScope, 1024-dim (default; v4 supports 1024/1536/2048)
-  batch_size: 100
-  dimension: 1024
-  version: v1                         # bump when changing chunk strategy or model
-
-
-# ---- Text chunking (rule-based) -----------------------------------
-chunk:
-  target_size: 750
-  min_size: 300
-  max_size: 900
-  overlap: 100
-
-
-# ---- Agentic RAG (multi-hop reasoning) ---------------------------
-agentic:
-  top_k: 5
-  max_hops: 3
-
-
-# ---- Rerank (two-stage retrieval) --------------------------------
-# embedding recall (top_n) -> rerank model -> cut to top_k.
-# provider: null (passthrough) | dashscope (gte-rerank-v2 cross-encoder) |
-#           hybrid (rule blend) | mmr (diversity) | llm (placeholder).
-# api_key via env: RERANK__API_KEY (falls back to LLM__API_KEY).
-rerank:
-  enabled: true                       # master switch; false -> NullReranker passthrough
-  provider: dashscope                 # gte-rerank-v2 cross-encoder via DashScope
-  model: gte-rerank-v2
-  base_url: https://dashscope.aliyuncs.com/api/v1
-  timeout: 30                         # seconds per rerank call
-  top_n: 30                           # over-recall count fed to the reranker
-  alpha: 0.7                          # hybrid weight: embedding similarity
-  beta: 0.2                           # hybrid weight: recency (placeholder)
-  gamma: 0.1                          # hybrid weight: field boost
-  lambda: 0.7                         # mmr relevance vs diversity (1.0 = pure relevance)
-
-
-# ---- ASR — DashScope speech-to-text ------------------------------
-asr:
-  provider: dashscope                 # dashscope | whisper | funasr
-  base_url: https://dashscope.aliyuncs.com/api/v1
-  model: paraformer-realtime-v2       # Recognition (sync) API model; paraformer-v2 is for async Transcription API
-  model_local: paraformer-realtime-v2 # streaming model
-  transcription_model: paraformer-v2  # async Transcription model - long audio (>= realtime_max_seconds)
-  input_format: pcm
-  timeout: 600                        # per-task timeout for async Transcription (seconds)
-  realtime_max_seconds: 60            # above this, route to async Transcription (Recognition hangs on long audio)
-  recognition_timeout: 90            # forced-stop timeout for a single Recognition call (WebSocket stall guard)
-  # api_key via env: ASR__API_KEY; falls back to LLM__API_KEY
-
-
-# ---- Ingest — 入库并发控制 --------------------------------------
-ingest:
-  page_concurrency: 3               # 收藏夹同步时同 bvid 的分P 并发数（B站 SESSDATA 限流保守值）
-  asr_chunk_concurrency: 3          # 长音频 PCM 切块并行识别数（DashScope 并发限流）
-
-
-# ---- Knowledge Graph (Neo4j + MySQL, plan/1.0.5-KnowledgeGraph) ---
+# ---- Knowledge Graph (Neo4j + MySQL) ------------------------------
 # Derived store: entities/relations extracted from Mongo ASR documents.
 # Rebuildable at any time; failures degrade gracefully (kg_search tool
 # simply won't register / endpoints report unavailable).
@@ -228,7 +129,8 @@ ingest:
 kg:
   enabled: true
   uri: ""                               # inject via KG__URI env var; docker: bolt://neo4j:7687
-  username: neo4j                       # password via env: KG__PASSWORD
+  username: neo4j
+  password: ${KG__PASSWORD}             # from .env (shared with the compose neo4j service)
   database: neo4j                       # Neo4j database name (community edition = neo4j)
   entity_collection_name: kg_entities   # Milvus collection for semantic entity linking
   extract_model: qwen-flash             # LLM for entity/relation extraction (structured output)
@@ -242,21 +144,144 @@ kg:
   page_batch_size: 50                   # max pages processed per build run
 
 
-# ---- LangSmith tracing --------------------------------------------
-# Set enabled=true + LANGSMITH__API_KEY env var to activate.
-langsmith:
+
+# ---- Slow SQL capture ---------------------------------------------
+# Threshold adapts per dialect: SQLite→100ms, PostgreSQL→50ms.
+# Override via env: SLOW_SQL__THRESHOLD_MS
+slow_sql:
   enabled: true
-  project: MindBase
-  endpoint: https://api.smith.langchain.com
-  tracing_v2: true                    # LANGCHAIN_TRACING_V2 compat
-  tracing: true                       # LANGSMITH_TRACING compat
-  # api_key via env: LANGSMITH__API_KEY
+  threshold_ms: 100
+  max_samples_per_fingerprint: 3
+  retention_days: 7
+  log_to_console: true
+  log_to_storage: true
 
 
-# ---- Session ------------------------------------------------------
-session:
-  ttl_days: 30
-  # secret via env: SESSION__SECRET
+
+# ---- Transaction defaults -----------------------------------------
+# retry_delay_base in seconds; exponential backoff doubles each
+# attempt (0.1, 0.2, 0.4, …).
+transaction:
+  max_retries: 3
+  retry_delay_base: 0.1
+  readonly_hint: false
+
+# ============================================================
+# 3. AI gateway & models — the single egress for all AI traffic
+# ============================================================
+
+
+
+# ---- AI Gateway (Higress) ----------------------------------------
+# The single egress for platform LLM/embedding traffic (APISIX fronts business
+# traffic in; the gateway fronts AI traffic out). resolve_llm_config maps
+# base_url/api_key to the gateway endpoint and consumer key; model names pass
+# through untouched. Real vendor keys live in the Higress console (persisted
+# under ./data/higress), never in .env/git. BYOK (user-supplied credentials)
+# connect straight to the user's own endpoint; ASR/rerank are not
+# OpenAI-compatible and keep their own direct settings.
+ai_gateway:
+  base_url: http://higress:8080/v1
+  api_key: ${AI_GATEWAY__API_KEY}     # key-auth key of consumer mindbase-backend (required)
+
+
+
+# ---- LLM (inference params; the AI gateway below is the only connection entry) ----
+# Platform / model switching: change `model` in config.yaml (team) or
+# local.yaml (personal) — those layers WIN over this file. Any model id
+# passes through the gateway verbatim (qwen3-max, openai/gpt-4o-mini,
+# stealth/... — whatever the platform names it). For models not in
+# providers.MODEL_CONTEXT_WINDOWS, pin `context_window` with the real window.
+llm:
+  model: stealth/union-alpha                   # fallback default; config.yaml wins
+  context_window: 0                   # 0=auto: matched against the built-in registry (providers.py
+                                      # MODEL_CONTEXT_WINDOWS, covering qwen/gpt/claude/gemini/
+                                      # deepseek/glm/kimi etc.); history-compression budget ≈ 50%
+                                      # of the window. Pin manually only for models not listed
+  eval_model: stealth/union-alpha             # auxiliary model for eval / quiz generation
+  timeout: 60
+  max_retries: 3
+  # api_key (LLM__API_KEY): legacy compatibility only — no AI connection uses
+  # it any more; the offline eval scripts' env fallback chain still references it
+  api_key: ${LLM__API_KEY}
+
+
+
+# ---- Embedding ----------------------------------------------------
+embedding:
+  model: text-embedding-v4            # DashScope, 1024-dim — RED LINE: change = full Milvus rebuild
+                                      # (OpenRouter offers NO embeddings API — liquid/* ids 500 at the gateway)
+  batch_size: 100
+  dimension: 1024
+  version: v1                         # bump when changing chunk strategy or model
+
+
+
+# ---- Rerank (two-stage retrieval) --------------------------------
+# embedding recall (top_n) -> rerank model -> cut to top_k.
+# provider: null (passthrough) | dashscope (gte-rerank-v2 cross-encoder) |
+#           hybrid (rule blend) | mmr (diversity) | llm (placeholder).
+# Connection: the AI gateway native passthrough route (/api/v1) with the
+# gateway consumer key — no direct vendor config.
+rerank:
+  enabled: true                       # master switch; false -> NullReranker passthrough
+  provider: dashscope                 # rerank strategies: null | dashscope | hybrid | mmr | llm
+                                      # (openrouter is NOT a valid strategy — dispatch KeyError)
+  model: gte-rerank-v2                # DashScope native rerank family only (no vendor-prefixed ids)
+  timeout: 30                         # seconds per rerank call
+  top_n: 30                           # over-recall count fed to the reranker
+  alpha: 0.7                          # hybrid weight: embedding similarity
+  beta: 0.2                           # hybrid weight: recency (placeholder)
+  gamma: 0.1                          # hybrid weight: field boost
+  lambda: 0.7                         # mmr relevance vs diversity (1.0 = pure relevance)
+
+
+
+# ---- ASR — DashScope speech-to-text ------------------------------
+asr:
+  provider: dashscope                 # dashscope | whisper | funasr
+  model: paraformer-realtime-v2       # Recognition (sync) API model; paraformer-v2 is for async Transcription API
+  model_local: paraformer-realtime-v2 # streaming model
+  transcription_model: paraformer-v2  # async Transcription model - long audio (>= realtime_max_seconds)
+  input_format: pcm
+  timeout: 600                        # per-task timeout for async Transcription (seconds)
+  realtime_max_seconds: 60            # above this, route to async Transcription (Recognition hangs on long audio)
+  recognition_timeout: 90            # forced-stop timeout for a single Recognition call (WebSocket stall guard)
+  # Connection: the AI gateway native passthrough route (/api/v1, /api-ws) with
+  # the gateway consumer key — no separate ASR key/base_url; BYOK callers pass
+  # both explicitly or the call raises.
+
+# ============================================================
+# 4. RAG pipeline
+# ============================================================
+
+
+
+# ---- Text chunking (rule-based) -----------------------------------
+chunk:
+  target_size: 750
+  min_size: 300
+  max_size: 900
+  overlap: 100
+
+
+
+# ---- Agentic RAG (multi-hop reasoning) ---------------------------
+agentic:
+  top_k: 5
+  max_hops: 3
+
+
+
+# ---- Ingest — 入库并发控制 --------------------------------------
+ingest:
+  page_concurrency: 3               # 收藏夹同步时同 bvid 的分P 并发数（B站 SESSDATA 限流保守值）
+  asr_chunk_concurrency: 3          # 长音频 PCM 切块并行识别数（DashScope 并发限流）
+
+# ============================================================
+# 5. Security & session
+# ============================================================
+
 
 
 # ---- Security — user API key encryption ---------------------------
@@ -267,6 +292,7 @@ session:
 # becomes undecryptable.
 # Generate: python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
 security:
+  api_key_encryption_key: ${SECURITY__API_KEY_ENCRYPTION_KEY}  # 32-byte base64 (AES-GCM), .env only
   # CORS allowlist - explicit origins permitted to call the API cross-origin.
   # Override via env (comma-separated):
   #   SECURITY__CORS__ALLOW_ORIGINS=https://app.example.com,https://admin.example.com
@@ -344,6 +370,38 @@ security:
     image_height: 56
 
 
+
+# ---- Session ------------------------------------------------------
+session:
+  ttl_days: 30
+  secret: ${SESSION__SECRET}          # signing key from .env
+
+
+
+# ---- Rate limiting ------------------------------------------------
+ratelimit:
+  chat_per_minute: 60
+  asr_per_hour: 100
+  quiz_per_day: 50
+
+# ============================================================
+# 6. Optional features & integrations
+# ============================================================
+
+
+
+# ---- LangSmith tracing --------------------------------------------
+# Set enabled=true + LANGSMITH__API_KEY env var to activate.
+langsmith:
+  enabled: true
+  project: MindBase
+  endpoint: https://api.smith.langchain.com
+  tracing_v2: true                    # LANGCHAIN_TRACING_V2 compat
+  tracing: true                       # LANGSMITH_TRACING compat
+  api_key: ${LANGSMITH_API_KEY}       # SDK reads LANGSMITH_API_KEY from env directly
+
+
+
 # ---- Email (verification + password reset) ------------------------
 # Uses Resend (https://resend.com). Free tier: 100 emails/day.
 #   1. Sign up at resend.com, create API key
@@ -353,7 +411,7 @@ security:
 # api_key via env: EMAIL__API_KEY
 email:
   enabled: false                    # set true once API key is configured
-  api_key: ""                       # inject via EMAIL__API_KEY
+  api_key: ${EMAIL__API_KEY}        # from .env
   from_email: "MindBase <onboarding@resend.dev>"
   frontend_url: "http://localhost:3000"  # for reset password link
   code_ttl_seconds: 300             # 5 minutes
@@ -362,6 +420,7 @@ email:
   rate_limit_uid_minutes: 10        # window for per-uid send count
   rate_limit_uid_max: 5             # max sends per uid in window
   max_verify_attempts: 5            # wrong code attempts before code is voided
+
 
 
 # ---- WeChat open platform login (网站应用 snsapi_login) ------------
@@ -374,51 +433,62 @@ email:
 #   http://localhost:3000/oauth/wechat/callback
 wechat:
   enabled: false                    # set true once credentials are configured
-  app_id: ""                        # inject via WECHAT__APP_ID
-  app_secret: ""                    # inject via WECHAT__APP_SECRET
-  redirect_uri: ""                  # inject via WECHAT__REDIRECT_URI
+  app_id: ""                        # non-secret: fill here (config.yaml / local.yaml)
+  app_secret: ${WECHAT__APP_SECRET}   # from .env
+  redirect_uri: ""                  # non-secret: fill here (config.yaml / local.yaml)
+
 
 
 # ---- SMS (aliyun dysmsapi) — phone code login/register -------------
 # Requires an Aliyun SMS signature + template (个人可用公众号资质申请).
 # The template must declare a ${code} parameter.
-# Inject via env: SMS__ENABLED / SMS__ACCESS_KEY_ID / SMS__ACCESS_KEY_SECRET /
-# SMS__SIGN_NAME / SMS__TEMPLATE_CODE. When disabled, all phone login/
-# register entry points are hidden (GET /auth/features reports false).
+# Credentials (access key pair) inject via env: SMS__ACCESS_KEY_ID /
+# SMS__ACCESS_KEY_SECRET. Non-secret fields (enabled / sign_name /
+# template_code) fill here. When disabled, all phone login/register entry
+# points are hidden (GET /auth/features reports false).
 sms:
   enabled: false
-  access_key_id: ""                 # inject via SMS__ACCESS_KEY_ID
-  access_key_secret: ""             # inject via SMS__ACCESS_KEY_SECRET
-  sign_name: ""                     # inject via SMS__SIGN_NAME
-  template_code: ""                 # inject via SMS__TEMPLATE_CODE
+  access_key_id: ${SMS__ACCESS_KEY_ID}
+  access_key_secret: ${SMS__ACCESS_KEY_SECRET}
+  sign_name: ""                     # non-secret: fill here (config.yaml / local.yaml)
+  template_code: ""                 # non-secret: fill here (config.yaml / local.yaml)
 
 
-# ---- Rate limiting ------------------------------------------------
-ratelimit:
-  chat_per_minute: 60
-  asr_per_hour: 100
-  quiz_per_day: 50
+
+# ---- Daytona (code sandbox for code agent) ------------------------
+daytona:
+  enabled: false
+  api_url: https://app.daytona.io/api
+  org_id: ""
+  network_block_all: true        # 沙箱默认禁网（防数据外泄）；白名单域名可放行
+  domain_allow_list: ""          # 逗号分隔白名单域名，如 "*.pypi.org,github.com"
+  api_key: ${DAYTONA__API_KEY}   # from .env
 
 
-# ---- Slow SQL capture ---------------------------------------------
-# Threshold adapts per dialect: SQLite→100ms, PostgreSQL→50ms.
-# Override via env: SLOW_SQL__THRESHOLD_MS
-slow_sql:
-  enabled: true
-  threshold_ms: 100
-  max_samples_per_fingerprint: 3
-  retention_days: 7
-  log_to_console: true
-  log_to_storage: true
+
+# ---- Skill store - external third-party skill registry -------------
+skill_store:
+  enabled: false
+  topic: mindbase-skill              # GitHub topic identifying skill repos (marketplace)
+  timeout: 30
+  api_key: ${SKILL_STORE__API_KEY}   # optional GitHub token from .env
 
 
-# ---- Transaction defaults -----------------------------------------
-# retry_delay_base in seconds; exponential backoff doubles each
-# attempt (0.1, 0.2, 0.4, …).
-transaction:
-  max_retries: 3
-  retry_delay_base: 0.1
-  readonly_hint: false
+
+# ---- Message queue — Celery + Redis Streams -----------------------
+mq:
+  enabled: false
+  broker: redis://localhost:6379/1
+  backend: redis://localhost:6379/2
+  task_time_limit: 1800               # hard timeout (seconds)
+  task_soft_time_limit: 1500          # soft timeout (seconds)
+  task_acks_late: true                # ack after task completes
+  worker_prefetch: 1
+  result_expires: 86400               # result TTL (seconds)
+  stream_maxlen: 10000
+  stream_block_ms: 5000
+  rabbitmq_url: ${MQ__RABBITMQ_URL}     # amqp://... (with password) from .env; set to switch broker
+
 
 
 # ---- Quiz AI governance -------------------------------------------

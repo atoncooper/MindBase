@@ -121,13 +121,23 @@ class Reranker:
 
         When ``rerank_enabled`` is False, forces the ``null`` strategy
         regardless of ``rerank_provider`` (matches legacy semantics).
+
+        AI gateway: rerank is not OpenAI-compatible, so it goes through the
+        gateway's native passthrough route (/api/v1, path forwarded as-is)
+        and authenticates with the gateway consumer key — the gateway
+        injects the real vendor key. There is no direct-connection path:
+        without a consumer key the rerank call fails at call time.
         """
+        from app.services.llm.providers import gateway_native_base_urls
+
         strategy = "null" if not settings.rerank_enabled else settings.rerank_provider
+        api_key = settings.ai_gateway_api_key
+        base_url = gateway_native_base_urls()[0]
         return cls(
             strategy=strategy,
-            dashscope_api_key=settings.rerank_api_key,
+            dashscope_api_key=api_key,
             dashscope_model=settings.rerank_model,
-            dashscope_base_url=settings.rerank_base_url,
+            dashscope_base_url=base_url,
             dashscope_timeout=settings.rerank_timeout,
             hybrid_alpha=getattr(settings, "rerank_alpha", 0.7),
             hybrid_beta=getattr(settings, "rerank_beta", 0.2),

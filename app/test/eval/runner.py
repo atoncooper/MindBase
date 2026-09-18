@@ -98,10 +98,13 @@ def _build_harness():
 
     rag = RAGService(api_key_manager=None)
 
+    from app.services.llm.providers import resolve_llm_config
+
+    _cfg = resolve_llm_config()
     llm = ChatOpenAI(
         model=settings.llm_model,
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=_cfg.api_key,
+        base_url=_cfg.base_url,
         temperature=0,
         timeout=120,
     )

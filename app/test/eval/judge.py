@@ -5,11 +5,18 @@ answer produced by the RAG pipeline against the golden expectations.
 The judge is intentionally isolated from the system-under-test so that
 co-trained biases don't inflate scores.
 
-Configuration (env vars, all optional except api key):
+Connection: the Higress AI gateway is the default path — the judge goes
+through the same consumer key / base_url as every other AI call, and the
+model name routes server-side. Cross-vendor escape hatch: setting BOTH
+``JUDGE__BASE_URL`` and ``JUDGE__API_KEY`` routes the judge directly to
+that endpoint instead (for evaluating against a vendor the gateway does
+not carry); setting only one raises an error — no silent fallbacks.
 
-    JUDGE__API_KEY   — required; falls back to OPENAI_API_KEY then LLM__API_KEY
-    JUDGE__BASE_URL  — default: https://api.openai.com/v1
+Configuration (env vars, all optional):
+
     JUDGE__MODEL     — default: settings.eval_llm_model (gpt-4o-mini)
+    JUDGE__BASE_URL  — set together with JUDGE__API_KEY for direct mode
+    JUDGE__API_KEY   — direct-mode credential (same pairing rule)
 
 The judge call is deterministic (temperature=0). Output is strict JSON;
 on parse failure we retry once. A second failure returns score=0 with
@@ -64,18 +71,27 @@ class JudgeVerdict:
 def _judge_credentials() -> tuple[str, str, str]:
     """Resolve (api_key, base_url, model) for the judge.
 
-    Independent JUDGE__* env vars take priority so the judge can run
-    against a different provider than the system under test.
+    Default: through the AI gateway (same consumer key / base_url as all
+    other AI traffic).  Setting BOTH ``JUDGE__BASE_URL`` and
+    ``JUDGE__API_KEY`` switches to a direct cross-vendor connection;
+    setting only one raises — no silent fallbacks.
     """
-
-    api_key = (
-        os.getenv("JUDGE__API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or settings.openai_api_key
-    )
-    base_url = os.getenv("JUDGE__BASE_URL", "https://api.openai.com/v1")
     model = os.getenv("JUDGE__MODEL", settings.eval_llm_model)
-    return api_key, base_url, model
+
+    direct_url = os.getenv("JUDGE__BASE_URL")
+    direct_key = os.getenv("JUDGE__API_KEY")
+    if direct_url or direct_key:
+        if not (direct_url and direct_key):
+            raise ValueError(
+                "JUDGE__BASE_URL and JUDGE__API_KEY must be set together "
+                "for direct-mode judge evaluation"
+            )
+        return direct_key, direct_url, model
+
+    from app.services.llm.providers import resolve_llm_config
+
+    cfg = resolve_llm_config()
+    return cfg.api_key, cfg.base_url, model
 
 
 def _build_user_prompt(

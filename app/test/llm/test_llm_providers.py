@@ -2,11 +2,13 @@
 
 Covers:
 
-- resolve_llm_config: dashscope default (legacy keys), openrouter switch
-  (own section + attribution headers), unknown-provider fallback
-- infer_provider: openrouter URL classification
-- build_llm integration: provider-resolved base_url / model / headers land
-  on the ChatOpenAI instance
+- resolve_llm_config: gateway-only platform path (key/url from
+  ``ai_gateway.*``, model passthrough, missing-key tolerance), explicit
+  connection pins bypassing the gateway, ``direct=True`` requiring an
+  explicit base_url (legacy fallbacks removed)
+- infer_provider: URL classification
+- build_llm integration: gateway-resolved base_url / model land on the
+  ChatOpenAI instance
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from app.config import settings
 from app.services.llm import providers
 from app.services.llm.providers import (
     DEFAULT_CONTEXT_WINDOW,
-    OPENROUTER_DEFAULT_MODEL,
     infer_provider,
     resolve_context_window,
     resolve_llm_config,
@@ -26,7 +27,8 @@ from app.services.llm.providers import (
 
 class TestContextWindowRegistry:
     def test_known_qwen_model(self):
-        # qwen-plus 最新快照支持 1M（旧快照 128k 需手动钉 llm.context_window）
+        # latest qwen-plus snapshot supports 1M (pin llm.context_window for
+        # an older 128k snapshot)
         assert resolve_context_window("qwen-plus") == 1_000_000
 
     def test_openrouter_vendor_prefix_stripped(self):
@@ -38,12 +40,24 @@ class TestContextWindowRegistry:
         assert resolve_context_window("qwen3-max-2025") == 262_144
 
     def test_glm5_resolves_via_registry(self):
-        # 用户实际配置的模型：GLM-5.2 已收录（1M）
+        # the model actually configured by the user: GLM-5.2 is registered (1M)
         assert resolve_context_window("z-ai/glm-5.2:free") == 1_000_000
 
     def test_unknown_model_conservative_default(self):
         assert resolve_context_window("some-startup/super-model-v9") == DEFAULT_CONTEXT_WINDOW
         assert resolve_context_window("") == DEFAULT_CONTEXT_WINDOW
+
+    def test_unknown_model_warns_once_per_model(self, caplog):
+        # The conservative fallback must be visible (platform switches should
+        # not degrade silently), but only warn once per model per process.
+        import logging
+
+        providers._window_fallback_warned.clear()
+        with caplog.at_level(logging.WARNING, logger="app.services.llm.providers"):
+            assert resolve_context_window("totally-unknown-model") == DEFAULT_CONTEXT_WINDOW
+            assert resolve_context_window("totally-unknown-model") == DEFAULT_CONTEXT_WINDOW
+        warned = [r for r in caplog.records if "not in the context-window registry" in r.message]
+        assert len(warned) == 1
 
     def test_manual_pin_wins_over_registry(self):
         assert resolve_context_window("gemini-2.5-pro", 8192) == 8192
@@ -61,11 +75,14 @@ class TestDynamicContextWindows:
         providers._dynamic_windows = {}
         providers._dynamic_fetched_at = 0.0
 
-    teardown = setup_method
+    def teardown_method(self):
+        self.setup_method()
 
     @pytest.mark.asyncio
     async def test_refresh_populates_and_resolution_uses_it(self, monkeypatch):
         class _Resp:
+            headers = {"content-type": "application/json"}
+
             def raise_for_status(self):
                 pass
 
@@ -131,100 +148,99 @@ class TestDynamicContextWindows:
         assert resolve_context_window("some/model", 8192) == 8192
 
 
-def _use_provider(monkeypatch, name: str):
+def _patch_gateway(
+    monkeypatch,
+    *,
+    api_key: str = "sk-higress",
+    base_url: str = "http://higress:8080/v1",
+    model: str = "qwen3-max",
+):
     monkeypatch.setattr(
-        type(settings), "llm_provider", property(lambda self: name)
+        type(settings), "ai_gateway_api_key", property(lambda self: api_key)
     )
+    monkeypatch.setattr(
+        type(settings), "ai_gateway_base_url", property(lambda self: base_url)
+    )
+    monkeypatch.setattr(type(settings), "llm_model", property(lambda self: model))
 
 
-class TestResolveDashScope:
-    def test_default_provider_is_dashscope(self, monkeypatch):
-        _use_provider(monkeypatch, "dashscope")
-        monkeypatch.setattr(
-            type(settings), "openai_api_key", property(lambda self: "sk-dash")
-        )
-        monkeypatch.setattr(
-            type(settings),
-            "openai_base_url",
-            property(lambda self: "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        )
-        monkeypatch.setattr(
-            type(settings), "llm_model", property(lambda self: "qwen3-max")
-        )
+class TestResolveGateway:
+    def test_platform_path_uses_gateway(self, monkeypatch):
+        _patch_gateway(monkeypatch)
 
         cfg = resolve_llm_config()
-        assert cfg.provider == "dashscope"
-        assert cfg.api_key == "sk-dash"
-        assert "dashscope" in cfg.base_url
+        assert cfg.provider == "higress"
+        assert cfg.api_key == "sk-higress"
+        assert cfg.base_url == "http://higress:8080/v1"
         assert cfg.model == "qwen3-max"
         assert cfg.default_headers == {}
 
-    def test_explicit_overrides_win(self):
+    def test_gateway_base_url_builtin_default_when_unset(self, monkeypatch):
+        _patch_gateway(monkeypatch, base_url="")
+
+        cfg = resolve_llm_config()
+        assert cfg.base_url == providers.DEFAULT_GATEWAY_BASE_URL
+
+    def test_missing_key_yields_empty_without_crash(self, monkeypatch):
+        _patch_gateway(monkeypatch, api_key="")
+
+        cfg = resolve_llm_config()
+        assert cfg.api_key == ""
+        assert cfg.provider == "higress"
+
+    def test_model_override_passes_through(self, monkeypatch):
+        _patch_gateway(monkeypatch)
+
+        cfg = resolve_llm_config(model="gpt-4o-mini")
+        assert cfg.model == "gpt-4o-mini"
+
+    def test_explicit_connection_pins_bypass_gateway(self, monkeypatch):
+        _patch_gateway(monkeypatch)
+
         cfg = resolve_llm_config(
-            provider="dashscope", api_key="sk-x", base_url="https://x/v1", model="m1"
+            api_key="sk-x", base_url="https://x.example.com/v1", model="m1"
         )
-        assert (cfg.api_key, cfg.base_url, cfg.model) == ("sk-x", "https://x/v1", "m1")
+        assert (cfg.api_key, cfg.base_url, cfg.model) == (
+            "sk-x",
+            "https://x.example.com/v1",
+            "m1",
+        )
+        assert cfg.provider == "custom"  # inferred from the pinned URL
+
+    def test_direct_without_base_url_raises(self):
+        # Legacy vendor fallbacks are gone: a direct connection requires an
+        # explicit endpoint — no silent dashscope fallback any more.
+        with pytest.raises(ValueError, match="explicit base_url"):
+            resolve_llm_config(direct=True)
+
+    def test_direct_with_explicit_base_url(self):
+        cfg = resolve_llm_config(
+            direct=True, api_key="sk-user", base_url="https://vendor.example.com/v1"
+        )
+        assert cfg.base_url == "https://vendor.example.com/v1"
+        assert cfg.provider == "custom"
+        assert cfg.api_key == "sk-user"
 
 
-class TestResolveOpenRouter:
-    def test_openrouter_uses_own_section_and_headers(self, monkeypatch):
-        _use_provider(monkeypatch, "openrouter")
-        monkeypatch.setattr(
-            type(settings), "openrouter_api_key", property(lambda self: "sk-or-1")
-        )
+class TestGatewayNativeBaseUrls:
+    def test_derives_http_and_ws_roots(self, monkeypatch):
         monkeypatch.setattr(
             type(settings),
-            "openrouter_base_url",
-            property(lambda self: "https://openrouter.ai/api/v1"),
+            "ai_gateway_base_url",
+            property(lambda self: "http://higress:8080/v1"),
         )
+        http_base, ws_base = providers.gateway_native_base_urls()
+        assert http_base == "http://higress:8080/api/v1"
+        assert ws_base == "ws://higress:8080/api-ws/v1/inference"
+
+    def test_https_maps_to_wss(self, monkeypatch):
         monkeypatch.setattr(
             type(settings),
-            "openrouter_model",
-            property(lambda self: "anthropic/claude-sonnet-4.5"),
+            "ai_gateway_base_url",
+            property(lambda self: "https://gw.example.com/v1"),
         )
-
-        cfg = resolve_llm_config()
-        assert cfg.provider == "openrouter"
-        assert cfg.api_key == "sk-or-1"
-        assert cfg.base_url == "https://openrouter.ai/api/v1"
-        assert cfg.model == "anthropic/claude-sonnet-4.5"
-        assert cfg.default_headers["X-Title"] == "MindBase"
-        assert "HTTP-Referer" in cfg.default_headers
-
-    def test_openrouter_model_defaults_when_unset(self, monkeypatch):
-        _use_provider(monkeypatch, "openrouter")
-        monkeypatch.setattr(
-            type(settings), "openrouter_api_key", property(lambda self: "sk-or-1")
-        )
-        monkeypatch.setattr(
-            type(settings),
-            "openrouter_base_url",
-            property(lambda self: "https://openrouter.ai/api/v1"),
-        )
-        monkeypatch.setattr(
-            type(settings), "openrouter_model", property(lambda self: "")
-        )
-
-        cfg = resolve_llm_config()
-        assert cfg.model == OPENROUTER_DEFAULT_MODEL
-
-    def test_unknown_provider_falls_back_to_dashscope(self, monkeypatch):
-        _use_provider(monkeypatch, "vertex-ai")
-        monkeypatch.setattr(
-            type(settings), "openai_api_key", property(lambda self: "sk-dash")
-        )
-        monkeypatch.setattr(
-            type(settings),
-            "openai_base_url",
-            property(lambda self: "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        )
-        monkeypatch.setattr(
-            type(settings), "llm_model", property(lambda self: "qwen3-max")
-        )
-
-        cfg = resolve_llm_config()
-        assert cfg.provider == "dashscope"
-        assert "dashscope" in cfg.base_url
+        _, ws_base = providers.gateway_native_base_urls()
+        assert ws_base == "wss://gw.example.com/api-ws/v1/inference"
 
 
 class TestInferProvider:
@@ -248,61 +264,19 @@ class TestInferProvider:
 
 class TestBuildLLMIntegration:
     @pytest.mark.asyncio
-    async def test_build_llm_uses_openrouter_when_selected(self, monkeypatch):
-        _use_provider(monkeypatch, "openrouter")
-        monkeypatch.setattr(
-            type(settings), "openrouter_api_key", property(lambda self: "sk-or-9")
-        )
-        monkeypatch.setattr(
-            type(settings),
-            "openrouter_base_url",
-            property(lambda self: "https://openrouter.ai/api/v1"),
-        )
-        monkeypatch.setattr(
-            type(settings),
-            "openrouter_model",
-            property(lambda self: "qwen/qwen3-max"),
-        )
+    async def test_build_llm_routes_via_gateway(self, monkeypatch):
+        _patch_gateway(monkeypatch, model="qwen3-max")
 
         from app.services.chat.llm import build_llm
 
         llm = build_llm()
         try:
-            assert llm.openai_api_base == "https://openrouter.ai/api/v1"
-            assert llm.model_name == "qwen/qwen3-max"
-            assert getattr(llm, "_provider") == "openrouter"
-            hdrs = getattr(llm, "default_headers", {}) or {}
-            assert hdrs.get("X-Title") == "MindBase"
-        finally:
-            # Close the httpx client owned by ChatOpenAI (pytest cleanup).
-            client = getattr(llm, "client", None)
-            inner = getattr(client, "client", None)
-            if inner is not None:
-                await inner.aclose()
-
-    @pytest.mark.asyncio
-    async def test_build_llm_dashscope_unchanged(self, monkeypatch):
-        _use_provider(monkeypatch, "dashscope")
-        monkeypatch.setattr(
-            type(settings), "openai_api_key", property(lambda self: "sk-dash")
-        )
-        monkeypatch.setattr(
-            type(settings),
-            "openai_base_url",
-            property(lambda self: "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        )
-        monkeypatch.setattr(
-            type(settings), "llm_model", property(lambda self: "qwen3-max")
-        )
-
-        from app.services.chat.llm import build_llm
-
-        llm = build_llm()
-        try:
-            assert "dashscope" in llm.openai_api_base
-            assert getattr(llm, "_provider") == "dashscope"
+            assert llm.openai_api_base == "http://higress:8080/v1"
+            assert llm.model_name == "qwen3-max"
+            assert getattr(llm, "_provider") == "higress"
             assert not (getattr(llm, "default_headers", None) or {})
         finally:
+            # Close the httpx client owned by ChatOpenAI (pytest cleanup).
             client = getattr(llm, "client", None)
             inner = getattr(client, "client", None)
             if inner is not None:

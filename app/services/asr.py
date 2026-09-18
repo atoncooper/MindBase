@@ -35,9 +35,31 @@ class ASRService:
         model: Optional[str] = None,
         timeout: Optional[int] = None,
     ):
-        # Prefer ASR__API_KEY, then LLM__API_KEY (shared DashScope account).
-        self.api_key = api_key or settings.asr_api_key
-        self.base_url = base_url or settings.dashscope_base_url
+        if api_key is None and base_url is None:
+            # Platform path: the AI gateway is the single egress for all AI
+            # traffic (ASR included). Authenticate with the gateway consumer
+            # key; the native passthrough route forwards to DashScope and
+            # injects the real vendor key.
+            from app.services.llm.providers import gateway_native_base_urls
+
+            self.api_key = settings.ai_gateway_api_key
+            self.base_url, self.gateway_ws_url = gateway_native_base_urls()
+            self._via_gateway = True
+        else:
+            # BYOK credential path: the caller must supply BOTH key and
+            # endpoint — a vendor key cannot authenticate against the
+            # gateway's consumer key-auth, and legacy direct fallbacks have
+            # been removed. The SDK default WebSocket endpoint stays in
+            # place (direct DashScope with the user's own key).
+            if not api_key or not base_url:
+                raise ValueError(
+                    "BYOK ASR requires both api_key and base_url — "
+                    "legacy fallbacks have been removed"
+                )
+            self.api_key = api_key
+            self.base_url = base_url
+            self.gateway_ws_url = None
+            self._via_gateway = False
         self.model = model or settings.asr_model
         self.timeout = timeout or settings.asr_timeout
         self.local_model = settings.asr_model_local or self.model
@@ -54,11 +76,18 @@ class ASRService:
 
     def _configure(self) -> None:
         if not self.api_key:
-            raise ValueError("未配置 DASHSCOPE API Key")
+            raise ValueError("AI gateway consumer key not configured (ASR)")
         dashscope.api_key = self.api_key
         if self.base_url:
-            self.base_url = validate_public_http_url(self.base_url)
+            # The gateway address is trusted ops territory — public-URL
+            # validation applies only to caller-supplied (BYOK) endpoints.
+            if not self._via_gateway:
+                self.base_url = validate_public_http_url(self.base_url)
             dashscope.base_http_api_url = self.base_url
+        if self._via_gateway and self.gateway_ws_url:
+            # Route realtime Recognition (WebSocket) through the gateway too;
+            # needs the gateway-side /api-ws passthrough route to exist.
+            dashscope.base_websocket_api_url = self.gateway_ws_url
 
     def _get_output_value(self, output: Any, key: str, default=None):
         if isinstance(output, dict):

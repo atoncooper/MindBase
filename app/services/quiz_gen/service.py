@@ -11,13 +11,13 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
-from langchain_openai import ChatOpenAI
 from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.agent.task_quiz.prompts import QUIZ_GEN_SYS_PROMPT
 from app.config import settings
 from app.infra.mongo import coll, is_enabled
+from app.services.llm.factory import build_platform_llm
 from app.services.quiz_task_service import (
     deliver_email,
     mark_generated,
@@ -109,8 +109,10 @@ class QuizGenService:
             raise ValueError("prompt required")
         if not 1 <= question_count <= 5:
             raise ValueError("question_count must be 1..5")
-        if not settings.openai_api_key:
-            raise RuntimeError("LLM not configured (openai_api_key empty)")
+        # Key guard aligned with the factory: platform LLM traffic always
+        # goes through the AI gateway
+        if not settings.ai_gateway_api_key:
+            raise RuntimeError("LLM not configured (AI_GATEWAY__API_KEY empty)")
 
         existing = await _get_quiz_doc(task_id)
         if existing:
@@ -160,12 +162,9 @@ async def _generate_quiz_bg(
 ):
     """Background coroutine: invoke LLM and store result in Mongo."""
     try:
-        llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url or None,
-            model=settings.llm_model,
-            temperature=0.7,
-        )
+        # The factory attaches usage metering automatically when uid is
+        # available (platform-key path)
+        llm = build_platform_llm(purpose="task_quiz_gen", temperature=0.7, uid=uid)
         structured_llm = llm.with_structured_output(QuizSetGenerateResult)
 
         last_err: Exception | None = None

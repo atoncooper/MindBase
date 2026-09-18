@@ -14,6 +14,7 @@
 # + Milvus, no task-quiz:                                 docker compose --profile storage up -d
 # App only (external DB):                                 docker compose --profile standalone up -d
 # Everything + admin tools (redis-commander, mongo-express): docker compose --profile full up -d
+# + Higress AI gateway (unified egress for AI requests):     docker compose --profile ai up -d
 # + Milvus (向量库):                            docker compose --profile storage up -d
 # Everything (含 Milvus + task-quiz):           docker compose --profile full up -d
 # App only (external DB, 无 infra):             docker compose --profile standalone up -d
@@ -53,22 +54,17 @@ services:
       - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
       # Redis — override via .env for external Redis
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      # LLM
+      # LLM (all AI traffic — LLM/embedding/rerank/ASR — goes through the AI
+      # gateway below; LLM__API_KEY is a legacy BYOK-fallback only)
       - LLM__API_KEY=${LLM__API_KEY:-}
-      - LLM__BASE_URL=${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      - LLM__MODEL=${LLM_MODEL:-qwen3-max}
-      # 对话类 LLM 网关切换（dashscope | openrouter），见 app/services/llm/providers.py
-      - LLM__PROVIDER=${LLM__PROVIDER:-dashscope}
-      - OPENROUTER__API_KEY=${OPENROUTER__API_KEY:-}
-      - OPENROUTER__BASE_URL=${OPENROUTER__BASE_URL:-https://openrouter.ai/api/v1}
-      - OPENROUTER__MODEL=${OPENROUTER__MODEL:-}
-      # Embedding
-      - EMBEDDING__MODEL=${EMBEDDING_MODEL:-text-embedding-v4}
-      - EMBEDDING__DIMENSION=${EMBEDDING_DIMENSION:-1024}
-      # ASR
-      - ASR__API_KEY=${ASR_API_KEY:-}
-      - ASR__BASE_URL=${ASR_BASE_URL:-https://dashscope.aliyuncs.com/api/v1}
-      - ASR__MODEL=${ASR_MODEL:-paraformer-realtime-v2}
+      # 模型名等普通配置在 app/config/*.yaml（config.yaml 为生效层）；
+      # 不在此处设 LLM__MODEL —— env 是最高优先级层，会静默覆盖 yaml
+      # AI Gateway (Higress) — the single egress for all AI traffic
+      # (LLM/embedding/rerank/ASR); real vendor keys live in the gateway console
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # Embedding / ASR model names etc. are plain config — default.yaml only;
+      # there is no separate ASR key/base_url any more (gateway consumer key)
       # LangSmith
       - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
@@ -234,7 +230,7 @@ services:
     networks:
       - mind-base-net
 
-  # app-pay MySQL —— 交易/会员服务独立实例（Spring Boot，plan/1.0.7-Pay）
+  # app-pay MySQL —— 交易/会员服务独立实例（Spring Boot）
   app-pay-mysql:
     image: mysql:8.4
     container_name: mind-base-app-pay-mysql
@@ -329,7 +325,7 @@ services:
     networks:
       - mind-base-net
 
-  # Knowledge graph store (KG feature, plan/1.0.5-KnowledgeGraph).
+  # Knowledge graph store (KG feature).
   # Optional at runtime: the backend degrades gracefully when it is down or
   # kg.enabled=false (kg_search tool simply won't register).
   neo4j:
@@ -671,7 +667,7 @@ services:
     networks:
       - mind-base-net
 
-  # app-pay-admin —— 支付后台管理（Go + Gin，plan/1.0.9-PayAdmin）
+  # app-pay-admin —— 支付后台管理（Go + Gin）
   # 全直连 app_pay 库（读查询 + 唯一写操作：会员补偿开通，事务内复刻 app-pay
   # MembershipService.extend 语义），运行时不依赖 app-pay/APISIX。自带账户体系
   # （payadmin_user + bcrypt），仅回环暴露，不经 APISIX（同 app-task WebUI 先例）。
@@ -703,6 +699,68 @@ services:
       #  重建容器不再换证书）。显式指定文件用 PAYADMIN__SERVER__TLS__CERT/KEY。
       - ./app-pay-admin/certs:/app/certs
     restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # AI Gateway (profile=ai) — Higress all-in-one
+  # Start: docker compose --profile ai up -d
+  #   higress - unified egress for AI requests (LLM/embedding egress proxy,
+  #             consumer auth, token rate limiting, primary/backup fallback,
+  #             AI Dashboard)
+  # Boundary: APISIX fronts "business APIs in", Higress fronts "AI traffic
+  # out" — neither replaces the other. Compose-internal services (backend
+  # etc.) reach it at http://higress:8080 (internal network, never via host
+  # ports); real vendor keys are configured in the console
+  # (http://127.0.0.1:18081) and persisted under ./data/higress, never in
+  # .env/git. Red line: the gateway-side modelMapping must stay an empty
+  # pass-through — changing model names (text-embedding-v4/1024-dim) forces
+  # a full Milvus rebuild (see AGENTS.md).
+  # ==============================================================
+
+  higress:
+    # Same image as the official gateway install script; all-in-one ships a
+    # rolling :latest tag only (no version tags). linux/amd64 digest recorded
+    # 2026-09-14: sha256:da3a8692f927e5ccc40269b8006708363b8e84d3d7cad5d0ef1865ea7071b47f.
+    # Before upgrading, record the new digest via docker manifest inspect;
+    # pin via .env HIGRESS_IMAGE=<repo>@sha256:<digest> when needed.
+    image: ${HIGRESS_IMAGE:-higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest}
+    container_name: mind-base-higress
+    profiles: ["ai", "full"]
+    environment:
+      # 容器内三个监听端口（与官方 install.sh 同款 env，固定不变）；
+      # 宿主侧映射端口用下方 ports 的 HIGRESS_* 变量调整
+      - GATEWAY_HTTP_PORT=8080
+      - GATEWAY_HTTPS_PORT=8443
+      - CONSOLE_PORT=8001
+      # 容器内组件互访（console/pilot/envoy 本机回环 + 未来限流插件连 redis）不走
+      # 宿主注入的 HTTP_PROXY——Docker Desktop 会把宿主 ~/.docker/config.json 的代理
+      # 注入容器，APISIX 曾因此内部 etcd 流量被劫持（见 apisix 服务 entrypoint 注释）。
+      # LLM 供应商出网（如 OpenRouter）如需代理，另行在 .env 设 HTTP(S)_PROXY 白名单外变量
+      - NO_PROXY=localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+      - no_proxy=localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+    ports:
+      # 仅回环 + 高位端口：AI 网关只服务内部出网流量与本机调试，不对公网暴露
+      # （8001 宿主侧已被 app-task 占用，console 用 18081）
+      - "127.0.0.1:${HIGRESS_GATEWAY_HTTP_PORT:-18080}:8080"
+      - "127.0.0.1:${HIGRESS_GATEWAY_HTTPS_PORT:-18443}:8443"
+      - "127.0.0.1:${HIGRESS_CONSOLE_PORT:-18081}:8001"
+    volumes:
+      # 官方数据目录：providers / 路由 / 消费者 key / 控制台账户持久化于此，
+      # 重建容器配置不丢（data/ 整目录已 gitignore）
+      - ./data/higress:/data
+      # Envoy 访问日志
+      - ./data/higress/logs:/var/log/proxy
+    restart: unless-stopped
+    healthcheck:
+      # Console homepage reachable = control plane up. The official image
+      # ships no health endpoint contract; probe with curl and fall back to
+      # wget (swap to an exec port probe if the image ships neither).
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8001/ || wget -qO /dev/null http://127.0.0.1:8001/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     networks:
       - mind-base-net
 

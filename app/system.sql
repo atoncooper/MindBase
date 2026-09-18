@@ -76,6 +76,9 @@ create table credential_usage
     total_tokens      int              null,
     api_calls         int              null,
     cost_estimate     numeric(12, 6)   default 0.0 null,
+    purpose           varchar(32)      null,
+    request_id        varchar(64)      null,
+    usage_source      varchar(24)      null,
     created_at        timestamp        default CURRENT_TIMESTAMP null,
     constraint credential_usage_ibfk_1
         foreign key (uid) references users (uid)

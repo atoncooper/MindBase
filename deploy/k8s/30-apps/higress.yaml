@@ -1,0 +1,93 @@
+# Higress all-in-one — AI gateway (single egress for ALL AI traffic:
+# LLM/embedding via OpenAI-compatible /v1; rerank via native /api/v1
+# passthrough; ASR via /api/v1 + /api-ws WebSocket).
+# Cluster-internal only. Console: kubectl -n mind-base port-forward
+# svc/higress 18081:8001  (host 8001 is occupied by app-task in compose).
+# Vendor keys live ONLY in the console (/data persisted); red line:
+# route modelMapping must stay an empty pass-through — changing
+# text-embedding-v4/1024-dim forces a full Milvus rebuild.
+apiVersion: v1
+kind: Service
+metadata:
+  name: higress
+  labels:
+    app: higress
+spec:
+  selector:
+    app: higress
+  ports:
+    - name: gateway
+      port: 8080
+      targetPort: 8080
+    - name: console
+      port: 8001
+      targetPort: 8001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: higress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: higress
+  template:
+    metadata:
+      labels:
+        app: higress
+    spec:
+      containers:
+        - name: higress
+          # all-in-one ships a rolling :latest tag only (no version tags).
+          # Pin via digest for production: image: <repo>@sha256:<digest>
+          image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+          imagePullPolicy: Always
+          env:
+            - name: GATEWAY_HTTP_PORT
+              value: "8080"
+            - name: GATEWAY_HTTPS_PORT
+              value: "8443"
+            - name: CONSOLE_PORT
+              value: "8001"
+            # Container-internal component traffic must not be hijacked by a
+            # proxy injected from the host docker config (APISIX lesson)
+            - name: NO_PROXY
+              value: localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+            - name: no_proxy
+              value: localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+          ports:
+            - containerPort: 8080
+            - containerPort: 8443
+            - containerPort: 8001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 2Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: higress-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: higress-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi

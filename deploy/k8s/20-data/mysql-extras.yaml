@@ -1,0 +1,138 @@
+# app-task / app-pay private MySQL instances — same image, separate data.
+# app-task credentials come from the mindbase-env Secret (APPTASK_MYSQL_*),
+# app-pay credentials from PAY_MYSQL_* — both sourced from .env.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-task-mysql
+  labels:
+    app: app-task-mysql
+spec:
+  clusterIP: None
+  selector:
+    app: app-task-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-task-mysql
+spec:
+  serviceName: app-task-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-task-mysql
+  template:
+    metadata:
+      labels:
+        app: app-task-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          imagePullPolicy: IfNotPresent
+          args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_ROOT_PASSWORD }
+            - name: MYSQL_DATABASE
+              value: app_task
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_USER }
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_PASSWORD }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-pay-mysql
+  labels:
+    app: app-pay-mysql
+spec:
+  clusterIP: None
+  selector:
+    app: app-pay-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-pay-mysql
+spec:
+  serviceName: app-pay-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-pay-mysql
+  template:
+    metadata:
+      labels:
+        app: app-pay-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          imagePullPolicy: IfNotPresent
+          args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_ROOT_PASSWORD }
+            - name: MYSQL_DATABASE
+              value: app_pay
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_USER }
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_PASSWORD }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

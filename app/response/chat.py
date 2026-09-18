@@ -4,7 +4,7 @@ Pydantic schemas for chat API — request / response models.
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class WorkspacePage(BaseModel):
@@ -95,8 +95,7 @@ class ChatSessionResponse(BaseModel):
     updated_at: datetime
     last_message_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ChatSessionListResponse(BaseModel):

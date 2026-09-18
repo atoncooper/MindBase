@@ -19,7 +19,7 @@ from app.agent.quiz import (
     generate_questions,
     validate_question,
 )
-from app.config import settings
+from app.services.llm.factory import build_platform_llm
 from app.database import get_db_context
 from app.models import QuizSet, Collection, Video
 from app.repository import mongo_quiz_repository as mongo_quiz
@@ -488,20 +488,8 @@ class QuizGeneratorService:
 
     @staticmethod
     def _get_llm(temperature: float = 0.7) -> ChatOpenAI:
-        """获取 LLM 实例（使用系统默认 Key）"""
-        api_key = settings.openai_api_key
-        base_url = settings.openai_base_url
-        model = settings.llm_model
-
-        if not api_key:
-            raise RuntimeError("未配置 LLM API Key")
-
-        return ChatOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            temperature=temperature,
-        )
+        """获取 LLM 实例（使用系统默认 Key；统一 LLM 工厂，plan/1.0.11 §5.1）"""
+        return build_platform_llm(purpose="quiz_gen", temperature=temperature)
 
     def _get_tracking_llm(self, *, uid: int, temperature: float) -> ChatOpenAI:
         """Build a per-user LLM with usage tracking for quiz generation.

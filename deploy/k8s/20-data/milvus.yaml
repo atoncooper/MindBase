@@ -1,0 +1,84 @@
+# Milvus standalone v2.6 — vector store. Metadata in etcd, objects in the
+# shared MinIO. RED LINE: the embedding model (text-embedding-v4, 1024-dim)
+# is baked into these vectors — changing it requires a full rebuild.
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus
+  labels:
+    app: milvus
+spec:
+  clusterIP: None
+  selector:
+    app: milvus
+  ports:
+    - name: grpc
+      port: 19530
+      targetPort: 19530
+    - name: metrics
+      port: 9091
+      targetPort: 9091
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: milvus
+spec:
+  serviceName: milvus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus
+  template:
+    metadata:
+      labels:
+        app: milvus
+    spec:
+      initContainers:
+        - name: wait-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z etcd 2379 && nc -z minio 9000; do echo waiting for etcd/minio; sleep 3; done"]
+      containers:
+        - name: milvus
+          image: milvusdb/milvus:v2.6.22
+          imagePullPolicy: IfNotPresent
+          args: ["milvus", "run", "standalone"]
+          env:
+            - name: ETCD_ENDPOINTS
+              value: etcd:2379
+            - name: MINIO_ADDRESS
+              value: minio:9000
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MINIO_ACCESS_KEY }
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: MINIO_SECRET_KEY }
+          ports:
+            - containerPort: 19530
+            - containerPort: 9091
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/milvus
+          readinessProbe:
+            tcpSocket:
+              port: 19530
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: 19530
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 768Mi }
+            limits: { cpu: "1", memory: 2Gi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi

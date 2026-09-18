@@ -17,6 +17,7 @@ from langchain_openai import OpenAIEmbeddings
 from loguru import logger
 
 from app.config import settings
+from app.services.llm.providers import resolve_llm_config
 
 
 # ContextVar：每个请求独立存储当前用户 uid
@@ -46,10 +47,10 @@ class DynamicEmbeddings:
             **default_kwargs: 默认的 api_key, base_url, model
         """
         self._api_key_manager = api_key_manager
-        self._default_api_key = default_kwargs.get("api_key", settings.openai_api_key)
-        self._default_base_url = default_kwargs.get(
-            "base_url", settings.openai_base_url
-        )
+        # Placeholders only — _make_embeddings always resolves the real
+        # connection (BYOK branch or AI-gateway platform branch).
+        self._default_api_key = default_kwargs.get("api_key", "")
+        self._default_base_url = default_kwargs.get("base_url", "")
         self._default_model = default_kwargs.get("model", settings.embedding_model)
 
     def _make_embeddings(self) -> OpenAIEmbeddings:
@@ -58,6 +59,8 @@ class DynamicEmbeddings:
         api_key = self._default_api_key
         base_url = self._default_base_url
         model = self._default_model
+        using_user_key = False
+        user_base_url: Optional[str] = None
 
         if uid is not None and self._api_key_manager.is_enabled:
             cache_key = f"cred:{uid}"
@@ -71,14 +74,33 @@ class DynamicEmbeddings:
                     api_key = self._api_key_manager._decrypt(
                         entry.embedding_key_encrypted
                     )
+                    using_user_key = True
                     if entry.embedding_base_url:
                         base_url = entry.embedding_base_url
+                        user_base_url = entry.embedding_base_url
                     if entry.embedding_model:
                         model = entry.embedding_model
                 except Exception as e:
                     logger.warning(
                         f"[DYNAMIC_EMBED] failed to apply session config: {e}"
                     )
+                    using_user_key = False
+
+        if using_user_key and user_base_url is None:
+            # BYOK without an explicit endpoint is an error: a vendor key
+            # cannot authenticate against the gateway, and legacy direct
+            # fallbacks have been removed.
+            raise RuntimeError(
+                "user embedding credential has no base_url configured"
+            )
+        elif not using_user_key:
+            # Platform default path: resolve through the unified layer (the
+            # AI gateway is the only platform entry). The model name stays
+            # embedding_model — passed through the gateway untouched;
+            # text-embedding-v4/1024-dim must never change
+            cfg = resolve_llm_config()
+            api_key = cfg.api_key
+            base_url = cfg.base_url
 
         return OpenAIEmbeddings(
             api_key=api_key,

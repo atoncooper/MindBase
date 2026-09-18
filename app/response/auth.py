@@ -5,7 +5,7 @@ Pydantic schemas for auth API — request / response models.
 import re
 from datetime import datetime, date
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def normalize_email(value: str) -> str:
@@ -137,8 +137,7 @@ class UserInfoResponse(BaseModel):
     primary_oauth: Optional[str] = None
     created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TokenResponse(BaseModel):
@@ -182,8 +181,7 @@ class ProfileResponse(BaseModel):
     status: str = "active"
     created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PasswordSetRequest(BaseModel):
@@ -474,5 +472,4 @@ class SecurityOverviewResponse(BaseModel):
     oauth_bindings: list[dict] = []
     bilibili: BilibiliBindingStatus = BilibiliBindingStatus()
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
