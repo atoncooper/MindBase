@@ -1,0 +1,78 @@
+# app-pay — Java Spring Boot trade/membership service (port 8002, HTTPS-only).
+# Config lives in its application.yaml (docker profile); credentials come
+# from the mindbase-env Secret (PAY_MYSQL_* / ALIPAY_*). TLS certs mounted
+# from the app-pay-tls Secret at the default path /app/certs.
+# Cluster-internal only: must be reached via APISIX, never exposed directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-pay
+  labels:
+    app: app-pay
+spec:
+  selector:
+    app: app-pay
+  ports:
+    - name: https
+      port: 8002
+      targetPort: 8002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-pay
+  template:
+    metadata:
+      labels:
+        app: app-pay
+    spec:
+      initContainers:
+        - name: wait-mysql
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z app-pay-mysql 3306; do echo waiting for app-pay-mysql; sleep 3; done"]
+      containers:
+        - name: app-pay
+          image: ghcr.io/atoncooper/mind-base-app-pay:latest
+          imagePullPolicy: Always
+          args: ["--spring.profiles.active=docker"]
+          envFrom:
+            - secretRef:
+                name: mindbase-env
+          ports:
+            - containerPort: 8002
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: tls
+              mountPath: /app/certs
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 8002
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 8002
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: 500m, memory: 1Gi }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tls
+          secret:
+            secretName: app-pay-tls
+            items:
+              - key: pay.crt
+                path: pay.crt
+              - key: pay.key
+                path: pay.key

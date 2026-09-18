@@ -1,0 +1,54 @@
+# MindBase — Kubernetes deployment (kustomize base)
+# Apply:  kubectl apply -k deploy/k8s
+# Prereqs (secrets, one-time, from local files that are NOT committed):
+#   kubectl -n mind-base create secret generic mindbase-env --from-env-file=.env
+#   kubectl -n mind-base create secret generic nginx-tls \
+#     --from-file=fullchain.pem=nginx/certs/fullchain.pem \
+#     --from-file=privkey.pem=nginx/certs/privkey.pem
+#   kubectl -n mind-base create secret generic app-pay-tls \
+#     --from-file=pay.crt=app-pay/certs/pay.crt --from-file=pay.key=app-pay/certs/pay.key \
+#     --from-file=ca.crt=app-pay/certs/ca.crt
+#   kubectl -n mind-base create secret generic app-board-certs \
+#     --from-file=dev-ca.crt=app-board/certs/dev-ca.crt \
+#     --from-file=server.crt=app-board/certs/server.crt \
+#     --from-file=server.key=app-board/certs/server.key
+# See README.md for the full manual.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mind-base
+
+resources:
+  - 00-namespace.yaml
+  - 20-data/mysql.yaml
+  - 20-data/mysql-extras.yaml
+  - 20-data/mongo.yaml
+  - 20-data/redis.yaml
+  - 20-data/etcd.yaml
+  - 20-data/minio.yaml
+  - 20-data/milvus.yaml
+  - 20-data/neo4j.yaml
+  - 30-apps/backend.yaml
+  - 30-apps/frontend.yaml
+  - 30-apps/app-task.yaml
+  - 30-apps/app-pay.yaml
+  - 30-apps/app-board.yaml
+  - 30-apps/app-pay-admin.yaml
+  - 30-apps/apisix.yaml
+  - 30-apps/higress.yaml
+  - 30-apps/nginx.yaml
+
+# Static config files mounted into containers (all < 50KB, well under the
+# 1MB ConfigMap limit). Keys keep their file names so subPath mounts work.
+configMapGenerator:
+  - name: mysql-init-sql        # mounted at /docker-entrypoint-initdb.d (mysql)
+    files:
+      - ../../app/system.sql
+  - name: apisix-config         # mounted at /usr/local/apisix/conf (subPath)
+    files:
+      - ../../apisix/config.yaml
+      - ../../apisix/apisix.yaml
+  - name: nginx-conf            # mounted at /etc/nginx (subPath)
+    files:
+      - ../../nginx/nginx.conf
+      - ../../nginx/locations.conf

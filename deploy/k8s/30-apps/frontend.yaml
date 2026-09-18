@@ -1,0 +1,65 @@
+# Frontend — Next.js (frontendv2). NEXT_PUBLIC_* values are inlined at image
+# BUILD time; the env entries below only feed server-side rewrites
+# (MINIO_PROXY_DEST). Changing the public URL requires an image rebuild.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      initContainers:
+        - name: wait-backend
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z backend 8000; do echo waiting for backend; sleep 3; done"]
+      containers:
+        - name: frontend
+          image: ghcr.io/atoncooper/mind-base-frontend:latest
+          imagePullPolicy: Always
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: NEXT_PUBLIC_API_URL
+              value: https://localhost
+            - name: NEXT_PUBLIC_APISIX_HOST
+              value: nginx:80
+            # MinIO same-origin proxy target — read at runtime by rewrites()
+            - name: MINIO_PROXY_DEST
+              value: http://nginx:80
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 1Gi }

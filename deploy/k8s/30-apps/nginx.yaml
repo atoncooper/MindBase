@@ -1,0 +1,94 @@
+# nginx — SSL termination + routing (same nginx.conf/locations.conf as
+# compose, mounted from ConfigMaps). The entry Service is LoadBalancer —
+# on local clusters (Docker Desktop / kind / k3s) this binds the node port;
+# on cloud providers it provisions a LB. Video/wallpaper caches are
+# emptyDir (rebuildable); TLS certs come from the nginx-tls Secret.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: https
+      port: 443
+      targetPort: 443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      initContainers:
+        - name: wait-upstreams
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z frontend 3000 && nc -z backend 8000 && nc -z apisix 9080 && nc -z minio 9000; do echo waiting for frontend/backend/apisix/minio; sleep 3; done"]
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+            - containerPort: 443
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: conf
+              mountPath: /etc/nginx/locations.conf
+              subPath: locations.conf
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/certs
+              readOnly: true
+            - name: certbot-www
+              mountPath: /var/www/certbot
+            - name: video-cache
+              mountPath: /var/cache/nginx/video
+            - name: wallpaper-cache
+              mountPath: /var/cache/nginx/wallpaper
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: conf
+          configMap:
+            name: nginx-conf
+        - name: tls
+          secret:
+            secretName: nginx-tls
+        - name: certbot-www
+          emptyDir: {}
+        - name: video-cache
+          emptyDir: {}
+        - name: wallpaper-cache
+          emptyDir: {}
