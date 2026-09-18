@@ -7,10 +7,16 @@ from app.services.quiz_gen.service import QuizGenService
 
 
 class FakeSettings:
-    def __init__(self, api_key="fake-key", base_url=None, model="test"):
+    def __init__(self, api_key="fake-key", base_url=None, model="test",
+                 ai_gateway_api_key=None):
         self.openai_api_key = api_key
         self.openai_base_url = base_url
         self.llm_model = model
+        # The gateway is the only entry: the guard checks ai_gateway_api_key
+        # only; defaults follow api_key for test ergonomics
+        self.ai_gateway_api_key = (
+            api_key if ai_gateway_api_key is None else ai_gateway_api_key
+        )
 
 
 class FakeMongoColl:

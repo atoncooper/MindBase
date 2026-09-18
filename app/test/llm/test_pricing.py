@@ -26,6 +26,17 @@ class TestGetPricingEntry:
     def test_unknown_model(self) -> None:
         assert get_pricing_entry("openai", "unknown-model") is None
 
+    def test_platform_prefixed_model_matches_vendor_suffix(self) -> None:
+        # Platform-prefixed ids must still price via the vendor-suffix retry
+        # (the model id reaches the app verbatim regardless of platform).
+        entry = get_pricing_entry("higress", "openai/gpt-4o")
+        assert entry is not None
+        assert entry.input_price == 5.0
+
+    def test_unknown_platform_model_still_none(self) -> None:
+        # No vendor table entry for anonymous stealth models — stays unpriced.
+        assert get_pricing_entry("higress", "stealth/union-alpha") is None
+
 
 class TestEstimateCost:
     """Cost estimation from token counts."""

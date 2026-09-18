@@ -291,15 +291,19 @@ def _fake_settings(**over) -> SimpleNamespace:
     base = dict(
         rerank_enabled=True,
         rerank_provider="dashscope",
-        rerank_api_key="k",
         rerank_model="gte-rerank-v2",
-        rerank_base_url="http://x",
         rerank_timeout=30,
         rerank_alpha=0.7,
         rerank_beta=0.2,
         rerank_gamma=0.1,
         rerank_lambda=0.7,
         llm_model="gpt-4o",
+        # The gateway is the only connection for rerank — direct vendor
+        # settings below are legacy and must be ignored.
+        ai_gateway_api_key="sk-higress",
+        ai_gateway_base_url="http://higress:8080/v1",
+        rerank_api_key="legacy-direct-key",
+        rerank_base_url="http://legacy-direct",
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -325,9 +329,18 @@ class TestFromSettings:
             "app.services.rag.rerank.settings", _fake_settings()
         )
         r = Reranker.from_settings()
-        assert r._ds_api_key == "k"
+        assert r._ds_api_key == "sk-higress"
         assert r._ds_model == "gte-rerank-v2"
-        assert r._ds_base_url == "http://x"
+        assert r._ds_base_url == "http://higress:8080/api/v1"
+
+    def test_gateway_is_the_only_connection(self, monkeypatch) -> None:
+        # Direct vendor settings must be ignored — no direct fallback exists.
+        monkeypatch.setattr(
+            "app.services.rag.rerank.settings", _fake_settings()
+        )
+        r = Reranker.from_settings()
+        assert r._ds_api_key != "legacy-direct-key"
+        assert r._ds_base_url != "http://legacy-direct"
 
     def test_real_default_config_enables_dashscope(self) -> None:
         # Reads the real default.yaml (no monkeypatch): rerank.enabled=true

@@ -211,11 +211,13 @@ class TestAggregations:
         assert len(result) == 7
         # All zeros since no records
         assert all(p.total_tokens == 0 for p in result)
-        # Dates are sequential
-        from datetime import date, timedelta
-        today = date.today()
-        assert result[-1].date == today
-        assert result[0].date == today - timedelta(days=6)
+        # Dates are sequential — the repository buckets by UTC date, so the
+        # expected "today" must be UTC too (a local-date assertion flakes
+        # between 00:00-08:00 Beijing time).
+        from datetime import datetime, timedelta, timezone
+        today_utc = datetime.now(timezone.utc).date()
+        assert result[-1].date == today_utc
+        assert result[0].date == today_utc - timedelta(days=6)
 
     @pytest.mark.asyncio
     async def test_get_timeseries_aggregates_by_day(self, test_db, repo):
