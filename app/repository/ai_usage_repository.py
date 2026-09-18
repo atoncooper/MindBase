@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
 
 from loguru import logger
 from sqlalchemy import func, select
