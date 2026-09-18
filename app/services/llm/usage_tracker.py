@@ -101,12 +101,17 @@ class UsageTrackingCallback(BaseCallbackHandler):
         provider: str = "openai",
         model: Optional[str] = None,
         writer: Optional["BufferedUsageWriter"] = None,
+        purpose: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> None:
         self.uid = uid
         self.credential_id = credential_id
         self.provider = provider
         self.model = model
         self._writer = writer
+        # Plan 1.0.11: 账单维度（purpose/request_id）与计量来源标记（usage_source）
+        self.purpose = purpose
+        self.request_id = request_id
         # In-process accumulator (read by caller after the run completes).
         self.total_tokens: int = 0
         self.prompt_tokens: int = 0
@@ -166,6 +171,9 @@ class UsageTrackingCallback(BaseCallbackHandler):
                         total_tokens=total_tokens,
                         api_calls=api_calls,
                         cost_estimate=cost_estimate,
+                        purpose=self.purpose,
+                        request_id=self.request_id,
+                        usage_source=source,
                     ),
                     self._loop,
                 )
@@ -191,10 +199,14 @@ def attach_usage_tracking(
     provider: str = "openai",
     model: Optional[str] = None,
     writer: Optional["BufferedUsageWriter"] = None,
+    purpose: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> Any:
     """Attach a UsageTrackingCallback to a LangChain LLM and return it.
 
     The original object is not mutated; callbacks are appended to a new list.
+    ``purpose`` / ``request_id`` feed the billing dimensions of
+    ``ai_usage_daily`` (aggregation / reconciliation).
     """
     tracker = UsageTrackingCallback(
         uid=uid,
@@ -202,6 +214,8 @@ def attach_usage_tracking(
         provider=provider,
         model=model,
         writer=writer,
+        purpose=purpose,
+        request_id=request_id,
     )
     callbacks = list(getattr(llm, "callbacks", None) or [])
     callbacks.append(tracker)

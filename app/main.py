@@ -268,6 +268,11 @@ async def lifespan(app: FastAPI):
 
     app.state.usage_writer = await start_buffered_usage_writer()
 
+    # 计量账单 rollup 周期任务（credential_usage → ai_usage_daily，plan/1.0.11 §6.5）
+    from app.repository.ai_usage_repository import start_usage_rollup_loop
+
+    app.state.usage_rollup_task = await start_usage_rollup_loop()
+
     # 初始化 QueryRewriter (singleton; DBChatDeps also uses get_rewriter())
     from app.services.query import get_rewriter
 
@@ -371,6 +376,17 @@ async def lifespan(app: FastAPI):
         )
 
         await _asyncio.shield(shutdown_buffered_usage_writer())
+
+        # 计量账单 rollup 周期任务退出前跑最后一次（收尾当天数据）
+        _rollup_task = getattr(app.state, "usage_rollup_task", None)
+        if _rollup_task is not None:
+            try:
+                from app.repository.ai_usage_repository import run_rollup_once
+
+                await _asyncio.shield(run_rollup_once())
+            finally:
+                _rollup_task.cancel()
+            logger.info("[AI_USAGE] rollup task stopped")
 
         await _asyncio.shield(app.state.rewriter.close())
         logger.info("[QUERY_REWRITE] QueryRewriter shutdown")
@@ -510,6 +526,10 @@ app.include_router(tasks_ws_router)
 app.include_router(code_executions_router)
 app.include_router(admin_code_executions_router)
 app.include_router(internal_quiz_router)
+# AI 网关 usage-logger 插件上报（网关侧请求级用量流水；APISIX key-auth 保护）
+from app.routers.internal_ai_usage import router as internal_ai_usage_router
+
+app.include_router(internal_ai_usage_router)
 app.include_router(internal_auth_router)
 app.include_router(task_quiz_router)
 # 定时出题答题提交（判题/入库业务在主 app；app-task 只做调度+通知）

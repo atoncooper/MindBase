@@ -21,7 +21,7 @@ from sqlalchemy import (
     Index,
     text,
 )
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 
@@ -389,6 +389,70 @@ class CredentialUsage(Base):
     api_calls = Column(Integer, default=1)
     cost_estimate = Column(Numeric(12, 6), default=0.0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Plan 1.0.11: 计量账单维度（纯 MySQL 追加列，无 Milvus 影响）
+    purpose = Column(String(32), nullable=True)  # 业务维度：chat/quiz_gen/task_quiz/kg/...
+    request_id = Column(String(64), nullable=True)  # 请求关联（X-Request-Id）
+    usage_source = Column(String(24), nullable=True)  # 计量来源：llm_output/usage_metadata/response_metadata/none
+
+
+class AIUsageDaily(Base):
+    """AI 用量日账单（plan/1.0.11 §6.5）——credential_usage 的持久聚合，
+    单价快照内嵌于行，改价不重算历史。金额一律 long 分。"""
+
+    __tablename__ = "ai_usage_daily"
+    __table_args__ = (
+        UniqueConstraint(
+            "uid", "stat_date", "provider", "model", "purpose",
+            name="uq_ai_usage_daily_dim",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(BigInteger, nullable=False, index=True)
+    stat_date = Column(Date, nullable=False, index=True)
+    provider = Column(String(32), nullable=False, default="dashscope")
+    model = Column(String(64), nullable=False, default="unknown")
+    purpose = Column(String(32), nullable=False, default="chat")
+    requests = Column(Integer, default=0)
+    prompt_tokens = Column(BigInteger, default=0)
+    completion_tokens = Column(BigInteger, default=0)
+    asr_seconds = Column(BigInteger, default=0)
+    unit_price_in = Column(BigInteger, default=0)  # 分/百万 token（快照）
+    unit_price_out = Column(BigInteger, default=0)  # 分/百万 token（快照）
+    cost = Column(BigInteger, default=0)  # 分
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AIPriceConfig(Base):
+    """AI 计价配置（分/百万 token）——effective_from 版本化，账单按日期取生效价。"""
+
+    __tablename__ = "ai_price_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(32), nullable=False)
+    model = Column(String(64), nullable=False)
+    input_per_m = Column(BigInteger, nullable=False, default=0)
+    output_per_m = Column(BigInteger, nullable=False, default=0)
+    asr_per_minute = Column(BigInteger, nullable=False, default=0)
+    effective_from = Column(Date, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+
+
+class AIGatewayUsage(Base):
+    """AI 网关侧请求级流水（usage-logger 插件经 /internal/ai-usage 上报）——
+    与 credential_usage 对账的独立账本（ground truth 校准）。"""
+
+    __tablename__ = "ai_gateway_usage"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=True, index=True)
+    uid = Column(BigInteger, nullable=True, index=True)
+    model = Column(String(64), nullable=True)
+    purpose = Column(String(32), nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    status = Column(String(24), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 # ==================== SQLAlchemy 模型 (Quiz 题目训练系统) ====================
