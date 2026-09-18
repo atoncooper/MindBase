@@ -57,9 +57,12 @@ def _get_store():
 def _gen_llm():
     from langchain_openai import ChatOpenAI
 
+    from app.services.llm.providers import resolve_llm_config
+
+    cfg = resolve_llm_config()
     return ChatOpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=cfg.api_key,
+        base_url=cfg.base_url,
         model=settings.llm_model,  # qwen3-max
         temperature=0.3,
     )
@@ -69,9 +72,12 @@ def _judge_llm():
     """Judge LLM: 同源不同 model (qwen-plus). 后续拓展异源改这里."""
     from langchain_openai import ChatOpenAI
 
+    from app.services.llm.providers import resolve_llm_config
+
+    cfg = resolve_llm_config()
     return ChatOpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=cfg.api_key,
+        base_url=cfg.base_url,
         model=JUDGE_MODEL,
         temperature=0,
         max_tokens=JUDGE_MAX_TOKENS,
