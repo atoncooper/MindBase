@@ -1,23 +1,25 @@
-"""LLM provider registry — switch the conversational LLM between DashScope
-and OpenRouter.
+"""LLM connection resolution — the Higress AI gateway is the single entry.
 
-Both providers speak the OpenAI-compatible protocol, so a switch is just a
-different ``(base_url, api_key, model)`` triple plus optional default
-headers.  Resolution is centralised here so every chat-style LLM builder
-sees the same provider decision.
-
-Selection: ``llm.provider`` in config.yaml / env ``LLM__PROVIDER``
-(``dashscope`` | ``openrouter``).  Credentials live in their own config
-sections so both providers can stay configured side-by-side::
-
-    llm:        { api_key, base_url, model }   # dashscope (existing keys)
-    openrouter: { api_key, base_url, model }   # env: OPENROUTER__*
+Platform-initiated LLM traffic (chat harness, quiz, KG extraction, query
+rewriting, platform embeddings, ...) always exits through the Higress AI
+gateway: ``base_url``/``api_key`` are the gateway endpoint and consumer
+key, and the model name is passed through untouched — the gateway routes
+by model to the upstream provider.  Vendor keys live only in the gateway
+console, never in this app's config.
 
 Scope (deliberate):
-    - Switches: conversational LLM calls (chat ``build_llm``, harness LLM).
-    - Does NOT switch: embeddings and rerank — DashScope-only models
-      (``text-embedding-v4`` / ``gte-rerank-v2`` are not available on
-      OpenRouter), so those call sites keep reading ``llm.*`` directly.
+    - Routes: OpenAI-compatible chat + embeddings traffic.
+    - Does NOT route: ASR (paraformer native API) and rerank
+      (gte-rerank-v2 native API) — not OpenAI-compatible, keep their own
+      ``ASR__*`` / ``RERANK__*`` credentials.
+    - BYOK (user-supplied credentials) go directly to the user's own
+      endpoint.  A user credential without a base_url is an ERROR: a vendor
+      key cannot authenticate against the gateway's consumer key-auth, and
+      legacy direct-connection fallbacks have been removed.
+
+Selection used to be a dashscope/openrouter switch (``llm.provider``);
+both direct providers are deprecated — the gateway is the only platform
+entry and the switch has been removed.
 """
 
 from __future__ import annotations
@@ -33,39 +35,23 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-# OpenRouter routes by "vendor/model"; default to the same family the project
-# already uses on DashScope so a switch is behaviourally comparable.
-OPENROUTER_DEFAULT_MODEL = "qwen/qwen3-max"
-# Optional attribution headers OpenRouter uses to rank apps on their leaderboards.
-_OPENROUTER_APP_HEADERS = {
-    "HTTP-Referer": "https://github.com/atoncooper/MindBase",
-    "X-Title": "MindBase",
-}
+# Default Higress gateway endpoint (compose-internal hostname); override
+# with AI_GATEWAY__BASE_URL when debugging from outside the compose network.
+DEFAULT_GATEWAY_BASE_URL = "http://higress:8080/v1"
 
 
-@dataclass(frozen=True)
-class ProviderPreset:
-    """Static per-provider facts that don't depend on user configuration."""
+def gateway_native_base_urls() -> tuple[str, str]:
+    """``(http_base, ws_base)`` for DashScope-native passthrough via the
+    gateway — used by rerank and ASR, which are not OpenAI-compatible.
 
-    name: str
-    default_base_url: str
-    default_headers: dict[str, str] = field(default_factory=dict)
-
-
-PROVIDERS: dict[str, ProviderPreset] = {
-    "dashscope": ProviderPreset(
-        name="dashscope",
-        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    ),
-    "openrouter": ProviderPreset(
-        name="openrouter",
-        default_base_url=OPENROUTER_DEFAULT_BASE_URL,
-        default_headers=_OPENROUTER_APP_HEADERS,
-    ),
-}
-
-DEFAULT_PROVIDER = "dashscope"
+    The gateway's native route forwards the path as-is and injects the real
+    vendor key, so callers authenticate with the gateway consumer key.
+    """
+    root = (settings.ai_gateway_base_url or DEFAULT_GATEWAY_BASE_URL).removesuffix(
+        "/v1"
+    )
+    ws_root = root.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+    return root + "/api/v1", ws_root + "/api-ws/v1/inference"
 
 # ---------------------------------------------------------------------------
 # Model → context-window registry
@@ -182,11 +168,9 @@ async def refresh_dynamic_context_windows(
     """
     global _dynamic_windows, _dynamic_fetched_at
 
-    if (
-        not force
-        and _dynamic_windows
-        and time.time() - _dynamic_fetched_at < _DYNAMIC_TTL_SECONDS
-    ):
+    # TTL gates both successes and failures — an endpoint without metadata
+    # (e.g. the gateway's /models) must not be re-probed on every call.
+    if not force and time.time() - _dynamic_fetched_at < _DYNAMIC_TTL_SECONDS:
         return len(_dynamic_windows)
 
     url = base_url.rstrip("/") + "/models"
@@ -195,6 +179,17 @@ async def refresh_dynamic_context_windows(
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
+            if "application/json" not in resp.headers.get("content-type", ""):
+                # 2xx with an empty/non-JSON body = the endpoint carries no
+                # model metadata (normal for gateway passthrough) — nothing
+                # to learn, the static registry applies. Not an error.
+                logger.info(
+                    "[LLM_PROVIDER] %s serves no model metadata (non-JSON); "
+                    "static context-window registry applies",
+                    url,
+                )
+                _dynamic_fetched_at = time.time()
+                return 0
             payload = resp.json()
         windows: dict[str, int] = {}
         for entry in payload.get("data", []):
@@ -211,13 +206,20 @@ async def refresh_dynamic_context_windows(
             url,
         )
         return len(windows)
-    except Exception:
+    except Exception as exc:
         logger.warning(
-            "[LLM_PROVIDER] dynamic context-window fetch failed from %s",
+            "[LLM_PROVIDER] dynamic context-window fetch failed from %s (%s) — "
+            "static context-window registry applies",
             url,
-            exc_info=True,
+            type(exc).__name__,
         )
+        _dynamic_fetched_at = time.time()
         return 0
+
+
+# Models whose conservative-fallback resolution already warned (per process),
+# so switching platforms surfaces visibly instead of silently degrading.
+_window_fallback_warned: set[str] = set()
 
 
 def resolve_context_window(model: str, manual_window: int = 0) -> int:
@@ -227,7 +229,7 @@ def resolve_context_window(model: str, manual_window: int = 0) -> int:
     1. ``manual_window`` > 0 — explicit pin (``llm.context_window``)
     2. dynamic vendor metadata (exact id or vendor-suffix match)
     3. longest substring match against :data:`MODEL_CONTEXT_WINDOWS`
-    4. conservative :data:`DEFAULT_CONTEXT_WINDOW`
+    4. conservative :data:`DEFAULT_CONTEXT_WINDOW` (warns once per model)
     """
     if manual_window and manual_window > 0:
         return manual_window
@@ -250,6 +252,16 @@ def resolve_context_window(model: str, manual_window: int = 0) -> int:
     for key in sorted(MODEL_CONTEXT_WINDOWS, key=len, reverse=True):
         if key in static_name:
             return MODEL_CONTEXT_WINDOWS[key]
+
+    if name not in _window_fallback_warned:
+        _window_fallback_warned.add(name)
+        logger.warning(
+            "[LLM_PROVIDER] model %r is not in the context-window registry — "
+            "assuming %dk for the history-compression budget; pin "
+            "llm.context_window with the real window",
+            model,
+            DEFAULT_CONTEXT_WINDOW // 1024,
+        )
     return DEFAULT_CONTEXT_WINDOW
 
 
@@ -290,67 +302,64 @@ def infer_provider(base_url: Optional[str]) -> str:
 
 def resolve_llm_config(
     *,
-    provider: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     model: Optional[str] = None,
+    direct: bool = False,
 ) -> ResolvedLLMConfig:
-    """Resolve the effective LLM settings for the configured provider.
+    """Resolve the effective LLM connection settings.
 
-    Explicit arguments override configuration (used by tests); otherwise the
-    values come from the provider's own config section:
+    Platform path (default): the Higress AI gateway is the only entry —
+    ``base_url``/``api_key`` come from ``ai_gateway.*`` and the model name
+    passes through untouched (the gateway routes by model to the upstream
+    provider).  A missing ``AI_GATEWAY__API_KEY`` warns once and yields an
+    empty key; builders surface a clear error at call time instead of
+    failing startup.
 
-    - ``dashscope`` → ``llm.api_key / llm.base_url / llm.model`` (unchanged
-      legacy behaviour)
-    - ``openrouter`` → ``openrouter.api_key / openrouter.base_url /
-      openrouter.model`` plus OpenRouter attribution headers
+    Explicit ``api_key``/``base_url`` arguments (tests, BYOK builders) and
+    ``direct=True`` bypass the gateway: a direct connection requires an
+    explicit ``base_url`` — there is no legacy vendor fallback, a missing
+    endpoint raises :class:`ValueError`.
 
-    An unknown provider name falls back to DashScope with a warning rather
-    than failing startup — a typo must not take chat down.
+    Platform path (default) continues below.
     """
-    chosen = (provider or settings.llm_provider or DEFAULT_PROVIDER).strip().lower()
-    preset = PROVIDERS.get(chosen)
-    if preset is None:
-        logger.warning(
-            "[LLM_PROVIDER] unknown provider=%r, falling back to %s",
-            chosen,
-            DEFAULT_PROVIDER,
-        )
-        chosen = DEFAULT_PROVIDER
-        preset = PROVIDERS[DEFAULT_PROVIDER]
+    mdl = model if model is not None else settings.llm_model
 
-    if chosen == "openrouter":
-        key = api_key if api_key is not None else settings.openrouter_api_key
-        url = (
-            base_url
-            if base_url is not None
-            else (settings.openrouter_base_url or preset.default_base_url)
-        )
-        mdl = (
-            model
-            if model is not None
-            else (settings.openrouter_model or OPENROUTER_DEFAULT_MODEL)
-        )
-        headers = dict(preset.default_headers)
-        if not key:
-            logger.warning(
-                "[LLM_PROVIDER] provider=openrouter but openrouter.api_key is "
-                "empty — set OPENROUTER__API_KEY"
+    if direct or api_key is not None or base_url is not None:
+        if base_url is None:
+            raise ValueError(
+                "direct LLM connection requires an explicit base_url — "
+                "legacy vendor fallbacks have been removed"
             )
-    else:
-        key = api_key if api_key is not None else settings.openai_api_key
-        url = (
-            base_url
-            if base_url is not None
-            else (settings.openai_base_url or preset.default_base_url)
+        return ResolvedLLMConfig(
+            provider=infer_provider(base_url),
+            api_key=api_key if api_key is not None else settings.openai_api_key,
+            base_url=base_url,
+            model=mdl,
         )
-        mdl = model if model is not None else settings.llm_model
-        headers = {}
 
+    url = settings.ai_gateway_base_url or DEFAULT_GATEWAY_BASE_URL
+    key = settings.ai_gateway_api_key
+    if not key:
+        _warn_gateway_key_missing()
+    logger.info("[LLM_PROVIDER] via AI gateway %s model=%s", url, mdl)
     return ResolvedLLMConfig(
-        provider=chosen,
+        provider="higress",
         api_key=key,
         base_url=url,
         model=mdl,
-        default_headers=headers,
     )
+
+
+_gateway_key_warned = False
+
+
+def _warn_gateway_key_missing() -> None:
+    """Warn once (per process) that the gateway has no consumer key."""
+    global _gateway_key_warned
+    if not _gateway_key_warned:
+        _gateway_key_warned = True
+        logger.warning(
+            "[LLM_PROVIDER] AI_GATEWAY__API_KEY is empty — platform LLM "
+            "calls will fail until the Higress consumer key is configured"
+        )

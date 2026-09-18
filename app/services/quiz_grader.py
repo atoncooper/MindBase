@@ -11,7 +11,7 @@ from loguru import logger
 from langchain_openai import ChatOpenAI
 
 from app.agent.quiz import grade_essay
-from app.config import settings
+from app.services.llm.factory import build_platform_llm
 from app.database import get_db_context
 from app.services.quiz_generator import get_quiz_set, get_quiz_questions_full
 
@@ -263,20 +263,8 @@ class QuizGraderService:
 
     @staticmethod
     def _get_llm() -> ChatOpenAI:
-        """获取 LLM 实例（用于主观题评分，低温度确保一致性）"""
-        api_key = settings.openai_api_key
-        base_url = settings.openai_base_url
-        model = settings.llm_model
-
-        if not api_key:
-            raise RuntimeError("未配置 LLM API Key")
-
-        return ChatOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            temperature=0.1,
-        )
+        """获取 LLM 实例（用于主观题评分，低温度确保一致性；统一 LLM 工厂）"""
+        return build_platform_llm(purpose="quiz_grade", temperature=0.1)
 
     def _get_tracking_llm(self, uid: int | None = None) -> ChatOpenAI:
         """LLM with usage tracking wired up for essay grading cost accounting."""

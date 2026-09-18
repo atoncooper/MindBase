@@ -91,24 +91,20 @@ class _Settings:
         return str(_get("rdbms", "url", default="sqlite+aiosqlite:///./data/mind_base.db"))
 
     # ── LLM ──────────────────────────────────────────────────────
+    # The AI gateway (see the ai_gateway section below) is the only
+    # connection entry; this section keeps inference parameters (model
+    # name / context window) while api_key/base_url are legacy-only.
 
     @property
     def openai_api_key(self) -> str:
+        """Legacy platform key (``llm.api_key``).  No longer used for any
+        AI connection (the Higress gateway is the only entry); kept only for
+        the offline eval scripts' env fallback chain."""
         return str(_get("llm", "api_key", default=""))
-
-    @property
-    def openai_base_url(self) -> str:
-        return str(_get("llm", "base_url", default="https://dashscope.aliyuncs.com/compatible-mode/v1"))
 
     @property
     def llm_model(self) -> str:
         return str(_get("llm", "model", default="qwen3-max"))
-
-    @property
-    def llm_provider(self) -> str:
-        """Which provider serves conversational LLM calls (see
-        ``app/services/llm/providers.py``): ``dashscope`` | ``openrouter``."""
-        return str(_get("llm", "provider", default="dashscope"))
 
     @property
     def llm_context_window(self) -> int:
@@ -121,19 +117,20 @@ class _Settings:
         """
         return int(_get("llm", "context_window", default=0))
 
-    # ── OpenRouter (alternative OpenAI-compatible gateway) ──────────
+    # ── AI Gateway (Higress) ─────────────────────────────────────
+    # The single egress for platform LLM/embedding traffic: base_url/api_key
+    # are the gateway endpoint and consumer key, and model names pass
+    # through untouched (the gateway routes by model to the upstream
+    # provider). Real vendor keys are configured in the Higress console
+    # only, never in .env/git.
 
     @property
-    def openrouter_api_key(self) -> str:
-        return str(_get("openrouter", "api_key", default=""))
+    def ai_gateway_base_url(self) -> str:
+        return str(_get("ai_gateway", "base_url", default=""))
 
     @property
-    def openrouter_base_url(self) -> str:
-        return str(_get("openrouter", "base_url", default="https://openrouter.ai/api/v1"))
-
-    @property
-    def openrouter_model(self) -> str:
-        return str(_get("openrouter", "model", default=""))
+    def ai_gateway_api_key(self) -> str:
+        return str(_get("ai_gateway", "api_key", default=""))
 
     @property
     def eval_llm_model(self) -> str:
@@ -178,10 +175,8 @@ class _Settings:
         return int(_get("agentic", "max_hops", default=3))
 
     # ── ASR ──────────────────────────────────────────────────────
-
-    @property
-    def dashscope_base_url(self) -> str:
-        return str(_get("asr", "base_url", default="https://dashscope.aliyuncs.com/api/v1"))
+    # Connection goes through the AI gateway (consumer key); no separate
+    # ASR key / base_url any more — BYOK callers must pass both explicitly.
 
     @property
     def asr_model(self) -> str:
@@ -210,12 +205,6 @@ class _Settings:
     @property
     def asr_recognition_timeout(self) -> int:
         return int(_get("asr", "recognition_timeout", default=90))
-
-    @property
-    def asr_api_key(self) -> str:
-        """ASR key; falls back to LLM key when ASR__API_KEY is unset."""
-        key = str(_get("asr", "api_key", default="") or "")
-        return key or self.openai_api_key
 
     # ── Ingest ───────────────────────────────────────────────────
 

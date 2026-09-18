@@ -16,7 +16,7 @@ from app.agent.quiz.prompts import (
     QUIZ_BATCH_USER_PROMPT,
 )
 from app.agent.quiz.schemas import EssayGradingOutput, QuizBatchOutput
-from app.config import settings
+from app.services.llm.factory import build_platform_llm
 
 
 MAX_BATCH_COUNT = 20
@@ -33,19 +33,9 @@ _DOWNGRADE_MAP = {"essay": "short_answer", "short_answer": "single_choice"}
 
 
 def get_default_llm(temperature: float = 0.7) -> ChatOpenAI:
-    api_key = settings.openai_api_key
-    base_url = settings.openai_base_url
-    model = settings.llm_model
-
-    if not api_key:
-        raise RuntimeError("未配置 LLM API Key")
-
-    return ChatOpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        temperature=temperature,
-    )
+    """平台默认 LLM（quiz agent 出题）。统一 LLM 工厂：provider 切换 +
+    AI 网关灰度 + key 缺失显式报错（plan/1.0.11 §5.1 收口）。"""
+    return build_platform_llm(purpose="quiz", temperature=temperature)
 
 
 def _option_label(value: str) -> str:

@@ -5,7 +5,7 @@ QueryRewriter 主入口：协调多个改写策略，对用户 query 进行改�
 """
 from typing import List
 
-from app.config import settings
+from app.services.llm.factory import build_platform_llm
 from app.services.query.strategy import RewriteStrategy
 from app.services.query.step_back import StepBackStrategy
 from app.services.query.sub_query_splitter import SubQuerySplitterStrategy
@@ -20,14 +20,8 @@ class QueryRewriter:
     """Query 改写服务主入口"""
 
     def __init__(self):
-        from langchain_openai import ChatOpenAI
-
-        self.llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            model=settings.llm_model,
-            temperature=0,  # 改写用 temperature=0 保证稳定
-        )
+        # 统一 LLM 工厂（provider 切换 + AI 网关灰度），plan/1.0.11 §5.1
+        self.llm = build_platform_llm(purpose="rewrite", temperature=0)  # temperature=0 保证稳定
 
         # 注入改写策略（按优先级排序：后退提示词 > 子查询拆分）
         self.strategies: List[RewriteStrategy] = [

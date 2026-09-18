@@ -12,6 +12,14 @@ Env var convention:
   RDBMS__URL     → config["rdbms"]["url"]
   SESSION__SECRET → config["session"]["secret"]
 
+Secret placeholders (declared in YAML, resolved from env):
+  Sensitive fields are declared in YAML as ``${VAR}`` or ``${VAR:default}``
+  placeholders; the loader expands them from os.environ when each YAML layer
+  is parsed.  Unset variables without a default resolve to "" — the same
+  shape as the previous ``key: ""`` convention.  Placeholders only ever read
+  the environment (never other config values), and expansion runs BEFORE the
+  env-override merge so values arriving via env are never rewritten.
+
 Backward-compat env vars (mapped automatically):
   DASHSCOPE_API_KEY → config["llm"]["api_key"]
   OPENAI_API_KEY    → config["llm"]["api_key"]
@@ -28,6 +36,10 @@ from pathlib import Path
 import yaml
 
 _CONFIG_DIR = Path(__file__).parent
+
+# ${VAR} / ${VAR:default} — variable name required, optional default that may
+# not contain "}". A bare "$" without braces is left untouched.
+_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}")
 
 # Old env var names mapped to their new dotted paths.
 # Only used when the new-style env var is NOT set.
@@ -81,6 +93,26 @@ _StrictBoolSafeLoader.add_implicit_resolver(
     re.compile(r"^(?:true|True|false|False)$"),
     list("tTfF"),
 )
+
+
+def _expand_env_placeholders(node):
+    """Recursively expand ``${VAR}`` / ``${VAR:default}`` in string values.
+
+    Reads os.environ only (never other config values).  Called on each YAML
+    layer right after parsing, BEFORE any env-override merge, so values
+    arriving via env are never rewritten.  Unset variables without a
+    default resolve to "".
+    """
+    if isinstance(node, dict):
+        return {k: _expand_env_placeholders(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_expand_env_placeholders(v) for v in node]
+    if isinstance(node, str):
+        return _PLACEHOLDER_RE.sub(
+            lambda m: os.getenv(m.group(1), m.group(2) if m.group(2) is not None else ""),
+            node,
+        )
+    return node
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -163,14 +195,16 @@ def load_config() -> dict:
     if not default_path.exists():
         raise FileNotFoundError(f"Missing required config file: {default_path}")
     with open(default_path, encoding="utf-8") as f:
-        config = yaml.load(f, Loader=_StrictBoolSafeLoader)
+        config = _expand_env_placeholders(yaml.load(f, Loader=_StrictBoolSafeLoader))
 
     # 2. config.yaml (optional, committed — skip via BILIRAG_SKIP_CONFIG=1)
     if not os.getenv("BILIRAG_SKIP_CONFIG"):
         config_path = _CONFIG_DIR / "config.yaml"
         if config_path.exists():
             with open(config_path, encoding="utf-8") as f:
-                config_overlay = yaml.load(f, Loader=_StrictBoolSafeLoader)
+                config_overlay = _expand_env_placeholders(
+                    yaml.load(f, Loader=_StrictBoolSafeLoader)
+                )
                 if config_overlay:
                     _deep_merge(config, config_overlay)
 
@@ -178,7 +212,9 @@ def load_config() -> dict:
     local_path = _CONFIG_DIR / "local.yaml"
     if local_path.exists():
         with open(local_path, encoding="utf-8") as f:
-            local_overlay = yaml.load(f, Loader=_StrictBoolSafeLoader)
+            local_overlay = _expand_env_placeholders(
+                yaml.load(f, Loader=_StrictBoolSafeLoader)
+            )
             if local_overlay:
                 _deep_merge(config, local_overlay)
 

@@ -8,13 +8,14 @@ from datetime import datetime, timezone, timedelta
 import re
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from app.config import settings
 from app.response.knowledge import VideoContent
+from app.services.llm.factory import build_platform_llm
 from app.services.rag.chunking import SemanticChunker
 from app.services.rag.prompts import (
     fallback_system_prompt,
@@ -64,9 +65,6 @@ class RAGService:
         self.collection_name = collection_name
         self._api_key_manager = api_key_manager
 
-        # 默认配置
-        default_embedding_api_key = settings.openai_api_key
-        default_embedding_base_url = settings.openai_base_url
         default_embedding_model = settings.embedding_model
 
         # 初始化 Embeddings
@@ -75,28 +73,23 @@ class RAGService:
 
             self.embeddings = DynamicEmbeddings(
                 api_key_manager,
-                api_key=default_embedding_api_key,
-                base_url=default_embedding_base_url,
                 model=default_embedding_model,
             )
             logger.info("使用 DynamicEmbeddings 初始化（支持用户自定义 Embedding Key）")
         else:
-            # 无 ApiKeyManager 时使用默认 Embeddings（兼容现有逻辑）
-            try:
-                from langchain_community.embeddings import DashScopeEmbeddings
+            # No ApiKeyManager: platform default credentials via the AI
+            # gateway — the single egress for all AI traffic, embeddings
+            # included. Same model / dimensions, so vectors are unchanged.
+            from app.services.llm.providers import resolve_llm_config
 
-                self.embeddings = DashScopeEmbeddings(
-                    dashscope_api_key=default_embedding_api_key,
-                    model=default_embedding_model,
-                )
-                logger.info("使用 DashScopeEmbeddings 初始化成功")
-            except ImportError:
-                self.embeddings = OpenAIEmbeddings(
-                    api_key=default_embedding_api_key,
-                    base_url=default_embedding_base_url,
-                    model=default_embedding_model,
-                    check_embedding_ctx_length=False,
-                )
+            cfg = resolve_llm_config()
+            self.embeddings = OpenAIEmbeddings(
+                api_key=cfg.api_key,
+                base_url=cfg.base_url,
+                model=default_embedding_model,
+                check_embedding_ctx_length=False,
+            )
+            logger.info("Using gateway embeddings (no ApiKeyManager)")
 
         # 初始化向量存储 — 统一使用 Milvus
         self.vectorstore = None
@@ -174,13 +167,9 @@ class RAGService:
                     type(e).__name__,
                 )
 
-        # 初始化 LLM
-        self.llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            model=settings.llm_model,
-            temperature=0.5,
-        )
+        # 初始化 LLM（统一 LLM 工厂：provider 切换 + AI 网关灰度；RAG 层按架构
+        # 约定不感知 uid，不挂用户计量，plan/1.0.11 §5.1）
+        self.llm = build_platform_llm(purpose="rag_summary", temperature=0.5)
 
         # Semantic chunker (outline-aware, builds embedding_text with title
         # prefix). Shared pattern with cloud-drive ingestion (vectorize.py).
