@@ -9,7 +9,6 @@ import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
-import UpdateBanner from "./components/UpdateBanner";
 import SystemSettings from "./components/SystemSettings";
 import ApiSettings from "./components/ApiSettings";
 import AgentStatusView from "./components/AgentStatusView";
@@ -79,7 +78,8 @@ function App() {
   const route = useHashRoute();
   const [version, setVersion] = useState<ItemState<string>>({ status: "loading" });
   // One silent auto check ~3s after mount, plus manual checks on demand;
-  // the banner and the 系统状态 card share this single state object.
+  // the 更新弹窗 in 系统设置 and the 检查更新 row share this single state
+  // object — 更新只在设置内以弹窗呈现，不再有全局横幅。
   const updateState = useUpdateCheck(3000);
   const inSettings = route.view === "settings";
   // The chat workspace is full-bleed: it skips the .shell card entirely and
@@ -158,7 +158,6 @@ function App() {
       <div className="app-frame">
         <NavRail route={route} />
         <main className="main-col main-col--chat">
-          <UpdateBanner info={updateState.update} onDismiss={updateState.dismiss} />
           {route.view === "notes" ? (
             <NotesView pending={pending} onPendingConsumed={() => setPending(null)} />
           ) : route.view === "mindmap-edit" ? (
@@ -188,8 +187,6 @@ function App() {
             </div>
             {version.status === "ok" && <span className="chip">v{version.value}</span>}
           </header>
-
-          <UpdateBanner info={updateState.update} onDismiss={updateState.dismiss} />
 
           {inSettings ? (
             <>

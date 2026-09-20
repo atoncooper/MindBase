@@ -46,6 +46,7 @@ tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 http = "1"
+tauri-plugin-updater = "2.11.0"
 
 # Test-only: backdate mtimes to exercise LRU eviction order and the grace window.
 # (cross-platform mtime setting isn't exposed by std)

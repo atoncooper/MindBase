@@ -5,6 +5,13 @@ name: Desktop Release
 # 应用内更新器按该前缀识别版本（strip 后与 tauri.conf.json 的 version 比较），
 # 附件文件名保持 tauri 默认命名（含 x64、以 -setup.exe 结尾）即可被识别。
 #
+# 签名无感更新（tauri-plugin-updater）：构建时以 Secret
+# TAURI_SIGNING_PRIVATE_KEY 签出 Windows 安装包（*_x64-setup.exe / *.msi，
+# tauri 2.11 直接签安装包本体）与 macOS 包（*.app.tar.gz）的 .sig；
+# Windows job 额外生成并上传 latest.json（windows-x86_64 条目指向 NSIS
+# 安装包），macOS job 上传 darwin 包后把 darwin 条目合并进 latest.json。
+# 应用经 /releases/latest/download/latest.json 发现签名更新。
+#
 # 平台矩阵：Windows（NSIS/MSI，Windows job 创建 Release）与 macOS（Apple
 # Silicon .dmg，Beta）。macOS job 等待 Release 出现后上传附件，避免与
 # Windows job 的创建竞争。
@@ -86,6 +93,11 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app
+        env:
+          # 签名更新产物（安装包 .sig）必需；缺失时 createUpdaterArtifacts
+          # 会直接让构建失败。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
       - name: Publish GitHub Release (Windows)
@@ -103,6 +115,26 @@ jobs:
             --title "MindBase Desktop $env:GITHUB_REF_NAME" `
             --generate-notes
 
+          # 签名更新通道清单：windows-x86_64 → NSIS 安装包（tauri 2.11 直接
+          # 签安装包本体，更新器按 .sig 校验后以静默模式执行）。
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*_x64-setup.exe" | Select-Object -First 1
+          if (-not $setup) { Write-Error "未找到 NSIS 安装包（*_x64-setup.exe）"; exit 1 }
+          $sig = (Get-Content "$($setup.FullName).sig" -Raw).Trim()
+          $version = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
+          $latest = [ordered]@{
+            version  = $version
+            notes    = ""
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{ signature = $sig; url = "$base/$($setup.Name)" }
+            }
+          }
+          $json = $latest | ConvertTo-Json -Depth 6
+          # WriteAllText 落盘为无 BOM 的 UTF-8（BOM 会破坏 updater 的 JSON 解析）。
+          [System.IO.File]::WriteAllText("$PWD/latest.json", $json)
+          gh release upload $env:GITHUB_REF_NAME "latest.json" --clobber
+
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
         env:
@@ -119,3 +151,23 @@ jobs:
           done
           gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || { echo "Release 仍未创建"; exit 1; }
           gh release upload "$GITHUB_REF_NAME" $files --clobber
+
+          # 签名更新包（darwin）：上传 app.tar.gz + sig，并把 darwin 条目
+          # 合并进 Windows job 写入的 latest.json（通用的 universal 包两个
+          # 架构共用一个条目）。
+          app_tar=$(ls src-tauri/target/release/bundle/macos/*.app.tar.gz 2>/dev/null | head -n1)
+          if [ -n "$app_tar" ] && [ -f "${app_tar}.sig" ]; then
+            gh release upload "$GITHUB_REF_NAME" "$app_tar" "${app_tar}.sig" --clobber
+            gh release download "$GITHUB_REF_NAME" -p "latest.json" -O latest.json
+            base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+            sig=$(cat "${app_tar}.sig")
+            tmp=$(mktemp)
+            jq --arg url "$base/$(basename "$app_tar")" --arg sig "$sig" \
+              '.platforms["darwin-aarch64"] = {signature: $sig, url: $url}
+               | .platforms["darwin-x86_64"] = {signature: $sig, url: $url}' \
+              latest.json > "$tmp"
+            mv "$tmp" latest.json
+            gh release upload "$GITHUB_REF_NAME" latest.json --clobber
+          else
+            echo "未找到 macOS 更新包（*.app.tar.gz），latest.json 保持 windows-only"
+          fi
