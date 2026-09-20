@@ -540,6 +540,20 @@ class _Settings:
         return int(_get("rerank", "top_n", default=30))
 
     @property
+    def rerank_min_relevance_score(self) -> float:
+        # Tool-level relevance floor on rerank_score (gte-rerank family, 0-1).
+        # Docs below it are dropped before the answer is built; when nothing
+        # survives, the search tool answers "not found" and pushes no sources.
+        return float(_get("rerank", "min_relevance_score", default=0.25))
+
+    @property
+    def rerank_min_similarity_score(self) -> float:
+        # COSINE floor for docs that carry no rerank score (rerank disabled
+        # or the rerank call fell back). Embedding-model dependent — revisit
+        # when the embedding model changes.
+        return float(_get("rerank", "min_similarity_score", default=0.35))
+
+    @property
     def rerank_alpha(self) -> float:
         return float(_get("rerank", "alpha", default=0.7))
 
@@ -555,6 +569,33 @@ class _Settings:
     def rerank_lambda(self) -> float:
         # MMR relevance/diversity trade-off (1.0 = pure relevance).
         return float(_get("rerank", "lambda", default=0.7))
+
+    # ── Board MCP (app-board-mcp) ────────────────────────────────
+
+    @property
+    def board_mcp_url(self) -> str:
+        return str(_get("board_mcp", "url", default="http://app-board-mcp:8005/mcp"))
+
+    @property
+    def board_mcp_timeout(self) -> float:
+        return float(_get("board_mcp", "timeout", default=30.0))
+
+    @property
+    def board_mcp_auth_token(self) -> str:
+        # Secret: value arrives from .env via the ${BOARD_MCP_AUTH_TOKEN}
+        # placeholder in default.yaml (never committed).
+        return str(_get("board_mcp", "auth_token", default=""))
+
+    @property
+    def board_mcp_completion_model(self) -> str:
+        # Lightweight model for editor inline completion; empty = primary model.
+        return str(_get("board_mcp", "completion_model", default=""))
+
+    @property
+    def board_mcp_service_key(self) -> str:
+        # Service-mode apikey: the APISIX consumer key, shared with the
+        # board_internal gateway route (secret via .env placeholder).
+        return str(_get("board_mcp", "service_api_key", default=""))
 
 
 # Module-level singleton — the single config access point

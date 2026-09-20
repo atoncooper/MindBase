@@ -3,6 +3,7 @@ import { Inter, Noto_Sans_SC } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 import { AuthProvider } from "@/lib/auth";
+import { AppToastProvider } from "@/lib/app-toast";
 import { RouteGuard } from "@/components/route-guard";
 
 const inter = Inter({
@@ -41,7 +42,9 @@ export default function RootLayout({
     <html lang="zh-CN" className={`${inter.variable} ${notoSansSC.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">
         <AuthProvider>
-          <RouteGuard>{children}</RouteGuard>
+          <AppToastProvider>
+            <RouteGuard>{children}</RouteGuard>
+          </AppToastProvider>
         </AuthProvider>
       </body>
     </html>

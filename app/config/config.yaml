@@ -310,3 +310,15 @@ transaction:
   max_retries: 3
   retry_delay_base: 0.1
   readonly_hint: false                   # set true to route reads to replicas
+
+# ============================================================
+# Board MCP — app-board-mcp（思维导图/白板 MCP server）
+# ============================================================
+# backend 经 mind-base-net 直连容器端口的 streamable-http 端点。
+# auth_token / service_api_key 为敏感值，经 ${VAR} 占位引用 .env：
+#   auth_token     → BOARD_MCP_AUTH_TOKEN（外部 MCP 宿主 Bearer 用）
+#   service_api_key→ APISIX_CONSUMER_KEY（服务模式，per-request X-Uid）
+board_mcp:
+  url: http://app-board-mcp:8005/mcp
+  timeout: 30
+  completion_model: inclusionai/ling-3.0-flash-vl:free   # AI 补全轻量模型（空=跟随主模型）

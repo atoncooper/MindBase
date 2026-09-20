@@ -10,6 +10,7 @@
  */
 
 import { sanitizeError } from "@/lib/error-utils";
+import { emitAppToast } from "@/lib/app-toast";
 
 // SSR base URL: Next.js server-side fetches (SSR/RSC) have no origin, so they
 // always need an absolute internal URL. Route them through nginx (NOT direct
@@ -70,13 +71,14 @@ export async function request<T>(
         },
     });
 
-    // 会话失效时清除登录状态（不立即跳转，让调用方决定处理方式）
+    // 会话失效时清除登录状态并全局弹窗提示（RouteGuard 统一跳转到首页）。
     if (response.status === 401) {
         if (typeof window !== "undefined") {
             const token = localStorage.getItem("bili_session");
             if (token) {
                 localStorage.removeItem("bili_session");
                 localStorage.removeItem("bili_user");
+                emitAppToast("error", "登录已过期，请重新登录");
                 window.dispatchEvent(new Event("auth:unauthorized"));
                 throw new Error(sanitizeError({ status: 401 }));
             }
@@ -86,11 +88,21 @@ export async function request<T>(
     if (!response.ok) {
         // Consume body so the connection can be reused
         let rawDetail = "";
+        let bodyIsHtml = false;
         try {
             const text = await response.text();
             const parsed = JSON.parse(text);
             rawDetail = typeof parsed.detail === "string" ? parsed.detail : "";
-        } catch {}
+        } catch {
+            // 非 JSON 响应体（如 APISIX/openresty 的 403 HTML 错误页）说明
+            // 请求死在网关层，而不是业务层拒绝——按服务不可用提示，避免被
+            // 误读成"没有权限"。
+            bodyIsHtml = true;
+        }
+        if (bodyIsHtml && (response.status === 403 || response.status >= 500)) {
+            emitAppToast("warning", "服务暂时不可用，请稍后重试");
+            throw new Error("服务暂时不可用，请稍后重试");
+        }
         throw new Error(sanitizeError({ status: response.status, detail: rawDetail }));
     }
 

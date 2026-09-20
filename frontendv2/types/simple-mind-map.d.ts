@@ -91,7 +91,13 @@ declare module "simple-mind-map" {
     };
     /** 需注册 AssociativeLine 插件；调用后进入连线模式，点击目标节点完成。 */
     /** 全局快捷键控制：对话框打开时 pause，关闭时 recovery（注意 restore 是另一对 save/restore 的缓存交换，勿混用）。 */
-    keyCommand: { pause(): void; recovery(): void; restore(): void };
+    keyCommand: {
+      pause(): void;
+      recovery(): void;
+      restore(): void;
+      /** 移除库内置快捷键绑定（不传 fn = 整键清除），用于避免与全局快捷键双重触发。 */
+      removeShortcut(key: string, fn?: () => void): void;
+    };
     associativeLine: {
       createLineFromActiveNode(): void;
       /** 当前激活的关联线 [path, clickPath, text, fromNode, toNode, marker]，未选中为 null。 */

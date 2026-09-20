@@ -416,3 +416,50 @@ body {
   tab-size: 2;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── 全局 toast（auth / 网关级错误弹窗）────────────────────── */
+.app-toast-stack {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.app-toast-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--line, #e5e5ea);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  animation: app-toast-in 180ms ease-out;
+}
+
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.app-toast-icon {
+  flex: none;
+}
+
+.app-toast-message {
+  font-size: 13px;
+  color: var(--ink, #1f2329);
+  line-height: 1.5;
+}

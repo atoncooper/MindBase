@@ -92,4 +92,33 @@ export const boardsApi = {
             method: "PATCH",
             body: JSON.stringify({ isPinned }),
         }).catch(rethrowMapped),
+
+    /**
+     * AI 补全：为锚点节点建议 children / siblings（后端 /chat/board/complete，
+     * 单次结构化 LLM 调用；失败由调用方静默处理，不打断编辑）。
+     */
+    completeBoard: (
+        uuid: string,
+        payload: { anchor_uid: string; anchor_text: string; direction?: string }
+    ): Promise<BoardCompletion> =>
+        request<BoardCompletion>("/chat/board/complete", {
+            method: "POST",
+            body: JSON.stringify({ board_uuid: uuid, ...payload }),
+        }).catch(rethrowMapped),
 };
+
+export interface NodeSuggestion {
+    text: string;
+    reason?: string;
+    /** text | code | md —— code/md 时由本地渲染管线转富文本卡片 */
+    kind?: string;
+    code?: string;
+    language?: string;
+    markdown?: string;
+}
+
+export interface BoardCompletion {
+    anchor_text: string;
+    children: NodeSuggestion[];
+    siblings: NodeSuggestion[];
+}

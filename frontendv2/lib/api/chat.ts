@@ -2,6 +2,7 @@
  * Chat API - 问答 / 流式 / 会话管理 / 历史消息.
  */
 import { request, getAuthHeaders, API_BASE_URL } from "./client";
+import { emitAppToast } from "@/lib/app-toast";
 import type { ChatArtifact } from "@/lib/chat-stream";
 
 export interface ChatResponse {
@@ -94,6 +95,7 @@ export interface ChatRequestPayload {
     workspace_pages?: WorkspacePage[];
     workspace_id?: number;  // Plan 0023: cloud drive workspace
     skill_ids?: string[];  // 强制注入本次对话的已安装技能（全文进 system prompt）
+    board_uuid?: string;  // 板聊：请求限定在某块板子上（后端直路由 board agent）
 }
 
 export const chatApi = {

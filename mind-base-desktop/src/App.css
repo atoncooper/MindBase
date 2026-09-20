@@ -1144,51 +1144,6 @@ body {
   cursor: default;
 }
 
-/* Update banner ------------------------------------------------------------ */
-
-.update-banner {
-  border-left: 3px solid var(--ink);
-}
-
-.update-banner__body {
-  flex: 1;
-  min-width: 0;
-}
-
-.update-banner__head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.update-banner__title {
-  margin: 0;
-  font-size: 13.5px;
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.update-banner__notes {
-  margin: 8px 0 0;
-  font-size: 12.5px;
-  line-height: 18px;
-  color: var(--ink-2);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-all;
-}
-
-.update-banner__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-}
-
 /* Misc ------------------------------------------------------------------ */
 
 .placeholder {
@@ -3459,13 +3414,6 @@ body {
   }
 }
 
-/* The update banner floats as an inset strip on the full-bleed chat surface. */
-.main-col--chat .update-banner {
-  margin: 12px 16px 0;
-  border-radius: 10px;
-  flex-shrink: 0;
-}
-
 /* Collapsed history rail ("spine") — same 56px rhythm as the nav rail. ------ */
 
 .chat-sidebar--collapsed {
@@ -4278,6 +4226,68 @@ body {
   font-size: 10.5px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
+}
+
+/* Update dialog — updates surface only inside 系统设置 as this modal;
+   release notes render as markdown via MarkdownContent. Must come after
+   .modal so the width/padding overrides win the cascade. */
+.update-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(600px, calc(100vw - 48px));
+  height: min(72vh, 680px);
+  padding: 0;
+}
+
+.update-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  background-color: var(--rail);
+  border-radius: 14px 14px 0 0;
+}
+
+.update-dialog__head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.update-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 24px 20px;
+}
+
+/* 版本元信息行：mono 小字钉在更新日志顶部（对齐 summary-modal__stamp）。 */
+.update-dialog__meta {
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.update-dialog__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.update-dialog__buttons {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* 技能卡片：档案行 + 墨色迷你开关（黑白体系，无彩色）。 */

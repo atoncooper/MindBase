@@ -144,6 +144,14 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
     }
     instanceRef.current = instance;
 
+    // 库默认把 Ctrl+I 绑成 fit()、Ctrl+= / Ctrl+- 绑成缩放步进，与编辑器
+    // 全局快捷键双重触发：按 Ctrl+I 出补全的同时视图会被 fit 回 100% 并
+    // 居中，缩放键一次跳两步。这几颗键统一交给 MindMapEditorView 的全局
+    // 处理器，这里摘除库内绑定。
+    instance.keyCommand.removeShortcut("Control+i");
+    instance.keyCommand.removeShortcut("Control+=");
+    instance.keyCommand.removeShortcut("Control+-");
+
     const onTreeChange = (): void => callbacksRef.current.onTreeChange();
     const onActive = (_node: unknown, activeNodeList: MindMapNodeInstance[]): void => {
       activeNodeRef.current = activeNodeList.length === 1 ? activeNodeList[0] : null;

@@ -504,6 +504,32 @@ routes:
         timeout: 5000
         status_code: 401
 
+  # Internal (M2M) -> app-board: key-auth consumers (app-board-mcp and future
+  # internal services) call /internal/board/* with the shared apikey plus the
+  # acting user's X-Uid; proxy-rewrite strips the /internal prefix so app-board
+  # serves its normal /board/* handlers. Caller-supplied X-Uid is trusted for
+  # key-auth holders by design (same trust model as app-task's uid-in-body).
+  # priority 100 so /internal/board/* never falls into board_user/catch_all.
+  # limit-req: per-caller (remote_addr) 20 rps + burst 10 — the gateway-side
+  # backstop so no key-auth holder can stampede app-board (standalone mode
+  # keeps counters in local shm, no etcd needed).
+  - id: board_internal
+    uri: /internal/board/*
+    methods: [GET, POST, PUT, DELETE, PATCH]
+    priority: 100
+    upstream_id: upstream-app-board
+    plugins:
+      request-id: {}
+      key-auth: {}
+      limit-req:
+        rate: 20
+        burst: 10
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+      proxy-rewrite:
+        regex_uri: ["^/internal/board/(.*)", "/board/$1"]
+
   # User <-> main app chat (SSE under /chat/*; backend self-validates bili_session
   # - no forward-auth, same as catch_all). Uses SSE upstream (retries:0, read 300s)
   # so /chat/ask/stream isn't cut at catch_all's 30s read timeout.

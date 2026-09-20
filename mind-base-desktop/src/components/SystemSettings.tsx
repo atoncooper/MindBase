@@ -21,6 +21,7 @@ import { getFfmpegStatus, ffmpegSourceLabel } from "../lib/ffmpeg";
 import type { FfmpegProbeResult } from "../lib/ffmpeg";
 import { toErrorMessage } from "../lib/updater";
 import type { UpdateCheckState } from "../lib/use-update-check";
+import UpdateDialog from "./UpdateDialog";
 import { getVectorStats } from "../lib/vectors";
 import type { VectorStats } from "../lib/vectors";
 import { toItem, itemValue } from "../lib/ui-state";
@@ -72,12 +73,17 @@ function dbBadge(config: ItemState<AppConfig>): ReactNode {
 }
 
 /** Inline text next to the manual check button (never a blocking UI state). */
-function manualFeedback(state: UpdateCheckState): ReactNode {
+function manualFeedback(state: UpdateCheckState, onOpenUpdate: () => void): ReactNode {
   if (state.update !== null) {
     return (
-      <span className="hint-text">
-        发现新版本 v{state.update.latestVersion}，可前往下载
-      </span>
+      <>
+        <span className="hint-text">
+          发现新版本 v{state.update.latestVersion}
+        </span>
+        <button type="button" className="button" onClick={onOpenUpdate}>
+          查看更新
+        </button>
+      </>
     );
   }
   if (state.checking || state.lastSource !== "manual") return null;
@@ -140,6 +146,16 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
   const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; text: string } | null>(
     null,
   );
+  // 更新弹窗：手动检查发现新版本时自动弹出；已知更新可经「查看更新」回看。
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  // 武装位：手动检查发起时置位，结果落地（update 非空）即自动开弹窗。
+  const [awaitingUpdateDialog, setAwaitingUpdateDialog] = useState(false);
+
+  useEffect(() => {
+    if (!awaitingUpdateDialog || updateState.checking) return;
+    if (updateState.update !== null) setUpdateDialogOpen(true);
+    setAwaitingUpdateDialog(false);
+  }, [awaitingUpdateDialog, updateState.checking, updateState.update]);
 
   useEffect(() => {
     let cancelled = false;
@@ -323,11 +339,14 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
             type="button"
             className="button button--primary"
             disabled={updateState.checking}
-            onClick={() => void updateState.check("manual")}
+            onClick={() => {
+              setAwaitingUpdateDialog(true);
+              void updateState.check("manual");
+            }}
           >
             {updateState.checking ? "检查中…" : "检查更新"}
           </button>
-          {manualFeedback(updateState)}
+          {manualFeedback(updateState, () => setUpdateDialogOpen(true))}
         </div>
       </section>
 
@@ -536,6 +555,19 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
           </dl>
         )}
       </section>
+
+      {/* 弹窗只属于系统设置：pane 转 hidden（切走 tab）时一并消失；
+          经 createPortal 渲染到 body，不受 hidden 祖先影响，因此显式门控。 */}
+      {!hidden && updateDialogOpen && updateState.update !== null && (
+        <UpdateDialog
+          info={updateState.update}
+          onClose={() => setUpdateDialogOpen(false)}
+          onDismiss={() => {
+            setUpdateDialogOpen(false);
+            updateState.dismiss();
+          }}
+        />
+      )}
     </div>
   );
 }

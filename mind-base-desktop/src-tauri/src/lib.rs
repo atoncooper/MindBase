@@ -51,6 +51,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         // Native folder picker behind the data-directory relocation UI.
         .plugin(tauri_plugin_dialog::init())
+        // Signed seamless updates (latest.json + minisign); the commands in
+        // updater.rs drive the plugin with the app's own proxy routing.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // System-wide Ctrl+K: reveal the window and open the command palette
         // even when the app is not focused. The frontend listens for the
         // `palette-open` event and toggles its panel accordingly.
@@ -94,6 +97,8 @@ pub fn run() {
                 api_keys::refresh_proxy_setting(&conn);
             }
             app.manage(db);
+            // Parked signed update (checked → awaiting user confirmation).
+            app.manage(updater::PendingUpdate::default());
             logging::info("main", "MindBase desktop started");
 
             // Local ASR mode: warm the server up at startup (installs deps
@@ -153,6 +158,8 @@ pub fn run() {
             updater::check_update,
             updater::download_update,
             updater::run_update_installer,
+            updater::updater_check,
+            updater::updater_install,
             vectors::get_vector_stats,
             vectors::upsert_doc_chunks,
             vectors::search_vectors,

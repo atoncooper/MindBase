@@ -48,6 +48,7 @@ from app.routers.internal_auth import router as internal_auth_router
 from app.routers.task_quiz import router as task_quiz_router
 from app.routers.task_answer import router as task_answer_router
 from app.routers.session_summary import router as session_summary_router
+from app.routers.board_ai import router as board_ai_router
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +537,7 @@ app.include_router(task_quiz_router)
 app.include_router(task_answer_router)
 # 会话总结（summary agent，前端按钮触发；挂 /chat 前缀复用 APISIX /chat/* SSE 路由）
 app.include_router(session_summary_router)
+app.include_router(board_ai_router)
 
 # Preferences - extensible KV (wallpaper/theme/language)
 from app.routers.preferences import router as preferences_router  # noqa: E402

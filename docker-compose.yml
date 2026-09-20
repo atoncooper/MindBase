@@ -615,6 +615,44 @@ services:
     networks:
       - mind-base-net
 
+  # app-board-mcp —— MCP server（把思维导图/白板以 MCP 工具暴露给 Agent）
+  # 双模式鉴权：外部 MCP 宿主走 Bearer token（BOARD_MCP_AUTH_TOKEN，固定 uid）；
+  # 主 app backend 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid，
+  # uid 来自后端已认证会话，永不经过 LLM 参数）。上游经 APISIX key-auth 路由
+  # /internal/board/* 到 app-board。回环 8005 + 容器内网互通（backend 直连）。
+  # 默认 profile 启动：board agent 是主栈功能的一部分。
+  app-board-mcp:
+    image: ${APPBOARD_MCP_IMAGE:-ghcr.io/atoncooper/mind-base-app-board-mcp:latest}
+    build:
+      context: ./mcp/app-board-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-board-mcp
+    profiles: ["", "board", "full"]
+    environment:
+      - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
+      - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
+      # 服务模式：主 app backend 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
+      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true；自动生成 dev-CA+叶子
+      # （./mcp/app-board-mcp/certs/，宿主侧用 dev-ca.crt 配 NODE_EXTRA_CA_CERTS）
+      - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
+      - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
+      # Logging: stdout + /app/logs/app-board-mcp.log（lumberjack 轮转；
+      # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
+      - BOARDMCP__LOG__OUTPUT=both
+      - BOARDMCP__LOG__FILE=/app/logs/app-board-mcp.log
+    ports:
+      - "127.0.0.1:8005:8005"
+    volumes:
+      - app_board_mcp_logs:/app/logs
+      # TLS 证书目录：TLS on 时自动生成 dev-CA+叶子并持久化（对齐 app-board/certs 模式）
+      - ./mcp/app-board-mcp/certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
   # app-pay 测试环境（--profile pay-test 按需拉起，不随主栈默认启动）：
   # 与生产完全隔离——独立 MySQL 实例/整库(app_pay_test)、独立卷/端口(仅回环 18002)、
   # MOCK 渠道 + 测试入口开启（全部固化在 application-test.yaml，不读 .env 的生产值）。
@@ -769,6 +807,7 @@ volumes:
   backend_logs:
   app_task_logs:
   app_board_logs:
+  app_board_mcp_logs:
   app_task_mysql_data:
   app_pay_mysql_data:
   app_pay_logs:

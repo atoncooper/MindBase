@@ -37,6 +37,43 @@ export async function checkUpdate(): Promise<UpdateInfo> {
   return invoke<UpdateInfo>("check_update");
 }
 
+// --- 签名无感更新（tauri-plugin-updater） ----------------------------------
+
+/** Result of the signed-update channel check (`latest.json`). */
+export interface UpdaterMeta {
+  currentVersion: string;
+  /** False when latest.json says the running version is already current. */
+  available: boolean;
+  version: string | null;
+  notes: string | null;
+}
+
+/** Progress pushed while the signed update payload downloads. */
+export type UpdaterInstallEvent =
+  | { type: "progress"; received: number; totalBytes: number | null }
+  | { type: "downloaded" };
+
+/**
+ * Check the signed-update channel via tauri-plugin-updater (minisign
+ * verified). The found update parks Rust-side until `updaterInstall`.
+ */
+export async function updaterCheck(): Promise<UpdaterMeta> {
+  return invoke<UpdaterMeta>("updater_check");
+}
+
+/**
+ * Download the pending signed update (progress on `onEvent`) and install it
+ * silently. On Windows the app exits itself once the installer launches and
+ * is relaunched by the installer; on macOS/Linux the app restarts on success.
+ */
+export async function updaterInstall(
+  onEvent: (event: UpdaterInstallEvent) => void,
+): Promise<void> {
+  const channel = new Channel<UpdaterInstallEvent>();
+  channel.onmessage = onEvent;
+  return invoke<void>("updater_install", { onEvent: channel });
+}
+
 // --- 应用内下载安装包（in-app installer download） ------------------------
 
 /** Download kicked off. */

@@ -172,6 +172,7 @@ const EXPORT_MIME: Record<string, string> = {
     svg: "image/svg+xml",
     pdf: "application/pdf",
     json: "application/json",
+    excalidraw: "application/json",
     xmind: "application/zip",
     opml: "text/x-opml",
     md: "text/markdown",

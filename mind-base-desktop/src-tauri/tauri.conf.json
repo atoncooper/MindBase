@@ -24,6 +24,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "resources": ["scripts/whisper_server.py", "scripts/doc_extract.py", "scripts/ocr_extract.py", "scripts/pptx_build.py"],
     "windows": {
@@ -40,5 +41,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxNzQyNkJBQUZGRTc0NTcKUldSWGRQNnZ1aVowOFZTTy9uV2ZHN1podkxaMUdBNUtlVUwzSXVYY0tFT2RtN0tKTzFESHd6OFcK",
+      "endpoints": [
+        "https://github.com/atoncooper/MindBase/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

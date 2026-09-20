@@ -176,9 +176,14 @@ async def agent_stream_setup(
     _ensure_started(agent_harness)
     ctx = await _resolve_agent_context(request, db=db, uid=uid)
 
+    # Panel board chat pins the route: a request carrying board_uuid always
+    # goes to the board agent (deterministic, no LLM routing detour).
+    agent_override = "board" if request.board_uuid else None
+
     agent_name, agent_graph = await agent_harness.dispatch_stream(
         session_id=session_id,
         query=query,
+        agent_name=agent_override,
         uid=uid,
         bvids=ctx["bvids"],
         media_ids=ctx["media_ids"],
@@ -199,6 +204,7 @@ async def agent_stream_setup(
         "workspace_pages": ctx["workspace_pages"] or [],
         "upload_uuids": ctx["upload_uuids"] or [],
         "skill_ids": request.skill_ids or [],
+        "board_uuid": request.board_uuid or "",
     }
     run_config: dict[str, Any] = {
         "run_name": f"{agent_name}_agent_stream",

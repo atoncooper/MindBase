@@ -28,6 +28,11 @@ class ChatRequest(BaseModel):
         max_length=10,
         description="User-selected skills to force-inject (full body) into this turn's system prompt.",
     )
+    board_uuid: Optional[str] = Field(
+        default=None,
+        description="Board the request is scoped to (panel board chat). "
+        "When set, the request is routed directly to the board agent.",
+    )
     mode: str = Field(
         default="standard",
         deprecated="Routing is owned by AgentHarness; this field is ignored.",
