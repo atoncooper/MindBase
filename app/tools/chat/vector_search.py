@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain_core.documents import Document
 
+from app.config import settings
 from app.tools import ToolDeps, register_tool
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ class VectorSearchTool:
                     "[vector_search] sub-query failed: %s", (q or "")[:50], exc_info=res
                 )
                 continue
-            per_query_docs.append(res)
+            per_query_docs.append(_filter_relevant(res))
 
         # Fuse: RRF for multi-path (robust to per-query score-scale
         # differences, implicitly honors reranker ordering); passthrough for
@@ -142,6 +143,34 @@ class VectorSearchTool:
 
 
 _RRF_K = 60  # standard Reciprocal Rank Fusion constant
+
+
+def _filter_relevant(docs: list[Document]) -> list[Document]:
+    """Drop docs whose relevance falls below the configured floor.
+
+    Vector search always returns the k nearest neighbours regardless of
+    absolute relevance, so an off-topic question (chit-chat, or a topic the
+    library does not cover) still surfaces junk candidates that would end
+    up streamed to the client as answer sources. Each doc is judged by its
+    rerank score when the reranker stamped one, falling back to the raw
+    embedding similarity; survivors keep their original order. An empty
+    result means "nothing relevant found" — the tool then answers with the
+    not-found text and no sources at all.
+    """
+    kept: list[Document] = []
+    for doc in docs:
+        meta = doc.metadata or {}
+        rerank_score = meta.get("rerank_score")
+        if isinstance(rerank_score, (int, float)):
+            floor = settings.rerank_min_relevance_score
+            score = float(rerank_score)
+        else:
+            floor = settings.rerank_min_similarity_score
+            raw = meta.get("score")
+            score = float(raw) if isinstance(raw, (int, float)) else 0.0
+        if score >= floor:
+            kept.append(doc)
+    return kept
 
 
 def _doc_key(doc: Document) -> str:
