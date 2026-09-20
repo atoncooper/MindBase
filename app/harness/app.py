@@ -278,9 +278,10 @@ class AgentHarness:
         session_id: str,
         *,
         query: str,
+        agent_name: str | None = None,
         **input: Any,
     ) -> tuple[str, Any]:
-        """Auto-route, then return (agent_name, graph) for streaming.
+        """Route (or take a direct override), return (agent_name, graph) for streaming.
 
         Callers should use the returned graph to set up their own
         ``astream_events()`` loop.
@@ -288,14 +289,18 @@ class AgentHarness:
         Args:
             session_id: Session identifier.
             query: User question (used for routing).
+            agent_name: Optional direct routing override — skips the LLM
+                router (used for scope-pinned requests, e.g. panel board chat
+                with ``board_uuid`` set).
             **input: Agent input kwargs (uid, bvids, etc.).
 
         Returns:
             ``(agent_name, compiled_graph)`` tuple.
         """
         uid = input.get("uid")
-        route_input = {k: v for k, v in input.items() if k != "uid"}
-        agent_name = await self._orchestrator.route(query, uid=uid, **route_input)
+        if agent_name is None:
+            route_input = {k: v for k, v in input.items() if k != "uid"}
+            agent_name = await self._orchestrator.route(query, uid=uid, **route_input)
         logger.info(
             "[HARNESS] dispatch_stream: query='%s' → agent='%s'",
             query[:60],
@@ -487,4 +492,34 @@ class AgentHarness:
             logger.warning(
                 "[HARNESS] no session_factory provided — "
                 "Chat Agent will not be registered"
+            )
+
+        # ── Board Agent ──────────────────────────────────────────────
+        # Create/explain/refine mind-map boards via the app-board-mcp proxy
+        # tools. Top-level route target (LLM routing) AND directly addressed
+        # when a request carries board_uuid (panel board chat).
+        if self._session_factory:
+            from app.agent.board import build_board_agent
+            from app.agent.chat.db_deps import DBChatDeps
+
+            board_deps = DBChatDeps(self._session_factory)
+            self._lifecycle.register(
+                "board",
+                build_board_agent,
+                runtime=self._runtime,
+                llm=self._llm,
+                deps=board_deps,
+                circuit_breaker=self._lifecycle.get_breaker("board"),
+            )
+            self._orchestrator.register(
+                "board",
+                "板子助手。创建、解释和完善用户的思维导图/白板（board）。"
+                "支持列出、读取、创建、更新板子等工具。"
+                "适用于用户想建导图、整理结构或修改已有板子的场景。",
+            )
+            logger.info("[HARNESS] registered agent 'board'")
+        else:
+            logger.warning(
+                "[HARNESS] no session_factory provided — "
+                "Board Agent will not be registered"
             )
