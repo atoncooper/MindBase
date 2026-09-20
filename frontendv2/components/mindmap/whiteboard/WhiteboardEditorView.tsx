@@ -26,11 +26,15 @@ import { toErrorMessage } from "../editor/errmsg";
 import { useToast } from "../editor/toast";
 import { isAppDark } from "../editor/doc";
 import { HistoryPanel } from "../editor/toolPanels";
+import { BoardChatPanel } from "../editor/BoardChatPanel";
 
 type SaveState = "saved" | "pending" | "saving";
 
 /** 自动快照最小间隔：距上一版 ≥10 分钟且本次有落库才拍（与导图编辑器一致）。 */
 const AUTO_SNAPSHOT_INTERVAL_SEC = 600;
+
+/** 落库体积警告阈值（字符数 ≈ 字节数，dataURL 均为 ASCII）：app-board 单板上限 8MB。 */
+const SIZE_WARN_CHARS = 6 * 1024 * 1024;
 
 type ExcalidrawModule = typeof import("./excalidrawBundle");
 
@@ -76,6 +80,8 @@ function WhiteboardEditorView({ mapId, onExit }: {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [snapshots, setSnapshots] = useState<MindMapSnapshotMeta[] | null>(null);
   const [snapshotSaving, setSnapshotSaving] = useState(false);
+  /** 板聊侧栏（board agent 对白板只读引导：可解释内容，不改结构）。 */
+  const [boardChatOpen, setBoardChatOpen] = useState(false);
   /** 回滚后递增：重载文档并重挂 Excalidraw（initialData 只在挂载时读）。 */
   const [reloadToken, setReloadToken] = useState(0);
   /** 动态分包的 Excalidraw 组件模块；加载失败时提示。 */
@@ -88,8 +94,13 @@ function WhiteboardEditorView({ mapId, onExit }: {
   const inFlightRef = useRef(false);
   const trailingRef = useRef(false);
   const doFlushRef = useRef<() => Promise<void>>(async () => {});
+  /** 体积警告只提示一次，避免每次落库刷屏。 */
+  const sizeWarnedRef = useRef(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   /** 最近一次成功保存的序列化结果，内容没变就跳过落库。 */
   const lastSavedRef = useRef<string | null>(null);
+  /** 最近一次成功保存的标题；标题单独改动不算 no-op，否则会被静默丢弃。 */
+  const lastSavedTitleRef = useRef<string | null>(null);
   /** onChange 的最新一帧；flush 时才序列化。 */
   const pendingRef = useRef<PendingScene | null>(null);
   /** 最近一次快照时间（秒）；自动快照按此判断间隔。 */
@@ -138,10 +149,20 @@ function WhiteboardEditorView({ mapId, onExit }: {
       },
     };
     const serialized = JSON.stringify(scene);
-    if (serialized === lastSavedRef.current) {
+    if (serialized === lastSavedRef.current && titleRef.current === lastSavedTitleRef.current) {
+      // Scene AND title both identical to the last save -> true no-op
+      // (suppresses saves triggered by Excalidraw pan/zoom onChange).
       dirtyRef.current = false;
       setSaveState("saved");
       return;
+    }
+    // app-board 单板上限 8MB：贴大截图会随 files 一起存，超限后保存直接失败。
+    // 只提示一次；阈值 6MB 留出余量。
+    if (serialized.length > SIZE_WARN_CHARS && !sizeWarnedRef.current) {
+      sizeWarnedRef.current = true;
+      toast.info("白板内容较大，接近存储上限（8MB）——大图建议压缩后再插入，否则可能无法保存", {
+        title: "体积提示",
+      });
     }
     inFlightRef.current = true;
     dirtyRef.current = false;
@@ -149,6 +170,7 @@ function WhiteboardEditorView({ mapId, onExit }: {
     try {
       await saveMindMap(mapId, titleRef.current, scene);
       lastSavedRef.current = serialized;
+      lastSavedTitleRef.current = titleRef.current;
       setSaveState("saved");
       // 落库成功 → 距上一版超过间隔就顺手拍一版自动快照（失败静默）。
       const nowSec = Math.floor(Date.now() / 1000);
@@ -195,6 +217,7 @@ function WhiteboardEditorView({ mapId, onExit }: {
               zoom: scene.appState?.zoom?.value ?? 1,
             };
             lastSavedRef.current = detail.data;
+            lastSavedTitleRef.current = detail.title;
           } catch {
             // 场景损坏则从空白开始，用户重画比报错卡死更好。
             pendingRef.current = null;
@@ -321,6 +344,91 @@ function WhiteboardEditorView({ mapId, onExit }: {
     }
   }
 
+  /** 导出 .excalidraw 源文件（完整场景，可经「导入」回灌或与桌面端互用）。 */
+  async function exportSceneFile(): Promise<void> {
+    if (exporting !== null) return;
+    const pending = pendingRef.current;
+    if (pending === null || pending.elements.length === 0) {
+      toast.error("白板还是空的，先画点什么再导出吧", { title: "导出失败" });
+      return;
+    }
+    setExporting("file");
+    try {
+      const scene: WhiteboardScene = {
+        type: "excalidraw",
+        version: 1,
+        elements: pending.elements,
+        files: pending.files,
+        appState: {
+          viewBackgroundColor: pending.viewBackgroundColor,
+          scrollX: pending.scrollX,
+          scrollY: pending.scrollY,
+          zoom: { value: pending.zoom },
+        },
+      };
+      const contentBase64 = utf8ToBase64(JSON.stringify(scene));
+      const path = await saveMindMapExport(
+        `白板-${titleRef.current || "未命名"}`,
+        "excalidraw",
+        contentBase64,
+      );
+      toast.success(`已导出：${path}`, { title: "导出完成" });
+    } catch (err) {
+      toast.error(toErrorMessage(err), { title: "导出失败" });
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  /** 导入 .excalidraw 场景：先备份当前内容一版，再落库并按回滚同款路径重挂画布。 */
+  async function importSceneFile(file: File): Promise<void> {
+    let parsed: Partial<WhiteboardScene>;
+    try {
+      parsed = JSON.parse(await file.text()) as Partial<WhiteboardScene>;
+    } catch {
+      toast.error("文件不是合法的 JSON", { title: "导入失败" });
+      return;
+    }
+    if (parsed.type !== "excalidraw" || !Array.isArray(parsed.elements)) {
+      toast.error("不是有效的 .excalidraw 场景文件", { title: "导入失败" });
+      return;
+    }
+    const confirmed = await confirm(
+      "导入会覆盖当前白板内容（覆盖前自动备份一版），确定吗？",
+      { title: "导入确认", kind: "warning" },
+    );
+    if (!confirmed) return;
+    try {
+      await doFlush();
+      restoringRef.current = true;
+      const appState = parsed.appState ?? {};
+      const scene: WhiteboardScene = {
+        type: "excalidraw",
+        version: 1,
+        elements: parsed.elements,
+        files: parsed.files ?? {},
+        appState: {
+          viewBackgroundColor: appState.viewBackgroundColor ?? "transparent",
+          scrollX: appState.scrollX ?? 0,
+          scrollY: appState.scrollY ?? 0,
+          zoom: appState.zoom ?? { value: 1 },
+        },
+      };
+      await createMindMapSnapshot(mapId, "导入前备份");
+      await saveMindMap(mapId, titleRef.current, scene);
+      lastSavedRef.current = null;
+      lastSavedTitleRef.current = null;
+      setHistoryOpen(false);
+      // 与回滚同款重挂路径：先回 loading 再重跑加载 effect（initialData 只吃一次）。
+      setPhase("loading");
+      setReloadToken((token) => token + 1);
+      toast.success(`已导入 ${parsed.elements.length} 个元素`, { title: "导入完成" });
+    } catch (err) {
+      restoringRef.current = false;
+      toast.error(toErrorMessage(err), { title: "导入失败" });
+    }
+  }
+
   // ── 版本历史（与导图共用快照机制） ───────────────────────────────────
 
   async function refreshSnapshots(): Promise<void> {
@@ -425,6 +533,13 @@ function WhiteboardEditorView({ mapId, onExit }: {
         <span className="mm-topbar__spacer" aria-hidden="true" />
         <button
           type="button"
+          className={boardChatOpen ? "mm-btn mm-btn--active" : "mm-btn"}
+          onClick={() => setBoardChatOpen(true)}
+        >
+          板聊
+        </button>
+        <button
+          type="button"
           className={historyOpen ? "mm-btn mm-btn--active" : "mm-btn"}
           onClick={toggleHistory}
         >
@@ -445,6 +560,23 @@ function WhiteboardEditorView({ mapId, onExit }: {
           onClick={() => lib !== null && void exportBoard(lib, "svg")}
         >
           {exporting === "svg" ? "导出中…" : "SVG"}
+        </button>
+        <button
+          type="button"
+          className="mm-btn"
+          disabled={exporting !== null}
+          title="导出 .excalidraw 源文件（可再导入，或与桌面端互用）"
+          onClick={() => void exportSceneFile()}
+        >
+          {exporting === "file" ? "导出中…" : "文件"}
+        </button>
+        <button
+          type="button"
+          className="mm-btn"
+          title="导入 .excalidraw 场景文件（覆盖当前内容，覆盖前自动备份）"
+          onClick={() => importInputRef.current?.click()}
+        >
+          导入
         </button>
       </div>
       <div className="wb-canvas">
@@ -493,6 +625,25 @@ function WhiteboardEditorView({ mapId, onExit }: {
           onClose={() => setHistoryOpen(false)}
         />
       )}
+      {boardChatOpen && (
+        <BoardChatPanel
+          boardUuid={mapId}
+          boardTitle={titleRef.current || "未命名白板"}
+          onClose={() => setBoardChatOpen(false)}
+        />
+      )}
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".excalidraw,.json"
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const files = event.target.files;
+          event.target.value = "";
+          const file = files?.[0];
+          if (file !== undefined) void importSceneFile(file);
+        }}
+      />
     </div>
   );
 }
