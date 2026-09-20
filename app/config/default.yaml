@@ -234,6 +234,13 @@ rerank:
   beta: 0.2                           # hybrid weight: recency (placeholder)
   gamma: 0.1                          # hybrid weight: field boost
   lambda: 0.7                         # mmr relevance vs diversity (1.0 = pure relevance)
+  # Relevance floor for the search-tool gate: vector search always returns
+  # the k nearest neighbours, so off-topic questions would otherwise surface
+  # junk candidates as answer "sources". Docs below the floor are dropped;
+  # when nothing survives the tool answers "not found" with no sources.
+  min_relevance_score: 0.25           # rerank_score floor (gte-rerank family, 0-1)
+  min_similarity_score: 0.35          # COSINE floor when a doc has no rerank score
+                                      # (rerank disabled / fallback) — embedding-model dependent
 
 
 
@@ -503,3 +510,14 @@ quiz:
   # rq / celery = external queue (not yet implemented, falls back to background)
   queue:
     engine: background
+
+# ---- app-board-mcp（思维导图/白板 MCP server）----------------------
+# streamable-http 端点；compose 内 backend 经 mind-base-net 直连容器端口。
+# auth_token / service_api_key 为敏感值，经 ${VAR} 占位引用 .env。
+board_mcp:
+  url: http://app-board-mcp:8005/mcp
+  timeout: 30            # 单次 MCP 工具调用超时（秒）
+  auth_token: ${BOARD_MCP_AUTH_TOKEN}
+  service_api_key: ${APISIX_CONSUMER_KEY}
+  # AI 补全用轻量模型（编辑器内联补全对延迟/成本敏感；空=跟随主模型）。
+  completion_model: inclusionai/ling-3.0-flash-vl:free
