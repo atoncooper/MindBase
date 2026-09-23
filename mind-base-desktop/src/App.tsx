@@ -82,8 +82,9 @@ function App() {
   // object — 更新只在设置内以弹窗呈现，不再有全局横幅。
   const updateState = useUpdateCheck(3000);
   const inSettings = route.view === "settings";
-  // The chat workspace is full-bleed: it skips the .shell card entirely and
-  // owns every pixel of the main column (sidebar + streaming conversation).
+  // The chat / notes / mindmap-editor workspaces are full-bleed: they skip
+  // the .shell card entirely and own every pixel of the main column
+  // (sidebar + streaming conversation). Chat is the default route (home).
   const inFull = route.view === "home" || route.view === "notes" || route.view === "mindmap-edit";
   const meta = viewMeta(route);
   // Ctrl+K 命令面板 + 跨视图跳转的 pending 状态（由目标视图消费）。
@@ -157,15 +158,15 @@ function App() {
     return (
       <div className="app-frame">
         <NavRail route={route} />
-        <main className="main-col main-col--chat">
-          {route.view === "notes" ? (
-            <NotesView pending={pending} onPendingConsumed={() => setPending(null)} />
-          ) : route.view === "mindmap-edit" ? (
-            <MindMapEditorView mapId={route.mapId} />
-          ) : (
-            <ChatView pending={pending} onPendingConsumed={() => setPending(null)} />
-          )}
-        </main>
+      <main className="main-col main-col--chat">
+        {route.view === "notes" ? (
+          <NotesView pending={pending} onPendingConsumed={() => setPending(null)} />
+        ) : route.view === "mindmap-edit" ? (
+          <MindMapEditorView mapId={route.mapId} />
+        ) : (
+          <ChatView pending={pending} onPendingConsumed={() => setPending(null)} />
+        )}
+      </main>
         {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onJump={handleJump} />}
       </div>
     );
@@ -178,12 +179,9 @@ function App() {
       <main className="main-col">
         <div className="shell shell--full">
           <header className="header">
-            <div className="header__badge" aria-hidden="true">
-              MB
-            </div>
             <div className="header__text">
-              <h1 className="header__title">MindBase Desktop</h1>
-              <p className="header__subtitle">{meta.subtitle}</p>
+              <h1 className="header__title">{meta.subtitle}</h1>
+              <p className="header__subtitle">MindBase Desktop</p>
             </div>
             {version.status === "ok" && <span className="chip">v{version.value}</span>}
           </header>

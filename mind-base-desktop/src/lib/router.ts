@@ -3,13 +3,14 @@
  * two settings groups.
  *
  * Routes:
- * - `#/`                     → home, the chat workspace
+ * - `#/`                     → home, the chat workspace (默认落点)
  * - `#/knowledge`            → knowledge base (search + document management)
  * - `#/import`               → local file ingestion (文件入库)
  * - `#/favorites`            → favorites browsing (main area)
  * - `#/skills`               → skill manager (store install + installed list)
  * - `#/quiz`                 → quiz config + generation + set history
  * - `#/quiz/set/:id`         → one persisted quiz set (view / answer / answers toggle)
+ * - `#/notes`                → notes two-pane workspace
  * - `#/mindmap`              → knowledge mind maps (library)
  * - `#/mindmap/:id`          → one mind map editor (full-bleed canvas)
  * - `#/settings/system`      → settings, 系统设置 tab

@@ -1,9 +1,10 @@
 /**
- * PPT 制作入口页（#/slides）。
+ * PPT 制作页（#/slides）—— Google Slides 风格的历史展示页。
  *
- * 生成集成在对话里：chat agent 的 generate_slides 工具按主题生成大纲并
- * 渲染成 .pptx（默认结合知识库素材），保存到数据目录的 exports/ 文件夹。
- * 本页：说明、一键带请求进对话、以及**生成记录**列表。
+ * 生成在主聊天完成：本页模板卡 / 自定义主题会**跳到对话并切换到 PPT 制作
+ * 模式**（右上分段选择器），预填请求后发送即可；chat agent 的
+ * generate_slides 工具按主题检索知识库、出大纲并渲染 .pptx 存到 exports/。
+ * 右侧 = 生成记录（一轮结束后自动刷新）。
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -11,8 +12,35 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { formatBytes, listExports } from "../../lib/exports";
 import type { ExportEntry } from "../../lib/exports";
 import { navigate, HOME_HASH } from "../../lib/router";
+import { CHAT_MODE_JUMP_KEY } from "../../lib/chat";
 import { toErrorMessage } from "../../lib/updater";
 import { useToast } from "../../lib/toast";
+
+/** Google Slides 产品图标：黄色页面 + 折角 + 白色幻灯片。 */
+function GoogleSlidesIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#fbbc04" d="M14.5 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.5L14.5 2z" />
+      <path fill="#fde293" d="M14.5 2 19 6.5h-3.5a1 1 0 0 1-1-1V2z" />
+      <rect x="8.2" y="11.6" width="7.6" height="5.8" rx="0.8" fill="#fff" />
+    </svg>
+  );
+}
+
+/** 模板卡：一键切到 PPT 模式的对话（topic 为空 = 不限定主题）。 */
+interface SlidesTemplate {
+  id: string;
+  name: string;
+  hint: string;
+  topic: string;
+}
+
+const SLIDES_TEMPLATES: ReadonlyArray<SlidesTemplate> = [
+  { id: "blank", name: "空白演示", hint: "从零开始", topic: "" },
+  { id: "report", name: "工作汇报", hint: "季度 / 周度总结", topic: "季度工作总结" },
+  { id: "product", name: "产品介绍", hint: "卖点 + 场景", topic: "产品介绍" },
+  { id: "training", name: "培训课件", hint: "面向新人 / 客户", topic: "培训课件" },
+];
 
 function SlidesView(): React.JSX.Element {
   const [topic, setTopic] = useState("");
@@ -46,9 +74,10 @@ function SlidesView(): React.JSX.Element {
     }
   }
 
-  /** 带上主题跳回对话（用户手动发送，或先补充受众/页数）。 */
-  function goChat(): void {
+  /** 带上主题跳到对话：一次性切到 PPT 制作模式并预填请求。 */
+  function goChat(topic: string): void {
     const trimmed = topic.trim();
+    window.sessionStorage.setItem(CHAT_MODE_JUMP_KEY, "slides");
     window.sessionStorage.setItem(
       "mb-draft-input",
       trimmed !== ""
@@ -59,86 +88,130 @@ function SlidesView(): React.JSX.Element {
   }
 
   return (
-    <>
-      <section className="card quiz-pane">
-        <h2 className="card__title">
-          <span className="card__index">PT</span>PPT 制作
-        </h2>
-        <p className="hint-text">
-          PPT 生成现在<b>集成在对话中</b>：告诉助手主题、受众和期望页数，它会先
-          检索你的知识库取材、生成大纲，再渲染成 .pptx 文件（含每页要点与讲者
-          备注），保存到数据目录的 exports 文件夹。主题范围或受众不明确时，
-          助手会先向你提问再动手。
-        </p>
-        <div className="cfg-row">
-          <span className="cfg-label">主题</span>
+    <div className="gen-layout">
+      <section className="card gen-panel">
+        <div className="gen-hero">
+          <span className="gen-hero__icon" aria-hidden="true">
+            <GoogleSlidesIcon />
+          </span>
+          <div className="gen-hero__text">
+            <h2 className="gen-hero__title">PPT 制作</h2>
+            <p className="gen-hero__sub">
+              在对话里给出主题，助手先检索知识库取材、生成大纲，再渲染成 .pptx
+              （含每页要点与讲者备注）。
+            </p>
+          </div>
+        </div>
+
+        <p className="gen-section-label">选择模板，进入 PPT 制作模式</p>
+        <div className="tpl-grid">
+          {SLIDES_TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.id}
+              type="button"
+              className="tpl-card"
+              title={`以「${tpl.name}」为主题进入对话`}
+              onClick={() => goChat(tpl.topic)}
+            >
+              <span className="tpl-card__icon" aria-hidden="true">
+                <GoogleSlidesIcon />
+              </span>
+              <span className="tpl-card__name">{tpl.name}</span>
+              <span className="tpl-card__hint">{tpl.hint}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="gen-box">
+          <span className="gen-box__label">或自定义主题（可选）</span>
           <input
             type="text"
-            className="cfg-input"
-            placeholder="可选：如「RAG 系统架构与实践」"
+            className="gen-box__input"
+            placeholder="如「RAG 系统架构与实践」，进入对话后可补充受众与页数"
             value={topic}
             onChange={(event) => setTopic(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") goChat(topic);
+            }}
           />
+          <div className="gen-box__actions">
+            <button type="button" className="button button--primary" onClick={() => goChat(topic)}>
+              进入 PPT 模式生成
+            </button>
+          </div>
         </div>
-        <div className="card__actions">
-          <button type="button" className="button button--primary" onClick={goChat}>
-            去对话中生成
-          </button>
-        </div>
-        <p className="hint-text">
-          小技巧：说清受众（面试官/客户/新人）和页数偏好效果最好；入库资料
-          越丰富，PPT 的内容越有据可依。
+
+        <ol className="flow-steps">
+          <li className="flow-step">
+            <span className="flow-step__num">1</span>
+            <span className="flow-step__text">
+              <b>选模板进入对话</b>——自动切到 PPT 制作模式并预填主题，聊天历史随之只看 PPT 对话。
+            </span>
+          </li>
+          <li className="flow-step">
+            <span className="flow-step__num">2</span>
+            <span className="flow-step__text">
+              <b>检索取材出大纲</b>——说清受众与页数，助手查知识库挑素材、给分页大纲，确认后动手。
+            </span>
+          </li>
+          <li className="flow-step">
+            <span className="flow-step__num">3</span>
+            <span className="flow-step__text">
+              <b>查收 .pptx</b>——结果自动存到数据目录的 exports
+              文件夹，右侧记录可直接打开；不满意可让它按反馈重做。
+            </span>
+          </li>
+        </ol>
+        <p className="hint-text gen-panel__hint">
+          主题范围或受众不明确时，助手会先向你提问再动手；入库资料越丰富，内容越有据可依。
         </p>
       </section>
 
-      <section className="card">
+      <section className="card gen-side">
         <h2 className="card__title">
-          <span className="card__index">⏱</span>生成记录
-          <span className="hint-text" style={{ marginLeft: "auto", fontWeight: 400 }}>
-            {records !== null ? `${records.length} 份` : ""}
-          </span>
+          生成记录
+          <span className="card__count">{records !== null ? `${records.length} 份` : ""}</span>
         </h2>
         {records !== null && records.length === 0 && (
-          <p className="hint-text">还没有生成过 PPT。在对话中生成后会自动出现在这里。</p>
+          <div className="gen-empty">
+            <GoogleSlidesIcon />
+            <p>还没有生成过 PPT。在对话里生成后会自动出现在这里。</p>
+          </div>
         )}
         {records !== null && records.length > 0 && (
-          <ul className="ws-docs">
+          <ul className="file-list">
             {records.map((entry) => (
-              <li key={entry.path} className="ws-doc">
-                <div className="ws-doc__head">
-                  <span className="ws-doc__title" title={entry.path}>
+              <li key={entry.path} className="file-row">
+                <span className="file-row__icon" aria-hidden="true">
+                  <GoogleSlidesIcon />
+                </span>
+                <span className="file-row__body">
+                  <span className="file-row__name" title={entry.path}>
                     {entry.name}
                   </span>
-                  <span className="ws-doc__page-meta">
+                  <span className="file-row__meta">
                     {new Date(entry.modifiedAt * 1000).toLocaleString()} ·{" "}
-                    {formatBytes(entry.sizeBytes)}
+                    {formatBytes(entry.sizeBytes)} · PowerPoint 演示文稿
                   </span>
-                </div>
-                <div className="ws-doc__page">
-                  <span className="ws-doc__page-meta">PowerPoint 演示文稿</span>
-                  <span className="ws-doc__page-actions">
-                    <button
-                      type="button"
-                      className="button"
-                      onClick={() => void reveal(entry)}
-                    >
-                      所在文件夹
-                    </button>
-                    <button
-                      type="button"
-                      className="button button--primary"
-                      onClick={() => void open(entry)}
-                    >
-                      打开
-                    </button>
-                  </span>
-                </div>
+                </span>
+                <span className="file-row__actions">
+                  <button type="button" className="button" onClick={() => void reveal(entry)}>
+                    所在文件夹
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--primary"
+                    onClick={() => void open(entry)}
+                  >
+                    打开
+                  </button>
+                </span>
               </li>
             ))}
           </ul>
         )}
       </section>
-    </>
+    </div>
   );
 }
 

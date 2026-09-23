@@ -10,7 +10,8 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { ChatSource } from "../../lib/chat";
+import type { ChatMode, ChatSource } from "../../lib/chat";
+import { LinkifiedText } from "../../lib/linkify";
 import { MarkdownContent } from "./MarkdownContent";
 
 /** Write text to the clipboard with an execCommand fallback. */
@@ -172,12 +173,6 @@ const StepLog = memo(function StepLog({
   );
 });
 
-const SUGGESTIONS: ReadonlyArray<string> = [
-  "我的收藏里都讲了哪些内容？",
-  "总结一下和检索相关的视频要点",
-  "知识库里提到过哪些工具或框架？",
-];
-
 function SourceChips({ sources }: { sources: ChatSource[] }): React.JSX.Element | null {
   if (sources.length === 0) return null;
   return (
@@ -254,7 +249,9 @@ const UserRow = memo(function UserRow({
 
   return (
     <div className="msg-row msg-row--user">
-      <div className="bubble bubble--user">{message.content}</div>
+      <div className="bubble bubble--user">
+        <LinkifiedText text={message.content} />
+      </div>
       <div className="msg-user__actions">
         <button
           type="button"
@@ -412,6 +409,43 @@ export interface LiveAgentStatus {
   step: number;
 }
 
+/** 各对话模式空态的文案与建议（简历/PPT 走专用引导）。 */
+const MODE_EMPTY_COPY: Record<
+  ChatMode,
+  { kicker: string; title: string; text: string; suggestions: string[] }
+> = {
+  chat: {
+    kicker: "MINDBASE · 本地知识库",
+    title: "与你的收藏夹对话",
+    text: "基于已入库的视频转写内容回答，每条结论都带来源。",
+    suggestions: [
+      "我的收藏里都讲了哪些内容？",
+      "总结一下和检索相关的视频要点",
+      "知识库里提到过哪些工具或框架？",
+    ],
+  },
+  resume: {
+    kicker: "简历制作模式",
+    title: "把对话聊成一份简历",
+    text: "把项目细节、技术栈和量化成果聊具体，助手把全部对话提炼成一份 Markdown 简历，存到 exports 文件夹——「简历」页可查所有生成记录。",
+    suggestions: [
+      "请根据我们的历史对话生成一份简历",
+      "我想先聊聊我的项目经历",
+      "补充一下我的技术栈和量化成果",
+    ],
+  },
+  slides: {
+    kicker: "PPT 制作模式",
+    title: "从一个主题到一套 PPT",
+    text: "告诉助手主题，它会先检索知识库取材、给出分页大纲，再渲染成 .pptx（含每页要点与讲者备注），存到 exports 文件夹——「PPT」页可查所有生成记录。",
+    suggestions: [
+      "请帮我制作一套关于「RAG 系统架构与实践」的 PPT",
+      "制作一份面向新人的培训课件 PPT",
+      "先给这套 PPT 拟一个大纲再动手",
+    ],
+  },
+};
+
 interface MessageListProps {
   messages: UiMessage[];
   /** True while a turn is streaming — drives the typing cursor + autoscroll. */
@@ -420,6 +454,10 @@ interface MessageListProps {
   liveAgent: LiveAgentStatus | null;
   /** 任务计划面板（plan 工具维护的检查点清单）。 */
   planView: PlanView | null;
+  /** 额外的滚动容器类（模式区分：mode-resume / mode-slides）。 */
+  className?: string;
+  /** 当前对话模式（决定空态文案与建议）。 */
+  mode?: ChatMode;
   onSuggestion: (text: string) => void;
   /** 重试一条失败的回复（沿用其上方用户消息重新生成）。 */
   onRetry: (messageId: string) => void;
@@ -432,6 +470,8 @@ function MessageList({
   busy,
   liveAgent,
   planView,
+  className = "",
+  mode = "chat",
   onSuggestion,
   onRetry,
   onEditResend,
@@ -461,12 +501,12 @@ function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="msg-scroll chat-empty">
-        <p className="chat-empty__kicker">MINDBASE · 本地知识库</p>
-        <h2 className="chat-empty__title">与你的收藏夹对话</h2>
-        <p className="chat-empty__text">基于已入库的视频转写内容回答，每条结论都带来源。</p>
+      <div className={`msg-scroll chat-empty mode-in ${className}`.trim()}>
+        <p className="chat-empty__kicker">{MODE_EMPTY_COPY[mode].kicker}</p>
+        <h2 className="chat-empty__title">{MODE_EMPTY_COPY[mode].title}</h2>
+        <p className="chat-empty__text">{MODE_EMPTY_COPY[mode].text}</p>
         <div className="chat-empty__suggestions">
-          {SUGGESTIONS.map((text) => (
+          {MODE_EMPTY_COPY[mode].suggestions.map((text) => (
             <button key={text} type="button" className="suggest-chip" onClick={() => onSuggestion(text)}>
               {text}
             </button>
@@ -481,7 +521,7 @@ function MessageList({
     busy && lastMessage !== undefined && lastMessage.role === "assistant" && lastMessage.status === "pending";
 
   return (
-    <div className="msg-scroll" ref={scrollRef}>
+    <div className={`msg-scroll mode-in ${className}`.trim()} ref={scrollRef}>
       <div className="msg-list">
         {messages.map((message) => (
           <MessageRow

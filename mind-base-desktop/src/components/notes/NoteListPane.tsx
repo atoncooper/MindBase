@@ -4,6 +4,7 @@
  */
 
 import type { NoteListRow } from "../../lib/notes";
+import { SearchGlyph } from "../icons";
 
 function relativeTime(epochSecs: number): string {
   const deltaMs = Date.now() - epochSecs * 1000;
@@ -41,13 +42,28 @@ function NoteListPane({
   return (
     <aside className="notes-list">
       <div className="notes-list__top">
-        <input
-          type="text"
-          className="cfg-input notes-list__search"
-          placeholder="搜索标题或正文…"
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-        />
+        <div className="gsearch gsearch--compact notes-list__search">
+          <span className="gsearch__icon" aria-hidden="true">
+            <SearchGlyph />
+          </span>
+          <input
+            type="text"
+            placeholder="搜索标题或正文…"
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+          />
+          {query !== "" && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="清空搜索"
+              title="清空"
+              onClick={() => onQueryChange("")}
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <button type="button" className="button button--primary" onClick={onCreate}>
           ＋ 新建
         </button>

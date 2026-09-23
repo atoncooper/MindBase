@@ -22,6 +22,7 @@ import {
 import type { SkillMeta, StoreRepo } from "../lib/skills";
 import { toErrorMessage } from "../lib/updater";
 import type { Feedback } from "../lib/ui-state";
+import { SearchGlyph } from "./icons";
 
 /** 仓库搜索结果行（名称 + 描述 + ★ + 安装按钮，安装中显示进度文案）。 */
 function StoreRow({
@@ -238,17 +239,32 @@ function SkillsView(): React.JSX.Element {
           与 Web 版（app/）技能包格式互通。
         </p>
         <div className="cfg-actions skills-view__search">
-          <input
-            type="text"
-            className="cfg-input"
-            placeholder="搜索关键词，留空用默认 topic"
-            value={searchDraft}
-            spellCheck={false}
-            onChange={(event) => setSearchDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void runSearch(searchDraft.trim() || null);
-            }}
-          />
+          <div className="gsearch gsearch--compact">
+            <span className="gsearch__icon" aria-hidden="true">
+              <SearchGlyph />
+            </span>
+            <input
+              type="text"
+              placeholder="搜索关键词，留空用默认 topic"
+              value={searchDraft}
+              spellCheck={false}
+              onChange={(event) => setSearchDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void runSearch(searchDraft.trim() || null);
+              }}
+            />
+            {searchDraft !== "" && (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="清空搜索"
+                title="清空"
+                onClick={() => setSearchDraft("")}
+              >
+                ✕
+              </button>
+            )}
+          </div>
           <button
             type="button"
             className="button button--primary"

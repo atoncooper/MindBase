@@ -24,6 +24,7 @@ import { listSessions } from "../lib/chat";
 import { listNotes } from "../lib/notes";
 import { listDocuments } from "../lib/ingest";
 import { listSkills } from "../lib/skills";
+import { SearchGlyph } from "./icons";
 
 /** One searchable entry: group header + display text + the jump it performs. */
 interface PaletteEntry {
@@ -200,15 +201,30 @@ function CommandPalette({ onClose, onJump }: CommandPaletteProps): React.JSX.Ele
         aria-label="命令面板"
         onClick={(event) => event.stopPropagation()}
       >
-        <input
-          type="text"
-          className="palette__input"
-          placeholder="搜索会话、笔记、文档、技能，或执行动作…"
-          value={query}
-          autoFocus
-          spellCheck={false}
-          onChange={(event) => setQuery(event.target.value)}
-        />
+        <div className="gsearch">
+          <span className="gsearch__icon" aria-hidden="true">
+            <SearchGlyph />
+          </span>
+          <input
+            type="text"
+            placeholder="搜索会话、笔记、文档、技能，或执行动作…"
+            value={query}
+            autoFocus
+            spellCheck={false}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {query !== "" && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="清空搜索"
+              title="清空"
+              onClick={() => setQuery("")}
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <div className="palette__list" ref={listRef}>
           {entries.length === 0 ? (
             <p className="palette__empty">没有匹配项</p>

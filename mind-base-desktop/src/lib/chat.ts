@@ -69,6 +69,31 @@ export function listSessions(): Promise<ChatSessionRow[]> {
   return invoke<ChatSessionRow[]>("chat_sessions_list");
 }
 
+/** 对话工作模式：普通对话 / 简历制作 / PPT 制作。 */
+export type ChatMode = "chat" | "resume" | "slides";
+
+/** 各模式会话标题的固定后缀（也是历史列表的过滤标记）。 */
+export const MODE_SUFFIX: Record<Exclude<ChatMode, "chat">, string> = {
+  resume: "——简历",
+  slides: "——PPT",
+};
+
+export const CHAT_MODE_STORAGE_KEY = "mb.chat.mode";
+/** 薄入口页跳进聊天时一次性指定模式的 sessionStorage 键。 */
+export const CHAT_MODE_JUMP_KEY = "mb-chat-mode";
+
+/** 规范化不可信的模式值。 */
+export function normalizeChatMode(value: string | null): ChatMode {
+  return value === "resume" || value === "slides" ? value : "chat";
+}
+
+/** 首条消息 → 会话标题前缀（压缩空白、截 24 字）。 */
+export function chatTitlePrefix(question: string): string {
+  const squeezed = question.trim().replace(/\s+/g, " ");
+  if (squeezed === "") return "新对话";
+  return squeezed.length > 24 ? `${squeezed.slice(0, 24)}…` : squeezed;
+}
+
 /** Create a conversation; omit the title for the 新对话 default. */
 export function createSession(title?: string): Promise<ChatSessionRow> {
   return invoke<ChatSessionRow>("chat_session_create", { title: title ?? null });

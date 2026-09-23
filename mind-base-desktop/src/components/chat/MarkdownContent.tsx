@@ -13,6 +13,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { remarkLinkify } from "../../lib/linkify";
 
 /**
  * react-markdown 默认会把"非安全协议"的 href 清空（Windows 盘符 `D:/` 会被
@@ -27,7 +28,7 @@ function allowUrl(url: string): string {
   return "";
 }
 
-const MD_PLUGINS = [remarkGfm, remarkBreaks];
+const MD_PLUGINS = [remarkGfm, remarkBreaks, remarkLinkify];
 
 /** Flatten a React node tree into its plain text (for the copy button). */
 function extractText(node: React.ReactNode): string {
@@ -86,6 +87,10 @@ function CodeBlock({ children }: { children?: React.ReactNode }): React.JSX.Elem
 
 const MD_COMPONENTS: Components = {
   pre: CodeBlock,
+  // GFM 宽表：包一层横向滚动容器，宽表格滚动查看而不是撑破消息列/笔记栏。
+  table({ children }) {
+    return <div className="md-table-wrap"><table>{children}</table></div>;
+  },
   a({ children, href }) {
     return (
       <a

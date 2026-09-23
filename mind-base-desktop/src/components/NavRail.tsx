@@ -1,10 +1,13 @@
 /**
- * 左侧导航栏：细图标栏，导航入口统一放左上。
+ * 左侧导航侧栏（ChatGPT 式）：顶部品牌行 + 图标/标签导航列表 + 底部设置组，
+ * 可折叠（展开 = 图标+标签列表，收起 = 64px 图标栏，tooltip 提示全名）。
  *
  * 纯 in-flow 布局（无 fixed/transform），点击切换 hash 路由，主区随路由
- * 渲染对应视图。活动项用反色图标块标记。
+ * 渲染对应视图。活动项用色调填充（--hover-deep）标记，不做整块反色。
+ * 折叠态经 localStorage 持久化，重启恢复。
  */
 
+import { useState } from "react";
 import {
   FAVORITES_HASH,
   HOME_HASH,
@@ -21,6 +24,20 @@ import {
   navigate,
 } from "../lib/router";
 import type { Route } from "../lib/router";
+
+/** localStorage key remembering the nav collapse across restarts. */
+const NAV_COLLAPSED_KEY = "mb.nav-collapsed";
+
+/** Panel fold/unfold glyph（与会话侧栏折叠键同一语言）。 */
+function PanelIcon({ folded }: { folded: boolean }): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="14" rx="2" />
+      <path d="M9.5 5v14" />
+      {folded && <path d="m15 10-2 2 2 2" strokeLinecap="round" strokeLinejoin="round" />}
+    </svg>
+  );
+}
 
 /** Chat bubble glyph for the conversation workspace (home). */
 function ChatIcon(): React.JSX.Element {
@@ -186,6 +203,17 @@ const SETTINGS_RAIL_ITEMS: ReadonlyArray<RailItem> = [
 ];
 
 function NavRail({ route }: { route: Route }) {
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => window.localStorage.getItem(NAV_COLLAPSED_KEY) === "1",
+  );
+
+  function toggleCollapsed(): void {
+    setCollapsed((value) => {
+      window.localStorage.setItem(NAV_COLLAPSED_KEY, value ? "0" : "1");
+      return !value;
+    });
+  }
+
   const renderItem = (item: RailItem): React.JSX.Element => {
     const active = item.active(route);
     const Icon = item.icon;
@@ -200,11 +228,30 @@ function NavRail({ route }: { route: Route }) {
         onClick={() => navigate(item.hash)}
       >
         <Icon />
+        <span className="rail-btn__label">{item.label}</span>
       </button>
     );
   };
   return (
-    <nav className="nav-rail" aria-label="主导航">
+    <nav
+      className={collapsed ? "nav-rail nav-rail--collapsed" : "nav-rail"}
+      aria-label="主导航"
+    >
+      <div className="nav-brand">
+        <div className="nav-brand__badge" aria-hidden="true">
+          MB
+        </div>
+        <span className="nav-brand__name">MindBase</span>
+        <button
+          type="button"
+          className="icon-button nav-rail__toggle"
+          aria-label={collapsed ? "展开导航" : "折叠导航"}
+          title={collapsed ? "展开导航" : "折叠导航"}
+          onClick={toggleCollapsed}
+        >
+          <PanelIcon folded={collapsed} />
+        </button>
+      </div>
       {MAIN_RAIL_ITEMS.map(renderItem)}
       {/* 弹性占位：把设置组推到侧边栏最下方 */}
       <div className="nav-rail__spacer" aria-hidden="true" />
