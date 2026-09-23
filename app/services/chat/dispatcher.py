@@ -205,8 +205,14 @@ async def agent_stream_setup(
         "upload_uuids": ctx["upload_uuids"] or [],
         "skill_ids": request.skill_ids or [],
         "board_uuid": request.board_uuid or "",
+        "board_anchor_text": (request.board_anchor_text or "").strip(),
     }
     run_config: dict[str, Any] = {
+        # Bounded ReAct loop: without an explicit limit LangGraph defaults to
+        # 25 super-steps, and a runaway tool loop dies with a raw
+        # GraphRecursionError. The streamer converts any raise into an error
+        # frame either way; 30 leaves headroom for multi-tool rounds.
+        "recursion_limit": 30,
         "run_name": f"{agent_name}_agent_stream",
         "tags": [f"{agent_name}_agent", "streaming"],
         "metadata": {

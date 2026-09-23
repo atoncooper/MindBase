@@ -33,6 +33,13 @@ class ChatRequest(BaseModel):
         description="Board the request is scoped to (panel board chat). "
         "When set, the request is routed directly to the board agent.",
     )
+    board_anchor_text: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Plain text of the node currently selected on the canvas "
+        "(panel board chat context). The board agent anchors suggestions to it; "
+        "content only — never identity.",
+    )
     mode: str = Field(
         default="standard",
         deprecated="Routing is owned by AgentHarness; this field is ignored.",

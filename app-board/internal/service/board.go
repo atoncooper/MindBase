@@ -31,6 +31,7 @@ var (
 	ErrConflict      = errors.New("version conflict")  // -> 409
 	ErrPrecondition  = errors.New("if-match required") // -> 428
 	ErrInvalidInput  = errors.New("invalid input")     // -> 400
+	ErrDuplicateName = errors.New("同名看板已存在")      // -> 400 (user-facing copy)
 	ErrStorage       = errors.New("storage error")     // -> 500
 	ErrContentTooBig = errors.New("content too large") // -> 413
 )
@@ -50,6 +51,7 @@ const (
 type MetaStore interface {
 	GetByUUID(ctx context.Context, uid int64, uuid string) (*model.Board, error)
 	List(ctx context.Context, uid int64, kind string, page, pageSize int) ([]model.Board, int64, error)
+	TitleExists(ctx context.Context, uid int64, kind, title, excludeUUID string) (bool, error)
 	Create(ctx context.Context, b *model.Board) error
 	UpdatePin(ctx context.Context, uid int64, uuid string, pinned bool) (*model.Board, error)
 	SoftDelete(ctx context.Context, uid int64, uuid string) error
@@ -148,6 +150,25 @@ func validateKind(kind string) error {
 	return nil
 }
 
+// ensureUniqueTitle rejects a title that another non-deleted board of the
+// same uid+kind already uses. Empty titles skip the check (they render as
+// 未命名 in clients and legacy rows may carry ""). Returns the normalized
+// title.
+func (s *BoardService) ensureUniqueTitle(ctx context.Context, uid int64, kind, title, excludeUUID string) (string, error) {
+	title = truncateRunes(strings.TrimSpace(title), 255)
+	if title == "" {
+		return "", nil
+	}
+	exists, err := s.meta.TitleExists(ctx, uid, kind, title, excludeUUID)
+	if err != nil {
+		return "", fmt.Errorf("%w: check duplicate title: %v", ErrStorage, err)
+	}
+	if exists {
+		return "", ErrDuplicateName
+	}
+	return title, nil
+}
+
 // Create makes a new board and returns its metadata. content may be
 // empty (create-then-edit flow).
 func (s *BoardService) Create(ctx context.Context, uid int64, title, kind, content string) (*BoardMeta, error) {
@@ -157,7 +178,14 @@ func (s *BoardService) Create(ctx context.Context, uid int64, title, kind, conte
 	if len(content) > MaxContentBytes {
 		return nil, ErrContentTooBig
 	}
-	title = truncateRunes(title, 255)
+	// 空标题归一为默认名（前端新建/导入都会给具体名，这里是 API 兜底）。
+	if strings.TrimSpace(title) == "" {
+		title = "未命名看板"
+	}
+	title, err := s.ensureUniqueTitle(ctx, uid, kind, title, "")
+	if err != nil {
+		return nil, err
+	}
 	b := &model.Board{
 		UUID:    uuid.NewString(),
 		UID:     uid,
@@ -276,7 +304,7 @@ func (s *BoardService) Update(ctx context.Context, uid int64, boardUUID string, 
 		return nil, ErrContentTooBig
 	}
 	if p.Title != nil {
-		p.Title = ptr(truncateRunes(strings.TrimSpace(*p.Title), 255))
+		p.Title = ptr(strings.TrimSpace(*p.Title))
 	}
 
 	b, err := s.meta.GetByUUID(ctx, uid, boardUUID)
@@ -289,6 +317,15 @@ func (s *BoardService) Update(ctx context.Context, uid int64, boardUUID string, 
 	if ifMatch != b.Version {
 		// Stale client (or raced between read and write) -> conflict.
 		return nil, fmt.Errorf("%w: if-match %d != current %d", ErrConflict, ifMatch, b.Version)
+	}
+	// 重命名时校验同名（未改名/清空标题跳过）；校验放在乐观锁确认之后，
+	// 失败不计入任何存储写入。
+	if p.Title != nil && *p.Title != "" && *p.Title != b.Title {
+		unique, err := s.ensureUniqueTitle(ctx, uid, b.Kind, *p.Title, boardUUID)
+		if err != nil {
+			return nil, err
+		}
+		p.Title = ptr(unique)
 	}
 
 	// Serialize content writers in Mongo first (conditional on current doc

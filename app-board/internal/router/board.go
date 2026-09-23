@@ -58,6 +58,9 @@ func mapServiceError(c *gin.Context, err error, context string) bool {
 		jsonError(c, http.StatusRequestEntityTooLarge, "content exceeds the 8MB limit")
 	case errors.Is(err, service.ErrInvalidInput):
 		jsonError(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, service.ErrDuplicateName):
+		// 重名是用户可自行纠正的输入问题 -> 400，文案直接可读。
+		jsonError(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrStorage):
 		internalError(c, err, context)
 	default:
