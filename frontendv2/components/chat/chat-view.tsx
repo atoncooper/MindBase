@@ -207,6 +207,39 @@ export function ChatView() {
       const controller = new AbortController();
       abortRef.current = controller;
 
+      // Throttled stream flush: SSE deltas arrive far faster than markdown
+      // should be re-parsed, so the newest content/reasoning is held here and
+      // committed to state at most every ~80ms (plus a final flush at the end
+      // of the stream so no trailing delta is lost).
+      let latestContent = "";
+      let latestReasoning = "";
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      let flushPending = false;
+
+      const flushStream = () => {
+        if (flushTimer != null) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        if (!flushPending) return;
+        flushPending = false;
+        const content = latestContent;
+        const reasoning = latestReasoning;
+        updateActiveSession((s) => ({
+          ...s,
+          messages: s.messages.map((m) =>
+            m.id === assistantMsgId ? { ...m, content, reasoning } : m
+          ),
+        }));
+      };
+
+      const scheduleFlush = () => {
+        flushPending = true;
+        if (flushTimer == null) {
+          flushTimer = setTimeout(flushStream, 80);
+        }
+      };
+
       try {
         const stream = await chatApi.askStream(
           {
@@ -221,12 +254,8 @@ export function ChatView() {
           stream,
           {
             onChunk: (accumulated) => {
-              updateActiveSession((s) => ({
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === assistantMsgId ? { ...m, content: accumulated } : m
-                ),
-              }));
+              latestContent = accumulated;
+              scheduleFlush();
             },
             onSources: (sources: ChatSource[]) => {
               updateActiveSession((s) => ({
@@ -257,12 +286,16 @@ export function ChatView() {
               }));
             },
             onReset: () => {
-              updateActiveSession((s) => ({
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === assistantMsgId ? { ...m, content: "" } : m
-                ),
-              }));
+              // A retried LLM run begins: clear the buffered content (the
+              // backend replays pre-run content as chunks) and flush
+              // immediately so no stale text lingers for up to 80ms.
+              latestContent = "";
+              flushPending = true;
+              flushStream();
+            },
+            onReasoning: (accumulated) => {
+              latestReasoning = accumulated;
+              scheduleFlush();
             },
             onStep: (step: StreamStep) => {
               updateActiveSession((s) => ({
@@ -299,6 +332,7 @@ export function ChatView() {
               }));
             },
             onError: (message: string) => {
+              flushStream();
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) =>
@@ -307,6 +341,7 @@ export function ChatView() {
               }));
             },
             onComplete: () => {
+              flushStream();
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) =>
@@ -325,6 +360,7 @@ export function ChatView() {
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
+        flushStream();
         const message = error instanceof Error ? error.message : "请求失败";
         updateActiveSession((s) => ({
           ...s,
@@ -388,11 +424,11 @@ export function ChatView() {
 
       updateActiveSession((s) => ({
         ...s,
-        messages: s.messages.map((m) =>
-          m.id === assistantMsgId
-            ? { ...m, content: "", status: "pending", error: undefined, sources: undefined, reasoningSteps: undefined, artifacts: undefined }
-            : m
-        ),
+          messages: s.messages.map((m) =>
+            m.id === assistantMsgId
+              ? { ...m, content: "", status: "pending", error: undefined, sources: undefined, reasoningSteps: undefined, reasoning: undefined, artifacts: undefined }
+              : m
+          ),
       }));
       void streamQuestion(prevUser.content, assistantMsgId);
     },
@@ -542,6 +578,7 @@ export function ChatView() {
                   sources={message.sources}
                   artifacts={message.artifacts}
                   reasoningSteps={message.reasoningSteps}
+                  reasoning={message.reasoning}
                   agent={message.agent}
                   status={message.status}
                   error={message.error}

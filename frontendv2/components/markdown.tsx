@@ -6,6 +6,7 @@
  * - remark-math parses $...$ (inline) and $$...$$ (block) into math nodes.
  * - rehype-katex renders those nodes with KaTeX.
  * - KaTeX CSS is imported once globally in app/layout.tsx.
+ * - Fenced code blocks are Prism-highlighted via <CodeBlock>.
  *
  * Use `inline` to render paragraphs as <span> (for buttons, list items, and
  * other inline contexts where a block <p> would break layout).
@@ -27,21 +28,25 @@ const INLINE_COMPONENTS: Components = {
 };
 
 // Block-level overrides: fenced code blocks render through <CodeBlock> so every
-// code block gets a ChatGPT-style light gray surface + language label + copy
-// button. Inline code keeps the default chip styling from .md-body.
+// code block gets Prism highlighting + a language label + copy button. Wide
+// tables wrap in a horizontal scroll container instead of breaking the column.
 const BLOCK_COMPONENTS: Components = {
     pre: ({ children }) => <CodeBlock>{children as ReactNode}</CodeBlock>,
+    table: ({ children }) => (
+        <div className="md-table-scroll">
+            <table>{children as ReactNode}</table>
+        </div>
+    ),
 };
 
+const INLINE_BLOCK_COMPONENTS: Components = { ...INLINE_COMPONENTS, ...BLOCK_COMPONENTS };
+
 export function Markdown({ children, inline }: MarkdownProps) {
-    const components: Components | undefined = inline
-        ? { ...INLINE_COMPONENTS, ...BLOCK_COMPONENTS }
-        : BLOCK_COMPONENTS;
     return (
         <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkMath]}
             rehypePlugins={[rehypeKatex]}
-            components={components}
+            components={inline ? INLINE_BLOCK_COMPONENTS : BLOCK_COMPONENTS}
         >
             {children}
         </ReactMarkdown>
