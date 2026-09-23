@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Plus, Pin, Trash2, Network, PenTool, Search, X, Upload } from "lucide-react";
+import { Plus, Pin, Trash2, Network, PenTool, Search, X, Upload, RefreshCw } from "lucide-react";
 import { boardsApi, type BoardMeta, type BoardKind } from "@/lib/api/boards";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -113,12 +113,8 @@ export function MindMapView() {
         void refreshList(kind);
     }, [kind, refreshList]);
 
-    // 编辑器自动保存后同步列表的 updated_at（编辑器 flush 不回调，这里轮询节流）。
-    useEffect(() => {
-        if (selected === null) return;
-        const timer = setInterval(() => void refreshList(), 30_000);
-        return () => clearInterval(timer);
-    }, [selected, refreshList]);
+    // 侧边栏不做自动刷新：列表只在进入页面、切换类型和用户操作
+    // （新建/导入/置顶/删除/手动刷新按钮）时拉取。
 
     const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
@@ -129,13 +125,21 @@ export function MindMapView() {
     const isBoard = kind === "whiteboard";
     const noun = isBoard ? "白板" : "导图";
 
-    // Google Drive 惯例：新建即创建"未命名"并打开。
+    // Google Drive 惯例：新建即创建"未命名"并打开。后端禁止同 uid+kind 重名，
+    // 这里基于已加载列表自动避让（未命名导图 / 未命名导图 2 / …），极端并发
+    // 下仍可能撞名——后端会返回 400 并透出错误文案。
     const handleCreate = async () => {
         if (creating) return;
         setCreating(true);
         try {
+            const base = `未命名${noun}`;
+            const existing = new Set(boards.map((b) => b.title));
+            let title = base;
+            for (let n = 2; existing.has(title); n += 1) {
+                title = `${base} ${n}`;
+            }
             const meta = await boardsApi.create({
-                title: `未命名${noun}`,
+                title,
                 kind,
             });
             await refreshList();
@@ -223,9 +227,18 @@ export function MindMapView() {
             <div className="flex h-[calc(100vh-3rem)] overflow-hidden">
                 {/* ── 左侧栏：kind 切换 + 搜索 + 新建 + 文件列表 ─────────── */}
                 <aside className="flex w-80 shrink-0 flex-col border-r border-border-subtle bg-surface">
-                    <div className="flex items-baseline gap-2 px-5 pb-3 pt-4">
+                    <div className="flex items-center gap-2 px-5 pb-3 pt-4">
                         <h1 className="text-[15px] font-medium tracking-tight">知识导图</h1>
                         <span className="text-xs text-tertiary">{boards.length}</span>
+                        <span className="min-w-0 flex-1" />
+                        <IconButton label="刷新列表" onClick={() => void refreshList()}>
+                            <RefreshCw
+                                className={cn(
+                                    "h-4 w-4",
+                                    loading && "animate-spin text-accent"
+                                )}
+                            />
+                        </IconButton>
                     </div>
 
                     {/* 导图 / 白板 kind 切换（桌面端同款分段控件） */}

@@ -13,7 +13,7 @@ import type { MindMapNodeData, MindMapIconPack } from "@/lib/board-store";
 import { nodeIconList } from "simple-mind-map/src/svg/icons.js";
 import type { MindMapIconGroup } from "simple-mind-map/src/svg/icons.js";
 import { highlightCode, LANGUAGE_GROUPS } from "./codeBlock";
-import { MD_COMPONENTS, MD_PLUGINS, MD_URL_TRANSFORM } from "./mdCard";
+import { MD_COMPONENTS, MD_PLUGINS, MD_REHYPE_PLUGINS, MD_URL_TRANSFORM } from "./mdCard";
 
 // ── 可选项（"" = 清除本节点的覆盖，回到主题默认） ──────────────────────
 
@@ -612,7 +612,7 @@ function LangSelect({ value, onChange }: {
 }
 
 /** 高亮代码编辑区：行号栏 + Prism 高亮层 + 透明文本域（代码块/公式对话框共用）。 */
-function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, placeholder }: {
+function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, placeholder, textareaRef }: {
   value: string;
   onChange: (value: string) => void;
   language: string;
@@ -620,8 +620,11 @@ function HighlightedCodeEditor({ value, onChange, language, onSubmit, height, pl
   onSubmit?: () => void;
   height: number;
   placeholder: string;
+  /** 可选外接 textarea ref：工具栏等场景直接操作选区/焦点用。 */
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }): React.JSX.Element {
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const localTaRef = useRef<HTMLTextAreaElement | null>(null);
+  const taRef = textareaRef ?? localTaRef;
   const gutterRef = useRef<HTMLPreElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
   const lineCount = Math.max(value.split("\n").length, 1);
@@ -799,6 +802,29 @@ export function CodeBlockDialog({ initialCode, initialLanguage, onSave, onDelete
 
 // ── Markdown 渲染节点（左源码 / 右实时预览，与画布渲染同源） ─────────
 
+/** 工具栏动作：wrap = 用前后缀包住选区（无选区则插入占位符），line = 整行加前缀。 */
+interface MdToolbarAction {
+  key: string;
+  label: string;
+  title: string;
+  kind: "wrap" | "line";
+  before: string;
+  after: string;
+}
+
+const MD_TOOLBAR_ACTIONS: MdToolbarAction[] = [
+  { key: "bold", label: "B", title: "加粗", kind: "wrap", before: "**", after: "**" },
+  { key: "italic", label: "I", title: "斜体", kind: "wrap", before: "*", after: "*" },
+  { key: "code", label: "</>", title: "行内代码", kind: "wrap", before: "`", after: "`" },
+  { key: "h2", label: "H2", title: "标题", kind: "line", before: "## ", after: "" },
+  { key: "list", label: "•", title: "无序列表", kind: "line", before: "- ", after: "" },
+  { key: "olist", label: "1.", title: "有序列表", kind: "line", before: "1. ", after: "" },
+  { key: "quote", label: "❝", title: "引用", kind: "line", before: "> ", after: "" },
+  { key: "link", label: "🔗", title: "链接", kind: "wrap", before: "[", after: "](https://)" },
+  { key: "imath", label: "∑x", title: "行内公式 $…$", kind: "wrap", before: "$", after: "$" },
+  { key: "bmath", label: "∑", title: "块级公式 $$…$$", kind: "wrap", before: "$$\n", after: "\n$$" },
+];
+
 export function MarkdownDialog({ initialSource, onSave, onDelete, onClose }: {
   /** 编辑已有节点时的初始源码；空串表示新建节点。 */
   initialSource: string;
@@ -808,9 +834,52 @@ export function MarkdownDialog({ initialSource, onSave, onDelete, onClose }: {
   onClose: () => void;
 }): React.JSX.Element {
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
   const [source, setSource] = useState(initialSource);
   useOutsideClose(boxRef, onClose);
   const isEditing = initialSource !== "";
+  const lineCount = Math.max(source.split("\n").length, 1);
+  const charCount = source.length;
+
+  /** 工具栏：把动作应用到 textarea 当前选区（无选区时插入占位符并选中它）。 */
+  function applyAction(action: MdToolbarAction): void {
+    const ta = taRef.current;
+    if (ta === null) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    let next: string;
+    let selStart: number;
+    let selEnd: number;
+    if (action.kind === "line") {
+      // 整行动作：扩展选区到整行，给每个非空行加前缀；已带前缀则移除（切换）。
+      const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+      const lineEnd = source.indexOf("\n", end) === -1 ? source.length : source.indexOf("\n", end);
+      const lines = source.slice(lineStart, lineEnd).split("\n");
+      const allPrefixed = lines.every((line) => line === "" || line.startsWith(action.before));
+      const updated = lines
+        .map((line) =>
+          line === "" ? line : allPrefixed ? line.slice(action.before.length) : action.before + line,
+        )
+        .join("\n");
+      next = source.slice(0, lineStart) + updated + source.slice(lineEnd);
+      selStart = lineStart;
+      selEnd = lineStart + updated.length;
+    } else {
+      const selected = source.slice(start, end);
+      const body = selected === "" ? "文本" : selected;
+      next = source.slice(0, start) + action.before + body + action.after + source.slice(end);
+      selStart = start + action.before.length;
+      selEnd = selStart + body.length;
+    }
+    setSource(next);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (el !== null) {
+        el.focus();
+        el.setSelectionRange(selStart, selEnd);
+      }
+    });
+  }
 
   return (
     <div className="mm-overlay">
@@ -819,18 +888,37 @@ export function MarkdownDialog({ initialSource, onSave, onDelete, onClose }: {
           <h3 className="mm-dialog__title">{isEditing ? "编辑 Markdown" : "插入 Markdown"}</h3>
           <span className="hint-text">左源码 · 右实时预览（与画布渲染同源）</span>
         </div>
+        <div className="mm-md-toolbar" role="toolbar" aria-label="Markdown 格式">
+          {MD_TOOLBAR_ACTIONS.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              className="mm-md-toolbtn"
+              title={action.title}
+              onMouseDown={(event) => {
+                // 阻止按钮抢焦点：点工具栏后选区仍在编辑区里。
+                event.preventDefault();
+              }}
+              onClick={() => applyAction(action)}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
         <div className="mm-md-split">
           <HighlightedCodeEditor
             value={source}
             onChange={setSource}
             language="markdown"
+            textareaRef={taRef}
             height={420}
-            placeholder="粘贴或输入 Markdown…（支持表格 / 任务列表 / 代码块）"
+            placeholder={"粘贴或输入 Markdown…（支持表格 / 任务列表 / 代码块 / LaTeX 公式）\n行内公式 $E=mc^2$；块级公式 $ 与 $ 各占一行：\n$$\nf(x)=x^2\n$$"}
           />
           <div className="mm-md-preview">
             <div className="smm-md-card">
               <Markdown
                 remarkPlugins={MD_PLUGINS}
+                rehypePlugins={MD_REHYPE_PLUGINS}
                 urlTransform={MD_URL_TRANSFORM}
                 components={MD_COMPONENTS}
               >
@@ -843,7 +931,9 @@ export function MarkdownDialog({ initialSource, onSave, onDelete, onClose }: {
           <span className="hint-text">
             {isEditing ? "保存后替换该节点的渲染内容（源码存在节点数据里）" : "在选中节点下创建 Markdown 渲染子节点"}
           </span>
-          <span className="hint-text">{source.length} 字符</span>
+          <span className="hint-text">
+            {lineCount} 行 · {charCount} 字符 · Ctrl+Enter 保存
+          </span>
         </div>
         <div className="mm-dialog__actions">
           {isEditing && onDelete !== undefined && (
@@ -888,8 +978,8 @@ export interface OutlineNodeItem {
   children: OutlineNodeItem[];
 }
 
-/** 富文本节点的 text 是 HTML（代码/MD 卡片是整块标记），大纲只显示剥离标签后的纯文本。 */
-function stripHtmlTags(html: string): string {
+/** 富文本节点的 text 是 HTML（代码/MD 卡片是整块标记），剥标签取纯文本。 */
+export function stripHtmlTags(html: string): string {
   return html
     .replace(/<[^>]*>/g, "")
     .replace(/&amp;/g, "&")
@@ -897,6 +987,15 @@ function stripHtmlTags(html: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
+}
+
+/**
+ * 板聊锚点/删除目标匹配用的归一化：剥标签 → 解码实体 → 折叠空白。
+ * 与后端大纲的 _plain_text 严格同序对齐——agent 从大纲逐字复制的目标
+ * （含富文本 HTML 节点）经过两侧归一化后必须相等，插入/删除才匹配得上。
+ */
+export function normalizeNodeText(html: string): string {
+  return stripHtmlTags(html).replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
 }
 
 /** 把画布文档的根节点转成大纲树（uid 缺失的节点不可定位/重命名）。 */

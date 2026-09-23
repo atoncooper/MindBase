@@ -106,7 +106,17 @@ export async function request<T>(
         throw new Error(sanitizeError({ status: response.status, detail: rawDetail }));
     }
 
-    return response.json();
+    // 204/空响应体没有 JSON 可解析（DELETE 等操作端点）：直接返回 undefined，
+    // 不能走 response.json()——空串 JSON.parse 会抛 "Unexpected end of JSON
+    // input"，把成功的删除误报成错误。
+    if (response.status === 204) {
+        return undefined as T;
+    }
+    const text = await response.text();
+    if (text === "") {
+        return undefined as T;
+    }
+    return JSON.parse(text) as T;
 }
 
 // Like `request`, but recursively converts snake_case response keys to

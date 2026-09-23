@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Pencil, Trash2, MessageSquare } from "lucide-react";
+import { Plus, Pencil, Trash2, MessageSquare, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatSessionSummary } from "./types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -31,6 +31,30 @@ function formatRelative(iso: string): string {
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day} 天前`;
   return new Date(iso).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+}
+
+// Highlight matching text in session title
+function HighlightText({ text, query }: { text: string; query: string }) {
+  if (!query.trim()) {
+    return <>{text}</>;
+  }
+
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  const parts = text.split(regex);
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="bg-yellow-200 text-foreground rounded-sm px-0.5">
+            {part}
+          </mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
 }
 
 interface SessionGroup {
@@ -81,8 +105,18 @@ export function ChatSidebar({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ChatSessionSummary | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const grouped = groupSessionsByDate(sessions);
+  // Filter sessions based on search query
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sessions;
+    const query = searchQuery.toLowerCase().trim();
+    return sessions.filter((session) =>
+      session.title.toLowerCase().includes(query)
+    );
+  }, [sessions, searchQuery]);
+
+  const grouped = groupSessionsByDate(filteredSessions);
 
   const handleStartEdit = (session: ChatSessionSummary, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -142,12 +176,50 @@ export function ChatSidebar({
             </button>
           </div>
 
+          {/* Search box - Google style */}
+          <div className="px-3 pb-2">
+            <div className="relative flex items-center">
+              <Search className="absolute left-3 h-4 w-4 text-tertiary pointer-events-none" aria-hidden="true" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜索会话"
+                className={cn(
+                  "w-full rounded-lg border border-border-subtle bg-surface py-2 pl-9 pr-8 text-[13px] text-foreground placeholder:text-tertiary",
+                  "transition-colors focus:border-border focus:outline-none focus:ring-1 focus:ring-border",
+                  searchQuery && "border-border"
+                )}
+                aria-label="搜索会话"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2 grid h-5 w-5 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
+                  aria-label="清除搜索"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Session list */}
           <div className="flex-1 overflow-y-auto px-2 pb-3">
             {grouped.length === 0 ? (
               <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-[12px] text-tertiary">
-                <MessageSquare className="h-5 w-5 opacity-50" aria-hidden="true" />
-                <span>暂无历史会话</span>
+                {searchQuery ? (
+                  <>
+                    <Search className="h-5 w-5 opacity-50" aria-hidden="true" />
+                    <span>无匹配会话</span>
+                  </>
+                ) : (
+                  <>
+                    <MessageSquare className="h-5 w-5 opacity-50" aria-hidden="true" />
+                    <span>暂无历史会话</span>
+                  </>
+                )}
               </div>
             ) : (
               grouped.map((group) => (
@@ -198,7 +270,7 @@ export function ChatSidebar({
                                     isActive ? "font-medium text-accent" : "text-foreground/90"
                                   )}
                                 >
-                                  {session.title}
+                                  <HighlightText text={session.title} query={searchQuery} />
                                 </div>
                                 <div className="mt-0.5 text-[11px] text-tertiary">
                                   {formatRelative(session.lastMessageAt)}

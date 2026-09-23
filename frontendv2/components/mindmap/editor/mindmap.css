@@ -898,6 +898,39 @@
   text-decoration: underline;
 }
 
+/* KaTeX 公式（MD 卡片内，画布与对话框预览同源）：
+   行内公式继承正文字号不撑行高；块级公式横向可滚（长公式不撑破节点宽度）。 */
+.smm-md-card .katex,
+.mm-canvas foreignObject .smm-md-card .katex {
+  font-size: 1.05em;
+}
+
+.smm-md-card .katex-display,
+.mm-canvas foreignObject .smm-md-card .katex-display {
+  margin: 6px 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* foreignObject 内滚动条不可见（合成层裁剪），块级公式预览时露出滚动条、
+   画布上隐藏但仍可横向拖动/滚轮横移。 */
+.mm-canvas foreignObject .smm-md-card .katex-display::-webkit-scrollbar {
+  display: none;
+}
+
+.smm-md-card .katex-display > .katex {
+  font-size: 1.15em;
+}
+
+/* KaTeX 渲染错误的源码回显（throwOnError=false 时红色提示，便于定位笔误）。 */
+.smm-md-card .katex-error,
+.mm-canvas foreignObject .smm-md-card .katex-error {
+  color: var(--danger, #d93025);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
 .smm-md-card input[type="checkbox"] {
   pointer-events: none;
 }
@@ -1345,6 +1378,42 @@
   width: min(940px, calc(100vw - 48px));
 }
 
+/* Markdown 工具栏：格式动作一排小按钮（选区包裹 / 整行前缀）。 */
+.mm-md-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--wash);
+}
+
+.mm-md-toolbtn {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.mm-md-toolbtn:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.mm-md-toolbtn:active {
+  background: var(--line);
+}
+
 .mm-md-split {
   display: flex;
   gap: 10px;
@@ -1779,7 +1848,7 @@
   border-radius: 3px;
 }
 
-/* ── 板聊面板（BoardChatPanel）────────────────────────────── */
+/* ── Board chat panel (BoardChatPanel) — ChatGPT-style ────── */
 .mm-boardchat-panel {
   position: fixed;
   top: 50%;
@@ -1787,30 +1856,50 @@
   z-index: 60;
   display: flex;
   flex-direction: column;
-  width: min(480px, calc(100vw - 48px));
-  height: min(70vh, 560px);
+  width: min(560px, calc(100vw - 48px));
+  height: min(76vh, 660px);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  border-radius: 16px;
+  box-shadow:
+    0 24px 64px rgba(29, 29, 31, 0.16),
+    0 4px 16px rgba(29, 29, 31, 0.08);
+  overflow: hidden;
+  font-size: 13.5px;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Header: slim drag handle with title + board name + close. */
 .mm-boardchat-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 9px 10px 9px 18px;
   border-bottom: 1px solid var(--line);
   cursor: move;
   user-select: none;
   touch-action: none;
 }
 
+.mm-boardchat-headtext {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
 .mm-boardchat-title {
-  font-size: 12px;
+  flex: none;
+  font-size: 13px;
   font-weight: 600;
   color: var(--ink);
+}
+
+.mm-boardchat-sub {
+  font-size: 12px;
+  color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1818,14 +1907,17 @@
 
 .mm-boardchat-close {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   border: none;
   background: transparent;
-  color: var(--ink-soft);
-  font-size: 16px;
-  line-height: 1;
+  color: var(--ink-2);
+  border-radius: 8px;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
 }
 
 .mm-boardchat-close:hover {
@@ -1833,90 +1925,601 @@
   color: var(--ink);
 }
 
+/* Message list: user bubbles right, assistant text full-width. */
 .mm-boardchat-body {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 20px 20px 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
 }
 
-.mm-boardchat-empty {
-  font-size: 12px;
-  color: var(--ink-soft);
-  padding: 8px 4px;
-  line-height: 1.6;
+.mm-boardchat-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.mm-boardchat-body::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 3px;
 }
 
 .mm-boardchat-msg {
-  max-width: 92%;
-  padding: 6px 9px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
+  font-size: 13.5px;
+  line-height: 1.7;
   word-break: break-word;
 }
 
 .mm-boardchat-msg--user {
   align-self: flex-end;
-  background: var(--primary, #1f2329);
-  color: #fff;
+  max-width: 82%;
+  padding: 8px 14px;
+  background: var(--wash);
+  border-radius: 18px;
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .mm-boardchat-msg--assistant {
-  align-self: flex-start;
-  background: var(--wash);
+  align-self: stretch;
+  color: var(--ink);
+  white-space: normal;
+}
+
+/* Empty state: centered greeting + starter prompts. */
+.mm-boardchat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  text-align: center;
+}
+
+.mm-boardchat-empty-title {
+  font-size: 17px;
+  font-weight: 600;
   color: var(--ink);
 }
 
-.mm-boardchat-error {
-  padding: 4px 10px;
-  font-size: 11px;
-  color: #b3261e;
+.mm-boardchat-empty-hint {
+  font-size: 12px;
+  color: var(--ink-2);
 }
 
-.mm-boardchat-inputrow {
+.mm-boardchat-starters {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+}
+
+.mm-boardchat-starter {
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.mm-boardchat-starter:hover {
+  background: var(--wash);
+  border-color: var(--line-strong);
+}
+
+/* Thinking: pulsing dot + shimmering label before the first token. */
+.mm-boardchat-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 0;
+}
+
+.mm-boardchat-thinking-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink);
+  animation: mm-bc-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mm-bc-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.mm-boardchat-shimmer {
+  font-size: 13px;
+  font-weight: 500;
+  background: linear-gradient(90deg, var(--ink-2) 35%, var(--ink) 50%, var(--ink-2) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: mm-bc-shimmer 1.8s linear infinite;
+}
+
+@keyframes mm-bc-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* Streaming caret appended to the segment currently streaming in. */
+.mm-boardchat-caret {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  border-radius: 2px;
+  background: var(--ink);
+  animation: mm-bc-blink 0.9s steps(2, start) infinite;
+}
+
+@keyframes mm-bc-blink {
+  to { visibility: hidden; }
+}
+
+/* Error line above the composer, with retry when session setup failed. */
+.mm-boardchat-error {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 20px 0;
+  font-size: 12px;
+  color: var(--danger, #b3261e);
+}
+
+.mm-boardchat-error-text {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.mm-boardchat-error-retry {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.mm-boardchat-error-retry:hover {
+  background: var(--wash);
+}
+
+/* Selected-node context chip above the composer (board chat anchor hint). */
+.mm-boardchat-anchor {
+  flex: none;
+  display: flex;
+  align-items: center;
   gap: 6px;
-  padding: 8px;
-  border-top: 1px solid var(--line);
+  margin: 0 16px 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--wash);
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+
+.mm-boardchat-anchor svg {
+  flex: none;
+}
+
+.mm-boardchat-anchor-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Composer: pill input with a circular send / stop button. */
+.mm-boardchat-composer {
+  flex: none;
+  display: flex;
   align-items: flex-end;
+  gap: 8px;
+  margin: 10px 16px 14px;
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 24px;
+  background: var(--surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mm-boardchat-composer:focus-within {
+  border-color: var(--ink-2);
+  box-shadow: 0 2px 10px rgba(29, 29, 31, 0.06);
 }
 
 .mm-boardchat-input {
   flex: 1;
   resize: none;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-size: 12px;
+  border: none;
+  background: transparent;
+  padding: 5px 0;
+  max-height: 120px;
+  font-size: 13.5px;
   font-family: inherit;
+  line-height: 1.5;
   color: var(--ink);
-  background: var(--surface);
 }
 
 .mm-boardchat-input:focus {
   outline: none;
-  border-color: var(--primary, #1f2329);
+}
+
+.mm-boardchat-input::placeholder {
+  color: var(--ink-2);
 }
 
 .mm-boardchat-send {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   border: none;
-  border-radius: 6px;
-  background: var(--primary, #1f2329);
-  color: #fff;
-  font-size: 12px;
-  padding: 7px 12px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--paper);
   cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.12s ease;
+}
+
+.mm-boardchat-send:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.mm-boardchat-send:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
 .mm-boardchat-send:disabled {
-  opacity: 0.5;
+  background: var(--wash);
+  color: var(--ink-2);
   cursor: default;
 }
+
+/* Stop button replaces send while a reply is streaming. */
+.mm-boardchat-send--stop {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+}
+
+.mm-boardchat-send--stop:hover:not(:disabled) {
+  background: var(--wash);
+  opacity: 1;
+}
+
+/* ── Board chat: assistant Markdown / LaTeX rendering ─────── */
+/* Assistant messages have no bubble; markdown segments lay out as blocks
+   (md-body) while the plain wrapper (streaming) restores pre-wrap. */
+.mm-boardchat-md--plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mm-boardchat-msg .md-body {
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.mm-boardchat-msg .md-body p,
+.mm-boardchat-msg .md-body ul,
+.mm-boardchat-msg .md-body ol,
+.mm-boardchat-msg .md-body blockquote {
+  margin: 0.4em 0;
+}
+
+.mm-boardchat-msg .md-body pre,
+.mm-boardchat-msg .md-body table {
+  margin: 0.5em 0;
+  font-size: 12px;
+}
+
+/* Inline KaTeX scales slightly down so formulas fit the panel width. */
+.mm-boardchat-msg .katex {
+  font-size: 1.05em;
+}
+
+.mm-boardchat-msg .katex-display {
+  margin: 0.45em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* ── Board chat: node suggestion cards (board-nodes → ghost insert) ── */
+.mm-bprop-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.mm-bprop-head {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: 2px;
+}
+
+.mm-bprop-group {
+  margin-top: 6px;
+}
+
+.mm-bprop-grouplabel {
+  display: block;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  margin-bottom: 4px;
+}
+
+.mm-bprop-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.mm-bprop-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--wash);
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.mm-bprop-chiptext {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-bprop-kind {
+  flex: none;
+  font-size: 9px;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 3px;
+}
+
+.mm-bprop-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mm-bprop-insert {
+  flex: none;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.mm-bprop-insert:hover {
+  opacity: 0.85;
+}
+
+.mm-bprop-dismiss {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.mm-bprop-dismiss:hover {
+  background: var(--wash);
+  color: var(--ink);
+}
+
+.mm-bprop-status {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  margin-top: 8px;
+}
+
+.mm-bprop-error {
+  font-size: 10.5px;
+  color: var(--danger, #b3261e);
+  margin-top: 6px;
+}
+
+/* ── 板聊建议删除（逐项人工确认）────────────────────────────── */
+.mm-bprop-chip--del {
+  justify-content: space-between;
+  gap: 8px;
+  border-color: color-mix(in srgb, var(--danger, #b3261e) 35%, var(--line));
+  background: color-mix(in srgb, var(--danger, #b3261e) 5%, var(--wash));
+}
+
+.mm-bprop-delbtn {
+  flex: none;
+  padding: 2px 9px;
+  border: none;
+  border-radius: 999px;
+  background: var(--danger, #b3261e);
+  color: #fff;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.mm-bprop-delbtn:hover {
+  opacity: 0.85;
+}
+
+.mm-bprop-delbtn--ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+
+.mm-bprop-delbtn--ghost:hover {
+  background: var(--wash);
+  opacity: 1;
+}
+
+.mm-bprop-del-confirm {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.mm-bprop-del-done {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.mm-bprop-del-done::before {
+  content: "✓";
+  margin-right: 4px;
+  color: var(--ink-2);
+}
+
+/* Pending fence block while the suggestion JSON is still streaming in. */
+.mm-bprop-pending {
+  padding: 2px 0;
+}
+
+.mm-bprop-pending .mm-boardchat-shimmer {
+  font-size: 12.5px;
+}
+
+/* ── 板聊：折叠思考块 + 工具步骤轨迹 ───────────────────────── */
+
+.mm-boardchat-think {
+  margin: 2px 0 6px;
+}
+
+.mm-boardchat-think-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.mm-boardchat-think-head:hover {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+
+.mm-boardchat-think-chevron {
+  transition: transform 0.15s ease;
+}
+
+.mm-boardchat-think-chevron--open {
+  transform: rotate(180deg);
+}
+
+.mm-boardchat-think-body {
+  margin-top: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border-radius: 8px;
+}
+
+.mm-boardchat-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 2px 0 6px;
+}
+
+.mm-boardchat-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.mm-boardchat-step--done {
+  color: var(--ink-2);
+  opacity: 0.75;
+}
+
+.mm-boardchat-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--ink);
+  animation: mm-bc-pulse 1.2s ease-in-out infinite;
+}
+
+.mm-boardchat-step--done .mm-boardchat-step-dot {
+  background: var(--ink-2);
+  opacity: 0.5;
+  animation: none;
+}
+
+.mm-boardchat-step-action {
+  flex-shrink: 0;
+}
+
+.mm-boardchat-step-q {
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
 
 /* ── AI 补全卡片（幽灵建议 chips）──────────────────────────── */
 .mm-complete-card {
@@ -1953,6 +2556,68 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Ghost-confirm card body: anchor line + clickable confirm / dismiss. */
+.mm-complete-anchor {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  padding: 2px 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-complete-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.mm-complete-confirm,
+.mm-complete-dismiss {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.mm-complete-confirm {
+  border: none;
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.mm-complete-confirm:hover {
+  opacity: 0.85;
+}
+
+.mm-complete-dismiss {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.mm-complete-dismiss:hover {
+  background: var(--wash);
+  color: var(--ink);
+}
+
+.mm-complete-actions kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.7;
 }
 
 .mm-complete-loading {

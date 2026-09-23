@@ -8,7 +8,9 @@
  *
  * 画布手势约定（参考 ProcessOn）：空白处左键拖拽 = 整体平移画布；
  * Ctrl/Meta + 空白拖拽（或右键拖拽）= 框选多选；节点拖拽 = 换父级挂载点，
- * 单个节点拖到空白处 = 自由定位（enableFreeDrag，位置存进节点数据）。
+ * 单个节点拖到空白处 = 自由定位（enableFreeDrag，位置存进节点数据）；
+ * 节点拖到另一个节点正上方（重叠判定）= **内容替换/互换**（SWAP_NODE_CONTENT，
+ * beforeDragEnd 拦截库默认的"变为子节点"），多选拖拽不适用。
  *
  * 节点尺寸调节：选中单个节点时显示四向手柄——左右拖拽调整文本换行宽度
  * （customTextWidth），上下拖拽调整节点纵向内边距（paddingY，节点级样式
@@ -35,8 +37,11 @@ import "katex/dist/katex.min.css";
 
 import type { MindMapDoc } from "@/lib/board-store";
 import type { MindMapNodeInstance } from "simple-mind-map";
+import { getBaseStyleText } from "simple-mind-map/src/plugins/FormulaStyle.js";
 import { isCodeBlockText } from "./codeBlock";
 import { isMdCardText } from "./mdCard";
+import { EXPORT_CARD_CSS } from "./exportHtml";
+import { useToast } from "./toast";
 
 // 插件模块级注册一次：拖拽、导出（PDF = Export 先转 PNG 再经 ExportPDF/
 // pdf-lib 打包；XMind = ExportXMind 产 zip）、外框、关联线、框选多选、
@@ -61,6 +66,19 @@ interface ResizeBox {
   width: number;
   height: number;
 }
+
+/**
+ * PNG/PDF/SVG 导出时库会把 resetCss 注入序列化 SVG 的首个 foreignObject
+ * （样式对整棵 SVG 生效）。默认只有一条 * reset，代码卡片的 Prism 配色、
+ * MD 卡片排版、MD 里内嵌 KaTeX 的 .katex 规则都会丢——公式甚至会因缺
+ * .katex-mathml 隐藏规则而把 MathML 源码画出来。这里拼入卡片样式与
+ * KaTeX 基线（与 HTML 导出同一份 EXPORT_CARD_CSS）。
+ */
+const EXPORT_RESET_CSS = [
+  `* { margin: 0; padding: 0; box-sizing: border-box; }`,
+  EXPORT_CARD_CSS,
+  getBaseStyleText(),
+].join("\n");
 
 interface MindMapCanvasProps {
   doc: MindMapDoc;
@@ -90,6 +108,7 @@ interface MindMapCanvasProps {
 function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const toastApi = useToast();
   // 回调经 ref 转发，事件处理永远读到最新一帧的闭包。
   const callbacksRef = useRef(props);
   callbacksRef.current = props;
@@ -128,6 +147,29 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       enableShortcutOnlyWhenMouseInSvg: true,
       // 单个节点拖到空白处 = 自由定位（customLeft/customTop 存进节点数据）。
       enableFreeDrag: true,
+      // 节点拖到另一节点正上方（重叠判定）= 互换位置（SWAP_NODE_POSITION）：
+      // 拦截库默认的"变为目标节点的子节点"。多选拖拽 / 目标为根节点 /
+      // 祖先链互换（会自嵌套成环）不替换，其中前两者走库默认行为，后者
+      // 取消本次拖放并提示。
+      beforeDragEnd: ({
+        overlapNodeUid,
+        beingDragNodeList,
+      }: {
+        overlapNodeUid: string;
+        beingDragNodeList: MindMapNodeInstance[];
+      }) => {
+        if (overlapNodeUid === "" || beingDragNodeList.length !== 1) return false;
+        const dragNode = beingDragNodeList[0];
+        if (dragNode.isRoot === true) return false;
+        const target = instance.renderer.findNodeByUid(overlapNodeUid);
+        if (target === null || target.isRoot === true) return false;
+        if (target.isAncestor(dragNode) || dragNode.isAncestor(target)) {
+          toastApi.info("父节点与子孙节点不能互换位置", { title: "无法替换" });
+          return true;
+        }
+        instance.execCommand("SWAP_NODE_POSITION", dragNode, target);
+        return true;
+      },
       // 自定义宽度机制的总开关：关掉它 hasCustomWidth() 恒为 false，
       // customTextWidth 会被引擎完全忽略（节点级宽度调节依赖此开关）。
       enableDragModifyNodeWidth: true,
@@ -138,11 +180,37 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       // 节点 hover/激活描边框颜色：库默认是亮青蓝，与画布主题不搭；
       // 统一成应用强调蓝（与框选矩形同族），选中状态一眼可辨。
       hoverRectColor: "rgb(0, 113, 227)",
+      // PNG/PDF/SVG 导出的样式注入（见 EXPORT_RESET_CSS 注释）。
+      resetCss: EXPORT_RESET_CSS,
     });
     if (props.doc.theme?.config !== undefined) {
       instance.setThemeConfig(props.doc.theme.config);
     }
     instanceRef.current = instance;
+
+    // 拖拽替换：把节点 A 拖到节点 B 正上方（库的重叠判定）松手 = A 与 B
+    // **互换位置**（各自的 nodeData 在父节点 children 数组里对调整棵子树
+    // 跟随移动，含样式/备注/代码卡与子节点）。uid 原地不动，撤销栈与
+    // data_change_detail 按 uid 追踪的增量语义不被破坏。beforeDragEnd 返回
+    // true 取消库默认动作（MOVE_NODE_TO 把 A 变成 B 的子节点）；多选拖拽、
+    // 根节点、祖先链、跨树场景不替换，仍走库默认行为。
+    instance.command.add(
+      "SWAP_NODE_POSITION",
+      (dragNode: MindMapNodeInstance, targetNode: MindMapNodeInstance) => {
+        const dragParent = dragNode.parent;
+        const targetParent = targetNode.parent;
+        if (dragParent === undefined || targetParent === undefined) return;
+        const dragList = dragParent.nodeData.children;
+        const targetList = targetParent.nodeData.children;
+        const dragIdx = dragList.indexOf(dragNode.nodeData);
+        const targetIdx = targetList.indexOf(targetNode.nodeData);
+        if (dragIdx === -1 || targetIdx === -1) return;
+        // 同父：直接对调两个槽位；异父：互换槽位内容。
+        dragList[dragIdx] = targetNode.nodeData;
+        targetList[targetIdx] = dragNode.nodeData;
+        instance.render();
+      },
+    );
 
     // 库默认把 Ctrl+I 绑成 fit()、Ctrl+= / Ctrl+- 绑成缩放步进，与编辑器
     // 全局快捷键双重触发：按 Ctrl+I 出补全的同时视图会被 fit 回 100% 并

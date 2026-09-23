@@ -18,8 +18,12 @@ declare module "simple-mind-map" {
     isGeneralization?: boolean;
     /** 无 key 返回整份节点 data；有 key 返回对应字段（样式覆盖也存这里）。 */
     getData<T = unknown>(key?: string): T;
+    /** 渲染树上的原始节点数据（nodeData.data = 节点字段，nodeData.children = 子树）。 */
+    nodeData: MindMapNodeData;
     /** 激活该节点（加入选中集合并高亮）。 */
     active(): void;
+    /** 当前节点是否是目标节点的祖先（父链上出现即真）。 */
+    isAncestor(node: MindMapNodeInstance): boolean;
     /** 布局树上的父节点实例（根节点为 undefined）。 */
     parent?: MindMapNodeInstance;
     /** 布局层级：根为 0，二级为 1，以此类推。 */
@@ -62,6 +66,10 @@ declare module "simple-mind-map" {
     on(event: string, fn: (...args: any[]) => void): void;
     off(event: string, fn: (...args: any[]) => void): void;
     execCommand(...args: unknown[]): void;
+    /** 命令系统：add 注册自定义命令；execCommand 执行后自动记撤销栈并 emit data_change。 */
+    command: {
+      add(name: string, fn: (...args: never[]) => void): void;
+    };
     getData(withConfig: true): MindMapFullData;
     getData(withConfig?: false): MindMapNodeData;
     getData(withConfig?: boolean): MindMapFullData | MindMapNodeData;
@@ -232,6 +240,12 @@ declare module "simple-mind-map/src/svg/icons.js" {
 declare module "simple-mind-map/src/plugins/Drag.js" {
   const Drag: object;
   export default Drag;
+}
+
+declare module "simple-mind-map/src/plugins/FormulaStyle.js" {
+  /** KaTeX 基线样式（.katex 类规则，不含 @font-face 字体）——导出 SVG 时
+   *  需要手动拼进 resetCss，MD 卡片里内嵌的 katex HTML 才有样式。 */
+  export function getBaseStyleText(): string;
 }
 
 declare module "simple-mind-map/src/plugins/ExportXMind.js" {

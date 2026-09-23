@@ -96,6 +96,7 @@ export interface ChatRequestPayload {
     workspace_id?: number;  // Plan 0023: cloud drive workspace
     skill_ids?: string[];  // 强制注入本次对话的已安装技能（全文进 system prompt）
     board_uuid?: string;  // 板聊：请求限定在某块板子上（后端直路由 board agent）
+    board_anchor_text?: string;  // 板聊：画布当前选中节点纯文本（作为建议锚点上下文）
 }
 
 export const chatApi = {
