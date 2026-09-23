@@ -648,8 +648,14 @@ def _get_harness_llm():
         # streamer emits a single `chunk` frame with the full text and the
         # frontend renders it non-incrementally.  stream_usage=True keeps
         # token usage flowing in stream mode so usage tracking still works.
-        # temperature=0.4: temperature=0 输出过于保守简短；0.4 在保持稳定的
-        # 同时让回答更舒展（该 LLM 被所有 agent 共享，勿再调高）。
+        # temperature=0.4: 0 is overly terse; 0.4 keeps answers expansive
+        # (this LLM is shared by all agents — do not raise it).
+        # timeout=120 / max_retries=1: openai's defaults (600s read timeout,
+        # 2 retries) would let a wedged call stall one SSE turn for ~30min
+        # with zero bytes, blowing past the gateways' 300s read windows
+        # (nginx / APISIX) which then cut the stream without any error
+        # frame. The read timeout applies per byte-gap while streaming; one
+        # retry bounds the worst case at ~4min.
         return ChatOpenAI(
             api_key=cfg.api_key,
             base_url=cfg.base_url or None,
@@ -657,6 +663,8 @@ def _get_harness_llm():
             temperature=0.4,
             streaming=True,
             stream_usage=True,
+            timeout=120,
+            max_retries=1,
             **({"default_headers": dict(cfg.default_headers)} if cfg.default_headers else {}),
         )
     except Exception as e:

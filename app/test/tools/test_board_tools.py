@@ -9,6 +9,7 @@ from app.tools.board.board_create import BoardCreateTool
 from app.tools.board.board_delete import BoardDeleteTool
 from app.tools.board.board_get import BoardGetTool
 from app.tools.board.board_list import BoardListTool
+from app.tools.board.board_navigate import BoardNavigateTool
 from app.tools.board.board_update import BoardUpdateTool
 
 
@@ -102,3 +103,197 @@ class TestArgumentPassthrough:
     async def test_board_delete(self, fake_client):
         await BoardDeleteTool().run(board_uuid="u-1", _uid=UID)
         assert fake_client.calls == [(UID, "delete_board", {"board_uuid": "u-1"})]
+
+
+def _big_mindmap_doc(node_count: int) -> str:
+    """A mind-map doc JSON string whose size scales with node_count."""
+    children = [
+        {"data": {"text": f"节点 {i} 的内容文本"}, "children": []} for i in range(node_count)
+    ]
+    doc = {"root": {"data": {"text": "根节点"}, "children": children}, "layout": "logicalStructure"}
+    return json.dumps(doc, ensure_ascii=False)
+
+
+class TestOutlinePlainText:
+    """Outline texts must be plain (no raw rich-text HTML/entities) and
+    whitespace-collapsed — the agent copies them verbatim as anchor/remove
+    targets and the frontend matcher normalizes the same way."""
+
+    @pytest.mark.asyncio
+    async def test_rich_html_text_stripped_in_outline(self, fake_client):
+        doc = json.dumps(
+            {
+                "root": {
+                    "data": {"text": "根"},
+                    "children": [
+                        {"data": {"text": "<span style=\"color:red\">哲学 &amp; 逻辑</span>"}, "children": []}
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        )
+        fake_client.result = {"uuid": "u-9", "content": doc + " " * 9000}
+        result = await BoardGetTool().run(board_uuid="u-9", _uid=UID)
+        view = json.loads(result["content"])
+        outline = view["content_outline"]
+        assert "<span" not in outline
+        assert "哲学 & 逻辑" in outline
+
+    def test_plain_text_order_matches_frontend(self):
+        from app.tools.board._base import _plain_text
+
+        # strip tags FIRST, then entities — escaped literals (<b>) must
+        # survive as literal text, same as the frontend normalizer.
+        assert _plain_text("<b>加粗</b> 文本") == "加粗 文本"
+        assert _plain_text("a &lt;b&gt; c") == "a <b> c"
+        assert _plain_text("多  空格\t制表") == "多 空格 制表"
+
+
+class TestLLMViewPayloadBudget:
+    """board_get/create/update results are embedded verbatim into the next
+    LLM request; oversized docs must be replaced by an outline so the turn
+    does not die on the gateway request-size limit (413)."""
+
+    @pytest.mark.asyncio
+    async def test_small_doc_keeps_full_content(self, fake_client):
+        doc = _big_mindmap_doc(3)
+        fake_client.result = {"uuid": "u-1", "title": "t", "version": 1, "content": doc}
+        result = await BoardGetTool().run(board_uuid="u-1", _uid=UID)
+        view = json.loads(result["content"])
+        assert view["content"] == doc
+        assert "content_full" not in view
+
+    @pytest.mark.asyncio
+    async def test_large_doc_replaced_by_outline(self, fake_client):
+        doc = _big_mindmap_doc(1200)  # well past the 8k char limit
+        assert len(doc) > 8000
+        fake_client.result = {"uuid": "u-1", "title": "t", "version": 1, "content": doc}
+        result = await BoardGetTool().run(board_uuid="u-1", _uid=UID)
+
+        view = json.loads(result["content"])
+        assert "content" not in view
+        assert view["content_full"] is False
+        assert "节点 0" in view["content_outline"]
+        assert "禁止" in view["hint"]
+        # Raw doc stays available to programmatic consumers, never to the LLM.
+        assert result["data"]["content"] == doc
+
+    @pytest.mark.asyncio
+    async def test_large_whiteboard_doc_replaced_by_excerpt(self, fake_client):
+        raw = json.dumps({"elements": [{"id": i, "type": "rectangle"} for i in range(1500)]})
+        fake_client.result = {"uuid": "u-2", "kind": "whiteboard", "content": raw}
+        result = await BoardGetTool().run(board_uuid="u-2", _uid=UID)
+
+        view = json.loads(result["content"])
+        assert "content" not in view
+        assert "content_outline" not in view
+        assert view["content_excerpt"].startswith('{"elements"')
+        assert view["content_full"] is False
+
+    @pytest.mark.asyncio
+    async def test_payload_without_content_untouched(self, fake_client):
+        fake_client.result = {"uuid": "u-3", "deleted": True}
+        result = await BoardGetTool().run(board_uuid="u-3", _uid=UID)
+        assert json.loads(result["content"]) == {"uuid": "u-3", "deleted": True}
+
+    @pytest.mark.asyncio
+    async def test_board_update_large_content_echo_is_also_capped(self, fake_client):
+        # update_board echoes the stored doc back; the same budget applies to
+        # the LLM-facing view while the outgoing request is unaffected.
+        doc = _big_mindmap_doc(1200)
+        fake_client.result = {"uuid": "u-1", "version": 2, "content": doc}
+        result = await BoardUpdateTool().run(board_uuid="u-1", content={"root": {}}, _uid=UID)
+
+        sent = fake_client.calls[-1][2]
+        assert sent["content"] == {"root": {}}
+        view = json.loads(result["content"])
+        assert view["content_full"] is False
+        assert "content" not in view
+
+
+def _nav_doc() -> str:
+    """三层示例树：根 > {数学, 物理}；数学 > {极限, 导数}。"""
+    doc = {
+        "root": {
+            "data": {"text": "高数"},
+            "children": [
+                {
+                    "data": {"text": "数学"},
+                    "children": [
+                        {"data": {"text": "极限"}, "children": []},
+                        {"data": {"text": "导数"}, "children": []},
+                    ],
+                },
+                {"data": {"text": "物理"}, "children": []},
+            ],
+        }
+    }
+    return json.dumps(doc, ensure_ascii=False)
+
+
+class TestBoardNavigate:
+    @pytest.fixture
+    def nav_client(self, monkeypatch):
+        client = FakeMCPClient(result={"uuid": "u-nav", "content": _nav_doc()})
+        monkeypatch.setattr("app.services.board.mcp._lazy_client._instance", client)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_children_view(self, nav_client):
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="children", target="数学", _uid=UID)
+        view = json.loads(result["content"])
+        assert [i["text"] for i in view["items"]] == ["极限", "导数"]
+        assert view["child_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_siblings_view_marks_target(self, nav_client):
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="siblings", target="物理", _uid=UID)
+        view = json.loads(result["content"])
+        assert view["parent"] == "高数"
+        assert [i["is_target"] for i in view["items"]] == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_parent_view_of_root(self, nav_client):
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="parent", target="高数", _uid=UID)
+        view = json.loads(result["content"])
+        assert "中心主题" in view["parent"]
+
+    @pytest.mark.asyncio
+    async def test_subtree_view(self, nav_client):
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="subtree", target="数学", _uid=UID)
+        view = json.loads(result["content"])
+        assert "- 数学" in view["subtree_outline"] and "极限" in view["subtree_outline"]
+
+    @pytest.mark.asyncio
+    async def test_search_returns_paths(self, nav_client):
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="search", keyword="导数", _uid=UID)
+        view = json.loads(result["content"])
+        assert len(view["matches"]) == 1
+        assert view["matches"][0]["path"] == "高数 > 数学 > 导数"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_target_rejected(self, nav_client):
+        doc = json.dumps(
+            {"root": {"data": {"text": "根"}, "children": [
+                {"data": {"text": "同名"}, "children": []},
+                {"data": {"text": "同名"}, "children": []},
+            ]}},
+            ensure_ascii=False,
+        )
+        nav_client.result = {"uuid": "u-nav", "content": doc}
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="children", target="同名", _uid=UID)
+        view = json.loads(result["content"])
+        assert "同名节点" in view["error"]
+
+    @pytest.mark.asyncio
+    async def test_truncated_prefix_unique_match(self, nav_client):
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="children", target="极限…", _uid=UID)
+        view = json.loads(result["content"])
+        # 唯一前缀命中 → 正常返回（大纲截断文本可用）
+        assert view.get("child_count") == 0
+
+    @pytest.mark.asyncio
+    async def test_mcp_failure_passthrough(self, nav_client):
+        nav_client.error = BoardMCPUnavailableError("board 服务暂不可达")
+        result = await BoardNavigateTool().run(board_uuid="u-nav", view="children", target="数学", _uid=UID)
+        assert "暂不可用" in result["content"]

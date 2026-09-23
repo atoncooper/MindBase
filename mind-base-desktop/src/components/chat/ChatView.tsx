@@ -1,5 +1,5 @@
 /**
- * 对话工作区（主页）：左侧会话历史 + 右侧流式聊天。
+ * 对话工作区（默认主页）：左侧会话历史 + 右侧流式聊天。
  *
  * 状态机：draft（activeId=null，首条消息时才真正建会话）→ 发送后乐观插入
  * user 气泡与 pending assistant 气泡，Channel 事件逐 delta 追加、更新来源，
@@ -10,14 +10,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   chatAsk,
+  chatTitlePrefix,
   createSession,
+  CHAT_MODE_JUMP_KEY,
+  CHAT_MODE_STORAGE_KEY,
   deleteSession,
   getHistory,
   listSessions,
+  MODE_SUFFIX,
+  normalizeChatMode,
   renameSession,
   stopChat,
 } from "../../lib/chat";
-import type { ChatEvent, ChatSessionRow } from "../../lib/chat";
+import type { ChatEvent, ChatMode, ChatSessionRow } from "../../lib/chat";
 import type { PendingJump } from "../../lib/router";
 import { listProviders, type ProviderStatus } from "../../lib/api-keys";
 import { listSkills, type SkillMeta } from "../../lib/skills";
@@ -85,6 +90,12 @@ function StopIcon(): React.JSX.Element {
 }
 
 function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Element {
+  // 对话工作模式（右上角分段选择器切换）：chat=普通对话、resume=简历制作、
+  // slides=PPT 制作。模式决定会话列表的过滤（按标题后缀）与新会话的命名；
+  // 持久化在 localStorage，重启恢复。
+  const [mode, setMode] = useState<ChatMode>(() =>
+    normalizeChatMode(window.localStorage.getItem(CHAT_MODE_STORAGE_KEY)),
+  );
   const [sessions, setSessions] = useState<ChatSessionRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -188,6 +199,14 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
   useEffect(() => {
     let cancelled = false;
+    // 薄入口页（简历/PPT）一次性跳转模式：取走即用。
+    const jumpMode = window.sessionStorage.getItem(CHAT_MODE_JUMP_KEY);
+    if (jumpMode !== null) {
+      window.sessionStorage.removeItem(CHAT_MODE_JUMP_KEY);
+      const normalized = normalizeChatMode(jumpMode);
+      setMode(normalized);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, normalized);
+    }
     void listSessions().then(
       (rows) => {
         if (cancelled) return;
@@ -195,7 +214,11 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         // 点「对话」进入时自动落到最近的会话（列表首位）；但命令面板已
         // 指定目标会话时让位——pending effect 负责选中，避免竞态覆盖。
         if (pending?.kind === "open-session") return;
-        if (rows.length > 0) selectSession(rows[0].chatSessionId);
+        const expected = jumpMode !== null ? normalizeChatMode(jumpMode) : mode;
+        const visible = visibleSessionRows(rows, expected);
+        // 落到当前模式下最近的会话（草稿态留给各模式自己的空态引导）。
+        if (expected === "chat" && rows.length > 0) selectSession(rows[0].chatSessionId);
+        else if (expected !== "chat" && visible.length > 0) selectSession(visible[0].chatSessionId);
       },
       (err) => {
         if (!cancelled) setLoadError(toErrorMessage(err));
@@ -328,6 +351,33 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     setMessages([]);
   }
 
+  /** 按模式过滤会话：普通对话隐藏带类型后缀的会话，简历/PPT 只看自己的。 */
+  function visibleSessionRows(
+    rows: ChatSessionRow[],
+    forMode: ChatMode,
+  ): ChatSessionRow[] {
+    if (forMode === "chat") {
+      return rows.filter(
+        (row) =>
+          !row.title.endsWith(MODE_SUFFIX.resume) &&
+          !row.title.endsWith(MODE_SUFFIX.slides),
+      );
+    }
+    return rows.filter((row) => row.title.endsWith(MODE_SUFFIX[forMode]));
+  }
+
+  /** 切换模式：持久化；当前会话不属于新模式时回到草稿态（消息区随之换场）。 */
+  function switchMode(next: ChatMode): void {
+    if (next === mode) return;
+    setMode(next);
+    window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, next);
+    const active = sessions.find((row) => row.chatSessionId === activeId);
+    const expected = next === "chat" ? "" : MODE_SUFFIX[next];
+    if (activeId !== null && !(active?.title ?? "").endsWith(expected)) {
+      startDraft();
+    }
+  }
+
   async function removeSession(sessionId: string): Promise<void> {
     try {
       await deleteSession(sessionId);
@@ -451,7 +501,11 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     let sid = activeId;
     try {
       if (sid === null) {
-        const created = await createSession();
+        // 非对话模式显式命名「摘要——类型」：后端只改默认名，显式命名
+        // 不会被自动标题覆盖，主聊天侧栏与模式过滤都靠这个后缀。
+        const created = await createSession(
+          mode === "chat" ? undefined : `${chatTitlePrefix(question)}${MODE_SUFFIX[mode]}`,
+        );
         sid = created.chatSessionId;
         setSessions((prev) => [created, ...prev]);
         setActiveId(sid);
@@ -532,9 +586,11 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   return (
     <div className={collapsed ? "chat-layout chat-layout--folded" : "chat-layout"}>
       <SessionSidebar
-        sessions={sessions}
+        sessions={visibleSessionRows(sessions, mode)}
         activeId={activeId}
         collapsed={collapsed}
+        mode={mode}
+        onSwitchMode={switchMode}
         onToggleCollapsed={() => setCollapsed((value) => !value)}
         onSelect={selectSession}
         onCreate={startDraft}
@@ -548,7 +604,10 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         }
       />
       <div className="chat-main">
+        {/* key=mode：切换模式时消息区整棵重挂，触发 mode-in 过渡动画。 */}
         <MessageList
+          key={mode}
+          mode={mode}
           messages={messages}
           busy={busy}
           liveAgent={liveAgent}

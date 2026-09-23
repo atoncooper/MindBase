@@ -20,6 +20,10 @@ class BoardAgentState(BaseModel):
     query: str = Field(description="User request about boards.")
     uid: int = Field(default=0, description="User id, injected for board MCP tools.")
     board_uuid: str = Field(default="", description="Board the request is scoped to (panel board chat); empty for open-ended chat.")
+    board_anchor_text: str = Field(
+        default="",
+        description="Plain text of the node currently selected on the canvas (panel board chat hint); empty when nothing is selected.",
+    )
     session_id: str = Field(default="", description="Chat session id, used to load conversation history.")
 
     # ── messages (LangGraph reducer for tool-call accumulation) ───────
@@ -36,3 +40,26 @@ class BoardAgentState(BaseModel):
     retry_count: int = Field(default=0)
     failed_node: str = Field(default="")
     max_retries: int = Field(default=2)
+
+    # ── loop guards (explicit state, maintained by runtime_dispatch) ──
+    steps: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Executed-action ledger: one entry per executed/refused tool call "
+            "{tool, args, ok, brief}. Re-injected into every LLM run so the "
+            "model knows what it already did, and used by the deterministic "
+            "duplicate/budget gates."
+        ),
+    )
+    tool_call_count: int = Field(
+        default=0,
+        description="Tool calls actually executed this turn (the budget counter).",
+    )
+    force_finalize: bool = Field(
+        default=False,
+        description=(
+            "Set by runtime_dispatch when every pending call was refused "
+            "(duplicates/budget exhausted) — routes the turn to the finalize "
+            "node for a forced no-tools answer."
+        ),
+    )

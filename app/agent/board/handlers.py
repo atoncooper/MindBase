@@ -37,7 +37,7 @@ def as_error_node(node_name: str):
             try:
                 result = await func(state, **kwargs)
                 if isinstance(result, dict):
-                    result.setdefault("error", "")
+                    result.setdefault("error", state.error)
                     result.setdefault("retry_count", state.retry_count)
                 return result
             except Exception as exc:

@@ -38,9 +38,9 @@ export function buildInteractiveHtml(
 html, body { margin: 0; height: 100%; }
 #map { width: 100vw; height: 100vh; overflow: hidden; }
 .mm-toolbar { position: fixed; top: 12px; right: 12px; z-index: 10; display: flex; gap: 6px; }
-.mm-toolbar button { padding: 5px 12px; font: 13px/1.4 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f1f1e; background: #fff; border: 1px solid #cbcbc7; border-radius: 6px; cursor: pointer; }
-.mm-toolbar button:hover { background: #f5f5f4; }
-.mm-hint { position: fixed; left: 12px; bottom: 10px; z-index: 10; font: 11px/1.6 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; color: #8b8b86; }
+.mm-toolbar button { padding: 5px 12px; font: 13px/1.4 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; color: #0d0d0d; background: #fff; border: 1px solid #d9d9d6; border-radius: 999px; cursor: pointer; }
+.mm-toolbar button:hover { background: #f4f4f2; }
+.mm-hint { position: fixed; left: 12px; bottom: 10px; z-index: 10; font: 11px/1.6 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; color: #5d5d5b; }
 </style>
 <style>${css}</style>
 </head>

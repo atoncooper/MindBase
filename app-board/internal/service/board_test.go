@@ -279,3 +279,55 @@ func TestContentTooBig(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestDuplicateTitleRejected(t *testing.T) {
+	svc := NewBoardService(newMeta(t), newMemDocs(), cache.NewInMemory())
+	if _, err := svc.Create(context.Background(), uid, "同名", KindMindmap, ""); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// 同 uid+kind 重名 -> 400（ErrDuplicateName）。
+	if _, err := svc.Create(context.Background(), uid, "同名", KindMindmap, ""); !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("create dup = %v, want ErrDuplicateName", err)
+	}
+	// 不同 kind 同名允许（导图/白板是两个独立命名空间）。
+	if _, err := svc.Create(context.Background(), uid, "同名", KindWhiteboard, ""); err != nil {
+		t.Fatalf("create same title other kind: %v", err)
+	}
+	// 其他用户的同名允许。
+	if _, err := svc.Create(context.Background(), uid+1, "同名", KindMindmap, ""); err != nil {
+		t.Fatalf("create same title other uid: %v", err)
+	}
+
+	// 重命名为已存在的名称 -> 400；改回自己 -> 通过。
+	meta, _ := svc.Create(context.Background(), uid, "甲", KindMindmap, "")
+	other, _ := svc.Create(context.Background(), uid, "乙", KindMindmap, "")
+	dup := "甲"
+	if _, err := svc.Update(context.Background(), uid, other.UUID, other.Version,
+		UpdateParams{Title: &dup}); !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("rename dup = %v, want ErrDuplicateName", err)
+	}
+	self := "乙"
+	if _, err := svc.Update(context.Background(), uid, other.UUID, other.Version,
+		UpdateParams{Title: &self}); err != nil {
+		t.Fatalf("rename to self: %v", err)
+	}
+
+	// 软删除后名称可复用。
+	if err := svc.Delete(context.Background(), uid, meta.UUID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := svc.Create(context.Background(), uid, "甲", KindMindmap, ""); err != nil {
+		t.Fatalf("reuse title after delete: %v", err)
+	}
+}
+
+func TestCreateEmptyTitleNormalized(t *testing.T) {
+	svc := NewBoardService(newMeta(t), newMemDocs(), cache.NewInMemory())
+	meta, err := svc.Create(context.Background(), uid, "  ", KindMindmap, "")
+	if err != nil {
+		t.Fatalf("create empty title: %v", err)
+	}
+	if meta.Title != "未命名看板" {
+		t.Fatalf("title = %q, want default", meta.Title)
+	}
+}

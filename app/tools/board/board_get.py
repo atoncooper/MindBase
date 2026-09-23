@@ -19,8 +19,10 @@ class BoardGetTool(BoardToolBase):
     @property
     def description(self) -> str:
         return (
-            "读取一块思维导图/白板的完整文档 JSON（含 title/kind/version 与 content）。"
+            "读取板子：元数据（title/kind/version/is_pinned）+ 文档 JSON。"
             "返回的 version 是乐观锁版本号：之后用 board_update 修改时作为 expected_version 传回。"
+            "小板子返回完整 content；大板子只返回 content_outline 结构大纲（content_full=false），"
+            "此时禁止 board_update 全量重写。"
         )
 
     def parameters(self) -> dict[str, Any]:

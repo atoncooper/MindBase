@@ -1,6 +1,9 @@
 /**
- * 文件入库页：选择本机文件 / 文件夹 → 后端预扫描（过滤扩展名/大小/上限）
- * → 确认队列 → 批量入库（解析 → 切块 → 向量化）。
+ * 文件入库页（#/import）—— Google Drive 风格布局。
+ *
+ * 左列：添加内容卡（Drive 式拖放区 + 网页链接抓取）与入库队列卡（实时进度）；
+ * 右列：入库记录（Drive 文件列表风格 + Google 式圆角搜索框），按类型着色的
+ * 文件图标。后端预扫描（过滤扩展名/大小/上限）→ 确认队列 → 批量入库。
  *
  * 进度经 Tauri Channel 实时回推：队列里每个文件维护独立状态徽章
  * （等待 / 处理中 / 已入库 / 失败），总进度条按已完成文件数推进。
@@ -24,6 +27,8 @@ import type {
 } from "../../lib/file-ingest";
 import { deleteDocument, listDocuments } from "../../lib/ingest";
 import type { DocumentRow } from "../../lib/ingest";
+import { openResolvedLink } from "../../lib/linkify";
+import { SearchGlyph } from "../icons";
 import { toErrorMessage } from "../../lib/updater";
 import { useToast } from "../../lib/toast";
 import { KNOWLEDGE_HASH, navigate } from "../../lib/router";
@@ -95,44 +100,49 @@ const RECORD_STATUS_LABELS: Record<DocumentRow["status"], string> = {
 /** Extensions ingested through local OCR (keep in sync with file_ingest.rs). */
 const OCR_IMAGE_EXTS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "bmp", "webp"]);
 
-/** URL textarea grows with content up to this height (~12 lines), then scrolls. */
-const URL_INPUT_MAX_HEIGHT = 264;
+/** 网址输入框的最大数量（防止一次抓取失控）。 */
+const URL_INPUTS_MAX = 20;
 
-/** One parsed line of the URL textarea. */
-interface ParsedUrl {
-  /** Normalized URL (missing https:// is added automatically). */
-  url: string;
-  /** The raw line it came from, for pointing out invalid input. */
-  raw: string;
+/** 单行网址 → 规范化 URL（缺 https:// 自动补全）；无法成为网址时返回 null。 */
+function normalizeUrlLine(raw: string): string | null {
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const host = new URL(candidate).hostname;
+    return host.includes(".") ? candidate : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Parse the URL textarea: whitespace-separated (one per line recommended),
- * scheme auto-completed, deduped. Lines that cannot become a plausible URL
- * are returned separately so the UI can point at them.
+ * 逐框解析网址输入：每个输入框最多一个网址。返回有效列表（去重）与
+ * 无效/重复行的下标（供行内红字提示）。
  */
-function parseUrlLines(text: string): { valid: ParsedUrl[]; invalid: string[] } {
-  const valid: ParsedUrl[] = [];
-  const invalid: string[] = [];
+function parseUrlInputs(inputs: string[]): {
+  valid: string[];
+  invalidIdx: number[];
+  duplicateIdx: number[];
+} {
+  const valid: string[] = [];
   const seen = new Set<string>();
-  for (const raw of text.split(/\s+/).map((line) => line.trim()).filter((line) => line !== "")) {
-    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
-    let host = "";
-    try {
-      host = new URL(candidate).hostname;
-    } catch {
-      host = "";
+  const invalidIdx: number[] = [];
+  const duplicateIdx: number[] = [];
+  inputs.forEach((input, index) => {
+    const raw = input.trim();
+    if (raw === "") return; // 空框不参与校验
+    const candidate = normalizeUrlLine(raw);
+    if (candidate === null) {
+      invalidIdx.push(index);
+      return;
     }
-    if (host.includes(".")) {
-      if (!seen.has(candidate)) {
-        seen.add(candidate);
-        valid.push({ url: candidate, raw });
-      }
-    } else {
-      invalid.push(raw);
+    if (seen.has(candidate)) {
+      duplicateIdx.push(index);
+      return;
     }
-  }
-  return { valid, invalid };
+    seen.add(candidate);
+    valid.push(candidate);
+  });
+  return { valid, invalidIdx, duplicateIdx };
 }
 
 /** Per-URL capture outcome for the status list under the textarea. */
@@ -142,15 +152,96 @@ interface CaptureResult {
   error?: string;
 }
 
+/** 网址输入框行首的链接 glyph（Material 链条形）。 */
+function LinkGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M10.5 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 1 0-5.7-5.7l-1.3 1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13.5 10.5a4 4 0 0 0-5.7 0l-3 3a4 4 0 1 0 5.7 5.7l1.3-1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Google Drive 产品图标：三色三角（蓝/绿/黄）。 */
+function GoogleDriveIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#0066da" d="M8.65 3 1.9 14.6l3.3 5.6L11.95 8.6z" />
+      <path fill="#00ac47" d="M8.65 3h6.7l6.75 11.6h-6.7z" />
+      <path fill="#ffba00" d="M5.2 20.2h13.6l3.3-5.6H8.5z" />
+    </svg>
+  );
+}
+
+/** 上传 glyph（Material 风格云上传，中性单色）。 */
+function UploadGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      <path d="M6.4 17.5a4.5 4.5 0 0 1-.9-8.9 5.5 5.5 0 0 1 10.7-1.1 4.2 4.2 0 0 1 1.6 8.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 12.5V20" strokeLinecap="round" />
+      <path d="m9 15.5 2.5-2.5 2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 文件类型 → Drive 式着色分组。 */
+type FileKind = "pdf" | "doc" | "img";
+
+const FILE_KIND_COLORS: Record<FileKind, { fill: string; fold: string }> = {
+  pdf: { fill: "#ea4335", fold: "#f6aea9" },
+  doc: { fill: "#4285f4", fold: "#a6c8fa" },
+  img: { fill: "#34a853", fold: "#a8dab5" },
+};
+
+function fileKindOf(ext: string): FileKind {
+  const lowered = ext.toLowerCase();
+  if (lowered === "pdf") return "pdf";
+  if (OCR_IMAGE_EXTS.has(lowered)) return "img";
+  return "doc";
+}
+
+/** Google Drive 式按类型着色的文件页图标（pdf 红 / 文档蓝 / 图片绿）。 */
+function FileKindIcon({ ext }: { ext: string }): React.JSX.Element {
+  const kind = fileKindOf(ext);
+  const color = FILE_KIND_COLORS[kind];
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path fill={color.fill} d="M14.5 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.5L14.5 2z" />
+      <path fill={color.fold} d="M14.5 2 19 6.5h-3.5a1 1 0 0 1-1-1V2z" />
+      {kind === "img" ? (
+        <>
+          <circle cx="10" cy="12.6" r="1.1" fill="#fff" />
+          <path fill="#fff" d="m9.1 17.8 2.3-2.7 1.8 2.1 1.3-1.5 2.6 3.1H9.1z" />
+        </>
+      ) : (
+        <path
+          fill="none"
+          stroke="#fff"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          d="M9 12h6M9 15h6M9 18h3.5"
+        />
+      )}
+    </svg>
+  );
+}
+
+/** 从路径取扩展名（无路径回退空串）。 */
+function extOfPath(path: string): string {
+  const dot = path.lastIndexOf(".");
+  return dot >= 0 ? path.slice(dot + 1).toLowerCase() : "";
+}
+
 function ImportView() {
   const [files, setFiles] = useState<ScannedFile[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
-  const [urlText, setUrlText] = useState("");
+  // 网址输入框的值（每个输入框一个网址）；初始一个空框。
+  const [urlInputs, setUrlInputs] = useState<string[]>([""]);
   const [capturing, setCapturing] = useState(false);
   const [captureNote, setCaptureNote] = useState("");
   // Per-URL outcomes of the latest capture run (pending rows tick over to
-  // ok/failed as events arrive). Cleared when the textarea is edited.
+  // ok/failed as events arrive). Cleared when any input is edited.
   const [captureResults, setCaptureResults] = useState<CaptureResult[]>([]);
   const [running, setRunning] = useState(false);
   // Per-file live state keyed by queue index.
@@ -173,20 +264,26 @@ function ImportView() {
   // Filter query for the 入库记录 list (matches title or path).
   const [recordQuery, setRecordQuery] = useState("");
   const toast = useToast();
-  // URL textarea: auto-grows with content (3 → 12 lines), see autoGrowUrlInput.
-  const urlInputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  /** Resize the URL textarea to fit its content, clamped to a scrollable max. */
-  function autoGrowUrlInput(el: HTMLTextAreaElement): void {
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, URL_INPUT_MAX_HEIGHT)}px`;
+  /** 编辑一个网址输入框；任何编辑都会让旧的抓取结果失效。 */
+  function setUrlInputAt(index: number, value: string): void {
+    setUrlInputs((prev) => prev.map((item, i) => (i === index ? value : item)));
+    // Stale per-URL outcomes would mislead against edited input.
+    if (captureResults.length > 0) setCaptureResults([]);
+    if (captureNote !== "") setCaptureNote("");
   }
 
-  // Restore the grown height when the view remounts with persisted text.
-  useEffect(() => {
-    if (urlInputRef.current !== null) autoGrowUrlInput(urlInputRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  /** 追加一个空网址框（达到上限后忽略）。 */
+  function addUrlInput(): void {
+    setUrlInputs((prev) => (prev.length >= URL_INPUTS_MAX ? prev : [...prev, ""]));
+  }
+
+  /** 移除一个网址框（至少保留一个）。 */
+  function removeUrlInput(index: number): void {
+    setUrlInputs((prev) => (prev.length <= 1 ? [""] : prev.filter((_, i) => i !== index)));
+    if (captureResults.length > 0) setCaptureResults([]);
+    if (captureNote !== "") setCaptureNote("");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -275,20 +372,20 @@ function ImportView() {
    */
   async function captureWebpages(): Promise<void> {
     if (capturing || running) return;
-    const { valid } = parseUrlLines(urlText);
+    const { valid } = parseUrlInputs(urlInputs);
     if (valid.length === 0) {
-      setScanError("请输入至少一个有效网址（每行一个）");
+      setScanError("请输入至少一个有效网址（每个输入框一个网址）");
       return;
     }
     setCapturing(true);
     setScanError("");
     setCaptureNote("");
-    setCaptureResults(valid.map((entry) => ({ url: entry.url, state: "pending" as const })));
+    setCaptureResults(valid.map((url) => ({ url, state: "pending" as const })));
     const failures: string[] = [];
     const captured: ScannedFile[] = [];
     try {
       const summary = await captureUrls(
-        valid.map((entry) => entry.url),
+        valid,
         (event: WebCaptureEvent) => {
           if (event.type === "urlDone") {
             captured.push({ path: event.path, name: event.name, size: event.bytes, ext: "html" });
@@ -494,274 +591,331 @@ function ImportView() {
         );
 
   return (
-    <>
-      <section className={dragging ? "card dropzone is-active" : "card dropzone"}>
-        <h2 className="card__title">
-          <span className="card__index">01</span>选择要入库的内容
-        </h2>
-
-        <p className="hint-text">
-        支持本机文档：txt / md / pdf / docx / html，以及图片 jpg / jpeg / png / bmp /
-        webp（走本地 OCR 识别，需在「API 设置」中启用本地 OCR 并下载模型；扫描版
-        PDF 无文本层时也会自动回退 OCR）。可选择多个文件或整个文件夹（递归扫描，
-        跳过隐藏目录，单文件上限 50MB、单批上限 500 个），也可以直接把文件或文件夹
-        <strong>拖拽到本页任意位置</strong>。入库后在「知识库」页检索、提问、出题。
-        内容重复的文件自动跳过（按内容指纹判重，改名/换位置也不重复入库）；首次导入 PDF /
-        DOCX 时会自动下载解析依赖（pymupdf / python-docx）。
-        </p>
-
-        <div className="card__actions">
-          <button
-            type="button"
-            className="button button--primary"
-            disabled={scanning || running}
-            onClick={() => void pickFiles()}
-          >
-            {scanning ? "扫描中…" : "选择文件"}
-          </button>
-          <button type="button" className="button" disabled={scanning || running} onClick={() => void pickFolder()}>
-            {scanning ? "扫描中…" : "选择文件夹"}
-          </button>
-        </div>
-
-        <label className="cfg-label" htmlFor="webpage-urls">
-          网页链接入库（每行一个网址，抓取正文后进入下方队列；Ctrl+Enter 直接抓取）
-        </label>
-        <div className="url-input-row">
-          <textarea
-            id="webpage-urls"
-            className="cfg-input url-input"
-            rows={3}
-            placeholder={"https://example.com/article-one\nhttps://example.com/article-two\n（不带 https:// 的也会自动补全）"}
-            value={urlText}
-            disabled={capturing || running}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            ref={urlInputRef}
-            onChange={(event) => {
-              setUrlText(event.target.value);
-              autoGrowUrlInput(event.target);
-              // Stale per-URL outcomes would mislead against edited input.
-              if (captureResults.length > 0) setCaptureResults([]);
-              if (captureNote !== "") setCaptureNote("");
-            }}
-            onKeyDown={(event) => {
-              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-                event.preventDefault();
-                if (!capturing && !running && parseUrlLines(urlText).valid.length > 0) {
-                  void captureWebpages();
-                }
-              }
-            }}
-          />
-          {urlText !== "" && !capturing && !running && (
-            <button
-              type="button"
-              className="icon-button url-input__clear"
-              aria-label="清空网址"
-              title="清空"
-              onClick={() => {
-                setUrlText("");
-                setCaptureResults([]);
-                setCaptureNote("");
-                if (urlInputRef.current !== null) {
-                  autoGrowUrlInput(urlInputRef.current);
-                  urlInputRef.current.focus();
-                }
-              }}
-            >
-              ✕
-            </button>
-          )}
-        </div>
-        {(() => {
-          const { valid, invalid } = parseUrlLines(urlText);
-          const failed = captureResults.filter((item) => item.state === "failed").length;
-          const done = captureResults.filter((item) => item.state === "ok").length;
-          return (
-            <p className="hint-text">
-              {urlText.trim() === "" ? (
-                "支持按行或空格分隔；缺 https:// 的网址会自动补全。"
-              ) : (
-                <>
-                  有效网址 {valid.length} 个
-                  {invalid.length > 0 && (
-                    <span className="error-text"> · 无法识别 {invalid.length} 行（如「{invalid[0]}」）</span>
-                  )}
-                  {captureResults.length > 0 && ` · 已完成 ${done}${failed > 0 ? `，失败 ${failed}` : ""}`}
-                </>
-              )}
-            </p>
-          );
-        })()}
-        {captureResults.length > 0 && (
-          <ul className="ws-docs">
-            {captureResults.map((item, index) => (
-              <li key={`${index}-${item.url}`} className="ws-doc">
-                <div className="ws-doc__page">
-                  <span className="ws-doc__page-meta" title={item.error ?? item.url}>
-                    {item.url}
-                  </span>
-                  <span className="ws-doc__page-actions">
-                    <span
-                      className={
-                        item.state === "ok"
-                          ? "status status--ok"
-                          : item.state === "failed"
-                            ? "status status--error"
-                            : "status status--live"
-                      }
-                    >
-                      {item.state === "ok" ? "已抓取" : item.state === "failed" ? "失败" : "抓取中"}
-                    </span>
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="card__actions">
-          <button
-            type="button"
-            className="button"
-            disabled={capturing || running || parseUrlLines(urlText).valid.length === 0}
-            title="以浏览器请求头抓取网页并提取正文；被反爬拦截时会给出替代方案"
-            onClick={() => void captureWebpages()}
-          >
-            {capturing ? (
-              <>
-                <span className="ingest__spinner" />
-                抓取中 {captureResults.filter((item) => item.state !== "pending").length}/
-                {captureResults.length}
-              </>
-            ) : parseUrlLines(urlText).valid.length > 0 ? (
-              `抓取网页（${parseUrlLines(urlText).valid.length}）`
-            ) : (
-              "抓取网页"
-            )}
-          </button>
-          {captureNote !== "" && <span className="hint-text">{captureNote}</span>}
-        </div>
-
-        {scanError !== "" && <p className="error-text">{scanError}</p>}
-      </section>
-
-      {files !== null && (
-        <section className="card">
-          <h2 className="card__title">
-            <span className="card__index">02</span>入库队列
-            <span className="hint-text" style={{ marginLeft: "auto", fontWeight: 400 }}>
-              {total} 个文件 · {formatBytes(totalBytes)}
+    <div className="imp-layout">
+      <div className="imp-ops">
+        <section className="card imp-panel">
+          <div className="gen-hero">
+            <span className="gen-hero__icon" aria-hidden="true">
+              <GoogleDriveIcon />
             </span>
-          </h2>
+            <div className="gen-hero__text">
+              <h2 className="gen-hero__title">文件入库</h2>
+              <p className="gen-hero__sub">
+                把本机文档与网页抓取进知识库——解析、分块、向量化一次完成。
+              </p>
+            </div>
+          </div>
 
-          <ul className="ws-docs">
-            {files.map((file, index) => {
-              const run = runStates.get(index);
-              return (
-                <li key={file.path} className="ws-doc">
-                  <div className="ws-doc__head">
-                    <span className="ws-doc__title" title={file.path}>
-                      {file.name}
+          <div className={dragging ? "imp-drop is-active" : "imp-drop"}>
+            <span className="imp-drop__glyph" aria-hidden="true">
+              <UploadGlyph />
+            </span>
+            <p className="imp-drop__title">将文件或文件夹拖到此处</p>
+            <p className="imp-drop__or">或</p>
+            <div className="imp-drop__actions">
+              <button
+                type="button"
+                className="button button--primary"
+                disabled={scanning || running}
+                onClick={() => void pickFiles()}
+              >
+                {scanning ? "扫描中…" : "选择文件"}
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={scanning || running}
+                onClick={() => void pickFolder()}
+              >
+                {scanning ? "扫描中…" : "选择文件夹"}
+              </button>
+            </div>
+          </div>
+          {scanError !== "" && <p className="error-text">{scanError}</p>}
+          <p className="hint-text imp-note">
+            支持 txt / md / pdf / docx / html，以及图片 jpg / jpeg / png / bmp / webp
+            （走本地 OCR 识别，需在「API 设置」中启用并下载模型；扫描版 PDF 无文本层时也会自动回退
+            OCR）。递归扫描文件夹（跳过隐藏目录），单文件上限 50MB、单批 500
+            个；内容重复的文件自动跳过（按内容指纹判重，改名/换位置也不重复入库）。首次导入 PDF /
+            DOCX 时会自动下载解析依赖（pymupdf / python-docx）。入库后在「知识库」页检索、提问、出题。
+          </p>
+
+          <hr className="imp-divider" />
+
+          <p className="gen-section-label">网页链接入库（每个输入框一个网址，抓取正文后进入下方队列）</p>
+          <div className="url-fields">
+            {(() => {
+              // 逐框解析：给无效/重复的框挂上红框与提示（在渲染时计算即可）。
+              const seen = new Set<string>();
+              return urlInputs.map((value, index) => {
+                const raw = value.trim();
+                let invalidReason = "";
+                if (raw !== "") {
+                  const candidate = normalizeUrlLine(raw);
+                  if (candidate === null) invalidReason = "无法识别，请检查网址格式";
+                  else if (seen.has(candidate)) invalidReason = "与其他输入框重复";
+                  else seen.add(candidate);
+                }
+                return (
+                  <div
+                    key={index}
+                    className={invalidReason !== "" ? "url-field is-invalid" : "url-field"}
+                    title={invalidReason !== "" ? invalidReason : undefined}
+                  >
+                    <span className="url-field__icon" aria-hidden="true">
+                      <LinkGlyph />
                     </span>
-                    <span className="ws-doc__page-meta">
-                      {file.ext.toUpperCase()} · {formatBytes(file.size)}
-                      {OCR_IMAGE_EXTS.has(file.ext) && (
-                        <span className="ext-tag" title="该文件走本地 OCR 识别入库">
-                          OCR
-                        </span>
-                      )}
-                    </span>
+                    <input
+                      type="text"
+                      className="url-field__input"
+                      placeholder={index === 0 ? "如 https://example.com/article（不带协议的自动补全）" : "下一个网址…"}
+                      value={value}
+                      disabled={capturing || running}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      onChange={(event) => setUrlInputAt(index, event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                          event.preventDefault();
+                          if (!capturing && !running) void captureWebpages();
+                        }
+                        if (
+                          event.key === "Enter" &&
+                          !event.ctrlKey &&
+                          !event.metaKey &&
+                          !event.nativeEvent.isComposing
+                        ) {
+                          // Enter = 添加下一个输入框（多网址连续录入）。
+                          event.preventDefault();
+                          if (!capturing && !running && urlInputs.length < URL_INPUTS_MAX) {
+                            addUrlInput();
+                          }
+                        }
+                      }}
+                    />
+                    {urlInputs.length > 1 && (
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="移除该网址"
+                        title={invalidReason !== "" ? invalidReason : "移除"}
+                        disabled={capturing || running}
+                        onClick={() => removeUrlInput(index)}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
-                  <div className="ws-doc__page">
-                    <span
-                      className="ws-doc__page-meta"
-                      title={run !== undefined && run.state === "failed" ? run.detail : undefined}
-                    >
-                      {run !== undefined && run.detail !== "" ? run.detail : file.path}
-                    </span>
-                    <span className="ws-doc__page-actions">
-                      <span className={run !== undefined ? runPill(run.state) : "status status--info"}>
-                        {run !== undefined ? RUN_LABELS[run.state] : "待入库"}
+                );
+              });
+            })()}
+            {urlInputs.length < URL_INPUTS_MAX && (
+              <button
+                type="button"
+                className="url-fields__add"
+                disabled={capturing || running}
+                onClick={addUrlInput}
+              >
+                ＋ 添加网址（最多 {URL_INPUTS_MAX} 个）
+              </button>
+            )}
+          </div>
+          {(() => {
+            const { valid, invalidIdx, duplicateIdx } = parseUrlInputs(urlInputs);
+            const failed = captureResults.filter((item) => item.state === "failed").length;
+            const done = captureResults.filter((item) => item.state === "ok").length;
+            const anyFilled = urlInputs.some((value) => value.trim() !== "");
+            return (
+              <p className="hint-text">
+                {!anyFilled ? (
+                  "每个输入框填写一个网址；缺 https:// 的会自动补全，Enter 快速添加下一框，Ctrl+Enter 直接抓取。"
+                ) : (
+                  <>
+                    有效网址 {valid.length} 个
+                    {invalidIdx.length > 0 && (
+                      <span className="error-text">
+                        {" "}
+                        · {invalidIdx.length} 个无法识别（如「{urlInputs[invalidIdx[0]].trim()}」）
                       </span>
-                      {!running && (run === undefined || run.state === "pending" || run.state === "failed") && (
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label="移除"
-                          onClick={() => removeFile(file.path)}
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </span>
-                  </div>
+                    )}
+                    {duplicateIdx.length > 0 && (
+                      <span className="error-text"> · {duplicateIdx.length} 个重复</span>
+                    )}
+                    {captureResults.length > 0 && ` · 已完成 ${done}${failed > 0 ? `，失败 ${failed}` : ""}`}
+                  </>
+                )}
+              </p>
+            );
+          })()}
+          {captureResults.length > 0 && (
+            <ul className="capture-list">
+              {captureResults.map((item, index) => (
+                <li key={`${index}-${item.url}`} className="capture-row">
+                  <span className="capture-row__url" title={item.error ?? item.url}>
+                    <a
+                      className="text-link"
+                      href={item.url}
+                      title={item.error ?? `在浏览器打开 ${item.url}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        openResolvedLink(item.url);
+                      }}
+                    >
+                      {item.url}
+                    </a>
+                  </span>
+                  <span
+                    className={
+                      item.state === "ok"
+                        ? "status status--ok"
+                        : item.state === "failed"
+                          ? "status status--error"
+                          : "status status--live"
+                    }
+                  >
+                    {item.state === "ok" ? "已抓取" : item.state === "failed" ? "失败" : "抓取中"}
+                  </span>
                 </li>
-              );
-            })}
-          </ul>
-
-          {running && (
-            <div className="ingest__busy" role="status" aria-live="polite">
-              <div className="ingest__bar">
-                <div className="ingest__bar__fill" style={{ width: `${pct}%` }} />
-              </div>
-              <span className="ingest__busy__text">
-                {pct}% · {activity !== "" ? activity : "正在处理…"}
-              </span>
-            </div>
+              ))}
+            </ul>
           )}
-
-          {summary !== null && !running && (
-            <div className="ingest__head">
-              <span className={summary.failed === 0 ? "hint-text" : "error-text"}>
-                入库完成：成功 {summary.ok}
-                {summary.skipped > 0 ? ` · 重复跳过 ${summary.skipped}` : ""} · 失败{" "}
-                {summary.failed}
-              </span>
-              <span className="ingest__actions">
-                <button type="button" className="button" onClick={() => navigate(KNOWLEDGE_HASH)}>
-                  前往知识库
-                </button>
-              </span>
-            </div>
-          )}
-
           <div className="card__actions">
             <button
               type="button"
               className="button button--primary"
-              disabled={running || retryingId !== "" || !anyStartable}
-              title="开始解析并入库队列中的文件（消耗 Embedding 配额）"
-              onClick={() => void start()}
+              disabled={capturing || running || parseUrlInputs(urlInputs).valid.length === 0}
+              title="以浏览器请求头抓取网页并提取正文；被反爬拦截时会给出替代方案"
+              onClick={() => void captureWebpages()}
             >
-              {running ? (
+              {capturing ? (
                 <>
-                  <span className="ingest__spinner" />入库中
+                  <span className="ingest__spinner" />
+                  抓取中 {captureResults.filter((item) => item.state !== "pending").length}/
+                  {captureResults.length}
                 </>
-              ) : files !== null && files.some((_, index) => (runStates.get(index)?.state ?? "pending") === "done") ? (
-                "重新入库全部"
+              ) : parseUrlInputs(urlInputs).valid.length > 0 ? (
+                `抓取网页（${parseUrlInputs(urlInputs).valid.length}）`
               ) : (
-                `开始入库（${total}）`
+                "抓取网页"
               )}
             </button>
-            {!running && (
-              <button type="button" className="button" onClick={() => setFiles(null)}>
-                清空队列
-              </button>
-            )}
+            {captureNote !== "" && <span className="hint-text">{captureNote}</span>}
           </div>
         </section>
-      )}
 
-      <section className="card">
+        {files !== null && (
+          <section className="card imp-panel imp-queue">
+            <h2 className="card__title">
+              入库队列
+              <span className="card__count">
+                {total} 个文件 · {formatBytes(totalBytes)}
+              </span>
+            </h2>
+
+            <ul className="file-list">
+              {files.map((file, index) => {
+                const run = runStates.get(index);
+                return (
+                  <li key={file.path} className="file-row">
+                    <span className="file-row__icon" aria-hidden="true">
+                      <FileKindIcon ext={file.ext} />
+                    </span>
+                    <span className="file-row__body">
+                      <span className="file-row__name" title={file.path}>
+                        {file.name}
+                        {OCR_IMAGE_EXTS.has(file.ext) && (
+                          <span className="ext-tag" title="该文件走本地 OCR 识别入库">
+                            OCR
+                          </span>
+                        )}
+                      </span>
+                      <span
+                        className="file-row__meta"
+                        title={run !== undefined && run.state === "failed" ? run.detail : undefined}
+                      >
+                        {run !== undefined && run.detail !== "" ? run.detail : file.path}
+                      </span>
+                    </span>
+                    <span className="file-row__actions">
+                      <span className={run !== undefined ? runPill(run.state) : "status status--info"}>
+                        {run !== undefined ? RUN_LABELS[run.state] : "待入库"}
+                      </span>
+                      {!running &&
+                        (run === undefined || run.state === "pending" || run.state === "failed") && (
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="移除"
+                            onClick={() => removeFile(file.path)}
+                          >
+                            ✕
+                          </button>
+                        )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {running && (
+              <div className="ingest__busy" role="status" aria-live="polite">
+                <div className="ingest__bar">
+                  <div className="ingest__bar__fill" style={{ width: `${pct}%` }} />
+                </div>
+                <span className="ingest__busy__text">
+                  {pct}% · {activity !== "" ? activity : "正在处理…"}
+                </span>
+              </div>
+            )}
+
+            {summary !== null && !running && (
+              <div className="ingest__head">
+                <span className={summary.failed === 0 ? "hint-text" : "error-text"}>
+                  入库完成：成功 {summary.ok}
+                  {summary.skipped > 0 ? ` · 重复跳过 ${summary.skipped}` : ""} · 失败{" "}
+                  {summary.failed}
+                </span>
+                <span className="ingest__actions">
+                  <button type="button" className="button" onClick={() => navigate(KNOWLEDGE_HASH)}>
+                    前往知识库
+                  </button>
+                </span>
+              </div>
+            )}
+
+            <div className="card__actions">
+              <button
+                type="button"
+                className="button button--primary"
+                disabled={running || retryingId !== "" || !anyStartable}
+                title="开始解析并入库队列中的文件（消耗 Embedding 配额）"
+                onClick={() => void start()}
+              >
+                {running ? (
+                  <>
+                    <span className="ingest__spinner" />入库中
+                  </>
+                ) : files !== null && files.some((_, index) => (runStates.get(index)?.state ?? "pending") === "done") ? (
+                  "重新入库全部"
+                ) : (
+                  `开始入库（${total}）`
+                )}
+              </button>
+              {!running && (
+                <button type="button" className="button" onClick={() => setFiles(null)}>
+                  清空队列
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+      </div>
+
+      <section className="card imp-records">
         <h2 className="card__title">
-          <span className="card__index">03</span>入库记录
-          <span
-            className="hint-text"
-            style={{ marginLeft: "auto", fontWeight: 400 }}
-          >
+          入库记录
+          <span className="card__count">
             {records !== null
               ? query !== ""
                 ? `${filteredRecords?.length ?? 0} / ${records.length} 个文件`
@@ -775,13 +929,28 @@ function ImportView() {
         </p>
 
         {records !== null && records.length > 0 && (
-          <input
-            type="text"
-            className="cfg-input cfg-input--narrow import-filter"
-            placeholder="搜索标题或路径…"
-            value={recordQuery}
-            onChange={(event) => setRecordQuery(event.target.value)}
-          />
+          <div className="gsearch">
+            <span className="gsearch__icon" aria-hidden="true">
+              <SearchGlyph />
+            </span>
+            <input
+              type="text"
+              placeholder="搜索标题或路径…"
+              value={recordQuery}
+              onChange={(event) => setRecordQuery(event.target.value)}
+            />
+            {recordQuery !== "" && (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="清空搜索"
+                title="清空"
+                onClick={() => setRecordQuery("")}
+              >
+                ✕
+              </button>
+            )}
+          </div>
         )}
 
         {records !== null && records.length === 0 && (
@@ -791,24 +960,57 @@ function ImportView() {
           <p className="hint-text">没有匹配「{recordQuery.trim()}」的记录。</p>
         )}
         {filteredRecords !== null && filteredRecords.length > 0 && (
-          <ul className="ws-docs">
-            {filteredRecords.map((row) => (
-              <li key={row.docId} className="ws-doc">
-                <div className="ws-doc__head">
-                  <span className="ws-doc__title" title={row.filePath !== "" ? row.filePath : undefined}>
-                    {row.videoTitle}
+          <ul className="file-list">
+            {filteredRecords.map((row) => {
+              const ext = extOfPath(row.filePath);
+              return (
+                <li key={row.docId} className="file-row">
+                  <span className="file-row__icon" aria-hidden="true">
+                    <FileKindIcon ext={ext} />
                   </span>
-                  <span className="status status--info">{row.source.toUpperCase()} 文档</span>
-                </div>
-                <div className="ws-doc__page">
-                  <span
-                    className="ws-doc__page-meta"
-                    title={row.status === "failed" && row.error !== "" ? row.error : undefined}
-                  >
-                    {row.chunkCount} 块 · {new Date(row.updatedAt * 1000).toLocaleString()}
-                    {row.status === "failed" && row.error !== "" ? ` · ${row.error}` : ""}
+                  <span className="file-row__body">
+                    <span className="file-row__name" title={row.filePath !== "" ? row.filePath : undefined}>
+                      {row.videoTitle}
+                    </span>
+                    <span
+                      className="file-row__meta"
+                      title={row.status === "failed" && row.error !== "" ? row.error : undefined}
+                    >
+                      {row.chunkCount} 块 · {new Date(row.updatedAt * 1000).toLocaleString()}
+                      {row.status === "failed" && row.error !== "" ? ` · ${row.error}` : ""}
+                    </span>
+                    {(row.url !== "" || row.filePath !== "") && (
+                      <span className="file-row__links">
+                        {row.url !== "" && (
+                          <a
+                            className="text-link"
+                            href={row.url}
+                            title={`在浏览器打开 ${row.url}`}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              openResolvedLink(row.url);
+                            }}
+                          >
+                            网页来源
+                          </a>
+                        )}
+                        {row.filePath !== "" && (
+                          <a
+                            className="text-link"
+                            href={row.filePath}
+                            title={`打开 ${row.filePath}`}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              openResolvedLink(row.filePath);
+                            }}
+                          >
+                            本地文件
+                          </a>
+                        )}
+                      </span>
+                    )}
                   </span>
-                  <span className="ws-doc__page-actions">
+                  <span className="file-row__actions">
                     <span className={recordPill(row.status)}>
                       {RECORD_STATUS_LABELS[row.status]}
                     </span>
@@ -841,13 +1043,13 @@ function ImportView() {
                       ✕
                     </button>
                   </span>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
-    </>
+    </div>
   );
 }
 

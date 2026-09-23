@@ -1,33 +1,44 @@
 /*
- * MindBase Desktop — design system (Codex-style).
+ * MindBase Desktop — design system (ChatGPT-style warm neutrals).
  *
- * Strict monochrome on plain white (light) / terminal inversion (dark).
- * Structure comes from hairline rules and monospace micro-labels only —
- * no color, no gradients, no textures, no glass. Quiet until you look
- * closely.
+ * 暖灰调中性色 + 大圆角 + 柔和描边，参考 ChatGPT 的界面语言：侧栏用比纸面
+ * 深一档的暖灰（--rail），交互态一律走色调填充（--wash / --hover-deep），
+ * 不再做墨色整块反白；黑色只保留给少数「实体件」——发送键、主按钮、
+ * 勾选框、开关与品牌徽标。无渐变、无玻璃拟态、无纹理。
  */
 
 :root {
   --paper: #ffffff;
   --surface: #ffffff;
-  /* 雅黑：softened near-black — crisp for text, gentle for solid surfaces. */
-  --ink: #1f1f1e;
-  --ink-2: #6e6e6a;
-  --line: #e9e9e8;
-  --line-strong: #cbcbc7;
-  --wash: #f5f5f4;
+  /* ChatGPT 式近黑：文本主色，同时是少数实体件的底色。 */
+  --ink: #0d0d0d;
+  --ink-2: #5d5d5b;
+  --line: #ececeb;
+  --line-strong: #d9d9d6;
+  --wash: #f4f4f2;
   /* Quiet-paper layering: rails/sidebars separate from the paper by tone,
      not by hairline borders. */
-  --rail: #f5f5f3;
-  --shadow-lift: 0 6px 20px rgba(31, 31, 30, 0.08);
+  --rail: #f9f9f7;
+  /* 激活导航项 / 会话项的再深一档填充（比 hover 更笃定的色调层）。 */
+  --hover-deep: #e9e9e7;
+  --shadow-lift: 0 4px 16px rgba(0, 0, 0, 0.06);
   /* Semantic status colors — the only color in the system. */
   --ok: #1e8e3e;
   --ok-bg: #e7f3ea;
   --danger: #d93025;
   --danger-bg: #fcebe9;
-  /* 用户消息气泡（Gemini 风浅蓝容器）。 */
-  --user-bubble: #d3e3fd;
-  --user-bubble-ink: #102e56;
+  /* Google 产品色（简历 / PPT 页专用）：主按钮蓝（Google Workspace 蓝），
+     深色档用 Google dark 的 #8ab4f8 + 深字。 */
+  --g-blue: #1a73e8;
+  --g-blue-hover: #1765cc;
+  --g-blue-ink: #ffffff;
+  /* 测验页（Google Forms 紫）。 */
+  --g-purple: #7248b9;
+  --g-purple-hover: #5e3a9e;
+  --g-purple-ink: #ffffff;
+  /* 用户消息气泡：ChatGPT 式暖灰容器（不再用蓝色）。 */
+  --user-bubble: #ececeb;
+  --user-bubble-ink: #0d0d0d;
 
   /* 代码语法三色（画布代码节点与代码编辑对话框共用）：靛/青/赭，
      与连线强调色同源；深色档在 :root[data-theme="dark"] 提亮。 */
@@ -45,31 +56,40 @@
     -apple-system, sans-serif;
   --font-mono:
     "Geist Mono", "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
-  /* 书写面专用：霞鹜文楷屏幕版（内置子集）优先，缺字回退系统黑体。
-     楷体字形舒展、字重轻盈，是中文长文读写的最优解。 */
+  /* 书写面专用：苹果系统字体栈——macOS 落 SF Pro + 苹方（-apple-system /
+     BlinkMacSystemFont / PingFang SC），Windows 顺次落到 Segoe UI + 雅黑
+     UI，整体是干净的无衬线读写面（原霞鹜文楷楷体面已弃用）。 */
   --font-editor:
-    "LXGW WenKai Screen", "PingFang SC", "HarmonyOS Sans SC", "MiSans",
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Segoe UI",
     "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 }
 
 /* 暗色主题：由 lib/theme.ts 把解析结果写到 <html data-theme>，浅色档与
    系统档浅色都不带属性，天然落在 :root 默认变量上。 */
 :root[data-theme="dark"] {
-  --paper: #131312;
-  --surface: #1b1b1a;
-  --ink: #ececea;
-  --ink-2: #8b8b86;
-  --line: #282827;
-  --line-strong: #40403e;
-  --wash: #222221;
-  --rail: #181817;
-  --shadow-lift: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --paper: #212121;
+  --surface: #2b2b2a;
+  --ink: #ececec;
+  --ink-2: #a6a6a2;
+  --line: #3a3a38;
+  --line-strong: #4d4d4a;
+  --wash: #2f2f2e;
+  --rail: #181818;
+  --hover-deep: #383836;
+  --shadow-lift: 0 4px 16px rgba(0, 0, 0, 0.4);
   --ok: #6dd58c;
   --ok-bg: #1f2d22;
   --danger: #f28b82;
   --danger-bg: #38211e;
-  --user-bubble: #0842a0;
-  --user-bubble-ink: #d3e3fd;
+  --g-blue: #8ab4f8;
+  --g-blue-hover: #aecbfa;
+  --g-blue-ink: #1b1b1a;
+  --g-purple: #d0bcff;
+  --g-purple-hover: #e2d4ff;
+  --g-purple-ink: #1b1b1a;
+  --user-bubble: #2f2f2e;
+  --user-bubble-ink: #ececec;
   --code-keyword: #7b97c9;
   --code-string: #6cc3a9;
   --code-literal: #cf9873;
@@ -148,6 +168,8 @@ body {
   max-width: none;
   padding: 30px 44px 56px;
   font-size: 14px;
+  /* flex:1 撑满 main-col 视口高度（内容多时 0 收缩继续撑高，整页滚动）。 */
+  flex: 1 0 auto;
 }
 
 .shell--full .header__title {
@@ -159,16 +181,9 @@ body {
   font-size: 13px;
 }
 
-.shell--full .header__badge {
-  width: 50px;
-  height: 50px;
-  border-radius: 11px;
-  font-size: 15px;
-}
-
 .shell--full .card {
   padding: 22px 28px 24px;
-  border-radius: 12px;
+  border-radius: 16px;
 }
 
 .shell--full .card__title {
@@ -216,22 +231,6 @@ body {
   padding-bottom: 18px;
 }
 
-.header__badge {
-  width: 42px;
-  height: 42px;
-  border-radius: 9px;
-  background-color: var(--ink);
-  color: var(--paper);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  flex-shrink: 0;
-}
-
 .header__text {
   flex: 1;
   min-width: 0;
@@ -247,9 +246,9 @@ body {
 
 .header__subtitle {
   margin: 2px 0 0;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  letter-spacing: 0;
   color: var(--ink-2);
 }
 
@@ -258,7 +257,7 @@ body {
   padding: 3px 10px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   color: var(--ink-2);
   white-space: nowrap;
@@ -272,18 +271,18 @@ body {
   align-self: flex-start;
   padding: 3px;
   background-color: var(--wash);
-  border-radius: 9px;
+  border-radius: 999px;
 }
 
 .tab {
   padding: 7px 16px;
   border: none;
-  border-radius: 7px;
+  border-radius: 999px;
   background: none;
   color: var(--ink-2);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  letter-spacing: 0.06em;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  letter-spacing: 0;
   cursor: pointer;
   transition:
     color 0.15s ease,
@@ -297,8 +296,8 @@ body {
 .tab--active {
   color: var(--ink);
   font-weight: 500;
-  background-color: var(--paper);
-  box-shadow: 0 1px 3px rgba(31, 31, 30, 0.1);
+  background-color: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 /* Panes keep their own stack rhythm; [hidden] beats display:flex. */
@@ -312,20 +311,436 @@ body {
   display: none;
 }
 
-/* Left navigation rail ------------------------------------------------------ */
+/* Agent generation pages (简历 / PPT) --------------------------------------- */
 
-/* Slim icon column at the far left; navigation lives top-left. In-flow, no
-   fixed/transform/z-index — same structural rule as the app frame. */
-.nav-rail {
+/* ── 以下为原生成面板样式（模板卡等，测验页仍在用） ── */
+
+
+/* 左右双栏：左 = 生成面板（说明 + 输入 + 流程），右 = 生成记录；窄屏纵排。 */
+.gen-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  /* 整条 flex 链的一环：占满 shell 里 header 之外的剩余空间。 */
+  flex: 1 0 auto;
+}
+
+@media (max-width: 1080px) {
+  .gen-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gen-panel {
+  padding: 24px 26px 22px;
+}
+
+.gen-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 0 0 18px;
+}
+
+.gen-hero__icon {
   flex-shrink: 0;
-  width: 56px;
-  background-color: var(--rail);
+  width: 46px;
+  height: 46px;
+}
+
+.gen-hero__icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.gen-hero__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.gen-hero__sub {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.gen-hero__sub b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* 生成输入盒：大号无边框输入 + 快捷 chips + 主操作，聚焦时描边加深。 */
+.gen-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background-color: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.2s ease;
+}
+
+.gen-box:focus-within {
+  border-color: var(--g-blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--g-blue) 30%, transparent);
+}
+
+.gen-box__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.gen-box__input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.gen-box__input::placeholder {
+  color: var(--ink-2);
+}
+
+/* Google Workspace 首页式模板卡：产品色文件图标 + 名称 + 一句提示，
+   点击即带方向/主题进入对话。 */
+.gen-section-label {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.tpl-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.tpl-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.tpl-card__icon {
+  display: block;
+  width: 30px;
+  height: 30px;
+}
+
+.tpl-card__icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tpl-card__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.tpl-card__hint {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.gen-box__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 简历 / PPT 页主按钮走 Google 蓝（参考 Google Workspace；深色档 #8ab4f8）。 */
+.gen-layout .button--primary {
+  background-color: var(--g-blue);
+  border-color: var(--g-blue);
+  color: var(--g-blue-ink);
+}
+
+.gen-layout .button--primary:hover:not(:disabled) {
+  background-color: var(--g-blue-hover);
+  border-color: var(--g-blue-hover);
+  transform: none;
+  box-shadow: none;
+}
+
+/* 三步流程：编号圆点 + 说明，交代「生成发生在对话里」这件事。 */
+.flow-steps {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.flow-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.flow-step__num {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background-color: var(--wash);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+
+.flow-step__text {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.flow-step__text b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.gen-panel__hint {
+  margin: 14px 0 0;
+}
+
+/* 记录卡：标题不带延伸线，数量计数靠右。 */
+.gen-side .card__title::after {
+  display: none;
+}
+
+.card__count {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+/* 记录列表：文件行（图标 + 名称/元信息 + 操作），hover 走色调。 */
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+  transition: background-color 0.13s ease;
+}
+
+.file-row:hover {
+  background-color: var(--wash);
+}
+
+.file-row__icon {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+}
+
+.file-row__icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.file-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.file-row__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row__meta {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row__actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 可点击的文件行主体（历史题集整行进题集页）：重置按钮外观。 */
+.file-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-row .button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+/* 空状态：居中的弱图标 + 说明。 */
+.gen-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 14px 0;
+  gap: 10px;
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.gen-empty svg {
+  width: 26px;
+  height: 26px;
+  color: var(--line-strong);
+}
+
+.gen-empty p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+/* Left navigation sidebar ---------------------------------------------------- */
+
+/* ChatGPT 式带标签侧栏：顶部品牌行 + 主导航列表 + 底部设置组。纯 in-flow
+   布局（无 fixed/transform/z-index），活动项用色调填充标记，不整块反墨。 */
+.nav-rail {
+  flex-shrink: 0;
+  width: 208px;
+  background-color: var(--rail);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 10px 12px;
   overflow-y: auto;
+  /* 展开 ⇄ 收起平滑过渡（与会话侧栏同一节奏）。 */
+  transition:
+    width 0.22s cubic-bezier(0.21, 0.6, 0.35, 1),
+    padding 0.22s cubic-bezier(0.21, 0.6, 0.35, 1);
+}
+
+/* 品牌行：黑徽标 + 应用名 + 折叠键；收起时改为纵向（徽标 / 折叠键纵排）。 */
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px 14px;
+  flex-shrink: 0;
+}
+
+.nav-rail__toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.nav-rail--collapsed {
+  width: 64px;
+  padding: 14px 8px 12px;
+}
+
+.nav-rail--collapsed .nav-brand {
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 14px;
+}
+
+.nav-rail--collapsed .nav-brand__name {
+  display: none;
+}
+
+.nav-rail--collapsed .nav-rail__toggle {
+  margin-left: 0;
+}
+
+.nav-rail--collapsed .rail-btn {
+  justify-content: center;
+  padding: 0;
+  gap: 0;
+}
+
+.nav-rail--collapsed .rail-btn__label {
+  display: none;
+}
+
+.nav-brand__badge {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background-color: var(--ink);
+  color: var(--paper);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+
+.nav-brand__name {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
 }
 
 /* 弹性占位：主导航与底部设置组之间的空隙，把设置推到最下方。 */
@@ -341,27 +756,29 @@ body {
 .nav-rail__spacer + .rail-btn::before {
   content: "";
   position: absolute;
-  top: -4px;
-  left: 8px;
-  right: 8px;
+  top: -5px;
+  left: 10px;
+  right: 10px;
   height: 1px;
-  background-color: var(--line-strong);
+  background-color: var(--line);
 }
 
 .rail-btn {
-  width: 40px;
-  height: 40px;
+  width: 100%;
+  height: 38px;
+  flex-shrink: 0;
   border: none;
   border-radius: 10px;
   background-color: transparent;
   color: var(--ink-2);
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
   cursor: pointer;
   transition:
     color 0.15s ease,
-    background-color 0.15s ease,
-    transform 0.12s ease;
+    background-color 0.15s ease;
 }
 
 .rail-btn:hover:not(:disabled) {
@@ -370,33 +787,36 @@ body {
 }
 
 .rail-btn:active:not(:disabled) {
-  transform: scale(0.94);
+  background-color: var(--hover-deep);
 }
 
-/* Active route: full inversion — the one loud state in the system. */
+/* Active route: tonal fill — the label carries the weight, no inversion. */
 .rail-btn--active,
 .rail-btn--active:hover {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--hover-deep);
+  color: var(--ink);
 }
 
 .rail-btn svg {
-  width: 19px;
-  height: 19px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.rail-btn__label {
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Cards ---------------------------------------------------------------- */
 
 .card {
   background-color: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
   padding: 18px 20px 20px;
-}
-
-.card:hover {
-  box-shadow: var(--shadow-lift);
 }
 
 .card__title {
@@ -404,18 +824,18 @@ body {
   align-items: center;
   gap: 10px;
   margin: 0 0 14px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink);
 }
 
 /* Section index ("01") sits in ink; the title runs out into a hairline. */
 .card__index {
-  color: var(--ink);
-  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
+  font-weight: 500;
 }
 
 .card__title::after {
@@ -484,7 +904,7 @@ body {
 .ledger-row__index {
   flex-shrink: 0;
   width: 22px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.08em;
   color: var(--ink-2);
@@ -510,10 +930,9 @@ body {
 }
 
 .ledger-row__group {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
   color: var(--ink-2);
 }
 
@@ -530,7 +949,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
@@ -547,7 +966,7 @@ body {
 }
 
 .ledger-row__unset {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
@@ -562,7 +981,7 @@ body {
   border-radius: 999px;
   background-color: var(--ink);
   color: var(--paper);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.1em;
 }
@@ -570,7 +989,7 @@ body {
 .ledger-row__chevron {
   width: 14px;
   flex-shrink: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1;
   color: var(--ink-2);
@@ -656,8 +1075,10 @@ body {
 }
 
 .asr-mode-switch__option.is-active {
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .asr-mode-switch__option:focus-visible {
@@ -856,11 +1277,10 @@ body {
 
 .key-group__title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
   color: var(--ink);
 }
 
@@ -977,7 +1397,7 @@ body {
 
 .row__value {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   color: var(--ink);
   text-align: right;
@@ -999,7 +1419,7 @@ body {
   border-radius: 8px;
   background-color: var(--paper);
   color: var(--ink);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   text-align: left;
 }
@@ -1031,7 +1451,7 @@ body {
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   background-color: transparent;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   letter-spacing: 0.03em;
   color: var(--ink);
@@ -1098,11 +1518,13 @@ body {
 
 /* Buttons ---------------------------------------------------------------- */
 
+/* Buttons — ChatGPT 式药丸按钮：hover 走色调填充，不再整块反墨。 */
+
 .button {
   height: 34px;
-  padding: 0 15px;
+  padding: 0 16px;
   border: 1px solid var(--line-strong);
-  border-radius: 7px;
+  border-radius: 999px;
   background-color: transparent;
   color: var(--ink);
   font-family: var(--font-sans);
@@ -1119,9 +1541,9 @@ body {
 }
 
 .button:hover:not(:disabled) {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--wash);
+  border-color: var(--line-strong);
+  color: var(--ink);
 }
 
 .button:active:not(:disabled) {
@@ -1135,8 +1557,10 @@ body {
 }
 
 .button--primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-lift);
+  background-color: color-mix(in srgb, var(--ink) 86%, var(--paper));
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
 }
 
 .button:disabled {
@@ -1153,8 +1577,28 @@ body {
   color: var(--ink-2);
 }
 
+/* 纯文本语境的内联链接（链接化工具 / 抓取列表 / 入库记录来源）：
+   继承字号与颜色，仅以下划线提示可点。 */
+.text-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.text-link:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+
 .hint-text {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--ink-2);
   word-break: break-all;
@@ -1185,7 +1629,7 @@ body {
   align-items: center;
   gap: 9px;
   margin-top: 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   letter-spacing: 0.01em;
   color: var(--ink-2);
@@ -1224,7 +1668,7 @@ body {
 
 .card-hint {
   margin: 0 0 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--ink-2);
@@ -1274,10 +1718,9 @@ body {
 }
 
 .cfg-label {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  letter-spacing: 0;
   color: var(--ink-2);
   white-space: nowrap;
   transition: color 0.15s ease;
@@ -1298,7 +1741,7 @@ body {
   border-radius: 0;
   background-color: transparent;
   color: var(--ink);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   caret-color: var(--ink);
   transition:
@@ -1327,34 +1770,101 @@ body {
   opacity: 0.45;
 }
 
-/* Multi-line URL textarea (网页链接入库): cfg-input is sized for one-line
-   inputs (height:30px, no padding) — a textarea on it would squeeze 3 rows
-   into ~1 line. Override the box, keep the underline language; the wrapper
-   row hosts an inline clear button at the tail. */
-.url-input-row {
-  position: relative;
+/* 网页链接入库的网址输入框列表（每个框一个网址）：圆角行 + 链接图标，
+   无效/重复的框挂红色描边；行尾可删（多于一个时）。 */
+.url-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.url-input {
+.url-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.url-field:focus-within {
+  border-color: var(--g-blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--g-blue) 25%, transparent);
+}
+
+.url-field.is-invalid,
+.url-field.is-invalid:focus-within {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 25%, transparent);
+}
+
+.url-field__icon {
   display: block;
-  width: 100%;
-  box-sizing: border-box;
-  height: auto;
-  min-height: 72px; /* ~3 rows */
-  max-height: 264px; /* ~12 rows, then it scrolls */
-  padding: 8px 30px 8px 2px; /* right rail leaves room for the clear button */
-  overflow-y: auto;
-  line-height: 1.55;
-  resize: vertical;
+  width: 15px;
+  height: 15px;
+  color: var(--ink-2);
+  flex-shrink: 0;
 }
 
-.url-input__clear {
-  position: absolute;
-  top: 6px;
-  right: 2px;
-  width: 22px;
-  height: 22px;
-  font-size: 11px;
+.url-field__icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.url-field input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.url-field input::placeholder {
+  color: var(--ink-2);
+}
+
+.url-field.is-invalid input {
+  color: var(--danger);
+}
+
+/* 「添加网址」：Drive 式虚线行，hover 亮 Google 蓝。 */
+.url-fields__add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 12px;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.url-fields__add:hover:not(:disabled) {
+  border-color: var(--g-blue);
+  color: var(--ink);
+  background-color: color-mix(in srgb, var(--g-blue) 5%, transparent);
+}
+
+.url-fields__add:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* Keep webkit autofill from painting its default pale-yellow plate. */
@@ -1418,7 +1928,7 @@ body {
   border-radius: 7px;
   background-color: var(--danger-bg);
   color: var(--danger);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12px;
   line-height: 1.6;
   word-break: break-all;
@@ -1429,7 +1939,7 @@ body {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background-color: rgba(31, 31, 30, 0.42);
+  background-color: rgba(0, 0, 0, 0.42);
   display: grid;
   place-items: center;
   /* Above every app surface (panel 12, corner buttons 10) by an order of
@@ -1455,18 +1965,17 @@ body {
 
 .modal__title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink);
 }
 
 .modal__hint {
   margin: 14px 0 0;
   text-align: center;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   color: var(--ink-2);
 }
@@ -1507,7 +2016,7 @@ body {
 }
 
 .qr-stage__detail {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--ink-2);
   word-break: break-all;
@@ -1594,7 +2103,7 @@ body {
 
 .fav-profile__sub {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
@@ -1605,7 +2114,7 @@ body {
   border-radius: 999px;
   background-color: var(--ink);
   color: var(--paper);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.06em;
 }
@@ -1629,7 +2138,7 @@ body {
 
 .account-row__sub {
   margin: 2px 0 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--ink-2);
 }
@@ -1696,9 +2205,9 @@ body {
 }
 
 .fav-card--open .fav-card__icon {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--hover-deep);
+  border-color: var(--hover-deep);
+  color: var(--ink);
 }
 
 .fav-card__text {
@@ -1731,13 +2240,13 @@ body {
   border-radius: 999px;
   background-color: var(--ink);
   color: var(--paper);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.06em;
 }
 
 .fav-card__meta {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
@@ -1755,7 +2264,7 @@ body {
 }
 
 .fav-card__count-num {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
@@ -1808,7 +2317,7 @@ body {
   gap: 8px;
   margin: 0;
   padding: 8px 12px 4px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
@@ -1829,14 +2338,14 @@ body {
 .vlist__note {
   margin: 0;
   padding: 10px 12px 12px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   color: var(--ink-2);
 }
 
 .vlist__error {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   color: var(--danger);
   word-break: break-all;
@@ -1950,7 +2459,7 @@ body {
   border-radius: 4px;
   background-color: color-mix(in srgb, var(--ink) 72%, transparent);
   color: var(--paper);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9px;
   line-height: 1.5;
   letter-spacing: 0.02em;
@@ -1975,7 +2484,7 @@ body {
 }
 
 .vrow__sub {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
@@ -2022,7 +2531,7 @@ body {
   flex-shrink: 0;
   min-width: 30px;
   text-align: center;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 600;
   color: var(--paper);
@@ -2043,7 +2552,7 @@ body {
 
 .prow__duration {
   flex-shrink: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
   padding: 1px 7px;
@@ -2076,6 +2585,9 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  /* flex 列：让 .shell 可以 flex:1 撑满视口（简历/PPT 页内对话的等高基础）。 */
+  display: flex;
+  flex-direction: column;
 }
 
 
@@ -2122,7 +2634,7 @@ body {
 }
 
 .ingest__lines li {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--ink-2);
   overflow-wrap: anywhere;
@@ -2329,7 +2841,7 @@ body {
 .ws-doc__page-meta {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
   overflow: hidden;
@@ -2439,8 +2951,116 @@ body {
   display: flex;
 }
 
+/* 对话模式分段选择器（会话侧栏顶部，右上方）：滑块随选中项平移。 */
+.chat-sidebar__modes {
+  flex-shrink: 0;
+  padding: 2px 2px 10px;
+}
+
+.chat-mode {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 3px;
+  background-color: var(--wash);
+  border-radius: 999px;
+}
+
+.chat-mode__thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 3);
+  border-radius: 999px;
+  background-color: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  transition: transform 0.24s cubic-bezier(0.21, 0.6, 0.35, 1);
+}
+
+.chat-mode__seg {
+  position: relative;
+  z-index: 1;
+  padding: 6px 0;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.chat-mode__seg:hover {
+  color: var(--ink);
+}
+
+.chat-mode__seg.is-active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* 窄脊上的模式切换方块（点一下循环切换）。 */
+.spine-mode {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background-color: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    background-color 0.13s ease,
+    border-color 0.13s ease;
+}
+
+.spine-mode:hover {
+  border-color: var(--ink-2);
+}
+
+/* 模式切换过渡：消息区 / 会话列表整棵重挂（key=mode），自下淡入一拍。
+   会话列表里每行依次 stagger（session-item 已有 rise 动画，配合重挂生效）。 */
+.mode-in {
+  animation: mode-in 0.28s cubic-bezier(0.21, 0.6, 0.35, 1) both;
+}
+
+@keyframes mode-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 侧栏顶部行：折叠键 + 新建对话（新建为弹性主件）。 */
+.chat-sidebar__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-sidebar__top .chat-sidebar__new {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+/* 侧栏「新建对话」：灰侧栏上的白底药丸（ChatGPT 式），hover 走色调加深。 */
 .chat-sidebar__new {
   width: 100%;
+  background-color: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
   transition:
     background-color 0.15s ease,
     color 0.15s ease,
@@ -2448,14 +3068,14 @@ body {
 }
 
 .chat-sidebar__new:hover:not(:disabled) {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--wash);
+  border-color: var(--line-strong);
+  color: var(--ink);
 }
 
 .chat-sidebar__empty {
   margin: 10px 4px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   line-height: 1.8;
   color: var(--ink-2);
@@ -2477,7 +3097,7 @@ body {
   position: relative;
   display: flex;
   align-items: center;
-  border-radius: 8px;
+  border-radius: 10px;
   animation: rise 0.4s cubic-bezier(0.21, 0.6, 0.35, 1) both;
   transition: background-color 0.12s ease;
 }
@@ -2486,21 +3106,10 @@ body {
   background-color: var(--wash);
 }
 
-/* Active session: hairline ink bar docked on the left edge. */
+/* Active session: 再深一档的色调填充（ChatGPT 式，无侧边墨条）。 */
 .session-item--active,
 .session-item--active:hover {
-  background-color: var(--wash);
-}
-
-.session-item--active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
-  border-radius: 2px;
-  background-color: var(--ink);
+  background-color: var(--hover-deep);
 }
 
 .session-item__body {
@@ -2537,9 +3146,9 @@ body {
 }
 
 .session-item__time {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0;
   color: var(--ink-2);
 }
 
@@ -2611,15 +3220,15 @@ body {
   justify-content: flex-start;
 }
 
-/* User turn: a compact ink pill, tail-corner clipped for direction. */
+/* User turn: ChatGPT 式暖灰气泡——四角均匀大圆角，不做裁角。 */
 .bubble--user {
   max-width: 72%;
-  border-radius: 14px 14px 4px 14px;
-  padding: 9px 14px;
+  border-radius: 18px;
+  padding: 10px 16px;
   background-color: var(--user-bubble);
   color: var(--user-bubble-ink);
-  font-size: 13.5px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -2659,7 +3268,7 @@ body {
   min-height: 64px;
   line-height: 1.65;
   font-family: var(--font-sans);
-  font-size: 13.5px;
+  font-size: 14px;
 }
 
 .user-edit__actions {
@@ -2725,7 +3334,7 @@ body {
 
 /* Collapsed summary: deduped tool list + step count, mono terminal style. */
 .msg-steps summary {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.03em;
   color: var(--ink-2);
@@ -2761,7 +3370,7 @@ body {
 }
 
 .msg-steps li {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.03em;
   color: var(--ink-2);
@@ -2836,7 +3445,8 @@ body {
 
 .msg-retry:hover {
   color: var(--ink);
-  border-color: var(--ink);
+  border-color: var(--line-strong);
+  background-color: var(--wash);
 }
 
 .typing-cursor {
@@ -2881,17 +3491,17 @@ body {
 
 .chat-empty__kicker {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.22em;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  letter-spacing: 0.1em;
   color: var(--ink-2);
   animation: rise 0.5s cubic-bezier(0.21, 0.6, 0.35, 1) both;
 }
 
 .chat-empty__title {
   margin: 0;
-  font-size: 27px;
-  font-weight: 300;
+  font-size: 26px;
+  font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--ink);
   animation: rise 0.55s cubic-bezier(0.21, 0.6, 0.35, 1) 0.06s both;
@@ -2928,9 +3538,9 @@ body {
 }
 
 .suggest-chip:hover {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--wash);
+  border-color: var(--line-strong);
+  color: var(--ink);
 }
 
 /* Composer ----------------------------------------------------------------------- */
@@ -2956,11 +3566,11 @@ body {
   display: flex;
   gap: 10px;
   align-items: flex-end;
-  border: 1px solid var(--line-strong);
-  border-radius: 14px;
-  padding: 10px 10px 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: 10px 10px 10px 18px;
   background-color: var(--surface);
-  box-shadow: var(--shadow-lift);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
   transition:
     border-color 0.15s ease,
     box-shadow 0.2s ease;
@@ -2968,15 +3578,13 @@ body {
 
 /* hover 预备态：边框先行加深，提示可输入。 */
 .composer:hover:not(:focus-within) {
-  border-color: var(--ink-2);
+  border-color: var(--line-strong);
 }
 
-/* 聚焦态：墨色描边 + 一圈极淡的光环，与全局 focus 语言一致。 */
+/* 聚焦态：边框再深一档 + 柔和投影，不做彩色光环。 */
 .composer:focus-within {
-  border-color: var(--ink);
-  box-shadow:
-    var(--shadow-lift),
-    0 0 0 3px color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: var(--line-strong);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.07);
 }
 
 .composer__input {
@@ -2986,7 +3594,7 @@ body {
   outline: none;
   background: transparent;
   font-family: var(--font-sans);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.65;
   color: var(--ink);
   max-height: 160px;
@@ -3025,7 +3633,7 @@ body {
 
 .skill-menu__hint {
   margin: 2px 6px 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.06em;
   color: var(--ink-2);
@@ -3057,7 +3665,7 @@ body {
 }
 
 .skill-menu__name {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   font-weight: 500;
   color: var(--ink);
@@ -3095,7 +3703,7 @@ body {
 
 .skill-chip__note {
   margin-left: 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.06em;
   color: var(--ink-2);
@@ -3118,8 +3726,8 @@ body {
 }
 
 .skill-chip__remove:hover {
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--line);
+  color: var(--ink);
 }
 
 .composer .button {
@@ -3218,9 +3826,9 @@ body {
 }
 
 .clarify-card__option:hover:not(:disabled) {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--wash);
+  border-color: var(--line-strong);
+  color: var(--ink);
 }
 
 .clarify-card__option:disabled {
@@ -3281,7 +3889,7 @@ body {
   border-radius: 50%;
   background-color: var(--ink);
   color: var(--paper);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 600;
   display: grid;
@@ -3363,7 +3971,7 @@ body {
   height: 18px;
   border-radius: 5px;
   border: 1px solid var(--line-strong);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   display: grid;
   place-items: center;
@@ -3476,14 +4084,15 @@ body {
 
 .spine-item:hover {
   color: var(--ink);
-  border-color: var(--ink);
+  border-color: var(--line-strong);
+  background-color: var(--wash);
 }
 
 .spine-item--active,
 .spine-item--active:hover {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--hover-deep);
+  border-color: var(--hover-deep);
+  color: var(--ink);
 }
 
 /* ===========================================================================
@@ -3543,7 +4152,7 @@ body {
   position: relative;
   display: flex;
   align-items: center;
-  border-radius: 8px;
+  border-radius: 10px;
   transition: background-color 0.12s ease;
 }
 
@@ -3551,19 +4160,9 @@ body {
   background-color: var(--wash);
 }
 
-.note-item--active {
-  background-color: var(--wash);
-}
-
-.note-item--active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  border-radius: 2px;
-  background-color: var(--ink);
+.note-item--active,
+.note-item--active:hover {
+  background-color: var(--hover-deep);
 }
 
 .note-item__body {
@@ -3614,7 +4213,7 @@ body {
 }
 
 .note-item__meta {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
@@ -3697,8 +4296,8 @@ body {
 }
 
 .note-mode--active {
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--hover-deep);
+  color: var(--ink);
 }
 
 /* Anchors strip ----------------------------------------------------------------- */
@@ -3713,7 +4312,7 @@ body {
 }
 
 .anchors__label {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.1em;
   color: var(--ink-2);
@@ -3774,7 +4373,7 @@ body {
   border-radius: 10px;
   background: var(--wash);
   padding: 12px 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   line-height: 1.75;
   color: var(--ink);
@@ -3796,7 +4395,7 @@ body {
 
 .markdown-body {
   overflow-y: auto;
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.78;
   color: var(--ink);
 }
@@ -3929,7 +4528,7 @@ body {
 
 .revisions__head {
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.12em;
   color: var(--ink-2);
@@ -3944,66 +4543,248 @@ body {
 }
 
 .revisions__meta {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
 
-/* Quiz panel ------------------------------------------------------------------ */
+/* Quiz (知识测验) — Google Forms 风格：紫色产品色 + 表单式题卡。 */
 
 .quiz-pane {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+}
+
+/* 答题 / 结果页：居中的表单列（Google Forms 的页面形态）。 */
+.quiz-page {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.quiz-pane .card__title::after {
+  display: none;
+}
+
+/* 本页主按钮与聚焦态走 Forms 紫。 */
+.quiz-pane .button--primary {
+  background-color: var(--g-purple);
+  border-color: var(--g-purple);
+  color: var(--g-purple-ink);
+}
+
+.quiz-pane .button--primary:hover:not(:disabled) {
+  background-color: var(--g-purple-hover);
+  border-color: var(--g-purple-hover);
+  transform: none;
+  box-shadow: none;
+}
+
+/* 表单字段：Google 式圆角输入/下拉，聚焦描边走紫。 */
+.quiz-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.quiz-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quiz-field__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.quiz-field__input {
+  width: 100%;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.quiz-field__input:focus {
+  border-color: var(--g-purple);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--g-purple) 25%, transparent);
 }
 
 .quiz-select {
-  max-width: 140px;
+  width: 160px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  outline: none;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.quiz-type-row {
+.quiz-select:focus {
+  border-color: var(--g-purple);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--g-purple) 25%, transparent);
+}
+
+/* 题型 / 难度：Google 式可选 chips（选中亮 Google 蓝）。 */
+.quiz-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
+  gap: 8px;
 }
 
+.quiz-chip {
+  padding: 6px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.quiz-chip:hover {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
+.quiz-chip.is-on {
+  border-color: var(--g-blue);
+  background-color: color-mix(in srgb, var(--g-blue) 10%, var(--surface));
+  color: var(--g-blue);
+  font-weight: 500;
+}
+
+/* 题卡：Google Forms 的问题卡形态。 */
 .quiz-questions {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 .quiz-question {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 14px 16px;
+  background-color: var(--surface);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .quiz-question__stem {
   margin: 0;
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.7;
   color: var(--ink);
 }
 
+/* 选项：选中亮 Google 蓝（填充 + 文本着色），hover 走色调。 */
 .quiz-option {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
-  color: var(--ink);
+  font-size: 13px;
+  color: var(--ink-2);
   cursor: pointer;
-  padding: 2px 0;
+  padding: 4px 2px;
+  border-radius: 8px;
 }
 
+.quiz-option:hover {
+  color: var(--ink);
+}
+
+.quiz-option input {
+  border-color: var(--line-strong);
+}
+
+.quiz-option input:checked {
+  background-color: var(--g-blue);
+  border-color: var(--g-blue);
+}
+
+.quiz-option input:checked::after {
+  border-color: var(--g-blue-ink);
+}
+
+.quiz-option input:checked ~ .quiz-option__text {
+  color: var(--g-blue);
+  font-weight: 500;
+}
+
+/* 简答 / 论述：Google 式描边输入，聚焦走紫。 */
 .quiz-free {
-  min-height: 60px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  outline: none;
+  resize: vertical;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.quiz-free:focus {
+  border-color: var(--g-purple);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--g-purple) 25%, transparent);
+}
+
+/* 结果页：Forms 式得分条（大号分数 + 通过状态）。 */
+.quiz-score {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: var(--surface);
+}
+
+.quiz-score__value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--ink);
+}
+
+.quiz-score__value small {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-2);
 }
 
 .quiz-results {
@@ -4017,11 +4798,12 @@ body {
 
 .quiz-result {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  background-color: var(--surface);
 }
 
 .quiz-result__head {
@@ -4087,13 +4869,13 @@ body {
   padding: 26px 40px 40px;
 }
 
-/* Notes preview rides on the same kai reading face as the editor, so
-   switching modes doesn't change the voice of the text. */
+/* Notes preview rides on the same Apple-system reading face as the editor,
+   so switching modes doesn't change the voice of the text. */
 .typ-paper.markdown-body {
   font-family: var(--font-editor);
   font-size: 15px;
   line-height: 1.9;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 /* Document-level title: an oversized borderless input, Typora-style. */
@@ -4141,7 +4923,7 @@ body {
   font-family: var(--font-editor);
   font-size: 15.5px;
   line-height: 1.95;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   color: var(--ink);
   caret-color: var(--ink);
 }
@@ -4158,7 +4940,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
@@ -4222,7 +5004,7 @@ body {
   margin: 0 0 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
@@ -4268,7 +5050,7 @@ body {
   margin: 0 0 12px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
@@ -4303,9 +5085,10 @@ body {
   margin: 2px 0 12px;
 }
 
-.skills-view__search .cfg-input {
+.skills-view__search .gsearch {
   flex: 1;
   margin: 0;
+  min-width: 0;
 }
 
 /* 自由安装行（owner/repo + 分支 + 按钮）。 */
@@ -4355,7 +5138,7 @@ body {
 }
 
 .store-row__name {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   font-weight: 500;
   color: var(--ink);
@@ -4378,7 +5161,7 @@ body {
 }
 
 .store-row__stars {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   color: var(--ink-2);
 }
@@ -4432,22 +5215,6 @@ body {
   }
 }
 
-.palette__input {
-  flex-shrink: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: var(--font-sans);
-  font-size: 15px;
-  color: var(--ink);
-  padding: 15px 18px;
-  border-bottom: 1px solid var(--line);
-}
-
-.palette__input::placeholder {
-  color: var(--ink-2);
-}
-
 .palette__list {
   flex: 1;
   min-height: 0;
@@ -4457,10 +5224,9 @@ body {
 
 .palette__group {
   margin: 8px 8px 4px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
   color: var(--ink-2);
 }
 
@@ -4512,7 +5278,7 @@ body {
   margin: 0;
   padding: 8px 18px;
   border-top: 1px solid var(--line);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.08em;
   color: var(--ink-2);
@@ -4570,7 +5336,7 @@ body {
 }
 
 .skill-row__state {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.08em;
   color: var(--ink-2);
@@ -4635,7 +5401,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.06em;
   color: var(--ink-2);
@@ -4782,9 +5548,9 @@ body {
 }
 
 .toast__details:hover {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--line);
+  border-color: var(--line);
+  color: var(--ink);
 }
 
 /* Toast detail modal — full selectable/copyable error text. */
@@ -4818,14 +5584,277 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   文件入库页：拖拽高亮、OCR 扩展名徽章、记录搜索。
+   文件入库页（Google Drive 风格布局）：左列添加内容 + 入库队列，右列入库记录。
 --------------------------------------------------------------------------- */
 
-/* Dropping files anywhere on the import page is supported; the selection
-   card lights up while a drag is over the window. */
-.dropzone.is-active {
-  border-color: var(--line-strong);
-  box-shadow: 0 0 0 2px var(--user-bubble), var(--shadow-lift);
+.imp-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  flex: 1 0 auto;
+}
+
+@media (max-width: 1080px) {
+  .imp-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.imp-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.imp-panel {
+  padding: 24px 26px 22px;
+}
+
+/* 主按钮与聚焦描边走 Google 蓝（与其他 gen 页一致）。 */
+.imp-layout .button--primary {
+  background-color: var(--g-blue);
+  border-color: var(--g-blue);
+  color: var(--g-blue-ink);
+}
+
+.imp-layout .button--primary:hover:not(:disabled) {
+  background-color: var(--g-blue-hover);
+  border-color: var(--g-blue-hover);
+  transform: none;
+  box-shadow: none;
+}
+
+.imp-layout .card__title::after {
+  display: none;
+}
+
+/* Drive 式拖放区：虚线框 + 上传 glyph + 选择按钮；拖拽悬停亮 Google 蓝。 */
+.imp-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 30px 20px 26px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 16px;
+  background-color: var(--surface);
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.imp-drop.is-active {
+  border-color: var(--g-blue);
+  background-color: color-mix(in srgb, var(--g-blue) 6%, var(--surface));
+}
+
+.imp-drop__glyph {
+  display: block;
+  width: 36px;
+  height: 36px;
+  color: var(--ink-2);
+}
+
+.imp-drop__glyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.imp-drop__title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.imp-drop__or {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.imp-drop__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.imp-note {
+  margin: 12px 0 0;
+  line-height: 1.75;
+}
+
+.imp-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 20px 0 18px;
+}
+
+/* 网页抓取结果：URL 行 + 状态徽章。 */
+.capture-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.capture-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--surface);
+}
+
+.capture-row__url {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Google 式搜索输入框（命令面板 / 笔记 / 技能商店 / 文件入库记录共用）：
+   药丸圆角 + 左侧放大镜 + 可清空；聚焦描边走 Google 蓝。 */
+.gsearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background-color: var(--surface);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.gsearch:focus-within {
+  border-color: var(--g-blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--g-blue) 25%, transparent);
+}
+
+.gsearch__icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  color: var(--ink-2);
+  flex-shrink: 0;
+}
+
+.gsearch__icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.gsearch input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.gsearch input::placeholder {
+  color: var(--ink-2);
+}
+
+.gsearch .icon-button {
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+}
+
+/* 紧凑档：与 34px 按钮同排（笔记列表 / 技能商店）。 */
+.gsearch--compact {
+  height: 34px;
+}
+
+.gsearch--compact input {
+  font-size: 12.5px;
+}
+
+/* 命令面板内嵌的搜索行（替代旧的通栏下划线输入）。 */
+.palette .gsearch {
+  flex-shrink: 0;
+  margin: 10px 10px 2px;
+}
+
+/* 记录行内的来源链接组（网页来源 / 本地文件）。 */
+.file-row__links {
+  display: flex;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------------------
+   溢出加固：任何内容量/字符串长度下都不破版。
+   - 文字容器补 min-width:0 与换行保护（超长 URL/路径/标识符不撑破列）；
+   - Markdown 宽表经 .md-table-wrap 横向滚动（组件层包装）；
+   - 抓取结果列表限高内滚；
+   - 双栏页右列（记录/历史）吸顶 + 内滚，内容很多时操作区仍可见；
+     窄屏单栏时取消吸顶，回退整页滚动。
+--------------------------------------------------------------------------- */
+
+.gen-hero__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.gen-hero__sub,
+.flow-step__text,
+.quiz-question__stem,
+.quiz-result__q,
+.msg-steps li {
+  overflow-wrap: anywhere;
+}
+
+.markdown-body {
+  overflow-wrap: break-word;
+}
+
+/* GFM 表格的横向滚动容器（MarkdownContent 的 table 组件包装）。 */
+.md-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.capture-list {
+  max-height: 208px;
+  overflow-y: auto;
+}
+
+/* 双栏页右列（记录/历史）在内容很多时保持可见：吸顶 + 内部滚动；
+   简历/PPT 的等高 fill 模式里列本身已受 grid 高度约束，改为整卡内滚；
+   窄屏单栏时取消吸顶，回退整页滚动。 */
+.imp-layout .imp-records,
+.gen-layout .gen-side {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 46px);
+  overflow-y: auto;
+}
+
+@media (max-width: 1080px) {
+  .imp-layout .imp-records,
+  .gen-layout .gen-side {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
 }
 
 /* Small pill marking image files that go through local OCR. */
@@ -4840,11 +5869,6 @@ body {
   border-radius: 999px;
   color: var(--ink-2);
   vertical-align: 1px;
-}
-
-/* Search box for the 入库记录 list. */
-.import-filter {
-  margin-bottom: 10px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -5133,7 +6157,7 @@ body {
   flex: none;
   min-width: 56px;
   text-align: center;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
 }
@@ -5618,14 +6642,14 @@ body {
 
 .mm-ctx-hint {
   flex: none;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
 }
 
 .mm-ctx-header {
   padding: 6px 10px 3px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
   border-top: 1px solid var(--line);
@@ -5658,7 +6682,7 @@ body {
 
 .mm-icon-group-title {
   margin: 8px 0 4px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
 }
@@ -5713,14 +6737,14 @@ body {
   margin: 8px 0 6px;
   padding-top: 6px;
   border-top: 1px solid var(--line);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
 }
 
 .mm-style-panel__title {
   margin-bottom: 8px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
 }
@@ -5901,7 +6925,7 @@ body {
   gap: 8px;
   min-width: 150px;
   padding: 5px 10px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--ink);
   background: var(--paper);
@@ -5941,7 +6965,7 @@ body {
 
 .mm-lang-group {
   margin: 6px 0 3px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10px;
   color: var(--ink-2);
 }
@@ -5951,7 +6975,7 @@ body {
   width: 100%;
   padding: 4px 8px;
   text-align: left;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--ink);
   background: transparent;
@@ -6464,14 +7488,14 @@ body {
 
 .agent-task__meta {
   margin: 6px 0 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
   color: var(--ink-2);
   word-break: break-all;
 }
 
 .agent-badge {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   letter-spacing: 0.1em;
   padding: 1px 7px;
@@ -6500,7 +7524,7 @@ body {
 }
 
 .tool-row__name {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--ink);
 }
@@ -6545,7 +7569,7 @@ body {
   margin-bottom: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11.5px;
 }
 
@@ -6588,7 +7612,7 @@ body {
 }
 
 .plan-panel__head {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
   letter-spacing: 0.08em;
   color: var(--ink-2);
@@ -6610,7 +7634,7 @@ body {
 }
 
 .plan-step__mark {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   width: 14px;
   flex-shrink: 0;
 }

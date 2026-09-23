@@ -7,7 +7,7 @@
  * 一起覆盖写回 SQLite。画布主题跟随应用深浅档实时重配色。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { confirm } from "./web-shims";
 import type MindMap from "simple-mind-map";
 import type { MindMapNodeInstance } from "simple-mind-map";
@@ -32,6 +32,8 @@ import { useToast } from "./toast";
 import "./mindmap.css";
 import MindMapCanvas from "./MindMapCanvas";
 import { BoardChatPanel } from "./BoardChatPanel";
+import type { BoardProposal } from "./boardProposal";
+import type { NodeSuggestion } from "@/lib/api/boards";
 import WhiteboardEditorView from "../whiteboard/WhiteboardEditorView";
 import {
   CodeBlockDialog,
@@ -44,6 +46,8 @@ import {
   OutlinePanel,
   ShapesPanel,
   StylePanel,
+  stripHtmlTags,
+  normalizeNodeText,
   toOutlineTree,
 } from "./overlays";
 import type { ContextMenuItem, NodeInfoValues } from "./overlays";
@@ -64,6 +68,8 @@ import {
 const ACCENT_KEY = "mb-mm-accent";
 const RAINBOW_KEY = "mb-mm-rainbow";
 const AUTOSAVE_DELAY_MS = 800;
+/** doc state 防抖镜像间隔：大纲等 React 消费方的追平延迟（肉眼无感）。 */
+const DOC_MIRROR_DEBOUNCE_MS = 150;
 /** 自动快照最小间隔：距上一版 ≥10 分钟且本次有落库才拍。 */
 const AUTO_SNAPSHOT_INTERVAL_SEC = 600;
 
@@ -85,6 +91,39 @@ function loadRainbow(): boolean {
 
 type SaveState = "saved" | "pending" | "saving";
 
+/** 幽灵节点浅色样式：插入后由 Tab 确认（清样式入正式保存）或 Esc 丢弃。 */
+const GHOST_STYLE = { fillColor: "#e9edf1", color: "#8a939e" };
+
+/**
+ * 幽灵节点数据构造（Ctrl+I 补全与板聊建议共用）：LLM 只出语义
+ * （code/md 源码），富文本 HTML 由本地渲染管线生成
+ * （buildCodeBlockHtml / renderMdCardHtml）。
+ */
+function buildGhostNodeData(s: NodeSuggestion, uid: string, batch: string): Record<string, unknown> {
+  if (s.kind === "code" && s.code) {
+    return {
+      text: buildCodeBlockHtml(s.code, s.language || "text"),
+      richText: true,
+      customTextWidth: estimateCodeNodeWidth(s.code),
+      uid,
+      ghostBatch: batch,
+      ...GHOST_STYLE,
+    };
+  }
+  if (s.kind === "md" && s.markdown) {
+    return {
+      text: renderMdCardHtml(s.markdown),
+      richText: true,
+      mdSource: s.markdown,
+      customTextWidth: Math.min(560, Math.max(340, estimateCodeNodeWidth(s.markdown))),
+      uid,
+      ghostBatch: batch,
+      ...GHOST_STYLE,
+    };
+  }
+  return { text: s.text, uid, ghostBatch: batch, ...GHOST_STYLE };
+}
+
 function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
   mapId: string;
   /** 「← 返回」：web 由列表视图收起编辑器；缺省走桌面端 hash 路由。 */
@@ -99,6 +138,10 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [activeCount, setActiveCount] = useState(0);
+  /** 当前选中节点的纯文本（单选时非空）：板聊面板的锚点上下文展示与请求携带。 */
+  const [activeAnchorText, setActiveAnchorText] = useState("");
+  /** 选中节点 uid：板聊建议锚点的精确回执（同名文本不再靠运气匹配）。 */
+  const [activeAnchorUid, setActiveAnchorUid] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [exporting, setExporting] = useState<string | null>(null);
   // 右键菜单（节点）/ 画布菜单 / 节点信息对话框 / 备注查看。
@@ -173,10 +216,14 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
   const titleRef = useRef("");
   const accentRef = useRef(accentId);
   accentRef.current = accentId;
-  const docRef = useRef<MindMapDoc | null>(null);
-  docRef.current = doc;
   /** 最近一份完整文档（树/布局/主题/视图），卸载后兜底 flush 用。 */
   const latestDocRef = useRef<MindMapDoc | null>(null);
+  /** doc state 防抖镜像计时器（大纲等 React 消费方追平用）。 */
+  const docMirrorTimerRef = useRef<number | null>(null);
+  const docRef = useRef<MindMapDoc | null>(null);
+  // docRef 始终镜像 latestDocRef（树变更时即时写入，先于防抖的 doc state）：
+  // 板聊锚点/删除目标匹配、导出等读取方永远拿到最新文档，不随渲染回退。
+  docRef.current = latestDocRef.current;
   const doFlushRef = useRef<() => Promise<void>>(async () => {});
   /** 当前选中节点（右键菜单 / 样式面板 / 节点信息的操作目标）。 */
   const activeNodesRef = useRef<MindMapNodeInstance[]>([]);
@@ -345,6 +392,29 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
         } else if (event.key === "-") {
           event.preventDefault();
           instanceRef.current?.view.narrow();
+        }
+      }
+      // 方向键移动画布（每次40px，非编辑状态下）
+      if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+        const target = event.target as HTMLElement | null;
+        const editingText =
+          target?.isContentEditable === true ||
+          target?.tagName === "INPUT" ||
+          target?.tagName === "TEXTAREA";
+        if (!editingText) {
+          const step = 40;
+          let dx = 0;
+          let dy = 0;
+          switch (event.key) {
+            case "ArrowLeft":  dx = step;  break;
+            case "ArrowRight": dx = -step; break;
+            case "ArrowUp":    dy = step;  break;
+            case "ArrowDown":  dy = -step; break;
+          }
+          if (dx !== 0 || dy !== 0) {
+            event.preventDefault();
+            instanceRef.current?.view.translateXY(dx, dy);
+          }
         }
       }
     }
@@ -789,7 +859,12 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
   ];
 
   // 大纲树随画布编辑实时重建（doc 状态在每次树变更时镜像最新文档）。
-  const outlineRoot = doc !== null ? toOutlineTree(doc.root) : null;
+  // useMemo：仅 doc 变化时重建——completion/保存状态等无关渲染不再反复
+  // 全树 O(n) 遍历（大板子上是可感知的卡顿来源）。
+  const outlineRoot = useMemo(
+    () => (doc !== null ? toOutlineTree(doc.root) : null),
+    [doc]
+  );
   const activeIconKeys = activeNodesRef.current[0]?.getData<string[]>("icon") ?? [];
 
   function locateOutline(uid: string): void {
@@ -878,9 +953,7 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
   // 建议节点以浅色样式直接插进锚点位置（children 挂锚点下、siblings 排在
   // 锚点后面），排版交给布局引擎；Tab 整体确认（原地清幽灵样式，转入正式
   // 保存）、Esc/多选或取消选中丢弃。幽灵未确认期间暂停自动保存——
-  // 文档不落幽灵状态。
-
-  const GHOST_STYLE = { fillColor: "#e9edf1", color: "#8a939e" };
+  // 文档不落幽灵状态。板聊建议（applyChatProposal）共用同一套机制。
 
   function cancelCompletionTimers(): void {
     completionAbortRef.current?.abort();
@@ -909,6 +982,8 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
       const result = await boardsApi.completeBoard(mapId, {
         anchor_uid: anchorUid,
         anchor_text: anchorText,
+        // Ctrl+I 只补锚点下的子节点（兄弟级建议易与同父已选项混淆，不适用此入口）。
+        direction: "children",
       });
       if (controller.signal.aborted) return;
       const anchor = findCanvasNode(anchorUid);
@@ -918,43 +993,17 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
       }
       const batch = `gc${Date.now().toString(36)}`;
       const ghostUids: string[] = [];
-      // kind 语义 → 富文本卡片数据：LLM 只出语义（code/markdown 源码），
-      // 富文本 HTML 由本地渲染管线生成（buildCodeBlockHtml / renderMdCardHtml）。
-      const buildGhostData = (s: (typeof result.children)[number], uid: string): Record<string, unknown> => {
-        if (s.kind === "code" && s.code) {
-          return {
-            text: buildCodeBlockHtml(s.code, s.language || "text"),
-            richText: true,
-            customTextWidth: estimateCodeNodeWidth(s.code),
-            uid,
-            ghostBatch: batch,
-            ...GHOST_STYLE,
-          };
-        }
-        if (s.kind === "md" && s.markdown) {
-          return {
-            text: renderMdCardHtml(s.markdown),
-            richText: true,
-            mdSource: s.markdown,
-            customTextWidth: Math.min(560, Math.max(340, estimateCodeNodeWidth(s.markdown))),
-            uid,
-            ghostBatch: batch,
-            ...GHOST_STYLE,
-          };
-        }
-        return { text: s.text, uid, ghostBatch: batch, ...GHOST_STYLE };
-      };
       const childList = result.children.map((s, i) => {
         const uid = `${batch}c${i}`;
         ghostUids.push(uid);
-        return { data: buildGhostData(s, uid), children: [] };
+        return { data: buildGhostNodeData(s, uid, batch), children: [] };
       });
       const siblingList = anchor.isRoot
         ? []
         : result.siblings.map((s, i) => {
             const uid = `${batch}s${i}`;
             ghostUids.push(uid);
-            return { data: buildGhostData(s, uid), children: [] };
+            return { data: buildGhostNodeData(s, uid, batch), children: [] };
           });
 
       ghostModeRef.current = true; // 插入引发的 data_change 在幽灵模式内不落盘
@@ -1024,10 +1073,180 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // 卸载时清掉补全的在途请求。
+  // ── 板聊建议 → 幽灵节点（与 Ctrl+I 补全共用插入/确认机制）──────
+
+  /**
+   * 板聊目标（锚点/删除）统一解析：先归一化精确匹配；失败且候选以「…」
+   * 结尾（大板子大纲截断）时按去省略号前缀唯一匹配。多命中一律拒绝，
+   * 让用户在画布上手动选择——绝不猜测。
+   */
+  function resolveTargetUid(rawText: string): { uid: string | null; error: string | null } {
+    const doc = docRef.current;
+    if (doc === null) return { uid: null, error: "画布尚未就绪，请稍候再试" };
+    const wanted = normalizeNodeText(rawText);
+    if (wanted === "") return { uid: null, error: "目标文本为空" };
+    const exact: string[] = [];
+    const prefix: string[] = [];
+    const walk = (node: MindMapNodeData): void => {
+      const nodeText = normalizeNodeText(String(node.data.text ?? ""));
+      const uid = String(node.data.uid ?? "");
+      if (nodeText === wanted) {
+        if (uid !== "") exact.push(uid);
+      } else if (wanted.endsWith("…") && nodeText.startsWith(wanted.slice(0, -1))) {
+        if (uid !== "") prefix.push(uid);
+      }
+      for (const child of node.children ?? []) walk(child);
+    };
+    walk(doc.root);
+    const shown = wanted.length > 16 ? `${wanted.slice(0, 16)}…` : wanted;
+    if (exact.length === 1) return { uid: exact[0], error: null };
+    if (exact.length > 1) return { uid: null, error: `存在 ${exact.length} 个同名节点「${shown}」，请在画布上手动选择` };
+    if (prefix.length === 1) return { uid: prefix[0], error: null };
+    if (prefix.length > 1) return { uid: null, error: `前缀匹配到多个节点「${shown}」，请在画布上手动选择` };
+    return { uid: null, error: `未找到节点「${shown}」，需与节点文本一致（可从大纲逐字复制）` };
+  }
+
+  /**
+   * 按 uid 找画布实例；uid 在文档里但实例不存在（所在分支被折叠，渲染树
+   * 里没有该节点）时全部展开后重试一次。
+   */
+  function findCanvasNodeExpandable(uid: string): MindMapNodeInstance | null {
+    const instance = instanceRef.current;
+    if (instance === null) return null;
+    const node = instance.renderer.findNodeByUid(uid);
+    if (node !== null) return node;
+    exec("EXPAND_ALL");
+    return instance.renderer.findNodeByUid(uid);
+  }
+
+  /**
+   * 板聊「插入画布」：把建议节点以幽灵样式插到锚点位置（anchor_text 匹配
+   * 现有节点；空串 = 根节点），随后由既有的 Tab（确认）/ Esc（丢弃）接管，
+   * 确认后走正常防抖保存。返回 null = 成功，否则为面板展示的错误说明。
+   * anchorHint = 本回合用户选中节点的 {uid, text}：建议锚点与之文本一致时
+   * 按 uid 直取，绕过整树同名文本的歧义（文本匹配只作兜底）。
+   */
+  function applyChatProposal(
+    proposal: BoardProposal,
+    anchorHint?: { uid: string; text: string }
+  ): string | null {
+    const instance = instanceRef.current;
+    if (instance === null || docRef.current === null) return "画布尚未就绪，请稍候再试";
+    if (ghostModeRef.current || completionRef.current !== null) {
+      // 已有幽灵批次：新建议直接替换旧批（同 Ctrl+I 语义；幽灵从未落盘，无数据丢失）。
+      discardGhostNodes();
+    }
+    if (proposal.children.length === 0 && proposal.siblings.length === 0) return "建议内容为空";
+    const anchorText = proposal.anchor_text.trim();
+    let anchorCandidate: MindMapNodeInstance | null;
+    const hintText = normalizeNodeText(anchorHint?.text ?? "");
+    if (anchorText === "") {
+      anchorCandidate = instance.renderer.root ?? null;
+    } else if (
+      anchorHint !== undefined &&
+      anchorHint.uid !== "" &&
+      hintText !== "" &&
+      hintText === normalizeNodeText(anchorText)
+    ) {
+      // 本回合选中的节点：uid 直取（同名文本在树上别处出现也不再误锚）。
+      anchorCandidate = findCanvasNodeExpandable(anchorHint.uid);
+    } else {
+      const resolved = resolveTargetUid(anchorText);
+      if (resolved.error !== null) return resolved.error;
+      anchorCandidate = findCanvasNodeExpandable(resolved.uid ?? "");
+    }
+    if (anchorCandidate === null) {
+      const shown = anchorText.length > 16 ? `${anchorText.slice(0, 16)}…` : anchorText;
+      return `节点「${shown}」不在当前画布上（可能所在分支折叠后未恢复），请手动展开后重试`;
+    }
+    // const 中转保住非空窄化：下面的 map 回调里也要引用 anchor。
+    const anchor: MindMapNodeInstance = anchorCandidate;
+    const batch = `gchat${Date.now().toString(36)}`;
+    const ghostUids: string[] = [];
+    const childList = proposal.children.map((s, i) => {
+      const uid = `${batch}c${i}`;
+      ghostUids.push(uid);
+      return { data: buildGhostNodeData(s, uid, batch), children: [] };
+    });
+    const siblingList = anchor.isRoot
+      ? []
+      : proposal.siblings.map((s, i) => {
+          const uid = `${batch}s${i}`;
+          ghostUids.push(uid);
+          return { data: buildGhostNodeData(s, uid, batch), children: [] };
+        });
+    if (childList.length === 0 && siblingList.length === 0) return "没有可插入的节点";
+
+    ghostModeRef.current = true; // 插入引发的 data_change 在幽灵模式内不落盘
+    // smm 的 INSERT_MULTI_CHILD_NODE 会跳过 root（isRoot 直接 return，静默
+    // 空操作）；root 锚点必须逐个走支持 root 的 INSERT_CHILD_NODE，否则
+    // 「挂载在中心主题」的建议一张卡片弹了、画布上一个节点都没有。
+    if (childList.length > 0) {
+      if (anchor.isRoot) {
+        for (const child of childList) exec("INSERT_CHILD_NODE", false, [anchor], null, [child]);
+      } else {
+        exec("INSERT_MULTI_CHILD_NODE", [anchor], childList);
+      }
+    }
+    if (siblingList.length > 0) exec("INSERT_MULTI_NODE", [anchor], siblingList);
+    setCompletion({
+      anchorUid: String(anchor.getData("uid") ?? ""),
+      anchorText: stripHtmlTags(String(anchor.getData("text") ?? "")).trim(),
+      loading: false,
+      ghostUids,
+    });
+    return null;
+  }
+
+  /**
+   * 板聊「建议删除」执行入口：按纯文本定位节点并 REMOVE_NODE。用户已在面板
+   * 逐项二次确认，这里是唯一执行路径；删除随 data_change 走正常防抖保存。
+   * 返回 null = 成功，否则为面板展示的错误说明。
+   */
+  function applyChatDeletion(targetText: string): string | null {
+    const instance = instanceRef.current;
+    if (instance === null) return "画布尚未就绪，请稍候再试";
+    const resolved = resolveTargetUid(targetText);
+    if (resolved.error !== null) return resolved.error;
+    const uid = resolved.uid ?? "";
+    const rootUid = String(docRef.current?.root.data.uid ?? "");
+    if (uid === rootUid) return "中心主题不可删除";
+    if (ghostModeRef.current || completionRef.current !== null) {
+      // 幽灵批次从未落盘，直接清掉再删，避免同画布操作互相混淆。
+      discardGhostNodes();
+    }
+    const node = findCanvasNodeExpandable(uid);
+    if (node === null) return "节点不在当前画布上（可能所在分支折叠后未恢复），请手动展开后重试";
+    exec("REMOVE_NODE", [node]);
+    return null;
+  }
+
+  /**
+   * 板聊「建议修改」执行入口：按纯文本定位节点并 SET_NODE_TEXT。用户已在
+   * 面板逐项二次确认；变更随 data_change 走正常防抖保存。
+   * 返回 null = 成功，否则为面板展示的错误说明。
+   */
+  function applyChatUpdate(targetText: string, nextText: string): string | null {
+    const instance = instanceRef.current;
+    if (instance === null) return "画布尚未就绪，请稍候再试";
+    const next = nextText.trim();
+    if (next === "") return "新文本为空";
+    const resolved = resolveTargetUid(targetText);
+    if (resolved.error !== null) return resolved.error;
+    if (ghostModeRef.current || completionRef.current !== null) {
+      discardGhostNodes();
+    }
+    const node = findCanvasNodeExpandable(resolved.uid ?? "");
+    if (node === null) return "节点不在当前画布上（可能所在分支折叠后未恢复），请手动展开后重试";
+    exec("SET_NODE_TEXT", node, next);
+    return null;
+  }
+
+  // 卸载时清掉补全的在途请求与 doc 镜像的挂起计时器。
   useEffect(
     () => () => {
       completionAbortRef.current?.abort();
+      if (docMirrorTimerRef.current !== null) window.clearTimeout(docMirrorTimerRef.current);
     },
     []
   );
@@ -1326,18 +1545,17 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
     setExporting("html");
     try {
       // 桌面端经 Vite ?raw 把 UMD 全量包（约 7MB）内嵌进导出的交互式 HTML；
-      // Turbopack 无 ?raw，改为 prebuild 时把 UMD/CSS 拷进 public/
+      // Turbopack 无 ?raw，改为 prebuild 时把 UMD 拷进 public/
       // （scripts/copy-smm-umd.mjs），导出时同源 fetch 取文本再拼接。
-      const [umdRes, cssRes] = await Promise.all([
-        fetch("/simple-mind-map/simpleMindMap.umd.min.js"),
-        fetch("/simple-mind-map/simpleMindMap.esm.min.css"),
-      ]);
-      if (!umdRes.ok || !cssRes.ok) {
+      // 库自带 esm.min.css 是 quill 编辑器样式且 UMD 已运行时注入，不内嵌；
+      // 卡片排版样式由 exportHtml.ts 内嵌（见 EXPORT_CARD_CSS）。
+      const umdRes = await fetch("/simple-mind-map/simpleMindMap.umd.min.js");
+      if (!umdRes.ok) {
         throw new Error("导出组件资源缺失（public/simple-mind-map/），请重新构建前端");
       }
-      const [umdSource, cssSource] = await Promise.all([umdRes.text(), cssRes.text()]);
+      const umdSource = await umdRes.text();
       const doc = instance.getData(true);
-      const html = buildInteractiveHtml(titleRef.current || "思维导图", doc, umdSource, cssSource);
+      const html = buildInteractiveHtml(titleRef.current || "思维导图", doc, umdSource);
       const path = await saveMindMapExport(
         `导图-${titleRef.current || "未命名"}`,
         "html",
@@ -1665,9 +1883,17 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
             const instance = instanceRef.current;
             if (instance !== null) {
               const snapshot = instance.getData(true);
+              // refs 即时更新：自动保存/板聊匹配/导出永远读最新文档。
               latestDocRef.current = snapshot;
-              // doc 状态同步镜像最新文档，大纲面板等内容随之实时刷新。
-              setDoc(snapshot);
+              docRef.current = snapshot;
+              // doc state 防抖镜像：每个键击都 setDoc 会让大纲树重建 +
+              // React 全量 diff 随节点数线性膨胀（大板子打字卡顿的主因）。
+              // 大纲面板 150ms 内追平，肉眼无感。
+              if (docMirrorTimerRef.current !== null) window.clearTimeout(docMirrorTimerRef.current);
+              docMirrorTimerRef.current = window.setTimeout(() => {
+                docMirrorTimerRef.current = null;
+                setDoc(latestDocRef.current);
+              }, DOC_MIRROR_DEBOUNCE_MS);
             }
             // 幽灵模式内（建议未确认）只镜像不落盘；补全只由 Ctrl+I /
             // 节点右键菜单手动触发，不随写入自动出建议。
@@ -1678,6 +1904,16 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
           onActiveChange={(list) => {
             activeNodesRef.current = list;
             setActiveCount(list.length);
+            // 板聊锚点上下文：单选时取该节点纯文本（截断到请求上限），
+            // 多选/取消选择时清空。
+            if (list.length === 1) {
+              const text = stripHtmlTags(String(list[0].getData("text") ?? "")).trim();
+              setActiveAnchorText(text === "" ? "" : text.slice(0, 200));
+              setActiveAnchorUid(String(list[0].getData("uid") ?? ""));
+            } else {
+              setActiveAnchorText("");
+              setActiveAnchorUid("");
+            }
             // 选中不再自动出补全（Ctrl+I / 右键菜单手动触发，省 token）；
             // 多选/取消选择时收起现有幽灵建议。
             if (list.length !== 1) discardGhostNodes();
@@ -1826,11 +2062,37 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
         <BoardChatPanel
           boardUuid={mapId}
           boardTitle={titleRef.current || "未命名板子"}
+          selectedAnchorText={activeAnchorText}
+          selectedAnchorUid={activeAnchorUid}
+          onInsertProposal={applyChatProposal}
+          onApplyDeletion={applyChatDeletion}
+          onApplyUpdate={applyChatUpdate}
           onClose={() => setBoardChatOpen(false)}
         />
       )}
       {completion !== null && completion.loading && (
         <div className="mm-complete-hint-chip">AI 补全中…</div>
+      )}
+      {completion !== null && !completion.loading && completion.ghostUids.length > 0 && (
+        <div className="mm-complete-card" role="dialog" aria-label="建议节点确认">
+          <div className="mm-complete-head">
+            <span className="mm-complete-title">
+              待确认建议 · {completion.ghostUids.length} 个新节点
+            </span>
+          </div>
+          <div className="mm-complete-anchor">
+            挂载在「{completion.anchorText || "中心主题"}
+            {completion.anchorText.length > 16 ? "…" : ""}」
+          </div>
+          <div className="mm-complete-actions">
+            <button type="button" className="mm-complete-confirm" onClick={confirmGhost}>
+              确认入图 <kbd>Tab</kbd>
+            </button>
+            <button type="button" className="mm-complete-dismiss" onClick={discardGhostNodes}>
+              丢弃 <kbd>Esc</kbd>
+            </button>
+          </div>
+        </div>
       )}
       {infoDialog !== null && (
         <NodeInfoDialog

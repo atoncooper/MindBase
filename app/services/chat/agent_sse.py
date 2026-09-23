@@ -2,15 +2,23 @@
 
 Wraps ``CompiledGraph.astream_events(version="v2")`` so the
 orchestrator can yield the SSE protocol the frontend already speaks
-(``chunk`` / ``step`` / ``sources`` / ``done`` / ``error``) directly
-from the ``AgentHarness`` ReAct chat agent.
+(``chunk`` / ``reasoning`` / ``step`` / ``sources`` / ``done`` / ``error``)
+directly from the ``AgentHarness`` ReAct agents.
 
 The agent emits LangChain v2 events; we translate the relevant ones:
 
-* ``on_chat_model_stream`` → ``chunk`` (content delta)
-* ``on_tool_start``        → ``step`` (action=name, query=primary arg)
-* ``on_tool_end``          → ``step`` (with content_preview / sources)
-* ``on_chain_end`` (root)  → emit collected ``sources`` + ``done``
+* ``on_chat_model_stream`` → ``chunk`` (content delta) and ``reasoning``
+  (reasoning_content delta from thinking models)
+* ``on_chat_model_start``  → reset/replay bookkeeping between LLM runs
+* ``on_chat_model_end``    → ``step`` frames announcing tool calls the LLM
+  just decided on
+* ``on_chain_end`` (node)  → ``step`` frames with tool results (the tools
+  run inside ``AgentRuntime`` via direct ``tool.run()``, so no
+  ``on_tool_*`` events ever fire — node boundaries are the reliable
+  completion signal)
+* ``on_chain_end`` (root)  → emit collected ``sources`` + ``done``; a
+  final-state ``error`` (agent fell back after retries) is surfaced as an
+  ``error`` frame instead of being silently dropped.
 """
 
 from __future__ import annotations
@@ -45,6 +53,35 @@ def _primary_query(args: dict[str, Any] | None) -> str:
     return ""
 
 
+def _tool_calls_of(output: Any) -> list[dict]:
+    """Extract ``[{id, name, args}]`` from a model-end output message.
+
+    Handles both aggregated ``AIMessage.tool_calls`` and streamed
+    ``tool_call_chunks`` (args arrive as a JSON string there).
+    """
+    calls = getattr(output, "tool_calls", None) or []
+    result: list[dict] = []
+    for tc in calls:
+        if isinstance(tc, dict) and tc.get("name"):
+            result.append({"id": str(tc.get("id") or ""), "name": tc["name"], "args": tc.get("args") or {}})
+    if result:
+        return result
+    for c in getattr(output, "tool_call_chunks", None) or []:
+        if not isinstance(c, dict):
+            continue
+        raw_args = c.get("args")
+        args: Any = {}
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args) if raw_args else {}
+            except ValueError:
+                args = {}
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        result.append({"id": str(c.get("id") or c.get("index") or ""), "name": c.get("name") or "tool_call", "args": args})
+    return result
+
+
 def _parse_tool_output(output: Any) -> tuple[list[dict], str, list[dict]]:
     """Return ``(sources, preview, artifacts)`` from a tool's output payload.
 
@@ -58,9 +95,14 @@ def _parse_tool_output(output: Any) -> tuple[list[dict], str, list[dict]]:
     # extras: sub_steps / sources / artifacts). Re-merge so the parsing
     # below works uniformly for ToolMessage and raw dict/str payloads.
     payload: Any = output
+    preview_override: Optional[str] = None
     if isinstance(output, ToolMessage):
         extras = getattr(output, "additional_kwargs", None) or {}
-        payload = {"content": getattr(output, "content", ""), **extras}
+        content = getattr(output, "content", "")
+        payload = {"content": content, **extras}
+        # The human-facing preview is the tool's text result, not the
+        # re-merged JSON dump.
+        preview_override = content if isinstance(content, str) else None
     elif isinstance(payload, str):
         try:
             payload = json.loads(payload)
@@ -96,7 +138,8 @@ def _parse_tool_output(output: Any) -> tuple[list[dict], str, list[dict]]:
 
     # Use the normalized payload (dict/str), not the raw ``output`` which may
     # be a ToolMessage that isn't JSON-serializable (crashes _content_preview).
-    return sources, _content_preview(payload), artifacts
+    preview_value = preview_override if preview_override is not None else payload
+    return sources, _content_preview(preview_value), artifacts
 
 
 class AgentSSEStreamer:
@@ -115,19 +158,36 @@ class AgentSSEStreamer:
         # Binary artifacts (e.g. images) emitted by sub-agents; flushed as
         # ``type:artifact`` frames near the end of the stream.
         self.artifacts: list[dict] = []
+        # Reasoning stream (reasoning models emit ``reasoning_content`` on
+        # chunk deltas); streamed to the client but NOT part of the answer.
+        self.reasoning_content: str = ""
         # Token usage accumulated from the final agent state.
         self.total_tokens: int = 0
         self.prompt_tokens: int = 0
         self.completion_tokens: int = 0
         self.llm_calls: int = 0
         self._step_no = 0
-        self._tool_runs: dict[str, dict[str, Any]] = {}
         self._root_run_name: str = ""
+        # LLM run lifecycle, used to distinguish a legitimate ReAct
+        # continuation (LLM ran → tools ran → LLM runs again) from a retry
+        # (error_node re-ran the LLM after a failure).
+        self._run_start_content: str = ""
+        self._run_start_reasoning: str = ""
+        self._run_in_flight: bool = False
+        self._run_completed: bool = False
+        self._run_had_tool_calls: bool = False
+        # Tool calls announced by on_chat_model_end, awaiting completion at
+        # the next node boundary. Keyed by tool_call_id.
+        self._open_tool_calls: dict[str, dict[str, Any]] = {}
         # Error tracking: when stream() swallows an exception, these let the
         # orchestrator fail_turn instead of finalize_turn (which would persist
-        # a partial answer as a successful message).
+        # a partial answer as a successful message). graph_error covers the
+        # silent-fallback path: the graph completes normally but its final
+        # state carries ``error`` (fallback result) — previously that text
+        # was dropped and the client just saw the stream end mid-answer.
         self.had_error: bool = False
         self.error_message: str = ""
+        self.graph_error: str = ""
 
     async def stream(
         self,
@@ -144,27 +204,29 @@ class AgentSSEStreamer:
             ):
                 kind = event.get("event", "")
                 event_counts[kind] = event_counts.get(kind, 0) + 1
-                frame: Optional[str] = None
+                frames: Optional[list[str]] = None
 
                 if kind == "on_chat_model_stream":
-                    frame = self._handle_token(event)
+                    frames = self._handle_token(event)
                 elif kind == "on_chat_model_start":
-                    frame = self._handle_model_start(event)
-                elif kind == "on_tool_start":
-                    frame = self._handle_tool_start(event)
-                elif kind == "on_tool_end":
-                    frame = self._handle_tool_end(event)
-                elif kind == "on_chain_end" and event.get("name") == self._root_run_name:
-                    self._capture_root_output(event)
+                    frames = self._handle_model_start(event)
+                elif kind == "on_chat_model_end":
+                    frames = self._handle_model_end(event)
+                elif kind == "on_chain_end":
+                    if event.get("name") == self._root_run_name:
+                        self._capture_root_output(event)
+                    else:
+                        frames = self._handle_node_end(event)
 
-                if frame is not None:
+                for frame in frames or []:
                     yield frame
 
             logger.info(
-                "[SSE_STREAMER] event_counts={} content_chars={} token_events={}",
+                "[SSE_STREAMER] event_counts={} content_chars={} token_events={} reasoning_chars={}",
                 event_counts,
                 len(self.full_content),
                 event_counts.get("on_chat_model_stream", 0),
+                len(self.reasoning_content),
             )
             # Flush artifacts (e.g. images produced by the code agent) before
             # sources/done so the frontend can render them inline with the
@@ -172,6 +234,28 @@ class AgentSSEStreamer:
             for art in self.artifacts:
                 yield sse_event({"type": "artifact", "artifact": art})
             yield sse_event({"type": "sources", "sources": self.sources[:5]})
+            if self.graph_error:
+                # The graph completed but ended in a fallback (error_node
+                # exhausted retries / circuit breaker). Surface the fallback
+                # text to the client instead of letting the stream end as if
+                # the answer were done.
+                self.had_error = True
+                self.error_message = self.graph_error
+                yield sse_event({"type": "error", "message": self.graph_error})
+            elif not self.full_content.strip():
+                # The agent finished "successfully" but produced no answer
+                # text (e.g. the model emitted only reasoning). Ending here
+                # used to look like a normal done with an empty reply, which
+                # was then persisted to history as a successful message.
+                self.had_error = True
+                self.error_message = "模型未返回有效内容，请重试"
+                logger.warning(
+                    "[SSE_STREAMER] empty answer: graph completed with no content "
+                    "(reasoning_chars={} tokens={})",
+                    len(self.reasoning_content),
+                    self.total_tokens,
+                )
+                yield sse_event({"type": "error", "message": self.error_message})
             yield sse_event({"type": "done"})
         except Exception as exc:
             logger.exception("Agent SSE stream failed")
@@ -179,25 +263,147 @@ class AgentSSEStreamer:
             self.error_message = str(exc)
             yield sse_event({"type": "error", "message": str(exc)})
 
-    def _handle_model_start(self, event: dict[str, Any]) -> Optional[str]:
-        """Reset accumulated content when a new LLM call begins mid-stream.
+    def _handle_model_start(self, event: dict[str, Any]) -> Optional[list[str]]:
+        """Bookkeeping between consecutive LLM runs of the ReAct loop.
 
-        A second ``on_chat_model_start`` after content has already been
-        accumulated means the graph is re-running the LLM (e.g. a retryable
-        "peer closed connection" error triggered error_node -> agent). Without
-        a reset, the retry's tokens append to the partial first attempt,
-        producing garbled half+duplicate content both streamed to the client
-        and persisted. Emit a ``reset`` frame so the client clears its bubble,
-        and zero ``full_content`` so only the retried (complete) answer is
-        persisted.
+        Two distinct situations produce a new ``on_chat_model_start`` after
+        content has been streamed:
+
+        * Normal continuation: the previous run ended by requesting tool
+          calls and those tools have run. Its text is a preamble worth
+          keeping, so the next run's tokens simply append (with a blank
+          line separator).
+        * A retry: error_node re-ran the LLM after a failure (or the model
+          re-ran after finishing). The failed run's partial text must be
+          discarded, otherwise the retry's tokens append to the garbled
+          half answer. Emit ``reset`` and replay the content from before
+          the failed run so the client keeps earlier preambles.
         """
-        if self.full_content:
-            self.full_content = ""
-            return sse_event({"type": "reset"})
-        return None
+        frames: list[str] = []
+        if self._run_in_flight or (self._run_completed and not self._run_had_tool_calls):
+            # Previous run errored mid-stream (no on_chat_model_end), or it
+            # completed with a plain answer yet another call follows — both
+            # mean a retry with stale partial text in flight.
+            prev_start_content = self._run_start_content
+            if self.full_content != prev_start_content:
+                frames.append(sse_event({"type": "reset"}))
+                self.full_content = prev_start_content
+                self.reasoning_content = self._run_start_reasoning
+                if prev_start_content:
+                    frames.append(sse_event({"type": "chunk", "content": prev_start_content}))
+        elif self._run_had_tool_calls and self.full_content:
+            # Normal continuation after tools: separate the preamble from
+            # the next segment with a blank line.
+            frames.append(sse_event({"type": "chunk", "content": "\n\n"}))
+            self.full_content += "\n\n"
+
+        # Snapshot for the run that is starting.
+        self._run_start_content = self.full_content
+        self._run_start_reasoning = self.reasoning_content
+        self._run_in_flight = True
+        self._run_completed = False
+        self._run_had_tool_calls = False
+        return frames
+
+    def _handle_model_end(self, event: dict[str, Any]) -> Optional[list[str]]:
+        """Close out an LLM run; announce tool calls it decided on.
+
+        Tool start frames are derived here (not from ``on_tool_start``,
+        which never fires because AgentRuntime invokes tools via direct
+        ``tool.run()``), so the client sees what the agent is about to do
+        while the tool executes.
+        """
+        output = event.get("data", {}).get("output")
+        self._run_completed = True
+        self._run_in_flight = False
+        calls = _tool_calls_of(output)
+        self._run_had_tool_calls = bool(calls)
+
+        frames: list[str] = []
+        for tc in calls:
+            if not tc.get("id"):
+                continue
+            self._step_no += 1
+            self._open_tool_calls[tc["id"]] = {
+                "step": self._step_no,
+                "name": tc["name"],
+                "query": _primary_query(tc.get("args") or {}),
+            }
+            frames.append(
+                sse_event(
+                    {
+                        "type": "step",
+                        "step": {
+                            "step": self._step_no,
+                            "action": tc["name"],
+                            "query": self._open_tool_calls[tc["id"]]["query"],
+                            "reasoning": "",
+                            "sources": [],
+                            "content_preview": "",
+                        },
+                    }
+                )
+            )
+        return frames
+
+    def _handle_node_end(self, event: dict[str, Any]) -> Optional[list[str]]:
+        """Emit completion steps for tools whose results arrived at a node
+        boundary (``runtime_dispatch`` returns the ToolMessages).
+
+        Any non-root ``on_chain_end`` whose output carries ToolMessages
+        matching an announced tool_call_id counts as completion; the
+        tool_call_id lookup makes duplicate state snapshots harmless.
+        """
+        output = event.get("data", {}).get("output")
+        if not isinstance(output, dict):
+            return None
+        messages = output.get("messages")
+        if not isinstance(messages, list):
+            return None
+
+        frames: list[str] = []
+        for msg in messages:
+            if not isinstance(msg, ToolMessage):
+                continue
+            record = self._open_tool_calls.pop(msg.tool_call_id, None)
+            if record is None:
+                continue
+            try:
+                srcs, preview, arts = _parse_tool_output(msg)
+            except Exception as exc:
+                logger.warning("[SSE_STREAMER] skip unparseable ToolMessage: %s", exc)
+                srcs, preview, arts = [], "", []
+            for src in srcs:
+                if src not in self.sources:
+                    self.sources.append(src)
+            for art in arts:
+                key = art.get("minio_key") or art.get("url") or art.get("name")
+                if key and any(
+                    (a.get("minio_key") or a.get("url") or a.get("name")) == key
+                    for a in self.artifacts
+                ):
+                    continue
+                self.artifacts.append(art)
+            frames.append(
+                sse_event(
+                    {
+                        "type": "step",
+                        "step": {
+                            "step": record["step"],
+                            "action": record["name"],
+                            "query": record["query"],
+                            "reasoning": "",
+                            "sources": srcs,
+                            "content_preview": preview,
+                        },
+                    }
+                )
+            )
+        return frames
 
     def _capture_root_output(self, event: dict[str, Any]) -> None:
-        """Extract token usage + sources + artifacts from the root graph's final state.
+        """Extract token usage + sources + artifacts + fallback error from the
+        root graph's final state.
 
         The root ``on_chain_end`` event carries ``data.output`` which is the
         full agent state dict, including the ``messages`` list.  Each AI
@@ -205,16 +411,29 @@ class AgentSSEStreamer:
         non-streaming ``ainvoke`` inside ReAct).
 
         Sources and artifacts are recovered here from the final ToolMessages
-        because ``AgentRuntime.execute()`` calls ``tool.run()`` directly
-        (not via LangChain's callback-aware tool invocation), so ``on_tool_*``
-        events are never emitted and ``_handle_tool_end`` never fires.
-        Iterating the final ToolMessages - incl. delegated sub-agent
-        ``sub_steps`` (parsed by ``_parse_tool_output``) - is the only
-        reliable way to surface them to the SSE stream.
+        as a safety net in case node-boundary events were missed (e.g. an
+        agent graph without a ``runtime_dispatch`` node).
         """
         output = event.get("data", {}).get("output")
         if not isinstance(output, dict):
             return
+
+        # A fallback that ran out of retries leaves ``error`` set in the final
+        # state with ``result`` = the user-facing fallback text. Previously
+        # this text never reached the client — the stream just ended.
+        state_error = output.get("error")
+        if state_error:
+            self.graph_error = str(output.get("result") or "Agent 执行失败，请稍后重试")
+
+        # Defense in depth: terminal nodes used to clear ``error`` (their
+        # wrapper setdefaulted it to "") while keeping the fallback
+        # ``result``. A final-state result that was never streamed — no LLM
+        # token ever reached full_content — must still reach the client as
+        # an error frame instead of dying in the state.
+        if not self.graph_error and not self.full_content.strip():
+            result_text = str(output.get("result") or "").strip()
+            if result_text:
+                self.graph_error = result_text
 
         messages = output.get("messages")
         if not isinstance(messages, list) or not messages:
@@ -236,9 +455,8 @@ class AgentSSEStreamer:
             )
 
         # Recover sources + artifacts from the final ToolMessages. This is
-        # the ONLY reliable extraction path: _handle_tool_end never fires
-        # because AgentRuntime executes tools via direct tool.run() (no
-        # on_tool_* events). _parse_tool_output handles both direct tools
+        # the ONLY reliable extraction path when node-boundary events did
+        # not fire; _parse_tool_output handles both direct tools
         # (top-level sources/artifacts) and delegated sub-agents (nested in
         # sub_steps, e.g. code agent's run_code artifacts).
         for msg in messages:
@@ -272,70 +490,25 @@ class AgentSSEStreamer:
 
     # ── handlers ─────────────────────────────────────────────────────
 
-    def _handle_token(self, event: dict[str, Any]) -> Optional[str]:
+    def _handle_token(self, event: dict[str, Any]) -> Optional[list[str]]:
+        """Split a model stream chunk into ``reasoning`` and ``chunk`` frames.
+
+        Reasoning models deliver thinking deltas in
+        ``additional_kwargs.reasoning_content``; they stream to the client
+        as ``type:reasoning`` frames (rendered in a collapsed block) and
+        are never mixed into the answer text.
+        """
         chunk = event.get("data", {}).get("chunk")
-        text = getattr(chunk, "content", "") if chunk is not None else ""
-        if not text:
+        if chunk is None:
             return None
-        self.full_content += text
-        return sse_event({"type": "chunk", "content": text})
-
-    def _handle_tool_start(self, event: dict[str, Any]) -> Optional[str]:
-        run_id = event.get("run_id") or ""
-        name = event.get("name", "tool_call")
-        args = event.get("data", {}).get("input") or {}
-        if not isinstance(args, dict):
-            args = {}
-
-        self._step_no += 1
-        self._tool_runs[run_id] = {"step": self._step_no, "name": name}
-
-        return sse_event(
-            {
-                "type": "step",
-                "step": {
-                    "step": self._step_no,
-                    "action": name,
-                    "query": _primary_query(args),
-                    "reasoning": "",
-                    "sources": [],
-                    "content_preview": "",
-                },
-            }
-        )
-
-    def _handle_tool_end(self, event: dict[str, Any]) -> Optional[str]:
-        run_id = event.get("run_id") or ""
-        tracked = self._tool_runs.pop(run_id, None)
-        output = event.get("data", {}).get("output")
-        sources, preview, artifacts = _parse_tool_output(output)
-        for src in sources:
-            if src not in self.sources:
-                self.sources.append(src)
-        for art in artifacts:
-            # Dedup by minio_key/url/name so a retried run_code doesn't
-            # double-render the same artifact.
-            key = art.get("minio_key") or art.get("url") or art.get("name")
-            if key and any(
-                (a.get("minio_key") or a.get("url") or a.get("name")) == key
-                for a in self.artifacts
-            ):
-                continue
-            self.artifacts.append(art)
-
-        step_no = tracked["step"] if tracked else self._step_no
-        action = tracked["name"] if tracked else event.get("name", "tool_call")
-
-        return sse_event(
-            {
-                "type": "step",
-                "step": {
-                    "step": step_no,
-                    "action": action,
-                    "query": "",
-                    "reasoning": "",
-                    "sources": sources,
-                    "content_preview": preview,
-                },
-            }
-        )
+        frames: list[str] = []
+        kwargs = getattr(chunk, "additional_kwargs", None) or {}
+        reasoning = kwargs.get("reasoning_content") or kwargs.get("reasoning") or ""
+        if isinstance(reasoning, str) and reasoning:
+            self.reasoning_content += reasoning
+            frames.append(sse_event({"type": "reasoning", "content": reasoning}))
+        text = getattr(chunk, "content", "")
+        if text:
+            self.full_content += text
+            frames.append(sse_event({"type": "chunk", "content": text}))
+        return frames or None

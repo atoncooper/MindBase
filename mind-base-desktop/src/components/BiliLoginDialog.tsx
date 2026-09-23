@@ -70,7 +70,7 @@ function BiliLoginDialog({ onClose, onSuccess }: BiliLoginDialogProps) {
           await QRCode.toCanvas(canvasRef.current, start.qrUrl, {
             width: 220,
             margin: 1,
-            color: { dark: "#1f1f1e", light: "#ffffff" },
+            color: { dark: "#0d0d0d", light: "#ffffff" },
           });
         }
         timer = window.setInterval(() => {

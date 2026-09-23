@@ -26,7 +26,12 @@ from typing import Optional
 from langchain_openai import ChatOpenAI
 
 from app.services.llm.providers import resolve_llm_config
+from app.services.llm.reasoning_patch import install_reasoning_capture
 from app.services.llm.usage_tracker import attach_usage_tracking
+
+# Same rationale as app.services.chat.llm: keep thinking-model reasoning
+# deltas alive for any consumer that surfaces them (agent SSE streamer).
+install_reasoning_capture()
 
 
 def build_platform_llm(

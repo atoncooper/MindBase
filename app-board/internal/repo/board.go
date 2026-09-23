@@ -78,6 +78,27 @@ func (r *BoardRepo) UpdatePin(ctx context.Context, uid int64, uuid string, pinne
 	return r.GetByUUID(ctx, uid, uuid)
 }
 
+// TitleExists reports whether another non-deleted board of the same uid+kind
+// already carries the title (exact match). excludeUUID skips the board being
+// renamed itself; empty kind matches any kind. Check-then-insert is not
+// atomic — acceptable at this scale (single-user UI flows), a true guard
+// would need a nullable deleted_at + unique index.
+func (r *BoardRepo) TitleExists(ctx context.Context, uid int64, kind, title, excludeUUID string) (bool, error) {
+	q := r.DB.WithContext(ctx).Model(&model.Board{}).Where(
+		"uid = ? AND deleted = false AND title = ?", uid, title)
+	if kind != "" {
+		q = q.Where("kind = ?", kind)
+	}
+	if excludeUUID != "" {
+		q = q.Where("uuid <> ?", excludeUUID)
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return false, fmt.Errorf("count boards by title: %w", err)
+	}
+	return count > 0, nil
+}
+
 // SoftDelete marks the row deleted (Mongo body kept for recovery).
 func (r *BoardRepo) SoftDelete(ctx context.Context, uid int64, uuid string) error {
 	res := r.DB.WithContext(ctx).Model(&model.Board{}).Where(
