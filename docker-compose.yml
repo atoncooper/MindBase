@@ -167,10 +167,10 @@ services:
         condition: service_started
       backend:
         condition: service_healthy
-      # nginx proxies apisix (upstream) + minio (direct proxy_pass in
-      # locations.conf). Both hostnames are resolved at nginx startup; if
-      # either container isn't running yet nginx crashes with
-      # "host not found in upstream". Wait for them to be ready first.
+      # nginx proxies apisix + minio (direct proxy_pass in locations.conf).
+      # Upstream hostnames resolve at request time now (resolver + variable
+      # proxy_pass, see nginx.conf), so a missing container no longer crashes
+      # startup — waiting here just avoids initial 502s until they are ready.
       apisix:
         condition: service_healthy
       minio:
