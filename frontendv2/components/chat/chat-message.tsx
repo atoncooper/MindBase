@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, memo } from "react";
 import { Markdown } from "@/components/markdown";
 import {
+  Brain,
   ChevronDown,
   ExternalLink,
   Copy,
@@ -14,16 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { ChatArtifact, ChatSource } from "@/lib/chat-stream";
-
-interface ReasoningStep {
-  step: number;
-  action: string;
-  query?: string;
-  reasoning?: string;
-  verdict?: string;
-  recall_score?: number;
-  sources: ChatSource[];
-}
+import type { ReasoningStep } from "./types";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -31,6 +23,7 @@ interface ChatMessageProps {
   sources?: ChatSource[] | null;
   artifacts?: ChatArtifact[] | null;
   reasoningSteps?: ReasoningStep[] | null;
+  reasoning?: string;
   agent?: string;
   status?: "pending" | "completed" | "failed";
   error?: string;
@@ -59,6 +52,7 @@ function ChatMessage({
   sources,
   artifacts,
   reasoningSteps,
+  reasoning,
   agent,
   status = "completed",
   error,
@@ -68,17 +62,38 @@ function ChatMessage({
   const safeSources = Array.isArray(sources) ? sources : [];
   const safeArtifacts = Array.isArray(artifacts) ? artifacts : [];
   const safeReasoningSteps = Array.isArray(reasoningSteps) ? reasoningSteps : [];
+  const hasThinking = !!reasoning || safeReasoningSteps.length > 0;
 
-  const [showReasoning, setShowReasoning] = useState(false);
-  // Track manual toggle so auto-expand doesn't override the user's choice:
-  // while streaming (pending) with steps arriving, auto-expand; once the
-  // user toggles, respect their state.
-  const userToggledRef = useRef(false);
-  useEffect(() => {
-    if (!userToggledRef.current && safeReasoningSteps.length > 0 && status === "pending") {
-      setShowReasoning(true);
+  // Unified thinking panel (model reasoning stream + tool steps) - collapsed
+  // by default; content only rendered while open ("load on open").
+  //
+  // While streaming the open state is derived from progress (React's
+  // "adjust state during render" pattern): expand when thinking arrives,
+  // collapse as soon as the answer starts. The first manual toggle (userOpen
+  // becoming non-null) takes over control permanently for this message.
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [autoInputs, setAutoInputs] = useState({ content, status, hasThinking });
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  if (
+    autoInputs.content !== content ||
+    autoInputs.status !== status ||
+    autoInputs.hasThinking !== hasThinking
+  ) {
+    setAutoInputs({ content, status, hasThinking });
+    if (userOpen === null && status === "pending") {
+      setAutoOpen(content ? false : hasThinking);
     }
-  }, [safeReasoningSteps.length, status]);
+  }
+  const thinkingOpen = userOpen ?? autoOpen;
+  const reasoningScrollRef = useRef<HTMLDivElement>(null);
+
+  // Keep the reasoning stream pinned to the bottom while it grows.
+  useEffect(() => {
+    if (!thinkingOpen || status !== "pending") return;
+    const el = reasoningScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [reasoning, thinkingOpen, status]);
+
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
 
@@ -96,6 +111,20 @@ function ChatMessage({
   const isPending = status === "pending";
   const isFailed = status === "failed";
   const showActions = !isUser && status === "completed" && !!content;
+
+  // Panel header label: live wording while streaming, summary once settled.
+  const thinkingActive = isPending && !content;
+  const thinkingLabel = (() => {
+    if (thinkingActive) {
+      return reasoning ? "深度思考中…" : "执行中…";
+    }
+    if (reasoning) {
+      return safeReasoningSteps.length > 0
+        ? `已深度思考 · ${safeReasoningSteps.length} 步`
+        : "已深度思考";
+    }
+    return `执行过程 · ${safeReasoningSteps.length} 步`;
+  })();
 
   // ---- User message: right-aligned compact bubble (light blue, iMessage-ish) ----
   if (isUser) {
@@ -129,103 +158,125 @@ function ChatMessage({
           </div>
         )}
 
-        {/* Reasoning toggle - chip, above content */}
-        {safeReasoningSteps.length > 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              userToggledRef.current = true;
-              setShowReasoning((v) => !v);
-            }}
-            className="mb-2 inline-flex items-center gap-1 rounded-full border border-border-subtle px-2.5 py-1 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
-            aria-expanded={showReasoning}
-            aria-controls="reasoning-content"
-          >
-            <ChevronDown
-              className={`h-3 w-3 transition-transform ${showReasoning ? "rotate-180" : ""}`}
-              aria-hidden="true"
-            />
-            <span>{showReasoning ? "收起思考过程" : `展示思考过程 · ${safeReasoningSteps.length} 步`}</span>
-          </button>
-        )}
+        {/* Unified thinking panel - one toggle for the reasoning stream and
+            the tool-execution timeline. */}
+        {hasThinking && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setUserOpen((v) => !(v ?? autoOpen))}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle px-2.5 py-1 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+              aria-expanded={thinkingOpen}
+              aria-controls="thinking-panel"
+            >
+              <Brain
+                className={`h-3.5 w-3.5 ${thinkingActive ? "animate-pulse text-accent" : ""}`}
+                aria-hidden="true"
+              />
+              <span>{thinkingLabel}</span>
+              <ChevronDown
+                className={`h-3 w-3 transition-transform ${thinkingOpen ? "rotate-180" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
 
-        {showReasoning && (
-          <div
-            id="reasoning-content"
-            className="mb-3 rounded-xl border border-border-subtle bg-border-subtle/50 p-3 text-[13px] text-secondary"
-            role="region"
-            aria-label="思考过程详情"
-          >
-            {safeReasoningSteps.map((step, i) => {
-              const stepSources = Array.isArray(step.sources) ? step.sources : [];
-              return (
-                <div key={i} className="border-l-2 border-border pl-3 [&:not(:first-child)]:mt-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] text-tertiary">
-                      {String(step.step).padStart(2, "0")}
-                    </span>
-                    <span className="font-medium text-foreground">{step.action}</span>
+            {thinkingOpen && (
+              <div
+                id="thinking-panel"
+                className="mt-2 rounded-xl border border-border-subtle bg-border-subtle/40 px-3.5 py-3 text-[13px] text-secondary"
+                role="region"
+                aria-label="思考过程"
+              >
+                {/* Model reasoning stream - pinned to the bottom while growing */}
+                {reasoning && (
+                  <div
+                    ref={reasoningScrollRef}
+                    className="max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed"
+                    aria-label="深度思考内容"
+                  >
+                    {reasoning}
                   </div>
-                  {step.query && (
-                    <div className="mt-1 flex gap-1.5">
-                      <span className="text-[11px] text-tertiary">检索</span>
-                      <code className="rounded bg-surface px-1.5 py-0.5 text-[12px] text-foreground">
-                        {step.query}
-                      </code>
-                    </div>
-                  )}
-                  {step.reasoning && <div className="mt-1 leading-relaxed">{step.reasoning}</div>}
-                  {step.verdict && (
-                    <div className="mt-1.5 text-[12px]">
-                      <span
-                        className={
-                          step.verdict === "sufficient" ? "text-success" : "text-warning"
-                        }
-                      >
-                        结论：{step.verdict}
-                      </span>
-                      {step.recall_score != null && (
-                        <span className="ml-2 text-tertiary">召回 {step.recall_score.toFixed(3)}</span>
+                )}
+
+                {/* Divider between the two sections when both are present */}
+                {reasoning && safeReasoningSteps.length > 0 && (
+                  <div className="my-3 flex items-center gap-2 text-[11px] text-tertiary">
+                    <span className="h-px flex-1 bg-border" />
+                    <span>执行步骤</span>
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                )}
+
+                {safeReasoningSteps.map((step, i) => {
+                  const stepSources = Array.isArray(step.sources) ? step.sources : [];
+                  return (
+                    <div key={i} className="border-l-2 border-border pl-3 [&:not(:first-child)]:mt-3">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[11px] text-tertiary">
+                          {String(step.step).padStart(2, "0")}
+                        </span>
+                        <span className="font-medium text-foreground">{step.action}</span>
+                      </div>
+                      {step.query && (
+                        <div className="mt-1 flex gap-1.5">
+                          <span className="text-[11px] text-tertiary">检索</span>
+                          <code className="rounded bg-surface px-1.5 py-0.5 text-[12px] text-foreground">
+                            {step.query}
+                          </code>
+                        </div>
+                      )}
+                      {step.reasoning && <div className="mt-1 leading-relaxed">{step.reasoning}</div>}
+                      {step.verdict && (
+                        <div className="mt-1.5 text-[12px]">
+                          <span
+                            className={
+                              step.verdict === "sufficient" ? "text-success" : "text-warning"
+                            }
+                          >
+                            结论：{step.verdict}
+                          </span>
+                          {step.recall_score != null && (
+                            <span className="ml-2 text-tertiary">召回 {step.recall_score.toFixed(3)}</span>
+                          )}
+                        </div>
+                      )}
+                      {stepSources.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {stepSources.map((src, j) => (
+                            <a
+                              key={j}
+                              href={sourceHref(src)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:text-foreground"
+                            >
+                              <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                              <span className="max-w-[180px] truncate">{src.title}</span>
+                            </a>
+                          ))}
+                        </div>
                       )}
                     </div>
-                  )}
-                  {stepSources.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {stepSources.map((src, j) => (
-                        <a
-                          key={j}
-                          href={sourceHref(src)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:text-foreground"
-                        >
-                          <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
-                          <span className="max-w-[180px] truncate">{src.title}</span>
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
         {/* Content / loading / error */}
         <div className={isFailed ? "rounded-xl border border-danger/20 bg-danger/5 p-3" : ""}>
-          {isPending && !content ? (
-            <div className="flex items-center gap-1.5 py-1" role="status" aria-label="助手思考中">
+          {isPending && !content && !reasoning ? (
+            <div className="flex items-center gap-2 py-1 text-[13px] text-tertiary" role="status" aria-label="助手思考中">
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:0ms]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:150ms]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:300ms]" />
-            </div>
-          ) : isPending ? (
-            // Streaming: render plain text to avoid re-parsing markdown on every
-            // token (the main cause of janky/non-incremental rendering).
-            <div className="md-body whitespace-pre-wrap text-[15px] leading-relaxed text-foreground">
-              {content}
+              <span className="ml-1">思考中…</span>
             </div>
           ) : (
+            // Markdown renders during streaming too - flushes are throttled
+            // upstream (~80ms) so re-parsing stays cheap, and the switch from
+            // streaming to the final render no longer jumps/reflows the text.
             <div className="md-body text-[15px] leading-relaxed text-foreground">
               <Markdown>{content || ""}</Markdown>
             </div>

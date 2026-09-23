@@ -23,6 +23,10 @@ export interface ChatMessageData {
   // rendered inline below the text answer.
   artifacts?: ChatArtifact[];
   reasoningSteps?: ReasoningStep[];
+  // Thinking-model reasoning stream (`reasoning` SSE frame); rendered in a
+  // collapsed block, content loads on expand. Not persisted by the backend,
+  // so it disappears on history reload.
+  reasoning?: string;
   // Agent name routed to by AgentOrchestrator (from the `route` SSE frame).
   agent?: string;
   status: MessageStatus;

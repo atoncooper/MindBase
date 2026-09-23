@@ -39,6 +39,11 @@ export interface StreamCallbacks {
   onRoute?: (agent: string) => void;
   onReset?: () => void;
   onArtifact?: (artifact: ChatArtifact) => void;
+  // Reasoning deltas from thinking models (backend `reasoning` SSE frame).
+  // Accumulated here like text. NOT cleared on `reset` frames — the backend
+  // does not replay reasoning after reset, so clearing would lose the
+  // thinking during ReAct loops.
+  onReasoning?: (accumulated: string, delta: string) => void;
 }
 
 /**
@@ -58,8 +63,16 @@ export async function streamChat(
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
   let accumulated = "";
+  let reasoningAccumulated = "";
   let buffer = "";
   let done = false;
+  // Set when the server's terminal frames arrived (`done` / `[DONE]`). If
+  // the loop exits without them the stream was cut mid-answer (proxy idle
+  // timeout, network drop, server crash) — that must surface as an error,
+  // otherwise a dead connection looks exactly like a finished-but-empty
+  // reply.
+  let completed = false;
+  let errored = false;
 
   try {
     while (!done) {
@@ -78,6 +91,7 @@ export async function streamChat(
         if (!line.startsWith("data: ")) continue;
         const dataStr = line.slice(6);
         if (dataStr === "[DONE]") {
+          completed = true;
           done = true;
           break;
         }
@@ -88,6 +102,10 @@ export async function streamChat(
             const delta = typeof data.content === "string" ? data.content : "";
             accumulated += delta;
             callbacks.onChunk(accumulated, delta);
+          } else if (data.type === "reasoning") {
+            const delta = typeof data.content === "string" ? data.content : "";
+            reasoningAccumulated += delta;
+            callbacks.onReasoning?.(reasoningAccumulated, delta);
           } else if (data.type === "sources") {
             callbacks.onSources?.(Array.isArray(data.sources) ? data.sources : []);
           } else if (data.type === "step") {
@@ -95,19 +113,29 @@ export async function streamChat(
           } else if (data.type === "route") {
             callbacks.onRoute?.(data.agent as string);
           } else if (data.type === "reset") {
+            // A retried LLM run begins: clear text (backend replays pre-run
+            // content as chunks) but preserve reasoning — the backend does
+            // NOT replay reasoning after reset, so clearing it would make
+            // the thinking "disappear" during ReAct loops.
             accumulated = "";
             callbacks.onReset?.();
           } else if (data.type === "artifact") {
             callbacks.onArtifact?.(data.artifact as ChatArtifact);
           } else if (data.type === "error") {
+            errored = true;
             callbacks.onError?.(data.message || data.error || "请求失败");
           } else if (data.type === "done") {
+            completed = true;
             done = true;
           }
         } catch {
           // Ignore malformed JSON frames; SSE may split across chunks.
         }
       }
+    }
+
+    if (!completed && !errored && !signal?.aborted) {
+      callbacks.onError?.("回复流中断（连接提前断开），请重试");
     }
   } catch (e) {
     // Aborting the fetch rejects the pending reader.read() with an AbortError.

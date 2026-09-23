@@ -263,7 +263,62 @@ body {
 }
 
 /* Fenced code blocks are rendered by <CodeBlock> (language label + copy button
-   on a light gray surface). No global pre styling here to avoid conflicts. */
+   on a light gray surface). Token colors below scope to the .md-code container
+   and reuse the same restrained palette as the mindmap editor's
+   .mm-code-highlight (indigo/teal/ochre + gray comments). */
+.md-code pre { tab-size: 2; }
+
+.md-code .token.comment,
+.md-code .token.prolog,
+.md-code .token.doctype,
+.md-code .token.cdata {
+  color: var(--color-tertiary);
+  font-style: italic;
+}
+.md-code .token.punctuation {
+  color: var(--color-secondary);
+}
+.md-code .token.operator {
+  color: var(--color-secondary);
+  background: transparent;
+}
+.md-code .token.keyword,
+.md-code .token.boolean,
+.md-code .token.builtin,
+.md-code .token.atrule,
+.md-code .token.important,
+.md-code .token.selector {
+  color: #4a6fa5;
+  font-weight: 600;
+}
+.md-code .token.string,
+.md-code .token.char,
+.md-code .token.attr-value,
+.md-code .token.inserted {
+  color: #2e8b74;
+}
+.md-code .token.number,
+.md-code .token.tag,
+.md-code .token.attr-name,
+.md-code .token.constant,
+.md-code .token.property,
+.md-code .token.deleted {
+  color: #b0673f;
+}
+.md-code .token.function,
+.md-code .token.class-name {
+  color: #4a6fa5;
+}
+.md-code .token.namespace {
+  opacity: 0.7;
+}
+
+/* Wide markdown tables scroll horizontally instead of breaking the column
+   (the <table> is wrapped in .md-table-scroll by the shared renderer). */
+.md-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 
 .md-body table {
   width: 100%;
