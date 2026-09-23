@@ -14,7 +14,13 @@ from app.security.url_validation import validate_public_http_url
 from app.services.llm.buffered_usage_writer import get_buffered_usage_writer
 from app.services.llm.providers import infer_provider as _infer_provider
 from app.services.llm.providers import resolve_llm_config
+from app.services.llm.reasoning_patch import install_reasoning_capture
 from app.services.llm.usage_tracker import attach_usage_tracking
+
+# The pinned langchain-openai drops thinking-model reasoning deltas; install
+# the capture wrapper at import time so the SSE streamer can relay reasoning
+# to the client's collapsed thinking block.
+install_reasoning_capture()
 
 
 def infer_provider(base_url: Optional[str]) -> str:
