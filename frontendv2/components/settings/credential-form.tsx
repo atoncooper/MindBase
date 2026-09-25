@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2, X } from "lucide-react";
+import { Select } from "@/components/ui/select";
 import type { DisplayItem } from "./credential-card";
 
 export type ConfigFormType = "llm" | "embedding" | "asr";
@@ -163,20 +164,14 @@ export function CredentialForm({ type, item, onSave, onCancel }: Props) {
                     </Field>
 
                     <Field label="服务商">
-                        <select
-                            className="field"
+                        <Select
                             value={provider}
-                            onChange={(e) => {
-                                setProvider(e.target.value);
+                            onChange={(v) => {
+                                setProvider(v);
                                 setBaseUrl("");
                             }}
-                        >
-                            {providers.map((p) => (
-                                <option key={p.value} value={p.value}>
-                                    {p.label}
-                                </option>
-                            ))}
-                        </select>
+                            options={providers.map((p) => ({ value: p.value, label: p.label }))}
+                        />
                     </Field>
 
                     <Field

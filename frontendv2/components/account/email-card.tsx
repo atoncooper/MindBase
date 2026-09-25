@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Pencil } from "lucide-react";
+import { Check, Mail, Pencil } from "lucide-react";
 import { userApi, type CaptchaValue, type ProfileData } from "@/lib/api";
 import { CaptchaField } from "@/components/captcha-field";
 import {
@@ -148,7 +148,7 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
                             type="button"
                             onClick={sendCode}
                             disabled={sending || cooldown > 0 || !emailVal.trim()}
-                            className="inline-flex h-9 shrink-0 items-center rounded-md border border-border px-3 text-[12px] text-secondary hover:bg-border-subtle disabled:opacity-40"
+                            className="inline-flex h-12 shrink-0 items-center rounded-[var(--radius)] border border-border px-3 text-[12px] text-secondary transition-colors hover:bg-border-subtle disabled:opacity-40"
                         >
                             {cooldown > 0 ? `${cooldown}s` : sending ? "发送中…" : "发送验证码"}
                         </button>
@@ -157,6 +157,7 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
                 </div>
             ) : (
                 <div className="flex items-center gap-3 px-5 py-3.5">
+                    <Mail className="h-4 w-4 shrink-0 text-secondary" />
                     <div className="min-w-0 flex-1">
                         {profile.email ? (
                             <span className="truncate text-[13px] text-foreground">
@@ -174,7 +175,7 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
                             <button
                                 type="button"
                                 onClick={unbind}
-                                className="text-[12px] text-danger hover:underline"
+                                className="rounded px-1 py-0.5 text-[12px] text-danger transition-colors hover:bg-danger/10"
                             >
                                 解绑
                             </button>

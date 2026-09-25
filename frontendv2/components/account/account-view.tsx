@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import {
     Loader2,
     AlertCircle,
+    Copy,
     Tv,
     Sparkles,
     KeyRound,
@@ -42,6 +43,15 @@ export function AccountView() {
         setToast({ message, type });
         setTimeout(() => setToast(null), type === "error" ? 6000 : 3000);
     }, []);
+
+    async function copyUid(uid: number) {
+        try {
+            await navigator.clipboard.writeText(String(uid));
+            flash("UID 已复制", "success");
+        } catch {
+            flash("复制失败", "error");
+        }
+    }
 
     // Reload after an edit (no full-page spinner).
     const load = useCallback(async () => {
@@ -100,7 +110,7 @@ export function AccountView() {
     if (!profile || !security) return null;
 
     return (
-        <div className="flex flex-col gap-5 px-6 py-8 sm:px-10">
+        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6 px-6 py-8 sm:px-10">
             {toast && (
                 <div
                     className={`fixed right-6 top-20 z-50 rounded-md border px-4 py-2.5 text-[13px] font-medium shadow-sm ${
@@ -120,65 +130,98 @@ export function AccountView() {
                     <h1 className="truncate text-[20px] font-semibold tracking-tight text-foreground">
                         {profile.nickname || `用户 ${profile.uid}`}
                     </h1>
-                    <p className="mt-0.5 text-[13px] text-tertiary">UID {profile.uid}</p>
-                    {profile.created_at && (
-                        <p className="mt-0.5 text-[12px] text-tertiary">
-                            注册于 {fmtDate(profile.created_at)}
+                    {profile.bio && (
+                        <p className="mt-0.5 truncate text-[13px] text-secondary">
+                            {profile.bio}
                         </p>
                     )}
+                    <div className="mt-0.5 flex items-center text-[12px] text-tertiary">
+                        <span>UID {profile.uid}</span>
+                        <button
+                            type="button"
+                            onClick={() => copyUid(profile.uid)}
+                            aria-label="复制 UID"
+                            className="mx-0.5 inline-flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-border-subtle hover:text-foreground"
+                        >
+                            <Copy className="h-3 w-3" />
+                        </button>
+                        {profile.created_at && (
+                            <span>· 注册于 {fmtDate(profile.created_at)}</span>
+                        )}
+                    </div>
                 </div>
             </div>
 
-            {/* Editable cards */}
-            <ProfileCard profile={profile} onUpdated={setProfile} onToast={flash} />
-            <EmailCard profile={profile} onReload={load} onToast={flash} />
-            <PhoneCard profile={profile} onReload={load} onToast={flash} />
-            <PasswordCard
-                profile={profile}
-                security={security}
-                onReload={load}
-                onToast={flash}
-            />
+            {/* 基础资料 */}
+            <section className="flex flex-col gap-3">
+                <SectionLabel>基础资料</SectionLabel>
+                <ProfileCard profile={profile} onUpdated={setProfile} onToast={flash} />
+            </section>
 
-            {/* Bilibili binding (read-only) */}
-            <FormCard title="B 站账号" description="B 站授权状态，用于同步收藏夹内容。">
-                <div className="flex items-center gap-3 px-5 py-3.5">
-                    <Tv className="h-4 w-4 shrink-0 text-secondary" />
-                    <div className="min-w-0 flex-1 text-[13px] text-foreground">
-                        {security.bilibili.nickname || "未绑定"}
-                    </div>
-                    <Tag
-                        tone={
-                            security.bilibili.valid
-                                ? "ok"
+            {/* 登录与安全 */}
+            <section className="flex flex-col gap-3">
+                <SectionLabel>登录与安全</SectionLabel>
+                <EmailCard profile={profile} onReload={load} onToast={flash} />
+                <PhoneCard profile={profile} onReload={load} onToast={flash} />
+                <PasswordCard
+                    profile={profile}
+                    security={security}
+                    onReload={load}
+                    onToast={flash}
+                />
+
+                {/* Bilibili binding (read-only) */}
+                <FormCard title="B 站账号" description="B 站授权状态，用于同步收藏夹内容。">
+                    <div className="flex items-center gap-3 px-5 py-3.5">
+                        <Tv className="h-4 w-4 shrink-0 text-secondary" />
+                        <div className="min-w-0 flex-1 text-[13px] text-foreground">
+                            {security.bilibili.nickname || "未绑定"}
+                        </div>
+                        <Tag
+                            tone={
+                                security.bilibili.valid
+                                    ? "ok"
+                                    : security.bilibili.bound
+                                      ? "warn"
+                                      : "neutral"
+                            }
+                        >
+                            {security.bilibili.valid
+                                ? "可用"
                                 : security.bilibili.bound
-                                  ? "warn"
-                                  : "neutral"
-                        }
-                    >
-                        {security.bilibili.valid
-                            ? "可用"
-                            : security.bilibili.bound
-                              ? "已失效"
-                              : "未绑定"}
-                    </Tag>
-                </div>
-            </FormCard>
+                                  ? "已失效"
+                                  : "未绑定"}
+                        </Tag>
+                    </div>
+                </FormCard>
+            </section>
 
-            {/* Quick links */}
-            <FormCard title="数据与配置" description="前往相关管理页面。">
-                <Row
-                    icon={<Sparkles className="h-4 w-4" />}
-                    label="技能商店"
-                    onClick={() => router.push("/skills")}
-                />
-                <Row
-                    icon={<KeyRound className="h-4 w-4" />}
-                    label="凭证管理"
-                    onClick={() => router.push("/settings")}
-                />
-            </FormCard>
+            {/* 更多 */}
+            <section className="flex flex-col gap-3">
+                <SectionLabel>更多</SectionLabel>
+                <FormCard title="快捷入口" description="前往相关管理页面。">
+                    <Row
+                        icon={<Sparkles className="h-4 w-4" />}
+                        label="技能商店"
+                        onClick={() => router.push("/skills")}
+                    />
+                    <Row
+                        icon={<KeyRound className="h-4 w-4" />}
+                        label="凭证管理"
+                        onClick={() => router.push("/settings")}
+                    />
+                </FormCard>
+            </section>
         </div>
+    );
+}
+
+/** Tiny group caption above a cluster of cards (Apple settings style). */
+function SectionLabel({ children }: { children: React.ReactNode }) {
+    return (
+        <h2 className="text-[11px] font-medium tracking-wider text-tertiary">
+            {children}
+        </h2>
     );
 }
 
@@ -198,7 +241,7 @@ function Avatar({
             <img
                 src={url}
                 alt=""
-                className="h-16 w-16 shrink-0 rounded-full object-cover"
+                className="h-16 w-16 shrink-0 rounded-full object-cover ring-1 ring-border-subtle"
             />
         );
     }

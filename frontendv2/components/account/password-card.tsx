@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Eye, EyeOff, Pencil } from "lucide-react";
+import { Check, Eye, EyeOff, KeyRound, Pencil } from "lucide-react";
 import { userApi, authApi, type CaptchaValue, type ProfileData, type SecurityOverview } from "@/lib/api";
 import { CaptchaField } from "@/components/captcha-field";
 import {
@@ -156,7 +156,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     return (
         <FormCard
             title="密码"
-            description="用于账号登录。修改密码时需通过邮箱二次验证。"
+            description="用于账号登录。修改需通过已验证邮箱或短信二次验证。"
             action={
                 editing ? undefined : (
                     <EditButton
@@ -231,7 +231,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                                     type="button"
                                     onClick={sendCode}
                                     disabled={sending || cooldown > 0}
-                                    className="inline-flex h-9 shrink-0 items-center rounded-md border border-border px-3 text-[12px] text-secondary hover:bg-border-subtle disabled:opacity-40"
+                                    className="inline-flex h-12 shrink-0 items-center rounded-[var(--radius)] border border-border px-3 text-[12px] text-secondary transition-colors hover:bg-border-subtle disabled:opacity-40"
                                 >
                                     {cooldown > 0 ? `${cooldown}s` : sending ? "发送中…" : "发送验证码"}
                                 </button>
@@ -255,8 +255,13 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                 </div>
             ) : (
                 <div className="flex items-center gap-3 px-5 py-3.5">
+                    <KeyRound className="h-4 w-4 shrink-0 text-secondary" />
                     <div className="min-w-0 flex-1 text-[13px] text-foreground">
-                        {security.has_password ? "已设置" : "未设置"}
+                        {security.has_password ? (
+                            <span className="select-none tracking-widest">••••••••</span>
+                        ) : (
+                            <span className="text-tertiary">未设置</span>
+                        )}
                     </div>
                     <Tag tone={security.has_password ? "ok" : "warn"}>
                         {security.has_password ? "已设置" : "未设置"}
