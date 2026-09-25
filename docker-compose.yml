@@ -145,6 +145,34 @@ services:
       - mind-base-net
 
   # ==============================================================
+  # TLS certificate provisioning (one-shot init container)
+  # ==============================================================
+  # Runs scripts/gen-certs.sh on every `docker compose up` BEFORE the
+  # TLS-consuming services start, so a fresh clone gets working certs/keys
+  # with zero manual steps: nginx 443 (nginx exits without them), app-pay
+  # (startup self-check refuses to boot without them), app-board /
+  # app-board-mcp leaves, and the shared dev CA that APISIX + app-task trust.
+  # Idempotent: valid files are reused, expiring ones re-signed.
+
+  cert-gen:
+    image: mind-base-certgen:latest
+    build:
+      context: ./scripts
+      dockerfile: certgen.Dockerfile
+    container_name: mind-base-cert-gen
+    environment:
+      MB_CERT_NGINX_DIR: /out/nginx
+      MB_CERT_APPBOARD_DIR: /out/app-board
+      MB_CERT_MCP_DIR: /out/mcp
+      MB_CERT_PAY_DIR: /out/pay
+    volumes:
+      - ./nginx/certs:/out/nginx
+      - ./app-board/certs:/out/app-board
+      - ./mcp/app-board-mcp/certs:/out/mcp
+      - ./app-pay/certs:/out/pay
+    restart: "no"
+
+  # ==============================================================
   # Reverse Proxy (Nginx) — SSL termination + routing
   # ==============================================================
 
@@ -163,6 +191,8 @@ services:
       - nginx_video_cache:/var/cache/nginx/video   # Plan 0021
       - nginx_wallpaper_cache:/var/cache/nginx/wallpaper   # wallpaper image cache
     depends_on:
+      cert-gen:
+        condition: service_completed_successfully
       frontend:
         condition: service_started
       backend:
@@ -455,6 +485,8 @@ services:
     # it in task. Share all of nginx's profiles plus task to cover both paths.
     profiles: ["", "standalone", "storage", "task", "full"]
     depends_on:
+      cert-gen:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
       # init_etcd (run by the entrypoint) connects to etcd:2379; wait for it
@@ -550,6 +582,8 @@ services:
     container_name: mind-base-app-pay
     profiles: ["", "pay", "full"]
     depends_on:
+      cert-gen:
+        condition: service_completed_successfully
       app-pay-mysql:
         condition: service_healthy
     env_file:
@@ -586,6 +620,8 @@ services:
     container_name: mind-base-app-board
     profiles: ["", "board", "full"]
     depends_on:
+      cert-gen:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       mongo:
@@ -628,6 +664,9 @@ services:
       dockerfile: Dockerfile
     container_name: mind-base-app-board-mcp
     profiles: ["", "board", "full"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
     environment:
       - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
       - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}

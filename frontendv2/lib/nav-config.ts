@@ -8,8 +8,6 @@ import {
   CalendarClock,
   Settings,
   UserCircle,
-  Activity,
-  BarChart3,
   Sparkles,
   Target,
   Waypoints,
@@ -42,10 +40,10 @@ export const navItems: NavItem[] = [
   { id: "quiz", label: "题目练习", href: "/quiz", icon: BookOpen, placement: "primary" },
   { id: "task-quiz", label: "定时出题", href: "/task-quiz", icon: CalendarClock, placement: "primary" },
   // Low-frequency modules collapsed under "更多"
-  { id: "tasks", label: "任务监控", href: "/tasks", icon: Activity, placement: "more" },
+  // Task monitoring (/tasks) and usage billing (/billing) are temporarily
+  // disabled: their route pages and API modules were removed; restore via git.
   { id: "graph", label: "知识图谱", href: "/graph", icon: Waypoints, placement: "more" },
   { id: "blindspot", label: "知识盲区", href: "/blindspot", icon: Target, placement: "more" },
-  { id: "billing", label: "用量计费", href: "/billing", icon: BarChart3, placement: "more" },
   { id: "skills", label: "技能商店", href: "/skills", icon: Sparkles, placement: "more" },
   // Right-side account area
   { id: "settings", label: "设置", href: "/settings", icon: Settings, placement: "account" },

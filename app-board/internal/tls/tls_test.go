@@ -55,6 +55,14 @@ func TestEnsureGeneratesChainedLeaf(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("leaf does not chain to dev CA: %v", err)
 	}
+	if _, err := pair.Leaf.Verify(x509.VerifyOptions{
+		DNSName:     "mindbase",
+		Roots:       x509pool(caPEM),
+		CurrentTime: time.Now(),
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); err != nil {
+		t.Fatalf("leaf does not cover the mindbase deployment alias: %v", err)
+	}
 }
 
 // Second Ensure with the same dir must REUSE both CA and leaf (no rotation

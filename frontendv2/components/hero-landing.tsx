@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { AnimatedVisual } from "./animated-visual";
+import { FeatureShowcase } from "./showcase/feature-showcase";
 
 interface HeroLandingProps {
   onShowQRLogin: () => void;
@@ -9,13 +10,6 @@ interface HeroLandingProps {
   onShowRegister: () => void;
   onShowDemo: () => void;
 }
-
-const pipeline = [
-  { step: "01", title: "同步", desc: "接入 B站收藏夹" },
-  { step: "02", title: "提炼", desc: "自动整理要点" },
-  { step: "03", title: "检索", desc: "语义精准查找" },
-  { step: "04", title: "回顾", desc: "对话式复习" },
-];
 
 const container = {
   hidden: {},
@@ -38,7 +32,7 @@ export function HeroLanding({ onShowQRLogin, onShowPasswordLogin, onShowRegister
         variants={container}
         initial="hidden"
         animate="show"
-        className="relative mx-auto flex w-full max-w-[820px] flex-col items-center px-6 pt-20 text-center md:pt-28"
+        className="relative mx-auto flex w-full max-w-[820px] flex-col items-center px-6 pb-20 pt-20 text-center md:pb-28 md:pt-28"
       >
         <motion.span
           variants={item}
@@ -81,26 +75,8 @@ export function HeroLanding({ onShowQRLogin, onShowPasswordLogin, onShowRegister
         </motion.div>
       </motion.div>
 
-      {/* Pipeline cards */}
-      <motion.div
-        variants={container}
-        initial="hidden"
-        whileInView="show"
-        viewport={{ once: true, margin: "-80px" }}
-        className="relative mx-auto mt-24 grid w-full max-w-[1100px] grid-cols-2 gap-4 px-6 pb-24 md:grid-cols-4 md:gap-5"
-      >
-        {pipeline.map((p) => (
-          <motion.div
-            key={p.step}
-            variants={item}
-            className="group rounded-2xl border border-border bg-surface p-6 transition-shadow hover:shadow-[0_8px_30px_rgba(0,0,0,0.06)]"
-          >
-            <span className="text-[13px] font-medium text-accent">{p.step}</span>
-            <h3 className="mt-3 text-[20px] font-semibold tracking-tight text-foreground">{p.title}</h3>
-            <p className="mt-1.5 text-[14px] text-secondary">{p.desc}</p>
-          </motion.div>
-        ))}
-      </motion.div>
+      {/* Alternating feature showcase bands (copy ⇄ animated demo) + closing CTA */}
+      <FeatureShowcase authed={false} onShowQRLogin={onShowQRLogin} />
     </section>
   );
 }

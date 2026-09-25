@@ -305,3 +305,25 @@ async def clear_chat_history(
     if not cleared:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"success": True}
+
+
+@router.delete("/history/from/{msg_id}")
+async def truncate_chat_history_from(
+    msg_id: str,
+    chat_session_id: str = Query(...),
+    uid: int = Depends(get_current_uid),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete *msg_id* and all later messages of the session.
+
+    Used by the frontend per-turn regenerate: the target turn (and
+    everything after it) is removed from history, then re-asked.
+    """
+    deleted = await chat_history_service.truncate_history_from_for_user(
+        db, uid, chat_session_id, msg_id
+    )
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"success": True, "deleted": deleted}
