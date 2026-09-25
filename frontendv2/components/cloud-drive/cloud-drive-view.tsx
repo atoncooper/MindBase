@@ -25,6 +25,8 @@ import { FileToolbar, type ViewMode, type SortField, type SortOrder } from "./fi
 import { FileList } from "./file-list";
 import { FileGrid } from "./file-grid";
 import { FileInspector } from "./file-inspector";
+import { ShareDialog } from "./share-dialog";
+import { formatBytes, type CloudQuotaResponse, type CloudTrashItem } from "@/lib/api/cloud";
 import { UploadDropzone, UploadProgressPill } from "./upload-dropzone";
 import { FileListSkeleton, NoFiles } from "./empty-states";
 
@@ -52,6 +54,17 @@ export function CloudDriveView() {
 
     // ── Selection / detail ──
     const [selectedUuid, setSelectedUuid] = useState<string | null>(null);
+
+    // ── app-cloud 新能力：配额 / 搜索 / 回收站 / 分享 ──
+    const [quota, setQuota] = useState<CloudQuotaResponse | null>(null);
+    const [searchQ, setSearchQ] = useState("");
+    const [searchResults, setSearchResults] = useState<CloudVideoItem[] | null>(null);
+    const [searching, setSearching] = useState(false);
+    const [trashOpen, setTrashOpen] = useState(false);
+    const [trashItems, setTrashItems] = useState<CloudTrashItem[]>([]);
+    const [trashCount, setTrashCount] = useState(0);
+    const [trashLoading, setTrashLoading] = useState(false);
+    const [shareOpen, setShareOpen] = useState(false);
     const [detail, setDetail] = useState<CloudVideoDetailResponse | null>(null);
     const [loadingDetail, setLoadingDetail] = useState(false);
 
@@ -211,7 +224,10 @@ export function CloudDriveView() {
     }, []);
 
     const handleSelectFile = useCallback((uuid: string) => {
-        setSelectedUuid(uuid);
+        // Toggle semantics: clicking the selected file closes the inspector.
+        // (Plain setSelectedUuid(uuid) on the same file would clear detail
+        // while the [selectedUuid] effect skips refetch — a blank panel.)
+        setSelectedUuid((prev) => (prev === uuid ? null : uuid));
         setDetail(null);
     }, []);
 
@@ -306,6 +322,7 @@ export function CloudDriveView() {
             }
             setVideos((prev) => prev.filter((v) => v.uploadUuid !== uuid));
             await refreshFolders();
+            void cloudApi.listTrash().then((res) => setTrashCount(res.total)).catch(() => {});
         } catch {
             // Keep dialog open.
         } finally {
@@ -338,7 +355,70 @@ export function CloudDriveView() {
         []
     );
 
+    // ── app-cloud handlers ──
+    useEffect(() => {
+        void cloudApi.getQuota().then(setQuota).catch(() => {});
+    }, []);
+
+    // 搜索防抖（清空时由派生值恢复文件夹列表，见 effectiveSearchResults）
+    useEffect(() => {
+        if (!searchQ.trim()) {
+            return;
+        }
+        const t = setTimeout(() => {
+            setSearching(true);
+            void cloudApi
+                .searchFiles(searchQ.trim())
+                .then((res) => setSearchResults(res.results))
+                .catch(() => setSearchResults([]))
+                .finally(() => setSearching(false));
+        }, 350);
+        return () => clearTimeout(t);
+    }, [searchQ]);
+
+    const refreshTrash = useCallback(async () => {
+        setTrashLoading(true);
+        try {
+            const res = await cloudApi.listTrash();
+            setTrashItems(res.items);
+            setTrashCount(res.total);
+        } finally {
+            setTrashLoading(false);
+        }
+    }, []);
+
+    // 徽章常驻计数：挂载时轻量拉一次
+    useEffect(() => {
+        void cloudApi
+            .listTrash()
+            .then((res) => setTrashCount(res.total))
+            .catch(() => {});
+    }, []);
+
+    const handleToggleTrash = useCallback(() => {
+        setTrashOpen((v) => {
+            if (!v) void refreshTrash();
+            return !v;
+        });
+        setSearchQ("");
+        setSearchResults(null);
+    }, [refreshTrash]);
+
+    const handleRestore = useCallback(async (uuid: string) => {
+        await cloudApi.restoreTrash(uuid);
+        await refreshTrash();
+        await refreshVideos(selectedFolderId, 1, false);
+        await refreshFolders();
+    }, [refreshTrash, refreshVideos, selectedFolderId, refreshFolders]);
+
+    const handlePurge = useCallback(async (uuid: string) => {
+        await cloudApi.purgeTrashItem(uuid);
+        await refreshTrash();
+    }, [refreshTrash]);
+
     // ── Derived ──
+    // 搜索词非空时显示搜索结果，清空（或纯空白）时回落到文件夹列表
+    const effectiveSearchResults = searchQ.trim() ? searchResults : null;
     const totalFiles = folders.reduce((sum, f) => sum + (f.videoCount || 0), 0) + videos.length;
     const currentFolderName =
         selectedFolderId == null
@@ -354,10 +434,17 @@ export function CloudDriveView() {
                     loading={foldersLoading}
                     selectedFolderId={selectedFolderId}
                     totalCount={videosLoading ? 0 : totalFiles}
-                    onSelect={handleSelectFolder}
+                    onSelect={(id) => {
+                        handleSelectFolder(id);
+                        if (trashOpen) setTrashOpen(false);
+                    }}
                     onCreateFolder={handleCreateFolder}
                     onRenameFolder={handleRenameFolder}
                     onDeleteFolder={setDeleteFolderTarget}
+                    quota={quota}
+                    trashCount={trashCount}
+                    trashOpen={trashOpen}
+                    onToggleTrash={handleToggleTrash}
                 />
             </aside>
 
@@ -376,9 +463,66 @@ export function CloudDriveView() {
                         }}
                         onUploadClick={() => fileInputRef.current?.click()}
                         uploading={uploading}
+                        searchValue={searchQ}
+                        onSearchChange={setSearchQ}
+                        canShare={selectedUuid != null}
+                        onShareClick={() => setShareOpen(true)}
                     />
                     <div className="flex-1 overflow-y-auto">
-                        {videosLoading ? (
+                        {trashOpen ? (
+                            trashLoading ? (
+                                <FileListSkeleton />
+                            ) : trashItems.length === 0 ? (
+                                <p className="py-16 text-center text-[13px] text-tertiary">回收站是空的</p>
+                            ) : (
+                                <ul className="divide-y divide-border-subtle px-5">
+                                    {trashItems.map((t) => (
+                                        <li key={t.uploadUuid} className="flex items-center justify-between py-2.5">
+                                            <div className="min-w-0">
+                                                <p className="truncate text-[13px] text-foreground">{t.originalName}</p>
+                                                <p className="text-[11px] text-tertiary">
+                                                    {formatBytes(t.fileSize)}
+                                                    {t.purgeAt
+                                                        ? ` · ${new Date(t.purgeAt).toLocaleDateString()} 彻底删除`
+                                                        : ""}
+                                                </p>
+                                            </div>
+                                            <div className="flex shrink-0 items-center gap-2 text-[12px]">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleRestore(t.uploadUuid)}
+                                                    className="text-accent hover:underline"
+                                                >
+                                                    恢复
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handlePurge(t.uploadUuid)}
+                                                    className="text-red-500 hover:underline"
+                                                >
+                                                    彻底删除
+                                                </button>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )
+                        ) : effectiveSearchResults != null ? (
+                            searching ? (
+                                <FileListSkeleton />
+                            ) : effectiveSearchResults.length === 0 ? (
+                                <p className="py-16 text-center text-[13px] text-tertiary">没有匹配的文件</p>
+                            ) : (
+                                <FileList
+                                    videos={effectiveSearchResults}
+                                    selectedUuid={selectedUuid}
+                                    onSelect={handleSelectFile}
+                                    hasMore={false}
+                                    loadingMore={false}
+                                    onLoadMore={() => {}}
+                                />
+                            )
+                        ) : videosLoading ? (
                             <FileListSkeleton />
                         ) : videos.length === 0 ? (
                             <NoFiles />
@@ -474,12 +618,20 @@ export function CloudDriveView() {
             <ConfirmDialog
                 open={deleteFileUuid !== null}
                 title="删除文件？"
-                message="文件及其向量数据将被删除，此操作不可撤销。"
-                confirmLabel="删除"
+                message="文件将移入回收站，30 天后自动彻底删除；期间可随时恢复。"
+                confirmLabel="移入回收站"
                 danger
                 busy={busyAction}
                 onConfirm={() => void handleDeleteFile()}
                 onCancel={() => (busyAction ? undefined : setDeleteFileUuid(null))}
+            />
+
+            {/* Share dialog */}
+            <ShareDialog
+                open={shareOpen}
+                uploadUuid={detail?.uploadUuid ?? selectedUuid}
+                fileName={detail?.originalName ?? "文件"}
+                onClose={() => setShareOpen(false)}
             />
         </div>
     );
