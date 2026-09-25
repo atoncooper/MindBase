@@ -150,32 +150,6 @@ def _diagnose_langsmith() -> None:
 diagnose_langsmith = _diagnose_langsmith
 
 
-async def _recover_stuck_cloud_tasks():
-    """Plan 0023: Reset stuck cloud drive processing tasks (status=processing and timed out)."""
-    try:
-        from app.infra.config import config as _cfg
-
-        if not _cfg.rdbms.url:
-            return
-
-        from app.database import engine as _engine
-        from sqlalchemy import text as _text
-
-        async with _engine.begin() as conn:
-            result = await conn.execute(
-                _text(
-                    "UPDATE async_tasks SET status = 'pending', progress = 0, updated_at = NOW() "
-                    "WHERE status = 'processing' "
-                    "AND task_type IN ('cloud_doc', 'cloud_video') "
-                    "AND updated_at < NOW() - INTERVAL 30 MINUTE"
-                )
-            )
-            count = result.rowcount
-            if count > 0:
-                logger.warning(f"[STARTUP] 恢复 {count} 个卡住的云盘处理任务")
-    except Exception as e:
-        logger.debug("[STARTUP] cloud task recovery skipped: {}", e)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -228,6 +202,14 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(60)
 
     app.state.quiz_overdue_task = asyncio.create_task(_quiz_overdue_loop())
+
+    # 云盘状态桥：订阅 app-cloud(Go) 发布的 cloud:status，经既有 WS 转发
+    from app.services.cloud_status_bridge import run_bridge as _run_cloud_bridge
+
+    app.state.cloud_status_bridge_stop = asyncio.Event()
+    app.state.cloud_status_bridge_task = asyncio.create_task(
+        _run_cloud_bridge(app.state.cloud_status_bridge_stop)
+    )
 
     # LangSmith 追踪诊断
     diagnose_langsmith()
@@ -301,8 +283,6 @@ async def lifespan(app: FastAPI):
                 )
             )
 
-    # Plan 0023: Recover stuck cloud drive document processing tasks
-    await _recover_stuck_cloud_tasks()
 
     # === Agent Harness 启动 ===
     # Failure modes (stored on app.state so /health and request-time 503s can
@@ -417,6 +397,13 @@ async def lifespan(app: FastAPI):
         _od = getattr(app.state, "quiz_overdue_task", None)
         if _od:
             _od.cancel()
+
+        _csb_stop = getattr(app.state, "cloud_status_bridge_stop", None)
+        if _csb_stop:
+            _csb_stop.set()
+        _csb_task = getattr(app.state, "cloud_status_bridge_task", None)
+        if _csb_task:
+            _csb_task.cancel()
 
         logger.info("👋 应用关闭")
     except _asyncio.CancelledError:
@@ -561,9 +548,6 @@ app.include_router(skills_router)
 
 # Plan 0021: Cloud drive router (with graceful degradation)
 try:
-    from app.routers.cloud import router as cloud_router
-
-    app.include_router(cloud_router)
     logger.info("[MAIN] Cloud drive router registered")
 except ImportError as e:
     logger.info(f"[MAIN] Cloud drive router not available: {e}")

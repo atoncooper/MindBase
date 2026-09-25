@@ -1,0 +1,109 @@
+# ============================================================
+# app-cloud (Go) - default configuration
+# ============================================================
+# Cloud drive service: chunked uploads, folders, previews, storage quotas,
+# Baidu-style sharing, trash, and the Go-native document parse→chunk→embed
+# →vectorize pipeline. Owns the cloud tables (cloud_files/cloud_folders/
+# cloud_shares) in the SHARED bilirag MySQL — schema ownership moved from
+# the Python backend (which keeps READ-ONLY access for notes/workspace/RAG).
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPCLOUD__, double-underscore nesting
+#   Shared secret env vars (same names as the Python backend):
+#        MINIO__ACCESS_KEY/SECRET_KEY, REDIS__URL, MONGO__URI, AI_GATEWAY__API_KEY
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-cloud
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8007
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPCLOUD__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+redis:
+  url: ""                    # inject via APPCLOUD__REDIS__URL or shared REDIS__URL
+
+mongo:
+  uri: ""                    # inject via MONGO__URI (shared); parsed docs + quotas metadata
+  database: mind_base        # mongo database name
+
+minio:
+  enabled: true
+  endpoint: http://minio:9000
+  region: us-east-1
+  bucket: drive-videos       # same bucket as the Python backend — zero data migration
+  secure: false
+  presign_expire: 3600       # seconds; upload/preview presigned URL lifetime
+  access_key: ""             # inject via MINIO__ACCESS_KEY (.env)
+  secret_key: ""             # inject via MINIO__SECRET_KEY (.env)
+  # Browser-reachable MinIO base via nginx /minio-proxy (signature contract:
+  # nginx rewrites Host back to minio:9000 so presigned URLs stay valid).
+  public_endpoint: ""        # full URL, e.g. https://mindbase.example.com/minio-proxy
+  public_host: ""            # host only; auto-prefixed {scheme}://{host}/minio-proxy
+                             # neither set → http://localhost/minio-proxy
+
+upload:
+  chunk_size: 10485760       # 10 MB (must match the Python CHUNK_SIZE clients rely on)
+  max_file_size: 5368709120  # 5 GB
+  heartbeat_ttl: 300         # seconds
+  upload_meta_ttl: 3600      # seconds; Redis upload session window
+
+quota:
+  # tier → storage quota (bytes). Lookup: app-pay /internal/pay/membership/{uid}
+  # via APISIX key-auth; fail-closed → free tier when unreachable.
+  free: 10737418240          # 10 GiB
+  vip: 6597069766656         # 6 TiB
+  svip: 65970697666560       # 60 TiB
+  membership_base_url: http://apisix:9080/internal/pay  # key-auth protected
+  membership_api_key: ""     # inject via APISIX_CONSUMER_KEY (.env)
+  membership_cache_ttl: 60   # seconds
+
+trash:
+  purge_after_days: 30       # soft-deleted files physically purged after N days
+  sweep_interval_seconds: 3600
+
+pipeline:
+  enabled: true              # Go-native parse→chunk→embed→vectorize pipeline
+  max_doc_size: 52428800     # 50 MB; larger files are marked non-vectorizable
+  embedding:
+    base_url: http://higress:8080/v1  # override via AI_GATEWAY__BASE_URL (OpenAI-compatible)
+    api_key: ""              # inject via AI_GATEWAY__API_KEY (.env)
+    model: text-embedding-v4 # RED LINE: change = Milvus cloud_drive full rebuild
+    dimension: 1024          # must match the existing cloud_drive collection
+    batch_size: 10           # texts per /v1/embeddings call
+  milvus:
+    enabled: true
+    uri: ""                  # inject via MILVUS__URI (e.g. http://milvus:19530)
+    token: ""                # inject via MILVUS__TOKEN if auth enabled
+    collection: cloud_drive  # existing collection (schema owned by the pipeline, guarded)
+    analyzer: chinese        # BM25 analyzer; must match the existing collection
+
+ws_bridge:
+  enabled: true              # publish status changes to Redis for the backend WS bridge
+  channel: cloud:status
+
+cors:
+  allow_origins:
+    - http://localhost:3000
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-cloud.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true
