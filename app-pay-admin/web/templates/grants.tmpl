@@ -13,6 +13,14 @@
           <span>天数（1–3650）</span>
           <input name="duration_days" value="30" required inputmode="numeric">
         </label>
+        <label>
+          <span>档位</span>
+          <select name="tier">
+            <option value="">保持现状</option>
+            <option value="VIP">VIP</option>
+            <option value="SVIP">SVIP</option>
+          </select>
+        </label>
         <label class="field">
           <span>原因（必填，审计留痕；记录时自动加 [操作人] 前缀）</span>
           <textarea name="reason" rows="3" required maxlength="160" placeholder="如：客诉补偿，工单 #1234"></textarea>

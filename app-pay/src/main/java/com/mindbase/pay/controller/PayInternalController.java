@@ -41,9 +41,15 @@ public class PayInternalController {
     /** 运营补偿开通/延期：reason 必填并落 ADMIN_GRANT 审计事件。 */
     @PostMapping("/grant")
     public MembershipView grant(@Valid @RequestBody GrantRequest req) {
-        log.info("[PAY] admin_grant uid={} days={} reason={}", req.uid(), req.durationDays(), req.reason());
+        // tier optional: blank = keep existing/default; only VIP|SVIP accepted
+        String tier = req.tier() == null || req.tier().isBlank() ? null : req.tier().trim().toUpperCase();
+        if (tier != null && !"VIP".equals(tier) && !"SVIP".equals(tier)) {
+            throw new IllegalArgumentException("tier must be VIP or SVIP");
+        }
+        log.info("[PAY] admin_grant uid={} days={} tier={} reason={}",
+                req.uid(), req.durationDays(), tier, req.reason());
         PayMembership membership = membershipService.extend(req.uid(), req.durationDays(), null,
-                PayMembershipEvent.EventType.ADMIN_GRANT, req.reason());
+                PayMembershipEvent.EventType.ADMIN_GRANT, req.reason(), tier);
         return MembershipView.from(membership, membershipService.isActive(membership));
     }
 }

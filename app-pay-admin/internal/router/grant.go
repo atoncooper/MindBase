@@ -27,6 +27,7 @@ func (r *Router) apiGrant(c *gin.Context) {
 		UID          int64  `json:"uid" binding:"required,gt=0"`
 		DurationDays int    `json:"duration_days" binding:"required,gt=0,lte=3650"`
 		Reason       string `json:"reason" binding:"required"`
+		Tier         string `json:"tier"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
@@ -57,7 +58,12 @@ func (r *Router) apiGrant(c *gin.Context) {
 		return
 	}
 
-	res, err := r.grants.Grant(c.Request.Context(), operator, req.UID, req.DurationDays, reason)
+	tier := strings.ToUpper(strings.TrimSpace(req.Tier))
+	if tier != "" && tier != "VIP" && tier != "SVIP" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "tier must be VIP or SVIP"})
+		return
+	}
+	res, err := r.grants.Grant(c.Request.Context(), operator, req.UID, req.DurationDays, reason, tier)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "grant failed: " + err.Error()})
 		return

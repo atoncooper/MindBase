@@ -52,7 +52,7 @@ type GrantResult struct {
 
 // Grant extends uid's membership by days days. Validation of the request
 // happens at the router; this method is purely the transactional write.
-func (g *GrantService) Grant(ctx context.Context, operator string, uid int64, days int, reason string) (*GrantResult, error) {
+func (g *GrantService) Grant(ctx context.Context, operator string, uid int64, days int, reason string, tier string) (*GrantResult, error) {
 	var res *GrantResult
 	err := db.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var m model.PayMembership
@@ -62,7 +62,10 @@ func (g *GrantService) Grant(ctx context.Context, operator string, uid int64, da
 		created := false
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			created = true
-			m = model.PayMembership{UID: uid, Tier: "VIP", CreatedAt: now, UpdatedAt: now}
+			if tier == "" {
+				tier = "VIP"
+			}
+			m = model.PayMembership{UID: uid, Tier: tier, CreatedAt: now, UpdatedAt: now}
 		} else if err != nil {
 			return err
 		} else {
@@ -82,13 +85,18 @@ func (g *GrantService) Grant(ctx context.Context, operator string, uid int64, da
 			}
 		} else {
 			// Preserve last_order_no: Java's grant never clears it either.
-			if err := tx.Model(&m).Updates(map[string]any{
-				"expire_at":  after,
-				"updated_at": now,
-			}).Error; err != nil {
+			// tier: explicit value overrides (SVIP grants on existing VIPs).
+			updates := map[string]any{"expire_at": after, "updated_at": now}
+			if tier != "" {
+				updates["tier"] = tier
+			}
+			if err := tx.Model(&m).Updates(updates).Error; err != nil {
 				return err
 			}
 			m.ExpireAt = after
+			if tier != "" {
+				m.Tier = tier
+			}
 		}
 
 		finalReason := "[" + operator + "] " + reason
