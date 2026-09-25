@@ -13,7 +13,6 @@ import {
     Loader2,
     AlertCircle,
     Tv,
-    BarChart3,
     Sparkles,
     KeyRound,
 } from "lucide-react";
@@ -168,11 +167,6 @@ export function AccountView() {
 
             {/* Quick links */}
             <FormCard title="数据与配置" description="前往相关管理页面。">
-                <Row
-                    icon={<BarChart3 className="h-4 w-4" />}
-                    label="用量计费"
-                    onClick={() => router.push("/billing")}
-                />
                 <Row
                     icon={<Sparkles className="h-4 w-4" />}
                     label="技能商店"

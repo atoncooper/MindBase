@@ -96,22 +96,6 @@ export function NavBar({ onLoginClick }: NavBarProps) {
             </button>
           ) : (
             <div className="flex items-center gap-1">
-              {accountNavItems
-                .filter((i) => i.id === "settings")
-                .map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <Link
-                      key={item.id}
-                      href={item.href}
-                      title={item.label}
-                      className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
-                    >
-                      <Icon className="h-[18px] w-[18px]" />
-                    </Link>
-                  );
-                })}
-
               {/* Account menu */}
               <div ref={accountRef} className="relative">
                 <button
