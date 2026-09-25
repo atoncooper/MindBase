@@ -1,13 +1,16 @@
 "use client";
 
 /**
- * Folder sidebar - recursive folder tree with full CRUD.
+ * Folder sidebar - recursive folder tree with full CRUD + storage card.
  *
- * Apple Finder sidebar feel: a "全部文件" root entry, then a collapsible
- * nested tree. Active folder = accent-soft + accent text; hover reveals the
- * action group (new subfolder / rename / delete). Creating shows an inline
- * input under the target node (or at the tree top for the root); renaming
- * swaps the row's name for an inline input.
+ * Apple Finder sidebar feel, upgraded:
+ *  - "位置" section: 全部文件 root + collapsible nested tree with indentation
+ *    guide lines, animated chevrons (rotate instead of swap), open/closed
+ *    folder icons, count pills, hover action group (new subfolder / rename /
+ *    delete).
+ *  - "回收站" entry below the tree (badge = item count) — the single entry
+ *    point for trash view.
+ *  - "存储空间" card pinned at the bottom: usage bar + tier badge.
  *
  * State ownership:
  *  - expanded/collapsed: lifted here (persisted to localStorage); selection
@@ -20,14 +23,13 @@ import {
     Folder,
     FolderPlus,
     ChevronRight,
-    ChevronDown,
     Trash2,
     Pencil,
     Loader2,
     X,
     FolderOpen,
 } from "lucide-react";
-import type { CloudFolderTreeItem } from "@/lib/api/cloud";
+import { formatBytes, type CloudFolderTreeItem, type CloudQuotaResponse } from "@/lib/api/cloud";
 import { cn } from "@/lib/utils";
 
 const COLLAPSED_KEY = "cloud-drive:collapsed-folders";
@@ -41,6 +43,11 @@ interface FolderSidebarProps {
     onCreateFolder: (name: string, parentId: number | null) => Promise<void>;
     onRenameFolder: (id: number, name: string) => Promise<void>;
     onDeleteFolder: (folder: CloudFolderTreeItem) => void;
+    /** storage card + trash entry (app-cloud capabilities) */
+    quota?: CloudQuotaResponse | null;
+    trashCount?: number;
+    trashOpen?: boolean;
+    onToggleTrash?: () => void;
 }
 
 function readCollapsed(): Set<number> {
@@ -80,6 +87,10 @@ export function FolderSidebar({
     onCreateFolder,
     onRenameFolder,
     onDeleteFolder,
+    quota,
+    trashCount = 0,
+    trashOpen = false,
+    onToggleTrash,
 }: FolderSidebarProps) {
     const [collapsed, setCollapsed] = useState<Set<number>>(() => readCollapsed());
     // null = none; { parentId: null } = root-level create.
@@ -97,20 +108,27 @@ export function FolderSidebar({
     }, [collapsed]);
 
     // Selection (including a restored one from localStorage) must reveal its
-    // folder: expand ancestors and scroll the row into view.
-    useEffect(() => {
-        if (selectedFolderId == null) return;
-        const ancestors = findAncestors(folders, selectedFolderId);
-        if (ancestors.length === 0) return;
-        setCollapsed((prev) => {
-            const next = new Set(prev);
-            let changed = false;
-            for (const id of ancestors) {
-                if (next.delete(id)) changed = true;
+    // folder: expand ancestors and scroll the row into view. Render-time
+    // adjustment keyed on (selection, folder set) — the sanctioned pattern
+    // instead of a set-state-in-effect.
+    const adjustKey = `${selectedFolderId ?? "root"}:${loading}:${folders.length}`;
+    const [lastAdjustKey, setLastAdjustKey] = useState<string | null>(null);
+    if (adjustKey !== lastAdjustKey) {
+        setLastAdjustKey(adjustKey);
+        if (selectedFolderId != null && !loading) {
+            const ancestors = findAncestors(folders, selectedFolderId);
+            if (ancestors.length > 0) {
+                setCollapsed((prev) => {
+                    const next = new Set(prev);
+                    let changed = false;
+                    for (const id of ancestors) {
+                        if (next.delete(id)) changed = true;
+                    }
+                    return changed ? next : prev;
+                });
             }
-            return changed ? next : prev;
-        });
-    }, [selectedFolderId, folders]);
+        }
+    }
 
     useEffect(() => {
         if (selectedFolderId == null || loading) return;
@@ -128,10 +146,14 @@ export function FolderSidebar({
         });
     }, []);
 
+    const usedPct = quota
+        ? Math.min(100, Math.round((quota.used / Math.max(quota.quota, 1)) * 100))
+        : 0;
+
     return (
         <div className="flex h-full flex-col">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 pb-2 pt-4">
+            <div className="flex items-center justify-between px-4 pb-1.5 pt-4">
                 <h2 className="text-[13px] font-semibold text-foreground">位置</h2>
                 <button
                     type="button"
@@ -155,13 +177,18 @@ export function FolderSidebar({
                     onClick={() => onSelect(null)}
                     className={cn(
                         "flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-[13px] transition-colors",
-                        selectedFolderId === null
+                        selectedFolderId === null && !trashOpen
                             ? "bg-accent-soft font-medium text-accent"
                             : "text-foreground hover:bg-border-subtle/70"
                     )}
                 >
                     <Cloud className="h-4 w-4 shrink-0" />
                     <span className="truncate">全部文件</span>
+                    {totalCount > 0 && !trashOpen && (
+                        <span className="ml-auto rounded-full bg-border-subtle/80 px-1.5 py-0.5 text-[10px] tabular-nums text-secondary">
+                            {totalCount}
+                        </span>
+                    )}
                 </button>
 
                 {/* Root-level inline create input */}
@@ -188,15 +215,26 @@ export function FolderSidebar({
                     </div>
                 )}
 
-                {/* Empty state */}
+                {/* Empty state — the create action is inline, not "top right" */}
                 {!loading && folders.length === 0 && (
-                    <div className="flex flex-col items-center gap-1.5 px-3 pt-6 text-center">
+                    <div className="flex flex-col items-center gap-2 px-3 pt-6 text-center">
                         <FolderOpen className="h-6 w-6 text-tertiary" />
-                        <p className="text-[12px] text-tertiary">
+                        <p className="text-[12px] leading-5 text-tertiary">
                             还没有文件夹
                             <br />
-                            点击右上角新建
+                            建一个来整理文件
                         </p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setRenamingId(null);
+                                setCreateTarget({ parentId: null });
+                            }}
+                            className="btn-pill btn-primary h-7 px-3 text-[11px]"
+                        >
+                            <FolderPlus className="h-3.5 w-3.5" />
+                            新建文件夹
+                        </button>
                     </div>
                 )}
 
@@ -222,10 +260,56 @@ export function FolderSidebar({
                     ))}
             </nav>
 
-            {/* Footer */}
-            <div className="border-t border-border-subtle px-4 py-2.5 text-[11px] text-tertiary">
-                共 {totalCount} 个文件
-            </div>
+            {/* Trash entry — Finder puts it at the bottom of the sidebar */}
+            {onToggleTrash && (
+                <div className="border-t border-border-subtle px-2 pb-1 pt-1.5">
+                    <button
+                        type="button"
+                        onClick={onToggleTrash}
+                        className={cn(
+                            "flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-[13px] transition-colors",
+                            trashOpen
+                                ? "bg-accent-soft font-medium text-accent"
+                                : "text-foreground hover:bg-border-subtle/70"
+                        )}
+                    >
+                        <Trash2 className="h-4 w-4 shrink-0" />
+                        <span className="truncate">回收站</span>
+                        {trashCount > 0 && (
+                            <span className="ml-auto rounded-full bg-border-subtle/80 px-1.5 py-0.5 text-[10px] tabular-nums text-secondary">
+                                {trashCount}
+                            </span>
+                        )}
+                    </button>
+                </div>
+            )}
+
+            {/* Storage card — usage bar pinned to the sidebar bottom */}
+            {quota && (
+                <div className="border-t border-border-subtle px-4 py-3">
+                    <div className="mb-1.5 flex items-baseline justify-between text-[11px]">
+                        <span className="text-secondary">存储空间</span>
+                        {quota.tier !== "free" && (
+                            <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                                {quota.tier.toUpperCase()}
+                            </span>
+                        )}
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-border-subtle">
+                        <div
+                            className={cn(
+                                "h-full rounded-full transition-all",
+                                usedPct >= 90 ? "bg-danger" : "bg-accent"
+                            )}
+                            style={{ width: `${usedPct}%` }}
+                        />
+                    </div>
+                    <p className="mt-1.5 text-[11px] tabular-nums text-tertiary">
+                        {formatBytes(quota.used)} / {formatBytes(quota.quota)}
+                        {quota.pending > 0 && ` · 传输中 ${formatBytes(quota.pending)}`}
+                    </p>
+                </div>
+            )}
         </div>
     );
 }
@@ -264,7 +348,7 @@ function InlineCreateInput({
     return (
         <div
             className="mt-0.5 flex items-center gap-2 rounded-[10px] bg-accent-soft px-2.5 py-1.5"
-            style={{ marginLeft: depth * 12 + 4 }}
+            style={{ marginLeft: depth * 14 + 4 }}
         >
             <Folder className="h-4 w-4 shrink-0 text-accent" />
             <input
@@ -329,34 +413,6 @@ function FolderNode({
     const open = !collapsed.has(folder.id);
     const renaming = renamingId === folder.id;
     const creatingHere = createTarget?.parentId === folder.id;
-    const [renameDraft, setRenameDraft] = useState("");
-    const [renameBusy, setRenameBusy] = useState(false);
-    const renameInputRef = useRef<HTMLInputElement>(null);
-
-    useEffect(() => {
-        if (renaming) {
-            setRenameDraft(folder.name);
-            renameInputRef.current?.focus();
-            renameInputRef.current?.select();
-        }
-    }, [renaming, folder.name]);
-
-    const submitRename = async () => {
-        const name = renameDraft.trim();
-        if (!name || renameBusy || name === folder.name) {
-            setRenamingId(null);
-            return;
-        }
-        setRenameBusy(true);
-        try {
-            await onRenameFolder(folder.id, name);
-            setRenamingId(null);
-        } catch {
-            // Keep the input open so the error is visible.
-        } finally {
-            setRenameBusy(false);
-        }
-    };
 
     return (
         <div>
@@ -366,52 +422,36 @@ function FolderNode({
                     "group flex items-center gap-1 rounded-[10px] pr-1 transition-colors",
                     active ? "bg-accent-soft" : "hover:bg-border-subtle/70"
                 )}
-                style={{ paddingLeft: depth * 12 + 4 }}
+                style={{ paddingLeft: depth * 14 + 4 }}
             >
+                {/* Chevron: one icon, rotated via transition — smoother than a swap */}
                 <button
                     type="button"
                     onClick={() => hasChildren && onToggle(folder.id)}
                     aria-expanded={hasChildren ? open : undefined}
                     className={cn(
-                        "grid h-6 w-5 shrink-0 place-items-center text-tertiary transition-transform",
+                        "grid h-6 w-5 shrink-0 place-items-center text-tertiary",
                         !hasChildren && "invisible"
                     )}
                 >
-                    {open ? (
-                        <ChevronDown className="h-3.5 w-3.5" />
-                    ) : (
-                        <ChevronRight className="h-3.5 w-3.5" />
-                    )}
+                    <ChevronRight
+                        className={cn(
+                            "h-3.5 w-3.5 transition-transform duration-200",
+                            open && "rotate-90"
+                        )}
+                    />
                 </button>
 
                 {renaming ? (
-                    <div className="flex min-w-0 flex-1 items-center gap-2 py-1.5">
-                        <Folder className="h-4 w-4 shrink-0 text-accent" />
-                        <input
-                            ref={renameInputRef}
-                            value={renameDraft}
-                            disabled={renameBusy}
-                            onChange={(e) => setRenameDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") void submitRename();
-                                if (e.key === "Escape") setRenamingId(null);
-                            }}
-                            maxLength={80}
-                            className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none"
-                        />
-                        {renameBusy ? (
-                            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
-                        ) : (
-                            <button
-                                type="button"
-                                onClick={() => setRenamingId(null)}
-                                className="shrink-0 text-tertiary hover:text-foreground"
-                                aria-label="取消重命名"
-                            >
-                                <X className="h-3.5 w-3.5" />
-                            </button>
-                        )}
-                    </div>
+                    <RenameInput
+                        key={folder.id}
+                        folderName={folder.name}
+                        onSubmit={async (name) => {
+                            await onRenameFolder(folder.id, name);
+                            setRenamingId(null);
+                        }}
+                        onCancel={() => setRenamingId(null)}
+                    />
                 ) : (
                     <>
                         <button
@@ -422,15 +462,31 @@ function FolderNode({
                                 active ? "font-medium text-accent" : "text-foreground"
                             )}
                         >
-                            <Folder
-                                className={cn(
-                                    "h-4 w-4 shrink-0",
-                                    active ? "text-accent" : "text-secondary"
-                                )}
-                            />
+                            {open && hasChildren ? (
+                                <FolderOpen
+                                    className={cn(
+                                        "h-4 w-4 shrink-0 transition-colors",
+                                        active ? "text-accent" : "text-secondary"
+                                    )}
+                                />
+                            ) : (
+                                <Folder
+                                    className={cn(
+                                        "h-4 w-4 shrink-0 transition-colors",
+                                        active ? "text-accent" : "text-secondary"
+                                    )}
+                                />
+                            )}
                             <span className="truncate">{folder.name}</span>
                             {folder.videoCount > 0 && (
-                                <span className="ml-auto shrink-0 text-[11px] tabular-nums text-tertiary">
+                                <span
+                                    className={cn(
+                                        "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+                                        active
+                                            ? "bg-accent/15 text-accent"
+                                            : "bg-border-subtle/80 text-tertiary group-hover:bg-surface"
+                                    )}
+                                >
                                     {folder.videoCount}
                                 </span>
                             )}
@@ -496,8 +552,12 @@ function FolderNode({
                 />
             )}
 
+            {/* Children with an indentation guide line (Finder tree feel) */}
             {hasChildren && open && (
-                <div>
+                <div
+                    className="border-l border-border-subtle/70 pl-0.5"
+                    style={{ marginLeft: depth * 14 + 15 }}
+                >
                     {folder.children.map((child) => (
                         <FolderNode
                             key={child.id}
@@ -517,6 +577,74 @@ function FolderNode({
                         />
                     ))}
                 </div>
+            )}
+        </div>
+    );
+}
+
+/** Inline rename input — key-remounted per rename, so the draft initializes
+ *  from props (no state-sync effect needed). */
+function RenameInput({
+    folderName,
+    onSubmit,
+    onCancel,
+}: {
+    folderName: string;
+    onSubmit: (name: string) => Promise<void>;
+    onCancel: () => void;
+}) {
+    const [draft, setDraft] = useState(folderName);
+    const [busy, setBusy] = useState(false);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const inputRefCb = (el: HTMLInputElement | null) => {
+        inputRef.current = el;
+        el?.focus();
+        el?.select();
+    };
+
+    const submit = async () => {
+        const name = draft.trim();
+        if (!name || busy || name === folderName) {
+            onCancel();
+            return;
+        }
+        setBusy(true);
+        try {
+            await onSubmit(name);
+        } catch {
+            // Keep the input open so the error is visible.
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <div className="flex min-w-0 flex-1 items-center gap-2 py-1.5">
+            <Folder className="h-4 w-4 shrink-0 text-accent" />
+            <input
+                ref={inputRefCb}
+                value={draft}
+                disabled={busy}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter") void submit();
+                    if (e.key === "Escape") onCancel();
+                }}
+                maxLength={80}
+                className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none"
+            />
+            {busy ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+            ) : (
+                <button
+                    type="button"
+                    onClick={onCancel}
+                    className="shrink-0 text-tertiary hover:text-foreground"
+                    aria-label="取消重命名"
+                >
+                    <X className="h-3.5 w-3.5" />
+                </button>
             )}
         </div>
     );

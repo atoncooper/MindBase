@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Pencil } from "lucide-react";
+import { Check, Pencil, Smartphone } from "lucide-react";
 import { authApi, userApi, type AuthFeatures, type CaptchaValue, type ProfileData } from "@/lib/api";
 import { CaptchaField } from "@/components/captcha-field";
 import {
@@ -181,6 +181,7 @@ export function PhoneCard({ profile, onReload, onToast }: Props) {
                 </div>
             ) : (
                 <div className="flex items-center gap-3 px-5 py-3.5">
+                    <Smartphone className="h-4 w-4 shrink-0 text-secondary" />
                     <div className="min-w-0 flex-1">
                         {profile.phone ? (
                             <span className="text-[13px] text-foreground">{profile.phone}</span>
@@ -196,7 +197,7 @@ export function PhoneCard({ profile, onReload, onToast }: Props) {
                             <button
                                 type="button"
                                 onClick={unbind}
-                                className="text-[12px] text-danger hover:underline"
+                                className="rounded px-1 py-0.5 text-[12px] text-danger transition-colors hover:bg-danger/10"
                             >
                                 解绑
                             </button>

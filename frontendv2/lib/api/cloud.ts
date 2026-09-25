@@ -176,6 +176,69 @@ export interface CloudRawFileResponse {
     viewMode: CloudViewMode;
 }
 
+// ── New (app-cloud Go service): quota / search / trash / share ──
+
+export interface CloudQuotaResponse {
+    used: number;
+    quota: number;
+    tier: string;
+    /** in-flight upload bytes (registered at init, consumed on complete) */
+    pending: number;
+    error?: string;
+}
+
+export interface CloudTrashItem {
+    uploadUuid: string;
+    originalName: string;
+    fileSize: number;
+    mimeType: string;
+    deletedAt: string | null;
+    purgeAt: string | null;
+}
+
+export interface CloudTrashResponse {
+    items: CloudTrashItem[];
+    total: number;
+}
+
+export interface CloudShareCreateParams {
+    code?: string;
+    expiresInDays?: number;
+    maxDownloads?: number | null;
+}
+
+export interface CloudShareView {
+    id: number;
+    fileId: number;
+    hasCode: boolean;
+    expiresAt: string | null;
+    maxDownloads: number | null;
+    viewCount: number;
+    downloadCount: number;
+    isRevoked: boolean;
+    createdAt: string | null;
+    shareToken?: string;
+    shareUrl?: string;
+}
+
+export interface CloudShareInfoResponse {
+    fileName: string;
+    fileSize: number;
+    mimeType: string;
+    requiresCode: boolean;
+    createdAt: string | null;
+    expiresAt: string | null;
+}
+
+export interface CloudShareAccessResponse {
+    url: string;
+    viewMode: CloudViewMode;
+    mimeType: string;
+    fileName: string;
+    fileSize: number;
+    expiresIn: number;
+}
+
 export function formatBytes(bytes: number): string {
     if (bytes === 0) return "0 B";
     const k = 1024;
@@ -305,6 +368,64 @@ export const cloudApi = {
         );
         return snakeToCamel<CloudRawFileResponse>(raw);
     },
+
+    // ── Quota / Search / Trash / Share (app-cloud) ──
+    getQuota: async () => {
+        const raw = await request<CloudQuotaResponse>("/cloud/quota", { headers: getAuthHeaders() });
+        return snakeToCamel<CloudQuotaResponse>(raw);
+    },
+
+    searchFiles: async (q: string) => {
+        const raw = await request<{ results: CloudVideoItem[]; total: number }>(
+            `/cloud/search?q=${encodeURIComponent(q)}`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<{ results: CloudVideoItem[]; total: number }>(raw);
+    },
+
+    listTrash: async () => {
+        const raw = await request<CloudTrashResponse>("/cloud/trash", { headers: getAuthHeaders() });
+        return snakeToCamel<CloudTrashResponse>(raw);
+    },
+
+    restoreTrash: (uploadUuid: string) =>
+        request<{ restored: boolean }>(`/cloud/trash/${uploadUuid}/restore`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    purgeTrashItem: (uploadUuid: string) =>
+        request<{ purged: boolean }>(`/cloud/trash/${uploadUuid}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    emptyTrash: () =>
+        request<{ purged: number }>("/cloud/trash", {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    createShare: (uploadUuid: string, data: CloudShareCreateParams) =>
+        request<CloudShareView>(`/cloud/video/${uploadUuid}/share`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        }),
+
+    listShares: async (uploadUuid: string) => {
+        const raw = await request<{ shares: CloudShareView[]; total: number }>(
+            `/cloud/video/${uploadUuid}/shares`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<{ shares: CloudShareView[]; total: number }>(raw);
+    },
+
+    revokeShare: (shareId: number) =>
+        request<{ revoked: boolean }>(`/cloud/shares/${shareId}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
 
     // ── Helper: chunked upload ──
     /** Upload a file to the cloud drive with chunked multipart upload */

@@ -3,14 +3,24 @@
 /**
  * Cloud drive toolbar - sticky, frosted.
  *
- * Left: current folder title. Right: sort dropdown + list/grid segmented
- * control (framer-motion sliding indicator, same pattern as the note editor)
- * + upload button. Sticks to the top of the main pane with a blur veil so
- * content scrolls beneath, matching Apple Finder / iCloud Drive.
+ * Left: search input (app-cloud) + current folder title. Right: sort dropdown
+ * + list/grid segmented control + share + upload button. (trash entry lives in the sidebar)
+ * Sticks to the top of the main pane with a blur veil so content scrolls
+ * beneath, matching Apple Finder / iCloud Drive.
  */
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { List, LayoutGrid, ArrowUpDown, CloudUpload, Check, Loader2 } from "lucide-react";
+import {
+    List,
+    LayoutGrid,
+    ArrowUpDown,
+    CloudUpload,
+    Check,
+    Loader2,
+    Search,
+    Share2,
+    X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type ViewMode = "list" | "grid";
@@ -26,6 +36,11 @@ interface FileToolbarProps {
     onSortChange: (field: SortField, order: SortOrder) => void;
     onUploadClick: () => void;
     uploading: boolean;
+    /** app-cloud additions */
+    searchValue?: string;
+    onSearchChange?: (q: string) => void;
+    canShare?: boolean;
+    onShareClick?: () => void;
 }
 
 const SORT_LABELS: Record<SortField, string> = {
@@ -43,6 +58,10 @@ export function FileToolbar({
     onSortChange,
     onUploadClick,
     uploading,
+    searchValue,
+    onSearchChange,
+    canShare,
+    onShareClick,
 }: FileToolbarProps) {
     const [sortOpen, setSortOpen] = useState(false);
     const sortRef = useRef<HTMLDivElement>(null);
@@ -60,13 +79,48 @@ export function FileToolbar({
 
     return (
         <div className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-border-subtle bg-background/75 px-5 py-2.5 backdrop-blur-xl">
-            {/* Title */}
-            <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-tight text-foreground">
-                {title}
-            </h1>
+            {/* Search + Title */}
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+                {onSearchChange && (
+                    <div className="relative hidden sm:block">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
+                        <input
+                            value={searchValue ?? ""}
+                            onChange={(e) => onSearchChange(e.target.value)}
+                            placeholder="搜索文件…"
+                            className="h-8 w-40 rounded-full border border-border-subtle bg-surface pl-8 pr-7 text-[12px] text-foreground outline-none transition-all placeholder:text-tertiary focus:w-56 focus:border-accent"
+                        />
+                        {searchValue ? (
+                            <button
+                                type="button"
+                                onClick={() => onSearchChange("")}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-tertiary hover:text-foreground"
+                            >
+                                <X className="h-3 w-3" />
+                            </button>
+                        ) : null}
+                    </div>
+                )}
+                <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-tight text-foreground">
+                    {title}
+                </h1>
+            </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
+                {onShareClick && (
+                    <button
+                        type="button"
+                        onClick={onShareClick}
+                        disabled={!canShare}
+                        title={canShare ? "分享选中文件" : "先选中一个文件"}
+                        className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        <Share2 className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">分享</span>
+                    </button>
+                )}
+
                 {/* Sort */}
                 <div ref={sortRef} className="relative">
                     <button

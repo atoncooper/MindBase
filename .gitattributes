@@ -3,3 +3,7 @@
 # lua YAML parser mis-handles CRLF (init_etcd fails to read deployment.etcd,
 # routes in apisix.yaml may load with trailing \r).
 apisix/*.yaml text eol=lf
+
+# Shell scripts run inside Linux containers — CRLF breaks them at runtime
+# (e.g. `set -eu` -> "illegal option"). Enforce LF for the whole class.
+*.sh text eol=lf

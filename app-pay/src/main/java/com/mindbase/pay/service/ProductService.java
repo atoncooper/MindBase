@@ -29,7 +29,10 @@ public class ProductService implements ApplicationRunner {
     private static final List<PayProduct> DEFAULT_SKUS = List.of(
             sku("VIP_MONTHLY", "会员·月度", 30, 1800, 10),
             sku("VIP_QUARTERLY", "会员·季度", 90, 4500, 20),
-            sku("VIP_YEARLY", "会员·年度", 365, 15800, 30)
+            sku("VIP_YEARLY", "会员·年度", 365, 15800, 30),
+            sku("SVIP_MONTHLY", "超级会员·月度", 30, 4800, 40),
+            sku("SVIP_QUARTERLY", "超级会员·季度", 90, 12000, 50),
+            sku("SVIP_YEARLY", "超级会员·年度", 365, 42000, 60)
     );
 
     private static PayProduct sku(String code, String title, int days, long priceCents, int sort) {

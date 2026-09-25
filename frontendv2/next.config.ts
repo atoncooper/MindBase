@@ -6,6 +6,18 @@ const MINIO_PROXY_DEST = process.env.MINIO_PROXY_DEST || "http://localhost";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // HTML 路由强制 no-cache：浏览器每次带 ETag 重验证（命中即 304，代价极小）。
+  // 否则 Next 对预渲染页发 s-maxage=31536000，nginx/浏览器会缓存旧 HTML ——
+  // 前端重建后旧 HTML 引用已删除的 chunk，整页无样式（踩过三次的坑）。
+  // /_next/static/* 资源本身 immutable，不受此头影响。
+  async headers() {
+    return [
+      {
+        source: "/:path((?!_next/static|_next/image).*)",
+        headers: [{ key: "Cache-Control", value: "no-cache" }],
+      },
+    ];
+  },
   // 开发模式代理：将 API 请求转发到 APISIX。
   // 生产环境（NEXT_PUBLIC_API_URL 设值）跳过 API rewrite（由 nginx 处理），
   // 但 MinIO 同源代理 rewrite 两种模式都保留（媒体元素需要同源嵌入）。

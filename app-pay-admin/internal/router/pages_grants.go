@@ -68,6 +68,11 @@ func (r *Router) handleGrantForm(c *gin.Context) {
 		return
 	}
 	reason := strings.TrimSpace(c.PostForm("reason"))
+	tier := strings.ToUpper(strings.TrimSpace(c.PostForm("tier")))
+	if tier != "" && tier != "VIP" && tier != "SVIP" {
+		redirectFlash(c, "/grants", "err", "tier 必须为 VIP 或 SVIP")
+		return
+	}
 	if reason == "" {
 		redirectFlash(c, "/grants", "err", "原因必填（审计留痕）")
 		return
@@ -77,7 +82,7 @@ func (r *Router) handleGrantForm(c *gin.Context) {
 		return
 	}
 
-	res, err := r.grants.Grant(c.Request.Context(), s.Username, uid, days, reason)
+	res, err := r.grants.Grant(c.Request.Context(), s.Username, uid, days, reason, tier)
 	if err != nil {
 		slog.Error("[GRANT] form grant failed", "err", err, "operator", s.Username, "uid", uid)
 		redirectFlash(c, "/grants", "err", "开通失败：%v", err)

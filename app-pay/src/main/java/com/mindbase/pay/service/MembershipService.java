@@ -43,6 +43,17 @@ public class MembershipService {
         String orderNo,
         PayMembershipEvent.EventType explicitType, 
         String reason) {
+        return extend(uid, days, orderNo, explicitType, reason, null);
+    }
+
+    /** Tier-aware overload: tier null/blank keeps the existing row's tier (or defaults VIP on create). */
+    public PayMembership extend(
+        long uid,
+        int days,
+        String orderNo,
+        PayMembershipEvent.EventType explicitType,
+        String reason,
+        String tier) {
         LocalDateTime now = LocalDateTime.now(clock);
         PayMembership membership = membershipMapper.selectByUidForUpdate(uid);
 
@@ -65,6 +76,10 @@ public class MembershipService {
         LocalDateTime base = expireBefore.isAfter(now) ? expireBefore : now;
         membership.setExpireAt(base.plusDays(days));
         membership.setLastOrderNo(orderNo);
+        // tier: explicit value wins; a new row defaults to VIP
+        if (tier != null && !tier.isBlank()) {
+            membership.setTier(tier);
+        }
         membership.setUpdatedAt(now);
         if (membership.getId() == null) {
             membershipMapper.insert(membership);

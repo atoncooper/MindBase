@@ -67,7 +67,8 @@ public final class PayDtos {
 
     public record GrantRequest(@Positive long uid,
                                @Min(1) int durationDays,
-                               @NotBlank @Size(max = 200) String reason) {
+                               @NotBlank @Size(max = 200) String reason,
+                               @Size(max = 20) String tier) {
     }
 
     // ---------- 本机测试入口（/test/pay/*，默认关闭 + 令牌双闸门） ----------

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Check, Pencil } from "lucide-react";
+import { Select } from "@/components/ui/select";
 import { userApi, type ProfileData } from "@/lib/api";
 import {
     FormCard,
@@ -146,16 +147,16 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
                         />
                     </Field>
                     <Field label="性别">
-                        <select
-                            className="field"
+                        <Select
                             value={form.gender}
-                            onChange={(e) => set("gender", e.target.value)}
-                        >
-                            <option value="">未设置</option>
-                            <option value="male">男</option>
-                            <option value="female">女</option>
-                            <option value="other">其他</option>
-                        </select>
+                            onChange={(v) => set("gender", v)}
+                            placeholder="未设置"
+                            options={[
+                                { value: "male", label: "男" },
+                                { value: "female", label: "女" },
+                                { value: "other", label: "其他" },
+                            ]}
+                        />
                     </Field>
                     <Field label="地区">
                         <input
@@ -174,15 +175,15 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
                         />
                     </Field>
                     <Field label="语言">
-                        <select
-                            className="field"
+                        <Select
                             value={form.language}
-                            onChange={(e) => set("language", e.target.value)}
-                        >
-                            <option value="">未设置</option>
-                            <option value="zh">中文</option>
-                            <option value="en">English</option>
-                        </select>
+                            onChange={(v) => set("language", v)}
+                            placeholder="未设置"
+                            options={[
+                                { value: "zh", label: "中文" },
+                                { value: "en", label: "English" },
+                            ]}
+                        />
                     </Field>
                 </div>
             ) : (

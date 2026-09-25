@@ -41,7 +41,10 @@ public class DeliveryService {
             return;
         }
         try {
-            membershipService.extend(order.getUid(), order.getDurationDays(), order.getOrderNo(), null, null);
+            // tier derived from the SKU code prefix ("SVIP_*" -> SVIP, otherwise VIP)
+            String tier = order.getSkuCode() != null && order.getSkuCode().startsWith("SVIP")
+                    ? "SVIP" : "VIP";
+            membershipService.extend(order.getUid(), order.getDurationDays(), order.getOrderNo(), null, null, tier);
         } catch (Exception e) {
             // 抛出使本事务回滚（DELIVERED 标记一并撤销），订单留 PAID 等待补偿
             audit.audit("DELIVER_FAILED", "order_no", order.getOrderNo(),
