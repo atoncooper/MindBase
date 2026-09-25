@@ -108,6 +108,41 @@ async def fail_message(msg_id: str, error: str) -> None:
     )
 
 
+async def truncate_messages_from_for_user(
+    chat_session_id: str, uid: int, msg_id: str
+) -> Optional[int]:
+    """Delete *msg_id* and every later message of the session (chat order).
+
+    Backs the per-turn "regenerate" flow: the client removes the target
+    turn (and everything after it) from server history before re-asking,
+    so the next request rebuilds LLM context without the dropped turns.
+
+    Returns the number of deleted documents, or ``None`` when the anchor
+    message does not exist in this session for this user (or Mongo is
+    disabled, in which case history is not persisted anyway).
+    """
+    if not is_enabled():
+        return None
+    anchor = await coll(COLLECTION).find_one(
+        {"msg_id": msg_id, "chat_session_id": chat_session_id, "uid": uid},
+        {"created_at": 1},
+    )
+    if anchor is None or "created_at" not in anchor:
+        return None
+    result = await coll(COLLECTION).delete_many(
+        {
+            "chat_session_id": chat_session_id,
+            "uid": uid,
+            "created_at": {"$gte": anchor["created_at"]},
+        }
+    )
+    logger.info(
+        f"[MONGO_CHAT] truncated {result.deleted_count} messages "
+        f"from msg_id={msg_id} session={chat_session_id} uid={uid}"
+    )
+    return result.deleted_count
+
+
 async def delete_message(msg_id: str) -> int:
     """Delete a single message by ``msg_id``.
 

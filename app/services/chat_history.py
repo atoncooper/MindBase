@@ -471,6 +471,39 @@ async def delete_assistant_message(
     logger.info(f"[CHAT_HISTORY] removed placeholder msg_id={msg_id} (turn aborted before generation)")
 
 
+async def truncate_history_from_for_user(
+    db: AsyncSession,
+    uid: int,
+    chat_session_id: str,
+    msg_id: str,
+) -> Optional[int]:
+    """Delete *msg_id* and all later messages of the session (chat order).
+
+    Backs the per-turn "regenerate" flow: after truncation the client
+    re-asks the anchor turn's question, so history and LLM context stay
+    consistent.
+
+    Returns:
+        ``None``   — session does not belong to *uid* (caller maps to 404).
+        ``0``      — anchor message not found (or Mongo disabled).
+        ``int >0`` — number of deleted messages.
+    """
+    session = await get_chat_session_for_user(db, uid, chat_session_id)
+    if session is None:
+        return None
+    deleted = await mongo_chat.truncate_messages_from_for_user(
+        chat_session_id, uid, msg_id
+    )
+    if deleted is None:
+        return 0
+    if deleted:
+        logger.info(
+            f"[CHAT_HISTORY] truncated {deleted} messages from "
+            f"msg_id={msg_id} session={chat_session_id} uid={uid}"
+        )
+    return deleted
+
+
 async def _unsafe_get_history(
     db: AsyncSession,
     chat_session_id: str,
