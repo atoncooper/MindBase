@@ -92,30 +92,46 @@ async def get_session_token(
 
 
 async def get_current_uid(
-    token_str: Optional[str] = Depends(get_session_token),
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> int:
-    """FastAPI dependency: validate token and return uid, or raise 401."""
-    if not token_str:
+    """FastAPI dependency: return the caller's uid from the gateway-injected
+    ``X-Uid`` header, or raise 401.
+
+    Cutover to app-auth: APISIX forward-auth validates bili_session against
+    app-go/app-auth (``/internal/auth/verify``, lenient verify) and injects
+    ``X-Uid`` / ``X-Roles``. The backend no longer reads user_tokens — the
+    header is the only identity source. X-Uid is stripped from client
+    requests by proxy-rewrite on every forward-auth route, so it cannot be
+    spoofed.
+    """
+    raw = request.headers.get("X-Uid", "").strip()
+    if not raw:
         raise HTTPException(status_code=401, detail="未提供认证 token")
-    uid = await _validate_token(db, token_str)
-    if uid is None:
+    try:
+        uid = int(raw)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="token 无效或已过期")
+    if uid <= 0:
         raise HTTPException(status_code=401, detail="token 无效或已过期")
     return uid
 
 
 async def require_admin(
+    request: Request,
     uid: int = Depends(get_current_uid),
-    db: AsyncSession = Depends(get_db),
 ) -> int:
     """FastAPI dependency: require the caller to hold the 'admin' RBAC role.
 
-    Returns uid on success; raises 403 otherwise. Used to gate globally
-    destructive endpoints (e.g. drop Milvus collection, clear knowledge base).
+    Reads the gateway-injected ``X-Roles`` header (comma-separated role ids
+    from app-auth's verify response) instead of querying rbac tables.
+    Returns uid on success; raises 403 otherwise.
     """
-    from app.repository.rbac_repository import get_rbac_repository
-
-    roles = await get_rbac_repository().get_user_roles(uid, db)
+    roles = {
+        r.strip()
+        for r in request.headers.get("X-Roles", "").split(",")
+        if r.strip()
+    }
     if "admin" not in roles:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return uid

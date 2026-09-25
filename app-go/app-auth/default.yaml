@@ -1,0 +1,119 @@
+# ============================================================
+# app-auth (Go) - default configuration
+# ============================================================
+# Identity & access service: session tokens, login methods, account
+# management, RBAC. Owns the auth tables (users/user_tokens/user_oauth/
+# user_profile/user_device/verification_codes/login_attempts/rbac_*) in the
+# SHARED bilirag MySQL database — schema ownership moved here from the
+# Python backend (which keeps READ-ONLY access to user_oauth for SESSDATA).
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPAUTH__, double-underscore nesting:
+#        APPAUTH__RDBMS__URL=...  -> rdbms.url
+#   Shared secret env vars (read directly, same names as the Python backend):
+#        SECURITY__API_KEY_ENCRYPTION_KEY, EMAIL__API_KEY, SMS__*,
+#        WECHAT__APP_ID/APP_SECRET/REDIRECT_URI, REDIS__URL
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-auth
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8006
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPAUTH__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800    # seconds
+
+redis:
+  url: ""                    # inject via APPAUTH__REDIS__URL or shared REDIS__URL; empty = in-memory cache only
+
+auth:
+  token_ttl_days: 30         # session token lifetime (must match Python DEFAULT_TOKEN_TTL_DAYS)
+  cache_ttl_seconds: 300     # token->uid cache TTL (must match Python _TOKEN_TTL)
+  token_cache_namespace: "appauth:token:"  # redis key prefix for the token cache
+
+security:
+  api_key_encryption_key: "" # inject via SECURITY__API_KEY_ENCRYPTION_KEY (shared with Python backend;
+                             # AES-256-GCM key, base64(32 bytes); empty = dev plaintext-base64 fallback)
+  captcha:
+    enabled: true
+    length: 4
+    ttl_seconds: 300
+    image_width: 160
+    image_height: 56
+  # Per-endpoint fixed-window rate limits (Redis-backed, fail-open).
+  # Defaults mirror the Python backend's security.rate_limit.* — entries
+  # listed here are the effective defaults; override any rule per key.
+  rate_limit:
+    login_ip:          { max: 10, window: 60 }    # per-IP login attempts
+    login_target:      { max: 5,  window: 300 }   # per-identifier (email/phone)
+    register_send_ip:  { max: 5,  window: 3600 }  # per-IP register-code sends
+    register_send_tgt: { max: 3,  window: 3600 }  # per-email register-code sends
+    register_ip:       { max: 10, window: 3600 }  # per-IP registrations
+    phone_send_ip:     { max: 10, window: 60 }    # per-IP sms sends
+    phone_send_tgt:    { max: 5,  window: 600 }   # per-phone sms sends
+    phone_login_ip:    { max: 10, window: 300 }   # per-IP sms-code logins
+    email_send_ip:     { max: 10, window: 60 }    # per-IP email-code sends (authed)
+    email_send_uid:    { max: 5,  window: 600 }   # per-uid email-code sends
+    email_verify_ip:   { max: 20, window: 60 }    # per-IP code verifications
+    pw_reset_req_ip:   { max: 5,  window: 3600 }  # per-IP reset requests
+    pw_reset_req_tgt:  { max: 3,  window: 3600 }  # per-email reset requests
+    pw_reset_ip:       { max: 10, window: 3600 }  # per-IP reset confirms
+    pw_change_uid:     { max: 3,  window: 3600 }  # per-uid password changes
+    pw_set_uid:        { max: 3,  window: 3600 }  # per-uid first-time password sets
+
+email:
+  enabled: false             # inject via EMAIL__ENABLED (shared with Python backend)
+  api_key: ""                # inject via EMAIL__API_KEY (Resend)
+  from_email: "MindBase <onboarding@resend.dev>"
+  frontend_url: "http://localhost:3000"
+  code_ttl_seconds: 300
+  code_length: 6
+  rate_limit_target_seconds: 60
+  rate_limit_uid_minutes: 10
+  rate_limit_uid_max: 5
+  max_verify_attempts: 5
+
+sms:
+  # 阿里云短信(手机验证码登录/绑定)。密钥对走 .env 的 SMS__ACCESS_KEY_ID /
+  # SMS__ACCESS_KEY_SECRET;开通步骤:①阿里云短信服务申请通过签名+模板
+  # (模板须含 ${code} 参数)②此处填 enabled/sign_name/template_code
+  # ③.env 填密钥对 ④docker compose up -d --force-recreate app-auth
+  # 未配置时 /auth/features 返回 sms_enabled=false,前端隐藏手机登录入口
+  enabled: false
+  sign_name: ""              # 已审核通过的短信签名,如 "MindBase"
+  template_code: ""          # 已审核通过的模板 CODE,如 "SMS_123456789",须含 ${code}
+  access_key_id: ""          # inject via SMS__ACCESS_KEY_ID (.env)
+  access_key_secret: ""      # inject via SMS__ACCESS_KEY_SECRET (.env)""
+
+wechat:
+  enabled: false             # inject via WECHAT__ENABLED
+  app_id: ""
+  app_secret: ""
+  redirect_uri: ""
+
+worker_id: 2                # snowflake worker id — MUST differ from the Python backend (default 1) to avoid uid collisions
+
+security_cors:
+  allow_origins:
+    - http://localhost:3000
+
+log:
+  level: info       # debug|info|warn|error (APPAUTH__LOG__LEVEL)
+  format: json      # text|json (APPAUTH__LOG__FORMAT)
+  output: stdout    # stdout|file|both (APPAUTH__LOG__OUTPUT)
+  file:
+    path: /app/logs/app-auth.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true
