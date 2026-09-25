@@ -1,18 +1,20 @@
-// Package tls resolves and rotates the serving certificate.
+// Package tls resolves and rotates the serving certificate for the http
+// transport, ported from app-board's internal/tls (same file names, same
+// renewal policy) so every MindBase Go service shares one TLS posture.
 //
 // Two modes (server.tls):
 //   - explicit cert+key file paths -> load and use them (production: CA-issued
-//     certificates managed externally); the CA must then be trusted by APISIX;
-//   - both empty -> auto mode: a persistent dev CA (dev-ca.key/dev-ca.crt,
+//     certificates managed externally);
+//   - both empty -> auto mode: a persistent dev CA (dev-ca.crt/dev-ca.key,
 //     10 years) plus a leaf certificate signed by THAT CA (server.crt/key,
-//     ECDSA P-256, 825 days, SAN app-board/localhost/loopback). Because every
-//     leaf chains to the same stable dev CA, APISIX can set tls_verify: true
-//     with just dev-ca.crt mounted — even in auto mode.
+//     ECDSA P-256, 825 days, SAN localhost/loopback/app-board-mcp/mindbase).
+//     Every leaf chains to the same stable dev CA, so MCP hosts only ever need
+//     to trust dev-ca.crt once — even across leaf renewals.
 //
 // Rotator re-checks daily: auto mode re-signs the leaf when it has <30 days
-// left (or the file vanished — self-heal) and hot-swaps via GetCertificate;
+// left (or the files vanished — self-heal) and hot-swaps via GetCertificate;
 // explicit mode reloads changed files and only warns on nearing expiry.
-package tls
+package certs
 
 import (
 	"crypto/ecdsa"
@@ -55,7 +57,7 @@ func Ensure(certPath, keyPath, dir string) (cert, key, caPath string, err error)
 		}
 		return certPath, keyPath, "", nil
 	case certPath != "" || keyPath != "":
-		return "", "", "", fmt.Errorf("tls cert 与 key 须同时提供，或同时留空（留空=自动生成开发 CA+证书）")
+		return "", "", "", fmt.Errorf("tls cert and key must be provided together, or both left empty (empty = auto-generate dev CA + certificate)")
 	}
 
 	if dir == "" {
@@ -78,7 +80,7 @@ func Ensure(certPath, keyPath, dir string) (cert, key, caPath string, err error)
 	return leafPath, leafKeyPath, caPath, nil
 }
 
-// caKeyPair loads or creates the persistent dev CA (CN app-board-dev-ca).
+// ensureCA loads or creates the persistent dev CA (CN app-board-mcp-dev-ca).
 func ensureCA(dir, caPath string) (*caKeyPair, error) {
 	caKeyPath := filepath.Join(dir, caKeyFile)
 	if pair, err := tls.LoadX509KeyPair(caPath, caKeyPath); err == nil && pair.Leaf != nil {
@@ -98,7 +100,7 @@ func ensureCA(dir, caPath string) (*caKeyPair, error) {
 	}
 	tmpl := x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "app-board-dev-ca", Organization: []string{"MindBase"}},
+		Subject:               pkix.Name{CommonName: "app-board-mcp-dev-ca", Organization: []string{"MindBase"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(caValidity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
@@ -163,9 +165,8 @@ func ensureLeaf(leafPath, leafKeyPath string, ca *caKeyPair) error {
 	return writePEM(leafPath, certPEM, 0o644)
 }
 
-// generateLeaf signs one server certificate with the dev CA. SANs cover the
-// container DNS name (SNI target), the service hostname and loopback for
-// local `go run` debugging.
+// generateLeaf signs one server certificate with the dev CA. SANs cover
+// loopback IPs, localhost and the container DNS name for local debugging.
 func generateLeaf(ca *caKeyPair, validity time.Duration) (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -178,15 +179,15 @@ func generateLeaf(ca *caKeyPair, validity time.Duration) (certPEM, keyPEM []byte
 	host, _ := os.Hostname()
 	tmpl := x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "app-board", Organization: []string{"MindBase"}},
+		Subject:      pkix.Name{CommonName: "app-board-mcp", Organization: []string{"MindBase"}},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(validity),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		// "mindbase" is the deployment-facing alias (hosts/DNS points it at
-		// the server) so clients can also verify against it.
-		DNSNames:    []string{"localhost", "app-board", "mindbase"},
+		// the server) so MCP clients can also verify against it.
+		DNSNames:    []string{"localhost", "app-board-mcp", "mindbase"},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 	}
 	if host != "" {
@@ -212,14 +213,11 @@ func writePEM(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-// ── 运行期自动轮换 ──────────────────────────────────────────────────
-//
 // Rotator holds the live certificate for tls.Config.GetCertificate; a
 // background goroutine re-checks daily. Auto mode: re-sign the leaf from the
 // stable dev CA when expiring within rotateWithin or when files vanish
 // (atomic tmp+rename), hot-swap without restart. Explicit mode: reload
 // changed files; nearing expiry only warns (renewal is external).
-
 type Rotator struct {
 	certPath string
 	keyPath  string
@@ -243,8 +241,8 @@ func NewRotator(certPath, keyPath, dir string) (*Rotator, error) {
 	return r, nil
 }
 
-// CACertPath returns the dev CA cert path (auto mode) — mounted into APISIX
-// as the trust anchor for tls_verify. Empty in explicit mode.
+// CACertPath returns the dev CA cert path (auto mode) — the trust anchor MCP
+// hosts must be configured with. Empty in explicit mode.
 func (r *Rotator) CACertPath() string { return r.caPath }
 
 // Summary logs the resolved TLS posture at startup (paths only, no secrets).
