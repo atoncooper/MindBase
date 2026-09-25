@@ -186,4 +186,12 @@ export const chatApi = {
 
     clearHistory: (chatSessionId: string) =>
         request(`/chat/history?chat_session_id=${chatSessionId}`, { method: "DELETE" }),
+
+    // Delete msg_id and all later messages of the session (per-turn regenerate:
+    // the target turn is truncated server-side, then re-asked).
+    truncateHistoryFrom: (chatSessionId: string, msgId: string) =>
+        request<{ success: boolean; deleted: number }>(
+            `/chat/history/from/${msgId}?chat_session_id=${chatSessionId}`,
+            { method: "DELETE" }
+        ),
 };

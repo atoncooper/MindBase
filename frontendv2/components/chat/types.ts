@@ -16,6 +16,10 @@ export type MessageStatus = "pending" | "completed" | "failed";
 
 export interface ChatMessageData {
   id: string;
+  // Real backend msg_id, backfilled after a streamed turn completes (the SSE
+  // protocol carries no ids). Used by per-turn regenerate to address server
+  // history; `id` stays a stable local key so React doesn't remount the row.
+  serverId?: string;
   role: "user" | "assistant";
   content: string;
   sources?: ChatSource[];

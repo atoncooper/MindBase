@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { Markdown } from "@/components/markdown";
 import {
   Brain,
@@ -13,6 +13,7 @@ import {
   RefreshCw,
   AlertCircle,
   Sparkles,
+  Pencil,
 } from "lucide-react";
 import type { ChatArtifact, ChatSource } from "@/lib/chat-stream";
 import type { ReasoningStep } from "./types";
@@ -29,6 +30,12 @@ interface ChatMessageProps {
   error?: string;
   timestamp?: string;
   onRegenerate?: () => void;
+  // User-message editing (ChatGPT-style): onEdit opens the inline editor,
+  // submit truncates the turn server-side and re-asks with the new content.
+  onEdit?: () => void;
+  isEditing?: boolean;
+  onEditSubmit?: (content: string) => void;
+  onEditCancel?: () => void;
 }
 
 // Extract a readable domain from a source URL for the citation card.
@@ -46,6 +53,85 @@ function sourceHref(src: { url?: string; bvid?: string }): string {
   return src.url || (src.bvid ? `https://www.bilibili.com/video/${src.bvid}` : "#");
 }
 
+// Inline editor for a user message. Mounted only while editing, so the draft
+// state starts fresh from the original content every time. Enter submits,
+// Shift+Enter newlines, Esc cancels.
+function EditableUserMessage({
+  content,
+  onSubmit,
+  onCancel,
+}: {
+  content: string;
+  onSubmit: (content: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(content);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const resize = useCallback(() => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    }
+  }, []);
+
+  useEffect(() => {
+    resize();
+  }, [resize]);
+
+  const submit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== content.trim()) onSubmit(trimmed);
+    else onCancel();
+  };
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <div className="w-[78%] rounded-[18px] rounded-br-md border border-accent/40 bg-surface px-4 py-2.5 focus-within:border-accent">
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          autoFocus
+          rows={1}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            resize();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          className="block w-full resize-none bg-transparent text-[15px] leading-relaxed text-foreground outline-none"
+          aria-label="编辑消息"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-full border border-border-subtle px-3 py-1 text-[12px] text-secondary transition-colors hover:text-foreground"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!draft.trim() || draft.trim() === content.trim()}
+          className="rounded-full bg-accent px-3.5 py-1 text-[12px] font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-40"
+        >
+          保存并发送
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ChatMessage({
   role,
   content,
@@ -57,6 +143,10 @@ function ChatMessage({
   status = "completed",
   error,
   onRegenerate,
+  onEdit,
+  isEditing = false,
+  onEditSubmit,
+  onEditCancel,
 }: ChatMessageProps) {
   // Normalize null/undefined -> [] so .length and .map are always safe.
   const safeSources = Array.isArray(sources) ? sources : [];
@@ -128,9 +218,27 @@ function ChatMessage({
 
   // ---- User message: right-aligned compact bubble (light blue, iMessage-ish) ----
   if (isUser) {
+    if (isEditing && onEditSubmit && onEditCancel) {
+      return (
+        <div role="article" aria-roledescription="编辑用户消息">
+          <EditableUserMessage content={content} onSubmit={onEditSubmit} onCancel={onEditCancel} />
+        </div>
+      );
+    }
     return (
-      <div className="flex justify-end" role="article" aria-roledescription="用户消息">
-        <div className="max-w-[78%] whitespace-pre-wrap rounded-[18px] rounded-br-md bg-[#dce8fb] px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+      <div className="group flex items-center justify-end gap-1.5" role="article" aria-roledescription="用户消息">
+        {onEdit && (
+          <button
+            type="button"
+            onClick={onEdit}
+            title="编辑并重新发送（此轮之后的对话将被移除）"
+            aria-label="编辑消息"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tertiary opacity-100 transition-colors hover:bg-border-subtle hover:text-foreground md:opacity-0 md:group-hover:opacity-100"
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
+        <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-[18px] rounded-br-md bg-[#dce8fb] px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
           {content}
         </div>
       </div>
@@ -145,7 +253,9 @@ function ChatMessage({
       aria-roledescription="助手消息"
       aria-live={isPending ? "polite" : "off"}
     >
-      <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
+      {/* No vertical offset: the pending loading row below is h-7 too, so
+          the "thinking" indicator sits exactly on the avatar's centerline. */}
+      <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-soft text-accent">
         <Sparkles className="h-3.5 w-3.5" />
       </div>
 
@@ -267,11 +377,17 @@ function ChatMessage({
         {/* Content / loading / error */}
         <div className={isFailed ? "rounded-xl border border-danger/20 bg-danger/5 p-3" : ""}>
           {isPending && !content && !reasoning ? (
-            <div className="flex items-center gap-2 py-1 text-[13px] text-tertiary" role="status" aria-label="助手思考中">
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:0ms]" />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:150ms]" />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:300ms]" />
-              <span className="ml-1">思考中…</span>
+            <div
+              className="flex h-7 items-center gap-2.5 text-[13px] text-tertiary"
+              role="status"
+              aria-label="助手思考中"
+            >
+              <span className="flex items-center gap-1" aria-hidden="true">
+                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "0ms" }} />
+                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "160ms" }} />
+                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "320ms" }} />
+              </span>
+              <span className="chat-shimmer font-medium">思考中…</span>
             </div>
           ) : (
             // Markdown renders during streaming too - flushes are throttled
@@ -288,6 +404,16 @@ function ChatMessage({
               <div>
                 <div className="font-medium">生成失败</div>
                 <div className="text-danger/80">{error}</div>
+                {onRegenerate && (
+                  <button
+                    type="button"
+                    onClick={onRegenerate}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-danger/30 px-3 py-1 text-[12px] font-medium text-danger transition-colors hover:bg-danger/10"
+                  >
+                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                    重试
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -358,9 +484,14 @@ function ChatMessage({
           </div>
         )}
 
-        {/* Action bar - ghost icon buttons, reveal on row hover */}
+        {/* Action bar - ghost icon buttons; hover-reveal on desktop, always
+            visible on touch devices (no hover there). */}
         {showActions && (
-          <div className="mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100" role="group" aria-label="消息操作">
+          <div
+            className="mt-2 flex items-center gap-0.5 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+            role="group"
+            aria-label="消息操作"
+          >
             <button
               type="button"
               onClick={handleCopy}
@@ -392,8 +523,9 @@ function ChatMessage({
               <button
                 type="button"
                 onClick={onRegenerate}
+                title="重新生成本轮回复（此轮之后的对话将被移除）"
                 className="grid h-7 w-7 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
-                aria-label="重新生成"
+                aria-label="重新生成本轮回复"
               >
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
               </button>

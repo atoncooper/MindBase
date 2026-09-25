@@ -518,3 +518,56 @@ body {
   color: var(--ink, #1f2329);
   line-height: 1.5;
 }
+
+/* Chat assistant "thinking" indicator: smooth dot wave + shimmering label */
+@keyframes chat-dot-wave {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.chat-dot {
+  animation: chat-dot-wave 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-shimmer-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.chat-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-tertiary) 35%,
+    var(--color-foreground) 50%,
+    var(--color-tertiary) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: chat-shimmer-sweep 2.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-dot,
+  .chat-shimmer {
+    animation: none;
+  }
+
+  .chat-shimmer {
+    background: none;
+    color: var(--color-tertiary);
+  }
+}

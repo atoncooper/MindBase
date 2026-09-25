@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { ChevronDown } from "lucide-react";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
@@ -51,6 +52,19 @@ function toUISession(s: ChatSession): UISession {
   };
 }
 
+// Client-side placeholder ids ("user-*"/"assistant-*"/"load-err") vs real
+// backend msg_ids (UUIDs, used by history-loaded messages directly).
+function isLocalId(id: string): boolean {
+  return id.startsWith("user-") || id.startsWith("assistant-") || id === "load-err";
+}
+
+// Server addressable id of a message: serverId if backfilled, else the id
+// itself when it already is a backend msg_id (history-loaded rows).
+function anchorIdOf(m: ChatMessageData): string | undefined {
+  if (m.serverId) return m.serverId;
+  return isLocalId(m.id) ? undefined : m.id;
+}
+
 export function ChatView() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sessions, setSessions] = useState<UISession[]>([]);
@@ -61,6 +75,8 @@ export function ChatView() {
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [quizDialogOpen, setQuizDialogOpen] = useState(false);
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
+  // Which user message is currently being edited inline (at most one).
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const messages = activeSession?.messages ?? EMPTY_MESSAGES;
@@ -180,13 +196,20 @@ export function ChatView() {
     };
   }, [activeSessionId]);
 
-  // ---- Auto-scroll to newest message (rAF-throttled; auto during stream) ----
+  // ---- Auto-scroll with stick-to-bottom (rAF-throttled) ----
+  // Follow the stream only while the user is already near the bottom; once
+  // they scroll up to read, stop yanking the viewport and offer a jump-back
+  // button instead.
+  const scrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const scrollRafRef = useRef<number | null>(null);
   useEffect(() => {
     if (scrollRafRef.current != null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
+      if (!stickToBottomRef.current) return;
       messagesEndRef.current?.scrollIntoView({
         behavior: isStreaming ? "auto" : "smooth",
       });
@@ -198,6 +221,56 @@ export function ChatView() {
       }
     };
   }, [messages, isStreaming]);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distance < 80;
+    setShowJumpToBottom(distance > 240);
+  }, []);
+
+  const scrollToBottom = useCallback((smooth = true) => {
+    stickToBottomRef.current = true;
+    setShowJumpToBottom(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+  }, []);
+
+  // ---- Backfill real backend msg_ids after a streamed turn ----
+  // The SSE protocol carries no msg_ids, so freshly-streamed messages only
+  // have local placeholder ids. Once the turn settles, pair the local list
+  // with server history (same order) and record each message's real id as
+  // `serverId`, which per-turn regenerate needs to truncate server history.
+  // Best-effort: on any mismatch (desync) or fetch error, keep local state.
+  const backfillMessageIds = useCallback(async () => {
+    if (!activeSessionId) return;
+    try {
+      let res = await chatApi.getHistory(activeSessionId, 1, 100);
+      if (res.total > res.messages.length && res.messages.length === 100) {
+        // Long session: the fresh turns sit on the last page.
+        res = await chatApi.getHistory(activeSessionId, Math.ceil(res.total / 100), 100);
+      }
+      const server = res.messages;
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== activeSessionId || server.length !== s.messages.length) return s;
+          let aligned = true;
+          const next = s.messages.map((m, i) => {
+            const sm = server[i];
+            if (sm.role !== m.role) {
+              aligned = false;
+              return m;
+            }
+            return m.id === sm.msg_id ? m : { ...m, serverId: sm.msg_id };
+          });
+          return aligned ? { ...s, messages: next } : s;
+        })
+      );
+    } catch {
+      // History fetch is best-effort; regenerate simply stays unavailable
+      // for the affected turns until the next successful backfill.
+    }
+  }, [activeSessionId]);
 
   // ---- Core: stream a question into the active session ----
   const streamQuestion = useCallback(
@@ -371,9 +444,10 @@ export function ChatView() {
       } finally {
         setIsStreaming(false);
         abortRef.current = null;
+        void backfillMessageIds();
       }
     },
-    [activeSessionId, updateActiveSession, refreshSessions]
+    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
@@ -411,26 +485,105 @@ export function ChatView() {
     );
   }, []);
 
-  // ---- Regenerate: re-ask the last user question, replacing the assistant msg ----
+  // ---- Regenerate a specific turn (per-turn rewrite) ----
+  // Truncates server history from the turn's user message onward (the turn
+  // itself and everything after it), then re-asks that question. Requires
+  // the turn to be server-addressable (real msg_id backfilled from history).
   const handleRegenerate = useCallback(
-    (assistantMsgId: string) => {
+    async (assistantMsgId: string) => {
       if (!activeSessionId || isStreaming) return;
       const sess = sessions.find((s) => s.id === activeSessionId);
       if (!sess) return;
       const idx = sess.messages.findIndex((m) => m.id === assistantMsgId);
-      if (idx <= 0) return;
-      const prevUser = [...sess.messages.slice(0, idx)].reverse().find((m) => m.role === "user");
-      if (!prevUser) return;
+      if (idx < 1) return;
+      const prevUser = sess.messages[idx - 1];
+      if (prevUser.role !== "user") return;
+      const anchorId = anchorIdOf(prevUser);
+      if (!anchorId) return;
 
+      try {
+        await chatApi.truncateHistoryFrom(activeSessionId, anchorId);
+      } catch (e) {
+        setLoadError(e instanceof Error ? e.message : "重写失败，请稍后重试");
+        return;
+      }
+
+      const timestamp = new Date().toISOString();
+      const userMsgId = `user-${Date.now()}`;
+      const newAssistantId = `assistant-${Date.now() + 1}`;
       updateActiveSession((s) => ({
         ...s,
-          messages: s.messages.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, content: "", status: "pending", error: undefined, sources: undefined, reasoningSteps: undefined, reasoning: undefined, artifacts: undefined }
-              : m
-          ),
+        messages: [
+          ...s.messages.slice(0, idx - 1),
+          {
+            id: userMsgId,
+            role: "user",
+            content: prevUser.content,
+            status: "completed",
+            timestamp,
+          },
+          {
+            id: newAssistantId,
+            role: "assistant",
+            content: "",
+            status: "pending",
+            timestamp,
+          },
+        ],
       }));
-      void streamQuestion(prevUser.content, assistantMsgId);
+      void streamQuestion(prevUser.content, newAssistantId);
+    },
+    [activeSessionId, isStreaming, sessions, updateActiveSession, streamQuestion]
+  );
+
+  // ---- Edit a user message (ChatGPT-style rewrite from that turn) ----
+  // Truncates server history from the edited user message (inclusive), then
+  // re-asks with the new content. Requires a server-addressable msg_id.
+  const handleEditUserMessage = useCallback(
+    async (messageId: string, newContent: string) => {
+      if (!activeSessionId || isStreaming) return;
+      const content = newContent.trim();
+      if (!content) return;
+      const sess = sessions.find((s) => s.id === activeSessionId);
+      if (!sess) return;
+      const idx = sess.messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return;
+      const target = sess.messages[idx];
+      if (target.role !== "user" || content === target.content) return;
+      const anchorId = anchorIdOf(target);
+      if (!anchorId) return;
+
+      try {
+        await chatApi.truncateHistoryFrom(activeSessionId, anchorId);
+      } catch (e) {
+        setLoadError(e instanceof Error ? e.message : "编辑失败，请稍后重试");
+        return;
+      }
+
+      const timestamp = new Date().toISOString();
+      const userMsgId = `user-${Date.now()}`;
+      const assistantMsgId = `assistant-${Date.now() + 1}`;
+      updateActiveSession((s) => ({
+        ...s,
+        messages: [
+          ...s.messages.slice(0, idx),
+          {
+            id: userMsgId,
+            role: "user",
+            content,
+            status: "completed",
+            timestamp,
+          },
+          {
+            id: assistantMsgId,
+            role: "assistant",
+            content: "",
+            status: "pending",
+            timestamp,
+          },
+        ],
+      }));
+      void streamQuestion(content, assistantMsgId);
     },
     [activeSessionId, isStreaming, sessions, updateActiveSession, streamQuestion]
   );
@@ -440,9 +593,14 @@ export function ChatView() {
     setIsStreaming(false);
     updateActiveSession((s) => ({
       ...s,
-      messages: s.messages.map((m) =>
-        m.status === "pending" ? { ...m, status: "completed" } : m
-      ),
+      messages: s.messages.map((m) => {
+        if (m.status !== "pending") return m;
+        // A stop with nothing streamed leaves a blank bubble; surface it as
+        // an explicit failure so the user sees what happened and can retry.
+        return m.content
+          ? { ...m, status: "completed" }
+          : { ...m, status: "failed", error: "已停止生成" };
+      }),
     }));
   }, [updateActiveSession]);
 
@@ -455,6 +613,7 @@ export function ChatView() {
       loadedRef.current.add(ui.id);
       setSessions((prev) => [ui, ...prev]);
       setActiveSessionId(res.chat_session_id);
+      setEditingMessageId(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "创建会话失败");
     }
@@ -462,6 +621,10 @@ export function ChatView() {
 
   const handleSessionSelect = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
+    // Fresh session view starts pinned to the bottom.
+    stickToBottomRef.current = true;
+    setShowJumpToBottom(false);
+    setEditingMessageId(null);
     // 桌面端（md+，≥768px）侧边栏常驻，选中会话不能把它收起变窄；
     // 仅移动端覆盖式抽屉需要选中后自动关闭。
     if (
@@ -565,33 +728,66 @@ export function ChatView() {
         )}
 
         {/* Messages scroll area */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {messages.length === 0 ? (
-            <ChatEmpty onSuggestionClick={handleSend} />
-          ) : (
-            <div className="mx-auto max-w-[768px] space-y-5 px-5 py-6">
-              {messages.map((message) => (
-                <ChatMessage
-                  key={message.id}
-                  role={message.role}
-                  content={message.content}
-                  sources={message.sources}
-                  artifacts={message.artifacts}
-                  reasoningSteps={message.reasoningSteps}
-                  reasoning={message.reasoning}
-                  agent={message.agent}
-                  status={message.status}
-                  error={message.error}
-                  timestamp={message.timestamp}
-                  onRegenerate={
-                    message.role === "assistant" && message.status === "completed"
-                      ? () => handleRegenerate(message.id)
-                      : undefined
-                  }
-                />
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
+        <div className="relative min-h-0 flex-1">
+          <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto">
+            {messages.length === 0 ? (
+              <ChatEmpty onSuggestionClick={handleSend} />
+            ) : (
+              <div className="mx-auto max-w-[768px] space-y-5 px-5 py-6">
+                {messages.map((message, i) => {
+                  const prev = messages[i - 1];
+                  const regenAnchor =
+                    prev && prev.role === "user" ? anchorIdOf(prev) : undefined;
+                  const canRegenerate =
+                    message.role === "assistant" &&
+                    (message.status === "completed" || message.status === "failed") &&
+                    !!regenAnchor;
+                  const editAnchor =
+                    message.role === "user" ? anchorIdOf(message) : undefined;
+                  const canEdit = !isStreaming && !!editAnchor;
+                  return (
+                    <ChatMessage
+                      key={message.id}
+                      role={message.role}
+                      content={message.content}
+                      sources={message.sources}
+                      artifacts={message.artifacts}
+                      reasoningSteps={message.reasoningSteps}
+                      reasoning={message.reasoning}
+                      agent={message.agent}
+                      status={message.status}
+                      error={message.error}
+                      timestamp={message.timestamp}
+                      onRegenerate={
+                        canRegenerate
+                          ? () => void handleRegenerate(message.id)
+                          : undefined
+                      }
+                      onEdit={canEdit ? () => setEditingMessageId(message.id) : undefined}
+                      isEditing={editingMessageId === message.id}
+                      onEditSubmit={(content) => {
+                        setEditingMessageId(null);
+                        void handleEditUserMessage(message.id, content);
+                      }}
+                      onEditCancel={() => setEditingMessageId(null)}
+                    />
+                  );
+                })}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
+
+          {/* Jump back to the live bottom when the user scrolled up */}
+          {showJumpToBottom && (
+            <button
+              type="button"
+              onClick={() => scrollToBottom()}
+              className="absolute bottom-4 left-1/2 grid h-9 w-9 -translate-x-1/2 place-items-center rounded-full border border-border-subtle bg-surface text-secondary shadow-sm transition-colors hover:text-foreground"
+              aria-label="回到底部"
+            >
+              <ChevronDown className="h-4 w-4" aria-hidden="true" />
+            </button>
           )}
         </div>
 
