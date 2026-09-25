@@ -531,6 +531,96 @@ services:
     networks:
       - mind-base-net
 
+  # app-auth —— 身份认证服务（Go + Gin；接管 users/user_tokens/user_oauth 等
+  # auth 表的 schema 所有权，共享主 bilirag MySQL；APISIX forward-auth 指向
+  # /internal/auth/verify，/auth/* 用户端点也由它提供）
+  app-auth:
+    image: ${APPAUTH_IMAGE:-ghcr.io/atoncooper/mind-base-app-auth:latest}
+    build:
+      context: ./app-go/app-auth
+      dockerfile: Dockerfile
+    container_name: mind-base-app-auth
+    profiles: ["", "auth", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # Redis: captcha store / login throttle / rate limits / wechat state
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      # Shared secrets (same env names as the Python backend — one .env drives both)
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      # Snowflake worker id — MUST differ from the Python backend (1)
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_AUTH_PORT:-8006}:8006"
+    volumes:
+      - app_auth_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-cloud —— 云盘服务（Go + Gin；接管 cloud_files/cloud_folders/cloud_shares
+  # 的 schema 所有权，共享主 bilirag MySQL + MinIO bucket + Mongo；分块上传/配额/
+  # 分享/回收站/解析向量化管线；nginx /cloud/ 直连本服务，身份经 auth_request 注入）
+  app-cloud:
+    image: ${APPCLOUD_IMAGE:-ghcr.io/atoncooper/mind-base-app-cloud:latest}
+    build:
+      context: ./app-go/app-cloud
+      dockerfile: Dockerfile
+    container_name: mind-base-app-cloud
+    profiles: ["", "cloud", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      - APPCLOUD__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      # MinIO (same bucket/keys as the previous Python implementation)
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
+      - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
+      # Storage quota tier lookup via APISIX key-auth -> app-pay
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # Vector pipeline (Higress AI gateway; model/dim RED LINE = Milvus rebuild)
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
+      - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
+      - APPCLOUD__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_CLOUD_PORT:-8007}:8007"
+    volumes:
+      - app_cloud_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
   app-task:
     image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/mind-base-app-task:latest}
     build:
@@ -642,6 +732,10 @@ services:
       # Logging: stdout + /app/logs/app-board.log（lumberjack 轮转）
       - APPBOARD__LOG__OUTPUT=both
       - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      # explicit mode: load cert-gen issued leaf as-is; auto mode would try to
+      # regenerate + overwrite the shared dev-ca.crt (root-owned bind mount, EACCES)
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
     # 无宿主端口映射：只能经 APISIX 访问（与 app-task 8001 同策略）
     volumes:
       - app_board_logs:/app/logs
@@ -845,6 +939,8 @@ volumes:
   backend_data:
   backend_logs:
   app_task_logs:
+  app_auth_logs:
+  app_cloud_logs:
   app_board_logs:
   app_board_mcp_logs:
   app_task_mysql_data:

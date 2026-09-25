@@ -163,6 +163,88 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
+  # app-auth —— 身份认证服务（Go；auth 表 schema 所有者）。
+  # forward-auth verify 权威 + /auth/* 用户端点归属地。宽验证语义：
+  # 无凭证 200（不带身份头，公有端点放行；受保护服务对缺 X-Uid 自行 401）。
+  - id: upstream-app-auth
+    name: app-auth
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-auth:8006": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+  # app-cloud —— 云盘服务（Go；nginx /cloud/ 直连为主路径，此 upstream 仅兜底路由用）
+  - id: upstream-app-cloud
+    name: app-cloud
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-cloud:8007": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
   # app-task Go executor - /tasks/* user endpoints + /tasks/register
   - id: upstream-app-task
     name: app-task
@@ -212,8 +294,10 @@ upstreams:
     name: app-pay
     type: roundrobin
     scheme: https
-    tls:
-      verify: false
+    # NOTE: no `tls:` block here — APISIX 3.11 crashes (parse_pem_cert(nil)
+    # in upstream.lua set_upstream) for https upstreams carrying a tls block
+    # without client_cert. Default behaviour already skips upstream cert
+    # verification, so removing the block is equivalent and avoids the bug.
     pass_host: pass
     retries: 2
     timeout:
@@ -309,10 +393,13 @@ routes:
     priority: 50
     upstream_id: upstream-backend-sse
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -323,10 +410,13 @@ routes:
     priority: 50
     upstream_id: upstream-backend
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -385,10 +475,13 @@ routes:
     priority: 100
     upstream_id: upstream-backend
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -407,10 +500,13 @@ routes:
     priority: 90
     upstream_id: upstream-app-task
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -421,10 +517,13 @@ routes:
     priority: 10
     upstream_id: upstream-app-task
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -437,10 +536,13 @@ routes:
     priority: 100
     upstream_id: upstream-backend
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -452,10 +554,13 @@ routes:
     priority: 50
     upstream_id: upstream-app-pay
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -497,10 +602,13 @@ routes:
     upstream_id: upstream-app-board
     plugins:
       request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://backend:8000/internal/auth/verify"
+        uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
-        upstream_headers: [X-Uid]
+        upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
@@ -530,13 +638,59 @@ routes:
       proxy-rewrite:
         regex_uri: ["^/internal/board/(.*)", "/board/$1"]
 
-  # User <-> main app chat (SSE under /chat/*; backend self-validates bili_session
-  # - no forward-auth, same as catch_all). Uses SSE upstream (retries:0, read 300s)
-  # so /chat/ask/stream isn't cut at catch_all's 30s read timeout.
+  # 用户端认证端点 (/auth/*) -> app-auth。app-auth 自己校验 Bearer token
+  # （authGuard），无需 forward-auth；仍剥离伪造身份头以防伪造 X-Uid。
+  - id: auth_user
+    uris: [/auth, /auth/*]
+    priority: 50
+    upstream_id: upstream-app-auth
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      # Gateway-level backstop for the credential surface (nginx sheds at
+      # 1r/s first; this catches bursts and any non-nginx internal caller).
+      limit-req:
+        rate: 10
+        burst: 20
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+
+  # /cloud/* -> app-cloud（兜底路由：nginx /cloud/ 直连已绕过 APISIX，此路由
+  # 保证任何直连 APISIX 的调用者也不会落回 backend 的已下线 cloud router）
+  - id: cloud_user
+    uris: [/cloud, /cloud/*]
+    priority: 50
+    upstream_id: upstream-app-cloud
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
   - id: chat_sse
     uris: [/chat, /chat/*]
     priority: 50
     upstream_id: upstream-backend-sse
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
 
   # User <-> main app WebSocket (/ws task notifications, long-lived). WS upstream
   # read 86400s aligns with nginx; APISIX passes Upgrade/Connection headers through.
@@ -544,13 +698,36 @@ routes:
     uris: [/ws, /ws/*]
     priority: 50
     upstream_id: upstream-backend-ws
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
 
-  # Catch-all: other main app endpoints (/auth, /chat, /favorites, /knowledge, ...)
-  # -> backend (passthrough). Backend validates bili_session itself (get_current_uid).
+  # Catch-all: other main app endpoints (/chat, /favorites, /knowledge, ...)
+  # -> backend (passthrough)。forward-auth 经 app-auth 校验 bili_session 并注入
+  # X-Uid/X-Roles（宽验证：无凭证放行，受保护端点对缺失 X-Uid 自行 401）。
   - id: catch_all
     uri: /*
     priority: 1
     upstream_id: upstream-backend
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
 
 # ============================================================
 # Consumers
