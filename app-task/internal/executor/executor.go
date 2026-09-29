@@ -36,6 +36,10 @@ type Task struct {
 	ID      string
 	Payload []byte
 	Meta    map[string]any
+	// LogSink optionally receives ctx.log lines. Ad-hoc runs (console run
+	// button / internal run API) set it so output shows in the result view;
+	// scheduled runs leave it nil and logging stays on slog only.
+	LogSink func(msg string)
 }
 
 // Handler processes one task trigger. It must be idempotent (the scheduler may

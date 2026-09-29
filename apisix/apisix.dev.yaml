@@ -308,6 +308,11 @@ routes:
     priority: 90
     upstream_id: upstream-app-task
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid]
+          set:
+            X-API-Key: "mindbase-internal-key-change-me"
       forward-auth:
         uri: "http://192.168.138.1:8000/internal/auth/verify"
         request_headers: [Authorization]
@@ -322,6 +327,11 @@ routes:
     priority: 10
     upstream_id: upstream-app-task
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid]
+          set:
+            X-API-Key: "mindbase-internal-key-change-me"
       forward-auth:
         uri: "http://192.168.138.1:8000/internal/auth/verify"
         request_headers: [Authorization]

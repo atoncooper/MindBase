@@ -46,11 +46,18 @@ type HTTPOptions struct {
 	Timeout            time.Duration // per request timeout (default 30s)
 	InsecureSkipVerify bool          // opt out of TLS cert validation (self-signed only)
 	CAFile             string        // PEM file with a private CA to trust
+	// Idle connections kept per executor host. Go's default (2) throttles
+	// keep-alive reuse when the dispatch pool runs wider than that, forcing
+	// reconnect churn on hot targets. 0 = default 32.
+	IdleConnsPerHost int
 }
 
 func NewHTTPExecutor(opts HTTPOptions) *HTTPExecutor {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 30 * time.Second
+	}
+	if opts.IdleConnsPerHost <= 0 {
+		opts.IdleConnsPerHost = 32
 	}
 	return &HTTPExecutor{opts: opts}
 }
@@ -76,8 +83,16 @@ func (e *HTTPExecutor) clientForTLS() (*http.Client, error) {
 		tlsCfg.RootCAs = pool
 	}
 	e.client = &http.Client{
-		Timeout:   e.opts.Timeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Timeout: e.opts.Timeout,
+		Transport: &http.Transport{
+			TLSClientConfig:     tlsCfg,
+			MaxIdleConnsPerHost: e.opts.IdleConnsPerHost,
+			// Honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY so dispatches to
+			// third-party executors on the public internet can route through
+			// a deployment's egress proxy (internal targets must be listed in
+			// NO_PROXY to stay direct).
+			Proxy: http.ProxyFromEnvironment,
+		},
 	}
 	return e.client, nil
 }

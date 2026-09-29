@@ -40,12 +40,19 @@ type LuaOptions struct {
 //   - per-script env table: every execution gets a fresh environment table
 //     (restricted stdlib + ctx/cjson) as the script's _G, so global variables
 //     never leak across executions or scripts on a reused VM.
+//
+// SecretResolver fetches a stored credential by name (decrypted). Wired in
+// main.go from the encrypted secret table; nil when the encryption key is
+// not configured (ctx.secret then fails with a clear message).
+type SecretResolver func(name string) (string, error)
+
 type LuaExecutor struct {
-	opts  LuaOptions
-	mu    sync.Mutex
-	cache map[string]*compiledScript // script_id → latest compiled form
-	pool  chan *lua.LState
-	http  *http.Client
+	opts    LuaOptions
+	mu      sync.Mutex
+	cache   map[string]*compiledScript // script_id → latest compiled form
+	pool    chan *lua.LState
+	http    *http.Client
+	Secrets SecretResolver
 }
 
 type compiledScript struct {
@@ -90,6 +97,11 @@ func (e *LuaExecutor) Handler() Handler {
 		scriptID, _ := payload["script_id"].(string)
 		if scriptID == "" {
 			return errors.New("lua task payload missing script_id")
+		}
+		// A disabled script must not execute (console 启停 semantics) — check
+		// the latest version before running.
+		if latest, err := repo.GetLatestScript(scriptID); err == nil && latest != nil && !latest.Enabled {
+			return fmt.Errorf("lua script %q is disabled (enable it in the console)", scriptID)
 		}
 		return e.Execute(ctx, scriptID, task)
 	}
@@ -185,24 +197,33 @@ func (e *LuaExecutor) Execute(ctx context.Context, scriptID string, task Task) e
 	}
 
 	var res execResult
+	var mask []string // secret values fetched this run — masked on every log/error path
+	maskMsg := func(msg string) string {
+		for _, v := range mask {
+			if v != "" {
+				msg = strings.ReplaceAll(msg, v, "***")
+			}
+		}
+		return msg
+	}
 	ctxTbl := ls.NewTable()
-	e.installCtx(ls, ctxTbl, task, &res)
+	e.installCtx(ls, ctxTbl, task, &res, &mask, maskMsg)
 	if err := ls.CallByParam(lua.P{Fn: h, NRet: 0, Protect: true}, ctxTbl); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("lua %q timed out after %s", scriptID, e.opts.Timeout)
 		}
-		return fmt.Errorf("lua %q handle: %w", scriptID, err)
+		return fmt.Errorf("lua %q handle: %s", scriptID, maskMsg(err.Error()))
 	}
 	clean = true
 
 	switch res.kind {
 	case resultRetry:
-		return fmt.Errorf("%w: %s", ErrRetry, res.msg)
+		return fmt.Errorf("%w: %s", ErrRetry, maskMsg(res.msg))
 	case resultFail:
 		if res.msg == "" {
 			res.msg = "failed by script"
 		}
-		return errors.New(res.msg)
+		return errors.New(maskMsg(res.msg))
 	default:
 		return nil
 	}
@@ -312,11 +333,28 @@ func (e *LuaExecutor) installEnv(ls *lua.LState, env *lua.LTable) {
 		return 1
 	}))
 	env.RawSetString("cjson", cjson)
+	// Expose the safe stdlib (base/table/string/math opened in newSafeState)
+	// through an __index fallback: the fresh env is empty, and without this
+	// any use of tostring/pairs/string.format etc. fails with "attempt to
+	// call a non-function object". The VM's _G only ever contains the safe
+	// libraries, so the sandbox boundary stays intact.
+	mt := ls.NewTable()
+	// -10002 = lua.GlobalsIndex (registry index of the global table; the
+	// exported constant oddly fails to resolve on some Windows builds).
+	mt.RawSetString("__index", ls.Get(-10002))
+	ls.SetMetatable(env, mt)
 }
 
-func (e *LuaExecutor) installCtx(ls *lua.LState, tbl *lua.LTable, task Task, res *execResult) {
+func (e *LuaExecutor) installCtx(ls *lua.LState, tbl *lua.LTable, task Task, res *execResult, mask *[]string, maskMsg func(string) string) {
+	// maskMsg (defined per-run in Execute) replaces any fetched secret value
+	// in the text so ctx.log / retry / fail output never persists a
+	// credential (script_run.Logs, task_log, slog all flow through here).
 	tbl.RawSetString("log", ls.NewFunction(func(L *lua.LState) int {
-		slog.Info("[LUA] script log", "task_id", task.ID, "msg", L.OptString(1, ""))
+		msg := maskMsg(L.OptString(1, ""))
+		if task.LogSink != nil {
+			task.LogSink(msg)
+		}
+		slog.Info("[LUA] script log", "task_id", task.ID, "msg", msg)
 		return 0
 	}))
 	tbl.RawSetString("payload", ls.NewFunction(func(L *lua.LState) int {
@@ -343,16 +381,73 @@ func (e *LuaExecutor) installCtx(ls *lua.LState, tbl *lua.LTable, task Task, res
 	}))
 	tbl.RawSetString("retry", ls.NewFunction(func(L *lua.LState) int {
 		res.kind = resultRetry
-		res.msg = L.OptString(1, "retry requested by script")
+		res.msg = maskMsg(L.OptString(1, "retry requested by script"))
 		return 0
 	}))
 	tbl.RawSetString("fail", ls.NewFunction(func(L *lua.LState) int {
 		res.kind = resultFail
-		res.msg = L.OptString(1, "failed by script")
+		res.msg = maskMsg(L.OptString(1, "failed by script"))
 		return 0
 	}))
+	tbl.RawSetString("secret", ls.NewFunction(func(L *lua.LState) int {
+		name := L.CheckString(1)
+		if e.Secrets == nil {
+			L.RaiseError("secret store not configured (SECURITY__API_KEY_ENCRYPTION_KEY missing)")
+			return 0
+		}
+		value, err := e.Secrets(name)
+		if err != nil {
+			L.RaiseError("secret %q: %v", name, err)
+			return 0
+		}
+		// Track the value so every log/error path masks it.
+		*mask = append(*mask, value)
+		L.Push(lua.LString(value))
+		return 1
+	}))
+	tbl.RawSetString("http_req", ls.NewFunction(func(L *lua.LState) int {
+		tbl := L.CheckTable(1)
+		method := strings.ToUpper(L.GetField(tbl, "method").String())
+		if method == "" {
+			method = "GET"
+		}
+		url := L.GetField(tbl, "url").String()
+		if url == "" {
+			L.RaiseError("http_req: url required")
+			return 0
+		}
+		contentType := L.GetField(tbl, "content_type").String()
+		if contentType == "" && method != "GET" {
+			contentType = "application/json"
+		}
+		body := []byte(L.GetField(tbl, "body").String())
+		if method == "GET" {
+			body = nil
+		}
+		headers := map[string]string{}
+		if hv := L.GetField(tbl, "headers"); hv != lua.LNil {
+			if ht, ok := hv.(*lua.LTable); ok {
+				ht.ForEach(func(k, v lua.LValue) {
+					headers[k.String()] = v.String()
+				})
+			}
+		}
+		// Mask request headers too (Authorization carries fetched secrets).
+		for _, v := range headers {
+			*mask = append(*mask, v)
+		}
+		respBody, status, errMsg := e.httpCall(method, url, body, contentType, headers)
+		if errMsg != "" {
+			L.Push(lua.LNil)
+			L.Push(lua.LString(maskMsg(errMsg)))
+			return 2
+		}
+		L.Push(lua.LString(maskMsg(respBody)))
+		L.Push(lua.LNumber(status))
+		return 2
+	}))
 	tbl.RawSetString("http_get", ls.NewFunction(func(L *lua.LState) int {
-		body, status, errMsg := e.httpCall("GET", L.CheckString(1), nil, "")
+		body, status, errMsg := e.httpCall("GET", L.CheckString(1), nil, "", nil)
 		if errMsg != "" {
 			L.Push(lua.LNil)
 			L.Push(lua.LString(errMsg))
@@ -363,7 +458,7 @@ func (e *LuaExecutor) installCtx(ls *lua.LState, tbl *lua.LTable, task Task, res
 		return 2
 	}))
 	tbl.RawSetString("http_post", ls.NewFunction(func(L *lua.LState) int {
-		body, status, errMsg := e.httpCall("POST", L.CheckString(1), []byte(L.OptString(2, "")), L.OptString(3, "application/json"))
+		body, status, errMsg := e.httpCall("POST", L.CheckString(1), []byte(L.OptString(2, "")), L.OptString(3, "application/json"), nil)
 		if errMsg != "" {
 			L.Push(lua.LNil)
 			L.Push(lua.LString(errMsg))
@@ -375,7 +470,7 @@ func (e *LuaExecutor) installCtx(ls *lua.LState, tbl *lua.LTable, task Task, res
 	}))
 }
 
-func (e *LuaExecutor) httpCall(method, url string, body []byte, contentType string) (string, int, string) {
+func (e *LuaExecutor) httpCall(method, url string, body []byte, contentType string, headers map[string]string) (string, int, string) {
 	var req *http.Request
 	var err error
 	if method == "POST" {
@@ -388,6 +483,9 @@ func (e *LuaExecutor) httpCall(method, url string, body []byte, contentType stri
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := e.http.Do(req)
 	if err != nil {

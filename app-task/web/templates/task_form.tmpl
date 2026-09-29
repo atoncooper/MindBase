@@ -1,0 +1,127 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/tasks">← 返回列表</a>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-body">
+    <form method="post" action="/console/tasks" class="form-horizontal" id="task-create-form">
+      <div class="form-group">
+        <label class="col-sm-2 control-label">任务属主 uid</label>
+        <div class="col-sm-10">
+          <p class="form-control-static">自动 = 当前登录用户 <strong>{{.Owner}}</strong>（无需填写；接口调用方按业务 uid 传入）</p>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="col-sm-2 control-label" for="task-type">任务类型</label>
+        <div class="col-sm-4">
+          <select name="task_type" id="task-type" class="form-control">
+            <option value="http" {{if eq .TaskType "http"}}selected{{end}}>http</option>
+            <option value="lua" {{if eq .TaskType "lua"}}selected{{end}}>lua</option>
+          </select>
+        </div>
+        <div class="col-sm-6">
+          <label class="checkbox-inline" style="margin-top:8px">
+            <input type="checkbox" name="async"> 异步（202 + 回调）
+          </label>
+        </div>
+      </div>
+      <div class="form-group" id="script-field" style="display:none">
+        <label class="col-sm-2 control-label" for="script-id-select">执行脚本</label>
+        <div class="col-sm-10">
+          <select name="script_id" id="script-id-select" class="form-control">
+            <option value="" disabled>请选择脚本</option>
+            {{range .Scripts}}
+            <option value="{{.ScriptID}}" {{if eq .ScriptID $.ScriptID}}selected{{end}}>{{.Name}}</option>
+            {{end}}
+          </select>
+          <span class="help-block">到点时由 Lua 执行器运行其 handle(ctx)，选中后自动写入 payload.script_id</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="col-sm-2 control-label" for="executor-url">executor_url</label>
+        <div class="col-sm-10">
+          <input type="text" class="form-control" id="executor-url" name="executor_url" placeholder="https://exec:9000/run（http 类型必填；lua 留空）">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="col-sm-2 control-label" for="cron-expr">cron 表达式</label>
+        <div class="col-sm-4">
+          <input type="text" class="form-control" id="cron-expr" name="cron_expr" placeholder="5 段，如 0 23 * * *（留空=一次性）">
+        </div>
+        <label class="col-sm-2 control-label" for="trigger-time">触发时间</label>
+        <div class="col-sm-4">
+          <input type="datetime-local" class="form-control" id="trigger-time" name="trigger_time">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="col-sm-2 control-label" for="max-retry">max_retry</label>
+        <div class="col-sm-4">
+          <input type="number" class="form-control" id="max-retry" name="max_retry" value="0" step="1" min="0">
+        </div>
+        <label class="col-sm-2 control-label" for="weight">weight</label>
+        <div class="col-sm-4">
+          <input type="number" class="form-control" id="weight" name="weight" value="1" step="1" min="1">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="col-sm-2 control-label" for="payload">payload（JSON，透传给执行器）</label>
+        <div class="col-sm-10">
+          <div class="code-editor cm-host" data-code-editor="json" style="height:260px">
+            <textarea name="payload" id="payload" spellcheck="false" placeholder='{"key": "value"}'>{{.Payload}}</textarea>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="col-sm-offset-2 col-sm-10">
+          <a class="btn btn-default" href="/console/tasks">取消</a>
+          <button type="submit" class="btn btn-primary">创建任务</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var typeSel = document.getElementById('task-type');
+  var scriptField = document.getElementById('script-field');
+  var form = document.getElementById('task-create-form');
+
+  function syncType() {
+    var isLua = typeSel.value === 'lua';
+    scriptField.style.display = isLua ? 'block' : 'none';
+    var exec = form.querySelector('[name=executor_url]');
+    exec.closest('.form-group').style.opacity = isLua ? 0.5 : 1;
+  }
+  typeSel.addEventListener('change', syncType);
+  syncType();
+
+  // lua 任务：提交前把选中的脚本写进 payload.script_id
+  form.addEventListener('submit', function (e) {
+    if (typeSel.value !== 'lua') return;
+    var scriptSel = form.querySelector('[name=script_id]');
+    var sid = scriptSel ? scriptSel.value : '';
+    if (!sid) {
+      e.preventDefault();
+      alert('请选择要执行的 Lua 脚本');
+      return;
+    }
+    // payload 由 CodeMirror 托管：表单提交时它才把内容同步回 textarea，
+    // 所以这里必须读/写编辑器实例，否则写入会被提交同步覆盖。
+    var cm = window.AppTaskEditors ? AppTaskEditors.get('payload') : null;
+    var ta = form.querySelector('[name=payload]');
+    var raw = (cm ? cm.getValue() : ta.value).trim();
+    var obj = {};
+    if (raw) {
+      try { obj = JSON.parse(raw); }
+      catch (err) { e.preventDefault(); alert('payload 不是合法 JSON：' + err.message); return; }
+    }
+    obj.script_id = sid;
+    var out = JSON.stringify(obj, null, 2);
+    if (cm) cm.setValue(out); else ta.value = out;
+  });
+})();
+</script>
+{{end}}

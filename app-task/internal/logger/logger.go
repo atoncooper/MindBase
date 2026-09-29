@@ -171,13 +171,16 @@ func GinRecovery() gin.HandlerFunc {
 //   - debug=false -> Warn level (only slow queries >= 200ms + errors)
 //
 // Call after Init so slog.Default() is the configured handler.
-func NewGORMLogger(debug bool) gormlogger.Interface {
+func NewGORMLogger(debug bool, slowThreshold time.Duration) gormlogger.Interface {
 	lvl := gormlogger.Warn
 	if debug {
 		lvl = gormlogger.Info
 	}
+	if slowThreshold <= 0 {
+		slowThreshold = 200 * time.Millisecond
+	}
 	return gormlogger.NewSlogLogger(slog.Default(), gormlogger.Config{
-		SlowThreshold: 200 * time.Millisecond,
+		SlowThreshold: slowThreshold,
 		LogLevel:      lvl,
 		Colorful:      false,
 	})

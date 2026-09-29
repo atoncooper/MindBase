@@ -15,6 +15,10 @@ import (
 // platform only understands this mail format — the executor renders the
 // content (business side). Key-auth via APISIX.
 func (r *Router) sendEmail(c *gin.Context) {
+	if c.Request.ContentLength > maxEmailBodyBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "request too large"})
+		return
+	}
 	var req struct {
 		To          []string `json:"to" binding:"required"`
 		CC          []string `json:"cc"`

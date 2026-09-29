@@ -1,0 +1,79 @@
+{{define "content"}}
+<div class="panel panel-default">
+  <div class="panel-heading panel-head">
+    <span class="panel-title">API 密钥 <span class="muted">（活跃 {{.ActiveCount}}/{{.MaxActive}}）</span></span>
+    <button class="btn btn-primary btn-sm" type="button" data-modal-open="apikey-modal">生成密钥</button>
+  </div>
+
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>key_id</th><th>名称</th><th>权限范围</th><th>限流</th><th>密钥前缀</th><th>状态</th><th>创建人</th><th>最近使用</th><th>过期时间</th><th>创建时间</th><th class="op-col">操作</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td class="mono-cell" title="{{.KeyID}}">{{.KeyID}}</td>
+        <td class="strong">{{.Name}}</td>
+        <td>
+          {{range .Scopes}}<span class="label label-primary">{{.}}</span> {{end}}
+        </td>
+        <td>{{.RatePerMin}}</td>
+        <td class="mono-cell">{{.KeyPrefix}}</td>
+        <td><span class="label {{if .Active}}label-success{{else}}label-default{{end}}">{{.Status}}</span></td>
+        <td>{{.CreatedBy}}</td>
+        <td>{{.LastUsedAt}}</td>
+        <td>{{.ExpiresAt}}</td>
+        <td>{{.CreatedAt}}</td>
+        <td class="op-cell">
+          {{if .Active}}
+          <form method="post" action="/console/apikeys/{{.KeyID}}/revoke" class="inline-form" onsubmit="return confirm('确认吊销密钥 {{.Name}}？使用它的调用将立即 401。')">
+            <button class="btn btn-danger btn-xs" type="submit">吊销</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="11" class="empty">暂无密钥，点击右上角「生成密钥」创建</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="panel-note">名称全局唯一（含已吊销，创建后不可改）；key_id 是每把密钥的独立标识。调用方式：请求头 <span class="mono">X-API-Key</span> / <span class="mono">apikey</span> / <span class="mono">Authorization: Bearer</span> 任一。保护范围：/tasks/*、/scripts*、/internal/*；范围按路由组拦截（403），限流按密钥每分钟计（429）；吊销立即生效。</div>
+</div>
+
+<div class="modal fade" id="apikey-modal" tabindex="-1" role="dialog" aria-labelledby="apikey-modal-title">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-modal-close aria-label="关闭"><span aria-hidden="true">&times;</span></button>
+        <h4 class="modal-title" id="apikey-modal-title">生成 API 密钥</h4>
+      </div>
+      <form method="post" action="/console/apikeys">
+        <div class="modal-body">
+          <div class="form-group">
+            <label>名称（1–64 字符，全局唯一，如 executor-1）</label>
+            <input name="name" class="form-control" required maxlength="64" placeholder="如 executor-1">
+          </div>
+          <div class="form-group">
+            <label>权限范围（至少一项）</label>
+            <div>
+              <label class="checkbox-inline"><input type="checkbox" name="scopes" value="tasks" checked> tasks</label>
+              <label class="checkbox-inline"><input type="checkbox" name="scopes" value="scripts" checked> scripts</label>
+              <label class="checkbox-inline"><input type="checkbox" name="scopes" value="internal" checked> internal</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>限流（次/分钟，0 = 不限）</label>
+            <input type="number" name="rate_per_min" class="form-control" value="0" min="0" max="600" step="1">
+          </div>
+          <div class="form-group">
+            <label>有效期（天，0 = 永不过期）</label>
+            <input type="number" name="expires_days" class="form-control" value="0" min="0" max="3650" step="1">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" data-modal-close>取消</button>
+          <button class="btn btn-primary" type="submit">生成密钥</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{{end}}

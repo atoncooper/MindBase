@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">执行日志</span></div>
+  <form method="get" action="/console/logs" class="panel-body filter-bar">
+    <div class="form-inline">
+      <div class="form-group">
+        <label class="control-label" for="log-task-id">task_id</label>
+        <input type="text" class="form-control" id="log-task-id" name="task_id" value="{{.TaskID}}" placeholder="留空 = 全部" style="width:280px">
+      </div>
+      <button class="btn btn-default btn-sm" type="submit">筛选</button>
+    </div>
+  </form>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>触发时间</th><th>task_id</th><th>执行器</th><th>状态</th><th>耗时</th><th>响应</th><th>错误</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td>{{.TriggerAt}}</td>
+        <td class="mono-cell"><a href="/console/tasks/{{.TaskID}}">{{.TaskIDShort}}</a></td>
+        <td title="{{.Executor}}">{{.ExecutorShort}}</td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td>{{.Duration}}</td>
+        <td class="mono-cell" title="{{.Response}}">{{.ResponseShort}}</td>
+        <td class="mono-cell" title="{{.Error}}">{{.ErrorShort}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">暂无执行记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

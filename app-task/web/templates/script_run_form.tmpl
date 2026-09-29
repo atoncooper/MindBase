@@ -1,0 +1,24 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/scripts">← 返回列表</a>
+  <a class="btn btn-default btn-sm" href="/console/scripts/{{.ScriptID}}">脚本详情</a>
+  <span class="id-chip">{{.ScriptID}}</span>
+  <span class="label label-primary">v{{.Version}}</span>
+  <span class="muted">{{.Name}}</span>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">运行参数（payload）</span><span class="muted">同步执行 · 结果落 script_run</span></div>
+  <div class="panel-body" style="padding-bottom:0">
+    <form method="post" action="/console/scripts/{{.ScriptID}}/run" class="editor-form">
+      <div class="code-editor cm-host" data-code-editor="json" style="height:220px">
+        <textarea name="payload" spellcheck="false" autocomplete="off" autocapitalize="off">{{.Payload}}</textarea>
+      </div>
+      <div class="script-actions" style="padding-top:12px">
+        <span class="muted" style="margin-right:auto">payload 原样传给 ctx.payload()；脚本默认超时 30s</span>
+        <button type="submit" class="btn btn-primary">▶ 运行</button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

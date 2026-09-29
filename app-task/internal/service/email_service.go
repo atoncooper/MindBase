@@ -100,23 +100,45 @@ func (s *EmailService) loop() {
 	}
 }
 
+// emailSendingTTL bounds one delivery attempt; claims older than this are
+// reclaimed (must exceed the Resend HTTP timeout).
+const emailSendingTTL = 2 * time.Minute
+
 func (s *EmailService) processBatch() {
+	// Cluster safety: reclaim emails stuck in sending (crashed worker/instance)
+	// before picking up new work — same pattern as the task scheduler.
+	if n, err := repo.ReclaimStaleSending(time.Now().UTC().Add(-emailSendingTTL)); err != nil {
+		slog.Error("[EMAIL_WORKER] reclaim stale sending failed", "err", err)
+	} else if n > 0 {
+		slog.Warn("[EMAIL_WORKER] reclaimed stale sending claims", "count", n)
+	}
 	pending, err := repo.ListDueEmails(50)
 	if err != nil {
 		slog.Error("[EMAIL_WORKER] list due failed", "err", err)
 		return
 	}
 	for i := range pending {
-		s.sendOne(&pending[i])
+		// Claim before sending: conditional update pending -> sending, so a
+		// second instance scanning the same queue skips already-claimed rows.
+		token, ok, err := repo.ClaimEmail(pending[i].EmailID, time.Now().UTC())
+		if err != nil {
+			slog.Error("[EMAIL_WORKER] claim failed", "email_id", pending[i].EmailID, "err", err)
+			continue
+		}
+		if !ok {
+			continue // claimed by another worker/instance
+		}
+		pending[i].ClaimToken = token
+		s.sendOne(&pending[i], token)
 	}
 }
 
-func (s *EmailService) sendOne(m *model.EmailMessage) {
+func (s *EmailService) sendOne(m *model.EmailMessage, claimToken string) {
 	if s.cfg.Email.APIKey == "" {
 		// Dry-run: no API key configured — mark dry_run (NOT sent), distinct
 		// from a real send so delivery status stays honest.
 		slog.Error("[EMAIL_WORKER] no EMAIL_API_KEY; dry-run (email NOT sent)", "email_id", m.EmailID)
-		_ = repo.MarkEmailDryRun(m.EmailID, "dry-run: EMAIL_API_KEY not set")
+		_ = repo.MarkEmailDryRun(m.EmailID, claimToken, "dry-run: EMAIL_API_KEY not set")
 		return
 	}
 	to := toStringSliceJSON(m.To)
@@ -139,7 +161,7 @@ func (s *EmailService) sendOne(m *model.EmailMessage) {
 			t := time.Now().UTC().Add(backoff)
 			next = &t
 		}
-		_ = repo.MarkEmailFailed(m.EmailID, err.Error(), retry, next, final)
+		_ = repo.MarkEmailFailed(m.EmailID, claimToken, err.Error(), retry, next, final)
 		if final {
 			slog.Error("[EMAIL_WORKER] FAILED after retries", "email_id", m.EmailID, "retry", retry, "err", err)
 		} else {
@@ -147,6 +169,6 @@ func (s *EmailService) sendOne(m *model.EmailMessage) {
 		}
 		return
 	}
-	_ = repo.MarkEmailSent(m.EmailID)
+	_ = repo.MarkEmailSent(m.EmailID, claimToken)
 	slog.Info("[EMAIL_WORKER] sent", "email_id", m.EmailID, "to", to)
 }

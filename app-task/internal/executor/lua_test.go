@@ -257,3 +257,98 @@ func TestLuaHandlerReadsScriptIDFromPayload(t *testing.T) {
 		t.Fatalf("err = %v, want missing script_id error", err)
 	}
 }
+
+// ── 中心密钥库：ctx.secret + ctx.http_req 自定义头 + 日志脱敏 ──────────
+
+func TestLuaSecretMaskedAndHTTPReqHeaders(t *testing.T) {
+	setupLuaTestDB(t)
+
+	var gotAuth, gotCustom string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotCustom = r.Header.Get("X-Custom")
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	var logged []string
+	e := NewLuaExecutor(LuaOptions{Timeout: 5 * time.Second})
+	e.Secrets = func(name string) (string, error) {
+		if name != "gh_token" {
+			return "", errors.New("secret not found: " + name)
+		}
+		return "super-secret-token-42", nil
+	}
+	src := fmt.Sprintf(`function handle(ctx)
+    local tok = ctx.secret('gh_token')
+    ctx.log('token is ' .. tok)
+    local body, status = ctx.http_req({
+        method = 'POST',
+        url = %q,
+        headers = { ['Authorization'] = 'Bearer ' .. tok, ['X-Custom'] = 'v1' },
+        body = cjson.encode({a = 1}),
+    })
+    if status ~= 200 or body ~= 'ok' then ctx.fail('req fail: ' .. tostring(status)) end
+end`, srv.URL)
+	if _, err := e.UpsertScript(ScriptInput{
+		ScriptID: "sec_demo", Name: "SecDemo", Source: src, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.Execute(context.Background(), "sec_demo", Task{
+		ID:      "t1",
+		Payload: []byte(`{}`),
+		LogSink: func(msg string) { logged = append(logged, msg) },
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if gotAuth != "Bearer super-secret-token-42" {
+		t.Fatalf("Authorization header = %q", gotAuth)
+	}
+	if gotCustom != "v1" {
+		t.Fatalf("X-Custom header = %q", gotCustom)
+	}
+	// 脱敏：ctx.log 里的明文密钥必须已被 *** 替换
+	if len(logged) != 1 || strings.Contains(logged[0], "super-secret-token-42") {
+		t.Fatalf("logged = %v, secret must be masked", logged)
+	}
+	if !strings.Contains(logged[0], "***") {
+		t.Fatalf("logged = %v, want masked marker", logged)
+	}
+}
+
+func TestLuaSecretNotFoundFails(t *testing.T) {
+	setupLuaTestDB(t)
+	e := NewLuaExecutor(LuaOptions{Timeout: 5 * time.Second})
+	e.Secrets = func(name string) (string, error) {
+		return "", errors.New("secret not found: " + name)
+	}
+	if _, err := e.UpsertScript(ScriptInput{ScriptID: "s", Name: "S", Source: "function handle(ctx) ctx.secret('nope') end", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	err := e.Execute(context.Background(), "s", Task{
+		ID:      "t2",
+		Payload: []byte(`{}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "secret not found") {
+		t.Fatalf("err = %v, want secret not found", err)
+	}
+}
+
+func TestLuaSecretNilResolverFails(t *testing.T) {
+	setupLuaTestDB(t)
+	e := NewLuaExecutor(LuaOptions{Timeout: 5 * time.Second})
+	if _, err := e.UpsertScript(ScriptInput{ScriptID: "s", Name: "S", Source: "function handle(ctx) ctx.secret('any') end", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	err := e.Execute(context.Background(), "s", Task{
+		ID:      "t2",
+		Payload: []byte(`{}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("err = %v, want not configured", err)
+	}
+}

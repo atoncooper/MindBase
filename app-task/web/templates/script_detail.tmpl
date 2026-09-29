@@ -1,0 +1,77 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/scripts">← 返回列表</a>
+  <span class="id-chip">{{.ScriptID}}</span>
+  <span class="label label-primary">v{{.ScriptVersion}}</span>
+  <form method="post" action="/console/scripts/{{.ScriptID}}/toggle" class="inline-form">
+    <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
+    <button class="btn btn-default btn-sm" type="submit">{{if .Enabled}}停用{{else}}启用{{end}}</button>
+  </form>
+  <a class="btn btn-default btn-sm" href="/console/scripts/{{.ScriptID}}/run">▶ 运行</a>
+  <a class="btn btn-default btn-sm" href="/console/tasks/new?task_type=lua&script_id={{.ScriptID}}" title="新建 task_type=lua 任务并挂载本脚本">⏰ 创建定时任务</a>
+  <a class="btn btn-primary btn-sm" href="/console/scripts/{{.ScriptID}}/edit" style="margin-left:auto">编辑（新版本）</a>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">{{.Name}}{{if .Description}} <span class="muted">{{.Description}}</span>{{end}}</span></div>
+  <div class="cm-view" data-code-view="lua">{{.Source}}</div>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">版本历史</span></div>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>版本</th><th>名称</th><th>启用</th><th>更新时间</th></tr></thead>
+    <tbody>
+    {{range .Versions}}
+      <tr>
+        <td>v{{.Version}}{{if .Current}}（当前）{{end}}</td>
+        <td>{{.Name}}</td>
+        <td>{{if .Enabled}}是{{else}}否{{end}}</td>
+        <td>{{.UpdatedAt}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">审计日志</span></div>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>时间</th><th>动作</th><th>版本</th><th>操作人</th><th>来源 IP</th><th>摘要</th><th>request_id</th></tr></thead>
+    <tbody>
+    {{range .Logs}}
+      <tr>
+        <td>{{.CreatedAt}}</td>
+        <td>{{.Action}}</td>
+        <td>v{{.Version}}</td>
+        <td>{{.Operator}}</td>
+        <td class="mono-cell">{{.SourceIP}}</td>
+        <td>{{.Summary}}</td>
+        <td class="mono-cell">{{.RequestIDShort}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">暂无审计记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">运行记录（立即执行）</span><a class="btn btn-default btn-xs" href="/console/scripts/{{.ScriptID}}/run">▶ 运行</a></div>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>run_id</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+    <tbody>
+    {{range .Runs}}
+      <tr>
+        <td class="mono-cell"><a href="/console/scripts/{{$.ScriptID}}/runs/{{.RunID}}" title="{{.RunID}}">{{.RunIDShort}}</a></td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td>{{.Duration}}</td>
+        <td>{{.CreatedAt}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="empty">暂无运行记录（点右上角「运行」立即执行一次）</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"app-task/internal/repo"
@@ -19,6 +20,7 @@ func TestUploadScriptAuditTrail(t *testing.T) {
 	body := `{"script_id":"aud","name":"Audit","description":"d","source":"function handle(ctx) end","operator":"ops-bot"}`
 	req := httptest.NewRequest("POST", "/scripts", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	req.Header.Set("X-Request-Id", "req-123")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -42,6 +44,7 @@ func TestUploadScriptAuditTrail(t *testing.T) {
 	body2 := `{"script_id":"aud","name":"Audit2","source":"function handle(ctx) ctx.log(\"v2\") end"}`
 	req2 := httptest.NewRequest("POST", "/scripts", bytes.NewBufferString(body2))
 	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("apikey", testServiceKey)
 	req2.Header.Set("X-Request-Id", "req-456")
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
@@ -66,6 +69,7 @@ func TestUploadScriptValidation(t *testing.T) {
 	// missing source → 400
 	req := httptest.NewRequest("POST", "/scripts", bytes.NewBufferString(`{"script_id":"x","name":"X"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -76,6 +80,7 @@ func TestUploadScriptValidation(t *testing.T) {
 	bad := `{"script_id":"y","name":"Y","source":"function handle( ctx)"}`
 	req2 := httptest.NewRequest("POST", "/scripts", bytes.NewBufferString(bad))
 	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("apikey", testServiceKey)
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusBadRequest {
@@ -89,6 +94,7 @@ func TestScriptLogsEndpoint(t *testing.T) {
 		body := `{"script_id":"aud2","name":"A","source":"function handle(ctx) end","operator":"op-` + string(rune('0'+version)) + `"}`
 		req := httptest.NewRequest("POST", "/scripts", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("apikey", testServiceKey)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -99,6 +105,7 @@ func TestScriptLogsEndpoint(t *testing.T) {
 	upload(2)
 
 	req := httptest.NewRequest("GET", "/scripts/logs?script_id=aud2&limit=10", nil)
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -120,9 +127,84 @@ func TestScriptLogsEndpoint(t *testing.T) {
 
 	// missing script_id → 400
 	req2 := httptest.NewRequest("GET", "/scripts/logs", nil)
+	req2.Header.Set("apikey", testServiceKey)
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (script_id required)", w2.Code)
+	}
+}
+
+// ── POST /internal/script/run: 立即执行（中心运行容器） ────────────
+
+func TestInternalScriptRun(t *testing.T) {
+	_, h := newTestRouter(t)
+
+	// upload a script that logs the payload and returns normally
+	upload := `{"script_id":"runx","name":"RunX","source":"function handle(ctx) ctx.log('n=' .. tostring(ctx.payload().n)) end"}`
+	w := doJSON(h, "POST", "/scripts", upload, serviceKeyHeaders(nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// run it with a payload
+	w = doJSON(h, "POST", "/internal/script/run", `{"script_id":"runx","payload":{"n":42}}`, serviceKeyHeaders(nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		RunID    string   `json:"run_id"`
+		Version  int      `json:"version"`
+		Status   string   `json:"status"`
+		Error    string   `json:"error"`
+		Logs     []string `json:"logs"`
+		Duration int64    `json:"duration_ms"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, w.Body.String())
+	}
+	if resp.Status != "success" || resp.Version != 1 || resp.RunID == "" {
+		t.Fatalf("run resp = %+v (body %s)", resp, w.Body.String())
+	}
+	if len(resp.Logs) != 1 || resp.Logs[0] != "n=42" {
+		t.Fatalf("logs = %v, want [n=42]", resp.Logs)
+	}
+
+	// run is persisted and inspectable
+	run, err := repo.GetScriptRun(resp.RunID)
+	if err != nil || run == nil {
+		t.Fatalf("get run: %v, %v", run, err)
+	}
+	if run.Status != "success" || run.ScriptID != "runx" {
+		t.Fatalf("run = %+v", run)
+	}
+
+	// unknown script -> 404
+	if w := doJSON(h, "POST", "/internal/script/run", `{"script_id":"nope"}`, serviceKeyHeaders(nil)); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown script status = %d, want 404", w.Code)
+	}
+
+	// syntax-broken source is rejected at upload time (compile check)…
+	if w := doJSON(h, "POST", "/scripts", `{"script_id":"bad","name":"Bad","source":"function handle( end"}`, serviceKeyHeaders(nil)); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad upload status = %d, want 400", w.Code)
+	}
+	// …and a runtime failure surfaces as status=failed with the error text.
+	w = doJSON(h, "POST", "/scripts", `{"script_id":"bad","name":"Bad","source":"function handle(ctx) ctx.fail('boom') end"}`, serviceKeyHeaders(nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("fail-script upload status = %d, body = %s", w.Code, w.Body.String())
+	}
+	w = doJSON(h, "POST", "/internal/script/run", `{"script_id":"bad"}`, serviceKeyHeaders(nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("bad run status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var bad struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &bad); err != nil {
+		t.Fatal(err)
+	}
+	if bad.Status != "failed" || !strings.Contains(bad.Error, "boom") {
+		t.Fatalf("bad run resp = %+v", bad)
 	}
 }

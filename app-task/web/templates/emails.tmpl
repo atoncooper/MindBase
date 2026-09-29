@@ -1,0 +1,50 @@
+{{define "content"}}
+<div class="toolbar">
+  <ul class="nav nav-pills filter-pills">
+    <li role="presentation" {{if eq .Status ""}}class="active"{{end}}><a href="/console/emails">全部</a></li>
+    <li role="presentation" {{if eq .Status "pending"}}class="active"{{end}}><a href="/console/emails?status=pending">pending</a></li>
+    <li role="presentation" {{if eq .Status "sending"}}class="active"{{end}}><a href="/console/emails?status=sending">sending</a></li>
+    <li role="presentation" {{if eq .Status "sent"}}class="active"{{end}}><a href="/console/emails?status=sent">sent</a></li>
+    <li role="presentation" {{if eq .Status "failed"}}class="active"{{end}}><a href="/console/emails?status=failed">failed</a></li>
+    <li role="presentation" {{if eq .Status "dry_run"}}class="active"{{end}}><a href="/console/emails?status=dry_run">dry_run</a></li>
+  </ul>
+</div>
+
+<div class="panel panel-default">
+  <table class="table table-striped table-hover data">
+    <thead><tr>
+      <th>email_id</th><th>收件人</th><th>主题</th><th>reference</th><th>状态</th><th>重试</th><th>创建时间</th><th>发送时间</th><th class="op-col"></th>
+    </tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td class="mono-cell" title="{{.EmailID}}">{{.EmailIDShort}}</td>
+        <td>{{.To}}</td>
+        <td title="{{.Subject}}">{{.SubjectShort}}</td>
+        <td class="mono-cell">{{.ReferenceID}}</td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td>{{.RetryCount}}{{if .NextRetryAt}}<br><span class="cell-sub">{{.NextRetryAt}}</span>{{end}}</td>
+        <td>{{.CreatedAt}}</td>
+        <td>{{.SentAt}}</td>
+        <td class="op-cell">
+          {{if eq .StatusRaw "failed"}}
+          <form method="post" action="/console/emails/{{.EmailID}}/retry" class="inline-form">
+            <button class="btn btn-danger btn-xs" type="submit">重试</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="9" class="empty">暂无邮件记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <div class="panel-footer page-pagination">
+    <span>共 {{.Nav.Total}} 条 · 第 {{.Nav.From}}-{{.Nav.To}} 条</span>
+    <ul class="pagination pagination-sm">
+      <li {{if not .Nav.PrevURL}}class="disabled"{{end}}><a href="{{if .Nav.PrevURL}}{{.Nav.PrevURL}}{{else}}#{{end}}">上一页</a></li>
+      <li {{if not .Nav.NextURL}}class="disabled"{{end}}><a href="{{if .Nav.NextURL}}{{.Nav.NextURL}}{{else}}#{{end}}">下一页</a></li>
+    </ul>
+  </div>
+</div>
+{{end}}

@@ -9,6 +9,7 @@ import (
 	"app-task/internal/db"
 	"app-task/internal/model"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -20,9 +21,11 @@ const (
 )
 
 var (
-	ErrUserNotFound = errors.New("user not found")
-	ErrUserExists   = errors.New("username already exists")
-	ErrLastAdmin    = errors.New("cannot delete the last admin")
+	ErrUserNotFound   = errors.New("user not found")
+	ErrUserExists     = errors.New("username already exists")
+	ErrSecretExists   = errors.New("secret name already exists")
+	ErrSecretNotFound = errors.New("secret not found")
+	ErrLastAdmin      = errors.New("cannot delete the last admin")
 )
 
 func GetUserByUsername(username string) (*model.WebUIUser, error) {
@@ -86,11 +89,24 @@ func SetUserPassword(id int64, password string) error {
 }
 
 func CreateUser(username, password, role string) (*model.WebUIUser, error) {
+	return createUser(username, password, role, "")
+}
+
+// CreateUserWithID inserts a user with an explicit UUID (startup backfill).
+func CreateUserWithID(userID, username, password, role string) (*model.WebUIUser, error) {
+	return createUser(username, password, role, userID)
+}
+
+func createUser(username, password, role, userID string) (*model.WebUIUser, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
+	if userID == "" {
+		userID = uuid.NewString()
+	}
 	u := &model.WebUIUser{
+		UserID:       userID,
 		Username:     username,
 		PasswordHash: string(hash),
 		Role:         role,
@@ -137,4 +153,33 @@ func containsUniqueViolation(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "Duplicate entry") || strings.Contains(msg, "UNIQUE constraint failed")
+}
+
+// GetUserByUserID fetches a user by its UUID identifier; nil, nil when absent.
+func GetUserByUserID(userID string) (*model.WebUIUser, error) {
+	var u model.WebUIUser
+	err := db.DB.Where("user_id = ?", userID).First(&u).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// EnsureUserIDs backfills UUID identifiers for user rows created before the
+// user_id column existed (idempotent; runs once at startup after migrate).
+func EnsureUserIDs() error {
+	var rows []model.WebUIUser
+	if err := db.DB.Where("user_id IS NULL OR user_id = ''").Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, u := range rows {
+		if err := db.DB.Model(&model.WebUIUser{}).Where("id = ?", u.ID).
+			Update("user_id", uuid.NewString()).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
