@@ -37,10 +37,6 @@ jobs:
             dockerfile: app-pay/Dockerfile
             image: ghcr.io/${{ github.repository_owner }}/mind-base-app-pay
             name: app-pay
-          - context: ./app-task
-            dockerfile: app-task/Dockerfile
-            image: ghcr.io/${{ github.repository_owner }}/mind-base-app-task
-            name: app-task
     steps:
       - uses: actions/checkout@v4
 

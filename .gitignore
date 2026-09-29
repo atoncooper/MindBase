@@ -80,6 +80,9 @@ app-board/certs/
 # app-task TLS certs（server.tls 自动生成的自签证书与私钥，敏感）
 app-task/certs/
 
+# app-task 已拆分为独立仓库 atoncooper/app-task（本地嵌套 checkout，勿入库）
+/app-task/
+
 
 # CLAUDE
 .claude/
