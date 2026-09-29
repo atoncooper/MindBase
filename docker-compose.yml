@@ -652,12 +652,62 @@ services:
       - APPTASK__TIMEZONE=Asia/Shanghai
       # Logging: both writes to stdout AND /app/logs/app-task.log (rotated via lumberjack)
       - APPTASK__LOG__OUTPUT=both
+      # 出站代理（可选）：ctx.http_* 与 http 任务派发的外网访问经此代理出网；
+      # 留空 = 直连。NO_PROXY 保证容器内网服务名（backend/app-pay 等）不走代理。
+      # 宿主机代理示例：APPTASK_HTTP_PROXY=http://host.docker.internal:10808
+      - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
+      - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,backend,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
-      - "${APP_TASK_PORT:-8001}:8001"
+      - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
       - app_task_logs:/app/logs
       # app-pay 开发 CA（app-pay/certs/ 由 scripts/gen-dev-cert.* 生成；缺失时目录为空，
       # 只有 https 委托回调会报错并由兜底轮询接管，不影响 app-task 启动）
+      - ./app-pay/certs:/app/pay-certs:ro
+      # 容器内 HTTPS（.env 设 APPTASK__SERVER__TLS__ENABLED=true 即可）：不配 cert/key 时
+      # 启动自动生成自签证书写入 /app/certs（挂卷持久化，重建容器不再换证书）；
+      # 显式指定文件用 APPTASK__SERVER__TLS__CERT/KEY
+      - ./app-task/certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-task 第二实例（HA）：与 app-task 共享同一 app-task-mysql，调度态全在
+  # DB（认领互斥 + dispatching 超时回收），双实例不重不漏。profile=ha 显式
+  # 启用：docker compose --profile ha up -d app-task-ha。控制台会话默认
+  # memory（每实例独立；两实例走各自回环端口，无需共享）；若前面挂同一
+  # 域名 LB，两边都设 APPTASK__WEBUI__SESSION_STORE=redis + APPTASK__REDIS__URL。
+  app-task-ha:
+    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/mind-base-app-task:latest}
+    build:
+      context: ./app-task
+      dockerfile: Dockerfile
+    container_name: mind-base-app-task-ha
+    profiles: ["ha"]
+    depends_on:
+      app-task-mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
+      - APPTASK__APP__BASE_URL=http://apisix:9080
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      - APPTASK__LOG__OUTPUT=both
+      # 集群身份：task.owner / 控制台溯源显示
+      - APPTASK__SCHEDULER__INSTANCE_ID=mind-base-app-task-ha
+      # 兼职节点调低权重：APPTASK__SCHEDULER__WEIGHT=1（其他节点设更高，如 4）
+      - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
+      - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,backend,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+    ports:
+      - "127.0.0.1:${APP_TASK_HA_PORT:-8011}:8001"
+    volumes:
+      - app_task_ha_logs:/app/logs
       - ./app-pay/certs:/app/pay-certs:ro
     restart: unless-stopped
     networks:
@@ -768,10 +818,13 @@ services:
       - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
       # 服务模式：主 app backend 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
       - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
-      # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true；自动生成 dev-CA+叶子
-      # （./mcp/app-board-mcp/certs/，宿主侧用 dev-ca.crt 配 NODE_EXTRA_CA_CERTS）
+      # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true。证书由 cert-gen
+      # 统一签发（shared dev CA 叶子），此处 explicit 模式直接加载；
+      # auto 模式会试图在 root 属主的 bind mount 里重建 dev CA（EACCES 崩溃）
       - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
       - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - BOARDMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - BOARDMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
       # Logging: stdout + /app/logs/app-board-mcp.log（lumberjack 轮转；
       # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
       - BOARDMCP__LOG__OUTPUT=both
@@ -780,7 +833,7 @@ services:
       - "127.0.0.1:8005:8005"
     volumes:
       - app_board_mcp_logs:/app/logs
-      # TLS 证书目录：TLS on 时自动生成 dev-CA+叶子并持久化（对齐 app-board/certs 模式）
+      # TLS 证书目录：cert-gen 统一签发叶子（explicit 模式加载，不自动生成）
       - ./mcp/app-board-mcp/certs:/app/certs
     restart: unless-stopped
     networks:
@@ -938,6 +991,7 @@ services:
 volumes:
   backend_data:
   backend_logs:
+  app_task_ha_logs:
   app_task_logs:
   app_auth_logs:
   app_cloud_logs:
