@@ -129,26 +129,30 @@ func TestWebuiPageGate(t *testing.T) {
 	}
 	// ...which serves the standalone login page (no app shell).
 	w = doJSON(h, "GET", "/login", "", nil)
-	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("登录控制台")) {
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("login-side")) {
 		t.Fatalf("GET /login: got %d, want 200 login page", w.Code)
 	}
 
-	// The app shell is NOT reachable via the public static route.
-	if w := doJSON(h, "GET", "/assets/index.html", "", nil); w.Code != http.StatusNotFound {
-		t.Fatalf("/assets/index.html: got %d, want 404", w.Code)
+	// Template sources are NOT reachable via the public static route.
+	if w := doJSON(h, "GET", "/assets/base.tmpl", "", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("/assets/base.tmpl: got %d, want 404", w.Code)
 	}
 
-	// Login -> session cookie unlocks the console page; /login bounces back.
+	// Login -> session cookie unlocks the console pages; /login bounces back.
 	ah := adminHeaders(t, h)
-	if w := doJSON(h, "GET", "/", "", ah); w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`id="app"`)) {
-		t.Fatalf("authenticated /: got %d, want 200 app shell", w.Code)
+	if w := doJSON(h, "GET", "/console", "", ah); w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`subnav-tabs`)) {
+		t.Fatalf("authenticated /console: got %d, want 200 dashboard", w.Code)
 	}
-	if w := doJSON(h, "GET", "/login", "", ah); w.Code != http.StatusFound || w.Header().Get("Location") != "/" {
-		t.Fatalf("authenticated /login: got %d Location=%q, want 302 /", w.Code, w.Header().Get("Location"))
+	if w := doJSON(h, "GET", "/login", "", ah); w.Code != http.StatusFound || w.Header().Get("Location") != "/console" {
+		t.Fatalf("authenticated /login: got %d Location=%q, want 302 /console", w.Code, w.Header().Get("Location"))
 	}
-	// Assets remain public (CSS/JS are not sensitive).
-	if w := doJSON(h, "GET", "/assets/app.js", "", nil); w.Code != http.StatusOK {
-		t.Fatalf("/assets/app.js: got %d, want 200", w.Code)
+	// Unauthenticated console pages redirect to /login.
+	if w := doJSON(h, "GET", "/console/users", "", nil); w.Code != http.StatusFound || w.Header().Get("Location") != "/login" {
+		t.Fatalf("unauthenticated /console/users: got %d Location=%q, want 302 /login", w.Code, w.Header().Get("Location"))
+	}
+	// Assets remain public (the stylesheet is not sensitive).
+	if w := doJSON(h, "GET", "/assets/app.css", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("/assets/app.css: got %d, want 200", w.Code)
 	}
 }
 

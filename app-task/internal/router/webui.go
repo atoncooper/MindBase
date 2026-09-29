@@ -11,9 +11,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"app-task/internal/config"
@@ -26,7 +26,10 @@ import (
 	"gorm.io/datatypes"
 )
 
-const webuiVersion = "0.5.0"
+const webuiVersion = "0.12.0"
+
+// Version is the exported service version (CLI `--version` / `at info`).
+const Version = webuiVersion
 
 const (
 	// Brute-force throttle: max failed credentials per client IP per window,
@@ -47,7 +50,7 @@ const (
 // webuiSession is the identity attached to a browser/API session: it always
 // carries a username and role so handlers can authorize and audit.
 type webuiSession struct {
-	UserID   int64
+	UserID   string // UUID of the webui_user row ("" for master-token sessions)
 	Username string
 	Role     string // admin / member
 	Expiry   time.Time
@@ -66,6 +69,9 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, auth *we
 	api := e.Group("/api", auth.middleware())
 	api.GET("/info", r.apiInfo)
 	api.GET("/stats", r.apiStats)
+
+	api.GET("/cluster", requireAdmin(), r.apiCluster)
+	api.POST("/cluster/join", requireAdmin(), r.apiClusterJoin)
 
 	api.GET("/tasks", r.apiListTasks)
 	api.GET("/tasks/:task_id", r.apiTaskDetail)
@@ -101,23 +107,28 @@ type webuiAuthenticator struct {
 	masterToken string
 	ttl         time.Duration
 
-	mu          sync.Mutex
-	sessions    map[string]webuiSession // session id -> identity
-	fails       map[string]int          // client ip -> failures in current window
-	windowStart time.Time
+	// Backing stores: memory by default (single instance), Redis for
+	// multi-instance console deployments (see state_stores.go / config).
+	sessions sessionStore
+	throttle throttler
 }
 
-func newWebuiAuthenticator(token string, ttlMinutes int) *webuiAuthenticator {
+func newWebuiAuthenticator(token string, ttlMinutes int, sessions sessionStore, throttle throttler) *webuiAuthenticator {
 	ttl := webuiDefaultTTL
 	if ttlMinutes > 0 {
 		ttl = time.Duration(ttlMinutes) * time.Minute
 	}
+	if sessions == nil {
+		sessions = newMemorySessionStore()
+	}
+	if throttle == nil {
+		throttle = newMemoryThrottler(webuiMaxFails, webuiFailWindow)
+	}
 	return &webuiAuthenticator{
 		masterToken: token,
 		ttl:         ttl,
-		sessions:    make(map[string]webuiSession),
-		fails:       make(map[string]int),
-		windowStart: time.Now(),
+		sessions:    sessions,
+		throttle:    throttle,
 	}
 }
 
@@ -205,9 +216,7 @@ func (a *webuiAuthenticator) login(c *gin.Context) {
 // logout invalidates the presented session and clears the session cookie.
 func (a *webuiAuthenticator) logout(c *gin.Context) {
 	if tok := a.extractToken(c); tok != "" {
-		a.mu.Lock()
-		delete(a.sessions, tok)
-		a.mu.Unlock()
+		a.sessions.delete(tok)
 	}
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     webuiSessionCookie,
@@ -253,13 +262,7 @@ func (a *webuiAuthenticator) authenticate(cred string) (webuiSession, bool) {
 	if a.masterToken != "" && subtle.ConstantTimeCompare([]byte(cred), []byte(a.masterToken)) == 1 {
 		return webuiSession{Username: "master-token", Role: "admin", Expiry: time.Now().Add(a.ttl)}, true
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.pruneSessionsLocked()
-	if s, ok := a.sessions[cred]; ok && time.Now().Before(s.Expiry) {
-		return s, true
-	}
-	return webuiSession{}, false
+	return a.sessions.load(cred)
 }
 
 // verifyUser checks a username + password against the webui_user store.
@@ -271,7 +274,7 @@ func (a *webuiAuthenticator) verifyUser(username, password string) (webuiSession
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		return webuiSession{}, false
 	}
-	return webuiSession{UserID: u.ID, Username: u.Username, Role: u.Role, Expiry: time.Now().Add(a.ttl)}, true
+	return webuiSession{UserID: u.UserID, Username: u.Username, Role: u.Role, Expiry: time.Now().Add(a.ttl)}, true
 }
 
 func (a *webuiAuthenticator) newSession(user webuiSession) (string, error) {
@@ -280,48 +283,17 @@ func (a *webuiAuthenticator) newSession(user webuiSession) (string, error) {
 		return "", err
 	}
 	sid := hex.EncodeToString(b)
-	a.mu.Lock()
-	a.sessions[sid] = user
-	a.mu.Unlock()
+	if err := a.sessions.save(sid, user, a.ttl); err != nil {
+		return "", err
+	}
 	return sid, nil
 }
 
-func (a *webuiAuthenticator) pruneSessionsLocked() {
-	now := time.Now()
-	for sid, s := range a.sessions {
-		if now.After(s.Expiry) {
-			delete(a.sessions, sid)
-		}
-	}
-}
+func (a *webuiAuthenticator) allow(ip string) bool { return a.throttle.allow(ip) }
 
-func (a *webuiAuthenticator) allow(ip string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.rollWindowLocked()
-	return a.fails[ip] < webuiMaxFails
-}
+func (a *webuiAuthenticator) fail(ip string) { a.throttle.fail(ip) }
 
-func (a *webuiAuthenticator) fail(ip string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.rollWindowLocked()
-	a.fails[ip]++
-}
-
-func (a *webuiAuthenticator) reset(ip string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	delete(a.fails, ip)
-}
-
-func (a *webuiAuthenticator) rollWindowLocked() {
-	now := time.Now()
-	if now.Sub(a.windowStart) >= webuiFailWindow {
-		a.fails = make(map[string]int)
-		a.windowStart = now
-	}
-}
+func (a *webuiAuthenticator) reset(ip string) { a.throttle.reset(ip) }
 
 // currentUser reads the authed identity set by the auth middleware.
 func currentUser(c *gin.Context) (webuiSession, bool) {
@@ -379,14 +351,33 @@ func (r *Router) apiStats(c *gin.Context) {
 	emailTotal, _ := repo.CountEmails("")
 	scripts, _ := repo.CountScripts()
 
-	c.JSON(http.StatusOK, gin.H{
+	out := gin.H{
 		"service":    gin.H{"status": "running", "version": webuiVersion},
 		"tasks":      withTotal(tasks, taskTotal),
 		"logs_total": logsTotal,
 		"emails":     withTotal(emails, emailTotal),
 		"scripts":    scripts,
 		"now":        time.Now().Format(time.RFC3339),
-	})
+	}
+	if schedulerStats != nil {
+		workers, inflight := schedulerStats()
+		out["scheduler"] = gin.H{"workers": workers, "inflight": inflight}
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// apiCluster renders the node roster: liveness, versions, in-flight claims.
+func (r *Router) apiCluster(c *gin.Context) {
+	if clusterMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"nodes": []gin.H{}})
+		return
+	}
+	nodes, err := clusterMgr.Nodes(time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"nodes": nodes})
 }
 
 func withTotal(m map[string]int64, total int64) gin.H {
@@ -435,8 +426,9 @@ func (r *Router) apiTaskDetail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"task": taskView(task), "logs": logOut})
 }
 
-// apiCreateTask registers a task from the admin console form. uid defaults to
-// 0 (system) when omitted — unlike /tasks/register which requires it.
+// apiCreateTask registers a task from the admin console. An omitted uid (0)
+// attributes the task to the logged-in console user's own id; master-token
+// sessions (no user row) and explicit uids pass through unchanged.
 func (r *Router) apiCreateTask(c *gin.Context) {
 	var req struct {
 		UID         int64           `json:"uid"`
@@ -452,6 +444,9 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
+	}
+	if req.UID == 0 {
+		req.UID = sessionUID(c)
 	}
 	var triggerTime time.Time
 	if req.CronExpr == "" && req.TriggerTime == "" {
@@ -481,6 +476,8 @@ func taskView(j *model.Task) gin.H {
 		"uid":               j.UID,
 		"task_type":         j.TaskType,
 		"status":            j.Status,
+		"owner":             j.Owner,
+		"claimed_at":        timePtr(j.ClaimedAt),
 		"trigger_time":      j.TriggerTime.Format(time.RFC3339),
 		"executor_url":      j.ExecutorURL,
 		"async":             j.Async,
@@ -725,6 +722,7 @@ func (r *Router) apiListUsers(c *gin.Context) {
 	for _, u := range us {
 		out = append(out, gin.H{
 			"id":         u.ID,
+			"user_id":    u.UserID,
 			"username":   u.Username,
 			"role":       u.Role,
 			"created_at": u.CreatedAt.Format(time.RFC3339),
@@ -759,13 +757,13 @@ func (r *Router) apiCreateUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "create user failed: " + err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"id": u.ID, "username": u.Username, "role": u.Role})
+	c.JSON(http.StatusOK, gin.H{"id": u.ID, "user_id": u.UserID, "username": u.Username, "role": u.Role})
 }
 
 func (r *Router) apiSetUserPassword(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	uid, err := resolveUserID(c.Param("user_id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid user id"})
+		c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
 		return
 	}
 	var req struct {
@@ -775,7 +773,7 @@ func (r *Router) apiSetUserPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
 	}
-	if err := repo.SetUserPassword(id, req.Password); err != nil {
+	if err := repo.SetUserPassword(uid, req.Password); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
 		return
 	}
@@ -783,9 +781,9 @@ func (r *Router) apiSetUserPassword(c *gin.Context) {
 }
 
 func (r *Router) apiDeleteUser(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	uid, err := resolveUserID(c.Param("user_id"))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid user id"})
+		c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
 		return
 	}
 	me, ok := currentUser(c)
@@ -793,11 +791,11 @@ func (r *Router) apiDeleteUser(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"detail": "unauthorized"})
 		return
 	}
-	if me.UserID == id {
+	if me.UserID == c.Param("user_id") {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "cannot delete your own account"})
 		return
 	}
-	target, err := repo.GetUserByID(id)
+	target, err := repo.GetUserByID(uid)
 	if err != nil || target == nil {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "user not found"})
 		return
@@ -809,7 +807,7 @@ func (r *Router) apiDeleteUser(c *gin.Context) {
 			return
 		}
 	}
-	if err := repo.DeleteUser(id); err != nil {
+	if err := repo.DeleteUser(uid); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
@@ -860,4 +858,17 @@ func toStringSlice(j datatypes.JSON) []string {
 		_ = json.Unmarshal(j, &ss)
 	}
 	return ss
+}
+
+// resolveUserID resolves a user_id route parameter (UUID) to the internal
+// row id used by the repo helpers. Unknown identifiers → error.
+func resolveUserID(userID string) (int64, error) {
+	u, err := repo.GetUserByUserID(userID)
+	if err != nil {
+		return 0, err
+	}
+	if u == nil {
+		return 0, errors.New("user not found")
+	}
+	return u.ID, nil
 }

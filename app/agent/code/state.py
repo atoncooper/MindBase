@@ -19,7 +19,7 @@ class CodeAgentState(BaseModel):
     uid: int = Field(default=0, description="User id, injected for run_code tool.")
     chat_session_id: str = Field(
         default="",
-        description="Chat session id, threaded from the parent chat agent so "
+        description="Chat session id, threaded from the parent main agent so "
         "execution records can be associated to the conversation.",
     )
     assistant_msg_id: str = Field(

@@ -35,6 +35,18 @@ _RETRYABLE_PATTERNS: Sequence[str] = [
     "503",
     "502",
     "500",
+    # CDN/gateway-side transient errors: proxy/gateway HTML error pages can
+    # arrive as the error body (e.g. Cloudflare 421 when a pooled connection
+    # is misdirected, 502/52x edge pages). A retry on a fresh connection
+    # usually succeeds.
+    "misdirected request",
+    "bad gateway",
+    "gateway timeout",
+    "code: 421",
+    "code: 52",
+    # Reasoning models sometimes end with a thinking-only final turn; the
+    # retry re-runs the agent turn and usually produces a real answer.
+    "empty final answer",
 ]
 
 _FATAL_PATTERNS: Sequence[str] = [

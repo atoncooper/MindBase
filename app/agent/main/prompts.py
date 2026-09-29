@@ -1,6 +1,6 @@
-"""System prompt for the ReAct Chat Agent.
+"""System prompt for the ReAct Main Agent.
 
-The Chat Agent follows the ReAct (Reasoning + Acting) pattern.
+The Main Agent follows the ReAct (Reasoning + Acting) pattern.
 The LLM is the decision-maker — it decides which tools to call,
 whether to search again, and when to produce the final answer.
 """
@@ -269,7 +269,7 @@ def build_system_prompt(
     skills_section: str = "",
     forced_skills_section: str = "",
 ) -> str:
-    """Build the system prompt for the Chat Agent."""
+    """Build the system prompt for the Main Agent."""
     if has_data and cloud_has_data:
         data_status = "用户有 B站视频和云盘文档的向量数据可用。"
     elif has_data:

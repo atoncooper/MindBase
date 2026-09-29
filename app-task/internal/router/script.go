@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"app-task/internal/executor"
@@ -17,7 +18,7 @@ import (
 // scriptUploadBody is the shared create/update request shape used by both the
 // key-auth /scripts endpoint and the admin console POST /api/scripts.
 type scriptUploadBody struct {
-	ScriptID    string `json:"script_id" binding:"required,max=64"`
+	ScriptID    string `json:"script_id" binding:"max=64"` // optional: server assigns a UUID when omitted
 	Name        string `json:"name" binding:"required,max=128"`
 	Description string `json:"description" binding:"max=512"`
 	Source      string `json:"source" binding:"required"`
@@ -30,6 +31,12 @@ func (r *Router) uploadScript(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
+	}
+	// script_id is server-assigned when omitted (UUID); callers may supply
+	// their own id to drive the upsert/update flow.
+	req.ScriptID = strings.TrimSpace(req.ScriptID)
+	if req.ScriptID == "" {
+		req.ScriptID = uuid.NewString()
 	}
 	version, logID, err := r.applyScriptUpload(req, c)
 	if err != nil {
@@ -53,13 +60,17 @@ func (r *Router) applyScriptUpload(req scriptUploadBody, c *gin.Context) (versio
 	}
 
 	// Audit metadata: prefer explicit operator, fall back to header, then to
-	// the authenticated webui user; always capture source IP + request id.
+	// the authenticated webui user, then the API-key credential name; always
+	// capture source IP + request id.
 	operator := req.Operator
 	if operator == "" {
 		operator = c.GetHeader("X-Operator")
 	}
 	if operator == "" {
 		operator = operatorOf(c)
+	}
+	if operator == "" {
+		operator = currentAPIKeyName(c)
 	}
 	requestID := c.GetHeader("X-Request-Id")
 	if requestID == "" {

@@ -54,7 +54,7 @@ class AgentHarness:
     Then anywhere in request handling::
 
         result = await request.app.state.agent_harness.invoke(
-            "chat", session_id="abc", query="...", uid=1,
+            "main", session_id="abc", query="...", uid=1,
         )
 
     On shutdown::
@@ -204,7 +204,7 @@ class AgentHarness:
         """Invoke a registered agent.
 
         Args:
-            agent_name: Registered agent type (``"chat"`` or ``"memory"``).
+            agent_name: Registered agent type (``"main"`` or ``"memory"``).
             session_id: Session identifier.
             timeout: Max invocation seconds.
             bypass_scheduler: When True (default), goes directly to
@@ -335,7 +335,7 @@ class AgentHarness:
         """
         db_deps: Any = None
         if self._session_factory is not None:
-            from app.agent.chat.db_deps import DBChatDeps
+            from app.agent.main.db_deps import DBChatDeps
 
             db_deps = DBChatDeps(self._session_factory)
 
@@ -467,21 +467,21 @@ class AgentHarness:
 
         # ── Chat Agent ───────────────────────────────────────────────
         if self._session_factory:
-            from app.agent.chat import build_chat_agent
-            from app.agent.chat.db_deps import DBChatDeps
+            from app.agent.main import build_main_agent
+            from app.agent.main.db_deps import DBChatDeps
 
             deps = DBChatDeps(self._session_factory)
             self._lifecycle.register(
-                "chat",
-                build_chat_agent,
+                "main",
+                build_main_agent,
                 runtime=self._runtime,
                 llm=self._llm,
                 deps=deps,
-                circuit_breaker=self._lifecycle.get_breaker("chat"),
+                circuit_breaker=self._lifecycle.get_breaker("main"),
                 skill_manager=self._skill_manager,
             )
             self._orchestrator.register(
-                "chat",
+                "main",
                 "收藏夹知识库助手。使用ReAct模式回答用户关于B站视频内容和云盘文档的问题。"
                 "支持向量检索、视频列表、视频总结等工具。"
                 "适用于绝大多数用户问答场景。",
@@ -500,7 +500,7 @@ class AgentHarness:
         # when a request carries board_uuid (panel board chat).
         if self._session_factory:
             from app.agent.board import build_board_agent
-            from app.agent.chat.db_deps import DBChatDeps
+            from app.agent.main.db_deps import DBChatDeps
 
             board_deps = DBChatDeps(self._session_factory)
             self._lifecycle.register(

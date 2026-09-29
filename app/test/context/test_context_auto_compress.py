@@ -207,7 +207,7 @@ class _FakeDB:
 
 
 def _make_deps_with_history(monkeypatch, messages):
-    from app.agent.chat.db_deps import DBChatDeps
+    from app.agent.main.db_deps import DBChatDeps
 
     deps = DBChatDeps.__new__(DBChatDeps)  # skip __init__ wiring
 

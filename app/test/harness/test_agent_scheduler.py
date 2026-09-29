@@ -247,7 +247,7 @@ class TestTicketState:
     def test_initial_state_is_queued(self) -> None:
         ticket = InvocationTicket(
             job_id="abc",
-            agent_name="chat",
+            agent_name="main",
             session_id="s1",
             input={},
         )

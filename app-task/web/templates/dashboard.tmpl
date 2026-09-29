@@ -1,0 +1,106 @@
+{{define "content"}}
+<div class="stat-cards">
+  <div class="stat-card panel panel-default">
+    <div class="panel-body">
+      <div class="label-text">任务总数</div>
+      <div class="value">{{.Tasks.Total}}</div>
+      <div class="sub">
+        <span>待执行 {{.Tasks.Pending}}</span> ·
+        <span>执行中 {{.Tasks.Running}}</span> ·
+        <span>已完成 {{.Tasks.Completed}}</span> ·
+        <span>失败 {{.Tasks.Failed}}</span>
+      </div>
+    </div>
+  </div>
+  <div class="stat-card panel panel-default">
+    <div class="panel-body">
+      <div class="label-text">执行日志</div>
+      <div class="value">{{.LogsTotal}}</div>
+      <div class="sub">全部执行记录（task_log）</div>
+    </div>
+  </div>
+  <div class="stat-card panel panel-default">
+    <div class="panel-body">
+      <div class="label-text">邮件队列</div>
+      <div class="value">{{.Emails.Total}}</div>
+      <div class="sub">
+        <span>待发送 {{.Emails.Pending}}</span> ·
+        <span>已发送 {{.Emails.Sent}}</span> ·
+        <span>失败 {{.Emails.Failed}}</span> ·
+        <span>模拟 {{.Emails.DryRun}}</span>
+      </div>
+    </div>
+  </div>
+  <div class="stat-card panel panel-default">
+    <div class="panel-body">
+      <div class="label-text">Lua 脚本</div>
+      <div class="value">{{.Scripts}}</div>
+      <div class="sub"><a href="/console/scripts">进入脚本管理 →</a></div>
+    </div>
+  </div>
+</div>
+
+{{if and .User.IsAdmin .ClusterNodes}}
+<div class="panel panel-default">
+  <div class="panel-heading panel-head">
+    <span class="panel-title">集群</span>
+    <a class="btn btn-default btn-xs" href="/console/cluster">集群管理 →</a>
+  </div>
+  <table class="table table-hover data">
+    <thead><tr><th>node_id</th><th>权重</th><th>认领中</th><th>状态</th></tr></thead>
+    <tbody>
+    {{range .ClusterNodes}}
+      <tr>
+        <td class="mono-cell">{{.NodeID}}{{if .Self}} <span class="label label-primary">本机</span>{{end}}</td>
+        <td>{{.Weight}}</td>
+        <td>{{.Claims}}</td>
+        <td><span class="label {{if .Alive}}label-success{{else}}label-danger{{end}}">{{if .Alive}}存活{{else}}失联{{end}}</span></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">最近任务</span><a class="btn btn-default btn-xs" href="/console/tasks">全部任务 →</a></div>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>task_id</th><th>uid</th><th>类型</th><th>状态</th><th>触发时间</th><th>执行器</th></tr></thead>
+    <tbody>
+    {{range .RecentTasks}}
+      <tr>
+        <td class="mono-cell"><a href="/console/tasks/{{.TaskID}}">{{.TaskIDShort}}</a></td>
+        <td>{{.UID}}</td>
+        <td>{{.TaskType}}</td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td>{{.TriggerTime}}</td>
+        <td title="{{.ExecutorURL}}">{{.ExecutorShort}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">暂无任务</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">最近执行日志</span><a class="btn btn-default btn-xs" href="/console/logs">全部日志 →</a></div>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>触发时间</th><th>task_id</th><th>执行器</th><th>状态</th><th>耗时</th><th>结果/错误</th></tr></thead>
+    <tbody>
+    {{range .RecentLogs}}
+      <tr>
+        <td>{{.TriggerAt}}</td>
+        <td class="mono-cell"><a href="/console/tasks/{{.TaskID}}">{{.TaskIDShort}}</a></td>
+        <td title="{{.Executor}}">{{.ExecutorShort}}</td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td>{{.Duration}}</td>
+        <td class="mono-cell log-wrap" title="{{if .Error}}{{.Error}}{{else}}{{.Response}}{{end}}">{{if .Error}}{{.ErrorShort}}{{else}}{{.ResponseShort}}{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">暂无执行记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

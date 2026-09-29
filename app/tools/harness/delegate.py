@@ -41,7 +41,7 @@ class DelegateToAgentTool:
     """Call another registered agent and return its result.
 
     This tool enables inter-agent delegation within the ReAct loop.
-    For example, the Chat Agent can delegate a history-retrieval
+    For example, the Main Agent can delegate a history-retrieval
     sub-query to the Memory Agent instead of using the context tools
     directly.
     """
@@ -108,8 +108,8 @@ class DelegateToAgentTool:
         parent agent's SSE stream can surface what the sub-agent did internally.
         """
         # Prevent delegation back to the top-level chat agent (would loop).
-        if agent_name == "chat":
-            return {"content": "不能委托给 chat agent(它是顶层路由目标)", "failed": True}
+        if agent_name == "main":
+            return {"content": "不能委托给 main agent(它是顶层路由目标)", "failed": True}
 
         # Cap delegation nesting to prevent chat -> memory -> chat -> ... loops.
         depth = kwargs.get("delegate_depth", 0)

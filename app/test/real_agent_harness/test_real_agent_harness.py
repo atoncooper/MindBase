@@ -69,7 +69,7 @@ async def test_real_harness_startup_discovers_tools_and_agents(real_harness):
 
     assert real_harness.started is True
     assert real_harness.runtime.started is True
-    assert "chat" in real_harness.lifecycle.registered_agents
+    assert "main" in real_harness.lifecycle.registered_agents
     assert "memory" in real_harness.lifecycle.registered_agents
     assert "quiz" in real_harness.lifecycle.registered_agents
     assert REQUIRED_CHAT_TOOLS <= tool_names
@@ -131,7 +131,7 @@ async def test_real_chat_agent_invokes_llm_and_returns_answer(real_harness):
     session_id = f"real-chat-{uuid.uuid4()}"
 
     result = await real_harness.invoke(
-        "chat",
+        "main",
         session_id=session_id,
         uid=1,
         query="请用一句中文回答：你现在是否通过真实 AgentHarness 运行？",

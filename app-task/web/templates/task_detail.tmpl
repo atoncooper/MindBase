@@ -1,0 +1,44 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/tasks">← 返回列表</a>
+  <span class="id-chip">{{.Task.TaskID}}</span>
+  <span class="label label-{{.Task.StatusClass}}">{{.Task.StatusText}}</span>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">任务信息</span></div>
+  <div class="detail-grid">
+    {{range .Fields}}
+    <div class="detail-item"><div class="k">{{.K}}</div><div class="v {{if .Long}}long{{end}}">{{.V}}</div></div>
+    {{end}}
+  </div>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">payload（透传给执行器）</span></div>
+  {{if .Payload}}
+  <div class="cm-view" data-code-view="json">{{.Payload}}</div>
+  {{else}}<div class="panel-body"><div class="empty" style="padding:20px 0">无 payload</div></div>{{end}}
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">执行日志（task_log）</span></div>
+  <table class="table table-striped table-hover data">
+    <thead><tr><th>触发时间</th><th>执行器</th><th>状态</th><th>耗时</th><th>响应</th><th>错误</th></tr></thead>
+    <tbody>
+    {{range .Logs}}
+      <tr>
+        <td>{{.TriggerAt}}</td>
+        <td title="{{.Executor}}">{{.ExecutorShort}}</td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td>{{.Duration}}</td>
+        <td class="mono-cell log-wrap" title="{{.Response}}">{{.Response}}</td>
+        <td class="mono-cell log-wrap" title="{{.Error}}">{{.Error}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">暂无执行记录</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

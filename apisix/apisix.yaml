@@ -503,6 +503,8 @@ routes:
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
+          set:
+            X-API-Key: "mindbase-internal-key-change-me"
       forward-auth:
         uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -520,6 +522,8 @@ routes:
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
+          set:
+            X-API-Key: "mindbase-internal-key-change-me"
       forward-auth:
         uri: "http://app-auth:8006/internal/auth/verify"
         request_headers: [Authorization]

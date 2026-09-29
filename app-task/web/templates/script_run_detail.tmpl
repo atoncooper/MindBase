@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/scripts/{{.Run.ScriptID}}/run">再跑一次</a>
+  <a class="btn btn-default btn-sm" href="/console/scripts/{{.Run.ScriptID}}">脚本详情</a>
+  <span class="id-chip" title="{{.Run.RunID}}">{{.RunIDShort}}</span>
+  <span class="label label-{{.StatusCli}}">{{.StatusText}}</span>
+  <span class="muted">v{{.Run.Version}} · {{.Run.DurationMS}} ms · {{.CreatedAtStr}}</span>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">脚本输出（ctx.log）</span></div>
+  {{if .Logs}}
+  <div class="cm-view" data-code-view="plain" style="max-height:320px">{{range .Logs}}{{.}}
+{{end}}</div>
+  {{else}}<div class="panel-body"><div class="empty" style="padding:20px 0">脚本没有 ctx.log 输出</div></div>{{end}}
+</div>
+
+{{if .Error}}
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">错误</span></div>
+  <div class="panel-body"><div class="err-text">{{.Error}}</div></div>
+</div>
+{{end}}
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">本次传入的 payload</span></div>
+  <div class="cm-view" data-code-view="json">{{.Payload}}</div>
+</div>
+{{end}}

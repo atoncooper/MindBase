@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 	"time"
 
@@ -102,22 +101,31 @@ func sessionFromCookie(w *httptest.ResponseRecorder) string {
 func TestWebUIIndexServed(t *testing.T) {
 	h := newWebUITestRouter(t, "")
 
-	// Unauthenticated: redirect to /login; no app shell.
+	// Unauthenticated: root bounces to /login; no console page.
 	if w := doJSON(h, "GET", "/", "", nil); w.Code != http.StatusFound {
 		t.Fatalf("unauthenticated GET / status = %d, want 302", w.Code)
 	}
-	// Authenticated: app shell served.
+	// Authenticated: root bounces to /console, dashboard served there.
 	w := doJSON(h, "GET", "/", "", adminHeaders(t, h))
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/console" {
+		t.Fatalf("authenticated GET / = %d %q, want 302 /console", w.Code, w.Header().Get("Location"))
+	}
+	w = doJSON(h, "GET", "/console", "", adminHeaders(t, h))
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET / status = %d", w.Code)
+		t.Fatalf("GET /console status = %d", w.Code)
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("app-task")) {
-		t.Fatalf("index.html does not mention app-task: %s", w.Body.String()[:200])
+		t.Fatalf("dashboard page does not mention app-task: %s", w.Body.String()[:200])
 	}
 	// static asset reachable (public)
-	w2 := doJSON(h, "GET", "/assets/app.js", "", nil)
-	if w2.Code != http.StatusOK || !bytes.Contains(w2.Body.Bytes(), []byte("renderDashboard")) {
-		t.Fatalf("GET /assets/app.js status = %d", w2.Code)
+	w2 := doJSON(h, "GET", "/assets/app.css", "", nil)
+	if w2.Code != http.StatusOK || !bytes.Contains(w2.Body.Bytes(), []byte(".subnav-tabs")) {
+		t.Fatalf("GET /assets/app.css status = %d", w2.Code)
+	}
+	// html/tmpl sources hidden from the static route (pages served via gated handlers only)
+	w3 := doJSON(h, "GET", "/assets/base.tmpl", "", nil)
+	if w3.Code != http.StatusNotFound {
+		t.Fatalf("GET /assets/base.tmpl status = %d, want 404", w3.Code)
 	}
 }
 
@@ -191,6 +199,7 @@ func TestWebUIUserAdmin(t *testing.T) {
 	var lst struct {
 		Users []struct {
 			ID       int64  `json:"id"`
+			UserID   string `json:"user_id"`
 			Username string `json:"username"`
 			Role     string `json:"role"`
 		} `json:"users"`
@@ -241,8 +250,8 @@ func TestWebUIUserAdmin(t *testing.T) {
 	}
 
 	// admin cannot delete self; cannot delete the last admin.
-	adminID := lst.Users[0].ID
-	if w := doJSON(h, "DELETE", "/api/users/"+itoa(adminID), "", ah); w.Code != http.StatusBadRequest {
+	adminUUID := lst.Users[0].UserID
+	if w := doJSON(h, "DELETE", "/api/users/"+adminUUID, "", ah); w.Code != http.StatusBadRequest {
 		t.Fatalf("delete self: status = %d, want 400", w.Code)
 	}
 
@@ -250,28 +259,24 @@ func TestWebUIUserAdmin(t *testing.T) {
 	w = doJSON(h, "GET", "/api/users", "", ah)
 	lst2 := struct {
 		Users []struct {
-			ID       int64  `json:"id"`
+			UserID   string `json:"user_id"`
 			Username string `json:"username"`
 			Role     string `json:"role"`
 		} `json:"users"`
 	}{}
 	_ = json.Unmarshal(w.Body.Bytes(), &lst2)
-	var memberID int64
+	var memberUUID string
 	for _, u := range lst2.Users {
 		if u.Username == "zhang" {
-			memberID = u.ID
+			memberUUID = u.UserID
 		}
 	}
-	if memberID == 0 {
+	if memberUUID == "" {
 		t.Fatal("member not found")
 	}
-	if w := doJSON(h, "DELETE", "/api/users/"+itoa(memberID), "", ah); w.Code != http.StatusOK {
+	if w := doJSON(h, "DELETE", "/api/users/"+memberUUID, "", ah); w.Code != http.StatusOK {
 		t.Fatalf("delete member: status = %d", w.Code)
 	}
-}
-
-func itoa(n int64) string {
-	return strconv.FormatInt(n, 10)
 }
 
 // ── /api/stats 统计 ────────────────────────────────────────

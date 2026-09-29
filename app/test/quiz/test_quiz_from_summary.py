@@ -236,7 +236,7 @@ class TestDispatcherSkillIdsPassthrough:
 
             async def dispatch_stream(self, session_id, *, query, **kwargs):
                 captured["kwargs"] = kwargs
-                return "chat", object()
+                return "main", object()
 
         request = ChatRequest(question="q", skill_ids=["s1", "s2"])
         _name, _graph, input_state, _config = await dispatcher.agent_stream_setup(
@@ -269,7 +269,7 @@ class TestDispatcherSkillIdsPassthrough:
             started = True
 
             async def dispatch_stream(self, session_id, *, query, **kwargs):
-                return "chat", object()
+                return "main", object()
 
         request = ChatRequest(question="q")
         _name, _graph, input_state, _config = await dispatcher.agent_stream_setup(

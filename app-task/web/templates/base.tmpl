@@ -1,0 +1,68 @@
+{{define "content"}}{{end}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.PageTitle}} · app-task 控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23141413'/%3E%3Cpath d='M8 10h12v2.4h-4.8V22h-2.4V12.4H8z' fill='%23fafaf8'/%3E%3Crect x='22' y='19.4' width='3' height='2.6' fill='%235b8dff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/vendor/codemirror/codemirror.min.css">
+<link rel="stylesheet" href="/assets/app.css">
+<script src="/assets/vendor/codemirror/codemirror.min.js" defer></script>
+<script src="/assets/vendor/codemirror/lua.min.js" defer></script>
+<script src="/assets/vendor/codemirror/javascript.min.js" defer></script>
+<script src="/assets/vendor/codemirror/matchbrackets.min.js" defer></script>
+<script src="/assets/vendor/codemirror/closebrackets.min.js" defer></script>
+<script src="/assets/vendor/codemirror/active-line.min.js" defer></script>
+<script src="/assets/vendor/codemirror/comment.min.js" defer></script>
+<script src="/assets/editor.js" defer></script>
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+<nav class="navbar navbar-inverse navbar-static-top main-nav">
+  <div class="container-fluid">
+    <div class="navbar-header">
+      <a class="navbar-brand brand" href="/console">
+        <svg class="logo-img" viewBox="0 0 32 32" width="24" height="24" role="img" aria-label="app-task"><rect width="32" height="32" rx="7" fill="#fafaf8"/><path d="M8 10h12v2.4h-4.8V22h-2.4V12.4H8z" fill="#141413"/><rect x="22" y="19.4" width="3" height="2.6" fill="#1a73e8"/></svg>
+        <span class="brand-name">MindBase 任务控制台</span>
+        <span class="brand-tag">app-task</span>
+      </a>
+    </div>
+    <div class="navbar-right navbar-text top-actions">
+      <span class="ver">v{{.Version}}</span>
+      <span class="user"><span class="avatar" aria-hidden="true"><svg viewBox="0 0 24 24" fill="#fff"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></span>{{.User.Username}}<i class="label {{if .User.IsAdmin}}label-primary{{else}}label-default{{end}} role">{{if .User.IsAdmin}}admin{{else}}member{{end}}</i></span>
+      <a class="btn btn-default btn-xs" href="/console/password" title="修改自己的登录密码">改密</a>
+      <form method="post" action="/logout" class="inline-form"><button class="btn btn-default btn-xs" type="submit">退出</button></form>
+    </div>
+  </div>
+</nav>
+
+<div class="subnav">
+  <div class="container-fluid">
+    <ul class="nav nav-tabs subnav-tabs">
+      <li role="presentation" {{if eq .Active ""}}class="active"{{end}}><a href="/console">仪表盘</a></li>
+      <li role="presentation" {{if eq .Active "tasks"}}class="active"{{end}}><a href="/console/tasks">任务管理</a></li>
+      <li role="presentation" {{if eq .Active "logs"}}class="active"{{end}}><a href="/console/logs">执行日志</a></li>
+      <li role="presentation" {{if eq .Active "scripts"}}class="active"{{end}}><a href="/console/scripts">Lua 脚本</a></li>
+      {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "cluster"}}class="active"{{end}}><a href="/console/cluster">集群</a></li>{{end}}
+      <li role="presentation" {{if eq .Active "emails"}}class="active"{{end}}><a href="/console/emails">邮件队列</a></li>
+      {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "users"}}class="active"{{end}}><a href="/console/users">账户</a></li>{{end}}
+      {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "apikeys"}}class="active"{{end}}><a href="/console/apikeys">API 密钥</a></li>{{end}}
+      {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "secrets"}}class="active"{{end}}><a href="/console/secrets">密钥管理</a></li>{{end}}
+    </ul>
+  </div>
+</div>
+
+<div class="container-fluid page">
+  {{with .Flash}}<div class="alert {{if eq .Kind "ok"}}alert-success{{else}}alert-danger{{end}} alert-dismissible page-alert" role="alert">
+    <button type="button" class="close" data-dismiss="alert" aria-label="关闭"><span aria-hidden="true">&times;</span></button>
+    {{.Msg}}
+  </div>{{end}}
+  <div class="page-head">
+    <h1>{{.PageTitle}}</h1>
+    {{if .PageDesc}}<p>{{.PageDesc}}</p>{{end}}
+  </div>
+  {{block "content" .}}{{end}}
+</div>
+</body>
+</html>

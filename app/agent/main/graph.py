@@ -1,4 +1,4 @@
-"""Chat Agent graph — ReAct pattern with tool-calling loop.
+"""Main Agent graph — ReAct pattern with tool-calling loop.
 
 Node flow::
 
@@ -24,9 +24,9 @@ from typing import Any
 from langchain_core.messages import BaseMessage
 from langgraph.graph import END, StateGraph
 
-from app.agent.chat.error_handling import as_error_node
-from app.agent.chat.prompts import build_system_prompt
-from app.agent.chat.state import ChatAgentState
+from app.agent.main.error_handling import as_error_node
+from app.agent.main.prompts import build_system_prompt
+from app.agent.main.state import MainAgentState
 from app.agent.lifecycle.circuit import CircuitBreaker
 from app.harness.runtime import AgentRuntime
 
@@ -72,12 +72,12 @@ async def _load_forced_skills(
             skill = await skill_manager.load_skill(uid, skill_id)
         except Exception:
             logger.warning(
-                "[CHAT_AGENT] forced skill load failed id=%s", skill_id, exc_info=True
+                "[MAIN_AGENT] forced skill load failed id=%s", skill_id, exc_info=True
             )
             skill = None
         if skill is None or not getattr(skill, "body", ""):
             logger.warning(
-                "[CHAT_AGENT] forced skill unavailable, skipped id=%s", skill_id
+                "[MAIN_AGENT] forced skill unavailable, skipped id=%s", skill_id
             )
             continue
         sections.append(f"### 技能：{skill.name}（{skill_id}）\n\n{skill.body}")
@@ -96,7 +96,7 @@ async def _load_forced_skills(
 
 
 async def inject_context(
-    state: ChatAgentState,
+    state: MainAgentState,
     *,
     deps: Any,
     runtime: AgentRuntime,
@@ -138,7 +138,7 @@ async def inject_context(
 
     if has_ctx:
         logger.info(
-            "[CHAT_AGENT] conversation_context: session_id={} uid={} chars={}",
+            "[MAIN_AGENT] conversation_context: session_id={} uid={} chars={}",
             state.session_id[:8] if state.session_id else "",
             state.uid,
             len(conversation_context),
@@ -172,7 +172,7 @@ async def inject_context(
     )
     if forced_skills_section:
         logger.info(
-            "[CHAT_AGENT] forced skills injected count={} ids={}",
+            "[MAIN_AGENT] forced skills injected count={} ids={}",
             len(state.skill_ids),
             state.skill_ids,
         )
@@ -203,7 +203,7 @@ async def inject_context(
     }
 
 
-async def call_agent(state: ChatAgentState, *, llm_with_tools: Any) -> dict[str, Any]:
+async def call_agent(state: MainAgentState, *, llm_with_tools: Any) -> dict[str, Any]:
     """2/4. LLM decides: call a tool, or respond directly.
 
     When the LLM emits tool_calls, the graph routes to runtime_dispatch.
@@ -223,7 +223,22 @@ async def call_agent(state: ChatAgentState, *, llm_with_tools: Any) -> dict[str,
     response = await llm_with_tools.ainvoke(state.messages, config=config)
 
     if not _has_tool_calls(response):
-        return {"messages": [response], "result": response.content.strip()}
+        content = response.content if isinstance(response.content, str) else str(response.content)
+        result = content.strip()
+        # Reasoning models occasionally emit a final turn with thinking only
+        # and no visible answer (content of a few stray chars). Route it to
+        # the error node so the retry policy takes another shot with a clean
+        # message list, instead of ending the graph with an empty reply.
+        if len(result) < 4:
+            logger.warning(
+                "[MAIN_AGENT] empty final answer detected (content_chars=%d)",
+                len(result),
+            )
+            return {
+                "error": "empty final answer (reasoning-only output)",
+                "failed_node": "agent",
+            }
+        return {"messages": [response], "result": result}
     return {"messages": [response]}
 
 
@@ -235,7 +250,7 @@ DELEGATE_FAILURE_THRESHOLD = 2
 
 
 async def runtime_dispatch(
-    state: ChatAgentState, *, runtime: AgentRuntime
+    state: MainAgentState, *, runtime: AgentRuntime
 ) -> dict[str, Any]:
     """3/4. Hand tool_calls to AgentRuntime for execution.
 
@@ -356,7 +371,7 @@ async def runtime_dispatch(
     return update
 
 
-async def format_result(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
+async def format_result(state: MainAgentState, **_kwargs: Any) -> dict[str, Any]:
     """4/4. Extract deduplicated sources from the state."""
     sources: list[dict] = []
     seen_ids: set[str] = set()
@@ -368,7 +383,7 @@ async def format_result(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]
             sources.append(src)
 
     logger.info(
-        "[CHAT_AGENT] format_result: search_results={} final_sources={}",
+        "[MAIN_AGENT] format_result: search_results={} final_sources={}",
         len(state.search_results),
         len(sources),
     )
@@ -378,9 +393,9 @@ async def format_result(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]
     return {"sources": sources}
 
 
-async def error_node(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
+async def error_node(state: MainAgentState, **_kwargs: Any) -> dict[str, Any]:
     """Error handler: classify and decide retry or fallback."""
-    from app.agent.chat.error_handling import (
+    from app.agent.main.error_handling import (
         classify_error,
         ErrorCategory,
         FALLBACK_RESULT,
@@ -389,7 +404,7 @@ async def error_node(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
     category = classify_error(state.error)
 
     logger.error(
-        "[CHAT_AGENT] error_node node=%s error=%s category=%s retry=%s/%s",
+        "[MAIN_AGENT] error_node node=%s error=%s category=%s retry=%s/%s",
         state.failed_node,
         state.error,
         category.value,
@@ -401,7 +416,7 @@ async def error_node(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
         return {"result": FALLBACK_RESULT, "error": state.error}
 
     if category is ErrorCategory.RETRYABLE and state.retry_count < state.max_retries:
-        from app.agent.chat.error_handling import backoff_delay
+        from app.agent.main.error_handling import backoff_delay
 
         await backoff_delay(state.retry_count)
         return {"error": "", "retry_count": state.retry_count + 1}
@@ -414,11 +429,11 @@ async def error_node(state: ChatAgentState, **_kwargs: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def route_after_inject(state: ChatAgentState) -> str:
+def route_after_inject(state: MainAgentState) -> str:
     return "error_node" if state.error else "agent"
 
 
-def route_after_agent(state: ChatAgentState) -> str:
+def route_after_agent(state: MainAgentState) -> str:
     """After agent: error → error_node, tool_calls → runtime_dispatch, respond → format_result."""
     if state.error:
         return "error_node"
@@ -427,19 +442,19 @@ def route_after_agent(state: ChatAgentState) -> str:
     return "format_result"
 
 
-def route_after_dispatch(state: ChatAgentState) -> str:
+def route_after_dispatch(state: MainAgentState) -> str:
     """After runtime_dispatch: error → error_node, steps exhausted → format_result, ok → agent."""
     if state.error:
         return "error_node"
     if state.step_count >= state.max_steps:
         logger.warning(
-            "[CHAT_AGENT] max_steps=%s reached, forcing format_result", state.max_steps
+            "[MAIN_AGENT] max_steps=%s reached, forcing format_result", state.max_steps
         )
         return "format_result"
     return "agent"
 
 
-def route_after_error(state: ChatAgentState) -> str:
+def route_after_error(state: MainAgentState) -> str:
     """After error_node: fallback → format_result, retry → failed_node."""
     if not state.error and state.result:
         return "format_result"
@@ -453,7 +468,7 @@ def route_after_error(state: ChatAgentState) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_chat_agent(
+def build_main_agent(
     *,
     runtime: AgentRuntime,
     llm: Any,
@@ -461,7 +476,7 @@ def build_chat_agent(
     circuit_breaker: CircuitBreaker | None = None,
     skill_manager: Any = None,
 ) -> object:
-    """Build the ReAct Chat Agent graph.
+    """Build the ReAct Main Agent graph.
 
     Parameters
     ----------
@@ -487,26 +502,26 @@ def build_chat_agent(
     _dispatch = as_error_node("runtime_dispatch")(runtime_dispatch)
     _format = as_error_node("format_result")(format_result)
 
-    async def inject_node(s: ChatAgentState) -> dict:
+    async def inject_node(s: MainAgentState) -> dict:
         if circuit_breaker and circuit_breaker.is_tripped:
             return {"result": "", "error": "circuit breaker open"}
         return await _inject(
             s, deps=deps, runtime=runtime, skill_manager=skill_manager
         )
 
-    async def agent_node(s: ChatAgentState) -> dict:
+    async def agent_node(s: MainAgentState) -> dict:
         return await _agent(s, llm_with_tools=llm_with_tools)
 
-    async def dispatch_node(s: ChatAgentState) -> dict:
+    async def dispatch_node(s: MainAgentState) -> dict:
         return await _dispatch(s, runtime=runtime)
 
-    async def error_n(s: ChatAgentState) -> dict:
+    async def error_n(s: MainAgentState) -> dict:
         return await error_node(s)
 
-    async def format_n(s: ChatAgentState) -> dict:
+    async def format_n(s: MainAgentState) -> dict:
         return await _format(s)
 
-    graph = StateGraph(ChatAgentState)
+    graph = StateGraph(MainAgentState)
 
     graph.add_node("inject_context", inject_node)
     graph.add_node("agent", agent_node)
@@ -557,5 +572,5 @@ def build_chat_agent(
 
 
 def create_chat_agent(**kwargs: Any) -> object:
-    """Shorthand for ``build_chat_agent``."""
-    return build_chat_agent(**kwargs)
+    """Shorthand for ``build_main_agent``."""
+    return build_main_agent(**kwargs)

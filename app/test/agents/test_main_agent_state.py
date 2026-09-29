@@ -1,12 +1,12 @@
-"""Tests for ChatAgentState and ChatAgentResult."""
+"""Tests for MainAgentState and ChatAgentResult."""
 
 
-from app.agent.chat.state import ChatAgentResult, ChatAgentState
+from app.agent.main.state import ChatAgentResult, MainAgentState
 
 
-class TestChatAgentState:
+class TestMainAgentState:
     def test_default_values(self):
-        s = ChatAgentState(query="hello")
+        s = MainAgentState(query="hello")
         assert s.query == "hello"
         assert s.session_id == ""
         assert s.uid is None
@@ -26,7 +26,7 @@ class TestChatAgentState:
         assert s.max_steps == 10
 
     def test_with_all_inputs(self):
-        s = ChatAgentState(
+        s = MainAgentState(
             query="test",
             session_id="sess-1",
             uid=42,
@@ -37,7 +37,7 @@ class TestChatAgentState:
         assert s.folder_ids == [100, 200]
 
     def test_partial_update(self):
-        s = ChatAgentState(query="q")
+        s = MainAgentState(query="q")
         merged = s.model_copy(update={"bvids": ["BV1xx"], "has_data": True})
         assert merged.bvids == ["BV1xx"]
         assert merged.has_data is True

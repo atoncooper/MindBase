@@ -6,9 +6,14 @@
 #
 # Merge order (later overrides earlier):
 #   1. default.yaml                  <- this file (embedded in binary)
-#   2. Environment variables         <- prefix APPTASK__, double-underscore nesting:
+#   2. ${VAR} / ${VAR:default}       <- env placeholders expanded at load time
+#                                       (.env loaded first, so secrets can live there)
+#   3. Environment variables         <- prefix APPTASK__, double-underscore nesting:
 #        APPTASK__RDBMS__URL=mysql://...  -> rdbms.url
-# Secrets (api_key / url) MUST be injected via env, not YAML.
+#
+# Secrets and deployment-specific values SHOULD be written as ${VAR} placeholders
+# referencing .env (aligned with the main app loader); unset without default -> "".
+# Ordinary config stays as literal defaults in this file.
 # ============================================================
 
 app:
@@ -18,21 +23,62 @@ app:
 server:
   host: 0.0.0.0
   port: 8001
+  # TLS is optional (default off = plain HTTP). enabled=true -> the whole
+  # service (web console + API + health) is served over HTTPS.
+  # Certificate resolution: cert/key provided as a pair = use those files
+  # (production: CA-issued); both empty = auto-generate a self-signed dev
+  # certificate (ECDSA P-256, SANs localhost/app-task/loopback, 825 days)
+  # stored in cert_dir as auto.crt/auto.key — reused across restarts while
+  # valid, rotated automatically near expiry, imported as a trust anchor for
+  # warning-free browsing. Login session cookies get the Secure flag
+  # automatically when TLS is on. env overrides:
+  #   APPTASK__SERVER__TLS__ENABLED / __CERT / __KEY / __CERT_DIR
+  tls:
+    enabled: true
+    cert: "${APPTASK__SERVER__TLS__CERT}"
+    key: "${APPTASK__SERVER__TLS__KEY}"
+    cert_dir: "certs"          # container: /app/certs (bind-mounted volume in compose)
 
 timezone: Asia/Shanghai      # business timezone (Beijing); trigger_time/deadline stored UTC aware
 
+cluster:
+  admission: open               # open（默认：持有共享 DB 凭据即自动入册）| pre_approved（治理闸门：必须先经控制台/at node join 预登记，否则新节点拒绝启动）
+
+redis:
+  url: "${REDIS__URL}"         # 可选：webui.session_store=redis 时必需；env APPTASK__REDIS__URL / 共享 REDIS__URL 覆盖
+                               # 支持 rediss://（TLS）；用户名/密码/DB 号写在 URL 里
+  pool_size: 0                 # 0 = go-redis 默认（10×CPU 核数）
+  min_idle_conns: 0            # 预热空闲连接，防冷启动抖动
+  dial_timeout_seconds: 0      # 0 = go-redis 默认（5s）
+  read_timeout_seconds: 0      # 0 = 默认 3s（故障时限时失败，配合 fail-open）
+  write_timeout_seconds: 0
+  max_retries: 0               # 0 = 默认 3 次（网络错误重试）
+
 rdbms:
-  url: ""                    # inject via APPTASK__RDBMS__URL (mysql dsn of app-task's OWN instance/db)
-  max_open_conns: 10
-  max_idle_conns: 5
-  conn_max_lifetime: 1800    # seconds
+  url: "${APPTASK__RDBMS__URL}"  # mysql dsn of app-task's OWN instance/db (inject via env)
+  max_open_conns: 25          # ≥ workers：派发 goroutine + 邮件 worker + API 共用池
+  max_idle_conns: 10
+  conn_max_lifetime: 1800     # seconds；定期换连接避免长连接老化
+  conn_max_idle_time: 300     # seconds；空闲过久的连接主动关闭（防中间件静默断连）
+  dial_timeout_seconds: 10    # 建连超时（默认 go-sql-driver 无超时上限）
+  read_timeout_seconds: 60    # 单查询读超时——防 hung DB 冻结 worker（0=无上限）
+  write_timeout_seconds: 60
+  tls: ""                     # "" | "true"(系统证书) | "skip-verify"(自签名) —— MySQL 层身份/加密
+  prepare_stmt: false         # 连接级预编译语句缓存（热点重复查询提速）
+  slow_threshold_ms: 500      # 慢查询日志阈值（GORM WARN）
 
 scheduler:
   interval_seconds: 30          # DB poll interval for due tasks
+  workers: 16                   # dispatch goroutine pool size (parallel claim+dispatch per tick)
+  batch_size: 50                # due tasks claimed per tick
+  dispatching_timeout_seconds: 120  # reclaim dispatching claims older than this (crashed instance)
+  per_url_limit: 8              # max concurrent dispatches per executor_url (0 = unlimited)
+  weight: 1                     # 本节点分任务份额（认领上限按 weight/最大存活权重 缩放；manager 等兼职节点调低）
+  instance_id: ""               # claim owner identity; empty = hostname+random suffix
 
 email:
   provider: resend
-  api_key: ""                # inject via APPTASK__EMAIL__API_KEY / APPTASK_EMAIL_API_KEY
+  api_key: "${APPTASK__EMAIL__API_KEY}"   # inject via APPTASK__EMAIL__API_KEY / APPTASK_EMAIL_API_KEY
   from_email: "MindBase <onboarding@resend.dev>"
 
 notification:
@@ -43,9 +89,10 @@ notification:
 # 嵌入式管理控制台（Gin 直接提供 /，无独立前端服务）
 webui:
   enabled: true                 # 是否挂载 / 管理界面与 /api/* 管理端点
-  token: ""                     # 可选：master API 密钥（APPTASK__WEBUI__TOKEN 注入），
+  token: "${APPTASK__WEBUI__TOKEN}"  # 可选：master API 密钥（APPTASK__WEBUI__TOKEN 注入），
                                 # 供脚本/API 调用 /api/* 用（等价 admin）；控制台登录一律走账户密码
   session_ttl_minutes: 720      # 登录会话有效期（分钟）；登录成功签发 HttpOnly 会话 Cookie
+  session_store: memory         # memory（默认，单实例零依赖）| redis（多实例：会话/密钥展示/限流计数共享）
   # 账户（用户名+密码，bcrypt 存 app-task 自己的 MySQL webui_user 表）：
   # 首次启动自动创建默认管理员 admin / app-task-admin，仅 admin 可管理账户；
   # 生产务必在控制台「账户」页修改默认密码或添加自己的账户
@@ -53,7 +100,7 @@ webui:
 http_executor:
   timeout_seconds: 30            # 单次调用 executor 超时
   insecure_skip_verify: false   # 仅自签名内网 executor 才开(生产禁用)
-  ca_file: ""                   # 私有 CA PEM 路径(可选;容器部署由 compose 注入 APPTASK__HTTP_EXECUTOR__CA_FILE=/app/pay-certs/ca.crt 信任 app-pay 开发 CA,惰性加载,文件缺失不阻塞启动)
+  ca_file: "${APPTASK__HTTP_EXECUTOR__CA_FILE}"  # 私有 CA PEM 路径(可选;容器部署由 compose 注入 APPTASK__HTTP_EXECUTOR__CA_FILE=/app/pay-certs/ca.crt 信任 app-pay 开发 CA,惰性加载,文件缺失不阻塞启动)
 
 lua:
   timeout_seconds: 30           # 单次脚本执行超时
@@ -65,6 +112,14 @@ security:
   cors:
     allow_origins:
       - http://localhost:3000
+  # Bootstrap API keys for the service surface (/tasks/*, /scripts*, /internal/*).
+  # Inject via env: APPTASK__SECURITY__SERVICE_KEYS=key1,key2 (comma-separated);
+  # falls back to the legacy APPTASK__APP__CONSUMER_KEY when unset. Keys are
+  # seeded into the api_key table at startup and can be revoked from the
+  # console (API 密钥 page); additional keys can be generated there at runtime.
+  # Every non-console request to the service surface must carry one of the
+  # accepted headers: X-API-Key / apikey / Authorization: Bearer.
+  service_keys: []
 
 log:
   level: info       # debug|info|warn|error (APPTASK__LOG__LEVEL)

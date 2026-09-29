@@ -27,10 +27,17 @@ func setupRouterTestDB(t *testing.T) {
 	}
 	sqlDB, _ := gdb.DB()
 	sqlDB.SetMaxOpenConns(1)
-	if err := gdb.AutoMigrate(&model.Task{}, &model.TaskLog{}, &model.EmailMessage{}, &model.Script{}, &model.ScriptLog{}); err != nil {
+	if err := gdb.AutoMigrate(
+		&model.Task{}, &model.TaskLog{}, &model.EmailMessage{}, &model.Script{},
+		&model.ScriptLog{}, &model.ScriptRun{}, &model.APIKey{}, &model.Secret{}, &model.WebUIUser{},
+		&model.ClusterNode{},
+	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.DB = gdb
+	if err := repo.EnsureDefaultAdmin(); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
 }
 
 func newTestRouter(t *testing.T) (*service.TaskService, http.Handler) {
@@ -39,6 +46,8 @@ func newTestRouter(t *testing.T) (*service.TaskService, http.Handler) {
 	taskSvc := service.NewTaskService()
 	cfg := &config.Config{}
 	cfg.Security.CORS.AllowOrigins = []string{"*"}
+	cfg.Security.ServiceKeys = []string{testServiceKey}
+	cfg.Security.SecretEncKey = testEncKey
 	cfg.Notification.WorkerIntervalSeconds = 30
 	cfg.Notification.RetryMax = 5
 	cfg.Notification.RetryBackoffBase = 2
@@ -49,6 +58,21 @@ func newTestRouter(t *testing.T) (*service.TaskService, http.Handler) {
 	return taskSvc, New(taskSvc, emailSvc, luaExec, cfg)
 }
 
+// testServiceKey is the bootstrap API key seeded into the test router; every
+// service-surface call in the tests must present it (header `apikey`).
+const testServiceKey = "test-service-key"
+
+// testEncKey enables the secret store (base64 of 32 zero bytes).
+const testEncKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+func serviceKeyHeaders(extra map[string]string) map[string]string {
+	h := map[string]string{"apikey": testServiceKey}
+	for k, v := range extra {
+		h[k] = v
+	}
+	return h
+}
+
 // ── POST /tasks/register ───────────────────────────────────────────
 
 func TestTasksRegister(t *testing.T) {
@@ -56,6 +80,7 @@ func TestTasksRegister(t *testing.T) {
 	body := `{"uid":1,"task_type":"http","payload":{"to":"a@x.com"},"executor_url":"http://exec:9000","trigger_time":"2030-01-01T00:00:00Z","max_retry":3}`
 	req := httptest.NewRequest("POST", "/tasks/register", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -78,6 +103,7 @@ func TestTasksRegister_RequiresTriggerOrCron(t *testing.T) {
 	body := `{"uid":1}`
 	req := httptest.NewRequest("POST", "/tasks/register", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -92,6 +118,7 @@ func TestTasksDetailAndList(t *testing.T) {
 	body := `{"uid":1,"trigger_time":"2030-01-01T00:00:00Z"}`
 	req := httptest.NewRequest("POST", "/tasks/register", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	var reg struct {
@@ -101,6 +128,7 @@ func TestTasksDetailAndList(t *testing.T) {
 
 	// detail (owner)
 	req2 := httptest.NewRequest("GET", "/tasks/"+reg.TaskID, nil)
+	req2.Header.Set("apikey", testServiceKey)
 	req2.Header.Set("X-Uid", "1")
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
@@ -110,6 +138,7 @@ func TestTasksDetailAndList(t *testing.T) {
 
 	// detail (not owner) → 403
 	req3 := httptest.NewRequest("GET", "/tasks/"+reg.TaskID, nil)
+	req3.Header.Set("apikey", testServiceKey)
 	req3.Header.Set("X-Uid", "999")
 	w3 := httptest.NewRecorder()
 	h.ServeHTTP(w3, req3)
@@ -119,6 +148,7 @@ func TestTasksDetailAndList(t *testing.T) {
 
 	// list
 	req4 := httptest.NewRequest("GET", "/tasks", nil)
+	req4.Header.Set("apikey", testServiceKey)
 	req4.Header.Set("X-Uid", "1")
 	w4 := httptest.NewRecorder()
 	h.ServeHTTP(w4, req4)
@@ -140,6 +170,7 @@ func TestTasksCompleteCallback(t *testing.T) {
 	body := `{"status":"completed","result":"{\"ok\":true}"}`
 	req := httptest.NewRequest("POST", "/internal/task/"+taskID+"/complete", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -158,6 +189,7 @@ func TestEmailSendEndpoint(t *testing.T) {
 	body := `{"to":["a@x.com"],"cc":["c@x.com"],"subject":"出题提醒","html":"<p>hi</p>","reference_id":"task-1"}`
 	req := httptest.NewRequest("POST", "/internal/email/send", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -175,6 +207,7 @@ func TestEmailSendEndpoint(t *testing.T) {
 	bad := `{"subject":"s","html":"<p>x</p>"}`
 	req2 := httptest.NewRequest("POST", "/internal/email/send", bytes.NewBufferString(bad))
 	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("apikey", testServiceKey)
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusBadRequest {

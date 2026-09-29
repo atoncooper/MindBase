@@ -1,0 +1,18 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/apikeys">← 返回列表</a>
+  <span class="id-chip">{{.Prefix}}</span>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">请立即复制保存</span></div>
+  <div class="panel-body">
+    <p style="font-size:13px;line-height:1.7;color:#5f6368;margin-bottom:14px">
+      这是密钥明文的<strong>唯一展示机会</strong>——关闭本页后无法再次查看（服务端只存哈希）。
+      丢失请吊销后重新生成。
+    </p>
+    <pre class="code" style="font-size:15px;position:relative">{{.Plaintext}}<button type="button" class="btn btn-default btn-xs" style="position:absolute;top:10px;right:10px" onclick="(function(b){var t=b.previousSibling.textContent.trim();function f(){b.textContent='已复制';setTimeout(function(){b.textContent='复制'},1500)}if(navigator.clipboard){navigator.clipboard.writeText(t).then(f)}else{var r=document.createRange();r.selectNodeContents(b.previousSibling);var s=getSelection();s.removeAllRanges();s.addRange(r);document.execCommand('copy');f()}})(this)">复制</button></pre>
+    <div class="panel-note" style="border:0;padding:10px 0 0">调用方式：<span class="mono">X-API-Key: …</span> 或 <span class="mono">Authorization: Bearer …</span> 或 <span class="mono">apikey: …</span></div>
+  </div>
+</div>
+{{end}}

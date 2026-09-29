@@ -1,4 +1,4 @@
-"""Dependency protocols for the Chat Agent.
+"""Dependency protocols for the Main Agent.
 
 Nodes receive their I/O dependencies through the graph builder rather
 than importing them directly.  This keeps nodes testable and decoupled.

@@ -17,8 +17,8 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agent.chat.graph import format_result, runtime_dispatch
-from app.agent.chat.state import ChatAgentState
+from app.agent.main.graph import format_result, runtime_dispatch
+from app.agent.main.state import MainAgentState
 from app.harness.runtime import AgentRuntime, ToolMetrics
 from app.tools.registry import ToolRegistry
 
@@ -61,8 +61,8 @@ def _make_runtime(tools) -> AgentRuntime:
     return runtime
 
 
-def _state_with_tool_call(tool_name: str, *, search_results=None) -> ChatAgentState:
-    return ChatAgentState(
+def _state_with_tool_call(tool_name: str, *, search_results=None) -> MainAgentState:
+    return MainAgentState(
         query="q",
         session_id="sess-1",
         messages=[
@@ -125,7 +125,7 @@ class TestRuntimeDispatchSources:
     async def test_skips_tool_calls_already_executed(self) -> None:
         """If a ToolMessage with the same call_id exists, don't re-dispatch."""
         runtime = _make_runtime([_SourceTool("vector_search", [{"bvid": "BV1"}])])
-        state = ChatAgentState(
+        state = MainAgentState(
             query="q",
             messages=[
                 SystemMessage(content="sys"),
@@ -160,7 +160,7 @@ class TestRuntimeDispatchSources:
                 return {"content": "ok", "sources": []}
 
         runtime = _make_runtime([_CaptureTool()])
-        state = ChatAgentState(
+        state = MainAgentState(
             query="q",
             session_id="sess-xyz",
             uid=42,
@@ -196,7 +196,7 @@ class TestRuntimeDispatchSources:
 class TestFormatResultDedup:
     @pytest.mark.asyncio
     async def test_dedup_by_bvid(self) -> None:
-        state = ChatAgentState(
+        state = MainAgentState(
             query="q",
             search_results=[
                 {"bvid": "BV1", "title": "T1"},
@@ -210,7 +210,7 @@ class TestFormatResultDedup:
 
     @pytest.mark.asyncio
     async def test_dedup_by_upload_uuid(self) -> None:
-        state = ChatAgentState(
+        state = MainAgentState(
             query="q",
             search_results=[
                 {"upload_uuid": "u1", "title": "C1"},
@@ -224,7 +224,7 @@ class TestFormatResultDedup:
 
     @pytest.mark.asyncio
     async def test_skips_sources_without_identifier(self) -> None:
-        state = ChatAgentState(
+        state = MainAgentState(
             query="q",
             search_results=[
                 {"title": "无标识1"},
@@ -237,13 +237,13 @@ class TestFormatResultDedup:
 
     @pytest.mark.asyncio
     async def test_empty_search_results_yields_empty_sources(self) -> None:
-        state = ChatAgentState(query="q")
+        state = MainAgentState(query="q")
         update = await format_result(state)
         assert update["sources"] == []
 
     @pytest.mark.asyncio
     async def test_mixed_bvid_and_upload_uuid_preserved(self) -> None:
-        state = ChatAgentState(
+        state = MainAgentState(
             query="q",
             search_results=[
                 {"bvid": "BV1", "title": "T1"},

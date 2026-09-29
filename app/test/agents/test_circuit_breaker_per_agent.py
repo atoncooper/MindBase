@@ -32,7 +32,7 @@ class TestGetBreakerIsolation:
     async def test_different_agents_get_different_breakers(self):
         m = AgentLifecycleManager()
         cb_code = m.get_breaker("code")
-        cb_chat = m.get_breaker("chat")
+        cb_chat = m.get_breaker("main")
         assert cb_code is not cb_chat
 
     async def test_same_agent_returns_same_instance(self):
@@ -42,7 +42,7 @@ class TestGetBreakerIsolation:
     async def test_tripping_one_does_not_trip_other(self):
         m = AgentLifecycleManager()
         cb_code = m.get_breaker("code")
-        cb_chat = m.get_breaker("chat")
+        cb_chat = m.get_breaker("main")
         for _ in range(cb_code._failure_threshold):
             cb_code.record_failure()
         assert cb_code.is_tripped
@@ -50,7 +50,7 @@ class TestGetBreakerIsolation:
 
     async def test_deprecated_circuit_property_returns_chat_breaker(self):
         m = AgentLifecycleManager()
-        assert m.circuit is m.get_breaker("chat")
+        assert m.circuit is m.get_breaker("main")
 
 
 class TestInvokeIsolation:
@@ -58,20 +58,20 @@ class TestInvokeIsolation:
         """3 code failures trip code's breaker but not chat's."""
         m = AgentLifecycleManager()
         m.register("code", lambda **kw: _FailingAgent())
-        m.register("chat", lambda **kw: _OkAgent())
+        m.register("main", lambda **kw: _OkAgent())
 
         # Trip code's breaker via repeated failed invocations.
         for _ in range(m.get_breaker("code")._failure_threshold):
             await m.invoke("code", session_id="s1", query="x")
 
         assert m.get_breaker("code").is_tripped
-        assert not m.get_breaker("chat").is_tripped
+        assert not m.get_breaker("main").is_tripped
 
     async def test_tripped_agent_blocked_but_others_run(self):
         """Once code's breaker is open, code is rejected but chat still works."""
         m = AgentLifecycleManager()
         m.register("code", lambda **kw: _FailingAgent())
-        m.register("chat", lambda **kw: _OkAgent())
+        m.register("main", lambda **kw: _OkAgent())
 
         for _ in range(m.get_breaker("code")._failure_threshold):
             await m.invoke("code", session_id="s1", query="x")
@@ -81,7 +81,7 @@ class TestInvokeIsolation:
         assert "error" in code_result
 
         # chat is unaffected.
-        chat_result = await m.invoke("chat", session_id="s1", query="x")
+        chat_result = await m.invoke("main", session_id="s1", query="x")
         assert "error" not in chat_result
         assert chat_result.get("result") == "ok"
 

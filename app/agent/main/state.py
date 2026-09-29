@@ -1,6 +1,6 @@
-"""ChatAgentState — state model for the ReAct Chat Agent.
+"""MainAgentState — state model for the ReAct Main Agent.
 
-The Chat Agent follows the ReAct pattern:
+The Main Agent follows the ReAct pattern:
     LLM observes → decides which tool to call → executes → observes result → repeat or answer
 
 This is NOT a deterministic pipeline. The LLM is in the loop and decides
@@ -16,8 +16,8 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 
-class ChatAgentState(BaseModel):
-    """State flowing through the ReAct Chat Agent graph.
+class MainAgentState(BaseModel):
+    """State flowing through the ReAct Main Agent graph.
 
     Inputs (set by the caller):
         query, session_id, uid, folder_ids, workspace_pages, workspace_id, mode
@@ -115,7 +115,7 @@ class ChatAgentState(BaseModel):
 
 
 class ChatAgentResult(BaseModel):
-    """Structured output returned by the Chat Agent."""
+    """Structured output returned by the Main Agent."""
 
     result: str = ""
     messages: list[BaseMessage] = Field(default_factory=list)

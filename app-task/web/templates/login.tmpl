@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · app-task 控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23141413'/%3E%3Cpath d='M8 10h12v2.4h-4.8V22h-2.4V12.4H8z' fill='%23fafaf8'/%3E%3Crect x='22' y='19.4' width='3' height='2.6' fill='%235b8dff'/%3E%3C/svg%3E">
+<style>
+:root {
+  --primary: #1a73e8; --primary-hover: #1765cc;
+  --link: #1a73e8; --text-1: #202124; --text-2: #5f6368; --text-3: #80868b;
+  --border: #dadce0; --divider: #f0f1f3; --fill: #f7f8fa;
+  --page-bg: #f8f9fa; --red: #d93025;
+  --panel-bg: #0f1318; --accent: #5b8dff; --brand: #1a73e8;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 13px; color: var(--text-1); background: var(--page-bg);
+}
+.login-split { display: flex; min-height: 100vh; }
+.login-side {
+  width: 46%; min-width: 420px;
+  background:
+    radial-gradient(1100px 700px at 18% -10%, rgba(26, 115, 232, 0.16), transparent 60%),
+    radial-gradient(900px 640px at 88% 110%, rgba(91, 141, 255, 0.10), transparent 55%),
+    var(--panel-bg);
+  color: #fff;
+  display: flex; flex-direction: column;
+  padding: 44px 48px 30px;
+  overflow: hidden;
+}
+.side-brand { display: flex; align-items: center; gap: 10px; }
+.side-brand .logo-img { width: 30px; height: 30px; display: block; filter: drop-shadow(0 2px 10px rgba(91, 141, 255, 0.35)); }
+.side-title { font-size: 20px; font-weight: 600; margin-top: 26px; letter-spacing: .5px; }
+.side-sub { font-size: 12.5px; color: rgba(255, 255, 255, 0.55); margin-top: 8px; letter-spacing: 1.5px; }
+.side-art { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+.side-art svg { width: 100%; max-width: 540px; height: auto; display: block; }
+.side-foot {
+  font-size: 11.5px; color: rgba(255, 255, 255, 0.4);
+  font-family: Consolas, "SF Mono", Menlo, monospace;
+  display: flex; justify-content: space-between; margin-top: 10px;
+}
+.p-float { animation: p-float 9s ease-in-out infinite alternate; }
+.p-float.d1 { animation-duration: 12s; animation-delay: -3s; }
+.p-float.d2 { animation-duration: 14s; animation-delay: -7s; }
+.p-float.d3 { animation-duration: 11s; animation-delay: -5s; }
+.p-float.d4 { animation-duration: 16s; animation-delay: -9s; }
+@keyframes p-float {
+  from { transform: translateY(0); opacity: .25; }
+  to   { transform: translateY(-16px); opacity: .7; }
+}
+.caret { animation: caret 1.1s steps(1) infinite; }
+@keyframes caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+.login-main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 32px; }
+.login-box { width: 340px; }
+.login-brand { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; margin-bottom: 30px; }
+.login-brand svg { width: 24px; height: 24px; display: block; }
+.login-box h1 { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
+.login-box .login-sub { font-size: 13px; color: var(--text-3); margin-bottom: 26px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+.field > span { font-size: 12.5px; color: var(--text-2); }
+input {
+  width: 100%; height: 38px; padding: 0 11px; font-size: 14px; font-family: inherit;
+  border: 1px solid var(--border); border-radius: 4px; outline: none; color: var(--text-1);
+}
+input:focus { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+button {
+  width: 100%; height: 40px; margin-top: 8px; font-size: 14px; font-weight: 500; font-family: inherit;
+  color: #fff; background: var(--primary); border: 1px solid var(--primary); border-radius: 4px;
+  cursor: pointer;
+}
+button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+button:disabled { opacity: .6; cursor: default; }
+.err { color: var(--red); font-size: 12.5px; min-height: 18px; margin-top: 12px; text-align: center; }
+.login-hint {
+  margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--divider);
+  font-size: 12px; color: var(--text-3); line-height: 1.7;
+}
+@media (max-width: 880px) { .login-side { display: none; } }
+</style>
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+<div class="login-split">
+
+  <!-- ════════ 左侧：手绘 SVG 动画画布（调度表盘 · 组合动效） ════════ -->
+  <aside class="login-side">
+    <div class="side-brand">
+      <svg class="logo-img" viewBox="0 0 32 32" role="img" aria-label="app-task"><rect width="32" height="32" rx="7" fill="#fafaf8"/><path d="M8 10h12v2.4h-4.8V22h-2.4V12.4H8z" fill="#141413"/><rect x="22" y="19.4" width="3" height="2.6" fill="#1a73e8"/></svg>
+      <span style="font-size:15px;font-weight:600">MindBase 任务控制台</span>
+      <span style="font-family:Consolas,Menlo,monospace;font-size:11px;color:rgba(255,255,255,.45);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);border-radius:3px;padding:1px 7px">app-task</span>
+    </div>
+    <div>
+      <div class="side-title">调度，安静地发生</div>
+      <div class="side-sub">定时任务 · 执行编排 · 邮件投递</div>
+    </div>
+
+    <div class="side-art">
+      <svg viewBox="0 0 560 560" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" role="img" aria-label="任务调度示意动画">
+        <defs>
+          <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#5b8dff" stop-opacity=".30"/>
+            <stop offset="60%" stop-color="#5b8dff" stop-opacity=".08"/>
+            <stop offset="100%" stop-color="#5b8dff" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="sweepGrad" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0%" stop-color="#5b8dff" stop-opacity=".20"/>
+            <stop offset="30%" stop-color="#5b8dff" stop-opacity=".07"/>
+            <stop offset="100%" stop-color="#5b8dff" stop-opacity="0"/>
+          </radialGradient>
+          <path id="ring-236" d="M280 44 a236 236 0 1 1 -0.01 0" fill="none"/>
+          <path id="ring-188" d="M280 92 a188 188 0 1 1 -0.01 0" fill="none"/>
+          <path id="ring-text" d="M280 58 a222 222 0 1 1 -0.01 0" fill="none"/>
+        </defs>
+
+        <g fill="#ffffff">
+          <circle class="p-float"    cx="76"  cy="120" r="1.6"/>
+          <circle class="p-float d1" cx="492" cy="96"  r="1.2"/>
+          <circle class="p-float d2" cx="512" cy="330" r="1.8"/>
+          <circle class="p-float d3" cx="52"  cy="400" r="1.3"/>
+          <circle class="p-float d4" cx="300" cy="40"  r="1.2"/>
+        </g>
+
+        <g opacity="0.34">
+          <text font-family="Consolas, Menlo, monospace" font-size="9.5" letter-spacing="4" fill="#ffffff">
+            <textPath xlink:href="#ring-text" href="#ring-text">MINDBASE · TASK SCHEDULER · CRON · RETRY · NOTIFY · MINDBASE · TASK SCHEDULER · CRON · RETRY · NOTIFY · MINDBASE · TASK SCHEDULER ·</textPath>
+          </text>
+          <animateTransform attributeName="transform" type="rotate" from="0 280 280" to="360 280 280" dur="180s" repeatCount="indefinite"/>
+        </g>
+
+        <g stroke="#ffffff" fill="none">
+          <g opacity="0.16" stroke-dasharray="1.5 6">
+            <circle cx="280" cy="280" r="236"/>
+            <animateTransform attributeName="transform" type="rotate" from="360 280 280" to="0 280 280" dur="150s" repeatCount="indefinite"/>
+          </g>
+          <g opacity="0.17" stroke-dasharray="64 28">
+            <circle cx="280" cy="280" r="188"/>
+            <animateTransform attributeName="transform" type="rotate" from="0 280 280" to="360 280 280" dur="110s" repeatCount="indefinite"/>
+          </g>
+          <g opacity="0.10" stroke-dasharray="1.5 8">
+            <circle cx="280" cy="280" r="140"/>
+            <animateTransform attributeName="transform" type="rotate" from="360 280 280" to="0 280 280" dur="80s" repeatCount="indefinite"/>
+          </g>
+        </g>
+        <path d="M 394.7 199.7 A 140 140 0 0 1 379 379" fill="none" stroke="#5b8dff" stroke-opacity="0.4" stroke-width="2" stroke-linecap="round"/>
+
+        <g stroke="#ffffff" opacity="0.22">
+          <circle cx="280" cy="280" r="98" fill="none" stroke-dasharray="2 49.3"/>
+          <animateTransform attributeName="transform" type="rotate" from="0 280 280" to="360 280 280" dur="240s" repeatCount="indefinite"/>
+        </g>
+        <circle cx="280" cy="280" r="92" fill="none" stroke="#ffffff" opacity="0.08" stroke-dasharray="1.2 8.44"/>
+
+        <g>
+          <path d="M280 280 L280 44 A236 236 0 0 1 484.4 162 Z" fill="url(#sweepGrad)"/>
+          <animateTransform attributeName="transform" type="rotate" from="0 280 280" to="360 280 280" dur="12s" repeatCount="indefinite"/>
+        </g>
+
+        <circle r="3.2" fill="#5b8dff">
+          <animateMotion dur="16s" repeatCount="indefinite" rotate="auto"><mpath xlink:href="#ring-188" href="#ring-188"/></animateMotion>
+        </circle>
+        <circle r="2.4" fill="#ffffff" opacity="0.65">
+          <animateMotion dur="16s" begin="-8s" repeatCount="indefinite"><mpath xlink:href="#ring-188" href="#ring-188"/></animateMotion>
+        </circle>
+        <circle r="3" fill="#0fa964" opacity="0.9">
+          <animateMotion dur="24s" begin="-5s" repeatCount="indefinite"><mpath xlink:href="#ring-236" href="#ring-236"/></animateMotion>
+        </circle>
+
+        <g stroke="#5b8dff" stroke-opacity="0.5" stroke-width="1.2" fill="none" stroke-dasharray="3 7">
+          <path d="M321 264 Q 395 225 449 212"/>
+          <path d="M239 264 Q 165 225 111 203"/>
+          <path d="M305 316 Q 365 400 412 466"/>
+          <path d="M255 316 Q 195 400 148 466"/>
+          <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1.6s" repeatCount="indefinite"/>
+        </g>
+
+        <g>
+          <circle cx="454" cy="210" r="7" fill="#0fa964" stroke="#0f1318" stroke-width="2"/>
+          <circle cx="454" cy="210" r="7" fill="none" stroke="#0fa964" stroke-width="1.4">
+            <animate attributeName="r" values="7;17" dur="2.6s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.55;0" dur="2.6s" repeatCount="indefinite"/>
+          </circle>
+          <text x="454" y="188" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="10.5" fill="rgba(255,255,255,.5)">ok · 131ms</text>
+
+          <circle cx="110" cy="201" r="7" fill="#ff8d1a" stroke="#0f1318" stroke-width="2"/>
+          <circle cx="110" cy="201" r="7" fill="none" stroke="#ff8d1a" stroke-width="1.4">
+            <animate attributeName="r" values="7;17" dur="2.6s" begin="-0.9s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.55;0" dur="2.6s" begin="-0.9s" repeatCount="indefinite"/>
+          </circle>
+          <text x="110" y="179" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="10.5" fill="rgba(255,255,255,.5)">retry ×2</text>
+
+          <circle cx="415" cy="473" r="7" fill="#4a7dc9" stroke="#0f1318" stroke-width="2"/>
+          <circle cx="415" cy="473" r="7" fill="none" stroke="#4a7dc9" stroke-width="1.4">
+            <animate attributeName="r" values="7;17" dur="2.6s" begin="-1.7s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.55;0" dur="2.6s" begin="-1.7s" repeatCount="indefinite"/>
+          </circle>
+
+          <circle cx="145" cy="473" r="7" fill="#a9aeb8" stroke="#0f1318" stroke-width="2"/>
+          <circle cx="145" cy="473" r="7" fill="none" stroke="#a9aeb8" stroke-width="1.4">
+            <animate attributeName="r" values="7;17" dur="2.6s" begin="-2.3s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.55;0" dur="2.6s" begin="-2.3s" repeatCount="indefinite"/>
+          </circle>
+        </g>
+
+        <circle cx="280" cy="280" r="52" fill="url(#coreGlow)">
+          <animate attributeName="r" values="52;62;52" dur="3.2s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.9;0.55;0.9" dur="3.2s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="280" cy="280" r="44" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
+        <g transform="translate(252 252) scale(1.75)">
+          <rect width="32" height="32" rx="7" fill="#fafaf8"/>
+          <path d="M8 10h12v2.4h-4.8V22h-2.4V12.4H8z" fill="#141413"/>
+          <rect x="22" y="19.4" width="3" height="2.6" fill="#1a73e8"/>
+        </g>
+
+        <text x="242" y="354" font-family="Consolas, Menlo, monospace" font-size="12.5" fill="rgba(255,255,255,.78)">0 23 * * *</text>
+        <rect class="caret" x="316" y="344" width="6" height="13" fill="#5b8dff"/>
+        <text x="280" y="378" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="10" fill="rgba(255,255,255,.35)">next · 23:00</text>
+      </svg>
+    </div>
+
+    <div class="side-foot">
+      <span>app-task · scheduler &amp; executor</span>
+      <span>go:embed · single binary</span>
+    </div>
+  </aside>
+
+  <!-- ════════ 右侧：登录表单（POST-redirect-GET） ════════ -->
+  <main class="login-main">
+    <div class="login-box">
+      <div class="login-brand">
+        <svg viewBox="0 0 32 32" role="img" aria-label="app-task"><rect width="32" height="32" rx="7" fill="#141413"/><path d="M8 10h12v2.4h-4.8V22h-2.4V12.4H8z" fill="#fafaf8"/><rect x="22" y="19.4" width="3" height="2.6" fill="#5b8dff"/></svg>
+        <span>MindBase 任务控制台</span>
+      </div>
+      <h1>登录</h1>
+      <p class="login-sub">请输入管理员账户（连续失败会被限流）。默认账户：admin</p>
+      <form method="post" action="/login">
+        <div class="field">
+          <span>用户名</span>
+          <input type="text" name="username" value="{{.Username}}" autocomplete="username" autofocus>
+        </div>
+        <div class="field">
+          <span>密码</span>
+          <input type="password" name="password" autocomplete="current-password">
+        </div>
+        <button type="submit">登录</button>
+        <div class="err">{{.Error}}</div>
+      </form>
+      <div class="login-hint">仅登录会话可达控制台；会话由 HttpOnly Cookie 携带（TLS 下自动加 Secure）。</div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

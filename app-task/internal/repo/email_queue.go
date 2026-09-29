@@ -7,11 +7,42 @@ import (
 	"app-task/internal/db"
 	"app-task/internal/model"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 func CreateEmail(m *model.EmailMessage) error {
 	return db.DB.Create(m).Error
+}
+
+// StatusSending is the transient claim state of an email being delivered
+// (pending -> sending -> sent | failed | dry_run; stale claims are reclaimed
+// back to pending after the delivery timeout — at-least-once, so a reclaimed
+// email may have been delivered by the crashed worker before it died).
+const StatusSending = "sending"
+
+// ClaimEmail atomically claims one pending email for delivery: the conditional
+// update makes competing workers/instances mutually exclusive. Returns the
+// fresh fencing token and whether the claim won.
+func ClaimEmail(emailID string, now time.Time) (string, bool, error) {
+	token := uuid.NewString()
+	res := db.DB.Model(&model.EmailMessage{}).
+		Where("email_id = ? AND status = ?", emailID, "pending").
+		Updates(map[string]any{
+			"status":      StatusSending,
+			"claim_token": token,
+			"updated_at":  now,
+		})
+	return token, res.RowsAffected > 0, res.Error
+}
+
+// ReclaimStaleSending flips emails stuck in sending longer than the delivery
+// timeout (crashed worker/instance) back to pending so they are delivered again.
+func ReclaimStaleSending(olderThan time.Time) (int64, error) {
+	res := db.DB.Model(&model.EmailMessage{}).
+		Where("status = ? AND updated_at < ?", StatusSending, olderThan).
+		Updates(map[string]any{"status": "pending", "updated_at": time.Now().UTC()})
+	return res.RowsAffected, res.Error
 }
 
 // ListDueEmails returns pending emails whose retry window has passed.
@@ -24,23 +55,23 @@ func ListDueEmails(limit int) ([]model.EmailMessage, error) {
 	return out, err
 }
 
-func MarkEmailSent(emailID string) error {
+func MarkEmailSent(emailID, claimToken string) error {
 	return db.DB.Model(&model.EmailMessage{}).
-		Where("email_id = ?", emailID).
+		Where("email_id = ? AND status = ? AND claim_token = ?", emailID, StatusSending, claimToken).
 		Updates(map[string]any{"status": "sent", "sent_at": time.Now().UTC()}).Error
 }
 
 // MarkEmailDryRun marks an email as dry_run (no API key configured); distinct
 // from sent so real delivery is distinguishable.
-func MarkEmailDryRun(emailID, reason string) error {
+func MarkEmailDryRun(emailID, claimToken, reason string) error {
 	return db.DB.Model(&model.EmailMessage{}).
-		Where("email_id = ?", emailID).
+		Where("email_id = ? AND status = ? AND claim_token = ?", emailID, StatusSending, claimToken).
 		Updates(map[string]any{"status": "dry_run", "last_error": reason}).Error
 }
 
 // MarkEmailFailed bumps retry_count; if final, status=failed, else pending with
 // nextRetryAt as the exact retry time.
-func MarkEmailFailed(emailID, errMsg string, retryCount int, nextRetryAt *time.Time, final bool) error {
+func MarkEmailFailed(emailID, claimToken, errMsg string, retryCount int, nextRetryAt *time.Time, final bool) error {
 	status := "pending"
 	if final {
 		status = "failed"
@@ -54,7 +85,7 @@ func MarkEmailFailed(emailID, errMsg string, retryCount int, nextRetryAt *time.T
 		values["next_retry_at"] = *nextRetryAt
 	}
 	return db.DB.Model(&model.EmailMessage{}).
-		Where("email_id = ?", emailID).Updates(values).Error
+		Where("email_id = ? AND status = ? AND claim_token = ?", emailID, StatusSending, claimToken).Updates(values).Error
 }
 
 // ListEmails returns the mail queue across all senders, newest first (admin

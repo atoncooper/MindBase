@@ -1,0 +1,62 @@
+{{define "content"}}
+<div class="detail-top">
+  <a class="btn btn-default btn-sm" href="/console/scripts">← 返回列表</a>
+  {{if .Edit}}<span class="id-chip">{{.ScriptID}}</span><span class="muted">保存将编译为新版本并立即生效</span>{{else}}<span class="muted">script_id 由系统自动生成（UUID），创建后不可修改</span>{{end}}
+</div>
+
+{{if not .Edit}}
+{{if .Examples}}
+<div class="panel panel-default">
+  <div class="panel-body" style="padding:10px 16px">
+    <span class="muted" style="font-size:12px;margin-right:8px">从示例开始：</span>
+    {{range .Examples}}
+    <a class="btn btn-default btn-xs {{if eq $.ExampleID .ID}}active{{end}}" href="/console/scripts/new?example={{.ID}}" title="{{.Description}}">{{.Title}}</a>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{end}}
+
+<div class="panel panel-default">
+  <form method="post" action="/console/scripts" class="editor-form">
+    {{if .Edit}}<input type="hidden" name="edit" value="1">{{end}}
+    {{if .Edit}}<input type="hidden" name="script_id" value="{{.ScriptID}}">{{end}}
+    <div class="script-meta">
+      <label class="field-inline w-name">名称
+        <input type="text" name="name" required maxlength="128" value="{{.Name}}" class="form-control">
+      </label>
+      <label class="field-inline grow">描述
+        <input type="text" name="description" maxlength="512" value="{{.Description}}" class="form-control">
+      </label>
+      <label class="field-inline check"><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}> 启用</label>
+      <button type="submit" class="btn btn-primary">{{if .Edit}}保存新版本{{else}}保存脚本{{end}}</button>
+    </div>
+    <div class="code-editor cm-host" data-code-editor="lua" data-ctrl-s="1" data-required="1">
+      <textarea name="source" spellcheck="false" autocomplete="off" autocapitalize="off">{{.Source}}</textarea>
+    </div>
+    <div class="script-actions">
+      <details style="margin-right:auto;width:100%">
+        <summary class="muted" style="cursor:pointer;font-size:12.5px;user-select:none">ctx API 速查（点击展开：日志 / 密钥 / HTTP 请求 / 重试失败）</summary>
+        <table class="table table-condensed data" style="margin-top:10px">
+          <thead><tr><th>方法</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td class="mono-cell">ctx.log(msg)</td><td>写执行日志（密钥值自动脱敏）</td></tr>
+            <tr><td class="mono-cell">ctx.payload()</td><td>任务 payload（table，建任务时传入）</td></tr>
+            <tr><td class="mono-cell">ctx.task()</td><td>{id, meta} 当前任务标识</td></tr>
+            <tr><td class="mono-cell">ctx.secret(name)</td><td>读取「密钥管理」页存储的凭据（值进脱敏清单）</td></tr>
+            <tr><td class="mono-cell">ctx.http_get(url)</td><td>GET 请求 → body, status（失败 nil, err）</td></tr>
+            <tr><td class="mono-cell">ctx.http_post(url, body, content_type)</td><td>POST 请求 → body, status</td></tr>
+            <tr><td class="mono-cell">ctx.http_req{...}</td><td>全参数请求：{method, url, headers={...}, body, content_type}</td></tr>
+            <tr><td class="mono-cell">ctx.retry(msg)</td><td>本轮判重试，按任务 max_retry 退避重跑</td></tr>
+            <tr><td class="mono-cell">ctx.fail(msg)</td><td>本轮判失败</td></tr>
+            <tr><td class="mono-cell">cjson.encode / decode</td><td>JSON 与 Lua table 互转</td></tr>
+          </tbody>
+        </table>
+        <div class="panel-note" style="border:0;padding:8px 0 0">沙箱无 os/io/package；出网仅限 ctx.http_*；单脚本超时 <span class="mono">lua.timeout_seconds</span>（默认 30s）。</div>
+      </details>
+      <span class="muted" style="align-self:center;margin-right:auto">Ctrl+S 保存 · Ctrl-/ 注释 · Tab 缩进 · 括号自动补全</span>
+      <a class="btn btn-default" href="/console/scripts">取消</a>
+    </div>
+  </form>
+</div>
+{{end}}

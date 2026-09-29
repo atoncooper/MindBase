@@ -15,6 +15,10 @@ import (
 // register creates a pure scheduling task. The scheduler never interprets the
 // payload — it is passed verbatim to the executor.
 func (r *Router) register(c *gin.Context) {
+	if c.Request.ContentLength > maxTaskPayloadBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "payload too large"})
+		return
+	}
 	var req struct {
 		UID         int64           `json:"uid" binding:"required"`
 		TaskType    string          `json:"task_type"`    // http (default) / lua
@@ -88,6 +92,7 @@ func (r *Router) detail(c *gin.Context) {
 		"uid":          task.UID,
 		"task_type":    task.TaskType,
 		"status":       task.Status,
+		"owner":        task.Owner,
 		"trigger_time": task.TriggerTime.Format(time.RFC3339),
 		"executor_url": task.ExecutorURL,
 		"async":        task.Async,

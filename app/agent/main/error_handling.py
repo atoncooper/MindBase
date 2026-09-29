@@ -1,4 +1,4 @@
-"""Error handling utilities for the Chat Agent.
+"""Error handling utilities for the Main Agent.
 
 Self-contained to avoid circular imports from the memory agent package.
 """
@@ -10,7 +10,7 @@ import logging
 from enum import Enum
 from typing import Sequence
 
-from app.agent.chat.state import ChatAgentState
+from app.agent.main.state import MainAgentState
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,18 @@ _RETRYABLE_PATTERNS: Sequence[str] = [
     "503",
     "502",
     "500",
+    # CDN/gateway-side transient errors: proxy/gateway HTML error pages can
+    # arrive as the error body (e.g. Cloudflare 421 when a pooled connection
+    # is misdirected, 502/52x edge pages). A retry on a fresh connection
+    # usually succeeds.
+    "misdirected request",
+    "bad gateway",
+    "gateway timeout",
+    "code: 421",
+    "code: 52",
+    # Reasoning models sometimes end with a thinking-only final turn; the
+    # retry re-runs the agent turn and usually produces a real answer.
+    "empty final answer",
 ]
 
 _FATAL_PATTERNS: Sequence[str] = [
@@ -73,7 +85,7 @@ def classify_error(error_message: str) -> ErrorCategory:
 async def backoff_delay(attempt: int, base_seconds: float = 1.0) -> None:
     """Exponential backoff: sleep base * 2^attempt seconds (capped at 10)."""
     delay = min(base_seconds * (2**attempt), 10.0)
-    logger.debug("[CHAT_AGENT] backoff %.2fs (attempt %s)", delay, attempt)
+    logger.debug("[MAIN_AGENT] backoff %.2fs (attempt %s)", delay, attempt)
     await asyncio.sleep(delay)
 
 
@@ -83,14 +95,14 @@ async def backoff_delay(attempt: int, base_seconds: float = 1.0) -> None:
 
 
 def as_error_node(node_name: str):
-    """Decorator that wraps a Chat Agent node function with error handling.
+    """Decorator that wraps a Main Agent node function with error handling.
 
     On success: returns original result with ``error`` cleared.
     On exception: returns dict with ``error`` and ``failed_node`` set.
     """
 
     def decorator(func):
-        async def wrapper(state: ChatAgentState, **kwargs) -> dict:
+        async def wrapper(state: MainAgentState, **kwargs) -> dict:
             try:
                 result = await func(state, **kwargs)
                 if isinstance(result, dict):
@@ -99,7 +111,7 @@ def as_error_node(node_name: str):
                 return result
             except Exception as exc:
                 logger.warning(
-                    "[CHAT_AGENT] %s failed: %s (retry %s/%s)",
+                    "[MAIN_AGENT] %s failed: %s (retry %s/%s)",
                     node_name,
                     exc,
                     state.retry_count,

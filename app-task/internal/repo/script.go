@@ -118,3 +118,33 @@ func UpdateScriptEnabled(scriptID string, enabled bool) error {
 		Where("script_id = ? AND version = ?", scriptID, latest.Version).
 		Update("enabled", enabled).Error
 }
+
+// CreateScriptRun persists one on-demand script execution (run button or
+// /internal/script/run).
+func CreateScriptRun(r *model.ScriptRun) error {
+	return db.DB.Create(r).Error
+}
+
+// GetScriptRun fetches one run by run_id; nil with no error when absent.
+func GetScriptRun(runID string) (*model.ScriptRun, error) {
+	var out model.ScriptRun
+	err := db.DB.Where("run_id = ?", runID).First(&out).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListScriptRuns returns recent on-demand runs of a script_id, newest first.
+func ListScriptRuns(scriptID string, limit int) ([]model.ScriptRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var out []model.ScriptRun
+	err := db.DB.Where("script_id = ?", scriptID).
+		Order("id DESC").Limit(limit).Find(&out).Error
+	return out, err
+}

@@ -86,12 +86,12 @@ class AgentLifecycleManager:
 
     @property
     def circuit(self) -> CircuitBreaker:
-        """Deprecated: returns the chat agent's breaker for backward compat.
+        """Deprecated: returns the main agent's breaker for backward compat.
 
         Use :meth:`get_breaker` for per-agent-type isolation so a failure in
         one agent does not trip the breaker for others.
         """
-        return self.get_breaker("chat")
+        return self.get_breaker("main")
 
     def get_breaker(self, agent_name: str) -> CircuitBreaker:
         """Get or create the per-agent-type circuit breaker.
@@ -119,7 +119,7 @@ class AgentLifecycleManager:
         """Register an agent type with its build factory.
 
         Args:
-            name: Agent type name (e.g. ``"memory"``, ``"chat"``).
+            name: Agent type name (e.g. ``"memory"``, ``"main"``).
             factory: Callable that returns a compiled LangGraph.
             **factory_kwargs: Extra args passed to *factory* each time
                 a new instance is needed.
