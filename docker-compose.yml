@@ -622,7 +622,7 @@ services:
       - mind-base-net
 
   app-task:
-    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/mind-base-app-task:latest}
+    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/app-task:latest}
     build:
       context: ./app-task
       dockerfile: Dockerfile
@@ -679,7 +679,7 @@ services:
   # memory（每实例独立；两实例走各自回环端口，无需共享）；若前面挂同一
   # 域名 LB，两边都设 APPTASK__WEBUI__SESSION_STORE=redis + APPTASK__REDIS__URL。
   app-task-ha:
-    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/mind-base-app-task:latest}
+    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/app-task:latest}
     container_name: mind-base-app-task-ha
     profiles: ["ha"]
     depends_on:
