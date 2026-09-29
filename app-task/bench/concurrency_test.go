@@ -113,6 +113,8 @@ func TestFencedFinalizeUnderReclaim(t *testing.T) {
 		if ok, _ := repo.FinalizeClaim(id, tok2, "completed", nil); !ok {
 			t.Fatalf("round %d: fresh holder finalize rejected", round)
 		}
+		// 清理本轮任务行：下一轮重新种子（id 相同，避免唯一约束冲突）
+		db.DB.Where("task_id = ?", id).Delete(&model.Task{})
 	}
 }
 
