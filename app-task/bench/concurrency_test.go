@@ -91,8 +91,8 @@ func TestConcurrentClaimExclusivity(t *testing.T) {
 func TestFencedFinalizeUnderReclaim(t *testing.T) {
 	setupDB(t)
 	for round := 0; round < 50; round++ {
-		seedDueTasks(t, 1)
-		id := fmt.Sprintf("bench-task-%d", round)
+		seedDueTasks(t, 1) // 每轮种子同一 id（bench-task-0），轮末已删除
+		id := "bench-task-0"
 
 		tok1, ok1, err := repo.ClaimTask(id, "stale", time.Now().UTC())
 		if err != nil || !ok1 {
