@@ -8,12 +8,12 @@ Usage::
 
     from app.harness.orchestrator import AgentOrchestrator
 
-    orch = AgentOrchestrator(llm=my_llm, default_agent="chat")
-    orch.register("chat", "Knowledge-base Q&A agent for B站 videos and cloud docs.")
+    orch = AgentOrchestrator(llm=my_llm, default_agent="main")
+    orch.register("main", "Knowledge-base Q&A agent for B站 videos and cloud docs.")
     orch.register("memory", "Conversation history retrieval agent.")
 
     agent_name = await orch.route("总结收藏夹内容")
-    # → "chat"
+    # → "main"
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class AgentOrchestrator:
     def __init__(
         self,
         llm: Any,
-        default_agent: str = "chat",
+        default_agent: str = "main",
         routing_timeout: float = 3.0,
     ) -> None:
         self._llm = llm

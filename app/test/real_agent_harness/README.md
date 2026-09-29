@@ -46,7 +46,7 @@ app/test/real_agent_harness/test_real_agent_harness.py
    - 如果当前向量库没有数据，该测试会 `skip`，不是通过 mock 伪造结果
 
 4. `test_real_chat_agent_invokes_llm_and_returns_answer`
-   - 通过真实 `AgentHarness.invoke("chat", ...)` 调用 Chat Agent
+   - 通过真实 `AgentHarness.invoke("chat", ...)` 调用 Main Agent
    - 会真实请求配置的 LLM
    - 验证返回非空答案
 
@@ -165,7 +165,7 @@ pytest app/test/real_agent_harness -v -s
 pytest app/test/real_agent_harness/test_real_agent_harness.py::test_real_harness_startup_discovers_tools_and_agents -v -s
 ```
 
-运行真实 Chat Agent + LLM 测试：
+运行真实 Main Agent + LLM 测试：
 
 ```bash
 pytest app/test/real_agent_harness/test_real_agent_harness.py::test_real_chat_agent_invokes_llm_and_returns_answer -v -s
@@ -225,7 +225,7 @@ set BILIRAG_REAL_AGENT_HARNESS_TESTS=1
 
 如果 `health["tools"]["failed"] != 0`，说明 `ToolManager.discover()` 中有工具真实加载失败。请查看 pytest 输出和日志里的 `[TOOLS]` 报告。
 
-### Chat Agent 超时
+### Main Agent 超时
 
 `test_real_chat_agent_invokes_llm_and_returns_answer` 默认 timeout 是 90 秒。如果失败，通常是：
 

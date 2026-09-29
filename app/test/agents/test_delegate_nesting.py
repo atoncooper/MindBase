@@ -35,11 +35,11 @@ class TestDelegateBlacklist:
     async def test_rejects_delegating_to_chat(self):
         tool, lifecycle = _make_tool()
         result = await tool.run(
-            agent_name="chat", query="x", chat_session_id="s1", _uid=None
+            agent_name="main", query="x", chat_session_id="s1", _uid=None
         )
 
         assert result["failed"] is True
-        assert "chat" in result["content"]
+        assert "main" in result["content"]
         # lifecycle was NOT called.
         assert lifecycle.invoke_reentrant_calls == []
 

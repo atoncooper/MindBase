@@ -8,8 +8,8 @@ the whole ReAct budget retrying one failing sub-agent.
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.chat.graph import DELEGATE_FAILURE_THRESHOLD, runtime_dispatch
-from app.agent.chat.state import ChatAgentState
+from app.agent.main.graph import DELEGATE_FAILURE_THRESHOLD, runtime_dispatch
+from app.agent.main.state import MainAgentState
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,8 +37,8 @@ def _delegate_tc(tc_id: str, agent_name: str, query: str = "x") -> dict:
     }
 
 
-def _state_with_calls(*tool_calls: dict, delegate_failures: dict | None = None) -> ChatAgentState:
-    return ChatAgentState(
+def _state_with_calls(*tool_calls: dict, delegate_failures: dict | None = None) -> MainAgentState:
+    return MainAgentState(
         query="q",
         session_id="s1",
         uid=1,

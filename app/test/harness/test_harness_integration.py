@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.messages import AIMessage
 
-from app.agent.chat import build_chat_agent
+from app.agent.main import build_main_agent
 from app.agent.memory import build_memory_agent
 from app.agent.quiz import build_quiz_agent
 from app.harness.app import AgentHarness
@@ -153,12 +153,12 @@ def _make_harness(deps=None, llm=None):
         circuit_breaker=harness._lifecycle.get_breaker("memory"),
     )
     harness._lifecycle.register(
-        "chat",
-        build_chat_agent,
+        "main",
+        build_main_agent,
         runtime=harness._runtime,
         llm=llm,
         deps=_deps,
-        circuit_breaker=harness._lifecycle.get_breaker("chat"),
+        circuit_breaker=harness._lifecycle.get_breaker("main"),
     )
     harness._lifecycle.register(
         "quiz",
@@ -179,7 +179,7 @@ def _make_harness(deps=None, llm=None):
 class TestHarnessRegistration:
     def test_core_agents_registered(self):
         harness = _make_harness()
-        assert "chat" in harness._lifecycle.registered_agents
+        assert "main" in harness._lifecycle.registered_agents
         assert "memory" in harness._lifecycle.registered_agents
         assert "quiz" in harness._lifecycle.registered_agents
 
@@ -217,7 +217,7 @@ class TestHarnessInvokeChat:
         )
 
         result = await harness.invoke(
-            "chat",
+            "main",
             session_id="test-session",
             query="你好",
             uid=1,
@@ -251,7 +251,7 @@ class TestHarnessInvokeChat:
         harness._llm.ainvoke = mock_invoke
 
         result = await harness.invoke(
-            "chat",
+            "main",
             session_id="test-session",
             query="中国哲学的核心观点",
             uid=1,
@@ -270,7 +270,7 @@ class TestHarnessInvokeChat:
         )
 
         result = await harness.invoke(
-            "chat",
+            "main",
             session_id="sess-direct",
             query="你好",
             uid=1,
@@ -344,10 +344,10 @@ class TestHarnessErrorHandling:
     @pytest.mark.asyncio
     async def test_circuit_breaker_blocks_invocation(self):
         harness = _make_harness()
-        cb = harness._lifecycle.get_breaker("chat")
+        cb = harness._lifecycle.get_breaker("main")
         # Trip the circuit breaker
         for _ in range(cb._failure_threshold):
             cb.record_failure()
 
-        result = await harness.invoke("chat", session_id="x", query="test")
+        result = await harness.invoke("main", session_id="x", query="test")
         assert "error" in result

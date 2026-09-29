@@ -57,7 +57,7 @@ class TestGetAgentRuntime:
             "started",
             health={
                 "status": "running",
-                "registered_agents": ["chat", "memory", "quiz"],
+                "registered_agents": ["main", "memory", "quiz"],
                 "sessions_active": 2,
                 "circuit_breaker": {"state": "closed", "failures": 0},
             },
@@ -67,7 +67,7 @@ class TestGetAgentRuntime:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "running"
-        assert "chat" in data["registered_agents"]
+        assert "main" in data["registered_agents"]
         assert data["sessions_active"] == 2
 
     @pytest.mark.asyncio

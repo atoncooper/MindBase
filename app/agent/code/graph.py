@@ -97,7 +97,7 @@ async def runtime_dispatch(state: CodeAgentState, runtime: AgentRuntime) -> dict
     )
     latency_ms = int((time.monotonic() - start) * 1000)
 
-    # Record sub-steps so the parent chat agent's SSE can show what
+    # Record sub-steps so the parent main agent's SSE can show what
     # the code agent did internally (run_code, etc.). Each run_code call is
     # also persisted to MongoDB (code_executions) for post-hoc review from
     # the admin console and the chat message detail view.

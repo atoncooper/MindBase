@@ -86,7 +86,7 @@ def _build_harness():
     AgentRuntime + LangGraph chat agent) without requiring a FastAPI
     lifespan or a real DB session. ``EvalChatDeps`` short-circuits the
     DB-backed scope helpers — the eval feeds ``bvids`` directly via
-    ``ChatAgentState`` so the agent never needs to resolve them from
+    ``MainAgentState`` so the agent never needs to resolve them from
     SQL.
     """
 
@@ -176,10 +176,10 @@ def _swap_chat_deps_for_eval(harness: Any, rag: Any) -> None:
     harness has finished registering everything.
     """
     factories = harness.lifecycle._factories  # noqa: SLF001 — eval-only splice
-    if "chat" not in factories:
+    if "main" not in factories:
         raise RuntimeError("AgentHarness did not register a 'chat' agent")
-    factory, kwargs = factories["chat"]
-    factories["chat"] = (factory, {**kwargs, "deps": _EvalChatDeps(rag)})
+    factory, kwargs = factories["main"]
+    factories["main"] = (factory, {**kwargs, "deps": _EvalChatDeps(rag)})
 
 
 async def _invoke_pipeline(

@@ -5,10 +5,10 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from unittest.mock import AsyncMock, MagicMock
 
-from app.agent.chat import build_chat_agent, ChatAgentState
-from app.agent.chat.prompts import build_system_prompt
-from app.agent.chat.error_handling import classify_error, ErrorCategory
-from app.agent.chat.graph import runtime_dispatch
+from app.agent.main import build_main_agent, MainAgentState
+from app.agent.main.prompts import build_system_prompt
+from app.agent.main.error_handling import classify_error, ErrorCategory
+from app.agent.main.graph import runtime_dispatch
 from app.tools.chat import VectorSearchTool, ListVideosTool
 from app.tools.registry import ToolRegistry
 from app.harness.runtime import AgentRuntime
@@ -144,6 +144,10 @@ class TestErrorClassification:
             "rate limit exceeded",
             "502 bad gateway",
             "service unavailable",
+            # Cloudflare edge pages arriving as the error body: a fresh
+            # connection usually succeeds, so these must be retryable.
+            '<html><head><title>421 Misdirected Request</title></head><body><center><h1>421 Misdirected Request</h1></center><hr><center>cloudflare</center></body></html>',
+            "Error code: 521 - web server is down",
         ],
     )
     def test_retryable(self, msg):
@@ -178,7 +182,7 @@ class TestReActDirectAnswer:
             return_value=AIMessage(content="你好！我是你的知识库助手。")
         )
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
         result = await agent.ainvoke({"query": "你好", "uid": 1})
 
         assert result["result"] == "你好！我是你的知识库助手。"
@@ -187,6 +191,44 @@ class TestReActDirectAnswer:
         assert isinstance(result["messages"][0], SystemMessage)
         assert isinstance(result["messages"][1], HumanMessage)
         assert isinstance(result["messages"][2], AIMessage)
+
+
+class TestReActEmptyFinalRetry:
+    @pytest.mark.asyncio
+    async def test_empty_final_answer_retries_then_answers(self):
+        """A reasoning-only final turn (stray chars, no tool calls) routes to
+        the error node, and the retry produces a real answer."""
+        _, runtime, llm = _make_runtime_and_llm()
+        call_count = 0
+
+        async def mock_invoke(messages, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return AIMessage(content="。 ")  # stray chars = empty final
+            return AIMessage(content="库内没有找到相关内容。")
+
+        llm.ainvoke = mock_invoke
+
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        result = await agent.ainvoke({"query": "xxl-job Lua 脚本", "uid": 1})
+
+        assert call_count == 2
+        assert result["result"] == "库内没有找到相关内容。"
+        # The empty attempt is not kept: system + user + final ai_response
+        assert len(result["messages"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_empty_final_answer_falls_back_after_exhaustion(self):
+        """Every attempt empty → retries exhaust → generic fallback, no crash."""
+        _, runtime, llm = _make_runtime_and_llm()
+        llm.ainvoke = AsyncMock(return_value=AIMessage(content=" "))
+
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        result = await agent.ainvoke({"query": "你好", "uid": 1})
+
+        assert "服务暂时不可用" in result["result"]
+        assert llm.ainvoke.await_count == 3  # 1 initial + 2 retries (max_retries=2)
 
 
 class TestReActToolCall:
@@ -225,7 +267,7 @@ class TestReActToolCall:
 
         llm.ainvoke = mock_invoke
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
         result = await agent.ainvoke({"query": "中国哲学的核心观点", "uid": 1})
 
         assert call_count == 2  # ReAct: think → act → observe → answer
@@ -258,7 +300,7 @@ class TestReActToolCall:
 
         llm.ainvoke = mock_invoke
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=deps)
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=deps)
         result = await agent.ainvoke({"query": "我有哪些视频", "uid": 1})
 
         assert call_count == 2
@@ -314,7 +356,7 @@ class TestReActMultiRound:
 
         llm.ainvoke = mock_invoke
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
         result = await agent.ainvoke({"query": "中西方哲学的差异", "uid": 1})
 
         assert call_count == 3  # think → search1 → search2 → answer
@@ -334,7 +376,7 @@ class TestReActErrorHandling:
         cb.record_failure()
         assert cb.is_tripped
 
-        agent = build_chat_agent(
+        agent = build_main_agent(
             llm=llm, runtime=runtime, deps=MockDeps(), circuit_breaker=cb
         )
         result = await agent.ainvoke({"query": "test"})
@@ -380,7 +422,7 @@ class TestSessionIdInjection:
         mock_tool = MockContextTool()
         _, runtime, _ = _make_runtime_and_llm(tools=[mock_tool])
 
-        state = ChatAgentState(
+        state = MainAgentState(
             query="之前聊过的内容",
             session_id="sess-abc123",
             messages=[
@@ -412,7 +454,7 @@ class TestSessionIdInjection:
         mock_tool = MockContextTool()
         _, runtime, _ = _make_runtime_and_llm(tools=[mock_tool])
 
-        state = ChatAgentState(
+        state = MainAgentState(
             query="test",
             session_id="",
             messages=[
@@ -441,7 +483,7 @@ class TestSessionIdInjection:
         mock_tool = MockContextTool()
         _, runtime, _ = _make_runtime_and_llm(tools=[mock_tool])
 
-        state = ChatAgentState(
+        state = MainAgentState(
             query="test",
             session_id="sess-auto",
             messages=[
@@ -502,7 +544,7 @@ class TestReActWithContextTools:
 
         llm.ainvoke = mock_invoke
 
-        agent = build_chat_agent(
+        agent = build_main_agent(
             llm=llm,
             runtime=runtime,
             deps=MockDeps(),
@@ -528,7 +570,7 @@ class TestReActWithContextTools:
 
         llm.ainvoke = AsyncMock(return_value=AIMessage(content="直接回答"))
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
         result = await agent.ainvoke({"query": "你好", "uid": 1})
 
         # The system message should include context tools section
@@ -545,7 +587,7 @@ class TestReActWithContextTools:
 
         llm.ainvoke = AsyncMock(return_value=AIMessage(content="直接回答"))
 
-        agent = build_chat_agent(llm=llm, runtime=runtime, deps=MockDeps())
+        agent = build_main_agent(llm=llm, runtime=runtime, deps=MockDeps())
         result = await agent.ainvoke({"query": "你好", "uid": 1})
 
         # The system message should NOT include context tools section
