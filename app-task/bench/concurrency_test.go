@@ -98,7 +98,8 @@ func TestFencedFinalizeUnderReclaim(t *testing.T) {
 		if err != nil || !ok1 {
 			t.Fatalf("round %d: first claim = %v %v", round, ok1, err)
 		}
-		if n, err := repo.ReclaimDispatching(time.Now().UTC().Add(-time.Second)); err != nil || n != 1 {
+		// cutoff 在未来：回收该轮全部已存在的认领（模拟 TTL 已过期）
+		if n, err := repo.ReclaimDispatching(time.Now().UTC().Add(time.Minute)); err != nil || n != 1 {
 			t.Fatalf("round %d: reclaim = %d %v", round, n, err)
 		}
 		tok2, ok2, err := repo.ClaimTask(id, "fresh", time.Now().UTC())
