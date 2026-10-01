@@ -121,7 +121,7 @@ services:
       dockerfile: Dockerfile
       # Build-time env consumed by next.config.ts rewrites(). NEXT_PUBLIC_* vars
       # are inlined at build time, so they must be passed here (runtime env has
-      # no effect on them). Source lives in frontendv2/ (frontend/ is deprecated).
+      # no effect on them). Source lives in frontendv2/ (first-gen frontend/ removed).
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
         NEXT_PUBLIC_APISIX_HOST: nginx:80
@@ -622,10 +622,8 @@ services:
       - mind-base-net
 
   app-task:
-    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/app-task:latest}
-    build:
-      context: ./app-task
-      dockerfile: Dockerfile
+    # Published by the standalone repo (github.com/atoncooper/app-task) to Docker Hub.
+    image: atoncooper/app-task:latest
     container_name: mind-base-app-task
     profiles: ["", "task", "full"]
     depends_on:
@@ -668,7 +666,7 @@ services:
       # 容器内 HTTPS（.env 设 APPTASK__SERVER__TLS__ENABLED=true 即可）：不配 cert/key 时
       # 启动自动生成自签证书写入 /app/certs（挂卷持久化，重建容器不再换证书）；
       # 显式指定文件用 APPTASK__SERVER__TLS__CERT/KEY
-      - ./app-task/certs:/app/certs
+      - app_task_certs:/app/certs
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -679,7 +677,7 @@ services:
   # memory（每实例独立；两实例走各自回环端口，无需共享）；若前面挂同一
   # 域名 LB，两边都设 APPTASK__WEBUI__SESSION_STORE=redis + APPTASK__REDIS__URL。
   app-task-ha:
-    image: ${APPTASK_IMAGE:-ghcr.io/atoncooper/app-task:latest}
+    image: atoncooper/app-task:latest
     container_name: mind-base-app-task-ha
     profiles: ["ha"]
     depends_on:
@@ -988,6 +986,7 @@ services:
 volumes:
   backend_data:
   backend_logs:
+  app_task_certs:
   app_task_ha_logs:
   app_task_logs:
   app_auth_logs:

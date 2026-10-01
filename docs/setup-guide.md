@@ -95,11 +95,10 @@ APPTASK_EMAIL_API_KEY=
 
 不用出题功能就跳到第 6 步。
 
-打开 `app-task/default.yaml`，找到 `from_email`，改成你在 Resend 验证过的域名：
+app-task 镜像内置默认发件人（`onboarding@resend.dev`，仅够测试）。在项目根 `.env` 里加一行，改成你在 Resend 验证过的域名：
 
-```yaml
-email:
-  from_email: "MindBase <noreply@你的域名.com>"
+```bash
+APPTASK__EMAIL__FROM=MindBase <noreply@你的域名.com>
 ```
 
 ---
@@ -147,10 +146,10 @@ curl http://localhost:8001/health
 
 **app-task 控制台**：`http://localhost:8001/` 是内置管理界面，**需要登录**——默认账户 `admin` / `app-task-admin`（首次启动自动创建，登录后请在「账户」页改密；连续输错会被限流）。
 
-**只跑 app-task（不拉起整个主栈）**：
+**只跑 app-task（不拉起整个主栈）**：本仓已不含 app-task 源码（镜像随默认 profile 自动拉取）。如需独立部署（仅 app-task + 它自己的 MySQL），克隆独立仓库后用其自带 compose：
 
 ```bash
-cd app-task && docker compose up -d --build   # app-task + 它自己的 MySQL
+git clone https://github.com/atoncooper/app-task.git && cd app-task && docker compose up -d
 ```
 
 ---
@@ -247,8 +246,8 @@ uvicorn app.main:app --reload --port 8000
 # 前端（另开终端）
 cd frontendv2 && npm install && npm run dev
 
-# 出题执行器（另开终端）
-go run ./app-task
+# 出题执行器：源码在独立仓库（本仓 compose 已默认拉镜像跑容器，本地开发一般无需另起）
+git clone https://github.com/atoncooper/app-task.git && cd app-task && go run .
 ```
 
 本地开发时 `.env` 用 `.env.example` 的**双下划线**变量名（`LLM__API_KEY` 等），程序直接读。

@@ -299,7 +299,7 @@ See `app/config/default.yaml` for full field listings.
 
 | 服务 | 配置入口 | 环境前缀 | 文档 |
 |------|---------|---------|------|
-| app-task | `app-task/default.yaml`（嵌入） | `APPTASK__` | [app-task.md](app-task.md) |
+| app-task | 独立仓库 `default.yaml`（嵌入镜像；本仓覆盖走 `APPTASK__` env） | `APPTASK__` | [app-task.md](app-task.md) |
 | app-pay | `application.yaml`（+ docker/test profile） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
 | app-pay-admin | 嵌入 `default.yaml` + 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
 | app-board | 嵌入 `default.yaml` | `APPBOARD__` | [app-board.md](app-board.md) |

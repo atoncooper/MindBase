@@ -45,7 +45,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | milvus | milvus v2.6 standalone | 19530 | 19530 | 默认 | 向量库：`bilibili_videos` + `cloud_drive` + `kg_entities` |
 | neo4j | neo4j 5 community | 7474 / 7687 | 7474 / 7687 | 默认 | 知识图谱（`KG__URI` 指向，未连接自动降级） |
 | app-task-mysql | mysql:8.4 | 3306 | 无 | 默认 | app-task 独立库 `app_task` |
-| app-task | Go + Gin（`app-task/`） | 8001 | `${APP_TASK_PORT:-8001}` | 默认（task） | 定时任务调度器 + 邮件投递 + WebUI 控制台 |
+| app-task | Go + Gin（独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)，拉取镜像 `atoncooper/app-task`） | 8001 | `${APP_TASK_PORT:-8001}` | 默认（task） | 定时任务调度器 + 邮件投递 + WebUI 控制台 |
 | app-pay-mysql | mysql:8.4 | 3306 | `127.0.0.1:3307` | 默认（pay） | 交易库 `app_pay` |
 | app-pay | Java 17 / Spring Boot 3（`app-pay/`） | 8002 | `127.0.0.1:8002` | pay | 交易/会员服务（HTTPS-only） |
 | app-pay-test-mysql | mysql:8.4 | 3306 | `127.0.0.1:18306` | pay-test | 测试库 `app_pay_test`（整库隔离） |
@@ -67,7 +67,7 @@ profile 汇总：
 | `--profile full` | 全部以上（含 tools 管理界面） |
 | `--profile tools` | redis-commander / mongo-express |
 
-另有两个独立 compose：`docker-compose.daytona.yml`（自托管 Daytona 代码沙箱，:3800）、`app-task/docker-compose.yml`（仅 app-task + 自有 MySQL，:8001；与主栈同时跑会端口冲突）。
+另有一个独立 compose：`docker-compose.daytona.yml`（自托管 Daytona 代码沙箱，:3800）。
 
 ---
 
@@ -121,7 +121,7 @@ forward-auth 统一调 backend 的 `POST /internal/auth/verify` 校验 `Authoriz
 
 | 服务 | 配置文件 | 环境前缀 | 文档 |
 |------|---------|---------|------|
-| app-task | `app-task/default.yaml`（嵌入） | `APPTASK__` | [app-task.md](app-task.md) |
+| app-task | 独立仓库 `default.yaml`（嵌入镜像；本仓覆盖走 `APPTASK__` env） | `APPTASK__` | [app-task.md](app-task.md) |
 | app-pay | `application.yaml` + docker/test profile | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
 | app-pay-admin | `default.yaml`（嵌入）+ config 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
 | app-board | `default.yaml`（嵌入） | `APPBOARD__` | [app-board.md](app-board.md) |
@@ -150,7 +150,7 @@ infra/            配置加载 / mysql / mongo / redis / minio / neo4j / milvus 
 |----------|------|------|
 | ci-backend | `app/**` | ruff lint（mypy 建议性） |
 | ci-frontend | `frontendv2/**` | tsc --noEmit + ESLint + next build |
-| ci-app-task / ci-pay-admin | 对应 Go 服务 | gofmt / vet / test / build |
+| ci-pay-admin | 对应 Go 服务（app-pay-admin；app-task CI 随拆分迁至独立仓库） | gofmt / vet / test / build |
 | ci-app-pay | `app-pay/**` | mvn test（纯 JUnit，无外部 DB） |
-| docker-build | push main / tag | 构建并发布 5 个镜像到 ghcr（backend/frontend/app-pay/app-pay-admin/app-task） |
+| docker-build | push main / tag | 构建并发布 4 个镜像到 ghcr（backend/frontend/app-pay/app-pay-admin） |
 | desktop-release | tag `mind-base-desktop-v*` | Tauri 桌面端构建（Windows NSIS + macOS dmg）并发布 Release |

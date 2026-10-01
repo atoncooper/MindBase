@@ -42,9 +42,9 @@ cp .env.example .env                          # 至少填 LLM__API_KEY、SESSION
                                               # SECURITY__API_KEY_ENCRYPTION_KEY、APISIX_CONSUMER_KEY
 docker compose up -d --build                  # 入口 http://localhost:3000（nginx 80/443 亦可）
 
-# 定时出题（默认 profile 已含 app-task；WebUI 控制台 http://localhost:8001/
+# 定时出题（默认 profile 已含 app-task，镜像自动拉取；WebUI 控制台 http://localhost:8001/
 # 登录 admin / app-task-admin，生产务必改密）
-# 也可只跑 app-task：cd app-task && docker compose up -d --build
+# app-task 源码在独立仓库 github.com/atoncooper/app-task（镜像 atoncooper/app-task）
 ```
 
 > ⚠️ 环境变量、profile 服务范围、HTTPS/TLS、故障排查、Daytona 代码沙箱等细节请在对应的 docs/ 文档中查阅，README 不再重复维护。
@@ -97,7 +97,7 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 - **入口**：`/task-quiz`（对话定义任务）+ `/tasks`（任务列表/答题）
 - 用户与 AI 对话定义"到某时间出一道题"，AI 按北京时间随机生成触发时间（避开睡觉/午休）
 - 到点自动 LLM 生成题目，HTML 邮件发给用户+抄送人，限时答题；超时未答发"未完成语录"提醒
-- 独立 Go 调度服务（自写 DB 轮询 scheduler + 邮件投递队列 + WebUI 控制台），详见 [`docs/app-task.md`](docs/app-task.md)
+- 独立 Go 调度服务（自写 DB 轮询 scheduler + 邮件投递队列 + WebUI 控制台），源码在独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)，运行态详见 [`docs/app-task.md`](docs/app-task.md)
 
 ### 技能（Skills）
 
@@ -189,10 +189,10 @@ pytest app/test/real_agent_harness -v -s
 ### 独立服务测试
 
 ```bash
-cd app-task && go test ./...            # Go 调度器（76 个测试）
 cd app-board && go test ./...           # Go 板存储（22 个测试）
 cd app-pay-admin && go test ./...       # Go 支付后台（31 个测试）
 cd app-pay && mvn test                  # Java 交易服务（82 个测试）
+# app-task 测试随源码在独立仓库 atoncooper/app-task
 ```
 
 ### 前端
@@ -234,7 +234,7 @@ app/                             FastAPI 主后端
   models.py              SQLAlchemy ORM 模型
   test/                  测试（按业务域分包）+ diagnose_rag 诊断
 
-frontendv2/                      当前前端（frontend/ 已废弃，仅存档）
+frontendv2/                      当前前端（第一代 frontend/ 已于 2026-10-01 删除）
   app/                   Next.js App Router（chat / favorites / notes / mindmap / cloud-drive /
                          quiz / task-quiz / graph / blindspot / skills / billing / settings ...）
   components/            UI 组件（按功能域组织）
@@ -246,10 +246,6 @@ frontendv2/                      当前前端（frontend/ 已废弃，仅存档�
 app-board/                       思维导图/白板存储服务（Go + Gin，:8004，HTTPS-only）
   internal/              config / db / mongo / redis缓存 / repo / service / router / tls
   certs/                 自动生成的开发 CA + 叶子证书（APISIX 信任锚）
-
-app-task/                        定时任务调度器（Go + Gin，:8001；DB 轮询 scheduler + 邮件投递）
-  web/                   嵌入式 WebUI 控制台（go:embed，登录 admin / app-task-admin）
-  internal/              config / db / model / repo / service / executor(http+lua) / queue / router
 
 app-pay/                         交易/会员服务（Java 17 + Spring Boot 3 + MyBatis-Plus，:8002 HTTPS-only）
 app-pay-admin/                   支付后台管理（Go + Gin SSR，:8003 回环）

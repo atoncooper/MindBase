@@ -7,6 +7,8 @@ payload 通过 HTTP 发给 executor,执行成功记录 completed,失败按重试
 > 定位:调度 ≠ 业务。app-task 的库里只有 `task`(调度定义)+ `task_log`(执行记录)+ 可选的 `script`(Lua 执行器);
 > 没有也不应该有业务模型。
 
+> ⚠️ **源码已拆分至独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)**（2026-09-29 拆分，2026-10-01 本仓目录删除）：根 compose 直接拉取 Docker Hub 镜像 `atoncooper/app-task:latest` 运行。本文保留**运行态参考**（架构 / API / 配置 / executor 对接）；源码开发、独立部署、CLI（`at`）与集群文档见新仓 `README.md` 与 `docs/`。
+
 ## 架构
 
 ```
@@ -173,16 +175,15 @@ APPTASK__TIMEZONE=Asia/Shanghai
 
 ```bash
 # 与主栈一起（app-task 在默认 profile 里，裸 up 已包含；--profile task 仅显式圈选时用）
-docker compose up -d --build
+docker compose up -d
 
-# 独立启动（不拉起主栈：只起 app-task + 自有 MySQL）
-cd app-task && docker compose up -d --build
-
-# 本地
-go run ./app-task   # 从项目根
+# 单独升级 app-task（拉取新镜像后重建容器）
+docker compose pull app-task && docker compose up -d app-task
 ```
 
 启动后 WebUI 控制台在 `http://localhost:8001/`（默认账户 `admin` / `app-task-admin`，登录后进「账户」页改密）。
+
+> 源码开发 / 独立部署（仅 app-task + 自有 MySQL）/ `go run` 本地运行，见独立仓库 atoncooper/app-task（本仓已无 `app-task/` 目录）。
 
 ## 迁移(从出题执行器 → 纯调度器)
 

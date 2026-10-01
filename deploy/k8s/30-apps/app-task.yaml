@@ -34,7 +34,7 @@ spec:
           command: ["sh", "-c", "until nc -z app-task-mysql 3306 && nc -z apisix 9080; do echo waiting for app-task-mysql/apisix; sleep 3; done"]
       containers:
         - name: app-task
-          image: ghcr.io/atoncooper/mind-base-app-task:latest
+          image: atoncooper/app-task:latest
           imagePullPolicy: Always
           envFrom:
             - secretRef:

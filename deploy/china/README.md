@@ -10,7 +10,7 @@
 |------|---------|-----------|------|
 | Backend 镜像 | `ghcr.io` 预构建 / 项目根 Dockerfile | 本地构建（本目录 `Dockerfile.backend`） | ghcr.io 被墙；ffmpeg 下载走 ghfast.top 代理 |
 | Frontend 镜像 | `ghcr.io` 预构建 / `frontendv2/Dockerfile` | 本地构建（本目录 `Dockerfile.frontend`） | ghcr.io 被墙；npm 走 npmmirror |
-| App-task 镜像 | `ghcr.io` 预构建 / `app-task/Dockerfile` | 本地构建（本目录 `Dockerfile.app-task`） | ghcr.io + gcr.io/distroless 被墙；运行时换 Alpine |
+| App-task 镜像 | Docker Hub `atoncooper/app-task:latest` | 同原版（直接拉取） | 源码已拆分至独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)；Docker Hub 中国可直达，无需本地构建 |
 | etcd | `quay.io/coreos/etcd` | `bitnami/etcd`（Docker Hub） | quay.io 不稳定 |
 
 其余基础设施镜像（MySQL、Redis、MongoDB、MinIO、Milvus、Nginx、APISIX）均在 Docker Hub，中国可直达，未做替换。
@@ -160,4 +160,3 @@ docker compose up -d --build
 | `docker-compose.yml` | 中国区编排文件（等价于项目根 docker-compose.yml） |
 | `Dockerfile.backend` | 后端 FastAPI（阿里云 apt + 清华 pip + ghfast.top ffmpeg） |
 | `Dockerfile.frontend` | 前端 Next.js（npmmirror + 阿里云 Alpine） |
-| `Dockerfile.app-task` | Go 任务执行器（goproxy.cn + Alpine 替代 distroless） |
