@@ -26,7 +26,7 @@ services:
 
   backend:
     profiles: ["", "standalone", "storage", "full", "task"]
-    image: ${BACKEND_IMAGE:-atoncooper/mind-base-backend:latest}
+    image: atoncooper/mind-base-backend:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -115,7 +115,7 @@ services:
 
   frontend:
     profiles: ["", "standalone", "storage", "full", "task"]
-    image: ${FRONTEND_IMAGE:-atoncooper/mind-base-frontend:latest}
+    image: atoncooper/mind-base-frontend:latest
     build:
       context: ./frontendv2
       dockerfile: Dockerfile
@@ -155,7 +155,7 @@ services:
   # Idempotent: valid files are reused, expiring ones re-signed.
 
   cert-gen:
-    image: mind-base-certgen:latest
+    image: atoncooper/mind-base-certgen:latest
     build:
       context: ./scripts
       dockerfile: certgen.Dockerfile
@@ -409,7 +409,14 @@ services:
       - mind-base-net
 
   minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    image: atoncooper/mind-base-minio:latest
+    # Upstream removed community MinIO from every distribution channel
+    # (Docker Hub repo deleted, dl.min.io 410, GitHub repo archived as
+    # source-only). We vendor the last upstream release that still published
+    # prebuilt binaries — see scripts/minio.Dockerfile.
+    build:
+      context: ./scripts
+      dockerfile: minio.Dockerfile
     container_name: mind-base-minio
     # nginx (proxy_pass) and Milvus both depend on minio; add standalone so
     # nginx's standalone profile doesn't break the dependency graph.
@@ -535,7 +542,7 @@ services:
   # auth 表的 schema 所有权，共享主 bilirag MySQL；APISIX forward-auth 指向
   # /internal/auth/verify，/auth/* 用户端点也由它提供）
   app-auth:
-    image: ${APPAUTH_IMAGE:-atoncooper/mind-base-app-auth:latest}
+    image: atoncooper/mind-base-app-auth:latest
     build:
       context: ./app-go/app-auth
       dockerfile: Dockerfile
@@ -581,7 +588,7 @@ services:
   # 的 schema 所有权，共享主 bilirag MySQL + MinIO bucket + Mongo；分块上传/配额/
   # 分享/回收站/解析向量化管线；nginx /cloud/ 直连本服务，身份经 auth_request 注入）
   app-cloud:
-    image: ${APPCLOUD_IMAGE:-atoncooper/mind-base-app-cloud:latest}
+    image: atoncooper/mind-base-app-cloud:latest
     build:
       context: ./app-go/app-cloud
       dockerfile: Dockerfile
@@ -710,7 +717,7 @@ services:
 
   # app-pay —— 交易/会员服务（Spring Boot 3;模式对齐 app-task）
   app-pay:
-    image: ${APP_PAY_IMAGE:-atoncooper/mind-base-app-pay:latest}
+    image: atoncooper/mind-base-app-pay:latest
     build:
       context: ./app-pay
       dockerfile: Dockerfile
@@ -748,7 +755,7 @@ services:
   # 作为 upstream tls_verify 的信任锚(见 apisix config.yaml ssl_trusted_certificate)。
   # 注意:首次启动生成证书后若 apisix 先于其启动,需 `docker compose restart apisix` 重载 CA bundle。
   app-board:
-    image: ${APPBOARD_IMAGE:-atoncooper/mind-base-app-board:latest}
+    image: atoncooper/mind-base-app-board:latest
     build:
       context: ./app-board
       dockerfile: Dockerfile
@@ -797,7 +804,7 @@ services:
   # /internal/board/* 到 app-board。回环 8005 + 容器内网互通（backend 直连）。
   # 默认 profile 启动：board agent 是主栈功能的一部分。
   app-board-mcp:
-    image: ${APPBOARD_MCP_IMAGE:-atoncooper/mind-base-app-board-mcp:latest}
+    image: atoncooper/mind-base-app-board-mcp:latest
     build:
       context: ./mcp/app-board-mcp
       dockerfile: Dockerfile
@@ -864,7 +871,7 @@ services:
       - mind-base-net
 
   app-pay-test:
-    image: ${APP_PAY_IMAGE:-atoncooper/mind-base-app-pay:latest}
+    image: atoncooper/mind-base-app-pay:latest
     build:
       context: ./app-pay
       dockerfile: Dockerfile
@@ -891,7 +898,7 @@ services:
   # MembershipService.extend 语义），运行时不依赖 app-pay/APISIX。自带账户体系
   # （payadmin_user + bcrypt），仅回环暴露，不经 APISIX（同 app-task WebUI 先例）。
   app-pay-admin:
-    image: ${APP_PAY_ADMIN_IMAGE:-atoncooper/mind-base-app-pay-admin:latest}
+    image: atoncooper/mind-base-app-pay-admin:latest
     build:
       context: ./app-pay-admin
       dockerfile: Dockerfile
