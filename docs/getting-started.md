@@ -82,7 +82,7 @@ app/
 ├── tools/               # @register_tool auto-discovered tools
 └── models.py            # SQLAlchemy ORM models only
 
-frontendv2/              # current frontend (frontend/ is deprecated, archived only)
+frontendv2/              # current frontend (first-gen frontend/ removed 2026-10-01)
 ├── app/                 # Next.js App Router (page.tsx, layout.tsx)
 ├── components/          # React components (chat / account / settings / billing / notes / cloud-drive / quiz)
 ├── lib/api/             # API client (modular, no direct fetch in components)

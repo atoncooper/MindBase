@@ -4,6 +4,11 @@
 
 ## [Unreleased] — 2026-09-25
 
+### Removed
+
+- **frontend/ 目录移除**：第一代前端 `frontend/`（dock-modules 体系，2026-08 起废弃、compose/CI 早已切换 `frontendv2/`）从本仓删除；活跃用户前端为 `frontendv2/`（Next.js 16，`lib/api/` 按域分模块为唯一 API 调用入口）。AGENTS.md §2.4 的逐文件说明替换为 frontendv2 约束与 SSE 帧规范指针。
+- **app-task 目录移除**：app-task 已拆分为独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)（2026-09-29 拆分时已停止追踪，本次删除本地嵌套 checkout 目录），并顺带清理 4 个 Python 时代遗留、早已失效的本地启停脚本（`scripts/start-task.*` / `stop-task.*`）。根 compose 的 `app-task` / `app-task-ha` 服务去掉 `build:` 块，镜像直接写死 Docker Hub 的 `atoncooper/app-task:latest`（不再走 `APPTASK_IMAGE` 环境变量间接；GHCR 镜像仍在）；容器内 TLS 证书持久化由 `./app-task/certs` 绑定挂载改为命名卷 `app_task_certs`（源目录已不存在，绑定挂载会在宿主机复活空目录）。运行方式不变：默认 profile 仍含 app-task；源码开发、独立部署、CLI 与集群文档见独立仓库。
+
 ### Fixed
 
 - **cert-gen 启动失败（exit 2）**：git autocrlf 把 `scripts/gen-certs.sh` 工作区副本转成 CRLF，容器内 `set -eu

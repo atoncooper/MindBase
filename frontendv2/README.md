@@ -1,6 +1,6 @@
 # frontendv2 - MindBase 当前前端
 
-> 这是 MindBase 的**当前活跃前端**。第一代前端 [`../frontend/`](../frontend/) 已废弃，仅作存档。
+> 这是 MindBase 的**当前活跃前端**。第一代前端 `frontend/` 已于 2026-10-01 从本仓删除（历史可查 git）。
 
 ## 技术栈
 

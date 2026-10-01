@@ -68,7 +68,7 @@ LLM 不遵守标记格式时，只是没产物（文本回溯仍有效）。MinI
 
 ## SSE 产物事件
 
-`agent_sse.py` 在流末尾（sources/done 前）发 `type:"artifact"` 帧，前端 `ChatPanel` 经 `chat-stream.ts` 的 `onArtifact` 回调累积到 message，`ChatMessage` 渲染图片（`content_type` 为 image 时 `<img>`，否则下载链接）。
+`agent_sse.py` 在流末尾（sources/done 前）发 `type:"artifact"` 帧，前端聊天视图经 `chat-stream.ts` 的 `onArtifact` 回调累积到 message，`chat-message.tsx` 渲染图片（`content_type` 为 image 时 `<img>`，否则下载链接）。
 
 ## 配置依赖
 
