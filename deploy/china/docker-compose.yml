@@ -265,7 +265,7 @@ services:
       - mind-base-net
 
   minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    image: atoncooper/mind-base-minio:latest
     container_name: mind-base-minio
     profiles: ["", "standalone", "storage", "full"]
     ports:

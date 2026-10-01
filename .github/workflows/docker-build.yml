@@ -41,6 +41,18 @@ jobs:
             dockerfile: app-board/Dockerfile
             image: atoncooper/mind-base-app-board
             name: app-board
+          - context: ./mcp/app-board-mcp
+            dockerfile: mcp/app-board-mcp/Dockerfile
+            image: atoncooper/mind-base-app-board-mcp
+            name: app-board-mcp
+          - context: ./scripts
+            dockerfile: scripts/certgen.Dockerfile
+            image: atoncooper/mind-base-certgen
+            name: certgen
+          - context: ./scripts
+            dockerfile: scripts/minio.Dockerfile
+            image: atoncooper/mind-base-minio
+            name: minio
           - context: ./app-pay-admin
             dockerfile: app-pay-admin/Dockerfile
             image: atoncooper/mind-base-app-pay-admin

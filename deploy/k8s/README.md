@@ -12,9 +12,10 @@ APISIX、Higress、nginx）等价移植为 k8s 清单。
 
 - Kubernetes ≥ 1.28，`kubectl` 已配置（kustomize 内置于 kubectl）；
 - 默认 StorageClass 可用（StatefulSet/PVC 未指定 storageClassName，取默认）；
-- 能拉取镜像：`atoncooper/mind-base-*`、`milvusdb/milvus:v2.6.22`、
+- 能拉取镜像：`atoncooper/mind-base-*`（含 `mind-base-minio`/`mind-base-certgen`，MinIO 上游已从
+  Docker Hub 移除，见 scripts/minio.Dockerfile）、`milvusdb/milvus:v2.6.22`、
   `mysql:8.4`、`mongo:7`、`redis:7-alpine`、`neo4j:5-community`、
-  `quay.io/coreos/etcd:v3.5.14`、`minio/minio:RELEASE.2024-11-07T00-52-20Z`、
+  `quay.io/coreos/etcd:v3.5.14`、
   `apache/apisix:3.11.0-debian`、`nginx:alpine`、busybox、
   Higress all-in-one（国内集群直连阿里云仓库无压力；海外建议自行转存）。
 
