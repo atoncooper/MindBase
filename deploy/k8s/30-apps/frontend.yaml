@@ -35,7 +35,7 @@ spec:
           command: ["sh", "-c", "until nc -z backend 8000; do echo waiting for backend; sleep 3; done"]
       containers:
         - name: frontend
-          image: ghcr.io/atoncooper/mind-base-frontend:latest
+          image: atoncooper/mind-base-frontend:latest
           imagePullPolicy: Always
           env:
             - name: NODE_ENV

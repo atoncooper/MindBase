@@ -8,8 +8,8 @@
 
 | 组件 | 原版来源 | 中国区替代 | 原因 |
 |------|---------|-----------|------|
-| Backend 镜像 | `ghcr.io` 预构建 / 项目根 Dockerfile | 本地构建（本目录 `Dockerfile.backend`） | ghcr.io 被墙；ffmpeg 下载走 ghfast.top 代理 |
-| Frontend 镜像 | `ghcr.io` 预构建 / `frontendv2/Dockerfile` | 本地构建（本目录 `Dockerfile.frontend`） | ghcr.io 被墙；npm 走 npmmirror |
+| Backend 镜像 | Docker Hub `atoncooper/mind-base-backend` 预构建 / 项目根 Dockerfile | 本地构建（本目录 `Dockerfile.backend`） | Docker Hub 大陆直连不稳；ffmpeg 下载走 ghfast.top 代理 |
+| Frontend 镜像 | Docker Hub `atoncooper/mind-base-frontend` 预构建 / `frontendv2/Dockerfile` | 本地构建（本目录 `Dockerfile.frontend`） | Docker Hub 大陆直连不稳；npm 走 npmmirror |
 | App-task 镜像 | Docker Hub `atoncooper/app-task:latest` | 同原版（直接拉取） | 源码已拆分至独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)；Docker Hub 中国可直达，无需本地构建 |
 | etcd | `quay.io/coreos/etcd` | `bitnami/etcd`（Docker Hub） | quay.io 不稳定 |
 
@@ -127,7 +127,7 @@ curl -s http://localhost | head -5
 
 ### Q: 我有代理，还需要用这个版本吗？
 
-如果你有稳定的代理（能访问 ghcr.io、quay.io、GitHub），**推荐直接用项目根的原始 `docker-compose.yml`**——它使用预构建镜像，构建更快。配置 Docker 客户端代理即可：
+如果你有稳定的代理（能稳定访问 Docker Hub、GitHub），**推荐直接用项目根的原始 `docker-compose.yml`**——它使用预构建镜像，构建更快。配置 Docker 客户端代理即可：
 
 ```json
 // ~/.docker/config.json

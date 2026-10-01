@@ -152,5 +152,5 @@ infra/            配置加载 / mysql / mongo / redis / minio / neo4j / milvus 
 | ci-frontend | `frontendv2/**` | tsc --noEmit + ESLint + next build |
 | ci-pay-admin | 对应 Go 服务（app-pay-admin；app-task CI 随拆分迁至独立仓库） | gofmt / vet / test / build |
 | ci-app-pay | `app-pay/**` | mvn test（纯 JUnit，无外部 DB） |
-| docker-build | push main / tag | 构建并发布 4 个镜像到 ghcr（backend/frontend/app-pay/app-pay-admin） |
+| docker-build | push main / tag | 构建并发布 7 个镜像到 Docker Hub（`atoncooper/mind-base-*`：backend/frontend/app-auth/app-cloud/app-board/app-pay/app-pay-admin；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`） |
 | desktop-release | tag `mind-base-desktop-v*` | Tauri 桌面端构建（Windows NSIS + macOS dmg）并发布 Release |

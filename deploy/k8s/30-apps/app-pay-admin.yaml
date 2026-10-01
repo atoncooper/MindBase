@@ -36,7 +36,7 @@ spec:
           command: ["sh", "-c", "until nc -z app-pay-mysql 3306; do echo waiting for app-pay-mysql; sleep 3; done"]
       containers:
         - name: app-pay-admin
-          image: ghcr.io/atoncooper/mind-base-app-pay-admin:latest
+          image: atoncooper/mind-base-app-pay-admin:latest
           imagePullPolicy: Always
           args: ["-config", "config.docker.yaml"]
           envFrom:

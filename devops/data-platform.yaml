@@ -359,7 +359,7 @@ spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: ghcr.io/atoncooper/mind-base-spark:latest   # <-- build this image
+  image: atoncooper/mind-base-spark:latest   # <-- build this image
   imagePullPolicy: Always
   mainApplicationFile: local:///app/spark/embedding_job.py
   arguments:
@@ -438,7 +438,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: mindbase
 spec:
-  image: ghcr.io/atoncooper/mind-base-flink:latest    # <-- build this image
+  image: atoncooper/mind-base-flink:latest    # <-- build this image
   flinkVersion: v1_19
   flinkConfiguration:
     # Checkpointing to MinIO via S3

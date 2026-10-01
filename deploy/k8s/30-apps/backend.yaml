@@ -36,7 +36,7 @@ spec:
           command: ["sh", "-c", "until nc -z mysql 3306 && nc -z mongo 27017 && nc -z redis 6379; do echo waiting for mysql/mongo/redis; sleep 3; done"]
       containers:
         - name: backend
-          image: ghcr.io/atoncooper/mind-base-backend:latest
+          image: atoncooper/mind-base-backend:latest
           imagePullPolicy: Always
           envFrom:
             - secretRef:

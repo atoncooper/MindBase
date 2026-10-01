@@ -9,33 +9,45 @@ on:
       - "*.md"
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     strategy:
       matrix:
         include:
+          # Image names are hardcoded on Docker Hub (the standard registry).
+          # The namespace must match the DOCKERHUB_USERNAME repo secret.
+          # Requires repo secrets: DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+          # (Docker Hub → Account Settings → Personal access tokens, Read & Write).
           - context: .
             dockerfile: Dockerfile
-            image: ghcr.io/${{ github.repository_owner }}/bilirag-backend
+            image: atoncooper/mind-base-backend
             name: backend
           - context: ./frontendv2
             dockerfile: frontendv2/Dockerfile
-            image: ghcr.io/${{ github.repository_owner }}/bilirag-frontend
+            image: atoncooper/mind-base-frontend
             name: frontend
+          - context: ./app-go/app-auth
+            dockerfile: app-go/app-auth/Dockerfile
+            image: atoncooper/mind-base-app-auth
+            name: app-auth
+          - context: ./app-go/app-cloud
+            dockerfile: app-go/app-cloud/Dockerfile
+            image: atoncooper/mind-base-app-cloud
+            name: app-cloud
+          - context: ./app-board
+            dockerfile: app-board/Dockerfile
+            image: atoncooper/mind-base-app-board
+            name: app-board
           - context: ./app-pay-admin
             dockerfile: app-pay-admin/Dockerfile
-            image: ghcr.io/${{ github.repository_owner }}/mind-base-app-pay-admin
+            image: atoncooper/mind-base-app-pay-admin
             name: app-pay-admin
           - context: ./app-pay
             dockerfile: app-pay/Dockerfile
-            image: ghcr.io/${{ github.repository_owner }}/mind-base-app-pay
+            image: atoncooper/mind-base-app-pay
             name: app-pay
     steps:
       - uses: actions/checkout@v4
@@ -43,12 +55,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta

@@ -50,7 +50,7 @@ spec:
               app: backend
       containers:
         - name: backend
-          image: ghcr.io/atoncooper/mind-base-backend:latest
+          image: atoncooper/mind-base-backend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -214,7 +214,7 @@ spec:
               app: frontend
       containers:
         - name: frontend
-          image: ghcr.io/atoncooper/mind-base-frontend:latest
+          image: atoncooper/mind-base-frontend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

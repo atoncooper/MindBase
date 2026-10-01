@@ -37,7 +37,7 @@ spec:
           command: ["sh", "-c", "until nc -z app-pay-mysql 3306; do echo waiting for app-pay-mysql; sleep 3; done"]
       containers:
         - name: app-pay
-          image: ghcr.io/atoncooper/mind-base-app-pay:latest
+          image: atoncooper/mind-base-app-pay:latest
           imagePullPolicy: Always
           args: ["--spring.profiles.active=docker"]
           envFrom:

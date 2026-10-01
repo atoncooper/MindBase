@@ -23,7 +23,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 | **本地开发**（前置 → 克隆/依赖 → 配 .env → 起后端/前端 → 验证全链路） | [`docs/getting-started.md`](docs/getting-started.md) |
 | **环境变量 / 配置参考**（完整变量表、YAML 分层加载、密钥） | [`docs/configuration.md`](docs/configuration.md) |
 | **Docker 生产部署**（一键启动、profiles、HTTPS、监控、备份） | [`docs/deployment.md`](docs/deployment.md) |
-| **中国大陆镜像部署**（`ghcr.io`/`gcr.io`/`quay.io` 被墙时的替代方案） | [`deploy/china/README.md`](deploy/china/README.md) |
+| **中国大陆镜像部署**（Docker Hub 大陆直连不稳时的本地构建替代方案） | [`deploy/china/README.md`](deploy/china/README.md) |
 | **定时出题任务 app-task**（功能 / 独立启动 / WebUI 登录 / 配置） | [`docs/app-task.md`](docs/app-task.md) |
 | **思维导图/白板服务 app-board**（API / 乐观锁 / TLS / 配置） | [`docs/app-board.md`](docs/app-board.md) |
 | **交易/会员服务 app-pay**（订单状态机 / 渠道 / 审计 / 配置） | [`docs/app-pay.md`](docs/app-pay.md) |

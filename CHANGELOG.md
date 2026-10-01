@@ -4,6 +4,10 @@
 
 ## [Unreleased] — 2026-09-25
 
+### Changed
+
+- **镜像发布切换标准 Docker Hub**：CI（docker-build）由 GHCR 改为发布 `atoncooper/mind-base-*`，矩阵从 4 个服务扩到 7 个（新增 app-auth / app-cloud / app-board，构建上下文对齐 compose）；compose、k8s 清单与 `.env.example` 中全部 `ghcr.io/atoncooper/mind-base-*` 引用同步改为 Docker Hub。需在 GitHub 仓库配置 secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` 后生效。app-board-mcp 暂无 Dockerfile，仍不在 CI 构建范围（引用已统一指向 Docker Hub）。
+
 ### Removed
 
 - **frontend/ 目录移除**：第一代前端 `frontend/`（dock-modules 体系，2026-08 起废弃、compose/CI 早已切换 `frontendv2/`）从本仓删除；活跃用户前端为 `frontendv2/`（Next.js 16，`lib/api/` 按域分模块为唯一 API 调用入口）。AGENTS.md §2.4 的逐文件说明替换为 frontendv2 约束与 SSE 帧规范指针。
