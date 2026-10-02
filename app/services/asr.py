@@ -339,9 +339,11 @@ class ASRService:
         base_url = self.base_url or getattr(dashscope, "base_http_api_url", None)
         if not base_url:
             base_url = "https://dashscope.aliyuncs.com/api/v1"
-        base_url = validate_public_http_url(base_url)
-        if base_url is None:
-            raise ValueError("未配置 ASR API 地址")
+        # Same trust rule as _configure: the gateway address is internal ops
+        # config (http + private host); SSRF validation applies only to
+        # caller-supplied (BYOK) endpoints.
+        if not self._via_gateway:
+            base_url = validate_public_http_url(base_url)
         return join_url(base_url, *parts)
 
     def _submit_transcription_task_restful(

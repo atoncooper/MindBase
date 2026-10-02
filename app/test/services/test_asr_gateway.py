@@ -63,6 +63,18 @@ class TestPlatformPathViaGateway:
         with pytest.raises(ValueError, match="consumer key"):
             svc._configure()
 
+    def test_build_api_url_allows_internal_gateway_address(self, monkeypatch):
+        # Regression: the gateway base_url is http + a private hostname —
+        # SSRF validation (https + public IP) must not apply to it, or every
+        # async Transcription submission (long audio) fails with
+        # "仅支持 https URL".
+        monkeypatch.setattr(asr_module, "settings", _fake_settings())
+        svc = ASRService()
+        assert (
+            svc._build_api_url("services", "audio", "asr", "transcription")
+            == "http://higress:8080/api/v1/services/audio/asr/transcription"
+        )
+
 
 class TestByokPathDirect:
     def test_caller_credential_goes_direct_not_via_gateway(self, monkeypatch):
@@ -100,3 +112,13 @@ class TestByokPathDirect:
         svc._configure()
         assert dashscope.base_http_api_url == "https://dashscope.aliyuncs.com/api/v1"
         assert dashscope.base_websocket_api_url == "wss://sdk-default.example/api-ws"
+
+    def test_build_api_url_byok_still_validated(self, monkeypatch):
+        # BYOK endpoints are caller-supplied — SSRF validation stays on.
+        monkeypatch.setattr(asr_module, "settings", _fake_settings())
+        svc = ASRService(
+            api_key="user-key",
+            base_url="http://169.254.169.254/latest",
+        )
+        with pytest.raises(ValueError, match="仅支持 https URL"):
+            svc._build_api_url("services", "audio", "asr", "transcription")
