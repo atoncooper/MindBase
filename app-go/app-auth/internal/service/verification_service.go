@@ -92,12 +92,15 @@ func (v *Verification) SendCode(ctx context.Context, uid int64, target, purpose 
 			return err
 		}
 		return v.repo.Create(tx, &model.VerificationCode{
-			UID:       uidPtr,
-			Target:    target,
-			Type:      channel,
-			Purpose:   purpose,
-			Code:      code,
+			UID:  uidPtr,
+			Target: target,
+			Type:   channel,
+			Purpose: purpose,
+			Code:   code,
+			// used column is nullable with no DB default; NULL never matches
+			// the "used = 0" lookups, so it must be written explicitly.
 			ExpiresAt: now.Add(time.Duration(v.cfg.Email.CodeTTLSeconds) * time.Second),
+			Used:      boolPtr(false),
 			Attempts:  intPtr(0),
 			CreatedAt: &now,
 		})
@@ -154,6 +157,7 @@ func (v *Verification) SendResetToken(ctx context.Context, target string) error 
 			Purpose:   "reset_password",
 			Code:      token,
 			ExpiresAt: now.Add(600 * time.Second),
+			Used:      boolPtr(false),
 			Attempts:  intPtr(0),
 			CreatedAt: &now,
 		})

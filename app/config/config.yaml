@@ -216,7 +216,6 @@ agentic:
 # ============================================================
 asr:
   provider: dashscope                     # ASR providers: dashscope only (OpenRouter has no ASR API)
-  base_url: https://openrouter.ai/api/v1/audio/transcriptions
   model: paraformer-realtime-v2       # Recognition (sync, realtime) model — short audio only
   model_local: paraformer-realtime-v2    # streaming / real-time model
   transcription_model: paraformer-v2     # async Transcription model — long audio (>= realtime_max_seconds)

@@ -143,14 +143,7 @@ func main() {
 		if !cfg.Pipeline.Enabled {
 			return
 		}
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("[CLOUD_PIPELINE] panic", "upload_uuid", uploadUUID, "panic", r)
-				}
-			}()
-			_, _ = pipe.RunSync(context.Background(), file)
-		}()
+		pipe.RunAsync(file)
 	})
 	purgeSvc := service.NewPurgeService(db.DB, mc, mongoStore, pipe)
 	shareSvc := service.NewShareService(db.DB, mc, cfg.Minio.PresignExpire)

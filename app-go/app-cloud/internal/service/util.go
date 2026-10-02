@@ -76,7 +76,18 @@ func NewPipeline(db *gorm.DB, mongo *mongostore.MongoStore, rdb RedisPublisher, 
 // SetEngine attaches the vector engine (nil disables the pipeline).
 func (p *Pipeline) SetEngine(e pipeline.VectorEngine) { p.engine = e }
 
-// Trigger runs the vectorization pipeline for a file (async from the router).
+// pipelineTimeout bounds one full pipeline run (download → extract → embed
+// → Milvus). Without it a half-open MinIO/Mongo/Milvus connection leaves the
+// row in "processing" forever.
+const pipelineTimeout = 5 * time.Minute
+
+// staleProcessingAfter is how long a row may sit in "processing" before the
+// status endpoint reconciles it to failed (crash / panic / hang guard). Must
+// comfortably exceed pipelineTimeout.
+const staleProcessingAfter = 10 * time.Minute
+
+// Trigger marks the file processing and runs the pipeline in a background
+// goroutine; the HTTP response returns immediately.
 func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) error {
 	f, err := p.files.GetByUUID(p.db, uploadUUID, uid)
 	if err != nil {
@@ -91,11 +102,17 @@ func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) er
 		return err
 	}
 	p.pushStatus(ctx, uid, uploadUUID, "processing", 0, "")
-	// Run synchronously in the caller's goroutine (router calls us inside a
-	// fire-and-forget goroutine from the upload completion hook, or the
-	// process endpoint spawns one).
-	_, runErr := p.RunSync(context.Background(), f)
-	return runErr
+	p.RunAsync(f)
+	return nil
+}
+
+// RunAsync runs RunSync in a background goroutine; a panic is converted to a
+// failed status so the row never sits in "processing" forever.
+func (p *Pipeline) RunAsync(f *model.CloudFile) {
+	go func() {
+		defer p.recoverFailed("pipeline", f.UploadUUID, f.UID)
+		_, _ = p.RunSync(context.Background(), f)
+	}()
 }
 
 // Reprocess deletes existing vectors then re-runs the pipeline.
@@ -116,10 +133,7 @@ func (p *Pipeline) Reprocess(ctx context.Context, uploadUUID string, uid int64) 
 		map[string]any{"vector_status": "pending"}); err != nil {
 		return "", err
 	}
-	go func() {
-		defer recoverLog("reprocess", uploadUUID)
-		_, _ = p.RunSync(context.Background(), f)
-	}()
+	p.RunAsync(f)
 	return taskID, nil
 }
 
@@ -130,6 +144,9 @@ func (p *Pipeline) RunSync(ctx context.Context, f *model.CloudFile) (int, error)
 	uploadUUID := f.UploadUUID
 	slog.Info("[CLOUD_PIPELINE] run start", "upload_uuid", uploadUUID,
 		"vectorizable", f.Vectorizable, "engine", p.engine != nil)
+
+	ctx, cancel := context.WithTimeout(ctx, pipelineTimeout)
+	defer cancel()
 
 	if !f.Vectorizable {
 		_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "not_supported"})
@@ -189,6 +206,11 @@ func (p *Pipeline) pushStatus(ctx context.Context, uid int64, uploadUUID, status
 	if p.rdb == nil {
 		return
 	}
+	if ctx.Err() != nil {
+		// The pipeline ctx may already be dead (timeout) — the terminal
+		// status push must still go out.
+		ctx = context.Background()
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"uid": uid, "upload_uuid": uploadUUID, "status": status,
 		"chunk_count": count, "error": errMsg, "ts": time.Now().Unix(),
@@ -196,10 +218,34 @@ func (p *Pipeline) pushStatus(ctx context.Context, uid int64, uploadUUID, status
 	_ = p.rdb.Publish(ctx, p.channel, payload)
 }
 
-func recoverLog(op, uploadUUID string) {
+// recoverFailed converts a goroutine panic into a failed status so the row
+// never sits in "processing" forever.
+func (p *Pipeline) recoverFailed(op, uploadUUID string, uid int64) {
 	if r := recover(); r != nil {
 		logErr("[CLOUD_PIPELINE] panic", op, uploadUUID, r)
+		_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "failed"})
 	}
+}
+
+// ReconcileStaleProcessing flips a row stuck in "processing" (crash, panic,
+// restart mid-run) to failed once it exceeds staleProcessingAfter, so the
+// user can retry instead of staring at an endless spinner. Mutates f in
+// place to reflect the new status.
+func (p *Pipeline) ReconcileStaleProcessing(f *model.CloudFile) {
+	if f.VectorStatus == nil || *f.VectorStatus != "processing" {
+		return
+	}
+	if f.UpdatedAt == nil || time.Since(*f.UpdatedAt) < staleProcessingAfter {
+		return
+	}
+	if err := p.files.UpdateMeta(p.db, f.UploadUUID, f.UID,
+		map[string]any{"vector_status": "failed"}); err != nil {
+		return
+	}
+	slog.Warn("[CLOUD_PIPELINE] stale processing reconciled to failed",
+		"upload_uuid", f.UploadUUID, "age", time.Since(*f.UpdatedAt).Round(time.Second))
+	failed := "failed"
+	f.VectorStatus = &failed
 }
 
 // DeleteChunks proxies to the engine (purge path; nil-safe).
