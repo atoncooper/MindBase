@@ -10,6 +10,10 @@ import (
 
 // VerificationRepo — verification_codes access (email/sms one-time codes,
 // MySQL-backed with per-code attempts counters).
+//
+// "used" is a nullable column with no DB default; rows written before the
+// explicit Used insert may hold NULL, so every unused-row filter is
+// NULL-tolerant ((used = 0 OR used IS NULL)).
 type VerificationRepo struct{}
 
 func NewVerificationRepo() *VerificationRepo { return &VerificationRepo{} }
@@ -18,7 +22,7 @@ func NewVerificationRepo() *VerificationRepo { return &VerificationRepo{} }
 // used — one live code per target/purpose at a time.
 func (r *VerificationRepo) InvalidateOlder(db *gorm.DB, target, purpose string) error {
 	return db.Model(&model.VerificationCode{}).
-		Where("target = ? AND purpose = ? AND used = 0", target, purpose).
+		Where("target = ? AND purpose = ? AND (used = 0 OR used IS NULL)", target, purpose).
 		Update("used", true).Error
 }
 
@@ -37,7 +41,7 @@ func (r *VerificationRepo) Create(db *gorm.DB, v *model.VerificationCode) error 
 // count is the single source of truth (no read-then-write race).
 func (r *VerificationRepo) Consume(db *gorm.DB, target, purpose, code string) (bool, error) {
 	res := db.Model(&model.VerificationCode{}).
-		Where("target = ? AND purpose = ? AND code = ? AND used = 0 AND expires_at > ?",
+		Where("target = ? AND purpose = ? AND code = ? AND (used = 0 OR used IS NULL) AND expires_at > ?",
 			target, purpose, code, time.Now()).
 		Update("used", true)
 	if res.Error != nil {
@@ -50,7 +54,7 @@ func (r *VerificationRepo) Consume(db *gorm.DB, target, purpose, code string) (b
 // or nil.
 func (r *VerificationRepo) FindLatestUnused(db *gorm.DB, target, purpose string) (*model.VerificationCode, error) {
 	var v model.VerificationCode
-	err := db.Where("target = ? AND purpose = ? AND used = 0 AND expires_at > ?",
+	err := db.Where("target = ? AND purpose = ? AND (used = 0 OR used IS NULL) AND expires_at > ?",
 		target, purpose, time.Now()).
 		Order("id DESC").First(&v).Error
 	if err != nil {
@@ -70,7 +74,7 @@ func (r *VerificationRepo) MarkUsed(db *gorm.DB, id int64) error {
 // FindLatestUnusedResetToken locates an unused, unexpired reset token.
 func (r *VerificationRepo) FindLatestUnusedResetToken(db *gorm.DB, token string) (*model.VerificationCode, error) {
 	var v model.VerificationCode
-	err := db.Where("purpose = ? AND code = ? AND used = 0 AND expires_at > ?",
+	err := db.Where("purpose = ? AND code = ? AND (used = 0 OR used IS NULL) AND expires_at > ?",
 		"reset_password", token, time.Now()).
 		Order("id DESC").First(&v).Error
 	if err != nil {
@@ -111,7 +115,7 @@ func (r *VerificationRepo) CountRecentByUID(db *gorm.DB, uid int64, since time.T
 // the service layer burns the code once attempts exceed the configured cap.
 func (r *VerificationRepo) BumpAttempts(db *gorm.DB, target, purpose, code string) (int, error) {
 	res := db.Model(&model.VerificationCode{}).
-		Where("target = ? AND purpose = ? AND code = ? AND used = 0", target, purpose, code).
+		Where("target = ? AND purpose = ? AND code = ? AND (used = 0 OR used IS NULL)", target, purpose, code).
 		Update("attempts", gorm.Expr("attempts + 1"))
 	if res.Error != nil {
 		return 0, res.Error
