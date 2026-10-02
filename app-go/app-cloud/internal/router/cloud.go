@@ -444,6 +444,11 @@ func getVideoDetail(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "File not found")
 			return
 		}
+		if d.Process != nil {
+			// Stale reconcile so the detail view stops spinning on a zombie
+			// "processing" row (crash / panic / hang mid-run).
+			d.Process.ReconcileStaleProcessing(f)
+		}
 		resp := toVideoDetail(f)
 		if f.FolderID != nil {
 			if folder, err := d.Folders.GetByID(d.DB, *f.FolderID, uid); err == nil && folder != nil {
@@ -578,8 +583,8 @@ func deleteVideo(d Deps) gin.HandlerFunc {
 	}
 }
 
-// triggerProcess — pipeline trigger (stub until C3 lands; keeps the endpoint
-// contract so the frontend stays functional).
+// triggerProcess — marks processing and returns; the pipeline runs in a
+// background goroutine (status updates arrive via the WS bridge).
 func triggerProcess(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid, ok := currentUID(c)
@@ -642,6 +647,11 @@ func getVideoStatus(d Deps) gin.HandlerFunc {
 			return
 		}
 		count := intFromPtr(f.VectorChunkCount)
+		if d.Process != nil {
+			// Stale reconcile: a row stuck in "processing" past the deadline
+			// (crash / panic / hang) flips to failed so the user can retry.
+			d.Process.ReconcileStaleProcessing(f)
+		}
 		// Read-time reconcile: DB says done but Milvus lost the vectors
 		// (collection rebuilt) → flip to failed so the user can reprocess.
 		if f.VectorStatus != nil && *f.VectorStatus == "done" && d.Process != nil {

@@ -193,6 +193,14 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("MINIO__SECRET_KEY"); v != "" {
 		cfg.Minio.SecretKey = v
 	}
+	// compose shares these under the bare MINIO__ names; APPCLOUD__-prefixed
+	// overrides below take precedence.
+	if v := get("MINIO__PUBLIC_ENDPOINT"); v != "" {
+		cfg.Minio.PublicEndpoint = v
+	}
+	if v := get("MINIO__PUBLIC_HOST"); v != "" {
+		cfg.Minio.PublicHost = v
+	}
 	if v := get("APISIX_CONSUMER_KEY"); v != "" {
 		cfg.Quota.MembershipAPIKey = v
 	}
