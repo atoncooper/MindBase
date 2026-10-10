@@ -59,6 +59,9 @@ services:
       - NEXT_PUBLIC_APISIX_HOST=nginx:80
       # MinIO 同源代理目标（rewrites 在服务端运行时读取，非 NEXT_PUBLIC）
       - MINIO_PROXY_DEST=http://nginx:80
+      # 分享链接对外地址（/api/share-base 运行时读取；空 = 公网IP探测 → 回退当前访问地址）
+      - SHARE_DOMAIN=${SHARE_DOMAIN:-}
+      - SHARE_PUBLIC_IP=${SHARE_PUBLIC_IP:-}
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -85,6 +88,9 @@ services:
       MB_CERT_APPBOARD_DIR: /out/app-board
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
+      # 分享域名（.env SHARE_DOMAIN）纳入 nginx 叶子证书 SAN，浏览器直开
+      # https://<域名> 不再报证书域名不匹配
+      MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
       - ./nginx/certs:/out/nginx
       - ./app-board/certs:/out/app-board
@@ -679,10 +685,13 @@ services:
       - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
+      # 提取码静态加密密钥（与 app-auth 共用同一 secrets 文件；密钥不进数据库）
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
     ports:
       - "127.0.0.1:${APP_CLOUD_PORT:-8007}:8007"
     volumes:
       - app_cloud_logs:/app/logs
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
     restart: unless-stopped
     networks:
       - mind-base-net

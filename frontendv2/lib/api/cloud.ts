@@ -211,6 +211,8 @@ export interface CloudShareView {
     id: number;
     fileId: number;
     hasCode: boolean;
+    /** 属主可见的明文提取码（legacy 哈希行为空 —— 用重设提取码换新码） */
+    extractionCode?: string;
     expiresAt: string | null;
     maxDownloads: number | null;
     viewCount: number;
@@ -228,6 +230,13 @@ export interface CloudShareInfoResponse {
     requiresCode: boolean;
     createdAt: string | null;
     expiresAt: string | null;
+    /** 浏览器设备证明挑战（签名 + token 绑定 + 10 分钟时效） */
+    challenge?: string;
+}
+
+export interface CloudAttestation {
+    fp: string;
+    ticket: string;
 }
 
 export interface CloudShareAccessResponse {
@@ -237,6 +246,15 @@ export interface CloudShareAccessResponse {
     fileName: string;
     fileSize: number;
     expiresIn: number;
+}
+
+/** 解析 app-cloud 公开端点的 {detail} 错误消息（401=需要/提取码错误 等） */
+async function publicShareError(res: Response, fallback: string): Promise<string> {
+    try {
+        const parsed = JSON.parse(await res.text()) as { detail?: unknown };
+        if (typeof parsed.detail === "string" && parsed.detail) return parsed.detail;
+    } catch {}
+    return fallback;
 }
 
 export function formatBytes(bytes: number): string {
@@ -408,12 +426,17 @@ export const cloudApi = {
             headers: getAuthHeaders(),
         }),
 
-    createShare: (uploadUuid: string, data: CloudShareCreateParams) =>
-        request<CloudShareView>(`/cloud/video/${uploadUuid}/share`, {
+    createShare: async (uploadUuid: string, data: CloudShareCreateParams) => {
+        // app-cloud 返回 snake_case（share_url/share_token），必须转换，
+        // 否则 share-dialog 拿到 undefined 生成无 token 的 /cloud/s/ 链接
+        // （已导致 301 循环 + 限流 503）。
+        const raw = await request<Record<string, unknown>>(`/cloud/video/${uploadUuid}/share`, {
             method: "POST",
             headers: getAuthHeaders(),
             body: JSON.stringify(data),
-        }),
+        });
+        return snakeToCamel<CloudShareView>(raw);
+    },
 
     listShares: async (uploadUuid: string) => {
         const raw = await request<{ shares: CloudShareView[]; total: number }>(
@@ -428,6 +451,64 @@ export const cloudApi = {
             method: "DELETE",
             headers: getAuthHeaders(),
         }),
+
+    /** 重设提取码（链接与 token 不变，仅换码）—— 解决"忘记提取码" */
+    updateShareCode: (shareId: number, code: string) =>
+        request<{ updated: boolean }>(`/cloud/shares/${shareId}/code`, {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ code }),
+        }),
+
+    // ── Public share endpoints（/cloud/s/*，匿名访客）──
+    // 必须同源相对路径：分享页访客来自任意域名/IP（链接用 SHARE_DOMAIN 生成），
+    // request() 的 API_BASE_URL 是构建期固化的部署地址，远程访客会打到自己
+    // 的 localhost。X-Requested-With 让 nginx 把 XHR 分发到 app-cloud。
+    getSharedInfo: async (token: string) => {
+        const res = await fetch(`/cloud/s/${encodeURIComponent(token)}`, {
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+        });
+        if (!res.ok) {
+            throw new Error(await publicShareError(res, "分享不存在或已失效"));
+        }
+        return (await res.json()) as CloudShareInfoResponse;
+    },
+
+    attestShared: async (token: string, body: { challenge: string; fingerprint: string }) => {
+        const res = await fetch(`/cloud/s/${encodeURIComponent(token)}/attest`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            throw new Error(await publicShareError(res, "设备证明失败"));
+        }
+        return (await res.json()) as { ticket: string; expiresIn: number };
+    },
+
+    accessShared: async (
+        token: string,
+        body: { code?: string; download?: boolean },
+        attest?: CloudAttestation,
+    ) => {
+        const res = await fetch(`/cloud/s/${encodeURIComponent(token)}/access`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                // 设备证明票据（attest 签发，绑定 token + 指纹，15 分钟时效）
+                ...(attest ? { "X-Fp": attest.fp, "X-Ticket": attest.ticket } : {}),
+            },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            throw new Error(await publicShareError(res, "请求失败"));
+        }
+        return (await res.json()) as CloudShareAccessResponse;
+    },
 
     // ── Helper: chunked upload ──
     /** Upload a file to the cloud drive with chunked multipart upload */

@@ -22,6 +22,7 @@ import { QuizList } from "./quiz-list";
 import { QuizTaking } from "./quiz-taking";
 import { QuizResult } from "./quiz-result";
 import { GenerateDialog } from "./generate-dialog";
+import { QuizShareDialog } from "./share-dialog";
 
 type View = "list" | "taking" | "result";
 
@@ -36,6 +37,8 @@ export function QuizView() {
     const [listRefreshKey, setListRefreshKey] = useState(0);
     const [loadingQuiz, setLoadingQuiz] = useState(false);
     const [quizError, setQuizError] = useState<string | null>(null);
+    // 分享弹窗：非空 = 打开并针对该题卷
+    const [shareQuizUuid, setShareQuizUuid] = useState<string | null>(null);
 
     const enterList = useCallback(() => {
         setView("list");
@@ -143,6 +146,7 @@ export function QuizView() {
                             setDialogOpen(true);
                         }}
                         onSelect={handleSelect}
+                        onShare={(quizUuid) => setShareQuizUuid(quizUuid)}
                         refreshKey={listRefreshKey}
                     />
                     <GenerateDialog
@@ -168,6 +172,7 @@ export function QuizView() {
                     answers={userAnswers}
                     onBack={enterList}
                     onRetry={handleRetry}
+                    onShare={() => setShareQuizUuid(activeQuiz.quiz_uuid)}
                 />
             )}
 
@@ -176,6 +181,16 @@ export function QuizView() {
                 <div className="fixed inset-0 z-[90] flex items-center justify-center bg-background/60">
                     <Loader2 className="h-7 w-7 animate-spin text-foreground" />
                 </div>
+            )}
+
+            {/* 测验分享弹窗（结果页与列表行均可触发） */}
+            {shareQuizUuid && (
+                <QuizShareDialog
+                    open
+                    quizUuid={shareQuizUuid}
+                    onChanged={() => setListRefreshKey((k) => k + 1)}
+                    onClose={() => setShareQuizUuid(null)}
+                />
             )}
         </>
     );

@@ -9,12 +9,14 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, BookOpen } from "lucide-react";
+import { Plus, BookOpen, Share2 } from "lucide-react";
 import { quizApi, type QuizHistoryItem } from "@/lib/api";
 
 interface QuizListProps {
     onNew: () => void;
     onSelect: (quizUuid: string) => void;
+    /** 打开该题卷的分享弹窗（仅 done 状态的行显示入口） */
+    onShare: (quizUuid: string) => void;
     /** bump to force a reload after a new quiz is generated */
     refreshKey: number;
 }
@@ -32,7 +34,7 @@ function formatTime(iso?: string | null): string {
     return sameYear ? `${md} ${hm}` : `${d.getFullYear()}年${md} ${hm}`;
 }
 
-export function QuizList({ onNew, onSelect, refreshKey }: QuizListProps) {
+export function QuizList({ onNew, onSelect, onShare, refreshKey }: QuizListProps) {
     const [items, setItems] = useState<QuizHistoryItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -104,14 +106,17 @@ export function QuizList({ onNew, onSelect, refreshKey }: QuizListProps) {
                         className="overflow-hidden rounded-2xl border border-border bg-surface"
                     >
                         {items.map((it, i) => (
-                            <button
+                            <div
                                 key={it.quiz_uuid + (it.submission_uuid ?? "")}
-                                type="button"
-                                onClick={() => onSelect(it.quiz_uuid)}
-                                className={`flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-border-subtle ${
+                                className={`flex w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-border-subtle ${
                                     i > 0 ? "border-t border-border-subtle" : ""
                                 }`}
                             >
+                                <button
+                                    type="button"
+                                    onClick={() => onSelect(it.quiz_uuid)}
+                                    className="flex min-w-0 flex-1 items-center gap-4 rounded-xl px-2 py-2 text-left"
+                                >
                                 <div className="min-w-0 flex-1">
                                     <p className="truncate text-[15px] font-medium text-foreground">
                                         {it.title || "未命名练习"}
@@ -141,7 +146,22 @@ export function QuizList({ onNew, onSelect, refreshKey }: QuizListProps) {
                                         </p>
                                     )}
                                 </div>
-                            </button>
+                                </button>
+                                {it.status === "done" && onShare && (
+                                    <button
+                                        type="button"
+                                        title="分享题卷"
+                                        aria-label="分享题卷"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onShare(it.quiz_uuid);
+                                        }}
+                                        className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                                    >
+                                        <Share2 className="h-4 w-4" />
+                                    </button>
+                                )}
+                            </div>
                         ))}
                     </motion.div>
                 )}

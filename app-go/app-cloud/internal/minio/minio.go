@@ -51,8 +51,13 @@ func endpointHost(endpoint string) string {
 	return u.Host
 }
 
-// resolvePublicBase mirrors the Python _resolve_public_base fallback chain:
-// public_endpoint → {scheme}://{public_host}/minio-proxy → http://localhost/minio-proxy.
+// resolvePublicBase resolves the browser-reachable base for presigned URLs:
+// public_endpoint → {scheme}://{public_host}/minio-proxy → "/minio-proxy"
+// (same-origin relative). The relative fallback is deployment-shape agnostic:
+// the presigned query is host-independent (nginx /minio-proxy/ re-writes the
+// upstream Host to minio:9000, which the signature actually covers), so it
+// works for visitors on localhost, the share domain, or the public IP alike.
+// The old http://localhost fallback broke every non-localhost visitor.
 func resolvePublicBase(cfg *config.MinioConfig) string {
 	public := strings.TrimRight(strings.TrimSpace(cfg.PublicEndpoint), "/")
 	if public != "" {
@@ -66,7 +71,7 @@ func resolvePublicBase(cfg *config.MinioConfig) string {
 		}
 		return scheme + "://" + host + "/minio-proxy"
 	}
-	return "http://localhost/minio-proxy"
+	return "/minio-proxy"
 }
 
 // CompletePart re-exports the SDK type so callers of
@@ -135,13 +140,19 @@ func (c *Client) AbortMultipartUpload(ctx context.Context, objectKey, uploadID s
 // when non-empty, is signed into the query (response-content-type) so the
 // object renders inline regardless of its stored Content-Type — required
 // under nginx nosniff for PDFs/media persisted as application/octet-stream.
-func (c *Client) PresignGet(ctx context.Context, objectKey, responseContentType string, expireSeconds int) (string, error) {
+// contentDisposition, when non-empty, is signed into the query
+// (response-content-disposition) — "attachment" forces browsers to download
+// instead of rendering attacker-controlled HTML/SVG on the app origin.
+func (c *Client) PresignGet(ctx context.Context, objectKey, responseContentType, contentDisposition string, expireSeconds int) (string, error) {
 	if expireSeconds <= 0 {
 		expireSeconds = c.cfg.PresignExpire
 	}
 	qp := url.Values{}
 	if responseContentType != "" {
 		qp.Set("response-content-type", responseContentType)
+	}
+	if contentDisposition != "" {
+		qp.Set("response-content-disposition", contentDisposition)
 	}
 	u, err := c.sdk.Presign(ctx, "GET", c.cfg.Bucket, objectKey,
 		time.Duration(expireSeconds)*time.Second, qp)

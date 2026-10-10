@@ -17,7 +17,8 @@ const PUBLIC_PREFIXES = [
   "/reset-password",
   "/oauth/wechat/callback",
   "/notes/shared",
-  "/quiz/share-view",
+  "/cloud/s",
+  "/quiz/shared",
 ];
 
 function isPublicPath(pathname: string): boolean {

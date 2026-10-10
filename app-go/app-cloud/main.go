@@ -147,6 +147,7 @@ func main() {
 	})
 	purgeSvc := service.NewPurgeService(db.DB, mc, mongoStore, pipe)
 	shareSvc := service.NewShareService(db.DB, mc, cfg.Minio.PresignExpire)
+	attestor := service.NewDeviceAttestor()
 
 	// Trash sweeper: physically purge soft-deleted files after N days.
 	// Reconciler: per-uid drift check (active users, rotating — never a
@@ -176,6 +177,7 @@ func main() {
 		Files:      repo.NewFileRepo(),
 		Folders:    repo.NewFolderRepo(),
 		Share:      shareSvc,
+		Attestor:   attestor,
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}

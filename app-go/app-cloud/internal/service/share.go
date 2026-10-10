@@ -72,8 +72,11 @@ func (s *ShareService) CreateShare(uid, fileID int64, code string,
 		MaxDownloads: maxDownloads,
 	}
 	if code != "" {
-		hashed := hashExtractionCode(code)
-		row.ExtractionCode = &hashed
+		stored, serr := s.storeExtractionCode(code)
+		if serr != nil {
+			return nil, serr
+		}
+		row.ExtractionCode = &stored
 	}
 	if expiresInDays > 0 {
 		exp := time.Now().AddDate(0, 0, expiresInDays)
@@ -136,7 +139,27 @@ func (s *ShareService) ResolveShare(token string, countView bool) (*shareFile, e
 	return &shareFile{Share: sh, File: &f}, nil
 }
 
-// CheckCode verifies an extraction code against the stored hash.
+// storeExtractionCode — 密钥就绪存 AES-GCM 密文（属主可随时查看），
+// 未配置密钥优雅降级为 legacy 哈希（不可查看，仅可校验/重设）。
+func (s *ShareService) storeExtractionCode(code string) (string, error) {
+	normalized := normalizeCode(code)
+	if encryptionAvailable() {
+		return encryptCode(normalized)
+	}
+	return hashExtractionCode(normalized), nil
+}
+
+// matchExtractionCode — 兼容两种存储格式（legacy 哈希 / v1 密文）。
+func matchExtractionCode(code, stored string) bool {
+	normalized := normalizeCode(code)
+	if isEncryptedCode(stored) {
+		plain, ok := decryptCode(stored)
+		return ok && plain == normalized
+	}
+	return hashExtractionCode(normalized) == stored
+}
+
+// CheckCode verifies an extraction code (legacy hash or v1 ciphertext).
 func (s *ShareService) CheckCode(sh *model.CloudShare, code string) error {
 	if sh.ExtractionCode == nil {
 		return nil // no code required
@@ -144,10 +167,42 @@ func (s *ShareService) CheckCode(sh *model.CloudShare, code string) error {
 	if code == "" {
 		return ErrShareCodeRequired
 	}
-	if hashExtractionCode(code) != *sh.ExtractionCode {
+	if !matchExtractionCode(code, *sh.ExtractionCode) {
 		return ErrShareCodeWrong
 	}
 	return nil
+}
+
+// ViewCode — 属主查看提取码明文。legacy 哈希行不可逆，返回空串
+// （前端引导"重设提取码"）。
+func (s *ShareService) ViewCode(sh *model.CloudShare) string {
+	if sh.ExtractionCode == nil {
+		return ""
+	}
+	if plain, ok := decryptCode(*sh.ExtractionCode); ok {
+		return plain
+	}
+	return ""
+}
+
+// SetCode — 属主重设/新增提取码（链接与 token 保持不变，仅换码）。
+func (s *ShareService) SetCode(uid, shareID int64, code string) error {
+	normalized := normalizeCode(code)
+	if len(normalized) < 3 || len(normalized) > 16 {
+		return errors.New("提取码长度需为 3-16 位")
+	}
+	sh, err := s.shares.GetOwned(s.db, shareID, uid)
+	if err != nil {
+		return err
+	}
+	if sh == nil {
+		return ErrNotFound
+	}
+	stored, serr := s.storeExtractionCode(normalized)
+	if serr != nil {
+		return serr
+	}
+	return s.shares.UpdateExtractionCode(s.db, shareID, stored)
 }
 
 // BuildAccess renders a presigned URL for the shared file (preview or
@@ -155,16 +210,19 @@ func (s *ShareService) CheckCode(sh *model.CloudShare, code string) error {
 func (s *ShareService) BuildAccess(ctx context.Context, sf *shareFile, download bool) (map[string]any, error) {
 	f := sf.File
 	viewMode := classifyViewMode(f.MimeType)
+	previewable := viewMode == "pdf" || viewMode == "video" || viewMode == "audio" || viewMode == "image"
 	ct := ""
-	if viewMode == "pdf" || viewMode == "video" || viewMode == "audio" || viewMode == "image" {
+	if previewable {
 		ct = f.MimeType
 	}
-	var disposition string
-	if download {
+	// 下载强制 attachment；不可在线预览的类型（html/text/svg 等）即便预览请求
+	// 也强制 attachment —— 否则恶意上传的 HTML 会被浏览器在应用同源下渲染
+	// （presigned URL 经 /minio-proxy 同源回源，存储型 XSS 面）。
+	disposition := ""
+	if download || !previewable {
 		disposition = fmt.Sprintf("attachment; filename*=UTF-8''%s", urlEscape(f.OriginalName))
 	}
-	_ = disposition
-	url, err := s.minio.PresignGet(ctx, f.ObjectKey, ct, s.shareExpire)
+	url, err := s.minio.PresignGet(ctx, f.ObjectKey, ct, disposition, s.shareExpire)
 	if err != nil {
 		return nil, err
 	}

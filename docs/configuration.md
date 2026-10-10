@@ -15,7 +15,7 @@
 |------|---------|---------|------|
 | app-ts | `app-ts/src/config/`（`default.yaml` + loader） | 无前缀（如 `MILVUS__*`、`REDIS__URL`、`MONGO__URI`） | `AI_GATEWAY__*`、`OCR__*` |
 | app-auth | `app-go/app-auth/internal/config/default.yaml`（embed 进二进制） | `APPAUTH__` | `EMAIL__*`/`SMS__*`/`WECHAT__*`/`REDIS__URL`；主密钥走 `_FILE` |
-| app-cloud | `app-go/app-cloud/internal/config/default.yaml` | `APPCLOUD__` | `MINIO__*`/`AI_GATEWAY__*`/`MILVUS__*`/`MONGO__URI`/`REDIS__URL` |
+| app-cloud | `app-go/app-cloud/internal/config/default.yaml` | `APPCLOUD__` | `MINIO__*`/`AI_GATEWAY__*`/`MILVUS__*`/`MONGO__URI`/`REDIS__URL`；提取码加密密钥走 `_FILE`（同 app-auth 主密钥） |
 | app-note | `app-go/app-note/internal/config/default.yaml` | `APPNOTE__` | `MONGO__URI`/`RDBMS__URL` |
 | app-bili | `app-go/app-bili/internal/config/default.yaml` | `APPBILI__` | `AI_GATEWAY__*`/`MONGO__URI`/`REDIS__URL`；主密钥走 `_FILE` |
 | app-quiz | `app-go/app-quiz/internal/config/default.yaml` | `APPQUIZ__` | `MONGO__URI`/`REDIS__URL`/`RDBMS__URL` |
@@ -25,7 +25,7 @@
 | app-task | 独立仓库 default.yaml（embed；本仓只放密钥） | `APPTASK__` | `APPTASK__RDBMS__URL`/`APPTASK__EMAIL__API_KEY` |
 | app-pay | `application.yaml` + docker/test profile 变体（Flyway 管 schema） | 经 `${VAR:默认}` 占位符 | `PAY_MYSQL_*`/`ALIPAY_*`/`PAY_TLS_*` |
 | app-pay-admin | `default.yaml`（embed）+ `-config` 覆盖层 | `PAYADMIN__` | `PAYADMIN__RDBMS__URL`/`PAYADMIN__WEBUI__TOKEN` |
-| frontend | 构建期 `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_APISIX_HOST`（compose 插值） | — | — |
+| frontend | 构建期 `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_APISIX_HOST`（compose 插值）；运行时 `SHARE_DOMAIN`/`SHARE_PUBLIC_IP`（分享域名链，见 [sharing.md](sharing.md)） | — | — |
 
 改某个服务的配置 = 改它的 YAML 默认值（committed）或在 `.env` / compose `environment:` 覆盖（敏感值）。**新增配置项必须同步该服务自己的 default.yaml**；仅密钥类才进 `.env.example`。
 

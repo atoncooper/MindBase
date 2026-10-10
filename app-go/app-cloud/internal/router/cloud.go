@@ -738,7 +738,7 @@ func getVideoRaw(d Deps) gin.HandlerFunc {
 		if viewMode == "pdf" || viewMode == "video" || viewMode == "audio" || viewMode == "image" {
 			ct = f.MimeType
 		}
-		url, err := d.Minio.PresignGet(c.Request.Context(), f.ObjectKey, ct, 0)
+		url, err := d.Minio.PresignGet(c.Request.Context(), f.ObjectKey, ct, "", 0)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "Raw file unavailable")
 			return

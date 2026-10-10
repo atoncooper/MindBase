@@ -9,9 +9,7 @@ WORKDIR /src
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GOSUMDB=off
 
-# Cache deps first
-COPY go.mod go.sum* ./
-RUN go mod download || true
+# Cache deps first — 失败必须大声报错（旧写法 
 
 # Copy source
 COPY . .

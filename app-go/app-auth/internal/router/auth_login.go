@@ -159,6 +159,49 @@ func (d Deps) recordLoginAttempt(uid *int64, identifier, ip, deviceID string, su
 	}
 }
 
+// attestChallenge — GET /auth/attest/challenge?purpose=... (public).
+// 签发用途绑定的设备证明挑战（10 分钟时效）。用途白名单：只覆盖烧钱的
+// 公开发码端点（register_send / phone_send），authed 端点不参与。
+func attestChallenge(d Deps) gin.HandlerFunc {
+	allowed := map[string]bool{"register_send": true, "phone_send": true}
+	return func(c *gin.Context) {
+		purpose := c.Query("purpose")
+		if !allowed[purpose] {
+			apiErr(c, http.StatusUnprocessableEntity, "purpose 不合法")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"challenge":  d.Attestor.Issue(purpose, time.Now()),
+			"expires_in": int(service.AttestChallengeTTL.Seconds()),
+		})
+	}
+}
+
+// attestDevice — POST /auth/attest (public): 页面 JS 用挑战计算临时指纹
+// （挑战绑定 → 非跨站追踪标识）换取短时效票据。诚实边界：指纹算法在公开
+// 前端代码里，此层挡裸脚本与默认无头浏览器；captcha + 限流是人机第二层。
+func attestDevice(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Challenge   string `json:"challenge"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || !service.ValidAttestFingerprint(body.Fingerprint) {
+			apiErr(c, http.StatusUnprocessableEntity, "参数不合法")
+			return
+		}
+		purpose, ok := d.Attestor.VerifyChallengeResolve(body.Challenge, time.Now())
+		if !ok {
+			apiErr(c, http.StatusPreconditionFailed, "设备证明已过期，请刷新页面重试")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"ticket":    d.Attestor.IssueTicket(purpose, body.Fingerprint, time.Now()),
+			"expires_in": service.AttestTicketTTLSecs,
+		})
+	}
+}
+
 // registerSendCode — POST /auth/register/email/send-code (public).
 func registerSendCode(d Deps) gin.HandlerFunc {
 	type reqBody struct {
@@ -175,6 +218,12 @@ func registerSendCode(d Deps) gin.HandlerFunc {
 		email, err := service.NormalizeEmailExported(req.Email)
 		if err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		// 设备证明闸门（防脚本刷邮件）：须持 attest 签发的 (purpose, 指纹) 票据
+		if fp, tk := c.GetHeader("X-Fp"), c.GetHeader("X-Ticket"); !service.ValidAttestFingerprint(fp) ||
+			!d.Attestor.VerifyTicket("register_send", fp, tk, time.Now()) {
+			apiErr(c, http.StatusPreconditionFailed, "请通过浏览器页面发送验证码")
 			return
 		}
 		captchaID, captchaCode := "", ""
@@ -283,6 +332,14 @@ func phoneSendCode(d Deps) gin.HandlerFunc {
 		if err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, err.Error())
 			return
+		}
+		// 设备证明闸门：仅公开 login 路径（bind/twofa 有登录态，不在此列）
+		if req.Purpose != "bind" && req.Purpose != "twofa" {
+			if fp, tk := c.GetHeader("X-Fp"), c.GetHeader("X-Ticket"); !service.ValidAttestFingerprint(fp) ||
+				!d.Attestor.VerifyTicket("phone_send", fp, tk, time.Now()) {
+				apiErr(c, http.StatusPreconditionFailed, "请通过浏览器页面发送验证码")
+				return
+			}
 		}
 		ip, _, _, _ := requestContext(c)
 		_ = ip

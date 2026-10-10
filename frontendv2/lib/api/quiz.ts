@@ -294,9 +294,25 @@ export const quizApi = {
             headers: getAuthHeaders(),
         }),
 
-    getSharedQuiz: (shareToken: string) =>
-        request<SharedQuizData>(`/quiz/shared/${encodeURIComponent(shareToken)}`).then((q) => ({
+    getSharedQuiz: async (shareToken: string) => {
+        // 公开分享页的访客来自任意域名/IP（链接用 SHARE_DOMAIN 生成），必须
+        // 同源相对路径：request() 的 API_BASE_URL 是构建期固化的部署地址，
+        // 远程访客会打到自己的 localhost。X-Requested-With 让 nginx 分发。
+        const res = await fetch(`/quiz/shared/${encodeURIComponent(shareToken)}`, {
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+        });
+        if (!res.ok) {
+            let detail = "";
+            try {
+                const parsed = JSON.parse(await res.text()) as { detail?: unknown };
+                if (typeof parsed.detail === "string") detail = parsed.detail;
+            } catch {}
+            throw new Error(detail || "分享链接无效或已失效");
+        }
+        const q = (await res.json()) as SharedQuizData;
+        return {
             ...q,
             questions: normalizeQuizQuestions(q.questions ?? []),
-        })),
+        };
+    },
 };

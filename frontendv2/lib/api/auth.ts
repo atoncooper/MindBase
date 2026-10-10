@@ -2,6 +2,7 @@
  * Auth API - B站扫码 / 邮箱密码登录 / token 管理.
  */
 import { request, requireAuthHeaders } from "./client";
+import { computeDeviceFingerprint, isAutomationEnv } from "@/lib/device-attest";
 
 export interface QRCodeResponse {
     qrcode_key: string;
@@ -22,6 +23,34 @@ export interface CaptchaResponse {
 export interface CaptchaValue {
     captcha_id: string;
     captcha_code: string;
+}
+
+/** 设备证明票据（attest 签发，绑定用途 + 指纹） */
+export interface DeviceAttestation {
+    fp: string;
+    ticket: string;
+}
+
+/**
+ * 设备证明（验证码发送等公开敏感端点的前置闸门）：
+ * 拉签名挑战 → 页面计算挑战绑定指纹 → 换 15 分钟票据。
+ * 自动化环境（headless 默认特征）直接抛错。
+ */
+export async function attestDevice(
+    purpose: "register_send" | "phone_send",
+): Promise<DeviceAttestation> {
+    if (isAutomationEnv()) {
+        throw new Error("检测到自动化环境，无法发送验证码");
+    }
+    const res = await request<{ challenge: string }>(
+        `/auth/attest/challenge?purpose=${encodeURIComponent(purpose)}`,
+    );
+    const fp = await computeDeviceFingerprint(res.challenge);
+    const ticket = await request<{ ticket: string }>("/auth/attest", {
+        method: "POST",
+        body: JSON.stringify({ challenge: res.challenge, fingerprint: fp }),
+    });
+    return { fp, ticket: ticket.ticket };
 }
 
 export interface WeChatQRConfig {
@@ -110,10 +139,11 @@ export const authApi = {
             }),
         }),
 
-    // 发送邮箱注册验证码（图形验证码门禁）
-    registerSendEmailCode: (email: string, captcha: CaptchaValue) =>
+    // 发送邮箱注册验证码（图形验证码 + 设备证明门禁）
+    registerSendEmailCode: (email: string, captcha: CaptchaValue, attest?: DeviceAttestation) =>
         request<{ message: string }>("/auth/register/email/send-code", {
             method: "POST",
+            headers: attest ? { "X-Fp": attest.fp, "X-Ticket": attest.ticket } : undefined,
             body: JSON.stringify({
                 email,
                 captcha_id: captcha.captcha_id,
@@ -128,12 +158,14 @@ export const authApi = {
             body: JSON.stringify(data),
         }),
 
-    // 发送短信验证码（login 公开 / bind、twofa 需登录态，图形验证码门禁）
+    // 发送短信验证码（login 公开需设备证明 / bind、twofa 需登录态，图形验证码门禁）
     phoneSendCode: (
         data: { phone: string; purpose: "login" | "bind" | "twofa" } & CaptchaValue,
+        attest?: DeviceAttestation,
     ) =>
         request<{ message: string }>("/auth/phone/send-code", {
             method: "POST",
+            headers: attest ? { "X-Fp": attest.fp, "X-Ticket": attest.ticket } : undefined,
             body: JSON.stringify(data),
         }),
 
