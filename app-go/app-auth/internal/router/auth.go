@@ -39,6 +39,8 @@ func registerAuth(e *gin.Engine, d Deps) {
 	g.GET("/wechat/qrcode", wechatQROptions(d))
 	g.POST("/wechat/login", wechatLogin(d))
 	g.POST("/login", passwordLogin(d))
+	g.GET("/attest/challenge", attestChallenge(d))
+	g.POST("/attest", attestDevice(d))
 	g.POST("/register/email/send-code", registerSendCode(d))
 	g.POST("/register/email", registerEmail(d))
 	g.POST("/phone/send-code", phoneSendCode(d))

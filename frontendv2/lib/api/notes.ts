@@ -168,6 +168,22 @@ export const notesApi = {
         }),
     revokeShare: (uuid: string) =>
         request<void>(`/notes/${uuid}/share`, { method: "DELETE" }),
-    getShared: (token: string) =>
-        requestCamel<NoteSharedView>(`/notes/shared/${token}`),
+    getShared: async (token: string) => {
+        // 公开阅读页的访客可能来自任意域名/IP（链接用 SHARE_DOMAIN 生成），
+        // 必须同源相对路径：request() 的 API_BASE_URL 是构建期固化的部署地址
+        // （如 https://localhost），远程访客会打到访客自己的 localhost。
+        // X-Requested-With 让 nginx 把 XHR 分发到网关而非页面路由。
+        const response = await fetch(`/notes/shared/${encodeURIComponent(token)}`, {
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+        });
+        if (!response.ok) {
+            let detail = "";
+            try {
+                const parsed = JSON.parse(await response.text()) as { detail?: unknown };
+                if (typeof parsed.detail === "string") detail = parsed.detail;
+            } catch {}
+            throw new Error(detail || "分享不存在或已失效");
+        }
+        return snakeToCamel<NoteSharedView>(await response.json());
+    },
 };

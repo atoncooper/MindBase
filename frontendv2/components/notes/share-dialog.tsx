@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Copy, Check, Link2, Loader2, Trash2, X, Globe } from "lucide-react";
 import { notesApi, type NoteShareInfo } from "@/lib/api/notes";
+import { buildShareUrl } from "@/lib/api/share";
 
 interface ShareDialogProps {
     open: boolean;
@@ -60,10 +61,22 @@ export function ShareDialog({
 
     if (typeof document === "undefined") return null;
 
-    const fullUrl =
-        shareToken && typeof window !== "undefined"
-            ? `${window.location.origin}/notes/shared/${shareToken}`
-            : "";
+    // 分享链接用部署域名/公网 IP（/api/share-base 运行时解析），不能用
+    // window.location.origin —— 创建者可能正通过 localhost 访问。
+    const [fullUrl, setFullUrl] = useState("");
+    useEffect(() => {
+        if (!open || !shareToken) {
+            setFullUrl("");
+            return;
+        }
+        let cancelled = false;
+        void buildShareUrl(`/notes/shared/${shareToken}`).then((u) => {
+            if (!cancelled) setFullUrl(u);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [open, shareToken]);
 
     const handleCreate = async () => {
         setBusy(true);

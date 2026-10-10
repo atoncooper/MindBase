@@ -10,8 +10,9 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, Copy, Link2, Loader2, X } from "lucide-react";
+import { Check, Copy, Link2, Loader2, Lock, X } from "lucide-react";
 import { cloudApi, type CloudShareView } from "@/lib/api/cloud";
+import { getShareBaseUrl } from "@/lib/api/share";
 import { Select } from "@/components/ui/select";
 
 interface ShareDialogProps {
@@ -52,9 +53,22 @@ function ShareDialogBody({
     const [useCode, setUseCode] = useState(false);
     const [code, setCode] = useState("");
     const [expiresInDays, setExpiresInDays] = useState(7);
-    const [created, setCreated] = useState<string | null>(null);
-    const [copied, setCopied] = useState(false);
+    const [maxDownloads, setMaxDownloads] = useState("");
+    const [copiedId, setCopiedId] = useState<number | string | null>(null);
+    // 重设提取码（legacy 哈希行不可见 → 换新码；链接与 token 不变）
+    const [resetCodeId, setResetCodeId] = useState<number | null>(null);
+    const [resetCodeValue, setResetCodeValue] = useState("");
     const [error, setError] = useState<string | null>(null);
+    // 分享域名/公网 IP（/api/share-base），空则回退当前访问地址
+    const [shareBase, setShareBase] = useState("");
+
+    useEffect(() => {
+        void getShareBaseUrl().then((base) => {
+            setShareBase(base || (typeof window !== "undefined" ? window.location.origin : ""));
+        });
+    }, []);
+
+    const fullUrlFor = (token: string) => `${shareBase}/cloud/s/${token}`;
 
     const refresh = useCallback(async () => {
         setLoading(true);
@@ -86,14 +100,35 @@ function ShareDialogBody({
                 setError("提取码至少 3 位");
                 return;
             }
+            const md = maxDownloads.trim();
+            if (md && (!Number.isFinite(Number(md)) || Number(md) < 1)) {
+                setError("下载次数上限需为正整数，或留空不限");
+                return;
+            }
             const res = await cloudApi.createShare(uploadUuid, {
                 ...(useCode && trimmed ? { code: trimmed } : {}),
                 expiresInDays,
+                ...(md ? { maxDownloads: Number(md) } : {}),
             });
-            setCreated(res.shareUrl ?? `/cloud/s/${res.shareToken ?? ""}`);
+            setCopiedId(res.id ?? null); // 新链接直接进入列表并高亮复制态
             await refresh();
         } catch (e) {
             setError(e instanceof Error ? e.message : "创建失败");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleResetCode = async (id: number) => {
+        if (resetCodeValue.trim().length < 3) return;
+        setBusy(true);
+        try {
+            await cloudApi.updateShareCode(id, resetCodeValue.trim());
+            setResetCodeId(null);
+            setResetCodeValue("");
+            await refresh();
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "重设失败");
         } finally {
             setBusy(false);
         }
@@ -109,11 +144,11 @@ function ShareDialogBody({
         }
     };
 
-    const fullUrl = created
-        ? typeof window !== "undefined"
-            ? `${window.location.origin}${created}`
-            : created
-        : "";
+    const copyLink = (id: number | string, url: string) => {
+        void navigator.clipboard.writeText(url);
+        setCopiedId(id);
+        setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1500);
+    };
 
     return (
         <motion.div
@@ -181,6 +216,17 @@ function ShareDialogBody({
                             ]}
                         />
                     </div>
+                    <div className="flex items-center gap-2 text-[13px] text-foreground">
+                        <span className="shrink-0 text-secondary">下载上限</span>
+                        <input
+                            type="number"
+                            min={1}
+                            value={maxDownloads}
+                            onChange={(e) => setMaxDownloads(e.target.value)}
+                            placeholder="不限"
+                            className="field h-8 flex-1 text-[13px]"
+                        />
+                    </div>
                     {error && <p className="text-[12px] text-red-500">{error}</p>}
                     <button
                         type="button"
@@ -191,27 +237,6 @@ function ShareDialogBody({
                         {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "创建分享链接"}
                     </button>
                 </div>
-
-                {/* Created link */}
-                {created && (
-                    <div className="mt-3 flex items-center gap-2 rounded-xl border border-border bg-background p-2.5">
-                        <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">
-                            {fullUrl}
-                        </span>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                void navigator.clipboard.writeText(fullUrl);
-                                setCopied(true);
-                                setTimeout(() => setCopied(false), 1500);
-                            }}
-                            className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[12px] text-accent hover:bg-border-subtle"
-                        >
-                            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                            {copied ? "已复制" : "复制"}
-                        </button>
-                    </div>
-                )}
 
                 {/* Active shares */}
                 <div className="mt-4">
@@ -225,29 +250,106 @@ function ShareDialogBody({
                     ) : shares.length === 0 ? (
                         <p className="py-2 text-center text-[12px] text-tertiary">暂无生效链接</p>
                     ) : (
-                        <ul className="max-h-44 space-y-1.5 overflow-y-auto">
-                            {shares.map((sh) => (
-                                <li
-                                    key={sh.id}
-                                    className="flex items-center justify-between rounded-lg bg-border-subtle/50 px-2.5 py-1.5 text-[12px]"
-                                >
-                                    <span className="min-w-0 truncate text-secondary">
-                                        {sh.expiresAt
-                                            ? `至 ${new Date(sh.expiresAt).toLocaleDateString()}`
-                                            : "永久"}{" "}
-                                        · 查看 {sh.viewCount} · 下载 {sh.downloadCount}
-                                        {sh.hasCode ? " · 有提取码" : ""}
-                                    </span>
-                                    <button
-                                        type="button"
-                                        onClick={() => void handleRevoke(sh.id)}
-                                        disabled={busy}
-                                        className="ml-2 shrink-0 text-[12px] text-red-500 hover:underline disabled:opacity-50"
+                        <ul className="max-h-52 space-y-2 overflow-y-auto">
+                            {shares.map((sh) => {
+                                const url = sh.shareToken ? fullUrlFor(sh.shareToken) : "";
+                                return (
+                                    <li
+                                        key={sh.id}
+                                        className="rounded-lg bg-border-subtle/50 px-2.5 py-1.5 text-[12px]"
                                     >
-                                        撤销
-                                    </button>
-                                </li>
-                            ))}
+                                        <div className="flex items-center gap-1.5">
+                                            <Link2 className="h-3 w-3 shrink-0 text-tertiary" />
+                                            <span className="min-w-0 flex-1 truncate text-foreground">
+                                                {url || "（无 token）"}
+                                            </span>
+                                            {url && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => copyLink(sh.id, url)}
+                                                    className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-accent hover:bg-accent-soft"
+                                                >
+                                                    {copiedId === sh.id ? (
+                                                        <Check className="h-3 w-3" />
+                                                    ) : (
+                                                        <Copy className="h-3 w-3" />
+                                                    )}
+                                                    {copiedId === sh.id ? "已复制" : "复制"}
+                                                </button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleRevoke(sh.id)}
+                                                disabled={busy}
+                                                className="shrink-0 text-[11px] text-red-500 hover:underline disabled:opacity-50"
+                                            >
+                                                撤销
+                                            </button>
+                                        </div>
+                                        {/* 提取码：明文可见可复制；legacy 哈希行 → 重设 */}
+                                        {sh.hasCode && (
+                                            <div className="mt-1.5 flex items-center gap-1.5">
+                                                {sh.extractionCode ? (
+                                                    <>
+                                                        <Lock className="h-3 w-3 shrink-0 text-tertiary" />
+                                                        <span className="font-mono text-[11px] tracking-wider text-foreground">
+                                                            {sh.extractionCode}
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => copyLink(`code-${sh.id}`, sh.extractionCode ?? "")}
+                                                            className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-accent hover:bg-accent-soft"
+                                                        >
+                                                            {copiedId === `code-${sh.id}` ? (
+                                                                <Check className="h-3 w-3" />
+                                                            ) : (
+                                                                <Copy className="h-3 w-3" />
+                                                            )}
+                                                            {copiedId === `code-${sh.id}` ? "已复制" : "复制"}
+                                                        </button>
+                                                    </>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setResetCodeId((cur) => (cur === sh.id ? null : sh.id))
+                                                        }
+                                                        className="text-[11px] text-warning hover:underline"
+                                                    >
+                                                        提取码不可见（旧格式）—— 点击重设
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+                                        {resetCodeId === sh.id && (
+                                            <div className="mt-1.5 flex gap-1.5">
+                                                <input
+                                                    value={resetCodeValue}
+                                                    onChange={(e) => setResetCodeValue(e.target.value)}
+                                                    placeholder="新提取码（3 位以上）"
+                                                    maxLength={16}
+                                                    className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-[12px] outline-none focus:border-accent"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    disabled={busy || resetCodeValue.trim().length < 3}
+                                                    onClick={() => void handleResetCode(sh.id)}
+                                                    className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent disabled:opacity-50"
+                                                >
+                                                    保存
+                                                </button>
+                                            </div>
+                                        )}
+                                        <div className="mt-1 text-[11px] text-tertiary">
+                                            {sh.expiresAt
+                                                ? `至 ${new Date(sh.expiresAt).toLocaleDateString()}`
+                                                : "永久"}
+                                            {" · "}
+                                            查看 {sh.viewCount} · 下载 {sh.downloadCount}
+                                        </div>
+                                    </li>
+                                );
+                            })}
                         </ul>
                     )}
                 </div>

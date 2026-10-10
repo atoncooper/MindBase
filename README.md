@@ -29,6 +29,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 | **交易/会员服务 app-pay**（订单状态机 / 渠道 / 审计 / 配置） | [`docs/app-pay.md`](docs/app-pay.md) |
 | **支付后台 app-pay-admin**（查询 / 补偿开通 / 鉴权） | [`docs/app-pay-admin.md`](docs/app-pay-admin.md) |
 | **桌面端 mind-base-desktop**（Tauri 2，全本地） | [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md) |
+| **公开分享体系**（笔记/云盘/测验分享链接、域名策略、设备证明、提取码） | [`docs/sharing.md`](docs/sharing.md) |
 
 ### 最简命令（TL;DR）
 

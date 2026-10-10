@@ -11,6 +11,7 @@
 
 import { sanitizeError } from "@/lib/error-utils";
 import { emitAppToast } from "@/lib/app-toast";
+import { readCachedBase, resolveApiBase, writeCachedBase } from "./deployment";
 
 // SSR base URL: Next.js server-side fetches (SSR/RSC) have no origin, so they
 // always need an absolute internal URL. Route them through nginx (never a
@@ -20,16 +21,26 @@ import { emitAppToast } from "@/lib/app-toast";
 // "nginx:80"; local dev falls back to "localhost:9080" (apisix on host/VM).
 const INTERNAL_API_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "localhost:9080";
 
-// Browser base URL: NEXT_PUBLIC_API_URL (set at build time) points the browser
-// straight at the gateway (e.g. http://localhost -> nginx:80), bypassing the
-// Next.js server entirely - its rewrites proxy buffers SSE, collapsing
-// token-by-token streaming into one bulk delivery. Unset = "" (same-origin).
+// Browser base URL: 运行时按部署链解析（域名 SHARE_DOMAIN → 公网 IP → 本机
+// 地址）。初始值为构建期 NEXT_PUBLIC_API_URL（保持与旧版一致的行为），模块
+// 加载后由 resolveApiBase 异步覆盖；请求都在调用时读取该变量，解析完成前的
+// 请求沿用旧值（与历史行为相同，无回归）。缓存见 lib/api/deployment.ts。
 // It must NOT be used for SSR: inside the frontend container "localhost" is
-// the Next server itself, not the gateway.
-export const API_BASE_URL =
+// the Next server itself, not the gateway - SSR 请求永远走内网 nginx。
+export let API_BASE_URL =
     typeof window !== "undefined"
         ? process.env.NEXT_PUBLIC_API_URL || ""
         : `http://${INTERNAL_API_HOST}`;
+
+if (typeof window !== "undefined") {
+    // 上一轮解析结果立即生效（避免每次首屏请求打旧地址），后台再校准。
+    const cached = readCachedBase();
+    if (cached !== null) API_BASE_URL = cached;
+    void resolveApiBase(process.env.NEXT_PUBLIC_API_URL || "").then((base) => {
+        API_BASE_URL = base;
+        writeCachedBase(base);
+    });
+}
 
 // Authorization header built from the bili_session token in localStorage.
 export function getAuthHeaders(): Record<string, string> {

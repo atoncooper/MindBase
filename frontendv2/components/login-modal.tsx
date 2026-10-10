@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
-import { authApi, type QRCodeResponse, type CaptchaValue, type UserInfo, type WeChatQRConfig, type AuthFeatures } from "@/lib/api";
+import { authApi, attestDevice, type QRCodeResponse, type CaptchaValue, type UserInfo, type WeChatQRConfig, type AuthFeatures } from "@/lib/api";
 import { CaptchaField } from "@/components/captcha-field";
 
 type Tab = "qr" | "wechat" | "password";
@@ -268,12 +268,17 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
     setPwError("");
     setSmsSending(true);
     try {
-      await authApi.phoneSendCode({
-        phone: phone.trim(),
-        purpose: "login",
-        captcha_id: captcha.captcha_id,
-        captcha_code: captcha.captcha_code,
-      });
+      // 设备证明（防脚本刷短信）：挑战 → 指纹 → 票据，人类无感
+      const attest = await attestDevice("phone_send");
+      await authApi.phoneSendCode(
+        {
+          phone: phone.trim(),
+          purpose: "login",
+          captcha_id: captcha.captcha_id,
+          captcha_code: captcha.captcha_code,
+        },
+        attest,
+      );
       setSmsCooldown(60);
     } catch (err) {
       setPwError(err instanceof Error ? err.message : "发送失败");
@@ -311,7 +316,9 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
     setPwError("");
     setRegSending(true);
     try {
-      await authApi.registerSendEmailCode(regEmail.trim(), captcha);
+      // 设备证明（防脚本刷邮件）：挑战 → 指纹 → 票据，人类无感
+      const attest = await attestDevice("register_send");
+      await authApi.registerSendEmailCode(regEmail.trim(), captcha, attest);
       setRegCooldown(60);
     } catch (err) {
       setPwError(err instanceof Error ? err.message : "发送失败");

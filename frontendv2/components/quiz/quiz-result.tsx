@@ -10,7 +10,7 @@
  * check/cross icon shape and weight, not by color.
  */
 import { motion } from "framer-motion";
-import { ArrowLeft, RefreshCw, Check, X } from "lucide-react";
+import { ArrowLeft, RefreshCw, Share2, Check, X } from "lucide-react";
 import type { QuizSetData, QuizSubmissionResult } from "@/lib/api";
 import { Markdown } from "@/components/markdown";
 
@@ -21,6 +21,8 @@ interface QuizResultProps {
     answers: Record<string, string | string[]>;
     onBack: () => void;
     onRetry: () => void;
+    /** 打开该题卷的分享弹窗 */
+    onShare: () => void;
 }
 
 type Answer = string | string[];
@@ -36,6 +38,7 @@ export function QuizResult({
     answers,
     onBack,
     onRetry,
+    onShare,
 }: QuizResultProps) {
     const pct =
         result.total_count > 0
@@ -166,6 +169,15 @@ export function QuizResult({
                 >
                     <RefreshCw className="h-4 w-4" />
                     再练一次
+                </button>
+                <button
+                    type="button"
+                    onClick={onShare}
+                    title="生成公开链接，任何人可在线查看这份题卷"
+                    className="btn-pill btn-ghost h-10 px-5 text-[14px]"
+                >
+                    <Share2 className="h-4 w-4" />
+                    分享
                 </button>
                 <button
                     type="button"

@@ -157,6 +157,7 @@ func main() {
 		RBAC:         rbacSvc,
 		Verification: verification,
 		Captcha:      captchaSvc,
+		Attestor:     service.NewDeviceAttestor(),
 		Throttle:     throttle,
 		IPGuard:      ipGuard,
 		RateLimits:   rateLimits,

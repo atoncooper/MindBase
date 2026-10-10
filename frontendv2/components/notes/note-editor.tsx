@@ -82,6 +82,9 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const serverUpdatedAtRef = useRef<string>(note.updatedAt);
     const latestRef = useRef({ title, content, uuid: note.uuid });
+    // Last-known saved (server) copy of the note. The hide/unload flush compares
+    // against it so a fully-saved note never writes a new draft.
+    const savedSnapshotRef = useRef({ title: note.title, content: note.contentMd });
 
     // Keep latest title/content for beforeunload flush.
     useEffect(() => {
@@ -97,12 +100,21 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
         setContent(note.contentMd);
         setStatus("idle");
         serverUpdatedAtRef.current = note.updatedAt;
+        savedSnapshotRef.current = { title: note.title, content: note.contentMd };
         setDraftPrompt(false);
         /* eslint-enable react-hooks/set-state-in-effect */
         let cancelled = false;
         void (async () => {
             const draft = await getDraft(note.uuid);
             if (cancelled || !draft) return;
+            // A draft identical to the server copy is residue from a completed
+            // save (e.g. written by an old flush) - drop it silently, never
+            // surface a bogus "恢复草稿" prompt.
+            const sameTitle = draft.title === undefined || draft.title === note.title;
+            if (sameTitle && draft.contentMd === note.contentMd) {
+                await clearDraft(note.uuid);
+                return;
+            }
             const noteTs = new Date(note.updatedAt).getTime();
             if (Number.isFinite(noteTs) && draft.savedAt > noteTs) {
                 setDraftPrompt(true);
@@ -142,6 +154,7 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
                     );
                     serverUpdatedAtRef.current = updated.updatedAt;
                     setStatus("saved");
+                    savedSnapshotRef.current = { title, content };
                     await clearDraft(uuid);
                     onChanged();
                     setTimeout(() => {
@@ -165,6 +178,15 @@ export function NoteEditor({ note, onChanged, onDelete, onShare, onBack }: NoteE
     useEffect(() => {
         const flush = () => {
             const { title: t, content: c, uuid } = latestRef.current;
+            const saved = savedSnapshotRef.current;
+            if (t === saved.title && c === saved.content) {
+                // Everything is already on the server - clear any stale draft
+                // instead of writing one. The old unconditional write stamped
+                // savedAt=now on fully-saved notes, so the next visit always
+                // saw draft.savedAt > updatedAt and prompted a bogus recovery.
+                void clearDraft(uuid);
+                return;
+            }
             void saveDraft(uuid, { contentMd: c, title: t, savedAt: Date.now() });
         };
         const onVis = () => {

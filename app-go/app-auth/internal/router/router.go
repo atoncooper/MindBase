@@ -23,6 +23,7 @@ type Deps struct {
 	RBAC         *service.RBACService
 	Verification *service.Verification
 	Captcha      *service.CaptchaService
+	Attestor     *service.DeviceAttestor
 	Throttle     *service.LoginThrottle
 	IPGuard      *service.FixedWindowLimiter
 	RateLimits   *service.RateLimits
@@ -137,7 +138,7 @@ func cors(cfg *config.Config) gin.HandlerFunc {
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Credentials", "true")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, If-Match")
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, If-Match, X-Fp, X-Ticket")
 		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)

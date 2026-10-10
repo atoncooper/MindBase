@@ -156,7 +156,11 @@ func (s *NoteService) buildDetail(ctx context.Context, db *gorm.DB, note *model.
 	}
 	if share != nil {
 		d.ShareToken = &share.ShareToken
-		d.ShareExpiresAt = &NaiveUTC{*share.ExpiresAt}
+		// 永久分享 expires_at 为 NULL —— 无条件解引用会让该笔记的详情接口
+		// 永久 500（nil pointer panic）。
+		if share.ExpiresAt != nil {
+			d.ShareExpiresAt = &NaiveUTC{*share.ExpiresAt}
+		}
 	}
 	return d, nil
 }

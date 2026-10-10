@@ -34,6 +34,7 @@ type Deps struct {
 	Files      *repo.FileRepo
 	Folders    *repo.FolderRepo
 	Share      *service.ShareService
+	Attestor   *service.DeviceAttestor
 	Reconciler *service.Reconciler
 }
 
@@ -101,7 +102,7 @@ func cors(cfg *config.Config) gin.HandlerFunc {
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Credentials", "true")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, If-Match")
+			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, If-Match, X-Fp, X-Ticket")
 		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)

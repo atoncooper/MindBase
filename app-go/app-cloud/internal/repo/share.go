@@ -61,6 +61,33 @@ func (r *ShareRepo) Revoke(db *gorm.DB, id, uid int64) error {
 	return nil
 }
 
+// GetOwned returns one of the owner's shares (any state) — for code reset.
+func (r *ShareRepo) GetOwned(db *gorm.DB, id, uid int64) (*model.CloudShare, error) {
+	var s model.CloudShare
+	err := db.Where("id = ? AND uid = ?", id, uid).First(&s).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &s, nil
+}
+
+// UpdateExtractionCode rewrites the stored extraction code (owner-checked).
+func (r *ShareRepo) UpdateExtractionCode(db *gorm.DB, id int64, stored string) error {
+	res := db.Model(&model.CloudShare{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"extraction_code": stored, "updated_at": time.Now()})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // IncrView / IncrDownload — atomic counters (share access analytics).
 func (r *ShareRepo) IncrView(db *gorm.DB, id int64) error {
 	return db.Model(&model.CloudShare{}).Where("id = ?", id).
