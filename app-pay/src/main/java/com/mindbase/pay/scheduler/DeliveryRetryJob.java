@@ -15,8 +15,9 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 /**
- * 交付补偿：PAID 停留超过 1 分钟（正常回调链路早已完成交付）→ 重试交付。
- * 与并发交付的竞争由 markDelivered 条件更新兜底，双跑不会重复顺延会员。
+ * Delivery compensation: PAID stuck for more than 1 minute (the normal callback path would have delivered long ago) -> retry delivery.
+ * Races with concurrent delivery are handled by the markDelivered conditional update, so a double run will not extend membership twice.
+ * Multiple instances are mutually excluded via {@link JobLease} (correctness is still guaranteed by conditional updates).
  */
 @Slf4j
 @Component
@@ -25,6 +26,7 @@ public class DeliveryRetryJob implements AdaptiveJob {
 
     private final PayOrderMapper orderMapper;
     private final DeliveryService deliveryService;
+    private final JobLease lease;
     private final Clock clock;
     private volatile boolean lastHadWork;
 
@@ -32,8 +34,12 @@ public class DeliveryRetryJob implements AdaptiveJob {
     public void run() {
         MDC.put(TraceIdFilter.TRACE_ID, "job-retry-" + UUID.randomUUID().toString().substring(0, 8));
         try {
+            if (!lease.tryAcquire("delivery-retry")) {
+                lastHadWork = false;
+                return;
+            }
             LocalDateTime now = LocalDateTime.now(clock);
-            // ORDER BY paid_at 与复合索引 (status, paid_at) 同序，免 filesort
+            // ORDER BY paid_at matches the composite index (status, paid_at), avoiding filesort
             var stuck = orderMapper.selectList(new LambdaQueryWrapper<PayOrder>()
                     .eq(PayOrder::getStatus, PayOrder.OrderStatus.PAID)
                     .lt(PayOrder::getPaidAt, now.minusMinutes(1))

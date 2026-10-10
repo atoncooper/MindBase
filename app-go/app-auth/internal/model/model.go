@@ -1,6 +1,6 @@
 // Package model mirrors the auth tables owned by app-auth in the shared
 // bilirag MySQL database. Column names/types MUST match the existing schema
-// (app/system.sql + app/models.py) exactly — the tables already hold live
+// (db/system.sql + app/models.py) exactly — the tables already hold live
 // data and the Python backend keeps read access to user_oauth.
 package model
 

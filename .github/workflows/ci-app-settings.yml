@@ -1,0 +1,38 @@
+name: CI - App Settings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-go/app-settings/**"
+      - ".github/workflows/ci-app-settings.yml"
+  pull_request:
+    paths:
+      - "app-go/app-settings/**"
+      - ".github/workflows/ci-app-settings.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-go/app-settings
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app-go/app-settings/go.mod
+          cache-dependency-path: app-go/app-settings/go.sum
+
+      - name: Gofmt check
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test -count=1 ./...
+
+      - name: Build
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/app-settings .

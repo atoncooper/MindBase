@@ -6,6 +6,7 @@
 
 ### Changed
 
+- **app-pay 升级 Java 21**：`java.version` 17→21（LTS），构建/运行镜像 temurin 17→21（`Dockerfile` + `Dockerfile.local`）、CI setup-java 同步。代码层扫描零不兼容（无内部 API / finalize / SecurityManager / 已移除 Thread API 依赖；`javax.sql`/`javax.xml` 为 JDK 自带模块不受影响），Boot 3.5 官方支持 21，BOM 管理的 Lombok/ByteBuddy 均兼容。JEP 400 下默认字符集已是 UTF-8，容器内 LANG/file.encoding 双保险保留无害。回滚 = revert 工具链四处，无 schema/数据影响。
 - **镜像发布切换标准 Docker Hub**：CI（docker-build）由 GHCR 改为发布 `atoncooper/mind-base-*`，矩阵从 4 个服务扩到 7 个（新增 app-auth / app-cloud / app-board，构建上下文对齐 compose）；compose、k8s 清单与 `.env.example` 中全部 `ghcr.io/atoncooper/mind-base-*` 引用同步改为 Docker Hub。需在 GitHub 仓库配置 secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` 后生效。app-board-mcp 的 Dockerfile 位于 `mcp/app-board-mcp/`，随下条一并补入矩阵。
 - **MinIO 镜像自托管（atoncooper/mind-base-minio）**：上游已将社区版 MinIO 从所有渠道下架——Docker Hub 仓库整体删除、`dl.min.io` 二进制全部 410、GitHub 仓库归档为"仅源码"，原固定 tag `minio/minio:RELEASE.2024-11-07T00-52-20Z` 永久无法拉取（全新主机 `docker compose up` 时这几个缺失镜像 pull 秒失败并连带取消其余镜像下载，报成一片 `No such image`）。新增 `scripts/minio.Dockerfile`，以最后一个仍发布官方二进制的 release（`RELEASE.2025-09-07T16-13-09Z`，GitHub release 资产直取）打包为 `atoncooper/mind-base-minio:latest`；compose/k8s/china/devops 四处引用同步替换。CI 矩阵扩至 9：另新增 certgen（`atoncooper/mind-base-certgen`，替代仅本地构建的 `mind-base-certgen`）。compose 全部自建镜像硬编码，`*_IMAGE` 环境变量包装移除（`.env.example` 同步）。
 

@@ -1,8 +1,0 @@
-# Test artifacts
-reports/
-data/auth.json
-.env
-__pycache__/
-*.pyc
-.pytest_cache/
-.allure/

@@ -63,7 +63,7 @@ quota:
   # tier → storage quota (bytes). Lookup: app-pay /internal/pay/membership/{uid}
   # via APISIX key-auth; fail-closed → free tier when unreachable.
   free: 10737418240          # 10 GiB
-  vip: 6597069766656         # 6 TiB
+  vip: 10995116277760        # 10 TiB
   svip: 65970697666560       # 60 TiB
   membership_base_url: http://apisix:9080/internal/pay  # key-auth protected
   membership_api_key: ""     # inject via APISIX_CONSUMER_KEY (.env)

@@ -17,9 +17,11 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
- * 请求级 traceId：贯穿 控制器→服务→Mapper→渠道适配器 的所有日志（logback pattern 引 %X{traceId}）。
- * 优先复用网关/上游传入的 X-Trace-Id（白名单校验防日志注入），否则生成；
- * 响应回写 X-Trace-Id 便于把用户反馈与日志对上。同时输出一条访问日志（耗时/状态码）。
+ * Request-level traceId: threaded through all logs from controller -> service -> Mapper -> channel adapter
+ * (the logback pattern references %X{traceId}).
+ * Prefers to reuse the X-Trace-Id passed in by the gateway/upstream (allowlist-validated to prevent log injection),
+ * otherwise generates one;
+ * the response echoes X-Trace-Id so user feedback can be matched against logs. Also emits one access log (latency/status).
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -48,7 +50,7 @@ public class TraceIdFilter extends OncePerRequestFilter {
                         response.getStatus(), System.currentTimeMillis() - start);
             }
         } finally {
-            // MDC.clear() 会连带清掉链内后续写入的键，过滤器是最外层，安全
+            // MDC.clear() would also clear keys written later in the chain; this filter is the outermost, so it is safe
             response.setHeader(HEADER, traceId);
             MDC.clear();
         }

@@ -5,22 +5,29 @@ import com.mindbase.pay.model.PayOrder;
 import java.util.Map;
 
 /**
- * 支付渠道适配器。M2 接入支付宝；M2.5 接微信 V3 时按同一接口新增实现即可，
- * 订单/交付/幂等/补偿逻辑不感知具体渠道。
+ * Payment channel adapter. M2 adds Alipay; adding WeChat V3 in M2.5 only needs another implementation of this
+ * interface, since the order/delivery/idempotency/compensation logic is channel-agnostic.
  */
 public interface PayChannelAdapter {
 
     PayOrder.PayChannel channel();
 
-    /** 渠道是否已启用（配置齐全）。未启用的渠道在 requireAdapter 处被拒绝。 */
+    /** Whether the channel is enabled (fully configured). Disabled channels are rejected at requireAdapter. */
     boolean enabled();
 
     /**
-     * 渠道下单，返回前端支付参数（支付宝当面付 = {type:alipay_qr, qrCode}）。
-     * precreate 幂等（同一 orderNo 返回同一二维码），可用于重取码。
+     * Places the order at the channel and returns the frontend payment params
+     * (Alipay face-to-face = {type:alipay_qr, qrCode}).
+     * precreate is idempotent (the same orderNo returns the same QR), so it can be used to re-fetch the code.
      */
     Map<String, Object> createPayment(PayOrder order);
 
-    /** 主动查单（掉单补偿主路径）。 */
+    /** Active order query (the main path for missed-payment compensation). */
     ChannelQueryResult queryOrder(PayOrder order);
+
+    /**
+     * Channel refund (M4 reversal). Implementations must be idempotent: repeated calls for the same order must not
+     * produce a second payout (Alipay passes out_request_no; Mock succeeds directly).
+     */
+    RefundResult refund(PayOrder order, String reason);
 }

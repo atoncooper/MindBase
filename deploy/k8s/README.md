@@ -1,8 +1,12 @@
 # MindBase — Kubernetes 部署
 
 本目录将 `docker-compose.yml` 的完整拓扑（4×MySQL、Redis、Mongo、Milvus+etcd、
-MinIO、Neo4j、backend/frontend/app-task/app-pay/app-board/app-pay-admin、
-APISIX、Higress、nginx）等价移植为 k8s 清单。
+MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 六服务
+（auth/cloud/note/bili/quiz/kg/settings）、app-board + 三个 MCP、app-task、
+app-pay/app-pay-admin）等价移植为 k8s 清单。
+
+> ⚠️ Python backend 已于 2026-10-06 退役（见 docs/python-decommission.md）——
+> 旧 `backend.yaml` 已删除，app-ts 沿用其 8000 端口与网关路由语义。
 
 **核心设计：所有 Service 名称与 compose 服务名完全一致**
 （`mysql`/`redis`/`mongo`/`milvus`/`minio`/`apisix`/`higress`/`nginx`/…），
@@ -43,7 +47,33 @@ kubectl -n mind-base create secret generic app-board-certs \
   --from-file=dev-ca.crt=app-board/certs/dev-ca.crt \
   --from-file=server.crt=app-board/certs/server.crt \
   --from-file=server.key=app-board/certs/server.key
+
+# ⑤ 主加密密钥（SESSDATA 解密;app-auth/app-bili 经 _FILE 约定读
+#    /run/secrets/api_key_encryption_key——.env 里的 *_FILE 宿主相对路径
+#    在容器内无效,清单中的 env 覆盖会指向此挂载路径）
+kubectl -n mind-base create secret generic api-key-encryption-key \
+  --from-file=api_key_encryption_key=secrets/api_key_encryption_key
 ```
+
+## 1b. 一次性创建 ConfigMap（静态配置文件）
+
+> kustomize 的 load restrictor 禁止引用目录外文件（kubectl ≥1.36 也已拒绝
+> `loadRestrictions: LoadRestrictionsNone`），所以这三份 ConfigMap 与 Secret
+> 一样用 kubectl 从仓库根文件创建，**必须在 `apply -k` 之前完成**：
+
+```bash
+kubectl -n mind-base create configmap mysql-init-sql \
+  --from-file=system.sql=db/system.sql
+kubectl -n mind-base create configmap apisix-config \
+  --from-file=config.yaml=apisix/config.yaml \
+  --from-file=apisix.yaml=apisix/apisix.yaml
+kubectl -n mind-base create configmap nginx-conf \
+  --from-file=nginx.conf=nginx/nginx.conf \
+  --from-file=locations.conf=nginx/locations.conf
+```
+
+更新流程：改仓库源文件后重跑对应 `create configmap --dry-run=client -o yaml | kubectl apply -f -`，
+再 `kubectl -n mind-base rollout restart deploy/<mysql|apisix|nginx>`。
 
 `.env` 改动后需同步：`kubectl -n mind-base delete secret mindbase-env && 重新 create`，
 再 `kubectl -n mind-base rollout restart deploy`。
@@ -56,7 +86,7 @@ kubectl -n mind-base get pods -w
 ```
 
 启动顺序由各 Deployment 的 **initContainer 等待探针**保证
-（backend 等 mysql/mongo/redis 就绪、apisix 等 etcd/backend、nginx 等四个上游…），
+（app-go/app-ts 各等 mysql/mongo/redis/milvus/neo4j 就绪、apisix 等 etcd、nginx 等上游…），
 无需手工排序。
 
 ## 3. 部署后初始化（一次性）
@@ -64,7 +94,7 @@ kubectl -n mind-base get pods -w
 | 事项 | 操作 |
 |------|------|
 | Higress 控制台 | `kubectl -n mind-base port-forward svc/higress 18081:8001` → http://127.0.0.1:18081 初始化 admin、配 Provider（供应商真实 key 只在这里）/ Consumer `mindbase-backend`(BEARER) / 路由 `/v1`、`/api/v1`、`/api-ws`；**modelMapping 保持空透传** |
-| 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart backend |
+| 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart deploy/app-ts deploy/app-cloud deploy/app-bili |
 | app-pay-admin | `kubectl -n mind-base port-forward svc/app-pay-admin 8003:8003` → https://127.0.0.1:8003（种子账户 admin / app-pay-admin，首登改密） |
 | 入口地址 | nginx Service 是 LoadBalancer：本地集群直接用分配的地址；云上绑域名 + 正式证书（更新 nginx-tls Secret 后 restart nginx） |
 
@@ -76,15 +106,16 @@ kubectl -n mind-base get pods -w
 | redis-commander / mongo-express | `--profile tools` | **未移植**（用 port-forward + 本地工具替代） |
 | app-board 证书共享 | 宿主目录 `./app-board/certs` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-board，dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
 | app-pay TLS | 宿主目录 `./app-pay/certs` | Secret `app-pay-tls`（ca.crt 同时供 app-task 委托回调校验） |
-| MySQL 建表脚本 | 宿主 `app/system.sql` | ConfigMap `mysql-init-sql`（kustomize generator，改 SQL 后 apply 重建） |
-| APISIX 路由 | 宿主 `apisix/*.yaml` | ConfigMap `apisix-config`（subPath 挂载；改路由后 `kubectl -n mind-base rollout restart deploy/apisix`） |
+| MySQL 建表脚本 | 宿主 `db/system.sql` | ConfigMap `mysql-init-sql`（§1b kubectl 创建，改 SQL 后重建 + restart mysql） |
+| APISIX 路由 | 宿主 `apisix/*.yaml` | ConfigMap `apisix-config`（subPath 挂载；改路由后重建 ConfigMap + `rollout restart deploy/apisix`） |
 | nginx 配置 | 宿主 `nginx/*.conf` | ConfigMap `nginx-conf`（subPath；同上 restart） |
 | Higress 版本 | `:latest` + 可选 digest 钉死 | 同左；生产建议把 Deployment 的 image 改成 `@sha256:` 钉死 |
-| 数据持久化 | named volumes | PVC（mysql 10Gi×3、mongo 10Gi、redis 5Gi、etcd 5Gi、minio 20Gi、milvus 20Gi、neo4j 10Gi、higress 5Gi、backend-data 5Gi）；日志与 nginx 缓存为 emptyDir |
+| 数据持久化 | named volumes | PVC（mysql 10Gi×3、mongo 10Gi、redis 5Gi、etcd 5Gi、minio 20Gi、milvus 20Gi、neo4j 10Gi、higress 5Gi）；服务日志与 nginx 缓存为 emptyDir（backend-data 随 backend 退役删除） |
 
 探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
 redis-cli ping / etcdctl endpoint health / minio health/live / backend /health）；
-无 HTTP 健康端点的 TLS 服务（app-pay/app-board/app-pay-admin）用 tcpSocket 探活。
+无 HTTP 健康端点的 TLS 服务（app-pay/app-board/app-pay-admin）用 tcpSocket 探活；
+app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。
 
 ## 5. 日常运维
 
@@ -92,11 +123,11 @@ redis-cli ping / etcdctl endpoint health / minio health/live / backend /health�
 # 看状态
 kubectl -n mind-base get pods,svc,pvc
 # 日志
-kubectl -n mind-base logs deploy/backend -f
+kubectl -n mind-base logs deploy/app-ts -f
 # 改 APISIX 路由：编辑 apisix/apisix.yaml 后
 kubectl apply -k deploy/k8s && kubectl -n mind-base rollout restart deploy/apisix
-# 扩容 backend（无状态，可扩；注意 Milvus/DB 连接数）
-kubectl -n mind-base scale deploy/backend --replicas=2
+# 扩容 app-ts（无状态，可扩；注意 Milvus/DB 连接数与任务账本并发）
+kubectl -n mind-base scale deploy/app-ts --replicas=2
 ```
 
 ## 6. 未覆盖（后续按需）

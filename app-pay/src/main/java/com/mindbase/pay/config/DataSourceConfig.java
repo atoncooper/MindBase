@@ -12,24 +12,25 @@ import javax.sql.DataSource;
 import java.time.Clock;
 
 /**
- * 数据源从 pay.rdbms 构建（而非 spring.datasource），
- * 保持 PAY__RDBMS__URL 与 app-task 的 APPTASK__RDBMS__URL 同形契约。
+ * The data source is built from pay.rdbms (rather than spring.datasource),
+ * keeping the PAY__RDBMS__URL contract identical in shape to app-task's APPTASK__RDBMS__URL.
  *
- * <p>⚠️ DataSource 为手动构建，spring.datasource.hikari.* 这类 yaml 属性对本 bean 不生效，
- * 连接池参数必须代码化在此；TimeoutExecutionQueue 的 worker 数（pay.job.executor-workers）
- * 锚定本池大小，并在下方以启动断言强制（配置漂移宁可拒绝启动）。
+ * <p>⚠️ The DataSource is built manually, so yaml properties like spring.datasource.hikari.* have no
+ * effect on this bean; connection pool parameters must be coded here; TimeoutExecutionQueue's worker count
+ * (pay.job.executor-workers) is anchored to this pool size and enforced below with a startup assertion
+ * (configuration drift is better refused at startup).
  */
 @Configuration
 public class DataSourceConfig {
 
-    /** 固定池大小：8 个 executor worker 之外，仍须为兜底 job / web 请求留余量。 */
+    /** Fixed pool size: beyond the 8 executor workers, headroom must remain for fallback jobs / web requests. */
     private static final int POOL_SIZE = 10;
 
     @Bean
     @Primary
     public DataSource dataSource(PayProperties props) {
-        // 池自守断言：executor 在途 UPDATE 恒 ≤ workers，workers 超过池的安全上限 =
-        // 排队挤占 web/job 连接。与 EnvSummaryRunner 同一原则：资金系统宁可起不来。
+        // Pool self-guard assertion: in-flight executor UPDATEs are always <= workers; workers exceeding the pool's safe
+        // limit means queuing crowds out web/job connections. Same principle as EnvSummaryRunner: a fund system should fail to start rather than run unsafe.
         int workers = props.job().executorWorkers();
         if (workers > POOL_SIZE - 2) {
             throw new IllegalStateException(("[PAY] unsafe_config: pay.job.executor-workers=%d "
@@ -47,23 +48,23 @@ public class DataSourceConfig {
         ds.setPoolName("pay-hikari");
         ds.setMaximumPoolSize(POOL_SIZE);
         ds.setMinimumIdle(POOL_SIZE);
-        // 池打满快速失败（默认 30s 会把瞬时超载放大成 HTTP 堆积），调用方本就有重试语义
+        // Fail fast when the pool is saturated (the default 30s turns transient overload into HTTP pile-up); callers already have retry semantics
         ds.setConnectionTimeout(5_000);
-        // 资金服务必须有泄漏告警（纯诊断：超时未归还的连接打 WARN，不影响行为）
+        // A fund service must have leak warnings (diagnostic only: connections not returned within the timeout log WARN, without affecting behavior)
         ds.setLeakDetectionThreshold(30_000);
-        // 远小于 MySQL wait_timeout（默认 8h），防网络设备掐断产生的半开连接
+        // Far below MySQL wait_timeout (default 8h), preventing half-open connections caused by network devices dropping them
         ds.setMaxLifetime(1_800_000);
         return ds;
     }
 
-    /** OrderService 的程序化事务模板（显式声明，不依赖自动装配的有无）。 */
+    /** Programmatic transaction template for OrderService (explicitly declared, not relying on autoconfiguration). */
     @Bean
     public TransactionTemplate transactionTemplate(PlatformTransactionManager txManager) {
         return new TransactionTemplate(txManager);
     }
 
     /**
-     * 时钟集中注入：业务时间（订单超时/会员顺延）可测试、时区统一 Asia/Shanghai。
+     * Centralized clock injection: business time (order timeout/membership extension) is testable and the time zone is uniformly Asia/Shanghai.
      */
     @Bean
     public Clock clock() {

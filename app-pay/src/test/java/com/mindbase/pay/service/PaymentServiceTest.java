@@ -2,6 +2,7 @@ package com.mindbase.pay.service;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.mindbase.pay.common.PayAuditLogger;
+import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.mapper.PayCallbackLogMapper;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayCallbackLog;
@@ -27,7 +28,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 支付回调幂等：条件更新胜负、金额比对、关单后通知、重复通知。 */
+/** Payment callback idempotency: conditional-update outcome, amount comparison, notification after close, duplicate notification. */
 @ExtendWith(MockitoExtension.class)
 class PaymentServiceTest {
 
@@ -38,14 +39,33 @@ class PaymentServiceTest {
     @Mock
     private DeliveryService deliveryService;
     @Mock
+    private RefundService refundService;
+    @Mock
+    private MembershipService membershipService;
+    @Mock
     private PayAuditLogger audit;
+    @Mock
+    private PayMetrics metrics;
 
     private PaymentService service;
 
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
-        service = new PaymentService(orderMapper, callbackLogMapper, deliveryService, audit, clock);
+        service = new PaymentService(orderMapper, callbackLogMapper, deliveryService, refundService,
+                membershipService, audit, metrics, clock);
+    }
+
+    @Test
+    void missingAmountIsRejectedNotSilentlyAccepted() {
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(order(PayOrder.OrderStatus.CREATED));
+
+        assertThatThrownBy(() -> service.handleChannelPaid("PO1", PayOrder.PayChannel.ALIPAY,
+                "ALI-1", null, "{}", PayCallbackLog.SignatureResult.VALID, null, null))
+                .isInstanceOf(com.mindbase.pay.common.ApiException.class)
+                .hasMessageContaining("amount");
+        verify(orderMapper, never()).markPaid(anyString(), anyString(), any());
     }
 
     private PayOrder order(PayOrder.OrderStatus status) {
@@ -65,9 +85,9 @@ class PaymentServiceTest {
         when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(1);
 
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
-                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED);
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
-        // 交付成功后内存回填 DELIVERED，无需回查
+        // After successful delivery the in-memory object is filled with DELIVERED, no re-query needed
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService).deliverOrder(any(PayOrder.class));
         verify(callbackLogMapper, times(1)).insert(any(PayCallbackLog.class));
@@ -75,7 +95,7 @@ class PaymentServiceTest {
 
     @Test
     void duplicateWhilePaidTriggersHealingDelivery() {
-        // 回调重发 = 自愈触发器：交付中断（卡 PAID）时借重发立即补交付
+        // Duplicate callback = self-healing trigger: when delivery was interrupted (stuck in PAID), the resend immediately retries delivery
         when(orderMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(order(PayOrder.OrderStatus.PAID))
                 .thenReturn(order(PayOrder.OrderStatus.PAID))
@@ -83,7 +103,7 @@ class PaymentServiceTest {
         when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(0);
 
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
-                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED);
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService).deliverOrder(any(PayOrder.class));
@@ -96,7 +116,7 @@ class PaymentServiceTest {
         when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(0);
 
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
-                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED);
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService, never()).deliverOrder(any(com.mindbase.pay.model.PayOrder.class));
@@ -112,9 +132,9 @@ class PaymentServiceTest {
         when(orderMapper.markPaidAfterClose(eq("PO1"), anyString(), any())).thenReturn(1);
 
         PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
-                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED);
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
 
-        // 钱已收是事实：关单后到账自动补单 reopen 并交付，M4 退款路径负责逆向
+        // The money was received: payment after close automatically reopens and delivers the order; the M4 refund path handles the reverse
         assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
         verify(deliveryService).deliverOrder(any(PayOrder.class));
         verify(callbackLogMapper, times(1)).insert(any(PayCallbackLog.class));
@@ -126,7 +146,7 @@ class PaymentServiceTest {
                 .thenReturn(order(PayOrder.OrderStatus.CREATED));
 
         assertThatThrownBy(() -> service.handleChannelPaid("PO1", PayOrder.PayChannel.WECHAT_PAY,
-                "WX-1", 999L, "{}", PayCallbackLog.SignatureResult.VALID))
+                "WX-1", 999L, "{}", PayCallbackLog.SignatureResult.VALID, null, null))
                 .isInstanceOf(com.mindbase.pay.common.ApiException.class)
                 .hasMessageContaining("amount does not match");
         verify(orderMapper, never()).markPaid(anyString(), anyString(), any());
@@ -138,7 +158,7 @@ class PaymentServiceTest {
         when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(null);
 
         assertThatThrownBy(() -> service.handleChannelPaid("PO404", PayOrder.PayChannel.MOCK,
-                "MOCK-1", null, "{}", PayCallbackLog.SignatureResult.SKIPPED))
+                "MOCK-1", null, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null))
                 .isInstanceOf(com.mindbase.pay.common.ApiException.class)
                 .hasMessageContaining("not found");
         verify(orderMapper, never()).markPaid(anyString(), anyString(), any());

@@ -12,12 +12,12 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 资金审计日志：独立 JSONL 文件（logback PAY_AUDIT logger → logs/pay-audit.jsonl，保留 365 天），
- * 与运行日志分离，专供对账/客诉取证/合规审计。
+ * Fund audit log: a dedicated JSONL file (logback PAY_AUDIT logger -> logs/pay-audit.jsonl, retained 365 days),
+ * separate from runtime logs, used for reconciliation/customer-complaint forensics/compliance audits.
  *
- * 原则：只记资金事实（谁、哪笔、多少钱、什么状态），不记敏感密钥；
- * 每条自带 ts + trace_id + uid（MDC），可与运行日志互相关联。
- * 用法：audit("ORDER_PAID", "order_no", po, "amount_cents", 1800)——kv 成对传入。
+ * Principle: record only fund facts (who, which transaction, how much, what status), never sensitive secrets;
+ * every entry carries ts + trace_id + uid (MDC) so it can be correlated with runtime logs.
+ * Usage: audit("ORDER_PAID", "order_no", po, "amount_cents", 1800) -- key/value pairs passed in pairs.
  */
 @Component
 public class PayAuditLogger {

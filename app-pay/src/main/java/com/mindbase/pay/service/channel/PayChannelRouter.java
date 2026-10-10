@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/** 渠道注册表：按 PayChannel 找适配器；未启用/未实现的渠道统一拒绝。 */
+/** Channel registry: finds an adapter by PayChannel; disabled/unimplemented channels are uniformly rejected. */
 @Component
 public class PayChannelRouter {
 
@@ -26,5 +26,14 @@ public class PayChannelRouter {
             throw ApiException.badRequest("CHANNEL_NOT_SUPPORTED", "Payment channel not supported yet");
         }
         return adapter;
+    }
+
+    /** All channel adapters are registered at startup; only currently enabled ones are returned here for the frontend to render payment methods. */
+    public java.util.List<PayOrder.PayChannel> availableChannels() {
+        return adapters.values().stream()
+                .filter(PayChannelAdapter::enabled)
+                .map(PayChannelAdapter::channel)
+                .sorted()
+                .toList();
     }
 }

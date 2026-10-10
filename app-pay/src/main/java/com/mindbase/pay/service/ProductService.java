@@ -15,8 +15,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * SKU 种子 + 在售查询。种子仅在缺失时插入，不覆盖运营侧对价格/状态的修改；
- * 价格为占位值（plan/1.0.7-Pay §13-4），运营确认后直接改库或改此清单。
+ * SKU seeding + active-product query. Seeds are inserted only when missing and never overwrite operational changes
+ * to price/status; prices are placeholders (plan/1.0.7-Pay §13-4) to be updated directly in the DB or in this list
+ * once operations signs off.
  */
 @Slf4j
 @Service
@@ -27,21 +28,22 @@ public class ProductService implements ApplicationRunner {
     private final PayProperties payProperties;
 
     private static final List<PayProduct> DEFAULT_SKUS = List.of(
-            sku("VIP_MONTHLY", "会员·月度", 30, 1800, 10),
-            sku("VIP_QUARTERLY", "会员·季度", 90, 4500, 20),
-            sku("VIP_YEARLY", "会员·年度", 365, 15800, 30),
-            sku("SVIP_MONTHLY", "超级会员·月度", 30, 4800, 40),
-            sku("SVIP_QUARTERLY", "超级会员·季度", 90, 12000, 50),
-            sku("SVIP_YEARLY", "超级会员·年度", 365, 42000, 60)
+            sku("VIP_MONTHLY", "Membership · Monthly", 30, 1800, 10, "VIP"),
+            sku("VIP_QUARTERLY", "Membership · Quarterly", 90, 4500, 20, "VIP"),
+            sku("VIP_YEARLY", "Membership · Yearly", 365, 15800, 30, "VIP"),
+            sku("SVIP_MONTHLY", "Super Membership · Monthly", 30, 4800, 40, "SVIP"),
+            sku("SVIP_QUARTERLY", "Super Membership · Quarterly", 90, 12000, 50, "SVIP"),
+            sku("SVIP_YEARLY", "Super Membership · Yearly", 365, 42000, 60, "SVIP")
     );
 
-    private static PayProduct sku(String code, String title, int days, long priceCents, int sort) {
+    private static PayProduct sku(String code, String title, int days, long priceCents, int sort, String tier) {
         PayProduct p = new PayProduct();
         p.setCode(code);
         p.setTitle(title);
         p.setDurationDays(days);
         p.setPriceCents(priceCents);
         p.setSort(sort);
+        p.setTier(tier);
         p.setStatus(PayProduct.ProductStatus.ACTIVE);
         return p;
     }
@@ -78,7 +80,7 @@ public class ProductService implements ApplicationRunner {
         return product;
     }
 
-    /** 订单支付截止时间统一入口，便于测试与全局调整。 */
+    /** Single entry point for the order payment deadline, for easier testing and global adjustment. */
     public LocalDateTime expireAtFrom(LocalDateTime createdAt) {
         return createdAt.plusMinutes(payProperties.order().timeoutMinutes());
     }

@@ -1,16 +1,17 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
 import { ChatInput, type SelectedSkill } from "./chat-input";
+import { ChatSessionFiles } from "./chat-session-files";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
-import { chatApi, type ChatSession, type ChatMessage as ApiChatMessage } from "@/lib/api";
-import { streamChat, type ChatSource, type ChatArtifact, type StreamStep } from "@/lib/chat-stream";
+import { chatApi, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument } from "@/lib/api";
+import { streamChat, type ChatSource, type ChatArtifact, type StreamStep, type QueueStatus, type DelegateStatus } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
 // Stable empty array so `messages` doesn't change identity on every render
@@ -33,6 +34,9 @@ function toUIMessage(m: ApiChatMessage): ChatMessageData {
     content: m.content,
     // Backend may return null; normalize to array.
     sources: Array.isArray(m.sources) ? m.sources : undefined,
+    // 用户消息附图：MinIO 预签名 URL（新）或内联 data URL（旧消息）——不映射的话
+    // 重新加载历史后图片全部消失（只在发送当轮可见）。
+    images: Array.isArray(m.images) ? m.images : undefined,
     // Binary outputs (run_code images) persisted on the message; without
     // this mapping, reloading history loses the images (SSE-only display).
     artifacts: Array.isArray(m.artifacts) ? m.artifacts : undefined,
@@ -274,7 +278,7 @@ export function ChatView() {
 
   // ---- Core: stream a question into the active session ----
   const streamQuestion = useCallback(
-    async (question: string, assistantMsgId: string, skillIds?: string[]) => {
+    async (question: string, assistantMsgId: string, skillIds?: string[], images?: string[]) => {
       if (!activeSessionId) return;
       setIsStreaming(true);
       const controller = new AbortController();
@@ -319,6 +323,7 @@ export function ChatView() {
             question,
             chat_session_id: activeSessionId,
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
+            ...(images && images.length > 0 ? { images } : {}),
           },
           controller.signal
         );
@@ -354,7 +359,25 @@ export function ChatView() {
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) =>
-                  m.id === assistantMsgId ? { ...m, agent } : m
+                  m.id === assistantMsgId ? { ...m, agent, queuePosition: undefined } : m
+                ),
+              }));
+            },
+            onQueueStatus: ({ position }: QueueStatus) => {
+              updateActiveSession((s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId ? { ...m, queuePosition: position } : m
+                ),
+              }));
+            },
+            onDelegate: ({ agent, status, active }: DelegateStatus) => {
+              updateActiveSession((s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId
+                    ? { ...m, subAgent: active > 0 ? { agent, count: active } : undefined }
+                    : m
                 ),
               }));
             },
@@ -385,6 +408,8 @@ export function ChatView() {
                       query: step.query || next[idx].query,
                       reasoning: step.reasoning || next[idx].reasoning,
                       sources: step.sources?.length ? step.sources : next[idx].sources,
+                      args: step.args || next[idx].args,
+                      durationMs: step.durationMs ?? next[idx].durationMs,
                     };
                     return { ...m, reasoningSteps: next };
                   }
@@ -398,6 +423,7 @@ export function ChatView() {
                         query: step.query,
                         reasoning: step.reasoning,
                         sources: step.sources ?? [],
+                        args: step.args,
                       },
                     ],
                   };
@@ -452,7 +478,7 @@ export function ChatView() {
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
   const handleSend = useCallback(
-    (userMessage: string, skillIds?: string[]) => {
+    (userMessage: string, skillIds?: string[], images?: string[]) => {
       if (!activeSessionId) return;
 
       const userMsgId = `user-${Date.now()}`;
@@ -464,12 +490,19 @@ export function ChatView() {
         lastMessageAt: timestamp,
         messages: [
           ...s.messages,
-          { id: userMsgId, role: "user", content: userMessage, status: "completed", timestamp },
+          {
+            id: userMsgId,
+            role: "user",
+            content: userMessage,
+            images: images && images.length > 0 ? images : undefined,
+            status: "completed",
+            timestamp,
+          },
           { id: assistantMsgId, role: "assistant", content: "", status: "pending", timestamp },
         ],
       }));
 
-      void streamQuestion(userMessage, assistantMsgId, skillIds);
+      void streamQuestion(userMessage, assistantMsgId, skillIds, images);
       // Skills are per-turn (Claude-Code-style): consumed by this message.
       if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
@@ -603,6 +636,80 @@ export function ChatView() {
       }),
     }));
   }, [updateActiveSession]);
+
+  // ---- 图片灯箱(点击消息缩略图看大图;Esc/点击遮罩关闭) ----
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lightboxSrc) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightboxSrc(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxSrc]);
+
+  // ---- Session files (documents uploaded into the current chat) ----
+  const [sessionFiles, setSessionFiles] = useState<SessionDocument[]>([]);
+  const refreshSessionFiles = useCallback(async (sessionId: string) => {
+    try {
+      const res = await chatApi.listDocuments(sessionId);
+      setSessionFiles(res.documents ?? []);
+    } catch {
+      // 列表失败不打断聊天（无文件显示 = 不可用降级）
+      setSessionFiles([]);
+    }
+  }, []);
+  useEffect(() => {
+    if (activeSessionId) void refreshSessionFiles(activeSessionId);
+    else setSessionFiles([]);
+  }, [activeSessionId, refreshSessionFiles]);
+
+  const handleAttachDocuments = useCallback(
+    async (files: File[]) => {
+      // 无会话时先建一个（对齐 handleNewChat），否则上传没有归属
+      let sessionId = activeSessionId;
+      if (!sessionId) {
+        try {
+          const res = await chatApi.createSession();
+          const ui = toUISession(res);
+          ui.historyLoaded = true;
+          loadedRef.current.add(ui.id);
+          setSessions((prev) => [ui, ...prev]);
+          setActiveSessionId(res.chat_session_id);
+          sessionId = res.chat_session_id;
+        } catch (e) {
+          setLoadError(e instanceof Error ? e.message : "创建会话失败");
+          return;
+        }
+      }
+      const failed: string[] = [];
+      for (const file of files) {
+        try {
+          await chatApi.uploadDocument(file, sessionId);
+        } catch (e) {
+          failed.push(`${file.name}（${e instanceof Error ? e.message : "上传失败"}）`);
+        }
+      }
+      if (failed.length > 0) {
+        setLoadError(`上传失败：${failed.join("、")}`);
+      }
+      void refreshSessionFiles(sessionId);
+    },
+    [activeSessionId, refreshSessionFiles]
+  );
+
+  const handleDeleteSessionFile = useCallback(
+    async (doc: SessionDocument) => {
+      if (!activeSessionId) return;
+      try {
+        await chatApi.deleteDocument(activeSessionId, doc.id);
+        setSessionFiles((prev) => prev.filter((f) => f.id !== doc.id));
+      } catch (e) {
+        setLoadError(e instanceof Error ? e.message : "删除文件失败");
+      }
+    },
+    [activeSessionId]
+  );
 
   // ---- New chat: create backend session ----
   const handleNewChat = useCallback(async () => {
@@ -750,11 +857,15 @@ export function ChatView() {
                       key={message.id}
                       role={message.role}
                       content={message.content}
+                      images={message.images}
+                      onImageOpen={setLightboxSrc}
                       sources={message.sources}
                       artifacts={message.artifacts}
                       reasoningSteps={message.reasoningSteps}
                       reasoning={message.reasoning}
                       agent={message.agent}
+                      queuePosition={message.queuePosition}
+                      subAgent={message.subAgent}
                       status={message.status}
                       error={message.error}
                       timestamp={message.timestamp}
@@ -794,6 +905,7 @@ export function ChatView() {
         {/* Input area */}
         <div className="shrink-0 px-5 pt-2 pb-2">
           <div className="mx-auto max-w-[768px]">
+            <ChatSessionFiles files={sessionFiles} onDelete={handleDeleteSessionFile} />
             <ChatInput
               onSend={handleSend}
               disabled={isStreaming || !activeSessionId}
@@ -802,10 +914,36 @@ export function ChatView() {
               selectedSkills={selectedSkills}
               onToggleSkill={handleToggleSkill}
               onOpenQuizWizard={() => setQuizDialogOpen(true)}
+              onAttachDocuments={handleAttachDocuments}
             />
           </div>
         </div>
       </main>
+
+      {lightboxSrc && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片预览"
+          className="fixed inset-0 z-[9998] flex cursor-zoom-out items-center justify-center bg-black/80 p-6 md:p-10"
+          onClick={() => setLightboxSrc(null)}
+        >
+          <img
+            src={lightboxSrc}
+            alt="图片预览"
+            className="max-h-full max-w-full rounded-xl shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={() => setLightboxSrc(null)}
+            aria-label="关闭预览"
+            className="absolute right-5 top-5 grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          >
+            <X className="h-5 w-5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       <SummaryModal
         open={summaryOpen}

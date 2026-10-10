@@ -3,15 +3,17 @@ package com.mindbase.pay.common;
 import lombok.Getter;
 
 /**
- * 业务异常：携带 HTTP 状态与稳定错误码，由 {@link GlobalExceptionHandler} 统一渲染为 {code,message}。
+ * Business exception: carries an HTTP status and a stable error code, rendered uniformly as
+ * {code,message} by {@link GlobalExceptionHandler}.
  *
- * <p>约定：
+ * <p>Conventions:
  * <ul>
- *   <li>code 是对外稳定的 API 契约（前端/app-task 按码分支），改码视为破坏性变更；</li>
- *   <li>静态工厂覆盖常用状态码，特殊场景用 {@link #of}；</li>
- *   <li>业务异常是控制流而非程序缺陷：不采集堆栈（fillInStackTrace 置空）——
- *       代价是抛点不可回溯，收益是高频 4xx 场景（IDOR 探测、幂等重试等）零开销且日志无噪音堆栈；
- *       定位靠 code + message + MDC（traceId/uid），5xx 由 handler 以 ERROR 级记录。</li>
+ *   <li>code is the externally stable API contract (the frontend/app-task branches on it); changing a code is a breaking change;</li>
+ *   <li>static factories cover the common status codes; use {@link #of} for special cases;</li>
+ *   <li>business exceptions are control flow, not program defects: no stack trace is captured (fillInStackTrace is a no-op) --
+ *       the cost is that throw sites cannot be traced back, while the benefit is zero overhead and no noisy stack traces in logs
+ *       for high-frequency 4xx scenarios (IDOR probing, idempotent retries, etc.);
+ *       diagnosis relies on code + message + MDC (traceId/uid), and 5xx is logged at ERROR level by the handler.</li>
  * </ul>
  */
 @Getter
@@ -28,7 +30,7 @@ public class ApiException extends RuntimeException {
         this.code = code;
     }
 
-    /** 任意状态码入口（非枚举化，避免工厂清单与实际需求脱节）。 */
+    /** Entry point for an arbitrary status code (not enumerated, so the factory list does not drift from actual needs). */
     public static ApiException of(int status, String code, String message) {
         return new ApiException(status, code, message);
     }
@@ -53,7 +55,7 @@ public class ApiException extends RuntimeException {
         return of(409, code, message);
     }
 
-    /** 预留：APISIX/应用层限流命中（plan/1.0.7-Pay §12 限流项）时使用。 */
+    /** Reserved: used when APISIX/application-layer rate limiting is hit (plan/1.0.7-Pay §12 rate limiting item). */
     public static ApiException tooManyRequests(String code, String message) {
         return of(429, code, message);
     }
@@ -62,14 +64,15 @@ public class ApiException extends RuntimeException {
         return of(500, code, message);
     }
 
-    /** 队列满/依赖不可用等瞬态故障：调用方（app-task）应退避重试。 */
+    /** Transient failures such as a full queue or unavailable dependency: the caller (app-task) should retry with backoff. */
     public static ApiException serviceUnavailable(String code, String message) {
         return of(503, code, message);
     }
 
     /**
-     * 控制流异常不采集堆栈：代价是抛点不可回溯（由 code+message+traceId 定位），
-     * 收益是热路径零堆栈开销。若排障确需抛点，临时移除本覆盖即可。
+     * Control-flow exceptions do not capture a stack trace: the cost is that the throw site is not
+     * traceable (locate it via code+message+traceId), and the benefit is zero stack overhead on the hot path.
+     * If troubleshooting truly requires the throw site, temporarily remove this override.
      */
     @Override
     public synchronized Throwable fillInStackTrace() {

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- Cross-instance job lease: UPDATE takes over an expired lease -> INSERT IGNORE creates it the first
+     time; the two statements handle concurrency naturally (the row lock serializes UPDATE; INSERT IGNORE
+     guarantees a single winner). -->
+<mapper namespace="com.mindbase.pay.mapper.PayJobLockMapper">
+
+    <update id="tryTakeOver">
+        UPDATE pay_job_lock
+        SET owner        = #{owner},
+            locked_until = #{until},
+            updated_at   = #{now}
+        WHERE name = #{name}
+          AND (locked_until &lt; #{now} OR owner = #{owner})
+    </update>
+
+    <insert id="tryInsert">
+        INSERT IGNORE INTO pay_job_lock (name, owner, locked_until, created_at, updated_at)
+        VALUES (#{name}, #{owner}, #{until}, #{now}, #{now})
+    </insert>
+</mapper>

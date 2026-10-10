@@ -1,7 +1,8 @@
 /**
  * User API - 个人资料 / 安全概览 / 密码 / 邮箱 / 手机 / 找回密码.
  */
-import { request, getAuthHeaders } from "./client";
+import { request, getAuthHeaders, API_BASE_URL } from "./client";
+import { sanitizeError } from "@/lib/error-utils";
 
 export interface ProfileData {
     uid: number;
@@ -104,6 +105,30 @@ export interface PhoneBindParams {
 export const userApi = {
     getProfile: () =>
         request<ProfileData>("/auth/profile", { headers: getAuthHeaders() }),
+
+    /**
+     * 上传头像文件（multipart，≤2MB PNG/JPG/WebP）到 app-settings 对象存储，
+     * 返回站内公开直读 URL（/avatar/file/...），随后以 updateProfile({avatar})
+     * 写入资料。FormData 必须由浏览器自动生成 multipart 边界，因此绕过
+     * request() 的 JSON Content-Type，用裸 fetch + Bearer 头。
+     */
+    uploadAvatar: async (file: File): Promise<{ url: string }> => {
+        const form = new FormData();
+        form.append("file", file);
+        const resp = await fetch(`${API_BASE_URL}/avatar/upload`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: form,
+        });
+        if (!resp.ok) {
+            let detail = "";
+            try {
+                detail = (await resp.json()).detail ?? "";
+            } catch {}
+            throw new Error(sanitizeError({ status: resp.status, detail }));
+        }
+        return resp.json();
+    },
 
     updateProfile: (data: ProfileUpdateParams) =>
         request<ProfileData>("/auth/profile", {

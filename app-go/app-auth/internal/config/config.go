@@ -32,6 +32,13 @@ type Config struct {
 	WorkerID     int                `yaml:"worker_id"`
 	SecurityCORS SecurityCORSConfig `yaml:"security_cors"`
 	Log          LogConfig          `yaml:"log"`
+	Internal     InternalConfig     `yaml:"internal"`
+}
+
+// InternalConfig guards the /internal/auth M2M user-lookup face (AI stack);
+// key = the shared APISIX consumer key.
+type InternalConfig struct {
+	APIKey string `yaml:"api_key"`
 }
 
 type AppConfig struct {
@@ -165,7 +172,9 @@ func Load(yamlBytes []byte) (*Config, error) {
 	if err := yaml.Unmarshal(yamlBytes, &cfg); err != nil {
 		return nil, fmt.Errorf("parse default.yaml: %w", err)
 	}
-	applyEnvOverrides(&cfg)
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return nil, err
+	}
 	if cfg.Security.RateLimit == nil {
 		cfg.Security.RateLimit = map[string]RateLimitRule{}
 	}
@@ -186,7 +195,7 @@ func mergeRateLimitDefaults(rules map[string]RateLimitRule) {
 // applyEnvOverrides maps env vars onto the config. Order: shared backend env
 // vars first (so a single .env drives both services), then APPAUTH__-prefixed
 // overrides (highest priority).
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config) error {
 	get := func(key string) string { return strings.TrimSpace(os.Getenv(key)) }
 	getBool := func(key string) (bool, bool) {
 		v := get(key)
@@ -205,6 +214,13 @@ func applyEnvOverrides(cfg *Config) {
 
 	// ── shared secret env vars (same names as the Python backend) ──
 	if v := get("SECURITY__API_KEY_ENCRYPTION_KEY"); v != "" {
+		cfg.Security.APIKeyEncryptionKey = v
+	}
+	// _FILE convention: the master key lives in a dedicated secret file
+	// (docker volume mount / local secrets/ dir) and wins over the env var.
+	if v, err := secretFromFile("SECURITY__API_KEY_ENCRYPTION_KEY_FILE"); err != nil {
+		return err
+	} else if v != "" {
 		cfg.Security.APIKeyEncryptionKey = v
 	}
 	if v := get("REDIS__URL"); v != "" {
@@ -250,6 +266,11 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.WeChat.Enabled = b
 	}
 
+	// internal M2M guard (/internal/auth/user/*); compose injects the shared
+	// consumer key under the APPAUTH__-prefixed name.
+	if v := get("APPAUTH__INTERNAL__API_KEY"); v != "" {
+		cfg.Internal.APIKey = v
+	}
 	// ── APPAUTH__-prefixed overrides (highest priority) ──
 	if v := get("APPAUTH__RDBMS__URL"); v != "" {
 		cfg.RDBMS.URL = v
@@ -284,6 +305,22 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPAUTH__LOG__FILE__PATH"); v != "" {
 		cfg.Log.File.Path = v
 	}
+	return nil
+}
+
+// secretFromFile implements the _FILE convention for secrets: when <NAME>_FILE
+// is set, the secret is read from that path (docker volume / k8s secret mount,
+// or the local secrets/ dir) and overrides the direct env var. Unset = no-op.
+func secretFromFile(envName string) (string, error) {
+	path := strings.TrimSpace(os.Getenv(envName))
+	if path == "" {
+		return "", nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s=%s: %w", envName, path, err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // Validate fails loud on config that would silently break auth semantics.

@@ -3,12 +3,15 @@ package com.mindbase.pay.service;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.mindbase.pay.common.ApiException;
 import com.mindbase.pay.common.PayAuditLogger;
+import com.mindbase.pay.common.PayMetrics;
+import com.mindbase.pay.config.PayProperties;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayOrder;
 import com.mindbase.pay.model.PayProduct;
 import com.mindbase.pay.service.channel.PayChannelAdapter;
 import com.mindbase.pay.service.channel.PayChannelRouter;
 import com.mindbase.pay.service.timer.AppTaskTimerClient;
+import com.mindbase.pay.testutil.TestPayProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,7 +38,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 下单校验：渠道白名单/适配器委托、SKU 状态、幂等键命中、唯一键兜底、订单号归属。 */
+/** Order creation validation: unified admission across all channels, tier snapshot, open-order limit, idempotency-key hit, unique-key fallback, cancellation, order ownership. */
 @ExtendWith(MockitoExtension.class)
 class OrderServiceTest {
 
@@ -50,7 +53,15 @@ class OrderServiceTest {
     @Mock
     private PayChannelAdapter alipayAdapter;
     @Mock
+    private PayChannelAdapter mockAdapter;
+    @Mock
+    private PaymentService paymentService;
+    @Mock
+    private MembershipService membershipService;
+    @Mock
     private PayAuditLogger audit;
+    @Mock
+    private PayMetrics metrics;
     @Mock
     private AppTaskTimerClient timerClient;
     @Mock
@@ -61,23 +72,33 @@ class OrderServiceTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
-        // mock 事务管理器：execute 仅回调内核 + commit/rollback 空操作，无事务同步激活
-        service = new OrderService(orderMapper, productService, channelRouter, audit,
-                timerClient, clock, new TransactionTemplate(txManager));
+        // mock transaction manager: execute only invokes the callback, commit/rollback are no-ops, no transaction synchronization activated
+        service = new OrderService(orderMapper, productService, membershipService, channelRouter,
+                paymentService, audit, timerClient, metrics, TestPayProperties.defaults(), clock,
+                new TransactionTemplate(txManager));
     }
 
     private PayProduct product() {
         PayProduct product = new PayProduct();
         product.setCode("VIP_MONTHLY");
-        product.setTitle("会员·月度");
+        product.setTitle("Membership - Monthly");
         product.setDurationDays(30);
         product.setPriceCents(1800);
+        product.setTier("VIP");
         product.setStatus(PayProduct.ProductStatus.ACTIVE);
         return product;
     }
 
+    /** MOCK is now a first-class channel in the router; stubbing both call sites is required for completeness. */
+    private void stubMockChannel() {
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
+        when(mockAdapter.createPayment(any(PayOrder.class)))
+                .thenReturn(Map.of("type", "mock", "confirmEndpoint", "/pay/mock/confirm"));
+    }
+
     @Test
     void createOrderSnapshotsProductFields() {
+        stubMockChannel();
         when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
         when(productService.expireAtFrom(NOW)).thenReturn(NOW.plusMinutes(30));
 
@@ -87,15 +108,14 @@ class OrderServiceTest {
 
         assertThat(order.getOrderNo()).startsWith("PO");
         assertThat(order.getUid()).isEqualTo(10086L);
-        // 快照：后续改价改期不影响此订单
+        // Snapshot: later price/duration/tier changes do not affect this order
         assertThat(order.getAmountCents()).isEqualTo(1800L);
         assertThat(order.getDurationDays()).isEqualTo(30);
+        assertThat(order.getTier()).isEqualTo("VIP");
         assertThat(order.getStatus()).isEqualTo(PayOrder.OrderStatus.CREATED);
         assertThat(order.getExpiresAt()).isEqualTo(NOW.plusMinutes(30));
-        // mock 渠道返回确认端点参数
         assertThat(outcome.payParams()).containsEntry("type", "mock");
         verify(orderMapper).insert(order);
-        // 超时委托注册（测试环境无事务 → afterCommit 同步路径直通）
         verify(timerClient).registerOrderTimeoutAfterCommit(
                 eq(10086L), eq(order.getOrderNo()), eq(1), eq(NOW.plusMinutes(30)));
     }
@@ -112,9 +132,20 @@ class OrderServiceTest {
                 service.createOrder(10086L, "VIP_MONTHLY", PayOrder.PayChannel.ALIPAY, null);
 
         assertThat(outcome.payParams()).containsEntry("type", "alipay_qr");
-        // 渠道取码在事务提交后执行（事务内核只做幂等检查 + 落库）
         verify(alipayAdapter).createPayment(any(PayOrder.class));
         verify(orderMapper).insert(outcome.order());
+    }
+
+    @Test
+    void paymentParamsDelegatesToChannelAdapter() {
+        PayOrder order = new PayOrder();
+        order.setOrderNo("PO1");
+        order.setChannel(PayOrder.PayChannel.ALIPAY);
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.ALIPAY)).thenReturn(alipayAdapter);
+        when(alipayAdapter.createPayment(order))
+                .thenReturn(Map.of("type", "alipay_qr", "qrCode", "https://qr.alipay.com/x"));
+
+        assertThat(service.paymentParams(order)).containsEntry("qrCode", "https://qr.alipay.com/x");
     }
 
     @Test
@@ -130,7 +161,36 @@ class OrderServiceTest {
     }
 
     @Test
+    void mockChannelDisabledInProductionIsRejected() {
+        // Production profile mock.enabled=false: MOCK must also be rejected by the router, so an order that can never be paid is never created
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK))
+                .thenThrow(ApiException.badRequest("CHANNEL_NOT_SUPPORTED", "Payment channel not supported yet"));
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(400);
+        verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    @Test
+    void openOrderLimitRejectsWith429() {
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(orderMapper.selectCount(any(Wrapper.class))).thenReturn(10L);
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(429);
+        verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    @Test
     void idempotencyKeyReturnsExistingOrder() {
+        stubMockChannel();
         PayOrder existing = new PayOrder();
         existing.setOrderNo("PO-EXIST");
         existing.setUid(10086L);
@@ -147,6 +207,7 @@ class OrderServiceTest {
 
     @Test
     void idempotencyKeyOfAnotherUserConflicts() {
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
         PayOrder existing = new PayOrder();
         existing.setOrderNo("PO-EXIST");
         existing.setUid(999L);
@@ -160,6 +221,7 @@ class OrderServiceTest {
 
     @Test
     void duplicateOrderNoTranslatesToConflict() {
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
         when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
         when(orderMapper.insert(any(PayOrder.class)))
                 .thenThrow(new DuplicateKeyException("uk_pay_order_no"));
@@ -173,10 +235,11 @@ class OrderServiceTest {
 
     @Test
     void concurrentIdempotencyKeyRecoversExistingOrder() {
+        stubMockChannel();
         PayOrder existing = new PayOrder();
         existing.setOrderNo("PO-RACE");
         existing.setUid(10086L);
-        // 第一次读（幂等检查）未命中 → 落库撞唯一键（并发赢家已提交）→ 兜底重读命中复用
+        // First read (idempotency check) misses -> insert hits the unique key (concurrent winner already committed) -> fallback re-read hits and reuses
         when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(null, existing);
         when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
         when(orderMapper.insert(any(PayOrder.class)))
@@ -189,6 +252,37 @@ class OrderServiceTest {
         assertThat(outcome.payParams()).containsEntry("type", "mock");
         verify(timerClient, never()).registerOrderTimeoutAfterCommit(
                 anyLong(), anyString(), anyInt(), any());
+    }
+
+    @Test
+    void cancelOrderClosesCreatedOrder() {
+        PayOrder order = new PayOrder();
+        order.setOrderNo("PO1");
+        order.setUid(10086L);
+        order.setStatus(PayOrder.OrderStatus.CREATED);
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(order);
+        when(orderMapper.closeOrder(eq("PO1"), any(), eq("USER_CANCELLED"))).thenReturn(1);
+
+        PayOrder cancelled = service.cancelOrder(10086L, "PO1");
+
+        assertThat(cancelled.getOrderNo()).isEqualTo("PO1");
+        verify(orderMapper).closeOrder(eq("PO1"), any(), eq("USER_CANCELLED"));
+        verify(audit).audit(eq("ORDER_CANCELLED"), any(), any(), any(), any());
+    }
+
+    @Test
+    void cancelRejectsNonCreatedOrder() {
+        PayOrder order = new PayOrder();
+        order.setOrderNo("PO1");
+        order.setUid(10086L);
+        order.setStatus(PayOrder.OrderStatus.DELIVERED);
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(order);
+
+        assertThatThrownBy(() -> service.cancelOrder(10086L, "PO1"))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(409);
+        verify(orderMapper, never()).closeOrder(anyString(), any(), anyString());
     }
 
     @Test

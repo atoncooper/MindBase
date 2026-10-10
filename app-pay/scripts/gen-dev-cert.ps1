@@ -1,9 +1,9 @@
 # ==============================================================================
-# app-pay 本地开发/测试 TLS 证书生成（PowerShell 版，与 gen-dev-cert.sh 等价）：
-# 自建 mini-CA + 服务端叶子证书（PEM），输出到 app-pay/certs/（gitignored）。
-#   ca.crt / pay.crt / pay.key —— 含义见 .sh 版头部注释。
-# SAN 覆盖：localhost / 127.0.0.1 / ::1 / app-pay / app-pay-test / 192.168.138.1。
-# 生产不要用本脚本：挂载正式 CA 签发的证书并配置 PAY_TLS_CERT/PAY_TLS_KEY。
+# app-pay local development/test TLS certificate generation (PowerShell version, equivalent to gen-dev-cert.sh):
+# Builds a mini-CA + server leaf certificate (PEM), output to app-pay/certs/ (gitignored).
+#   ca.crt / pay.crt / pay.key —— see the .sh version's header comment for their meaning.
+# SAN coverage: localhost / 127.0.0.1 / ::1 / app-pay / app-pay-test / 192.168.138.1.
+# Do not use this script in production: mount a certificate issued by a real CA and configure PAY_TLS_CERT/PAY_TLS_KEY.
 # ==============================================================================
 $ErrorActionPreference = "Stop"
 
@@ -16,7 +16,7 @@ $DaysCa = 3650
 $DaysServer = 825
 $HostIp = if ($env:PAY_DEV_HOST_IP) { $env:PAY_DEV_HOST_IP } else { "192.168.138.1" }
 
-# openssl 优先取 PATH，其次常见 Git 安装位置（Windows 无内置 openssl）
+# Prefer openssl from PATH, then common Git install locations (Windows has no built-in openssl)
 $openssl = (Get-Command openssl -ErrorAction SilentlyContinue).Source
 if (-not $openssl) {
     foreach ($cand in @(
@@ -26,9 +26,9 @@ if (-not $openssl) {
         if (Test-Path $cand) { $openssl = $cand; break }
     }
 }
-if (-not $openssl) { throw "未找到 openssl.exe（请安装 Git for Windows 或加入 PATH）" }
+if (-not $openssl) { throw "openssl.exe not found (install Git for Windows or add it to PATH)" }
 Write-Host "==> openssl: $openssl"
-Write-Host "==> 输出目录: $Dir"
+Write-Host "==> Output directory: $Dir"
 
 & $openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$Dir\ca.key" 2>$null
 & $openssl req -x509 -new -key "$Dir\ca.key" -sha256 -days $DaysCa `
@@ -51,6 +51,6 @@ subjectAltName=DNS:localhost,DNS:app-pay,DNS:app-pay-test,IP:127.0.0.1,IP:$HostI
     -days $DaysServer -sha256 -extfile "$Dir\pay.ext" -out "$Dir\pay.crt" 2>$null
 Remove-Item "$Dir\pay.csr", "$Dir\pay.ext", "$Dir\ca.srl" -ErrorAction SilentlyContinue
 
-Write-Host "==> 完成。证书 SAN 摘要："
+Write-Host "==> Done. Certificate SAN summary:"
 & $openssl x509 -in "$Dir\pay.crt" -noout -subject -dates -ext subjectAltName
-Write-Host "==> 下一步：重启 app-pay（本地 IDE/mvn 或 docker compose）；需要精确超时委托的 app-task 挂载 ca.crt。"
+Write-Host "==> Next: restart app-pay (local IDE/mvn or docker compose); app-task (which needs precise timeout delegation) mounts ca.crt."

@@ -13,8 +13,9 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 
 /**
- * 超时委托的业务执行体（由 {@link TimeoutExecutionQueue} 的 worker 调用，受其并发钳制）。
- * 关单 = 按 (order_no, status=CREATED, version) 三条件更新；未命中即委托作废（订单已支付等）。
+ * Business execution body for timeout delegation (called by {@link TimeoutExecutionQueue} workers,
+ * subject to their concurrency limits). Closing an order = conditional update on the three conditions
+ * (order_no, status=CREATED, version); a miss voids the delegation (order already paid, etc.).
  */
 @Slf4j
 @Service
@@ -39,7 +40,7 @@ public class TimeoutExecutionService {
             PayOrder order = orderMapper.selectOne(new LambdaQueryWrapper<PayOrder>()
                     .eq(PayOrder::getOrderNo, cmd.orderNo()));
             if (order == null) {
-                // 幽灵任务容错：注册成功但订单不存在（理论不应发生）
+                // ghost task tolerance: registration succeeded but the order does not exist (should not happen in theory)
                 log.warn("[PAY] timeout_delegate_order_not_found expected_version={}", cmd.version());
                 return ExecuteResult.skip("ORDER_NOT_FOUND");
             }
@@ -47,7 +48,7 @@ public class TimeoutExecutionService {
                 log.info("[PAY] timeout_delegate_skip_status status={}", order.getStatus());
                 return ExecuteResult.skip("SKIP_STATUS:" + order.getStatus().name());
             }
-            // 版本不匹配 = 注册后订单已被支付等更新（v1 委托作废）——用户方案的核心分支
+            // version mismatch = the order was updated (e.g. paid) after registration, so the v1 delegation is voided -- the core branch of the design
             log.info("[PAY] timeout_delegate_discarded registered_version={} current_version={}",
                     cmd.version(), order.getVersion());
             return ExecuteResult.skip("SKIP_VERSION_MISMATCH");

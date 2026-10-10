@@ -1,0 +1,86 @@
+# ============================================================
+# app-bili (Go) - default configuration
+# ============================================================
+# Bilibili data acquisition service: favorites sync/organize,
+# video/player info (WBI-signed), audio/subtitle fetching, and
+# DashScope ASR transcription (via the Higress AI gateway).
+# Data acquisition ONLY — no embedding/Milvus/RAG work happens
+# here (those stay in the Python AI stack; ASR completion is
+# published to Redis so the AI side can trigger vectorization).
+#
+# Schema ownership: collection / favorite_folders / video /
+# video_versions / async_tasks in the SHARED bilirag MySQL.
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPBILI__, double-underscore nesting
+#   Shared secret env vars (same names as the other services):
+#        AI_GATEWAY__API_KEY, MONGO__URI, SECURITY__API_KEY_ENCRYPTION_KEY, REDIS__URL
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-bili
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8010
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPBILI__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+mongo:
+  uri: ""                    # inject via MONGO__URI (shared); asr_documents
+  database: mind_base
+
+redis:
+  url: ""                    # inject via APPBILI__REDIS__URL or shared REDIS__URL
+
+# ASR credentials: platform path uses the Higress AI gateway native
+# passthrough (same env names as the Python backend — one .env).
+asr:
+  api_key: ""                # inject via AI_GATEWAY__API_KEY
+  base_url: ""               # inject via AI_GATEWAY__BASE_URL (OpenAI style base; native base derived)
+  transcribe_model: paraformer-v2          # offline async (REST)
+  transcribe_timeout_seconds: 600
+  poll_interval_ms: 1500
+  chunk_concurrency: 3                     # parallel chunk recognition cap
+  min_text_chars: 50                       # below this = failed transcription
+  tmp_dir: /tmp/asr_tmp
+
+bili:
+  # Anti-crawl hardening: full device fingerprint + adaptive backoff.
+  page_delay_min_ms: 300        # favorite-list pagination jitter floor
+  page_delay_max_ms: 800
+  video_delay_min_ms: 1500      # per-video pause floor (folder sync)
+  video_delay_max_ms: 4000
+  max_retries: 4                # 412/352 backoff attempts
+  backoff_base_ms: 1500         # exponential base
+  proxy: ""                     # optional static egress proxy (http://host:port or socks5://)
+  request_timeout_seconds: 30
+
+cors:
+  allow_origins:
+    - http://localhost:3000
+
+# Internal M2M face (/internal/bili/*) — AI stack reads the knowledge scope.
+# Key = shared APISIX consumer key; compose injects it via
+# APPBILI__INTERNAL__API_KEY. Empty = every internal request rejected.
+internal:
+  api_key: ""
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-bili.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

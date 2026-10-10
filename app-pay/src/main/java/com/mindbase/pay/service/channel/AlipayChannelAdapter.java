@@ -1,15 +1,17 @@
 package com.mindbase.pay.service.channel;
 
 import com.alipay.api.AlipayApiException;
-import com.alipay.api.AlipayClient;
 import com.alipay.api.DefaultAlipayClient;
 import com.alipay.api.internal.util.AlipaySignature;
 import com.alipay.api.domain.AlipayTradePrecreateModel;
 import com.alipay.api.domain.AlipayTradeQueryModel;
+import com.alipay.api.domain.AlipayTradeRefundModel;
 import com.alipay.api.request.AlipayTradePrecreateRequest;
 import com.alipay.api.request.AlipayTradeQueryRequest;
+import com.alipay.api.request.AlipayTradeRefundRequest;
 import com.alipay.api.response.AlipayTradePrecreateResponse;
 import com.alipay.api.response.AlipayTradeQueryResponse;
+import com.alipay.api.response.AlipayTradeRefundResponse;
 import com.mindbase.pay.common.ApiException;
 import com.mindbase.pay.config.PayProperties;
 import com.mindbase.pay.model.PayOrder;
@@ -22,16 +24,18 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 支付宝当面付适配器（M2）：precreate 扫码下单 + trade query 查单 + 异步通知验签。
- * 金额全部以本地订单为准：下单传本地金额，查单/回调回传金额仅做比对。
+ * Alipay face-to-face payment adapter (M2): precreate for scan-code orders + trade query for order lookup +
+ * async notification signature verification.
+ * All amounts are based on the local order: the local amount is sent at order time, and amounts returned by query /
+ * callback are used only for comparison.
  */
 @Slf4j
 @Component
 public class AlipayChannelAdapter implements PayChannelAdapter {
 
     private final PayProperties payProperties;
-    private AlipayClient client;
-    /** 验签连续失败计数：≥3 触发告警（公钥配置错误或持续伪造攻击信号），成功一次清零。 */
+    private DefaultAlipayClient client;
+    /** Consecutive signature-verification failures: >=3 raises an alert (wrong public key config or an ongoing forgery attack); one success resets it to zero. */
     private final AtomicInteger verifyFailureStreak = new AtomicInteger();
 
     public AlipayChannelAdapter(PayProperties payProperties) {
@@ -53,8 +57,14 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
         }
         this.client = new DefaultAlipayClient(conf.gatewayUrl(), conf.appId(), conf.appPrivateKey(),
                 "json", "UTF-8", conf.platformPublicKey(), "RSA2");
-        log.info("[PAY] alipay_adapter_init gateway={} notify_url={}", conf.gatewayUrl(),
-                isBlank(conf.notifyUrl()) ? "(not configured, query-polling mode)" : conf.notifyUrl());
+        // The SDK brings its own HTTP client: global spring.http.client.* has no effect on it, so timeouts must be
+        // set explicitly; otherwise a slow channel response would occupy the order request thread for a long time
+        this.client.setConnectTimeout(conf.connectTimeoutMs());
+        this.client.setReadTimeout(conf.readTimeoutMs());
+        log.info("[PAY] alipay_adapter_init gateway={} notify_url={} connect_timeout_ms={} read_timeout_ms={}",
+                conf.gatewayUrl(),
+                isBlank(conf.notifyUrl()) ? "(not configured, query-polling mode)" : conf.notifyUrl(),
+                conf.connectTimeoutMs(), conf.readTimeoutMs());
     }
 
     @Override
@@ -90,7 +100,8 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
                     order.getOrderNo(), abbreviate(resp.getQrCode()));
             return Map.of("type", "alipay_qr", "orderNo", order.getOrderNo(), "qrCode", resp.getQrCode());
         } catch (AlipayApiException e) {
-            // 沙箱网关故障时消息可能是整页 HTML（404 页等），全量堆栈只有 SDK HTTP 样板帧——单行摘要足够
+            // When the sandbox gateway fails, the message may be a full HTML page (404 page, etc.) and the full stack
+            // only has boilerplate SDK HTTP frames -- a one-line summary is enough
             log.error("[PAY] alipay_precreate_error order_no={} err={}", order.getOrderNo(), abbreviate(e));
             throw ApiException.badRequest("CHANNEL_CREATE_FAILED", "Alipay order creation failed, please retry later");
         }
@@ -98,6 +109,12 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
 
     @Override
     public ChannelQueryResult queryOrder(PayOrder order) {
+        // 沙箱网关（openapi-sandbox.dl.alipaydev.com）间歇性 404 HTML，失败后立即重试一次再放弃
+        ChannelQueryResult first = queryOnce(order);
+        return first.status() == ChannelQueryResult.Status.NOT_PAID ? queryOnce(order) : first;
+    }
+
+    private ChannelQueryResult queryOnce(PayOrder order) {
         try {
             AlipayTradeQueryModel model = new AlipayTradeQueryModel();
             model.setOutTradeNo(order.getOrderNo());
@@ -105,14 +122,16 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
             request.setBizModel(model);
             AlipayTradeQueryResponse resp = client.execute(request);
             if (resp == null || !resp.isSuccess()) {
-                // 订单尚未在渠道创建（买家未扫码）属常态；查询暂时失败同样下轮再查，不误判
+                // The order not yet existing at the channel (buyer has not scanned) is normal; a transient query
+                // failure is likewise retried next round rather than misjudged
                 log.info("[PAY] alipay_query_not_ready order_no={} code={} sub={}",
                         order.getOrderNo(), codeOf(resp), subCodeOf(resp));
                 return ChannelQueryResult.notPaid();
             }
             String status = resp.getTradeStatus();
             if ("TRADE_SUCCESS".equals(status) || "TRADE_FINISHED".equals(status)) {
-                return ChannelQueryResult.paid(resp.getTradeNo(), toCents(resp.getTotalAmount()));
+                return ChannelQueryResult.paid(resp.getTradeNo(), toCents(resp.getTotalAmount()),
+                        resp.getBuyerLogonId(), resp.getBuyerUserId());
             }
             if ("TRADE_CLOSED".equals(status)) {
                 return ChannelQueryResult.closed(resp.getTradeNo());
@@ -125,8 +144,9 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
     }
 
     /**
-     * 异步通知验签 + 关键字段校验（app_id 归属、成功态、金额由 PaymentService 比对）。
-     * 验签失败/字段异常一律 INVALID → 回调方应答 fail 让渠道重试。
+     * Async notification signature verification + key field validation (app_id ownership, success status; the amount
+     * is compared by PaymentService).
+     * A failed signature or abnormal field always yields INVALID -> the callback responds fail so the channel retries.
      */
     public AlipayNotifyResult verifyNotify(Map<String, String> params) {
         try {
@@ -134,7 +154,7 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
                         payProperties.alipay().platformPublicKey(), "UTF-8", "RSA2");
             if (!signOk || !payProperties.alipay().appId().equals(params.get("app_id"))) {
                 int streak = verifyFailureStreak.incrementAndGet();
-                // 连续失败 = 支付宝公钥配置错误或遭遇持续伪造攻击，必须立刻人工核查
+                // Consecutive failures = wrong Alipay public key config or an ongoing forgery attack; manual investigation is required immediately
                 if (streak >= 3) {
                     log.error("[PAY] alipay_verify_failure_streak count={} -- wrong platform public key "
                             + "or ongoing forgery, investigate immediately", streak);
@@ -146,14 +166,51 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
             verifyFailureStreak.set(0);
             String status = params.get("trade_status");
             if (!"TRADE_SUCCESS".equals(status) && !"TRADE_FINISHED".equals(status)) {
-                // 非成功态通知（如交易关闭）不推进订单
+                // A non-success notification (e.g. trade closed) does not advance the order
                 return AlipayNotifyResult.notPaid();
             }
             return AlipayNotifyResult.paid(params.get("out_trade_no"), params.get("trade_no"),
-                    toCents(params.get("total_amount")));
+                    toCents(params.get("total_amount")),
+                    params.get("buyer_logon_id"), params.get("buyer_user_id"));
         } catch (AlipayApiException e) {
             log.error("[PAY] alipay_notify_verify_error", e);
             return AlipayNotifyResult.invalid();
+        }
+    }
+
+    /**
+     * Channel refund: out_request_no is fixed to REF-{orderNo}, making repeated refunds of the same order
+     * idempotent (no second payout).
+     * Only the channel_trade_no already on the local order is accepted (Alipay locates the original trade by
+     * trade_no first).
+     */
+    @Override
+    public RefundResult refund(PayOrder order, String reason) {
+        try {
+            AlipayTradeRefundModel model = new AlipayTradeRefundModel();
+            model.setOutTradeNo(order.getOrderNo());
+            if (!isBlank(order.getChannelTradeNo())) {
+                model.setTradeNo(order.getChannelTradeNo());
+            }
+            model.setRefundAmount(toYuan(order.getAmountCents()));
+            model.setOutRequestNo("REF-" + order.getOrderNo());
+            if (!isBlank(reason)) {
+                model.setRefundReason(reason.length() > 200 ? reason.substring(0, 200) : reason);
+            }
+            AlipayTradeRefundRequest request = new AlipayTradeRefundRequest();
+            request.setBizModel(model);
+            AlipayTradeRefundResponse resp = client.execute(request);
+            if (resp == null || !resp.isSuccess()) {
+                String error = "code=" + codeOf(resp) + " sub=" + subCodeOf(resp) + " msg=" + msgOf(resp);
+                log.error("[PAY] alipay_refund_failed order_no={} {}", order.getOrderNo(), error);
+                return RefundResult.failure(error);
+            }
+            log.info("[PAY] alipay_refund order_no={} trade_no={} fund_change={}",
+                    order.getOrderNo(), resp.getTradeNo(), resp.getFundChange());
+            return RefundResult.success(resp.getTradeNo() != null ? resp.getTradeNo() : order.getChannelTradeNo());
+        } catch (AlipayApiException e) {
+            log.error("[PAY] alipay_refund_error order_no={} err={}", order.getOrderNo(), abbreviate(e));
+            return RefundResult.failure(abbreviate(e));
         }
     }
 
@@ -173,7 +230,7 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
         return s == null || s.isBlank();
     }
 
-    /** SDK 异常消息单行摘要（截断 200 字符）：网关故障页是整页 HTML，堆栈只有 SDK HTTP 样板帧，全量落日志纯刷屏。 */
+    /** One-line summary of an SDK exception message (truncated to 200 chars): gateway failure pages are full HTML and the stack only has boilerplate SDK HTTP frames, so logging it all just floods the log. */
     private static String abbreviate(AlipayApiException e) {
         String msg = String.valueOf(e.getMessage()).replaceAll("\\s+", " ").trim();
         return msg.length() <= 200 ? msg : msg.substring(0, 200) + "...(truncated)";
@@ -195,21 +252,23 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
         return qrCode.length() <= 24 ? qrCode : qrCode.substring(0, 24) + "...";
     }
 
-    /** 异步通知处理结果。 */
-    public record AlipayNotifyResult(Status status, String orderNo, String tradeNo, Long paidAmountCents) {
+    /** Async notification handling result. */
+    public record AlipayNotifyResult(Status status, String orderNo, String tradeNo, Long paidAmountCents,
+                                     String buyerLogonId, String buyerUserId) {
 
         public enum Status {PAID, NOT_PAID, INVALID}
 
-        public static AlipayNotifyResult paid(String orderNo, String tradeNo, Long cents) {
-            return new AlipayNotifyResult(Status.PAID, orderNo, tradeNo, cents);
+        public static AlipayNotifyResult paid(String orderNo, String tradeNo, Long cents,
+                                              String buyerLogonId, String buyerUserId) {
+            return new AlipayNotifyResult(Status.PAID, orderNo, tradeNo, cents, buyerLogonId, buyerUserId);
         }
 
         public static AlipayNotifyResult notPaid() {
-            return new AlipayNotifyResult(Status.NOT_PAID, null, null, null);
+            return new AlipayNotifyResult(Status.NOT_PAID, null, null, null, null, null);
         }
 
         public static AlipayNotifyResult invalid() {
-            return new AlipayNotifyResult(Status.INVALID, null, null, null);
+            return new AlipayNotifyResult(Status.INVALID, null, null, null, null, null);
         }
     }
 }

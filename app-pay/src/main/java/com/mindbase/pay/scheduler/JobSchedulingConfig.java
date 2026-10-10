@@ -9,7 +9,7 @@ import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 
 import java.time.Duration;
 
-/** 兜底轮询的触发器接线：base/退避 cap 参数来自 pay.job 配置。 */
+/** Trigger wiring for fallback polling: base/backoff cap parameters come from the pay.job config. */
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
@@ -18,13 +18,16 @@ public class JobSchedulingConfig implements SchedulingConfigurer {
     private final OrderTimeoutJob orderTimeoutJob;
     private final DeliveryRetryJob deliveryRetryJob;
     private final ChannelQueryJob channelQueryJob;
+    private final ReconciliationJob reconciliationJob;
     private final PayProperties props;
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar registrar) {
-        // job 抛异常不许杀死调度循环：统一 [PAY] 前缀 + 完整堆栈，下一轮照常触发
+        // A job exception must not kill the scheduling loop: unified [PAY] prefix + full stack trace, next round still fires
         var scheduler = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
         scheduler.setThreadNamePrefix("pay-job-");
+        // Pool > 1: ChannelQueryJob may make up to 50 serial channel HTTP calls per round; a single thread would block order closing/delivery compensation
+        scheduler.setPoolSize(Math.max(2, props.job().schedulerPoolSize()));
         scheduler.setErrorHandler(t -> log.error("[PAY] job_execution_error", t));
         scheduler.initialize();
         registrar.setTaskScheduler(scheduler);
@@ -40,6 +43,10 @@ public class JobSchedulingConfig implements SchedulingConfigurer {
         registrar.addTriggerTask(channelQueryJob::run, new JitteredBackoffTrigger(
                 channelQueryJob,
                 Duration.ofSeconds(job.queryBaseSeconds()),
-                Duration.ofSeconds(job.queryBaseSeconds()), 0.3)); // cap==base：不退避
+                Duration.ofSeconds(job.queryBaseSeconds()), 0.3)); // cap==base: no backoff
+        registrar.addTriggerTask(reconciliationJob::run, new JitteredBackoffTrigger(
+                reconciliationJob,
+                Duration.ofSeconds(job.reconBaseSeconds()),
+                Duration.ofSeconds(job.reconBaseSeconds()), 0.3)); // reconciliation at a fixed low-frequency interval
     }
 }

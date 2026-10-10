@@ -1,8 +1,12 @@
 /**
  * Knowledge API - 知识库构建 / 同步 / 统计 / 视频向量管理.
+ *
+ * 网关路由三分（Python 退役后无 catch_all 兜底）：
+ *  - build / build/status / folders/sync → app-bili（bili_user）
+ *  - stats / folders/status / pages/vectorized / clear / video/{bvid} → app-ts（vec_knowledge_ts）
+ *  - /knowledge/kg/* → app-ts（kg_ts，见 kg.ts）
  */
 import { request, getAuthHeaders } from "./client";
-import type { VideoPagesResponse } from "./favorites";
 
 export interface BuildRequest {
     folder_ids: number[];
@@ -60,7 +64,7 @@ export const knowledgeApi = {
     // 获取统计信息
     getStats: () => request<KnowledgeStats>("/knowledge/stats"),
 
-    // 构建知识库 (v2: Bearer token auth via get_current_uid; session_id 是 v1 残留已移除)
+    // 构建知识库（同步+ASR 编排在 app-bili）
     build: (data: BuildRequest) =>
         request<{ task_id: string; message: string }>("/knowledge/build", {
             headers: getAuthHeaders(),
@@ -72,13 +76,14 @@ export const knowledgeApi = {
     getBuildStatus: (taskId: string) =>
         request<BuildStatus>(`/knowledge/build/status/${taskId}`),
 
-    // 获取收藏夹入库状态 (v2: Bearer token auth)
+    // 获取收藏夹入库状态
     getFolderStatus: () =>
         request<FolderStatus[]>("/knowledge/folders/status", {
             headers: getAuthHeaders(),
         }),
 
-    // 同步收藏夹到向量库 (v2: Bearer token auth; session_id 已移除)
+    // 同步收藏夹到向量库（同步编排在 app-bili；ASR 完成后经 bili:page_ready
+    // 事件由 app-ts 自动向量化）
     // 返回单个后台任务描述 { task_id, message, reused }，前端轮询 /knowledge/build/status/{task_id}
     syncFolders: (data: SyncRequest) =>
         request<{ task_id: string; message: string; reused?: boolean }>("/knowledge/folders/sync", {
@@ -87,19 +92,15 @@ export const knowledgeApi = {
             body: JSON.stringify(data),
         }),
 
-    // 清空知识库
+    // 清空知识库（admin；app-ts 向量账本 + Milvus）
     clear: () =>
         request<{ message: string }>("/knowledge/clear", { method: "DELETE" }),
 
-    // 删除视频
+    // 删除视频（向量数据；归属校验 + admin 旁路在 app-ts）
     deleteVideo: (bvid: string) =>
         request<{ message: string }>(`/knowledge/video/${bvid}`, { method: "DELETE" }),
 
-    /** @deprecated Use favoritesV2Api.listVideoPages(bvid) */
-    getVideoPages: (bvid: string) =>
-        request<VideoPagesResponse>(`/knowledge/video/${bvid}/pages`),
-
-    // 获取已向量化的分P列表 (v2: Bearer token auth)
+    // 获取已向量化的分P列表（账本 = app-ts Mongo vec_pages）
     getVectorizedPages: () =>
         request<VectorizedPageItem[]>("/knowledge/pages/vectorized", {
             headers: getAuthHeaders(),

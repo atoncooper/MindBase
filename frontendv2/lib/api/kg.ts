@@ -1,7 +1,8 @@
 /**
  * Knowledge Graph API - graph build / stats / visualization subgraph.
  *
- * Backend contract: app/routers/knowledge.py KG section; frontend design:
+ * Backend contract: app-ts src/transport/http/routes/kg.ts (AI 编排) +
+ * app-go/app-kg（gRPC 存储）；frontend design:
  * plan/1.0.5-KnowledgeGraph/frontend-design.md.
  */
 import { request } from "./client";

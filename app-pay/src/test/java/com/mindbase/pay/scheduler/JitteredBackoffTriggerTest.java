@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** jitter 边界、空跑退避递进、有工作重置、cap 封顶（jitterRatio=0 时确定性断言）。 */
+/** Jitter bounds, escalating backoff on idle runs, reset when work is found, cap ceiling (deterministic assertions when jitterRatio=0). */
 class JitteredBackoffTriggerTest {
 
     private static final Instant NOW = Instant.parse("2026-09-06T04:00:00Z");
@@ -50,7 +50,7 @@ class JitteredBackoffTriggerTest {
     void firstExecutionIsImmediate() {
         JitteredBackoffTrigger trigger = new JitteredBackoffTrigger(
                 new FakeJob(), Duration.ofSeconds(120), Duration.ofSeconds(600), 0);
-        // 空 ctx = 首启/重启，立即追补（对真实时钟断言， NOW 静态常量不可用）
+        // Empty ctx = first start/restart, catch up immediately (assert against the real clock; the static NOW constant is unusable here)
         Instant before = Instant.now();
         Instant next = trigger.nextExecution(ctx(null));
         Instant after = Instant.now();
@@ -65,11 +65,11 @@ class JitteredBackoffTriggerTest {
                 job, Duration.ofSeconds(120), Duration.ofSeconds(600), 0);
 
         Instant last = NOW;
-        long[] expected = {180, 270, 405, 600, 600}; // 120×1.5^n，第 4 起触 cap 600
+        long[] expected = {180, 270, 405, 600, 600}; // 120 * 1.5^n, hits the cap of 600 from the 4th iteration on
         for (int i = 0; i < expected.length; i++) {
             Instant next = trigger.nextExecution(ctx(last));
             long interval = Duration.between(last, next).getSeconds();
-            assertThat(interval).as("第 %d 次空跑后退避间隔", i + 1).isEqualTo(expected[i]);
+            assertThat(interval).as("backoff interval after idle run #%d", i + 1).isEqualTo(expected[i]);
             last = next;
         }
     }
@@ -82,10 +82,10 @@ class JitteredBackoffTriggerTest {
 
         job.hadWork = false;
         Instant last = NOW;
-        Instant next = trigger.nextExecution(ctx(last)); // 一次空跑 → 180s
+        Instant next = trigger.nextExecution(ctx(last)); // one idle run -> 180s
 
         job.hadWork = true;
-        Instant afterWork = trigger.nextExecution(ctx(next)); // 发现工作 → 回 base
+        Instant afterWork = trigger.nextExecution(ctx(next)); // work found -> back to base
         assertThat(Duration.between(next, afterWork).getSeconds()).isEqualTo(120);
     }
 
@@ -107,7 +107,7 @@ class JitteredBackoffTriggerTest {
     @Test
     void jitterStaysWithinRatio() {
         FakeJob job = new FakeJob();
-        job.hadWork = true; // 恒 base，无退避，只验 jitter 边界
+        job.hadWork = true; // always base, no backoff, only verifying jitter bounds
         JitteredBackoffTrigger trigger = new JitteredBackoffTrigger(
                 job, Duration.ofSeconds(60), Duration.ofSeconds(60), 0.3);
 
@@ -115,7 +115,7 @@ class JitteredBackoffTriggerTest {
         for (int i = 0; i < 50; i++) {
             Instant next = trigger.nextExecution(ctx(last));
             long interval = Duration.between(last, next).getSeconds();
-            assertThat(interval).isBetween(42L, 78L); // 60s ±30%
+            assertThat(interval).isBetween(42L, 78L); // 60s +/- 30%
             last = next;
         }
     }

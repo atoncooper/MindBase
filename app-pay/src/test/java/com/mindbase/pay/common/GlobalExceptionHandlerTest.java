@@ -18,8 +18,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 框架异常显式分类：乱码请求体/缺参数/类型不匹配 → 400，
- * 方法不支持 → 405，未知路径 → 404——都不许落进 500 兜底污染监控。
+ * Explicit classification of framework exceptions: malformed request body / missing parameter / type mismatch -> 400,
+ * method not supported -> 405, unknown path -> 404 -- none may fall into the 500 fallback and pollute monitoring.
  */
 class GlobalExceptionHandlerTest {
 

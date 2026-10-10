@@ -80,12 +80,20 @@ export function NotesView() {
     }, [selectedUuid, refreshDetail]);
 
     const handleSelect = useCallback((uuid: string) => {
+        if (uuid === selectedUuid) {
+            // 同一条笔记二次点击：selection 未变化，详情 effect 不会重跑 ——
+            // 若此处清空 detail 就会出现「点击两次无法展示」。改为原地重拉
+            // 详情（拉取期间保留现有内容，loadingDetail 转圈）。
+            void refreshDetail(uuid);
+            setMobileEditor(true);
+            return;
+        }
         setSelectedUuid(uuid);
         // Clear stale detail so the loader (not the previous note) shows while
         // the new one fetches.
         setDetail(null);
         setMobileEditor(true);
-    }, []);
+    }, [selectedUuid, refreshDetail]);
 
     const handleNew = useCallback(async () => {
         setBusyAction(true);

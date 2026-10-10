@@ -11,8 +11,9 @@ import org.springframework.stereotype.Service;
 import java.util.UUID;
 
 /**
- * M1 模拟支付渠道：复用 PaymentService.handleChannelPaid 完整链路（落流水/幂等/交付），
- * M2 真实渠道接入后只需关闭 pay.mock.enabled 并新增渠道适配器，业务侧无感。
+ * M1 mock payment channel: reuses the full PaymentService.handleChannelPaid path (callback log / idempotency /
+ * delivery). Once real M2 channels are wired in, it only takes pay.mock.enabled=false plus a new channel adapter;
+ * nothing else changes.
  */
 @Slf4j
 @Service
@@ -25,7 +26,7 @@ public class MockChannelService {
 
     public PayOrder confirmPaid(long uid, String orderNo) {
         if (!payProperties.mock().enabled()) {
-            // 关闭后接口整体隐身，避免暴露内部调试入口
+            // When disabled the endpoint disappears entirely, avoiding exposure of an internal debug entry point
             throw ApiException.notFound("NOT_FOUND", "Endpoint not found");
         }
         PayOrder order = orderService.getOwnedOrder(uid, orderNo);
@@ -36,6 +37,6 @@ public class MockChannelService {
         String payload = "{\"mock\":true,\"orderNo\":\"" + orderNo + "\",\"tradeNo\":\"" + tradeNo + "\"}";
         log.info("[PAY] mock_confirm uid={} order_no={}", uid, orderNo);
         return paymentService.handleChannelPaid(orderNo, PayOrder.PayChannel.MOCK, tradeNo,
-                order.getAmountCents(), payload, PayCallbackLog.SignatureResult.SKIPPED);
+                order.getAmountCents(), payload, PayCallbackLog.SignatureResult.SKIPPED, null, null);
     }
 }

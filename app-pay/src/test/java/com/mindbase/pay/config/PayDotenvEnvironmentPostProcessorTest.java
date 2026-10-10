@@ -13,8 +13,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * .env 加载：占位符变量注入、真实环境变量优先、找不到文件静默跳过（Docker 容器形态常态）。
- * 用包级重载入口显式传起始目录——Windows 下改 user.dir 对 Path.of("") 无效（默认目录随 FileSystem 固化）。
+ * .env loading: placeholder variable injection, real environment variables take precedence, silently skip when the file is missing (the usual Docker container shape).
+ * Uses the package-level overload entry point to pass the start directory explicitly -- on Windows, changing user.dir has no effect on Path.of("") (the default directory is fixed with the FileSystem).
  */
 class PayDotenvEnvironmentPostProcessorTest {
 
@@ -29,7 +29,7 @@ class PayDotenvEnvironmentPostProcessorTest {
 
     @Test
     void loadsEnvFileFromModuleDirParent() throws IOException {
-        // 模拟 IDE 运行：工作目录 = 模块目录 app-pay，.env 在其上级（项目根）
+        // simulate an IDE run: working directory = module directory app-pay, with .env one level up (project root)
         Path moduleDir = Files.createDirectories(tempDir.resolve("app-pay"));
         Files.writeString(moduleDir.getParent().resolve(".env"), """
                 # comment line
@@ -42,7 +42,7 @@ class PayDotenvEnvironmentPostProcessorTest {
 
         StandardEnvironment env = process(moduleDir);
 
-        // 首个 = 分隔：值本身可含 =（密钥 base64 可能有 = 填充）；引号剥离；注释/空行/非 KV 行跳过
+        // split on the first =: the value itself may contain = (base64 secrets may have = padding); quotes are stripped; comments/blank lines/non-KV lines are skipped
         assertThat(env.getProperty("PAY_DOTENV_TEST_KEY")).isEqualTo("plain-value");
         assertThat(env.getProperty("PAY_DOTENV_QUOTED")).isEqualTo("v a l");
         assertThat(env.getProperty("PAY_DOTENV_EQ")).isEqualTo("a=b=c");
@@ -54,7 +54,7 @@ class PayDotenvEnvironmentPostProcessorTest {
         Files.writeString(tempDir.resolve(".env"), "PAY_DOTENV_TEST_KEY=from-file\n");
 
         StandardEnvironment env = new StandardEnvironment();
-        // 真实环境变量位于 systemEnvironment 源——用同名源模拟其恒胜出
+        // real environment variables live in the systemEnvironment source -- simulate its constant precedence with a source of the same name
         env.getPropertySources().remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
         env.getPropertySources().addFirst(new MapPropertySource(
                 StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
@@ -69,7 +69,7 @@ class PayDotenvEnvironmentPostProcessorTest {
     void missingDotenvIsNoop() {
         StandardEnvironment env = process(tempDir);
 
-        // 起始目录向上均无 .env（Docker 容器常态）：不加源、不抛异常
+        // no .env in the start directory or any ancestor (the usual Docker container shape): no source added, no exception thrown
         assertThat(env.getPropertySources().contains(PayDotenvEnvironmentPostProcessor.SOURCE_NAME)).isFalse();
     }
 }

@@ -9,11 +9,11 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 随机偏移 + 空跑自适应退避的轮询触发器（plan/1.0.8 §5.4）：
- *   next = last完成 + base × 1.5^连续空跑次数（cap 封顶） × (1 ± jitter)
- * - 首次执行立即触发（重启追补）；
- * - cap == base 表示不退避（如掉单查单要求及时）；
- * - jitter ±30% 防多实例/多任务共振。
+ * Polling trigger with random jitter and idle-adaptive backoff (plan/1.0.8 §5.4):
+ *   next = last completion + base × 1.5^consecutive idle rounds (capped) × (1 ± jitter)
+ * - First execution fires immediately (catch-up after restart);
+ * - cap == base means no backoff (e.g. missed-payment queries must be timely);
+ * - jitter ±30% prevents resonance across instances/tasks.
  */
 public class JitteredBackoffTrigger implements Trigger {
 
@@ -36,7 +36,7 @@ public class JitteredBackoffTrigger implements Trigger {
     public Instant nextExecution(TriggerContext ctx) {
         Instant last = ctx.lastCompletion();
         if (last == null) {
-            return Instant.now(); // 重启/首启立即跑一轮（追补）
+            return Instant.now(); // run one round immediately on restart/first start (catch-up)
         }
         if (job.lastRunHadWork()) {
             idleStreak.set(0);

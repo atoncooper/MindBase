@@ -1,6 +1,7 @@
 package com.mindbase.pay.scheduler;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayCallbackLog;
 import com.mindbase.pay.model.PayOrder;
@@ -28,7 +29,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/** 掉单补偿：查单已支付→统一入口补单；渠道已关闭→本地关单；mock 渠道跳过。 */
+/** Lost-order compensation: query reports paid -> compensate via the unified entry; channel closed -> close locally; mock channel skipped. */
 @ExtendWith(MockitoExtension.class)
 class ChannelQueryJobTest {
 
@@ -42,13 +43,25 @@ class ChannelQueryJobTest {
     private PayChannelAdapter alipayAdapter;
     @Mock
     private PaymentService paymentService;
+    @Mock
+    private JobLease lease;
+    @Mock
+    private PayMetrics metrics;
 
     private ChannelQueryJob job;
 
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
-        job = new ChannelQueryJob(orderMapper, channelRouter, paymentService, clock);
+        job = new ChannelQueryJob(orderMapper, channelRouter, paymentService, lease, metrics, clock);
+        when(lease.tryAcquire(anyString())).thenReturn(true);
+    }
+
+    @Test
+    void leaseHeldElsewhereSkipsEntireround() {
+        when(lease.tryAcquire(anyString())).thenReturn(false);
+        job.run();
+        verifyNoInteractions(orderMapper, paymentService);
     }
 
     private PayOrder createdOrder(PayOrder.PayChannel channel) {
@@ -69,12 +82,13 @@ class ChannelQueryJobTest {
                 .thenReturn(List.of(createdOrder(PayOrder.PayChannel.ALIPAY)));
         when(channelRouter.requireAdapter(PayOrder.PayChannel.ALIPAY)).thenReturn(alipayAdapter);
         when(alipayAdapter.queryOrder(any(PayOrder.class)))
-                .thenReturn(ChannelQueryResult.paid("ALI1", 1800L));
+                .thenReturn(ChannelQueryResult.paid("ALI1", 1800L, "buyer@example.com", "2088001"));
 
         job.run();
 
         verify(paymentService).handleChannelPaid(eq("PO1"), eq(PayOrder.PayChannel.ALIPAY),
-                eq("ALI1"), eq(1800L), anyString(), eq(PayCallbackLog.SignatureResult.VALID));
+                eq("ALI1"), eq(1800L), anyString(), eq(PayCallbackLog.SignatureResult.VALID),
+                eq("buyer@example.com"), eq("2088001"));
     }
 
     @Test
@@ -88,7 +102,7 @@ class ChannelQueryJobTest {
 
         verify(orderMapper).closeOrder(eq("PO1"), any(LocalDateTime.class), eq("CHANNEL_CLOSED"));
         verify(paymentService, never()).handleChannelPaid(anyString(), any(), any(), any(),
-                anyString(), any());
+                anyString(), any(), any(), any());
     }
 
     @Test

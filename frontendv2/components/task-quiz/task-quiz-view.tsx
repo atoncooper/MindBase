@@ -28,14 +28,23 @@ export function TaskQuizView() {
         setLoading(true);
         try {
             const list = await taskQuizApi.listTasks();
+            // /tasks 是 app-task 的全用户任务表（调度器是通用执行器，
+            // app-pay 订单超时委托等系统任务也注册在同一张表、uid 相同会一并返回）。
+            // 本页面只关心出题任务：出题注册链路恒带 payload.prompt，其他域任务没有，
+            // 据此过滤——否则这类任务没有业务行（/detail 恒 404），兜底映射会把
+            // scheduler completed 渲染成"正在生成题目…"并永久转圈。
+            const quizTasks = list.filter(
+                (t) => typeof t.payload?.prompt === "string" && t.payload.prompt.trim().length > 0,
+            );
             // Newest trigger first.
-            list.sort((a, b) => b.triggerTime.localeCompare(a.triggerTime));
-            setTasks(list);
-            if (autoSelect && list.length > 0) {
-                // 只在尚未选中任何任务时自动选中第一个（函数式更新，
-                // 不依赖 selectedTaskId，避免点击任务时列表被整表重拉）。
-                setSelectedTaskId((prev) => prev ?? list[0].taskId);
-            }
+            quizTasks.sort((a, b) => b.triggerTime.localeCompare(a.triggerTime));
+            setTasks(quizTasks);
+            // 选中项仍存在于过滤后的列表则保留（避免点击任务时列表被整表重拉）；
+            // 已消失（含被过滤的系统任务）则回落到第一个，空列表清空选中。
+            setSelectedTaskId((prev) => {
+                if (prev && quizTasks.some((t) => t.taskId === prev)) return prev;
+                return quizTasks.length > 0 ? quizTasks[0].taskId : null;
+            });
         } catch {
             // Empty list is a valid state.
         } finally {
@@ -64,6 +73,8 @@ export function TaskQuizView() {
                     difficulty: item.payload?.difficulty ?? "",
                     // Scheduler -> business mapping: running/completed mean the
                     // executor phase (quiz generating); pending stays pending.
+                    // completed 仅在业务行缺失（404 兜底）时到达这里——正常完成
+                    // 会经 markTaskQuizGenerated 翻转业务行，detail 直接 200。
                     status:
                         item.status === "running" || item.status === "completed"
                             ? "generating"
@@ -132,6 +143,12 @@ export function TaskQuizView() {
         void refreshList(false);
     }, [selectedTaskId, refreshDetail, refreshList]);
 
+    const handleDeleted = useCallback(() => {
+        // 删除成功：重拉列表；若删除的是当前选中项，refreshList 的函数式
+        // 选中更新会自动回落到第一个任务（或清空）。
+        void refreshList(false);
+    }, [refreshList]);
+
     return (
         <div className="flex h-[calc(100dvh-3rem)]">
             {/* Left list — 任何宽度下都常驻显示，点击任务绝不收起/变窄；
@@ -148,6 +165,7 @@ export function TaskQuizView() {
                     selectedTaskId={selectedTaskId}
                     onSelect={handleSelect}
                     onNew={handleNew}
+                    onDeleted={handleDeleted}
                 />
             </aside>
 

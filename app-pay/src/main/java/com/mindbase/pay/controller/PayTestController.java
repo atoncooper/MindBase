@@ -44,13 +44,14 @@ import static com.mindbase.pay.dto.PayDtos.OrderView;
 import static com.mindbase.pay.dto.PayDtos.ProductView;
 
 /**
- * 本机测试入口（/test/pay/*）：M3 前端就绪前在本机跑通支付全流程的入口，
- * 含浏览器控制台 /test/pay/console.html（静态页）。
+ * Local test entry points (/test/pay/*): the entry point for exercising the full payment flow
+ * locally before the M3 frontend is ready, including the browser console
+ * /test/pay/console.html (static page).
  *
- * 三重隔离（缺一不可，见 plan/1.0.7-Pay 附录 B）：
- * ① pay.test.enabled 默认 false（关闭时全部 404 隐身）；② 令牌必须匹配；
- * ③ 结构性：APISIX 不路由 /test/*，app-pay 端口仅 127.0.0.1 绑定，公网不可达。
- * 生产/对外环境必须保持 enabled=false。
+ * Triple isolation (all three are required, see plan/1.0.7-Pay appendix B):
+ * (1) pay.test.enabled defaults to false (all endpoints 404/stealth when off); (2) the token must match;
+ * (3) structural: APISIX does not route /test/*, and the app-pay port binds only to 127.0.0.1, so it is
+ * unreachable from the public internet. Production/external environments must keep enabled=false.
  */
 @Slf4j
 @RestController
@@ -72,7 +73,7 @@ public class PayTestController {
         return productService.listActive().stream().map(ProductView::from).toList();
     }
 
-    /** 指定 uid 下单（绕过网关鉴权，仅本机测试）。 */
+    /** Create an order for the given uid (bypasses gateway auth; local testing only). */
     @PostMapping("/orders")
     public Object createOrder(@Valid @RequestBody PayDtos.TestCreateOrderRequest req,
                               @RequestHeader(value = "X-Test-Token", required = false) String headerToken,
@@ -82,7 +83,7 @@ public class PayTestController {
         return orderService.createOrder(req.uid(), req.skuCode(), req.channel(), null);
     }
 
-    /** 模拟支付成功（等价 M1 mock 渠道；用于不扫沙箱二维码时快速走完闭环）。 */
+    /** Simulate a successful payment (equivalent to the M1 mock channel; used to complete the loop quickly without scanning the sandbox QR code). */
     @PostMapping("/mock-pay")
     public OrderView mockPay(@Valid @RequestBody PayDtos.TestMockPayRequest req,
                              @RequestHeader(value = "X-Test-Token", required = false) String headerToken,
@@ -114,7 +115,7 @@ public class PayTestController {
                 .orElse(new MembershipView(null, false, null, false));
     }
 
-    /** 我的最近订单（控制台概览）。 */
+    /** My recent orders (console overview). */
     @GetMapping("/orders")
     public List<OrderView> orders(@RequestParam long uid,
                                   @RequestHeader(value = "X-Test-Token", required = false) String headerToken,
@@ -125,9 +126,10 @@ public class PayTestController {
     }
 
     /**
-     * 高并发模拟（服务端 burst，突破浏览器 fetch 并发上限）：
-     * PAY_SAME = N 线程并发支付同一订单（验证幂等：仅交付一次）；
-     * CREATE_ORDERS = N 线程并发下单（DB 写入压测）。闩锁保证 N 线程同时起跑。
+     * High-concurrency simulation (server-side burst, bypassing the browser fetch concurrency limit):
+     * PAY_SAME = N threads pay the same order concurrently (verifies idempotency: delivered only once);
+     * CREATE_ORDERS = N threads create orders concurrently (DB write stress test). The latch makes all
+     * N threads start at the same time.
      */
     @PostMapping("/burst")
     public Map<String, Object> burst(@Valid @RequestBody PayDtos.BurstRequest req,
@@ -181,31 +183,23 @@ public class PayTestController {
         }
     }
 
-    /** 二维码渲染（控制台展示支付宝沙箱收款码，手机沙箱钱包扫码）。 */
+    /** QR code rendering (console displays the Alipay sandbox payment code, scanned with the mobile sandbox wallet). */
     @GetMapping(value = "/qr", produces = MediaType.IMAGE_PNG_VALUE)
     public byte[] qr(@RequestParam String text,
                      @RequestHeader(value = "X-Test-Token", required = false) String headerToken,
                      @RequestParam(value = "token", required = false) String queryToken) {
         guard(headerToken, queryToken);
-        try {
-            BitMatrix matrix = new QRCodeWriter()
-                    .encode(text, BarcodeFormat.QR_CODE, 300, 300);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            MatrixToImageWriter.writeToStream(matrix, "PNG", out);
-            return out.toByteArray();
-        } catch (Exception e) {
-            throw ApiException.badRequest("QR_ENCODE_FAILED", "QR code generation failed");
-        }
+        return com.mindbase.pay.common.QrCodes.png(text, 300);
     }
 
-    /** 双闸门：开关关闭 → 404 隐身；令牌（可选加固）不匹配 → 401。未配置令牌 = 默认验证通过。 */
+    /** Double gate: switch off -> 404/stealth; token (optional hardening) mismatch -> 401. No token configured = verification passes by default. */
     private void guard(String headerToken, String queryToken) {
         if (!payProperties.test().enabled()) {
             throw ApiException.notFound("NOT_FOUND", "Endpoint not found");
         }
         String expected = payProperties.test().token();
         if (expected == null || expected.isBlank()) {
-            return; // 未配置令牌：本机回环 + 开关即闸门，默认验证通过
+            return; // No token configured: loopback + switch are the gate, verification passes by default
         }
         if (!expected.equals(headerToken) && !expected.equals(queryToken)) {
             throw ApiException.unauthorized("UNAUTHORIZED", "Invalid test token");

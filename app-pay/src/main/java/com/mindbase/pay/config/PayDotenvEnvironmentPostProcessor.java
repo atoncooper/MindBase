@@ -17,26 +17,28 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * 本地直启（IDE / java 命令）时加载项目根 .env 到 Spring Environment。
+ * Loads the project root .env into the Spring Environment when starting locally (IDE / java command).
  *
- * <p>背景：yaml 中的 ${ALIPAY_*}/${PAY_MYSQL_*}/${PAY_TEST_TOKEN} 占位符，在容器形态
- * 由 compose env_file 注入为真实环境变量；本地形态此前无来源，全部回落 yaml 默认值
- * ——.env 配了也不生效（典型症状：ALIPAY_ENABLED=true 但本地实例报"支付渠道暂未开放"）。
+ * <p>Background: the ${ALIPAY_*}/${PAY_MYSQL_*}/${PAY_TEST_TOKEN} placeholders in yaml are injected as real
+ * environment variables by compose env_file in the container form; the local form previously had no source and
+ * fell back entirely to the yaml defaults
+ * -- so values set in .env had no effect (typical symptom: ALIPAY_ENABLED=true but the local instance reports "payment channel not open yet").
  *
- * <p>优先级：真实环境变量 > .env > yaml 默认值。实现为把 .env 源插在 systemEnvironment
- * 之后——容器内 env_file 注入的变量与 shell 显式导出的变量恒胜出，行为与容器形态一致。
+ * <p>Precedence: real environment variables > .env > yaml defaults. Implemented by inserting the .env source after
+ * systemEnvironment -- variables injected by env_file in the container and those explicitly exported by the shell
+ * always win, matching container behavior.
  *
- * <p>Docker 容器镜像内无 .env 文件 → 自动跳过（找不到文件是常态而非错误）；
- * 读失败仅告警不阻断启动，占位符回落 yaml 默认值。
- * 安全：只记路径与条目数，绝不打印值（.env 含支付密钥）。
+ * <p>Docker container images have no .env file -> skipped automatically (a missing file is normal, not an error);
+ * a read failure only warns and does not block startup, and placeholders fall back to the yaml defaults.
+ * Security: only the path and entry count are logged, never the values (.env contains payment secrets).
  */
 @Slf4j
 public class PayDotenvEnvironmentPostProcessor implements EnvironmentPostProcessor, Ordered {
 
-    /** 属性源名称（排障/测试用）。 */
+    /** Property source name (for troubleshooting/testing). */
     public static final String SOURCE_NAME = "payDotenv";
 
-    /** 自工作目录向上回溯的层数上限：.env 在项目根（IDE 默认工作目录是模块目录 app-pay 的上级），防止误抓更上层目录的同名文件。 */
+    /** Maximum number of levels to walk up from the working directory: .env is at the project root (the IDE's default working directory is the parent of the module directory app-pay), preventing accidental capture of a same-named file in a higher directory. */
     private static final int MAX_PARENT_LEVELS = 3;
 
     @Override
@@ -44,7 +46,7 @@ public class PayDotenvEnvironmentPostProcessor implements EnvironmentPostProcess
         postProcessEnvironment(environment, Path.of(""));
     }
 
-    /** 测试入口：显式指定起始目录（Windows 下 Path.of("") 的默认目录在 FileSystem 创建时固化，测试改 user.dir 无效）。 */
+    /** Test entry point: explicitly specify the starting directory (on Windows the default directory of Path.of("") is fixed when the FileSystem is created, so changing user.dir in tests has no effect). */
     void postProcessEnvironment(ConfigurableEnvironment environment, Path startDir) {
         if (environment.getPropertySources().contains(SOURCE_NAME)) {
             return;
@@ -69,11 +71,11 @@ public class PayDotenvEnvironmentPostProcessor implements EnvironmentPostProcess
 
     @Override
     public int getOrder() {
-        // LOWEST_PRECEDENCE：跑在 ConfigData（HIGHEST+10，加载 application.yaml）之后
+        // LOWEST_PRECEDENCE: runs after ConfigData (HIGHEST+10, which loads application.yaml)
         return Ordered.LOWEST_PRECEDENCE;
     }
 
-    /** 自 startDir 向上找 .env（IDE 默认工作目录是模块目录，.env 在其上级项目根）。 */
+    /** Search upward from startDir for .env (the IDE's default working directory is the module directory, and .env is at the parent project root). */
     private Path locateDotenv(Path startDir) {
         Path dir = startDir.toAbsolutePath();
         for (int i = 0; i <= MAX_PARENT_LEVELS && dir != null; i++, dir = dir.getParent()) {
@@ -85,7 +87,7 @@ public class PayDotenvEnvironmentPostProcessor implements EnvironmentPostProcess
         return null;
     }
 
-    /** 极简 .env 解析：KEY=VALUE（首个 = 分隔，值本身可含 =，密钥 base64 可能有 = 填充）、# 注释、空行、可选成对引号剥离。 */
+    /** Minimal .env parsing: KEY=VALUE (split at the first =, the value itself may contain =, since base64 secrets may have = padding), # comments, blank lines, optional stripping of paired quotes. */
     private Map<String, Object> parse(Path dotenv) {
         Map<String, Object> entries = new HashMap<>();
         try (Stream<String> lines = Files.lines(dotenv)) {
@@ -94,7 +96,7 @@ public class PayDotenvEnvironmentPostProcessor implements EnvironmentPostProcess
                     .forEach(line -> {
                         int eq = line.indexOf('=');
                         if (eq <= 0) {
-                            return; // 无 = 或空 key 的行跳过
+                            return; // skip lines with no = or an empty key
                         }
                         String key = line.substring(0, eq).trim();
                         String value = stripQuotes(line.substring(eq + 1).trim());
@@ -108,7 +110,7 @@ public class PayDotenvEnvironmentPostProcessor implements EnvironmentPostProcess
         return entries;
     }
 
-    /** 剥离成对的首尾引号（KEY="v" / KEY='v'），内部引号不动。 */
+    /** Strip paired leading/trailing quotes (KEY="v" / KEY='v'); inner quotes are left untouched. */
     private String stripQuotes(String value) {
         if (value.length() >= 2) {
             char first = value.charAt(0);

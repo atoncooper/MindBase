@@ -11,9 +11,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * 实体字段初始化器必须用北京墙上时间（PayTime.now()），不得用系统默认时区——
- * 在非 Asia/Shanghai 时区的机器上（本用例 simulated：直接对 PayTime.ZONE 的当前时间断言）
- * 两者会差 8 小时，此测试在该类机器上是真正的拦截器。
+ * Entity field initializers must use Beijing wall-clock time (PayTime.now()), not the system default zone --
+ * on machines in a timezone other than Asia/Shanghai (this case is simulated: it asserts directly against the
+ * current time in PayTime.ZONE) the two differ by 8 hours, making this test a real interceptor on such machines.
  */
 class EntityTimeDefaultsTest {
 
@@ -24,7 +24,7 @@ class EntityTimeDefaultsTest {
         PayOrder order = new PayOrder();
         assertThat(order.getCreatedAt()).isCloseTo(BEIJING_NOW, within(1, ChronoUnit.MINUTES));
         assertThat(order.getUpdatedAt()).isCloseTo(BEIJING_NOW, within(1, ChronoUnit.MINUTES));
-        assertThat(order.getVersion()).isEqualTo(1); // 委托版本基线
+        assertThat(order.getVersion()).isEqualTo(1); // delegation version baseline
     }
 
     @Test

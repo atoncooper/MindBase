@@ -8,7 +8,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/** 权益变更审计事件流：开通/顺延/补偿均可追溯（对账与客诉取证）。 */
+/** Audit event stream for entitlement changes: activation/extension/compensation are all traceable (reconciliation and customer-dispute evidence). */
 @Getter
 @Setter
 @TableName("pay_membership_event")

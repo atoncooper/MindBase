@@ -1,12 +1,14 @@
 /**
  * Task-quiz API - 定时出题：注册任务 / 任务列表 / 详情 / 答题 / agent 对话.
  *
- * Three backends are involved (see CLAUDE.md §2.7):
- *  - Main app:  POST /task-quiz/register (form register), POST /task-quiz/chat (agent SSE),
- *               GET /tasks/{id}/detail + POST /tasks/{id}/answer (business detail & judging)
+ * Three backends are involved:
+ *  - app-ts:    POST /task-quiz/register (register proxy -> app-task) and
+ *               POST /task-quiz/chat (task-quiz agent SSE)
+ *  - app-quiz:  GET /tasks/{id}/detail + POST /tasks/{id}/answer (business
+ *               detail & deterministic judging)
  *  - app-task:  GET /tasks (scheduler list), GET /tasks/{id} (scheduler view)
- * All routed through APISIX with bili_session Bearer auth; the caller does
- * NOT pass uid - identity comes from the session.
+ * All routed through APISIX with Bearer token auth (X-Uid injected at the
+ * gateway); the caller does NOT pass uid - identity comes from the session.
  *
  * Responses are snake_case from the backend and converted to camelCase here.
  */
@@ -109,7 +111,7 @@ export interface TaskQuizStreamHandlers {
 }
 
 export const taskQuizApi = {
-    /** Register a scheduled quiz task (main app /task-quiz/register -> app-task). */
+    /** Register a scheduled quiz task (app-ts /task-quiz/register -> app-task). */
     register: (params: RegisterTaskParams) =>
         requestCamel<RegisterTaskResponse>("/task-quiz/register", {
             method: "POST",
@@ -123,20 +125,40 @@ export const taskQuizApi = {
             }),
         }),
 
-    /** List current user's scheduled quiz tasks. */
+    /**
+     * List current user's scheduled quiz tasks, scoped to the task-quiz
+     * domain. The scheduler (app-task) is a generic executor shared across
+     * domains (app-pay order-timeout delegation also registers there), so the
+     * list is filtered server-side via ?domain=task_quiz; entries without a
+     * payload prompt are dropped again client-side as defense in depth.
+     */
     listTasks: async (): Promise<TaskQuizListItem[]> => {
-        const res = await requestCamel<{ tasks: TaskQuizListItem[] }>("/tasks");
-        return res.tasks ?? [];
+        const res = await requestCamel<{ tasks: TaskQuizListItem[] }>(
+            "/tasks?domain=task_quiz",
+        );
+        return (res.tasks ?? []).filter(
+            (t) => typeof t.payload?.prompt === "string" && t.payload.prompt.trim().length > 0,
+        );
     },
 
     /**
-     * Get the business detail (quiz + answers + business status) from the main
-     * app. Note: the business row is only created at generation time, so this
+     * Get the business detail (quiz + answers + business status) from app-quiz.
+     * Note: the business row is only created at generation time, so this
      * 404s for tasks whose trigger time has not fired yet - callers should
      * fall back to a scheduled view built from the list item.
      */
     getTask: (taskId: string) =>
         requestCamel<TaskQuizDetail>(`/tasks/${taskId}/detail`),
+
+    /**
+     * Delete a scheduled task (app-task DELETE /tasks/{id}). Only the owner's
+     * pending / terminal (completed|failed) tasks are removable; in-flight
+     * tasks answer 409 and surface as an error here.
+     */
+    deleteTask: (taskId: string) =>
+        requestCamel<{ taskId: string; deleted: boolean }>(`/tasks/${taskId}`, {
+            method: "DELETE",
+        }),
 
     /** Submit answers for an awaiting_answer task (one entry per question, index 0-based). */
     submitAnswer: (taskId: string, answers: SubmitAnswerItem[]) =>

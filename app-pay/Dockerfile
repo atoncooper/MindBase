@@ -1,17 +1,31 @@
-# 多阶段构建：Maven 构建（阿里云镜像，防国内依赖下载超时）→ JRE 运行
-FROM maven:3.9-eclipse-temurin-17 AS build
+# Multi-stage build: Maven build (Alibaba Cloud mirror to avoid dependency download timeouts in China) -> JRE runtime
+FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /build
 COPY maven-settings.xml /root/.m2/settings.xml
-# 先拷 pom 拉依赖，利用 Docker 层缓存
+# Copy the pom first to fetch dependencies, leveraging Docker layer caching.
+# Both mvn steps retry. Two failure modes to defend against:
+#  - transient truncation ("Premature end of Content-Length") → mvn exits 1
+#  - stalled connection → mvn waits forever, so each attempt is capped with
+#    coreutils `timeout` (30min: go-offline legitimately takes ~15min here)
+# ~/.m2 persists across attempts within the same RUN, so retries resume
+# incrementally instead of re-downloading everything.
 COPY pom.xml .
-RUN mvn -B -q dependency:go-offline
+RUN ok=0; for i in 1 2 3; do \
+      if timeout 1800 mvn -B -q -Dmaven.artifact.threads=16 dependency:go-offline; then ok=1; break; fi; \
+      echo "dependency:go-offline attempt $i failed/timed out, retrying in 10s..."; sleep 10; \
+    done; \
+    [ "$ok" = "1" ] || { echo "dependency:go-offline failed after 3 attempts"; exit 1; }
 COPY src ./src
-RUN mvn -B -q package -DskipTests
+RUN ok=0; for i in 1 2 3; do \
+      if timeout 1800 mvn -B -q -Dmaven.artifact.threads=16 package -DskipTests; then ok=1; break; fi; \
+      echo "package attempt $i failed/timed out, retrying in 10s..."; sleep 10; \
+    done; \
+    [ "$ok" = "1" ] || { echo "package failed after 3 attempts"; exit 1; }
 
-FROM eclipse-temurin:17-jre
-# 时区统一 Asia/Shanghai（会员到期/订单超时均按北京时间计算）；
-# LANG + file.encoding 双保险：基础镜像默认 locale 是 ASCII，Java 17 默认字符集跟随环境，
-# 不固定会导致容器内默认字符集路径（系统输出/第三方库）中文乱码
+FROM eclipse-temurin:21-jre
+# Unify the timezone to Asia/Shanghai (membership expiry / order timeout are all computed in Beijing time);
+# Belt-and-suspenders LANG + file.encoding: since JEP 400 (Java 18+) the default charset is UTF-8 regardless of
+# environment, these only pin locale-dependent paths in the container (system output / third-party libraries)
 ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \

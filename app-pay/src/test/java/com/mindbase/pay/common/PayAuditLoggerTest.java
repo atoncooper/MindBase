@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 资金审计：事件写入 PAY_AUDIT logger（logback 路由到 pay-audit.jsonl），
- * 每条为单行 JSON，自动携带 ts/trace_id，kv 成对序列化。
+ * Money audit: events are written to the PAY_AUDIT logger (logback routes them to pay-audit.jsonl),
+ * each entry is a single-line JSON record that automatically carries ts/trace_id, with kv pairs serialized.
  */
 class PayAuditLoggerTest {
 
@@ -48,7 +48,7 @@ class PayAuditLoggerTest {
                     .contains("\"trace_id\":\"trace-1\"")
                     .contains("\"uid\":\"10086\"")
                     .contains("\"ts\":\"");
-            assertThat(line.lines().count()).isEqualTo(1); // 单行 JSONL
+            assertThat(line.lines().count()).isEqualTo(1); // single-line JSONL
         } finally {
             payAudit.detachAppender(appender);
         }

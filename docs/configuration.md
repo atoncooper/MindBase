@@ -1,391 +1,55 @@
-# Configuration Guide
+# 配置体系
 
-## Overview
+> ⚠️ **Python backend（`app/`，含 `app/config/*.yaml` 分层配置）已于 2026-10-06 彻底退役**——旧的 `default.yaml → config.yaml → local.yaml` 四层合并体系随之消亡。现在是**多服务各管各的配置**，本文描述现行体系。服务清单与端口见 [architecture.md](architecture.md)。
 
-Configuration is loaded from **YAML files** for non-sensitive settings and **environment variables** for secrets (API keys, passwords). The two are merged at startup — YAML defines the structure and defaults; env vars inject sensitive values without touching files that could be committed.
+## 总原则
 
-### Load order (later overrides earlier)
+1. **.env 只放密钥/敏感信息**（API key、含密码的连接串），见 [.env.example](../.env.example)；普通配置（开关/模型名/超时/并发/CORS 等）一律进各服务自己的 YAML。
+2. **命名规则**：环境变量用双下划线嵌套到 YAML 字段（`MINIO__ACCESS_KEY` → `minio.access_key`），各服务有自己的前缀（`APPAUTH__`/`APPCLOUD__`/…）。
+3. **优先级**（多数服务一致，以各自 config loader 为准）：YAML 默认值 < `.env`（godotenv）< 真实环境变量（compose `env_file` / `environment:` 注入）。
+4. **共享 env**：一个 `.env` 驱动全部服务——各服务按需读取同名共享变量（`RDBMS__URL`/`MONGO__URI`/`REDIS__URL`/`MINIO__*`/`AI_GATEWAY__*`/`NEO4J_PASSWORD`），避免同一密钥抄多份。**例外——主加密密钥不进 .env**：独立密钥文件 `secrets/api_key_encryption_key`（gitignored，一行 base64），服务经 `SECURITY__API_KEY_ENCRYPTION_KEY_FILE` 约定读取（FILE > env，直读 env 仅应急回退；compose 挂载到 `/run/secrets/`）。
 
-```
-1. app/config/default.yaml        ← committed, defines every field + default
-2. app/config/config.yaml         ← team-shared overrides (committed, optional)
-3. app/config/local.yaml          ← optional, gitignored, per-machine tweaks
-4. .env file                      ← loaded into os.environ (python-dotenv)
-5. Environment variables          ← highest priority (LLM__API_KEY etc.)
-```
+## 各服务配置入口
 
----
-
-## Quick start
-
-```bash
-# 1. Copy the env template
-cp .env.example .env
-
-# 2. Edit .env — only fill in the secret fields
-#    All non-sensitive settings are already in YAML files.
-```
-
-Minimal `.env`:
-
-```env
-LLM__API_KEY=sk-your-dashscope-key
-```
-
----
-
-## Environment variable naming
-
-Use **double underscore** (`__`) to express nesting:
-
-| Env var | Maps to YAML path | Example value |
-|---------|-------------------|---------------|
-| `LLM__API_KEY` | `llm.api_key` | `sk-xxx` |
-| `LLM__MODEL` | `llm.model` | `qwen3-max` |
-| `RDBMS__URL` | `rdbms.url` | `postgresql+asyncpg://...` |
-| `SESSION__SECRET` | `session.secret` | (random string) |
-| `SECURITY__API_KEY_ENCRYPTION_KEY` | `security.api_key_encryption_key` | (base64-32) |
-
-Legacy flat env var names (e.g. `DASHSCOPE_API_KEY`, `OPENAI_API_KEY`) are still recognized as fallbacks when the new-style name is not set.
-
----
-
-## YAML configuration reference
-
-### `app` — Application metadata
-
-```yaml
-app:
-  name: MindBase
-  env: dev
-  debug: false
-  log_level: INFO         # DEBUG / INFO / WARNING / ERROR / CRITICAL
-  timezone: Asia/Shanghai
-```
-
-### `server` — HTTP server
-
-```yaml
-server:
-  host: 0.0.0.0
-  port: 8000
-  workers: 4              # set 1 in config.yaml if using --reload
-  reload: false
-```
-
-### `rdbms` — Relational database
-
-```yaml
-rdbms:
-  url: ""                  # ⚠️ no default — inject via RDBMS__URL env var
-  echo: false
-  pool_size: 20
-  max_overflow: 10
-  pool_timeout: 30
-  pool_recycle: 1800
-```
-
-Docker compose injects MySQL (`mysql+aiomysql://...@mysql:3306/mind_base`) automatically.
-
-To switch to PostgreSQL:
-
-```yaml
-# config.yaml
-rdbms:
-  echo: false
-  pool_size: 50
-  max_overflow: 30
-```
-
-```env
-RDBMS__URL=postgresql+asyncpg://user:pass@host:5432/mind_base
-```
-
-### `milvus` — Vector database
-
-```yaml
-milvus:
-  enabled: true
-  uri: ""                            # inject via MILVUS__URI env var (e.g. http://localhost:19530)
-  token: ""
-  db_name: MindBase
-  collection_name: bilibili_videos
-  cloud_collection_name: cloud_drive
-  dimension: 1024
-  index_type: IVF_FLAT
-```
-
-### `kg` — Knowledge graph (Neo4j, optional; degrades gracefully when unreachable)
-
-```yaml
-kg:
-  enabled: true
-  uri: ""                            # inject via KG__URI env var; docker: bolt://neo4j:7687
-  username: neo4j                    # password via env: KG__PASSWORD (share NEO4J_PASSWORD)
-  database: neo4j
-  entity_collection_name: kg_entities  # Milvus collection for semantic entity linking
-  extract_model: qwen-flash
-  max_hops: 2
-```
-
-### `llm` — Language model (OpenAI-compatible)
-
-```yaml
-llm:
-  provider: dashscope     # dashscope | openrouter (dialogue LLMs only;
-                          # embedding/rerank/ASR always go through DashScope)
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  model: qwen3-max
-  context_window: 0       # 0=auto from built-in model table (providers.py)
-  eval_model: gpt-4o-mini
-  timeout: 60
-  max_retries: 3
-```
-
-```yaml
-# OpenRouter alternative gateway (used when llm.provider: openrouter)
-openrouter:
-  base_url: https://openrouter.ai/api/v1
-  model: z-ai/glm-5.2:free
-  # api_key via env: OPENROUTER__API_KEY
-```
-
-`api_key` is **never** in YAML — inject via env:
-
-```env
-LLM__API_KEY=sk-your-key
-```
-
-### `embedding` — Embedding model
-
-```yaml
-embedding:
-  model: text-embedding-v4    # DashScope, 1024-dim default (v4 supports 1024/1536/2048)
-  batch_size: 100
-  dimension: 1024
-  version: v1                 # bump after changing model or chunk strategy
-```
-
-> ⚠️ Changing the embedding model or dimension makes existing Milvus vectors incompatible — rebuild the collections and bump `version`.
-
-### `rerank` — Two-stage retrieval reranking
-
-```yaml
-rerank:
-  enabled: true               # false -> NullReranker passthrough
-  provider: dashscope         # gte-rerank-v2 cross-encoder via DashScope
-  model: gte-rerank-v2
-  timeout: 30
-  top_n: 30                   # over-recall count fed to the reranker
-  # api_key via env: RERANK__API_KEY (falls back to LLM__API_KEY)
-```
-
-### `chunk` — Text chunking
-
-```yaml
-chunk:
-  target_size: 750
-  min_size: 300
-  max_size: 900
-  overlap: 100
-```
-
-### `asr` — Speech-to-text
-
-```yaml
-asr:
-  provider: dashscope
-  base_url: https://dashscope.aliyuncs.com/api/v1
-  model: paraformer-realtime-v2        # sync Recognition API
-  transcription_model: paraformer-v2   # async Transcription API (audio >= 60s)
-  realtime_max_seconds: 60             # above this, route to async Transcription
-  input_format: pcm
-  timeout: 600
-  # api_key via env: ASR__API_KEY; falls back to LLM__API_KEY
-```
-
-### `langsmith` — Tracing
-
-```yaml
-langsmith:
-  enabled: true
-  project: MindBase
-  endpoint: https://api.smith.langchain.com
-  tracing_v2: true
-  tracing: true
-```
-
-`api_key` must come from env:
-
-```env
-LANGSMITH__API_KEY=lsv2_pt_xxx
-```
-
-### `session` — User session
-
-```yaml
-session:
-  ttl_days: 30
-```
-
-`secret` for signing must come from env:
-
-```env
-SESSION__SECRET=<random-64-char-string>
-```
-
-Generate: `python -c "import secrets; print(secrets.token_urlsafe(48))"`
-
-### `security` — Encryption
-
-Controls AES-256-GCM encryption for stored OAuth tokens and user API keys.
-
-```env
-SECURITY__API_KEY_ENCRYPTION_KEY=<base64-encoded-32-bytes>
-```
-
-Generate: `python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"`
-
-- If unset: tokens are stored as plaintext (fine for local dev, not for production).
-- If set: **do not change after deployment** — existing encrypted data becomes unreadable.
-
-### `ratelimit` — Rate limiting (Redis-backed middleware)
-
-```yaml
-ratelimit:
-  chat_per_minute: 60
-  asr_per_hour: 100
-  quiz_per_day: 50
-```
-
-Per-endpoint limits (login/register/captcha…) live under `security.rate_limit`. Redis down = pass-through (fail-open), noted as a known risk.
-
-### `slow_sql` — Slow query logging
-
-```yaml
-slow_sql:
-  enabled: true
-  threshold_ms: 100        # SQLite default; PostgreSQL defaults to 50
-  max_samples_per_fingerprint: 3
-  retention_days: 7
-  log_to_console: true
-  log_to_storage: true
-```
-
-### `transaction` — Transaction retry
-
-```yaml
-transaction:
-  max_retries: 3
-  retry_delay_base: 0.1    # seconds, exponential backoff
-  readonly_hint: false
-```
-
-### `mongo` / `redis` / `minio` / `daytona` / `skill_store` / `mq` — Infrastructure
-
-- `minio` — wallpapers, cloud drive files, skill packages, code artifacts (Docker deploy enables it by default)
-- `daytona` — code sandbox for the code agent and skill code (`DAYTONA__ENABLED`, `DAYTONA__API_URL`, `DAYTONA__API_KEY`)
-- `skill_store` — external skill marketplace (GitHub topic `mindbase-skill`), disabled by default
-- `mq` — Celery + Redis Streams queue config (reserved)
-- `wechat` / `sms` / `email` — WeChat scan login / Aliyun SMS / Resend email, all disabled by default (endpoints hidden until enabled, surfaced via `GET /auth/features`)
-
-See `app/config/default.yaml` for full field listings.
-
----
-
-## 独立服务的配置
-
-各微服务有独立的配置入口（均读项目根 `.env`），不在主 `default.yaml` 里：
-
-| 服务 | 配置入口 | 环境前缀 | 文档 |
+| 服务 | 配置入口 | env 前缀 | 敏感值占位符 |
 |------|---------|---------|------|
-| app-task | 独立仓库 `default.yaml`（嵌入镜像；本仓覆盖走 `APPTASK__` env） | `APPTASK__` | [app-task.md](app-task.md) |
-| app-pay | `application.yaml`（+ docker/test profile） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
-| app-pay-admin | 嵌入 `default.yaml` + 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
-| app-board | 嵌入 `default.yaml` | `APPBOARD__` | [app-board.md](app-board.md) |
+| app-ts | `app-ts/src/config/`（`default.yaml` + loader） | 无前缀（如 `MILVUS__*`、`REDIS__URL`、`MONGO__URI`） | `AI_GATEWAY__*`、`OCR__*` |
+| app-auth | `app-go/app-auth/internal/config/default.yaml`（embed 进二进制） | `APPAUTH__` | `EMAIL__*`/`SMS__*`/`WECHAT__*`/`REDIS__URL`；主密钥走 `_FILE` |
+| app-cloud | `app-go/app-cloud/internal/config/default.yaml` | `APPCLOUD__` | `MINIO__*`/`AI_GATEWAY__*`/`MILVUS__*`/`MONGO__URI`/`REDIS__URL` |
+| app-note | `app-go/app-note/internal/config/default.yaml` | `APPNOTE__` | `MONGO__URI`/`RDBMS__URL` |
+| app-bili | `app-go/app-bili/internal/config/default.yaml` | `APPBILI__` | `AI_GATEWAY__*`/`MONGO__URI`/`REDIS__URL`；主密钥走 `_FILE` |
+| app-quiz | `app-go/app-quiz/internal/config/default.yaml` | `APPQUIZ__` | `MONGO__URI`/`REDIS__URL`/`RDBMS__URL` |
+| app-kg | `app-go/app-kg/internal/config/default.yaml` | `APPKG__` | `KG__URI`/`KG__PASSWORD`(=`NEO4J_PASSWORD`)/`RDBMS__URL` |
+| app-settings | `app-go/app-settings/internal/config/default.yaml` | `APPSETTINGS__` | `RDBMS__URL`/`MINIO__*` |
+| app-board / 三个 MCP | 各自 `default.yaml`（embed） | `APPBOARD__`/`BOARDMCP__`/`NOTEMCP__` 等 | `RDBMS__URL`/`MONGO__URI`/`REDIS__URL` |
+| app-task | 独立仓库 default.yaml（embed；本仓只放密钥） | `APPTASK__` | `APPTASK__RDBMS__URL`/`APPTASK__EMAIL__API_KEY` |
+| app-pay | `application.yaml` + docker/test profile 变体（Flyway 管 schema） | 经 `${VAR:默认}` 占位符 | `PAY_MYSQL_*`/`ALIPAY_*`/`PAY_TLS_*` |
+| app-pay-admin | `default.yaml`（embed）+ `-config` 覆盖层 | `PAYADMIN__` | `PAYADMIN__RDBMS__URL`/`PAYADMIN__WEBUI__TOKEN` |
+| frontend | 构建期 `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_APISIX_HOST`（compose 插值） | — | — |
 
----
+改某个服务的配置 = 改它的 YAML 默认值（committed）或在 `.env` / compose `environment:` 覆盖（敏感值）。**新增配置项必须同步该服务自己的 default.yaml**；仅密钥类才进 `.env.example`。
 
-## config.yaml (team-shared overrides)
+## 共享基础设施连接
 
-Use `config.yaml` to set overrides that apply to all developers on the team:
+| 基础设施 | 消费方 | 连接来源 |
+|------|------|------|
+| MySQL `mind_base` | app-go 六服务 + app-board | `RDBMS__URL`（或 `APP<域>__RDBMS__URL`） |
+| MySQL `app_task` / `app_pay` | app-task / app-pay | 各自专属连接串 |
+| Mongo `mind_base`（Go 共享）+ `mind_base_ts`（app-ts 自有） | Go 服务 / app-ts | `MONGO__URI`（app-ts 以库区分，跨库只读 `mind_base.asr_documents`） |
+| Redis | app-auth（限流/验证码）、app-quiz（quota/分享缓存）、app-ts（事件桥）、app-board（缓存 db 2） | `REDIS__URL` |
+| Milvus | app-ts（`mind_base_ts`：bilibili_videos/cloud_drive/kg_entities） | app-ts config（`MILVUS__*`） |
+| Neo4j | app-kg 唯一写者 | `KG__URI` + `KG__PASSWORD` |
+| MinIO | app-cloud（drive-videos）、app-ts（技能 zip/壁纸）、app-board | `MINIO__*`（app-cloud 内网直连；对外预签名 URL 经 nginx `/minio-proxy/`） |
 
-```yaml
-# config.yaml — committed, shared across the team
+## AI 网关（Higress，`--profile ai`）
 
-app:
-  debug: true
-  log_level: DEBUG
+平台代发起的全部 AI 流量（LLM/embedding/rerank/ASR/OCR）统一经 Higress 出网，**供应商 key 只存在于网关**（控制台 `http://127.0.0.1:18081` 配置，持久化在 `./data/higress`，不进 `.env`/git）：
 
-server:
-  reload: true
-  workers: 1              # required when reload is on
+- 业务服务侧只持有 consumer key `AI_GATEWAY__API_KEY`（Higress consumer `mindbase-backend` 的 key-auth 凭证）。
+- 用户不配置任何 API Key（BYOK 已于 2026-10-07 退役，app-settings 的 `/credentials` 与 `/settings/*-configs` 端点已删除）；会员档位决定模型额度。
+- 模型名在网关侧原样透传；**embedding 换模型 = Milvus 对应集合全量重建**。
+- 网关侧计量：usage-logger Wasm 上报 + Console Dashboard（详见 AGENTS.md §2.10）。
 
-rdbms:
-  echo: true              # log all SQL in dev
+## 部署期密钥清单（.env 必填项）
 
-asr:
-  timeout: 300            # fail faster
-
-langsmith:
-  enabled: true           # trace for debugging
-```
-
-For production, the same file can hold different tuned values. Sensitive fields still come from env vars.
-
-### local.yaml (create from `local.yaml.example`)
-
-Put personal overrides here — different port, local DB, experimental model:
-
-```yaml
-rdbms:
-  url: postgresql+asyncpg://me:mypass@localhost:54320/mind_base_local
-
-llm:
-  model: qwen3-plus
-```
-
-This file is gitignored.
-
----
-
-## Migration from old .env-only config
-
-The old config system used flat env vars in `.env`:
-
-```env
-DASHSCOPE_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://...
-LLM_MODEL=qwen3-max
-DATABASE_URL=sqlite+aiosqlite:///...
-```
-
-These **still work** as fallbacks. However, the recommended approach is:
-
-1. Move non-sensitive values to YAML (`model`, `base_url`, `timeout`, etc.)
-2. Keep only secrets in `.env` using the new `__` naming:
-
-```env
-LLM__API_KEY=sk-xxx
-SECURITY__API_KEY_ENCRYPTION_KEY=...
-SESSION__SECRET=...
-```
-
----
-
-## Programmatic access
-
-```python
-from app.config import settings, get_config
-
-# Flat accessor (backward-compatible)
-print(settings.llm_model)          # "qwen3-max"
-print(settings.database_url)       # "sqlite+aiosqlite:///..."
-
-# Raw nested dict (new code preferred)
-cfg = get_config()
-print(cfg["llm"]["model"])         # "qwen3-max"
-print(cfg["rdbms"]["pool_size"])   # 20
-```
-
-The `settings` object maps YAML paths to flat property names for backward compatibility with existing code. New modules can access `get_config()` directly.
+起栈最小集：密钥文件 `secrets/api_key_encryption_key`（含主密钥，一行 base64）、`AI_GATEWAY__API_KEY`、`APISIX_CONSUMER_KEY`（服务间 key-auth）、`RDBMS__URL`/`MONGO__URI`/`REDIS__URL`/`MINIO__ACCESS_KEY`/`MINIO__SECRET_KEY`；按启用的功能补：邮件（`APPTASK_EMAIL_API_KEY`）、短信/微信（app-auth）、支付宝（app-pay）、LangSmith（可选 tracing）。逐项说明见 [.env.example](../.env.example)。

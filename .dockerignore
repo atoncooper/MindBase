@@ -53,3 +53,6 @@ Thumbs.db
 .dockerignore
 docker-compose*.yml
 Dockerfile*
+
+# app-ts runtime: prompts/*.md are loaded at startup (override the *.md above)
+!app-ts/**/*.md

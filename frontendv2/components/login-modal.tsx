@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { authApi, type QRCodeResponse, type CaptchaValue, type UserInfo, type WeChatQRConfig, type AuthFeatures } from "@/lib/api";
@@ -74,6 +75,8 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
   const [qr, setQr] = useState<QRCodeResponse | null>(null);
   const [qrStatus, setQrStatus] = useState<QRStatus>("loading");
   const [polling, setPolling] = useState(false);
+  /** real failure reason for the QR panel (load error vs expired) */
+  const [qrError, setQrError] = useState("");
 
   // Account-tab shared state
   const [pwLoading, setPwLoading] = useState(false);
@@ -164,12 +167,16 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
 
   const getQR = useCallback(async () => {
     setQrStatus("loading");
+    setQrError("");
     try {
       const data = await authApi.getQRCode();
       setQr(data);
       setQrStatus("ready");
       setPolling(true);
-    } catch {
+    } catch (err) {
+      // Show the real reason instead of the misleading "二维码已失效" —
+      // the QR never expired; it failed to load (e.g. backend egress down).
+      setQrError(err instanceof Error ? err.message : "二维码加载失败，请稍后重试");
       setQrStatus("error");
     }
   }, []);
@@ -193,6 +200,7 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
           setTimeout(() => onSuccess(token, res.user_info!), 500);
         } else if (res.status === "expired") {
           setPolling(false);
+          setQrError("二维码已过期，请重新获取");
           setQrStatus("error");
         }
       } catch {
@@ -210,6 +218,7 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
       setPolling(false);
       setQr(null);
       setQrStatus("loading");
+      setQrError("");
       setPwError("");
       setCaptcha({ captcha_id: "", captcha_code: "" });
       setCaptchaKey((k) => k + 1);
@@ -398,6 +407,8 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
 
   const smsEnabled = features?.sms_enabled === true;
   const registerEnabled = features?.email_register_enabled === true;
+  /** 密码找回走邮件通道，邮件服务未配置时不显示入口 */
+  const emailEnabled = features?.email_register_enabled === true;
 
   return createPortal(
     <AnimatePresence>
@@ -453,7 +464,7 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
                   )}
                   {qrStatus === "error" && (
                     <div className="flex flex-col items-center gap-3">
-                      <span className="text-[13px] text-danger">二维码已失效</span>
+                      <span className="px-3 text-center text-[13px] text-danger">{qrError || "二维码已失效"}</span>
                       <button onClick={getQR} className="btn-pill btn-ghost h-8 px-4 text-[12px]">
                         重新获取
                       </button>
@@ -603,6 +614,17 @@ export function LoginModal({ isOpen, onClose, onSuccess, initialTab, initialMode
                       {pwLoading ? "登录中…" : "登录 / 注册"}
                     </button>
                   </form>
+                )}
+
+                {accountView === "password" && emailEnabled && (
+                  <p className="mt-2 text-center text-[12px] text-tertiary">
+                    <Link
+                      href="/forgot-password"
+                      className="text-foreground underline underline-offset-2 hover:text-primary"
+                    >
+                      忘记密码？
+                    </Link>
+                  </p>
                 )}
 
                 {registerEnabled && (

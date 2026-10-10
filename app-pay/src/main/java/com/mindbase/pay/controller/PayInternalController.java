@@ -1,8 +1,12 @@
 package com.mindbase.pay.controller;
 
+import com.mindbase.pay.common.ApiException;
+import com.mindbase.pay.dto.PayDtos;
 import com.mindbase.pay.model.PayMembership;
 import com.mindbase.pay.model.PayMembershipEvent;
+import com.mindbase.pay.model.PayOrder;
 import com.mindbase.pay.service.MembershipService;
+import com.mindbase.pay.service.RefundService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,10 +20,12 @@ import org.springframework.web.bind.annotation.RestController;
 import static com.mindbase.pay.dto.PayDtos.GrantRequest;
 import static com.mindbase.pay.dto.PayDtos.InternalMembershipView;
 import static com.mindbase.pay.dto.PayDtos.MembershipView;
+import static com.mindbase.pay.dto.PayDtos.OrderView;
+import static com.mindbase.pay.dto.PayDtos.RefundRequest;
 
 /**
- * 内部端点（/internal/pay/*）。APISIX key-auth（consumer internal）保护，
- * 调用方：主 app 权益消费（M3）、运营补偿。
+ * Internal endpoints (/internal/pay/*), protected by APISIX key-auth (consumer internal).
+ * Callers: main app membership consumption (M3), operations compensation, operations refund.
  */
 @Slf4j
 @RestController
@@ -28,8 +34,9 @@ import static com.mindbase.pay.dto.PayDtos.MembershipView;
 public class PayInternalController {
 
     private final MembershipService membershipService;
+    private final RefundService refundService;
 
-    /** 非会员返回 active=false 而非 404，主 app 无需判空。 */
+    /** A non-member returns active=false instead of 404, so the main app needs no null checks. */
     @GetMapping("/membership/{uid}")
     public InternalMembershipView membership(@PathVariable long uid) {
         return membershipService.findByUid(uid)
@@ -38,18 +45,34 @@ public class PayInternalController {
                 .orElse(new InternalMembershipView(uid, null, false, null));
     }
 
-    /** 运营补偿开通/延期：reason 必填并落 ADMIN_GRANT 审计事件。 */
+    /** Operations compensation activation/extension: reason is required and recorded as an ADMIN_GRANT audit event. */
     @PostMapping("/grant")
     public MembershipView grant(@Valid @RequestBody GrantRequest req) {
         // tier optional: blank = keep existing/default; only VIP|SVIP accepted
         String tier = req.tier() == null || req.tier().isBlank() ? null : req.tier().trim().toUpperCase();
         if (tier != null && !"VIP".equals(tier) && !"SVIP".equals(tier)) {
-            throw new IllegalArgumentException("tier must be VIP or SVIP");
+            // 400 contract error (previously an IllegalArgumentException was swallowed into a 500, polluting 5xx monitoring)
+            throw ApiException.badRequest("INVALID_TIER", "tier must be VIP or SVIP");
         }
         log.info("[PAY] admin_grant uid={} days={} tier={} reason={}",
                 req.uid(), req.durationDays(), tier, req.reason());
         PayMembership membership = membershipService.extend(req.uid(), req.durationDays(), null,
                 PayMembershipEvent.EventType.ADMIN_GRANT, req.reason(), tier);
         return MembershipView.from(membership, membershipService.isActive(membership));
+    }
+
+    /**
+     * Operations refund (M4 reverse flow): channel refund + optional membership revocation.
+     * Idempotent -- a repeated call on an already refunded order returns immediately; an order
+     * stuck in REFUNDING (crash/timeout) can be replayed to continue.
+     */
+    @PostMapping("/orders/{orderNo}/refund")
+    public OrderView refund(@PathVariable String orderNo,
+                            @Valid @RequestBody RefundRequest req) {
+        boolean revokeMembership = req.revokeMembership() == null || req.revokeMembership();
+        log.info("[PAY] admin_refund order_no={} revoke_membership={} reason={}",
+                orderNo, revokeMembership, req.reason());
+        PayOrder order = refundService.refund(orderNo, req.reason(), revokeMembership);
+        return OrderView.from(order);
     }
 }

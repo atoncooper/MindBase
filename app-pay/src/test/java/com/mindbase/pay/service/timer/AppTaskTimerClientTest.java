@@ -19,7 +19,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-/** 超时委托注册：契约对齐 app-task /tasks/register；失败仅告警不抛出（兜底接管）。 */
+/** Timeout delegation registration: contract aligned with app-task /tasks/register; failures only warn, never throw (the fallback takes over). */
 class AppTaskTimerClientTest {
 
     private static final String BASE = "http://apptask-test";
@@ -29,13 +29,13 @@ class AppTaskTimerClientTest {
     private MockRestServiceServer server;
 
     private AppTaskTimerClient client(boolean registerEnabled) {
-        PayProperties props = new PayProperties(null, null, null, null, null,
-                new PayProperties.Apptask(BASE, "secret-key", registerEnabled,
-                        "http://app-pay:8002"),
-                null);
+        PayProperties props = com.mindbase.pay.testutil.TestPayProperties.builder()
+                .apptask(new PayProperties.Apptask(BASE, "secret-key", registerEnabled,
+                        "http://app-pay:8002"))
+                .build();
         RestClient.Builder builder = RestClient.builder()
                 .baseUrl(BASE)
-                .defaultHeader("apikey", "secret-key"); // 生产路径由构造器注入，测试手动等价
+                .defaultHeader("apikey", "secret-key"); // In production this is injected by the constructor; the test sets it manually to match
         server = MockRestServiceServer.bindTo(builder).build();
         audit = mock(PayAuditLogger.class);
         return new AppTaskTimerClient(builder, props, audit);
@@ -62,7 +62,7 @@ class AppTaskTimerClientTest {
                 .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
                         .withServerError());
 
-        // 失败不抛出：兜底轮询接管，资金审计记录 TIMER_REGISTER_FAILED
+        // Failure does not throw: fallback polling takes over, and the fund audit records TIMER_REGISTER_FAILED
         assertThatCode(() -> client.registerOrderTimeoutAfterCommit(
                 10086L, "PO1", 1, TRIGGER)).doesNotThrowAnyException();
         verify(audit).audit(eq("TIMER_REGISTER_FAILED"), eq("order_no"), eq("PO1"),
@@ -75,6 +75,6 @@ class AppTaskTimerClientTest {
 
         assertThatCode(() -> client.registerOrderTimeoutAfterCommit(
                 10086L, "PO1", 1, TRIGGER)).doesNotThrowAnyException();
-        server.verify(); // 零请求
+        server.verify(); // zero requests
     }
 }

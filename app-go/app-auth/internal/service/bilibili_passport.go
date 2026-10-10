@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -40,6 +42,76 @@ func NewBilibiliPassport() *BilibiliPassport {
 			Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
 		},
 	}
+}
+
+// NetPathError marks an outbound request that died on the network path —
+// no HTTP answer was ever received. In this deployment container egress on
+// ports 80/443 is transparently routed through the Docker Desktop proxy
+// (http://127.0.0.1:10808, v2rayN); when that proxy is down every call fails
+// with a bare EOF/reset, which previously surfaced as an opaque
+// "bilibili request: ... EOF" and cost a debugging session to attribute.
+type NetPathError struct {
+	Endpoint string        // host + path only, query string stripped
+	Elapsed  time.Duration // time-to-failure
+	Kind     string        // eof | reset | refused | timeout | dns | other
+	Err      error         // underlying transport error
+}
+
+func (e *NetPathError) Error() string {
+	return fmt.Sprintf("outbound %s to %s failed after %s: %v",
+		e.Kind, e.Endpoint, e.Elapsed.Round(time.Millisecond), e.Err)
+}
+
+func (e *NetPathError) Unwrap() error { return e.Err }
+
+// Hint is the operator-facing diagnosis. Kept short and free of "/", "<",
+// "\\" so it is also safe to surface as an API error detail (the frontend
+// sanitizer accepts only marker-free details of at most 80 chars).
+func (e *NetPathError) Hint() string {
+	switch e.Kind {
+	case "eof":
+		return "出站连接被对端提前关闭（EOF），通常是宿主机代理未启动或中间设备切断连接"
+	case "reset":
+		return "出站连接被重置，常见于代理异常或防火墙切断连接"
+	case "refused":
+		return "出站连接被拒绝，代理端口未监听或目标不可达"
+	case "timeout":
+		return "出站请求超时，检查代理节点连通性"
+	case "dns":
+		return "DNS 解析失败，检查容器 DNS 配置"
+	default:
+		return "出站网络异常"
+	}
+}
+
+// classifyNetErr inspects a transport error and tags it with a failure kind.
+func classifyNetErr(endpoint string, elapsed time.Duration, err error) *NetPathError {
+	kind := "other"
+	msg := err.Error()
+	var ne net.Error
+	switch {
+	case errors.As(err, &ne) && ne.Timeout():
+		kind = "timeout"
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		strings.Contains(msg, "EOF") || strings.Contains(msg, "unexpected eof"):
+		kind = "eof"
+	case strings.Contains(msg, "reset by peer"), strings.Contains(msg, "connection reset"):
+		kind = "reset"
+	case strings.Contains(msg, "connection refused"), strings.Contains(msg, "actively refused"):
+		kind = "refused"
+	case strings.Contains(msg, "no such host"), strings.Contains(msg, "lookup"):
+		kind = "dns"
+	}
+	return &NetPathError{Endpoint: netEndpointLabel(endpoint), Elapsed: elapsed, Kind: kind, Err: err}
+}
+
+// netEndpointLabel strips the query string — qrcode keys are session-scoped
+// credentials and follow the log-redaction stance of staying out of logs.
+func netEndpointLabel(endpoint string) string {
+	if i := strings.IndexByte(endpoint, '?'); i >= 0 {
+		return endpoint[:i]
+	}
+	return endpoint
 }
 
 // QRGenerateResult is the GET /auth/qrcode payload.
@@ -166,9 +238,11 @@ func (p *BilibiliPassport) GetUserInfo(sessdata, biliJCT, dedeUserID string) (*N
 		req.AddCookie(&http.Cookie{Name: "DedeUserID", Value: dedeUserID})
 	}
 	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment}}
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("获取用户信息失败: %w", err)
+		return nil, classifyNetErr(bilibiliBaseURL+"/x/web-interface/nav", time.Since(start),
+			fmt.Errorf("获取用户信息失败: %w", err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -201,9 +275,11 @@ func (p *BilibiliPassport) getJSON(ctx context.Context, endpoint string, params 
 	for k, v := range bilibiliHeaders {
 		req.Header.Set(k, v)
 	}
+	start := time.Now()
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("bilibili request: %w", err)
+		return classifyNetErr(endpoint, time.Since(start),
+			fmt.Errorf("bilibili request: %w", err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

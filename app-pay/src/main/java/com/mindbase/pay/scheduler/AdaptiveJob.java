@@ -1,13 +1,13 @@
 package com.mindbase.pay.scheduler;
 
 /**
- * 可被 {@link JitteredBackoffTrigger} 驱动的周期任务：执行体 + 本轮是否有工作。
- * hadWork 驱动空跑退避：连续无工作拉长间隔，一旦有工作回到 base。
+ * Periodic job drivable by {@link JitteredBackoffTrigger}: the execution body plus whether the current round had work.
+ * hadWork drives idle backoff: consecutive idle rounds stretch the interval, and any work resets it to base.
  */
 public interface AdaptiveJob {
 
     void run();
 
-    /** 刚结束的一轮是否发现了工作（触发退避/重置的依据）。 */
+    /** Whether the round that just finished found work (the basis for backoff/reset). */
     boolean lastRunHadWork();
 }

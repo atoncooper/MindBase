@@ -104,8 +104,19 @@ wechat:
 worker_id: 2                # snowflake worker id — MUST differ from the Python backend (default 1) to avoid uid collisions
 
 security_cors:
+  # 本地部署的页面入口可能落在 nginx :80/:443 的任一源（localhost、127.0.0.1、
+  # hosts 别名 mindbase —— 三者都在 cert-gen 的证书 SAN 里）。API 基址是
+  # NEXT_PUBLIC_API_URL=https://localhost，从其他源打开页面时浏览器会发 CORS
+  # 预检，白名单必须覆盖全部本地入口，否则预检 204 缺 ACAO、实际请求被浏览器
+  # 拦截（表现为前端 Failed to fetch 而后端只见 OPTIONS 不见 GET）。
   allow_origins:
     - http://localhost:3000
+    - https://localhost
+    - http://localhost
+    - https://127.0.0.1
+    - http://127.0.0.1
+    - https://mindbase
+    - http://mindbase
 
 log:
   level: info       # debug|info|warn|error (APPAUTH__LOG__LEVEL)

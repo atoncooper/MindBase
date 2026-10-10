@@ -1,0 +1,51 @@
+# ============================================================
+# app-settings (Go) - default configuration
+# ============================================================
+# User preferences (/preferences KV) + wallpaper (/wallpaper/*
+# presets/upload/file via MinIO) on the SHARED bilirag MySQL.
+# Owns user_preferences only (CREATE-only) — the per-user API key
+# config tables (user_credentials / user_embedding_configs /
+# user_asr_configs) were retired with BYOK: nothing reads them.
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPSETTINGS__, double-underscore nesting
+#   Shared env vars: MINIO__* (wallpaper storage), RDBMS__URL
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-settings
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8015
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPSETTINGS__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-settings.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true
+
+# MinIO (wallpaper uploads) — shared bucket drive-videos, keys wallpapers/{uid}/.
+# Endpoint/keys injected via shared MINIO__* env; empty endpoint = wallpaper 503.
+minio:
+  endpoint: ""
+  access_key: ""
+  secret_key: ""
+  bucket: drive-videos
+  secure: false

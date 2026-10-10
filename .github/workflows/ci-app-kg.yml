@@ -1,0 +1,40 @@
+name: CI - App KG
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-go/app-kg/**"
+      - "proto/kg/**"
+      - ".github/workflows/ci-app-kg.yml"
+  pull_request:
+    paths:
+      - "app-go/app-kg/**"
+      - "proto/kg/**"
+      - ".github/workflows/ci-app-kg.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-go/app-kg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app-go/app-kg/go.mod
+          cache-dependency-path: app-go/app-kg/go.sum
+
+      - name: Gofmt check
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test -count=1 ./...
+
+      - name: Build
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/app-kg .

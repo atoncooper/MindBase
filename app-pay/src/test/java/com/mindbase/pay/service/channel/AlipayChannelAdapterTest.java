@@ -13,17 +13,17 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mockStatic;
 
-/** 支付宝适配器：启动配置校验、金额换算、异步通知验签分支（静态验签 mock，不连网）。 */
+/** Alipay adapter: startup config validation, amount conversion, and async notification signature-verification branches (signature check stubbed statically, no network). */
 class AlipayChannelAdapterTest {
 
     private static final String APP_ID = "test-app";
 
     private static PayProperties props(boolean enabled, String privateKey) {
-        return new PayProperties(null, null, null,
-                new PayProperties.Alipay(enabled,
+        return com.mindbase.pay.testutil.TestPayProperties.builder()
+                .alipay(new PayProperties.Alipay(enabled,
                         "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
-                        APP_ID, privateKey, "alipay-public-key", ""),
-                null, null, null);
+                        APP_ID, privateKey, "alipay-public-key", "", 2000, 5000))
+                .build();
     }
 
     @Test

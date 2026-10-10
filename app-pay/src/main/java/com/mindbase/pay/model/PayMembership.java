@@ -9,8 +9,8 @@ import lombok.Setter;
 import java.time.LocalDateTime;
 
 /**
- * 会员实例，uid 唯一（对应主 app users.uid，跨库不建外键）。
- * 到期判断是懒过期：active = expire_at > now，不依赖定时任务翻转状态。
+ * Membership instance, uid unique (maps to users.uid in the main app; no cross-database foreign key).
+ * Expiry is evaluated lazily: active = expire_at > now, without relying on a scheduled job to flip status.
  */
 @Getter
 @Setter
@@ -22,12 +22,12 @@ public class PayMembership {
 
     private long uid;
 
-    // 一期固定 VIP；后续多档会员扩展此字段
+    // Fixed to VIP in phase one; this field will be extended for multi-tier memberships
     private String tier = "VIP";
 
     private LocalDateTime expireAt;
 
-    // 连续订阅一期不做，仅预留
+    // Recurring subscription is not implemented in phase one; reserved only
     private boolean autoRenew = false;
 
     private String lastOrderNo;

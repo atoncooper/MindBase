@@ -28,6 +28,26 @@ export interface StreamStep {
   reasoning?: string;
   sources?: ChatSource[];
   content_preview?: string;
+  /** compact JSON args preview (truncated; done frames omit it) */
+  args?: string;
+  /** tool execution duration in ms (done frames only) */
+  durationMs?: number;
+}
+
+// Turn is waiting in the backend admission queue (load at the concurrency cap).
+// Mirrors the backend `queue` SSE frame payload (app-ts services/admission.ts).
+export interface QueueStatus {
+  position: number;
+  waitedMs: number;
+}
+
+// Sub-agent delegation bracket (app-ts `delegate` SSE frame): status start/done,
+// `active` = how many sub-agents are currently running, `index` = 1-based ordinal.
+export interface DelegateStatus {
+  agent: string;
+  status: "start" | "done";
+  active: number;
+  index: number;
 }
 
 export interface StreamCallbacks {
@@ -39,6 +59,12 @@ export interface StreamCallbacks {
   onRoute?: (agent: string) => void;
   onReset?: () => void;
   onArtifact?: (artifact: ChatArtifact) => void;
+  // Turn queued at the backend (load control); delivered periodically until a
+  // slot is granted. The route/chunk frames that follow clear the state.
+  onQueueStatus?: (status: QueueStatus) => void;
+  // Sub-agent delegation bracket (delegate_to_agent start/done). `active` counts
+  // currently-running sub-agents; the done frame with active=0 clears the state.
+  onDelegate?: (status: DelegateStatus) => void;
   // Reasoning deltas from thinking models (backend `reasoning` SSE frame).
   // Accumulated here like text. NOT cleared on `reset` frames — the backend
   // does not replay reasoning after reset, so clearing would lose the
@@ -121,6 +147,18 @@ export async function streamChat(
             callbacks.onReset?.();
           } else if (data.type === "artifact") {
             callbacks.onArtifact?.(data.artifact as ChatArtifact);
+          } else if (data.type === "queue") {
+            callbacks.onQueueStatus?.({
+              position: typeof data.position === "number" ? data.position : 0,
+              waitedMs: typeof data.waitedMs === "number" ? data.waitedMs : 0,
+            });
+          } else if (data.type === "delegate") {
+            callbacks.onDelegate?.({
+              agent: typeof data.agent === "string" ? data.agent : "",
+              status: data.status === "done" ? "done" : "start",
+              active: typeof data.active === "number" ? data.active : 0,
+              index: typeof data.index === "number" ? data.index : 0,
+            });
           } else if (data.type === "error") {
             errored = true;
             callbacks.onError?.(data.message || data.error || "请求失败");

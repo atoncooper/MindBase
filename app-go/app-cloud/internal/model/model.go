@@ -1,6 +1,6 @@
 // Package model mirrors the cloud tables owned by app-cloud in the shared
 // bilirag MySQL database. Column names/types MUST match the existing schema
-// (app/system.sql + app/models.py) exactly — the tables already hold live
+// (db/system.sql + app/models.py) exactly — the tables already hold live
 // data and the Python backend keeps READ access (notes/workspace/RAG).
 package model
 

@@ -7,41 +7,62 @@ import org.apache.ibatis.annotations.Param;
 import java.time.LocalDateTime;
 
 /**
- * 订单 Mapper。BaseMapper 内置单表 CRUD；手写 SQL（状态机条件更新）
- * 集中在 resources/mapper/PayOrderMapper.xml，方法签名与 XML id 一一对应。
+ * Order Mapper. BaseMapper provides built-in single-table CRUD; hand-written SQL (state-machine
+ * conditional updates) is centralized in resources/mapper/PayOrderMapper.xml, with method signatures
+ * corresponding one-to-one to XML ids.
  */
 public interface PayOrderMapper extends BaseMapper<PayOrder> {
 
     /**
-     * CREATED -> PAID。
+     * CREATED -> PAID.
      *
-     * @return 受影响行数，0 表示订单不处于 CREATED（已支付/已关闭）
+     * @return affected row count; 0 means the order is not in CREATED (already paid/closed)
      */
     int markPaid(@Param("orderNo") String orderNo,
                  @Param("tradeNo") String channelTradeNo,
                  @Param("paidAt") LocalDateTime paidAt);
 
-    /** CLOSED -> PAID：关单后到账补单（仅渠道验签/查单确认已收款后调用，M4 退款路径负责逆向）。 */
+    /** CLOSED -> PAID: repair a late payment after the order was closed (called only after channel signature verification/query confirms the payment; the M4 refund path handles the reverse). */
     int markPaidAfterClose(@Param("orderNo") String orderNo,
                            @Param("tradeNo") String channelTradeNo,
                            @Param("paidAt") LocalDateTime paidAt);
 
     /**
-     * 超时委托 executor（plan/1.0.8）：按注册时版本关单。
+     * Timeout delegation executor (plan/1.0.8): close the order at the version captured at registration.
      *
-     * @return 受影响行数，0 = 版本不匹配（订单已支付等更新，委托作废）或状态非 CREATED
+     * @return affected row count; 0 = version mismatch (the order was updated, e.g. paid, so the
+     * delegation is void) or the status is not CREATED
      */
     int closeOrderAtVersion(@Param("orderNo") String orderNo,
                             @Param("version") int version,
                             @Param("now") LocalDateTime now);
 
-    /** PAID -> DELIVERED。 */
+    /** PAID -> DELIVERED. */
     int markDelivered(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
-    /** CREATED -> CLOSED（单笔主动关单）。 */
+    /** CREATED -> CLOSED (explicitly closing a single order). */
     int closeOrder(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now,
                    @Param("reason") String reason);
 
-    /** 批量超时关单（OrderTimeoutJob）。 */
+    /** Batch close for timed-out orders (OrderTimeoutJob). */
     int closeExpired(@Param("now") LocalDateTime now);
+
+    /**
+     * PAID|DELIVERED -> REFUNDING (refund accepted, preventing concurrent duplicate refunds).
+     * Also writes the previous status into refund_prev_status for rollback when the channel refund fails.
+     *
+     * @return affected row count; 0 = status does not qualify (already refunded/closed, etc.)
+     */
+    int markRefunding(@Param("orderNo") String orderNo,
+                      @Param("refundNo") String refundNo,
+                      @Param("reason") String reason,
+                      @Param("now") LocalDateTime now);
+
+    /** REFUNDING -> REFUNDED (channel refund succeeded). */
+    int markRefunded(@Param("orderNo") String orderNo,
+                     @Param("refundNo") String refundNo,
+                     @Param("now") LocalDateTime now);
+
+    /** REFUNDING -> previous status (rollback when the channel refund fails; does not wrongly trigger delivery compensation). */
+    int revertRefunding(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 }

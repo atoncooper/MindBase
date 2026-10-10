@@ -15,15 +15,15 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** 统一错误体 {code,message}；对外不泄露堆栈/SQL 等内部细节。 */
+/** Unified error body {code,message}; never leaks internal details such as stack traces/SQL. */
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<Map<String, String>> handleApiException(ApiException e) {
-        // 业务异常不采集堆栈（见 ApiException），此处按级别留一行结构化日志：
-        // 4xx = 客户端行为（含探测/重试），5xx = 瞬态故障需关注；traceId/uid 由 MDC 自动附带
+        // Business exceptions do not capture a stack trace (see ApiException), so leave one structured log line by level:
+        // 4xx = client behavior (including probing/retries), 5xx = transient failures needing attention; traceId/uid are attached automatically by MDC
         if (e.getStatus() >= 500) {
             log.error("[PAY] business_error status={} code={} msg={}",
                     e.getStatus(), e.getCode(), e.getMessage());
@@ -45,8 +45,8 @@ public class GlobalExceptionHandler {
                 .body(error("VALIDATION_ERROR", detail));
     }
 
-    // 框架异常显式分类：没有这几个 handler 时会被下方 Exception 兜底误判为 500，
-    // 监控被假 500 污染（如乱码请求体、访问不存在的路径）
+    // Explicit classification of framework exceptions: without these handlers, the generic Exception fallback below
+    // would misclassify them as 500 and pollute monitoring with fake 500s (e.g. malformed request body, nonexistent path)
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<Map<String, String>> handleNotReadable(HttpMessageNotReadableException e) {
         return ResponseEntity.badRequest().body(error("MALFORMED_BODY", "Malformed request body"));
@@ -75,6 +75,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error("NOT_FOUND", "Resource not found"));
     }
 
+    // Contract-layer parameter error (previously fell through to the 500 fallback): e.g. an invalid grant tier
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException e) {
+        return ResponseEntity.badRequest().body(error("BAD_REQUEST", e.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> handleUnexpected(Exception e) {
         log.error("[PAY] unexpected_error err={}", e.toString(), e);
@@ -82,7 +88,7 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "INTERNAL", "message", "Internal server error, please retry later"));
     }
 
-    /** 供需要多个字段的响应使用（当前错误体为两字段 Map）。 */
+    /** For responses that need multiple fields (the current error body is a two-field Map). */
     static Map<String, String> error(String code, String message) {
         Map<String, String> body = new LinkedHashMap<>();
         body.put("code", code);

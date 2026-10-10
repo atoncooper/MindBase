@@ -4,6 +4,8 @@
 
 > 笔记是**附加在某个 target（视频或云盘文件）上的用户内容**，与 RAG 检索链路解耦：笔记正文不进入向量库，不影响检索结果。
 
+> ⚠️ **2026-10-04 起笔记权威服务为 app-go/app-note（Go，端口 8008，§2.15），Python 侧旧实现已删除**：本文描述的存储拆分、快照策略、乐观并发、分享语义不变，但实现已整体迁移；对外路径保持 `/notes/*`、wire 契约逐条兼容（naive-UTC 时间格式、409 结构化 detail、X-Total-Count）。唯一的 wire 差异：修订列表不返回 `content_md`（Python 版该端点因 schema 声明必填但投影排除而存在 500 bug，Go 版按前端真实契约输出）。Python note agent 的 save_note 等工具经 `app/services/notes/m2m_client.py` → APISIX `/internal/note/*`（key-auth + X-Uid）落库；实施记录与切流/回滚手册见 [docs/app-note-migration.md](app-note-migration.md)。
+
 ## 架构：分离存储
 
 笔记采用 **MySQL 存元数据 + MongoDB 存正文** 的分离存储：
@@ -171,7 +173,7 @@ diff 用轻量的字符级采样（非 Levenshtein），仅作快照触发启发
 ## 依赖
 
 - **MongoDB 必须启用**：正文与修订均存 Mongo。Mongo 未连接时，创建/更新会抛 `RuntimeError`，读取降级为空。
-- 表结构在 `app/system.sql`（`notes` / `note_anchors` / `note_shares`）。
+- 表结构在 `db/system.sql`（`notes` / `note_anchors` / `note_shares`）。
 
 ## 测试
 

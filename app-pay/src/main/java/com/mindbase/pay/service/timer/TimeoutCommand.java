@@ -1,5 +1,5 @@
 package com.mindbase.pay.service.timer;
 
-/** app-task 超时委托的执行命令（payload 原文）。 */
+/** Execution command for an app-task timeout delegation (raw payload). */
 public record TimeoutCommand(String orderNo, int version) {
 }

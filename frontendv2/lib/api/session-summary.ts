@@ -2,10 +2,9 @@
  * Session summary API - 会话总结：流式生成 / 读取最近总结.
  *
  * POST /chat/sessions/{id}/summary streams a fresh detailed summary produced
- * by the summary agent (chat-header button); GET the same path returns the
- * latest persisted summary (404 when none exists yet). Both ride the regular
- * /chat/* chain (nginx -> backend, bili_session Bearer auth) - no APISIX
- * forward-auth involved.
+ * by the summary service (chat-header button); GET the same path returns the
+ * latest persisted summary (404 when none exists yet). Both ride the APISIX
+ * chat_ts route to app-ts (storage: Mongo mind_base_ts.session_summaries).
  */
 import { getAuthHeaders, API_BASE_URL, snakeToCamel } from "./client";
 

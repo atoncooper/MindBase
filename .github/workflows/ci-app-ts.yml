@@ -1,0 +1,38 @@
+name: CI - App TS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-ts/**"
+      - "proto/**"
+      - ".github/workflows/ci-app-ts.yml"
+  pull_request:
+    paths:
+      - "app-ts/**"
+      - "proto/**"
+      - ".github/workflows/ci-app-ts.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-ts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app-ts/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npx vitest run

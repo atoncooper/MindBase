@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-/** executor 并发自守：FIFO 顺序消费、队列满快速失败、worker 异常向上传播（5xx→调用方重试）。 */
+/** Executor concurrency self-defense: FIFO consumption, fail-fast when the queue is full, worker exceptions propagated upward (5xx -> caller retries). */
 @ExtendWith(MockitoExtension.class)
 class TimeoutExecutionQueueTest {
 
@@ -25,8 +25,9 @@ class TimeoutExecutionQueueTest {
     private TimeoutExecutionQueue queue;
 
     private static PayProperties props(int workers, int capacity) {
-        return new PayProperties(null, null, null, null, null, null,
-                new PayProperties.Job(workers, capacity, 120, 600, 60, 300, 60));
+        return com.mindbase.pay.testutil.TestPayProperties.builder()
+                .job(new PayProperties.Job(workers, capacity, 120, 600, 60, 300, 60, 4, 900, 3600, 24))
+                .build();
     }
 
     @AfterEach
@@ -61,16 +62,16 @@ class TimeoutExecutionQueueTest {
         CountDownLatch release = new CountDownLatch(1);
         when(service.execute(any(TimeoutCommand.class))).thenAnswer(inv -> {
             firstStarted.countDown();
-            release.await(10, java.util.concurrent.TimeUnit.SECONDS); // 占住唯一 worker
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS); // occupy the only worker
             return ExecuteResult.ok();
         });
 
         var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
         try {
-            // 1) worker 被占用（阻塞执行中）；submit 同步等待，须异步发起
+            // 1) worker is occupied (blocking execution); submit waits synchronously, so it must be started asynchronously
             var f1 = pool.submit(() -> queue.submit(new TimeoutCommand("PO-run", 1)));
             firstStarted.await(5, java.util.concurrent.TimeUnit.SECONDS);
-            // 2) 连续入队至容量上限（capacity=2），轮询等待（异步提交，不阻塞）
+            // 2) enqueue up to the capacity limit (capacity=2), polling-wait (submitted asynchronously, no blocking)
             var f2 = pool.submit(() -> queue.submit(new TimeoutCommand("PO-q1", 1)));
             var f3 = pool.submit(() -> queue.submit(new TimeoutCommand("PO-q2", 1)));
             long deadline = System.currentTimeMillis() + 3000;
@@ -78,10 +79,10 @@ class TimeoutExecutionQueueTest {
                 Thread.sleep(20);
             }
             assertThat(queue.queuedDepth()).isEqualTo(2);
-            // 3) 第 4 条 → 队列满快速失败
+            // 3) 4th item -> queue full, fail fast
             assertThatThrownBy(() -> queue.submit(new TimeoutCommand("PO-q3", 1)))
                     .isInstanceOf(TimeoutExecutionQueue.QueueFullException.class);
-            // 4) 放行 → 队列排空，全部成功
+            // 4) release -> queue drains, all succeed
             release.countDown();
             f1.get(5, java.util.concurrent.TimeUnit.SECONDS);
             f2.get(5, java.util.concurrent.TimeUnit.SECONDS);
@@ -106,7 +107,7 @@ class TimeoutExecutionQueueTest {
 
     @Test
     void workerSurvivesEvenFatalError() {
-        // Error（如 OOM）不许杀死 worker：异常上抛（5xx→重试），worker 继续接活
+        // Error (e.g. OOM) must not kill the worker: the exception is rethrown (5xx -> retry) and the worker keeps taking work
         queue = new TimeoutExecutionQueue(service, props(1, 10));
         queue.start();
         AtomicInteger calls = new AtomicInteger();
@@ -120,7 +121,7 @@ class TimeoutExecutionQueueTest {
         assertThatThrownBy(() -> queue.submit(new TimeoutCommand("PO1", 1)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasCauseInstanceOf(OutOfMemoryError.class);
-        // 第二次调用正常执行 = worker 存活
+        // second call executes normally = worker is alive
         assertThat(queue.submit(new TimeoutCommand("PO2", 1)).executed()).isTrue();
     }
 }
