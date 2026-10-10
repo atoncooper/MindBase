@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<!-- 订单手写 SQL：仅放 MyBatis-Plus BaseMapper/LambdaWrapper 表达不了的语句。
-     状态机的条件更新集中于此（plan/1.0.7-Pay §4）：WHERE 带当前状态，
-     受影响行数判定流转成败——并发/重复回调下只有一次生效。 -->
+<!-- Order handwritten SQL: only statements that MyBatis-Plus BaseMapper/LambdaWrapper cannot express.
+     The state machine's conditional updates are centralized here (plan/1.0.7-Pay §4): WHERE carries the
+     current status, and the affected row count determines whether the transition succeeded; under
+     concurrency/duplicate callbacks exactly one takes effect. -->
 <mapper namespace="com.mindbase.pay.mapper.PayOrderMapper">
 
     <update id="markPaid">
@@ -17,8 +18,9 @@
           AND status = 'CREATED'
     </update>
 
-    <!-- 关单后到账补单（ChannelQueryJob/回调确认已收款时触发）：CLOSED -> PAID，
-         钱已收是事实，M4 退款路径负责逆向；仅渠道验签/查单确认后才允许调用 -->
+    <!-- Payment received after the order was closed, compensation (triggered when ChannelQueryJob/a callback
+         confirms the money was collected): CLOSED -> PAID. That the money was collected is a fact; the M4
+         refund path handles the reversal. May be called only after channel signature verification/query confirmation -->
     <update id="markPaidAfterClose">
         UPDATE pay_order
         SET status           = 'PAID',
@@ -62,8 +64,11 @@
           AND expires_at &lt; #{now}
     </update>
 
-    <!-- app-task 超时委托的 executor（plan/1.0.8）：携带注册时版本 v1 执行，
-         版本不匹配（订单已支付等更新）或状态非 CREATED → 0 行受影响 → 委托作废 -->
+    <!-- Executor for an app-task timeout delegation (plan/1.0.8): executes with the version v1 captured at
+         registration; a version mismatch (order updated, e.g. paid) or a status other than CREATED -> 0 rows
+         affected -> delegation voided. The extra expires_at <= now guard means that even if someone on the
+         network forges an executor call, they can only close orders that have genuinely expired (which the
+         fallback job closes anyway); they cannot close an order early and seize the user's payment window. -->
     <update id="closeOrderAtVersion">
         UPDATE pay_order
         SET status      = 'CLOSED',
@@ -74,5 +79,42 @@
         WHERE order_no = #{orderNo}
           AND status = 'CREATED'
           AND version = #{version}
+          AND expires_at &lt;= #{now}
+    </update>
+
+    <!-- Refund acceptance: refund_prev_status must be assigned before status (MySQL evaluates assignments
+         left to right), otherwise it would read the new status REFUNDING -->
+    <update id="markRefunding">
+        UPDATE pay_order
+        SET refund_prev_status = status,
+            status             = 'REFUNDING',
+            refund_no          = #{refundNo},
+            refund_reason      = #{reason},
+            updated_at         = #{now},
+            version            = version + 1
+        WHERE order_no = #{orderNo}
+          AND status IN ('PAID', 'DELIVERED')
+    </update>
+
+    <update id="markRefunded">
+        UPDATE pay_order
+        SET status       = 'REFUNDED',
+            refund_no    = #{refundNo},
+            refunded_at  = #{now},
+            updated_at   = #{now},
+            version      = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'REFUNDING'
+    </update>
+
+    <update id="revertRefunding">
+        UPDATE pay_order
+        SET status             = COALESCE(refund_prev_status, 'PAID'),
+            refund_prev_status = NULL,
+            refund_no          = NULL,
+            updated_at         = #{now},
+            version            = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'REFUNDING'
     </update>
 </mapper>

@@ -8,7 +8,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/** 渠道回调/通知流水，留档用于对账与客诉取证。payload 只存脱敏文本，不落密文与密钥。 */
+/** Channel callback/notification log, retained for reconciliation and customer-dispute evidence. payload stores only masked text, never ciphertext or keys. */
 @Getter
 @Setter
 @TableName("pay_callback_log")

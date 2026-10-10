@@ -32,7 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** 测试入口的三重闸门：开关关闭 404 隐身、令牌 401、通过后全流程可用。 */
+/** The triple gate on the test entry: switch off -> 404 invisible, token -> 401, and the full flow works once passed. */
 @ExtendWith(MockitoExtension.class)
 class PayTestControllerTest {
 
@@ -63,8 +63,9 @@ class PayTestControllerTest {
     }
 
     private PayProperties props(boolean enabledFlag, String token) {
-        return new PayProperties(null, null, null, null,
-                new PayProperties.Test(enabledFlag, token), null, null);
+        return com.mindbase.pay.testutil.TestPayProperties.builder()
+                .test(new PayProperties.Test(enabledFlag, token, false))
+                .build();
     }
 
     @Test
@@ -126,7 +127,7 @@ class PayTestControllerTest {
 
     @Test
     void oversizedSkuRejectedAtValidationLayer() throws Exception {
-        // @Size(max=50)：超长输入在 400 校验层拒绝，而非穿透到 DB 变 500
+        // @Size(max=50): oversized input is rejected at the 400 validation layer instead of leaking to the DB and becoming a 500
         enabled.perform(post("/test/pay/orders").header("X-Test-Token", "secret-token")
                         .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
                         .content("{\"uid\":10086,\"skuCode\":\"" + "X".repeat(60)
@@ -137,7 +138,7 @@ class PayTestControllerTest {
 
     @Test
     void blankTokenMeansDefaultPass() throws Exception {
-        // 未配置令牌 = 默认验证通过（本机回环 + 开关即闸门）
+        // no configured token = validation passes by default (loopback plus the switch is the gate)
         PayProperties open = props(true, "");
         MockMvc openMvc = MockMvcBuilders.standaloneSetup(new PayTestController(open,
                         productService, orderService, mockChannelService, membershipService, audit))

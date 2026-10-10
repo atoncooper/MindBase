@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Loader2, AlertCircle, Check, ChevronLeft, ChevronRight } from "lucide-react";
+import { X, Loader2, AlertCircle, Check, ChevronLeft, ChevronRight, BookOpen, Sparkles, Target } from "lucide-react";
 import {
     quizApi,
     favoritesV2Api,
@@ -148,6 +148,9 @@ function DialogBody({
     const [difficulty, setDifficulty] = useState("medium");
     const [title, setTitle] = useState("");
     const [loadingFolders, setLoadingFolders] = useState(true);
+    // 出题模式:kb=知识库检索(原能力) / free=AI 围绕主题自由出题 / wrong=错题强化
+    const [mode, setMode] = useState<"kb" | "free" | "wrong">("kb");
+    const [topic, setTopic] = useState("");
 
     const [step, setStep] = useState<Step>("source");
     const [error, setError] = useState<string | null>(null);
@@ -225,12 +228,20 @@ function DialogBody({
         setStep("generating");
         setError(null);
         try {
-            const res = await quizApi.generate({
-                folder_ids: Array.from(selected),
-                question_count: count,
-                difficulty,
-                title: title.trim() || undefined,
-            });
+            const res = mode === "kb"
+                ? await quizApi.generate({
+                      folder_ids: Array.from(selected),
+                      question_count: count,
+                      difficulty,
+                      title: title.trim() || undefined,
+                  })
+                : await quizApi.generateAI({
+                      mode: mode === "wrong" ? "wrong_answers" : "free",
+                      topic: topic.trim() || undefined,
+                      question_count: count,
+                      difficulty,
+                      title: title.trim() || undefined,
+                  });
             setPollUuid(res.quiz_uuid);
         } catch (e) {
             setStep("config");
@@ -238,7 +249,8 @@ function DialogBody({
         }
     }
 
-    const canNextFromSource = selected.size > 0;
+    const canNextFromSource =
+        mode === "kb" ? selected.size > 0 : mode === "free" ? topic.trim().length > 0 : true;
 
     return (
         <div className="flex h-full flex-col">
@@ -275,6 +287,36 @@ function DialogBody({
                             className="h-full overflow-y-auto"
                         >
                             <div className="mx-auto max-w-[680px] px-6 pb-8">
+                                {/* 出题模式 */}
+                                <div className="grid grid-cols-3 gap-2">
+                                    {([
+                                        { v: "kb", label: "知识库出题", desc: "检索已向量化视频", icon: BookOpen },
+                                        { v: "free", label: "AI 自由出题", desc: "任意主题，无需知识库", icon: Sparkles },
+                                        { v: "wrong", label: "错题强化", desc: "基于错题本由易到难", icon: Target },
+                                    ] as const).map((m) => (
+                                        <button
+                                            key={m.v}
+                                            type="button"
+                                            onClick={() => {
+                                                setMode(m.v);
+                                                setError(null);
+                                            }}
+                                            className={cn(
+                                                    "flex flex-col items-start gap-1 rounded-xl border px-3.5 py-3 text-left transition-all",
+                                                    mode === m.v
+                                                        ? "border-foreground bg-surface"
+                                                        : "border-border bg-surface hover:border-tertiary",
+                                            )}
+                                        >
+                                            <m.icon className="h-4 w-4 text-foreground" aria-hidden="true" />
+                                            <span className="text-[13px] font-medium text-foreground">{m.label}</span>
+                                            <span className="text-[11px] leading-snug text-tertiary">{m.desc}</span>
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {mode === "kb" && (
+                                    <>
                                 <p className="text-[13px] text-secondary">
                                     选择作为出题来源的收藏夹，可多选。仅已向量化的内容会被检索。
                                 </p>
@@ -325,6 +367,37 @@ function DialogBody({
                                     )}
                                 </div>
 
+
+                                    </>
+                                )}
+
+                                {mode === "free" && (
+                                    <div className="mt-5">
+                                        <label className="text-[11px] font-medium uppercase tracking-wider text-tertiary">
+                                            出题主题
+                                        </label>
+                                        <textarea
+                                            value={topic}
+                                            onChange={(e) => setTopic(e.target.value)}
+                                            className="field mt-2.5 min-h-[88px] resize-none"
+                                            placeholder="如：Java 并发编程、线性代数特征值、考研英语长难句…（可留空描述方向）"
+                                            maxLength={300}
+                                        />
+                                        <p className="mt-2 text-[11px] text-tertiary">AI 将围绕主题自主设计题目，无需知识库材料。</p>
+                                    </div>
+                                )}
+                                {mode === "wrong" && (
+                                    <div className="mt-5 rounded-xl border border-border-subtle bg-surface px-4 py-3.5">
+                                        <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
+                                            <Target className="h-4 w-4" aria-hidden="true" />
+                                            错题强化训练
+                                        </div>
+                                        <p className="mt-1.5 text-[12px] leading-relaxed text-secondary">
+                                            AI 会读取你的错题本，针对错误次数最多的薄弱知识点出由易到难的变式新题（先 easy 巩固、后 hard 拔高）。
+                                        </p>
+                                    </div>
+                                )}
+
                                 {error && (
                                     <div className="mt-4 flex items-start gap-2 rounded-lg border-l-2 border-foreground bg-border-subtle px-3 py-2.5 text-[12px] text-foreground">
                                         <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -348,13 +421,17 @@ function DialogBody({
                                 {/* Selected source summary */}
                                 <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3">
                                     <div className="text-[11px] font-medium uppercase tracking-wider text-tertiary">
-                                        来源 · {selected.size} 个收藏夹
+                                        来源 · {mode === "kb" ? `${selected.size} 个收藏夹` : mode === "free" ? "AI 自由出题" : "错题强化"}
                                     </div>
                                     <div className="mt-1 line-clamp-2 text-[13px] text-foreground">
-                                        {folders
-                                            .filter((f) => selected.has(f.media_id))
-                                            .map((f) => f.title)
-                                            .join("、") || "未选择"}
+                                        {mode === "kb"
+                                            ? folders
+                                                    .filter((f) => selected.has(f.media_id))
+                                                    .map((f) => f.title)
+                                                    .join("、") || "未选择"
+                                            : mode === "free"
+                                                ? topic.trim() || "未填写主题"
+                                                : "历史错题薄弱点（AI 读取错题本，由易到难出变式新题）"}
                                     </div>
                                 </div>
 
@@ -455,7 +532,7 @@ function DialogBody({
                                     {DIFFS.find((d) => d.v === difficulty)?.label}
                                 </span>
                                 <span className="h-3 w-px bg-border" />
-                                <span>{selected.size} 个来源</span>
+                                <span>{mode === "kb" ? `${selected.size} 个来源` : mode === "free" ? "AI 自由出题" : "错题本"}</span>
                             </div>
                         </motion.div>
                     )}

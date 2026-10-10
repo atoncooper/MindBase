@@ -1,7 +1,20 @@
 # ================================================================
 # MindBase — full-stack development / deployment
 # ================================================================
-# App + infra + task-quiz (apisix + app-task): docker compose up -d
+# Stack: app-ts (AI/agent) + app-go services + app-pay + infra + apisix.
+# The Python backend was retired (2026-10-06); every route targets
+# app-ts / app-go services via APISIX.
+#
+# Image model (build local, publish remote):
+#   - Every first-party service carries BOTH image: (the tag CI/CD publishes
+#     to Docker Hub via .github/workflows/docker-build.yml) AND build: (local
+#     source). 'docker compose up' therefore builds locally when the image is
+#     absent and NEVER pulls first-party images from the registry;
+#     'docker compose build' rebuilds them all offline.
+#   - EXCEPTION atoncooper/app-task: remote pull ONLY — source
+#     lives in the standalone repo (no local Dockerfile context).
+#   - nginx/mysql/redis/mongo/milvus/neo4j/etcd/apisix/higress/... are upstream
+#     third-party releases, pulled as-is.
 # NOTE: services tagged with "" profile start by default, so plain
 # `docker compose up` actually starts the FULL stack (incl. Milvus). Named
 # profiles are additive only when no --profile is given; once you pass
@@ -15,107 +28,16 @@
 # App only (external DB):                                 docker compose --profile standalone up -d
 # Everything + admin tools (redis-commander, mongo-express): docker compose --profile full up -d
 # + Higress AI gateway (unified egress for AI requests):     docker compose --profile ai up -d
-# + Milvus (向量库):                            docker compose --profile storage up -d
-# Everything (含 Milvus + task-quiz):           docker compose --profile full up -d
-# App only (external DB, 无 infra):             docker compose --profile standalone up -d
 
 services:
   # ==============================================================
   # Application
   # ==============================================================
 
-  backend:
-    profiles: ["", "standalone", "storage", "full", "task"]
-    image: atoncooper/mind-base-backend:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mind-base-backend
-    ports:
-      - "${APP_PORT:-8000}:8000"
-    volumes:
-      - backend_data:/app/data
-      - backend_logs:/app/logs
-    env_file:
-      - .env
-    environment:
-      # App
-      - APP_DEBUG=${APP_DEBUG:-false}
-      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
-      # RDBMS — override via .env for external DB
-      - RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # Milvus — override via .env for external Milvus
-      - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
-      - MILVUS__TOKEN=${MILVUS__TOKEN:-}
-      # MongoDB — override via .env for external Mongo
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      # Knowledge graph (Neo4j) — password shares NEO4J_PASSWORD with the neo4j service
-      - KG__URI=${KG__URI:-bolt://neo4j:7687}
-      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
-      # Redis — override via .env for external Redis
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      # LLM (all AI traffic — LLM/embedding/rerank/ASR — goes through the AI
-      # gateway below; LLM__API_KEY is a legacy BYOK-fallback only)
-      - LLM__API_KEY=${LLM__API_KEY:-}
-      # 模型名等普通配置在 app/config/*.yaml（config.yaml 为生效层）；
-      # 不在此处设 LLM__MODEL —— env 是最高优先级层，会静默覆盖 yaml
-      # AI Gateway (Higress) — the single egress for all AI traffic
-      # (LLM/embedding/rerank/ASR); real vendor keys live in the gateway console
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
-      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      # Embedding / ASR model names etc. are plain config — default.yaml only;
-      # there is no separate ASR key/base_url any more (gateway consumer key)
-      # LangSmith
-      - LANGSMITH__API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH__PROJECT=${LANGSMITH_PROJECT:-MindBase}
-      # Session
-      - SESSION__SECRET=${SESSION__SECRET:-}
-      # Security
-      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
-      # WeChat open platform login (website app snsapi_login)
-      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
-      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
-      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
-      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
-      # Aliyun SMS (phone code login/register)
-      - SMS__ENABLED=${SMS__ENABLED:-false}
-      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
-      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
-      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
-      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
-      # Plan 0021: MinIO object storage
-      - MINIO__ENABLED=${MINIO__ENABLED:-true}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
-      - MINIO__REGION=${MINIO_REGION:-us-east-1}
-      - MINIO__SECURE=${MINIO_SECURE:-false}
-      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
-      - MINIO__PUBLIC_HOST=${MINIO__PUBLIC_HOST:-}
-      # Task-quiz agent (main app) -> app-task via APISIX
-      - APPTASK_BASE_URL=http://apisix:9080
-      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
   frontend:
     profiles: ["", "standalone", "storage", "full", "task"]
     image: atoncooper/mind-base-frontend:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./frontendv2
       dockerfile: Dockerfile
@@ -137,9 +59,6 @@ services:
       - NEXT_PUBLIC_APISIX_HOST=nginx:80
       # MinIO 同源代理目标（rewrites 在服务端运行时读取，非 NEXT_PUBLIC）
       - MINIO_PROXY_DEST=http://nginx:80
-    depends_on:
-      backend:
-        condition: service_healthy
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -156,6 +75,7 @@ services:
 
   cert-gen:
     image: atoncooper/mind-base-certgen:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./scripts
       dockerfile: certgen.Dockerfile
@@ -195,8 +115,6 @@ services:
         condition: service_completed_successfully
       frontend:
         condition: service_started
-      backend:
-        condition: service_healthy
       # nginx proxies apisix + minio (direct proxy_pass in locations.conf).
       # Upstream hostnames resolve at request time now (resolver + variable
       # proxy_pass, see nginx.conf), so a missing container no longer crashes
@@ -225,7 +143,7 @@ services:
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./app/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./db/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
@@ -356,7 +274,7 @@ services:
       - mind-base-net
 
   # Knowledge graph store (KG feature).
-  # Optional at runtime: the backend degrades gracefully when it is down or
+  # Optional at runtime: the AI stack degrades gracefully when it is down or
   # kg.enabled=false (kg_search tool simply won't register).
   neo4j:
     image: neo4j:5-community
@@ -377,6 +295,144 @@ services:
       timeout: 10s
       retries: 5
       start_period: 40s
+    networks:
+      - mind-base-net
+
+  # Agent + RAG service (Node/Fastify) — the chat/agent/RAG face (chat cutover).
+  # Build context is the repo ROOT: the image needs proto/kg/v1/kg.proto (gRPC)
+  # and prompts/*.md. Own store = Mongo mind_base_ts (isolated from Python).
+  app-ts:
+    image: atoncooper/mind-base-app-ts:latest
+    # missing（非 build）：registry 被 DNS 污染时 build 无法解析元数据；
+    # 镜像已在本地（commit 修补过 /app/logs 属主），missing=不构建不拉取。
+    # 网络恢复后改回 pull_policy: build 并 docker compose build app-ts。
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: app-ts/Dockerfile
+    container_name: mind-base-app-ts
+    profiles: ["", "ts", "full"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - SERVER__HOST=0.0.0.0
+      # Redis event bridge (bili:page_ready -> per-page vectorization)
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      # acquisition service (Go): ASR delegation + internal knowledge-scope reads
+      - APP_BILI_BASE_URL=http://app-bili:8010
+      # task-quiz flow: scheduler via APISIX + auth internal user lookup
+      - APP_TASK_BASE_URL=http://apisix:9080
+      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
+      # skills zip storage (shared bucket; empty endpoint = skills disabled)
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      # OCR (image documents) — vision model via the Higress gateway; the model
+      # name must be routed in the Higress console (dashscope qwen-vl-ocr)
+      - OCR__ENABLED=${OCR__ENABLED:-true}
+      - OCR__MODEL=${OCR__MODEL:-qwen-vl-ocr}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # membership tier (weighted admission) via APISIX key-auth internal route
+      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
+      # app-quiz storage writes for quiz AI orchestration (APISIX key-auth route)
+      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
+      # gRPC data faces (kg graph + chat folder scope; same app-kg service)
+      - KGGRPC__TARGET=app-kg:8013
+      - KGGRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
+      # milvus.address 的 env 名是 MILVUS__ADDRESS（MILVUS__URI 不是本服务
+      # 的配置键,会被静默忽略回落 127.0.0.1——容器内即自身）;host:port
+      # 不带 scheme（milvus-js SDK 约定）
+      - MILVUS__ADDRESS=milvus:19530
+      # stdout-only logging: the image's /app/logs is not pre-created with
+      # node ownership (Dockerfile chown fix pending rebuild), and pino
+      # aborts the process on EACCES when the file sink is enabled
+      - LOG__FILEENABLED=false
+    ports:
+      # 8000 = the port the retired Python backend owned; app-ts inherits it.
+      # (app-note keeps host 8008 — the clash that existed before the move.)
+      - "127.0.0.1:${APP_TS_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-settings:
+    image: atoncooper/mind-base-app-settings:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./app-go/app-settings
+      dockerfile: Dockerfile
+    container_name: mind-base-app-settings
+    profiles: ["", "settings", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # wallpaper storage (shared bucket; empty endpoint = wallpaper 503)
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_SETTINGS_PORT:-8015}:8015"
+    volumes:
+      - app_settings_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # KG graph storage service (Go, gRPC) — Neo4j data access + video.kg_* MySQL
+  # bookkeeping + scope resolution. Consumed by app-ts over mind-base-net;
+  # not behind APISIX (internal service-to-service only). Owns NO tables:
+  # it is the ONLY writer of the video.kg_status/kg_version columns.
+  app-kg:
+    image: atoncooper/mind-base-app-kg:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./app-go/app-kg
+      dockerfile: Dockerfile
+    container_name: mind-base-app-kg
+    profiles: ["", "kg", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPKG__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - KG__URI=${KG__URI:-bolt://neo4j:7687}
+      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
+      - APPKG__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_KG_GRPC_PORT:-8013}:8013"
+      - "127.0.0.1:${APP_KG_HEALTH_PORT:-8014}:8014"
+    volumes:
+      - app_kg_logs:/app/logs
+    restart: unless-stopped
     networks:
       - mind-base-net
 
@@ -410,6 +466,7 @@ services:
 
   minio:
     image: atoncooper/mind-base-minio:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     # Upstream removed community MinIO from every distribution channel
     # (Docker Hub repo deleted, dl.min.io 410, GitHub repo archived as
     # source-only). We vendor the last upstream release that still published
@@ -494,14 +551,12 @@ services:
     depends_on:
       cert-gen:
         condition: service_completed_successfully
-      backend:
-        condition: service_healthy
       # init_etcd (run by the entrypoint) connects to etcd:2379; wait for it
       # to be healthy first so APISIX doesn't crash on startup.
       etcd:
         condition: service_healthy
     # No host port mapping: apisix must only be reachable inside mind-base-net
-    # (nginx -> apisix -> backend). Exposing 9080 to the host lets external
+    # (nginx -> apisix -> app services). Exposing 9080 to the host lets external
     # clients bypass nginx (SSL/cache/rate-limit). To debug apisix directly,
     # `docker compose exec apisix ...` or temporarily re-add `ports: ["9080:9080"]`.
     volumes:
@@ -526,8 +581,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,backend,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
-      - no_proxy=etcd,backend,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
@@ -543,6 +598,7 @@ services:
   # /internal/auth/verify，/auth/* 用户端点也由它提供）
   app-auth:
     image: atoncooper/mind-base-app-auth:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./app-go/app-auth
       dockerfile: Dockerfile
@@ -560,8 +616,9 @@ services:
       - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       # Redis: captcha store / login throttle / rate limits / wechat state
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      # Shared secrets (same env names as the Python backend — one .env drives both)
+      # Shared secrets (same env names as the retired Python backend — one .env drives all)
       - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
       - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
       - EMAIL__API_KEY=${EMAIL__API_KEY:-}
       - SMS__ENABLED=${SMS__ENABLED:-false}
@@ -573,13 +630,14 @@ services:
       - WECHAT__APP_ID=${WECHAT__APP_ID:-}
       - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
       - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
-      # Snowflake worker id — MUST differ from the Python backend (1)
+      # Snowflake worker id 2 (1 was the retired Python backend)
       - APPAUTH__WORKER_ID=2
       - APPAUTH__LOG__OUTPUT=both
     ports:
       - "127.0.0.1:${APP_AUTH_PORT:-8006}:8006"
     volumes:
       - app_auth_logs:/app/logs
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -589,6 +647,7 @@ services:
   # 分享/回收站/解析向量化管线；nginx /cloud/ 直连本服务，身份经 auth_request 注入）
   app-cloud:
     image: atoncooper/mind-base-app-cloud:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./app-go/app-cloud
       dockerfile: Dockerfile
@@ -628,14 +687,72 @@ services:
     networks:
       - mind-base-net
 
+  # app-note —— 笔记服务（Go + Gin；接管 notes/note_anchors/note_shares 的
+  # schema 所有权，共享主 bilirag MySQL + Mongo（note_documents/note_revisions，
+  # 零数据迁移）；APISIX /notes/* 用户路由 + /internal/note/* key-auth M2M
+  # 路由（app-note-mcp 的 M2M 落库走此通道）；nginx /notes 透传 APISIX 无需改动）
+  app-note:
+    image: atoncooper/mind-base-app-note:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./app-go/app-note
+      dockerfile: Dockerfile
+    container_name: mind-base-app-note
+    profiles: ["", "note", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPNOTE__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_NOTE_PORT:-8008}:8008"
+    volumes:
+      - app_note_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-quiz:
+    image: atoncooper/mind-base-app-quiz:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./app-go/app-quiz
+      dockerfile: Dockerfile
+    container_name: mind-base-app-quiz
+    profiles: ["", "quiz", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPQUIZ__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_QUIZ_PORT:-8011}:8011"
+    volumes:
+      - app_quiz_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
   app-task:
     # Published by the standalone repo (github.com/atoncooper/app-task) to Docker Hub.
     image: atoncooper/app-task:latest
     container_name: mind-base-app-task
     profiles: ["", "task", "full"]
     depends_on:
-      backend:
-        condition: service_healthy
       apisix:
         condition: service_healthy
       app-task-mysql:
@@ -648,6 +765,11 @@ services:
       # Main app via APISIX gateway
       - APPTASK__APP__BASE_URL=http://apisix:9080
       - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # 网关作用域执行器鉴权：派发到 apisix 的任务（如定时出题
+      # /internal/quiz/generate-llm 回调）自动附 apikey 头通过 key-auth；
+      # 其他 executor_url 不携带密钥
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9080
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
       # app-pay 超时委托回调（executor_url=https://app-pay:8002/...）的证书校验 CA：
       # executor 惰性加载，纯调度栈（无 app-pay）不受影响；可用 PAY_EXECUTOR_CA_FILE 覆盖
       - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
@@ -658,11 +780,11 @@ services:
       # Logging: both writes to stdout AND /app/logs/app-task.log (rotated via lumberjack)
       - APPTASK__LOG__OUTPUT=both
       # 出站代理（可选）：ctx.http_* 与 http 任务派发的外网访问经此代理出网；
-      # 留空 = 直连。NO_PROXY 保证容器内网服务名（backend/app-pay 等）不走代理。
+      # 留空 = 直连。NO_PROXY 保证容器内网服务名（apisix/app-pay 等）不走代理。
       # 宿主机代理示例：APPTASK_HTTP_PROXY=http://host.docker.internal:10808
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,backend,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -678,49 +800,63 @@ services:
     networks:
       - mind-base-net
 
-  # app-task 第二实例（HA）：与 app-task 共享同一 app-task-mysql，调度态全在
-  # DB（认领互斥 + dispatching 超时回收），双实例不重不漏。profile=ha 显式
-  # 启用：docker compose --profile ha up -d app-task-ha。控制台会话默认
-  # memory（每实例独立；两实例走各自回环端口，无需共享）；若前面挂同一
-  # 域名 LB，两边都设 APPTASK__WEBUI__SESSION_STORE=redis + APPTASK__REDIS__URL。
-  app-task-ha:
-    image: atoncooper/app-task:latest
-    container_name: mind-base-app-task-ha
-    profiles: ["ha"]
+  # app-bili —— B 站数据获取服务（Go + Gin；收藏夹同步/整理、视频与播放器信息、
+  # 音频/字幕获取、DashScope ASR 转写落库、知识库 build 编排（同步+ASR）。
+  # 只获取不向量化：AI 域（RAG/Milvus/向量化账本）在 app-ts，经 Redis
+  # bili:page_ready 事件触发（消费方 = app-ts BiliEventBridge；分P 向量账本在
+  # app-ts 的 Mongo vec_pages/vec_tasks）。schema 所有者：
+  # collection/favorite_folders/video/video_versions/async_tasks。
+  # 镜像含静态 ffmpeg；须出公网访问 B 站与 DashScope（经 Higress 网关）。
+  app-bili:
+    image: atoncooper/mind-base-app-bili:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./app-go/app-bili
+      dockerfile: Dockerfile
+    container_name: mind-base-app-bili
+    profiles: ["", "bili", "full"]
     depends_on:
-      app-task-mysql:
+      mysql:
+        condition: service_healthy
+      mongo:
         condition: service_healthy
     env_file:
       - .env
     environment:
-      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
-      - APPTASK__APP__BASE_URL=http://apisix:9080
-      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
-      - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
-      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
-      - APPTASK__TIMEZONE=Asia/Shanghai
-      - APPTASK__LOG__OUTPUT=both
-      # 集群身份：task.owner / 控制台溯源显示
-      - APPTASK__SCHEDULER__INSTANCE_ID=mind-base-app-task-ha
-      # 兼职节点调低权重：APPTASK__SCHEDULER__WEIGHT=1（其他节点设更高，如 4）
-      - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
-      - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,backend,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      # internal M2M guard (/internal/bili/* knowledge-scope reads by app-ts)
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
+      # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
+      # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
+      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
+      - APPBILI__LOG__OUTPUT=both
     ports:
-      - "127.0.0.1:${APP_TASK_HA_PORT:-8011}:8001"
+      - "127.0.0.1:${APP_BILI_PORT:-8010}:8010"
     volumes:
-      - app_task_ha_logs:/app/logs
-      - ./app-pay/certs:/app/pay-certs:ro
+      - app_bili_logs:/app/logs
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
     restart: unless-stopped
     networks:
       - mind-base-net
 
+
   # app-pay —— 交易/会员服务（Spring Boot 3;模式对齐 app-task）
   app-pay:
     image: atoncooper/mind-base-app-pay:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./app-pay
-      dockerfile: Dockerfile
+      # Dockerfile = 自包含（容器内 mvn，CI 用）; Dockerfile.local = 宿主
+      # mvn package 的 jar 直拷——VPN/TUN 环境下容器到国内镜像源只有宿主
+      # 1/25 吞吐，本地快速路径设 APP_PAY_DOCKERFILE=Dockerfile.local
+      dockerfile: ${APP_PAY_DOCKERFILE:-Dockerfile}
     container_name: mind-base-app-pay
     profiles: ["", "pay", "full"]
     depends_on:
@@ -756,6 +892,7 @@ services:
   # 注意:首次启动生成证书后若 apisix 先于其启动,需 `docker compose restart apisix` 重载 CA bundle。
   app-board:
     image: atoncooper/mind-base-app-board:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./app-board
       dockerfile: Dockerfile
@@ -799,12 +936,13 @@ services:
 
   # app-board-mcp —— MCP server（把思维导图/白板以 MCP 工具暴露给 Agent）
   # 双模式鉴权：外部 MCP 宿主走 Bearer token（BOARD_MCP_AUTH_TOKEN，固定 uid）；
-  # 主 app backend 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid，
+  # 主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid，
   # uid 来自后端已认证会话，永不经过 LLM 参数）。上游经 APISIX key-auth 路由
-  # /internal/board/* 到 app-board。回环 8005 + 容器内网互通（backend 直连）。
+  # /internal/board/* 到 app-board。回环 8005 + 容器内网互通（app-ts 直连）。
   # 默认 profile 启动：board agent 是主栈功能的一部分。
   app-board-mcp:
     image: atoncooper/mind-base-app-board-mcp:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./mcp/app-board-mcp
       dockerfile: Dockerfile
@@ -818,7 +956,7 @@ services:
       - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
       - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
       - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
-      # 服务模式：主 app backend 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
+      # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
       - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
       # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true。证书由 cert-gen
       # 统一签发（shared dev CA 叶子），此处 explicit 模式直接加载；
@@ -837,6 +975,69 @@ services:
       - app_board_mcp_logs:/app/logs
       # TLS 证书目录：cert-gen 统一签发叶子（explicit 模式加载，不自动生成）
       - ./mcp/app-board-mcp/certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-note-mcp —— 笔记 MCP server（把笔记以 MCP 工具暴露给 Agent）
+  # 双模式鉴权同 app-board-mcp：外部 MCP 宿主走 Bearer（NOTE_MCP_AUTH_TOKEN，
+  # 固定 uid）；主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求
+  # X-Uid，uid 永不经过 LLM 参数）。上游经 APISIX key-auth 路由 /internal/note/*
+  # 到 app-note。回环 8009 + 容器内网互通（app-ts 直连）；默认 profile 启动。
+  app-note-mcp:
+    image: atoncooper/mind-base-app-note-mcp:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./mcp/app-note-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-note-mcp
+    profiles: ["", "note", "full"]
+    environment:
+      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
+      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
+      # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
+      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # Logging: stdout + /app/logs/app-note-mcp.log（lumberjack 轮转；
+      # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
+      - NOTEMCP__LOG__OUTPUT=both
+      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
+    ports:
+      - "127.0.0.1:8009:8009"
+    volumes:
+      - app_note_mcp_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-quiz-mcp —— 测验 MCP server（把 quiz 出题/批改落库以 MCP 工具暴露给 Agent）。
+  # 鉴权同 app-note-mcp：外部宿主 Bearer（QUIZ_MCP_AUTH_TOKEN，固定 uid）；主 app（app-ts）
+  # 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid）。上游经 APISIX key-auth
+  # 路由 /internal/quiz/* 到 app-quiz。回环 8012 + 容器内网互通；默认 profile 启动。
+  app-quiz-mcp:
+    image: atoncooper/mind-base-app-quiz-mcp:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./mcp/app-quiz-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-quiz-mcp
+    profiles: ["", "quiz", "full"]
+    environment:
+      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
+      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
+      # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
+      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      # Logging: stdout + /app/logs/app-quiz-mcp.log（lumberjack 轮转；
+      # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
+      - QUIZMCP__LOG__OUTPUT=both
+      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
+    ports:
+      - "127.0.0.1:8012:8012"
+    volumes:
+      - app_quiz_mcp_logs:/app/logs
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -872,9 +1073,13 @@ services:
 
   app-pay-test:
     image: atoncooper/mind-base-app-pay:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./app-pay
-      dockerfile: Dockerfile
+      # Dockerfile = 自包含（容器内 mvn，CI 用）; Dockerfile.local = 宿主
+      # mvn package 的 jar 直拷——VPN/TUN 环境下容器到国内镜像源只有宿主
+      # 1/25 吞吐，本地快速路径设 APP_PAY_DOCKERFILE=Dockerfile.local
+      dockerfile: ${APP_PAY_DOCKERFILE:-Dockerfile}
     container_name: mind-base-app-pay-test
     profiles: ["pay-test", "full"]
     depends_on:
@@ -899,6 +1104,7 @@ services:
   # （payadmin_user + bcrypt），仅回环暴露，不经 APISIX（同 app-task WebUI 先例）。
   app-pay-admin:
     image: atoncooper/mind-base-app-pay-admin:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
       context: ./app-pay-admin
       dockerfile: Dockerfile
@@ -935,7 +1141,7 @@ services:
   #             consumer auth, token rate limiting, primary/backup fallback,
   #             AI Dashboard)
   # Boundary: APISIX fronts "business APIs in", Higress fronts "AI traffic
-  # out" — neither replaces the other. Compose-internal services (backend
+  # out" — neither replaces the other. Compose-internal services (app-ts
   # etc.) reach it at http://higress:8080 (internal network, never via host
   # ports); real vendor keys are configured in the console
   # (http://127.0.0.1:18081) and persisted under ./data/higress, never in
@@ -960,8 +1166,8 @@ services:
       # 宿主注入的 HTTP_PROXY——Docker Desktop 会把宿主 ~/.docker/config.json 的代理
       # 注入容器，APISIX 曾因此内部 etcd 流量被劫持（见 apisix 服务 entrypoint 注释）。
       # LLM 供应商出网（如 OpenRouter）如需代理，另行在 .env 设 HTTP(S)_PROXY 白名单外变量
-      - NO_PROXY=localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
-      - no_proxy=localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+      - NO_PROXY=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+      - no_proxy=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
     ports:
       # 18081 console intentionally public; firewall source IPs on public hosts
       - "127.0.0.1:18080:8080"
@@ -987,13 +1193,17 @@ services:
       - mind-base-net
 
 volumes:
-  backend_data:
-  backend_logs:
   app_task_certs:
-  app_task_ha_logs:
   app_task_logs:
   app_auth_logs:
   app_cloud_logs:
+  app_note_logs:
+  app_quiz_logs:
+  app_kg_logs:
+  app_settings_logs:
+  app_bili_logs:
+  app_note_mcp_logs:
+  app_quiz_mcp_logs:
   app_board_logs:
   app_board_mcp_logs:
   app_task_mysql_data:

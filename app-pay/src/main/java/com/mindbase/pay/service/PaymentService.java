@@ -1,8 +1,10 @@
 package com.mindbase.pay.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.mindbase.pay.common.ApiException;
 import com.mindbase.pay.common.PayAuditLogger;
+import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.mapper.PayCallbackLogMapper;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayCallbackLog;
@@ -16,13 +18,15 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 
 /**
- * 渠道支付通知统一入口（M1 mock / M2 支付宝回调与查单共用）。
+ * Unified entry point for channel payment notifications (shared by M1 mock / M2 Alipay callbacks and query polling).
  *
- * 幂等设计（plan/1.0.7-Pay §4）：
- * ① markPaid 条件更新（WHERE status='CREATED'）在数据库层保证并发回调只有一次生效；
- * ② 回调流水落档（含幂等命中/关单补单等分支）；
- * ③ 交付走 DeliveryService（PAID 是已收款事实，不随交付失败回滚）。
- * 所有资金事件同步写 PayAuditLogger（JSONL 审计文件）。
+ * Idempotency design (plan/1.0.7-Pay §4):
+ * (1) the markPaid conditional update (WHERE status='CREATED') guarantees at the database layer that only one of
+ *     several concurrent callbacks takes effect;
+ * (2) every callback is written to the callback log (including idempotent hits / re-open after close branches);
+ * (3) delivery goes through DeliveryService (PAID is the received-payment fact and is not rolled back when delivery
+ *     fails).
+ * All money events are written synchronously to PayAuditLogger (the JSONL audit file).
  */
 @Slf4j
 @Service
@@ -32,7 +36,10 @@ public class PaymentService {
     private final PayOrderMapper orderMapper;
     private final PayCallbackLogMapper callbackLogMapper;
     private final DeliveryService deliveryService;
+    private final RefundService refundService;
+    private final MembershipService membershipService;
     private final PayAuditLogger audit;
+    private final PayMetrics metrics;
     private final Clock clock;
 
     public PayOrder handleChannelPaid(String orderNo,
@@ -40,8 +47,10 @@ public class PaymentService {
                                       String channelTradeNo,
                                       Long paidAmountCents,
                                       String payloadMasked,
-                                      PayCallbackLog.SignatureResult signatureResult) {
-        // orderNo 进 MDC：本条支付链路后续所有日志自动携带，可与审计流水互查
+                                      PayCallbackLog.SignatureResult signatureResult,
+                                      String buyerLogonId,
+                                      String buyerUserId) {
+        // Put orderNo in MDC: all later logs of this payment path carry it automatically and can be cross-checked against the audit trail
         MDC.put("orderNo", orderNo);
         try {
             PayOrder order = selectByOrderNo(orderNo);
@@ -52,8 +61,24 @@ public class PaymentService {
                 throw ApiException.notFound("ORDER_NOT_FOUND", "Order not found");
             }
 
-            // 金额以本地订单为准，不信渠道回传值
-            if (paidAmountCents != null && paidAmountCents != order.getAmountCents()) {
+            // Amounts are based on the local order, never on the value the channel returns. A missing/unparseable
+            // amount is always rejected -- the old "paidAmount != null && compare" skipped validation on null and
+            // still marked the order PAID.
+            if (paidAmountCents == null) {
+                log.error("[PAY] amount_missing channel={} order_no={}", channel, orderNo);
+                audit.audit("AMOUNT_MISSING", "order_no", orderNo, "channel", channel.name());
+                logCallback(orderNo, channel, payloadMasked, signatureResult,
+                        PayCallbackLog.HandleResult.ERROR, "amount missing");
+                throw ApiException.badRequest("AMOUNT_MISSING", "Callback amount is missing or unparseable");
+            }
+            // 买家信息是渠道验签/查单确认过的事实，先落库（订单详情展示付款账户）。
+            if (buyerLogonId != null || buyerUserId != null) {
+                orderMapper.update(null, new LambdaUpdateWrapper<PayOrder>()
+                        .eq(PayOrder::getOrderNo, orderNo)
+                        .set(PayOrder::getBuyerLogonId, buyerLogonId)
+                        .set(PayOrder::getBuyerUserId, buyerUserId));
+            }
+            if (paidAmountCents != order.getAmountCents()) {
                 log.error("[PAY] amount_mismatch expect={} actual={}", order.getAmountCents(), paidAmountCents);
                 audit.audit("AMOUNT_MISMATCH", "order_no", orderNo, "channel", channel.name(),
                         "expect_cents", order.getAmountCents(), "actual_cents", paidAmountCents);
@@ -70,9 +95,38 @@ public class PaymentService {
             logCallback(orderNo, channel, payloadMasked, signatureResult,
                     PayCallbackLog.HandleResult.ACCEPTED, null);
             log.info("[PAY] order_paid channel={} amount_cents={}", channel, order.getAmountCents());
+            metrics.orderPaid();
             audit.audit("ORDER_PAID", "order_no", orderNo, "uid", order.getUid(),
                     "channel", channel.name(), "amount_cents", order.getAmountCents(),
                     "trade_no", channelTradeNo);
+
+            // ── 第二道墙（安全纵深）：PAID 落库后复核档位 ——
+            // 即使恶意脚本绕过下单拦截（并发窗口/伪造请求），付款确认时也会复核：
+            // 违规单（档位不高于现有生效会员）不交付权益，自动原路退款（本单未交付，
+            // 不撤销任何天数）。退款失败则保持 PAID 禁止交付并告警，人工介入。
+            // tier 快照为空（历史/异常单）不拦截 —— 与 applyTier 的 normalize 语义一致。
+            String paidTier = order.getTier();
+            if (paidTier != null && !paidTier.isBlank()) {
+                int activeRank = membershipService.activeTierRank(order.getUid());
+                int orderRank = MembershipService.tierRank(paidTier);
+                if (orderRank <= activeRank) {
+                    log.warn("[PAY] duplicate_order_auto_refund order_no={} order_tier={} active_rank={}",
+                            orderNo, paidTier, activeRank);
+                    audit.audit("DUPLICATE_ORDER_AUTO_REFUND", "order_no", orderNo, "uid", order.getUid(),
+                            "tier", paidTier, "active_rank", activeRank,
+                            "amount_cents", order.getAmountCents());
+                    try {
+                        refundService.refund(orderNo, "重复购买自动退款（仅允许向上升级）", false);
+                    } catch (Exception e) {
+                        log.error("[PAY] duplicate_order_refund_failed order_no={} -- 保持 PAID 禁止交付，需人工退款",
+                                orderNo, e);
+                        audit.audit("DUPLICATE_ORDER_REFUND_FAILED", "order_no", orderNo, "uid", order.getUid());
+                        throw ApiException.internalServerError("AUTO_REFUND_FAILED",
+                                "Duplicate order detected; delivery frozen pending manual refund");
+                    }
+                    return selectByOrderNo(orderNo);
+                }
+            }
 
             deliveryService.deliverOrder(order);
             order.setStatus(PayOrder.OrderStatus.DELIVERED);
@@ -82,7 +136,7 @@ public class PaymentService {
         }
     }
 
-    /** markPaid 未命中：订单已被并发通知推进（幂等）或已关闭（渠道确认收款后补单）。 */
+    /** markPaid missed: the order was advanced by a concurrent notification (idempotent) or is already closed (re-open after the channel confirms receipt). */
     private PayOrder handleNonCreatedState(String orderNo,
                                            PayOrder.PayChannel channel,
                                            String channelTradeNo,
@@ -97,16 +151,18 @@ public class PaymentService {
             audit.audit("ORDER_PAID_DUPLICATE", "order_no", orderNo, "channel", channel.name(),
                     "status", status.name(), "trade_no", channelTradeNo);
             if (status == PayOrder.OrderStatus.PAID) {
-                // 幂等命中同时是自愈触发器：上次交付中断（进程崩溃在 PAID 后）时，
-                // 借本次回调重发立即补交付；并发竞争由 markDelivered 条件更新兜底
+                // An idempotent hit doubles as a self-healing trigger: if the previous delivery was interrupted
+                // (the process crashed after PAID), this redelivered callback immediately completes it; concurrent
+                // races are handled by the markDelivered conditional update
                 deliveryService.deliverOrder(current);
                 current = selectByOrderNo(orderNo);
             }
             return current;
         }
         if (status == PayOrder.OrderStatus.CLOSED) {
-            // 关单后到账（用户在超时关单瞬间完成支付）：渠道已确认收款（验签通知/查单），
-            // 无条件补单 reopen——钱已收是事实；逆向走 M4 退款路径
+            // Payment arrived after close (the user paid at the instant the timeout closed the order): the channel
+            // has confirmed receipt (verified notification / query), so re-open unconditionally -- the money was
+            // received; the reverse path goes through the M4 refund flow
             log.warn("[PAY] paid_after_close_reopening");
             int reopened = orderMapper.markPaidAfterClose(orderNo, channelTradeNo, LocalDateTime.now(clock));
             if (reopened == 0) {

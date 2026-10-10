@@ -1,6 +1,8 @@
 package com.mindbase.pay.controller;
 
+import com.mindbase.pay.common.ApiException;
 import com.mindbase.pay.common.PayAuditLogger;
+import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.model.PayCallbackLog;
 import com.mindbase.pay.model.PayOrder;
 import com.mindbase.pay.service.PaymentService;
@@ -16,9 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * 支付渠道异步回调（/pay/callback/*）。APISIX 路由免登录态（priority 60），
- * 伪造请求由渠道验签拒绝；本服务不信任任何未验签字段。
- * 应答约定：支付宝要求纯文本 "success"/"fail"，非 success 渠道会重试（幂等保证重试安全）。
+ * Payment channel async callbacks (/pay/callback/*). The APISIX route requires no login state
+ * (priority 60); forged requests are rejected by channel signature verification, and this service
+ * trusts no unverified field.
+ * Response contract: Alipay expects plain-text "success"/"fail"; a non-success response makes the
+ * channel retry (idempotency keeps retries safe).
  */
 @Slf4j
 @RestController
@@ -29,8 +33,9 @@ public class PayCallbackController {
     private final AlipayChannelAdapter alipayAdapter;
     private final PaymentService paymentService;
     private final PayAuditLogger audit;
+    private final PayMetrics metrics;
 
-    /** 支付宝异步通知：form-urlencoded，验签通过且成功态 → 统一入口推进订单。 */
+    /** Alipay async notification: form-urlencoded; once signature verification and a success status pass, advance the order through the unified entry point. */
     @PostMapping(value = "/alipay", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE,
             produces = MediaType.TEXT_PLAIN_VALUE)
     public String alipayNotify(@RequestParam Map<String, String> params) {
@@ -39,28 +44,41 @@ public class PayCallbackController {
 
         AlipayChannelAdapter.AlipayNotifyResult result = alipayAdapter.verifyNotify(params);
         if (result.status() == AlipayChannelAdapter.AlipayNotifyResult.Status.INVALID) {
-            // 验签失败 = 疑似伪造请求，资金安全事件，必须留审计
+            // Signature verification failed = suspected forged request, a financial security event that must be audited
+            metrics.callbackRejected();
             audit.audit("CALLBACK_REJECTED", "channel", "alipay",
                     "app_id", params.get("app_id"), "out_trade_no", outTradeNo);
             return "fail";
         }
         if (result.status() == AlipayChannelAdapter.AlipayNotifyResult.Status.NOT_PAID) {
-            // 非成功态通知（交易关闭等），不应答 success 防止同类通知重试风暴
+            // Non-success notification (e.g. trade closed); do not ack success to avoid a retry storm of similar notifications
             return "success";
         }
         try {
             paymentService.handleChannelPaid(result.orderNo(), PayOrder.PayChannel.ALIPAY,
                     result.tradeNo(), result.paidAmountCents(), maskedPayload(params),
-                    PayCallbackLog.SignatureResult.VALID);
+                    PayCallbackLog.SignatureResult.VALID,
+                    result.buyerLogonId(), result.buyerUserId());
             return "success";
+        } catch (ApiException e) {
+            if ("AMOUNT_MISMATCH".equals(e.getCode()) || "AMOUNT_MISSING".equals(e.getCode())) {
+                // Permanent discrepancy (amount mismatch/missing): ack success to stop the channel's
+                // pointless retry storm; an ERROR log + audit + rejection metric are already emitted and
+                // manual reconciliation is required
+                log.error("[PAY] alipay_notify_amount_rejected out_trade_no={} code={} -- acked to stop retries",
+                        outTradeNo, e.getCode());
+                return "success";
+            }
+            log.error("[PAY] alipay_notify_handle_failed out_trade_no={} code={}", outTradeNo, e.getCode());
+            return "fail";
         } catch (Exception e) {
-            // 处理失败（临时故障）应答 fail 让渠道重试；幂等与关单补单保证重试安全
+            // Processing failed (transient fault): ack fail so the channel retries; idempotency and close/repair logic keep retries safe
             log.error("[PAY] alipay_notify_handle_failed out_trade_no={} err={}", outTradeNo, e.toString());
             return "fail";
         }
     }
 
-    /** 回调留档只取关键明文字段，签名等长字段不入库。 */
+    /** Callback archival keeps only key plaintext fields; long fields such as the signature are not stored. */
     private String maskedPayload(Map<String, String> params) {
         return "{\"app_id\":\"" + params.get("app_id")
                 + "\",\"out_trade_no\":\"" + params.get("out_trade_no")

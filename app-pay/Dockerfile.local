@@ -1,0 +1,24 @@
+# Local fast-path build: skip the in-container Maven download entirely.
+#
+# Why: in VPN/TUN environments Docker Desktop's NAT egress to domestic
+# mirrors (maven.aliyun.com) runs at ~1/25 of host throughput (measured
+# 25KB/s vs 620KB/s on the same box), making the Maven stage take 15min+
+# with stalls/truncations. The host build uses the warm ~/.m2 instead:
+#
+#   mvn -s maven-settings.xml package -DskipTests   (run in app-pay/)
+#   APP_PAY_DOCKERFILE=Dockerfile.local docker compose build app-pay
+#
+# The default Dockerfile (self-contained, CI) stays the compose default via
+# APP_PAY_DOCKERFILE in docker-compose.yml.
+FROM eclipse-temurin:21-jre
+# Unify the timezone to Asia/Shanghai (membership expiry / order timeout are all
+# computed in Beijing time); LANG/file.encoding keep Chinese text intact on
+# default-charset paths. Mirrors the main Dockerfile.
+ENV TZ=Asia/Shanghai \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8\ -Duser.timezone=Asia/Shanghai
+WORKDIR /app
+COPY target/app-pay-*.jar /app/app.jar
+EXPOSE 8002
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

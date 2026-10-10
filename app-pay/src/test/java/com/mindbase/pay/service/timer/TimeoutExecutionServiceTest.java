@@ -24,7 +24,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 超时委托 executor 四分支：命中关单 / 版本作废 / 状态跳过 / 幽灵任务。 */
+/** Timeout delegation executor four branches: match closes the order / version discarded / status skipped / ghost task. */
 @ExtendWith(MockitoExtension.class)
 class TimeoutExecutionServiceTest {
 
@@ -69,7 +69,7 @@ class TimeoutExecutionServiceTest {
 
         ExecuteResult result = service.execute(new TimeoutCommand("PO1", 1));
 
-        // 用户方案核心：注册的是 v1 委托，订单已升级 v2（已支付），委托作废
+        // Core of the design: the registered delegation is v1, the order advanced to v2 (paid), so the delegation is void
         assertThat(result.executed()).isFalse();
         assertThat(result.reason()).isEqualTo("SKIP_VERSION_MISMATCH");
     }

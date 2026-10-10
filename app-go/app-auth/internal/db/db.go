@@ -3,9 +3,9 @@
 //
 // Migration policy: CREATE TABLE IF NOT EXISTS only — never ALTER. The auth
 // tables already exist with live data (created by the Python backend via
-// app/system.sql); GORM AutoMigrate is deliberately NOT used because it
+// db/system.sql); GORM AutoMigrate is deliberately NOT used because it
 // issues ALTERs that could drift a shared, in-production schema. The DDL
-// below mirrors app/system.sql verbatim and only fires on a fresh database.
+// below mirrors db/system.sql verbatim and only fires on a fresh database.
 // Indexes are declared inline (MySQL 8 has no CREATE INDEX IF NOT EXISTS).
 package db
 
@@ -67,7 +67,7 @@ var ownedTables = []string{
 }
 
 // Migrate creates the auth schema if (and only if) it does not exist yet.
-// Mirrors app/system.sql DDL — keep in sync when the Python DDL changes.
+// Mirrors db/system.sql DDL — keep in sync when the Python DDL changes.
 func Migrate() error {
 	for _, ddl := range schemaDDL() {
 		if err := DB.Exec(ddl).Error; err != nil {

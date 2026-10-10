@@ -9,9 +9,9 @@ import lombok.Setter;
 import java.time.LocalDateTime;
 
 /**
- * 订单状态机（plan/1.0.7-Pay §4）：
- * CREATED -> PAID -> DELIVERED；CREATED -> CLOSED；M4 预留 REFUNDING/REFUNDED。
- * 状态流转一律走 PayOrderMapper 的条件更新（WHERE status=...），禁止读改写。
+ * Order state machine (plan/1.0.7-Pay §4):
+ * CREATED -> PAID -> DELIVERED; CREATED -> CLOSED; M4 reserves REFUNDING/REFUNDED.
+ * All state transitions go through conditional updates in PayOrderMapper (WHERE status=...); read-modify-write is forbidden.
  */
 @Getter
 @Setter
@@ -29,7 +29,7 @@ public class PayOrder {
 
     private long uid;
 
-    // 快照字段：SKU 后续改价改期不影响历史订单
+    // Snapshot field: later SKU price/duration changes do not affect historical orders
     private String skuCode;
 
     private String productTitle;
@@ -43,16 +43,35 @@ public class PayOrder {
     private OrderStatus status = OrderStatus.CREATED;
 
     /**
-     * 乐观锁版本：创建=1，每次状态迁移由条件更新 SQL 原子自增。
-     * app-task 超时委托携带注册时的版本，executor 执行时版本不匹配 = 订单已被支付等更新，委托作废。
+     * Optimistic-lock version: 1 on creation, atomically incremented by the conditional-update SQL on each state transition.
+     * The app-task timeout delegation carries the version from registration time; if the version no longer matches when the executor runs, the order was updated (e.g. paid) and the delegation is void.
      */
     private int version = 1;
 
     private String channelTradeNo;
 
+    /** 付款账户（买家支付宝登录号，查单/异步通知下发后落库，订单详情展示）。 */
+    private String buyerLogonId;
+
+    /** 买家支付宝 userId，与登录号一并展示用于核对。 */
+    private String buyerUserId;
+
     private String idempotencyKey;
 
     private String failReason;
+
+    /** Tier snapshot (copied from the SKU at order time): delivery grants based on this, and later SKU tier changes do not affect historical orders. */
+    private String tier;
+
+    /** Status before refund (PAID|DELIVERED): rollback target when the channel refund fails, preventing accidental delivery compensation. */
+    private String refundPrevStatus;
+
+    /** Channel refund number/request number (for idempotency and reconciliation). */
+    private String refundNo;
+
+    private String refundReason;
+
+    private LocalDateTime refundedAt;
 
     private LocalDateTime expiresAt;
 

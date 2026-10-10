@@ -129,3 +129,8 @@ _tmp2/
 # 根目录 reports/ 为一次性评测产物，不入库
 reports/
 higress-console.jar
+
+# 本机密钥文件（不入库;主密钥/凭证独立于 .env 存放）
+secrets/
+# 本地测试临时产物
+tmp-gotest/

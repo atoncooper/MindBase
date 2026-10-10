@@ -10,6 +10,10 @@ export interface ReasoningStep {
   verdict?: string;
   recall_score?: number;
   sources: ChatSource[];
+  /** compact JSON args preview (step start frames, truncated) */
+  args?: string;
+  /** tool execution duration in ms (step done frames) */
+  durationMs?: number;
 }
 
 export type MessageStatus = "pending" | "completed" | "failed";
@@ -33,7 +37,17 @@ export interface ChatMessageData {
   reasoning?: string;
   // Agent name routed to by AgentOrchestrator (from the `route` SSE frame).
   agent?: string;
+  // Turn is waiting in the backend admission queue (from the `queue` SSE
+  // frame, 1-based position). Cleared when the slot is granted (route/chunk
+  // frames follow); if the wait times out the turn fails with a queue error.
+  queuePosition?: number;
+  // Sub-agent delegation live status (from the `delegate` SSE frame): the
+  // currently-running sub-agent name + how many are active. Cleared when the
+  // delegation finishes (active=0).
+  subAgent?: { agent: string; count: number };
   status: MessageStatus;
+  // 多模态：用户消息附带的图片（data URL，仅本地实时态；历史重载后不含）
+  images?: string[];
   error?: string;
   timestamp: string;
 }

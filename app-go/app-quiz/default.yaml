@@ -1,0 +1,68 @@
+# ============================================================
+# app-quiz (Go) - default configuration
+# ============================================================
+# Quiz storage service: history, wrong-answer notebook, export,
+# detail, delete and sharing for quiz sets, plus the scheduled-quiz
+# business face (business detail + deterministic answer judging). Owns
+# quiz_sets/quiz_submissions/quiz_answers/quiz_questions +
+# quiz_task/quiz_task_answer in the SHARED bilirag MySQL — schema
+# ownership moved from the Python backend (CREATE-TABLE-IF-NOT-EXISTS
+# only). Question CONTENT lives in MongoDB (quiz_questions and
+# task_quiz_questions — the same collections the Python backend uses),
+# so there is zero data migration.
+#
+# The AI-bearing flows (generate / generate-from-summary /
+# submit+grade) stay in the Python backend.
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPQUIZ__, double-underscore nesting
+#   Shared secret env vars (same names as the other services):
+#        MONGO__URI, REDIS__URL
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-quiz
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8011
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPQUIZ__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+mongo:
+  uri: ""                    # inject via MONGO__URI (shared); quiz question content
+  database: mind_base        # same mongo database as the Python backend
+
+redis:
+  url: ""                    # inject via REDIS__URL (shared); share L2 cache (fail-open)
+  key_prefix: "mind-base:"   # same prefix as app/infra/redis.py — keys must stay shared
+
+quota:
+  # 每日每 uid 配额（对齐 Python app/config/default.yaml 的 quiz.limits）
+  # 由 /internal/quiz/quota/* 提供给 app-ts 的 AI 出题/批改编排；Redis 不可用时 fail-open
+  generate: 5
+  grade: 20
+
+cors:
+  allow_origins:
+    - http://localhost:3000
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-quiz.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

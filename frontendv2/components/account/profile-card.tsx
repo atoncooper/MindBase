@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Pencil } from "lucide-react";
+import { Check, ImagePlus, Loader2, Pencil } from "lucide-react";
 import { Select } from "@/components/ui/select";
 import { userApi, type ProfileData } from "@/lib/api";
 import {
@@ -52,6 +52,29 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
     const [editing, setEditing] = useState(false);
     const [form, setForm] = useState<FormState>(() => toForm(profile));
     const [saving, setSaving] = useState(false);
+    const [uploading, setUploading] = useState(false);
+    // 本地预览：优先刚上传/已有的 form.avatar，回退到当前 profile 头像。
+    const preview = (editing ? form.avatar : "") || profile.avatar || "";
+
+    async function onAvatarPick(e: React.ChangeEvent<HTMLInputElement>) {
+        const file = e.target.files?.[0];
+        e.target.value = ""; // 允许重选同一文件
+        if (!file) return;
+        if (file.size > 2 * 1024 * 1024) {
+            onToast("头像不能超过 2MB", "error");
+            return;
+        }
+        setUploading(true);
+        try {
+            const { url } = await userApi.uploadAvatar(file);
+            setForm((prev) => ({ ...prev, avatar: url }));
+            onToast("头像已上传，保存资料后生效", "success");
+        } catch (err) {
+            onToast(err instanceof Error ? err.message : "头像上传失败", "error");
+        } finally {
+            setUploading(false);
+        }
+    }
 
     function enterEdit() {
         setForm(toForm(profile));
@@ -121,13 +144,39 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
                             maxLength={40}
                         />
                     </Field>
-                    <Field label="头像 URL">
-                        <input
-                            className="field"
-                            value={form.avatar}
-                            onChange={(e) => set("avatar", e.target.value)}
-                            placeholder="https://…"
-                        />
+                    <Field label="头像">
+                        <div className="flex items-center gap-3">
+                            {preview ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                    src={preview}
+                                    alt=""
+                                    className="h-12 w-12 shrink-0 rounded-full object-cover ring-1 ring-border-subtle"
+                                />
+                            ) : (
+                                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-border-subtle text-tertiary">
+                                    <ImagePlus className="h-4 w-4" />
+                                </span>
+                            )}
+                            <label className="btn-pill btn-ghost inline-flex h-8 cursor-pointer items-center gap-1.5 px-4 text-[12px]">
+                                {uploading ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                    <ImagePlus className="h-3.5 w-3.5" />
+                                )}
+                                {uploading ? "上传中…" : "选择图片"}
+                                <input
+                                    type="file"
+                                    accept="image/png,image/jpeg,image/webp"
+                                    className="hidden"
+                                    disabled={uploading}
+                                    onChange={onAvatarPick}
+                                />
+                            </label>
+                            <span className="min-w-0 truncate text-[12px] text-tertiary">
+                                PNG / JPG / WebP，≤ 2MB
+                            </span>
+                        </div>
                     </Field>
                     <Field label="简介">
                         <input

@@ -1,5 +1,8 @@
 /**
  * Vector page API - 分P 向量化状态查询 / 触发（幂等）/ 重向量化 / 任务轮询.
+ *
+ * Backend contract: app-ts src/transport/http/routes/vector-page.ts（向量账本
+ * = Mongo mind_base_ts.vec_pages；APISIX vec_knowledge_ts 路由）.
  */
 import { request } from "./client";
 
@@ -17,11 +20,20 @@ export interface VectorPageStatusResponse {
   vector_error?: string;
 }
 
+// 向量化流水线步骤（app-ts vec_tasks 记录：ASR 委派 → 切块 → 入库）
+export interface VectorTaskStep {
+    name: string;
+    status: string;
+    progress: number;
+    at: number;
+}
+
 export interface VectorPageTaskStatus {
   task_id: string;
   status: "pending" | "processing" | "done" | "failed";
   progress: number;
   message: string;
+  steps?: VectorTaskStep[];
   result?: { chunk_count?: number };
   error?: string;
 }

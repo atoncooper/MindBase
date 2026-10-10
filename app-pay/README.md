@@ -1,106 +1,151 @@
-# app-pay — 交易/会员服务（Spring Boot）
+# app-pay — Transaction/Membership Service (Spring Boot)
 
-MindBase 会员开通：商品（SKU）→ 订单 → 支付（M1 mock / M2 微信·支付宝）→ 会员开通/续费顺延。
-设计与实施计划：[plan/1.0.7-Pay/1.0.7-Pay.md](../plan/1.0.7-Pay/1.0.7-Pay.md)
+MindBase membership activation: product (SKU) -> order -> payment (M1 mock / M2 WeChat & Alipay) -> membership activation/renewal extension.
+Design and implementation plan: [plan/1.0.7-Pay/1.0.7-Pay.md](../plan/1.0.7-Pay/1.0.7-Pay.md)
 
-## 定位与边界
+## Scope and Boundaries
 
-- 独立服务（Java 17 + Spring Boot 3.5），模式与 `app-task/` 对齐：独立 MySQL（`app-pay-mysql`，库 `app_pay`）、APISIX 统一鉴权、**配置唯一入口 = application.yaml（+ docker/test profile 变体，敏感值经占位符引用 .env）**。
-- 不 `import` 主 app；会员号即主 app `users.uid`（`X-Uid` 由 APISIX forward-auth 注入，本服务不自验登录）。
-- 数据访问统一走 **MyBatis-Plus**（`mapper/`：BaseMapper 内置 CRUD；手写 SQL 一律放 `resources/mapper/*.xml`）；建表走 `schema.sql`（启动执行，幂等）。
-- 金额一律 long 分；订单状态流转全走条件更新（`WHERE status=...`），回调幂等。
+- Standalone service (Java 21 + Spring Boot 3.5), modeled after `app-task/`: dedicated MySQL (`app-pay-mysql`, database `app_pay`), unified APISIX authentication, **single configuration entry point = application.yaml (+ docker/test profile variants; sensitive values reference .env via placeholders)**.
+- Does not `import` the main app; the membership ID is the main app's `users.uid` (`X-Uid` is injected by APISIX forward-auth; this service does not verify login itself).
+- All data access goes through **MyBatis-Plus** (`mapper/`: BaseMapper's built-in CRUD; hand-written SQL always goes in `resources/mapper/*.xml`); schema is managed by **Flyway** (`db/migration/V*.sql`, applied at startup).
+- All amounts are long cents; order state transitions always use conditional updates (`WHERE status=...`), and callbacks are idempotent.
 
-## 启动
+## Startup
 
-> ⚠️ **服务端 HTTPS-only（含本地启动）**：`server.ssl` 强制开启（`application.yaml`），
-> 交易/会员数据不允许明文上线。首次启动前先生成开发证书（gitignored，不进仓库）：
+> ⚠️ **Server-side HTTPS-only (including local startup)**: `server.ssl` is forced on (`application.yaml`),
+> transaction/membership data must not go to production in plaintext. Generate a development certificate before the first startup (gitignored, not committed):
 
 ```bash
-# 1) 生成开发证书（二选一；产出 app-pay/certs/{ca.crt,pay.crt,pay.key}）
+# 1) Generate a development certificate (either script; produces app-pay/certs/{ca.crt,pay.crt,pay.key})
 bash app-pay/scripts/gen-dev-cert.sh      # Git Bash / Linux
 powershell app-pay/scripts/gen-dev-cert.ps1
 
-# 2) Docker（推荐，从项目根；容器挂载 certs → /app/certs 与 yaml 默认相对路径对齐）
+# 2) Docker (recommended, from the project root; the container mounts certs -> /app/certs to match the yaml default relative paths)
 docker compose --profile pay up -d --build app-pay-mysql app-pay
 
-# 3) 本地 IDE/mvn 运行（需先起 app-pay-mysql，宿主回环端口 3307；workdir 须为 app-pay/）
+# 3) Run locally via IDE/mvn (start app-pay-mysql first, host loopback port 3307; workdir must be app-pay/)
 mvn spring-boot:run
 ```
 
-证书缺失时启动自检（`EnvSummaryRunner`）会明确报错并给出指引；应急逃生口
-`PAY_TLS_ENABLED=false` 可回退明文（仅限本机排查，生产禁止）。生产挂载正式 CA
-签发的证书后用 `PAY_TLS_CERT` / `PAY_TLS_KEY` 覆盖路径。
+If the certificate is missing, the startup self-check (`EnvSummaryRunner`) reports a clear error with guidance; the emergency escape hatch
+`PAY_TLS_ENABLED=false` falls back to plaintext (local troubleshooting only, forbidden in production). In production, mount the certificate issued by a real CA
+and override the paths with `PAY_TLS_CERT` / `PAY_TLS_KEY`.
 
-测试：`mvn test`。健康检查：`GET https://127.0.0.1:8002/health`（自签名证书用
-`curl -k` 或 `--cacert app-pay/certs/ca.crt`）。
+Tests: `mvn test`. Health check: `GET https://127.0.0.1:8002/health` (for self-signed certificates use
+`curl -k` or `--cacert app-pay/certs/ca.crt`).
 
-**本地运行后浏览器直接打开 `https://localhost:8002/`** —— 自动跳转到端到端测试控制台
-（base yaml 即本地开发形态，无需任何配置；生产容器形态下根路径为 404，不暴露控制台）。
+**After starting locally, open `https://localhost:8002/` in a browser** —— it redirects automatically to the end-to-end test console
+(the base yaml is the local development form, no configuration needed; in the production container form the root path returns 404 and the console is not exposed).
 
-## API 速览
+## API Overview
 
-| 分组 | 端点 | 说明 |
+| Group | Endpoint | Description |
 |------|------|------|
-| 用户 | `GET /pay/products` | 在售 SKU |
-| 用户 | `POST /pay/orders` | 创建订单（`{skuCode, channel:"MOCK"}`） |
-| 用户 | `GET /pay/orders/{orderNo}` | 订单详情（uid 归属校验） |
-| 用户 | `GET /pay/membership` | 当前用户会员态 |
-| 用户 | `POST /pay/mock/confirm` | **仅测试/本地形态**：模拟支付成功（`pay.mock.enabled` 守卫） |
-| 回调 | `POST /pay/callback/alipay` | **M2**：支付宝异步通知（验签，应答 success/fail 文本） |
-| 内部 | `GET /internal/pay/membership/{uid}` | 主 app 查会员态（非会员 `active:false`） |
-| 内部 | `POST /internal/pay/grant` | 运营补偿开通（reason 必填，落审计） |
+| User | `GET /pay/products` | SKUs on sale |
+| User | `GET /pay/channels` | Currently enabled channels (the frontend renders payment methods from this, no hardcoded MOCK) |
+| User | `POST /pay/orders` | Create an order (`{skuCode, channel, idempotencyKey?}`; all channels are admitted through the router) |
+| User | `GET /pay/orders` | My orders (`?limit=`, default 20, max 50) |
+| User | `GET /pay/orders/{orderNo}` | Order details (uid ownership check; 404 if not the owner) |
+| User | `POST /pay/orders/{orderNo}/cancel` | Cancel an unpaid order (CREATED only, decided by conditional update) |
+| User | `GET /pay/orders/{orderNo}/qr` | Payment QR code PNG for a pending order (Alipay Face-to-Face Payment, precreate idempotent) |
+| User | `GET /pay/membership` | Current user's membership status |
+| User | `POST /pay/mock/confirm` | **Test/local form only**: simulate a successful payment (guarded by `pay.mock.enabled`) |
+| Callback | `POST /pay/callback/alipay` | **M2**: Alipay async notification (signature verification, responds with success/fail text) |
+| Internal | `GET /internal/pay/membership/{uid}` | Main app queries membership status (non-member `active:false`) |
+| Internal | `POST /internal/pay/grant` | Operations compensation grant (reason required, audited; invalid tier 400) |
+| Internal | `POST /internal/pay/orders/{orderNo}/refund` | **M4**: operations refund (channel refund + optional membership revocation; idempotent, replayable) |
+| Internal | `POST /internal/pay/timeout/execute` | app-task timeout delegation execution (token enforced once configured; SQL-side `expires_at<=now` guard) |
 
-用户端点需 `X-Uid` 头（网关注入；直连调试手动携带）。完整契约与时序见计划文档 §5/§6。
+User endpoints require the `X-Uid` header (injected by the gateway; send it manually for direct debugging). See plan document §5/§6 for the full contract and sequence.
 
-## 配置
+## Configuration
 
-**配置唯一入口 = application.yaml**（基础=本地开发形态；`application-docker.yaml`=生产容器，`application-test.yaml`=测试/本地容器，由 compose command 激活 profile）。环境差异全部固化在各 yaml；仅敏感值经占位符引用根 `.env`：
+**Single configuration entry point = application.yaml** (base = local development form; `application-docker.yaml` = production container; `application-test.yaml` = test/local container; profile activated by the compose command). All environment differences are baked into each yaml; only sensitive values reference the root `.env` via placeholders:
 
-| 占位符（.env） | 被引用位置 | 默认 |
+| Placeholder (.env) | Referenced by | Default |
 |----------------|-----------|------|
-| `PAY_MYSQL_USER` / `PAY_MYSQL_PASSWORD` | `pay.rdbms.*`（MySQL 容器与 Java 共用同名变量） | `app_pay` / `app-pay` |
-| `ALIPAY_ENABLED` / `ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` | `pay.alipay.*` | `false` / 空（缺失启用即失败） |
-| `ALIPAY_GATEWAY_URL` / `ALIPAY_NOTIFY_URL` | `pay.alipay.*` | 正式网关 / 空=查单为主 |
-| `PAY_TEST_TOKEN` | test profile 测试入口令牌 | `local-test-token` |
-| `APPTASK_BASE_URL` / `APISIX_CONSUMER_KEY` / `PAY_EXECUTOR_BASE_URL` | `pay.apptask.*` 超时委托 | 网关地址等 |
-| `PAY_MYSQL_PORT` | compose 宿主映射 | `3307` |
-| `PAY_TLS_ENABLED` / `PAY_TLS_CERT` / `PAY_TLS_KEY` | `server.ssl.*`（HTTPS-only 开关与证书路径覆盖） | `true` / `certs/pay.crt` / `certs/pay.key` |
-| `PAY_EXECUTOR_CA_FILE` | compose → app-task `APPTASK__HTTP_EXECUTOR__CA_FILE`（信任 app-pay 开发 CA） | `/app/pay-certs/ca.crt` |
+| `PAY_MYSQL_USER` / `PAY_MYSQL_PASSWORD` | `pay.rdbms.*` (the MySQL container and Java share the same variable names) | `app_pay` / `app-pay` |
+| `ALIPAY_ENABLED` / `ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` | `pay.alipay.*` | `false` / empty (fails if enabled but missing) |
+| `ALIPAY_GATEWAY_URL` / `ALIPAY_NOTIFY_URL` | `pay.alipay.*` | production gateway / empty = query-order-based |
+| `PAY_TEST_TOKEN` | test profile test endpoint token | `local-test-token` |
+| `APPTASK_BASE_URL` / `APISIX_CONSUMER_KEY` / `PAY_EXECUTOR_BASE_URL` | `pay.apptask.*` timeout delegation | gateway URL, etc. |
+| `PAY_MYSQL_PORT` | compose host mapping | `3307` |
+| `PAY_TLS_ENABLED` / `PAY_TLS_CERT` / `PAY_TLS_KEY` | `server.ssl.*` (HTTPS-only switch and certificate path overrides) | `true` / `certs/pay.crt` / `certs/pay.key` |
+| `PAY_EXECUTOR_TOKEN` | `pay.internal.executor-token` (executor endpoint token, delivered via the registration URL query string) | empty = no check (compatible with older app-task) |
+| `PAY_EXECUTOR_CA_FILE` | compose -> app-task `APPTASK__HTTP_EXECUTOR__CA_FILE` (trusts the app-pay development CA) | `/app/pay-certs/ca.crt` |
 
-非敏感配置（超时分钟、job 参数、mock 开关等）一律改对应 yaml，不走环境变量。
+Non-sensitive configuration (timeout minutes, job parameters, mock switches, etc.) is always changed in the corresponding yaml, not via environment variables.
 
-## 调度任务
+## Scheduled Jobs
 
-| Job | 频率 | 职责 |
+| Job | Frequency | Responsibility |
 |-----|------|------|
-| **主路径** | 每单各自 `expires_at` | app-task 精确定时委托：下单时注册 task（payload 携带 version），到点调 `/internal/pay/timeout/execute`（executor 内 FIFO+worker 池并发自守，version 不匹配=已支付，委托作废） |
-| OrderTimeoutJob | 120s 起，jitter±30%，空跑退避 cap 10min | 超时关单**兜底**（主路径失效时接管，最终一致） |
-| DeliveryRetryJob | 60s 起，jitter，退避 cap 5min | `PAID` 停留 >1min → 重试交付（幂等） |
-| ChannelQueryJob | 60s，jitter，不退避 | 掉单主动查单（M2 主路径） |
+| **Primary path** | Each order's own `expires_at` | app-task precise timed delegation: a task is registered at order creation (payload carries version) and calls `/internal/pay/timeout/execute` when due (inside the executor, FIFO + worker pool self-limits concurrency; a version mismatch means already paid and the delegation is discarded) |
+| OrderTimeoutJob | from 120s, jitter ±30%, idle backoff cap 10min | Timeout closure **fallback** (takes over when the primary path fails; eventually consistent) |
+| DeliveryRetryJob | from 60s, jitter, backoff cap 5min | Stuck in `PAID` >1min -> retry delivery (idempotent) |
+| ChannelQueryJob | 60s, jitter, no backoff | Actively query the channel for lost orders (M2 primary path) |
+| ReconciliationJob | 3600s, fixed interval | Reconciliation: re-check channel status/amount for recently paid orders; discrepancies go to `RECON_*` audit + metrics |
 
-## 日志
+> **Multi-instance mutual exclusion**: all four jobs first acquire a `pay_job_lock` lease (`JobLease`, TTL configurable via `pay.job.lease-ttl-seconds`),
+> so only one instance actually executes at a time; if the lease table fails, this instance is allowed through (correctness is still guaranteed by order conditional updates).
+> The scheduler thread pool `pay.job.scheduler-pool-size` defaults to 4, preventing slow jobs (serial outbound channel queries) from blocking order closure/delivery compensation.
 
-- 运行日志：console + `logs/app-pay.log`（30 天轮转），行内自带 `[traceId] [uid]`
-- **资金审计**：`logs/pay-audit.jsonl`（独立文件，**365 天**留存），每行一条 JSON 资金事实
-  （`ORDER_PAID` / `ORDER_REOPENED` / `AMOUNT_MISMATCH` / `CALLBACK_REJECTED` 等），对账与客诉取证用
-- 每请求生成/透传 `X-Trace-Id`（响应回写，可把用户反馈对到日志）；定时 job 每轮自赋 `job-*` traceId
-- 红线：密钥/验签原文不入日志；Docker 挂载 `app_pay_logs` 卷持久化
+## Logging
 
-## 端到端测试控制台（M3 前端就绪前的联调入口）
+- Runtime logs: console + `logs/app-pay.log` (30-day rotation), each line includes `[traceId] [uid]`
+- **Funds audit**: `logs/pay-audit.jsonl` (separate file, retained **365 days**), one JSON funds fact per line
+  (such as `ORDER_PAID` / `ORDER_REOPENED` / `AMOUNT_MISMATCH` / `CALLBACK_REJECTED`), used for reconciliation and customer-complaint forensics
+- Each request generates/propagates `X-Trace-Id` (echoed in the response, so user reports can be matched to logs); scheduled jobs assign themselves a `job-*` traceId each round
+- Red line: secrets and raw signature payloads never enter logs; Docker mounts the `app_pay_logs` volume for persistence
 
-**测试环境（独立实例，与生产整库隔离）**：`docker compose --profile pay-test up -d app-pay-test-mysql app-pay-test`
-—— 强制 MOCK 渠道、测试入口开启（令牌默认 `local-test-token`）、订单超时 2min、控制台 `https://127.0.0.1:18002/test/pay/console.html`。生产实例照常 `--profile pay` 跑 8002，两者可同时运行。
+## Database Migration (Flyway)
 
-**控制台能力（v2）**：覆盖全部接口（商品/下单/沙箱二维码/模拟支付/查订单/我的最近订单/查会员/健康检查）；**请求默认验证通过**（未配置令牌时）；每请求显示 `X-Trace-Id`+状态+耗时，可复制对线日志与审计流水；**高并发模拟**走服务端 burst（闩锁同时起跑，绕过浏览器并发上限）——并发支付同一订单验证幂等（仅交付一次）、并发创建订单压测写入。
+All schema changes go through `src/main/resources/db/migration/V*.sql` (replacing the legacy raw `schema.sql`):
 
-测试实例开箱即用（application-test.yaml 固化）。**生产实例不开测试入口**（docker profile 固化关闭），如需在生产临时开启只能改 application-docker.yaml 后重启：
+- `V1__baseline.sql` = baseline of the legacy 5 tables; `V2__refund_tier_job_lock.sql` = refund fields + explicit tier + `pay_job_lock` + reconciliation indexes;
+- `baseline-on-migrate: true` + `baseline-version: 0`: legacy databases (created by the old schema.sql) are automatically baselined and then incrementally migrated,
+  while new databases create all tables from V1 —— the two paths converge to the same schema;
+- **Released migrations must not be modified**; all schema changes add a new `V3__...sql`.
 
-- **浏览器控制台**：`https://127.0.0.1:8002/test/pay/console.html` —— 填令牌 → 选商品下单 → MOCK 一键支付闭环，或选 ALIPAY 出**沙箱二维码**（沙箱钱包 App 扫码，ChannelQueryJob ≤60s 自动查单确认）→ 查会员
-- **一键冒烟脚本**：`PAY_TEST_TOKEN=xxx ./app-pay/scripts/smoke.sh`（下单→模拟支付→会员开通；自动信任本地 `certs/ca.crt`）
-- 安全：双闸门（`pay.test.enabled` 默认 false + 令牌）+ 结构性隔离（APISIX 不路由 `/test/*`、端口仅回环）；测试动作同样进资金审计流水（`TEST_MOCK_PAY` 事件）
+## Refunds (M4)
 
-## TLS（HTTPS-only）
+`POST /internal/pay/orders/{orderNo}/refund`(key-auth)`{"reason":"...","revokeMembership":true}`:
 
-- **服务端**：Spring Boot `server.ssl` 挂 PEM 证书（`application.yaml`），三种形态（本地 base / docker / test）统一生效；启动自检打印 `tls_enabled/cert/key` 并在证书缺失时拒绝启动。
-- **调用方**：APISIX `upstream-app-pay` 已改 `scheme: https`（`apisix.yaml` / `apisix.dev.yaml`，自签名阶段 `tls.verify: false` 只加密；换正式 CA 后收紧 `verify: true`）；app-task 超时委托回调（`executor_url=https://app-pay:8002/...`）经 `ca_file` 严格校验（CA 惰性加载，纯调度栈不受影响）。
-- **证书**：开发/测试用 `scripts/gen-dev-cert.sh|.ps1` 自建 mini-CA + 叶子证书（SAN：localhost/127.0.0.1/::1/app-pay/app-pay-test/192.168.138.1），浏览器导入 `ca.crt` 可消除告警；生产换正式证书后同步更新各调用方信任。
+- State machine `PAID|DELIVERED -> REFUNDING -> REFUNDED`; acceptance uses conditional update (only one concurrent request succeeds);
+- The channel refund **HTTP call is outside the transaction**, and `out_request_no=REF-{orderNo}` guarantees channel-side idempotency (repeated calls do not pay out twice);
+- On success, within the transaction mark REFUNDED + revoke membership (deduct `duration_days`, never producing a negative membership period, and emit a `REFUND_REVOKE` event);
+- On channel failure, roll back to the pre-refund status (`refund_prev_status`), without falsely triggering delivery compensation;
+- Orders stuck in REFUNDING (crash/timeout) can resume by calling the endpoint again; repeated calls on refunded orders return immediately (idempotent);
+- `pay.refund.max-days-back` limits the refund window.
+
+## Observability
+
+- `GET /health`: **actually probes the database** (`SELECT 1`); returns 503 when the DB is unavailable so the gateway removes the upstream;
+- `/actuator/health` (including db details and liveness/readiness probes), `/actuator/metrics`, `/actuator/prometheus`;
+- Business metrics: `pay.orders.created|paid|closed`, `pay.delivery.failed`, `pay.callback.rejected`,
+  `pay.refund.succeeded|failed`, `pay.channel.query.paid`, `pay.recon.mismatch`.
+
+## Testing
+
+- `mvn test`: offline unit tests (including transaction-boundary reflection guards, no-tier-downgrade, three-phase refund, missing-amount rejection, and SQL guard assertions);
+- `PayIntegrationTest`: Testcontainers with real MySQL (conditional updates / transactions / Flyway migrations),
+  **automatically skipped when Docker is unavailable locally**; CI with Docker runs it.
+
+## End-to-End Test Console (integration entry point before the M3 frontend is ready)
+
+**Test environment (separate instance, fully isolated database from production)**: `docker compose --profile pay-test up -d app-pay-test-mysql app-pay-test`
+—— forces the MOCK channel, enables the test endpoints (default token `local-test-token`), sets order timeout to 2min, and hosts the console at `https://127.0.0.1:18002/test/pay/console.html`. The production instance runs on 8002 with `--profile pay` as usual; both can run simultaneously.
+
+**Console capabilities (v2)**: covers all endpoints (products / create order / sandbox QR code / simulate payment / query order / my recent orders / query membership / health check); **requests pass authentication by default** (when no token is configured); each request shows `X-Trace-Id` + status + duration, and logs/audit records can be copied for tracing; **high-concurrency simulation** uses a server-side burst (a latch starts all requests at once, bypassing browser concurrency limits) —— concurrently paying the same order verifies idempotency (delivered only once), and concurrently creating orders stress-tests writes.
+
+The test instance works out of the box (baked into application-test.yaml). **The production instance does not open the test endpoints** (baked off in the docker profile); to enable them temporarily in production you must edit application-docker.yaml and restart:
+
+- **Browser console**: `https://127.0.0.1:8002/test/pay/console.html` —— enter the token -> pick a product and create an order -> one-click MOCK payment closes the loop, or choose ALIPAY to get a **sandbox QR code** (scan with the sandbox wallet App; ChannelQueryJob confirms the order within ≤60s) -> query membership
+- **One-click smoke script**: `PAY_TEST_TOKEN=xxx ./app-pay/scripts/smoke.sh` (create order -> simulate payment -> activate membership; automatically trusts the local `certs/ca.crt`)
+- Security: double gate (`pay.test.enabled` defaults to false + token) plus structural isolation (APISIX does not route `/test/*`, port is loopback-only); test actions also enter the funds audit stream (`TEST_MOCK_PAY` event)
+
+## TLS (HTTPS-only)
+
+- **Server side**: Spring Boot `server.ssl` mounts PEM certificates (`application.yaml`), effective uniformly across all three forms (local base / docker / test); the startup self-check prints `tls_enabled/cert/key` and refuses to start when the certificate is missing.
+- **Callers**: APISIX `upstream-app-pay` has switched to `scheme: https` (`apisix.yaml` / `apisix.dev.yaml`; during the self-signed phase `tls.verify: false` encrypts only; tighten to `verify: true` after switching to a real CA); the app-task timeout delegation callback (`executor_url=https://app-pay:8002/...`) is strictly verified via `ca_file` (the CA is loaded lazily, so pure scheduling stacks are unaffected).
+- **Certificates**: for development/testing, `scripts/gen-dev-cert.sh|.ps1` builds a mini-CA + leaf certificate (SAN: localhost/127.0.0.1/::1/app-pay/app-pay-test/192.168.138.1); importing `ca.crt` into the browser removes the warning; after switching to a real certificate in production, update trust on every caller accordingly.

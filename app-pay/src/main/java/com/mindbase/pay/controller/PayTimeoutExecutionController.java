@@ -4,9 +4,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.mindbase.pay.common.ApiException;
+import com.mindbase.pay.config.PayProperties;
 import com.mindbase.pay.dto.PayDtos;
 import com.mindbase.pay.service.timer.ExecuteResult;
 import com.mindbase.pay.service.timer.TimeoutCommand;
@@ -18,9 +20,17 @@ import lombok.extern.slf4j.Slf4j;
 
 
 /**
- * 超时委托 executor（plan/1.0.8）：app-task 到点把 payload 原文 POST 到此。
- * 并发自守（§5.3）：入队由 {@link TimeoutExecutionQueue} 钳制，队列满 503 → 调用方退避重试。
- * 响应恒 200（业务跳过也是处理成功）；仅 5xx 触发 app-task 重试。
+ * Timeout delegation executor (plan/1.0.8): app-task POSTs the raw payload here when a deadline fires.
+ *
+ * <p>Trust boundary: at registration executor_url carries the token query string (app-task POSTs it
+ * verbatim, no changes needed); when pay.internal.executor-token is configured it is enforced. The SQL
+ * side also guards on expires_at, so even if the token is missing/bypassed only genuinely expired orders
+ * can be closed.
+ *
+ * <p>Concurrency self-limiting (§5.3): enqueueing is clamped by {@link TimeoutExecutionQueue}; a full
+ * queue returns 503 -> the caller backs off and retries.
+ * Responses are always 200 (a business skip is still a successful handling); only 5xx triggers an
+ * app-task retry.
  */
 @Slf4j
 @RestController
@@ -29,15 +39,23 @@ import lombok.extern.slf4j.Slf4j;
 public class PayTimeoutExecutionController {
 
     private final TimeoutExecutionQueue queue;
+    private final PayProperties payProperties;
 
     @PostMapping("/execute")
-    public ResponseEntity<ExecuteResult> execute(@Valid @RequestBody PayDtos.TimeoutExecutionRequest req) {
+    public ResponseEntity<ExecuteResult> execute(
+            @Valid @RequestBody PayDtos.TimeoutExecutionRequest req,
+            @RequestParam(value = "token", required = false) String token) {
+        String expected = payProperties.internal() == null ? null : payProperties.internal().executorToken();
+        if (expected != null && !expected.isBlank() && !expected.equals(token)) {
+            log.warn("[PAY] timeout_executor_unauthorized order_no={}", req.orderNo());
+            throw ApiException.unauthorized("UNAUTHORIZED", "Invalid executor token");
+        }
         try {
             ExecuteResult result = queue.submit(new TimeoutCommand(req.orderNo(), req.version()));
             return ResponseEntity.ok(result);
         } catch (TimeoutExecutionQueue.QueueFullException e) {
             log.warn("[PAY] timeout_executor_busy -- 503, caller should backoff and retry");
-            // 统一错误体经 GlobalExceptionHandler 渲染；503 触发 app-task 退避重试
+            // The unified error body is rendered by GlobalExceptionHandler; 503 triggers app-task backoff retry
             throw ApiException.serviceUnavailable("EXECUTOR_BUSY", "Executor queue is full, please retry later");
         }
     }

@@ -247,7 +247,7 @@ app-board/                       思维导图/白板存储服务（Go + Gin，:8
   internal/              config / db / mongo / redis缓存 / repo / service / router / tls
   certs/                 自动生成的开发 CA + 叶子证书（APISIX 信任锚）
 
-app-pay/                         交易/会员服务（Java 17 + Spring Boot 3 + MyBatis-Plus，:8002 HTTPS-only）
+app-pay/                         交易/会员服务（Java 21 + Spring Boot 3 + MyBatis-Plus，:8002 HTTPS-only）
 app-pay-admin/                   支付后台管理（Go + Gin SSR，:8003 回环）
 
 mind-base-desktop/               桌面端（Tauri 2 + React 19，全本地 SQLite）

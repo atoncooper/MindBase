@@ -1,38 +1,38 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# app-pay 本地开发/测试 TLS 证书生成：自建 mini-CA + 服务端叶子证书（PEM）。
+# app-pay local development/test TLS certificate generation: builds a mini-CA + server leaf certificate (PEM).
 #
-# 输出到 app-pay/certs/（gitignored）：
-#   ca.crt   自建 CA（调用方信任它：APISIX/浏览器可选、app-task 必需）
-#   pay.crt  服务端证书（server.ssl.certificate）
-#   pay.key  服务端私钥（server.ssl.certificate-private-key，PKCS#8 PEM）
+# Output to app-pay/certs/ (gitignored):
+#   ca.crt   self-built CA (callers must trust it: optional for APISIX/browser, required for app-task)
+#   pay.crt  server certificate (server.ssl.certificate)
+#   pay.key  server private key (server.ssl.certificate-private-key, PKCS#8 PEM)
 #
-# SAN 覆盖所有调用方使用的名字（新增调用方域名/IP 需重新生成）：
-#   localhost / 127.0.0.1 / ::1           —— 本机浏览器与直连调试
-#   app-pay / app-pay-test                —— docker 网络内服务名（APISIX、app-task）
-#   192.168.138.1                         —— VM 开发宿主 IP（apisix.dev.yaml 上游）
+# SAN covers every name used by callers (regenerate when adding a caller domain/IP):
+#   localhost / 127.0.0.1 / ::1           —— local browser and direct debugging
+#   app-pay / app-pay-test                —— service names inside the docker network (APISIX, app-task)
+#   192.168.138.1                         —— VM development host IP (apisix.dev.yaml upstream)
 #
-# 重复执行会覆盖旧证书；换 CA 后调用方持有的旧 ca.crt 需重新分发。
-# 生产不要用本脚本：挂载正式 CA 签发的证书并配置 PAY_TLS_CERT/PAY_TLS_KEY。
+# Re-running overwrites the old certificate; after switching CA, redistribute the old ca.crt held by callers.
+# Do not use this script in production: mount a certificate issued by a real CA and configure PAY_TLS_CERT/PAY_TLS_KEY.
 # ==============================================================================
 set -euo pipefail
 
-# Git Bash(MSYS) 会把 -subj "/CN=..." 当 POSIX 路径转换成 Windows 路径，必须禁用；
-# 两个变量在原生 Linux bash 下未定义/无副作用，脚本可双平台复用。
+# Git Bash (MSYS) treats -subj "/CN=..." as a POSIX path and converts it to a Windows path, so it must be disabled;
+# Both variables are undefined/no-ops under native Linux bash, so the script works on both platforms.
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL="*"
 
 DIR="$(cd "$(dirname "$0")/.." && pwd)/certs"
 DAYS_CA=3650
 DAYS_SERVER=825
-HOST_IP="${PAY_DEV_HOST_IP:-192.168.138.1}"   # VM 开发宿主 IP，可用 env 覆盖
+HOST_IP="${PAY_DEV_HOST_IP:-192.168.138.1}"   # VM development host IP, overridable via env
 
 mkdir -p "$DIR"
-# 统一 cd 进输出目录用【相对文件名】操作 openssl：mingw64 原生版 openssl
-# 不认 /d/... POSIX 路径，而 -subj 又依赖 NO_PATHCONV，相对路径两边都兼容
+# cd into the output directory and use [relative file names] with openssl: the mingw64 native openssl
+# does not accept /d/... POSIX paths, while -subj depends on NO_PATHCONV, so relative paths work on both
 cd "$DIR"
 
-echo "==> 输出目录: $DIR"
+echo "==> Output directory: $DIR"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ca.key 2>/dev/null
 openssl req -x509 -new -key ca.key -sha256 -days "$DAYS_CA" \
   -subj "/CN=app-pay-dev-ca/O=MindBase" \
@@ -54,6 +54,6 @@ openssl x509 -req -in pay.csr \
 rm -f pay.csr pay.ext ca.srl
 chmod 600 pay.key ca.key 2>/dev/null || true
 
-echo "==> 完成。证书 SAN 摘要："
+echo "==> Done. Certificate SAN summary:"
 openssl x509 -in pay.crt -noout -subject -dates -ext subjectAltName
-echo "==> 下一步：重启 app-pay（本地 IDE/mvn 或 docker compose）；需要精确超时委托的 app-task 挂载 ca.crt。"
+echo "==> Next: restart app-pay (local IDE/mvn or docker compose); app-task (which needs precise timeout delegation) mounts ca.crt."

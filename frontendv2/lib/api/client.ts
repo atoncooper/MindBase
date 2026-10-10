@@ -13,9 +13,9 @@ import { sanitizeError } from "@/lib/error-utils";
 import { emitAppToast } from "@/lib/app-toast";
 
 // SSR base URL: Next.js server-side fetches (SSR/RSC) have no origin, so they
-// always need an absolute internal URL. Route them through nginx (NOT direct
-// backend:8000) so SSR traffic stays behind the nginx -> apisix -> backend
-// chain and benefits from load balancing.
+// always need an absolute internal URL. Route them through nginx (never a
+// specific backend service) so SSR traffic stays behind the
+// nginx -> apisix -> service chain and benefits from load balancing.
 // NEXT_PUBLIC_APISIX_HOST is inlined at build time: docker-compose sets it to
 // "nginx:80"; local dev falls back to "localhost:9080" (apisix on host/VM).
 const INTERNAL_API_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "localhost:9080";
@@ -50,6 +50,22 @@ export function requireAuthHeaders(): Record<string, string> {
     return headers;
 }
 
+// Attach the HTTP status to a thrown request error so callers can branch on
+// it (e.g. 409 from /favorites/v2 = bilibili not bound → show bind prompt,
+// not a logout). Message text alone is not a stable discriminator.
+function withStatus(err: Error, status: number): Error {
+    (err as Error & { status?: number }).status = status;
+    return err;
+}
+
+/** HTTP status carried on an error thrown by request(), if any. */
+export function requestErrorStatus(e: unknown): number | undefined {
+    if (e instanceof Error && typeof (e as Error & { status?: number }).status === "number") {
+        return (e as Error & { status?: number }).status;
+    }
+    return undefined;
+}
+
 // Generic request helper. Injects JSON content-type + auth headers, normalizes
 // 401 (clears local auth + dispatches auth:unauthorized) and sanitizes errors.
 export async function request<T>(
@@ -61,9 +77,16 @@ export async function request<T>(
     const response = await fetch(url, {
         ...options,
         headers: {
-            "Content-Type": "application/json",
+            // Content-Type only with an actual body: Fastify rejects bodiless
+            // requests that declare application/json ("Body cannot be empty when
+            // content-type is set") — that 400 surfaced as「请求参数有误」and broke
+            // the bodiless DELETE /chat/history/from/{id} (per-turn regenerate).
+            // FormData bodies are excluded so fetch can set its multipart boundary.
+            ...(options.body !== undefined && !(options.body instanceof FormData)
+                ? { "Content-Type": "application/json" }
+                : {}),
             // Marks the request as AJAX so dev-proxy beforeFiles rewrites can
-            // route API calls (e.g. GET /notes) to the backend ahead of the
+            // route API calls (e.g. GET /notes) to the API gateway ahead of the
             // matching page route. Page navigation never sends this header.
             "X-Requested-With": "XMLHttpRequest",
             ...getAuthHeaders(),
@@ -101,9 +124,12 @@ export async function request<T>(
         }
         if (bodyIsHtml && (response.status === 403 || response.status >= 500)) {
             emitAppToast("warning", "服务暂时不可用，请稍后重试");
-            throw new Error("服务暂时不可用，请稍后重试");
+            throw withStatus(new Error("服务暂时不可用，请稍后重试"), response.status);
         }
-        throw new Error(sanitizeError({ status: response.status, detail: rawDetail }));
+        throw withStatus(
+            new Error(sanitizeError({ status: response.status, detail: rawDetail })),
+            response.status,
+        );
     }
 
     // 204/空响应体没有 JSON 可解析（DELETE 等操作端点）：直接返回 undefined，

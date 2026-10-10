@@ -10,7 +10,8 @@
  */
 import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Search, X, Plus, CalendarClock } from "lucide-react";
+import { Search, X, Plus, CalendarClock, Trash2, Check } from "lucide-react";
+import { taskQuizApi } from "@/lib/api";
 import type { TaskQuizListItem, TaskQuizStatus } from "@/lib/api/task-quiz";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,8 @@ interface TaskQuizListProps {
     selectedTaskId: string | null;
     onSelect: (taskId: string) => void;
     onNew: () => void;
+    /** 删除成功后回调（父组件刷新列表/选中态）。 */
+    onDeleted: (taskId: string) => void;
 }
 
 interface Group {
@@ -104,8 +107,33 @@ export function TaskQuizList({
     selectedTaskId,
     onSelect,
     onNew,
+    onDeleted,
 }: TaskQuizListProps) {
     const [query, setQuery] = useState("");
+    // 两段式删除：第一次点击进入确认态（对勾），再次点击才真正删除；
+    // 选中其他行/展开其他行的删除按钮会重置确认态。
+    const [confirmId, setConfirmId] = useState<string | null>(null);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
+
+    async function handleDelete(taskId: string) {
+        if (confirmId !== taskId) {
+            setConfirmId(taskId);
+            setDeleteError(null);
+            return;
+        }
+        setDeletingId(taskId);
+        setDeleteError(null);
+        try {
+            await taskQuizApi.deleteTask(taskId);
+            setConfirmId(null);
+            onDeleted(taskId);
+        } catch (e) {
+            setDeleteError(e instanceof Error ? e.message : "删除失败");
+        } finally {
+            setDeletingId(null);
+        }
+    }
 
     const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
@@ -235,13 +263,17 @@ export function TaskQuizList({
                                             delay: Math.min(i * 0.018, 0.12),
                                             ease: [0.28, 0.11, 0.32, 1],
                                         }}
+                                        className="group relative"
                                     >
                                         <button
                                             type="button"
-                                            onClick={() => onSelect(task.taskId)}
+                                            onClick={() => {
+                                                setConfirmId(null);
+                                                onSelect(task.taskId);
+                                            }}
                                             aria-current={isActive ? "true" : undefined}
                                             className={cn(
-                                                "group relative w-full rounded-[10px] px-2.5 py-2.5 text-left transition-colors duration-150",
+                                                "relative w-full rounded-[10px] py-2.5 pl-2.5 pr-9 text-left transition-colors duration-150",
                                                 isActive
                                                     ? "bg-accent-soft"
                                                     : "hover:bg-border-subtle/70",
@@ -276,6 +308,45 @@ export function TaskQuizList({
                                                 </span>
                                             </div>
                                         </button>
+                                        {/* 悬停出现：两段式删除（垃圾桶 → 对勾确认） */}
+                                        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                                            {confirmId === task.taskId ? (
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        aria-label="确认删除"
+                                                        title="确认删除"
+                                                        disabled={deletingId === task.taskId}
+                                                        onClick={() => void handleDelete(task.taskId)}
+                                                        className={cn(
+                                                            "grid h-6 w-6 place-items-center rounded-md text-danger transition-colors hover:bg-danger/10",
+                                                            deletingId === task.taskId && "opacity-50",
+                                                        )}
+                                                    >
+                                                        <Check className="h-3.5 w-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        aria-label="取消删除"
+                                                        title="取消删除"
+                                                        onClick={() => setConfirmId(null)}
+                                                        className="grid h-6 w-6 place-items-center rounded-md text-tertiary transition-colors hover:bg-border-subtle"
+                                                    >
+                                                        <X className="h-3.5 w-3.5" />
+                                                    </button>
+                                                </>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    aria-label="删除任务"
+                                                    title="删除任务"
+                                                    onClick={() => void handleDelete(task.taskId)}
+                                                    className="grid h-6 w-6 place-items-center rounded-md text-tertiary transition-colors hover:bg-border-subtle hover:text-danger"
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </button>
+                                            )}
+                                        </div>
                                     </motion.div>
                                 );
                             })}
@@ -285,6 +356,21 @@ export function TaskQuizList({
             </div>
 
             {/* Footer */}
+            {deleteError && (
+                <div className="border-t border-border-subtle px-4 py-2">
+                    <div className="flex items-center gap-1.5 text-[11px] text-danger">
+                        <span className="min-w-0 flex-1 truncate">{deleteError}</span>
+                        <button
+                            type="button"
+                            aria-label="关闭错误提示"
+                            onClick={() => setDeleteError(null)}
+                            className="grid h-4 w-4 shrink-0 place-items-center rounded-full hover:bg-border-subtle"
+                        >
+                            <X className="h-3 w-3" />
+                        </button>
+                    </div>
+                </div>
+            )}
             {!loading && tasks.length > 0 && (
                 <div className="border-t border-border-subtle px-4 py-2">
                     <span className="text-[10px] tabular-nums text-tertiary/70">

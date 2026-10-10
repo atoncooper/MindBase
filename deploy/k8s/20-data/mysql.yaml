@@ -1,4 +1,4 @@
-# Main application MySQL (mind_base) — schema seeded from app/system.sql
+# Main application MySQL (mind_base) — schema seeded from db/system.sql
 # Credentials come from the mindbase-env Secret (MYSQL_ROOT_PASSWORD /
 # MYSQL_USER / MYSQL_PASSWORD — sourced from .env).
 apiVersion: v1

@@ -12,7 +12,7 @@ import java.io.IOException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** traceId 贯穿：复用合法上游 ID、非法注入重新生成、结束后 MDC 清理、响应回写。 */
+/** traceId propagation: reuse a valid upstream ID, regenerate on unsafe injection, clear MDC afterwards, write back to the response. */
 class TraceIdFilterTest {
 
     private final TraceIdFilter filter = new TraceIdFilter();
@@ -30,7 +30,7 @@ class TraceIdFilterTest {
 
         filter.doFilter(request, response, chain);
 
-        assertThat(org.slf4j.MDC.get(TraceIdFilter.TRACE_ID)).isNull(); // 结束后必须清理
+        assertThat(org.slf4j.MDC.get(TraceIdFilter.TRACE_ID)).isNull(); // must be cleared after the chain completes
         assertThat(response.getHeader("X-Trace-Id")).hasSize(16);
     }
 
@@ -40,7 +40,7 @@ class TraceIdFilterTest {
         request.addHeader("X-Trace-Id", "abc-DEF-123");
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = (req, res) ->
-                // 链内任意组件都能读到同一 traceId（日志/审计互相关联的依据）
+                // any component inside the chain can read the same traceId (the basis for correlating logs/audit)
                 assertThat(org.slf4j.MDC.get(TraceIdFilter.TRACE_ID)).isEqualTo("abc-DEF-123");
 
         filter.doFilter(request, response, chain);
@@ -57,7 +57,7 @@ class TraceIdFilterTest {
 
         filter.doFilter(request, response, chain);
 
-        // 不透传含白名单外字符的头（防日志注入），重新生成的 ID 回写响应
+        // do not pass through a header containing characters outside the whitelist (prevents log injection); the regenerated ID is written back to the response
         assertThat(response.getHeader("X-Trace-Id")).hasSize(16)
                 .isNotEqualTo("evil<script>alert(1)</script>");
     }

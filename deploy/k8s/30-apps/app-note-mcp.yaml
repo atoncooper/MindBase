@@ -1,0 +1,82 @@
+# app-note-mcp — NOTEMCP MCP server (Go + mcp-go; agent tool surface) (port 8009).
+# Env parity with docker-compose.yml service 'app-note-mcp'; secrets come from the
+# mindbase-env Secret (created once via kubectl create secret from .env).
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-note-mcp
+  labels:
+    app: app-note-mcp
+spec:
+  selector:
+    app: app-note-mcp
+  ports:
+    - name: http
+      port: 8009
+      targetPort: 8009
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-note-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-note-mcp
+  template:
+    metadata:
+      labels:
+        app: app-note-mcp
+    spec:
+      initContainers:
+        - name: wait-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z apisix 9080; do echo waiting for apisix; sleep 3; done"]
+      containers:
+        - name: app-note-mcp
+          image: atoncooper/mind-base-app-note-mcp:latest
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: mindbase-env
+          env:
+            - name: NOTEMCP__UPSTREAM__BASE_URL
+              value: "http://apisix:9080"
+            - name: NOTEMCP__UPSTREAM__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: NOTEMCP__UPSTREAM__UID
+              value: "$(NOTE_MCP_UID)"
+            - name: NOTEMCP__SERVER__AUTH_TOKEN
+              value: "$(NOTE_MCP_AUTH_TOKEN)"
+            - name: NOTEMCP__SERVER__SERVICE_API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: NOTEMCP__LOG__OUTPUT
+              value: "both"
+            - name: NOTEMCP__LOG__FILE
+              value: "/app/logs/app-note-mcp.log"
+          ports:
+            - containerPort: 8009
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8009
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8009
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: logs
+          emptyDir: {}
+

@@ -18,10 +18,13 @@ import {
     Sparkles,
     X,
     Zap,
+    Tv,
 } from "lucide-react";
 import { favoritesV2Api, type FavoriteFolderV2 } from "@/lib/api/favorites";
 import { knowledgeApi, type BuildStatus, type FolderStatus } from "@/lib/api/knowledge";
+import { requestErrorStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { BilibiliBindModal } from "@/components/account/bilibili-bind-modal";
 import { FolderCard } from "./folder-card";
 import { KgPanel } from "./kg-panel";
 
@@ -45,6 +48,10 @@ export function FavoritesView() {
     const [statusMap, setStatusMap] = useState<Record<number, FolderStatus>>({});
     const [loadState, setLoadState] = useState<LoadState>("loading");
     const [loadError, setLoadError] = useState<string>("");
+    // 409 from bili endpoints = session valid but no bilibili binding — show
+    // the bind prompt instead of an error (never log the user out for this).
+    const [needsBind, setNeedsBind] = useState(false);
+    const [bindOpen, setBindOpen] = useState(false);
     const [syncing, setSyncing] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
     const [build, setBuild] = useState<BuildRun | null>(null);
@@ -71,7 +78,11 @@ export function FavoritesView() {
             }
             setLoadState("ready");
         } catch (e) {
-            setLoadError(e instanceof Error ? e.message : "加载收藏夹失败");
+            if (requestErrorStatus(e) === 409) {
+                setNeedsBind(true);
+            } else {
+                setLoadError(e instanceof Error ? e.message : "加载收藏夹失败");
+            }
             setLoadState("error");
         }
     }, []);
@@ -107,7 +118,11 @@ export function FavoritesView() {
             await favoritesV2Api.syncFolders();
             await loadAll();
         } catch (e) {
-            setLoadError(e instanceof Error ? e.message : "同步收藏夹失败");
+            if (requestErrorStatus(e) === 409) {
+                setNeedsBind(true);
+            } else {
+                setLoadError(e instanceof Error ? e.message : "同步收藏夹失败");
+            }
             setLoadState("error");
         } finally {
             setSyncing(false);
@@ -209,6 +224,43 @@ export function FavoritesView() {
                         <div key={i} className="h-16 animate-pulse rounded-2xl bg-border-subtle" />
                     ))}
                 </div>
+            </FavoritesShell>
+        );
+    }
+
+    // ───────────────────────────────────────────────
+    // Render: bilibili not bound — bind prompt, not an error
+    // ───────────────────────────────────────────────
+    if (loadState === "error" && needsBind) {
+        return (
+            <FavoritesShell>
+                <Header syncing={false} onSync={() => {}} onRefresh={() => {}} refreshing={false} count={0} />
+                <div className="flex flex-col items-center justify-center rounded-2xl border border-border-subtle py-20 text-center">
+                    <span className="grid h-12 w-12 place-items-center rounded-full bg-border-subtle text-secondary">
+                        <Tv className="h-5 w-5" />
+                    </span>
+                    <p className="mt-4 text-[15px] font-medium text-foreground">还没有绑定 B 站账号</p>
+                    <p className="mt-1.5 max-w-xs text-[13px] text-secondary">
+                        邮箱注册的账号需要先绑定 B 站，才能同步收藏夹并构建知识库。
+                    </p>
+                    <button
+                        type="button"
+                        onClick={() => setBindOpen(true)}
+                        className="btn-pill btn-primary mt-6 h-9 px-5 text-[13px]"
+                    >
+                        扫码绑定 B 站
+                    </button>
+                </div>
+                <BilibiliBindModal
+                    isOpen={bindOpen}
+                    onClose={() => setBindOpen(false)}
+                    onBound={() => {
+                        setBindOpen(false);
+                        setNeedsBind(false);
+                        setLoadError("");
+                        void loadAll();
+                    }}
+                />
             </FavoritesShell>
         );
     }

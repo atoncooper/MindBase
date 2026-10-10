@@ -1,7 +1,9 @@
 /**
- * Blindspot API - knowledge blind-spot map (Plan 1.0.6).
+ * Blindspot API - knowledge blind-spot map.
  *
- * Backend contract: app/routers/blindspot.py; design: plan/1.0.6-BlindSpotMap/.
+ * Backend contract: app-ts src/transport/http/routes/blindspot.ts
+ * (exposure/evidence via app-kg gRPC, quiz signals via app-quiz internal API);
+ * design: plan/1.0.6-BlindSpotMap/.
  */
 import { request } from "./client";
 

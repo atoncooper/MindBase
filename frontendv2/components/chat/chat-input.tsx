@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { ArrowUp, Square, X } from "lucide-react";
+import { ArrowUp, Square, X, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
 import { skillsApi, type InstalledSkill } from "@/lib/api";
 
@@ -11,7 +11,7 @@ export interface SelectedSkill {
 }
 
 interface ChatInputProps {
-  onSend: (message: string, skillIds?: string[]) => void;
+  onSend: (message: string, skillIds?: string[], images?: string[]) => void;
   disabled?: boolean;
   isStreaming?: boolean;
   onStop?: () => void;
@@ -21,6 +21,8 @@ interface ChatInputProps {
   selectedSkills?: SelectedSkill[];
   onToggleSkill?: (skill: SelectedSkill) => void;
   onOpenQuizWizard?: () => void;
+  // 会话文档上传（pdf/docx/pptx/txt/md/html）— 由视图上传到 /chat/documents
+  onAttachDocuments?: (files: File[]) => void;
 }
 
 // Apple-style chat input - a single rounded card that grows with content up to
@@ -36,6 +38,51 @@ const MAX_HEIGHT = 200;
 // input starts with "/" followed by no whitespace → slash menu is active
 const SLASH_RE = /^\/(\S*)$/;
 
+// ---- 图片压缩:大截图先缩放再附加,不再粗暴拒绝 ----
+// 等比缩到最长边 2000px;优先 PNG(UI 截图文字锐利、压缩率高),超限自动转
+// JPEG 逐档降质;满足后端单张 data URL 上限(app-ts 2M chars)留有余量。
+// ≤1.1MB 的原图原样直传(GIF 动图不重编码,避免丢帧)。
+const IMAGE_PASSTHROUGH_BYTES = 1_100_000;
+const IMAGE_MAX_SIDE = 2000;
+const IMAGE_DATA_URL_LIMIT = 1_800_000;
+
+function readAsDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("empty read"));
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function compressImageFile(file: File): Promise<string> {
+  if (file.size <= IMAGE_PASSTHROUGH_BYTES) return readAsDataUrl(file);
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return readAsDataUrl(file); // 极端环境兜底:原样直传(超限会由后端明确报错)
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const png = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+  if (png) {
+    const url = await readAsDataUrl(png);
+    if (url.length <= IMAGE_DATA_URL_LIMIT) return url;
+  }
+  for (const q of [0.9, 0.8, 0.7, 0.6]) {
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/jpeg", q));
+    if (!blob) continue;
+    const url = await readAsDataUrl(blob);
+    if (url.length <= IMAGE_DATA_URL_LIMIT) return url;
+  }
+  throw new Error("compress-failed");
+}
+
 export function ChatInput({
   onSend,
   disabled = false,
@@ -46,8 +93,13 @@ export function ChatInput({
   selectedSkills = [],
   onToggleSkill,
   onOpenQuizWizard,
+  onAttachDocuments,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const [imageError, setImageError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
   const [skills, setSkills] = useState<InstalledSkill[] | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
@@ -101,7 +153,7 @@ export function ChatInput({
     el.style.height = `${next}px`;
   }, [input]);
 
-  const canSend = input.trim().length > 0 && !disabled;
+  const canSend = (input.trim().length > 0 || images.length > 0) && !disabled;
 
   const handlePickCommand = useCallback(
     (id: string) => {
@@ -129,12 +181,62 @@ export function ChatInput({
     [items, handlePickCommand, onToggleSkill]
   );
 
+  // 多模态：选择/粘贴图片 → 压缩后附为 data URL（≤4 张；大图自动缩放/转码，不再拒绝）
+  const addImages = useCallback(
+    (files: ArrayLike<File>) => {
+      setImageError("");
+      const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
+      if (list.length === 0) return;
+      void (async () => {
+        const next: string[] = [];
+        let overflow = false;
+        for (const file of list) {
+          if (images.length + next.length >= 4) {
+            overflow = true;
+            break;
+          }
+          try {
+            next.push(await compressImageFile(file));
+          } catch {
+            setImageError(`图片 ${file.name} 处理失败，请截取后重试`);
+          }
+        }
+        if (overflow) setImageError("图片数量超限（最多 4 张）");
+        if (next.length > 0) setImages((prev) => [...prev, ...next].slice(0, 4));
+      })();
+    },
+    [images]
+  );
+
+  // 会话文档：按扩展名过滤（与后端 doc-parser 支持面一致），交给视图上传
+  const DOC_EXTENSIONS = ["pdf", "docx", "pptx", "txt", "md", "markdown", "html", "htm"];
+  const addDocuments = (files: ArrayLike<File>) => {
+    if (!onAttachDocuments) return;
+    const accepted: File[] = [];
+    const rejected: string[] = [];
+    for (const file of Array.from(files)) {
+      const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+      if (DOC_EXTENSIONS.includes(ext)) accepted.push(file);
+      else rejected.push(file.name);
+    }
+    if (rejected.length > 0) {
+      setImageError(`不支持的文档类型：${rejected.join("、")}（支持 pdf/docx/pptx/txt/md/html）`);
+    } else {
+      setImageError("");
+    }
+    if (accepted.length > 0) onAttachDocuments(accepted);
+  };
+
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed || disabled) return;
+    if ((!trimmed && images.length === 0) || disabled) return;
     const skillIds = selectedSkills.map((s) => s.skill_id);
-    onSend(trimmed, skillIds.length > 0 ? skillIds : undefined);
+    onSend(trimmed, skillIds.length > 0 ? skillIds : undefined, images.length > 0 ? images : undefined);
     setInput("");
+    setImages([]);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -202,16 +304,87 @@ export function ChatInput({
         </div>
       )}
 
+      {images.length > 0 && (
+        <div className="mb-1.5 flex flex-wrap gap-2">
+          {images.map((src, i) => (
+            <div key={i} className="relative">
+              <img src={src} alt={`附件 ${i + 1}`} className="h-16 w-16 rounded-lg border border-border object-cover" />
+              <button
+                type="button"
+                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full border border-border bg-surface text-tertiary transition-colors hover:text-foreground"
+                aria-label={`移除图片 ${i + 1}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {imageError && (
+        <div className="mb-1.5 text-[12px] text-danger" role="alert">
+          {imageError}
+        </div>
+      )}
+
       <div
         className={`flex items-end gap-2 rounded-[22px] border bg-surface px-3 py-2 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-colors ${
           canSend ? "border-border" : "border-border-subtle"
         } ${isStreaming ? "border-accent/40" : ""}`}
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) addImages(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <input
+          ref={docInputRef}
+          type="file"
+          accept=".pdf,.docx,.pptx,.txt,.md,.markdown,.html,.htm"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) addDocuments(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => docInputRef.current?.click()}
+          disabled={disabled || isStreaming}
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+          aria-label="上传文档到当前会话"
+          title="上传文档到当前会话（pdf/docx/pptx/txt/md/html）"
+        >
+          <Paperclip className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || isStreaming}
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+          aria-label="添加图片"
+        >
+          <ImagePlus className="h-4 w-4" />
+        </button>
         <textarea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files ?? []);
+            if (files.length > 0) {
+              e.preventDefault();
+              addImages(files);
+            }
+          }}
           placeholder={placeholder}
           disabled={disabled}
           rows={1}

@@ -28,6 +28,11 @@
   --color-warning: #ff9f0a;
   --color-danger: #ff3b30;
 
+  /* Scrollbar - Apple neutral (iOS separator gray), darkens on hover/press */
+  --color-scrollbar-thumb: rgba(60, 60, 67, 0.28);
+  --color-scrollbar-thumb-hover: rgba(60, 60, 67, 0.44);
+  --color-scrollbar-thumb-active: rgba(60, 60, 67, 0.55);
+
   /* Fonts - system-first so Apple devices render SF Pro / PingFang SC natively;
      Inter + Noto Sans SC (next/font) remain as the non-Apple fallback. */
   --font-sans: -apple-system, BlinkMacSystemFont, var(--font-inter), "Segoe UI", var(--font-noto-sans-sc), sans-serif;
@@ -71,6 +76,9 @@ html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Custom scrollbars are classic (non-overlay) on Windows/Chromium; reserving
+     the gutter keeps pages that scroll from shifting content vs ones that don't. */
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -90,17 +98,36 @@ body {
   color: #ffffff;
 }
 
-/* Thin, Apple-style scrollbar */
+/* Thin, Apple-style scrollbar (global).
+   Chromium/WebKit: 11px hit area carrying a slimmer visual bar (transparent
+   border + background-clip: padding-box), which thickens slightly on hover and
+   darkens while pressed — macOS-like feedback. Track/corner stay transparent;
+   buttons are suppressed so no classic arrows appear on Windows.
+   Firefox: scrollbar-width/scrollbar-color only (no hover styling exists). */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-tertiary) transparent;
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar { width: 11px; height: 11px; }
 *::-webkit-scrollbar-thumb {
-  background: var(--color-tertiary);
-  border-radius: 8px;
+  background: var(--color-scrollbar-thumb);
+  border: 3px solid transparent; /* slimmer visual bar inside a wider hit area */
+  background-clip: padding-box;
+  border-radius: 999px;
+  min-width: 28px;
+  min-height: 28px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+  border-width: 2px;
+}
+*::-webkit-scrollbar-thumb:active {
+  background: var(--color-scrollbar-thumb-active);
+  border-width: 2px;
 }
 *::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; } /* h+v overlap (md tables) */
+*::-webkit-scrollbar-button { display: none; }
 
 /* ==================== Components ==================== */
 

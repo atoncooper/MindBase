@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -38,6 +39,17 @@ func generateQRCode(d Deps) gin.HandlerFunc {
 		passport := service.NewBilibiliPassport()
 		res, err := passport.GenerateQRCode(c.Request.Context())
 		if err != nil {
+			var npe *service.NetPathError
+			if errors.As(err, &npe) {
+				// Transport-level failure: log the classified diagnosis so the
+				// operator can tell a dead local proxy from a bilibili outage.
+				slog.Error("[AUTH] generate qrcode failed",
+					"kind", npe.Kind, "endpoint", npe.Endpoint,
+					"elapsed_ms", npe.Elapsed.Milliseconds(),
+					"hint", npe.Hint(), "err", err)
+				apiErr(c, http.StatusInternalServerError, "二维码生成失败："+npe.Hint())
+				return
+			}
 			slog.Error("[AUTH] generate qrcode failed", "err", err)
 			apiErr(c, http.StatusInternalServerError, "二维码生成失败，请稍后重试")
 			return
@@ -72,6 +84,15 @@ func pollQRCode(d Deps) gin.HandlerFunc {
 		if err != nil {
 			if shouldDrop {
 				qrcodePool.pop(key)
+			}
+			var npe *service.NetPathError
+			if errors.As(err, &npe) {
+				slog.Error("[AUTH] poll qrcode failed",
+					"kind", npe.Kind, "endpoint", npe.Endpoint,
+					"elapsed_ms", npe.Elapsed.Milliseconds(),
+					"hint", npe.Hint(), "err", err)
+				apiErr(c, http.StatusInternalServerError, "二维码轮询失败："+npe.Hint())
+				return
 			}
 			slog.Error("[AUTH] poll qrcode failed", "err", err)
 			apiErr(c, http.StatusInternalServerError, "二维码轮询失败，请稍后重试")

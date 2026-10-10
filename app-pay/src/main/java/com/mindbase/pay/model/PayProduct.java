@@ -8,7 +8,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/** 会员 SKU。价格一律 long 分，禁止浮点。字段驼峰自动映射表下划线列（schema.sql 建表）。 */
+/** Membership SKU. Prices are always long cents; floating point is forbidden. Camel-case fields map automatically to underscore table columns (tables created by Flyway migrations). */
 @Getter
 @Setter
 @TableName("pay_product")
@@ -26,6 +26,9 @@ public class PayProduct {
     private int durationDays;
 
     private long priceCents;
+
+    /** Entitlement tier (VIP|SVIP): explicit column, replacing tier inference from the code prefix string. */
+    private String tier = "VIP";
 
     private ProductStatus status = ProductStatus.ACTIVE;
 

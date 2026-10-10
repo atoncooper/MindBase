@@ -15,14 +15,14 @@
     <artifactId>app-pay</artifactId>
     <version>0.1.0</version>
     <name>app-pay</name>
-    <description>MindBase 交易/会员服务（plan/1.0.7-Pay）</description>
+    <description>MindBase transaction/membership service (plan/1.0.7-Pay)</description>
 
     <properties>
-        <java.version>17</java.version>
+        <java.version>21</java.version>
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
         <alipay-sdk.version>4.40.984.ALL</alipay-sdk.version>
-        <!-- 显式声明（Boot 父 POM 已含 UTF-8，此处防回退）；surefire 同步 UTF-8，
-             否则中文 Windows 上 file.encoding=GBK，测试输出/断言中的中文会乱码 -->
+        <!-- Declared explicitly (the Boot parent POM already sets UTF-8; this guards against fallback); surefire is set to UTF-8 as well,
+             otherwise on Chinese Windows file.encoding=GBK and Chinese text in test output/assertions gets garbled -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>
@@ -37,8 +37,26 @@
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
             <version>${mybatis-plus.version}</version>
         </dependency>
-        <!-- 支付宝开放平台官方 SDK（当面付 precreate/query/异步通知验签）；
-             排除其捆绑的 commons-logging（与 spring-jcl 冲突警告） -->
+        <!-- Health checks / readiness probes / metrics (/actuator/health, /actuator/metrics, /actuator/prometheus) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- Versioned database migration (M4): replaces raw schema.sql; column additions / index creation are traceable and repeatably deployable -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
+        <!-- Official Alipay Open Platform SDK (Face-to-Face Payment precreate/query/async notification signature verification);
+             excludes its bundled commons-logging (conflicts with spring-jcl and triggers warnings) -->
         <dependency>
             <groupId>com.alipay.sdk</groupId>
             <artifactId>alipay-sdk-java</artifactId>
@@ -50,7 +68,7 @@
                 </exclusion>
             </exclusions>
         </dependency>
-        <!-- 测试控制台二维码渲染（/test/pay/qr） -->
+        <!-- QR code rendering for the test console (/test/pay/qr) -->
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>core</artifactId>
@@ -78,6 +96,17 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Real MySQL integration tests (conditional updates / transactions / migrations); @Testcontainers is skipped automatically when Docker is unavailable -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mysql</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

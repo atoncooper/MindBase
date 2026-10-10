@@ -1,0 +1,58 @@
+# ============================================================
+# app-kg (Go) - default configuration
+# ============================================================
+# KG storage service (gRPC): the complete Neo4j data access for
+# the knowledge graph (Entity/Video/RELATES/APPEARS_IN) plus
+# video.kg_status/kg_version bookkeeping and favorite-folder
+# scope resolution on the SHARED bilirag MySQL.
+#
+# app-kg owns NO tables — the kg columns already exist on the
+# `video` table; this service is their ONLY writer (mirror of the
+# app-bili red line "app-bili 禁止写 kg* 列"). No DDL is ever run.
+#
+# The AI side (LLM extraction / entity linking / build
+# orchestration) lives in app-ts and talks to this service over
+# gRPC (proto/kg/v1/kg.proto). During the transition the Python
+# backend writes the same Neo4j graph directly.
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPKG__, double-underscore nesting
+#   Shared env vars (same names as the other services):
+#        KG__URI, KG__PASSWORD (fallback NEO4J_PASSWORD)
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-kg
+  debug: false
+
+server:
+  host: 0.0.0.0
+  grpc_port: 8013
+  health_port: 8014
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPKG__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+neo4j:
+  uri: ""                    # inject via KG__URI (shared; bolt://neo4j:7687)
+  username: neo4j
+  password: ""               # inject via KG__PASSWORD (fallback NEO4J_PASSWORD)
+  database: neo4j
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-kg.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

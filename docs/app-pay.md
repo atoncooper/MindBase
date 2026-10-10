@@ -1,12 +1,12 @@
 # app-pay — 交易 / 会员服务
 
-> 独立 Java 17 + Spring Boot 3 微服务：会员 SKU、订单、支付渠道、会员态。agent 无关、无用户交互；鉴权由 APISIX 统一承担，本服务信任网关注入的 `X-Uid`。
+> 独立 Java 21 + Spring Boot 3 微服务：会员 SKU、订单、支付渠道、会员态。agent 无关、无用户交互；鉴权由 APISIX 统一承担，本服务信任网关注入的 `X-Uid`。
 
 ## 定位
 
 | 维度 | 说明 |
 |------|------|
-| 技术栈 | Java 17 + Spring Boot 3.5 + MyBatis-Plus 3.5（手写 SQL 一律在 `resources/mapper/*.xml`）+ Alipay SDK |
+| 技术栈 | Java 21 + Spring Boot 3.5 + MyBatis-Plus 3.5（手写 SQL 一律在 `resources/mapper/*.xml`）+ Alipay SDK |
 | 端口 | 生产 8002（profile `docker`）；测试 18002（profile `test`）。compose 仅回环暴露（`127.0.0.1`），须经 APISIX 访问 |
 | 数据库 | 独立 MySQL `app_pay`（`app-pay-mysql` 容器，宿主 3307）；`schema.sql` 启动幂等自建 |
 | 会员号 | 即主 app `users.uid`（BigInteger 全局唯一，无跨库外键） |

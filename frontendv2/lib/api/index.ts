@@ -9,7 +9,7 @@
  */
 
 // Shared infra
-export { API_BASE_URL } from "./client";
+export { API_BASE_URL, requestErrorStatus } from "./client";
 
 // Feature domains
 export * from "./auth";
@@ -19,15 +19,11 @@ export * from "./kg";
 export * from "./blindspot";
 export * from "./chat";
 export * from "./session-summary";
-export * from "./code-executions";
 export * from "./vec-page";
 export * from "./asr";
-export * from "./embedding-config";
-export * from "./asr-config";
-export * from "./settings";
-export * from "./credentials";
 export * from "./quiz";
 export * from "./task-quiz";
+export * from "./pay";
 export * from "./user";
 export * from "./cloud";
 export * from "./workspace";

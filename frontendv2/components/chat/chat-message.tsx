@@ -26,6 +26,16 @@ interface ChatMessageProps {
   reasoningSteps?: ReasoningStep[] | null;
   reasoning?: string;
   agent?: string;
+  // Turn waiting in the backend admission queue (`queue` SSE frame); shows a
+  // queue-position line in the pending row until the slot is granted.
+  queuePosition?: number;
+  // Sub-agent delegation live status (`delegate` SSE frame): currently-running
+  // sub-agent + active count; cleared when the delegation finishes.
+  subAgent?: { agent: string; count: number };
+  // 多模态：用户消息附带的图片（data URL；仅本地实时态）
+  images?: string[];
+  /** 点击缩略图 → 打开大图预览(灯箱) */
+  onImageOpen?: (src: string) => void;
   status?: "pending" | "completed" | "failed";
   error?: string;
   timestamp?: string;
@@ -140,6 +150,10 @@ function ChatMessage({
   reasoningSteps,
   reasoning,
   agent,
+  queuePosition,
+  subAgent,
+  images,
+  onImageOpen,
   status = "completed",
   error,
   onRegenerate,
@@ -238,8 +252,31 @@ function ChatMessage({
             <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         )}
-        <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-[18px] rounded-br-md bg-[#dce8fb] px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
-          {content}
+        <div className="max-w-[78%]">
+          {images && images.length > 0 && (
+            <div className="mb-1.5 flex flex-wrap justify-end gap-2">
+              {images.map((src, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => onImageOpen?.(src)}
+                  className="overflow-hidden rounded-xl border border-border transition-transform hover:scale-[1.02]"
+                  title="点击查看大图"
+                >
+                  <img
+                    src={src}
+                    alt={`附件 ${i + 1}`}
+                    className="max-h-48 object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+          {content && (
+            <div className="whitespace-pre-wrap break-words rounded-[18px] rounded-br-md bg-[#dce8fb] px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+              {content}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -326,7 +363,20 @@ function ChatMessage({
                           {String(step.step).padStart(2, "0")}
                         </span>
                         <span className="font-medium text-foreground">{step.action}</span>
+                        {step.durationMs != null && (
+                          <span className="text-[11px] text-tertiary">
+                            {(step.durationMs / 1000).toFixed(1)}s
+                          </span>
+                        )}
                       </div>
+                      {step.args && !step.query && (
+                        <div className="mt-1 flex gap-1.5">
+                          <span className="text-[11px] text-tertiary">参数</span>
+                          <code className="max-w-[320px] truncate rounded bg-surface px-1.5 py-0.5 text-[12px] text-foreground">
+                            {step.args}
+                          </code>
+                        </div>
+                      )}
                       {step.query && (
                         <div className="mt-1 flex gap-1.5">
                           <span className="text-[11px] text-tertiary">检索</span>
@@ -380,14 +430,20 @@ function ChatMessage({
             <div
               className="flex h-7 items-center gap-2.5 text-[13px] text-tertiary"
               role="status"
-              aria-label="助手思考中"
+              aria-label={queuePosition != null ? "排队等待中" : "助手思考中"}
             >
               <span className="flex items-center gap-1" aria-hidden="true">
                 <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "0ms" }} />
                 <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "160ms" }} />
                 <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "320ms" }} />
               </span>
-              <span className="chat-shimmer font-medium">思考中…</span>
+              <span className="chat-shimmer font-medium">
+                {queuePosition != null
+                  ? `排队中 · 第 ${queuePosition} 位…`
+                  : subAgent != null
+                    ? `子任务执行中：${subAgent.agent}（${subAgent.count} 个）`
+                    : "思考中…"}
+              </span>
             </div>
           ) : (
             // Markdown renders during streaming too - flushes are throttled

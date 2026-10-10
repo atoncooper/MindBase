@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** 工厂状态码映射、message 保留、控制流无堆栈采集。 */
+/** Factory status-code mapping, message preservation, and no stack-trace capture for control flow. */
 class ApiExceptionTest {
 
     @Test
@@ -21,23 +21,23 @@ class ApiExceptionTest {
 
     @Test
     void ofAllowsArbitraryStatus() {
-        ApiException e = ApiException.of(418, "TEAPOT", "短连接");
+        ApiException e = ApiException.of(418, "TEAPOT", "short connection");
         assertThat(e.getStatus()).isEqualTo(418);
         assertThat(e.getCode()).isEqualTo("TEAPOT");
-        assertThat(e.getMessage()).isEqualTo("短连接");
+        assertThat(e.getMessage()).isEqualTo("short connection");
     }
 
     @Test
     void controlFlowExceptionHasNoStackTrace() {
-        // 控制流约定：不采集堆栈（热路径 4xx 零开销）；getStackTrace 为空数组
-        ApiException e = ApiException.notFound("ORDER_NOT_FOUND", "订单不存在");
+        // Control-flow contract: no stack capture (zero overhead for hot-path 4xx); getStackTrace is an empty array
+        ApiException e = ApiException.notFound("ORDER_NOT_FOUND", "order not found");
         assertThat(e.fillInStackTrace()).isSameAs(e);
         assertThat(e.getStackTrace()).isEmpty();
     }
 
     @Test
     void messageIsPreservedForLogging() {
-        assertThat(ApiException.conflict("IDEMPOTENCY_CONFLICT", "幂等键已被其他用户占用").getMessage())
-                .isEqualTo("幂等键已被其他用户占用");
+        assertThat(ApiException.conflict("IDEMPOTENCY_CONFLICT", "idempotency key already held by another user").getMessage())
+                .isEqualTo("idempotency key already held by another user");
     }
 }

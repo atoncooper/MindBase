@@ -14,9 +14,9 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 约定守护（不连数据库）：手写 SQL 一律进 resources/mapper/*.xml，接口不放注解 SQL。
- * - XML 必须可解析且 namespace 对应真实接口文件；
- * - 每个 statement id 必须有同名接口方法（防止改接口忘改 XML 的运行期才暴露的错）。
+ * Convention guard (no database connection): hand-written SQL always goes into resources/mapper/*.xml, and interfaces carry no annotation SQL.
+ * - The XML must be parseable and its namespace must correspond to a real interface file;
+ * - Every statement id must have a same-named interface method (prevents errors that only surface at runtime when an interface is changed but the XML is forgotten).
  */
 class MapperXmlConsistencyTest {
 
@@ -25,19 +25,19 @@ class MapperXmlConsistencyTest {
 
     @Test
     void xmlStatementsMatchInterfaceMethods() throws Exception {
-        assertThat(MAPPER_XML_DIR.toFile().exists()).as("resources/mapper 目录存在").isTrue();
+        assertThat(MAPPER_XML_DIR.toFile().exists()).as("resources/mapper directory exists").isTrue();
         List<Path> xmlFiles;
         try (Stream<Path> files = Files.list(MAPPER_XML_DIR)) {
             xmlFiles = files.filter(p -> p.toString().endsWith(".xml")).toList();
         }
-        assertThat(xmlFiles).as("至少存在一个 mapper XML").isNotEmpty();
+        assertThat(xmlFiles).as("at least one mapper XML exists").isNotEmpty();
 
         for (Path xml : xmlFiles) {
             Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(xml.toFile());
             String namespace = doc.getDocumentElement().getAttribute("namespace");
             Path javaFile = MAPPER_JAVA_DIR.resolve(
                     namespace.substring(namespace.lastIndexOf('.') + 1) + ".java");
-            assertThat(javaFile.toFile().exists()).as("接口存在: %s", namespace).isTrue();
+            assertThat(javaFile.toFile().exists()).as("interface exists: %s", namespace).isTrue();
             String javaSource = Files.readString(javaFile);
 
             var nodes = doc.getDocumentElement().getChildNodes();
@@ -48,9 +48,34 @@ class MapperXmlConsistencyTest {
                 }
                 String id = node.getAttributes().getNamedItem("id").getNodeValue();
                 assertThat(Pattern.compile("\\b" + id + "\\s*\\(").matcher(javaSource).find())
-                        .as("%s.%s 在接口中有同名方法", namespace, id).isTrue();
+                        .as("%s.%s has a same-named method in the interface", namespace, id).isTrue();
             }
         }
+    }
+
+    @Test
+    void timeoutExecutorCannotCloseNonExpiredOrder() throws Exception {
+        // trust-boundary hardening: even if the executor is spoof-called from the same network, the SQL requires expires_at <= now
+        String xml = Files.readString(MAPPER_XML_DIR.resolve("PayOrderMapper.xml"));
+        String stmt = statement(xml, "closeOrderAtVersion");
+        assertThat(stmt).contains("expires_at &lt;= #{now}");
+    }
+
+    @Test
+    void refundPrevStatusIsCapturedBeforeStatusIsOverwritten() throws Exception {
+        // MySQL evaluates assignments left to right: refund_prev_status must be assigned before status, otherwise it records REFUNDING
+        String xml = Files.readString(MAPPER_XML_DIR.resolve("PayOrderMapper.xml"));
+        String stmt = statement(xml, "markRefunding");
+        assertThat(stmt.indexOf("refund_prev_status = status"))
+                .as("refund_prev_status must be assigned before status")
+                .isLessThan(stmt.indexOf("'REFUNDING'"));
+    }
+
+    private static String statement(String xml, String id) {
+        int start = xml.indexOf("id=\"" + id + "\"");
+        assertThat(start).as("statement %s exists", id).isGreaterThanOrEqualTo(0);
+        int end = xml.indexOf("</update>", start);
+        return xml.substring(start, end);
     }
 
     @Test
@@ -61,7 +86,7 @@ class MapperXmlConsistencyTest {
         }
         for (Path javaFile : javaFiles) {
             String source = Files.readString(javaFile);
-            assertThat(source).as("%s 不含注解式 SQL", javaFile.getFileName())
+            assertThat(source).as("%s contains no annotation-based SQL", javaFile.getFileName())
                     .doesNotContain("@Update", "@Select", "@Insert", "@Delete");
         }
     }

@@ -6,6 +6,7 @@ import {
   Cloud,
   BookOpen,
   CalendarClock,
+  Crown,
   Settings,
   UserCircle,
   Sparkles,
@@ -45,6 +46,7 @@ export const navItems: NavItem[] = [
   { id: "graph", label: "知识图谱", href: "/graph", icon: Waypoints, placement: "more" },
   { id: "blindspot", label: "知识盲区", href: "/blindspot", icon: Target, placement: "more" },
   { id: "skills", label: "技能商店", href: "/skills", icon: Sparkles, placement: "more" },
+  { id: "membership", label: "会员中心", href: "/membership", icon: Crown, placement: "more" },
   // Right-side account area
   { id: "settings", label: "设置", href: "/settings", icon: Settings, placement: "account" },
   { id: "account", label: "个人中心", href: "/account", icon: UserCircle, placement: "account" },

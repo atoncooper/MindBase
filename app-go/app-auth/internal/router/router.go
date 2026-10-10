@@ -42,6 +42,7 @@ func New(d Deps) *gin.Engine {
 	})
 
 	registerInternalAuth(e, d)
+	registerInternalUser(e, d)
 	registerAuth(e, d)
 	return e
 }

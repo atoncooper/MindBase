@@ -3,9 +3,9 @@
 //
 // Migration policy: CREATE TABLE IF NOT EXISTS only — never ALTER. The cloud
 // tables already exist with live data (created by the Python backend via
-// app/system.sql); GORM AutoMigrate is deliberately NOT used because it
+// db/system.sql); GORM AutoMigrate is deliberately NOT used because it
 // issues ALTERs that could drift a shared, in-production schema. The DDL
-// below mirrors app/system.sql verbatim (plus the new cloud_shares table,
+// below mirrors db/system.sql verbatim (plus the new cloud_shares table,
 // owned by app-cloud from day one). Indexes are declared inline (MySQL 8 has
 // no CREATE INDEX IF NOT EXISTS).
 package db
@@ -58,6 +58,8 @@ var ownedTables = []string{
 	"cloud_folders",
 	"cloud_files",
 	"cloud_shares",
+	"workspaces",
+	"workspace_bindings",
 }
 
 // Migrate creates the cloud schema if (and only if) it does not exist yet.
@@ -136,6 +138,35 @@ func schemaDDL() []string {
 			index idx_cloud_shares_uid (uid),
 			index idx_cloud_shares_file (file_id),
 			constraint uq_cloud_shares_token unique (share_token)
+		)`,
+		`create table if not exists workspaces (
+			id          int auto_increment primary key,
+			uid         bigint       not null,
+			name        varchar(200) not null,
+			description text         null,
+			icon        varchar(50)  null,
+			color       varchar(20)  null,
+			file_count  int          default 0,
+			chunk_count int          default 0,
+			created_at  datetime     null,
+			updated_at  datetime     null,
+			deleted_at  datetime     null,
+			index ix_workspaces_uid (uid),
+			index ix_workspaces_active (uid, deleted_at)
+		)`,
+		`create table if not exists workspace_bindings (
+			id                int auto_increment primary key,
+			workspace_id      int          not null,
+			uid               bigint       not null,
+			bind_type         varchar(10)  not null,
+			folder_id         int          null,
+			upload_uuid       varchar(64)  null,
+			include_subfolders tinyint(1)  default 1,
+			created_at        datetime     null,
+			index ix_wb_workspace (workspace_id),
+			index ix_wb_uid (uid),
+			index ix_wb_folder (folder_id),
+			index ix_wb_upload_uuid (upload_uuid)
 		)`,
 	}
 }

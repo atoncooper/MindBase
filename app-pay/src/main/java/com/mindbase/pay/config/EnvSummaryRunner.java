@@ -10,13 +10,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * 启动环境自检：
- * 1. 打印环境摘要（TLS/mock/测试入口/真实渠道/数据库），跑错实例一眼可辨；
- * 2. TLS 证书缺失时拒绝启动并给出可操作提示——服务端强制 HTTPS（含本地），
- *    缺证书不能悄悄回退明文，资金数据不允许明文上线；
- * 3. 危险组合拒绝启动——测试入口与【真实网关的】支付渠道不可同时开启，
- *    防止测试流量打到真钱（沙箱网关 URL 含 sandbox 视为安全，允许在测试环境联调）。
- * 资金系统宁可起不来，不能带风险配置上线。
+ * Startup environment self-check:
+ * 1. Print an environment summary (TLS/mock/test entry/real channel/database) so a misconfigured instance is obvious at a glance;
+ * 2. Refuse to start when the TLS certificate is missing and give actionable guidance -- the server enforces HTTPS (including locally),
+ *    and a missing certificate must not silently fall back to plaintext; fund data is not allowed to go live in plaintext;
+ * 3. Refuse to start on dangerous combinations -- the test entry and a [real-gateway] payment channel cannot be enabled together,
+ *    preventing test traffic from hitting real money (a sandbox gateway URL containing "sandbox" is considered safe and allowed for integration testing in test environments).
+ * A fund system should fail to start rather than go live with a risky configuration.
  */
 @Slf4j
 @Component
@@ -45,6 +45,15 @@ public record EnvSummaryRunner(PayProperties props, Environment env) implements 
             requireTlsMaterial(key, "server.ssl.certificate-private-key", "PAY_TLS_KEY");
         }
 
+        // Test entry enabled + token required but blank = degraded to no authentication: refuse to start
+        if (testEnabled && props.test().requireToken()
+                && (props.test().token() == null || props.test().token().isBlank())) {
+            log.error("[PAY] unsafe_config: pay.test.require-token=true but token is blank -- refusing to start");
+            throw new IllegalStateException(
+                    "[PAY] unsafe_config: pay.test.enabled with require-token=true requires a non-blank "
+                            + "pay.test.token (env PAY_TEST_TOKEN); blank would leave /test/pay/* unauthenticated.");
+        }
+
         if (testEnabled && alipayReal) {
             log.error("[PAY] unsafe_config: test entry and real (non-sandbox) payment channel "
                     + "cannot be enabled together -- refusing to start");
@@ -55,8 +64,9 @@ public record EnvSummaryRunner(PayProperties props, Environment env) implements 
     }
 
     /**
-     * TLS 证书/私钥缺失时的明确报错（带生成指引），替代 Tomcat 底层 SSLException 堆栈。
-     * 未配置属 Spring 自身启动失败的范畴，这里只对「配了但文件不存在」给出可操作提示。
+     * Explicit error when the TLS certificate/private key is missing (with generation guidance), replacing Tomcat's low-level
+     * SSLException stack trace.
+     * A missing configuration is Spring's own startup-failure domain; here we only give actionable guidance for "configured but file does not exist".
      */
     private void requireTlsMaterial(String path, String prop, String envVar) {
         if (path == null || path.isBlank()) {

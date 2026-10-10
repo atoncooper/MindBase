@@ -53,6 +53,8 @@ export interface QuizAnswerResult {
     question_uuid: string;
     is_correct: boolean | null;
     auto_score: number | null;
+    // 主观题（short_answer）自动批改不达标时置 true，等待人工复核
+    needs_manual_grading?: boolean;
     correct_answer: string | string[];
     grading_note?: string;
 }
@@ -160,6 +162,28 @@ export interface SharedQuizData {
     questions: SharedQuizQuestion[];
 }
 
+// Mongo 题目文档把 list 字段存成 JSON 字符串（Go 端原样透传），前端统一解析。
+// 兼容两种形态：已是数组/对象的原样返回；字符串则尝试 JSON.parse。
+function parseListField<T>(v: unknown): T | unknown {
+    if (typeof v !== "string") return v;
+    const s = v.trim();
+    if (!(s.startsWith("[") || s.startsWith("{"))) return v;
+    try {
+        return JSON.parse(s) as unknown;
+    } catch {
+        return v;
+    }
+}
+
+function normalizeQuizQuestions<T extends { options?: unknown; keywords?: unknown; correct_answer?: unknown }>(questions: T[]): T[] {
+    return (questions ?? []).map((q) => ({
+        ...q,
+        options: parseListField(q.options) as T["options"],
+        keywords: parseListField(q.keywords) as T["keywords"],
+        correct_answer: parseListField(q.correct_answer),
+    }));
+}
+
 export const quizApi = {
     generate: (params: Omit<QuizGenerateParams, "session_id">) => {
         const sp = new URLSearchParams();
@@ -175,8 +199,26 @@ export const quizApi = {
         });
     },
 
+    // AI 出题(不依赖知识库):free = 围绕主题自由出题;wrong_answers = 读取错题
+    // 本,针对薄弱点出由易到难的变式新题。
+    generateAI: (params: {
+        mode: "free" | "wrong_answers";
+        topic?: string;
+        question_count: number;
+        difficulty?: string;
+        title?: string;
+    }) =>
+        request<{ quiz_uuid: string; status: string }>("/quiz/generate-ai", {
+            method: "POST",
+            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify(params),
+        }),
+
     getQuiz: (quizUuid: string, includeAnswers = false) =>
-        request<QuizSetData>(`/quiz/${quizUuid}${includeAnswers ? "?include_answers=true" : ""}`),
+        request<QuizSetData>(`/quiz/${quizUuid}${includeAnswers ? "?include_answers=true" : ""}`).then((q) => ({
+            ...q,
+            questions: normalizeQuizQuestions(q.questions ?? []),
+        })),
 
     // 基于聊天会话总结出题（非定时）：复用持久化总结，无总结时后端自动生成
     generateFromSummary: (params: {
@@ -253,5 +295,8 @@ export const quizApi = {
         }),
 
     getSharedQuiz: (shareToken: string) =>
-        request<SharedQuizData>(`/quiz/shared/${encodeURIComponent(shareToken)}`),
+        request<SharedQuizData>(`/quiz/shared/${encodeURIComponent(shareToken)}`).then((q) => ({
+            ...q,
+            questions: normalizeQuizQuestions(q.questions ?? []),
+        })),
 };

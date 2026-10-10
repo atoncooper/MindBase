@@ -1,8 +1,8 @@
-﻿# APISIX standalone routes - DOCKER variant (normalized)
+# APISIX standalone routes - DOCKER variant (normalized)
 # ========================================================
 # Mounted to /usr/local/apisix/conf/apisix.yaml.
 #
-# Docker deployment: upstreams use service names backend:8000 / app-task:8001
+# Docker deployment: upstreams use service names app-ts:8000 / app-task:8001 etc.
 # (same mind-base-net). For local VM dev, use apisix.dev.yaml instead.
 #
 # ⚠️ Standalone mode: dashboard / Admin API writes do NOT persist. Edit THIS
@@ -41,131 +41,6 @@
 # Upstreams
 # ============================================================
 upstreams:
-  # Main app FastAPI - normal API (read timeout 30s)
-  - id: upstream-backend
-    name: backend
-    type: roundrobin
-    scheme: http
-    pass_host: pass
-    retries: 2
-    timeout:
-      connect: 5
-      send: 5
-      read: 30
-    keepalive_pool:
-      size: 10
-      idle_timeout: 60
-      requests: 100
-    nodes:
-      "backend:8000": 1
-    checks:
-      active:
-        type: http
-        http_path: /health
-        timeout: 1
-        interval: 5
-        healthy:
-          interval: 5
-          successes: 2
-          http_statuses: [200]
-        unhealthy:
-          interval: 5
-          http_failures: 3
-          http_statuses: [404, 500, 502, 503, 504]
-      passive:
-        type: http
-        healthy:
-          http_statuses: [200]
-          successes: 2
-        unhealthy:
-          http_statuses: [500, 502, 503, 504]
-          http_failures: 3
-
-  # Main app FastAPI - SSE streaming (/task-quiz/chat)
-  - id: upstream-backend-sse
-    name: backend-sse
-    type: roundrobin
-    scheme: http
-    pass_host: pass
-    retries: 0  # SSE: never retry - replaying a half stream corrupts it
-    timeout:
-      connect: 5
-      send: 5
-      read: 300  # SSE streaming - keep long or the stream is cut at 30s
-    keepalive_pool:
-      size: 10
-      idle_timeout: 60
-      requests: 100
-    nodes:
-      "backend:8000": 1
-    checks:
-      active:
-        type: http
-        http_path: /health
-        timeout: 1
-        interval: 5
-        healthy:
-          interval: 5
-          successes: 2
-          http_statuses: [200]
-        unhealthy:
-          interval: 5
-          http_failures: 3
-          http_statuses: [404, 500, 502, 503, 504]
-      passive:
-        type: http
-        healthy:
-          http_statuses: [200]
-          successes: 2
-        unhealthy:
-          http_statuses: [500, 502, 503, 504]
-          http_failures: 3
-
-  # Main app FastAPI - WebSocket (/ws task notifications, long-lived)
-  # Same nodes as backend; read 86400s aligns with nginx proxy_read_timeout so
-  # idle WS isn't dropped. retries:0 - never retry a long-lived connection.
-  - id: upstream-backend-ws
-    name: backend-ws
-    type: roundrobin
-    scheme: http
-    pass_host: pass
-    retries: 0
-    timeout:
-      connect: 5
-      send: 5
-      read: 86400
-    keepalive_pool:
-      size: 10
-      idle_timeout: 60
-      requests: 100
-    nodes:
-      "backend:8000": 1
-    checks:
-      active:
-        type: http
-        http_path: /health
-        timeout: 1
-        interval: 5
-        healthy:
-          interval: 5
-          successes: 2
-          http_statuses: [200]
-        unhealthy:
-          interval: 5
-          http_failures: 3
-          http_statuses: [404, 500, 502, 503, 504]
-      passive:
-        type: http
-        healthy:
-          http_statuses: [200]
-          successes: 2
-        unhealthy:
-          http_statuses: [500, 502, 503, 504]
-          http_failures: 3
-
-  # app-auth —— 身份认证服务（Go；auth 表 schema 所有者）。
-  # forward-auth verify 权威 + /auth/* 用户端点归属地。宽验证语义：
-  # 无凭证 200（不带身份头，公有端点放行；受保护服务对缺 X-Uid 自行 401）。
   - id: upstream-app-auth
     name: app-auth
     type: roundrobin
@@ -245,11 +120,204 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
+  # app-note —— 笔记服务（Go；/notes/* 用户路由 + /internal/note/* M2M，
+  # schema 所有权已从 Python backend 迁入本服务）
+  - id: upstream-app-note
+    name: app-note
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-note:8008": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+  # app-quiz —— 测验存储服务（Go；history/错题本/导出/详情/删除/分享，
+  # schema 所有权自 Python backend 迁入本服务；generate/submit 留 Python）
+  - id: upstream-app-quiz
+    name: app-quiz
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-quiz:8011": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
+  # app-ts —— agent + RAG 服务（Node/Fastify；聊天域切流目标：/chat 的
+  # ask/stream + sessions/history + board/complete + documents。Python 面已
+  # 退役：未列举的 /chat/* URI 将 404，无 catch_all 兜底——新端点必须显式加路由。
+  # SSE 读超时沿用原 backend-sse 的 300s。
+  - id: upstream-app-ts
+    name: app-ts
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 300
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-ts:8000": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+
+  # app-settings —— 设置服务（Go；用户 embedding/ASR 配置 CRUD+test）
+  - id: upstream-app-settings
+    name: app-settings
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-settings:8015": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+
+  # app-bili —— B 站数据获取服务（Go；收藏夹/ASR/知识库 build 编排；
+  # schema 所有权自 Python backend 迁入本服务）
+  - id: upstream-app-bili
+    name: app-bili
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 30
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-bili:8010": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+      passive:
+        type: http
+        healthy:
+          http_statuses: [200]
+          successes: 2
+        unhealthy:
+          http_statuses: [500, 502, 503, 504]
+          http_failures: 3
+
   # app-task Go executor - /tasks/* user endpoints + /tasks/register
+  # 服务端 HTTPS-only（app-task 自动生成自签证书，见其 [TLS] 启动日志）——
+  # scheme 必须 https，否则任务列表/注册全量 400（Client sent an HTTP request
+  # to an HTTPS server）。自签名 → 不校验上游证书（同 app-pay 姿态）。
   - id: upstream-app-task
     name: app-task
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -391,7 +459,7 @@ routes:
     uri: /task-quiz/chat
     methods: [POST]
     priority: 50
-    upstream_id: upstream-backend-sse
+    upstream_id: upstream-app-ts
     plugins:
       proxy-rewrite:
         headers:
@@ -408,7 +476,7 @@ routes:
     uri: /task-quiz/register
     methods: [POST]
     priority: 50
-    upstream_id: upstream-backend
+    upstream_id: upstream-app-ts
     plugins:
       proxy-rewrite:
         headers:
@@ -420,21 +488,24 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # app-task -> main app generate quiz (async, service-to-service, key-auth)
+  # app-task -> main app generate quiz (async, service-to-service, key-auth).
+  # priority 110 > quiz_internal (/internal/quiz/* → app-quiz, 100) so the more
+  # specific generate-llm URI is not shadowed by the app-quiz wildcard.
   - id: internal_quiz_generate
     uri: /internal/quiz/generate-llm
     methods: [POST]
-    priority: 50
-    upstream_id: upstream-backend
+    priority: 110
+    upstream_id: upstream-app-ts
     plugins:
       key-auth: {}
 
-  # app-task -> main app poll quiz generation status (async A+B)
+  # app-task -> main app poll quiz generation status (async A+B).
+  # priority 110 > quiz_internal (100) — same shadow guard as generate-llm.
   - id: internal_quiz_status
     uri: /internal/quiz/status/*
     methods: [GET]
-    priority: 50
-    upstream_id: upstream-backend
+    priority: 110
+    upstream_id: upstream-app-ts
     plugins:
       key-auth: {}
 
@@ -468,12 +539,14 @@ routes:
     plugins:
       key-auth: {}
 
-  # User -> main app quiz-task business detail (forward-auth, X-Uid injected)
+  # User -> app-quiz scheduled-quiz business detail (forward-auth, X-Uid injected).
+  # 业务行 quiz_task/quiz_task_answer + Mongo task_quiz_questions 归 app-quiz；
+  # app-task 只提供调度视图（/tasks、/tasks/{id}）。
   - id: tasks_detail
     uri: /tasks/*/detail
     methods: [GET]
     priority: 100
-    upstream_id: upstream-backend
+    upstream_id: upstream-app-quiz
     plugins:
       proxy-rewrite:
         headers:
@@ -512,10 +585,10 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User -> app-task task detail (forward-auth, X-Uid injected)
+  # User -> app-task task detail / delete (forward-auth, X-Uid injected)
   - id: tasks_wildcard
     uri: /tasks/*
-    methods: [GET, POST]
+    methods: [GET, POST, DELETE]
     priority: 10
     upstream_id: upstream-app-task
     plugins:
@@ -531,14 +604,14 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User -> main app submit answer (forward-auth, X-Uid injected).
-  # 判题/入库/状态流转是业务逻辑，归主 app（app-task 只做调度+通知）。
+  # User -> app-quiz submit answer (forward-auth, X-Uid injected).
+  # 判题/入库/状态流转是 quiz 域业务逻辑，归 app-quiz（app-task 只做调度+通知）。
   # priority 100 so /tasks/{id}/answer is NOT shadowed by /tasks/* (app-task).
   - id: tasks_answer
     uri: /tasks/*/answer
     methods: [POST]
     priority: 100
-    upstream_id: upstream-backend
+    upstream_id: upstream-app-quiz
     plugins:
       proxy-rewrite:
         headers:
@@ -642,6 +715,43 @@ routes:
       proxy-rewrite:
         regex_uri: ["^/internal/board/(.*)", "/board/$1"]
 
+  # Internal (M2M) -> app-note: Python note agent tools (save_note /
+  # list_notes / get_note / update_note) call /internal/note/notes with the
+  # shared apikey plus the acting user's X-Uid (same trust model as
+  # board_internal / app-pay /internal/*). priority 100 so /internal/note/*
+  # never falls into notes_user/catch_all.
+  - id: note_internal
+    uri: /internal/note/*
+    methods: [GET, POST, PUT, DELETE, PATCH]
+    priority: 100
+    upstream_id: upstream-app-note
+    plugins:
+      request-id: {}
+      key-auth: {}
+      limit-req:
+        rate: 20
+        burst: 10
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+
+  # quiz_internal —— app-quiz-mcp → app-quiz 的 M2M 写入路由（quiz agent 落库）。
+  # priority 100：/internal/quiz/* 不落 quiz_user/catch_all。信任模型同 note_internal。
+  - id: quiz_internal
+    uri: /internal/quiz/*
+    methods: [GET, POST]
+    priority: 100
+    upstream_id: upstream-app-quiz
+    plugins:
+      request-id: {}
+      key-auth: {}
+      limit-req:
+        rate: 20
+        burst: 10
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+
   # 用户端认证端点 (/auth/*) -> app-auth。app-auth 自己校验 Bearer token
   # （authGuard），无需 forward-auth；仍剥离伪造身份头以防伪造 X-Uid。
   - id: auth_user
@@ -680,10 +790,16 @@ routes:
         timeout: 5000
         status_code: 401
 
-  - id: chat_sse
-    uris: [/chat, /chat/*]
-    priority: 50
-    upstream_id: upstream-backend-sse
+
+  # /chat 的聊天域切流（显式枚举，priority 60 压过 chat_sse 的 /chat/*）：
+  # ask/stream（SSE）+ sessions/history REST + board AI 补全 → app-ts。
+  # /chat/search 已另落 vec_knowledge_ts；/chat/messages 等未列举 URI 将 404
+  # （Python 面已退役）
+  # （AI 域）。回滚：删除本路由对应 uri 即回落 Python。
+  - id: chat_ts
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents]
+    priority: 60
+    upstream_id: upstream-app-ts
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -696,12 +812,13 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User <-> main app WebSocket (/ws task notifications, long-lived). WS upstream
-  # read 86400s aligns with nginx; APISIX passes Upgrade/Connection headers through.
-  - id: ws_notifications
-    uris: [/ws, /ws/*]
+  # /knowledge/kg/* -> app-ts（KG AI 编排：抽取/实体链接/子图；存储在 app-go/app-kg
+  # 经 gRPC。契约镜像 Python，前端 kgApi 零改动。切流自主 backend catch_all。
+  # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: kg_ts
+    uris: [/knowledge/kg, /knowledge/kg/*]
     priority: 50
-    upstream_id: upstream-backend-ws
+    upstream_id: upstream-app-ts
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -714,13 +831,17 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # Catch-all: other main app endpoints (/chat, /favorites, /knowledge, ...)
-  # -> backend (passthrough)。forward-auth 经 app-auth 校验 bili_session 并注入
-  # X-Uid/X-Roles（宽验证：无凭证放行，受保护端点对缺失 X-Uid 自行 401）。
-  - id: catch_all
-    uri: /*
-    priority: 1
-    upstream_id: upstream-backend
+
+  # /quiz/* -> app-quiz（Go 测验存储服务；切流自主 backend catch_all。宽验证
+  # forward-auth 与 catch_all 语义一致：无凭证放行，公开分享页
+  # /quiz/shared/{token} 免登录可达，受保护端点对缺失 X-Uid 自行 401。
+  # 过渡期 Python 的 AI 端点（generate/submit）仍直写共享 quiz 表，与
+  # app-quiz 并行读写（对齐 task_quiz_* 共享表先例）。
+  # 回滚方式：删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: quiz_user
+    uris: [/quiz, /quiz/*]
+    priority: 50
+    upstream_id: upstream-app-quiz
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -732,6 +853,163 @@ routes:
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
+
+  # /quiz/generate-from-summary -> app-ts（AI 编排；summary → 分块 → LLM 出题 →
+  # app-quiz internal 落库）。priority 110 > quiz_ai (100)，该 uri 已离开 Python。
+  - id: quiz_ai_summary
+    uri: /quiz/generate-from-summary
+    methods: [POST]
+    priority: 110
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # /quiz/generate -> app-ts（folder/pages 来源的 AI 出题；priority 110）。
+  - id: quiz_ai_generate
+    uris: [/quiz/generate, /quiz/generate-ai]
+    methods: [POST]
+    priority: 110
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # /quiz/submit -> app-ts（批改 = app-ts LLM 批改 + app-quiz 落库，2026-10-06 切流；
+  # 优先级 100 压过 quiz_user 的通配）。
+  - id: quiz_ai
+    uris: [/quiz/submit]
+    priority: 100
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # /favorites/* /asr/* /knowledge(build|folders) -> app-bili（B 站数据获取服务；
+  # 切流自主 backend catch_all。宽验证 forward-auth 与 catch_all 语义一致。
+  # 注意 uri 列表是显式的：/knowledge/stats、/knowledge/video/*、/vec/* 等
+  # AI 域端点已切 vec_knowledge_ts -> app-ts（2026-10-06），与 bili_user 不相交。
+  # 回滚方式：删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: bili_user
+    uris: [/favorites, /favorites/*, /asr, /asr/*, /knowledge/build, /knowledge/build/*, /knowledge/folders/sync]
+    priority: 50
+    upstream_id: upstream-app-bili
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+
+  # /vec/page/* + /knowledge(stats|folders/status|pages/vectorized|clear|video/*)
+  # + /chat/search -> app-ts（视频分P向量化管线 + 知识库管理面，迁移自 Python
+  # VectorPageService/knowledge router。向量真账本 = app-ts Mongo vec_pages/vec_tasks；
+  # 收藏夹 scope 经 app-bili internal 只读端点。/knowledge/build* 与
+  # /knowledge/folders/sync 仍归 app-bili（bili_user），uri 列表显式不相交。
+  # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: vec_knowledge_ts
+    uris: [/vec, /vec/*, /knowledge/stats, /knowledge/folders/status, /knowledge/pages/vectorized, /knowledge/clear, /knowledge/video, /knowledge/video/*, /chat/search, /blindspot, /blindspot/*, /skills, /skills/*]
+    priority: 55
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # /preferences + /wallpaper + /avatar -> app-settings（用户 KV 偏好 + 壁纸/
+  # 头像上传与服务，2026-10-06 迁自 Python；wallpaper/file、avatar/file 无鉴权
+  # —— <img> 直读语义，lenient verify 无凭证时放行）。
+  - id: prefs_wallpaper_user
+    uris: [/preferences, /preferences/*, /wallpaper, /wallpaper/*, /avatar, /avatar/*]
+    priority: 50
+    upstream_id: upstream-app-settings
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # /workspaces/* -> app-cloud（RAG 工作区 CRUD/绑定/文件展开，2026-10-06 迁自
+  # Python workspace router；camelCase wire。回滚 = 删除本路由即回落 catch_all。）
+  - id: workspaces_user
+    uris: [/workspaces, /workspaces/*]
+    priority: 50
+    upstream_id: upstream-app-cloud
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # /notes/* -> app-note（笔记服务；切流自主 backend catch_all。宽验证
+  # forward-auth 与 catch_all 语义一致：无凭证放行，公开分享页
+  # /notes/shared/{token} 免登录可达，受保护端点对缺失 X-Uid 自行 401。
+  # 回滚方式：删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: notes_user
+    uris: [/notes, /notes/*]
+    priority: 50
+    upstream_id: upstream-app-note
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
 
 # ============================================================
 # Consumers

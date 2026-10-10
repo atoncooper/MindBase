@@ -18,10 +18,11 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** 会员顺延规则：首开/未到期续费叠加/过期后重新起算/运营补偿类型。 */
+/** Membership extension rules: first activation / renewal stacking while active / restart from now after expiry / admin grant event types. */
 @ExtendWith(MockitoExtension.class)
 class MembershipServiceTest {
 
@@ -67,7 +68,7 @@ class MembershipServiceTest {
 
         PayMembership result = service.extend(10086L, 30, "PO2", null, null);
 
-        // 未到期续费：从当前到期时间顺延叠加，而非从 now
+        // Renewal before expiry: stack onto the current expire time rather than starting from now
         assertThat(result.getExpireAt()).isEqualTo(NOW.plusDays(40));
         verify(membershipMapper).updateById(result);
         assertThat(capturedEvent().getType()).isEqualTo(PayMembershipEvent.EventType.RENEW);
@@ -91,12 +92,110 @@ class MembershipServiceTest {
     void adminGrantKeepsExplicitTypeAndReason() {
         when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(null);
 
-        service.extend(10086L, 7, null, PayMembershipEvent.EventType.ADMIN_GRANT, "活动补偿");
+        service.extend(10086L, 7, null, PayMembershipEvent.EventType.ADMIN_GRANT, "campaign compensation");
 
         PayMembershipEvent event = capturedEvent();
         assertThat(event.getType()).isEqualTo(PayMembershipEvent.EventType.ADMIN_GRANT);
-        assertThat(event.getReason()).isEqualTo("活动补偿");
+        assertThat(event.getReason()).isEqualTo("campaign compensation");
         assertThat(event.getOrderNo()).isNull();
+    }
+
+    @Test
+    void downgradeBlockedWhileHigherTierStillActive() {
+        PayMembership existing = new PayMembership();
+        existing.setId(1L);
+        existing.setUid(10086L);
+        existing.setTier("SVIP");
+        existing.setExpireAt(NOW.plusDays(100));
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(existing);
+
+        // Buying a VIP monthly plan while SVIP is active: extend the expiry, but the tier must not be downgraded
+        PayMembership result = service.extend(10086L, 30, "PO-VIP", null, null, "VIP");
+
+        assertThat(result.getTier()).isEqualTo("SVIP");
+        assertThat(result.getExpireAt()).isEqualTo(NOW.plusDays(130));
+        verify(audit).audit(org.mockito.ArgumentMatchers.eq("TIER_DOWNGRADE_BLOCKED"),
+                any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void upgradeAppliesWhileActive() {
+        PayMembership existing = new PayMembership();
+        existing.setId(1L);
+        existing.setUid(10086L);
+        existing.setTier("VIP");
+        existing.setExpireAt(NOW.plusDays(10));
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(existing);
+
+        PayMembership result = service.extend(10086L, 30, "PO-SVIP", null, null, "SVIP");
+
+        assertThat(result.getTier()).isEqualTo("SVIP");
+        assertThat(result.getExpireAt()).isEqualTo(NOW.plusDays(40));
+    }
+
+    @Test
+    void expiredMembershipTakesRequestedLowerTier() {
+        PayMembership expired = new PayMembership();
+        expired.setId(1L);
+        expired.setUid(10086L);
+        expired.setTier("SVIP");
+        expired.setExpireAt(NOW.minusDays(1));
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(expired);
+
+        // Already expired = no active entitlement to protect, start from the newly purchased tier
+        PayMembership result = service.extend(10086L, 30, "PO-VIP", null, null, "VIP");
+
+        assertThat(result.getTier()).isEqualTo("VIP");
+        assertThat(result.getExpireAt()).isEqualTo(NOW.plusDays(30));
+    }
+
+    @Test
+    void invalidTierIsIgnoredNotWritten() {
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(null);
+
+        PayMembership result = service.extend(10086L, 30, "PO1", null, null, "GOLD");
+
+        assertThat(result.getTier()).isEqualTo("VIP");
+    }
+
+    @Test
+    void revokeSubtractsDaysAndRecordsEvent() {
+        PayMembership existing = new PayMembership();
+        existing.setId(1L);
+        existing.setUid(10086L);
+        existing.setTier("VIP");
+        existing.setExpireAt(NOW.plusDays(40));
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(existing);
+
+        PayMembership result = service.revoke(10086L, 30, "PO1", "user refund").orElseThrow();
+
+        assertThat(result.getExpireAt()).isEqualTo(NOW.plusDays(10));
+        PayMembershipEvent event = capturedEvent();
+        assertThat(event.getType()).isEqualTo(PayMembershipEvent.EventType.REFUND_REVOKE);
+        assertThat(event.getDays()).isEqualTo(-30);
+        assertThat(event.getExpireBefore()).isEqualTo(NOW.plusDays(40));
+        assertThat(event.getExpireAfter()).isEqualTo(NOW.plusDays(10));
+    }
+
+    @Test
+    void revokeFloorsAtNowWhenAlreadyConsumed() {
+        PayMembership existing = new PayMembership();
+        existing.setId(1L);
+        existing.setUid(10086L);
+        existing.setExpireAt(NOW.plusDays(5));
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(existing);
+
+        PayMembership result = service.revoke(10086L, 30, "PO1", "refund").orElseThrow();
+
+        assertThat(result.getExpireAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void revokeWithoutRowIsNoop() {
+        when(membershipMapper.selectByUidForUpdate(10086L)).thenReturn(null);
+
+        assertThat(service.revoke(10086L, 30, "PO1", "refund")).isEmpty();
+        verify(eventMapper, org.mockito.Mockito.never()).insert(any(PayMembershipEvent.class));
     }
 
     private PayMembershipEvent capturedEvent() {

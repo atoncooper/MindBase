@@ -1,0 +1,53 @@
+# ============================================================
+# app-note (Go) - default configuration
+# ============================================================
+# Notes service: CRUD, anchors, revisions, sharing for user
+# markdown notes. Owns the note tables (notes/note_anchors/
+# note_shares) in the SHARED bilirag MySQL — schema ownership
+# moved from the Python backend (kept for one release cycle as
+# rollback margin). Note CONTENT lives in MongoDB (note_documents
+# /note_revisions — same collections the Python backend used), so
+# there is zero data migration.
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml               <- this file (embedded in binary)
+#   2. Environment variables      <- prefix APPNOTE__, double-underscore nesting
+#   Shared secret env vars (same names as the Python backend):
+#        MONGO__URI
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-note
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8008
+
+timezone: Asia/Shanghai
+
+rdbms:
+  url: ""                    # inject via APPNOTE__RDBMS__URL (shared bilirag MySQL dsn)
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+mongo:
+  uri: ""                    # inject via MONGO__URI (shared); note content + revisions
+  database: mind_base        # same mongo database as the Python backend
+
+cors:
+  allow_origins:
+    - http://localhost:3000
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-note.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

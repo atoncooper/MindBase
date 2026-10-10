@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, LogOut } from "lucide-react";
+import { useState as useReactState } from "react";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { primaryNavItems, moreNavItems, accountNavItems } from "@/lib/nav-config";
@@ -14,7 +15,7 @@ interface NavBarProps {
 }
 
 export function NavBar({ onLoginClick }: NavBarProps) {
-  const { status, user, uid, logout } = useAuth();
+  const { status, user, avatar, uid, logout } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
   const isAuthed = status === "authenticated";
@@ -107,9 +108,7 @@ export function NavBar({ onLoginClick }: NavBarProps) {
                     accountOpen ? "bg-border-subtle" : "hover:bg-border-subtle"
                   )}
                 >
-                  <span className="grid h-7 w-7 place-items-center rounded-full bg-accent text-[12px] font-semibold text-white ring-1 ring-black/[0.06]">
-                    {(user ?? "?").slice(0, 1)}
-                  </span>
+                  <AvatarBubble avatar={avatar} name={user} size="sm" />
                   <ChevronDown
                     className={cn(
                       "h-3 w-3 text-tertiary transition-transform duration-200",
@@ -128,9 +127,7 @@ export function NavBar({ onLoginClick }: NavBarProps) {
                     >
                       {/* Header - Apple ID style: avatar + name + uid */}
                       <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3.5">
-                        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent text-[15px] font-semibold text-white ring-1 ring-black/[0.06]">
-                          {(user ?? "?").slice(0, 1)}
-                        </span>
+                        <AvatarBubble avatar={avatar} name={user} size="lg" />
                         <div className="min-w-0">
                           <p className="truncate text-[14px] font-medium tracking-tight text-foreground">
                             {user ?? "用户"}
@@ -208,5 +205,30 @@ export function NavBar({ onLoginClick }: NavBarProps) {
         )}
       </AnimatePresence>
     </header>
+  );
+}
+
+
+/** 导航栏头像气泡：有头像显示图片（加载失败回退首字母），无头像显示首字母。 */
+function AvatarBubble({ avatar, name, size }: { avatar: string | null; name: string | null; size: "sm" | "lg" }) {
+  const [failed, setFailed] = useReactState(false);
+  const cls = size === "sm"
+    ? "h-7 w-7 text-[12px]"
+    : "h-10 w-10 text-[15px]";
+  if (avatar && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={avatar}
+        alt=""
+        onError={() => setFailed(true)}
+        className={cn(cls, "shrink-0 rounded-full object-cover ring-1 ring-black/[0.06]")}
+      />
+    );
+  }
+  return (
+    <span className={cn("grid shrink-0 place-items-center rounded-full bg-accent font-semibold text-white ring-1 ring-black/[0.06]", cls)}>
+      {(name ?? "?").slice(0, 1)}
+    </span>
   );
 }

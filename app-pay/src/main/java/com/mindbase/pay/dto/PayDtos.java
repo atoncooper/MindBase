@@ -11,18 +11,21 @@ import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
- * 请求/响应 DTO 集中定义（record）。日期序列化为 ISO-8601（Jackson 默认，时区见 application.yaml）。
- * 字符串长度上限与 schema.sql 对应列宽一致：超长输入在 400 层拒绝，而非穿透到 DB 变 500。
+ * Central request/response DTO definitions (records). Dates serialize as ISO-8601 (Jackson default;
+ * see application.yaml for the time zone). String length limits match the corresponding column widths
+ * in the Flyway migrations: over-long input is rejected at the 400 layer rather than passing through to the DB
+ * and becoming a 500.
  */
 public final class PayDtos {
 
     private PayDtos() {
     }
 
-    // ---------- 用户端 ----------
+    // ---------- User-facing ----------
 
     public record ProductView(String code, String title, int durationDays, long priceCents, String status) {
         public static ProductView from(PayProduct p) {
@@ -38,15 +41,23 @@ public final class PayDtos {
 
     public record OrderView(String orderNo, String skuCode, String productTitle, int durationDays,
                             long amountCents, PayOrder.PayChannel channel, PayOrder.OrderStatus status,
-                            LocalDateTime paidAt, LocalDateTime expiresAt, LocalDateTime createdAt) {
+                            LocalDateTime paidAt, LocalDateTime expiresAt, LocalDateTime createdAt,
+                            String tier, LocalDateTime refundedAt, String channelTradeNo,
+                            String buyerLogonId, String buyerUserId) {
         public static OrderView from(PayOrder o) {
             return new OrderView(o.getOrderNo(), o.getSkuCode(), o.getProductTitle(), o.getDurationDays(),
                     o.getAmountCents(), o.getChannel(), o.getStatus(),
-                    o.getPaidAt(), o.getExpiresAt(), o.getCreatedAt());
+                    o.getPaidAt(), o.getExpiresAt(), o.getCreatedAt(),
+                    o.getTier(), o.getRefundedAt(), o.getChannelTradeNo(),
+                    o.getBuyerLogonId(), o.getBuyerUserId());
         }
     }
 
-    /** payParams 按渠道不同：MOCK 为 {type,orderNo,confirmEndpoint}；M2 起为 {type,codeUrl} 等。 */
+    /** Available payment channels (the frontend renders from this: MOCK local simulation / ALIPAY QR code). */
+    public record ChannelView(String code, boolean enabled) {
+    }
+
+    /** payParams differ by channel: MOCK is {type,orderNo,confirmEndpoint}; from M2, {type,codeUrl}, etc. */
     public record CreateOrderResponse(String orderNo, PayOrder.OrderStatus status, long amountCents,
                                       LocalDateTime expiresAt, Map<String, Object> payParams) {
     }
@@ -57,21 +68,35 @@ public final class PayDtos {
         }
     }
 
+    /** 会员档位简介（内容由 TierCatalog 在 Java 侧维护，前端只渲染）。 */
+    public record TierView(String tier, String name, String tagline, List<String> benefits,
+                           String markdown) {
+    }
+
+    /** 权益对照表的一行（feature = 能力名，三列 = 各档位权益）。 */
+    public record ComparisonRow(String feature, String free, String vip, String svip) {
+    }
+
     public record MockConfirmRequest(@NotBlank @Size(max = 64) String orderNo) {
     }
 
-    // ---------- 内部端点（主 app / 运营） ----------
+    // ---------- Internal endpoints (main app / operations) ----------
 
     public record InternalMembershipView(long uid, String tier, boolean active, LocalDateTime expireAt) {
     }
 
     public record GrantRequest(@Positive long uid,
-                               @Min(1) int durationDays,
+                               @Min(1) @Max(3650) int durationDays,
                                @NotBlank @Size(max = 200) String reason,
                                @Size(max = 20) String tier) {
     }
 
-    // ---------- 本机测试入口（/test/pay/*，默认关闭 + 令牌双闸门） ----------
+    /** Operations refund (/internal/pay/orders/{orderNo}/refund, key-auth). */
+    public record RefundRequest(@NotBlank @Size(max = 200) String reason,
+                                Boolean revokeMembership) {
+    }
+
+    // ---------- Local test entry points (/test/pay/*, off by default + token double gate) ----------
 
     public record TestCreateOrderRequest(@Positive long uid, @NotBlank @Size(max = 50) String skuCode,
                                          @NotNull PayOrder.PayChannel channel) {
@@ -80,7 +105,7 @@ public final class PayDtos {
     public record TestMockPayRequest(@Positive long uid, @NotBlank @Size(max = 64) String orderNo) {
     }
 
-    /** 高并发模拟（服务端 burst）：PAY_SAME=并发支付同一订单；CREATE_ORDERS=并发下单。 */
+    /** High-concurrency simulation (server-side burst): PAY_SAME=pay the same order concurrently; CREATE_ORDERS=create orders concurrently. */
     public record BurstRequest(@NotBlank String mode,
                                @Min(1) @Max(500) int count,
                                @Positive long uid,
@@ -88,7 +113,7 @@ public final class PayDtos {
                                String orderNo) {
     }
 
-    // ---------- 超时委托 executor（app-task 到点调用，payload 原文） ----------
+    // ---------- Timeout delegation executor (called by app-task at deadline, raw payload) ----------
 
     public record TimeoutExecutionRequest(@NotBlank @Size(max = 64) String orderNo, @Min(1) int version) {
     }

@@ -1,23 +1,22 @@
 package com.mindbase.pay.config;
 
+import com.mindbase.pay.testutil.TestPayProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** 资金安全自检：测试入口 × 真实网关 = 拒绝启动；沙箱网关/关闭态放行；TLS 证书缺失拒绝启动。 */
+/** Money-safety self-check: test entry x real gateway = refuse to start; sandbox gateway/disabled is allowed; missing TLS cert refuses to start; a required token must not be blank. */
 class EnvSummaryRunnerTest {
 
     private static PayProperties props(boolean mock, boolean testEnabled, String testToken,
                                        boolean alipayEnabled, String gatewayUrl) {
-        return new PayProperties(
-                new PayProperties.Rdbms("jdbc:mysql://localhost/app_pay", "u", "p"),
-                new PayProperties.Mock(mock),
-                new PayProperties.Order(30),
-                new PayProperties.Alipay(alipayEnabled, gatewayUrl, "app", "pk", "pbk", ""),
-                new PayProperties.Test(testEnabled, testToken),
-                null, null);
+        return TestPayProperties.builder()
+                .mock(new PayProperties.Mock(mock))
+                .test(new PayProperties.Test(testEnabled, testToken, false))
+                .alipay(new PayProperties.Alipay(alipayEnabled, gatewayUrl, "app", "pk", "pbk", "", 2000, 5000))
+                .build();
     }
 
     private static MockEnvironment env(String... pairs) {
@@ -46,7 +45,7 @@ class EnvSummaryRunnerTest {
 
     @Test
     void prodShapeConfigPasses() {
-        // 生产形态：测试入口关闭 + 真实渠道开启 —— 合法
+        // production shape: test entry disabled + real channel enabled -- valid
         var runner = new EnvSummaryRunner(props(false, false, "", true,
                 "https://openapi.alipay.com/gateway.do"), new MockEnvironment());
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
@@ -54,14 +53,15 @@ class EnvSummaryRunnerTest {
 
     @Test
     void nullSectionsDoNotBreakSummary() {
-        var runner = new EnvSummaryRunner(new PayProperties(null, null, null, null, null, null, null),
+        var runner = new EnvSummaryRunner(
+                new PayProperties(null, null, null, null, null, null, null, null, null),
                 new MockEnvironment());
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
     }
 
     @Test
     void tlsEnabledWithMissingCertRefusesToStart() {
-        // 服务端强制 HTTPS：证书文件不存在 = 带风险配置，拒绝启动（不能回退明文）
+        // server enforces HTTPS: a missing certificate file = risky configuration, refuse to start (must not fall back to plaintext)
         var runner = new EnvSummaryRunner(props(true, true, "token", false, ""), env(
                 "server.ssl.enabled", "true",
                 "server.ssl.certificate", "certs/does-not-exist.crt",
@@ -73,7 +73,7 @@ class EnvSummaryRunnerTest {
 
     @Test
     void tlsDisabledSkipsCertCheck() {
-        // 应急逃生口：PAY_TLS_ENABLED=false 回退明文，不做证书文件检查
+        // emergency escape hatch: PAY_TLS_ENABLED=false falls back to plaintext, no certificate file check
         var runner = new EnvSummaryRunner(props(true, true, "token", false, ""), env(
                 "server.ssl.enabled", "false",
                 "server.ssl.certificate", "certs/does-not-exist.crt"));
@@ -82,9 +82,22 @@ class EnvSummaryRunnerTest {
 
     @Test
     void tlsEnabledWithoutConfiguredCertOnlyWarns() {
-        // certificate 属性未配置属 Spring 自身启动失败的范畴，自检只警告不拦截
+        // an unconfigured certificate property falls under Spring's own startup failure; the self-check only warns and does not block
         var runner = new EnvSummaryRunner(props(true, true, "token", false, ""), env(
                 "server.ssl.enabled", "true"));
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void requireTokenWithBlankTokenRefusesToStart() {
+        // test entry enabled + require-token=true but blank token = no authentication, refuse to start
+        PayProperties props = TestPayProperties.builder()
+                .mock(new PayProperties.Mock(true))
+                .test(new PayProperties.Test(true, "", true))
+                .build();
+        var runner = new EnvSummaryRunner(props, new MockEnvironment());
+        assertThatThrownBy(() -> runner.run(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("require-token");
     }
 }

@@ -2,6 +2,8 @@
 
 本文档介绍如何使用 Docker Compose 一键构建并部署 MindBase 系统。
 
+> ⚠️ **2026-10-06 Python backend 已彻底退役**：本文写作时 `app/`（FastAPI backend）仍存在，其中涉及 backend 服务、`docker compose` 服务清单、Swagger :8000/docs 等内容已过时。当前服务清单、端口与路由以 [architecture.md](architecture.md) 为权威；配置体系见 [configuration.md](configuration.md)。
+
 ---
 
 ## 目录

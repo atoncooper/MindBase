@@ -1,0 +1,38 @@
+name: CI - App Bili
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-go/app-bili/**"
+      - ".github/workflows/ci-app-bili.yml"
+  pull_request:
+    paths:
+      - "app-go/app-bili/**"
+      - ".github/workflows/ci-app-bili.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-go/app-bili
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app-go/app-bili/go.mod
+          cache-dependency-path: app-go/app-bili/go.sum
+
+      - name: Gofmt check
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test -count=1 ./...
+
+      - name: Build
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/app-bili .

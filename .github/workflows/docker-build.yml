@@ -21,10 +21,6 @@ jobs:
           # The namespace must match the DOCKERHUB_USERNAME repo secret.
           # Requires repo secrets: DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
           # (Docker Hub → Account Settings → Personal access tokens, Read & Write).
-          - context: .
-            dockerfile: Dockerfile
-            image: atoncooper/mind-base-backend
-            name: backend
           - context: ./frontendv2
             dockerfile: frontendv2/Dockerfile
             image: atoncooper/mind-base-frontend
@@ -37,6 +33,30 @@ jobs:
             dockerfile: app-go/app-cloud/Dockerfile
             image: atoncooper/mind-base-app-cloud
             name: app-cloud
+          - context: ./app-go/app-note
+            dockerfile: app-go/app-note/Dockerfile
+            image: atoncooper/mind-base-app-note
+            name: app-note
+          - context: ./app-go/app-bili
+            dockerfile: app-go/app-bili/Dockerfile
+            image: atoncooper/mind-base-app-bili
+            name: app-bili
+          - context: ./app-go/app-quiz
+            dockerfile: app-go/app-quiz/Dockerfile
+            image: atoncooper/mind-base-app-quiz
+            name: app-quiz
+          - context: ./app-go/app-kg
+            dockerfile: app-go/app-kg/Dockerfile
+            image: atoncooper/mind-base-app-kg
+            name: app-kg
+          - context: ./app-go/app-settings
+            dockerfile: app-go/app-settings/Dockerfile
+            image: atoncooper/mind-base-app-settings
+            name: app-settings
+          - context: .
+            dockerfile: app-ts/Dockerfile
+            image: atoncooper/mind-base-app-ts
+            name: app-ts
           - context: ./app-board
             dockerfile: app-board/Dockerfile
             image: atoncooper/mind-base-app-board
@@ -45,6 +65,14 @@ jobs:
             dockerfile: mcp/app-board-mcp/Dockerfile
             image: atoncooper/mind-base-app-board-mcp
             name: app-board-mcp
+          - context: ./mcp/app-note-mcp
+            dockerfile: mcp/app-note-mcp/Dockerfile
+            image: atoncooper/mind-base-app-note-mcp
+            name: app-note-mcp
+          - context: ./mcp/app-quiz-mcp
+            dockerfile: mcp/app-quiz-mcp/Dockerfile
+            image: atoncooper/mind-base-app-quiz-mcp
+            name: app-quiz-mcp
           - context: ./scripts
             dockerfile: scripts/certgen.Dockerfile
             image: atoncooper/mind-base-certgen

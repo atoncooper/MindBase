@@ -1,0 +1,364 @@
+// KgGraph — KG（知识图谱/知识点）域的存储面 gRPC 契约。
+//
+// 分工红线：AI（LLM 抽取/实体归一化/检索编排/构建编排）在 app-ts；
+// 本服务（app-go/app-kg）是纯数据面：Neo4j 图数据访问 + MySQL
+// video.kg_status/kg_version 记账 + 收藏夹 scope 解析。本服务不感知
+// uid 之外的任何业务语义，不发起任何 LLM/embedding 调用。
+//
+// 过渡期共享存储：Python KgGraphRepository 与本服务双写同一 Neo4j
+// （同 schema、确定性 eid=sha1(name_lower)[:16]，merge 键 name_lower）。
+// name_lower 与 eid 由调用方（app-ts resolver / Python repository）
+// 计算后传入，本服务不做归一化——归一化实现只存在一份。
+syntax = "proto3";
+
+package kg.v1;
+
+option go_package = "app-kg/internal/kgpb;kgpb";
+
+service KgGraph {
+  // ── 记账（MySQL：video 表 kg 列 + collection/favorite_folders 只读）──
+
+  // 收藏夹范围 → bvid 列表（去重保序，复刻 chat/scope.py 两段 SQL）。
+  // folder_ids 为空 = 用户全部未删收藏夹。
+  rpc ResolveScope(ResolveScopeRequest) returns (ResolveScopeResponse);
+  // 圈定待抽取分P：ASR 完成且（从未抽取 / 失败可重试 / 内容已变更）。
+  rpc SelectPendingPages(SelectPendingPagesRequest) returns (SelectPendingPagesResponse);
+  // 单分P 幂等检查 + 置 kg_status='processing'（process_page Phase 1）。
+  rpc BeginPage(BeginPageRequest) returns (BeginPageResponse);
+  // Phase 7：置 kg_status='done' + kg_version=content_version。
+  rpc MarkPageDone(MarkPageDoneRequest) returns (MarkPageDoneResponse);
+  // 失败路径：置 kg_status='failed'（可重试）。
+  rpc MarkPageFailed(MarkPageFailedRequest) returns (MarkPageFailedResponse);
+  // 全局待抽取分P 计数（stats 用）。
+  rpc CountPendingPages(CountPendingPagesRequest) returns (CountPendingPagesResponse);
+
+  // ── 图写（Neo4j）──
+
+  // 批量 MERGE 实体（merge 键 name_lower；description 非空才覆盖；
+  // mention_count 自增；alias 追加去重）。返回涉及的全部 eid。
+  rpc UpsertEntities(UpsertEntitiesRequest) returns (UpsertEntitiesResponse);
+  // 写 (entity)-[:APPEARS_IN {page_index}]->(video) 证据边；同页同实体
+  // 去重保留最短非空引文（服务端实现，与 Python 一致）。
+  rpc LinkAppearances(LinkAppearancesRequest) returns (LinkAppearancesResponse);
+  // 批量 MERGE RELATES 边：weight 自增，quotes 滑窗保留最近 3 条去重样本。
+  rpc UpsertRelations(UpsertRelationsRequest) returns (UpsertRelationsResponse);
+  // 删某分P 全部证据边（delete-before-write）。
+  rpc DeletePageEvidence(DeletePageEvidenceRequest) returns (DeletePageEvidenceResponse);
+  // 级联删除视频节点并回收孤儿 Entity/Video。
+  rpc DeleteVideo(DeleteVideoRequest) returns (DeleteVideoResponse);
+  // 清空图谱（危险操作；Entity/Video 标签之外的数据不动）。
+  rpc ClearAll(ClearAllRequest) returns (ClearAllResponse);
+
+  // ── 图读（Neo4j；FetchEvidence 额外 join video 表标题）──
+
+  // 一跳邻居展开（BFS 单步；多跳循环在调用方）。
+  rpc Neighbors(NeighborsRequest) returns (NeighborsResponse);
+  // 证据回捞（bvids 空 = 不过滤作用域）。每行带 page_title
+  // （MySQL video 表按 (bvid, page_index) join，缺失回退 "P{n+1}"）。
+  rpc FetchEvidence(FetchEvidenceRequest) returns (FetchEvidenceResponse);
+  // 子图成员之间的关系边（含权重与引文样本）。
+  rpc RelationsAmong(RelationsAmongRequest) returns (RelationsAmongResponse);
+  // 按 eid 批量取实体详情。
+  rpc EntitiesByEids(EntitiesByEidsRequest) returns (EntitiesByEidsResponse);
+  // 实体曝光聚合（blindspot map 语义；bvids 空 = 返回空）。
+  rpc EntityExposure(EntityExposureRequest) returns (EntityExposureResponse);
+  // 单实体全部出现记录（entity-detail review 路径）。
+  rpc EntityAppearances(EntityAppearancesRequest) returns (EntityAppearancesResponse);
+  // 头部实体（按 RELATES 度数排序；图谱总览模式）。
+  rpc TopEntities(TopEntitiesRequest) returns (TopEntitiesResponse);
+  // 实体集合内部的有向关系边（无向去重是调用方职责）。
+  rpc EdgesAmong(EdgesAmongRequest) returns (EdgesAmongResponse);
+  // 图谱计数（Neo4j）+ 全局待抽取分P数（MySQL）。
+  rpc Stats(StatsRequest) returns (StatsResponse);
+}
+
+// ── 记账 ─────────────────────────────────────────────────────────────
+
+message ResolveScopeRequest {
+  int64 uid = 1;
+  repeated int64 folder_ids = 2;
+}
+
+message ResolveScopeResponse {
+  repeated string bvids = 1;
+}
+
+message SelectPendingPagesRequest {
+  repeated string bvids = 1;
+  int32 limit = 2;
+}
+
+message PendingPage {
+  string bvid = 1;
+  int64 cid = 2;
+  int32 page_index = 3;
+  string page_title = 4;
+  int64 version = 5;
+}
+
+message SelectPendingPagesResponse {
+  repeated PendingPage pages = 1;
+}
+
+message BeginPageRequest {
+  string bvid = 1;
+  int64 cid = 2;
+  // 预期内容版本；-1 = 未指定（沿用行内 version）。
+  int64 expected_version = 3;
+}
+
+message BeginPageResponse {
+  bool found = 1;       // video 行不存在 → false
+  bool asr_done = 2;    // is_processed=false → false
+  bool skip = 3;        // kg 已是 done 且版本一致（expected 未指定时）
+  string reason = 4;
+  int64 content_version = 5;
+  string page_title = 6;
+  int32 page_index = 7;
+}
+
+message MarkPageDoneRequest {
+  string bvid = 1;
+  int64 cid = 2;
+  int64 content_version = 3;
+}
+
+message MarkPageDoneResponse {}
+
+message MarkPageFailedRequest {
+  string bvid = 1;
+  int64 cid = 2;
+}
+
+message MarkPageFailedResponse {}
+
+message CountPendingPagesRequest {}
+
+message CountPendingPagesResponse {
+  int64 count = 1;
+}
+
+// ── 图写 ─────────────────────────────────────────────────────────────
+
+message EntityUpsert {
+  string eid = 1;
+  string name = 2;
+  // 归一化键（小写+空白折叠），由调用方计算——本服务不重复实现归一化。
+  string name_lower = 3;
+  string type = 4;
+  string description = 5;
+  string alias = 6;
+}
+
+message UpsertEntitiesRequest {
+  repeated EntityUpsert entities = 1;
+}
+
+message UpsertEntitiesResponse {
+  repeated string eids = 1;
+}
+
+message Appearance {
+  string eid = 1;
+  string quote = 2;
+}
+
+message LinkAppearancesRequest {
+  string bvid = 1;
+  int32 page_index = 2;
+  repeated Appearance appearances = 3;
+}
+
+message LinkAppearancesResponse {
+  int64 linked = 1;
+}
+
+message RelationUpsert {
+  string src_eid = 1;
+  string dst_eid = 2;
+  string rel_type = 3;
+  string quote = 4;
+}
+
+message UpsertRelationsRequest {
+  repeated RelationUpsert relations = 1;
+}
+
+message UpsertRelationsResponse {}
+
+message DeletePageEvidenceRequest {
+  string bvid = 1;
+  int32 page_index = 2;
+}
+
+message DeletePageEvidenceResponse {
+  int64 deleted = 1;
+}
+
+message DeleteVideoRequest {
+  string bvid = 1;
+}
+
+message DeleteVideoResponse {
+  int64 entities_removed = 1;
+  int64 videos_removed = 2;
+}
+
+message ClearAllRequest {}
+
+message ClearAllResponse {}
+
+// ── 图读 ─────────────────────────────────────────────────────────────
+
+message NeighborsRequest {
+  repeated string eids = 1;
+  repeated string exclude_eids = 2;
+  int32 limit = 3;
+}
+
+message NeighborRow {
+  string eid = 1;
+  string name = 2;
+  string type = 3;
+  string description = 4;
+  string rel_type = 5;
+  string from_eid = 6;
+}
+
+message NeighborsResponse {
+  repeated NeighborRow rows = 1;
+}
+
+message FetchEvidenceRequest {
+  repeated string eids = 1;
+  repeated string bvids = 2;
+  int32 limit = 3;
+}
+
+message EvidenceRow {
+  string eid = 1;
+  string name = 2;
+  string type = 3;
+  string bvid = 4;
+  int32 page_index = 5;
+  string quote = 6;
+  string page_title = 7;
+}
+
+message FetchEvidenceResponse {
+  repeated EvidenceRow rows = 1;
+}
+
+message RelationsAmongRequest {
+  repeated string eids = 1;
+}
+
+message RelationRow {
+  string src_eid = 1;
+  string src_name = 2;
+  string rel_type = 3;
+  string dst_eid = 4;
+  string dst_name = 5;
+  int64 weight = 6;
+  repeated string quotes = 7;
+}
+
+message RelationsAmongResponse {
+  repeated RelationRow rows = 1;
+}
+
+message EntitiesByEidsRequest {
+  repeated string eids = 1;
+}
+
+message EntityDetail {
+  string eid = 1;
+  string name = 2;
+  string type = 3;
+  string description = 4;
+  repeated string aliases = 5;
+}
+
+message EntitiesByEidsResponse {
+  repeated EntityDetail rows = 1;
+}
+
+message EntityExposureRequest {
+  repeated string bvids = 1;
+  int32 limit = 2;
+}
+
+message ExposureEvidence {
+  string bvid = 1;
+  int32 page_index = 2;
+  string quote = 3;
+}
+
+message ExposureRow {
+  string eid = 1;
+  string name = 2;
+  string type = 3;
+  string description = 4;
+  int64 pages = 5;
+  repeated ExposureEvidence evidence_sample = 6;
+}
+
+message EntityExposureResponse {
+  repeated ExposureRow rows = 1;
+}
+
+message EntityAppearancesRequest {
+  string eid = 1;
+  repeated string bvids = 2;
+  int32 limit = 3;
+}
+
+message AppearanceRow {
+  string bvid = 1;
+  int32 page_index = 2;
+  string quote = 3;
+}
+
+message EntityAppearancesResponse {
+  repeated AppearanceRow rows = 1;
+}
+
+message TopEntitiesRequest {
+  int32 limit = 1;
+}
+
+message TopEntityRow {
+  string eid = 1;
+  string name = 2;
+  string type = 3;
+  string description = 4;
+  int64 degree = 5;
+}
+
+message TopEntitiesResponse {
+  repeated TopEntityRow rows = 1;
+}
+
+message EdgesAmongRequest {
+  repeated string eids = 1;
+}
+
+message EdgeRow {
+  string src_eid = 1;
+  string dst_eid = 2;
+  string rel_type = 3;
+}
+
+message EdgesAmongResponse {
+  repeated EdgeRow rows = 1;
+}
+
+message StatsRequest {}
+
+message StatsResponse {
+  int64 entities = 1;
+  int64 relations = 2;
+  int64 evidence = 3;
+  int64 videos = 4;
+  int64 pending_pages = 5;
+}

@@ -1,5 +1,8 @@
 /**
  * Skills API - 技能商店：已装技能 / 上传安装 / 卸载 / 商店列表 / 预览.
+ *
+ * Backend contract: app-ts src/transport/http/routes/skills.ts（zip 存 MinIO，
+ * 元数据在 Mongo mind_base_ts.skills_meta；经 APISIX vec_knowledge_ts 路由）.
  */
 import { request, getAuthHeaders, API_BASE_URL } from "./client";
 import { sanitizeError } from "@/lib/error-utils";

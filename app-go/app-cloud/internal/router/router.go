@@ -59,6 +59,7 @@ func New(d Deps) *gin.Engine {
 	})
 
 	registerCloud(e, d)
+	registerWorkspaces(e, d)
 	return e
 }
 

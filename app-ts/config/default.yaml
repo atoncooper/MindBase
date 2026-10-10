@@ -1,0 +1,305 @@
+# =============================================================================
+# app-ts 分层配置（仓库默认值）
+# 加载顺序（后者覆盖前者）：default.yaml → config.yaml(可选) → local.yaml(个人, gitignored) → 环境变量(最高)
+# 环境变量命名规则：段__键（camelCase 自动转 SNAKE），如 milvus.address → MILVUS__ADDRESS
+# 敏感值用 ${VAR} 占位符引用 .env（支持 ${VAR:默认值}）；.env 只放密钥/连接串。
+# 红线：换 embedding 模型 = Milvus 全量重建；timezone 变更 = Milvus 分区命名漂移。
+# =============================================================================
+
+server:
+  host: 127.0.0.1
+  # 8000 = the port the retired Python backend owned; app-ts inherits it
+  port: 8000
+
+redis:
+  # 事件订阅（bili:page_ready → 视频分P向量化）。留空 = 不订阅（离线运行）。
+  url: ${REDIS__URL:}
+
+appBili:
+  # 获取域服务（Go）：ASR 委派 + 用户收藏夹 scope 只读（internal M2M）
+  baseUrl: ${APP_BILI_BASE_URL:http://127.0.0.1:8010}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 30000
+  cacheTtlMs: 30000
+
+appTask:
+  # app-task 调度服务（任务注册 /internal/task 回调 /internal/email/send；经 APISIX key-auth）
+  baseUrl: ${APP_TASK_BASE_URL:http://127.0.0.1:9080}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 15000
+
+appAuth:
+  # 认证服务内部用户查询（/internal/auth/user/{uid}，apikey 守卫）
+  baseUrl: ${APP_AUTH_BASE_URL:http://127.0.0.1:8006}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 5000
+
+taskQuiz:
+  # 定时出题：agent 对话（/task-quiz/chat）+ 注册（/task-quiz/register）
+  # + app-task 执行器回调（/internal/quiz/generate-llm|status）
+  enabled: true
+  sourceDatabase: mind_base          # 共享 Mongo 库（app-quiz 读取同一集合）
+  docCollection: task_quiz_questions
+  executorUrl: ${QUIZ_EXECUTOR_URL:http://127.0.0.1:9080/internal/quiz/generate-llm}
+  genRetries: 3
+
+minio:
+  # 技能 zip 存储（skills/{uid}/{skill_id}.zip；空 endpoint = skills 关闭）
+  endpoint: ${MINIO__ENDPOINT:}
+  # 聊天图片展示 URL 的前缀 base（/minio-proxy/ 由 nginx 代理到 minio:9000 并
+  # 回写 Host，签名按内网 endpoint 计算）；空 = 同源相对路径（生产 nginx 即同源）
+  publicEndpoint: ${MINIO__PUBLIC_ENDPOINT:}
+  accessKey: ${MINIO__ACCESS_KEY:}
+  secretKey: ${MINIO__SECRET_KEY:}
+  bucket: ${MINIO__BUCKET:drive-videos}
+  secure: false
+
+skills:
+  enabled: true
+  storeApiUrl: https://api.github.com
+  storeTopic: mindbase-skill
+  storeApiKey: ${SKILL_STORE_API_KEY:}
+
+vectorize:
+  # 视频分P向量化管线（bili:page_ready 消费 + /vec/page/*）
+  enabled: true
+  concurrency: 2          # 同时跑管线任务的分P数
+  asrTimeoutMs: 720000    # 委派 app-bili ASR 的总超时（转写 + 轮询余量）
+  pollIntervalMs: 3000
+
+aiGateway:
+  # OpenAI 兼容面（LLM / embedding）；nativeBaseURL 由 baseUrl 派生（去尾 /v1 加 /api/v1）
+  baseUrl: ${AI_GATEWAY__BASE_URL:http://127.0.0.1:18080/v1}
+  apiKey: ${AI_GATEWAY__API_KEY}
+
+llm:
+  # 主对话模型（经 Higress 网关路由）。GLM-5.3-flash 支持视觉（图片消息）；
+  # 旧默认 qwen3-max 为纯文本模型，收到图片只会回「无法看到图片」。
+  model: z-ai/glm-5.3-flash
+  # 出题等后台结构化输出任务用强 JSON 遵循模型（chat 不受影响）
+  quizModel: qwen3-max
+  temperature: 0.7
+
+embedding:
+  model: text-embedding-v4
+  dimension: 1024
+  batchSize: 10
+
+rerank:
+  enabled: true
+  model: gte-rerank-v2
+  timeoutMs: 30000
+  topN: 30
+  minRelevanceScore: 0
+
+milvus:
+  address: 127.0.0.1:19530
+  token: ${MILVUS__TOKEN}
+  # app-ts 独立新库，与 Python/Go 后端数据隔离
+  database: mind_base_ts
+  collection: bilibili_videos
+  # 云盘 collection（与视频 collection 并行检索；需独立灌库）
+  cloudCollection: cloud_drive
+  # hybrid 检索（BM25 sparse + dense，RRF 融合；Milvus 2.5+；切换会改 schema）
+  hybridSearch: false
+  dimension: 1024
+  indexType: IVF_FLAT
+  metricType: COSINE
+  nlist: 1024
+  nprobe: 16
+  useMonthlyPartitions: false
+
+mongo:
+  uri: ${MONGO__URI}
+  database: mind_base_ts
+  timeoutMs: 5000
+  sessionsCollection: chat_sessions
+  messagesCollection: chat_messages
+
+kg:
+  # false = 不注册 kg_search 工具与 /knowledge/kg/* 路由（app-kg 未部署时优雅降级）
+  enabled: true
+  # 实体向量 collection（app-ts 独立库 mind_base_ts 内；与 Python 的 mind_base.kg_entities 互不相通）
+  collectionName: kg_entities
+  # 抽取模型（经 Higress 网关，purpose=kg）
+  extractModel: qwen-flash
+  # 成本护栏：单分P 送 LLM 的正文上限
+  maxTextChars: 8000
+  seedTopN: 5
+  linkScoreThreshold: 0.55
+  maxHops: 2
+  expandLimitPerHop: 50
+  evidenceLimit: 100
+  concurrency: 2
+  pageBatchSize: 50
+  # ASR 正文源 = Python 后端的 Mongo 库（跨库只读——源数据归 bili 域所有）
+  sourceDatabase: mind_base
+  sourceCollection: asr_documents
+
+toolsStub:
+  # false = 不注册 list_videos/get_video_summaries（VideoMetaRepository 还是内存假数据；
+  # 视频知识库回灌 + 真元数据接入后再开）
+  videoMeta: false
+
+appPay:
+  # 会员档位查询（app-pay 经 APISIX key-auth 内部路由 /internal/pay/*；
+  # 对齐 app-cloud quota.go 的消费模式：TTL 缓存 + fail-open free）
+  baseUrl: ${APP_PAY_BASE_URL:http://127.0.0.1:9080/internal/pay}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 2000
+  cacheTtlMs: 60000
+
+appQuiz:
+  # app-quiz 存储写面（经 APISIX key-auth 内部路由 /internal/quiz/*）
+  baseUrl: ${APP_QUIZ_BASE_URL:http://127.0.0.1:9080/internal/quiz}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 15000
+
+kgGrpc:
+  # false = KG 能力整体关闭（app-kg 未部署时不注册工具与路由）
+  enabled: true
+  # app-kg（Go）gRPC 数据面
+  target: 127.0.0.1:8013
+  # 共享 proto 契约（运行时加载，无代码生成）
+  protoPath: ../proto/kg/v1/kg.proto
+  timeoutMs: 15000
+
+noteMcp:
+  # false = 不注册 save_note 工具（app-note-mcp 未部署时笔记保存不可用）
+  enabled: true
+  # app-note-mcp streamable-http 端点
+  url: http://127.0.0.1:8009/mcp
+  apiKey: ${NOTE_MCP__API_KEY}
+  bearerToken: ${NOTE_MCP_AUTH_TOKEN}
+  timeoutMs: 30000
+
+quizMcp:
+  # false = 启动时不注册 quiz 出题/批改工具（quiz 落库必须经 MCP，无直连回落）
+  enabled: true
+  # app-quiz-mcp streamable-http 端点
+  url: http://127.0.0.1:8012/mcp
+  # 服务模式 apikey / 外部宿主 Bearer（与 boardMcp 同模型）
+  apiKey: ${QUIZ_MCP__API_KEY}
+  bearerToken: ${QUIZ_MCP__BEARER_TOKEN}
+  timeoutMs: 30000
+
+boardMcp:
+  # false = 启动时不注册 board 工具（app-board-mcp 未部署时优雅降级）
+  enabled: true
+  # app-board-mcp streamable-http 端点
+  url: http://127.0.0.1:8005/mcp
+  # 服务模式 apikey（uid 走请求头 X-Uid，永不进 LLM 参数）
+  apiKey: ${BOARD_MCP__API_KEY}
+  # 外部宿主模式（与 apiKey 二选一）
+  bearerToken: ${BOARD_MCP__BEARER_TOKEN}
+  timeoutMs: 30000
+  # 桥接工具输出送入 LLM 上下文的截断上限
+  maxContentChars: 8000
+  # /chat/board/complete 的模型覆盖（留空 = llm.model）
+  completionModel: ${BOARD_MCP__COMPLETION_MODEL:}
+
+search:
+  defaultK: 8
+
+web:
+  # 单页抓取大小上限（字节）与重定向跳数
+  maxBytes: 2097152
+  maxRedirects: 5
+  userAgent: "MindBaseBot/0.1 (knowledge-base assistant)"
+  # 礼貌间隔：同宿主两次请求的最小间隔（真实等待；0 = 关闭）
+  perHostIntervalMs: 1000
+
+tools:
+  # 模型未传 timeoutMs 时的默认预算
+  defaultTimeoutMs: 60000
+  # 钳制下限（防 0/极小值滥用）
+  minTimeoutMs: 1000
+  # 钳制上限（manager 永不接受超过 1 小时）
+  maxTimeoutMs: 3600000
+  # 全局并发工具执行上限（保护 Milvus/Mongo/网关不被并发请求打挂）
+  maxConcurrent: 8
+  # 有界排队：等槽位超过该时长即快速失败（浅队列，不做深排队）
+  queueWaitMs: 5000
+  # 工具级熔断：连续失败/超时达到阈值即开闸
+  breakerThreshold: 5
+  breakerCooldownMs: 30000
+
+agent:
+  maxSteps: 10
+  routingTimeoutMs: 3000
+  circuitFailureThreshold: 3
+  circuitCooldownMs: 30000
+  # 可重试错误（超时/限流/5xx）触发的整轮重试次数（reset 帧后重新生成）
+  turnRetries: 1
+  # 同一工具+同参数在一轮内第 N 次调用被拒绝（防绕圈烧 token）
+  toolRepeatLimit: 3
+
+scheduling:
+  # 问答 turn 级加权排队（与 tools.maxConcurrent 的工具级闸门分层：本段限制
+  # "同时执行的轮数"，满员后按会员权重排队，等待超时报错结束本轮）
+  enabled: true
+  # 全局同时执行的问答轮数上限
+  maxConcurrent: 5
+  # 排队上限：队满立即拒绝（不排队，直接报"系统繁忙"）
+  queueMaxSize: 100
+  # 排队等待上限：超过即报错结束本轮（须小于网关/代理的读超时）
+  queueTimeoutMs: 60000
+  # 会员权重（SVIP > VIP > free），同级按先后顺序；tier 数据源当前为
+  # stub（人人 free，见 services/membership.ts），会员上线后接 app-pay
+  tierWeights: { free: 0, vip: 100, svip: 200 }
+  # 防饿死：每等待该时长，有效权重 +agingStep（低权重长等者可越过晚到的高权重者）
+  agingWindowMs: 30000
+  agingStep: 10
+  # 流式排队进度帧（type=queue）下发间隔
+  queueFrameIntervalMs: 2000
+
+chunk:
+  targetSize: 750
+  minSize: 300
+  maxSize: 900
+  overlap: 100
+
+log:
+  level: info
+  fileEnabled: true
+  dir: logs
+  fileName: app-ts.log
+
+rateLimit:
+  # /chat/ask/stream 每 IP 滑动窗口限流（LLM 端点昂贵）
+  windowMs: 60000
+  max: 20
+
+prompts:
+  dir: prompts
+
+context:
+  # 超出近期窗口的完成消息达到该数量才触发压缩
+  compressThreshold: 4
+  recentKeep: 6
+
+langsmith:
+  # LangSmith 追踪（AI SDK OTel 遥测 → OTLP 导出）。密钥缺失 = 追踪整体关闭（零开销）。
+  # 与 Python 后端共用同一组 LANGSMITH_* 变量；注意 span 会携带 prompt/补全内容到 LangSmith（外部 SaaS）。
+  apiKey: ${LANGSMITH_API_KEY}
+  projectName: ${LANGSMITH_PROJECT:MindBase-ts}
+  baseUrl: ${LANGSMITH_ENDPOINT:https://api.smith.langchain.com}
+
+timezone:
+  name: Asia/Shanghai
+
+openrouter:
+  modelsUrl: https://openrouter.ai/api/v1/models
+  refreshHours: 24
+  timeoutMs: 10000
+  # Higress 改名模型的本地能力覆盖（JSON 字符串）：{"local-name":{"vision":true}}
+  overridesJson: "{}"
+
+ocr:
+  enabled: false
+  model: qwen-vl-ocr
+  # 可选独立 key；默认复用 aiGateway.apiKey
+  apiKey: ${OCR__API_KEY}
+  prompt: 请提取图片中的全部文字内容，按原始阅读顺序输出，不要添加任何解释或评论。
+  maxImageBytes: 10485760
+  timeoutMs: 60000
