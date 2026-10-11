@@ -49,6 +49,9 @@ function normalizeTier(view: unknown): string {
  */
 export async function resolveTier(uid: string | undefined): Promise<string> {
   if (uid === undefined || uid === "" || uid === "0") return TIER_FREE;
+  // uid 是 int64（app-pay BigInteger / app-auth snowflake），非纯数字视为非法
+  // 输入：不发起网络请求，直接 fail-open free（与 0/空值同语义）。
+  if (!/^\d+$/.test(uid)) return TIER_FREE;
 
   const now = Date.now();
   const hit = cache.get(uid);

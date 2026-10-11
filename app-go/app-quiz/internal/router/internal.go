@@ -44,6 +44,7 @@ func registerInternalQuiz(e *gin.Engine, svc *service.Store) {
 	ig := e.Group("/internal/quiz")
 	ig.POST("/sets", createQuizSet(svc))
 	ig.POST("/sets/:quiz_uuid/questions", finalizeQuizSet(svc))
+	ig.POST("/sets/:quiz_uuid/questions/append", appendQuizQuestions(svc))
 	ig.POST("/sets/:quiz_uuid/fail", failQuizSet(svc))
 	ig.POST("/quota/peek", quotaPeekHandler(svc))
 	ig.POST("/quota/consume", quotaConsumeHandler(svc))
@@ -66,14 +67,14 @@ func createTaskQuizRow(svc *service.Store) gin.HandlerFunc {
 			return
 		}
 		var req struct {
-			UID FlexInt64 `json:"uid"`
-			TaskID            string   `json:"task_id"`
-			Prompt            string   `json:"prompt"`
-			Difficulty        string   `json:"difficulty"`
-			QuestionCount     int      `json:"question_count"`
-			UserEmail         string   `json:"user_email"`
-			CCEmails          []string `json:"cc_emails"`
-			IncompleteMessage *string  `json:"incomplete_message"`
+			UID               FlexInt64 `json:"uid"`
+			TaskID            string    `json:"task_id"`
+			Prompt            string    `json:"prompt"`
+			Difficulty        string    `json:"difficulty"`
+			QuestionCount     int       `json:"question_count"`
+			UserEmail         string    `json:"user_email"`
+			CCEmails          []string  `json:"cc_emails"`
+			IncompleteMessage *string   `json:"incomplete_message"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusBadRequest, "请求体格式错误")
@@ -120,7 +121,7 @@ func markTaskQuizGenerated(svc *service.Store) gin.HandlerFunc {
 // async-generation payload. With questions it behaves as before (status done);
 // without questions it creates a generating row.
 type agentQuizSetReq struct {
-	UID FlexInt64 `json:"uid"`
+	UID              FlexInt64                `json:"uid"`
 	QuizUUID         string                   `json:"quiz_uuid,omitempty"`
 	Title            string                   `json:"title"`
 	Difficulty       string                   `json:"difficulty,omitempty"`
@@ -183,7 +184,7 @@ func createQuizSet(svc *service.Store) gin.HandlerFunc {
 }
 
 type agentQuizQuestionsReq struct {
-	UID FlexInt64 `json:"uid"`
+	UID            FlexInt64               `json:"uid"`
 	Status         string                  `json:"status"`
 	Questions      []service.AgentQuestion `json:"questions"`
 	QualityMetrics json.RawMessage         `json:"quality_metrics,omitempty"`
@@ -215,9 +216,35 @@ func finalizeQuizSet(svc *service.Store) gin.HandlerFunc {
 	}
 }
 
+// appendQuizQuestions checkpoint：分批生成的增量落库（仅 generating 行）。
+func appendQuizQuestions(svc *service.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		quizUUID := strings.TrimSpace(c.Param("quiz_uuid"))
+		var req agentQuizQuestionsReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiErr(c, http.StatusBadRequest, "请求体格式错误")
+			return
+		}
+		if int64(req.UID) != 0 && int64(req.UID) != uid {
+			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
+			return
+		}
+		result, err := svc.AppendQuestions(c.Request.Context(), uid, quizUUID, req.Questions)
+		if err != nil {
+			respondAgentError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
 type agentQuizFailReq struct {
-	UID FlexInt64 `json:"uid"`
-	ErrorMessage string `json:"error_message"`
+	UID          FlexInt64 `json:"uid"`
+	ErrorMessage string    `json:"error_message"`
 }
 
 func failQuizSet(svc *service.Store) gin.HandlerFunc {
@@ -246,7 +273,7 @@ func failQuizSet(svc *service.Store) gin.HandlerFunc {
 }
 
 type agentGradingReq struct {
-	UID FlexInt64 `json:"uid"`
+	UID         FlexInt64              `json:"uid"`
 	QuizUUID    string                 `json:"quiz_uuid"`
 	Score       int                    `json:"score"`
 	Total       int                    `json:"total"`

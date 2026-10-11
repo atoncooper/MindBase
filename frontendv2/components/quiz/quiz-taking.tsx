@@ -1,19 +1,19 @@
 "use client";
 
 /**
- * QuizTaking - the answer flow.
+ * QuizTaking - 作答流程（Google Material 3 视觉）。
  *
- * Linear single-column flow: header (back + title + progress), current
- * question (Markdown + LaTeX), option list or textarea, footer nav
- * (prev / next / submit). Monochrome option selection mirrors task-quiz
- * (black border + black filled marker when active). Submit sends the whole
- * quiz at once and hands the result + captured answers up to the orchestrator.
+ * 两种模式共享同一份 answers 与提交入口：
+ *   practice 逐题模式：顶部 M3 线性进度 + 单题卡片（题型 chip + 选项卡 + 文本域）
+ *   paper    整卷模式：QuizPaperTaking 整卷作答
+ * 头部为返回 + 标题 + 分段控件；底部为上一题/下一题/交卷。
  */
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Check } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, AlertCircle, ClipboardList, Check } from "lucide-react";
 import { quizApi, type QuizSetData, type QuizSubmissionResult } from "@/lib/api";
 import { Markdown } from "@/components/markdown";
+import { QuizPaperTaking } from "./quiz-paper-taking";
 import { cn } from "@/lib/utils";
 
 interface QuizTakingProps {
@@ -27,6 +27,21 @@ interface QuizTakingProps {
 
 type AnswerMap = Record<string, string | string[]>;
 
+const TYPE_LABEL: Record<string, string> = {
+    single_choice: "单项选择",
+    multi_choice: "多项选择",
+    short_answer: "简答",
+    essay: "论述",
+};
+
+/** 提取选项标签（A/B/…），无前缀时按下标生成。 */
+function optionParts(opt: string, index: number): { label: string; text: string } {
+    const m = /^\s*([A-Za-z])(?:[.．、\s]+|$)/.exec(opt);
+    const label = m ? m[1].toUpperCase() : String.fromCharCode("A".charCodeAt(0) + index);
+    const text = m ? opt.replace(/^\s*[A-Za-z](?:[.．、\s]+)/, "").trim() : opt;
+    return { label, text: text || opt };
+}
+
 export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
     const questions = quiz.questions;
     const total = questions.length;
@@ -34,6 +49,8 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
     const [answers, setAnswers] = useState<AnswerMap>({});
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // 练习（逐题）/ 试卷（整卷）两种作答方式；同一份 answers + 同一提交入口
+    const [mode, setMode] = useState<"practice" | "paper">("practice");
     // Lazy init captures the start time once on mount.
     const [startedAt] = useState(() => Date.now());
 
@@ -43,18 +60,13 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
     // safe under rules-of-hooks.
     if (!q) {
         return (
-            <div className="mx-auto flex h-[calc(100dvh-3rem)] max-w-[760px] flex-col items-center justify-center gap-3 px-5 text-center">
-                <p className="text-[15px] font-medium text-foreground">
-                    该题卷暂无题目
-                </p>
-                <p className="text-[13px] text-secondary">
-                    题目可能仍在生成或已失败，请稍后重试
-                </p>
-                <button
-                    type="button"
-                    onClick={onBack}
-                    className="btn-pill btn-primary mt-2 h-9 px-5 text-[13px]"
-                >
+            <div className="flex min-h-[60vh] flex-1 flex-col items-center justify-center gap-3 px-5 text-center">
+                <div className="grid h-14 w-14 place-items-center rounded-full bg-[#d3e3fd]">
+                    <ClipboardList className="h-7 w-7 text-[#041e49]" />
+                </div>
+                <p className="text-[16px] font-medium text-[#1f1f1f]">该题卷暂无题目</p>
+                <p className="text-[13px] text-[#444746]">题目可能仍在生成或已失败，请稍后重试</p>
+                <button type="button" onClick={onBack} className="g-btn g-btn-tonal mt-2">
                     返回列表
                 </button>
             </div>
@@ -103,147 +115,196 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
 
     const progressPct = total > 0 ? ((current + 1) / total) * 100 : 0;
     const myAnswer = answers[q.question_uuid];
-    const activeOpts = isMulti && Array.isArray(myAnswer) ? (myAnswer as string[]) : [];
+    const activeMulti = isMulti && Array.isArray(myAnswer) ? (myAnswer as string[]) : [];
+    const answeredCount = Object.keys(answers).filter((k) => {
+        const v = answers[k];
+        return Array.isArray(v) ? v.length > 0 : typeof v === "string" && v.trim().length > 0;
+    }).length;
 
     return (
-        <div className="mx-auto flex h-[calc(100dvh-3rem)] max-w-[760px] flex-col px-5 md:px-8">
+        <div className="mx-auto flex h-[calc(100dvh-4rem)] w-full max-w-[860px] flex-col px-5 md:px-8">
             {/* Header */}
-            <div className="flex items-center gap-3 pt-6">
+            <div className="flex items-center gap-2.5 pt-5">
                 <button
                     type="button"
                     onClick={onBack}
-                    className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                    className="g-icon-btn shrink-0"
                     aria-label="返回"
                 >
-                    <ArrowLeft className="h-4 w-4" />
+                    <ArrowLeft className="h-[18px] w-[18px]" />
                 </button>
                 <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-semibold tracking-tight text-foreground">
+                    <p className="truncate text-[16px] font-semibold tracking-normal text-[#1f1f1f]">
                         {quiz.title || "题目练习"}
                     </p>
-                    <p className="text-[12px] text-tertiary">
-                        第 {current + 1} / {total} 题 · 难度 {q.difficulty}
+                    <p className="text-[12px] text-[#444746]">
+                        {mode === "paper"
+                            ? "整卷作答 · 共 " + total + " 题"
+                            : "第 " + (current + 1) + " / " + total + " 题 · 难度 " + q.difficulty}
                     </p>
+                </div>
+                <div className="g-segmented shrink-0">
+                    <button
+                        type="button"
+                        className={mode === "practice" ? "g-seg-active" : undefined}
+                        onClick={() => setMode("practice")}
+                    >
+                        练习
+                    </button>
+                    <button
+                        type="button"
+                        className={mode === "paper" ? "g-seg-active" : undefined}
+                        onClick={() => setMode("paper")}
+                    >
+                        试卷
+                    </button>
                 </div>
             </div>
 
-            {/* Progress bar */}
-            <div className="mt-3 h-[3px] w-full overflow-hidden rounded-full bg-border-subtle">
-                <div
-                    className="h-full rounded-full bg-foreground transition-all duration-300"
-                    style={{ width: `${progressPct}%` }}
-                />
-            </div>
+            {/* M3 线性进度（练习模式） */}
+            {mode === "practice" && (
+                <div className="g-progress mt-4">
+                    <div style={{ width: progressPct + "%" }} />
+                </div>
+            )}
 
-            {/* Question */}
+            {/* 题目区（practice）/ 整卷（paper） */}
             <div className="flex-1 overflow-y-auto py-6">
-                <motion.div
-                    key={current}
-                    initial={{ opacity: 0, x: 12 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.25, ease: [0.28, 0.11, 0.32, 1] }}
-                >
-                    <div className="mb-4 text-[11px] font-medium uppercase tracking-wider text-tertiary">
-                        {q.question_type}
-                    </div>
-                    <div className="md-body text-[16px] leading-relaxed text-foreground">
-                        <Markdown>{q.question_text}</Markdown>
-                    </div>
+                {mode === "paper" && (
+                    <QuizPaperTaking
+                        quiz={quiz}
+                        answers={answers}
+                        onAnswer={(uuid, value) => setAnswers((prev) => ({ ...prev, [uuid]: value }))}
+                    />
+                )}
 
-                    {/* Choice options */}
-                    {isChoice && q.options && (
-                        <div className="mt-5 space-y-2">
-                            {q.options.map((opt, i) => {
-                                const active = isSingle
-                                    ? myAnswer === opt
-                                    : activeOpts.includes(opt);
-                                return (
-                                    <button
-                                        key={i}
-                                        type="button"
-                                        disabled={submitting}
-                                        onClick={() =>
-                                            isSingle
-                                                ? setSingle(q.question_uuid, opt)
-                                                : toggleMulti(q.question_uuid, opt)
-                                        }
-                                        className={cn(
-                                            "flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left text-[14px] transition-all",
-                                            active
-                                                ? "border-foreground bg-surface text-foreground"
-                                                : "border-border bg-surface text-foreground/90 hover:border-tertiary",
-                                        )}
-                                    >
-                                        <span
-                                            className={cn(
-                                                "grid h-5 w-5 shrink-0 place-items-center border text-[11px] font-medium",
-                                                isMulti ? "rounded-[6px]" : "rounded-full",
-                                                active
-                                                    ? "border-foreground bg-foreground text-surface"
-                                                    : "border-tertiary text-transparent",
-                                            )}
-                                        >
-                                            {active && <Check className="h-3.5 w-3.5" />}
-                                        </span>
-                                        <span className="min-w-0 flex-1">
-                                            <Markdown inline>{opt}</Markdown>
-                                        </span>
-                                    </button>
-                                );
-                            })}
+                {mode === "practice" && (
+                    <motion.div
+                        key={current}
+                        initial={{ opacity: 0, x: 12 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.22, ease: [0.28, 0.11, 0.32, 1] }}
+                        className="g-card mx-auto max-w-[720px] px-6 py-6 md:px-8"
+                    >
+                        {/* 题型 chip + 题号 */}
+                        <div className="flex items-center gap-2">
+                            <span className="g-chip g-chip-static g-chip-selected">
+                                {TYPE_LABEL[q.question_type] ?? q.question_type}
+                            </span>
+                            <span className="text-[12px] text-[#747775]">第 {current + 1} 题</span>
                         </div>
-                    )}
 
-                    {/* Fill-in / essay */}
-                    {!isChoice && (
-                        <textarea
-                            value={(typeof myAnswer === "string" ? myAnswer : "") ?? ""}
-                            onChange={(e) => setText(q.question_uuid, e.target.value)}
-                            disabled={submitting}
-                            className="field mt-5 resize-none"
-                            rows={5}
-                            placeholder="输入你的答案…"
-                        />
-                    )}
-                </motion.div>
+                        <div className="md-body mt-4 text-[16px] leading-relaxed text-[#1f1f1f]">
+                            <Markdown>{q.question_text}</Markdown>
+                        </div>
+
+                        {/* 选择题选项 */}
+                        {isChoice && q.options && (
+                            <div className="mt-5 grid grid-cols-1 gap-2 md:grid-cols-2">
+                                {q.options.map((opt, i) => {
+                                    const label = optionParts(opt, i).label;
+                                    const active = isSingle ? myAnswer === label : activeMulti.includes(label);
+                                    return (
+                                        <button
+                                            key={i}
+                                            type="button"
+                                            disabled={submitting}
+                                            onClick={() =>
+                                                isSingle
+                                                    ? setSingle(q.question_uuid, label)
+                                                    : toggleMulti(q.question_uuid, label)
+                                            }
+                                            className={cn("g-option", active && "g-option-selected")}
+                                        >
+                                            <span
+                                                className={cn(
+                                                    isMulti ? "g-check" : "g-radio",
+                                                    active && (isMulti ? "g-check-selected" : "g-radio-selected"),
+                                                )}
+                                            >
+                                                {isMulti && active && <Check className="h-3 w-3" />}
+                                            </span>
+                                            <span className="font-semibold text-[#0b57d0]">{label}</span>
+                                            <span className="min-w-0 flex-1">
+                                                <Markdown inline>{optionParts(opt, i).text}</Markdown>
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        {/* 主观题 */}
+                        {!isChoice && (
+                            <textarea
+                                value={(typeof myAnswer === "string" ? myAnswer : "") ?? ""}
+                                onChange={(e) => setText(q.question_uuid, e.target.value)}
+                                disabled={submitting}
+                                rows={5}
+                                className="g-field mt-5 resize-none"
+                                placeholder="输入你的答案…"
+                            />
+                        )}
+                    </motion.div>
+                )}
             </div>
 
-            {/* Footer nav */}
-            <div className="border-t border-border-subtle py-4">
+            {/* Footer */}
+            <div className="border-t border-[#c4c7c5] bg-transparent py-4">
                 {error && (
-                    <div className="mb-3 text-[13px] text-foreground">
+                    <div className="g-banner mb-3">
+                        <AlertCircle className="h-4 w-4 shrink-0 text-[#d93025]" />
                         {error}
                     </div>
                 )}
                 <div className="flex items-center justify-between gap-3">
-                    <button
-                        type="button"
-                        onClick={() => setCurrent((c) => Math.max(0, c - 1))}
-                        disabled={current === 0}
-                        className="btn-pill btn-ghost h-10 px-4 text-[14px] disabled:opacity-40"
-                    >
-                        <ChevronLeft className="h-4 w-4" />
-                        上一题
-                    </button>
-                    {current < total - 1 ? (
-                        <button
-                            type="button"
-                            onClick={() => setCurrent((c) => Math.min(total - 1, c + 1))}
-                            className="btn-pill btn-primary h-10 px-5 text-[14px]"
-                        >
-                            下一题
-                            <ChevronRight className="h-4 w-4" />
-                        </button>
+                    {mode === "paper" ? (
+                        <>
+                            <span className="text-[12px] text-[#444746]">
+                                已答 {answeredCount} / {total} 题
+                            </span>
+                            <button
+                                type="button"
+                                onClick={submit}
+                                disabled={submitting}
+                                className="g-btn g-btn-filled !px-8"
+                            >
+                                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                                交卷
+                            </button>
+                        </>
                     ) : (
-                        <button
-                            type="button"
-                            onClick={submit}
-                            disabled={submitting}
-                            className="btn-pill btn-primary h-10 px-6 text-[14px]"
-                        >
-                            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                            提交批改
-                        </button>
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => setCurrent((c) => Math.max(0, c - 1))}
+                                disabled={current === 0}
+                                className="g-btn g-btn-outlined"
+                            >
+                                <ChevronLeft className="h-4 w-4" />
+                                上一题
+                            </button>
+                            {current < total - 1 ? (
+                                <button
+                                    type="button"
+                                    onClick={() => setCurrent((c) => Math.min(total - 1, c + 1))}
+                                    className="g-btn g-btn-filled !px-8"
+                                >
+                                    下一题
+                                    <ChevronRight className="h-4 w-4" />
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={submit}
+                                    disabled={submitting}
+                                    className="g-btn g-btn-filled !px-8"
+                                >
+                                    {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                                    提交批改
+                                </button>
+                            )}
+                        </>
                     )}
                 </div>
             </div>

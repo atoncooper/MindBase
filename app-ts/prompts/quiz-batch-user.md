@@ -7,6 +7,6 @@
 
 题型分布：{{TYPE_DISTRIBUTION}}
 难度：{{DIFFICULTY}}
-
+{{EXISTING_QUESTIONS}}
 source_chunk_index 表示题目来源于第几个知识片段。
 请确保所有题目的答案都能在对应片段中找到依据。

@@ -89,7 +89,7 @@ describe("POST /chat/ask/stream 多模态", () => {
       payload: { query: "看这张图", images: [PNG_DATA_URL, JPG_DATA_URL] },
     });
     expect(res.statusCode).toBe(200);
-    expect(built.chatCaptured[0]).toMatchObject({ query: "看这张图", images: [PNG_DATA_URL, JPG_DATA_URL], uid: 42 });
+    expect(built.chatCaptured[0]).toMatchObject({ query: "看这张图", images: [PNG_DATA_URL, JPG_DATA_URL], uid: "42" });
   });
 
   it("vision=false（有据）：400 且明确提示配置视觉模型", async () => {

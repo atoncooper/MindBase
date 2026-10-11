@@ -115,7 +115,7 @@ describe("/v1/chat/completions (OpenAI compat)", () => {
     ]);
     expect(captured[0].extraSystem).toBe("你是 cats-only 机器人");
     expect(captured[0].chatSessionId).toBeUndefined();
-    expect(captured[0].uid).toBe(42);
+    expect(captured[0].uid).toBe("42");
     await app.close();
   });
 

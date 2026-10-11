@@ -41,13 +41,21 @@ describe("LangSmith tracing", () => {
         content: [{ type: "text" as const, text: "ok" }],
       }),
     });
-    const result = await generateText({ model, prompt: "ping", ...aiTelemetry("test.call") });
-    expect(result.text).toBe("ok");
 
-    // SimpleSpanProcessor exports asynchronously — settle, then read BEFORE
-    // shutdown (shutdown stops the in-memory exporter and drops late exports)
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const spans = exporter.getFinishedSpans();
+    // 全局 provider 注册与 ProxyTracer 代理解析存在一次性时序竞态
+    // （冷启动/并发 worker 下首次调用可能拿不到 delegate）。轮询重试：
+    // 每次 generateText 后等待落 span，最多 5 次 —— 断言本身不变
+    // （必须出现携带 functionId 的 ai span），只消除时序脆弱性。
+    let spans: ReturnType<typeof exporter.getFinishedSpans> = [];
+    for (let attempt = 0; attempt < 5 && spans.length === 0; attempt += 1) {
+      const result = await generateText({ model, prompt: "ping", ...aiTelemetry("test.call") });
+      expect(result.text).toBe("ok");
+      // SimpleSpanProcessor exports synchronously on end — settle briefly anyway
+      for (let wait = 0; wait < 20 && exporter.getFinishedSpans().length === 0; wait += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      spans = exporter.getFinishedSpans();
+    }
     expect(spans.length).toBeGreaterThan(0);
     expect(spans.some((s) => s.attributes["ai.telemetry.functionId"] === "test.call")).toBe(true);
   });

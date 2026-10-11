@@ -4,6 +4,15 @@ import {
   defaultTypeDistribution,
   splitSummaryToChunks,
   validateQuestion,
+  buildPersonalizationSection,
+  buildExistingQuestionsBlock,
+  extractQuestionRecords,
+  renderExtractedProfile,
+  isQuizImageFile,
+  isQuizUploadFilename,
+  normalizeStem,
+  isNearDuplicateStem,
+  stemSimilarity,
   QuizGenerationService,
   type QuizQuestionDict,
 } from "../src/services/quiz-generation.js";
@@ -158,5 +167,198 @@ describe("QuizGenerationService.generateQuestions", () => {
       uid: 7,
     });
     expect(out).toEqual([]);
+  });
+});
+
+describe("buildPersonalizationSection", () => {
+  it("returns empty when nothing is set", () => {
+    expect(buildPersonalizationSection({})).toBe("");
+  });
+
+  it("composes style + skills + injection-wrapped instructions", () => {
+    const out = buildPersonalizationSection({
+      styleSection: "## 出题风格：高考卷面",
+      skillsSection: "## 用户指定技能（本次对话必须遵循）### 技能：x",
+      instructions: "多出计算题",
+    });
+    expect(out).toContain("## 出题风格：高考卷面");
+    expect(out).toContain("### 技能：x");
+    expect(out).toContain("<custom_instructions>");
+    expect(out).toContain("多出计算题");
+    // instructions come last
+    expect(out.indexOf("<custom_instructions>")).toBeGreaterThan(out.indexOf("### 技能：x"));
+  });
+
+  it("caps instruction length at 4000 chars", () => {
+    const out = buildPersonalizationSection({ instructions: "x".repeat(5000) });
+    const body = out.slice(out.indexOf("<custom_instructions>"), out.indexOf("</custom_instructions>"));
+    expect(body.length).toBeLessThan(4200);
+  });
+});
+
+describe("extractQuestionRecords", () => {
+  it("parses the object form and validates against the schema", () => {
+    const raw = JSON.stringify({
+      questions: [
+        { question: "求极限", options: ["A. 1", "B. 0"], answer: "A", knowledge_points: ["极限", "洛必达"], subject: "数学" },
+        { question: "简述闭包", knowledge_points: ["闭包"] },
+      ],
+    });
+    const out = extractQuestionRecords("前置噪声 {\n" + raw + "\n} 后置噪声");
+    expect(out).toHaveLength(2);
+    expect(out![0].knowledge_points).toEqual(["极限", "洛必达"]);
+    expect(out![1].answer).toBeUndefined();
+  });
+
+  it("accepts the bare array form", () => {
+    const raw = JSON.stringify([{ question: "q", knowledge_points: ["kp"] }]);
+    expect(extractQuestionRecords(raw)).toHaveLength(1);
+  });
+
+  it("rejects records without knowledge_points", () => {
+    expect(extractQuestionRecords(JSON.stringify({ questions: [{ question: "q" }] }))).toBeUndefined();
+  });
+
+  it("returns undefined for non-JSON text", () => {
+    expect(extractQuestionRecords("完全没有 JSON 的文本")).toBeUndefined();
+  });
+});
+
+describe("renderExtractedProfile", () => {
+  const records = [
+    { question: "求 f(x) 的极值", options: ["A. 极大", "B. 极小"], answer: "A", knowledge_points: ["导数", "极值"], subject: "数学" },
+    { question: "证明中值定理", knowledge_points: ["微分中值定理"] },
+  ];
+
+  it("wrong_images mode renders the reinforcement directive", () => {
+    const out = renderExtractedProfile(records, "wrong_images");
+    expect(out).toContain("错题材料共 2 道题");
+    expect(out).toContain("已标注答案：A");
+    expect(out).toContain("（材料中未见答案）");
+    expect(out).toContain("变式新题");
+  });
+
+  it("mimic mode renders the imitation directive", () => {
+    const out = renderExtractedProfile(records, "mimic");
+    expect(out).toContain("参考试卷/练习材料共 2 道题");
+    expect(out).toContain("模仿");
+  });
+});
+
+describe("upload filename gates", () => {
+  it("classifies images and text documents", () => {
+    expect(isQuizImageFile("IMG_1.PNG")).toBe(true);
+    expect(isQuizImageFile("a.pdf")).toBe(false);
+    expect(isQuizUploadFilename("a.pdf")).toBe(true);
+    expect(isQuizUploadFilename("a.docx")).toBe(true);
+    expect(isQuizUploadFilename("a.exe")).toBe(false);
+    expect(isQuizUploadFilename("no-ext")).toBe(false);
+  });
+});
+
+describe("cross-batch dedupe helpers", () => {
+  it("normalizes punctuation / whitespace / case", () => {
+    expect(normalizeStem("  Hello, World! ")).toBe("helloworld");
+    expect(normalizeStem("TCP 三次握手？")).toBe(normalizeStem("tcp三次握手"));
+  });
+
+  it("flags normalized-exact and paraphrase-level duplicates", () => {
+    const existing = [normalizeStem("TCP 三次握手的过程中，SYN 报文的作用是什么？")];
+    expect(isNearDuplicateStem("TCP三次握手的过程中，SYN报文的作用是什么?", existing)).toBe(true);
+    expect(isNearDuplicateStem("UDP 协议与 TCP 协议的核心区别是什么？", existing)).toBe(false);
+    expect(isNearDuplicateStem("", existing)).toBe(true);
+  });
+
+  it("similarity is 1 for identical and 0 for empty", () => {
+    expect(stemSimilarity("三次握手", "三次握手")).toBe(1);
+    expect(stemSimilarity("", "x")).toBe(0);
+  });
+});
+
+describe("buildExistingQuestionsBlock", () => {
+  it("is empty when nothing accepted yet", () => {
+    expect(buildExistingQuestionsBlock([])).toBe("");
+  });
+
+  it("lists stems, knowledge points and the avoidance instruction", () => {
+    const out = buildExistingQuestionsBlock([
+      { question: "题干一", related_entities: ["TCP", "三次握手"] },
+      { question: "题干二", related_entities: [] },
+    ]);
+    expect(out).toContain("已生成的题目");
+    expect(out).toContain("1. 题干一");
+    expect(out).toContain("2. 题干二");
+    expect(out).toContain("已覆盖知识点：TCP、三次握手");
+  });
+
+  it("caps the stem list to the most recent ones", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ question: "q" + i, related_entities: [] }));
+    const out = buildExistingQuestionsBlock(many, 24);
+    // 取最近 24 条（后段），题号在块内重新编号
+    expect(out).toContain("1. q16");
+    expect(out).toContain("24. q39");
+    expect(out).not.toContain("q15");
+  });
+});
+
+describe("generateQuestions with checkpoint + anti-dup context", () => {
+  const chunk = { title: "t", content: "TCP 三次握手用于建立可靠连接，SYN 报文用于同步序号。UDP 是无连接的传输层协议。" };
+  const q1: QuizQuestionDict = {
+    question: "TCP 三次握手用于建立什么？",
+    type: "single_choice",
+    difficulty: "medium",
+    source_chunk_index: 0,
+    options: ["A. 可靠连接", "B. 无连接服务", "C. 流量控制", "D. 拥塞控制"],
+    correct_answer: "A",
+    explanation: "e",
+    related_entities: ["TCP"],
+  };
+  const q2: QuizQuestionDict = {
+    question: "SYN 报文在握手中的作用是？",
+    type: "single_choice",
+    difficulty: "medium",
+    source_chunk_index: 0,
+    options: ["A. 同步序号", "B. 释放连接", "C. 流量控制", "D. 校验数据"],
+    correct_answer: "A",
+    explanation: "e",
+    related_entities: ["SYN"],
+  };
+  const q3: QuizQuestionDict = {
+    question: "UDP 的传输层特点是什么？",
+    type: "single_choice",
+    difficulty: "medium",
+    source_chunk_index: 0,
+    options: ["A. 无连接", "B. 可靠传输", "C. 面向字节流", "D. 拥塞退避"],
+    correct_answer: "A",
+    explanation: "e",
+    related_entities: ["UDP"],
+  };
+
+  it("dedupes paraphrase repeats across batches and checkpoints cumulatively", async () => {
+    const prompts: string[] = [];
+    let call = 0;
+    const svc = serviceWith(async (args) => {
+      prompts.push(args.prompt);
+      call += 1;
+      if (call === 1) return [structuredClone(q1), structuredClone(q2)];
+      return [structuredClone(q1), structuredClone(q3)]; // batch2: q1 换皮重复 + q3 新题
+    });
+    const checkpoints: number[] = [];
+    const out = await svc.generateQuestions({
+      chunks: [chunk],
+      totalCount: 3,
+      typeDistribution: { single_choice: 3 },
+      difficulty: "medium",
+      uid: 7,
+      checkpoint: async (accepted) => {
+        checkpoints.push(accepted.length);
+      },
+    });
+    expect(out).toHaveLength(3);
+    // 第二批 prompt 注入了已生成题目负面清单
+    expect(prompts[1]).toContain("已生成的题目");
+    expect(prompts[1]).toContain("TCP 三次握手用于建立什么？");
+    // checkpoint 每批累计调用：第一批 2 题，第二批 3 题
+    expect(checkpoints).toEqual([2, 3]);
   });
 });

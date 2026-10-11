@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"gorm.io/gorm"
@@ -29,20 +30,20 @@ func boolPtr(v bool) *bool { return &v }
 // The rich fields are optional; when omitted the legacy derivation applies
 // (options → single_choice, else short_answer; difficulty medium).
 type AgentQuestion struct {
-	Question      string          `json:"question"`
-	QuestionType  string          `json:"question_type,omitempty"`
-	Difficulty    string          `json:"difficulty,omitempty"`
-	Options       []string        `json:"options,omitempty"`
-	Answer        string          `json:"answer,omitempty"`
-	CorrectAnswer json.RawMessage `json:"correct_answer,omitempty"`
-	Explanation   string          `json:"explanation"`
-	Keywords      []string        `json:"keywords,omitempty"`
-	BVID          string          `json:"bvid,omitempty"`
-	ChunkID       string          `json:"chunk_id,omitempty"`
-	SourceSegment string          `json:"source_segment,omitempty"`
-	AnswerTemplate string         `json:"answer_template,omitempty"`
-	ScoringRubric json.RawMessage `json:"scoring_rubric,omitempty"`
-	ModelAnswer   string          `json:"model_answer,omitempty"`
+	Question       string          `json:"question"`
+	QuestionType   string          `json:"question_type,omitempty"`
+	Difficulty     string          `json:"difficulty,omitempty"`
+	Options        []string        `json:"options,omitempty"`
+	Answer         string          `json:"answer,omitempty"`
+	CorrectAnswer  json.RawMessage `json:"correct_answer,omitempty"`
+	Explanation    string          `json:"explanation"`
+	Keywords       []string        `json:"keywords,omitempty"`
+	BVID           string          `json:"bvid,omitempty"`
+	ChunkID        string          `json:"chunk_id,omitempty"`
+	SourceSegment  string          `json:"source_segment,omitempty"`
+	AnswerTemplate string          `json:"answer_template,omitempty"`
+	ScoringRubric  json.RawMessage `json:"scoring_rubric,omitempty"`
+	ModelAnswer    string          `json:"model_answer,omitempty"`
 }
 
 // AgentVerdict is one per-question verdict from the quiz agent's grading.
@@ -261,7 +262,6 @@ func insertQuestionMetadata(db *gorm.DB, quizUUID string, q AgentQuestion, quest
 	return nil
 }
 
-
 // buildQuestionDoc mirrors app/repository/mongo_quiz_repository.insert_questions:
 // list fields are stored as JSON strings; correct_answer keeps a bare string
 // as-is.
@@ -323,16 +323,85 @@ func buildQuestionDoc(quizUUID string, uid int64, q AgentQuestion, now time.Time
 	}
 }
 
+// CheckpointQuestions incrementally persists a batch of validated questions
+// for a quiz_set that is still in the "generating" state (the generation
+// checkpoint). Writes BOTH stores exactly like FinalizeQuizSet's write half:
+// Mongo upsert by (quiz_uuid, question_text), MySQL metadata upsert.
+// Idempotent — re-checkpointing the same texts replaces the same rows. The
+// terminal status is NOT touched; FinalizeQuizSet closes the flow (and
+// reuses these uuids).
+func CheckpointQuestions(ctx context.Context, db *gorm.DB, mdb *mongo.Database, quizUUID string, uid int64, questions []AgentQuestion) error {
+	now := time.Now().UTC()
+	existingUUIDs := mapQuestionUUIDsByText(ctx, mdb, quizUUID)
+	questionUUIDs := make([]string, len(questions))
+	for i := range questionUUIDs {
+		if id, ok := existingUUIDs[questions[i].Question]; ok && id != "" {
+			questionUUIDs[i] = id
+		} else {
+			questionUUIDs[i] = uuid.NewString()
+		}
+	}
+	if err := SaveAgentQuestions(ctx, mdb, quizUUID, uid, questions, questionUUIDs); err != nil {
+		return err
+	}
+	for i, q := range questions {
+		if err := insertQuestionMetadata(db, quizUUID, q, questionUUIDs[i], now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mapQuestionUUIDsByText reads the existing {question_text → question_uuid}
+// mapping for a quiz from Mongo. Empty map when Mongo is disabled or the
+// quiz has no checkpointed questions yet.
+func mapQuestionUUIDsByText(ctx context.Context, mdb *mongo.Database, quizUUID string) map[string]string {
+	out := map[string]string{}
+	if mdb == nil {
+		return out
+	}
+	cursor, err := mdb.Collection(quizQuestionsCollection).Find(ctx,
+		bson.M{"quiz_uuid": quizUUID, "is_valid": true},
+		options.Find().SetProjection(bson.D{{Key: "question_text", Value: 1}, {Key: "question_uuid", Value: 1}, {Key: "_id", Value: 0}}).SetLimit(500),
+	)
+	if err != nil {
+		return out
+	}
+	var docs []struct {
+		QuestionText string `bson:"question_text"`
+		QuestionUUID string `bson:"question_uuid"`
+	}
+	if err := cursor.All(ctx, &docs); err != nil {
+		return out
+	}
+	for _, d := range docs {
+		if d.QuestionText != "" && d.QuestionUUID != "" {
+			out[d.QuestionText] = d.QuestionUUID
+		}
+	}
+	return out
+}
 
 // FinalizeQuizSet persists the generated questions and flips the row to a
 // terminal status (done / partial), mirroring quiz_from_summary finalization.
+// With checkpointing enabled the generation flow may have already persisted
+// questions incrementally; uuids of texts that already exist are REUSED here so
+// the MySQL metadata upsert (keyed by question_uuid) updates the checkpoint
+// rows instead of duplicating them.
 func FinalizeQuizSet(ctx context.Context, db *gorm.DB, mdb *mongo.Database, quizUUID string, uid int64, status string, questions []AgentQuestion, qualityMetrics json.RawMessage, bvidCount int) error {
 	now := time.Now().UTC()
 	// uuid 由本函数统一生成:Mongo 文档与 MySQL 元数据行必须共用同一个
-	// question_uuid(错题本/导出按它 JOIN)
+	// question_uuid(错题本/导出按它 JOIN)。checkpoint 已落库的题干复用其
+	// 既有 uuid(Mongo 按 (quiz_uuid, question_text) upsert,MySQL 按
+	// question_uuid upsert —— 文本相同即同一条题)。
+	existing := mapQuestionUUIDsByText(ctx, mdb, quizUUID)
 	questionUUIDs := make([]string, len(questions))
 	for i := range questionUUIDs {
-		questionUUIDs[i] = uuid.NewString()
+		if id, ok := existing[questions[i].Question]; ok && id != "" {
+			questionUUIDs[i] = id
+		} else {
+			questionUUIDs[i] = uuid.NewString()
+		}
 	}
 	if len(questions) > 0 {
 		if err := SaveAgentQuestions(ctx, mdb, quizUUID, uid, questions, questionUUIDs); err != nil {
@@ -378,7 +447,6 @@ func FailQuizSet(ctx context.Context, db *gorm.DB, quizUUID string, uid int64, m
 	}
 	return nil
 }
-
 
 // CreateAgentGrading inserts a quiz_submissions row for an agent-produced
 // grading (conversational grading has no per-answer rows — quiz_answers stays

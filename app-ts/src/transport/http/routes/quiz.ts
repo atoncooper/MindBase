@@ -1,11 +1,33 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
 import { AppQuizError } from "../../../services/app-quiz-client.js";
-import { QuizGenerationError, type QuizGenerationService } from "../../../services/quiz-generation.js";
+import {
+  QuizGenerationError,
+  QUIZ_STYLES,
+  MAX_QUIZ_FILES,
+  MAX_QUIZ_FILE_BYTES,
+  type QuizGenerationService,
+  type GenerationPersonalization,
+  type QuizStyle,
+  type QuizFileInput,
+} from "../../../services/quiz-generation.js";
 import type { QuizGradingService } from "../../../services/quiz-grading.js";
 import { SessionSummaryError } from "../../../services/session-summary.js";
 
 const FOLDER_IDS_PATTERN = /^\d+(,\d+)*$/;
+
+/** Parse the personalization triple (style / skill_ids / instructions) shared by all generate endpoints. */
+function parsePersonalization(raw: { style?: unknown; skill_ids?: unknown; instructions?: unknown }): GenerationPersonalization | undefined {
+  const style = typeof raw.style === "string" && (QUIZ_STYLES as string[]).includes(raw.style) ? (raw.style as QuizStyle) : undefined;
+  const skillIds = Array.isArray(raw.skill_ids)
+    ? raw.skill_ids.map((s) => String(s).trim()).filter(Boolean).slice(0, 5)
+    : typeof raw.skill_ids === "string" && raw.skill_ids.trim()
+      ? raw.skill_ids.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 5)
+      : undefined;
+  const instructions = typeof raw.instructions === "string" && raw.instructions.trim() ? raw.instructions : undefined;
+  if (!style && !skillIds?.length && !instructions) return undefined;
+  return { style, skillIds, instructions };
+}
 
 function parseFolderIds(raw: string | undefined): number[] {
   const value = (raw ?? "").trim();
@@ -39,6 +61,9 @@ export function registerQuizRoutes(
       question_count?: string;
       difficulty?: string;
       title?: string;
+      style?: string;
+      skill_ids?: string;
+      instructions?: string;
     };
     const pages = Array.isArray(req.body)
       ? (req.body as Array<{ bvid: string; cid?: number; page_index?: number; page_title?: string }>)
@@ -50,6 +75,7 @@ export function registerQuizRoutes(
         questionCount: Number(query.question_count ?? 10),
         difficulty: query.difficulty ?? "medium",
         title: query.title,
+        personalization: parsePersonalization(query),
       });
     } catch (err) {
       if (err instanceof QuizGenerationError) {
@@ -75,6 +101,9 @@ export function registerQuizRoutes(
       question_count?: number;
       difficulty?: string;
       title?: string;
+      style?: string;
+      skill_ids?: unknown;
+      instructions?: string;
     };
     const mode = body.mode === "wrong_answers" ? "wrong_answers" : "free";
     const count = Number(body.question_count ?? 10);
@@ -88,6 +117,7 @@ export function registerQuizRoutes(
         questionCount: count,
         difficulty: body.difficulty ?? "medium",
         title: body.title,
+        personalization: parsePersonalization(body),
       });
     } catch (err) {
       if (err instanceof QuizGenerationError) {
@@ -139,6 +169,9 @@ export function registerQuizRoutes(
       chat_session_id?: string;
       question_count?: number;
       difficulty?: string;
+      style?: string;
+      skill_ids?: unknown;
+      instructions?: string;
     };
     const chatSessionId = typeof body.chat_session_id === "string" ? body.chat_session_id.trim() : "";
     if (!chatSessionId) {
@@ -150,13 +183,68 @@ export function registerQuizRoutes(
     }
     const difficulty = typeof body.difficulty === "string" && body.difficulty ? body.difficulty : "medium";
     try {
-      return await deps.quizGen.startFromSummary(uid, chatSessionId, count, difficulty);
+      return await deps.quizGen.startFromSummary(uid, chatSessionId, count, difficulty, parsePersonalization(body));
     } catch (err) {
       if (err instanceof SessionSummaryError) {
         return reply.status(err.status).send({ detail: err.message });
       }
       if (err instanceof AppQuizError) {
         return reply.status(502).send({ detail: err.message });
+      }
+      throw err;
+    }
+  });
+
+  // 上传出题（multipart）：错题图片强化（wrong_images）/ 文件模仿出题（mimic）。
+  // 图片走 OCR 视觉转写、文本类文档走 parseDocument → LLM 结构化提取 → 变式出题。
+  // 返回 generating quiz_uuid，前端轮询 GET /quiz/{uuid}（app-quiz）。
+  app.post("/quiz/generate-from-images", async (req: FastifyRequest, reply: FastifyReply) => {
+    const uid = getRequestContext()?.uid;
+    if (uid === undefined) {
+      return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });
+    }
+    const files: QuizFileInput[] = [];
+    const fields: Record<string, string> = {};
+    try {
+      for await (const part of req.parts({
+        limits: { fileSize: MAX_QUIZ_FILE_BYTES, files: MAX_QUIZ_FILES + 1 },
+      })) {
+        if (part.type === "file") {
+          if (files.length >= MAX_QUIZ_FILES) {
+            return reply.status(400).send({ detail: "最多上传 " + MAX_QUIZ_FILES + " 个文件" });
+          }
+          const buffer = await part.toBuffer();
+          files.push({ filename: part.filename || "unnamed", buffer, mime: part.mimetype || "application/octet-stream" });
+        } else if (part.fieldname) {
+          fields[part.fieldname] = String(part.value ?? "");
+        }
+      }
+    } catch {
+      return reply.status(413).send({
+        detail: "文件读取失败（单个文件上限 " + Math.floor(MAX_QUIZ_FILE_BYTES / 1024 / 1024) + "MB）",
+      });
+    }
+    const mode = fields.mode === "mimic" ? "mimic" : "wrong_images";
+    const count = Number(fields.question_count ?? 10);
+    if (!Number.isInteger(count) || count < 1 || count > 20) {
+      return reply.status(400).send({ detail: "question_count 须在 1-20 之间" });
+    }
+    try {
+      return await deps.quizGen.startFromFiles(uid, {
+        mode,
+        files,
+        topic: fields.topic || undefined,
+        questionCount: count,
+        difficulty: fields.difficulty || "medium",
+        title: fields.title || undefined,
+        personalization: parsePersonalization(fields),
+      });
+    } catch (err) {
+      if (err instanceof QuizGenerationError) {
+        return reply.status(err.status).send({ detail: err.message });
+      }
+      if (err instanceof AppQuizError) {
+        return reply.status(err.status ?? 502).send({ detail: err.message });
       }
       throw err;
     }

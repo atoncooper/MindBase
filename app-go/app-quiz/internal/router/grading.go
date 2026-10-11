@@ -14,8 +14,8 @@ import (
 )
 
 type gradingPayloadReq struct {
-	UID      FlexInt64  `json:"uid"`
-	QuizUUID string `json:"quiz_uuid"`
+	UID      FlexInt64 `json:"uid"`
+	QuizUUID string    `json:"quiz_uuid"`
 }
 
 func gradingPayloadHandler(svc *service.Store) gin.HandlerFunc {
@@ -61,7 +61,7 @@ type submissionAnswerReq struct {
 }
 
 type submissionReq struct {
-	UID                FlexInt64                 `json:"uid"`
+	UID                FlexInt64             `json:"uid"`
 	QuizUUID           string                `json:"quiz_uuid"`
 	TotalQuestionCount int                   `json:"total_question_count"`
 	PassingScore       *int                  `json:"passing_score"`
