@@ -254,7 +254,7 @@ describe("task-quiz routes", () => {
     expect(types).toContain("chunk");
     expect(types[types.length - 1]).toBe("done");
     const submit = registered.find((r) => (r as { task_type?: string }).task_type === "http");
-    expect(submit).toMatchObject({ uid: 7, async: true });
+    expect(submit).toMatchObject({ uid: "7", async: true });
 
     const noAuth = await app!.inject({ method: "POST", url: "/task-quiz/chat", payload: { message: "hi" } });
     expect(noAuth.statusCode).toBe(401);

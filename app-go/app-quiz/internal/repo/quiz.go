@@ -266,24 +266,27 @@ func ClearShareToken(db *gorm.DB, quizUUID string, uid int64) (bool, *string, er
 	return true, prev, nil
 }
 
-// MarkGeneratingTimedOut flips the user's stuck 'generating' quizzes
-// (older than cutoff) to failed. Returns the number of flipped rows.
-func MarkGeneratingTimedOut(db *gorm.DB, uid int64, cutoff time.Time) (int64, error) {
-	res := db.Exec(
-		"UPDATE quiz_sets SET status = 'failed', error_message = 'generation timeout' "+
-			"WHERE uid = ? AND status = 'generating' AND created_at < ?",
+// ListGeneratingTimedOut returns the user's stuck 'generating' quiz uuids
+// (created before cutoff). The caller decides the terminal status per quiz by
+// counting checkpointed questions (partial when any survived, failed when not).
+func ListGeneratingTimedOut(db *gorm.DB, uid int64, cutoff time.Time) ([]string, error) {
+	var uuids []string
+	err := db.Raw(
+		"SELECT quiz_uuid FROM quiz_sets WHERE uid = ? AND status = 'generating' AND created_at < ?",
 		uid, cutoff,
-	)
-	return res.RowsAffected, res.Error
+	).Scan(&uuids).Error
+	return uuids, err
 }
 
-// MarkQuizTimedOut flips a single quiz from generating to failed when it is
-// past the generation timeout (port of quiz_lifecycle.refresh_on_read).
-func MarkQuizTimedOut(db *gorm.DB, quizUUID string, uid int64, cutoff time.Time) error {
+// MarkQuizTimedOutStatus flips a single stuck generating quiz to the given
+// terminal status (partial when checkpoints survived, failed otherwise).
+// Conditional on status='generating' so a concurrently-finalizing quiz never
+// gets clobbered.
+func MarkQuizTimedOutStatus(db *gorm.DB, quizUUID string, uid int64, cutoff time.Time, status, message string) error {
 	return db.Exec(
-		"UPDATE quiz_sets SET status = 'failed', error_message = 'generation timeout' "+
+		"UPDATE quiz_sets SET status = ?, error_message = ?, updated_at = ? "+
 			"WHERE quiz_uuid = ? AND uid = ? AND status = 'generating' AND created_at < ?",
-		quizUUID, uid, cutoff,
+		status, message, time.Now().UTC(), quizUUID, uid, cutoff,
 	).Error
 }
 

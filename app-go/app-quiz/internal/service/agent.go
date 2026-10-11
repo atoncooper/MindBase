@@ -16,20 +16,20 @@ import (
 
 // AgentQuestion is one question from the quiz agent or the AI generation flow.
 type AgentQuestion struct {
-	Question      string          `json:"question"`
-	QuestionType  string          `json:"question_type,omitempty"`
-	Difficulty    string          `json:"difficulty,omitempty"`
-	Options       []string        `json:"options,omitempty"`
-	Answer        string          `json:"answer,omitempty"`
-	CorrectAnswer json.RawMessage `json:"correct_answer,omitempty"`
-	Explanation   string          `json:"explanation"`
-	Keywords      []string        `json:"keywords,omitempty"`
-	BVID          string          `json:"bvid,omitempty"`
-	ChunkID       string          `json:"chunk_id,omitempty"`
-	SourceSegment string          `json:"source_segment,omitempty"`
-	AnswerTemplate string         `json:"answer_template,omitempty"`
-	ScoringRubric json.RawMessage `json:"scoring_rubric,omitempty"`
-	ModelAnswer   string          `json:"model_answer,omitempty"`
+	Question       string          `json:"question"`
+	QuestionType   string          `json:"question_type,omitempty"`
+	Difficulty     string          `json:"difficulty,omitempty"`
+	Options        []string        `json:"options,omitempty"`
+	Answer         string          `json:"answer,omitempty"`
+	CorrectAnswer  json.RawMessage `json:"correct_answer,omitempty"`
+	Explanation    string          `json:"explanation"`
+	Keywords       []string        `json:"keywords,omitempty"`
+	BVID           string          `json:"bvid,omitempty"`
+	ChunkID        string          `json:"chunk_id,omitempty"`
+	SourceSegment  string          `json:"source_segment,omitempty"`
+	AnswerTemplate string          `json:"answer_template,omitempty"`
+	ScoringRubric  json.RawMessage `json:"scoring_rubric,omitempty"`
+	ModelAnswer    string          `json:"model_answer,omitempty"`
 }
 
 // AgentVerdict is one per-question grading verdict.
@@ -151,8 +151,10 @@ func (s *Store) FinalizeQuizSet(ctx context.Context, uid int64, quizUUID, status
 	if len(questions) == 0 {
 		return nil, fmt.Errorf("%w: questions 不能为空", ErrInvalidInput)
 	}
-	if len(questions) > 20 {
-		return nil, fmt.Errorf("%w: questions 数量须在 1-20 之间", ErrInvalidInput)
+	// 知识库模式允许 question_count 至 50,checkpoint+finalize 一次性携带全部
+	// 累计题目 —— 上限须覆盖生成上限(20 是 agent 会话路径的限制,不适用于此)
+	if len(questions) > 200 {
+		return nil, fmt.Errorf("%w: questions 数量须在 1-200 之间", ErrInvalidInput)
 	}
 	if err := validateQuestions(questions); err != nil {
 		return nil, err
@@ -164,6 +166,43 @@ func (s *Store) FinalizeQuizSet(ctx context.Context, uid int64, quizUUID, status
 		return nil, err
 	}
 	return map[string]interface{}{"quiz_uuid": quizUUID, "status": status, "question_count": len(questions)}, nil
+}
+
+// AppendQuestions checkpoint 增量落库：仅接受 generating 状态的题卷行
+// （终态/删除中拒绝），题目校验与 Finalize 一致。幂等 —— 相同题干重复
+// checkpoint 只会替换同一行（Mongo 按 (quiz_uuid, question_text) upsert，
+// MySQL 按 question_uuid upsert）。供 app-ts 的分批生成流程逐批持久化，
+// 进程中断后超时清扫按已存题数判 partial 而非 failed。
+func (s *Store) AppendQuestions(ctx context.Context, uid int64, quizUUID string, questions []AgentQuestion) (map[string]interface{}, error) {
+	if uid <= 0 {
+		return nil, fmt.Errorf("%w: uid 必填", ErrInvalidInput)
+	}
+	if strings.TrimSpace(quizUUID) == "" {
+		return nil, fmt.Errorf("%w: quiz_uuid 必填", ErrInvalidInput)
+	}
+	if len(questions) == 0 {
+		return nil, fmt.Errorf("%w: questions 不能为空", ErrInvalidInput)
+	}
+	if len(questions) > 50 {
+		return nil, fmt.Errorf("%w: 单次 checkpoint questions 数量须在 1-50 之间", ErrInvalidInput)
+	}
+	if err := validateQuestions(questions); err != nil {
+		return nil, err
+	}
+	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	if err != nil {
+		return nil, err
+	}
+	if qs == nil {
+		return nil, fmt.Errorf("%w: quiz set 不存在", ErrInvalidInput)
+	}
+	if deref(qs.Status) != "generating" {
+		return nil, apiErr(409, "题卷不在生成中，无法 checkpoint")
+	}
+	if err := repo.CheckpointQuestions(ctx, s.DB, s.Mongo, quizUUID, uid, toRepoQuestions(questions)); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"stored": len(questions)}, nil
 }
 
 // FailQuizSet marks a generating quiz set failed with a bounded message.
@@ -246,20 +285,20 @@ func toRepoQuestions(questions []AgentQuestion) []repo.AgentQuestion {
 	out := make([]repo.AgentQuestion, len(questions))
 	for i, q := range questions {
 		out[i] = repo.AgentQuestion{
-			Question:      q.Question,
-			QuestionType:  q.QuestionType,
-			Difficulty:    q.Difficulty,
-			Options:       q.Options,
-			Answer:        q.Answer,
-			CorrectAnswer: q.CorrectAnswer,
-			Explanation:   q.Explanation,
-			Keywords:      q.Keywords,
-			BVID:          q.BVID,
-			ChunkID:       q.ChunkID,
-			SourceSegment: q.SourceSegment,
+			Question:       q.Question,
+			QuestionType:   q.QuestionType,
+			Difficulty:     q.Difficulty,
+			Options:        q.Options,
+			Answer:         q.Answer,
+			CorrectAnswer:  q.CorrectAnswer,
+			Explanation:    q.Explanation,
+			Keywords:       q.Keywords,
+			BVID:           q.BVID,
+			ChunkID:        q.ChunkID,
+			SourceSegment:  q.SourceSegment,
 			AnswerTemplate: q.AnswerTemplate,
-			ScoringRubric: q.ScoringRubric,
-			ModelAnswer:   q.ModelAnswer,
+			ScoringRubric:  q.ScoringRubric,
+			ModelAnswer:    q.ModelAnswer,
 		}
 	}
 	return out

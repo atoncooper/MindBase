@@ -423,12 +423,17 @@ export async function bootstrap() {
     : undefined;
   const sessionSummary = new SessionSummaryService(sessions, messages, summaries, prompts);
   // Quiz AI orchestration: app-ts generates, app-quiz stores (internal key-auth route).
+  // skills + ocr power 个性化出题（技能注入）与错题图片/文件出题（视觉转写）。
   const quizGen = new QuizGenerationService({
     summaries: sessionSummary,
     appQuiz: appQuizClient,
     rag,
     resolveFolderScope,
     prompts,
+    skills: skillManager
+      ? { forcedSection: (uid, ids) => skillManager!.forcedSection(uid, ids) }
+      : undefined,
+    ocr,
   });
   const quizGrade = new QuizGradingService({ appQuiz: appQuizClient });
   // 2.85 Blindspot map (AI attribution): scope from app-bili, graph via

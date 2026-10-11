@@ -891,6 +891,25 @@ routes:
         timeout: 5000
         status_code: 401
 
+  # /quiz/generate-from-images -> app-ts（错题图片/文件上传出题；multipart，
+  # OCR 视觉转写 + 结构化提取后走 AI 出题管道。priority 110 压过 quiz_user 通配）。
+  - id: quiz_ai_images
+    uri: /quiz/generate-from-images
+    methods: [POST]
+    priority: 110
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 30000
+        status_code: 401
+
   # /quiz/submit -> app-ts（批改 = app-ts LLM 批改 + app-quiz 落库，2026-10-06 切流；
   # 优先级 100 压过 quiz_user 的通配）。
   - id: quiz_ai

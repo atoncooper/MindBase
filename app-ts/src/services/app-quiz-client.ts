@@ -180,6 +180,12 @@ export class AppQuizClient extends InternalServiceClient {
     });
   }
 
+  /** 分批生成 checkpoint：把当前累计题目增量 upsert（仅 generating 行；幂等）。 */
+  async appendQuestions(uid: string, quizUuid: string, questions: AgentQuestionPayload[]): Promise<void> {
+    if (questions.length === 0) return;
+    await this.post("/sets/" + encodeURIComponent(quizUuid) + "/questions/append", uid, { uid, questions });
+  }
+
   /** Insert the generating quiz_task business row (duplicate task_id = idempotent OK). */
   async createTaskQuizRow(
     uid: string,

@@ -14,7 +14,7 @@ import (
 
 type quotaReq struct {
 	UID  FlexInt64 `json:"uid"`
-	Kind string   `json:"kind"`
+	Kind string    `json:"kind"`
 }
 
 func validQuotaKind(kind string) bool {

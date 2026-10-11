@@ -52,7 +52,10 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
     }, [quizUuid]);
 
     useEffect(() => {
-        if (open) void load();
+        if (!open) return;
+        // defer: load() sets state synchronously (react-hooks/set-state-in-effect)
+        const t = setTimeout(() => void load(), 0);
+        return () => clearTimeout(t);
     }, [open, load]);
 
     // Escape 关闭

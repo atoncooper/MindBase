@@ -95,7 +95,7 @@ describe("doc-parser", () => {
     expect(text).toContain("# RAG & 检索");
     expect(text).toContain("正文段落，讲述向量检索。");
     expect(text).toContain("方法 | 召回");
-  });
+  }, 30000); // docx(mammoth) 冷加载在全量套件负载下会超 5s 默认超时
 
   it("html: headings/lists/tables survive as structure", async () => {
     const { text } = await parseDocument(

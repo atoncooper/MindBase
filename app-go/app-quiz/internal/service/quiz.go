@@ -23,8 +23,10 @@ import (
 )
 
 // GenerationTimeoutMinutes: a quiz still in "generating" after this many
-// minutes is considered stuck (parity with quiz_lifecycle).
-const GenerationTimeoutMinutes = 10
+// minutes is considered stuck (parity with quiz_lifecycle). 大题量（知识库
+// 模式至 50 题）分批 LLM 生成可接近 10 分钟，放宽到 15；即便超时，checkpoint
+// 已增量落库，清扫按已存题数判 partial 而非 failed。
+const GenerationTimeoutMinutes = 15
 
 // Service errors carry an HTTP status + detail (parity with the Python
 // HTTPException contract).
@@ -110,8 +112,17 @@ func parseJSONField(raw json.RawMessage) interface{} {
 // unavailability skips the empty-check (parity with quiz_lifecycle).
 func (s *Store) refreshStaleQuizStates(ctx context.Context, uid int64) {
 	cutoff := s.Clock().Add(-GenerationTimeoutMinutes * time.Minute)
-	if _, err := repo.MarkGeneratingTimedOut(s.DB, uid, cutoff); err != nil {
+	stuckUUIDs, err := repo.ListGeneratingTimedOut(s.DB, uid, cutoff)
+	if err != nil {
 		slog.Warn("[QUIZ_LIFECYCLE] timeout sweep failed", "uid", uid, "err", err)
+		return
+	}
+	for _, qid := range stuckUUIDs {
+		// checkpoint 生效：已存题数 > 0 → partial（题目可练），否则 failed
+		status, message := statusForTimedGeneration(repo.CountQuestions(ctx, s.Mongo, qid))
+		if err := repo.MarkQuizTimedOutStatus(s.DB, qid, uid, cutoff, status, message); err != nil {
+			slog.Warn("[QUIZ_LIFECYCLE] timeout mark failed", "quiz_uuid", qid, "err", err)
+		}
 	}
 	uuids, err := repo.ListDoneQuizUUIDs(s.DB, uid)
 	if err != nil {
@@ -128,13 +139,26 @@ func (s *Store) refreshStaleQuizStates(ctx context.Context, uid int64) {
 	}
 }
 
-// refreshOnRead flips a single generating quiz past the timeout to failed
-// (parity with quiz_lifecycle.refresh_on_read).
+// refreshOnRead flips a single generating quiz past the timeout to its
+// terminal state (parity with quiz_lifecycle.refresh_on_read; checkpoint-aware
+// —— 已有增量落库题目时判 partial 而非 failed)。UPDATE 对未超时行是 no-op。
 func (s *Store) refreshOnRead(quizUUID string, uid int64) {
 	cutoff := s.Clock().Add(-GenerationTimeoutMinutes * time.Minute)
-	if err := repo.MarkQuizTimedOut(s.DB, quizUUID, uid, cutoff); err != nil {
+	count := repo.CountQuestions(context.Background(), s.Mongo, quizUUID)
+	status, message := statusForTimedGeneration(count)
+	if err := repo.MarkQuizTimedOutStatus(s.DB, quizUUID, uid, cutoff, status, message); err != nil {
 		slog.Warn("[QUIZ_LIFECYCLE] single-quiz timeout failed", "quiz_uuid", quizUUID, "err", err)
 	}
+}
+
+// statusForTimedGeneration decides the terminal state of a stuck generating
+// quiz by its checkpointed question count: > 0 → partial（已生成题目可练），
+// else failed。count < 0 = Mongo 不可用（未知）→ failed（安全默认）。
+func statusForTimedGeneration(count int) (status, message string) {
+	if count > 0 {
+		return "partial", "生成超时中断，已保留已生成的部分题目"
+	}
+	return "failed", "生成超时"
 }
 
 // ── history ──────────────────────────────────────────────────────────

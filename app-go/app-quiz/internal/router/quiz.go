@@ -10,10 +10,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"app-quiz/internal/exampaper"
 	"app-quiz/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +41,7 @@ func registerQuiz(e *gin.Engine, svc *service.Store) {
 	g.GET("/history", history(svc))
 	g.GET("/wrong-answers", wrongAnswers(svc))
 	g.GET("/export", export(svc))
+	g.GET("/:quiz_uuid/paper", exportPaper(svc))
 
 	g.POST("/:quiz_uuid/share", createShare(svc))
 	g.GET("/:quiz_uuid/share", shareStatus(svc))
@@ -135,6 +138,55 @@ func export(svc *service.Store) gin.HandlerFunc {
 			slog.Error("[QUIZ] export stream failed", "uid", uid, "err", err)
 		}
 	}
+}
+
+// exportPaper renders an owned quiz as an exam-style printable docx
+// (query: style=standard|gaokao|kaoyan, with_answers=true|false).
+func exportPaper(svc *service.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		style := c.Query("style")
+		if !exampaper.ValidStyle(style) {
+			apiErr(c, http.StatusBadRequest, "style 仅支持 standard / gaokao / kaoyan")
+			return
+		}
+		includeAnswers := c.Query("with_answers") == "true"
+		data, title, err := svc.BuildPaper(c.Request.Context(), uid, c.Param("quiz_uuid"), service.PaperOptions{
+			Style:          exampaper.NormalizeStyle(style),
+			IncludeAnswers: includeAnswers,
+		})
+		if err != nil {
+			respondAPIError(c, err)
+			return
+		}
+		// RFC 5987 filename* for the Chinese filename; ASCII fallback alongside.
+		name := "paper_" + time.Now().Format("20060102_150405") + ".docx"
+		if cn := sanitizeFilename(title); cn != "" {
+			name = "filename*=UTF-8''" + url.PathEscape("试卷_"+cn+".docx")
+		}
+		c.Header("Content-Disposition", "attachment; filename="+name)
+		c.Header("Cache-Control", "no-store")
+		c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", data)
+	}
+}
+
+// sanitizeFilename strips filesystem-unsafe characters and caps the length.
+func sanitizeFilename(title string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', '\n', '\r', '\t':
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(title))
+	runes := []rune(cleaned)
+	if len(runes) > 80 {
+		runes = runes[:80]
+	}
+	return string(runes)
 }
 
 type createShareBody struct {

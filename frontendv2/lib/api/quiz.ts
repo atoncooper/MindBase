@@ -9,6 +9,12 @@ export interface QuizGenerateParams {
     question_count?: number;
     difficulty?: string;
     title?: string;
+    /** 试卷风格（影响题型用语/设问习惯/评分口径） */
+    style?: "standard" | "gaokao" | "kaoyan";
+    /** 已安装技能 ID（SKILL.md 全文注入出题提示词） */
+    skill_ids?: string[];
+    /** 用户自定义出题提示词 */
+    instructions?: string;
 }
 
 export interface QuizGenerateResponse {
@@ -191,6 +197,9 @@ export const quizApi = {
         if (params.question_count) sp.set("question_count", String(params.question_count));
         if (params.difficulty) sp.set("difficulty", params.difficulty);
         if (params.title) sp.set("title", params.title);
+        if (params.style && params.style !== "standard") sp.set("style", params.style);
+        if (params.skill_ids?.length) sp.set("skill_ids", params.skill_ids.join(","));
+        if (params.instructions?.trim()) sp.set("instructions", params.instructions.trim());
         const body = params.pages?.length ? JSON.stringify(params.pages) : undefined;
         return request<QuizGenerateResponse>(`/quiz/generate?${sp.toString()}`, {
             method: "POST",
@@ -207,11 +216,23 @@ export const quizApi = {
         question_count: number;
         difficulty?: string;
         title?: string;
+        style?: "standard" | "gaokao" | "kaoyan";
+        skill_ids?: string[];
+        instructions?: string;
     }) =>
         request<{ quiz_uuid: string; status: string }>("/quiz/generate-ai", {
             method: "POST",
             headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
             body: JSON.stringify(params),
+        }),
+
+    // 上传出题(multipart):mode=wrong_images 错题图片强化 / mimic 文件模仿出题。
+    // 不手动设 Content-Type，浏览器自动带 multipart boundary。
+    generateFromImages: (form: FormData) =>
+        request<{ quiz_uuid: string; status: string }>("/quiz/generate-from-images", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: form,
         }),
 
     getQuiz: (quizUuid: string, includeAnswers = false) =>
@@ -270,6 +291,38 @@ export const quizApi = {
         });
         if (!res.ok) throw new Error("导出失败");
         return res.blob();
+    },
+
+    // 试卷导出(app-quiz 生成的 Word 文档,高考/考研卷面)
+    exportPaper: async (
+        quizUuid: string,
+        params: { style?: "standard" | "gaokao" | "kaoyan"; with_answers?: boolean } = {},
+    ) => {
+        const sp = new URLSearchParams();
+        if (params.style) sp.set("style", params.style);
+        if (params.with_answers) sp.set("with_answers", "true");
+        const res = await fetch(
+            `${API_BASE_URL}/quiz/${encodeURIComponent(quizUuid)}/paper?${sp.toString()}`,
+            { headers: getAuthHeaders() },
+        );
+        if (!res.ok) {
+            let detail = "";
+            try {
+                detail = ((await res.json()) as { detail?: string }).detail ?? "";
+            } catch {}
+            throw new Error(detail || "试卷导出失败");
+        }
+        return res.blob();
+    },
+
+    /** 触发浏览器下载一个 Blob(统一文件名处理) */
+    downloadBlob: (blob: Blob, filename: string) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
     },
 
     createShare: (quizUuid: string, expiresInDays?: number | null) =>

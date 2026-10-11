@@ -62,7 +62,7 @@ describe("VideoVectorizerService", () => {
     expect(added).toHaveLength(1);
     expect(deletedPages).toContain("BV1:0");
 
-    const status = await vectorizer.taskStatus(taskId!, 7);
+    const status = await vectorizer.taskStatus(taskId!, "7");
     expect(status.status).toBe("done");
     expect(status.steps.map((s) => s.name)).toContain("vec");
   });
@@ -92,8 +92,8 @@ describe("VideoVectorizerService", () => {
     const { vectorizer, tasks } = makeDeps({ content: CONTENT });
     const { task_id: taskId } = await vectorizer.createTask({ uid: "7", bvid: "BV1", cid: 11 });
     void tasks;
-    await expect(vectorizer.taskStatus(taskId!, 99)).rejects.toThrow(VecError);
-    await expect(vectorizer.taskStatus("missing", 7)).rejects.toMatchObject({ status: 404 });
+    await expect(vectorizer.taskStatus(taskId!, "99")).rejects.toThrow(VecError);
+    await expect(vectorizer.taskStatus("missing", "7")).rejects.toMatchObject({ status: 404 });
   });
 
   it("revector refuses without ASR content (400/404 contract)", async () => {

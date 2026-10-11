@@ -263,7 +263,8 @@ export function registerChatRoutes(
   //      search contract: global video search, per-bvid dedup, preview cap ----
   app.post("/chat/search", async (req: FastifyRequest, reply: FastifyReply) => {
     const uid = getRequestContext()?.uid;
-    if (typeof uid !== "number") {
+    // uid 已迁移为字符串（server.ts onRequest 钩子），只判存在性
+    if (uid === undefined) {
       return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });
     }
     if (!deps.rag) {
