@@ -22,6 +22,10 @@ type fakeMongo struct {
 	contents  map[string]string // note_uuid -> content_md
 	revisions map[string][]mongoRevision
 	failWrite bool
+	// now — 测试注入时钟。修订时间戳必须走它：快照闸门比较的是
+	// svc.now 与修订 CreatedAt，若用真实墙钟，固定假时钟的测试
+	// （TestSnapshotPolicy）会在假日期过后必然失败（时间炸弹）。
+	now func() time.Time
 }
 
 type mongoRevision struct {
@@ -35,6 +39,7 @@ func newFakeMongo() *fakeMongo {
 	return &fakeMongo{
 		contents:  map[string]string{},
 		revisions: map[string][]mongoRevision{},
+		now:       time.Now,
 	}
 }
 
@@ -68,7 +73,7 @@ func (f *fakeMongo) InsertRevision(_ context.Context, noteUUID, contentMD string
 	}
 	id := fmt.Sprintf("rev-%d", len(f.revisions[noteUUID])+1)
 	f.revisions[noteUUID] = append(f.revisions[noteUUID], mongoRevision{
-		note: noteUUID, md: contentMD, note_: revisionNote, at: time.Now().UTC(),
+		note: noteUUID, md: contentMD, note_: revisionNote, at: f.now().UTC(),
 	})
 	return id, nil
 }
@@ -121,6 +126,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("migrate: %v", err)
 	}
 	env := &testEnv{mongo: newFakeMongo(), clock: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	// fakeMongo 的修订时间戳走同一个注入时钟（否则真实墙钟 vs 固定假时钟
+	// 相减为负，快照闸门永远跳过）。
+	env.mongo.now = func() time.Time { return env.clock }
 	env.svc = NewNoteService(repo.NewNoteRepo(), env.mongo)
 	env.svc.now = func() time.Time { return env.clock }
 	env.svc.repo.Now = func() time.Time { return env.clock }
