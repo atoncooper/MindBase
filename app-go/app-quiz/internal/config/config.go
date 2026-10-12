@@ -17,12 +17,12 @@ import (
 )
 
 type Config struct {
-	App      AppConfig    `yaml:"app"`
-	Server   ServerConfig `yaml:"server"`
-	Timezone string       `yaml:"timezone"`
-	RDBMS    RDBMSConfig  `yaml:"rdbms"`
-	Mongo    MongoConfig  `yaml:"mongo"`
-	Redis    RedisConfig  `yaml:"redis"`
+	App       AppConfig       `yaml:"app"`
+	Server    ServerConfig    `yaml:"server"`
+	Timezone  string          `yaml:"timezone"`
+	RDBMS     RDBMSConfig     `yaml:"rdbms"`
+	Mongo     MongoConfig     `yaml:"mongo"`
+	Redis     RedisConfig     `yaml:"redis"`
 	Quota     QuotaConfig     `yaml:"quota"`
 	CORS      CORSConfig      `yaml:"cors"`
 	Log       LogConfig       `yaml:"log"`

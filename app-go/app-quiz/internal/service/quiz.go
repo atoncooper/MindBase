@@ -20,8 +20,8 @@ import (
 	"app-quiz/internal/repo"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"gorm.io/gorm"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // GenerationTimeoutBaseMinutes: a quiz still in "generating" past this base
@@ -462,12 +462,12 @@ func (s *Store) UpdateGenerationProgress(ctx context.Context, uid int64, quizUUI
 		return apiErr(400, "stage 必填")
 	}
 	repo.SaveGenerationProgress(ctx, s.Mongo, repo.GenerationProgress{
-		QuizUUID: quizUUID,
-		UID:      uid,
-		Stage:    stage,
-		Detail:   strings.TrimSpace(detail),
-		Stored:   stored,
-		Total:    total,
+		QuizUUID:  quizUUID,
+		UID:       uid,
+		Stage:     stage,
+		Detail:    strings.TrimSpace(detail),
+		Stored:    stored,
+		Total:     total,
 		UpdatedAt: s.Clock(),
 	})
 	return nil

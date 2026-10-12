@@ -16,11 +16,11 @@ import (
 const quizShareSecretsCollection = "quiz_share_secrets"
 
 type ShareSecretDoc struct {
-	ShareToken string    `bson:"share_token"`
-	QuizUUID   string    `bson:"quiz_uuid"`
-	UID        int64     `bson:"uid"`
-	PasswordHash string  `bson:"password_hash"`
-	CreatedAt  time.Time `bson:"created_at"`
+	ShareToken   string    `bson:"share_token"`
+	QuizUUID     string    `bson:"quiz_uuid"`
+	UID          int64     `bson:"uid"`
+	PasswordHash string    `bson:"password_hash"`
+	CreatedAt    time.Time `bson:"created_at"`
 }
 
 // SaveShareSecret upserts the password hash for a share token（重建分享时覆盖）。
@@ -30,11 +30,11 @@ func SaveShareSecret(ctx context.Context, db *mongo.Database, shareToken, quizUU
 	}
 	filter := bson.M{"share_token": shareToken}
 	update := bson.M{"$set": bson.M{
-		"share_token":    shareToken,
-		"quiz_uuid":      quizUUID,
-		"uid":            uid,
-		"password_hash":  passwordHash,
-		"created_at":     time.Now().UTC(),
+		"share_token":   shareToken,
+		"quiz_uuid":     quizUUID,
+		"uid":           uid,
+		"password_hash": passwordHash,
+		"created_at":    time.Now().UTC(),
 	}}
 	if _, err := db.Collection(quizShareSecretsCollection).UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
 		slog.Warn("[QUIZ_SHARE] save secret failed", "err", err)
