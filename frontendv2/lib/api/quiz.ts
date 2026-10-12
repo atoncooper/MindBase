@@ -21,6 +21,8 @@ export interface QuizGenerateResponse {
     quiz_uuid: string;
     question_count: number;
     estimated_cost_tokens: number;
+    /** 语义配卷摘要（auto 模式：题量/结构由 AI 依主题决定） */
+    spec?: { total: number; reason?: string };
 }
 
 export interface QuizQuestion {
@@ -32,6 +34,21 @@ export interface QuizQuestion {
     correct_answer?: string | string[];
     explanation?: string;
     keywords?: string[];
+}
+
+export interface QuizGenerationLogEntry {
+    stage: string;
+    detail: string;
+    at: string;
+}
+
+export interface QuizGenerationProgress {
+    stage: string;
+    detail: string;
+    stored: number;
+    total: number;
+    updated_at?: string;
+    log?: QuizGenerationLogEntry[];
 }
 
 export interface QuizSetData {
@@ -47,6 +64,8 @@ export interface QuizSetData {
     source_type?: string;
     source_pages?: Array<{ bvid: string; cid: number; page_index: number; page_title?: string }>;
     created_at: string;
+    /** 生成管线执行步骤（仅 generating 期由后端返回；终态为空） */
+    generation_progress?: QuizGenerationProgress | null;
     questions: QuizQuestion[];
 }
 
@@ -140,6 +159,8 @@ export interface QuizShareStatus {
     shared_at?: string | null;
     share_expires_at?: string | null;
     expired?: boolean;
+    /** 该分享是否设置了访问密码 */
+    has_password?: boolean;
 }
 
 export interface QuizShareRevokeResponse {
@@ -213,7 +234,9 @@ export const quizApi = {
     generateAI: (params: {
         mode: "free" | "wrong_answers";
         topic?: string;
-        question_count: number;
+        /** 省略 = 自动（后端默认 10 题） */
+        question_count?: number;
+        /** 省略 = 自动（后端默认 medium） */
         difficulty?: string;
         title?: string;
         style?: "standard" | "gaokao" | "kaoyan";
@@ -268,6 +291,13 @@ export const quizApi = {
     getHistory: (page = 1, pageSize = 10) =>
         request<QuizHistoryResponse>(`/quiz/history?page=${page}&page_size=${pageSize}`, {
             headers: getAuthHeaders(),
+        }),
+
+    renameQuiz: (quizUuid: string, title: string) =>
+        request<{ quiz_uuid: string; title: string }>(`/quiz/${quizUuid}`, {
+            method: "PATCH",
+            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({ title }),
         }),
 
     deleteQuiz: (quizUuid: string) =>
@@ -325,15 +355,14 @@ export const quizApi = {
         URL.revokeObjectURL(url);
     },
 
-    createShare: (quizUuid: string, expiresInDays?: number | null) =>
+    createShare: (quizUuid: string, expiresInDays?: number | null, password?: string) =>
         request<QuizShareResponse>(`/quiz/${quizUuid}/share`, {
             method: "POST",
-            headers: getAuthHeaders(),
-            body: JSON.stringify(
-                expiresInDays === undefined
-                    ? {}
-                    : { expires_in_days: expiresInDays ?? null }
-            ),
+            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...(expiresInDays === undefined ? {} : { expires_in_days: expiresInDays ?? null }),
+                ...(password && password.trim() ? { password: password.trim() } : {}),
+            }),
         }),
 
     getShareStatus: (quizUuid: string) =>
@@ -347,12 +376,18 @@ export const quizApi = {
             headers: getAuthHeaders(),
         }),
 
-    getSharedQuiz: async (shareToken: string) => {
+    getSharedQuiz: async (shareToken: string, password?: string) => {
         // 公开分享页的访客来自任意域名/IP（链接用 SHARE_DOMAIN 生成），必须
         // 同源相对路径：request() 的 API_BASE_URL 是构建期固化的部署地址，
         // 远程访客会打到自己的 localhost。X-Requested-With 让 nginx 分发。
+        // 带密码时走 POST（口令不进 URL/query，避免落访问日志）。
         const res = await fetch(`/quiz/shared/${encodeURIComponent(shareToken)}`, {
-            headers: { "X-Requested-With": "XMLHttpRequest" },
+            method: password ? "POST" : "GET",
+            headers: {
+                "X-Requested-With": "XMLHttpRequest",
+                ...(password ? { "Content-Type": "application/json" } : {}),
+            },
+            ...(password ? { body: JSON.stringify({ password }) } : {}),
         });
         if (!res.ok) {
             let detail = "";
@@ -360,7 +395,9 @@ export const quizApi = {
                 const parsed = JSON.parse(await res.text()) as { detail?: unknown };
                 if (typeof parsed.detail === "string") detail = parsed.detail;
             } catch {}
-            throw new Error(detail || "分享链接无效或已失效");
+            const err = new Error(detail || "分享链接无效或已失效") as Error & { status?: number };
+            err.status = res.status;
+            throw err;
         }
         const q = (await res.json()) as SharedQuizData;
         return {

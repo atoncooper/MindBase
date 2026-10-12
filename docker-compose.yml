@@ -343,19 +343,35 @@ services:
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
       # OCR (image documents) — vision model via the Higress gateway; the model
-      # name must be routed in the Higress console (dashscope qwen-vl-ocr)
+      # name must be routed in the Higress console (GLM-5.3-flash, vision-capable)
       - OCR__ENABLED=${OCR__ENABLED:-true}
-      - OCR__MODEL=${OCR__MODEL:-qwen-vl-ocr}
+      - OCR__MODEL=${OCR__MODEL:-z-ai/glm-5.3-flash}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # LLM 统一 GLM-5.3-flash（2026-10-12 qwen3-max 被上游 OpenRouter 下线 404，
+      # 出题全批次失败「有效题目数量为 0」）。镜像内 baked default.yaml 仍是旧值，
+      # 先用 env 覆盖；镜像重建包含新 default.yaml 后可移除这两行。
+      - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
+      - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
       # membership tier (weighted admission) via APISIX key-auth internal route
       - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
       # app-quiz storage writes for quiz AI orchestration (APISIX key-auth route)
       - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
-      # gRPC data faces (kg graph + chat folder scope; same app-kg service)
-      - KGGRPC__TARGET=app-kg:8013
-      - KGGRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
+      # gRPC data faces (kg graph + chat folder scope; same app-kg service).
+      # env 名必须是 KG_GRPC__（loader 按 kgGrpc → KG_GRPC 推导；旧写法 KGGRPC__
+      # 被静默忽略 → gRPC 回落 127.0.0.1 → KG 图存储 memory 降级、数据不持久化）
+      - KG_GRPC__TARGET=app-kg:8013
+      - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
+      # MCP 桥（note/quiz/board）：default.yaml 的 URL 指向 127.0.0.1，容器内必须
+      # 显式指向服务名；凭证走服务模式 X-Api-Key（= 各 MCP server 的
+      # *_SERVER__SERVICE_API_KEY，即 APISIX_CONSUMER_KEY）
+      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
+      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
+      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
+      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
       # milvus.address 的 env 名是 MILVUS__ADDRESS（MILVUS__URI 不是本服务
       # 的配置键,会被静默忽略回落 127.0.0.1——容器内即自身）;host:port
       # 不带 scheme（milvus-js SDK 约定）

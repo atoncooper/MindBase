@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -59,6 +60,58 @@ const (
 
 func pageBreak() string {
 	return para("", "<w:r><w:br w:type=\"page\"/></w:r>")
+}
+
+// ── 选择题选项自适应排版 ────────────────────────────────────────────
+// 短选项（去标签后最长 ≤ maxShortOptionChars 字）→ 2×2 矩阵（每行两个，
+// 中点制表位对齐）；长选项 → 4×1 竖排。与前端 A4 预览（exam-paper.ts）同一规则。
+const (
+	maxShortOptionChars = 10
+	// A4 内容宽 ≈ 8917 twips，中点制表位取一半
+	prTabsMid = "<w:tabs><w:tab w:val=\"left\" w:pos=\"4460\"/></w:tabs>"
+)
+
+var optionLabelRe = regexp.MustCompile(`^\s*[A-Za-z](?:[.．、\s]+)`)
+
+// maxOptionTextLen returns the longest option body length (runes, label stripped).
+func maxOptionTextLen(opts []string) int {
+	max := 0
+	for _, o := range opts {
+		n := len([]rune(optionLabelRe.ReplaceAllString(strings.TrimSpace(o), "")))
+		if n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// optionRuns renders one matrix row: left option + tab + right option.
+func optionRuns(left, right, props string) string {
+	rpr := "<w:rPr>" + props + "</w:rPr>"
+	return "<w:r>" + rpr + "<w:t xml:space=\"preserve\">" + xmlEsc.Replace(left) + "</w:t></w:r>" +
+		"<w:r>" + rpr + "<w:tab/></w:r>" +
+		"<w:r>" + rpr + "<w:t xml:space=\"preserve\">" + xmlEsc.Replace(right) + "</w:t></w:r>"
+}
+
+// writeOptions emits the option block with the adaptive layout.
+func writeOptions(b *strings.Builder, opts []string) {
+	props := fontProps("宋体", 21, false)
+	ppr := prJust + prSpacingLo + prRight2
+	if maxOptionTextLen(opts) <= maxShortOptionChars {
+		// 短选项 → 2×2 矩阵
+		for i := 0; i < len(opts); i += 2 {
+			if i+1 >= len(opts) {
+				b.WriteString(para(ppr, run(opts[i], props)))
+				continue
+			}
+			b.WriteString(para(ppr+prTabsMid, optionRuns(opts[i], opts[i+1], props)))
+		}
+		return
+	}
+	// 长选项 → 竖排
+	for _, opt := range opts {
+		b.WriteString(para(ppr, run(opt, props)))
+	}
 }
 
 // sectPr: A4 portrait, ~2.5cm margins.
@@ -163,9 +216,7 @@ func (p *Paper) DocumentXML() []byte {
 				stem = fmt.Sprintf("%d.（%d 分，多选）%s", q.Number, q.Score, q.Row.QuestionText)
 			}
 			b.WriteString(para(prJust+prSpacing+prIndent, run(stem, fontProps("宋体", 21, false))))
-			for _, opt := range q.Row.Options {
-				b.WriteString(para(prJust+prSpacingLo+prRight2, run(opt, fontProps("宋体", 21, false))))
-			}
+			writeOptions(&b, q.Row.Options)
 			// 主观题作答区（下划线空行）
 			switch q.Row.QuestionType {
 			case "short_answer":

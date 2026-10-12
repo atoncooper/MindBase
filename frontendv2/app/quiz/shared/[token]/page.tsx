@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { quizApi, type SharedQuizData, type SharedQuizQuestion } from "@/lib/api/quiz";
-import { AlertCircle, BookOpenCheck, ClipboardList, Loader2 } from "lucide-react";
+import { AlertCircle, BookOpenCheck, ClipboardList, Loader2, Lock, Unlock } from "lucide-react";
 
 const DIFF_LABEL: Record<string, string> = {
     easy: "简单",
@@ -40,37 +40,89 @@ export default function SharedQuizPage() {
     const [data, setData] = useState<SharedQuizData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // 密码门：带口令的分享返回 401 → 展示密码表单，POST 验证后进入
+    const [needPassword, setNeedPassword] = useState(false);
+    const [password, setPassword] = useState("");
+    const [pwBusy, setPwBusy] = useState(false);
 
-    useEffect(() => {
+    const load = async (pw?: string) => {
         if (!token) {
             setError("链接无效");
             setLoading(false);
             return;
         }
-        let cancelled = false;
-        void (async () => {
-            try {
-                const q = await quizApi.getSharedQuiz(token);
-                if (!cancelled) {
-                    setData(q);
-                    setLoading(false);
-                }
-            } catch (e) {
-                if (!cancelled) {
-                    setError(e instanceof Error ? e.message : "分享链接无效或已失效");
-                    setLoading(false);
-                }
+        try {
+            const q = await quizApi.getSharedQuiz(token, pw);
+            setData(q);
+            setNeedPassword(false);
+            setLoading(false);
+        } catch (e) {
+            const err = e as Error & { status?: number };
+            if (err.status === 401) {
+                setNeedPassword(true);
+                setError(err.message || null);
+            } else {
+                setError(err.message || "分享链接无效或已失效");
             }
-        })();
-        return () => {
-            cancelled = true;
-        };
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        const t = setTimeout(() => void load(), 0);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [token]);
+
+    async function submitPassword() {
+        if (!password.trim() || pwBusy) return;
+        setPwBusy(true);
+        setError(null);
+        await load(password.trim());
+        setPwBusy(false);
+    }
 
     if (loading) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-background">
                 <Loader2 className="h-6 w-6 animate-spin text-tertiary" />
+            </div>
+        );
+    }
+
+    if (needPassword && !data) {
+        return (
+            <div className="flex min-h-screen flex-col items-center justify-center bg-background px-6 text-center">
+                <span className="grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
+                    <Lock className="h-6 w-6" />
+                </span>
+                <p className="mt-4 text-[15px] font-medium text-foreground">此分享已设置访问密码</p>
+                <div className="mt-5 w-[300px]">
+                    <input
+                        autoFocus
+                        type="password"
+                        value={password}
+                        onChange={(e) => {
+                            setPassword(e.target.value);
+                            setError(null);
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && password.trim()) void submitPassword();
+                        }}
+                        placeholder="输入访问密码"
+                        className="field h-10 text-center text-[14px]"
+                    />
+                    {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
+                    <button
+                        type="button"
+                        disabled={!password.trim() || pwBusy}
+                        onClick={() => void submitPassword()}
+                        className="btn-pill btn-primary mt-4 flex h-10 w-full text-[13px]"
+                    >
+                        {pwBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlock className="h-4 w-4" />}
+                        查看试卷
+                    </button>
+                </div>
             </div>
         );
     }

@@ -106,9 +106,12 @@ export function registerQuizRoutes(
       instructions?: string;
     };
     const mode = body.mode === "wrong_answers" ? "wrong_answers" : "free";
-    const count = Number(body.question_count ?? 10);
-    if (!Number.isInteger(count) || count < 1 || count > 20) {
-      return reply.status(400).send({ detail: "question_count 须在 1-20 之间" });
+    // question_count 缺省 = auto：语义配卷（后端由主题推断 PaperSpec，题量/结构由 AI 决定）
+    const rawCount = body.question_count;
+    const hasCount = rawCount !== undefined && rawCount !== null;
+    const count = hasCount ? Number(rawCount) : undefined;
+    if (count !== undefined && (!Number.isInteger(count) || count < 1 || count > 50)) {
+      return reply.status(400).send({ detail: "question_count 须在 1-50 之间" });
     }
     try {
       return await deps.quizGen.startAIGenerated(uid, {

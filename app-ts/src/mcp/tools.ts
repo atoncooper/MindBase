@@ -33,12 +33,19 @@ export interface McpToolsClient {
 
 export interface McpToolsOptions {
   maxContentChars?: number;
+  /**
+   * 服务模式网关要求每个请求带正整数 X-Uid（MCP server serve.go 校验，
+   * uid<=0 拒绝）；boot 时 tools/list 无用户会话，用该占位 uid 过闸
+   * （发现只返回工具元数据，不触达上游、不涉及用户数据）。
+   * 真实工具调用仍按 ToolRunContext.uid 注入。
+   */
+  discoveryUid?: string;
 }
 
 /** tools/list → ToolDefinition[] (empty when discovery fails — degrade, don't crash boot). */
 export async function createMcpTools(client: McpToolsClient, opts: McpToolsOptions = {}): Promise<ToolDefinition<Record<string, unknown>>[]> {
   const max = opts.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS;
-  const listing = await client.listTools();
+  const listing = await client.listTools(opts.discoveryUid !== undefined ? { uid: opts.discoveryUid } : undefined);
   if (!listing.ok) {
     log.warn(`[MCP] ${client.name} tools/list failed: ${listing.error ?? "unknown"} — no MCP tools registered`);
     return [];

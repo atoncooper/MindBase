@@ -32,6 +32,12 @@ server:
 
 timezone: Asia/Shanghai
 
+lifecycle:
+  # generating 状态超时清扫基数（分钟）。实际允许时长 = max(本值, 题量/2)，
+  # 大卷（40+ 题）自动获得更长窗口；清扫 checkpoint-aware：已落库题 >0 →
+  # partial（保留可练），=0 → failed。env: APPQUIZ__LIFECYCLE__GENERATION_TIMEOUT_MINUTES
+  generation_timeout_minutes: 15
+
 rdbms:
   url: ""                    # inject via APPQUIZ__RDBMS__URL (shared bilirag MySQL dsn)
   max_open_conns: 10

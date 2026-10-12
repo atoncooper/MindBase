@@ -111,6 +111,8 @@ func main() {
 	// quiz_quota.py; fail-open when Redis is unavailable).
 	quizSvc.Quota = redisStore
 	quizSvc.QuotaLimits = map[string]int{"generate": cfg.Quota.Generate, "grade": cfg.Quota.Grade}
+	// 生成超时基数（config lifecycle.generation_timeout_minutes；有效窗口按题量缩放）
+	quizSvc.GenTimeoutBase = time.Duration(cfg.Lifecycle.GenerationTimeoutMinutes) * time.Minute
 	handler := router.New(router.Deps{
 		Cfg:  cfg,
 		DB:   db.DB,

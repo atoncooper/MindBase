@@ -186,7 +186,9 @@ export function buildExamPaperHtml(quiz: QuizSetData, opts: ExamPaperOptions): s
                     let h = '<div class="question">';
                     h += '<p class="stem"><b>' + number + ".</b>（" + score + " 分" + multiMark + "）" + esc(q.question_text) + "</p>";
                     if (q.options && q.options.length > 0) {
-                        h += '<div class="options">';
+                        // 自适应排版：短选项（≤10 字）→ 2×2 矩阵；长选项 → 4×1 竖排
+                        const maxOptLen = Math.max(...q.options.map((o) => stripOptionLabel(o).length));
+                        h += '<div class="options ' + (maxOptLen <= 10 ? "cols-2" : "cols-1") + '">';
                         q.options.forEach((opt, i) => {
                             h +=
                                 '<p class="option"><span class="opt-label">' +
@@ -271,7 +273,9 @@ export function buildExamPaperHtml(quiz: QuizSetData, opts: ExamPaperOptions): s
   .section-head { font-family: "SimHei", "黑体", sans-serif; font-weight: 700; font-size: 12pt; margin: 0 0 6px; }
   .question { break-inside: avoid; margin: 0 0 10px; }
   .stem { margin: 0 0 4px; }
-  .options { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; margin: 2px 0 4px 2em; }
+  .options { display: grid; gap: 2px 18px; margin: 2px 0 4px 2em; }
+  .options.cols-2 { grid-template-columns: 1fr 1fr; }
+  .options.cols-1 { grid-template-columns: 1fr; }
   .option { margin: 0; line-height: 1.6; }
   .opt-label { font-weight: 600; }
   .blank { height: 30px; border-bottom: 1px solid #000; margin: 0 0 12px; }

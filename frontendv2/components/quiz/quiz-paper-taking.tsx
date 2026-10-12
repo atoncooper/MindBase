@@ -73,7 +73,10 @@ export function QuizPaperTaking({ quiz, answers, onAnswer }: QuizPaperTakingProp
                                     </p>
 
                                     {(isSingle || isMulti) && q.options && (
-                                        <div className="mt-3 grid grid-cols-1 gap-1.5 md:grid-cols-2">
+                                        <div className={
+                                            "mt-3 grid grid-cols-1 gap-1.5 " +
+                                            (Math.max(...q.options.map((o) => optionParts(o, 0).text.length)) <= 10 ? "md:grid-cols-2" : "")
+                                        }>
                                             {q.options.map((opt, i) => {
                                                 const { label, text } = optionParts(opt, i);
                                                 const active = isSingle ? my === label : activeMulti.includes(label);

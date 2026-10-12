@@ -28,6 +28,7 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
     const [expiresInDays, setExpiresInDays] = useState("");
+    const [password, setPassword] = useState("");
     const [copied, setCopied] = useState(false);
     const [shareBase, setShareBase] = useState("");
     const [error, setError] = useState<string | null>(null);
@@ -76,7 +77,8 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
         setError(null);
         try {
             const d = expiresInDays.trim() ? Number.parseInt(expiresInDays, 10) : undefined;
-            await quizApi.createShare(quizUuid, d ?? null);
+            await quizApi.createShare(quizUuid, d ?? null, password.trim() || undefined);
+            setPassword("");
             await load();
             onChanged?.();
         } catch (e) {
@@ -214,6 +216,19 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
                                             value={expiresInDays}
                                             onChange={(e) => setExpiresInDays(e.target.value)}
                                             placeholder="如 7"
+                                            className="field h-9 text-[13px]"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1.5 block text-[12px] text-secondary">
+                                            访问密码（可选，4-32 位）
+                                        </label>
+                                        <input
+                                            type="text"
+                                            maxLength={32}
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            placeholder="留空则无需密码"
                                             className="field h-9 text-[13px]"
                                         />
                                     </div>

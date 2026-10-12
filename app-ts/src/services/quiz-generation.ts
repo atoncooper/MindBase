@@ -383,6 +383,8 @@ const defaultGenerator: QuizBatchGenerator = async (args) => {
     system: args.system,
     prompt: args.prompt,
     maxRetries: 2,
+    // 单批硬超时：网关挂起时不无限等待（含 SDK 内部重试，最坏 3 次尝试）
+    abortSignal: AbortSignal.timeout(240_000),
     ...aiTelemetry("quiz.generate"),
   });
   return object.questions as unknown as QuizQuestionDict[];
@@ -396,10 +398,76 @@ const defaultExtractGenerator: QuizExtractGenerator = async (args) => {
     system: args.system,
     prompt: args.prompt,
     maxRetries: 2,
+    abortSignal: AbortSignal.timeout(240_000),
     ...aiTelemetry("quiz.extract"),
   });
   return object.questions as unknown as ExtractedQuestionRecord[];
 };
+
+// ── 语义配卷（PaperSpec：意图 → 整卷规格 → 蓝图）───────────────────
+// auto 模式（用户未显式给题量）时先出 PaperSpec：total/分节/题型配比/分值
+// 由 LLM 依主题语义决定（「408 模拟真题」→ 408 真实卷面结构）；spec 同时
+// 直接展开为蓝图（PlanItem[]），跳过二次规划。失败回退固定 10 题。
+
+export const quizSpecItemSchema = z.object({
+  type: z.enum(["single_choice", "multi_choice", "short_answer", "essay"]),
+  count: z.number().int().min(1).max(20),
+  hint: z.string().max(80).optional(),
+});
+export const quizSpecSchema = z.object({
+  total: z.number().int().min(1).max(50),
+  duration_minutes: z.number().int().min(5).max(600).optional(),
+  reason: z.string().max(120).optional(),
+  sections: z
+    .array(
+      z.object({
+        subject: z.string().min(1).max(40),
+        difficulty: z.enum(["easy", "medium", "hard"]).optional(),
+        items: z.array(quizSpecItemSchema).min(1).max(8),
+      }),
+    )
+    .min(1)
+    .max(6),
+});
+export type QuizPaperSpec = z.infer<typeof quizSpecSchema>;
+
+/** spec → 蓝图：按节展开为逐题 PlanItem（hint 以科目名前缀），对齐 total。 */
+export function planItemsFromSpec(spec: QuizPaperSpec, fallbackDifficulty: string): PlanItem[] {
+  const items: PlanItem[] = [];
+  for (const sec of spec.sections) {
+    for (const item of sec.items) {
+      for (let i = 0; i < item.count; i += 1) {
+        items.push({
+          type: item.type,
+          difficulty: sec.difficulty ?? fallbackDifficulty,
+          hint: (item.hint?.trim() || "核心考查点") + "｜" + sec.subject.trim(),
+        });
+      }
+    }
+  }
+  if (items.length === 0) return items;
+  if (items.length > spec.total) return items.slice(0, spec.total);
+  // 不足 total：循环补位（hint 置空让批次自选未覆盖考查点）
+  const pool = [...items];
+  let pi = 0;
+  while (items.length < spec.total) {
+    const src = pool[pi % pool.length];
+    items.push({ type: src.type, difficulty: src.difficulty, hint: "" });
+    pi += 1;
+  }
+  return items;
+}
+
+/** spec sections → createSet 用的题型分布。 */
+export function distributionFromSpec(spec: QuizPaperSpec): Record<string, number> {
+  const dist: Record<string, number> = {};
+  for (const sec of spec.sections) {
+    for (const item of sec.items) {
+      dist[item.type] = (dist[item.type] ?? 0) + item.count;
+    }
+  }
+  return dist;
+}
 
 // ── service ──────────────────────────────────────────────────────────
 
@@ -498,6 +566,90 @@ const extractRecordSchema = z.object({
   subject: z.string().optional(),
 });
 export const quizExtractSchema = z.object({ questions: z.array(extractRecordSchema).min(1).max(50) });
+
+// ── 大卷计划先行（plan-then-generate）──────────────────────────────
+// 超过 PLAN_THRESHOLD 题的 AI 自由出题先由 LLM 产出逐题蓝图（题型/难度/考查点），
+// 再按蓝图切片并发成批：各批认领不同条目 → 跨批不重复；并行使墙钟时间下降；
+// 每批照旧 checkpoint 增量落库，前端可渐进显示 n/N。
+
+export const PLAN_THRESHOLD = 6;
+export const PLAN_BATCH_SIZE = 5;
+export const PLAN_CONCURRENCY = 2;
+
+const planItemSchema = z.object({
+  type: z.enum(["single_choice", "multi_choice", "short_answer", "essay"]),
+  difficulty: z.enum(["easy", "medium", "hard"]),
+  hint: z.string(),
+});
+export const quizPlanSchema = z.object({ items: z.array(planItemSchema).min(1).max(50) });
+
+export interface PlanItem {
+  type: string;
+  difficulty: string;
+  hint: string;
+}
+
+/** 蓝图切片 → 本批 prompt 计划段（空切片返回 ""）。数据格式化，非提示词文案。 */
+export function buildPlanBlock(items: PlanItem[]): string {
+  if (items.length === 0) return "";
+  const typeLabel: Record<string, string> = {
+    single_choice: "单选",
+    multi_choice: "多选",
+    short_answer: "简答",
+    essay: "论述",
+  };
+  const lines = [
+    "本批题目计划（逐题按计划出题，题干方向不得偏离 hint）：",
+    ...items.map(
+      (item, i) =>
+        (i + 1) +
+        ". [" +
+        (typeLabel[item.type] ?? item.type) +
+        "·" +
+        item.difficulty +
+        "] " +
+        (item.hint || "围绕主题自选一个未覆盖的考查点"),
+    ),
+  ];
+  return lines.join("\n") + "\n\n";
+}
+
+/**
+ * 蓝图归一化：接受 {items:[…]} 或裸数组；剔除非法条目；补齐/截断到 totalCount
+ * （短缺按题型分布循环补位）。不可用（0 合法条目）返回 undefined → 走旧串行路径。
+ */
+export function normalizePlanItems(
+  raw: unknown,
+  totalCount: number,
+  typeDistribution: Record<string, number>,
+  difficulty: string,
+): PlanItem[] | undefined {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as { items?: unknown };
+  const list = Array.isArray(obj.items) ? obj.items : Array.isArray(raw) ? raw : [];
+  const allowedType = new Set(["single_choice", "multi_choice", "short_answer", "essay"]);
+  const allowedDiff = new Set(["easy", "medium", "hard"]);
+  const items: PlanItem[] = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") continue;
+    const rec = entry as Record<string, unknown>;
+    const type = typeof rec["type"] === "string" && allowedType.has(rec["type"]) ? rec["type"] : "";
+    if (!type) continue;
+    const diff = typeof rec["difficulty"] === "string" && allowedDiff.has(rec["difficulty"]) ? rec["difficulty"] : difficulty;
+    const hint = typeof rec["hint"] === "string" ? rec["hint"].trim().slice(0, 120) : "";
+    items.push({ type, difficulty: diff, hint });
+  }
+  if (items.length === 0) return undefined;
+  const pool: string[] = [];
+  for (const [qtype, count] of Object.entries(typeDistribution)) {
+    for (let i = 0; i < count; i += 1) pool.push(qtype);
+  }
+  let pi = 0;
+  while (items.length < totalCount) {
+    items.push({ type: pool[pi % Math.max(1, pool.length)] ?? "single_choice", difficulty, hint: "" });
+    pi += 1;
+  }
+  return items.slice(0, totalCount);
+}
 
 /**
  * Salvage extraction output from raw model text (same failure mode as the
@@ -841,6 +993,10 @@ export class QuizGenerationService {
       if (chunks.length < minChunks) {
         throw new Error("可用知识片段不足: " + chunks.length + " < " + minChunks);
       }
+      this.pushProgress(uid, quizUuid, {
+        stage: "retrieve",
+        detail: pages.length > 0 ? `已检索所选分P：${chunks.length} 段` : `知识库检索完成：${chunks.length} 段`,
+      });
       await this.generateAndFinalize(uid, quizUuid, chunks, questionCount, difficulty, distribution, personalization);
     } catch (err) {
       await this.failGeneration(uid, quizUuid, err);
@@ -902,6 +1058,7 @@ export class QuizGenerationService {
         uid,
         personalization,
         checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
+        progress: { uid, quizUuid },
       });
       const valid = generated.filter((q) => validateQuestion(q, chunks));
       const normalized = valid.map((q) => normalizeQuestion(q, chunks));
@@ -939,6 +1096,18 @@ export class QuizGenerationService {
     }
   }
 
+  /** 生成步骤上报（best-effort：失败仅告警，绝不阻断管线）。 */
+  private pushProgress(
+    uid: string,
+    quizUuid: string | undefined,
+    step: { stage: string; detail: string; stored?: number; total?: number },
+  ): void {
+    if (!quizUuid) return;
+    this.deps.appQuiz
+      .updateProgress(uid, quizUuid, step)
+      .catch((err) => log.warn("[QUIZ_GEN] progress push failed (non-fatal): " + (err instanceof Error ? err.message : String(err))));
+  }
+
   /**
    * 收尾统一出口：0 题 → failed（维持原语义）；不足量 → partial（保留全部
    * 已验证题目，不再整批丢弃）；足量 → done。
@@ -952,7 +1121,11 @@ export class QuizGenerationService {
     bvidCount = 0,
   ): Promise<void> {
     if (payloads.length === 0) {
-      await this.failGeneration(uid, quizUuid, new Error("有效题目数量为 0，全部批次均未产出可用题目"));
+      await this.failGeneration(
+        uid,
+        quizUuid,
+        new Error("有效题目数量为 0，全部批次均未产出可用题目（通常是出题模型连续调用失败，请稍后重试；持续出现请检查 AI 网关与出题模型配置）"),
+      );
       return;
     }
     const status = payloads.length >= questionCount ? "done" : "partial";
@@ -980,6 +1153,7 @@ export class QuizGenerationService {
       }
       const chunks = splitSummaryToChunks(summary);
       if (chunks.length === 0) throw new Error("会话总结无法切分出有效内容，无法出题");
+      this.pushProgress(uid, quizUuid, { stage: "prepare", detail: `会话总结已分块：${chunks.length} 段` });
 
       const distribution = defaultTypeDistribution(questionCount);
       const generated = await this.generateQuestions({
@@ -990,6 +1164,7 @@ export class QuizGenerationService {
         uid,
         personalization,
         checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
+        progress: { uid, quizUuid },
       });
       const valid = generated.filter((q) => validateQuestion(q, chunks));
       await this.finalizeGenerated(uid, quizUuid, valid.map((q) => normalizeQuestion(q, chunks)).map(toQuestionPayload), questionCount, "summary");
@@ -1013,6 +1188,8 @@ export class QuizGenerationService {
     personalization?: GenerationPersonalization;
     /** 已生成题目（跨批负面上下文） */
     existing?: QuizQuestionDict[];
+    /** 本批蓝图切片（plan-then-generate 模式）；空 = 无计划 */
+    planBlock?: string;
   }): Promise<QuizQuestionDict[]> {
     const counts = new Map<string, number>();
     for (const t of args.batchTypes) counts.set(t, (counts.get(t) ?? 1) + 1);
@@ -1023,6 +1200,7 @@ export class QuizGenerationService {
       TOTAL_COUNT: String(args.batchCount),
       TYPE_DISTRIBUTION: typeDesc,
       DIFFICULTY_PLAN: args.free.difficultyPlan,
+      PLAN_BLOCK: args.planBlock ?? "",
       EXISTING_QUESTIONS: buildExistingQuestionsBlock(args.existing ?? []),
       MATERIAL: "<error_material>\n" + material.slice(0, MAX_CONTEXT_CHARS) + "\n</error_material>",
     });
@@ -1047,10 +1225,11 @@ export class QuizGenerationService {
    */
   async startAIGenerated(
     uid: string,
-    source: { mode: "free" | "wrong_answers"; topic?: string; questionCount: number; difficulty?: string; title?: string; personalization?: GenerationPersonalization },
-  ): Promise<{ quiz_uuid: string; status: string }> {
-    if (!Number.isInteger(source.questionCount) || source.questionCount < 1 || source.questionCount > 20) {
-      throw new QuizGenerationError("question_count 须在 1-20 之间", 400);
+    source: { mode: "free" | "wrong_answers"; topic?: string; questionCount?: number; difficulty?: string; title?: string; personalization?: GenerationPersonalization },
+  ): Promise<{ quiz_uuid: string; status: string; spec?: { total: number; reason?: string } }> {
+    if (source.questionCount !== undefined &&
+        (!Number.isInteger(source.questionCount) || source.questionCount < 1 || source.questionCount > 50)) {
+      throw new QuizGenerationError("question_count 须在 1-50 之间", 400);
     }
     const difficulty = ALLOWED_DIFFICULTIES.includes(source.difficulty ?? "") ? source.difficulty! : "medium";
     const topic = (source.topic ?? "").trim();
@@ -1063,6 +1242,27 @@ export class QuizGenerationService {
     }
 
     await this.deps.appQuiz.quotaPeek(uid, "generate");
+
+    // 语义配卷：未显式给题量（auto）→ 先由主题推断 PaperSpec，意图决定题量与结构；
+    // spec 失败/显式指定 → 保持既有默认（10 题 / 固定配比）。
+    let specPlan: PlanItem[] | undefined;
+    let specSummary: { total: number; reason?: string } | undefined;
+    let questionCount = source.questionCount;
+    let distribution: Record<string, number> | undefined;
+    if (questionCount === undefined) {
+      const material =
+        source.mode === "wrong_answers" && profile ? this.renderErrorProfile(profile.entries) : "";
+      const spec = await this.generatePaperSpec({ uid, topic, material, difficulty, personalization: source.personalization });
+      if (spec) {
+        questionCount = spec.spec.total;
+        distribution = distributionFromSpec(spec.spec);
+        specPlan = spec.plan;
+        specSummary = { total: spec.spec.total, reason: spec.spec.reason };
+      }
+    }
+    if (questionCount === undefined) questionCount = 10;
+    if (!distribution) distribution = defaultTypeDistribution(questionCount);
+
     const title =
       (source.title && source.title.trim()) ||
       (source.mode === "wrong_answers"
@@ -1070,11 +1270,10 @@ export class QuizGenerationService {
         : topic
           ? this.aiTitle(topic.slice(0, 30))
           : this.aiTitle("AI 自由出题"));
-    const distribution = defaultTypeDistribution(source.questionCount);
     const created = await this.deps.appQuiz.createSet(uid, {
       title,
       difficulty,
-      questionCount: source.questionCount,
+      questionCount,
       typeDistribution: distribution,
       folderIds: [],
       sourceType: source.mode === "wrong_answers" ? "ai_wrong_answers" : "ai_free",
@@ -1084,8 +1283,8 @@ export class QuizGenerationService {
     });
     await this.deps.appQuiz.quotaConsume(uid, "generate");
 
-    void this.runAIGeneration(uid, created.quiz_uuid, source.mode, topic, source.questionCount, difficulty, distribution, profile ?? undefined, source.personalization);
-    return { quiz_uuid: created.quiz_uuid, status: "generating" };
+    void this.runAIGeneration(uid, created.quiz_uuid, source.mode, topic, questionCount, difficulty, distribution, profile ?? undefined, source.personalization, specPlan, specSummary);
+    return { quiz_uuid: created.quiz_uuid, status: "generating", ...(specSummary ? { spec: specSummary } : {}) };
   }
 
   private aiTitle(prefix: string): string {
@@ -1141,8 +1340,16 @@ export class QuizGenerationService {
     distribution: Record<string, number>,
     profile?: { entries: WrongAnswerEntry[]; totalWrong: number },
     personalization?: GenerationPersonalization,
+    specPlan?: PlanItem[],
+    specSummary?: { total: number; reason?: string },
   ): Promise<void> {
     try {
+      if (specSummary) {
+        this.pushProgress(uid, quizUuid, {
+          stage: "spec",
+          detail: (specSummary.reason ? specSummary.reason + " · " : "") + `共 ${questionCount} 题`,
+        });
+      }
       let material = "";
       let effectiveTopic = topic || "通识综合练习";
       if (mode === "wrong_answers") {
@@ -1167,6 +1374,8 @@ export class QuizGenerationService {
         free: { topic: effectiveTopic, material, difficultyPlan },
         personalization,
         checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
+        progress: { uid, quizUuid },
+        plan: specPlan,
       });
       const valid = generated.filter((q) => validateQuestion(q, chunks, { trace: false }));
       await this.finalizeGenerated(
@@ -1261,6 +1470,7 @@ export class QuizGenerationService {
   ): Promise<void> {
     try {
       // 1) 每个文件 → 文本（图片走 OCR 视觉转写，文本类走 parseDocument）
+      this.pushProgress(uid, quizUuid, { stage: "extract", detail: "识别上传文件并结构化提取题目…" });
       const parts: string[] = [];
       for (let i = 0; i < input.files.length; i += 1) {
         const f = input.files[i];
@@ -1317,6 +1527,7 @@ export class QuizGenerationService {
         free: { topic: effectiveTopic, material, difficultyPlan },
         personalization: input.personalization,
         checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
+        progress: { uid, quizUuid },
       });
       const valid = generated.filter((q) => validateQuestion(q, chunks, { trace: false }));
       await this.finalizeGenerated(
@@ -1377,6 +1588,10 @@ export class QuizGenerationService {
     personalization?: GenerationPersonalization;
     /** 每批校验通过后回调（参数 = 当前累计题目）；用于 checkpoint 增量落库 */
     checkpoint?: (accepted: QuizQuestionDict[]) => Promise<void>;
+    /** 执行步骤上报目标（quiz_uuid 存在才启用）；前端经 getQuiz 渐进展示 */
+    progress?: { uid: string; quizUuid: string };
+    /** 语义配卷蓝图（PaperSpec 展开结果）；存在时跳过二次规划直接并发生成 */
+    plan?: PlanItem[];
   }): Promise<QuizQuestionDict[]> {
     const batchSize = args.batchSize ?? 5;
     const typeList: string[] = [];
@@ -1387,11 +1602,45 @@ export class QuizGenerationService {
     const all: QuizQuestionDict[] = [];
     const normalizedAccepted: string[] = [];
     const usedChunkIndices = new Set<number>();
+
+    // 执行步骤上报（best-effort；前端答题页渐进展示）
+    const emit = (stage: string, detail: string, stored?: number) => {
+      if (!args.progress) return;
+      this.pushProgress(args.progress.uid, args.progress.quizUuid, {
+        stage,
+        detail,
+        stored: stored ?? all.length,
+        total: args.totalCount,
+      });
+    };
+
+    // 蓝图优先：语义配卷（spec）展开的蓝图直接并发生成；否则 free 且超阈值时
+    // 现场规划；都不可用 → 回落下方串行循环（行为不变）。
+    if (args.free) {
+      let plan: PlanItem[] | undefined = args.plan;
+      if (plan) {
+        emit("plan_done", `配卷完成：共 ${plan.length} 题 · 分 ${Math.ceil(plan.length / PLAN_BATCH_SIZE)} 批并发生成`);
+        return this.generateFromPlan({ ...args, free: args.free }, plan);
+      }
+      if (args.totalCount > PLAN_THRESHOLD) {
+        emit("plan", "整卷规划中：按主题拆解题型与考点");
+        // 显式带 free（TS 属性收窄不随整个 args 传入子调用）
+        plan = await this.generatePlan({ ...args, free: args.free });
+        if (plan) {
+          emit("plan_done", `蓝图完成：共 ${plan.length} 题 · 分 ${Math.ceil(plan.length / PLAN_BATCH_SIZE)} 批并发生成`);
+          return this.generateFromPlan({ ...args, free: args.free }, plan);
+        }
+        emit("plan_failed", "蓝图不可用，改为串行逐批生成");
+        log.warn("[QUIZ_GEN] plan unavailable — falling back to legacy sequential loop");
+      }
+    }
+
     const rounds = Math.floor(args.totalCount / batchSize) + 3;
 
     for (let round = 0; round < rounds; round += 1) {
       const remaining = args.totalCount - all.length;
       if (remaining <= 0) break;
+      emit("generate", `第 ${round + 1} 批生成中（已出 ${all.length}/${args.totalCount} 题）`);
       const batchCount = Math.min(batchSize, remaining);
       const batchTypes = typeList.slice(all.length, all.length + batchCount);
       const batch = await this.generateBatch({
@@ -1409,6 +1658,14 @@ export class QuizGenerationService {
       for (const q of batch) {
         const text = String(q["question"] ?? "").trim();
         if (!text) continue;
+        // free 模式只有单个伪 chunk：模型偶发把 source_chunk_index 写成 1-based
+        // 或其他越界序号，会让整批被 validateQuestion 拒掉（0 题 failed），归一到 0。
+        if (args.free) {
+          const idx = q["source_chunk_index"];
+          if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0 || idx >= args.chunks.length) {
+            q["source_chunk_index"] = 0;
+          }
+        }
         // 近似去重：归一化完全相同 或 与任一已收题干相似度过高 → 跳过
         if (isNearDuplicateStem(text, normalizedAccepted)) continue;
         if (!validateQuestion(q, args.chunks, { trace: !args.free })) continue;
@@ -1425,7 +1682,217 @@ export class QuizGenerationService {
           log.warn("[QUIZ_GEN] checkpoint callback failed (non-fatal): " + (err instanceof Error ? err.message : String(err)));
         }
       }
+      if (acceptedInBatch > 0) emit("checkpoint", `已落库 ${all.length}/${args.totalCount} 题`);
     }
+    return all.slice(0, args.totalCount);
+  }
+
+  /** 语义配卷：auto 模式（未显式给题量）由主题推断整卷规格；失败/不可解析返回 undefined。 */
+  private async generatePaperSpec(args: {
+    uid: string;
+    topic: string;
+    material: string;
+    difficulty: string;
+    personalization?: GenerationPersonalization;
+  }): Promise<{ spec: QuizPaperSpec; plan: PlanItem[] } | undefined> {
+    const material = args.material.trim();
+    const prompt = this.deps.prompts.render("quiz-spec-user", {
+      TOPIC: args.topic.slice(0, 500),
+      MATERIAL: material ? "<material>\n" + material.slice(0, MAX_CONTEXT_CHARS) + "\n</material>\n" : "",
+      PRESET_HINT: "",
+    });
+    try {
+      const base = this.deps.prompts.render("quiz-spec-system", {});
+      const suffix = await this.personalizationSection(args.uid, args.personalization);
+      const { object } = await generateObject({
+        model: createGatewayModel("quiz_spec", { uid: args.uid, temperature: 0.3, model: config.llm.quizModel || undefined }),
+        schema: quizSpecSchema,
+        system: suffix ? base + "\n\n" + suffix : base,
+        prompt,
+        maxRetries: 1,
+        abortSignal: AbortSignal.timeout(90_000),
+        ...aiTelemetry("quiz.spec"),
+      });
+      const plan = planItemsFromSpec(object, args.difficulty);
+      if (plan.length === 0) return undefined;
+      log.info("[QUIZ_GEN] spec ready total=" + object.total + " sections=" + object.sections.length + " reason=" + (object.reason ?? ""));
+      return { spec: object, plan };
+    } catch (err) {
+      log.warn("[QUIZ_GEN] spec call failed: " + (err instanceof Error ? err.message : String(err)));
+      return undefined;
+    }
+  }
+
+  /** 大卷蓝图：一次轻量 LLM 调用产出逐题计划；失败/不可解析返回 undefined（走旧串行路径）。 */
+  private async generatePlan(args: {
+    totalCount: number;
+    typeDistribution: Record<string, number>;
+    difficulty: string;
+    uid: string;
+    free: { topic: string; material: string; difficultyPlan: string };
+    personalization?: GenerationPersonalization;
+  }): Promise<PlanItem[] | undefined> {
+    const counts = new Map<string, number>();
+    for (const [qtype, count] of Object.entries(args.typeDistribution)) {
+      for (let i = 0; i < count; i += 1) counts.set(qtype, (counts.get(qtype) ?? 0) + 1);
+    }
+    const typeDesc = [...counts.entries()].map(([k, n]) => n + "道" + k).join("、");
+    const material = args.free.material.trim();
+    const prompt = this.deps.prompts.render("quiz-plan-user", {
+      TOPIC: args.free.topic.slice(0, 500),
+      TOTAL_COUNT: String(args.totalCount),
+      TYPE_DISTRIBUTION: typeDesc,
+      DIFFICULTY_PLAN: args.free.difficultyPlan,
+      MATERIAL: material
+        ? "<material>\n" + material.slice(0, MAX_CONTEXT_CHARS) + "\n</material>"
+        : "（无附加材料，围绕主题规划）",
+    });
+    try {
+      const base = this.deps.prompts.render("quiz-plan-system", {});
+      const suffix = await this.personalizationSection(args.uid, args.personalization);
+      const { object } = await generateObject({
+        model: createGatewayModel("quiz_plan", { uid: args.uid, temperature: 0.3, model: config.llm.quizModel || undefined }),
+        schema: quizPlanSchema,
+        system: suffix ? base + "\n\n" + suffix : base,
+        prompt,
+        maxRetries: 1,
+        abortSignal: AbortSignal.timeout(240_000),
+        ...aiTelemetry("quiz.plan"),
+      });
+      const plan = normalizePlanItems(object, args.totalCount, args.typeDistribution, args.difficulty);
+      if (plan) log.info("[QUIZ_GEN] plan ready items=" + plan.length + " batches=" + Math.ceil(plan.length / PLAN_BATCH_SIZE));
+      return plan;
+    } catch (err) {
+      log.warn("[QUIZ_GEN] plan call failed: " + (err instanceof Error ? err.message : String(err)));
+      return undefined;
+    }
+  }
+
+  /**
+   * 按蓝图生成：切片成批（PLAN_BATCH_SIZE）+ 受限并发（PLAN_CONCURRENCY）。
+   * 每批照旧 校验/去重/checkpoint；不足量退回串行自由出题补漏（负面清单注入）。
+   */
+  private async generateFromPlan(
+    args: {
+      chunks: Chunk[];
+      totalCount: number;
+      typeDistribution: Record<string, number>;
+      difficulty: string;
+      uid: string;
+      free: { topic: string; material: string; difficultyPlan: string };
+      personalization?: GenerationPersonalization;
+      checkpoint?: (accepted: QuizQuestionDict[]) => Promise<void>;
+      progress?: { uid: string; quizUuid: string };
+    },
+    plan: PlanItem[],
+  ): Promise<QuizQuestionDict[]> {
+    const all: QuizQuestionDict[] = [];
+    const normalizedAccepted: string[] = [];
+
+    const emit = (stage: string, detail: string, stored?: number) => {
+      if (!args.progress) return;
+      this.pushProgress(args.progress.uid, args.progress.quizUuid, {
+        stage,
+        detail,
+        stored: stored ?? all.length,
+        total: args.totalCount,
+      });
+    };
+
+    const batches: PlanItem[][] = [];
+    for (let i = 0; i < plan.length; i += PLAN_BATCH_SIZE) {
+      batches.push(plan.slice(i, i + PLAN_BATCH_SIZE));
+    }
+
+    const acceptQuestion = (q: QuizQuestionDict): boolean => {
+      if (all.length >= args.totalCount) return false;
+      const text = String(q["question"] ?? "").trim();
+      if (!text) return false;
+      // free 模式伪 chunk：越界/非整数 source_chunk_index 归一到 0（与串行路径一致）
+      const idx = q["source_chunk_index"];
+      if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0 || idx >= args.chunks.length) {
+        q["source_chunk_index"] = 0;
+      }
+      if (isNearDuplicateStem(text, normalizedAccepted)) return false;
+      if (!validateQuestion(q, args.chunks, { trace: !args.free })) return false;
+      normalizedAccepted.push(normalizeStem(text));
+      all.push(q);
+      return true;
+    };
+
+    const checkpointIfAdvanced = async (before: number): Promise<void> => {
+      if (args.checkpoint && all.length > before) {
+        try {
+          await args.checkpoint(all);
+        } catch (err) {
+          log.warn("[QUIZ_GEN] checkpoint callback failed (non-fatal): " + (err instanceof Error ? err.message : String(err)));
+        }
+      }
+    };
+
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < batches.length && all.length < args.totalCount) {
+        const batchNo = next + 1;
+        const slice = batches[next];
+        next += 1;
+        emit("generate", `第 ${batchNo}/${batches.length} 批生成中（并发 ${PLAN_CONCURRENCY} 路）`);
+        const before = all.length;
+        const batch = await this.generateFreeBatch({
+          batchCount: slice.length,
+          batchTypes: slice.map((item) => item.type),
+          uid: args.uid,
+          free: args.free,
+          personalization: args.personalization,
+          existing: all,
+          planBlock: buildPlanBlock(slice),
+        });
+        for (const q of batch) acceptQuestion(q);
+        await checkpointIfAdvanced(before);
+        if (all.length > before) emit("checkpoint", `已落库 ${all.length}/${args.totalCount} 题`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PLAN_CONCURRENCY, batches.length) }, () => worker()));
+
+    // 补漏：并发批有失败/被去重拒绝时，退回串行补齐（负面清单防重复），最多 2 轮
+    const remainingTypes = (want: number): string[] => {
+      const used = new Map<string, number>();
+      for (const q of all) {
+        const t = String(q["type"] ?? "");
+        if (t) used.set(t, (used.get(t) ?? 0) + 1);
+      }
+      const pool: string[] = [];
+      for (const [qtype, count] of Object.entries(args.typeDistribution)) {
+        for (let i = 0; i < count; i += 1) pool.push(qtype);
+      }
+      const out: string[] = [];
+      for (const t of pool) {
+        if (out.length >= want) break;
+        const u = used.get(t) ?? 0;
+        if (u > 0) {
+          used.set(t, u - 1);
+          continue;
+        }
+        out.push(t);
+      }
+      while (out.length < want) out.push("single_choice");
+      return out;
+    };
+    for (let round = 0; round < 2 && all.length < args.totalCount; round += 1) {
+      const remaining = args.totalCount - all.length;
+      const before = all.length;
+      const batch = await this.generateFreeBatch({
+        batchCount: Math.min(PLAN_BATCH_SIZE, remaining),
+        batchTypes: remainingTypes(remaining),
+        uid: args.uid,
+        free: args.free,
+        personalization: args.personalization,
+        existing: all,
+      });
+      for (const q of batch) acceptQuestion(q);
+      await checkpointIfAdvanced(before);
+    }
+
     return all.slice(0, args.totalCount);
   }
 

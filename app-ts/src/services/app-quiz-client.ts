@@ -186,6 +186,21 @@ export class AppQuizClient extends InternalServiceClient {
     await this.post("/sets/" + encodeURIComponent(quizUuid) + "/questions/append", uid, { uid, questions });
   }
 
+  /** 生成管线执行步骤上报（plan / retrieve / 逐批 / checkpoint）；调用侧 best-effort。 */
+  async updateProgress(
+    uid: string,
+    quizUuid: string,
+    progress: { stage: string; detail: string; stored?: number; total?: number },
+  ): Promise<void> {
+    await this.post("/sets/" + encodeURIComponent(quizUuid) + "/progress", uid, {
+      uid,
+      stage: progress.stage,
+      detail: progress.detail,
+      stored: progress.stored ?? 0,
+      total: progress.total ?? 0,
+    });
+  }
+
   /** Insert the generating quiz_task business row (duplicate task_id = idempotent OK). */
   async createTaskQuizRow(
     uid: string,

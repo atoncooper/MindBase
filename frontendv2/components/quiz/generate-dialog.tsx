@@ -3,13 +3,13 @@
 /**
  * GenerateDialog - 新建练习全屏向导（Google Material 3 视觉）。
  *
- * 三步占满视口：
+ * 两步占满视口：
  *   1. source    - 出题来源（知识库 / AI 自由 / 错题强化 / 错题图片上传）+ 个性化出题面板
  *   2. config    - 题量 / 难度 / 标题
- *   3. generating- 轮询直至出题完成
  *
  * 顶部 M3 步骤条跟踪进度；底部导航按钮驱动上一步/下一步。
- * 成功后父级经 onGenerated 收到就绪题卷。
+ * 提交成功即关闭（后端后台生成 + checkpoint 增量落库），父级经 onSubmitted
+ * 收到 quiz_uuid 后提示去练习列表查看——生成中项可边生成边作答，无需等待。
  */
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -21,7 +21,6 @@ import {
     skillsApi,
     type FavoriteFolderV2,
     type InstalledSkill,
-    type QuizSetData,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { PaperStyle } from "@/lib/exam-paper";
@@ -29,29 +28,29 @@ import type { PaperStyle } from "@/lib/exam-paper";
 interface GenerateDialogProps {
     open: boolean;
     onClose: () => void;
-    onGenerated: (quiz: QuizSetData) => void;
+    /** 提交成功（后端已创建 generating 题集）后回调；specReason = AI 配卷说明（auto 时） */
+    onSubmitted: (quizUuid: string, specReason?: string) => void;
 }
 
-const COUNTS = [5, 10, 15, 20];
+const COUNTS = [5, 10, 15, 20, 30, 40, 50];
 const DIFFS = [
     { v: "easy", label: "简单" },
     { v: "medium", label: "中等" },
     { v: "hard", label: "困难" },
 ];
 
-type Step = "source" | "config" | "generating";
+type Step = "source" | "config";
 const STEPS: { key: Step; label: string }[] = [
     { key: "source", label: "选择来源" },
     { key: "config", label: "出题配置" },
-    { key: "generating", label: "生成题目" },
 ];
 
-export function GenerateDialog({ open, onClose, onGenerated }: GenerateDialogProps) {
+export function GenerateDialog({ open, onClose, onSubmitted }: GenerateDialogProps) {
     return (
         <AnimatePresence>
             {open && (
                 <DialogShell onClose={onClose}>
-                    <DialogBody onClose={onClose} onGenerated={onGenerated} />
+                    <DialogBody onClose={onClose} onSubmitted={onSubmitted} />
                 </DialogShell>
             )}
         </AnimatePresence>
@@ -143,15 +142,17 @@ function Stepper({ current }: { current: number }) {
 
 function DialogBody({
     onClose,
-    onGenerated,
+    onSubmitted,
 }: {
     onClose: () => void;
-    onGenerated: (quiz: QuizSetData) => void;
+    onSubmitted: (quizUuid: string, specReason?: string) => void;
 }) {
     const [folders, setFolders] = useState<FavoriteFolderV2[]>([]);
     const [selected, setSelected] = useState<Set<number>>(new Set());
-    const [count, setCount] = useState(10);
-    const [difficulty, setDifficulty] = useState("medium");
+    // "auto" = 不传该参数，由后端按默认值出题（10 题 / 中等难度）——
+    // 用户只写一句话描述即可生成，题量/难度/标题全部可跳过。
+    const [count, setCount] = useState<number | "auto">("auto");
+    const [difficulty, setDifficulty] = useState<string | "auto">("auto");
     const [title, setTitle] = useState("");
     const [loadingFolders, setLoadingFolders] = useState(true);
     // 出题模式:kb=知识库检索(原能力) / free=AI 围绕主题自由出题 / wrong=错题强化 /
@@ -170,9 +171,8 @@ function DialogBody({
 
     const [step, setStep] = useState<Step>("source");
     const [error, setError] = useState<string | null>(null);
-    const [pollUuid, setPollUuid] = useState<string | null>(null);
-    // checkpoint 进度：轮询时后端已增量落库的题数（generating 期可见）
-    const [generatedCount, setGeneratedCount] = useState(0);
+    // 提交中（auto 时后端先做语义配卷，需 3-6s，按钮要有反馈）
+    const [submitting, setSubmitting] = useState(false);
 
     // Load favorite folders once.
     useEffect(() => {
@@ -199,40 +199,6 @@ function DialogBody({
         };
     }, []);
 
-    // Poll quiz status until done/partial/failed.
-    useEffect(() => {
-        if (!pollUuid) return;
-        let cancelled = false;
-        (async () => {
-            while (!cancelled) {
-                try {
-                    const q = await quizApi.getQuiz(pollUuid);
-                    if (cancelled) return;
-                    if (q.status === "done" || q.status === "partial") {
-                        onGenerated(q);
-                        return;
-                    }
-                    if (q.status === "failed") {
-                        setStep("config");
-                        setError(q.error_message || "题目生成失败，请重试");
-                        return;
-                    }
-                    // checkpoint 进度：已增量落库的题数
-                    setGeneratedCount(q.questions?.length ?? 0);
-                } catch {
-                    if (cancelled) return;
-                    setStep("config");
-                    setError("查询生成状态失败，请重试");
-                    return;
-                }
-                await new Promise((r) => setTimeout(r, 2000));
-            }
-        })();
-        return () => {
-            cancelled = true;
-        };
-    }, [pollUuid, onGenerated]);
-
     // 个性化面板展开时懒加载已安装技能
     useEffect(() => {
         if (!personalOpen || installedSkills.length > 0) return;
@@ -257,6 +223,7 @@ function DialogBody({
     };
 
     const stepIndex = STEPS.findIndex((s) => s.key === step);
+    // 自动档在后端默认 10 题，进度条按此展示
 
     function toggleFolder(mediaId: number) {
         setSelected((prev) => {
@@ -285,17 +252,19 @@ function DialogBody({
     }
 
     async function startGenerate() {
-        setStep("generating");
         setError(null);
-        setGeneratedCount(0);
+        setSubmitting(true);
+        // 自动档：不传 question_count / difficulty，由后端默认（10 题 / medium）
+        const effCount = count === "auto" ? undefined : count;
+        const effDifficulty = difficulty === "auto" ? undefined : difficulty;
         try {
             const res =
                 mode === "image" ? (
                     await quizApi.generateFromImages((() => {
                         const form = new FormData();
                         form.append("mode", imageMode);
-                        form.append("question_count", String(count));
-                        form.append("difficulty", difficulty);
+                        if (effCount !== undefined) form.append("question_count", String(effCount));
+                        if (effDifficulty) form.append("difficulty", effDifficulty);
                         if (title.trim()) form.append("title", title.trim());
                         if (topic.trim()) form.append("topic", topic.trim());
                         if (paperStyle !== "standard") form.append("style", paperStyle);
@@ -308,8 +277,8 @@ function DialogBody({
                 : mode === "kb" ? (
                     await quizApi.generate({
                         folder_ids: Array.from(selected),
-                        question_count: count,
-                        difficulty,
+                        question_count: effCount,
+                        difficulty: effDifficulty,
                         title: title.trim() || undefined,
                         ...personalization,
                     })
@@ -318,16 +287,18 @@ function DialogBody({
                     await quizApi.generateAI({
                         mode: mode === "wrong" ? "wrong_answers" : "free",
                         topic: topic.trim() || undefined,
-                        question_count: count,
-                        difficulty,
+                        question_count: effCount,
+                        difficulty: effDifficulty,
                         title: title.trim() || undefined,
                         ...personalization,
                     })
                 );
-            setPollUuid(res.quiz_uuid);
+            // 后台生成已启动：立即回父级（关闭对话框 + 引导去练习列表），不原地等待
+            onSubmitted(res.quiz_uuid, "spec" in res ? res.spec?.reason : undefined);
         } catch (e) {
-            setStep("config");
             setError(e instanceof Error ? e.message : "出题请求失败");
+        } finally {
+            setSubmitting(false);
         }
     }
 
@@ -493,7 +464,9 @@ function DialogBody({
                                             placeholder="如：Java 并发编程、线性代数特征值、考研英语长难句…（可留空描述方向）"
                                             maxLength={300}
                                         />
-                                        <p className="mt-2 text-[11px] text-[#747775]">AI 将围绕主题自主设计题目，无需知识库材料。</p>
+                                        <p className="mt-2 text-[11px] text-[#747775]">
+                                            只需一句话描述想练什么（如“贴近考试强度”），题量与难度可全部留空自动决定。
+                                        </p>
                                     </div>
                                 )}
                                 {mode === "wrong" && (
@@ -745,12 +718,24 @@ function DialogBody({
                                     <div className="mt-1 line-clamp-2 text-[13px] text-[#1f1f1f]">{sourceSummary}</div>
                                 </div>
 
-                                {/* 题量 */}
+                                {/* 题量（自动 = AI 配卷，可不选） */}
                                 <div className="mt-7">
                                     <label className="text-[12px] font-medium uppercase tracking-wider text-[#747775]">
-                                        题目数量
+                                        题目数量（可选）
                                     </label>
-                                    <div className="mt-2.5 grid grid-cols-4 gap-2">
+                                    <div className="mt-2.5 grid grid-cols-5 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setCount("auto")}
+                                            className={cn(
+                                                "h-11 rounded-xl border text-[14px] font-medium transition-all",
+                                                count === "auto"
+                                                    ? "border-[#0b57d0] bg-[#0b57d0] text-white shadow-[0_1px_2px_0_rgba(60,64,67,.30)]"
+                                                    : "border-[#c4c7c5] bg-white text-[#1f1f1f] hover:bg-[rgba(31,31,31,0.03)]",
+                                            )}
+                                        >
+                                            AI 配卷
+                                        </button>
                                         {COUNTS.map((c) => (
                                             <button
                                                 key={c}
@@ -769,12 +754,24 @@ function DialogBody({
                                     </div>
                                 </div>
 
-                                {/* 难度 */}
+                                {/* 难度（自动 = 后端默认，可不选） */}
                                 <div className="mt-7">
                                     <label className="text-[12px] font-medium uppercase tracking-wider text-[#747775]">
-                                        难度
+                                        难度（可选）
                                     </label>
-                                    <div className="mt-2.5 grid grid-cols-3 gap-2">
+                                    <div className="mt-2.5 grid grid-cols-4 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setDifficulty("auto")}
+                                            className={cn(
+                                                "h-11 rounded-xl border text-[14px] font-medium transition-all",
+                                                difficulty === "auto"
+                                                    ? "border-[#0b57d0] bg-[#0b57d0] text-white shadow-[0_1px_2px_0_rgba(60,64,67,.30)]"
+                                                    : "border-[#c4c7c5] bg-white text-[#1f1f1f] hover:bg-[rgba(31,31,31,0.03)]",
+                                            )}
+                                        >
+                                            自动
+                                        </button>
                                         {DIFFS.map((d) => (
                                             <button
                                                 key={d.v}
@@ -802,7 +799,7 @@ function DialogBody({
                                         value={title}
                                         onChange={(e) => setTitle(e.target.value)}
                                         className="g-field mt-2.5"
-                                        placeholder="如：操作系统复习"
+                                        placeholder="留空由 AI 自动命名（如：AI 自由出题 10-01 12:00）"
                                         maxLength={60}
                                     />
                                 </div>
@@ -817,52 +814,6 @@ function DialogBody({
                         </motion.div>
                     )}
 
-                    {step === "generating" && (
-                        <motion.div
-                            key="generating"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 0.22 }}
-                            className="flex h-full flex-col items-center justify-center gap-5 px-6 text-center"
-                        >
-                            <div className="relative grid place-items-center">
-                                <span className="absolute h-16 w-16 animate-ping rounded-full bg-[#d3e3fd]" />
-                                <Loader2 className="h-10 w-10 animate-spin text-[#0b57d0]" />
-                            </div>
-                            <div>
-                                <p className="text-[16px] font-medium text-[#1f1f1f]">正在生成题目…</p>
-                                <p className="mt-1.5 text-[13px] text-[#747775]">
-                                    {mode === "image"
-                                        ? "识别图片并结构化提取后由 AI 出题，约需 1-2 分钟"
-                                        : "基于来源检索与出题，通常需要 10-30 秒"}
-                                </p>
-                            </div>
-                            {/* checkpoint 进度：分批落库，已生成 X/N */}
-                            <div className="w-full max-w-[340px]">
-                                <div className="g-progress">
-                                    <div
-                                        style={{
-                                            width:
-                                                Math.min(100, Math.round((generatedCount / Math.max(1, count)) * 100)) + "%",
-                                        }}
-                                    />
-                                </div>
-                                <p className="mt-2 text-[12px] text-[#444746]">
-                                    {generatedCount > 0
-                                        ? "已生成 " + generatedCount + " / " + count + " 题"
-                                        : "正在准备第一批…"}
-                                </p>
-                            </div>
-                            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[12px] text-[#444746]">
-                                <span>{count} 题</span>
-                                <span className="h-3 w-px bg-[#c4c7c5]" />
-                                <span>{DIFFS.find((d) => d.v === difficulty)?.label}</span>
-                                <span className="h-3 w-px bg-[#c4c7c5]" />
-                                <span>{sourceLabel}</span>
-                            </div>
-                        </motion.div>
-                    )}
                 </AnimatePresence>
             </div>
 
@@ -902,20 +853,18 @@ function DialogBody({
                                 <ChevronLeft className="h-4 w-4" />
                                 上一步
                             </button>
-                            <button type="button" onClick={startGenerate} className="g-btn g-btn-filled">
-                                开始生成
+                            <button
+                                type="button"
+                                onClick={startGenerate}
+                                disabled={submitting}
+                                className="g-btn g-btn-filled"
+                            >
+                                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                                {submitting ? "AI 配卷中…" : "开始生成"}
                             </button>
                         </>
                     )}
 
-                    {step === "generating" && (
-                        <>
-                            <span className="text-[12px] text-[#747775]">生成中，请勿关闭</span>
-                            <button type="button" onClick={onClose} className="g-btn g-btn-text">
-                                取消
-                            </button>
-                        </>
-                    )}
                 </div>
             </footer>
         </div>

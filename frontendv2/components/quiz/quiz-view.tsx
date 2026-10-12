@@ -12,7 +12,7 @@
  * enters taking - a banner on the list explains why.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, AlertCircle, X } from "lucide-react";
+import { Loader2, AlertCircle, X, Check } from "lucide-react";
 import {
     quizApi,
     type QuizSetData,
@@ -38,6 +38,8 @@ export function QuizView() {
     const [listRefreshKey, setListRefreshKey] = useState(0);
     const [loadingQuiz, setLoadingQuiz] = useState(false);
     const [quizError, setQuizError] = useState<string | null>(null);
+    // 后台生成已提交的轻提示（列表顶部，可关闭）
+    const [notice, setNotice] = useState<string | null>(null);
     // 分享弹窗：非空 = 打开并针对该题卷
     const [shareQuizUuid, setShareQuizUuid] = useState<string | null>(null);
     // 试卷导出弹窗：非空 = 已加载完整题卷数据（含答案，供导出选项使用）
@@ -78,19 +80,16 @@ export function QuizView() {
         }
     }, []);
 
-    const handleGenerated = useCallback((quiz: QuizSetData) => {
-        if (!quiz.questions || quiz.questions.length === 0) {
-            setQuizError(explainEmpty(quiz));
-            setDialogOpen(false);
-            setListRefreshKey((k) => k + 1);
-            return;
-        }
-        setActiveQuiz(quiz);
-        setSubmission(null);
-        setUserAnswers(null);
+    // 对话框提交成功：后端已创建 generating 题集并转入后台生成，关闭对话框 +
+    // 刷新列表 + 轻提示（auto 模式附 AI 配卷说明）。生成中项可点开边生成边作答。
+    const handleGenerationStarted = useCallback((quizUuid: string, specReason?: string) => {
         setDialogOpen(false);
         setListRefreshKey((k) => k + 1);
-        setView("taking");
+        setNotice(
+            "已提交后台生成（" + quizUuid.slice(0, 8) + "…）" +
+                (specReason ? "：" + specReason : "") +
+                "；生成中的题卷可点开，已出的题能先做",
+        );
     }, []);
 
     const handleSubmitted = useCallback(
@@ -139,10 +138,55 @@ export function QuizView() {
         return () => clearTimeout(t);
     }, [handleSelect]);
 
+    // 生成中题卷：4s 轮询 getQuiz，新题增量并入答题页（作答状态按 question_uuid
+    // 记账在 QuizTaking 本地，题卷对象更新不重置已答内容）；终态停止轮询。
+    useEffect(() => {
+        if (view !== "taking" || !activeQuiz || activeQuiz.status !== "generating") return;
+        let cancelled = false;
+        const quizUuid = activeQuiz.quiz_uuid;
+        const t = setInterval(async () => {
+            try {
+                const next = await quizApi.getQuiz(quizUuid);
+                if (cancelled) return;
+                if (next.status === "failed") {
+                    setActiveQuiz(null);
+                    setQuizError(next.error_message || "该题卷生成失败");
+                    setView("list");
+                    return;
+                }
+                if (next.status !== "generating" || next.questions.length !== activeQuiz.questions.length) {
+                    setActiveQuiz(next);
+                }
+            } catch {
+                // 瞬时轮询失败忽略，下一轮继续
+            }
+        }, 4000);
+        return () => {
+            cancelled = true;
+            clearInterval(t);
+        };
+    }, [view, activeQuiz]);
+
     return (
         <>
             {view === "list" && (
                 <>
+                    {notice && (
+                        <div className="mx-auto max-w-[820px] px-5 pt-5 md:px-8">
+                            <div className="g-banner">
+                                <Check className="h-4 w-4 shrink-0 text-[#188038]" />
+                                <span className="flex-1">{notice}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setNotice(null)}
+                                    className="g-icon-btn !h-6 !w-6"
+                                    aria-label="关闭提示"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     {quizError && (
                         <div className="mx-auto max-w-[820px] px-5 pt-5 md:px-8">
                             <div className="g-banner">
@@ -172,7 +216,7 @@ export function QuizView() {
                     <GenerateDialog
                         open={dialogOpen}
                         onClose={() => setDialogOpen(false)}
-                        onGenerated={handleGenerated}
+                        onSubmitted={handleGenerationStarted}
                     />
                 </>
             )}
