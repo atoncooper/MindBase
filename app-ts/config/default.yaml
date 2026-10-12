@@ -76,8 +76,10 @@ llm:
   # 主对话模型（经 Higress 网关路由）。GLM-5.3-flash 支持视觉（图片消息）；
   # 旧默认 qwen3-max 为纯文本模型，收到图片只会回「无法看到图片」。
   model: z-ai/glm-5.3-flash
-  # 出题等后台结构化输出任务用强 JSON 遵循模型（chat 不受影响）
-  quizModel: qwen3-max
+  # 出题等后台结构化输出任务。2026-10-12：qwen3-max 被 OpenRouter 下线（404 deprecation，
+  # 曾导致出题全批次失败「有效题目数量为 0」），全部 LLM 统一收敛到 GLM-5.3-flash。
+  # 注意：GLM-5.3-flash 是思考型模型，reasoning 消耗输出预算，调用侧需给足 max tokens。
+  quizModel: z-ai/glm-5.3-flash
   temperature: 0.7
 
 embedding:
@@ -121,8 +123,8 @@ kg:
   enabled: true
   # 实体向量 collection（app-ts 独立库 mind_base_ts 内；与 Python 的 mind_base.kg_entities 互不相通）
   collectionName: kg_entities
-  # 抽取模型（经 Higress 网关，purpose=kg）
-  extractModel: qwen-flash
+  # 抽取模型（经 Higress 网关，purpose=kg）；与全局统一 GLM-5.3-flash
+  extractModel: z-ai/glm-5.3-flash
   # 成本护栏：单分P 送 LLM 的正文上限
   maxTextChars: 8000
   seedTopN: 5
@@ -297,7 +299,8 @@ openrouter:
 
 ocr:
   enabled: false
-  model: qwen-vl-ocr
+  # 视觉转写模型（网关 chat + 图片 part）；GLM-5.3-flash 支持视觉，与全局统一
+  model: z-ai/glm-5.3-flash
   # 可选独立 key；默认复用 aiGateway.apiKey
   apiKey: ${OCR__API_KEY}
   prompt: 请提取图片中的全部文字内容，按原始阅读顺序输出，不要添加任何解释或评论。

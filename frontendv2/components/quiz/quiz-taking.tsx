@@ -45,6 +45,9 @@ function optionParts(opt: string, index: number): { label: string; text: string 
 export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
     const questions = quiz.questions;
     const total = questions.length;
+    // 后台生成中的题卷：允许作答已出的题，交卷在生成完成（done/partial 终态）后开放
+    const generating = quiz.status === "generating";
+    const genTotal = quiz.question_count;
     const [current, setCurrent] = useState(0);
     const [answers, setAnswers] = useState<AnswerMap>({});
     const [submitting, setSubmitting] = useState(false);
@@ -93,6 +96,7 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
     }
 
     async function submit() {
+        if (generating) return; // 半卷不可交：等生成终态（done/partial）
         setSubmitting(true);
         setError(null);
         try {
@@ -161,6 +165,38 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
                 </div>
             </div>
 
+            {/* 生成中：执行步骤面板（管线阶段 + 步骤日志）+ 已落库进度 */}
+            {generating && (
+                <div className="mt-3 rounded-xl border border-[#d3e3fd] bg-[#f8fbff] px-4 py-3">
+                    <div className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0b57d0]" />
+                        <span className="text-[13px] font-medium text-[#1f1f1f]">
+                            {quiz.generation_progress?.detail || "正在准备生成…"}
+                        </span>
+                        <span className="ml-auto shrink-0 text-[12px] text-[#444746]">
+                            已落库 {total} / {genTotal} 题
+                        </span>
+                    </div>
+                    {(quiz.generation_progress?.log?.length ?? 0) > 0 && (
+                        <ol className="mt-2.5 space-y-1 border-t border-[#e8eaed] pt-2 text-[12px] text-[#444746]">
+                            {[...(quiz.generation_progress?.log ?? [])]
+                                .reverse()
+                                .slice(0, 6)
+                                .map((s, i) => (
+                                    <li key={i} className="flex items-center gap-1.5">
+                                        <span className="h-1 w-1 shrink-0 rounded-full bg-[#0b57d0]" />
+                                        <span className="flex-1">{s.detail}</span>
+                                        {s.at && <span className="shrink-0 text-[#747775]">{new Date(s.at).toLocaleTimeString()}</span>}
+                                    </li>
+                                ))}
+                        </ol>
+                    )}
+                    <p className="mt-2 text-[11px] text-[#747775]">
+                        新题会自动出现在下方；全部生成完成后即可交卷
+                    </p>
+                </div>
+            )}
+
             {/* M3 线性进度（练习模式） */}
             {mode === "practice" && (
                 <div className="g-progress mt-4">
@@ -198,9 +234,12 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
                             <Markdown>{q.question_text}</Markdown>
                         </div>
 
-                        {/* 选择题选项 */}
+                        {/* 选择题选项（自适应：短选项桌面 2 列矩阵，长选项单列） */}
                         {isChoice && q.options && (
-                            <div className="mt-5 grid grid-cols-1 gap-2 md:grid-cols-2">
+                            <div className={
+                                "mt-5 grid grid-cols-1 gap-2 " +
+                                (Math.max(...q.options.map((o) => optionParts(o, 0).text.length)) <= 10 ? "md:grid-cols-2" : "")
+                            }>
                                 {q.options.map((opt, i) => {
                                     const label = optionParts(opt, i).label;
                                     const active = isSingle ? myAnswer === label : activeMulti.includes(label);
@@ -261,12 +300,15 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
                     {mode === "paper" ? (
                         <>
                             <span className="text-[12px] text-[#444746]">
-                                已答 {answeredCount} / {total} 题
+                                {generating
+                                    ? `生成中 ${total} / ${genTotal} 题`
+                                    : `已答 ${answeredCount} / ${total} 题`}
                             </span>
                             <button
                                 type="button"
                                 onClick={submit}
-                                disabled={submitting}
+                                disabled={submitting || generating}
+                                title={generating ? "题目仍在生成，完成后可交卷" : undefined}
                                 className="g-btn g-btn-filled !px-8"
                             >
                                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -297,7 +339,8 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
                                 <button
                                     type="button"
                                     onClick={submit}
-                                    disabled={submitting}
+                                    disabled={submitting || generating}
+                                    title={generating ? "题目仍在生成，完成后可交卷" : undefined}
                                     className="g-btn g-btn-filled !px-8"
                                 >
                                     {submitting && <Loader2 className="h-4 w-4 animate-spin" />}

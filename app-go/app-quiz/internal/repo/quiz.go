@@ -114,7 +114,7 @@ func ListHistory(db *gorm.DB, uid int64, page, pageSize int) ([]HistoryRow, erro
 		 LEFT JOIN quiz_submissions qsub
 		   ON qsub.quiz_uuid = qs.quiz_uuid AND qsub.uid = ?
 		 WHERE qs.uid = ?
-		   AND qs.status IN ('done', 'failed')
+		   AND qs.status IN ('done', 'failed', 'generating', 'partial')
 		 ORDER BY qs.created_at DESC
 		 LIMIT ? OFFSET ?`,
 		uid, uid, pageSize, offset,
@@ -266,16 +266,46 @@ func ClearShareToken(db *gorm.DB, quizUUID string, uid int64) (bool, *string, er
 	return true, prev, nil
 }
 
-// ListGeneratingTimedOut returns the user's stuck 'generating' quiz uuids
-// (created before cutoff). The caller decides the terminal status per quiz by
-// counting checkpointed questions (partial when any survived, failed when not).
-func ListGeneratingTimedOut(db *gorm.DB, uid int64, cutoff time.Time) ([]string, error) {
-	var uuids []string
+// StuckGeneratingRow is one 'generating' quiz past the sweep floor. The caller
+// decides the terminal status per quiz by counting checkpointed questions
+// (partial when any survived, failed when not) and scales the allowed window
+// by QuestionCount (allowedFor).
+type StuckGeneratingRow struct {
+	QuizUUID      string
+	QuestionCount int
+	CreatedAt     time.Time
+}
+
+// ListGeneratingStuck returns the user's 'generating' quizzes created before
+// the FLOOR cutoff (the base timeout). Rows younger than the base can never be
+// timed out — the per-row allowed duration is always >= base.
+func ListGeneratingStuck(db *gorm.DB, uid int64, floor time.Time) ([]StuckGeneratingRow, error) {
+	var rows []StuckGeneratingRow
 	err := db.Raw(
-		"SELECT quiz_uuid FROM quiz_sets WHERE uid = ? AND status = 'generating' AND created_at < ?",
-		uid, cutoff,
-	).Scan(&uuids).Error
-	return uuids, err
+		"SELECT quiz_uuid, question_count, created_at FROM quiz_sets "+
+			"WHERE uid = ? AND status = 'generating' AND created_at < ?",
+		uid, floor,
+	).Scan(&rows).Error
+	return rows, err
+}
+
+// QuizSetLiteRow carries the columns the single-quiz timeout sweep needs.
+type QuizSetLiteRow struct {
+	QuestionCount int
+	CreatedAt     time.Time
+}
+
+// GetQuizSetLite fetches question_count + created_at for one quiz (uid-guarded).
+func GetQuizSetLite(db *gorm.DB, quizUUID string, uid int64) (*QuizSetLiteRow, error) {
+	var row QuizSetLiteRow
+	err := db.Raw(
+		"SELECT question_count, created_at FROM quiz_sets WHERE quiz_uuid = ? AND uid = ?",
+		quizUUID, uid,
+	).Scan(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
 }
 
 // MarkQuizTimedOutStatus flips a single stuck generating quiz to the given
@@ -288,6 +318,34 @@ func MarkQuizTimedOutStatus(db *gorm.DB, quizUUID string, uid int64, cutoff time
 			"WHERE quiz_uuid = ? AND uid = ? AND status = 'generating' AND created_at < ?",
 		status, message, time.Now().UTC(), quizUUID, uid, cutoff,
 	).Error
+}
+
+// QuizTitleExists reports whether the user already has ANOTHER quiz with the
+// same title. Uniqueness is per-uid; MySQL collation makes it case-insensitive.
+func QuizTitleExists(db *gorm.DB, uid int64, title string, excludeUUID string) (bool, error) {
+	var n int64
+	err := db.Raw(
+		"SELECT COUNT(*) FROM quiz_sets WHERE uid = ? AND title = ? AND quiz_uuid <> ?",
+		uid, title, excludeUUID,
+	).Scan(&n).Error
+	return n > 0, err
+}
+
+// RenameQuizSet updates the title of an owned quiz (any status except
+// deleting). RowsAffected == 0 → gorm.ErrRecordNotFound (caller maps to 404).
+func RenameQuizSet(db *gorm.DB, quizUUID string, uid int64, title string) error {
+	res := db.Exec(
+		"UPDATE quiz_sets SET title = ?, updated_at = ? "+
+			"WHERE quiz_uuid = ? AND uid = ? AND (status IS NULL OR status <> 'deleting')",
+		title, time.Now().UTC(), quizUUID, uid,
+	)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // ListDoneQuizUUIDs returns the user's 'done' quiz uuids for the

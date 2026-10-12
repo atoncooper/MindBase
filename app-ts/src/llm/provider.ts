@@ -30,6 +30,11 @@ export function createGatewayModel(
     name: "higress",
     baseURL: config.aiGateway.baseUrl,
     apiKey: opts.apiKey ?? config.aiGateway.apiKey,
+    // generateObject 走 JSON Schema 结构化输出（json_schema response_format）：
+    // GLM 对 schema 遵循度好且显著快于默认的 json_object+prompt 内联模式——
+    // 后者是出题批次慢/挂起/解析失败的根因。chat/streamText 不传 responseFormat，
+    // 不受此开关影响。
+    supportsStructuredOutputs: true,
     headers: {
       "X-Request-Id": requestId,
       "X-Purpose": purpose,

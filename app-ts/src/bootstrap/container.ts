@@ -282,7 +282,9 @@ export async function bootstrap() {
   if (config.noteMcp.enabled) {
     const noteMcpHeaders: Record<string, string> = {};
     if (config.noteMcp.bearerToken) noteMcpHeaders["Authorization"] = `Bearer ${config.noteMcp.bearerToken}`;
-    if (config.noteMcp.apiKey) noteMcpHeaders["X-Api-Key"] = config.noteMcp.apiKey;
+    // MCP server 服务模式认 APISIX 惯例的 `apikey` 头（serve.go: Header.Get("apikey")），
+    // 不是 X-Api-Key——头名错位会被服务端当作未带凭证而 401
+    if (config.noteMcp.apiKey) noteMcpHeaders["apikey"] = config.noteMcp.apiKey;
     const noteMcp = new McpClient({
       name: "note",
       url: config.noteMcp.url,
@@ -301,7 +303,7 @@ export async function bootstrap() {
   if (config.quizMcp.enabled) {
     const quizMcpHeaders: Record<string, string> = {};
     if (config.quizMcp.bearerToken) quizMcpHeaders["Authorization"] = `Bearer ${config.quizMcp.bearerToken}`;
-    if (config.quizMcp.apiKey) quizMcpHeaders["X-Api-Key"] = config.quizMcp.apiKey;
+    if (config.quizMcp.apiKey) quizMcpHeaders["apikey"] = config.quizMcp.apiKey;
     const quizMcp = new McpClient({
       name: "quiz",
       url: config.quizMcp.url,
@@ -321,14 +323,17 @@ export async function bootstrap() {
   if (config.boardMcp.enabled) {
     const boardMcpHeaders: Record<string, string> = {};
     if (config.boardMcp.bearerToken) boardMcpHeaders["Authorization"] = `Bearer ${config.boardMcp.bearerToken}`;
-    if (config.boardMcp.apiKey) boardMcpHeaders["X-Api-Key"] = config.boardMcp.apiKey;
+    if (config.boardMcp.apiKey) boardMcpHeaders["apikey"] = config.boardMcp.apiKey;
     const boardMcp = new McpClient({
       name: "board",
       url: config.boardMcp.url,
       timeoutMs: config.boardMcp.timeoutMs,
       defaultHeaders: boardMcpHeaders,
     });
-    const registered = await registerMcpTools(registry, boardMcp, { maxContentChars: config.boardMcp.maxContentChars });
+    // discoveryUid="1"：service-mode 网关要求正整数 X-Uid（uid<=0 拒绝），boot
+    // 发现无用户会话；tools/list 只返回工具元数据不触达上游，真实调用仍按会话
+    // uid 走 X-Uid
+    const registered = await registerMcpTools(registry, boardMcp, { maxContentChars: config.boardMcp.maxContentChars, discoveryUid: "1" });
     log.info(`[BOOT] board MCP tools registered: ${registered} (${config.boardMcp.url})`);
     // /chat/board/complete reuses the same service-mode client (GET board + one
     // structured LLM call); route is registered only when this block ran.

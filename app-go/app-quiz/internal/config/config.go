@@ -17,15 +17,16 @@ import (
 )
 
 type Config struct {
-	App      AppConfig    `yaml:"app"`
-	Server   ServerConfig `yaml:"server"`
-	Timezone string       `yaml:"timezone"`
-	RDBMS    RDBMSConfig  `yaml:"rdbms"`
-	Mongo    MongoConfig  `yaml:"mongo"`
-	Redis    RedisConfig  `yaml:"redis"`
-	Quota    QuotaConfig  `yaml:"quota"`
-	CORS     CORSConfig   `yaml:"cors"`
-	Log      LogConfig    `yaml:"log"`
+	App       AppConfig       `yaml:"app"`
+	Server    ServerConfig    `yaml:"server"`
+	Timezone  string          `yaml:"timezone"`
+	RDBMS     RDBMSConfig     `yaml:"rdbms"`
+	Mongo     MongoConfig     `yaml:"mongo"`
+	Redis     RedisConfig     `yaml:"redis"`
+	Quota     QuotaConfig     `yaml:"quota"`
+	CORS      CORSConfig      `yaml:"cors"`
+	Log       LogConfig       `yaml:"log"`
+	Lifecycle LifecycleConfig `yaml:"lifecycle"`
 }
 
 // QuotaConfig mirrors the Python app/config quiz.limits daily quotas (UTC day,
@@ -33,6 +34,13 @@ type Config struct {
 type QuotaConfig struct {
 	Generate int `yaml:"generate"`
 	Grade    int `yaml:"grade"`
+}
+
+// LifecycleConfig owns the stuck-generating sweep. 大题量（plan-then-generate
+// 并发批）生成 40-50 题可超过固定 15 分钟，因此基数可配置，且实际允许时长按
+// 题量缩放（见 service allowedFor）。
+type LifecycleConfig struct {
+	GenerationTimeoutMinutes int `yaml:"generation_timeout_minutes"`
 }
 
 type AppConfig struct {
@@ -153,6 +161,7 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPQUIZ__LOG__FILE__PATH"); v != "" {
 		cfg.Log.File.Path = v
 	}
+	atoi("APPQUIZ__LIFECYCLE__GENERATION_TIMEOUT_MINUTES", &cfg.Lifecycle.GenerationTimeoutMinutes)
 }
 
 // Validate fails loud on config that would silently break the service.
@@ -175,6 +184,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Quota.Grade <= 0 {
 		cfg.Quota.Grade = 20
+	}
+	if cfg.Lifecycle.GenerationTimeoutMinutes <= 0 {
+		cfg.Lifecycle.GenerationTimeoutMinutes = 15
 	}
 	return nil
 }

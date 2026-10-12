@@ -170,6 +170,50 @@ describe("QuizGenerationService.generateQuestions", () => {
   });
 });
 
+describe("generateQuestions free-mode source_chunk_index", () => {
+  const chunk = { title: "出题主题", content: "数学1 模拟测试" };
+  const base: QuizQuestionDict = {
+    question: "q",
+    type: "single_choice",
+    difficulty: "medium",
+    source_chunk_index: 0,
+    options: ["A. 收敛", "B. 发散", "C. 极限", "D. 单调"],
+    correct_answer: "A",
+    explanation: "e",
+  };
+  const free = { topic: "数学1", material: "", difficultyPlan: "medium" };
+
+  it("coerces out-of-range / non-integer indices to 0 instead of rejecting the batch", async () => {
+    const svc = serviceWith(async () => [
+      { ...structuredClone(base), source_chunk_index: 1 },
+      { ...structuredClone(base), question: "q2", source_chunk_index: "x" },
+      { ...structuredClone(base), question: "q3", source_chunk_index: -2 },
+    ]);
+    const out = await svc.generateQuestions({
+      chunks: [chunk],
+      totalCount: 3,
+      typeDistribution: { single_choice: 3 },
+      difficulty: "medium",
+      uid: 7,
+      free,
+    });
+    expect(out).toHaveLength(3);
+    expect(out.every((q) => q.source_chunk_index === 0)).toBe(true);
+  });
+
+  it("kb mode still rejects an out-of-range source_chunk_index (provenance matters)", async () => {
+    const svc = serviceWith(async () => [{ ...structuredClone(base), source_chunk_index: 3 }]);
+    const out = await svc.generateQuestions({
+      chunks: [chunk],
+      totalCount: 1,
+      typeDistribution: { single_choice: 1 },
+      difficulty: "medium",
+      uid: 7,
+    });
+    expect(out).toEqual([]);
+  });
+});
+
 describe("buildPersonalizationSection", () => {
   it("returns empty when nothing is set", () => {
     expect(buildPersonalizationSection({})).toBe("");

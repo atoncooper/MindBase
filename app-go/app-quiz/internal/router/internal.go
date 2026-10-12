@@ -45,6 +45,7 @@ func registerInternalQuiz(e *gin.Engine, svc *service.Store) {
 	ig.POST("/sets", createQuizSet(svc))
 	ig.POST("/sets/:quiz_uuid/questions", finalizeQuizSet(svc))
 	ig.POST("/sets/:quiz_uuid/questions/append", appendQuizQuestions(svc))
+	ig.POST("/sets/:quiz_uuid/progress", updateQuizProgress(svc))
 	ig.POST("/sets/:quiz_uuid/fail", failQuizSet(svc))
 	ig.POST("/quota/peek", quotaPeekHandler(svc))
 	ig.POST("/quota/consume", quotaConsumeHandler(svc))
@@ -239,6 +240,38 @@ func appendQuizQuestions(svc *service.Store) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, result)
+	}
+}
+
+type agentQuizProgressReq struct {
+	UID    FlexInt64 `json:"uid"`
+	Stage  string    `json:"stage"`
+	Detail string    `json:"detail"`
+	Stored int       `json:"stored"`
+	Total  int       `json:"total"`
+}
+
+func updateQuizProgress(svc *service.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		quizUUID := strings.TrimSpace(c.Param("quiz_uuid"))
+		var req agentQuizProgressReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiErr(c, http.StatusBadRequest, "请求体格式错误")
+			return
+		}
+		if int64(req.UID) != 0 && int64(req.UID) != uid {
+			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
+			return
+		}
+		if err := svc.UpdateGenerationProgress(c.Request.Context(), uid, quizUUID, req.Stage, req.Detail, req.Stored, req.Total); err != nil {
+			respondAgentError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
 

@@ -27,14 +27,28 @@ func registerQuiz(e *gin.Engine, svc *service.Store) {
 	// Public sharing — declared before /:quiz_uuid so the static segment
 	// wins (Gin prioritises static over param at the same level). 60s
 	// browser/nginx-cacheable, same as the Python endpoint.
+	// GET = 无口令访问（带口令的分享返回 401 password_required）；
+	// POST = 提交口令换取试卷内容（口令错误 401）。
 	g.GET("/shared/:share_token", func(c *gin.Context) {
-		payload, err := svc.GetSharedQuiz(c.Request.Context(), c.Param("share_token"))
+		payload, err := svc.GetSharedQuiz(c.Request.Context(), c.Param("share_token"), "")
 		if err != nil {
 			respondAPIError(c, err)
 			return
 		}
 		c.Header("Cache-Control", "public, max-age=60")
 		c.Header("Vary", "Accept-Encoding")
+		c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+	})
+	g.POST("/shared/:share_token", func(c *gin.Context) {
+		var body struct {
+			Password string `json:"password"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		payload, err := svc.GetSharedQuiz(c.Request.Context(), c.Param("share_token"), body.Password)
+		if err != nil {
+			respondAPIError(c, err)
+			return
+		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
 	})
 
@@ -46,6 +60,7 @@ func registerQuiz(e *gin.Engine, svc *service.Store) {
 	g.POST("/:quiz_uuid/share", createShare(svc))
 	g.GET("/:quiz_uuid/share", shareStatus(svc))
 	g.DELETE("/:quiz_uuid/share", revokeShare(svc))
+	g.PATCH("/:quiz_uuid", renameQuiz(svc))
 	g.DELETE("/:quiz_uuid", deleteQuiz(svc))
 	g.GET("/:quiz_uuid", getQuiz(svc))
 }
@@ -191,6 +206,7 @@ func sanitizeFilename(title string) string {
 
 type createShareBody struct {
 	ExpiresInDays *json.Number `json:"expires_in_days"`
+	Password      string       `json:"password"`
 }
 
 func createShare(svc *service.Store) gin.HandlerFunc {
@@ -211,6 +227,13 @@ func createShare(svc *service.Store) gin.HandlerFunc {
 				return
 			}
 		}
+		if pw := strings.TrimSpace(body.Password); pw != "" {
+			if n := len([]rune(pw)); n < 4 || n > 32 {
+				apiErr(c, http.StatusBadRequest, "访问密码须为 4-32 位")
+				return
+			}
+			body.Password = pw
+		}
 		var expiresAt *time.Time
 		if body.ExpiresInDays != nil {
 			days, err := strconv.Atoi(body.ExpiresInDays.String())
@@ -226,7 +249,7 @@ func createShare(svc *service.Store) gin.HandlerFunc {
 			expiresAt = &t
 		}
 
-		resp, err := svc.CreateShare(c.Request.Context(), quizUUID, uid, expiresAt)
+		resp, err := svc.CreateShare(c.Request.Context(), quizUUID, uid, expiresAt, body.Password)
 		if err != nil {
 			respondAPIError(c, err)
 			return
@@ -257,6 +280,28 @@ func revokeShare(svc *service.Store) gin.HandlerFunc {
 			return
 		}
 		resp, err := svc.RevokeShare(c.Request.Context(), c.Param("quiz_uuid"), uid)
+		if err != nil {
+			respondAPIError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, resp)
+	}
+}
+
+func renameQuiz(svc *service.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		var body struct {
+			Title string `json:"title"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			apiErr(c, http.StatusBadRequest, "请求体需为 JSON：{title}")
+			return
+		}
+		resp, err := svc.RenameQuiz(uid, c.Param("quiz_uuid"), body.Title)
 		if err != nil {
 			respondAPIError(c, err)
 			return

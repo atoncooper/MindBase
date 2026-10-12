@@ -42,7 +42,7 @@ export interface McpClientOptions {
   url: string;
   /** per-request + handshake timeout (SDK RequestOptions.timeout), default 30s */
   timeoutMs?: number;
-  /** static headers sent with every request (auth: Bearer token / X-Api-Key) */
+  /** static headers sent with every request (auth: Bearer token / apikey — MCP server 服务模式认 `apikey` 头) */
   defaultHeaders?: Record<string, string>;
   /** injectable for tests; defaults to global fetch */
   fetchImpl?: typeof fetch;
