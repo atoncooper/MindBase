@@ -17,7 +17,6 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-.pytests_cache/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
@@ -116,7 +115,6 @@ reasonix.toml
 .gocache/
 .gopath/
 .gotmp/
-.gocache/
 .pip-tmp/
 # Local test scratch dirs (sandbox temp artifacts)
 _tmp/
@@ -132,5 +130,8 @@ higress-console.jar
 
 # 本机密钥文件（不入库;主密钥/凭证独立于 .env 存放）
 secrets/
+# NVIDIA 驱动在运行桌面程序时可能于工作目录生成的垃圾目录
+NVIDIA Corporation/
+
 # 本地测试临时产物
 tmp-gotest/

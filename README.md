@@ -4,7 +4,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。可选知识图谱：LLM 从转写稿抽取实体与关系写入 Neo4j（带原文引文防幻觉），问答时支持跨视频实体关联检索。
 
-除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）与支付后台管理（app-pay-admin，Go）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
+除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）与支付后台管理（app-pay-admin，Go）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖），以及一个 Flutter 移动端 **app-mobile**（🚧 测试阶段，尚未开发完成，见其 README）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
 
 后端 FastAPI + LangGraph multi-agent（Chat / Memory / Note / Code / Search / Summary 六个 harness 注册 agent，Quiz 为结构化出题模块，task-quiz 独立对话通道；子 agent 经 delegate 按需调用）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。支持 OpenAI / DashScope / DeepSeek 多 LLM Provider。
 
@@ -29,6 +29,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 | **交易/会员服务 app-pay**（订单状态机 / 渠道 / 审计 / 配置） | [`docs/app-pay.md`](docs/app-pay.md) |
 | **支付后台 app-pay-admin**（查询 / 补偿开通 / 鉴权） | [`docs/app-pay-admin.md`](docs/app-pay-admin.md) |
 | **桌面端 mind-base-desktop**（Tauri 2，全本地） | [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md) |
+| **移动端 app-mobile**（Flutter；🚧 测试阶段 / WIP，未开发完成） | [`app-mobile/README.md`](app-mobile/README.md) |
 | **公开分享体系**（笔记/云盘/测验分享链接、域名策略、设备证明、提取码） | [`docs/sharing.md`](docs/sharing.md) |
 
 ### 最简命令（TL;DR）
