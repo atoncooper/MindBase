@@ -23,6 +23,7 @@
 
 ### Added
 
+- **移动端 app-mobile（Flutter）首次入库（🚧 测试阶段，尚未开发完成）**：B站收藏知识库的 Flutter 客户端，零后端改动、走同一套 APISIX 路由。已具备：聊天（SSE 流式 / 抽屉会话 / reasoning / 来源 / artifact，帧语义对齐 frontendv2）、收藏夹、笔记（Markdown + If-Match 乐观并发）、云盘、测验、会员中心（Google 式扁平 UI）、设置与登录（B站扫码 + 密码）。工程面：全平台 MiSans 字体统一（斜体/等宽链/字重映射守护测试 + `ext.app.fontProbe` 运行时探针）、组件主题 TextStyle 从 textTheme 派生（修复 ListTile 字体继承断裂）、侧边栏边缘右滑 + 半屏宽度 + push 不关抽屉、输入框桌面 Enter 发送与拍照/相册/文件附件、金样回归（侧边栏/笔记/会员中心）与 20 项测试全绿。**请勿用于生产**：推送通知、云盘后台上传等未完成，iOS 未实测，详见 `app-mobile/README.md`。
 - **云盘服务迁移（app-go/app-cloud）**：云盘整体迁至独立 Go 服务（:8007），并完善为对标百度网盘的能力面——**存储配额**（免费 10GB / VIP 6TB / SVIP 60TB，init 上传即校验超限 413，用量条上屏）、**百度式分享**（token 链接 + 可选 4 位提取码（哈希存储）+ 有效期 + 下载上限 + 查看/下载计数，公开页 `/cloud/s/{token}` 免登录可达，访问发放 15 分钟短时效预签名 URL）、**回收站**（删除改软删，MinIO/Mongo/Milvus 数据保留 30 天供恢复，后台 sweeper 自动清理；新增恢复/彻底删除端点）、**文件搜索**。**文档解析+向量化管线全部 Go 重写**（PDF/docx/xlsx/pptx/markdown/html/文本提取 → 语义分块 → Higress 网关 embedding → Milvus cloud_drive（启动 schema 守护）→ Mongo 全文 → 三层一致性校验），同一 bucket/key 零数据迁移，RAG 混合检索无缝命中 Go 写入的向量。backend 云盘代码全量删除（cloud router / upload/processing/cleanup 服务 / cloud 仓储 / doc_parser，保留笔记转化用的只读 document_text），APISIX 新增 `/cloud/*` 兜底路由直达 app-cloud——云盘请求在代码与网关两个层面都不再经过 Python backend；WS 状态经 Redis pub/sub 桥接保持前端推送不变。
 - **SVIP 档位**：app-pay SKU 种子新增 SVIP 月/季/年（占位价），`MembershipService.extend` 支持 tier（订单 SKU 前缀 `SVIP_*` 自动判定），运营补偿开通（API + PayAdmin 界面）可选档位；云盘配额按 membership tier 自动生效。
 
