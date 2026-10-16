@@ -196,7 +196,7 @@ func attestDevice(d Deps) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"ticket":    d.Attestor.IssueTicket(purpose, body.Fingerprint, time.Now()),
+			"ticket":     d.Attestor.IssueTicket(purpose, body.Fingerprint, time.Now()),
 			"expires_in": service.AttestTicketTTLSecs,
 		})
 	}

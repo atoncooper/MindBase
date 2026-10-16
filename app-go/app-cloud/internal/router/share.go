@@ -94,7 +94,7 @@ func createShare(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-			// 响应里的提取码从存储值解密取回（与属主列表同语义）
+		// 响应里的提取码从存储值解密取回（与属主列表同语义）
 		code := ""
 		if body.Code != "" {
 			code = d.Share.ViewCode(share)
@@ -254,16 +254,16 @@ func shareAccess(d Deps) gin.HandlerFunc {
 // 哈希行不可逆）是属主可见的明文提取码 —— 公开端点不经过此函数。
 func shareView(s *model.CloudShare, withToken bool, code string) gin.H {
 	out := gin.H{
-		"id":             s.ID,
-		"file_id":        s.FileID,
-		"has_code":       s.ExtractionCode != nil,
+		"id":              s.ID,
+		"file_id":         s.FileID,
+		"has_code":        s.ExtractionCode != nil,
 		"extraction_code": code,
-		"expires_at":     s.ExpiresAt,
-		"max_downloads":  s.MaxDownloads,
-		"view_count":     s.ViewCount,
-		"download_count": s.DownloadCount,
-		"is_revoked":     s.IsRevoked,
-		"created_at":     s.CreatedAt,
+		"expires_at":      s.ExpiresAt,
+		"max_downloads":   s.MaxDownloads,
+		"view_count":      s.ViewCount,
+		"download_count":  s.DownloadCount,
+		"is_revoked":      s.IsRevoked,
+		"created_at":      s.CreatedAt,
 	}
 	if withToken {
 		out["share_token"] = s.ShareToken

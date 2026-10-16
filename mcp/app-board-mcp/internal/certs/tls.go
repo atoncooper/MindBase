@@ -178,10 +178,10 @@ func generateLeaf(ca *caKeyPair, validity time.Duration) (certPEM, keyPEM []byte
 	}
 	host, _ := os.Hostname()
 	tmpl := x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "app-board-mcp", Organization: []string{"MindBase"}},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(validity),
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "app-board-mcp", Organization: []string{"MindBase"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(validity),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
