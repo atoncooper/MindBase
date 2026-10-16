@@ -58,6 +58,8 @@ var ownedTables = []string{
 	"cloud_folders",
 	"cloud_files",
 	"cloud_shares",
+	"cloud_vector_tasks",
+	"cloud_quota",
 	"workspaces",
 	"workspace_bindings",
 }
@@ -138,6 +140,33 @@ func schemaDDL() []string {
 			index idx_cloud_shares_uid (uid),
 			index idx_cloud_shares_file (file_id),
 			constraint uq_cloud_shares_token unique (share_token)
+		)`,
+		// Durable outbox for the vectorize pipeline (multi-replica hardening
+		// step ②): one row per upload_uuid, claimed FOR UPDATE SKIP LOCKED,
+		// stale claims requeued by the janitor. Created once, never ALTERed.
+		`create table if not exists cloud_vector_tasks (
+			id          bigint auto_increment primary key,
+			upload_uuid varchar(64)  not null,
+			uid         bigint       not null,
+			status      varchar(20)  not null default 'pending',
+			attempts    int          not null default 0,
+			last_error  varchar(500) null,
+			claimed_by  varchar(128) null,
+			claimed_at  datetime     null,
+			created_at  datetime     null,
+			updated_at  datetime     null,
+			constraint uq_cloud_vector_tasks_uuid unique (upload_uuid),
+			index ix_cvt_status (status, id)
+		)`,
+		// Maintained usage counter (multi-replica hardening step ③): O(1)
+		// quota reads instead of a per-request SUM over cloud_files. Every
+		// FileRepo mutation adjusts it in the same transaction; the daily
+		// reconciler heals drift — the SUM stays the accounting authority.
+		`create table if not exists cloud_quota (
+			uid        bigint primary key,
+			used_bytes bigint   not null default 0,
+			updated_at datetime null,
+			constraint cloud_quota_ibfk_1 foreign key (uid) references users (uid)
 		)`,
 		`create table if not exists workspaces (
 			id          int auto_increment primary key,

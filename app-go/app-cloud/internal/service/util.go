@@ -6,8 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"app-cloud/internal/model"
@@ -63,14 +66,31 @@ func urlEscape(s string) string {
 type Pipeline struct {
 	db      *gorm.DB
 	files   *repo.FileRepo
+	tasks   *repo.VectorTaskRepo
 	mongo   *mongostore.MongoStore
 	rdb     RedisPublisher
 	channel string
 	engine  pipeline.VectorEngine // nil = pipeline disabled
+
+	// Durable task queue (workerpool.go): a fixed worker pool drains
+	// cloud_vector_tasks; wake nudges idle workers, stop shuts them down.
+	startOnce sync.Once
+	stopOnce  sync.Once
+	wg        sync.WaitGroup
+	wake      chan struct{}
+	stop      chan struct{}
+	workerID  string
 }
 
 func NewPipeline(db *gorm.DB, mongo *mongostore.MongoStore, rdb RedisPublisher, channel string) *Pipeline {
-	return &Pipeline{db: db, files: repo.NewFileRepo(), mongo: mongo, rdb: rdb, channel: channel}
+	hostname, _ := os.Hostname()
+	return &Pipeline{
+		db: db, files: repo.NewFileRepo(), tasks: repo.NewVectorTaskRepo(),
+		mongo: mongo, rdb: rdb, channel: channel,
+		wake:     make(chan struct{}, 1),
+		stop:     make(chan struct{}),
+		workerID: fmt.Sprintf("%s-%d", hostname, os.Getpid()),
+	}
 }
 
 // SetEngine attaches the vector engine (nil disables the pipeline).
@@ -86,8 +106,9 @@ const pipelineTimeout = 5 * time.Minute
 // comfortably exceed pipelineTimeout.
 const staleProcessingAfter = 10 * time.Minute
 
-// Trigger marks the file processing and runs the pipeline in a background
-// goroutine; the HTTP response returns immediately.
+// Trigger marks the file pending and enqueues the durable pipeline task; the
+// bounded worker pool (workerpool.go) picks it up and the HTTP response
+// returns immediately. The task row survives restarts — it IS the queue.
 func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) error {
 	f, err := p.files.GetByUUID(p.db, uploadUUID, uid)
 	if err != nil {
@@ -96,23 +117,12 @@ func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) er
 	if f == nil {
 		return ErrNotFound
 	}
-	// Mark processing + push status; actual work happens in RunSync.
-	processing := "processing"
-	if err := p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": processing}); err != nil {
+	// Mark pending; the claiming worker moves it to processing and pushes the
+	// WS status, so states stay truthful while the task waits in the queue.
+	if err := p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "pending"}); err != nil {
 		return err
 	}
-	p.pushStatus(ctx, uid, uploadUUID, "processing", 0, "")
-	p.RunAsync(f)
-	return nil
-}
-
-// RunAsync runs RunSync in a background goroutine; a panic is converted to a
-// failed status so the row never sits in "processing" forever.
-func (p *Pipeline) RunAsync(f *model.CloudFile) {
-	go func() {
-		defer p.recoverFailed("pipeline", f.UploadUUID, f.UID)
-		_, _ = p.RunSync(context.Background(), f)
-	}()
+	return p.EnqueueTask(uploadUUID, uid)
 }
 
 // Reprocess deletes existing vectors then re-runs the pipeline.
@@ -133,7 +143,9 @@ func (p *Pipeline) Reprocess(ctx context.Context, uploadUUID string, uid int64) 
 		map[string]any{"vector_status": "pending"}); err != nil {
 		return "", err
 	}
-	p.RunAsync(f)
+	if err := p.EnqueueTask(uploadUUID, uid); err != nil {
+		return "", err
+	}
 	return taskID, nil
 }
 
@@ -218,15 +230,6 @@ func (p *Pipeline) pushStatus(ctx context.Context, uid int64, uploadUUID, status
 	_ = p.rdb.Publish(ctx, p.channel, payload)
 }
 
-// recoverFailed converts a goroutine panic into a failed status so the row
-// never sits in "processing" forever.
-func (p *Pipeline) recoverFailed(op, uploadUUID string, uid int64) {
-	if r := recover(); r != nil {
-		logErr("[CLOUD_PIPELINE] panic", op, uploadUUID, r)
-		_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "failed"})
-	}
-}
-
 // ReconcileStaleProcessing flips a row stuck in "processing" (crash, panic,
 // restart mid-run) to failed once it exceeds staleProcessingAfter, so the
 // user can retry instead of staring at an endless spinner. Mutates f in
@@ -242,6 +245,9 @@ func (p *Pipeline) ReconcileStaleProcessing(f *model.CloudFile) {
 		map[string]any{"vector_status": "failed"}); err != nil {
 		return
 	}
+	// Close the outbox row too, or the janitor would resurrect a task the
+	// user has already been told failed.
+	_ = p.tasks.FinishByUploadUUID(p.db, f.UploadUUID, "failed", "stale processing reconciled")
 	slog.Warn("[CLOUD_PIPELINE] stale processing reconciled to failed",
 		"upload_uuid", f.UploadUUID, "age", time.Since(*f.UpdatedAt).Round(time.Second))
 	failed := "failed"

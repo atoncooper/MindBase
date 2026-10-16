@@ -56,6 +56,7 @@ export function createMainAgent(
       "delegate_to_agent",
       "ask_user",
       "fetch_webpage",
+      "web_search",
       ...(includeKgTool ? ["kg_search"] : []),
     ],
     purpose: "chat",
@@ -76,7 +77,7 @@ export function createMainAgent(
           ? await skills.forcedSection(input.uid, input.skillIds)
           : await skills.indexSection(input.uid);
       }
-      const base = prompts.render("main", {
+      const base = prompts.render("agents/main", {
         TODAY: today(), // local date in the configured timezone (UTC would be wrong 00:00–08:00 CST)
         KNOWLEDGE_STATUS: hasData ? "可用" : "暂无数据（如用户问知识库内容，请如实说明）",
         SCOPE_LINE: buildScopeLine(input.scope),

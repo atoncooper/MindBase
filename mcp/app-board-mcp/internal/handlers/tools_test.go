@@ -147,10 +147,10 @@ func TestListBoardsSearch(t *testing.T) {
 	out := resultText(t, res, nil)
 	if !res.IsError {
 		var parsed struct {
-			Matched   int    `json:"matched"`
-			Total     int64  `json:"total"`
-			Scanned   int64  `json:"scanned"`
-			Truncated bool   `json:"truncated"`
+			Matched   int   `json:"matched"`
+			Total     int64 `json:"total"`
+			Scanned   int64 `json:"scanned"`
+			Truncated bool  `json:"truncated"`
 		}
 		if json.Unmarshal([]byte(out), &parsed) != nil {
 			t.Fatalf("output not JSON: %s", out)

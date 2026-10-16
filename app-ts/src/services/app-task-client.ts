@@ -44,6 +44,26 @@ export class AppTaskClient extends InternalServiceClient {
     return this.json<RegisterTaskResult>(res, "app-task register failed");
   }
 
+  /**
+   * GET /tasks?domain=… — scheduler list (the shape is an array in practice;
+   * envelope keys are tolerated defensively). Only status + payload surface
+   * here — the task-quiz active-task cap counts a user's pending/running rows.
+   */
+  async listTasks(domain?: string): Promise<Array<{ status: string; payload: Record<string, unknown> }>> {
+    const res = await this.request("GET", domain ? `/tasks?domain=${encodeURIComponent(domain)}` : "/tasks");
+    const json = await this.json<unknown>(res, "app-task list failed");
+    const rows = Array.isArray(json)
+      ? json
+      : ((json as { tasks?: unknown[] }).tasks ?? (json as { data?: unknown[] }).data ?? []);
+    return rows.map((row) => {
+      const r = (row && typeof row === "object" ? row : {}) as { status?: unknown; payload?: unknown };
+      return {
+        status: typeof r.status === "string" ? r.status : "",
+        payload: (r.payload && typeof r.payload === "object" ? r.payload : {}) as Record<string, unknown>,
+      };
+    });
+  }
+
   /** GET /tasks/{task_id} (scheduler view + logs). */
   async taskDetail(taskId: string): Promise<unknown> {
     const res = await this.request("GET", `/tasks/${encodeURIComponent(taskId)}`);

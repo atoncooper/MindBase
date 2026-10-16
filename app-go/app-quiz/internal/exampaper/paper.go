@@ -42,6 +42,8 @@ type QuestionRow struct {
 	Options      []string
 	Answer       string // pre-rendered (letters or text); empty = hide
 	Explanation  string
+	// Score 每题分值（蓝本固有；0 = 无分值 → 整卷均分兜底）
+	Score int
 }
 
 // PaperQuestion is one placed question inside a section.
@@ -123,6 +125,17 @@ func styleDuration(style string) int {
 	}
 }
 
+// annotatedSumWithRows sums the explicit per-question scores present on rows.
+func annotatedSumWithRows(rows []QuestionRow) int {
+	sum := 0
+	for _, q := range rows {
+		if q.Score > 0 {
+			sum += q.Score
+		}
+	}
+	return sum
+}
+
 // BuildPaper groups questions into sections and distributes the total score
 // (every question gets total/N points; the first total%N questions absorb the
 // remainder). Layout fails only on empty input or an unsupported style.
@@ -154,6 +167,25 @@ func BuildPaper(title, style string, totalScore int, durationMin int, includeAns
 	n := len(questions)
 	base := totalScore / n
 	rem := totalScore % n
+	// 每题分值：题目自带 score（蓝本固有）优先；无分值行走整卷均分。
+	// 带分值行存在时，卷面总分 = 实际分配合计（缩抽题后 != 传入 totalScore）。
+	annotated := 0
+	for _, q := range questions {
+		if q.Score > 0 {
+			annotated++
+		}
+	}
+	useAnnotated := annotated > 0
+	restBase := 0
+	restRem := 0
+	if useAnnotated {
+		rest := totalScore - annotatedSumWithRows(questions)
+		if rest < 0 {
+			rest = 0
+		}
+		restBase = rest / (n - annotated)
+		restRem = rest % (n - annotated)
+	}
 
 	paper := &Paper{
 		Title:          title,
@@ -175,14 +207,25 @@ func BuildPaper(title, style string, totalScore int, durationMin int, includeAns
 		}
 		delete(buckets, sec.Type)
 		ps := PaperSection{Index: len(paper.Sections) + 1, Title: sec.Title}
-		start := placed
 		for _, row := range rows {
-			score := base
-			if placed < rem { // first rem questions get +1
-				score++
+			score := 0
+			switch {
+			case row.Score > 0: // 题目固有分值（蓝本卷）
+				score = row.Score
+			case useAnnotated: // 分值标注卷的无分值题目：分摊余量
+				score = restBase
+				if restRem > 0 {
+					score++
+					restRem--
+				}
+			default: // 整卷均分（历史口径）
+				score = base
+				if placed < rem { // first rem questions get +1
+					score++
+				}
 			}
 			ps.ScoreSum += score
-			ps.Questions = append(ps.Questions, PaperQuestion{Number: placed - start + 1, Row: row, Score: score})
+			ps.Questions = append(ps.Questions, PaperQuestion{Number: placed + 1, Row: row, Score: score})
 			placed++
 		}
 		// uniform per-question display when every score matches
@@ -204,14 +247,26 @@ func BuildPaper(title, style string, totalScore int, durationMin int, includeAns
 		if ps.Title == "" {
 			ps.Title = "综合题"
 		}
-		start := placed
+
 		for _, row := range rows {
-			score := base
-			if placed < rem {
-				score++
+			score := 0
+			switch {
+			case row.Score > 0:
+				score = row.Score
+			case useAnnotated:
+				score = restBase
+				if restRem > 0 {
+					score++
+					restRem--
+				}
+			default:
+				score = base
+				if placed < rem {
+					score++
+				}
 			}
 			ps.ScoreSum += score
-			ps.Questions = append(ps.Questions, PaperQuestion{Number: placed - start + 1, Row: row, Score: score})
+			ps.Questions = append(ps.Questions, PaperQuestion{Number: placed + 1, Row: row, Score: score})
 			placed++
 		}
 		ps.Uniform = ps.Questions[0].Score
@@ -223,6 +278,12 @@ func BuildPaper(title, style string, totalScore int, durationMin int, includeAns
 		}
 		paper.Sections = append(paper.Sections, ps)
 	}
+	// 卷面总分 = 实际分配合计（分值标注卷缩抽题后与传入 totalScore 可能不同）
+	sum := 0
+	for _, ps := range paper.Sections {
+		sum += ps.ScoreSum
+	}
+	paper.TotalScore = sum
 	return paper, nil
 }
 

@@ -24,7 +24,7 @@ export const MAIN_AGENT: AgentManifestEntry = {
 export const SUB_AGENTS: AgentManifestEntry[] = [
   { name: "note", description: "笔记整理 agent：把对话/给定内容整理成结构化 markdown 笔记并保存到用户笔记库。", subAgent: true },
   { name: "code", description: "编程 agent：编写代码解决任务，沙箱可用时运行验证；也做代码解释与调试。", subAgent: true },
-  { name: "quiz", description: "出题与批改 agent：按主题/内容出题（含答案解析），或批改用户作答并评分。", subAgent: true },
+  { name: "quiz", description: "出题与批改 agent：可自主规划并调用工具——联网搜索考试大纲/规范、检索用户知识库收集素材，然后按主题/大纲出题（含答案解析与来源），或批改作答评分。", subAgent: true },
   { name: "board", description: "板子操作 agent：创建/查询/更新用户的思维导图与白板（经 MCP 操作 app-board）。", subAgent: true },
 ];
 

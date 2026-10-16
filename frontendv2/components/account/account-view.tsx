@@ -20,6 +20,7 @@ import {
     ChevronRight,
     Copy,
     Crown,
+    Gauge,
     KeyRound,
     Loader2,
     Mail,
@@ -33,10 +34,12 @@ import { cn } from "@/lib/utils";
 import {
     userApi,
     payApi,
+    quotaApi,
     type ProfileData,
     type SecurityOverview,
     type PayMembership,
     type PayTierInfo,
+    type QuotaSummary,
 } from "@/lib/api";
 import { ProfileCard } from "./profile-card";
 import { EmailCard } from "./email-card";
@@ -75,6 +78,8 @@ export function AccountView() {
     // 会员态（app-pay）。拉取失败静默降级为「免费用户」，不阻塞个人中心。
     const [membership, setMembership] = useState<PayMembership | null>(null);
     const [tiers, setTiers] = useState<PayTierInfo[]>([]);
+    // 用量摘要（/quota/summary）：仅用于入口行的迷你展示，失败静默。
+    const [quotaSummary, setQuotaSummary] = useState<QuotaSummary | null>(null);
 
     const loadMembership = useCallback(() => {
         payApi
@@ -85,6 +90,10 @@ export function AccountView() {
             .tiers()
             .then((t) => setTiers(t))
             .catch(() => setTiers([]));
+        quotaApi
+            .getSummary()
+            .then((q) => setQuotaSummary(q))
+            .catch(() => setQuotaSummary(null));
     }, []);
 
     const flash = useCallback((message: string, type: "success" | "error") => {
@@ -308,6 +317,17 @@ export function AccountView() {
 
                         {/* 更多 */}
                         <Group title="更多">
+                            <ListRow
+                                icon={<Gauge className="h-4 w-4" />}
+                                tint="bg-teal-500/10 text-teal-600"
+                                label="用量与额度"
+                                value={
+                                    quotaSummary?.enabled
+                                        ? `AI 问答 ${quotaSummary.kinds.find((k) => k.kind === "chat")?.used ?? 0}/${quotaSummary.kinds.find((k) => k.kind === "chat")?.limit ?? 0}`
+                                        : "每日用量"
+                                }
+                                onClick={() => router.push("/quota")}
+                            />
                             <ListRow
                                 icon={<Crown className="h-4 w-4" />}
                                 tint="bg-amber-500/10 text-amber-600"

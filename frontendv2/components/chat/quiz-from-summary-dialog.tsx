@@ -293,7 +293,7 @@ export function QuizFromSummaryDialog({
                                         type="button"
                                         onClick={() => {
                                             onClose();
-                                            router.push(`/quiz?quiz=${result.quiz_uuid}`);
+                                            router.push(`/quiz/${result.quiz_uuid}`);
                                         }}
                                         className="btn-pill btn-primary h-10 flex-1 text-[13px]"
                                     >

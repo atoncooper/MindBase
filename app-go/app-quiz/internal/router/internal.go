@@ -47,6 +47,8 @@ func registerInternalQuiz(e *gin.Engine, svc *service.Store) {
 	ig.POST("/sets/:quiz_uuid/questions/append", appendQuizQuestions(svc))
 	ig.POST("/sets/:quiz_uuid/progress", updateQuizProgress(svc))
 	ig.POST("/sets/:quiz_uuid/fail", failQuizSet(svc))
+	// partial → generating：app-ts 断点续跑（checkpoint 增量题已保留，重开后续写）
+	ig.POST("/sets/:quiz_uuid/reopen", reopenQuizSet(svc))
 	ig.POST("/quota/peek", quotaPeekHandler(svc))
 	ig.POST("/quota/consume", quotaConsumeHandler(svc))
 	ig.POST("/grading", gradingPayloadHandler(svc))
@@ -299,6 +301,35 @@ func failQuizSet(svc *service.Store) gin.HandlerFunc {
 		result, err := svc.FailQuizSet(c.Request.Context(), uid, quizUUID, req.ErrorMessage)
 		if err != nil {
 			respondAgentError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+// reopenQuizSet flips an owned partial quiz back to generating so app-ts can
+// continue the interrupted run (P2 断点续跑)。uid 一致性模型同 failQuizSet。
+func reopenQuizSet(svc *service.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		quizUUID := strings.TrimSpace(c.Param("quiz_uuid"))
+		var req struct {
+			UID FlexInt64 `json:"uid"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			apiErr(c, http.StatusBadRequest, "请求体格式错误")
+			return
+		}
+		if int64(req.UID) != 0 && int64(req.UID) != uid {
+			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
+			return
+		}
+		result, aerr := svc.ReopenForResume(c.Request.Context(), uid, quizUUID)
+		if aerr != nil {
+			apiErr(c, aerr.Status, aerr.Detail)
 			return
 		}
 		c.JSON(http.StatusOK, result)

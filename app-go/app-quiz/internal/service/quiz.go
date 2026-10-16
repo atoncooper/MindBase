@@ -209,6 +209,51 @@ func statusForTimedGeneration(count int) (status, message string) {
 	return "failed", "生成超时"
 }
 
+// ReopenForResume flips an owned partial quiz back to 'generating' so app-ts
+// can continue the interrupted generation (checkpoint-append the remaining
+// slots and finalize). partial is a PAUSE, not a verdict: the checkpointed
+// questions stay authoritative, and the activity-based sweep window restarts
+// from the reopen.
+func (s *Store) ReopenForResume(ctx context.Context, uid int64, quizUUID string) (map[string]interface{}, *APIError) {
+	if uid <= 0 {
+		return nil, apiErr(401, "缺少用户身份")
+	}
+	set, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	if err != nil {
+		return nil, apiErr(500, "查询失败，请稍后重试")
+	}
+	if set == nil || set.Status == nil {
+		return nil, apiErr(404, "题目集不存在")
+	}
+	switch *set.Status {
+	case "partial":
+		// 可续跑
+	case "generating":
+		return nil, apiErr(409, "题目正在生成中，无需续跑")
+	case "done":
+		return nil, apiErr(400, "题卷已完整生成，无需续跑")
+	default: // failed / deleting / lost
+		return nil, apiErr(404, "题目集不存在")
+	}
+	reopened, err := repo.ReopenQuizSet(s.DB, quizUUID, uid)
+	if err != nil {
+		return nil, apiErr(500, "续跑失败，请稍后重试")
+	}
+	if !reopened {
+		// 并发窗口：读时 partial、写时已被翻转（清扫器/另一端）。
+		return nil, apiErr(409, "题卷状态已变化，请刷新后重试")
+	}
+	questionCount := 0
+	if set.QuestionCount != nil {
+		questionCount = *set.QuestionCount
+	}
+	return map[string]interface{}{
+		"quiz_uuid":      set.QuizUUID,
+		"status":         "generating",
+		"question_count": questionCount,
+	}, nil
+}
+
 // ── history ──────────────────────────────────────────────────────────
 
 // History returns the user's paginated quiz history.

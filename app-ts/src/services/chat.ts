@@ -15,6 +15,10 @@ import {
 import { resolveTier } from "../utils/membership.js";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
+import type { QuotaGate, QuotaService } from "./quota.js";
+import { costMicroYuan, type UsageLedgerRepository } from "../repository/usage-ledger.js";
+import { today } from "../utils/datetime.js";
+import { historyLimitFor, noteTurnLevel } from "../utils/degrade.js";
 
 /**
  * Endpoint-level orchestration (mirrors Python services/chat/orchestrator.py):
@@ -32,6 +36,8 @@ export interface AskStreamRequest {
   historyLimit?: number;
   /** attached images (data URLs, vision-gated at the HTTP layer) */
   images?: string[];
+  /** hashed client IP for anonymous (chat_anon) metering; absent = unattributable */
+  clientKey?: string;
   /** user-selected installed skills forced into the system prompt */
   skillIds?: string[];
 }
@@ -57,6 +63,31 @@ function scopeIsEmpty(scope: SearchScope | undefined): boolean {
   return !scope || (!scope.bvids?.length && !scope.uploadUuids?.length && !scope.mediaIds?.length);
 }
 
+/**
+ * QUOTA_EXCEEDED / COST_GUARD SSE error frame: the frontend
+ * renders an upgrade card off `code` + `detail` (resetAt / upgradeSku).
+ */
+function quotaErrorFrame(gate: QuotaGate): SseFrame {
+  const costGuard = gate.verdict === "cost_guard";
+  return {
+    type: "error",
+    code: costGuard ? "COST_GUARD" : "QUOTA_EXCEEDED",
+    message: costGuard
+      ? "今日 AI 使用成本已达上限，明日 0 点自动恢复"
+      : gate.tier === "free" && gate.kind === "chat_anon"
+        ? "今日未登录体验额度已用完，登录解锁每日更多额度"
+        : `今日额度已用完（${gate.used}/${gate.limit}），明日 0 点重置`,
+    detail: {
+      kind: gate.kind,
+      used: gate.used,
+      limit: gate.limit,
+      resetAt: gate.resetAt,
+      tier: gate.tier,
+      upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+    },
+  };
+}
+
 export class ChatService {
   constructor(
     private readonly harness: AgentHarness,
@@ -69,6 +100,10 @@ export class ChatService {
     private readonly admission?: WeightedAdmissionQueue | null,
     /** durable image attachments (MinIO); undefined → inline data URLs (legacy) */
     private readonly chatImages?: ChatImageStorage,
+    /** member usage quota; undefined/null → quota disabled */
+    private readonly quota?: QuotaService | null,
+    /** usage ledger; absent → cost accounting disabled */
+    private readonly ledger?: UsageLedgerRepository | null,
   ) {}
 
   private get admissionQueue(): WeightedAdmissionQueue | null {
@@ -76,13 +111,53 @@ export class ChatService {
   }
 
   async *askStream(req: AskStreamRequest): AsyncGenerator<SseFrame> {
+    // ---- quota gate: first in line — no persistence, no
+    // admission slot, no harness dispatch. gate=null → quota disabled or the
+    // request is unattributable (no uid && no clientKey).
+    const gate = this.quota
+      ? await this.quota.beginChatTurn(req.uid, req.clientKey).catch((err: unknown) => {
+          log.warn(`[CHAT] quota gate error (fail-open): ${err instanceof Error ? err.message : err}`);
+          return null;
+        })
+      : null;
+    if (gate && gate.verdict !== "allow") {
+      log.warn(`[CHAT] quota ${gate.verdict} kind=${gate.kind} uid=${req.uid ?? "-"} used=${gate.used}/${gate.limit}`);
+      yield quotaErrorFrame(gate);
+      yield { type: "done" };
+      return;
+    }
+    // 降级阶梯登记：工具层（检索条数）与主循环（输出预算）按 uid 读取本轮级别
+    if (req.uid) noteTurnLevel(req.uid, gate?.level ?? "L0");
+    if (gate && req.images?.length) {
+      // attachments meter BEFORE storage: over budget → reject before any write
+      const imagesOk = await this.quota!
+        .consumeImages(req.uid, req.clientKey, req.images.length)
+        .catch((err: unknown) => {
+          log.warn(`[CHAT] image quota check failed (fail-open): ${err instanceof Error ? err.message : err}`);
+          return true;
+        });
+      if (!imagesOk) {
+        log.warn(`[CHAT] image quota exceeded uid=${req.uid ?? "-"} n=${req.images.length}`);
+        yield {
+          type: "error",
+          code: "QUOTA_EXCEEDED",
+          message: "今日图片附件额度已用完，明日 0 点重置",
+          detail: { kind: "chat_images", resetAt: gate.resetAt, tier: gate.tier, upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY" },
+        };
+        yield { type: "done" };
+        return;
+      }
+    }
     const sessionId = req.sessionId ?? randomUUID();
     const session = await this.sessions.getOrCreate(sessionId, req.uid);
     const stored = req.images?.length ? await this.storeImages(session.id, req.images) : undefined;
     const { assistantMsg } = await this.messages.beginTurn(session.id, req.query, stored?.inlineImages, stored?.refs);
 
     const history = await this.hydrateHistoryImages(
-      await this.messages.recentMessages(session.id, req.historyLimit ?? config.context.recentKeep),
+      await this.messages.recentMessages(
+        session.id,
+        req.historyLimit ?? historyLimitFor(config.context.recentKeep, gate?.level ?? "L0"),
+      ),
     );
     const effectiveScope = scopeIsEmpty(req.scope) ? inheritScopeFromHistory(history) : (req.scope ?? {});
     if (scopeIsEmpty(req.scope) && !scopeIsEmpty(effectiveScope)) {
@@ -141,6 +216,26 @@ export class ChatService {
       });
       if (usage && (usage.totalTokens || usage.outputTokens)) {
         log.info(`[CHAT] turn usage session=${sessionId} in=${usage.inputTokens ?? "?"} out=${usage.outputTokens ?? "?"} total=${usage.totalTokens ?? "?"}`);
+      }
+      // consume-on-success — turn count + day cost + ledger row.
+      // Failed/retried turns never consume (they short-circuit above via hadError).
+      if (this.quota && !hadError) {
+        await this.quota.completeChatTurn(req.uid, req.clientKey, usage, config.llm.model).catch((err: unknown) => {
+          log.warn(`[CHAT] quota consume failed (ignored): ${err instanceof Error ? err.message : err}`);
+        });
+      }
+      if (this.ledger && !hadError) {
+        void this.ledger
+          .recordTurn({
+            day: today(),
+            uid: req.uid ?? "0",
+            purpose: "chat",
+            model: config.llm.model,
+            inputTokens: usage?.inputTokens ?? 0,
+            outputTokens: usage?.outputTokens ?? 0,
+            costMicroYuan: costMicroYuan(usage?.inputTokens ?? 0, usage?.outputTokens ?? 0, config.quota.prices[config.llm.model]),
+          })
+          .catch((err: unknown) => log.warn(`[CHAT] usage ledger write failed: ${err instanceof Error ? err.message : err}`));
       }
       await this.sessions.touch(session.id);
       if (!hadError) {

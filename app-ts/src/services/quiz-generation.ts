@@ -12,6 +12,10 @@ import type { RAGService } from "../rag/service.js";
 import type { Document } from "../rag/types.js";
 import { parseDocument } from "../doc-parser/index.js";
 import type { OcrClient } from "../doc-parser/ocr.js";
+import { EXAM_BLUEPRINTS, blueprintTotal, blueprintScoredTotal, blueprintExamTotal, getBlueprint, type ExamBlueprint } from "./quiz-exam-blueprints.js";
+import type { QuotaService } from "./quota.js";
+import type { QuizResumePlan, QuizResumeStore } from "../repository/quiz-resume.js";
+import { MemoryQuizResumeStore } from "../repository/memory/quiz-resume.js";
 
 const log = createLogger("QUIZ_GEN");
 
@@ -271,10 +275,12 @@ export function normalizeQuestion(q: QuizQuestionDict, chunks: Chunk[]): QuizQue
 
 export function toQuestionPayload(q: QuizQuestionDict): AgentQuestionPayload {
   const correct = q["correct_answer"];
+  const score = Number(q["score"]);
   return {
     question: String(q["question"] ?? ""),
     question_type: typeof q["type"] === "string" ? q["type"] : undefined,
     difficulty: typeof q["difficulty"] === "string" ? q["difficulty"] : undefined,
+    ...(Number.isFinite(score) && score > 0 ? { score: Math.round(score * 100) / 100 } : {}),
     options: Array.isArray(q["options"]) ? (q["options"] as unknown[]).map((o) => String(o)) : undefined,
     answer: typeof correct === "string" ? correct : undefined,
     correct_answer: correct,
@@ -394,6 +400,8 @@ const defaultExtractGenerator: QuizExtractGenerator = async (args) => {
   const { object } = await generateObject({
     // 材料提取是纯结构化任务：低温 + 结构化输出模型（与出题同模型配置）
     model: createGatewayModel("quiz_extract", { uid: args.uid, temperature: 0, model: config.llm.quizModel || undefined }),
+    // 机械提取任务：关思考
+    providerOptions: { higress: { thinking: { type: "disabled" } } },
     schema: quizExtractSchema,
     system: args.system,
     prompt: args.prompt,
@@ -411,11 +419,11 @@ const defaultExtractGenerator: QuizExtractGenerator = async (args) => {
 
 export const quizSpecItemSchema = z.object({
   type: z.enum(["single_choice", "multi_choice", "short_answer", "essay"]),
-  count: z.number().int().min(1).max(20),
+  count: z.number().int().min(1).max(45),
   hint: z.string().max(80).optional(),
 });
 export const quizSpecSchema = z.object({
-  total: z.number().int().min(1).max(50),
+  total: z.number().int().min(1).max(100),
   duration_minutes: z.number().int().min(5).max(600).optional(),
   reason: z.string().max(120).optional(),
   sections: z
@@ -441,6 +449,7 @@ export function planItemsFromSpec(spec: QuizPaperSpec, fallbackDifficulty: strin
           type: item.type,
           difficulty: sec.difficulty ?? fallbackDifficulty,
           hint: (item.hint?.trim() || "核心考查点") + "｜" + sec.subject.trim(),
+          score: 0, // 占位：展开完成后按 spec.total 均分回填
         });
       }
     }
@@ -452,9 +461,12 @@ export function planItemsFromSpec(spec: QuizPaperSpec, fallbackDifficulty: strin
   let pi = 0;
   while (items.length < spec.total) {
     const src = pool[pi % pool.length];
-    items.push({ type: src.type, difficulty: src.difficulty, hint: "" });
+    items.push({ type: src.type, difficulty: src.difficulty, hint: "", score: 0 });
     pi += 1;
   }
+  // spec 语义配卷（非蓝本）无固有分值 → 整卷 spec.total 均分回填
+  const specScore = Math.round((spec.total / items.length) * 100) / 100;
+  for (const item of items) item.score = specScore;
   return items;
 }
 
@@ -481,8 +493,96 @@ export class QuizGenerationError extends Error {
   }
 }
 
-export type QuizStyle = "standard" | "gaokao" | "kaoyan";
-export const QUIZ_STYLES: QuizStyle[] = ["standard", "gaokao", "kaoyan"];
+/** 蓝本 → 题型分布（按 type 汇总各节 count）。 */
+export function blueprintDistribution(bp: ExamBlueprint): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const section of bp.sections) {
+    for (const item of section.items) {
+      out[item.type] = (out[item.type] ?? 0) + item.count;
+    }
+  }
+  return out;
+}
+
+/** 未标注 score 的题型项兜底分值（蓝本无 totalScore 时的口径）。 */
+const TYPE_DEFAULT_SCORE: Record<string, number> = {
+  single_choice: 2,
+  multi_choice: 2,
+  short_answer: 5,
+  essay: 10,
+};
+
+/**
+ * 蓝本 → 确定性逐题计划（不经 LLM）：按节展开，先截断/后补齐到 totalCount。
+ *
+ * 分值语义：每题分值是考试的固有属性，不随抽题数量缩放——
+ *  - item.score 标注项：逐题取标注值；
+ *  - 未标注项：按「totalScore − 已标注合计」在**全蓝图未标注槽位序列**上
+ *    均摊（余数给前几槽），保证整卷合计精确等于考试总分（408 综合 7×10；
+ *    考研数学解答 70 = 12×4 + 11×2）；
+ *  - 蓝本无 totalScore → 题型兜底分值。
+ */
+export function expandBlueprintPlan(bp: ExamBlueprint, totalCount: number, fallbackDifficulty: string): PlanItem[] {
+  const rawTotal = blueprintTotal(bp);
+  const scale = rawTotal > 0 ? totalCount / rawTotal : 1;
+  const scoredSum = blueprintScoredTotal(bp);
+  const scoredSlots = bp.sections.reduce(
+    (a, s) => a + s.items.reduce((b, i) => b + (typeof i.score === "number" ? i.count : 0), 0),
+    0,
+  );
+  const unscoredSlots = Math.max(0, rawTotal - scoredSlots);
+  const hasTotal = typeof bp.totalScore === "number" && bp.totalScore > 0;
+  const budget = hasTotal ? (bp.totalScore as number) - scoredSum : 0;
+  const useBudget = hasTotal && budget > 0 && unscoredSlots > 0;
+  const base = useBudget ? Math.floor(budget / unscoredSlots) : 0;
+  const rem = useBudget ? budget % unscoredSlots : 0;
+  const plan: PlanItem[] = [];
+  let unscoredIdx = 0;
+  for (const section of bp.sections) {
+    for (const item of section.items) {
+      const count = Math.max(1, Math.round(item.count * scale));
+      const hint = [section.subject, item.hint].filter(Boolean).join(" · ");
+      const scored = typeof item.score === "number";
+      const itemScore = scored ? (item.score as number) : useBudget ? base : (TYPE_DEFAULT_SCORE[item.type] ?? 2);
+      for (let i = 0; i < count; i += 1) {
+        const bonus = !scored && useBudget && unscoredIdx < rem ? 1 : 0;
+        plan.push({ type: item.type, difficulty: section.difficulty ?? fallbackDifficulty, hint, score: itemScore + bonus });
+        if (!scored) unscoredIdx += 1;
+      }
+    }
+  }
+  while (plan.length > totalCount) plan.pop();
+  let guard = 0;
+  while (plan.length < totalCount && guard < totalCount) {
+    const last = plan[plan.length - 1];
+    plan.push({
+      type: last?.type ?? "single_choice",
+      difficulty: fallbackDifficulty,
+      hint: last?.hint ?? "",
+      score: last?.score ?? 2,
+    });
+    guard += 1;
+  }
+  return plan;
+}
+
+// 风格 = 考试蓝本 id（66 种，见 quiz-exam-blueprints.ts；目录端点 GET /quiz/styles）
+export type QuizStyle = string;
+export const QUIZ_STYLES: string[] = EXAM_BLUEPRINTS.map((b) => b.id);
+
+// 蓝本 id → 风格提示词模板 key。prompts/quiz/styles/ 只有 6 个「风格族」模板
+// （gaokao / kaoyan / kaoyan-math / kaoyan-408 / kaoyan-engineering / standard），
+// 而蓝本注册表是 66 个细分 id——细分 id 不能直接拼模板名（如 kaoyan-math1 →
+// "prompt not found"，风格段炸掉后全部批次失败 → 整卷 0 题 failed）。按前缀
+// 归一到风格族；无族的考试（语言/公考/建工/财会/资格/IT）用 standard——题型
+// 结构与命题要点由蓝图数据（sections/items/hint）注入，与风格段无关。
+export function stylePromptKey(styleId: string): string {
+  if (styleId.startsWith("gaokao")) return "gaokao";
+  if (styleId.startsWith("kaoyan-math")) return "kaoyan-math";
+  if (styleId.startsWith("kaoyan-408")) return "kaoyan-408";
+  if (styleId.startsWith("kaoyan")) return "kaoyan";
+  return "standard";
+}
 
 /** Per-request personalization applied to every generation path (kb/free/wrong/summary/files). */
 export interface GenerationPersonalization {
@@ -587,6 +687,100 @@ export interface PlanItem {
   type: string;
   difficulty: string;
   hint: string;
+  /** 每题分值（蓝本固有属性，不随抽题缩放） */
+  score: number;
+}
+
+// ── 断点续跑：纯函数（对账 + 内容记忆重建，单测覆盖）──────────────
+// 权威源原则：内容记忆（已生成题目）以 app-quiz 落库为准，这里只做映射
+// 与对账；slot 是否"完成" = DB 里存在该题，不依赖任何进程内状态。
+
+/** 已落库题目（gradingPayload 的 Mongo 文档）→ 生成循环的内容记忆 dict。 */
+export function questionDocToDict(doc: Record<string, unknown>): QuizQuestionDict {
+  const parseJson = (v: unknown): unknown => {
+    if (typeof v !== "string") return v;
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v;
+    }
+  };
+  const dict: QuizQuestionDict = {
+    question: String(doc.question_text ?? ""),
+    type: String(doc.question_type ?? ""),
+    difficulty: String(doc.difficulty ?? "medium"),
+    explanation: String(doc.explanation ?? ""),
+    source_chunk_index: 0,
+  };
+  if (doc.question_uuid) dict.question_uuid = String(doc.question_uuid);
+  const docScore = Number(doc.score);
+  if (Number.isFinite(docScore) && docScore > 0) dict.score = docScore;
+  const options = parseJson(doc.options);
+  if (Array.isArray(options)) dict.options = options.map((o) => String(o));
+  if (doc.correct_answer !== null && doc.correct_answer !== undefined) {
+    dict.correct_answer = parseJson(doc.correct_answer);
+  }
+  const keywords = parseJson(doc.keywords);
+  if (Array.isArray(keywords)) dict.keywords = keywords.map((k) => String(k));
+  if (typeof doc.model_answer === "string" && doc.model_answer) dict.model_answer = doc.model_answer;
+  if (typeof doc.answer_template === "string" && doc.answer_template) dict.answer_template = doc.answer_template;
+  const entities = parseJson(doc.related_entities);
+  if (Array.isArray(entities)) dict.related_entities = entities.map((e) => String(e));
+  return dict;
+}
+
+/** dict 列表 → 题型计数（续跑对账的最小口径：题型级即可，无需逐槽 index）。 */
+export function countByType(dicts: QuizQuestionDict[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const q of dicts) {
+    const t = String(q["type"] ?? "");
+    if (t) out[t] = (out[t] ?? 0) + 1;
+  }
+  return out;
+}
+/** 目标分布 − 既有计数 = 剩余分布（负数截 0）。 */
+export function remainingDistribution(
+  distribution: Record<string, number>,
+  existingByType: Record<string, number>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [type, count] of Object.entries(distribution)) {
+    out[type] = Math.max(0, count - (existingByType[type] ?? 0));
+  }
+  return out;
+}
+
+/**
+ * 续跑计划：按题型消耗既有题目后，保留原计划中剩余的槽位——蓝本节序与
+ * hint 原样保留（408 的综合应用题 hint 不会丢）；无蓝本（老卷无快照）时
+ * 按剩余分布直接展开（通用提示降级）。
+ */
+export function buildContinuationPlan(
+  originalPlan: PlanItem[] | null,
+  distribution: Record<string, number>,
+  existingByType: Record<string, number>,
+): PlanItem[] {
+  if (originalPlan) {
+    const consumed = { ...existingByType };
+    const out: PlanItem[] = [];
+    for (const item of originalPlan) {
+      const used = consumed[item.type] ?? 0;
+      if (used > 0) {
+        consumed[item.type] = used - 1;
+        continue;
+      }
+      out.push(item);
+    }
+    return out;
+  }
+  const out: PlanItem[] = [];
+  for (const [type, count] of Object.entries(distribution)) {
+    const have = existingByType[type] ?? 0;
+    for (let i = have; i < count; i += 1) {
+      out.push({ type, difficulty: "medium", hint: "", score: TYPE_DEFAULT_SCORE[type] ?? 2 });
+    }
+  }
+  return out;
 }
 
 /** 蓝图切片 → 本批 prompt 计划段（空切片返回 ""）。数据格式化，非提示词文案。 */
@@ -628,6 +822,8 @@ export function normalizePlanItems(
   const list = Array.isArray(obj.items) ? obj.items : Array.isArray(raw) ? raw : [];
   const allowedType = new Set(["single_choice", "multi_choice", "short_answer", "essay"]);
   const allowedDiff = new Set(["easy", "medium", "hard"]);
+  // LLM 规划（非蓝本）无分值概念 → 整卷 100 均分（与读取侧兜底一致）
+  const uniformScore = Math.round((100 / Math.max(1, totalCount)) * 100) / 100;
   const items: PlanItem[] = [];
   for (const entry of list) {
     if (!entry || typeof entry !== "object") continue;
@@ -636,7 +832,7 @@ export function normalizePlanItems(
     if (!type) continue;
     const diff = typeof rec["difficulty"] === "string" && allowedDiff.has(rec["difficulty"]) ? rec["difficulty"] : difficulty;
     const hint = typeof rec["hint"] === "string" ? rec["hint"].trim().slice(0, 120) : "";
-    items.push({ type, difficulty: diff, hint });
+    items.push({ type, difficulty: diff, hint, score: uniformScore });
   }
   if (items.length === 0) return undefined;
   const pool: string[] = [];
@@ -645,7 +841,7 @@ export function normalizePlanItems(
   }
   let pi = 0;
   while (items.length < totalCount) {
-    items.push({ type: pool[pi % Math.max(1, pool.length)] ?? "single_choice", difficulty, hint: "" });
+    items.push({ type: pool[pi % Math.max(1, pool.length)] ?? "single_choice", difficulty, hint: "", score: uniformScore });
     pi += 1;
   }
   return items.slice(0, totalCount);
@@ -810,6 +1006,10 @@ export interface QuizGenerationDeps {
   skills?: { forcedSection(uid: string, skillIds: string[]): Promise<string> };
   /** 视觉 OCR（错题图片/文件出题）；absent 或 disabled = 图片上传出题不可用 */
   ocr?: OcrClient;
+  /** 会员出题/批改配额（tier 化限额）；absent = 回落 app-quiz 单档旧端点 */
+  quota?: QuotaService;
+  /** 断点续跑计划快照（app-ts 自有域）；absent = 进程内 fallback（单测/降级） */
+  resumeStore?: QuizResumeStore;
 }
 
 /** Diversified queries used to pull quiz material out of the vector store. */
@@ -865,10 +1065,12 @@ export function collectChunks(
 export class QuizGenerationService {
   private readonly generate: QuizBatchGenerator;
   private readonly extract: QuizExtractGenerator;
+  private readonly resumeStore: QuizResumeStore;
 
   constructor(private readonly deps: QuizGenerationDeps) {
     this.generate = deps.generate ?? defaultGenerator;
     this.extract = deps.extract ?? defaultExtractGenerator;
+    this.resumeStore = deps.resumeStore ?? new MemoryQuizResumeStore();
   }
 
   /** 个性化段（风格 + 技能 + 自定义指令）→ 追加到生成 system prompt。空 = 无个性化。 */
@@ -876,7 +1078,21 @@ export class QuizGenerationService {
     if (!p) return "";
     let styleSection = "";
     if (p.style && p.style !== "standard") {
-      styleSection = this.deps.prompts.render("quiz-style-" + p.style, {});
+      // 防御：风格段加载失败只降级到 standard，绝不让它炸掉整次生成
+      //（历史上 kaoyan-math1 无模板 → 全部批次抛错 → 0 题 failed）。
+      try {
+        styleSection = this.deps.prompts.render("quiz/styles/" + stylePromptKey(p.style), {});
+      } catch (err) {
+        log.warn(
+          "[QUIZ_GEN] style section load failed, falling back to standard: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        try {
+          styleSection = this.deps.prompts.render("quiz/styles/standard", {});
+        } catch {
+          styleSection = "";
+        }
+      }
     }
     let skillsSection = "";
     if (p.skillIds?.length && this.deps.skills) {
@@ -944,7 +1160,7 @@ export class QuizGenerationService {
     }
 
     // Quota, two-phase: peek before creating the row, consume after it exists.
-    await this.deps.appQuiz.quotaPeek(uid, "generate");
+    await this.enforceQuizQuota(uid, "generate");
     const distribution = folderTypeDistribution(source.questionCount);
     const created = await this.deps.appQuiz.createSet(uid, {
       title: (source.title && source.title.trim()) || this.folderTitle(),
@@ -965,10 +1181,43 @@ export class QuizGenerationService {
       totalScore: 100,
       passingScore: 60,
     });
-    await this.deps.appQuiz.quotaConsume(uid, "generate");
+    await this.consumeQuizQuota(uid, "generate");
 
     void this.runSourceGeneration(uid, created.quiz_uuid, folderIds, pages, source.questionCount, difficulty, distribution, source.personalization);
     return { quiz_uuid: created.quiz_uuid, status: "generating" };
+  }
+
+  /**
+   * 出题配额两阶段的前半：peek 在建行前快速失败（429）。计数沿用 app-quiz
+   * 的 Redis 日键（跨栈共享同一计数），限额按会员档位区分（config
+   * quota.limits.generate）。Quota 未注入（单测/降级形态）→ 回落 app-quiz
+   * 内部端点的单档旧行为。
+   */
+  private async enforceQuizQuota(uid: string, kind: "generate"): Promise<void> {
+    const quota = this.deps.quota;
+    if (!quota) {
+      await this.deps.appQuiz.quotaPeek(uid, kind);
+      return;
+    }
+    const gate = await quota.peekKind(uid, kind);
+    if (gate?.verdict === "quota_exceeded") {
+      throw new QuizGenerationError(
+        gate.tier === "free"
+          ? `今日免费出题额度已用完（${gate.limit} 批/日），升级会员可获得更高额度`
+          : `今日出题额度已用完（${gate.limit} 批/日），明日 0 点重置`,
+        429,
+      );
+    }
+  }
+
+  /** 配额后半：建行成功后扣减（失败/重试不扣）。 */
+  private async consumeQuizQuota(uid: string, kind: "generate"): Promise<void> {
+    const quota = this.deps.quota;
+    if (!quota) {
+      await this.deps.appQuiz.quotaConsume(uid, kind);
+      return;
+    }
+    await quota.consumeKind(uid, kind);
   }
 
   private folderTitle(): string {
@@ -1195,7 +1444,7 @@ export class QuizGenerationService {
     for (const t of args.batchTypes) counts.set(t, (counts.get(t) ?? 1) + 1);
     const typeDesc = [...counts.entries()].map(([k, n]) => n + "道" + k).join("、");
     const material = args.free.material.trim() || "（无附加材料，围绕主题自由发挥）";
-    const prompt = this.deps.prompts.render("quiz-free-user", {
+    const prompt = this.deps.prompts.render("quiz/free-user", {
       TOPIC: args.free.topic.slice(0, 500),
       TOTAL_COUNT: String(args.batchCount),
       TYPE_DISTRIBUTION: typeDesc,
@@ -1205,7 +1454,7 @@ export class QuizGenerationService {
       MATERIAL: "<error_material>\n" + material.slice(0, MAX_CONTEXT_CHARS) + "\n</error_material>",
     });
     try {
-      const base = this.deps.prompts.render("quiz-free-system", {});
+      const base = this.deps.prompts.render("quiz/free-system", {});
       const suffix = await this.personalizationSection(args.uid, args.personalization);
       return await this.generateRepaired({
         system: suffix ? base + "\n\n" + suffix : base,
@@ -1241,27 +1490,19 @@ export class QuizGenerationService {
       if (!profile) throw new QuizGenerationError("暂无错题记录，先完成一次练习并提交后再来强化吧", 400);
     }
 
-    await this.deps.appQuiz.quotaPeek(uid, "generate");
+    await this.enforceQuizQuota(uid, "generate");
 
-    // 语义配卷：未显式给题量（auto）→ 先由主题推断 PaperSpec，意图决定题量与结构；
-    // spec 失败/显式指定 → 保持既有默认（10 题 / 固定配比）。
-    let specPlan: PlanItem[] | undefined;
-    let specSummary: { total: number; reason?: string } | undefined;
-    let questionCount = source.questionCount;
-    let distribution: Record<string, number> | undefined;
-    if (questionCount === undefined) {
-      const material =
-        source.mode === "wrong_answers" && profile ? this.renderErrorProfile(profile.entries) : "";
-      const spec = await this.generatePaperSpec({ uid, topic, material, difficulty, personalization: source.personalization });
-      if (spec) {
-        questionCount = spec.spec.total;
-        distribution = distributionFromSpec(spec.spec);
-        specPlan = spec.plan;
-        specSummary = { total: spec.spec.total, reason: spec.spec.reason };
-      }
-    }
-    if (questionCount === undefined) questionCount = 10;
-    if (!distribution) distribution = defaultTypeDistribution(questionCount);
+    // 配卷零等待：选中考试蓝本 → 蓝本即整卷结构（真实题型分布），确定性展开
+    // 为逐题计划；AI 只按计划逐步填充内容，不得自行决定题量与题型分布。
+    // 无蓝本（standard）→ 保持原默认（10 题通用分布）。
+    const blueprint = getBlueprint(source.personalization?.style ?? "");
+    const questionCount = source.questionCount ?? (blueprint ? blueprintTotal(blueprint) : 10);
+    const distribution = blueprint ? blueprintDistribution(blueprint) : defaultTypeDistribution(questionCount);
+    const plan = blueprint ? expandBlueprintPlan(blueprint, questionCount, difficulty) : undefined;
+    const specSummary: { total: number; reason?: string } = {
+      total: questionCount,
+      ...(blueprint ? { reason: `按「${blueprint.name}」蓝本结构配卷` } : {}),
+    };
 
     const title =
       (source.title && source.title.trim()) ||
@@ -1278,12 +1519,33 @@ export class QuizGenerationService {
       folderIds: [],
       sourceType: source.mode === "wrong_answers" ? "ai_wrong_answers" : "ai_free",
       status: "generating",
-      totalScore: 100,
+      // 蓝本卷面总分（408=150 / 数学=150 / 政治英=100…）；无蓝本 → 通用 100
+      totalScore: blueprint ? blueprintExamTotal(blueprint) : 100,
       passingScore: 60,
     });
-    await this.deps.appQuiz.quotaConsume(uid, "generate");
+    await this.consumeQuizQuota(uid, "generate");
 
-    void this.runAIGeneration(uid, created.quiz_uuid, source.mode, topic, questionCount, difficulty, distribution, profile ?? undefined, source.personalization, specPlan, specSummary);
+    // 断点续跑快照：记录"这份卷当初按什么计划在跑"。内容记忆的权威在
+    // app-quiz（checkpoint 行），这里只存计划上下文，finalize 后删除。
+    // 失败不阻断生成（续跑降级为分布对账）。
+    try {
+      await this.resumeStore.save({
+        quizUuid: created.quiz_uuid,
+        uid,
+        mode: source.mode,
+        topic,
+        style: source.personalization?.style,
+        instructions: source.personalization?.instructions,
+        questionCount,
+        distribution,
+        difficulty,
+        createdAt: Date.now(),
+      });
+    } catch (err) {
+      log.warn("[QUIZ_GEN] resume plan save failed (non-fatal): " + (err instanceof Error ? err.message : String(err)));
+    }
+
+    void this.runAIGeneration(uid, created.quiz_uuid, source.mode, topic, questionCount, difficulty, distribution, profile ?? undefined, source.personalization, plan, specSummary);
     return { quiz_uuid: created.quiz_uuid, status: "generating", ...(specSummary ? { spec: specSummary } : {}) };
   }
 
@@ -1375,6 +1637,9 @@ export class QuizGenerationService {
         personalization,
         checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
         progress: { uid, quizUuid },
+        // 蓝图逐题计划必须透传：选了考试蓝本时 plan 已在前台确定性展开
+        // （408 = 40 单选 + 7 综合）。此前该参数被丢弃 → totalCount > PLAN_THRESHOLD
+        // 触发 LLM 整卷规划（易超时）→ 回落串行慢批，大卷烧穿超时预算被判 partial。
         plan: specPlan,
       });
       const valid = generated.filter((q) => validateQuestion(q, chunks, { trace: false }));
@@ -1388,6 +1653,133 @@ export class QuizGenerationService {
     } catch (err) {
       await this.failGeneration(uid, quizUuid, err);
     }
+  }
+
+  /**
+   * 断点续跑（partial → generating → done）：内容记忆从 app-quiz 落库题目
+   * 重建（权威源），结构上下文从 resume 快照读回；按题型对账出"剩余计划"，
+   * 复用同一生成管线（计划批并发 + 串行补漏 + checkpoint 增量落库）。
+   * 续跑失败绝不 failSet —— 已保留的 partial 题目不受影响，可再次续跑。
+   * 仅支持 ai_free / ai_wrong 来源（知识库/文件卷的素材重建暂不支持）。
+   */
+  async resumeAIGeneration(uid: string, quizUuid: string): Promise<{ quiz_uuid: string; status: string; remaining: number }> {
+    // 1) 权威状态 + 内容记忆（gradingPayload 对 partial 放行）
+    const payload = await this.deps.appQuiz.gradingPayload(uid, quizUuid);
+    const set = payload.set;
+    if (set.status !== "partial") {
+      throw new QuizGenerationError(
+        set.status === "generating" ? "题目正在生成中，无需续跑" : "题卷当前状态不支持续跑",
+        400,
+      );
+    }
+    if (set.source_type !== "ai_free" && set.source_type !== "ai_wrong_answers") {
+      throw new QuizGenerationError("该卷类型暂不支持续跑（仅 AI 自由出题 / 错题强化）", 400);
+    }
+    const targetCount = Number(set.question_count ?? 0);
+    if (!Number.isInteger(targetCount) || targetCount < 1) {
+      throw new QuizGenerationError("题卷缺少目标题量，无法续跑", 400);
+    }
+    const rawDistribution = set.type_distribution;
+    const distribution: Record<string, number> =
+      rawDistribution && typeof rawDistribution === "object" && !Array.isArray(rawDistribution)
+        ? (rawDistribution as Record<string, number>)
+        : {};
+    const difficulty =
+      typeof set.difficulty === "string" && ALLOWED_DIFFICULTIES.includes(set.difficulty) ? set.difficulty : "medium";
+
+    // 2) 计划快照（老卷无快照 → 读到 null，续跑降级为分布对账）
+    const resumePlan: QuizResumePlan | null = await this.resumeStore.get(uid, quizUuid);
+    const style = resumePlan?.style;
+    const mode = resumePlan?.mode ?? "free";
+    const topic = resumePlan?.topic ?? "";
+    const instructions = resumePlan?.instructions;
+
+    // 3) 内容记忆重建 + 题型对账
+    const existingDicts = payload.questions.map(questionDocToDict);
+    const existingByType = countByType(existingDicts);
+    const remainingTotal = Math.max(0, targetCount - existingDicts.length);
+
+    // 4) 续跑材料（wrong_answers 画像随时可重建，先于 reopen —— 失败时
+    //    题集停留在 partial，不会出现 generating 却无 runner 的悬挂态）
+    let material = "";
+    let effectiveTopic = topic || "通识综合练习";
+    if (mode === "wrong_answers") {
+      const profile = await this.buildErrorProfile(uid);
+      if (profile) material = this.renderErrorProfile(profile.entries);
+      effectiveTopic = topic || "针对历史错题暴露的薄弱知识点进行强化训练";
+    }
+
+    if (remainingTotal === 0) {
+      // 已齐但状态停在 partial（finalize 缺席的异常态）：重开并按 done 收尾
+      await this.deps.appQuiz.reopenSet(uid, quizUuid);
+      await this.finalizeGenerated(uid, quizUuid, existingDicts.map(toQuestionPayload), targetCount, "resume(done)");
+      await this.resumeStore.remove(uid, quizUuid);
+      return { quiz_uuid: quizUuid, status: "done", remaining: 0 };
+    }
+
+    // 5) 剩余计划：蓝本节序/hint 保留，无快照则分布对账降级
+    const blueprint = getBlueprint(style ?? "");
+    const originalPlan = blueprint ? expandBlueprintPlan(blueprint, targetCount, difficulty) : null;
+    const continuationPlan = buildContinuationPlan(originalPlan, distribution, existingByType);
+    const remainingDist = remainingDistribution(distribution, existingByType);
+
+    // 6) 重开（partial → generating）；他端已翻转 → 上抛给调用方
+    await this.deps.appQuiz.reopenSet(uid, quizUuid);
+
+    // 7) 续跑管线：与首跑同一条（计划批 + 串行补漏 + checkpoint）
+    this.pushProgress(uid, quizUuid, {
+      stage: "resume",
+      detail: `断点续跑：已保留 ${existingDicts.length} 题，补齐剩余 ${continuationPlan.length} 题`,
+      stored: existingDicts.length,
+      total: targetCount,
+    });
+    const chunks: Chunk[] = [{ title: mode === "wrong_answers" ? "错题画像" : "出题主题", content: material || effectiveTopic }];
+    const difficultyPlan = `以 ${difficulty} 为主，整体由易到难排列（先基础概念，后综合应用）`;
+    const personalization: GenerationPersonalization | undefined =
+      style || instructions ? { style: style || undefined, instructions: instructions || undefined } : undefined;
+
+    let generated: QuizQuestionDict[] = [];
+    try {
+      generated = await this.generateQuestions({
+        chunks,
+        totalCount: continuationPlan.length,
+        typeDistribution: remainingDist,
+        difficulty,
+        uid,
+        free: { topic: effectiveTopic, material, difficultyPlan },
+        personalization,
+        checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
+        progress: { uid, quizUuid },
+        plan: continuationPlan,
+      });
+    } catch (err) {
+      // 续跑失败绝不 failSet：partial 题目保住，状态随 finalize 缺席保持，
+      // 用户可再次点「继续生成」。注意 reopen 已把状态翻回 generating，
+      // 这里要显式落回 partial 终态（防清扫器把无主 generating 判 failed）。
+      log.error("[QUIZ_GEN] resume run failed quiz_uuid=" + quizUuid + ": " + (err instanceof Error ? err.message : String(err)));
+      try {
+        await this.deps.appQuiz.finalizeSet(uid, quizUuid, existingDicts.map(toQuestionPayload), "partial", undefined, 0);
+      } catch (finErr) {
+        log.error("[QUIZ_GEN] resume fail-close failed quiz_uuid=" + quizUuid + ": " + (finErr instanceof Error ? finErr.message : String(finErr)));
+      }
+      this.pushProgress(uid, quizUuid, { stage: "resume_failed", detail: "续跑中断，已保留题目不受影响，可再次续跑", stored: existingDicts.length, total: targetCount });
+      return { quiz_uuid: quizUuid, status: "partial", remaining: remainingTotal };
+    }
+
+    // 8) 收尾：existing + new 全量重写（finalize 按 question_text 幂等 upsert，
+    //    既有题目沿用原 question_uuid）
+    const valid = generated.filter((q) => validateQuestion(q, chunks, { trace: false }));
+    const payloads = [
+      ...existingDicts.map(toQuestionPayload),
+      ...valid.map((q) => normalizeQuestion(q, chunks)).map(toQuestionPayload),
+    ];
+    await this.finalizeGenerated(uid, quizUuid, payloads, targetCount, "resume");
+    await this.resumeStore.remove(uid, quizUuid);
+    return {
+      quiz_uuid: quizUuid,
+      status: payloads.length >= targetCount ? "done" : "partial",
+      remaining: Math.max(0, targetCount - payloads.length),
+    };
   }
 
   /**
@@ -1432,7 +1824,7 @@ export class QuizGenerationService {
     }
     const difficulty = ALLOWED_DIFFICULTIES.includes(input.difficulty ?? "") ? input.difficulty! : "medium";
 
-    await this.deps.appQuiz.quotaPeek(uid, "generate");
+    await this.enforceQuizQuota(uid, "generate");
     const title =
       (input.title && input.title.trim()) ||
       this.aiTitle(input.mode === "wrong_images" ? "错题图片强化" : "模仿出题");
@@ -1449,10 +1841,163 @@ export class QuizGenerationService {
       totalScore: 100,
       passingScore: 60,
     });
-    await this.deps.appQuiz.quotaConsume(uid, "generate");
+    await this.consumeQuizQuota(uid, "generate");
 
     void this.runFilesGeneration(uid, created.quiz_uuid, { ...input, difficulty }, distribution);
     return { quiz_uuid: created.quiz_uuid, status: "generating" };
+  }
+
+  /**
+   * 按大纲/规范出题：上传考试大纲、命题规范等文档，AI 先解析出整卷蓝图
+   * （题量/题型配比/分值由语义配卷推断），再按蓝图逐批生成；可选关联收藏夹
+   * 做知识库接地（大纲定标准、知识库供内容）。大纲文本同时作为命题规范
+   * 注入个性化指令（题目结构、难度与认知层次以文档为准）。
+   */
+  async startFromStandard(
+    uid: string,
+    input: {
+      files: QuizFileInput[];
+      folderIds?: number[];
+      questionCount?: number;
+      difficulty?: string;
+      title?: string;
+      personalization?: GenerationPersonalization;
+    },
+  ): Promise<{ quiz_uuid: string; status: string; spec?: { total: number; reason?: string } }> {
+    const difficulty = ALLOWED_DIFFICULTIES.includes(input.difficulty ?? "") ? input.difficulty! : "medium";
+
+    // 1) 解析大纲/规范文档（图片走 OCR、文本类走 parseDocument）——同步解析：
+    //    语义配卷蓝图需要全文在前台可用。
+    const parts: string[] = [];
+    for (const f of input.files) {
+      if (!isQuizUploadFilename(f.filename)) {
+        throw new QuizGenerationError(
+          "不支持的文件类型: " + f.filename + "（支持图片 png/jpg/jpeg/webp/bmp 与 pdf/docx/pptx/txt/md/html）",
+          415,
+        );
+      }
+      if (f.buffer.length > MAX_QUIZ_FILE_BYTES) {
+        throw new QuizGenerationError("文件过大（上限 " + Math.floor(MAX_QUIZ_FILE_BYTES / 1024 / 1024) + "MB）: " + f.filename, 413);
+      }
+      let text = "";
+      if (isQuizImageFile(f.filename)) {
+        if (!this.deps.ocr?.enabled) {
+          throw new QuizGenerationError("OCR 未启用（OCR__ENABLED=false），无法识别图片；可改传含文本层的 pdf/docx/txt", 415);
+        }
+        text = await this.deps.ocr.recognize(f.filename, f.buffer, f.mime || "image/png");
+      } else {
+        text = (await parseDocument(f.filename, f.buffer)).text;
+      }
+      if (text.trim()) parts.push("=== " + f.filename + " ===\n" + text.trim());
+    }
+    const standardText = parts.join("\n\n").slice(0, MAX_CONTEXT_CHARS * 3);
+    if (!standardText.trim()) {
+      throw new QuizGenerationError("未能从上传文档中识别出任何内容", 422);
+    }
+
+    // 2) 配额：peek 在建行前，consume 在建行成功后
+    await this.enforceQuizQuota(uid, "generate");
+
+    // 3) 语义配卷：题量未指定（auto）→ 由大纲内容推断整卷蓝图
+    // 配卷零等待：选中考试蓝本 → 蓝本即整卷结构；大纲文档定考查范围并在
+    // 后台注入命题约束。确定性逐题计划在后台执行，AI 只按计划填充。
+    const blueprint = getBlueprint(input.personalization?.style ?? "");
+    const questionCount = input.questionCount ?? (blueprint ? blueprintTotal(blueprint) : 10);
+    const distribution = blueprint ? blueprintDistribution(blueprint) : defaultTypeDistribution(questionCount);
+    const plan = blueprint ? expandBlueprintPlan(blueprint, questionCount, difficulty) : undefined;
+    const specSummary: { total: number; reason?: string } = {
+      total: questionCount,
+      ...(blueprint ? { reason: `按「${blueprint.name}」蓝本结构配卷（大纲定考查范围）` } : {}),
+    };
+
+    const created = await this.deps.appQuiz.createSet(uid, {
+      title: input.title?.trim() || this.aiTitle("大纲出题"),
+      difficulty,
+      questionCount,
+      typeDistribution: distribution,
+      folderIds: input.folderIds ?? [],
+      sourceType: "ai_standard",
+      status: "generating",
+      totalScore: blueprint ? blueprintExamTotal(blueprint) : 100,
+      passingScore: 60,
+    });
+    await this.consumeQuizQuota(uid, "generate");
+
+    void this.runStandardGeneration(uid, created.quiz_uuid, {
+      standardText,
+      folderIds: input.folderIds ?? [],
+      questionCount,
+      difficulty,
+      distribution,
+      plan,
+      personalization: input.personalization,
+    });
+    return { quiz_uuid: created.quiz_uuid, status: "generating", spec: specSummary };
+  }
+
+  /** 大纲出题后台体：大纲切块 + 可选知识库接地 → 规范注入 → 批量生成。 */
+  private async runStandardGeneration(
+    uid: string,
+    quizUuid: string,
+    args: {
+      standardText: string;
+      folderIds: number[];
+      questionCount: number;
+      difficulty: string;
+      distribution: Record<string, number>;
+      plan?: PlanItem[];
+      personalization?: GenerationPersonalization;
+    },
+  ): Promise<void> {
+    try {
+      const chunks: Chunk[] = splitSummaryToChunks(args.standardText);
+      if (chunks.length === 0) {
+        chunks.push({ title: "大纲/规范", content: args.standardText.slice(0, 12_000) });
+      }
+      this.pushProgress(uid, quizUuid, { stage: "prepare", detail: `大纲/规范已解析：${chunks.length} 段` });
+
+      // 知识库接地（可选）：大纲定标准，知识库供内容素材
+      if (args.folderIds.length > 0) {
+        const kb = await this.retrieveSourceChunks(uid, args.folderIds, [], args.questionCount);
+        if (kb.length > 0) {
+          chunks.push(...kb);
+          this.pushProgress(uid, quizUuid, { stage: "retrieve", detail: `知识库补充检索：${kb.length} 段` });
+        }
+      }
+
+      // 大纲/规范注入命题约束：题型、分值、知识点权重、难度与认知层次以文档为准
+      const merged: GenerationPersonalization = {
+        ...args.personalization,
+        instructions: [
+          args.personalization?.instructions,
+          "命题必须严格遵循以下考试大纲/规范文档的结构与要求——题型、分值、知识点覆盖、" +
+            "难度与认知层次均以文档为准，题目不得偏离文档规定的考查范围：\n" +
+            args.standardText.slice(0, 8000),
+        ].filter(Boolean).join("\n\n"),
+      };
+
+      const generated = await this.generateQuestions({
+        chunks,
+        totalCount: args.questionCount,
+        typeDistribution: args.distribution,
+        difficulty: args.difficulty,
+        uid,
+        personalization: merged,
+        checkpoint: (accepted) => this.checkpointQuestions(uid, quizUuid, accepted),
+        progress: { uid, quizUuid },
+        plan: args.plan,
+      });
+      const valid = generated.filter((q) => validateQuestion(q, chunks, { trace: false }));
+      await this.finalizeGenerated(
+        uid,
+        quizUuid,
+        valid.map((q) => normalizeQuestion(q, chunks)).map(toQuestionPayload),
+        args.questionCount,
+        "standard",
+      );
+    } catch (err) {
+      await this.failGeneration(uid, quizUuid, err);
+    }
   }
 
   private async runFilesGeneration(
@@ -1476,7 +2021,18 @@ export class QuizGenerationService {
         const f = input.files[i];
         let text = "";
         if (isQuizImageFile(f.filename)) {
+          // OCR 配额：peek 先行（超限整个任务 429 失败），识别成功后扣减
+          if (this.deps.quota) {
+            const gate = await this.deps.quota.peekKind(uid, "ocr");
+            if (gate?.verdict === "quota_exceeded") {
+              throw new QuizGenerationError(
+                `今日 OCR 识别额度已用完（${gate.limit} 次/日），明日 0 点重试或改传含文本层的文件`,
+                429,
+              );
+            }
+          }
           text = await this.deps.ocr!.recognize(f.filename, f.buffer, f.mime || "image/png");
+          if (this.deps.quota) await this.deps.quota.consumeKind(uid, "ocr");
         } else {
           text = (await parseDocument(f.filename, f.buffer)).text;
         }
@@ -1490,13 +2046,13 @@ export class QuizGenerationService {
       }
 
       // 2) 结构化提取题目（错误画像 / 模仿材料），带 raw-text 兜底
-      const prompt = this.deps.prompts.render("quiz-extract-user", {
+      const prompt = this.deps.prompts.render("quiz/extract-user", {
         MATERIAL: "<material>\n" + materialText.slice(0, MAX_CONTEXT_CHARS * 2) + "\n</material>",
         MAX_COUNT: "50",
       });
       let records: ExtractedQuestionRecord[];
       try {
-        records = await this.extract({ system: this.deps.prompts.render("quiz-extract-system", {}), prompt, uid });
+        records = await this.extract({ system: this.deps.prompts.render("quiz/extract-system", {}), prompt, uid });
       } catch (err) {
         const raw = (err as { text?: unknown }).text;
         const salvaged = typeof raw === "string" ? extractQuestionRecords(raw) : undefined;
@@ -1696,21 +2252,35 @@ export class QuizGenerationService {
     personalization?: GenerationPersonalization;
   }): Promise<{ spec: QuizPaperSpec; plan: PlanItem[] } | undefined> {
     const material = args.material.trim();
-    const prompt = this.deps.prompts.render("quiz-spec-user", {
+    // 风格接蓝图：选风格时给配卷一行结构提示（详细规范已在 system 的风格段注入）
+    const styleName = args.personalization?.style;
+    const PRESET_HINTS: Partial<Record<QuizStyle, string>> = {
+      gaokao: "整卷结构参考高考相应学科的题型与分值惯例（如数学：单选 8×5 + 多选 3×6 + 填空 3×5 + 解答 77 分；难度 3:5:2 梯度）。",
+      kaoyan: "整卷结构参考考研相应学科的题型与分值惯例（如政治：单选 16×1 + 多选 17×2 + 分析题 5×10；数学：单选 10×5 + 填空 6×5 + 解答 70 分）。",
+      "kaoyan-math": "整卷按考研数学口径：单选 10×5 + 填空 6×5 + 解答 6 题共 70 分；按卷种（数一/二/三）确定范围与权重，解答题跨章节综合。",
+      "kaoyan-408": "整卷按 408 口径：单选 40×2 + 综合应用题 70 分；四门权重 数据结构 45 / 组成原理 45 / 操作系统 35 / 计算机网络 25。",
+      "kaoyan-engineering": "工科初试组合（政治 100 + 英语一 100 + 数学 150 + 专业课 150）：数学与专业课为拉分主战场，各科独立由易到难。",
+    };
+    const presetHint = (styleName && PRESET_HINTS[stylePromptKey(styleName)]) || "";
+    const prompt = this.deps.prompts.render("quiz/spec-user", {
       TOPIC: args.topic.slice(0, 500),
       MATERIAL: material ? "<material>\n" + material.slice(0, MAX_CONTEXT_CHARS) + "\n</material>\n" : "",
-      PRESET_HINT: "",
+      PRESET_HINT: presetHint ? "<preset_hint>\n" + presetHint + "\n</preset_hint>\n" : "",
     });
     try {
-      const base = this.deps.prompts.render("quiz-spec-system", {});
+      const base = this.deps.prompts.render("quiz/spec-system", {});
       const suffix = await this.personalizationSection(args.uid, args.personalization);
       const { object } = await generateObject({
         model: createGatewayModel("quiz_spec", { uid: args.uid, temperature: 0.3, model: config.llm.quizModel || undefined }),
+        // 配卷是机械小任务：关思考（网关透传实测 5s 级出 JSON），思考只留给正式出题
+        providerOptions: { higress: { thinking: { type: "disabled" } } },
         schema: quizSpecSchema,
         system: suffix ? base + "\n\n" + suffix : base,
         prompt,
         maxRetries: 1,
-        abortSignal: AbortSignal.timeout(90_000),
+        // spec 用思考型模型 + 嵌套 schema：90s 实测必超时（日志：aborted due to
+        // timeout → 永远兜底 10 题）。预算对齐 batch 的 240s。
+        abortSignal: AbortSignal.timeout(240_000),
         ...aiTelemetry("quiz.spec"),
       });
       const plan = planItemsFromSpec(object, args.difficulty);
@@ -1738,7 +2308,7 @@ export class QuizGenerationService {
     }
     const typeDesc = [...counts.entries()].map(([k, n]) => n + "道" + k).join("、");
     const material = args.free.material.trim();
-    const prompt = this.deps.prompts.render("quiz-plan-user", {
+    const prompt = this.deps.prompts.render("quiz/plan-user", {
       TOPIC: args.free.topic.slice(0, 500),
       TOTAL_COUNT: String(args.totalCount),
       TYPE_DISTRIBUTION: typeDesc,
@@ -1748,10 +2318,11 @@ export class QuizGenerationService {
         : "（无附加材料，围绕主题规划）",
     });
     try {
-      const base = this.deps.prompts.render("quiz-plan-system", {});
+      const base = this.deps.prompts.render("quiz/plan-system", {});
       const suffix = await this.personalizationSection(args.uid, args.personalization);
       const { object } = await generateObject({
         model: createGatewayModel("quiz_plan", { uid: args.uid, temperature: 0.3, model: config.llm.quizModel || undefined }),
+        providerOptions: { higress: { thinking: { type: "disabled" } } },
         schema: quizPlanSchema,
         system: suffix ? base + "\n\n" + suffix : base,
         prompt,
@@ -1847,7 +2418,27 @@ export class QuizGenerationService {
           existing: all,
           planBlock: buildPlanBlock(slice),
         });
-        for (const q of batch) acceptQuestion(q);
+        // 分值归位：按题型消费本批计划槽位的 score（模型返回题型漂移时
+        // 回落到批内任一剩余分值，读取侧对缺分题目另有均分兜底）。
+        const typeScores = new Map<string, number[]>();
+        for (const item of slice) {
+          const queue = typeScores.get(item.type) ?? [];
+          queue.push(item.score);
+          typeScores.set(item.type, queue);
+        }
+        const anyLeft = (): number | undefined => {
+          for (const queue of typeScores.values()) {
+            if (queue.length > 0) return queue.shift();
+          }
+          return undefined;
+        };
+        for (const q of batch) {
+          if (!acceptQuestion(q)) continue;
+          const t = String(q["type"] ?? "");
+          const queue = typeScores.get(t);
+          const score = queue && queue.length > 0 ? queue.shift() : anyLeft();
+          if (score !== undefined) q["score"] = score;
+        }
         await checkpointIfAdvanced(before);
         if (all.length > before) emit("checkpoint", `已落库 ${all.length}/${args.totalCount} 题`);
       }
@@ -1944,7 +2535,7 @@ export class QuizGenerationService {
     const counts = new Map<string, number>();
     for (const t of args.batchTypes) counts.set(t, (counts.get(t) ?? 0) + 1);
     const typeDesc = [...counts.entries()].map(([t, n]) => n + "道" + t).join("、");
-    const prompt = this.deps.prompts.render("quiz-batch-user", {
+    const prompt = this.deps.prompts.render("quiz/batch-user", {
       CHUNK_COUNT: String(selected.length),
       TOTAL_COUNT: String(args.batchCount),
       CONTEXT: context,
@@ -1954,7 +2545,7 @@ export class QuizGenerationService {
     });
 
     try {
-      const base = this.deps.prompts.render("quiz-batch-system", {});
+      const base = this.deps.prompts.render("quiz/batch-system", {});
       const suffix = await this.personalizationSection(args.uid, args.personalization);
       return await this.generateRepaired({ system: suffix ? base + "\n\n" + suffix : base, prompt, uid: args.uid });
     } catch (err) {

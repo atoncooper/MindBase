@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
+import type { QuotaService } from "../../../services/quota.js";
 import {
   BoardCompletionError,
   type BoardCompleteRequest,
@@ -19,7 +20,7 @@ const DIRECTIONS: BoardDirection[] = ["children", "siblings", "both"];
  */
 export function registerBoardRoutes(
   app: FastifyInstance,
-  deps: { completion: BoardCompletionService },
+  deps: { completion: BoardCompletionService; quota?: QuotaService },
 ): void {
   app.post("/chat/board/complete", async (req: FastifyRequest, reply: FastifyReply) => {
     const uid = getRequestContext()?.uid;
@@ -33,13 +34,30 @@ export function registerBoardRoutes(
     const direction = DIRECTIONS.includes(body.direction as BoardDirection)
       ? (body.direction as BoardDirection)
       : "both";
+    // AI 补全配额：peek 先行，完成成功后扣减（失败不计）
+    if (deps.quota) {
+      const gate = await deps.quota.peekKind(uid, "board");
+      if (gate?.verdict === "quota_exceeded") {
+        return reply.status(429).send({
+          detail: `今日 AI 补全额度已用完（${gate.limit} 次/日），明日 0 点重置`,
+          code: "QUOTA_EXCEEDED",
+          kind: "board",
+          used: gate.used,
+          limit: gate.limit,
+          resetAt: gate.resetAt,
+          upgradeSku: gate.tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+        });
+      }
+    }
     try {
-      return await deps.completion.complete(uid, {
+      const result = await deps.completion.complete(uid, {
         board_uuid: body.board_uuid,
         anchor_uid: typeof body.anchor_uid === "string" ? body.anchor_uid : "",
         anchor_text: typeof body.anchor_text === "string" ? body.anchor_text : "",
         direction,
       });
+      if (deps.quota) await deps.quota.consumeKind(uid, "board");
+      return result;
     } catch (err) {
       if (err instanceof BoardCompletionError) {
         return reply.status(err.status).send({ detail: err.message });

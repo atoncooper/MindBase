@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"app-quiz/internal/exampaper"
@@ -50,6 +52,12 @@ func (s *Store) BuildPaper(ctx context.Context, uid int64, quizUUID string, opts
 			QuestionText: docString(q["question_text"]),
 			Options:      docStringList(q["options"]),
 		}
+		// 每题分值（蓝本固有；缺省 → 题干自注分值兜底（存量老卷）→ 整卷均分）
+		if s, ok := q["score"].(float64); ok && s > 0 {
+			row.Score = int(s + 0.5)
+		} else if v := scoreFromStem(docString(q["question_text"])); v > 0 {
+			row.Score = v
+		}
 		if opts.IncludeAnswers {
 			row.Answer = docAnswer(q["correct_answer"])
 			row.Explanation = docString(q["explanation"])
@@ -66,6 +74,22 @@ func (s *Store) BuildPaper(ctx context.Context, uid int64, quizUUID string, opts
 		return nil, "", apiErr(500, "试卷生成失败，请稍后重试")
 	}
 	return data, qs.Title, nil
+}
+
+// scoreFromStem parses the model-embedded per-question score from a stem
+// （「（本题满分 12 分）」「（满分 10 分）」）——存量老卷无 score 字段时的
+// 唯一分值信号。新卷生成已禁止题干带分值注记。
+func scoreFromStem(text string) int {
+	re := regexp.MustCompile(`[（(]\s*(?:本题\s*满\s*分|满\s*分)\s*([0-9]+(?:\.[0-9]+)?)\s*分\s*[）)]`)
+	m := re.FindStringSubmatch(text)
+	if m == nil {
+		return 0
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return int(v + 0.5)
 }
 
 // docString reads a Mongo question field as a string (nil-safe).

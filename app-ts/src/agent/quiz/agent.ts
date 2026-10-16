@@ -10,9 +10,10 @@ export function createQuizAgent(runtime: AgentRuntime, prompts: PromptRegistry, 
     name: "quiz",
     description: agentEntry("quiz").description,
     runtime,
-    toolNames: ["emit_quiz", "emit_grading"],
+    // 大脑化：可自主收集素材（知识库检索 + 联网搜索/抓页）后再结构化出题/批改
+    toolNames: ["emit_quiz", "emit_grading", "vector_search", "web_search", "fetch_webpage"],
     purpose: "quiz",
     context,
-    buildSystemPrompt: () => Promise.resolve(prompts.render("quiz", {})),
+    buildSystemPrompt: () => Promise.resolve(prompts.render("agents/quiz", {})),
   });
 }

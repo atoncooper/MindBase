@@ -40,7 +40,7 @@ export class AgentOrchestrator {
         .join("\n");
       const result = await generateText({
         model: createGatewayModel("agent_route"),
-        system: this.prompts.render("router", {
+        system: this.prompts.render("agents/router", {
           AGENTS_LIST: descriptions,
           DEFAULT_AGENT: this.defaultAgent,
         }),

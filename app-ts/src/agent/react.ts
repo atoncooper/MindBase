@@ -1,6 +1,7 @@
 import { streamText, stepCountIs, type ModelMessage, type UserContent, type LanguageModel } from "ai";
 import { aiTelemetry } from "../llm/tracing.js";
 import { config } from "../config/index.js";
+import { maxOutputTokensFor } from "../utils/degrade.js";
 import { createGatewayModel } from "../llm/provider.js";
 import { ResultCollector } from "../context/types.js";
 import type { AgentRuntime } from "../tools/runtime.js";
@@ -162,6 +163,8 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
         messages,
         tools,
         temperature: config.llm.temperature,
+        // L1 省流：输出预算封顶（思考 token 计入输出，随之一并截断）
+        ...(maxOutputTokensFor(input.uid) > 0 ? { maxOutputTokens: maxOutputTokensFor(input.uid) } : {}),
         ...aiTelemetry(`agent.${opts.name}`),
         // structured interaction ends the turn normally (round-based ask_user)
         stopWhen: [stepCountIs(config.agent.maxSteps), stopOnToolCall("ask_user")],

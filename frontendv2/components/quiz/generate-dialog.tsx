@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Loader2, AlertCircle, Check, ChevronLeft, ChevronRight, BookOpen, Sparkles, Target, ImagePlus, Wand2, Upload, FolderOpen, FileText } from "lucide-react";
 import {
     quizApi,
+    type QuizExamBlueprint,
     favoritesV2Api,
     skillsApi,
     type FavoriteFolderV2,
@@ -157,14 +158,21 @@ function DialogBody({
     const [loadingFolders, setLoadingFolders] = useState(true);
     // 出题模式:kb=知识库检索(原能力) / free=AI 围绕主题自由出题 / wrong=错题强化 /
     // image=错题图片/文件上传(OCR 识别后强化或模仿出题)
-    const [mode, setMode] = useState<"kb" | "free" | "wrong" | "image">("kb");
+    const [mode, setMode] = useState<"kb" | "free" | "wrong" | "image" | "standard">("kb");
     const [topic, setTopic] = useState("");
     // 上传出题(image 模式)
     const [files, setFiles] = useState<File[]>([]);
     const [imageMode, setImageMode] = useState<"wrong_images" | "mimic">("wrong_images");
     // 个性化出题(全模式可用)
     const [personalOpen, setPersonalOpen] = useState(false);
-    const [paperStyle, setPaperStyle] = useState<PaperStyle>("standard");
+    // 考试蓝本选择器（65 种，后端 /quiz/styles 目录；分类过滤 + 搜索）
+    const [catalog, setCatalog] = useState<QuizExamBlueprint[]>([]);
+    // 目录加载失败标记（网关未放行 /quiz/styles 或 app-ts 不可达时可见，不再永远「加载中」）
+    const [catalogError, setCatalogError] = useState(false);
+    const [catalogRetry, setCatalogRetry] = useState(0);
+    const [examSearch, setExamSearch] = useState("");
+    const [examCategory, setExamCategory] = useState("全部");
+    const [examStyle, setExamStyle] = useState("standard");
     const [skillIds, setSkillIds] = useState<string[]>([]);
     const [instructions, setInstructions] = useState("");
     const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([]);
@@ -199,7 +207,25 @@ function DialogBody({
         };
     }, []);
 
-    // 个性化面板展开时懒加载已安装技能
+    // 个性化面板展开时懒加载考试蓝本目录 + 已安装技能
+    useEffect(() => {
+        if (!personalOpen || catalog.length > 0) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const list = await quizApi.stylesCatalog();
+                if (!cancelled) {
+                    setCatalog(list);
+                    setCatalogError(false);
+                }
+            } catch {
+                // 目录不可达：置错误态（UI 出现重试入口），选择器降级为「标准练习」only
+                if (!cancelled) setCatalogError(true);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [personalOpen, catalog.length, catalogRetry]);
+
     useEffect(() => {
         if (!personalOpen || installedSkills.length > 0) return;
         let cancelled = false;
@@ -217,7 +243,7 @@ function DialogBody({
     }, [personalOpen, installedSkills.length]);
 
     const personalization = {
-        style: paperStyle,
+        style: examStyle,
         ...(skillIds.length ? { skill_ids: skillIds } : {}),
         ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
     };
@@ -259,7 +285,22 @@ function DialogBody({
         const effDifficulty = difficulty === "auto" ? undefined : difficulty;
         try {
             const res =
-                mode === "image" ? (
+                mode === "standard" ? (
+                    await quizApi.generateFromImages((() => {
+                        const form = new FormData();
+                        form.append("mode", "standard");
+                        if (effCount !== undefined) form.append("question_count", String(effCount));
+                        if (effDifficulty) form.append("difficulty", effDifficulty);
+                        if (title.trim()) form.append("title", title.trim());
+                        if (examStyle !== "standard") form.append("style", examStyle);
+                        if (skillIds.length) form.append("skill_ids", skillIds.join(","));
+                        if (instructions.trim()) form.append("instructions", instructions.trim());
+                        if (selected.size) form.append("folder_ids", Array.from(selected).join(","));
+                        for (const file of files) form.append("files", file, file.name);
+                        return form;
+                    })())
+                )
+                : mode === "image" ? (
                     await quizApi.generateFromImages((() => {
                         const form = new FormData();
                         form.append("mode", imageMode);
@@ -267,7 +308,7 @@ function DialogBody({
                         if (effDifficulty) form.append("difficulty", effDifficulty);
                         if (title.trim()) form.append("title", title.trim());
                         if (topic.trim()) form.append("topic", topic.trim());
-                        if (paperStyle !== "standard") form.append("style", paperStyle);
+                        if (examStyle !== "standard") form.append("style", examStyle);
                         if (skillIds.length) form.append("skill_ids", skillIds.join(","));
                         if (instructions.trim()) form.append("instructions", instructions.trim());
                         for (const f of files) form.append("files", f, f.name);
@@ -309,7 +350,9 @@ function DialogBody({
               ? topic.trim().length > 0
               : mode === "image"
                 ? files.length > 0
-                : true;
+                : mode === "standard"
+                  ? files.length > 0
+                  : true;
 
     const sourceSummary =
         mode === "kb"
@@ -323,7 +366,11 @@ function DialogBody({
                 ? files.length > 0
                     ? files.length + " 个文件：" + files.map((f) => f.name).slice(0, 3).join("、") + (files.length > 3 ? " 等" : "")
                     : "未上传文件"
-                : "历史错题薄弱点（AI 读取错题本，由易到难出变式新题）";
+                : mode === "standard"
+                  ? files.length > 0
+                    ? files.length + " 个大纲/规范文件：" + files.map((f) => f.name).slice(0, 3).join("、") + (files.length > 3 ? " 等" : "")
+                    : "未上传文件"
+                  : "历史错题薄弱点（AI 读取错题本，由易到难出变式新题）";
 
     const sourceLabel =
         mode === "kb"
@@ -334,7 +381,9 @@ function DialogBody({
                 ? imageMode === "mimic"
                     ? "模仿出题"
                     : "错题图片强化"
-                : "错题强化";
+                : mode === "standard"
+                  ? "按大纲/规范出题"
+                  : "错题强化";
 
     return (
         <div className="flex h-full flex-col">
@@ -365,12 +414,13 @@ function DialogBody({
                         >
                             <div className="mx-auto max-w-[680px] px-6 pb-8">
                                 {/* 出题模式（M3 卡片 + 主色圆图标） */}
-                                <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+                                <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3">
                                     {([
                                         { v: "kb", label: "知识库出题", desc: "检索已向量化视频", icon: BookOpen },
                                         { v: "free", label: "AI 自由出题", desc: "任意主题，无需知识库", icon: Sparkles },
                                         { v: "wrong", label: "错题强化", desc: "基于错题本由易到难", icon: Target },
                                         { v: "image", label: "错题图片", desc: "上传错题/试卷强化出题", icon: ImagePlus },
+                                        { v: "standard", label: "大纲出题", desc: "上传考试大纲/规范按标准出题", icon: FileText },
                                     ] as const).map((m) => {
                                         const active = mode === m.v;
                                         return (
@@ -408,7 +458,7 @@ function DialogBody({
                                         <p className="mt-5 text-[13px] text-[#444746]">
                                             选择作为出题来源的收藏夹，可多选。仅已向量化的内容会被检索。
                                         </p>
-                                        <div className="g-card mt-3 divide-y divide-[#c4c7c5] overflow-hidden">
+                                        <div className="g-card mt-3 space-y-0.5 p-1.5">
                                             {loadingFolders ? (
                                                 <div className="flex items-center justify-center gap-2 py-16 text-[13px] text-[#747775]">
                                                     <Loader2 className="h-4 w-4 animate-spin text-[#0b57d0]" />
@@ -427,7 +477,7 @@ function DialogBody({
                                                             key={f.media_id}
                                                             type="button"
                                                             onClick={() => toggleFolder(f.media_id)}
-                                                            className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[rgba(31,31,31,0.03)]"
+                                                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-[rgba(31,31,31,0.04)]"
                                                         >
                                                             <span
                                                                 className={cn(
@@ -583,6 +633,99 @@ function DialogBody({
                                     </div>
                                 )}
 
+                                {mode === "standard" && (
+                                    <div className="mt-5">
+                                        <p className="text-[13px] text-[#444746]">
+                                            上传考试大纲、命题规范等文档，AI 先解析出题量 / 题型 / 分值蓝图，再按标准逐知识点生成；题量选「AI 配卷」时整卷结构由大纲内容自动决定。
+                                        </p>
+                                        <label
+                                            onDragOver={(e) => e.preventDefault()}
+                                            onDrop={(e) => {
+                                                e.preventDefault();
+                                                addFiles(e.dataTransfer.files);
+                                            }}
+                                            className="mt-3 flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-[#c4c7c5] bg-white px-4 py-9 text-center transition-colors hover:border-[#0b57d0] hover:bg-[rgba(211,227,253,0.18)]"
+                                        >
+                                            <span className="grid h-11 w-11 place-items-center rounded-full bg-[#d3e3fd]">
+                                                <FileText className="h-5 w-5 text-[#041e49]" aria-hidden="true" />
+                                            </span>
+                                            <span className="text-[14px] font-medium text-[#1f1f1f]">
+                                                点击或拖拽上传考试大纲 / 命题规范
+                                            </span>
+                                            <span className="text-[11px] text-[#747775]">
+                                                支持 pdf / docx / pptx / txt / md / html 与图片，最多 10 个，单个 ≤10MB
+                                            </span>
+                                            <input
+                                                type="file"
+                                                multiple
+                                                accept=".pdf,.docx,.pptx,.txt,.md,.markdown,.html,.htm,image/png,image/jpeg,image/webp,image/bmp"
+                                                className="sr-only"
+                                                onChange={(e) => {
+                                                    addFiles(e.target.files);
+                                                    e.target.value = "";
+                                                }}
+                                            />
+                                        </label>
+
+                                        {files.length > 0 && (
+                                            <div className="mt-3 space-y-1.5">
+                                                {files.map((file) => (
+                                                    <div
+                                                        key={file.name + file.size}
+                                                        className="g-card flex items-center gap-2.5 px-3.5 py-2.5"
+                                                    >
+                                                        <FileText className="h-4 w-4 shrink-0 text-[#0b57d0]" />
+                                                        <span className="min-w-0 flex-1 truncate text-[13px] text-[#1f1f1f]">
+                                                            {file.name}
+                                                        </span>
+                                                        <span className="shrink-0 text-[11px] text-[#747775]">
+                                                            {(file.size / 1024 / 1024).toFixed(2)}MB
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeFile(file.name)}
+                                                            className="g-icon-btn !h-7 !w-7 shrink-0"
+                                                            aria-label={"移除 " + file.name}
+                                                        >
+                                                            <X className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {folders.length > 0 && (
+                                            <div className="mt-4">
+                                                <p className="text-[12px] font-medium uppercase tracking-wider text-[#747775]">
+                                                    关联知识库（可选 · 大纲定标准，知识库供内容）
+                                                </p>
+                                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                                    {folders.map((fold) => {
+                                                        const active = selected.has(fold.media_id);
+                                                        return (
+                                                            <button
+                                                                key={fold.media_id}
+                                                                type="button"
+                                                                onClick={() => toggleFolder(fold.media_id)}
+                                                                className={cn(
+                                                                    "g-chip",
+                                                                    active && "g-chip-selected",
+                                                                )}
+                                                            >
+                                                                {fold.title}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <p className="mt-3 text-[11px] leading-relaxed text-[#747775]">
+                                            生成前先做语义配卷（题量 / 题型 / 分值蓝图来自大纲）；题目内容同时受大纲约束与知识库素材支撑，约需 1-3 分钟。
+                                        </p>
+                                    </div>
+                                )}
+
                                 {/* 个性化出题（全模式可用，默认折叠） */}
                                 <div className="g-card mt-5 overflow-hidden">
                                     <button
@@ -593,7 +736,7 @@ function DialogBody({
                                         <Wand2 className="h-[18px] w-[18px] text-[#0b57d0]" aria-hidden="true" />
                                         <span className="flex-1 text-[14px] font-medium text-[#1f1f1f]">
                                             个性化出题
-                                            {(paperStyle !== "standard" || skillIds.length > 0 || instructions.trim()) && (
+                                            {(examStyle !== "standard" || skillIds.length > 0 || instructions.trim()) && (
                                                 <span className="ml-2 rounded-full bg-[#d3e3fd] px-2 py-0.5 text-[10px] font-medium text-[#041e49]">
                                                     已配置
                                                 </span>
@@ -605,31 +748,80 @@ function DialogBody({
                                         <div className="space-y-5 border-t border-[#c4c7c5] px-4 py-4">
                                             <div>
                                                 <p className="text-[12px] font-medium uppercase tracking-wider text-[#747775]">
-                                                    试卷风格
+                                                    考试类型（{catalog.length > 0 ? catalog.length + " 种蓝本" : "蓝本目录"} · 题型分布写死，AI 按蓝本逐步填充）
                                                 </p>
+                                                <input
+                                                    value={examSearch}
+                                                    onChange={(e) => setExamSearch(e.target.value)}
+                                                    className="g-field mt-2"
+                                                    placeholder="搜索考试（如：考研数学 / 雅思 / CPA / 408）"
+                                                />
                                                 <div className="mt-2 flex flex-wrap gap-1.5">
-                                                    {(
-                                                        [
-                                                            { v: "standard", label: "标准练习" },
-                                                            { v: "gaokao", label: "高考风格" },
-                                                            { v: "kaoyan", label: "考研风格" },
-                                                        ] as Array<{ v: PaperStyle; label: string }>
-                                                    ).map((s) => (
+                                                    {(["全部", ...Array.from(new Set(catalog.map((c) => c.category)))] as string[]).map((cat) => (
                                                         <button
-                                                            key={s.v}
+                                                            key={cat}
                                                             type="button"
-                                                            onClick={() => setPaperStyle(s.v)}
+                                                            onClick={() => setExamCategory(cat)}
                                                             className={cn(
                                                                 "g-chip",
-                                                                paperStyle === s.v && "g-chip-selected",
+                                                                examCategory === cat && "g-chip-selected",
                                                             )}
                                                         >
-                                                            {s.label}
+                                                            {cat}
                                                         </button>
                                                     ))}
                                                 </div>
+                                                <div className="mt-2 max-h-64 space-y-0.5 overflow-y-auto rounded-xl border border-[#c4c7c5] p-1.5">
+                                                    {catalog
+                                                        .filter((b) => (examCategory === "全部" || b.category === examCategory) &&
+                                                            (!examSearch.trim() || (b.name + b.id + b.category).toLowerCase().includes(examSearch.trim().toLowerCase())))
+                                                        .map((b) => {
+                                                            const active = examStyle === b.id;
+                                                            return (
+                                                                <button
+                                                                    key={b.id}
+                                                                    type="button"
+                                                                    onClick={() => setExamStyle(b.id)}
+                                                                    className={cn(
+                                                                        "flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+                                                                        active ? "bg-[rgba(211,227,253,0.55)]" : "hover:bg-[rgba(31,31,31,0.04)]",
+                                                                    )}
+                                                                >
+                                                                    <span className="min-w-0">
+                                                                        <span className="flex items-center gap-2">
+                                                                            <span className="text-[13px] font-medium text-[#1f1f1f]">{b.name}</span>
+                                                                            <span className="rounded-full bg-[#f1f3f4] px-2 py-0.5 text-[10px] text-[#5f6368]">{b.category}</span>
+                                                                        </span>
+                                                                        <span className="mt-0.5 block truncate text-[11px] text-[#747775]">{b.description}</span>
+                                                                    </span>
+                                                                    <span className="shrink-0 text-[11px] tabular-nums text-[#747775]">
+                                                                        {b.total} 题 · {b.duration_minutes} 分钟
+                                                                        {active && <Check className="ml-1.5 inline h-3.5 w-3.5 text-[#0b57d0]" />}
+                                                                    </span>
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    {catalog.length === 0 && (
+                                                        catalogError ? (
+                                                            <div className="px-4 py-6 text-center">
+                                                                <p className="text-[12px] text-[#747775]">
+                                                                    考试蓝本目录加载失败（/quiz/styles 不可达，请确认网关路由与 app-ts 已启动）
+                                                                </p>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setCatalogRetry((n) => n + 1)}
+                                                                    className="g-chip mt-2"
+                                                                >
+                                                                    重试
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="px-4 py-6 text-center text-[12px] text-[#747775]">目录加载中…</div>
+                                                        )
+                                                    )}
+                                                </div>
                                                 <p className="mt-1.5 text-[11px] text-[#747775]">
-                                                    影响题型用语、设问习惯与评分口径；导出时可再选卷面版式。
+                                                    选中后 AI 严格按该考试的题型分布逐步出题（题量可在下一步调整）；导出时可选卷面版式。
                                                 </p>
                                             </div>
 

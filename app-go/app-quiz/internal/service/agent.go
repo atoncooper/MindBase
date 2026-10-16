@@ -16,9 +16,11 @@ import (
 
 // AgentQuestion is one question from the quiz agent or the AI generation flow.
 type AgentQuestion struct {
-	Question       string          `json:"question"`
-	QuestionType   string          `json:"question_type,omitempty"`
-	Difficulty     string          `json:"difficulty,omitempty"`
+	Question     string `json:"question"`
+	QuestionType string `json:"question_type,omitempty"`
+	Difficulty   string `json:"difficulty,omitempty"`
+	// Score 每题分值（蓝本固有；0/缺省 = 无分值语义，读取侧整卷均分兜底）
+	Score          float64         `json:"score,omitempty"`
 	Options        []string        `json:"options,omitempty"`
 	Answer         string          `json:"answer,omitempty"`
 	CorrectAnswer  json.RawMessage `json:"correct_answer,omitempty"`
@@ -288,6 +290,7 @@ func toRepoQuestions(questions []AgentQuestion) []repo.AgentQuestion {
 			Question:       q.Question,
 			QuestionType:   q.QuestionType,
 			Difficulty:     q.Difficulty,
+			Score:          q.Score,
 			Options:        q.Options,
 			Answer:         q.Answer,
 			CorrectAnswer:  q.CorrectAnswer,

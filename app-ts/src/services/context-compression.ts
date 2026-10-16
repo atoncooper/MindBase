@@ -67,7 +67,7 @@ export class ContextCompressionService {
     const previous = prev?.summary ?? "（无）";
     const prompt = `# 已有摘要\n${previous}\n\n# 新增对话\n${transcript}`;
 
-    const summary = await this.summarize(this.prompts.render("compress", {}), prompt);
+    const summary = await this.summarize(this.prompts.render("chat/compress", {}), prompt);
     const saved = { summary, summarizedCount: target, updatedAt: Date.now() };
     await this.sessions.saveSummary(sessionId, saved);
     log.info(`[COMPRESS] session=${sessionId} summarized_upto=${target} chars=${summary.length}`);
@@ -101,7 +101,7 @@ export class ContextCompressionService {
     const previous = prev?.summary ?? "（无）";
     const prompt = `# 已有摘要\n${previous}\n\n# 新增对话\n${transcript}`;
 
-    const summary = await this.summarize(this.prompts.render("compress", {}), prompt);
+    const summary = await this.summarize(this.prompts.render("chat/compress", {}), prompt);
     const saved = { summary, summarizedCount: target, updatedAt: Date.now() };
     await port.saveSummary(sessionId, agentName, saved);
     await port.trim(sessionId, agentName, recentKeep);

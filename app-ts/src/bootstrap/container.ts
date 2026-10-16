@@ -17,6 +17,7 @@ import { buildServer } from "../transport/http/server.js";
 import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
+import { createWebSearchTool } from "../tools/web/search.js";
 import { HttpWebFetch } from "../tools/web/fetcher.js";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { AgentLifecycleManager } from "../agent/lifecycle.js";
@@ -34,6 +35,14 @@ import { SessionSummaryService } from "../services/session-summary.js";
 import { QuizGenerationService } from "../services/quiz-generation.js";
 import { QuizGradingService } from "../services/quiz-grading.js";
 import { AppQuizClient } from "../services/app-quiz-client.js";
+import { QuotaService } from "../services/quota.js";
+import { UsageReconciliationJob } from "../services/usage-reconciliation.js";
+import { RedisQuotaCounter } from "../repository/redis/quota-counter.js";
+import { MemoryQuotaCounter } from "../repository/memory/quota-counter.js";
+import type { QuotaCounterStore } from "../repository/quota.js";
+import { MemoryUsageLedger } from "../repository/memory/usage-ledger.js";
+import { MongoUsageLedger } from "../repository/mongo/usage-ledger.js";
+import type { UsageLedgerRepository } from "../repository/usage-ledger.js";
 import { MemorySessionSummaryStore } from "../repository/memory/session-summaries.js";
 import type { SessionSummaryRepository } from "../repository/session-summaries.js";
 import { MongoSessionSummaryStore } from "../repository/mongo/session-summaries.js";
@@ -45,6 +54,9 @@ import {
   MemoryMessageRepository,
 } from "../repository/memory/chat-store.js";
 import { MongoChatStore } from "../repository/mongo/chat-store.js";
+import { MongoQuizResumeStore } from "../repository/mongo/quiz-resume.js";
+import { MemoryQuizResumeStore } from "../repository/memory/quiz-resume.js";
+import type { QuizResumeStore } from "../repository/quiz-resume.js";
 import type { ChatSessionRepository, MessageRepository } from "../repository/persistence.js";
 import { MemoryVideoMetaRepository, defaultSeed } from "../repository/memory/video-meta.js";
 import { MemoryMemoryStore } from "../repository/memory/memory-store.js";
@@ -168,6 +180,28 @@ export async function bootstrap() {
   } else {
     log.warn("[BOOT] vector bookkeeping: memory fallback (MONGO__URI not set)");
   }
+  // 2.72 Quota + usage ledger: Redis daily counters (fail-open on
+  //      store errors at the service layer) + the cost ledger (Mongo preferred).
+  let quotaCounter: QuotaCounterStore = new MemoryQuotaCounter();
+  let redisQuotaCounter: RedisQuotaCounter | null = null;
+  if (config.redis.url) {
+    redisQuotaCounter = new RedisQuotaCounter(config.redis.url);
+    quotaCounter = redisQuotaCounter;
+    log.info("[BOOT] quota counter: redis (fail-open on store errors)");
+  } else {
+    log.info("[BOOT] quota counter: memory fallback (REDIS__URL not set)");
+  }
+  const quota = new QuotaService({ counter: quotaCounter });
+  let usageLedger: UsageLedgerRepository = new MemoryUsageLedger();
+  let mongoUsageLedger: MongoUsageLedger | null = null;
+  if (config.mongo.uri) {
+    mongoUsageLedger = await MongoUsageLedger.connect();
+    if (mongoUsageLedger) usageLedger = mongoUsageLedger;
+    else log.warn("[BOOT] usage ledger: memory fallback (mongodb unreachable)");
+  } else {
+    log.warn("[BOOT] usage ledger: memory fallback (MONGO__URI not set)");
+  }
+  const reconJob = new UsageReconciliationJob(usageLedger);
   const appBili = new AppBiliClient();
   // ASR transcript source (cross-DB read of mind_base.asr_documents) — a
   // dedicated connection; the kg block owns its own instance.
@@ -178,6 +212,7 @@ export async function bootstrap() {
     sources: vecSources ?? new MemoryKgSourceStore(),
     tasks: vecTasks,
     countPageVectors: (bvid, pageIndex) => rag.countPageVectors(bvid, pageIndex),
+    quota,
   });
 
   // Prompts load before any service that renders them (task-quiz / quiz generation /
@@ -219,6 +254,7 @@ export async function bootstrap() {
   registry.register(createAskUserTool);
   const webFetch = new HttpWebFetch();
   registry.register(createFetchWebpageTool(webFetch));
+  registry.register(createWebSearchTool());
 
   // 2.7 KG (knowledge graph): AI (extraction/retrieval/build) here, storage
   //     (Neo4j + video.kg bookkeeping) in the app-kg Go service over gRPC.
@@ -261,7 +297,7 @@ export async function bootstrap() {
     kgIndex = index ?? undefined;
     log.info(`[BOOT] kg entity index: ${index ? `ready (${config.kg.collectionName})` : "unavailable (semantic linking degraded)"}`);
     const extractor = new KgExtractor({
-      systemPrompt: prompts.render("kg-extract", {}),
+      systemPrompt: prompts.render("kg/extract", {}),
       extractModel: config.kg.extractModel,
       maxTextChars: config.kg.maxTextChars,
     });
@@ -422,13 +458,20 @@ export async function bootstrap() {
   );
   const chat = new ChatService(harness, sessions, messages, compression, (id, q) => {
     void generateTitle(sessions, prompts, id, q);
-  }, admission, chatImages);
+  }, admission, chatImages, quota, usageLedger);
   const resolveFolderScope = kgRepository
     ? (uid: string, folderIds: number[]) => kgRepository!.resolveScope(uid, folderIds)
     : undefined;
   const sessionSummary = new SessionSummaryService(sessions, messages, summaries, prompts);
   // Quiz AI orchestration: app-ts generates, app-quiz stores (internal key-auth route).
   // skills + ocr power 个性化出题（技能注入）与错题图片/文件出题（视觉转写）。
+  // resume store = 断点续跑计划快照（自有库；Mongo 不可达降级进程内）。
+  let quizResumeStore: QuizResumeStore = new MemoryQuizResumeStore();
+  if (config.mongo.uri) {
+    const mongoResume = await MongoQuizResumeStore.connect();
+    if (mongoResume) quizResumeStore = mongoResume;
+    else log.warn("[BOOT] quiz resume plans: memory fallback (mongodb unreachable)");
+  }
   const quizGen = new QuizGenerationService({
     summaries: sessionSummary,
     appQuiz: appQuizClient,
@@ -439,6 +482,7 @@ export async function bootstrap() {
       ? { forcedSection: (uid, ids) => skillManager!.forcedSection(uid, ids) }
       : undefined,
     ocr,
+    resumeStore: quizResumeStore,
   });
   const quizGrade = new QuizGradingService({ appQuiz: appQuizClient });
   // 2.85 Blindspot map (AI attribution): scope from app-bili, graph via
@@ -465,6 +509,9 @@ export async function bootstrap() {
     chat, harness, rag, sessionDocs, capabilities, ocr, kg: kgService,
     chatStores: { sessions, messages },
     chatImages,
+    quota,
+    ledger: usageLedger,
+    recon: reconJob,
     resolveFolderScope,
     boardCompletion,
     summaries: sessionSummary,
@@ -472,7 +519,7 @@ export async function bootstrap() {
     quizGrade,
     vectorizer: config.vectorize.enabled ? vectorizer : undefined,
     appBili,
-    taskQuiz: config.taskQuiz.enabled ? { generation: taskQuizGeneration, appTask, appAuth } : undefined,
+    taskQuiz: config.taskQuiz.enabled ? { generation: taskQuizGeneration, appTask, appAuth, quota } : undefined,
     blindspot,
     skills: skillManager && skillStore ? { manager: skillManager, store: skillStore } : undefined,
   });
@@ -480,6 +527,9 @@ export async function bootstrap() {
   // 7. Redis event bridge: bili:page_ready → vectorization (no-op without REDIS__URL)
   const biliEvents = new BiliEventBridge(vectorizer);
   await biliEvents.start();
+
+  // 8. 双账本对账 job（周期性，snapshot 进 /agent/runtime）
+  reconJob.start();
 
   await app.listen({ host: config.server.host, port: config.server.port });
   log.info(`[BOOT] config layers: ${configSources.join(" -> ")}`);
@@ -501,6 +551,9 @@ export async function bootstrap() {
     await vecSources?.close();
     await mongoQuizDocs?.close();
     await (mongoSkillMeta instanceof MongoSkillMetaStore ? mongoSkillMeta.close() : Promise.resolve());
+    await redisQuotaCounter?.close();
+    await mongoUsageLedger?.close();
+    reconJob.stop();
     await biliEvents.stop();
     await shutdownTracing();
     await closeLogger();

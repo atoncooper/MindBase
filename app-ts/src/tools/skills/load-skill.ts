@@ -16,15 +16,18 @@ export function createLoadSkillTool(manager: SkillManager): ToolDefinition {
       "返回技能全文，请严格按其指引执行。",
     inputSchema: z.object({
       name: z.string().min(1).describe("技能 ID（见系统提示的可用技能列表）"),
+      path: z.string().min(1).optional().describe(
+        "技能内附加文件路径（可选）。load_skill 只返回指令正文；技能列出的附加文件（references 等）用该参数按需读取",
+      ),
     }),
-    async execute(args: { name: string }, ctx: ToolRunContext): Promise<ToolOutput> {
+    async execute(args: { name: string; path?: string }, ctx: ToolRunContext): Promise<ToolOutput> {
       if (!config.skills.enabled) {
         return { content: "技能功能未启用。" };
       }
       if (ctx.uid === undefined) {
         return { content: "缺少用户身份，无法加载技能。" };
       }
-      const body = await manager.loadBody(ctx.uid, args.name);
+      const body = await manager.loadBody(ctx.uid, args.name, args.path);
       return { content: body };
     },
   };

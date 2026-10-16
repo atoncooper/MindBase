@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { config } from "../../config/index.js";
+import { searchKFor } from "../../utils/degrade.js";
 import { defineTool, type ToolOutput } from "../base.js";
 import type { RAGService } from "../../rag/service.js";
 import type { Source } from "../../context/types.js";
@@ -20,7 +21,8 @@ export function createVectorSearchTool(rag: RAGService) {
       k: z.number().int().positive().optional().describe(`返回条数，默认 ${config.search.defaultK}`),
     }),
     async execute(args, ctx): Promise<ToolOutput> {
-      const k = args.k ?? config.search.defaultK;
+      // L1 省流：默认检索条数减半（显式传 k 的调用不覆盖）
+      const k = args.k ?? searchKFor(ctx.uid, config.search.defaultK);
       const docs = await rag.search(args.query, k, {
         bvids: ctx.scope.bvids,
         uploadUuids: ctx.scope.uploadUuids,

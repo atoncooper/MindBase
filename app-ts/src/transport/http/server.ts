@@ -16,6 +16,11 @@ import { toErrorPayload } from "././errors.js";
 import { config } from "../../config/index.js";
 import { MAX_UPLOAD_BYTES } from "././routes/shared.js";
 import { registerSystemRoutes } from "././routes/system.js";
+import { registerQuotaRoutes } from "././routes/quota.js";
+import { registerAiUsageRoutes } from "././routes/ai-usage.js";
+import type { QuotaService } from "../../services/quota.js";
+import type { UsageLedgerRepository } from "../../repository/usage-ledger.js";
+import type { UsageReconciliationJob } from "../../services/usage-reconciliation.js";
 import { registerChatRoutes } from "././routes/chat.js";
 import { registerOpenAiCompat } from "././routes/openai.js";
 import { registerKgRoutes } from "././routes/kg.js";
@@ -67,6 +72,12 @@ export interface BuildServerOptions {
   chatStores?: { sessions: ChatSessionRepository; messages: MessageRepository };
   /** durable chat image storage (MinIO); absent → history returns legacy inline data URLs */
   chatImages?: import("../../repository/chat-images.js").ChatImageStorage;
+  /** member quota gate; absent → /quota/summary not registered */
+  quota?: QuotaService;
+  /** usage ledger; null still registers /internal/ai-usage (204 sink) */
+  ledger?: UsageLedgerRepository | null;
+  /** 双账本对账 job（snapshot 进 /agent/runtime）；absent = 无对账段 */
+  recon?: UsageReconciliationJob | null;
   /** folder_ids → bvids via app-kg; absent = chat folder scope unresolvable (fail-open unscoped) */
   resolveFolderScope?: (uid: string, folderIds: number[]) => Promise<string[]>;
   /** board AI completion (POST /chat/board/complete); absent = route not registered */
@@ -90,6 +101,8 @@ export interface BuildServerOptions {
     generation: TaskQuizGenerationService;
     appTask: AppTaskClient;
     appAuth: AppAuthClient;
+    /** member usage quota (task-quiz active-task cap); absent = unlimited */
+    quota?: QuotaService;
     /** test-only model override for the chat agent */
     agentModel?: Parameters<typeof import("../../services/task-quiz-agent.js").streamTaskQuizAgent>[0]["model"];
   };
@@ -166,7 +179,12 @@ export async function buildServer(opts: BuildServerOptions) {
   // ---- Route modules (one per domain; shared chat rate-limit budget) ----
   const limiter = new SlidingWindowLimiter({ windowMs: config.rateLimit.windowMs, max: config.rateLimit.max });
 
-  registerSystemRoutes(app, { rag: opts.rag, harness: opts.harness, capabilities: opts.capabilities });
+  registerSystemRoutes(app, { rag: opts.rag, harness: opts.harness, capabilities: opts.capabilities, quota: opts.quota, recon: opts.recon ?? null });
+  // gateway usage-logger sink (always registered — 204 when the ledger is down)
+  registerAiUsageRoutes(app, { ledger: opts.ledger ?? null });
+  if (opts.quota) {
+    registerQuotaRoutes(app, { quota: opts.quota });
+  }
   registerChatRoutes(app, { chat: opts.chat, sessionDocs: opts.sessionDocs, chatImages: opts.chatImages, ocr: opts.ocr, limiter, capabilities: opts.capabilities, resolveFolderScope: opts.resolveFolderScope, rag: opts.rag });
   if (opts.vectorizer && opts.appBili) {
     registerVectorPageRoutes(app, { vectorizer: opts.vectorizer });
@@ -186,10 +204,10 @@ export async function buildServer(opts: BuildServerOptions) {
   }
   registerOpenAiCompat(app, { harness: opts.harness, model: config.llm.model, limiter });
   if (opts.kg) {
-    registerKgRoutes(app, { kg: opts.kg });
+    registerKgRoutes(app, { kg: opts.kg, quota: opts.quota });
   }
   if (opts.boardCompletion) {
-    registerBoardRoutes(app, { completion: opts.boardCompletion });
+    registerBoardRoutes(app, { completion: opts.boardCompletion, quota: opts.quota });
   }
   if (opts.summaries) {
     registerSessionSummaryRoutes(app, { summaries: opts.summaries });

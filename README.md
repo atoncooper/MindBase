@@ -6,7 +6,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）与支付后台管理（app-pay-admin，Go）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖），以及一个 Flutter 移动端 **app-mobile**（🚧 测试阶段，尚未开发完成，见其 README）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
 
-后端 FastAPI + LangGraph multi-agent（Chat / Memory / Note / Code / Search / Summary 六个 harness 注册 agent，Quiz 为结构化出题模块，task-quiz 独立对话通道；子 agent 经 delegate 按需调用）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。支持 OpenAI / DashScope / DeepSeek 多 LLM Provider。
+后端按域拆分为独立服务：AI 域（chat/agent/RAG/KG/quiz 出题）在 **app-ts**（Node + Fastify + LangGraph multi-agent，:8000，沿用退役 Python backend 的端口），服务端 CRUD 在 **app-go** 各 Go 服务（app-auth 认证 / app-bili 获取 / app-note 笔记 / app-quiz 测验 / app-cloud 云盘 / app-kg 图存储 / app-settings 设置）。LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（用户无需配置任何 API Key）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。
 
 适合「收藏了很多但没时间整理」的学习者，把碎片化收藏变成可用的知识库。
 
@@ -28,6 +28,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 | **思维导图/白板服务 app-board**（API / 乐观锁 / TLS / 配置） | [`docs/app-board.md`](docs/app-board.md) |
 | **交易/会员服务 app-pay**（订单状态机 / 渠道 / 审计 / 配置） | [`docs/app-pay.md`](docs/app-pay.md) |
 | **支付后台 app-pay-admin**（查询 / 补偿开通 / 鉴权） | [`docs/app-pay-admin.md`](docs/app-pay-admin.md) |
+| **云盘服务 app-cloud**（分块上传 / 配额记账 / 分享 / 回收站 / 向量化管道 / 多实例扩容） | [`docs/app-cloud.md`](docs/app-cloud.md) |
 | **桌面端 mind-base-desktop**（Tauri 2，全本地） | [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md) |
 | **移动端 app-mobile**（Flutter；🚧 测试阶段 / WIP，未开发完成） | [`app-mobile/README.md`](app-mobile/README.md) |
 | **公开分享体系**（笔记/云盘/测验分享链接、域名策略、设备证明、提取码） | [`docs/sharing.md`](docs/sharing.md) |
@@ -35,9 +36,9 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 ### 最简命令（TL;DR）
 
 ```bash
-# 本地开发
-uvicorn app.main:app --reload --port 8000    # 终端 1：后端 → http://localhost:8000/docs
-cd frontendv2 && npm run dev                  # 终端 2：前端 → http://localhost:3000
+# 本地开发（后端建议直接用 compose 起 app-ts 全家桶；裸跑见 docs/getting-started.md）
+docker compose up -d app-ts                   # AI 域后端 → http://localhost:8000（/health）
+cd frontendv2 && npm run dev                  # 前端 → http://localhost:3000
 
 # Docker 部署（默认 profile = 全栈，含 Milvus/Neo4j/APISIX/nginx/app-task/app-board）
 cp .env.example .env                          # 至少填 LLM__API_KEY、SESSION__SECRET、
@@ -81,12 +82,16 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 - 存储：独立 Go 服务 app-board（MySQL 元数据 + Mongo 正文，`If-Match` 乐观并发锁）；白板（Excalidraw）存储契约就绪，编辑器 P3 接入
 - 详见 [`docs/app-board.md`](docs/app-board.md)
 
-### 云盘
+### 云盘（app-cloud）
 
 - **入口**：导航栏 `云盘`
-- 文件夹树、上传（分片直传 MinIO）、搜索、排序、批量处理
-- WebSocket 实时推送处理状态（ASR / 向量化）
-- 云盘文档一键转笔记（note agent 整理）、文档全文提取（pdf/docx/doc/html/md/txt）
+- 文件夹树、上传（5GB 分片直传 MinIO）、搜索、排序、批量处理、配额用量条、回收站（软删 30 天）
+- 处理状态前端轮询（`vector_status`：pending → processing → done/failed/not_supported）
+- 存储配额（免费 10GB / VIP / SVIP，tier 来自 app-pay；init 即原子预留，不超卖）
+- 百度式分享（提取码 / 有效期 / 下载上限 / 短时效直链，免登录访问页）
+- 云盘文档一键转笔记（note agent 整理）、文档全文提取（pdf/docx/doc/html/md/txt）+ 向量化入 RAG
+- 多实例就绪（outbox 任务队列 + 原子配额预留 + 租约锁后台任务）
+- 详见 [`docs/app-cloud.md`](docs/app-cloud.md)
 
 ### 题目练习
 
@@ -119,12 +124,13 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 - app-pay-admin（Go）：只读运营查询 + 会员补偿开通（`http://127.0.0.1:8003`，默认 `admin` / `app-pay-admin`）
 - 详见 [`docs/app-pay.md`](docs/app-pay.md) / [`docs/app-pay-admin.md`](docs/app-pay-admin.md)
 
-### API 设置 / 个人中心
+### 个人中心
 
-- **入口**：导航栏 `API 设置` / `个人中心`
-- LLM / Embedding / ASR 多 Provider 凭证管理，默认凭证、连接测试
+- **入口**：导航栏 `个人中心` / `会员中心`
 - 个人资料、安全绑定（B 站/邮箱/密码/微信）、退出登录
+- 会员开通与订单（渠道由 `GET /pay/channels` 决定：支付宝当面付 / MOCK）
 - 登录方式：B 站扫码、账号密码（图形验证码）、邮箱注册、手机短信、微信扫码（各自有配置开关，未启用自动隐藏）
+- AI 能力统一走 Higress 平台网关，**用户无需配置任何 API Key**（BYOK 已于 2026-10-07 退役）
 
 ### 桌面端（mind-base-desktop）
 
@@ -149,9 +155,8 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 | 思维导图 | `/board` | boards CRUD（If-Match 乐观锁）/ pin |
 | 题目 | `/quiz` | generate / generate-from-summary / submit / history / export / share |
 | 定时出题 | `/task-quiz` `/tasks` | chat（定义任务）/ register / answer / 列表 |
-| 云盘 | `/cloud` | 分片上传 / folders / files / 处理状态 / raw 预览 |
-| 凭证 | `/credentials` `/settings` | 多 Provider API Key CRUD / embedding / asr 配置 |
-| 计费 | `/billing` | 用量统计 / by-provider / by-credential / timeseries |
+| 云盘 | `/cloud` | 分片上传 / folders / files / quota / trash / share / 处理状态 / raw 预览 |
+| 工作区 | `/workspaces` | RAG 工作区 CRUD / 绑定 / 文件展开 |
 | 技能 | `/skills` | installed / install / uninstall / store |
 | 支付 | `/pay` | products / orders / membership（可选 app-pay 服务） |
 | 壁纸 | `/wallpaper` | upload / file / preset |
@@ -164,37 +169,20 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 
 ## 测试
 
-### RAG 诊断（P0 自检）
+### Go 独立服务测试（守护测试 + 单测）
 
 ```bash
-python -m app.test.rag.diagnose_rag
-```
-
-验证 Milvus / embedding / LLM 全链路可用。
-
-### 后端单元测试
-
-```bash
-pytest app/test/ -v          # 按业务域分包：agents / chat / kg / notes / quiz / rag / harness ...
-```
-
-### Agent 真实集成测试
-
-```bash
-export BILIRAG_REAL_AGENT_HARNESS_TESTS=1
-export LLM__API_KEY="你的真实 LLM Key"
-pytest app/test/real_agent_harness -v -s
-```
-
-默认不设开关时全部 skip（不消耗真实资源）。
-
-### 独立服务测试
-
-```bash
+cd app-go/app-cloud && go test ./...    # schema 守护（禁 ALTER）+ joblock 单测
 cd app-board && go test ./...           # Go 板存储（22 个测试）
 cd app-pay-admin && go test ./...       # Go 支付后台（31 个测试）
 cd app-pay && mvn test                  # Java 交易服务（82 个测试）
 # app-task 测试随源码在独立仓库 atoncooper/app-task
+```
+
+### AI 域（app-ts，vitest 全量离线；Mongo 用例无实例自动 skip）
+
+```bash
+cd app-ts && npm run typecheck && npm test
 ```
 
 ### 前端
@@ -222,19 +210,26 @@ npm run lint && npx tsc --noEmit
 ## 目录索引
 
 ```text
-app/                             FastAPI 主后端
-  agent/                 LangGraph agents (chat / memory / note / code / search / summary / quiz / task_quiz)
-  harness/               AgentHarness (orchestrator + runtime + lifecycle + scheduler + skills)
-  routers/               FastAPI 路由（薄层）
-  services/              业务服务 (rag / kg 知识图谱 / chat / notes / cloud 云盘 / blindspot 盲区 /
-                         quiz / llm 凭证与用量 / auth / wallpaper / preferences / doc_parser ...)
-  repository/            数据访问 (MySQL / Mongo / Milvus / Neo4j)
-  tools/                 Agent 工具 (vector_search / kg_search / run_code / delegate / context / skill ...)
-  infra/                 基础设施 (config / mysql / mongo / redis / minio / neo4j / milvus / 多级缓存)
-  config/                YAML 配置 (default.yaml / config.yaml)
-  response/              Pydantic 请求/响应 schema
-  models.py              SQLAlchemy ORM 模型
-  test/                  测试（按业务域分包）+ diagnose_rag 诊断
+app-ts/                          AI 域服务（Node + Fastify :8000，LangGraph multi-agent）
+  src/agent/             子 agent（main / note / code / quiz / board，ReAct）
+  src/rag/               chunk / embed / Milvus / rerank / RRF
+  src/transport/         http 路由 + SSE + gRPC + 内部客户端
+  src/bootstrap/         组合根（DI 装配）
+  config/default.yaml    配置；prompts/*.md 提示词；test/ vitest 离线单测
+
+app-go/                          Go 服务目录（每个服务自带 README.md）
+  app-auth/              身份认证（:8006；网关 verify 面 → X-Uid/X-Roles）
+  app-bili/              B 站获取（:8010；收藏夹/整理/ASR/build 编排，含 ffmpeg）
+  app-note/              笔记（:8008；If-Match 乐观并发 + 分离存储）
+  app-quiz/              测验存储（:8011；确定性判题/分享/错题本）
+  app-cloud/             云盘（:8007；分块上传/配额/分享/回收站/向量化管道，多实例就绪）
+  app-kg/                KG 图存储（:8013 gRPC；Neo4j 唯一写者）
+  app-settings/          设置（:8015；偏好/壁纸/头像）
+
+mcp/                             MCP server（把域能力暴露给 Agent，Go + mcp-go）
+  app-board-mcp/         思维导图/白板工具面（:8005）
+  app-note-mcp/          笔记工具面（:8009）
+  app-quiz-mcp/          测验工具面（:8012）
 
 frontendv2/                      当前前端（第一代 frontend/ 已于 2026-10-01 删除）
   app/                   Next.js App Router（chat / favorites / notes / mindmap / cloud-drive /
@@ -253,13 +248,17 @@ app-pay/                         交易/会员服务（Java 21 + Spring Boot 3 +
 app-pay-admin/                   支付后台管理（Go + Gin SSR，:8003 回环）
 
 mind-base-desktop/               桌面端（Tauri 2 + React 19，全本地 SQLite）
+app-mobile/                      移动端（Flutter，🚧 测试阶段）
 
 apisix/                          APISIX 网关声明式配置（路由/上游/forward-auth/key-auth）
 nginx/                           nginx 统一入口（TLS + 页面/接口分发 + 缓存）
+docs/                            文档索引（docs/README.md：架构/部署/迁移/各服务详解）
+plan/                            架构分析与实施计划（plan/1.0.x 编号制）
 
 docker-compose.yml               主服务（默认 profile = 全栈）
 docker-compose.daytona.yml       Daytona 代码沙箱（可选）
 deploy/china/                    中国大陆镜像部署替代方案
+deploy/k8s/                      K8s manifests（app-auth/app-cloud/app-note/…）
 ```
 
 ---
@@ -294,25 +293,30 @@ deploy/china/                    中国大陆镜像部署替代方案
 
 不是。app-pay 系列在 `--profile pay` / `--profile full` 才启动；主知识库功能完全不依赖它。
 
-### Q: 如何切换 LLM Provider？
+### Q: AI 请求走哪？需要自己配 API Key 吗？
 
-前端导航栏 → `API 设置` → 新建 Credential（Provider + API Key + Base URL），设为默认。支持 OpenAI / DashScope / DeepSeek / Custom；对话模型层还支持 OpenRouter 切换（`LLM__PROVIDER` / `OPENROUTER__API_KEY`）。
+不需要。平台代发起的 LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（compose `--profile ai`），
+供应商密钥只配置在网关控制台（127.0.0.1:18081），不进 `.env`、不下发给前端——BYOK（用户自带 Key）已于 2026-10-07 整体退役。模型切换/新增供应商都在网关侧完成。
 
 ---
 
 ## 相关文档
 
+- [文档索引（全量清单）](docs/README.md)
 - [系统架构总览](docs/architecture.md)
 - [配置说明](docs/configuration.md)
-- [部署指南](docs/deployment.md)
+- [部署指南](docs/deployment.md)（含 app-cloud 多实例扩容）
+- [Python backend 退役记录](docs/python-decommission.md)
 - [快速入门（本地开发）](docs/getting-started.md)
+- [云盘服务](docs/app-cloud.md)
 - [笔记系统](docs/notes.md)
 - [定时出题任务](docs/app-task.md)
 - [思维导图/白板服务](docs/app-board.md)
 - [交易/会员服务](docs/app-pay.md)
 - [支付后台管理](docs/app-pay-admin.md)
+- [KG 存储服务](docs/app-kg.md)
 - [桌面端](docs/mind-base-desktop.md)
-- [Quiz Harness](docs/quiz_harness.md)
+- [公开分享体系](docs/sharing.md)
 - [代码执行](docs/code-execution.md)
 - [开发规范](AGENTS.md)
 

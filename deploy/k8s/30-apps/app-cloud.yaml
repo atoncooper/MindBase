@@ -20,6 +20,9 @@ kind: Deployment
 metadata:
   name: app-cloud
 spec:
+  # 多实例强化已完成（Redis 租约锁后台任务 / cloud_vector_tasks outbox 认领 /
+  # Lua 配额预留 / cloud_quota 计数自愈 / 下载上限条件更新）——上方 Service 已
+  # 做负载均衡，可安全调大 replicas。
   replicas: 1
   selector:
     matchLabels:

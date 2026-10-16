@@ -100,6 +100,24 @@ func (r *Reconciler) ReconcileUser(ctx context.Context, uid int64) (*ReconcileRe
 		}
 	}
 	rep.DriftBytes = rep.MinioBytes - rep.DBActiveBytes - rep.DBTrashBytes
+
+	// Heal the cloud_quota counter against the authoritative SUM. The
+	// counter is a maintained index for O(1) quota checks; drift can only
+	// come from a missed maintenance path — self-heal and warn loudly.
+	var counter int64
+	if err := r.db.Raw("SELECT used_bytes FROM cloud_quota WHERE uid = ?", uid).Scan(&counter).Error; err != nil {
+		slog.Warn("[RECONCILE] usage counter read failed", "uid", uid, "err", err)
+	} else if counter != rep.DBActiveBytes {
+		if err := r.db.Exec(
+			"INSERT INTO cloud_quota (uid, used_bytes, updated_at) VALUES (?, ?, NOW()) "+
+				"ON DUPLICATE KEY UPDATE used_bytes = ?, updated_at = NOW()",
+			uid, rep.DBActiveBytes, rep.DBActiveBytes).Error; err != nil {
+			slog.Warn("[RECONCILE] usage counter heal failed", "uid", uid, "err", err)
+		} else {
+			slog.Warn("[RECONCILE] usage counter healed to authoritative SUM",
+				"uid", uid, "counter", counter, "sum", rep.DBActiveBytes)
+		}
+	}
 	return rep, nil
 }
 

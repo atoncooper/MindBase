@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
 import { config } from "../../../config/index.js";
+import { resolveTier } from "../../../utils/membership.js";
+import type { QuotaService } from "../../../services/quota.js";
 import { createLogger } from "../../../logger.js";
 import { AppTaskError } from "../../../services/app-task-client.js";
 import { AppAuthError } from "../../../services/app-auth-client.js";
@@ -24,12 +26,33 @@ const log = createLogger("HTTP");
 
 const DIFFICULTIES = new Set(["easy", "medium", "hard"]);
 
+/**
+ * 活跃任务计数：scheduler 视角的 pending/running（completed/failed 不占额度）。
+ * app-task 不可达或列表失败 → 返回 -1，调用方 fail-open 放行（可用性优先，
+ * 与聊天配额同一 fail 方向）。
+ */
+async function countActiveQuizTasks(
+  appTask: { listTasks(domain?: string): Promise<Array<{ status: string; payload: Record<string, unknown> }>> },
+  uid: string,
+): Promise<number> {
+  try {
+    const rows = await appTask.listTasks("task_quiz");
+    return rows.filter(
+      (r) => String(r.payload?.uid ?? "") === uid && (r.status === "pending" || r.status === "running"),
+    ).length;
+  } catch {
+    return -1;
+  }
+}
+
 export function registerTaskQuizRoutes(
   app: FastifyInstance,
   deps: {
     generation: TaskQuizGenerationService;
     appTask: import("../../../services/app-task-client.js").AppTaskClient;
     appAuth: import("../../../services/app-auth-client.js").AppAuthClient;
+    /** 会员用量配额（定时出题活跃任务数上限）；absent = 不限 */
+    quota?: QuotaService;
     /** test-only model override for the chat agent */
     agentModel?: Parameters<typeof streamTaskQuizAgent>[2];
   },
@@ -124,6 +147,24 @@ export function registerTaskQuizRoutes(
     }
     if (trigger.getTime() < Date.now() - 60_000) {
       return reply.status(400).send({ detail: "触发时间必须晚于当前时间" });
+    }
+    // 定时出题活跃任务数上限（存量口径）：app-task 不可达 → fail-open 放行。
+    if (deps.quota) {
+      const limit = await deps.quota.stockLimit(uid, "task_quiz_active");
+      if (limit >= 0) {
+        const active = await countActiveQuizTasks(deps.appTask, uid);
+        if (active >= 0 && active >= limit) {
+          const tier = await resolveTier(uid);
+          return reply.status(429).send({
+            detail: `定时出题活跃任务已达上限（${active}/${limit}），请先删除或等待现有任务完成`,
+            code: "QUOTA_EXCEEDED",
+            kind: "task_quiz_active",
+            used: active,
+            limit,
+            upgradeSku: tier === "free" ? "VIP_MONTHLY" : "SVIP_MONTHLY",
+          });
+        }
+      }
     }
     try {
       const result = await deps.appTask.registerTask({

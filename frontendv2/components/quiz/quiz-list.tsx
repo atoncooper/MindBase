@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, BookOpen, Share2, FileDown, ChevronRight, CircleHelp, Loader2, AlertCircle, Search, Check, X, Pencil, Trash2, ArrowUpDown, ChevronDown } from "lucide-react";
+import { Plus, BookOpen, Share2, FileDown, ChevronRight, CircleHelp, Loader2, AlertCircle, Search, Check, X, Pencil, Trash2, ArrowUpDown, ChevronDown, RefreshCw } from "lucide-react";
 import { quizApi, type QuizHistoryItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +39,8 @@ interface QuizListProps {
     onShare: (quizUuid: string) => void;
     /** 打开该题卷的试卷导出弹窗（仅 done 状态的行显示入口） */
     onExport: (quizUuid: string) => void;
+    /** 断点续跑：partial 卷从 checkpoint 补齐剩余题目（仅 partial 行显示入口） */
+    onResume: (quizUuid: string) => void;
     /** bump to force a reload after a new quiz is generated */
     refreshKey: number;
 }
@@ -60,7 +62,7 @@ function formatTime(iso?: string | null): string {
     return sameYear ? md + " " + hm : d.getFullYear() + "年" + md;
 }
 
-export function QuizList({ onNew, onSelect, onShare, onExport, refreshKey }: QuizListProps) {
+export function QuizList({ onNew, onSelect, onShare, onExport, onResume, refreshKey }: QuizListProps) {
     const [items, setItems] = useState<QuizHistoryItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -72,6 +74,7 @@ export function QuizList({ onNew, onSelect, onShare, onExport, refreshKey }: Qui
     const [sortBy, setSortBy] = useState<"created_desc" | "created_asc" | "score_desc">("created_desc");
     // 失败自动清理提示（failed = 0 题落库，删除无数据损失）
     const [cleaned, setCleaned] = useState<number | null>(null);
+    const [cleanedReason, setCleanedReason] = useState<string | null>(null);
     // 重命名：行内铅笔按钮 → 小对话框；同账号内标题唯一（后端 409 校验）
     const [renaming, setRenaming] = useState<{ uuid: string; title: string } | null>(null);
     const [renameError, setRenameError] = useState<string | null>(null);
@@ -126,6 +129,8 @@ export function QuizList({ onNew, onSelect, onShare, onExport, refreshKey }: Qui
             // 失败自动清理：failed 终态 = 无已落库题目，直接删除（用户要求，避免堆积）
             const failed = sorted.filter((it) => it.status === "failed");
             if (failed.length > 0) {
+                // 保留第一条失败原因用于横幅展示（清理后记录即删，原因必须先取出）
+                setCleanedReason(failed.find((it) => it.error_message)?.error_message ?? null);
                 void Promise.allSettled(failed.map((it) => quizApi.deleteQuiz(it.quiz_uuid))).then(() => {
                     setCleaned((prev) => (prev ?? 0) + failed.length);
                 });
@@ -269,7 +274,9 @@ export function QuizList({ onNew, onSelect, onShare, onExport, refreshKey }: Qui
             {cleaned != null && (
                 <div className="g-banner mt-3">
                     <Check className="h-4 w-4 shrink-0 text-[#188038]" />
-                    <span className="flex-1">已自动清理 {cleaned} 份生成失败的空题卷</span>
+                    <span className="flex-1 truncate" title={cleanedReason ?? undefined}>
+                        已自动清理 {cleaned} 份生成失败的空题卷{cleanedReason ? `（原因：${cleanedReason}）` : ""}
+                    </span>
                     <button
                         type="button"
                         onClick={() => setCleaned(null)}
@@ -392,11 +399,22 @@ export function QuizList({ onNew, onSelect, onShare, onExport, refreshKey }: Qui
                                 >
                                     <Pencil className="h-[15px] w-[15px]" />
                                 </button>
-                                {it.status === "done" && (
+                                {it.status === "partial" && (
+                                    <button
+                                        type="button"
+                                        title="继续生成：从断点补齐剩余题目（已保留部分不受影响）"
+                                        aria-label="继续生成"
+                                        onClick={() => onResume(it.quiz_uuid)}
+                                        className="g-icon-btn !h-9 !w-9 shrink-0"
+                                    >
+                                        <RefreshCw className="h-[15px] w-[15px]" />
+                                    </button>
+                                )}
+                                {(it.status === "done" || it.status === "partial") && (
                                     <>
                                         <button
                                             type="button"
-                                            title="导出试卷"
+                                            title={it.status === "partial" ? "导出试卷（部分生成，含已出题目）" : "导出试卷"}
                                             aria-label="导出试卷"
                                             onClick={() => onExport(it.quiz_uuid)}
                                             className="g-icon-btn !h-9 !w-9 shrink-0"

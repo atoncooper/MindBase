@@ -7,12 +7,12 @@
  * 右侧为 M3 单选列表（卷面风格）+ 复选项（含参考答案页）+ 按钮组
  * （filled 主操作 / outlined 次操作）。
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Loader2, FileDown, Printer, FileCode2, AlertCircle, Check } from "lucide-react";
 import { quizApi, type QuizSetData } from "@/lib/api";
-import { buildExamPaperHtml, printExamPaper, downloadExamPaperHtml, type PaperStyle } from "@/lib/exam-paper";
+import { buildExamPaperHtml, printExamPaper, downloadExamPaperHtml, inferTypeScoresFromCatalog, type PaperStyle } from "@/lib/exam-paper";
 import { cn } from "@/lib/utils";
 
 interface ExportPaperDialogProps {
@@ -32,10 +32,20 @@ export function ExportPaperDialog({ open, quiz, onClose }: ExportPaperDialogProp
     const [includeAnswers, setIncludeAnswers] = useState(false);
     const [exporting, setExporting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // 蓝本目录（存量老卷分值推断：type_distribution 匹配 → 每题型均分）
+    const [catalog, setCatalog] = useState<Array<{ distribution?: Record<string, number>; type_scores?: Record<string, number> }> | null>(null);
 
+    useEffect(() => {
+        if (!open || catalog) return;
+        quizApi.stylesCatalog().then(setCatalog).catch(() => setCatalog([]));
+    }, [open, catalog]);
+    const typeScores = useMemo(
+        () => (catalog && catalog.length > 0 ? inferTypeScoresFromCatalog(catalog, quiz.type_distribution) : null),
+        [catalog, quiz],
+    );
     const html = useMemo(
-        () => (open ? buildExamPaperHtml(quiz, { style, includeAnswers }) : ""),
-        [open, quiz, style, includeAnswers],
+        () => (open ? buildExamPaperHtml(quiz, { style, includeAnswers, typeScores }) : ""),
+        [open, quiz, style, includeAnswers, typeScores],
     );
 
     if (typeof window === "undefined") return null;
@@ -44,7 +54,12 @@ export function ExportPaperDialog({ open, quiz, onClose }: ExportPaperDialogProp
         setExporting(true);
         setError(null);
         try {
-            const blob = await quizApi.exportPaper(quiz.quiz_uuid, { style, with_answers: includeAnswers });
+            // 新增的出题风格（kaoyan-math/408/engineering）共用考研 docx 卷面版式
+            const exportStyle =
+                style === "kaoyan-math" || style === "kaoyan-408" || style === "kaoyan-engineering"
+                    ? ("kaoyan" as const)
+                    : style;
+            const blob = await quizApi.exportPaper(quiz.quiz_uuid, { style: exportStyle, with_answers: includeAnswers });
             quizApi.downloadBlob(blob, (quiz.title || "试卷") + ".docx");
             onClose();
         } catch (e) {
@@ -156,7 +171,7 @@ export function ExportPaperDialog({ open, quiz, onClose }: ExportPaperDialogProp
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => downloadExamPaperHtml(quiz, { style, includeAnswers })}
+                                        onClick={() => downloadExamPaperHtml(quiz, { style, includeAnswers, typeScores })}
                                         className="g-btn g-btn-outlined w-full"
                                     >
                                         <FileCode2 className="h-[18px] w-[18px]" />

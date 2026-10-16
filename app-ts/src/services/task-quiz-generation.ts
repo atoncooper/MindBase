@@ -175,7 +175,7 @@ export class TaskQuizGenerationService {
     const { object } = await generateObject({
       model,
       schema: QuizSetSchema,
-      system: this.prompts.render("task-quiz", {}),
+      system: this.prompts.render("quiz/task-generation", {}),
       prompt: userMessage,
     });
     return object.questions.map((q) => ({ ...q })) as TaskQuizQuestion[];

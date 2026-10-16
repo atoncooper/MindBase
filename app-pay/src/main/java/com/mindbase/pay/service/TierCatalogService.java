@@ -34,13 +34,13 @@ public class TierCatalogService {
         }
         List<Def> defs = List.of(
                 new Def("FREE", "免费用户", "基础能力全部可用",
-                        List.of("收藏同步与知识库构建", "AI 问答（标准队列）", "每日出题/批改基础配额", "基础云盘容量"),
+                        List.of("收藏同步与知识库构建", "AI 问答每日 30 条（前 15 条全量，其余省流）", "每日出题 3 批 / 批改 20 次", "定时出题任务 2 个", "云盘 10GiB"),
                         "tiers/FREE.md"),
                 new Def("VIP", "VIP 会员", "更高配额，会员队列",
-                        List.of("每日出题/批改更高配额", "AI 对话会员加权队列", "更大云盘容量", "专属 VIP 标识"),
+                        List.of("AI 问答每日 100 条 + 会员加权队列", "每日出题 20 批 / 批改 100 次", "定时出题任务 10 个", "云盘 100GiB", "专属 VIP 标识"),
                         "tiers/VIP.md"),
                 new Def("SVIP", "SVIP 超级会员", "全部权益拉满",
-                        List.of("每日出题/批改最高档配额", "最高优先级队列", "最大云盘容量", "专属标识 + 新功能优先体验"),
+                        List.of("AI 问答每日 300 条 + 最高优先级队列", "每日出题 60 批 / 批改 300 次", "定时出题任务 30 个", "云盘 1TiB", "专属标识 + 新功能优先体验"),
                         "tiers/SVIP.md"));
 
         for (Def d : defs) {
@@ -49,9 +49,12 @@ public class TierCatalogService {
 
         comparison.add(new ComparisonRow("收藏夹同步与知识库构建", "✓", "✓", "✓"));
         comparison.add(new ComparisonRow("AI 问答与知识库检索", "✓", "✓", "✓"));
+        comparison.add(new ComparisonRow("AI 问答（每日）", "30 条", "100 条", "300 条"));
         comparison.add(new ComparisonRow("AI 对话调度队列", "标准队列", "会员加权队列", "最高优先级队列"));
-        comparison.add(new ComparisonRow("每日出题 / 批改配额", "基础", "更高", "最高"));
-        comparison.add(new ComparisonRow("云盘存储容量", "基础", "更大", "最大"));
+        comparison.add(new ComparisonRow("每日出题（批）", "3", "20", "60"));
+        comparison.add(new ComparisonRow("每日批改（次）", "20", "100", "300"));
+        comparison.add(new ComparisonRow("定时出题任务", "2 个", "10 个", "30 个"));
+        comparison.add(new ComparisonRow("云盘存储容量", "10GiB", "100GiB", "1TiB"));
         comparison.add(new ComparisonRow("会员标识", "—", "✓", "✓"));
         comparison.add(new ComparisonRow("新功能优先体验", "—", "—", "✓"));
 

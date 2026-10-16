@@ -276,14 +276,17 @@ type StuckGeneratingRow struct {
 	CreatedAt     time.Time
 }
 
-// ListGeneratingStuck returns the user's 'generating' quizzes created before
-// the FLOOR cutoff (the base timeout). Rows younger than the base can never be
-// timed out — the per-row allowed duration is always >= base.
+// ListGeneratingStuck returns the user's 'generating' quizzes whose last DB
+// activity (updated_at — bumped by every checkpoint append) is older than the
+// FLOOR cutoff. Activity-based, not age-based: a slow-but-alive generation
+// that keeps checkpointing is never swept, while a truly stuck one (no
+// successful append within the window) is. Rows younger than the base can
+// never be timed out — the per-row allowed duration is always >= base.
 func ListGeneratingStuck(db *gorm.DB, uid int64, floor time.Time) ([]StuckGeneratingRow, error) {
 	var rows []StuckGeneratingRow
 	err := db.Raw(
 		"SELECT quiz_uuid, question_count, created_at FROM quiz_sets "+
-			"WHERE uid = ? AND status = 'generating' AND created_at < ?",
+			"WHERE uid = ? AND status = 'generating' AND updated_at < ?",
 		uid, floor,
 	).Scan(&rows).Error
 	return rows, err
@@ -311,13 +314,34 @@ func GetQuizSetLite(db *gorm.DB, quizUUID string, uid int64) (*QuizSetLiteRow, e
 // MarkQuizTimedOutStatus flips a single stuck generating quiz to the given
 // terminal status (partial when checkpoints survived, failed otherwise).
 // Conditional on status='generating' so a concurrently-finalizing quiz never
-// gets clobbered.
+// gets clobbered. The stale check is activity-based (updated_at < cutoff):
+// checkpoint appends bump updated_at, so a live generation is never swept
+// mid-run regardless of when it was created (this is what made resumed /
+// long-running large papers viable — the old created_at basis killed any
+// generation that simply took longer than the window).
 func MarkQuizTimedOutStatus(db *gorm.DB, quizUUID string, uid int64, cutoff time.Time, status, message string) error {
 	return db.Exec(
 		"UPDATE quiz_sets SET status = ?, error_message = ?, updated_at = ? "+
-			"WHERE quiz_uuid = ? AND uid = ? AND status = 'generating' AND created_at < ?",
+			"WHERE quiz_uuid = ? AND uid = ? AND status = 'generating' AND updated_at < ?",
 		status, message, time.Now().UTC(), quizUUID, uid, cutoff,
 	).Error
+}
+
+// ReopenQuizSet flips an owned partial quiz back to 'generating' so the AI
+// orchestrator (app-ts) can checkpoint-append the remaining questions and
+// finalize. Conditional on status='partial': done/failed/deleting sets are
+// never reopened. Clears the stale sweep message; updated_at bumps forward,
+// which also restarts the activity-based sweep window.
+func ReopenQuizSet(db *gorm.DB, quizUUID string, uid int64) (bool, error) {
+	res := db.Exec(
+		"UPDATE quiz_sets SET status = 'generating', error_message = NULL, updated_at = ? "+
+			"WHERE quiz_uuid = ? AND uid = ? AND status = 'partial'",
+		time.Now().UTC(), quizUUID, uid,
+	)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 // QuizTitleExists reports whether the user already has ANOTHER quiz with the

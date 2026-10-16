@@ -13,6 +13,6 @@ export function createCodeAgent(runtime: AgentRuntime, prompts: PromptRegistry, 
     toolNames: ["run_code"],
     purpose: "code",
     context,
-    buildSystemPrompt: () => Promise.resolve(prompts.render("code", {})),
+    buildSystemPrompt: () => Promise.resolve(prompts.render("agents/code", {})),
   });
 }

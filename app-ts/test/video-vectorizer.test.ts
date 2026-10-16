@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { MemoryVectorTaskStore } from "../src/repository/memory/vector-tasks.js";
 import { VideoVectorizerService, VecError } from "../src/services/video-vectorizer.js";
+import { QuotaService } from "../src/services/quota.js";
+import { MemoryQuotaCounter } from "../src/repository/memory/quota-counter.js";
+import { config } from "../src/config/index.js";
 import { buildServer } from "../src/transport/http/server.js";
 import type { RAGService } from "../src/rag/service.js";
 import type { ChatService } from "../src/services/chat.js";
@@ -10,7 +13,12 @@ import type { AppBiliClient, ScopeFolder } from "../src/services/app-bili-client
 
 // ---------- service ----------
 
-function makeDeps(opts: { content?: string; chunkCount?: number; asrError?: Error } = {}) {
+function makeDeps(opts: {
+  content?: string;
+  chunkCount?: number;
+  asrError?: Error;
+  quota?: QuotaService;
+} = {}) {
   const added: Array<Record<string, unknown>> = [];
   const deletedPages: string[] = [];
   const deletedVideos: string[] = [];
@@ -41,11 +49,44 @@ function makeDeps(opts: { content?: string; chunkCount?: number; asrError?: Erro
       if (opts.asrError) throw opts.asrError;
     },
   };
-  const vectorizer = new VideoVectorizerService({ rag, sources, tasks, asr });
+  const vectorizer = new VideoVectorizerService({
+    rag,
+    sources,
+    tasks,
+    asr,
+    ...(opts.quota ? { quota: opts.quota } : {}),
+  });
   return { vectorizer, tasks, added, deletedPages, deletedVideos };
 }
 
 const CONTENT = "x".repeat(120);
+
+
+const savedQuota = structuredClone(config.quota);
+afterEach(() => {
+  config.quota = structuredClone(savedQuota);
+});
+describe("VideoVectorizerService × quota", () => {
+  it("defers (no task, no error) once the daily page budget is exhausted", async () => {
+    config.quota.limits.vectorize = { free: 1, vip: 300, svip: 1000 };
+    const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "free" });
+    const { vectorizer } = makeDeps({ content: CONTENT, quota });
+
+    const first = await vectorizer.createTask({ uid: "7", bvid: "BV1", cid: 11, pageIndex: 0 });
+    expect(first.task_id).toBeTruthy();
+
+    const second = await vectorizer.createTask({ uid: "7", bvid: "BV2", cid: 22, pageIndex: 0 });
+    expect(second.task_id).toBeNull(); // 顺延：不报错、不建任务，次日可续
+    expect(second.message).toContain("向量化额度已用完");
+  });
+
+  it("revector refuses with 429 over the budget", async () => {
+    config.quota.limits.vectorize = { free: 0, vip: 300, svip: 1000 };
+    const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "free" });
+    const { vectorizer } = makeDeps({ content: CONTENT, quota });
+    await expect(vectorizer.revector({ uid: "7", bvid: "BV1", cid: 11 })).rejects.toMatchObject({ status: 429 });
+  });
+});
 
 describe("VideoVectorizerService", () => {
   it("createTask runs the pipeline to done and records chunk count", async () => {

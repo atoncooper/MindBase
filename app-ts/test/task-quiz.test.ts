@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { config } from "../src/config/index.js";
+import { QuotaService } from "../src/services/quota.js";
+import { MemoryQuotaCounter } from "../src/repository/memory/quota-counter.js";
 import { simulateReadableStream } from "ai";
 import { MockLanguageModelV2 } from "ai/test";
 import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
@@ -16,7 +19,10 @@ import type { AppAuthClient } from "../src/services/app-auth-client.js";
 
 // ---------- fakes ----------
 
-function fakeAppTask(registered: Array<Record<string, unknown>> = []) {
+function fakeAppTask(
+  registered: Array<Record<string, unknown>> = [],
+  listTasks?: () => Promise<Array<{ status: string; payload: Record<string, unknown> }>>,
+) {
   return {
     registerTask: async (body: Record<string, unknown>) => {
       registered.push(body);
@@ -29,6 +35,7 @@ function fakeAppTask(registered: Array<Record<string, unknown>> = []) {
     completeTask: async (taskId: string, status: string) => {
       registered.push({ __complete: { taskId, status } });
     },
+    ...(listTasks ? { listTasks } : {}),
   } as unknown as AppTaskClient;
 }
 
@@ -117,9 +124,25 @@ describe("task-quiz routes", () => {
     app = undefined;
   });
 
-  const build = async (opts?: { authEmail?: string | null }) => {
+  const savedQuota = structuredClone(config.quota);
+  afterEach(() => {
+    config.quota = structuredClone(savedQuota);
+  });
+
+  const build = async (opts?: {
+    authEmail?: string | null;
+    quota?: QuotaService;
+    taskList?: Array<{ status: string; payload: Record<string, unknown> }> | "throw";
+  }) => {
     const docs = new MemoryTaskQuizDocStore();
     const registered: Array<Record<string, unknown>> = [];
+    const listTasks = opts?.taskList === undefined
+      ? undefined
+      : opts.taskList === "throw"
+        ? async (): Promise<Array<{ status: string; payload: Record<string, unknown> }>> => {
+            throw new Error("app-task down");
+          }
+        : async () => opts.taskList!;
     app = await buildServer({
       chat,
       harness: fakeHarness,
@@ -127,9 +150,10 @@ describe("task-quiz routes", () => {
       sessionDocs: fakeDocs,
       taskQuiz: {
         generation: makeGeneration(docs),
-        appTask: fakeAppTask(registered),
+        appTask: fakeAppTask(registered, listTasks),
         appAuth: fakeAppAuth(opts?.authEmail === undefined ? "user@test.dev" : opts.authEmail),
         agentModel: makeChatModel(),
+        quota: opts?.quota,
       },
     } as Parameters<typeof buildServer>[0]);
     return { docs, registered };
@@ -181,6 +205,43 @@ describe("task-quiz routes", () => {
       user_email: "user@test.dev",
       question_count: 2,
     });
+  });
+
+  it("POST /task-quiz/register enforces the tier active-task cap", async () => {
+    config.quota.limits.task_quiz_active = { free: 1, vip: 10, svip: 30 };
+    const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "free" });
+    await build({
+      quota,
+      taskList: [{ status: "pending", payload: { uid: "7", prompt: "旧任务" } }],
+    });
+    const res = await app!.inject({
+      method: "POST",
+      url: "/task-quiz/register",
+      headers: { "x-uid": "7" },
+      payload: { prompt: "数学", trigger_time: new Date(Date.now() + 3600_000).toISOString() },
+    });
+    expect(res.statusCode).toBe(429);
+    expect(res.json()).toMatchObject({
+      code: "QUOTA_EXCEEDED",
+      kind: "task_quiz_active",
+      used: 1,
+      limit: 1,
+      upgradeSku: "VIP_MONTHLY",
+    });
+  });
+
+  it("register fails OPEN when app-task is unreachable (availability over quota)", async () => {
+    config.quota.limits.task_quiz_active = { free: 1, vip: 10, svip: 30 };
+    const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "free" });
+    const { registered } = await build({ quota, taskList: "throw" });
+    const ok = await app!.inject({
+      method: "POST",
+      url: "/task-quiz/register",
+      headers: { "x-uid": "7" },
+      payload: { prompt: "数学", trigger_time: new Date(Date.now() + 3600_000).toISOString() },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(registered.some((r) => (r as { task_type?: string }).task_type === "http")).toBe(true);
   });
 
   it("POST /internal/quiz/generate-llm returns 202 and the pipeline settles to ready", async () => {

@@ -10,7 +10,7 @@ export interface QuizGenerateParams {
     difficulty?: string;
     title?: string;
     /** 试卷风格（影响题型用语/设问习惯/评分口径） */
-    style?: "standard" | "gaokao" | "kaoyan";
+    style?: string;
     /** 已安装技能 ID（SKILL.md 全文注入出题提示词） */
     skill_ids?: string[];
     /** 用户自定义出题提示词 */
@@ -34,6 +34,8 @@ export interface QuizQuestion {
     correct_answer?: string | string[];
     explanation?: string;
     keywords?: string[];
+    /** 每题分值（蓝本固有；缺省时读取侧按整卷均分兜底） */
+    score?: number;
 }
 
 export interface QuizGenerationLogEntry {
@@ -67,6 +69,21 @@ export interface QuizSetData {
     /** 生成管线执行步骤（仅 generating 期由后端返回；终态为空） */
     generation_progress?: QuizGenerationProgress | null;
     questions: QuizQuestion[];
+}
+
+export interface QuizExamBlueprint {
+    id: string;
+    category: string;
+    name: string;
+    description: string;
+    duration_minutes: number;
+    total: number;
+    /** 卷面总分（蓝本固有） */
+    total_score?: number;
+    /** 题型分布（存量卷分值推断用） */
+    distribution?: Record<string, number>;
+    /** 题型 → 每题均分（蓝本固有分值） */
+    type_scores?: Record<string, number>;
 }
 
 export interface QuizAnswerItem {
@@ -239,7 +256,7 @@ export const quizApi = {
         /** 省略 = 自动（后端默认 medium） */
         difficulty?: string;
         title?: string;
-        style?: "standard" | "gaokao" | "kaoyan";
+        style?: string;
         skill_ids?: string[];
         instructions?: string;
     }) =>
@@ -251,6 +268,16 @@ export const quizApi = {
 
     // 上传出题(multipart):mode=wrong_images 错题图片强化 / mimic 文件模仿出题。
     // 不手动设 Content-Type，浏览器自动带 multipart boundary。
+    stylesCatalog: () => request<QuizExamBlueprint[]>("/quiz/styles"),
+
+    // 断点续跑：partial 卷从 checkpoint 断点补齐剩余题目（保留已生成部分）。
+    resumeQuiz: (quizUuid: string) =>
+        request<{ quiz_uuid: string; status: string; remaining: number }>("/quiz/resume", {
+            method: "POST",
+            headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({ quiz_uuid: quizUuid }),
+        }),
+
     generateFromImages: (form: FormData) =>
         request<{ quiz_uuid: string; status: string }>("/quiz/generate-from-images", {
             method: "POST",

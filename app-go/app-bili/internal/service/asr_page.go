@@ -201,9 +201,9 @@ func (s *ASRPageService) ProcessPage(ctx context.Context, uid int64, taskID stri
 
 	if downloaded {
 		if st, serr := os.Stat(local); serr == nil {
-		slog.Info("[ASR][DEBUG] downloaded", "size", st.Size())
-	}
-	step(40, "音频预处理")
+			slog.Info("[ASR][DEBUG] downloaded", "size", st.Size())
+		}
+		step(40, "音频预处理")
 		wav := tmp + ".wav"
 		if terr := asr.TranscodeToWav(ctx, local, wav); terr != nil {
 			s.failTask(ctx, taskID, videoRowID, fmt.Sprintf("音频转码失败: %v", terr))
