@@ -53,7 +53,11 @@ export interface DelegateStatus {
 export interface StreamCallbacks {
   onChunk: (accumulated: string, delta: string) => void;
   onSources?: (sources: ChatSource[]) => void;
-  onError?: (message: string) => void;
+  // `meta` carries the structured error code ("QUOTA_EXCEEDED" | "COST_GUARD")
+  // + detail {kind, used, limit, resetAt, tier, upgradeSku} — the chat view
+  // renders an upgrade banner off it. Undefined for plain
+  // server errors.
+  onError?: (message: string, meta?: { code?: string; detail?: Record<string, unknown> }) => void;
   onComplete?: () => void;
   onStep?: (step: StreamStep) => void;
   onRoute?: (agent: string) => void;
@@ -161,7 +165,10 @@ export async function streamChat(
             });
           } else if (data.type === "error") {
             errored = true;
-            callbacks.onError?.(data.message || data.error || "请求失败");
+            callbacks.onError?.(data.message || data.error || "请求失败", {
+              code: typeof data.code === "string" ? data.code : undefined,
+              detail: (data.detail && typeof data.detail === "object" ? data.detail : undefined) as Record<string, unknown> | undefined,
+            });
           } else if (data.type === "done") {
             completed = true;
             done = true;

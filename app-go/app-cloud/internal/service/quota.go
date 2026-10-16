@@ -155,20 +155,29 @@ func (s *QuotaService) Usage(ctx context.Context, uid int64) (int64, int64, stri
 	return used, quota, tier, pending, nil
 }
 
-// CheckUpload asserts that adding fileSize stays within the user's quota.
-// Membership lookup failure degrades to the FREE tier quota (fail-closed on
-// tier, but never a hard outage block — a pay-service incident must not stop
-// regular uploads; it only caps capacity at the free tier).
-func (s *QuotaService) CheckUpload(ctx context.Context, uid int64, fileSize int64) error {
+// ReserveUpload asserts that adding fileSize stays within the user's quota
+// AND registers the in-flight upload atomically (one Redis Lua round-trip;
+// see PendingUploads.Reserve). Membership lookup failure degrades to the
+// FREE tier quota (fail-closed on tier, but never a hard outage block — a
+// pay-service incident must not stop regular uploads; it only caps capacity
+// at the free tier). Redis unavailability degrades to the legacy non-atomic
+// check: same availability as before the ledger existed, race window too.
+func (s *QuotaService) ReserveUpload(ctx context.Context, uid int64, uploadUUID string, fileSize int64) error {
 	quota, _, _ := s.QuotaFor(ctx, uid) // QuotaFor already falls back to free
 	used, err := s.repo.UsedBytes(s.db, uid)
 	if err != nil {
 		return fmt.Errorf("usage query failed: %w", err)
 	}
-	// In-flight uploads count too — otherwise N parallel inits each pass
-	// the check and together exceed the quota.
-	pending := s.pending.Sum(ctx, uid)
-	if used+pending+fileSize > quota {
+	ok, pending, err := s.pending.Reserve(ctx, uid, uploadUUID, fileSize, quota, used)
+	if err != nil {
+		// Legacy path (non-atomic): used + fileSize only. In-flight uploads
+		// already registered remain counted via their own session lifecycle.
+		if used+fileSize > quota {
+			return &QuotaExceededError{Used: used, Quota: quota, Requested: fileSize}
+		}
+		return nil
+	}
+	if !ok {
 		return &QuotaExceededError{Used: used + pending, Quota: quota, Requested: fileSize}
 	}
 	return nil

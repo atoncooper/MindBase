@@ -17,6 +17,7 @@ import { createLogger } from "../../../logger.js";
 import { MAX_UPLOAD_BYTES, MAX_IMAGES_PER_TURN, MAX_IMAGE_DATA_URL_CHARS, DATA_URL_PATTERN } from "././shared.js";
 import { isVisionBlocked, type ModelCapabilityRegistry } from "../../../llm/model-capabilities.js";
 import { config } from "../../../config/index.js";
+import { hashClientKey } from "../../../services/quota.js";
 
 const log = createLogger("HTTP");
 
@@ -227,6 +228,8 @@ export function registerChatRoutes(
           query,
           sessionId: body.chat_session_id ?? body.session_id,
           uid,
+          // hashed IP → chat_anon daily bucket (anonymous metering)
+          clientKey: hashClientKey(req.ip ?? ""),
           agentName: body.agent_name,
           scope,
           images: images.length > 0 ? images : undefined,

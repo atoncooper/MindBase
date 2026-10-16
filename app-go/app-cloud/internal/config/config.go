@@ -113,6 +113,7 @@ type MilvusConfig struct {
 type PipelineConfig struct {
 	Enabled    bool            `yaml:"enabled"`
 	MaxDocSize int64           `yaml:"max_doc_size"`
+	Workers    int             `yaml:"workers"`
 	Embedding  EmbeddingConfig `yaml:"embedding"`
 	Milvus     MilvusConfig    `yaml:"milvus"`
 }
@@ -237,6 +238,7 @@ func applyEnvOverrides(cfg *Config) {
 	if b, ok := getBool("APPCLOUD__PIPELINE__ENABLED"); ok {
 		cfg.Pipeline.Enabled = b
 	}
+	atoi("APPCLOUD__PIPELINE__WORKERS", &cfg.Pipeline.Workers)
 	if v := get("APPCLOUD__LOG__LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}

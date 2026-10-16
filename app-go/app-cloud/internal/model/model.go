@@ -116,3 +116,24 @@ type CloudShare struct {
 }
 
 func (CloudShare) TableName() string { return "cloud_shares" }
+
+// CloudVectorTask — durable outbox row for the vectorize pipeline (new table,
+// owned by app-cloud; multi-replica hardening step ②). One row per
+// upload_uuid; status mirrors the cloud_files.vector_status transition
+// (pending → processing → done/failed). Workers claim with FOR UPDATE SKIP
+// LOCKED (repo.ClaimNext) and a janitor requeues claims older than
+// staleProcessingAfter — see service/workerpool.go.
+type CloudVectorTask struct {
+	ID         int64      `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	UploadUUID string     `gorm:"column:upload_uuid;uniqueIndex" json:"upload_uuid"`
+	UID        int64      `gorm:"column:uid" json:"uid"`
+	Status     string     `gorm:"column:status" json:"status"`
+	Attempts   int        `gorm:"column:attempts" json:"attempts"`
+	LastError  *string    `gorm:"column:last_error" json:"last_error"`
+	ClaimedBy  *string    `gorm:"column:claimed_by" json:"claimed_by"`
+	ClaimedAt  *time.Time `gorm:"column:claimed_at" json:"claimed_at"`
+	CreatedAt  *time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt  *time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (CloudVectorTask) TableName() string { return "cloud_vector_tasks" }

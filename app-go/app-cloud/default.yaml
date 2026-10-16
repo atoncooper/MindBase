@@ -62,9 +62,13 @@ upload:
 quota:
   # tier → storage quota (bytes). Lookup: app-pay /internal/pay/membership/{uid}
   # via APISIX key-auth; fail-closed → free tier when unreachable.
+  # 定价校准（磁盘成本 ≈ ¥0.05-0.1/GB/月 含冗余）：
+  #   100GiB 全用 ≈ ¥5-10/月（VIP ¥18 健康）；1TiB 全用 ≈ ¥50-100（SVIP ¥48，
+  #   实际使用分布远低于满额，撑「接近不限」体验）；旧值 10TiB/60TiB 与
+  #   月费严重倒挂，已废弃。env 可覆盖：APPCLOUD__QUOTA__VIP/SVIP。
   free: 10737418240          # 10 GiB
-  vip: 10995116277760        # 10 TiB
-  svip: 65970697666560       # 60 TiB
+  vip: 107374182400          # 100 GiB
+  svip: 1099511627776        # 1 TiB
   membership_base_url: http://apisix:9080/internal/pay  # key-auth protected
   membership_api_key: ""     # inject via APISIX_CONSUMER_KEY (.env)
   membership_cache_ttl: 60   # seconds
@@ -76,6 +80,7 @@ trash:
 pipeline:
   enabled: true              # Go-native parse→chunk→embed→vectorize pipeline
   max_doc_size: 52428800     # 50 MB; larger files are marked non-vectorizable
+  workers: 4                 # per-instance vectorize worker pool; 0/negative = default 4, cap 32
   embedding:
     base_url: http://higress:8080/v1  # override via AI_GATEWAY__BASE_URL (OpenAI-compatible)
     api_key: ""              # inject via AI_GATEWAY__API_KEY (.env)

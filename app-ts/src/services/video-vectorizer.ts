@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { config } from "../config/index.js";
+import type { QuotaService } from "./quota.js";
 import { createLogger } from "../logger.js";
 import type { RAGService } from "../rag/service.js";
 import type { KgSourceStore } from "../repository/kg-sources.js";
@@ -70,6 +71,7 @@ export class VideoVectorizerService {
   private readonly countPage?: (bvid: string, pageIndex: number) => Promise<number>;
   /** bounded pipeline concurrency (protects the embedding gateway + Milvus) */
   private readonly semaphore: Semaphore;
+  private readonly quota?: QuotaService;
 
   constructor(deps: {
     rag: Pick<RAGService, "addVideoContent" | "deletePageVectors" | "deleteVideo">;
@@ -78,12 +80,15 @@ export class VideoVectorizerService {
     asr?: AsrDelegate;
     /** page-level Milvus count (self-heal); absent = heal checks disabled */
     countPageVectors?: (bvid: string, pageIndex: number) => Promise<number>;
+    /** 会员向量化配额；absent = 不限 */
+    quota?: QuotaService;
   }) {
     this.rag = deps.rag;
     this.sources = deps.sources;
     this.tasks = deps.tasks;
     this.asr = deps.asr ?? new AppBiliAsrDelegate();
     this.countPage = deps.countPageVectors;
+    this.quota = deps.quota;
     this.semaphore = new Semaphore(Math.max(1, config.vectorize.concurrency));
   }
 
@@ -109,6 +114,16 @@ export class VideoVectorizerService {
       if (unchanged) {
         return { task_id: null, message: "Already up to date" };
       }
+    }
+
+    // 向量化配额：超限 → 顺延（不报错、不建任务；次日 page_ready 或手动重试即续上）
+    if (this.quota) {
+      const gate = await this.quota.peekKind(uid, "vectorize");
+      if (gate?.verdict === "quota_exceeded") {
+        log.warn(`[VEC] daily quota exceeded uid=${uid} bvid=${bvid} cid=${cid} — page deferred`);
+        return { task_id: null, message: `今日向量化额度已用完（${gate.limit} 分P/日），明日 0 点自动恢复` };
+      }
+      await this.quota.consumeKind(uid, "vectorize");
     }
 
     const record: VecPageRecord = existing ?? {
@@ -145,6 +160,14 @@ export class VideoVectorizerService {
     const existing = await this.tasks.getPage(bvid, cid);
     const pageIndex = existing?.pageIndex ?? 0;
     const pageTitle = transcript.pageTitle || existing?.pageTitle || `P${pageIndex + 1}`;
+    if (this.quota) {
+      const gate = await this.quota.peekKind(uid, "vectorize");
+      if (gate?.verdict === "quota_exceeded") {
+        log.warn(`[VEC] daily quota exceeded uid=${uid} bvid=${bvid} cid=${cid} — revector deferred`);
+        throw new VecError(429, `今日向量化额度已用完（${gate.limit} 分P/日），明日 0 点自动恢复`);
+      }
+      await this.quota.consumeKind(uid, "vectorize");
+    }
     const record: VecPageRecord = existing ?? {
       bvid, cid, pageIndex, pageTitle, status: "pending", chunkCount: 0, updatedAt: Date.now(),
     };

@@ -10,7 +10,7 @@ import { ChatSessionFiles } from "./chat-session-files";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
-import { chatApi, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument } from "@/lib/api";
+import { chatApi, quotaApi, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
 import { streamChat, type ChatSource, type ChatArtifact, type StreamStep, type QueueStatus, type DelegateStatus } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
@@ -69,11 +69,35 @@ function anchorIdOf(m: ChatMessageData): string | undefined {
   return isLocalId(m.id) ? undefined : m.id;
 }
 
+/** 升级引导横幅状态：QUOTA_EXCEEDED / COST_GUARD 时出现，下次发送时清除。 */
+interface QuotaBlockInfo {
+  code: string;
+  message: string;
+  kind?: string;
+  resetAt?: number;
+  upgradeSku?: string;
+}
+
 export function ChatView() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [quotaBlock, setQuotaBlock] = useState<QuotaBlockInfo | null>(null);
+  // 今日用量角标（/quota/summary）：挂载时与每轮结束后刷新
+  const [quotaSummary, setQuotaSummary] = useState<QuotaSummary | null>(null);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      setQuotaSummary(await quotaApi.getSummary());
+    } catch {
+      // 用量展示是尽力而为，失败静默
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshQuota();
+  }, [refreshQuota]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -281,6 +305,7 @@ export function ChatView() {
     async (question: string, assistantMsgId: string, skillIds?: string[], images?: string[]) => {
       if (!activeSessionId) return;
       setIsStreaming(true);
+      setQuotaBlock(null); // 新一轮开始：清掉上一轮的额度横幅
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -430,8 +455,20 @@ export function ChatView() {
                 }),
               }));
             },
-            onError: (message: string) => {
+            onError: (message: string, meta?: { code?: string; detail?: Record<string, unknown> }) => {
               flushStream();
+              if (meta?.code === "QUOTA_EXCEEDED" || meta?.code === "COST_GUARD") {
+                const detail = (meta.detail ?? {}) as { kind?: string; resetAt?: number; upgradeSku?: string };
+                setQuotaBlock({
+                  code: meta.code,
+                  message,
+                  kind: detail.kind,
+                  resetAt: typeof detail.resetAt === "number" ? detail.resetAt : undefined,
+                  upgradeSku: detail.upgradeSku,
+                });
+              } else {
+                setQuotaBlock(null);
+              }
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) =>
@@ -471,6 +508,7 @@ export function ChatView() {
         setIsStreaming(false);
         abortRef.current = null;
         void backfillMessageIds();
+        void refreshQuota();
       }
     },
     [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds]
@@ -905,6 +943,41 @@ export function ChatView() {
         {/* Input area */}
         <div className="shrink-0 px-5 pt-2 pb-2">
           <div className="mx-auto max-w-[768px]">
+            {(() => {
+              const chatKind = quotaSummary?.enabled
+                ? quotaSummary.kinds.find((k) => k.kind === "chat")
+                : undefined;
+              if (!chatKind || chatKind.limit < 0) return null;
+              const ratio = chatKind.limit > 0 ? chatKind.used / chatKind.limit : 0;
+              return (
+                <div className="mb-1 flex justify-end px-1 text-xs text-secondary">
+                  今日 AI 问答 {chatKind.used}/{chatKind.limit}
+                  {ratio >= 0.8 ? " · 额度即将用完" : ""}
+                </div>
+              );
+            })()}
+            {quotaBlock && (
+              <div
+                role="alert"
+                className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-border-subtle bg-surface px-4 py-3 text-sm shadow-sm"
+              >
+                <div>
+                  <p className="font-medium text-foreground">{quotaBlock.message}</p>
+                  <p className="mt-0.5 text-xs text-secondary">
+                    {quotaBlock.resetAt
+                      ? `重置时间：${new Date(quotaBlock.resetAt).toLocaleString()} · `
+                      : ""}
+                    升级会员可获得更高每日额度与会员优先队列
+                  </p>
+                </div>
+                <a
+                  href="/membership"
+                  className="shrink-0 rounded-lg bg-[#1f2329] px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+                >
+                  升级会员
+                </a>
+              </div>
+            )}
             <ChatSessionFiles files={sessionFiles} onDelete={handleDeleteSessionFile} />
             <ChatInput
               onSend={handleSend}

@@ -673,7 +673,8 @@ services:
     build:
       context: ./app-go/app-cloud
       dockerfile: Dockerfile
-    container_name: mind-base-app-cloud
+    # 多实例就绪：无 container_name（--scale app-cloud=N 直接可用）。后台任务
+    # 走 Redis 租约锁、向量化管道走 outbox 认领——扩容不重复执行（§2.14）。
     profiles: ["", "cloud", "full"]
     depends_on:
       mysql:
@@ -703,8 +704,9 @@ services:
       - APPCLOUD__LOG__OUTPUT=both
       # 提取码静态加密密钥（与 app-auth 共用同一 secrets 文件；密钥不进数据库）
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+    # 宿主端口池 8007-8009：--scale 时副本依次占用；单实例默认仍 8007（调试口不变）
     ports:
-      - "127.0.0.1:${APP_CLOUD_PORT:-8007}:8007"
+      - "127.0.0.1:${APP_CLOUD_PORT:-8007}-${APP_CLOUD_PORT_MAX:-8009}:8007"
     volumes:
       - app_cloud_logs:/app/logs
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro

@@ -30,9 +30,11 @@ func boolPtr(v bool) *bool { return &v }
 // The rich fields are optional; when omitted the legacy derivation applies
 // (options → single_choice, else short_answer; difficulty medium).
 type AgentQuestion struct {
-	Question       string          `json:"question"`
-	QuestionType   string          `json:"question_type,omitempty"`
-	Difficulty     string          `json:"difficulty,omitempty"`
+	Question     string `json:"question"`
+	QuestionType string `json:"question_type,omitempty"`
+	Difficulty   string `json:"difficulty,omitempty"`
+	// Score 每题分值（蓝本固有；0/缺省 = 无分值语义，读取侧均分兜底）
+	Score          float64         `json:"score,omitempty"`
 	Options        []string        `json:"options,omitempty"`
 	Answer         string          `json:"answer,omitempty"`
 	CorrectAnswer  json.RawMessage `json:"correct_answer,omitempty"`
@@ -306,6 +308,7 @@ func buildQuestionDoc(quizUUID string, uid int64, q AgentQuestion, now time.Time
 		"uid":              uid,
 		"question_type":    effectiveQuestionType(q),
 		"difficulty":       difficulty,
+		"score":            q.Score,
 		"question_text":    q.Question,
 		"options":          optionsJSON,
 		"correct_answer":   correct,

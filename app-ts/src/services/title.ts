@@ -24,7 +24,7 @@ export async function generateTitle(
     if (session.title) return null;
     const result = await generateText({
       model: createGatewayModel("title_gen"),
-      system: prompts.render("title", {}),
+      system: prompts.render("agents/title", {}),
       prompt: firstQuery.slice(0, 300),
       temperature: 0.3,
       ...aiTelemetry("title.generate"),

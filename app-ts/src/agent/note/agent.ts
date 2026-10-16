@@ -13,6 +13,6 @@ export function createNoteAgent(runtime: AgentRuntime, prompts: PromptRegistry, 
     toolNames: ["save_note"],
     purpose: "note",
     context,
-    buildSystemPrompt: () => Promise.resolve(prompts.render("note", {})),
+    buildSystemPrompt: () => Promise.resolve(prompts.render("agents/note", {})),
   });
 }

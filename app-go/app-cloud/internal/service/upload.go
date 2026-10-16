@@ -138,11 +138,6 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 	if fileSize > maxFileSize {
 		return nil, fmt.Errorf("File too large: %d bytes (max %d)", fileSize, maxFileSize)
 	}
-	// Quota gate (new capability): used + fileSize must fit the tier quota.
-	if err := s.quota.CheckUpload(ctx, uid, fileSize); err != nil {
-		return nil, err
-	}
-
 	uploadUUID, err := uuid7()
 	if err != nil {
 		return nil, err
@@ -151,17 +146,22 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 	if err != nil {
 		return nil, err
 	}
+	// Quota gate + in-flight reservation, atomically (Redis Lua): used +
+	// pending reservations + fileSize must fit the tier quota. Parallel inits
+	// are serialized in Redis and can no longer jointly overshoot.
+	if err := s.quota.ReserveUpload(ctx, uid, uploadUUID, fileSize); err != nil {
+		return nil, err
+	}
+
 	objectKey := fmt.Sprintf("%d/%s/file%s", uid, uploadUUID, extFromMime(mimeType))
 	chunkCount := (fileSize + chunkSize - 1) / chunkSize
 
 	minioUploadID, err := s.minio.CreateMultipartUpload(ctx, objectKey)
 	if err != nil {
 		slog.Error("[CLOUD_UPLOAD] minio create_multipart_upload failed", "err", err)
+		s.pending.Remove(ctx, uid, uploadUUID) // release the reservation
 		return nil, err
 	}
-	// In-flight accounting: from here the bytes count toward the quota even
-	// before complete (prevents parallel-init quota races).
-	s.pending.Add(ctx, uid, uploadUUID, fileSize)
 
 	type presignedItem struct {
 		ChunkIndex int64  `json:"chunkIndex"`
@@ -174,7 +174,7 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 		if err != nil {
 			slog.Error("[CLOUD_UPLOAD] presigned_url generation failed, aborting", "err", err)
 			s.minio.AbortMultipartUpload(ctx, objectKey, minioUploadID)
-			s.pending.Remove(ctx, uid, uploadUUID)
+			s.pending.Remove(ctx, uid, uploadUUID) // release the reservation
 			return nil, err
 		}
 		presigned = append(presigned, presignedItem{ChunkIndex: p - 1, ChunkSize: chunkSize, URL: u})
@@ -189,6 +189,9 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 	blob, _ := json.Marshal(meta)
 	if err := s.rdb.Set(ctx, uploadKeyPrefix+uploadUUID, blob,
 		time.Duration(uploadMetaTTL)*time.Second).Err(); err != nil {
+		// No upload session without meta — release the quota reservation so
+		// it does not linger until the pending-entry TTL prune.
+		s.pending.Remove(ctx, uid, uploadUUID)
 		return nil, fmt.Errorf("redis upload meta write: %w", err)
 	}
 	s.SetHeartbeat(ctx, sessionUUID)

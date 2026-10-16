@@ -4,6 +4,8 @@ import { AppQuizError } from "../../../services/app-quiz-client.js";
 import {
   QuizGenerationError,
   QUIZ_STYLES,
+  expandBlueprintPlan,
+  blueprintDistribution,
   MAX_QUIZ_FILES,
   MAX_QUIZ_FILE_BYTES,
   type QuizGenerationService,
@@ -13,6 +15,7 @@ import {
 } from "../../../services/quiz-generation.js";
 import type { QuizGradingService } from "../../../services/quiz-grading.js";
 import { SessionSummaryError } from "../../../services/session-summary.js";
+import { EXAM_BLUEPRINTS, blueprintTotal, blueprintExamTotal, getBlueprint, type ExamBlueprint } from "../../../services/quiz-exam-blueprints.js";
 
 const FOLDER_IDS_PATTERN = /^\d+(,\d+)*$/;
 
@@ -47,10 +50,64 @@ function parseFolderIds(raw: string | undefined): number[] {
  * Returns immediately with a generating quiz_uuid; the frontend polls
  * GET /quiz/{uuid} on app-quiz until the status is terminal.
  */
+/** 蓝本 → 题型均分（展开全蓝本逐题计划后按题型平均；含未标注项的均摊分值）。 */
+function typeScoresOf(b: ExamBlueprint): Record<string, number> {
+  const plan = expandBlueprintPlan(b, blueprintTotal(b), "medium");
+  const sum: Record<string, number> = {};
+  const cnt: Record<string, number> = {};
+  for (const p of plan) {
+    sum[p.type] = (sum[p.type] ?? 0) + p.score;
+    cnt[p.type] = (cnt[p.type] ?? 0) + 1;
+  }
+  const out: Record<string, number> = {};
+  for (const t of Object.keys(sum)) out[t] = Math.round((sum[t] / cnt[t]) * 100) / 100;
+  return out;
+}
+
 export function registerQuizRoutes(
   app: FastifyInstance,
   deps: { quizGen: QuizGenerationService; quizGrade: QuizGradingService },
 ): void {
+  // 考试蓝本目录（前端选择器数据源）：66 种考试的题型分布结构
+  app.get("/quiz/styles", async () => {
+    return EXAM_BLUEPRINTS.map((b) => ({
+      id: b.id,
+      category: b.category,
+      name: b.name,
+      description: b.description,
+      duration_minutes: b.durationMinutes,
+      total: blueprintTotal(b),
+      // 断点续跑/存量卷分值推断：题型分布 + 每题型均分（蓝本固有分值）
+      distribution: blueprintDistribution(b),
+      type_scores: typeScoresOf(b),
+    }));
+  });
+
+  // 断点续跑：partial 卷从 checkpoint 断点补齐剩余题目（app-quiz reopen
+  // partial→generating + 内容记忆从落库题目重建 + 蓝图剩余槽位续写）。
+  app.post("/quiz/resume", async (req: FastifyRequest, reply: FastifyReply) => {
+    const uid = getRequestContext()?.uid;
+    if (uid === undefined) {
+      return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });
+    }
+    const body = (req.body ?? {}) as { quiz_uuid?: unknown };
+    const quizUuid = String(body.quiz_uuid ?? "").trim();
+    if (!quizUuid) {
+      return reply.status(400).send({ detail: "quiz_uuid 必填" });
+    }
+    try {
+      return await deps.quizGen.resumeAIGeneration(uid, quizUuid);
+    } catch (err) {
+      if (err instanceof QuizGenerationError) {
+        return reply.status(err.status).send({ detail: err.message });
+      }
+      if (err instanceof AppQuizError) {
+        return reply.status(err.status ?? 502).send({ detail: err.message });
+      }
+      throw err;
+    }
+  });
+
   app.post("/quiz/generate", async (req: FastifyRequest, reply: FastifyReply) => {
     const uid = getRequestContext()?.uid;
     if (uid === undefined) {
@@ -227,12 +284,23 @@ export function registerQuizRoutes(
         detail: "文件读取失败（单个文件上限 " + Math.floor(MAX_QUIZ_FILE_BYTES / 1024 / 1024) + "MB）",
       });
     }
-    const mode = fields.mode === "mimic" ? "mimic" : "wrong_images";
+    const mode = fields.mode === "mimic" ? "mimic" : fields.mode === "standard" ? "standard" : "wrong_images";
     const count = Number(fields.question_count ?? 10);
-    if (!Number.isInteger(count) || count < 1 || count > 20) {
-      return reply.status(400).send({ detail: "question_count 须在 1-20 之间" });
+    if (!Number.isInteger(count) || count < 1 || count > (mode === "standard" ? 50 : 20)) {
+      return reply.status(400).send({ detail: "question_count 须在 1-" + (mode === "standard" ? 50 : 20) + " 之间" });
     }
     try {
+      // 大纲/规范出题：上传大纲文档 → 语义配卷蓝图 → 按标准生成；可选 folder_ids 接地
+      if (mode === "standard") {
+        return await deps.quizGen.startFromStandard(uid, {
+          files,
+          folderIds: parseFolderIds(fields.folder_ids),
+          questionCount: count,
+          difficulty: fields.difficulty || "medium",
+          title: fields.title || undefined,
+          personalization: parsePersonalization(fields),
+        });
+      }
       return await deps.quizGen.startFromFiles(uid, {
         mode,
         files,

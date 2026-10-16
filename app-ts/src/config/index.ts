@@ -186,6 +186,9 @@ export interface AppConfig {
     userAgent: string;
     /** politeness: min gap between requests to the same host */
     perHostIntervalMs: number;
+    /** 联网搜索源（引擎链按序：tavily → searxng → baidu → bing）。无任何配置时只剩爬虫兜底（质量不可靠） */
+    searchTavilyApiKey: string;
+    searchSearxngUrl: string;
   };
 
   tools: {
@@ -234,6 +237,29 @@ export interface AppConfig {
   chunk: { targetSize: number; minSize: number; maxSize: number; overlap: number };
   log: { level: string; fileEnabled: boolean; dir: string; fileName: string };
   rateLimit: { windowMs: number; max: number };
+  quota: {
+    /** false = 配额门整体跳过（放行）；计数与账本照常 */
+    enabled: boolean;
+    /** kind → { free, vip, svip } 每日次数上限；-1 = 不限 */
+    limits: Record<string, { free: number; vip: number; svip: number }>;
+    /** Free 聊天 L0 条数（其后 L1 省流，硬停于 limits.chat.free） */
+    freeLadder: { l0Turns: number };
+    /** L1 省流的单轮输出 token 预算（0 = 不设限） */
+    l1MaxOutputTokens: number;
+    /** 当日累计成本软阈值（微元）→ L1 降级；0 = 关闭 */
+    costSoftMicroYuan: Record<string, number>;
+    /** 成本熔断：开关 + 各档阈值（微元） */
+    costGuardEnabled: boolean;
+    costGuardMicroYuan: Record<string, number>;
+    /** 双账本对账周期（毫秒；0 = 关闭） */
+    reconIntervalMs: number;
+    /** 模型单价（元/百万 token） */
+    prices: Record<string, { input: number; output: number }>;
+    usageDailyCollection: string;
+    gatewayUsageCollection: string;
+    /** /internal/ai-usage 可选共享令牌（空 = 不校验，仅内网可达） */
+    gatewayUsageToken: string;
+  };
   prompts: { dir: string };
   context: { compressThreshold: number; recentKeep: number };
   timezone: { name: string };

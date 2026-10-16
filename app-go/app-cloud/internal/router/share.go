@@ -237,6 +237,12 @@ func shareAccess(d Deps) gin.HandlerFunc {
 		}
 		res, err := d.Share.BuildAccess(c.Request.Context(), sf, body.Download)
 		if err != nil {
+			if errors.Is(err, service.ErrShareDownloadCap) {
+				// The cap was exhausted between resolve and access — uniform
+				// 404 keeps the no-state-enumeration stance.
+				apiErr(c, http.StatusNotFound, "分享不存在或已失效")
+				return
+			}
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}

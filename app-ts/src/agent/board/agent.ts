@@ -13,6 +13,6 @@ export function createBoardAgent(runtime: AgentRuntime, prompts: PromptRegistry,
     toolNames: ["list_boards", "get_board", "create_board", "update_board", "delete_board", "ask_user"],
     purpose: "board",
     context,
-    buildSystemPrompt: () => Promise.resolve(prompts.render("board", {})),
+    buildSystemPrompt: () => Promise.resolve(prompts.render("agents/board", {})),
   });
 }

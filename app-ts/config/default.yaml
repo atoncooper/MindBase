@@ -210,6 +210,12 @@ web:
   userAgent: "MindBaseBot/0.1 (knowledge-base assistant)"
   # 礼貌间隔：同宿主两次请求的最小间隔（真实等待；0 = 关闭）
   perHostIntervalMs: 1000
+  # 联网搜索源（web_search 工具引擎链：tavily → searxng → baidu → bing）。
+  # 数据中心 IP 裸爬会被百度风控/Bing 降级——生产建议配置其一：
+  #   TAVILY_API_KEY  注册 tavily.com（免费 1000 次/月）；
+  #   SEARXNG_URL     自托管 SearXNG（需开启 json format）。
+  searchTavilyApiKey: ${TAVILY_API_KEY:}
+  searchSearxngUrl: ${SEARXNG_URL:}
 
 tools:
   # 模型未传 timeoutMs 时的默认预算
@@ -271,6 +277,44 @@ rateLimit:
   # /chat/ask/stream 每 IP 滑动窗口限流（LLM 端点昂贵）
   windowMs: 60000
   max: 20
+
+quota:
+  # ── 会员用量限制 ─────────────────────────────────────────────────────
+  # Redis 日计数（原子 Lua，键 mind-base:quota:{kind}:{uid}:{YYYYMMDD}，上海自然日）；
+  # generate/grade 沿用 app-quiz 旧键（UTC 日）跨栈共享计数。
+  # fail 方向：Redis 不可用 → 放行（可用性优先）；app-pay 不可用 → tier=free（防超卖）。
+  enabled: true
+  # kind → 各档每日次数上限；-1 = 不限；未接入的消费点仅为预留，不生效
+  limits:
+    chat:        { free: 30,  vip: 100, svip: 300 }   # 登录聊天：free 前 15 条 L0 全量，其后 L1 省流（降级接入后生效），30 硬停
+    chat_anon:   { free: 5,   vip: 5,   svip: 5 }      # 未登录（按 IP 哈希桶计数）
+    chat_images: { free: 20,  vip: 100, svip: 300 }   # 聊天图片附件（张/日）
+    generate:    { free: 3,   vip: 20,  svip: 60 }    # 出题（批/日；tier 化接入后生效）
+    grade:       { free: 20,  vip: 100, svip: 300 }   # 批改（次/日；tier 化接入后生效）
+    kg_build:    { free: 1,   vip: 5,   svip: 20 }    # KG 构建（次/日；接入后生效）
+    vectorize:   { free: 50,  vip: 300, svip: 1000 }  # 视频向量化（分P/日；接入后生效）
+    ocr:         { free: 10,  vip: 50,  svip: 200 }   # 云盘 OCR 解析（次/日；接入后生效）
+    board:       { free: 20,  vip: 100, svip: 300 }   # Board AI 补全（次/日；接入后生效）
+    task_quiz_active: { free: 2, vip: 10, svip: 30 }  # 定时出题活跃任务数（存量口径，注册时校验，非日计数）
+  # Free 聊天阶梯：前 l0Turns 条全量（L0），其后 L1 省流，硬停于 limits.chat.free
+  freeLadder: { l0Turns: 15 }
+  # L1 省流的单轮输出 token 预算（截断思考与长答；0 = 不设限）
+  l1MaxOutputTokens: 2048
+  # 当日累计成本软阈值（微元 1e-6 元）→ L1 降级（本版本仅记账 + summary 展示）
+  costSoftMicroYuan: { free: 0, vip: 1200000, svip: 3000000 }   # ¥1.2 / ¥3
+  # 成本熔断：当日累计 ≥ 阈值 → 冻结全部用户面 AI kind 至次日
+  costGuardEnabled: true
+  costGuardMicroYuan: { free: 1000000, vip: 2000000, svip: 8000000 }  # ¥1 / ¥2 / ¥8
+  # 双账本对账周期（毫秒；0 = 关闭）：业务面 ai_usage_daily vs 网关面 ai_gateway_usage
+  reconIntervalMs: 21600000
+  # 模型单价表（元/百万 token）；costMicroYuan = inputTokens×input + outputTokens×output
+  prices:
+    "z-ai/glm-5.3-flash": { input: 0.188, output: 6.48 }
+  # 成本账本集合：业务面日聚合 + 网关面原始上报（每日对账）
+  usageDailyCollection: ai_usage_daily
+  gatewayUsageCollection: ai_gateway_usage
+  # /internal/ai-usage 可选共享令牌（X-Usage-Token；空 = 不校验，仅内网可达）
+  gatewayUsageToken: ${QUOTA__GATEWAY_USAGE_TOKEN:}
 
 prompts:
   dir: prompts

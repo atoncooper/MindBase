@@ -8,6 +8,7 @@ import (
 	"app-cloud/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // FileRepo — cloud_files access.
@@ -41,7 +42,8 @@ func (r *FileRepo) GetByUUID(db *gorm.DB, uploadUUID string, uid int64) (*model.
 	return &f, nil
 }
 
-// Create inserts the CloudFile row (called only on complete_upload).
+// Create inserts the CloudFile row (called only on complete_upload) and
+// bumps the cloud_quota counter in the same transaction.
 func (r *FileRepo) Create(db *gorm.DB, f *model.CloudFile) error {
 	now := time.Now()
 	if f.CreatedAt == nil {
@@ -50,7 +52,12 @@ func (r *FileRepo) Create(db *gorm.DB, f *model.CloudFile) error {
 	if f.UpdatedAt == nil {
 		f.UpdatedAt = &now
 	}
-	return db.Create(f).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(f).Error; err != nil {
+			return err
+		}
+		return r.applyUsageDelta(tx, f.UID, f.FileSize)
+	})
 }
 
 // UpdateMeta patches title/description/tags/folder_id (owner-checked).
@@ -73,33 +80,42 @@ func (r *FileRepo) UpdateMeta(db *gorm.DB, uploadUUID string, uid int64, fields 
 }
 
 // SoftDelete marks the file deleted (trash semantics: objects stay in MinIO
-// until the sweeper purges them after purge_after_days).
+// until the sweeper purges them after purge_after_days) and moves the
+// cloud_quota counter down in the same transaction.
 func (r *FileRepo) SoftDelete(db *gorm.DB, uploadUUID string, uid int64) error {
 	now := time.Now()
-	res := db.Model(&model.CloudFile{}).
-		Where("upload_uuid = ? AND uid = ? AND deleted_at IS NULL", uploadUUID, uid).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		var f model.CloudFile
+		// Locking read serializes concurrent trash toggles of the same row.
+		err := tx.Where("upload_uuid = ? AND uid = ? AND deleted_at IS NULL", uploadUUID, uid).
+			Clauses(clause.Locking{Strength: "UPDATE"}).First(&f).Error
+		if err != nil {
+			return err // gorm.ErrRecordNotFound preserved for callers
+		}
+		if err := tx.Model(&model.CloudFile{}).Where("id = ?", f.ID).
+			Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		return r.applyUsageDelta(tx, uid, -f.FileSize)
+	})
 }
 
-// Restore undoes a soft delete (trash restore).
+// Restore undoes a soft delete (trash restore) and moves the cloud_quota
+// counter back up in the same transaction.
 func (r *FileRepo) Restore(db *gorm.DB, uploadUUID string, uid int64) error {
-	res := db.Model(&model.CloudFile{}).
-		Where("upload_uuid = ? AND uid = ? AND deleted_at IS NOT NULL", uploadUUID, uid).
-		Updates(map[string]any{"deleted_at": nil, "updated_at": time.Now()})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		var f model.CloudFile
+		err := tx.Where("upload_uuid = ? AND uid = ? AND deleted_at IS NOT NULL", uploadUUID, uid).
+			Clauses(clause.Locking{Strength: "UPDATE"}).First(&f).Error
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&model.CloudFile{}).Where("id = ?", f.ID).
+			Updates(map[string]any{"deleted_at": nil, "updated_at": time.Now()}).Error; err != nil {
+			return err
+		}
+		return r.applyUsageDelta(tx, uid, f.FileSize)
+	})
 }
 
 // ListByFolder returns a page of active files (root when folderID is nil),
@@ -123,16 +139,36 @@ func (r *FileRepo) ListByFolder(db *gorm.DB, uid int64, folderID *int64,
 }
 
 // SoftDeleteByFolderIDs trash-soft-deletes every active file inside the
-// given folders (folder delete cascade). Returns affected file count.
+// given folders (folder delete cascade) and moves the cloud_quota counter
+// down by exactly the flipped bytes, in one transaction. Returns affected
+// file count.
 func (r *FileRepo) SoftDeleteByFolderIDs(db *gorm.DB, uid int64, folderIDs []int64) (int64, error) {
 	if len(folderIDs) == 0 {
 		return 0, nil
 	}
 	now := time.Now()
-	res := db.Model(&model.CloudFile{}).
-		Where("uid = ? AND folder_id IN ? AND deleted_at IS NULL", uid, folderIDs).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now})
-	return res.RowsAffected, res.Error
+	var affected int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var sum int64
+		// Locking aggregate over the matched rows: the counter delta matches
+		// exactly the bytes this update flips (no interleaving soft-delete).
+		if err := tx.Model(&model.CloudFile{}).
+			Where("uid = ? AND folder_id IN ? AND deleted_at IS NULL", uid, folderIDs).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("COALESCE(SUM(file_size), 0)").
+			Scan(&sum).Error; err != nil {
+			return err
+		}
+		res := tx.Model(&model.CloudFile{}).
+			Where("uid = ? AND folder_id IN ? AND deleted_at IS NULL", uid, folderIDs).
+			Updates(map[string]any{"deleted_at": now, "updated_at": now})
+		if res.Error != nil {
+			return res.Error
+		}
+		affected = res.RowsAffected
+		return r.applyUsageDelta(tx, uid, -sum)
+	})
+	return affected, err
 }
 
 // ListTrash returns soft-deleted files (newest deletion first).
@@ -154,8 +190,39 @@ func (r *FileRepo) SearchByName(db *gorm.DB, uid int64, pattern string, limit in
 	return rows, err
 }
 
-// UsedBytes sums active file sizes for quota accounting.
+// UsedBytes returns the user's active-bytes total for quota accounting.
+// Fast path reads the cloud_quota counter (O(1), maintained transactionally
+// by every mutation above); a missing row lazily bootstraps from the
+// authoritative SUM. The daily reconciler heals any counter drift — the SUM
+// stays the accounting authority.
 func (r *FileRepo) UsedBytes(db *gorm.DB, uid int64) (int64, error) {
+	var counter int64
+	if err := db.Raw("SELECT used_bytes FROM cloud_quota WHERE uid = ?", uid).Scan(&counter).Error; err != nil {
+		return 0, err
+	}
+	if counter != 0 {
+		return counter, nil
+	}
+	// Zero counter: either a genuinely empty user or no row yet. Bootstrap
+	// missing rows from SUM so the fast path sticks after the first hit.
+	sum, err := r.sumActiveBytes(db, uid)
+	if err != nil {
+		return 0, err
+	}
+	var exists int64
+	if err := db.Raw("SELECT COUNT(*) FROM cloud_quota WHERE uid = ?", uid).Scan(&exists).Error; err != nil {
+		return 0, err
+	}
+	if exists == 0 {
+		if err := r.applyUsageDelta(db, uid, sum); err != nil {
+			return 0, err
+		}
+	}
+	return sum, nil
+}
+
+// sumActiveBytes is the authoritative accounting query (legacy UsedBytes).
+func (r *FileRepo) sumActiveBytes(db *gorm.DB, uid int64) (int64, error) {
 	var used int64
 	err := db.Model(&model.CloudFile{}).
 		Where("uid = ? AND deleted_at IS NULL", uid).
@@ -163,6 +230,19 @@ func (r *FileRepo) UsedBytes(db *gorm.DB, uid int64) (int64, error) {
 		Select("COALESCE(SUM(file_size), 0)").
 		Scan(&used).Error
 	return used, err
+}
+
+// applyUsageDelta moves the cloud_quota counter by delta (+upload / -trash).
+// Upsert keeps the row self-seeding. Must run inside the mutation's
+// transaction so the counter can never drift from cloud_files mid-crash.
+func (r *FileRepo) applyUsageDelta(tx *gorm.DB, uid int64, delta int64) error {
+	if delta == 0 {
+		return nil
+	}
+	return tx.Exec(
+		"INSERT INTO cloud_quota (uid, used_bytes, updated_at) VALUES (?, ?, NOW()) "+
+			"ON DUPLICATE KEY UPDATE used_bytes = used_bytes + ?, updated_at = NOW()",
+		uid, delta, delta).Error
 }
 
 // ListPurgeable returns soft-deleted rows whose deleted_at is older than

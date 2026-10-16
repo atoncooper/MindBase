@@ -22,6 +22,7 @@ import (
 
 	"app-cloud/internal/config"
 	"app-cloud/internal/db"
+	"app-cloud/internal/joblock"
 	"app-cloud/internal/logger"
 	"app-cloud/internal/minio"
 	"app-cloud/internal/model"
@@ -95,19 +96,20 @@ func main() {
 	}
 	slog.Info("[MINIO] init OK", "bucket", cfg.Minio.Bucket)
 
-	// Redis (upload sessions/heartbeats + sweeper limiter).
+	// Redis (upload sessions/heartbeats, pending-quota ledger, and the
+	// background-job lease — see internal/joblock).
 	var rdb redis.UniversalClient
-	if strings.TrimSpace(cfg.Redis.URL) != "" {
-		if opts, perr := redis.ParseURL(cfg.Redis.URL); perr == nil {
-			client := redis.NewClient(opts)
-			pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			if perr := client.Ping(pingCtx).Err(); perr != nil {
-				slog.Warn("[REDIS] unavailable at boot — upload sessions disabled until it recovers", "err", perr)
-			} else {
-				rdb = client
-			}
-			cancel()
+	if strings.TrimSpace(cfg.Redis.URL) == "" {
+		slog.Warn("[REDIS] url not configured — upload sessions disabled and background jobs run WITHOUT the multi-replica lease (single-replica only)")
+	} else if opts, perr := redis.ParseURL(cfg.Redis.URL); perr == nil {
+		client := redis.NewClient(opts)
+		pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if perr := client.Ping(pingCtx).Err(); perr != nil {
+			slog.Warn("[REDIS] unavailable at boot — upload sessions disabled and background jobs run WITHOUT the multi-replica lease until it recovers", "err", perr)
+		} else {
+			rdb = client
 		}
+		cancel()
 	}
 
 	// Mongo (parsed documents + ASR previews; optional at boot).
@@ -143,18 +145,26 @@ func main() {
 		if !cfg.Pipeline.Enabled {
 			return
 		}
-		pipe.RunAsync(file)
+		// Durable outbox: the bounded worker pool drains cloud_vector_tasks.
+		if err := pipe.EnqueueTask(uploadUUID, uid); err != nil {
+			slog.Error("[CLOUD_UPLOAD] pipeline enqueue failed", "upload_uuid", uploadUUID, "err", err)
+		}
 	})
 	purgeSvc := service.NewPurgeService(db.DB, mc, mongoStore, pipe)
 	shareSvc := service.NewShareService(db.DB, mc, cfg.Minio.PresignExpire)
 	attestor := service.NewDeviceAttestor()
 
+	// Bounded vectorize worker pool draining the cloud_vector_tasks outbox
+	// (multi-replica safe: FOR UPDATE SKIP LOCKED claiming + stale requeue).
+	pipe.StartWorkers(cfg.Pipeline.Workers)
+
 	// Trash sweeper: physically purge soft-deleted files after N days.
 	// Reconciler: per-uid drift check (active users, rotating — never a
 	// bucket-wide scan); runs on the same stop channel.
 	sweeperStop := make(chan struct{})
-	go runTrashSweeper(cfg, purgeSvc, sweeperStop)
-	go runDailyReconciler(reconciler, sweeperStop)
+	go runTrashSweeper(cfg, purgeSvc, rdb, sweeperStop)
+	go runDailyReconciler(reconciler, rdb, sweeperStop)
+	defer pipe.StopWorkers(8 * time.Second)
 	defer close(sweeperStop)
 
 	// Business timezone.
@@ -204,8 +214,18 @@ func main() {
 
 // runDailyReconciler reconciles recently-active users once a day (bounded
 // batch). Drift is logged; the DB ledger stays authoritative for quota.
-func runDailyReconciler(rec *service.Reconciler, stop chan struct{}) {
+// The Redis lease makes each run single-winner across replicas; reconcile is
+// read-only reporting, so a rare duplicate boot-time catch-up is harmless.
+func runDailyReconciler(rec *service.Reconciler, rdb redis.UniversalClient, stop chan struct{}) {
 	run := func() {
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		release, ok := joblock.TryAcquire(lockCtx, rdb, jobReconciler, jobLeaseTTL)
+		lockCancel()
+		if !ok {
+			slog.Info("[RECONCILE] lease held by another replica — skipping run")
+			return
+		}
+		defer release()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		n := rec.ReconcileActiveUsers(ctx, 7, 50)
@@ -235,7 +255,9 @@ func (p redisPublisher) Publish(ctx context.Context, channel string, message any
 
 // runTrashSweeper periodically purges soft-deleted files older than the
 // configured retention. One sweep tick is a no-op when nothing is eligible.
-func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, stop chan struct{}) {
+// The Redis lease makes each tick single-winner across replicas: only the
+// lock holder runs PurgeExpired, the rest of the fleet skips that round.
+func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, rdb redis.UniversalClient, stop chan struct{}) {
 	interval := time.Duration(cfg.Trash.SweepIntervalSeconds) * time.Second
 	if interval <= 0 {
 		interval = time.Hour
@@ -247,10 +269,18 @@ func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, stop chan 
 		case <-stop:
 			return
 		case <-ticker.C:
+			lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			release, ok := joblock.TryAcquire(lockCtx, rdb, jobSweeper, jobLeaseTTL)
+			lockCancel()
+			if !ok {
+				slog.Info("[TRASH_SWEEPER] lease held by another replica — skipping tick")
+				continue
+			}
 			olderThan := time.Now().AddDate(0, 0, -cfg.Trash.PurgeAfterDays)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			n, err := purge.PurgeExpired(ctx, olderThan, 500)
 			cancel()
+			release()
 			if err != nil {
 				slog.Warn("[TRASH_SWEEPER] sweep failed", "err", err)
 			} else if n > 0 {
@@ -259,3 +289,14 @@ func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, stop chan 
 		}
 	}
 }
+
+// Background-job lease knobs (internal/joblock). The TTL comfortably exceeds
+// the 10-minute job context: a finished run releases via compare-and-delete
+// well before expiry, while a crashed holder frees the job for another
+// replica within jobLeaseTTL.
+const jobLeaseTTL = 15 * time.Minute
+
+const (
+	jobSweeper    = "trash-sweeper"
+	jobReconciler = "daily-reconciler"
+)

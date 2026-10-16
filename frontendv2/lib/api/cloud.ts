@@ -261,7 +261,7 @@ export function formatBytes(bytes: number): string {
     if (bytes === 0) return "0 B";
     if (!Number.isFinite(bytes) || bytes < 0) return "-";
     const k = 1024;
-    // TB/PB 必须在表内：SVIP 配额 60 TiB 级别，缺 TB 会显示 "60 undefined"
+    // TB 必须在表内：SVIP 配额 1 TiB 级别，缺 TB 会显示 "1 undefined"
     const sizes = ["B", "KB", "MB", "GB", "TB", "PB"];
     const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];

@@ -94,9 +94,19 @@ func (r *ShareRepo) IncrView(db *gorm.DB, id int64) error {
 		UpdateColumn("view_count", gorm.Expr("view_count + 1")).Error
 }
 
-func (r *ShareRepo) IncrDownload(db *gorm.DB, id int64) error {
-	return db.Model(&model.CloudShare{}).Where("id = ?", id).
-		UpdateColumn("download_count", gorm.Expr("download_count + 1")).Error
+// TryIncrDownload atomically bumps download_count only while the share is
+// still under its max_downloads cap — check and increment are one statement,
+// so concurrent accesses cannot jointly overshoot the cap (the old
+// resolve-check → presign → increment chain was check-then-act). Returns
+// false when the cap is exhausted.
+func (r *ShareRepo) TryIncrDownload(db *gorm.DB, id int64) (bool, error) {
+	res := db.Model(&model.CloudShare{}).
+		Where("id = ? AND (max_downloads IS NULL OR download_count < max_downloads)", id).
+		UpdateColumn("download_count", gorm.Expr("download_count + 1"))
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
 }
 
 // RevokeAllForFile revokes every active share of a file (called on delete —

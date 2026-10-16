@@ -15,6 +15,8 @@ export interface AgentQuestionPayload {
   question: string;
   question_type?: string;
   difficulty?: string;
+  /** 每题分值（蓝本固有；蓝本外流程缺省 → 读取侧按整卷均分兜底） */
+  score?: number;
   options?: string[];
   answer?: string;
   correct_answer?: unknown;
@@ -51,6 +53,12 @@ export interface GradingPayload {
     passing_score: number | null;
     total_score: number | null;
     status: string | null;
+    // resume 断点续跑对账所需（app-quiz GradingPayload 同步扩展）
+    question_count?: number | null;
+    type_distribution?: Record<string, number> | null;
+    difficulty?: string | null;
+    title?: string | null;
+    source_type?: string | null;
   };
   questions: Array<Record<string, unknown>>;
 }
@@ -184,6 +192,11 @@ export class AppQuizClient extends InternalServiceClient {
   async appendQuestions(uid: string, quizUuid: string, questions: AgentQuestionPayload[]): Promise<void> {
     if (questions.length === 0) return;
     await this.post("/sets/" + encodeURIComponent(quizUuid) + "/questions/append", uid, { uid, questions });
+  }
+
+  /** partial → generating（断点续跑重开；清扫器窗口随 updated_at 重启）。 */
+  async reopenSet(uid: string, quizUuid: string): Promise<{ quiz_uuid: string; status: string; question_count?: number }> {
+    return this.post("/sets/" + encodeURIComponent(quizUuid) + "/reopen", uid, { uid });
   }
 
   /** 生成管线执行步骤上报（plan / retrieve / 逐批 / checkpoint）；调用侧 best-effort。 */

@@ -100,8 +100,11 @@ export class SkillManager {
     const parsed = await parseSkillZip(input.zip).catch((err: Error) => {
       throw new SkillError(400, `安装失败: ${err.message}`);
     });
-    const skillId = parsed.manifest.skill_id || input.skillId;
-    if (!skillId) throw new SkillError(400, "无法确定 skill_id（manifest 缺失且无文件名）");
+    // skill_id 兜底链：manifest.json 显式 → SKILL.md frontmatter 的 name（Claude
+    // Code / Codex 约定目录名即 id）→ 上传入参。
+    const fmName = typeof parsed.manifest.name === "string" ? parsed.manifest.name : "";
+    const skillId = parsed.manifest.skill_id || fmName || input.skillId;
+    if (!skillId) throw new SkillError(400, "无法确定 skill_id（manifest 与 SKILL.md front matter 均缺失且无文件名）");
     const key = `skills/${uid}/${skillId}.zip`;
     await this.store.put(key, input.zip, "application/zip");
     const record: SkillRecord = {
@@ -152,7 +155,7 @@ export class SkillManager {
   }
 
   /** load_skill tool body — "# 技能: {name}\n\n{body}" + code-tool pointers. */
-  async loadBody(uid: string, skillId: string): Promise<string> {
+  async loadBody(uid: string, skillId: string, path?: string): Promise<string> {
     const record = await this.meta.get(uid, skillId);
     if (!record) {
       const all = await this.meta.list(uid);
@@ -160,10 +163,25 @@ export class SkillManager {
       return `未知技能 '${skillId}'。可用技能: ${ids || "无"}`;
     }
     const parsed = await this.loadParsed(uid, skillId, record.minioKey);
+    if (path) {
+      // 渐进式披露：按需读取技能内附加文件（references / assets 说明等）
+      const content = parsed.fileMap[path];
+      if (content === undefined) {
+        const available = Object.keys(parsed.fileMap).filter((p) => !p.endsWith("SKILL.md")).join(", ") || "无";
+        return `技能 '${skillId}' 中没有文件 '${path}'。可用文件: ${available}`;
+      }
+      return `# ${record.name} / ${path}\n\n${content}`;
+    }
     let out = `# 技能: ${record.name}\n\n${parsed.body}`;
     if (record.hasCodeTools) {
       const tools = Object.keys(parsed.codeTools).join(", ") || "无";
       out += `\n\n## 代码工具\n可用脚本: ${tools}（入口 ${parsed.entry}）。沙箱不可用时请说明代码工具暂不可用。`;
+    }
+    const extras = Object.keys(parsed.fileMap).filter(
+      (p) => !p.endsWith("SKILL.md") && !p.includes("/tools/") && !p.startsWith("tools/"),
+    );
+    if (extras.length > 0) {
+      out += `\n\n## 技能内附加文件\n需要细节时用 load_skill(${JSON.stringify(skillId)}, path="…") 读取：\n${extras.map((p) => "- " + p).join("\n")}`;
     }
     return out;
   }
@@ -236,8 +254,12 @@ export class SkillStoreClient {
   }
 
   async contents(repo: string, branch: string, path: string): Promise<unknown> {
+    // GitHub zipball/contents 的路径段不接受整体 encodeURIComponent（%2F → 404），
+    // 必须逐段编码、保留斜杠（容器内实测）。
+    const encPath = (p: string) => p.split("/").map(encodeURIComponent).join("/");
+    const repoSeg = repo.split("/").map(encodeURIComponent).join("/");
     const res = await fetch(
-      `${this.api}/repos/${encodeURIComponent(repo)}/contents/${path}?ref=${encodeURIComponent(branch)}`,
+      `${this.api}/repos/${repoSeg}/contents/${encPath(path)}?ref=${encodeURIComponent(branch)}`,
       { headers: this.headers(), signal: AbortSignal.timeout(15_000) },
     );
     if (!res.ok) throw new SkillError(502, "store 访问失败: GitHub HTTP " + res.status);
@@ -255,11 +277,43 @@ export class SkillStoreClient {
   }
 
   async downloadZipball(repo: string, branch: string): Promise<Buffer> {
-    const res = await fetch(`${this.api}/repos/${encodeURIComponent(repo)}/zipball/${encodeURIComponent(branch)}`, {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!res.ok) throw new SkillError(502, "下载失败: GitHub HTTP " + res.status);
-    return Buffer.from(await res.arrayBuffer());
+    // 关键修复：repo 段不能用 encodeURIComponent 整体编码——owner%2Fname 会让
+    // zipball 端点返回 404（repo 元数据端点却正常，极具迷惑性）。逐段编码保留斜杠。
+    const repoSeg = repo.split("/").map(encodeURIComponent).join("/");
+    const tryFetch = (ref: string) =>
+      fetch(`${this.api}/repos/${repoSeg}/zipball/${encodeURIComponent(ref)}`, {
+        headers: this.headers(),
+        redirect: "follow",
+        signal: AbortSignal.timeout(120_000),
+      });
+    let usedBranch = branch;
+    let res = usedBranch ? await tryFetch(usedBranch) : undefined;
+    // 分支为空或 404 → 回退仓库默认分支（main/master 及其他命名都兼容）
+    if (!res || res.status === 404) {
+      const meta = await fetch(`${this.api}/repos/${repoSeg}`, {
+        headers: this.headers(),
+        signal: AbortSignal.timeout(15_000),
+      })
+        .then((r) => (r.ok ? (r.json() as Promise<{ default_branch?: string; private?: boolean; message?: string }>) : null))
+        .catch(() => null);
+      if (!meta) {
+        throw new SkillError(502, `下载失败: GitHub HTTP 404（repo=${repo} 不可访问：仓库不存在或为私有——私有仓库需配置 SKILL_STORE_API_KEY）`);
+      }
+      const defaultBranch = meta.default_branch || "main";
+      if (!usedBranch || usedBranch !== defaultBranch) {
+        usedBranch = defaultBranch;
+        res = await tryFetch(usedBranch);
+      }
+      if (res!.status === 404) {
+        throw new SkillError(
+          502,
+          `下载失败: GitHub HTTP 404（repo=${repo} branch=${usedBranch}；${meta.private ? "仓库为私有——需配置 SKILL_STORE_API_KEY" : "请确认仓库与分支存在"}）`,
+        );
+      }
+    }
+    if (!res!.ok) {
+      throw new SkillError(502, `下载失败: GitHub HTTP ${res!.status}（repo=${repo} branch=${usedBranch}）`);
+    }
+    return Buffer.from(await res!.arrayBuffer());
   }
 }

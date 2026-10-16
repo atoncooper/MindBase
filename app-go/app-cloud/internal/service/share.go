@@ -227,7 +227,18 @@ func (s *ShareService) BuildAccess(ctx context.Context, sf *shareFile, download 
 		return nil, err
 	}
 	if download {
-		_ = s.shares.IncrDownload(s.db, sf.Share.ID)
+		// Atomic cap gate: check + increment in one statement, before the
+		// URL is handed out. Failure means the cap was just exhausted —
+		// ErrShareDownloadCap maps to a uniform 404 at the router. (A presign
+		// minted here but never returned simply expires with its 15-min TTL;
+		// the cap is what must not be overshot.)
+		ok, ierr := s.shares.TryIncrDownload(s.db, sf.Share.ID)
+		if ierr != nil {
+			return nil, ierr
+		}
+		if !ok {
+			return nil, ErrShareDownloadCap
+		}
 	}
 	return map[string]any{
 		"url":       url,

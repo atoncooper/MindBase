@@ -69,6 +69,18 @@ const nextConfig: NextConfig = {
           destination: `http://${APISIX_HOST}/notes/:path*`,
           has: [{ type: "header", key: "X-Requested-With", value: "XMLHttpRequest" }],
         },
+        // /quiz 同为页面 + API 双用途前缀（页面导航无 XHR 头 → Next 页面路由；
+        // API fetch 带 XHR 头 → APISIX）。与 nginx locations.conf 双用途分发对齐。
+        {
+          source: "/quiz",
+          destination: `http://${APISIX_HOST}/quiz`,
+          has: [{ type: "header", key: "X-Requested-With", value: "XMLHttpRequest" }],
+        },
+        {
+          source: "/quiz/:path*",
+          destination: `http://${APISIX_HOST}/quiz/:path*`,
+          has: [{ type: "header", key: "X-Requested-With", value: "XMLHttpRequest" }],
+        },
       ],
       fallback: [
         // 其他非页面路由的 API（/chat /favorites /knowledge 等）-> APISIX

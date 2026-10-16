@@ -1,41 +1,64 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { config } from "../../config/index.js";
 
 /**
- * PromptRegistry: system prompts live as Markdown files (prompts/*.md),
- * loaded once at startup into memory. Filename stem = prompt name.
- * Dynamic content is injected via {{PLACEHOLDER}} substitution at render time;
- * rendering fails fast if a placeholder is left unfilled (catches prompt drift early).
+ * PromptRegistry: system prompts live as Markdown files under prompts/ in
+ * domain subdirectories (agents/ quiz/ chat/ kg/ …), loaded once at startup.
+ * Prompt name = relative path from the prompts dir without the .md extension
+ * (posix separators), e.g. "agents/main", "quiz/styles/gaokao",
+ * "quiz/batch-user" — the folder IS the namespace, so growing prompt counts
+ * stay organized. Dynamic content is injected via {{PLACEHOLDER}} substitution
+ * at render time; rendering fails fast if a placeholder is left unfilled
+ * (catches prompt drift early).
  */
 export class PromptRegistry {
   private readonly prompts = new Map<string, string>();
 
   private constructor() {}
 
-  /** Load all *.md files in dir. Throws if the dir is missing or empty (prompts are essential). */
+  /** Recursively load *.md files in dir. Throws if the dir is missing or empty (prompts are essential). */
   static load(dir: string = resolve(config.prompts.dir)): PromptRegistry {
     const registry = new PromptRegistry();
-    let files: string[];
+    const files: string[] = [];
+    const walk = (d: string) => {
+      let entries: string[];
+      try {
+        entries = readdirSync(d);
+      } catch (err) {
+        throw new Error(
+          `[PROMPTS] cannot read prompts dir "${d}": ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      for (const entry of entries) {
+        const full = join(d, entry);
+        let isDir = false;
+        try { isDir = readdirSync(full) !== undefined; } catch { isDir = false; }
+        if (isDir) walk(full);
+        else if (entry.endsWith(".md")) files.push(full);
+      }
+    };
     try {
-      files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+      walk(dir);
     } catch (err) {
-      throw new Error(
-        `[PROMPTS] cannot read prompts dir "${dir}": ${err instanceof Error ? err.message : err}`,
-      );
+      throw err instanceof Error ? err : new Error(String(err));
     }
     if (files.length === 0) {
       throw new Error(`[PROMPTS] no .md prompt files found in "${dir}"`);
     }
     for (const file of files) {
-      const name = file.replace(/\.md$/, "");
-      registry.prompts.set(name, readFileSync(join(dir, file), "utf-8"));
+      const rel = relative(dir, file).split(/\\|\//).join("/");
+      const name = rel.replace(/\.md$/, "");
+      if (registry.prompts.has(name)) {
+        throw new Error(`[PROMPTS] duplicate prompt name "${name}" (${file})`);
+      }
+      registry.prompts.set(name, readFileSync(file, "utf-8"));
     }
     return registry;
   }
 
   names(): string[] {
-    return [...this.prompts.keys()];
+    return [...this.prompts.keys()].sort();
   }
 
   has(name: string): boolean {

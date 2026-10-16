@@ -129,7 +129,7 @@ export function registerSkillsRoutes(
     if (!repo || !repo.includes("/")) {
       return reply.status(400).send({ detail: "repo 必填（owner/repo）" });
     }
-    const branch = body.branch || "main";
+    const branch = (body.branch || "").trim(); // 空 = 由 store 解析仓库默认分支
     try {
       const zip = await deps.store.downloadZipball(repo, branch);
       const installed = await deps.manager.install(uid, {

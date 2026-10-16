@@ -797,7 +797,7 @@ routes:
   # （Python 面已退役）
   # （AI 域）。回滚：删除本路由对应 uri 即回落 Python。
   - id: chat_ts
-    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents]
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /quota/summary]
     priority: 60
     upstream_id: upstream-app-ts
     plugins:
@@ -854,6 +854,26 @@ routes:
         timeout: 5000
         status_code: 401
 
+  # /quiz/styles -> app-ts（考试蓝本目录，65 种，个性化出题选择器数据源；实现在
+  # app-ts routes/quiz.ts，纯静态无 LLM。priority 110 压过 quiz_user 通配——缺此
+  # 路由会落 app-quiz 的 /:quiz_uuid 404，前端目录永远「加载中」）。
+  - id: quiz_ai_styles
+    uri: /quiz/styles
+    methods: [GET]
+    priority: 110
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
   # /quiz/generate-from-summary -> app-ts（AI 编排；summary → 分块 → LLM 出题 →
   # app-quiz internal 落库）。priority 110 > quiz_ai (100)，该 uri 已离开 Python。
   - id: quiz_ai_summary
@@ -874,8 +894,9 @@ routes:
         status_code: 401
 
   # /quiz/generate -> app-ts（folder/pages 来源的 AI 出题；priority 110）。
+  # /quiz/resume -> app-ts（partial 卷断点续跑）。
   - id: quiz_ai_generate
-    uris: [/quiz/generate, /quiz/generate-ai]
+    uris: [/quiz/generate, /quiz/generate-ai, /quiz/resume]
     methods: [POST]
     priority: 110
     upstream_id: upstream-app-ts

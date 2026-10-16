@@ -28,6 +28,10 @@ import type { Artifact, InteractionPayload, Source } from "../context/types.js";
  *
  * usage frame: INTERNAL ONLY — consumed by the chat service for persistence, never
  * forwarded to the HTTP layer.
+ *
+ * error frame: may carry `code` ("QUOTA_EXCEEDED" | "COST_GUARD") + `detail`
+ * {kind, used, limit, resetAt, tier, upgradeSku} — the frontend renders an
+ * upgrade card off the code; older clients ignore them.
  */
 export type SseFrame =
   | { type: "route"; agent: string }
@@ -53,7 +57,7 @@ export type SseFrame =
   | { type: "queue"; position: number; waitedMs: number }
   | { type: "reset" }
   | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string; detail?: Record<string, unknown> }
   | { type: "done" };
 
 export const HEARTBEAT = ": ping\n\n";

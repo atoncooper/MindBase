@@ -295,6 +295,23 @@ kubectl create secret generic mind-base-secrets \
 
 ---
 
+## Scaling app-cloud (multi-replica)
+
+app-cloud 已完成多实例强化（Redis 租约锁后台任务、`cloud_vector_tasks` outbox 认领、
+Lua 配额原子预留、`cloud_quota` 计数自愈、下载上限条件原子自增——详见
+[app-cloud.md](app-cloud.md) 与 [plan/1.0.13-AppCloud-MultiReplica](../plan/1.0.13-AppCloud-MultiReplica/1.0.13-AppCloud-MultiReplica.md)）：
+
+```bash
+# compose：宿主端口池 8007-8009，副本依次占用
+docker compose up -d --scale app-cloud=2
+```
+
+- nginx 以变量 `proxy_pass` + `resolver 127.0.0.11 valid=10s` 每 10s 重解析 Docker DNS，
+  扩容副本自动纳用；无需改 nginx
+- 两张新表由服务启动 `db.Migrate` 自动创建（CREATE TABLE IF NOT EXISTS）
+- APISIX `upstream-app-cloud` 仍单 node（仅 /workspaces 兜底路径，主路径走 nginx /cloud/）
+- k8s：Service 已负载均衡，直接调大 Deployment `replicas`
+
 ## Production checklist
 
 - [ ] `app.debug` is `false`

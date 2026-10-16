@@ -165,7 +165,7 @@ export class SessionSummaryService {
       .join("\n\n");
     return {
       history,
-      system: this.prompts.render("summary", {}),
+      system: this.prompts.render("agents/summary", {}),
       prompt: DEFAULT_QUERY + "\n\n<conversation>\n" + transcript + "\n</conversation>",
     };
   }
