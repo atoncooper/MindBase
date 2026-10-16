@@ -8,7 +8,8 @@ WORKDIR /app
 
 # Deps first (cache)
 COPY app-ts/package.json app-ts/package-lock.json* ./
-RUN npm install
+# npm 默认源在本机网络不可达（连接被重置）；与宿主 ~/.npmrc 及 lockfile 对齐走 npmmirror
+RUN npm install --registry=https://registry.npmmirror.com
 
 # Source + runtime assets
 COPY app-ts/ ./
