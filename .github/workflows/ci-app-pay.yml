@@ -31,16 +31,15 @@ jobs:
         run: mvn -s maven-settings.xml --batch-mode test
 
   security-scan:
-    # P2-11 漏洞门禁：Maven 依赖 HIGH/CRITICAL CVE 直接红 —— 漏洞不得静默进入依赖树
+    # 依赖漏洞门禁：官方 trivy Docker 镜像直接跑（不依赖 install.sh 下载二进制），
+    # HIGH/CRITICAL CVE 直接红
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Trivy vulnerability scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          scan-type: fs
-          scan-ref: app-pay
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: "true"
+        run: |
+          docker run --rm \
+            -v $PWD:/src \
+            aquasec/trivy:0.65.0 \
+            fs --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --ignore-unfixed /src
