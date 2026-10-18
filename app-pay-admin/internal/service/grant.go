@@ -75,7 +75,7 @@ func (g *GrantService) checkDailyQuota(ctx context.Context, requestedDays int) e
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	var count, totalDays int64
 	if err := db.DB.WithContext(ctx).Raw(
-		"SELECT COUNT(*), COALESCE(SUM(days), 0) FROM pay_membership_event " +
+		"SELECT COUNT(*), COALESCE(SUM(days), 0) FROM pay_membership_event "+
 			"WHERE type = 'ADMIN_GRANT' AND created_at >= ?", dayStart,
 	).Row().Scan(&count, &totalDays); err != nil {
 		// 统计失败不阻塞资金写（与 app-pay 侧 fail-open 一致），但要留痕

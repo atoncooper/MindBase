@@ -107,6 +107,7 @@ type PayAdminUser struct {
 }
 
 func (PayAdminUser) TableName() string { return "payadmin_user" }
+
 // PayRefundApproval maps pay_refund_approval (V4 migration): 退款双人复核请求
 // （maker-checker）。Read-only for this service —— approve/reject 经 app-pay 的
 // internal 端点执行（审计/状态机一致性），资金写不发生在本控制台。

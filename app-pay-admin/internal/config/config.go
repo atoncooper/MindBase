@@ -13,15 +13,15 @@ import (
 )
 
 type Config struct {
-	App      AppConfig      `yaml:"app"`
-	Server   ServerConfig   `yaml:"server"`
-	Timezone string         `yaml:"timezone"`
-	RDBMS    RDBMSConfig    `yaml:"rdbms"`
-	WebUI    WebUIConfig    `yaml:"webui"`
-	Audit    AuditConfig    `yaml:"audit"`
+	App      AppConfig    `yaml:"app"`
+	Server   ServerConfig `yaml:"server"`
+	Timezone string       `yaml:"timezone"`
+	RDBMS    RDBMSConfig  `yaml:"rdbms"`
+	WebUI    WebUIConfig  `yaml:"webui"`
+	Audit    AuditConfig  `yaml:"audit"`
 
-	AppPay AppPayConfig `yaml:"app_pay"`
-	Grant  GrantConfig  `yaml:"grant"`
+	AppPay   AppPayConfig   `yaml:"app_pay"`
+	Grant    GrantConfig    `yaml:"grant"`
 	Security SecurityConfig `yaml:"security"`
 	Log      LogConfig      `yaml:"log"`
 }
