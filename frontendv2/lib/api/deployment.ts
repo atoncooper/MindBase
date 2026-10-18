@@ -117,6 +117,22 @@ export async function resolveApiBase(fallback: string): Promise<string> {
     }
     // 0) 当前访问地址本身就是部署地址之一 → 同源相对路径（零跨域，最稳）
     if (candidates.includes(window.location.origin)) return "";
+    // 0.5) 同源 API 探测：页面源上 /auth/profile 可达（401/200 均算，
+    //      404 = 该源上没有 API，如本地 dev 无 rewrite）→ 同源直连。
+    //      修复：localhost 访问者原会被解析到域名候选（跨域），每个请求带 CORS
+    //      预检，且 nginx auth 区（1r/s burst=3）把预检 429 掉 → Failed to fetch
+    //      风暴。页面源上 API 可达时同源永远优先于跨域候选。
+    try {
+        const probe = await fetch(window.location.origin + "/auth/profile", {
+            method: "GET",
+            cache: "no-store",
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+            signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
+        if (probe.status !== 404 && probe.status < 500) return "";
+    } catch {
+        // 同源探测失败（不应发生：页面刚从该源加载）→ 继续候选链
+    }
     // 1) 域名优先，逐个探测可达性（域名没解析的设备自动落到公网 IP）
     for (const candidate of candidates) {
         if (await isReachable(candidate)) return candidate;
