@@ -1,0 +1,39 @@
+# Higress AI 网关（可选）—— server2
+# 仅当 .env 的 AI_GATEWAY__BASE_URL 指向 http://higress:8080/... 时才需要启动：
+#   docker compose --env-file ../../.env -f 90-higress.yml up -d
+# .env 已指向外部网关则跳过本文件。供应商 key 在控制台(18081)配置，持久化于 ../../data/higress
+# ⚠️ 18081 控制台公网可达，安全组务必限源 IP
+name: mb-higress
+
+services:
+  higress:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+    container_name: mind-base-higress
+    environment:
+      - GATEWAY_HTTP_PORT=8080
+      - GATEWAY_HTTPS_PORT=8443
+      - CONSOLE_PORT=8001
+      - NO_PROXY=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+      - no_proxy=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18443:8443"
+      - "18081:8001"
+    volumes:
+      - ../../data/higress:/data
+      - ../../data/higress/logs:/var/log/proxy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8001/ || wget -qO /dev/null http://127.0.0.1:8001/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    networks:
+      - mind-base-overlay
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

@@ -1,0 +1,38 @@
+# ================================================================
+# 证书一次性生成（在 server1 执行；生成的证书目录随后拷给 server2）
+#   docker compose --env-file ../../.env -f 00-certs.yml up cert-gen
+# SAN 覆盖：MB_CERT_HOST(域名或IP) + localhost/127.0.0.1/::1 + app-pay 等内部名
+# Subject 已含完整字段：C=CN / ST=Sichuan / L=Chengdu / O=MindBase / OU=MindBase Platform
+# ⚠️ 自签 CA 无论 Subject 多完整，浏览器都会提示不受信任——
+#    信任 nginx/certs/dev-ca.crt 后警告消失（详见 README）。
+# 重签：MB_CERT_FORCE=1 强制全部重签；换 MB_CERT_HOST 后相关叶子会自动重签。
+# ================================================================
+name: mb-certs
+
+services:
+  cert-gen:
+    image: atoncooper/mind-base-certgen:latest
+    pull_policy: missing        # server1 本地已有该镜像；缺失时从 Hub 拉
+    build:
+      context: ../../scripts
+      dockerfile: certgen.Dockerfile
+    container_name: mind-base-cert-gen
+    network_mode: none
+    environment:
+      MB_CERT_NGINX_DIR: /out/nginx
+      MB_CERT_APPBOARD_DIR: /out/app-board
+      MB_CERT_MCP_DIR: /out/mcp
+      MB_CERT_PAY_DIR: /out/pay
+      # 主访问地址：写成你的域名或公网 IP（进 CN+SAN）；.env 里配置
+      MB_CERT_HOST: ${MB_CERT_HOST:-mindbase}
+      # 额外 SAN，逗号分隔，例如 "mb.example.com,43.123.45.67"
+      MB_CERT_EXTRA_SAN: ${MB_CERT_EXTRA_SAN:-}
+      MB_CERT_FORCE: ${MB_CERT_FORCE:-0}
+      # 1 = 保留现有证书不覆盖（换成 Let's Encrypt 真证书后设 1）
+      MB_CERT_KEEP: ${MB_CERT_KEEP:-0}
+    volumes:
+      - ../../nginx/certs:/out/nginx
+      - ../../app-board/certs:/out/app-board
+      - ../../mcp/app-board-mcp/certs:/out/mcp
+      - ../../app-pay/certs:/out/pay
+    restart: "no"

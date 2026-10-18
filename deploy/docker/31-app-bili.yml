@@ -1,0 +1,39 @@
+# app-bili B站数据获取（Go：收藏夹同步/ASR/知识库 build 编排）—— server2
+#   docker compose --env-file ../../.env -f 31-app-bili.yml up -d
+name: mb-app-bili
+
+services:
+  app-bili:
+    image: atoncooper/mind-base-app-bili:latest
+    pull_policy: missing
+    container_name: mind-base-app-bili
+    env_file:
+      - ../../.env
+    environment:
+      - APPBILI__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 Higress 原生透传；.env 里配置了别的网关地址则以 .env 为准
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/api/v1}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPBILI__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_BILI_PORT:-8010}:8010"
+    volumes:
+      - app_bili_logs:/app/logs
+      - ../../secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_bili_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

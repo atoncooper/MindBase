@@ -1,0 +1,44 @@
+# app-task 定时出题执行器（Go，独立仓库镜像）—— server2
+#   docker compose --env-file ../../.env -f 41-app-task.yml up -d
+name: mb-app-task
+
+services:
+  app-task:
+    image: atoncooper/app-task:latest
+    container_name: mind-base-app-task
+    env_file:
+      - ../../.env
+    environment:
+      # 独立专用库（server2 本地 app-task-mysql，schema 自建）
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
+      - APPTASK__APP__BASE_URL=http://apisix:9080    # 主 app 经 server1 的 APISIX（overlay）
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9080
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      # app-pay 委托回调证书校验 CA（server1 拷来的同一套）
+      - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      - APPTASK__LOG__OUTPUT=both
+      - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
+      - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
+    ports:
+      - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
+    volumes:
+      - app_task_logs:/app/logs
+      - ../../app-pay/certs:/app/pay-certs:ro
+      - app_task_certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_task_logs: {}
+  app_task_certs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

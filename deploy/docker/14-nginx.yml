@@ -1,0 +1,40 @@
+# Nginx 入口（TLS 终结 + 路由）—— server1
+#   docker compose --env-file ../../.env -f 14-nginx.yml up -d
+# 依赖：证书已生成(00)、etcd/minio/apisix/frontend 已启动（顺序见 start-frontend.sh）。
+# locations.conf 用 resolver+变量 proxy_pass，后端暂时缺失只会 502，不会崩 nginx。
+name: mb-nginx
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: mind-base-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../nginx/locations.conf:/etc/nginx/locations.conf:ro
+      - ../../nginx/certs:/etc/nginx/certs:ro
+      - certbot_www:/var/www/certbot
+      - nginx_video_cache:/var/cache/nginx/video
+      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  certbot_www:
+    external: true
+    name: mindbase_certbot_www
+  nginx_video_cache:
+    external: true
+    name: mindbase_nginx_video_cache
+  nginx_wallpaper_cache:
+    external: true
+    name: mindbase_nginx_wallpaper_cache
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

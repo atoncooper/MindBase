@@ -1,0 +1,36 @@
+# app-board 思维导图/白板存储（Go，HTTPS-only，证书用 server1 拷来的同一套 dev-CA）—— server2
+#   docker compose --env-file ../../.env -f 37-app-board.yml up -d
+name: mb-app-board
+
+services:
+  app-board:
+    image: atoncooper/mind-base-app-board:latest
+    pull_policy: missing
+    container_name: mind-base-app-board
+    env_file:
+      - ../../.env
+    environment:
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      # ⚠️ 原版写死 @mysql:3306，两机部署必须指向外部主库
+      - APPBOARD__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
+    volumes:
+      - app_board_logs:/app/logs
+      - ../../app-board/certs:/app/certs   # 与 server1 apisix 信任的是同一套证书
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_board_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

@@ -1,0 +1,48 @@
+# MinIO 对象存储 —— server1（server2 的服务经 overlay 按名访问 minio:9000）
+#   docker compose --env-file ../../.env -f 12-minio.yml up -d
+name: mb-minio
+
+services:
+  minio:
+    image: atoncooper/mind-base-minio:latest
+    pull_policy: missing
+    build:
+      context: ../../scripts
+      dockerfile: minio.Dockerfile
+    container_name: mind-base-minio
+    ports:
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      # 桶事件推送 -> server2 的 redis（overlay 按名解析）
+      - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
+      - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
+      - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
+      - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-overlay
+
+# ⚠️ 复用旧栈的数据卷（云盘文件/技能包都在里面）。名字不同就改。
+volumes:
+  minio_data:
+    external: true
+    name: mindbase_minio_data
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

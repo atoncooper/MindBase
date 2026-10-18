@@ -1,0 +1,35 @@
+# app-task 专用 MySQL（app_task 库，表由 app-task 启动自建）—— server2
+#   docker compose --env-file ../../.env -f 24-app-task-mysql.yml up -d
+name: mb-app-task-mysql
+
+services:
+  app-task-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-task-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_task
+      - MYSQL_USER=${APPTASK_MYSQL_USER:-app_task}
+      - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - app_task_mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${APPTASK_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_task_mysql_data: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

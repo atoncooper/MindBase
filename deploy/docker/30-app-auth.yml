@@ -1,0 +1,47 @@
+# app-auth 身份认证（Go）—— server2
+#   docker compose --env-file ../../.env -f 30-app-auth.yml up -d
+name: mb-app-auth
+
+services:
+  app-auth:
+    image: atoncooper/mind-base-app-auth:latest
+    pull_policy: missing
+    container_name: mind-base-app-auth
+    env_file:
+      - ../../.env
+    environment:
+      # 主库 = 外部 MySQL（.env 的 RDBMS__URL）
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_AUTH_PORT:-8006}:8006"
+    volumes:
+      - app_auth_logs:/app/logs
+      - ../../secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_auth_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

@@ -1,0 +1,31 @@
+# app-quiz 测验存储（Go）—— server2
+#   docker compose --env-file ../../.env -f 33-app-quiz.yml up -d
+name: mb-app-quiz
+
+services:
+  app-quiz:
+    image: atoncooper/mind-base-app-quiz:latest
+    pull_policy: missing
+    container_name: mind-base-app-quiz
+    env_file:
+      - ../../.env
+    environment:
+      - APPQUIZ__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPQUIZ__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_QUIZ_PORT:-8011}:8011"
+    volumes:
+      - app_quiz_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_quiz_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

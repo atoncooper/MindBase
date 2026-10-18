@@ -1,0 +1,41 @@
+# etcd（APISIX 元数据 + Milvus 依赖）—— server1
+#   docker compose --env-file ../../.env -f 11-etcd.yml up -d
+name: mb-etcd
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    container_name: mind-base-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: >
+      etcd
+      -advertise-client-urls=http://etcd:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      -data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-overlay
+
+# ⚠️ 复用旧栈(/MindBase)的数据卷，etcd 里的元数据不丢。
+#    若 docker volume ls 显示的名字不同，把 name 改成实际值。
+volumes:
+  etcd_data:
+    external: true
+    name: mindbase_etcd_data
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

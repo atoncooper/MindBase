@@ -1,0 +1,37 @@
+# app-pay 专用 MySQL（app_pay 库，Flyway 迁移）—— server2
+#   docker compose --env-file ../../.env -f 25-app-pay-mysql.yml up -d
+name: mb-app-pay-mysql
+
+services:
+  app-pay-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-pay-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_pay
+      - MYSQL_USER=${PAY_MYSQL_USER:-app_pay}
+      - MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:${PAY_MYSQL_PORT:-3307}:3306"   # 仅回环，本地调试用
+    volumes:
+      - app_pay_mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${PAY_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_pay_mysql_data: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

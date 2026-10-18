@@ -1,0 +1,33 @@
+# app-kg KG 图存储（Go gRPC）—— server2
+#   docker compose --env-file ../../.env -f 35-app-kg.yml up -d
+name: mb-app-kg
+
+services:
+  app-kg:
+    image: atoncooper/mind-base-app-kg:latest
+    pull_policy: missing
+    container_name: mind-base-app-kg
+    env_file:
+      - ../../.env
+    environment:
+      - APPKG__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - KG__URI=bolt://neo4j:7687
+      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
+      - APPKG__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_KG_GRPC_PORT:-8013}:8013"
+      - "127.0.0.1:${APP_KG_HEALTH_PORT:-8014}:8014"
+    volumes:
+      - app_kg_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_kg_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

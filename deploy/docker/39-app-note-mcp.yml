@@ -1,0 +1,33 @@
+# app-note-mcp（笔记 MCP server）—— server2
+#   docker compose --env-file ../../.env -f 39-app-note-mcp.yml up -d
+name: mb-app-note-mcp
+
+services:
+  app-note-mcp:
+    image: atoncooper/mind-base-app-note-mcp:latest
+    pull_policy: missing
+    container_name: mind-base-app-note-mcp
+    environment:
+      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
+      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
+      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - NOTEMCP__LOG__OUTPUT=both
+      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
+    ports:
+      - "127.0.0.1:8009:8009"
+    volumes:
+      - app_note_mcp_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_note_mcp_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

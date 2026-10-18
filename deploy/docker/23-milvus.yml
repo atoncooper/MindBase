@@ -1,0 +1,32 @@
+# Milvus 向量库 —— server2（依赖 server1 的 etcd/minio，经 overlay 按名访问）
+#   docker compose --env-file ../../.env -f 23-milvus.yml up -d
+# ⚠️ 换 embedding 模型 = 清空 Milvus 全量重建（红线）
+name: mb-milvus
+
+services:
+  milvus:
+    image: milvusdb/milvus:v2.6.22
+    container_name: mind-base-milvus
+    command: milvus run standalone
+    ports:
+      - "127.0.0.1:${MILVUS_PORT:-19530}:19530"
+      - "127.0.0.1:${MILVUS_GRPC_PORT:-9091}:9091"
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379        # server1（overlay）
+      - MINIO_ADDRESS=minio:9000        # server1（overlay）
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  milvus_data: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

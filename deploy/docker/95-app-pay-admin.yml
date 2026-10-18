@@ -1,0 +1,34 @@
+# app-pay-admin 支付后台管理（可选，Go，仅回环）—— server2
+#   docker compose --env-file ../../.env -f 95-app-pay-admin.yml up -d
+# 浏览器经 SSH 隧道访问：ssh -L 8003:127.0.0.1:8003 <server2>
+name: mb-app-pay-admin
+
+services:
+  app-pay-admin:
+    image: atoncooper/mind-base-app-pay-admin:latest
+    pull_policy: missing
+    container_name: mind-base-app-pay-admin
+    env_file:
+      - ../../.env
+    command: ["-config", "config.docker.yaml"]
+    environment:
+      - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
+      - PAYADMIN__APP_PAY__OPS_KEY=${PAY_OPS_KEY:-}
+      - PAYADMIN__APP_PAY__BASE_URL=http://apisix:9080
+    ports:
+      - "127.0.0.1:${APP_PAY_ADMIN_PORT:-8003}:8003"
+    volumes:
+      - app_pay_admin_logs:/app/logs
+      - ../../app-pay-admin/certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_pay_admin_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

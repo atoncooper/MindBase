@@ -1,0 +1,37 @@
+# APISIX 业务网关 —— server1（不暴露宿主端口，入口只有 nginx）
+#   docker compose --env-file ../../.env -f 13-apisix.yml up -d
+name: mb-apisix
+
+services:
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    container_name: mind-base-apisix
+    volumes:
+      - ../../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ../../apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+      # app-board dev-CA（apisix 信任 server2 上 app-board 的 HTTPS upstream）
+      - ../../app-board/certs:/usr/local/apisix/conf/certs/board:ro
+    # 清理代理环境变量，防宿主 ~/.docker/config.json 注入劫持内网流量
+    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mind-base-overlay
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

@@ -1,0 +1,62 @@
+# app-ts —— AI 域核心（agent/RAG/向量化/KG/quiz AI，Node/Fastify）—— server2
+#   docker compose --env-file ../../.env -f 43-app-ts.yml up -d
+# 依赖（均经 overlay 按名解析）：mongo/redis(本机)、minio/etcd(server1)、
+#   app-bili/app-auth/app-kg/MCP×3(本机)、apisix(server1)、higress(见 90)
+name: mb-app-ts
+
+services:
+  app-ts:
+    image: atoncooper/mind-base-app-ts:latest
+    pull_policy: missing
+    container_name: mind-base-app-ts
+    env_file:
+      - ../../.env
+    environment:
+      - SERVER__HOST=0.0.0.0
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      # acquisition 服务（app-bili）：ASR 委托 + 知识范围读
+      - APP_BILI_BASE_URL=http://app-bili:8010
+      # task-quiz 调度 + 鉴权内部查询，经 server1 的 APISIX
+      - APP_TASK_BASE_URL=http://apisix:9080
+      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      # AI 网关：.env 配置了则以 .env 为准
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
+      - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
+      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
+      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
+      - KG_GRPC__TARGET=app-kg:8013
+      - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
+      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
+      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
+      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
+      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - MILVUS__ADDRESS=milvus:19530
+      # 镜像 /app/logs 属主未修复前文件日志会因 EACCES 崩进程，先走 stdout
+      - LOG__FILEENABLED=false
+    ports:
+      - "127.0.0.1:${APP_TS_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

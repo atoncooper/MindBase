@@ -1,0 +1,33 @@
+# app-quiz-mcp（测验 MCP server）—— server2
+#   docker compose --env-file ../../.env -f 40-app-quiz-mcp.yml up -d
+name: mb-app-quiz-mcp
+
+services:
+  app-quiz-mcp:
+    image: atoncooper/mind-base-app-quiz-mcp:latest
+    pull_policy: missing
+    container_name: mind-base-app-quiz-mcp
+    environment:
+      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
+      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
+      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - QUIZMCP__LOG__OUTPUT=both
+      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
+    ports:
+      - "127.0.0.1:8012:8012"
+    volumes:
+      - app_quiz_mcp_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_quiz_mcp_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

@@ -1,0 +1,34 @@
+# app-settings 用户 AI 配置（Go）—— server2
+#   docker compose --env-file ../../.env -f 36-app-settings.yml up -d
+name: mb-app-settings
+
+services:
+  app-settings:
+    image: atoncooper/mind-base-app-settings:latest
+    pull_policy: missing
+    container_name: mind-base-app-settings
+    env_file:
+      - ../../.env
+    environment:
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}   # server1（overlay）
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_SETTINGS_PORT:-8015}:8015"
+    volumes:
+      - app_settings_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_settings_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+

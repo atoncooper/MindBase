@@ -1,0 +1,32 @@
+# MongoDB（笔记正文/修订、quiz 题目、asr_documents、board 正文）—— server2
+#   docker compose --env-file ../../.env -f 21-mongo.yml up -d
+name: mb-mongo
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: mind-base-mongo
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mind-base-overlay
+
+volumes:
+  mongo_data: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay
+
