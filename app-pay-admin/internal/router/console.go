@@ -108,6 +108,7 @@ func adminPage(h gin.HandlerFunc) gin.HandlerFunc {
 		h(c)
 	}
 }
+
 // ── login / logout (form flow) ──────────────────────────────────────
 
 func loginPageHandler(auth *webuiAuthenticator) gin.HandlerFunc {

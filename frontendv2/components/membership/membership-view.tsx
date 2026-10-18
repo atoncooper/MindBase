@@ -36,6 +36,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const ORDER_POLL_MS = 2500;
+const ORDER_POLL_CAP_MS = 10000;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -210,7 +211,18 @@ export function MembershipView() {
                 });
                 orderNo = created.orderNo;
                 // 升级换购单：弹窗显示实付差价（订单金额），而非 SKU 原价
-                setPendingSku(productFromOrder(created.order));
+                setPendingSku(productFromOrder({
+                        orderNo: created.orderNo,
+                        skuCode: pendingSku.code,
+                        productTitle: pendingSku.title,
+                        durationDays: pendingSku.durationDays,
+                        amountCents: created.amountCents,
+                        channel,
+                        paidAt: null,
+                        createdAt: new Date().toISOString(),
+                        status: created.status,
+                        expiresAt: created.expiresAt,
+                    }));
                 setActiveOrder(await payApi.getOrder(orderNo));
             }
             if (channel === "MOCK") {
@@ -492,6 +504,7 @@ function PlanCards({
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {products.map((p) => {
+                    const quote = quoteFor(p.code);
                     const on = p.code === (selectedCode ?? products[0]?.code) && !isBlocked(p);
                     const best = p.code === bestCode && !isBlocked(p);
                     const blocked = isBlocked(p);
@@ -520,13 +533,13 @@ function PlanCards({
                             )}
                             <div className="flex items-center justify-between">
                                 <p className={cn("text-[13px]", blocked ? "text-tertiary" : "text-secondary")}>{p.title}</p>
-                                {blocked || quoteFor(p.code) ? (
+                                {blocked || quote ? (
                                     <span className={cn("rounded-full px-1.5 py-0.5 text-[10px]",
-                                        quoteFor(p.code)
+                                        quote
                                             ? "bg-amber-400/15 text-amber-600"
                                             : "bg-border-subtle text-tertiary")}>
-                                        {quoteFor(p.code)
-                                            ? `补差价升级 ¥${formatYuan(quoteFor(p.code).amountCents)}`
+                                        {quote
+                                            ? `补差价升级 ¥${formatYuan(quote.amountCents)}`
                                             : sameTier
                                                 ? "当前档位"
                                                 : "档位不高于现有"}
@@ -538,8 +551,8 @@ function PlanCards({
                                 {formatYuan(p.priceCents)}
                             </p>
                             <p className="mt-1 text-[11px] text-tertiary">
-                                {quoteFor(p.code)
-                                    ? `升级补 ${p.durationDays} 天（总时长至 ${quoteFor(p.code).newExpireAt}）· 原价 ¥${formatYuan(p.priceCents)}`
+                                {quote
+                                    ? `升级补 ${p.durationDays} 天（总时长至 ${quote.newExpireAt}）· 原价 ¥${formatYuan(p.priceCents)}`
                                     : `${p.durationDays} 天 · 折合 ¥${formatYuan(monthly(p))}/月`}
                             </p>
                             {on && (
