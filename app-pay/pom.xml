@@ -19,7 +19,7 @@
 
     <properties>
         <java.version>21</java.version>
-        <mybatis-plus.version>3.5.12</mybatis-plus.version>
+        <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <alipay-sdk.version>4.40.984.ALL</alipay-sdk.version>
         <!-- Declared explicitly (the Boot parent POM already sets UTF-8; this guards against fallback); surefire is set to UTF-8 as well,
              otherwise on Chinese Windows file.encoding=GBK and Chinese text in test output/assertions gets garbled -->
