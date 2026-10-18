@@ -696,7 +696,7 @@ services:
       - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
       - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
       # Storage quota tier lookup via APISIX key-auth -> app-pay
-      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # Vector pipeline (Higress AI gateway; model/dim RED LINE = Milvus rebuild)
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
@@ -791,12 +791,12 @@ services:
       - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
       # Main app via APISIX gateway
       - APPTASK__APP__BASE_URL=http://apisix:9080
-      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # 网关作用域执行器鉴权：派发到 apisix 的任务（如定时出题
       # /internal/quiz/generate-llm 回调）自动附 apikey 头通过 key-auth；
       # 其他 executor_url 不携带密钥
       - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9080
-      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # app-pay 超时委托回调（executor_url=https://app-pay:8002/...）的证书校验 CA：
       # executor 惰性加载，纯调度栈（无 app-pay）不受影响；可用 PAY_EXECUTOR_CA_FILE 覆盖
       - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
@@ -858,7 +858,7 @@ services:
       - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
       # internal M2M guard (/internal/bili/* knowledge-scope reads by app-ts)
-      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
       # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
       # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
@@ -980,11 +980,11 @@ services:
         condition: service_completed_successfully
     environment:
       - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
       - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
       # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
-      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true。证书由 cert-gen
       # 统一签发（shared dev CA 叶子），此处 explicit 模式直接加载；
       # auto 模式会试图在 root 属主的 bind mount 里重建 dev CA（EACCES 崩溃）
@@ -1021,11 +1021,11 @@ services:
     profiles: ["", "note", "full"]
     environment:
       - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
       - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
       # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
-      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # Logging: stdout + /app/logs/app-note-mcp.log（lumberjack 轮转；
       # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
       - NOTEMCP__LOG__OUTPUT=both
@@ -1052,11 +1052,11 @@ services:
     profiles: ["", "quiz", "full"]
     environment:
       - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
       - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
       # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
-      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # Logging: stdout + /app/logs/app-quiz-mcp.log（lumberjack 轮转；
       # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
       - QUIZMCP__LOG__OUTPUT=both
@@ -1147,6 +1147,10 @@ services:
     command: ["-config", "config.docker.yaml"]
     environment:
       - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
+      # 退款复核工作台：PAY_OPS_KEY 只注入本控制台（运营人的 UI 载体），
+      # 资金写经 app-pay 端点执行（审计/状态机一致）；其余业务容器不下发该密钥。
+      - PAYADMIN__APP_PAY__OPS_KEY=${PAY_OPS_KEY:?err_PAY_OPS_KEY_not_set_in_.env}
+      - PAYADMIN__APP_PAY__BASE_URL=http://apisix:9080
     ports:
       # 仅回环：管理后台不对公网暴露，本机浏览器直连 http://127.0.0.1:8003
       - "127.0.0.1:${APP_PAY_ADMIN_PORT:-8003}:8003"

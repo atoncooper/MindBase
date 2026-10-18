@@ -29,3 +29,18 @@ jobs:
       - name: Maven test
         # 单元测试为纯 JUnit（无 @SpringBootTest），不依赖运行中的 MySQL
         run: mvn -s maven-settings.xml --batch-mode test
+
+  security-scan:
+    # P2-11 漏洞门禁：Maven 依赖 HIGH/CRITICAL CVE 直接红 —— 漏洞不得静默进入依赖树
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy vulnerability scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: app-pay
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: "true"
