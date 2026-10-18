@@ -54,6 +54,19 @@ public record EnvSummaryRunner(PayProperties props, Environment env) implements 
                             + "pay.test.token (env PAY_TEST_TOKEN); blank would leave /test/pay/* unauthenticated.");
         }
 
+        // Test entry enabled with a blank token (guard() passes by default): the only remaining gate is the
+        // loopback binding -- refuse unless server.address is explicitly loopback. Prevents the "bare jar on a
+        // server with the base profile" shape where /test/pay/* and /pay/mock/confirm (any spoofable X-Uid)
+        // are reachable from the LAN.
+        if (testEnabled && (props.test().token() == null || props.test().token().isBlank())
+                && !isLoopbackAddress(env.getProperty("server.address", ""))) {
+            log.error("[PAY] unsafe_config: pay.test.enabled with a blank token but server.address='{}' is not "
+                    + "loopback -- refusing to start", env.getProperty("server.address", ""));
+            throw new IllegalStateException(
+                    "[PAY] unsafe_config: pay.test.enabled with a blank token requires server.address=127.0.0.1 "
+                            + "(local debugging only); set PAY_TEST_TOKEN or bind the loopback interface.");
+        }
+
         if (testEnabled && alipayReal) {
             log.error("[PAY] unsafe_config: test entry and real (non-sandbox) payment channel "
                     + "cannot be enabled together -- refusing to start");
@@ -68,6 +81,11 @@ public record EnvSummaryRunner(PayProperties props, Environment env) implements 
      * SSLException stack trace.
      * A missing configuration is Spring's own startup-failure domain; here we only give actionable guidance for "configured but file does not exist".
      */
+    /** Explicitly configured loopback binding (the only remaining gate when the test entry has no token). */
+    private static boolean isLoopbackAddress(String address) {
+        return "127.0.0.1".equals(address) || "localhost".equals(address) || "::1".equals(address);
+    }
+
     private void requireTlsMaterial(String path, String prop, String envVar) {
         if (path == null || path.isBlank()) {
             log.warn("[PAY] tls_material_missing: {} is not set while TLS is enabled "

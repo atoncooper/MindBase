@@ -1,6 +1,7 @@
 package com.mindbase.pay.service.channel;
 
 import com.alipay.api.internal.util.AlipaySignature;
+import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.config.PayProperties;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -16,6 +17,8 @@ import static org.mockito.Mockito.mockStatic;
 /** Alipay adapter: startup config validation, amount conversion, and async notification signature-verification branches (signature check stubbed statically, no network). */
 class AlipayChannelAdapterTest {
 
+    private final PayMetrics metrics = org.mockito.Mockito.mock(PayMetrics.class);
+
     private static final String APP_ID = "test-app";
 
     private static PayProperties props(boolean enabled, String privateKey) {
@@ -28,7 +31,7 @@ class AlipayChannelAdapterTest {
 
     @Test
     void initFailsFastWhenKeysMissing() {
-        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, ""));
+        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, ""), metrics);
         assertThatThrownBy(adapter::init)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("missing key config");
@@ -36,14 +39,14 @@ class AlipayChannelAdapterTest {
 
     @Test
     void disabledAdapterSkipsInitAndStaysDisabled() {
-        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(false, ""));
+        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(false, ""), metrics);
         adapter.init();
         assertThat(adapter.enabled()).isFalse();
     }
 
     @Test
     void verifyNotifyAcceptsSignedSuccess() {
-        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, "private-key"));
+        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, "private-key"), metrics);
         adapter.init();
         try (MockedStatic<AlipaySignature> sign = mockStatic(AlipaySignature.class)) {
             sign.when(() -> AlipaySignature.rsaCheckV1(anyMap(), anyString(), anyString(), anyString()))
@@ -65,7 +68,7 @@ class AlipayChannelAdapterTest {
 
     @Test
     void verifyNotifyRejectsBadSignature() {
-        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, "private-key"));
+        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, "private-key"), metrics);
         adapter.init();
         try (MockedStatic<AlipaySignature> sign = mockStatic(AlipaySignature.class)) {
             sign.when(() -> AlipaySignature.rsaCheckV1(anyMap(), anyString(), anyString(), anyString()))
@@ -81,7 +84,7 @@ class AlipayChannelAdapterTest {
 
     @Test
     void verifyNotifyRejectsForeignAppId() {
-        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, "private-key"));
+        AlipayChannelAdapter adapter = new AlipayChannelAdapter(props(true, "private-key"), metrics);
         adapter.init();
         try (MockedStatic<AlipaySignature> sign = mockStatic(AlipaySignature.class)) {
             sign.when(() -> AlipaySignature.rsaCheckV1(anyMap(), anyString(), anyString(), anyString()))

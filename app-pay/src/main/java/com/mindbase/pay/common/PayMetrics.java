@@ -52,6 +52,20 @@ public class PayMetrics {
         count("pay.channel.query.paid");
     }
 
+    /** 渠道出网调用计数（配额告警的数据源）：query/create 各一个。 */
+    public void channelQueryTotal() {
+        count("pay.channel.query.total");
+    }
+
+    public void channelCreateTotal() {
+        count("pay.channel.create.total");
+    }
+
+    /** 风控拦截计数（velocity/cooldown/global），配 Grafana 告警。 */
+    public void riskBlocked(String reason) {
+        registry.counter("pay.risk.blocked", "reason", reason).increment();
+    }
+
     public void reconMismatch() {
         count("pay.recon.mismatch");
     }

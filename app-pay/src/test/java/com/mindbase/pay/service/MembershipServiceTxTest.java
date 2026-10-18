@@ -9,7 +9,7 @@ import java.lang.reflect.Method;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * P0 regression guard: the admin grant goes through the 6-arg extend overload; if the transaction
+ * Regression guard: the admin grant goes through the 6-arg extend overload; if the transaction
  * annotation only lands on the 5-arg version, grant would run under autocommit (FOR UPDATE released
  * immediately + event insert non-atomic). Reflection asserts both overloads carry @Transactional.
  */

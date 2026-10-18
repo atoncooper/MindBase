@@ -30,15 +30,16 @@ class AppTaskTimerClientTest {
 
     private AppTaskTimerClient client(boolean registerEnabled) {
         PayProperties props = com.mindbase.pay.testutil.TestPayProperties.builder()
-                .apptask(new PayProperties.Apptask(BASE, "secret-key", registerEnabled,
-                        "http://app-pay:8002"))
+                .apptask(new PayProperties.Apptask(BASE, "secret-key", registerEnabled, "http://app-pay:8002", 2, 1000))
                 .build();
         RestClient.Builder builder = RestClient.builder()
                 .baseUrl(BASE)
                 .defaultHeader("apikey", "secret-key"); // In production this is injected by the constructor; the test sets it manually to match
         server = MockRestServiceServer.bindTo(builder).build();
         audit = mock(PayAuditLogger.class);
-        return new AppTaskTimerClient(builder, props, audit);
+        AppTaskTimerClient c = new AppTaskTimerClient(builder, props, audit);
+        c.setRegisterExecutorForTest(Runnable::run); // 同步执行器：注册语义测试保持确定性
+        return c;
     }
 
     @Test

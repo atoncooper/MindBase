@@ -23,19 +23,20 @@ import java.time.Clock;
 @Configuration
 public class DataSourceConfig {
 
-    /** Fixed pool size: beyond the 8 executor workers, headroom must remain for fallback jobs / web requests. */
-    private static final int POOL_SIZE = 10;
+    /** 默认池大小已被 pay.rdbms.pool-size 取代（见 application.yaml）：Tomcat 200 线程共享 20 连接。 */
+    private static final int DEFAULT_POOL_SIZE = 20;
 
     @Bean
     @Primary
     public DataSource dataSource(PayProperties props) {
         // Pool self-guard assertion: in-flight executor UPDATEs are always <= workers; workers exceeding the pool's safe
         // limit means queuing crowds out web/job connections. Same principle as EnvSummaryRunner: a fund system should fail to start rather than run unsafe.
+        int poolSize = props.rdbms().poolSize() > 0 ? props.rdbms().poolSize() : DEFAULT_POOL_SIZE;
         int workers = props.job().executorWorkers();
-        if (workers > POOL_SIZE - 2) {
+        if (workers > poolSize - 2) {
             throw new IllegalStateException(("[PAY] unsafe_config: pay.job.executor-workers=%d "
                     + "exceeds the safe limit of connection pool %d (must be <= %d)")
-                    .formatted(workers, POOL_SIZE, POOL_SIZE - 2));
+                    .formatted(workers, poolSize, poolSize - 2));
         }
 
         PayProperties.Rdbms rdbms = props.rdbms();
@@ -46,8 +47,8 @@ public class DataSourceConfig {
                 .password(rdbms.password())
                 .build();
         ds.setPoolName("pay-hikari");
-        ds.setMaximumPoolSize(POOL_SIZE);
-        ds.setMinimumIdle(POOL_SIZE);
+        ds.setMaximumPoolSize(poolSize);
+        ds.setMinimumIdle(Math.min(10, poolSize));
         // Fail fast when the pool is saturated (the default 30s turns transient overload into HTTP pile-up); callers already have retry semantics
         ds.setConnectionTimeout(5_000);
         // A fund service must have leak warnings (diagnostic only: connections not returned within the timeout log WARN, without affecting behavior)

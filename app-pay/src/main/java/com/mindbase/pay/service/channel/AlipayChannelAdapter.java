@@ -34,12 +34,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class AlipayChannelAdapter implements PayChannelAdapter {
 
     private final PayProperties payProperties;
+    private final com.mindbase.pay.common.PayMetrics metrics;
     private DefaultAlipayClient client;
     /** Consecutive signature-verification failures: >=3 raises an alert (wrong public key config or an ongoing forgery attack); one success resets it to zero. */
     private final AtomicInteger verifyFailureStreak = new AtomicInteger();
 
-    public AlipayChannelAdapter(PayProperties payProperties) {
+    public AlipayChannelAdapter(PayProperties payProperties, com.mindbase.pay.common.PayMetrics metrics) {
         this.payProperties = payProperties;
+        this.metrics = metrics;
     }
 
     @PostConstruct
@@ -90,6 +92,7 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
             if (!isBlank(notifyUrl)) {
                 request.setNotifyUrl(notifyUrl);
             }
+            metrics.channelCreateTotal();
             AlipayTradePrecreateResponse resp = client.execute(request);
             if (resp == null || !resp.isSuccess() || isBlank(resp.getQrCode())) {
                 log.error("[PAY] alipay_precreate_failed order_no={} code={} sub={} msg={}",
@@ -109,9 +112,18 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
 
     @Override
     public ChannelQueryResult queryOrder(PayOrder order) {
-        // 沙箱网关（openapi-sandbox.dl.alipaydev.com）间歇性 404 HTML，失败后立即重试一次再放弃
         ChannelQueryResult first = queryOnce(order);
-        return first.status() == ChannelQueryResult.Status.NOT_PAID ? queryOnce(order) : first;
+        // 「未支付即重查一次」是沙箱网关（openapi-sandbox.dl.alipaydev.com）间歇性 404 HTML 的
+        // workaround：生产网关无此问题，双倍查单只会浪费渠道 QPM 配额并加剧限频 —— 仅沙箱启用
+        if (first.status() == ChannelQueryResult.Status.NOT_PAID && isSandboxGateway()) {
+            return queryOnce(order);
+        }
+        return first;
+    }
+
+    private boolean isSandboxGateway() {
+        String url = payProperties.alipay().gatewayUrl();
+        return url != null && url.contains("sandbox");
     }
 
     private ChannelQueryResult queryOnce(PayOrder order) {
@@ -120,6 +132,7 @@ public class AlipayChannelAdapter implements PayChannelAdapter {
             model.setOutTradeNo(order.getOrderNo());
             AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
             request.setBizModel(model);
+            metrics.channelQueryTotal();
             AlipayTradeQueryResponse resp = client.execute(request);
             if (resp == null || !resp.isSuccess()) {
                 // The order not yet existing at the channel (buyer has not scanned) is normal; a transient query

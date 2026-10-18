@@ -40,6 +40,16 @@ public interface PayOrderMapper extends BaseMapper<PayOrder> {
     /** PAID -> DELIVERED. */
     int markDelivered(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
+    /**
+     * PAID -> REFUND_HOLD (tier-violation freeze): duplicate-purchase auto-refund failed, so the order
+     * must NOT be delivered by the compensation jobs (DeliveryRetryJob / duplicate-callback self-heal).
+     * Ops resumes via the refund endpoint (REFUND_HOLD is refundable; nothing was delivered, so no
+     * membership revocation on refund).
+     *
+     * @return affected row count; 0 = the order is no longer PAID
+     */
+    int markRefundHold(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
     /** CREATED -> CLOSED (explicitly closing a single order). */
     int closeOrder(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now,
                    @Param("reason") String reason);
@@ -48,7 +58,7 @@ public interface PayOrderMapper extends BaseMapper<PayOrder> {
     int closeExpired(@Param("now") LocalDateTime now);
 
     /**
-     * PAID|DELIVERED -> REFUNDING (refund accepted, preventing concurrent duplicate refunds).
+     * PAID|DELIVERED|REFUND_HOLD -> REFUNDING (refund accepted, preventing concurrent duplicate refunds).
      * Also writes the previous status into refund_prev_status for rollback when the channel refund fails.
      *
      * @return affected row count; 0 = status does not qualify (already refunded/closed, etc.)
@@ -65,4 +75,10 @@ public interface PayOrderMapper extends BaseMapper<PayOrder> {
 
     /** REFUNDING -> previous status (rollback when the channel refund fails; does not wrongly trigger delivery compensation). */
     int revertRefunding(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    /**
+     * 支付频次风控投影：单 uid 滚动 24h 的成功支付笔数与金额合计。
+     * status IN (PAID, DELIVERED, REFUND_HOLD) —— 已收款（含冻结待退）都计入占用。
+     */
+    PaidOrderSummary sumPaidSince(@Param("uid") long uid, @Param("since") LocalDateTime since);
 }

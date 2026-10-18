@@ -8,6 +8,7 @@ import com.mindbase.pay.config.PayProperties;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayOrder;
 import com.mindbase.pay.model.PayProduct;
+import com.mindbase.pay.service.channel.ChannelQueryResult;
 import com.mindbase.pay.service.channel.PayChannelAdapter;
 import com.mindbase.pay.service.channel.PayChannelRouter;
 import com.mindbase.pay.service.timer.AppTaskTimerClient;
@@ -28,6 +29,7 @@ import java.time.ZoneId;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -35,6 +37,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -78,6 +81,38 @@ class OrderServiceTest {
                 new TransactionTemplate(txManager));
     }
 
+    /** 升级换购用例基建：SVIP 有效会员 + DELIVERED 基准单（月付 30 天 ¥48）。 */
+    private com.mindbase.pay.model.PayMembership lockedSvipMember(String baseOrderNo) {
+        var m = new com.mindbase.pay.model.PayMembership();
+        m.setUid(10086L);
+        m.setTier("SVIP");
+        m.setExpireAt(NOW.plusDays(30));
+        m.setLastOrderNo(baseOrderNo);
+        return m;
+    }
+
+    private PayOrder deliveredBaseOrder(String orderNo) {
+        PayOrder o = new PayOrder();
+        o.setOrderNo(orderNo);
+        o.setUid(10086L);
+        o.setSkuCode("SVIP_MONTHLY");
+        o.setDurationDays(30);
+        o.setAmountCents(4800);
+        o.setTier("SVIP");
+        o.setStatus(PayOrder.OrderStatus.DELIVERED);
+        return o;
+    }
+
+    private PayProduct yearlyProduct() {
+        PayProduct p = new PayProduct();
+        p.setCode("SVIP_YEARLY");
+        p.setTitle("Super Membership · Yearly");
+        p.setDurationDays(365);
+        p.setPriceCents(42000);
+        p.setTier("SVIP");
+        p.setStatus(PayProduct.ProductStatus.ACTIVE);
+        return p;
+    }
     private PayProduct product() {
         PayProduct product = new PayProduct();
         product.setCode("VIP_MONTHLY");
@@ -172,6 +207,171 @@ class OrderServiceTest {
                 .extracting(e -> ((ApiException) e).getStatus())
                 .isEqualTo(400);
         verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    // ── 全局闸门 / 建单冷却 / 查单退避 ──
+
+    @Test
+    void globalGateRejectsBeyondLimit() {
+        OrderService gated = new OrderService(orderMapper, productService, membershipService, channelRouter,
+                paymentService, audit, timerClient, metrics,
+                TestPayProperties.builder().risk(new PayProperties.Risk(5, 500_000, 0, 2)).build(),
+                Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai")),
+                new TransactionTemplate(txManager));
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
+        when(mockAdapter.createPayment(any(PayOrder.class))).thenReturn(Map.of("type", "mock"));
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(productService.expireAtFrom(any(LocalDateTime.class))).thenReturn(NOW.plusMinutes(30));
+
+        assertThatCode(() -> gated.createOrder(900002L, "VIP_MONTHLY", PayOrder.PayChannel.MOCK, null))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> gated.createOrder(900002L, "VIP_MONTHLY", PayOrder.PayChannel.MOCK, null))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> gated.createOrder(900002L, "VIP_MONTHLY", PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(429);
+    }
+
+    @Test
+    void orderCooldownBlocksRapidRepeatCreate() {
+        // 独立 uid（900001）避免与其他用例共享静态冷却表
+        OrderService cooled = new OrderService(orderMapper, productService, membershipService, channelRouter,
+                paymentService, audit, timerClient, metrics,
+                TestPayProperties.builder().risk(new PayProperties.Risk(5, 500_000, 30, 0)).build(),
+                Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai")),
+                new TransactionTemplate(txManager));
+        stubMockChannel();
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(productService.expireAtFrom(any(LocalDateTime.class))).thenReturn(NOW.plusMinutes(30));
+
+        assertThatCode(() -> cooled.createOrder(900001L, "VIP_MONTHLY", PayOrder.PayChannel.MOCK, null))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> cooled.createOrder(900001L, "VIP_MONTHLY", PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(429);
+    }
+
+    @Test
+    void orderDetailPollingIsThrottledWithBackoff() {
+        // 固定时钟下第二次轮询必须被退避挡住 —— 渠道只被查一次
+        PayOrder order = new PayOrder();
+        order.setOrderNo("PO1");
+        order.setUid(10086L);
+        order.setChannel(PayOrder.PayChannel.ALIPAY);
+        order.setStatus(PayOrder.OrderStatus.CREATED);
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(order);
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.ALIPAY)).thenReturn(alipayAdapter);
+        when(alipayAdapter.queryOrder(order))
+                .thenReturn(ChannelQueryResult.notPaid());
+
+        service.getOwnedOrderLive(10086L, "PO1");
+        service.getOwnedOrderLive(10086L, "PO1");
+
+        verify(alipayAdapter, times(1)).queryOrder(any(PayOrder.class));
+    }
+
+    // ── 升级换购：同档补差价 ──
+    // lockActiveMembershipForUpdate 返回的实体经 isActive 判定活跃（mock 需显式打桩）
+    @Test
+    void upgradeOrderChargesDifferenceAndRecordsBase() {
+        // SVIP 有效期内买 SVIP 年付：不再拦截，按差价计价（42000 − 4800 = 37200），
+        // 交付天数 = 365 − 30 = 335（顺延后总时长 = 原购买日起整一年）
+        stubMockChannel();
+        when(membershipService.isActive(any())).thenReturn(true);
+        when(membershipService.lockActiveMembershipForUpdate(10086L))
+                .thenReturn(lockedSvipMember("PO-BASE"));
+        when(productService.requireActive("SVIP_YEARLY")).thenReturn(yearlyProduct());
+        when(productService.expireAtFrom(any(LocalDateTime.class))).thenReturn(NOW.plusMinutes(30));
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(deliveredBaseOrder("PO-BASE"));
+
+        OrderService.CreatedOrder outcome =
+                service.createOrder(10086L, "SVIP_YEARLY", PayOrder.PayChannel.MOCK, null);
+        PayOrder order = outcome.order();
+
+        assertThat(order.getAmountCents()).isEqualTo(37200L);
+        assertThat(order.getDurationDays()).isEqualTo(335);
+        assertThat(order.getUpgradeFromOrderNo()).isEqualTo("PO-BASE");
+        verify(orderMapper).insert(order);
+    }
+
+    @Test
+    void downgradeRemainsBlocked() {
+        // SVIP 有效期内买 VIP：降档仍然拒绝（升级换购只放行同档/升档）
+        when(membershipService.lockActiveMembershipForUpdate(10086L))
+                .thenReturn(lockedSvipMember("PO-BASE"));
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(membershipService.isActive(any())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("仅支持向上升级更高档位");
+        verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    @Test
+    void upgradeWithoutDurationDifferenceIsRejected() {
+        // 基准单 365 天，目标 90 天 → 无增量，拒绝
+        when(membershipService.lockActiveMembershipForUpdate(10086L))
+                .thenReturn(lockedSvipMember("PO-BASE"));
+        PayProduct quarterly = new PayProduct();
+        quarterly.setCode("SVIP_QUARTERLY");
+        quarterly.setDurationDays(90);
+        quarterly.setPriceCents(12000);
+        quarterly.setTier("SVIP");
+        quarterly.setStatus(PayProduct.ProductStatus.ACTIVE);
+        when(membershipService.isActive(any())).thenReturn(true);
+        when(productService.requireActive("SVIP_QUARTERLY")).thenReturn(quarterly);
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(deliveredBaseOrder365());
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "SVIP_QUARTERLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("已覆盖目标套餐");
+        verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    private PayOrder deliveredBaseOrder365() {
+        PayOrder o = deliveredBaseOrder("PO-BASE");
+        o.setDurationDays(365);
+        o.setAmountCents(42000);
+        return o;
+    }
+
+    @Test
+    void velocityLimitRejectsWith429() {
+        // 滚动 24h 支付笔数触顶 → 429，订单不落库
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(orderMapper.sumPaidSince(eq(10086L), any())).thenReturn(summary(5, 1800));
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(429);
+        verify(orderMapper, never()).insert(any(PayOrder.class));
+    }
+
+    @Test
+    void velocityAmountLimitRejectsWith429() {
+        when(productService.requireActive("VIP_MONTHLY")).thenReturn(product());
+        when(orderMapper.sumPaidSince(eq(10086L), any())).thenReturn(summary(1, 500_000));
+
+        assertThatThrownBy(() -> service.createOrder(10086L, "VIP_MONTHLY",
+                PayOrder.PayChannel.MOCK, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(429);
+    }
+
+    private com.mindbase.pay.mapper.PaidOrderSummary summary(long cnt, long total) {
+        com.mindbase.pay.mapper.PaidOrderSummary s = new com.mindbase.pay.mapper.PaidOrderSummary();
+        s.setCnt(cnt);
+        s.setTotal(total);
+        return s;
     }
 
     @Test

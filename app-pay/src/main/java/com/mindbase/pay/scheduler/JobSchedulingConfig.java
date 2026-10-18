@@ -26,7 +26,7 @@ public class JobSchedulingConfig implements SchedulingConfigurer {
         // A job exception must not kill the scheduling loop: unified [PAY] prefix + full stack trace, next round still fires
         var scheduler = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
         scheduler.setThreadNamePrefix("pay-job-");
-        // Pool > 1: ChannelQueryJob may make up to 50 serial channel HTTP calls per round; a single thread would block order closing/delivery compensation
+        // Pool > 1: 兜底 Job 每轮含多次渠道出网（已并行到 payJobQueryExecutor），单线程会阻塞关单/交付补偿
         scheduler.setPoolSize(Math.max(2, props.job().schedulerPoolSize()));
         scheduler.setErrorHandler(t -> log.error("[PAY] job_execution_error", t));
         scheduler.initialize();
