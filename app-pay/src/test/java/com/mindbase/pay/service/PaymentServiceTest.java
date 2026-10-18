@@ -14,6 +14,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Clock;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Optional;
@@ -21,6 +23,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -53,7 +57,7 @@ class PaymentServiceTest {
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
         service = new PaymentService(orderMapper, callbackLogMapper, deliveryService, refundService,
-                membershipService, audit, metrics, clock);
+                membershipService, audit, metrics, clock, new TransactionTemplate(mock(PlatformTransactionManager.class)));
     }
 
     @Test
@@ -151,6 +155,64 @@ class PaymentServiceTest {
                 .hasMessageContaining("amount does not match");
         verify(orderMapper, never()).markPaid(anyString(), anyString(), any());
         verify(deliveryService, never()).deliverOrder(any(com.mindbase.pay.model.PayOrder.class));
+    }
+
+    @Test
+    void duplicateWhileRefundingIsAckedWithoutDelivery() {
+        // REFUNDING is owned by the refund flow: a duplicate paid notification is acked as a duplicate
+        // (no delivery, no exception -> the channel stops retrying)
+        PayOrder refunding = order(PayOrder.OrderStatus.REFUNDING);
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(refunding)
+                .thenReturn(refunding);
+        when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(0);
+
+        PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
+
+        assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.REFUNDING);
+        verify(deliveryService, never()).deliverOrder(any(PayOrder.class));
+        verify(callbackLogMapper).insert(any(PayCallbackLog.class));
+    }
+
+    @Test
+    void duplicatePurchaseAutoRefundFailureFreezesOrderNotDelivered() {
+        // "Second wall": when auto-refund fails for a duplicate-purchase order, the order is frozen as
+        // REFUND_HOLD -- the delivery compensation path (retry job / self-heal) only picks PAID orders,
+        // so the freeze must be real, and the exception prevents acking success
+        PayOrder vipOrder = order(PayOrder.OrderStatus.CREATED);
+        vipOrder.setTier("VIP");
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(vipOrder);
+        when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(1);
+        when(membershipService.activeTierRank(10086L)).thenReturn(2); // SVIP 现役
+        when(refundService.refund(eq("PO1"), anyString(), eq(false)))
+                .thenThrow(new RuntimeException("channel down"));
+        when(orderMapper.markRefundHold(eq("PO1"), any())).thenReturn(1);
+
+        assertThatThrownBy(() -> service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null))
+                .isInstanceOf(com.mindbase.pay.common.ApiException.class)
+                .hasMessageContaining("frozen");
+
+        verify(deliveryService, never()).deliverOrder(any(PayOrder.class));
+        verify(orderMapper).markRefundHold(eq("PO1"), any());
+    }
+
+    @Test
+    void upgradeOrderDeliversWithoutSecondWall() {
+        // 升级换购单：同档按设计交付（差价已折算），第二道墙豁免
+        PayOrder order = order(PayOrder.OrderStatus.CREATED);
+        order.setTier("SVIP");
+        order.setUpgradeFromOrderNo("PO-BASE");
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(order);
+        when(orderMapper.markPaid(eq("PO1"), anyString(), any())).thenReturn(1);
+
+        PayOrder result = service.handleChannelPaid("PO1", PayOrder.PayChannel.MOCK, "MOCK-1",
+                1800L, "{}", PayCallbackLog.SignatureResult.SKIPPED, null, null);
+
+        assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
+        verify(deliveryService).deliverOrder(any(PayOrder.class));
+        verify(refundService, never()).refund(anyString(), anyString(), anyBoolean());
     }
 
     @Test

@@ -8,6 +8,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -49,6 +52,33 @@ class PayAuditLoggerTest {
                     .contains("\"uid\":\"10086\"")
                     .contains("\"ts\":\"");
             assertThat(line.lines().count()).isEqualTo(1); // single-line JSONL
+        } finally {
+            payAudit.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void auditRecordsFormAHashChain() {
+        // 第二行的 prev 必须等于第一行的 hash，且 hash != prev（链在推进）
+        Logger payAudit = (Logger) LoggerFactory.getLogger("PAY_AUDIT");
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        payAudit.addAppender(appender);
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            auditLogger.audit("TEST_CHAIN_A", "order_no", "PO1");
+            auditLogger.audit("TEST_CHAIN_B", "order_no", "PO2");
+
+            assertThat(appender.list.size()).isGreaterThanOrEqualTo(2);
+            JsonNode first = mapper.readTree(appender.list.get(appender.list.size() - 2).getFormattedMessage());
+            JsonNode second = mapper.readTree(appender.list.get(appender.list.size() - 1).getFormattedMessage());
+
+            assertThat(first.get("hash").asText()).isNotBlank();
+            assertThat(first.get("chain").asText()).isEqualTo(second.get("chain").asText());
+            assertThat(second.get("prev").asText()).isEqualTo(first.get("hash").asText());
+            assertThat(second.get("hash").asText()).isNotEqualTo(second.get("prev").asText());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
         } finally {
             payAudit.detachAppender(appender);
         }

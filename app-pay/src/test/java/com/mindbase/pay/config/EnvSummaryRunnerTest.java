@@ -54,7 +54,7 @@ class EnvSummaryRunnerTest {
     @Test
     void nullSectionsDoNotBreakSummary() {
         var runner = new EnvSummaryRunner(
-                new PayProperties(null, null, null, null, null, null, null, null, null),
+                new PayProperties(null, null, null, null, null, null, null, null, null, null, null),
                 new MockEnvironment());
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
     }
@@ -85,6 +85,33 @@ class EnvSummaryRunnerTest {
         // an unconfigured certificate property falls under Spring's own startup failure; the self-check only warns and does not block
         var runner = new EnvSummaryRunner(props(true, true, "token", false, ""), env(
                 "server.ssl.enabled", "true"));
+        assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void testEntryBlankTokenNonLoopbackRefusesToStart() {
+        // test entry on + blank token + non-loopback binding = /test/pay/* and /pay/mock/confirm are
+        // reachable from the network with a spoofable X-Uid -- refuse to start
+        var runner = new EnvSummaryRunner(props(true, true, "", false, ""), env(
+                "server.address", "0.0.0.0"));
+        assertThatThrownBy(() -> runner.run(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("server.address");
+    }
+
+    @Test
+    void testEntryBlankTokenLoopbackAllowed() {
+        // local debugging shape: loopback binding is the gate -- allowed
+        var runner = new EnvSummaryRunner(props(true, true, "", false, ""), env(
+                "server.address", "127.0.0.1"));
+        assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void testEntryWithTokenOnAnyInterfaceAllowed() {
+        // a non-blank token is enforced by the controller guard regardless of binding -- allowed
+        var runner = new EnvSummaryRunner(props(true, true, "some-token", false, ""), env(
+                "server.address", "0.0.0.0"));
         assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
     }
 

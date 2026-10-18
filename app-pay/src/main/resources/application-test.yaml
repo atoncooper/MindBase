@@ -1,6 +1,10 @@
 # Test/local container shape (compose command activates the test profile):
 # isolated database app_pay_test, MOCK channel on, local test entry on, order timeout reduced to 2min.
 # Production instances do not carry the test profile, so this file does not affect them.
+server:
+  # 同 docker profile：容器内监听 0.0.0.0，宿主侧仅 127.0.0.1 映射（compose ports）
+  address: 0.0.0.0
+
 pay:
   rdbms:
     url: jdbc:mysql://app-pay-test-mysql:3306/app_pay_test?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
@@ -17,6 +21,8 @@ pay:
   refund:
     enabled: true
     max-days-back: 365
+    # 测试形态关闭双人复核（本地联调便捷）；生产 docker profile 强制开启
+    require-approval: false
   apptask:
     # registered through APISIX inside the container network; the delegation callback points at the test
     # instance (naturally isolated from production delegations).

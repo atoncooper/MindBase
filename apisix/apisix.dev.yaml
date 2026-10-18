@@ -485,7 +485,7 @@ routes:
         headers:
           remove: [X-Uid]
           set:
-            X-API-Key: "mindbase-internal-key-change-me"
+            X-API-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -504,7 +504,7 @@ routes:
         headers:
           remove: [X-Uid]
           set:
-            X-API-Key: "mindbase-internal-key-change-me"
+            X-API-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -543,14 +543,77 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # 支付渠道异步回调（M2）：免登录态，伪造请求由渠道验签拒绝；掉单兜底以 ChannelQueryJob 为主
+  # 支付渠道异步回调（M2）：免登录态，伪造请求由渠道验签拒绝；掉单兜底以 ChannelQueryJob 为主。
+  # limit-req：伪造请求也要烧一次 RSA2 验签 CPU（重操作），per-IP 限流防验签 DoS
   - id: pay_callback
     uri: /pay/callback/*
     methods: [POST]
     priority: 60
     upstream_id: upstream-app-pay
+    plugins:
+      limit-req:
+        rate: 10
+        burst: 20
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
 
-  # main app / ops -> app-pay membership query & grant (service-to-service, key-auth)
+  # main app / ops -> app-pay internal。P1 密钥分权（最小权限）：
+  #   - membership 读（app-cloud / app-ts 会员查询）: 共享 internal 或 pay-readonly
+  #   - grant / orders 下的退款操作（资金写）: 仅 pay-ops 专用密钥 —— 持有共享 key 的其他服务
+  #     无法开通会员/退款；pay-ops 密钥只保存在 .env（PAY_OPS_KEY），不下发到任何业务容器。
+  # 注意：APISIX 仅支持尾缀通配，/orders/{orderNo}/refund 用 /orders/* 前缀路由覆盖；
+  # priority 100 先于 pay_internal(50) 命中，timeout/execute 仍走 pay_internal（共享 key）。
+  - id: pay_internal_membership
+    uri: /internal/pay/membership/*
+    methods: [GET]
+    priority: 100
+    upstream_id: upstream-app-pay
+    plugins:
+      key-auth: {}
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+          - pay-readonly
+
+  - id: pay_internal_grant
+    uri: /internal/pay/grant
+    methods: [POST]
+    priority: 100
+    upstream_id: upstream-app-pay
+    plugins:
+      key-auth: {}
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - pay-ops
+
+  - id: pay_internal_orders
+    uri: /internal/pay/orders/*
+    methods: [POST]
+    priority: 100
+    upstream_id: upstream-app-pay
+    plugins:
+      key-auth: {}
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - pay-ops
+
+  - id: pay_internal_refund_requests
+    uri: /internal/pay/refund-requests
+    methods: [GET]
+    priority: 100
+    upstream_id: upstream-app-pay
+    plugins:
+      key-auth: {}
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - pay-ops
+
+  # 兜底：/internal/pay/* 其余路径（timeout/execute 等）仍走共享 key-auth
   - id: pay_internal
     uri: /internal/pay/*
     methods: [GET, POST]
@@ -837,6 +900,16 @@ consumers:
   - username: internal
     plugins:
       key-auth:
-        key: mindbase-internal-key-change-me  # TODO: replace with real secret; sync with .env APISIX_CONSUMER_KEY
+        key: D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre  # service-to-service secret -- keep in sync with .env APISIX_CONSUMER_KEY (standalone yaml cannot read env)
+  - username: pay-readonly
+    # P1 密钥分权：会员查询只读密钥（/internal/pay/membership/*）
+    plugins:
+      key-auth:
+        key: 3YnhDOxxzfKWxwnj0YCAOOJ8B27FbZboOEGZ8wViYWI4_rvd
+  - username: pay-ops
+    # P1 密钥分权：资金写操作专用密钥（grant / orders 退款），只存 .env PAY_OPS_KEY，不下发业务容器
+    plugins:
+      key-auth:
+        key: HwNkd8MY07rDbP54Pz8KEcOCQjYc1N1f1336n3Ts3qg_I6pI
 
 #END

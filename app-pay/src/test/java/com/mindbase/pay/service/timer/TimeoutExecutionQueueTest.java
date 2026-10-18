@@ -26,7 +26,7 @@ class TimeoutExecutionQueueTest {
 
     private static PayProperties props(int workers, int capacity) {
         return com.mindbase.pay.testutil.TestPayProperties.builder()
-                .job(new PayProperties.Job(workers, capacity, 120, 600, 60, 300, 60, 4, 900, 3600, 24))
+                .job(new PayProperties.Job(workers, capacity, 120, 600, 60, 300, 60, 4, 900, 3600, 24, 200))
                 .build();
     }
 

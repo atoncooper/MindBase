@@ -1,0 +1,11 @@
+# P2-11：依赖自动升级（Maven + GitHub Actions），安全补丁以 PR 形式可审地进入
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: "/app-pay"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

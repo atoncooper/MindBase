@@ -41,6 +41,7 @@ public class PaymentService {
     private final PayAuditLogger audit;
     private final PayMetrics metrics;
     private final Clock clock;
+    private final org.springframework.transaction.support.TransactionTemplate txTemplate;
 
     public PayOrder handleChannelPaid(String orderNo,
                                       PayOrder.PayChannel channel,
@@ -87,13 +88,19 @@ public class PaymentService {
                 throw ApiException.badRequest("AMOUNT_MISMATCH", "Callback amount does not match the order");
             }
 
-            int updated = orderMapper.markPaid(orderNo, channelTradeNo, LocalDateTime.now(clock));
-            if (updated == 0) {
+            // 接受相事务折叠：markPaid + 回调留痕同一事务提交，fsync 4→3/笔，
+            // 且 markPaid 成功后回调日志不再可能因崩溃而丢失；幂等/状态机语义不变
+            Boolean accepted = txTemplate.execute(status -> {
+                int updated = orderMapper.markPaid(orderNo, channelTradeNo, LocalDateTime.now(clock));
+                if (updated == 1) {
+                    logCallback(orderNo, channel, payloadMasked, signatureResult,
+                            PayCallbackLog.HandleResult.ACCEPTED, null);
+                }
+                return updated == 1;
+            });
+            if (!Boolean.TRUE.equals(accepted)) {
                 return handleNonCreatedState(orderNo, channel, channelTradeNo, payloadMasked, signatureResult);
             }
-
-            logCallback(orderNo, channel, payloadMasked, signatureResult,
-                    PayCallbackLog.HandleResult.ACCEPTED, null);
             log.info("[PAY] order_paid channel={} amount_cents={}", channel, order.getAmountCents());
             metrics.orderPaid();
             audit.audit("ORDER_PAID", "order_no", orderNo, "uid", order.getUid(),
@@ -106,7 +113,9 @@ public class PaymentService {
             // 不撤销任何天数）。退款失败则保持 PAID 禁止交付并告警，人工介入。
             // tier 快照为空（历史/异常单）不拦截 —— 与 applyTier 的 normalize 语义一致。
             String paidTier = order.getTier();
-            if (paidTier != null && !paidTier.isBlank()) {
+            // 升级换购单豁免第二道墙：同档升级单的档位 == 现有档位，按设计应交付
+            // （差价已在建单时按基准单折算）；第二道墙只拦“未升级语义”的重复购买。
+            if (paidTier != null && !paidTier.isBlank() && order.getUpgradeFromOrderNo() == null) {
                 int activeRank = membershipService.activeTierRank(order.getUid());
                 int orderRank = MembershipService.tierRank(paidTier);
                 if (orderRank <= activeRank) {
@@ -118,9 +127,13 @@ public class PaymentService {
                     try {
                         refundService.refund(orderNo, "重复购买自动退款（仅允许向上升级）", false);
                     } catch (Exception e) {
-                        log.error("[PAY] duplicate_order_refund_failed order_no={} -- 保持 PAID 禁止交付，需人工退款",
-                                orderNo, e);
-                        audit.audit("DUPLICATE_ORDER_REFUND_FAILED", "order_no", orderNo, "uid", order.getUid());
+                        // 冻结为 REFUND_HOLD：交付补偿任务（DeliveryRetryJob / 重复回调自愈）只认 PAID，
+                        // 因此冻结是真实的；人工经退款端点重放续走（未交付过，退款不回收会员）
+                        int frozen = orderMapper.markRefundHold(orderNo, LocalDateTime.now(clock));
+                        log.error("[PAY] duplicate_order_refund_failed order_no={} frozen={} -- 禁止交付，需人工退款",
+                                orderNo, frozen == 1, e);
+                        audit.audit("DUPLICATE_ORDER_REFUND_FAILED", "order_no", orderNo, "uid", order.getUid(),
+                                "frozen", frozen == 1);
                         throw ApiException.internalServerError("AUTO_REFUND_FAILED",
                                 "Duplicate order detected; delivery frozen pending manual refund");
                     }
@@ -176,6 +189,19 @@ public class PaymentService {
             deliveryService.deliverOrder(reopenedOrder);
             reopenedOrder.setStatus(PayOrder.OrderStatus.DELIVERED);
             return reopenedOrder;
+        }
+        if (status == PayOrder.OrderStatus.REFUNDING || status == PayOrder.OrderStatus.REFUNDED
+                || status == PayOrder.OrderStatus.REFUND_HOLD) {
+            // Duplicate paid notification while the refund flow owns the order (REFUNDING), the refund already
+            // completed (REFUNDED), or the order is frozen pending manual refund (REFUND_HOLD): the payment was
+            // accepted earlier, so ack the duplicate -- a "fail" reply would make the channel retry for up to 24h
+            // against a state that will never accept payment again
+            logCallback(orderNo, channel, payloadMasked, signatureResult,
+                    PayCallbackLog.HandleResult.ACCEPTED_DUPLICATE, "status=" + status);
+            log.info("[PAY] callback_duplicate_refund_flow status={}", status);
+            audit.audit("ORDER_PAID_DUPLICATE", "order_no", orderNo, "channel", channel.name(),
+                    "status", status.name(), "trade_no", channelTradeNo);
+            return current;
         }
         throw ApiException.conflict("ORDER_STATE_INVALID", "Invalid order state: " + status);
     }

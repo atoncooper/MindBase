@@ -7,6 +7,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
@@ -45,11 +46,13 @@ public final class PayDtos {
                             String tier, LocalDateTime refundedAt, String channelTradeNo,
                             String buyerLogonId, String buyerUserId) {
         public static OrderView from(PayOrder o) {
+            // 买家账号对外统一掩码（DB 与 app-pay-admin 直连库保留全值）
             return new OrderView(o.getOrderNo(), o.getSkuCode(), o.getProductTitle(), o.getDurationDays(),
                     o.getAmountCents(), o.getChannel(), o.getStatus(),
                     o.getPaidAt(), o.getExpiresAt(), o.getCreatedAt(),
                     o.getTier(), o.getRefundedAt(), o.getChannelTradeNo(),
-                    o.getBuyerLogonId(), o.getBuyerUserId());
+                    com.mindbase.pay.common.Masking.maskLogonId(o.getBuyerLogonId()),
+                    com.mindbase.pay.common.Masking.maskUserId(o.getBuyerUserId()));
         }
     }
 
@@ -77,7 +80,9 @@ public final class PayDtos {
     public record ComparisonRow(String feature, String free, String vip, String svip) {
     }
 
-    public record MockConfirmRequest(@NotBlank @Size(max = 64) String orderNo) {
+    public record MockConfirmRequest(
+            @NotBlank @Size(max = 64) @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
+                    message = "orderNo must match PO[A-Za-z0-9]{1,62}") String orderNo) {
     }
 
     // ---------- Internal endpoints (main app / operations) ----------
@@ -91,18 +96,35 @@ public final class PayDtos {
                                @Size(max = 20) String tier) {
     }
 
-    /** Operations refund (/internal/pay/orders/{orderNo}/refund, key-auth). */
+    /**
+     * Operations refund (/internal/pay/orders/{orderNo}/refund, key-auth). maker-checker:
+     * operator = maker on the first call (records a PENDING approval), operator = checker on the
+     * confirm call (server-side enforced != maker). confirm=false is an explicit "still pending" probe.
+     */
     public record RefundRequest(@NotBlank @Size(max = 200) String reason,
-                                Boolean revokeMembership) {
+                                Boolean revokeMembership,
+                                @Size(max = 64) String operator,
+                                Boolean confirm) {
     }
 
+    /** Reject a pending refund request (second person; must differ from the maker). */
+    public record RejectRefundRequest(@NotBlank @Size(max = 64) String operator) {
+    }
+
+    /** 升级换购报价（同档补差价）：amountCents = 新 SKU 价 − 基准订单价。 */
+    public record UpgradeQuote(String skuCode, String productTitle, String tier,
+                               int durationDays, long amountCents,
+                               long oldPriceCents, long newPriceCents, String newExpireAt) {
+    }
     // ---------- Local test entry points (/test/pay/*, off by default + token double gate) ----------
 
     public record TestCreateOrderRequest(@Positive long uid, @NotBlank @Size(max = 50) String skuCode,
                                          @NotNull PayOrder.PayChannel channel) {
     }
 
-    public record TestMockPayRequest(@Positive long uid, @NotBlank @Size(max = 64) String orderNo) {
+    public record TestMockPayRequest(@Positive long uid,
+                                     @NotBlank @Size(max = 64) @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
+                                             message = "orderNo must match PO[A-Za-z0-9]{1,62}") String orderNo) {
     }
 
     /** High-concurrency simulation (server-side burst): PAY_SAME=pay the same order concurrently; CREATE_ORDERS=create orders concurrently. */
@@ -115,6 +137,9 @@ public final class PayDtos {
 
     // ---------- Timeout delegation executor (called by app-task at deadline, raw payload) ----------
 
-    public record TimeoutExecutionRequest(@NotBlank @Size(max = 64) String orderNo, @Min(1) int version) {
+    public record TimeoutExecutionRequest(
+            @NotBlank @Size(max = 64) @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
+                    message = "orderNo must match PO[A-Za-z0-9]{1,62}") String orderNo,
+            @Min(1) int version) {
     }
 }

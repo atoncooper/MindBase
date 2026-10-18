@@ -8,9 +8,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "pay")
 public record PayProperties(Rdbms rdbms, Mock mock, Order order, Alipay alipay, Test test,
-                            Apptask apptask, Job job, Internal internal, Refund refund) {
+                            Apptask apptask, Job job, Internal internal, Refund refund,
+                            Grant grant, Risk risk) {
 
-    public record Rdbms(String url, String username, String password) {
+    /**
+     * @param poolSize Hikari 连接池上限（DataSourceConfig 手工建池，yaml 的 spring.datasource.hikari.* 对它无效）；
+     *                 启动断言 executor-workers &lt;= poolSize - 2，为 web/job 留余量
+     */
+    public record Rdbms(String url, String username, String password, int poolSize) {
     }
 
     public record Mock(boolean enabled) {
@@ -51,7 +56,8 @@ public record PayProperties(Rdbms rdbms, Mock mock, Order order, Alipay alipay, 
      * When register-enabled=false or registration fails, fallback polling (jittered backoff) takes over, ensuring eventual consistency.
      */
     public record Apptask(String baseUrl, String consumerKey, boolean registerEnabled,
-                          String executorBaseUrl) {
+                          String executorBaseUrl,
+                          int registerThreads, int registerQueueCapacity) {
     }
 
     /**
@@ -66,7 +72,8 @@ public record PayProperties(Rdbms rdbms, Mock mock, Order order, Alipay alipay, 
                       int timeoutBaseSeconds, int timeoutCapSeconds,
                       int deliveryBaseSeconds, int deliveryCapSeconds,
                       int queryBaseSeconds, int schedulerPoolSize, int leaseTtlSeconds,
-                      int reconBaseSeconds, int reconWindowHours) {
+                      int reconBaseSeconds, int reconWindowHours,
+                      int scanLimit) {
     }
 
     /**
@@ -77,8 +84,25 @@ public record PayProperties(Rdbms rdbms, Mock mock, Order order, Alipay alipay, 
     }
 
     /**
-     * Refund reversal (M4): enabled controls the refund endpoint; maxDaysBack limits the refundable window (preventing indefinite look-back).
+     * Refund reversal (M4): enabled controls the refund endpoint; maxDaysBack limits the refundable window (preventing
+     * indefinite look-back); require-approval turns on maker-checker -- the first refund call only records a PENDING
+     * request, a second operator (server-side enforced != maker) must confirm before the channel refund runs.
      */
-    public record Refund(boolean enabled, int maxDaysBack) {
+    public record Refund(boolean enabled, int maxDaysBack, boolean requireApproval) {
+    }
+
+    /**
+     * ADMIN_GRANT daily circuit breaker (ops compensation abuse containment): counts ADMIN_GRANT events since local
+     * midnight; exceeding either cap rejects the grant with 429 + audit. 0 = unlimited.
+     */
+    public record Grant(boolean enabled, int dailyMaxCount, int dailyMaxDays) {
+    }
+
+    /**
+     * Payment velocity risk control (anti-fraud): per-uid rolling 24h caps on successful paid orders / total amount,
+     * enforced at order creation (before more money is invited). 0 = unlimited.
+     */
+    public record Risk(int maxPaidOrdersPerDay, int maxPaidAmountPerDayCents,
+                       int orderCooldownSeconds, int globalOrdersPerMinute) {
     }
 }

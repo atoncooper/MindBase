@@ -10,10 +10,14 @@
 package service
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,9 +25,14 @@ import (
 )
 
 // Audit appends one JSON object per line to the audit file.
+// 防篡改哈希链：每行携带 chain/prev/hash（SHA-256 链），启动从文件尾部
+// 续链（跨重启不断链）。多实例同写一个文件时链会分叉，验证器按 chain 分组。
 type Audit struct {
-	mu sync.Mutex
-	w  *lumberjack.Logger
+	mu      sync.Mutex
+	w       *lumberjack.Logger
+	prev    string
+	resumed bool
+	chainID string
 }
 
 // NewAudit opens (lazily, via lumberjack) the audit sink at path. Retention is
@@ -39,7 +48,7 @@ func NewAudit(path string) *Audit {
 			slog.Warn("[AUDIT] create audit dir failed", "dir", dir, "err", err)
 		}
 	}
-	return &Audit{w: &lumberjack.Logger{
+	return &Audit{chainID: "ch-" + randomSuffix(), w: &lumberjack.Logger{
 		Filename:   path,
 		MaxSize:    100,
 		MaxBackups: 10,
@@ -72,14 +81,77 @@ func (a *Audit) Log(event string, kv ...any) {
 		}
 		entry[key] = kv[i+1]
 	}
-	b, err := json.Marshal(entry)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.resumed {
+		a.prev = resumePrevHash(a.w.Filename)
+		a.resumed = true
+	}
+	body, err := json.Marshal(entry)
 	if err != nil {
 		slog.Error("[AUDIT] marshal failed", "event", event, "err", err)
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if _, err := a.w.Write(append(b, '\n')); err != nil {
+	hash := sha256Hex(a.prev + "|" + string(body))
+	entry["chain"] = a.chainID
+	entry["prev"] = a.prev
+	entry["hash"] = hash
+	a.prev = hash
+	body, err = json.Marshal(entry)
+	if err != nil {
+		slog.Error("[AUDIT] marshal failed", "event", event, "err", err)
+		return
+	}
+	if _, err := a.w.Write(append(body, '\n')); err != nil {
 		slog.Error("[AUDIT] write failed", "event", event, "err", err)
 	}
+}
+
+// resumePrevHash tails the audit file (last 64KB) for the last hash so the
+// chain survives restarts. Any failure restarts from GENESIS (loud WARN).
+func resumePrevHash(path string) string {
+	const genesis = "GENESIS"
+	f, err := os.Open(path)
+	if err != nil {
+		return genesis
+	}
+	defer f.Close()
+	const window = 64 * 1024
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		return genesis
+	}
+	off := st.Size() - window
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil {
+		return genesis
+	}
+	parts := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	for i := len(parts) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(parts[i])
+		if line == "" {
+			continue
+		}
+		var node struct {
+			Hash string `json:"hash"`
+		}
+		if json.Unmarshal([]byte(line), &node) == nil && node.Hash != "" {
+			return node.Hash
+		}
+	}
+	return genesis
+}
+
+func sha256Hex(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(sum[:])
+}
+
+func randomSuffix() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

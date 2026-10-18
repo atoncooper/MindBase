@@ -5,9 +5,12 @@
 # 25KB/s vs 620KB/s on the same box), making the Maven stage take 15min+
 # with stalls/truncations. The host build uses the warm ~/.m2 instead:
 #
-#   mvn -s maven-settings.xml package -DskipTests   (run in app-pay/)
+#   mvn -s maven-settings.xml clean package -DskipTests   (run in app-pay/)
 #   APP_PAY_DOCKERFILE=Dockerfile.local docker compose build app-pay
 #
+# ⚠️ clean 是必须的：IDE（VS Code JDT / IntelliJ）与 Maven 共享 target/classes，
+# IDE 写入的带错误 class（ECJ 容错模式内嵌 throw new Error）会被增量打包进镜像，
+# 运行时才炸（2026-10 实测：MembershipService 构造器抛 Unresolved compilation problems）。
 # The default Dockerfile (self-contained, CI) stays the compose default via
 # APP_PAY_DOCKERFILE in docker-compose.yml.
 FROM eclipse-temurin:21-jre

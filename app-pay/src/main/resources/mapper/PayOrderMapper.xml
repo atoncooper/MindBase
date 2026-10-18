@@ -42,6 +42,18 @@
           AND status = 'PAID'
     </update>
 
+    <!-- PAID -> REFUND_HOLD（档位违规冻结）：重复购买自动退款失败后订单不得被交付补偿
+         （DeliveryRetryJob / 重复回调自愈都只认 PAID），退款可通过 /internal/pay/.../refund
+         重放续走（REFUND_HOLD 可退款；未交付过，退款不回收会员） -->
+    <update id="markRefundHold">
+        UPDATE pay_order
+        SET status     = 'REFUND_HOLD',
+            updated_at = #{now},
+            version    = version + 1
+        WHERE order_no = #{orderNo}
+          AND status = 'PAID'
+    </update>
+
     <update id="closeOrder">
         UPDATE pay_order
         SET status      = 'CLOSED',
@@ -93,7 +105,7 @@
             updated_at         = #{now},
             version            = version + 1
         WHERE order_no = #{orderNo}
-          AND status IN ('PAID', 'DELIVERED')
+          AND status IN ('PAID', 'DELIVERED', 'REFUND_HOLD')
     </update>
 
     <update id="markRefunded">
@@ -117,4 +129,14 @@
         WHERE order_no = #{orderNo}
           AND status = 'REFUNDING'
     </update>
+
+    <!-- 支付频次风控：uid + paid_at 过滤走 idx_pay_order_uid_status 前缀，量级小 -->
+    <select id="sumPaidSince" resultType="com.mindbase.pay.mapper.PaidOrderSummary">
+        SELECT COUNT(*)                  AS cnt,
+               COALESCE(SUM(amount_cents), 0) AS total
+        FROM pay_order
+        WHERE uid = #{uid}
+          AND paid_at &gt;= #{since}
+          AND status IN ('PAID', 'DELIVERED', 'REFUND_HOLD')
+    </select>
 </mapper>

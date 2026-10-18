@@ -11,9 +11,11 @@ import com.mindbase.pay.service.ProductService;
 import com.mindbase.pay.service.TierCatalogService;
 import com.mindbase.pay.service.channel.PayChannelRouter;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.MDC;
 import org.springframework.http.MediaType;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,12 +37,14 @@ import static com.mindbase.pay.dto.PayDtos.OrderView;
 import static com.mindbase.pay.dto.PayDtos.ComparisonRow;
 import static com.mindbase.pay.dto.PayDtos.ProductView;
 import static com.mindbase.pay.dto.PayDtos.TierView;
+import static com.mindbase.pay.dto.PayDtos.UpgradeQuote;
 
 /**
  * User endpoints (/pay/*). APISIX forward-auth validates bili_session and injects X-Uid; this
  * service does not verify login itself (same trust model as app-task). Direct debugging requires
  * manually supplying X-Uid.
  */
+@Validated
 @RestController
 @RequestMapping("/pay")
 @RequiredArgsConstructor
@@ -101,7 +105,8 @@ public class PayUserController {
     }
 
     @GetMapping("/orders/{orderNo}")
-    public OrderView getOrder(@PathVariable String orderNo,
+    public OrderView getOrder(@PathVariable @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
+            message = "invalid orderNo") String orderNo,
                               @RequestHeader(value = "X-Uid", required = false) String xUid) {
         // 实时查单版：CREATED 订单读取时向渠道确认一次（扫码支付秒级转已开通）
         return OrderView.from(orderService.getOwnedOrderLive(resolveUid(xUid), orderNo));
@@ -113,7 +118,8 @@ public class PayUserController {
      * refreshed repeatedly.
      */
     @GetMapping(value = "/orders/{orderNo}/qr", produces = MediaType.IMAGE_PNG_VALUE)
-    public byte[] orderQr(@PathVariable String orderNo,
+    public byte[] orderQr(@PathVariable @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
+            message = "invalid orderNo") String orderNo,
                           @RequestHeader(value = "X-Uid", required = false) String xUid) {
         PayOrder order = orderService.getOwnedOrder(resolveUid(xUid), orderNo);
         if (order.getStatus() != PayOrder.OrderStatus.CREATED) {
@@ -128,9 +134,16 @@ public class PayUserController {
         return QrCodes.png(code, QrCodes.DEFAULT_SIZE);
     }
 
+    /** 升级换购报价：当前有效会员可补差价升级的同档 SKU（商品卡展示差价用）。 */
+    @GetMapping("/upgrade-quotes")
+    public List<UpgradeQuote> upgradeQuotes(@RequestHeader(value = "X-Uid", required = false) String xUid) {
+        return orderService.quoteUpgrades(resolveUid(xUid));
+    }
+
     /** Cancel an unpaid order (CREATED only; idempotency is decided by the conditional update). */
     @PostMapping("/orders/{orderNo}/cancel")
-    public OrderView cancelOrder(@PathVariable String orderNo,
+    public OrderView cancelOrder(@PathVariable @Pattern(regexp = "^PO[A-Za-z0-9]{1,62}$",
+            message = "invalid orderNo") String orderNo,
                                  @RequestHeader(value = "X-Uid", required = false) String xUid) {
         return OrderView.from(orderService.cancelOrder(resolveUid(xUid), orderNo));
     }

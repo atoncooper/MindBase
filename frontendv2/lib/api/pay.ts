@@ -44,6 +44,17 @@ export interface PayParams {
     [key: string]: unknown;  // other channels carry their own pay params
 }
 
+export interface PayUpgradeQuote {
+    skuCode: string;
+    productTitle: string;
+    tier: string;
+    durationDays: number;   // 交付增加的天数 = 新 SKU 天数 − 基准单天数
+    amountCents: number;    // 补差价金额 = 新 SKU 价 − 基准单价
+    oldPriceCents: number;
+    newPriceCents: number;
+    newExpireAt: string;    // 升级后的到期日（原到期日 + 天数差）
+}
+
 export interface CreateOrderRequest {
     skuCode: string;
     channel: PayChannel;
@@ -172,6 +183,10 @@ export const payApi = {
     },
 
     /** 当前登录用户的会员态（无会员行 = active:false，不报错） */
+    /** 升级换购报价：当前会员可补差价升级的同档 SKU（无 = 空数组）。 */
+    async upgradeQuotes(): Promise<PayUpgradeQuote[]> {
+        return request<PayUpgradeQuote[]>("/pay/upgrade-quotes", { headers: getAuthHeaders() });
+    },
     getMembership(): Promise<PayMembership> {
         return request<PayMembership>("/pay/membership");
     },

@@ -218,10 +218,23 @@ public class MembershipService {
      * 与并发的交付/升级/管理员补偿串行化 —— 恶意脚本并发下单无法在检查与建单之间
      * 插入一笔会改变档位的交付。
      */
+    /**
+     * FOR UPDATE 锁定会员行并返回实体（无行返回 null = FREE）。建单档位判定与
+     * 升级基准解析（last_order_no）共用这一把锁：档位墙、升级换购与并发的交付/
+     * 补偿在同一行上串行化。
+     */
+    @Transactional
+    public PayMembership lockActiveMembershipForUpdate(long uid) {
+        return membershipMapper.selectByUidForUpdate(uid);
+    }
     @Transactional
     public int activeTierRankForUpdate(long uid) {
-        membershipMapper.selectByUidForUpdate(uid);
-        return activeTierRank(uid);
+        // 复用锁定行计算档位（原实现锁定后再 findByUid 重查同一行，每单多一次往返）
+        PayMembership locked = membershipMapper.selectByUidForUpdate(uid);
+        if (locked == null) {
+            return 0;
+        }
+        return isActive(locked) ? rank(normalizeTierStatic(locked.getTier())) : 0;
     }
 
     /** 档位等级（FREE=0 / VIP=1 / SVIP=2，未知档位按 0）。 */

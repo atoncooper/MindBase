@@ -1,5 +1,7 @@
 package com.mindbase.pay.controller;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mindbase.pay.common.ApiException;
 import com.mindbase.pay.common.PayAuditLogger;
 import com.mindbase.pay.common.PayMetrics;
@@ -29,6 +31,8 @@ import java.util.Map;
 @RequestMapping("/pay/callback")
 @RequiredArgsConstructor
 public class PayCallbackController {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AlipayChannelAdapter alipayAdapter;
     private final PaymentService paymentService;
@@ -69,6 +73,13 @@ public class PayCallbackController {
                         outTradeNo, e.getCode());
                 return "success";
             }
+            if ("ORDER_NOT_FOUND".equals(e.getCode())) {
+                // Permanent unknown order: the notify_url points at the wrong environment / the order never
+                // existed here. Retrying for 24h changes nothing -- ack success (already audited as
+                // ORDER_NOT_FOUND + callback log by PaymentService) and require manual investigation
+                log.error("[PAY] alipay_notify_unknown_order out_trade_no={} -- acked to stop retries", outTradeNo);
+                return "success";
+            }
             log.error("[PAY] alipay_notify_handle_failed out_trade_no={} code={}", outTradeNo, e.getCode());
             return "fail";
         } catch (Exception e) {
@@ -80,10 +91,15 @@ public class PayCallbackController {
 
     /** Callback archival keeps only key plaintext fields; long fields such as the signature are not stored. */
     private String maskedPayload(Map<String, String> params) {
-        return "{\"app_id\":\"" + params.get("app_id")
-                + "\",\"out_trade_no\":\"" + params.get("out_trade_no")
-                + "\",\"trade_no\":\"" + params.get("trade_no")
-                + "\",\"trade_status\":\"" + params.get("trade_status")
-                + "\",\"total_amount\":\"" + params.get("total_amount") + "\"}";
+        try {
+            return MAPPER.writeValueAsString(Map.of(
+                    "app_id", String.valueOf(params.get("app_id")),
+                    "out_trade_no", String.valueOf(params.get("out_trade_no")),
+                    "trade_no", String.valueOf(params.get("trade_no")),
+                    "trade_status", String.valueOf(params.get("trade_status")),
+                    "total_amount", String.valueOf(params.get("total_amount"))));
+        } catch (JsonProcessingException e) {
+            return "{}";
+        }
     }
 }

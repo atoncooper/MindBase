@@ -10,7 +10,9 @@ import java.time.LocalDateTime;
 
 /**
  * Order state machine (plan/1.0.7-Pay §4):
- * CREATED -> PAID -> DELIVERED; CREATED -> CLOSED; M4 reserves REFUNDING/REFUNDED.
+ * CREATED -> PAID -> DELIVERED; CREATED -> CLOSED; M4 reserves REFUNDING/REFUNDED;
+ * REFUND_HOLD = tier-violation freeze (duplicate-purchase auto-refund failed; delivery compensation jobs
+ * skip this state so the freeze is real, ops replay the refund endpoint to resume).
  * All state transitions go through conditional updates in PayOrderMapper (WHERE status=...); read-modify-write is forbidden.
  */
 @Getter
@@ -18,7 +20,7 @@ import java.time.LocalDateTime;
 @TableName("pay_order")
 public class PayOrder {
 
-    public enum OrderStatus {CREATED, PAID, DELIVERED, CLOSED, REFUNDING, REFUNDED}
+    public enum OrderStatus {CREATED, PAID, DELIVERED, CLOSED, REFUNDING, REFUNDED, REFUND_HOLD}
 
     public enum PayChannel {MOCK, WECHAT_PAY, ALIPAY}
 
@@ -68,6 +70,12 @@ public class PayOrder {
 
     /** Channel refund number/request number (for idempotency and reconciliation). */
     private String refundNo;
+
+    /** 升级换购基准订单（同档/升档补差价升级时的会员 last_order_no）；null = 普通新购。
+     *  升级单金额 = 新 SKU 价 − 基准单价，交付天数 = 新 SKU 天数 − 基准单天数（顺延交付）。
+     *  档位墙（第二道）对升级单豁免。
+     */
+    private String upgradeFromOrderNo;
 
     private String refundReason;
 

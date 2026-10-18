@@ -76,7 +76,7 @@ services:
       - MINIO__SECURE=${MINIO_SECURE:-false}
       - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
       - APPTASK_BASE_URL=http://apisix:9080
-      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
     depends_on:
       mysql:
         condition: service_healthy
@@ -379,7 +379,7 @@ services:
       - APPTASK__MONGO__URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/?authSource=admin
       - APPTASK__MONGO__DB_NAME=mind_base
       - APPTASK__APP__BASE_URL=http://apisix:9080
-      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-mindbase-internal-key-change-me}
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
       - APPTASK__TIMEZONE=Asia/Shanghai
       - APPTASK__LOG__OUTPUT=both

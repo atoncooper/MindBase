@@ -4,11 +4,13 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.mindbase.pay.common.PayAuditLogger;
 import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.mapper.PayOrderMapper;
+import com.mindbase.pay.model.PayMembershipEvent;
 import com.mindbase.pay.model.PayOrder;
 
 import lombok.RequiredArgsConstructor;
@@ -36,7 +38,12 @@ public class DeliveryService {
     private final PayMetrics metrics;
     private final Clock clock;
 
-    @Transactional
+    /**
+     * READ_COMMITTED：首购用户无会员行时，RR 的 FOR UPDATE 会加间隙锁，
+     * 两个新 uid 的并发首购交付互相挡住对方 INSERT 形成死锁；RC 不加间隙锁，死锁面消除。
+     * 本事务的并发正确性只依赖显式 FOR UPDATE + markDelivered 条件更新，不依赖 RR 快照语义。
+     */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void deliverOrder(PayOrder order) {
         LocalDateTime now = LocalDateTime.now(clock);
         // The conditional update ensures only one side actually delivers when racing concurrent callbacks/compensation jobs
@@ -46,8 +53,11 @@ public class DeliveryService {
             return;
         }
         try {
+            // 升级换购单的权益事件标记为 UPGRADE（pay-admin 事件流水可辨）
+            PayMembershipEvent.EventType explicit = order.getUpgradeFromOrderNo() != null
+                    ? PayMembershipEvent.EventType.UPGRADE : null;
             membershipService.extend(order.getUid(), order.getDurationDays(), order.getOrderNo(),
-                    null, null, resolveTier(order));
+                    explicit, null, resolveTier(order));
         } catch (Exception e) {
             // Rethrow to roll back this transaction (the DELIVERED mark is undone too), leaving the order PAID for compensation
             metrics.deliveryFailed();

@@ -2,6 +2,7 @@ package com.mindbase.pay.scheduler;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.mindbase.pay.common.TraceIdFilter;
+import com.mindbase.pay.config.PayProperties;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayOrder;
 import com.mindbase.pay.service.DeliveryService;
@@ -27,6 +28,7 @@ public class DeliveryRetryJob implements AdaptiveJob {
     private final PayOrderMapper orderMapper;
     private final DeliveryService deliveryService;
     private final JobLease lease;
+    private final PayProperties props;
     private final Clock clock;
     private volatile boolean lastHadWork;
 
@@ -44,7 +46,7 @@ public class DeliveryRetryJob implements AdaptiveJob {
                     .eq(PayOrder::getStatus, PayOrder.OrderStatus.PAID)
                     .lt(PayOrder::getPaidAt, now.minusMinutes(1))
                     .orderByAsc(PayOrder::getPaidAt)
-                    .last("LIMIT 50"));
+                    .last("LIMIT " + Math.max(1, props.job().scanLimit())));
             lastHadWork = !stuck.isEmpty();
             for (PayOrder order : stuck) {
                 try {

@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @TableName("pay_membership_event")
 public class PayMembershipEvent {
 
-    public enum EventType {ACTIVATE, RENEW, ADMIN_GRANT, REFUND_REVOKE}
+    public enum EventType {ACTIVATE, RENEW, ADMIN_GRANT, REFUND_REVOKE, UPGRADE}
 
     @TableId(type = IdType.AUTO)
     private Long id;

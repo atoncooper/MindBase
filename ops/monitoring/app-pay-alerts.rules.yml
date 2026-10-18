@@ -1,0 +1,76 @@
+# app-pay 告警规则（P2-4/P2-11 配套）：挂到 Prometheus rule_files 并由 Alertmanager 路由。
+# 数据源 = app-pay /actuator/prometheus（Micrometer），指标名在 PayMetrics / Hikari / Tomcat。
+groups:
+  - name: app-pay-funds
+    rules:
+      # 资金对账差异（ReconciliationJob）——出现即需人工
+      - alert: AppPayReconMismatch
+        expr: increase(pay_recon_mismatch_total[1h]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "app-pay 对账发现差异（1h 内 {{ $value }} 笔）"
+
+      # 回调金额不符/缺失（已 ack 停止重试，需人工退款）
+      - alert: AppPayAmountMismatch
+        expr: increase(pay_callback_rejected_total[1h]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "app-pay 回调被拒/金额不符（1h 内 {{ $value }}）"
+
+      # 档位墙自动退款失败（订单冻结 REFUND_HOLD，需人工）
+      - alert: AppPayAutoRefundFailed
+        expr: increase(pay_delivery_failed_total[30m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay 交付失败（30m 内 {{ $value }}），订单停留 PAID 等待补偿"
+
+      # 渠道配额水位（P2-4）：query/create 速率逼近告警线
+      - alert: AppPayChannelQueryRate
+        expr: rate(pay_channel_query_total[5m]) > 40
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "支付宝查单 QPS 持续 >40（5m），检查退避与 notify_url"
+
+      - alert: AppPayChannelCreateRate
+        expr: rate(pay_channel_create_total[5m]) > 20
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "支付宝 precreate QPS 持续 >20（5m），疑似预下单洪水"
+
+      # 风控拦截激增（Sybil/脚本信号）
+      - alert: AppPayRiskBlockedSpike
+        expr: increase(pay_risk_blocked_total[5m]) > 100
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay 风控拦截激增（5m 内 {{ $value }}，reason={{ $labels.reason }}）"
+
+  - name: app-pay-capacity
+    rules:
+      # Hikari 连接池饱和（容量问题先兆）
+      - alert: AppPayHikariPending
+        expr: hikaricp_connections_pending > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay Hikari 有线程在等连接（pending={{ $value }}）"
+
+      - alert: AppPayHikariTimeout
+        expr: increase(hikaricp_connections_timeout_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "app-pay 出现获取连接超时（5m 内 {{ $value }}）—— 池太小或慢查询"
+
+      # 定时任务停滞（JobLease/调度异常）
+      - alert: AppPayJobStalled
+        expr: time() - app_pay_job_last_run_timestamp_seconds > 600
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay 兜底 job 超过 10 分钟未运行"

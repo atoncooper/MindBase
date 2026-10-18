@@ -20,18 +20,20 @@ public final class TestPayProperties {
     }
 
     public static final class Builder {
-        private PayProperties.Rdbms rdbms = new PayProperties.Rdbms("jdbc:mysql://localhost:3306/app_pay", "u", "p");
+        private PayProperties.Rdbms rdbms = new PayProperties.Rdbms("jdbc:mysql://localhost:3306/app_pay", "u", "p", 10);
         private PayProperties.Mock mock = new PayProperties.Mock(true);
         private PayProperties.Order order = new PayProperties.Order(30, 10);
         private PayProperties.Alipay alipay = new PayProperties.Alipay(false,
                 "https://openapi-sandbox.dl.alipaydev.com/gateway.do", "app", "pk", "pbk", "", 2000, 5000);
         private PayProperties.Test test = new PayProperties.Test(true, "token", false);
         private PayProperties.Apptask apptask = new PayProperties.Apptask(
-                "http://apptask-test", "secret-key", false, "http://app-pay:8002");
+                "http://apptask-test", "secret-key", false, "http://app-pay:8002", 2, 1000);
         private PayProperties.Job job = new PayProperties.Job(
-                8, 10000, 120, 600, 60, 300, 60, 4, 900, 3600, 24);
+                8, 10000, 120, 600, 60, 300, 60, 4, 900, 3600, 24, 200);
         private PayProperties.Internal internal = new PayProperties.Internal("");
-        private PayProperties.Refund refund = new PayProperties.Refund(true, 365);
+        private PayProperties.Refund refund = new PayProperties.Refund(true, 365, false);
+        private PayProperties.Grant grant = new PayProperties.Grant(true, 50, 1000);
+        private PayProperties.Risk risk = new PayProperties.Risk(5, 500_000, 0, 0);
 
         public Builder rdbms(PayProperties.Rdbms v) { this.rdbms = v; return this; }
         public Builder mock(PayProperties.Mock v) { this.mock = v; return this; }
@@ -42,9 +44,12 @@ public final class TestPayProperties {
         public Builder job(PayProperties.Job v) { this.job = v; return this; }
         public Builder internal(PayProperties.Internal v) { this.internal = v; return this; }
         public Builder refund(PayProperties.Refund v) { this.refund = v; return this; }
+        public Builder grant(PayProperties.Grant v) { this.grant = v; return this; }
+        public Builder risk(PayProperties.Risk v) { this.risk = v; return this; }
 
         public PayProperties build() {
-            return new PayProperties(rdbms, mock, order, alipay, test, apptask, job, internal, refund);
+            return new PayProperties(rdbms, mock, order, alipay, test, apptask, job, internal, refund,
+                    grant, risk);
         }
     }
 }

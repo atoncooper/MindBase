@@ -14,6 +14,7 @@ import {
     type PayOrder,
     type PayProduct,
     type PayTierInfo,
+    type PayUpgradeQuote,
 } from "@/lib/api";
 
 /**
@@ -74,6 +75,8 @@ export function MembershipView() {
     const [tiers, setTiers] = useState<PayTierInfo[]>([]);
     const [comparison, setComparison] = useState<PayComparisonRow[]>([]);
     const [orders, setOrders] = useState<PayOrder[]>([]);
+    // 升级换购报价（同档补差价，服务端计价）：商品卡据此显示差价与可升级态
+    const [upgradeQuotes, setUpgradeQuotes] = useState<PayUpgradeQuote[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -100,13 +103,14 @@ export function MembershipView() {
 
     const refresh = useCallback(async () => {
         try {
-            const [m, p, c, t, cmp, o] = await Promise.all([
+            const [m, p, c, t, cmp, o, uq] = await Promise.all([
                 payApi.getMembership(),
                 payApi.products(),
                 payApi.channels(),
                 payApi.tiers(),
                 payApi.comparison(),
                 payApi.listOrders(10),
+                payApi.upgradeQuotes(),
             ]);
             setMembership(m);
             setProducts(p);
@@ -114,6 +118,7 @@ export function MembershipView() {
             setTiers(t);
             setComparison(cmp);
             setOrders(o);
+            setUpgradeQuotes(uq);
             setLoadError(null);
         } catch (err) {
             setLoadError(err instanceof Error ? err.message : "加载失败");
@@ -138,11 +143,13 @@ export function MembershipView() {
         if (qrUrlRef.current) URL.revokeObjectURL(qrUrlRef.current);
     }, []);
 
-    // 待支付订单轮询：ALIPAY 扫码后由回调/查单推进，前端只管刷新状态
+    // 待支付订单轮询（退避版）：ALIPAY 扫码后由回调/查单推进，前端按 2.5s→5s→7.5s→10s 退避刷新
     useEffect(() => {
         if (!activeOrder || activeOrder.status !== "CREATED") return;
         let cancelled = false;
-        const id = window.setInterval(async () => {
+        let timer = 0;
+        let attempt = 0;
+        const tick = async () => {
             try {
                 const fresh = await payApi.getOrder(activeOrder.orderNo);
                 if (cancelled) return;
@@ -153,20 +160,27 @@ export function MembershipView() {
                     setPendingSku(null);
                     setActiveOrder(null);
                     void refresh();
-                } else if (fresh.status === "CLOSED" || isOrderExpired(fresh)) {
+                    return;
+                }
+                if (fresh.status === "CLOSED" || isOrderExpired(fresh)) {
                     emitAppToast("warning", "账单已过期，请重新下单");
                     revokeQr();
                     setPendingSku(null);
                     setActiveOrder(null);
                     void refresh();
+                    return;
                 }
             } catch {
                 // 瞬时错误：继续轮询
             }
-        }, ORDER_POLL_MS);
+            if (cancelled) return;
+            attempt += 1;
+            timer = window.setTimeout(tick, Math.min(ORDER_POLL_MS * attempt, ORDER_POLL_CAP_MS));
+        };
+        timer = window.setTimeout(tick, ORDER_POLL_MS);
         return () => {
             cancelled = true;
-            window.clearInterval(id);
+            window.clearTimeout(timer);
         };
     }, [activeOrder, refresh, revokeQr]);
 
@@ -195,6 +209,8 @@ export function MembershipView() {
                     idempotencyKey: crypto.randomUUID(),
                 });
                 orderNo = created.orderNo;
+                // 升级换购单：弹窗显示实付差价（订单金额），而非 SKU 原价
+                setPendingSku(productFromOrder(created.order));
                 setActiveOrder(await payApi.getOrder(orderNo));
             }
             if (channel === "MOCK") {
@@ -333,6 +349,7 @@ export function MembershipView() {
                         products={products}
                         selectedCode={selectedProduct?.code ?? null}
                         currentTier={currentTier}
+                        upgradeQuotes={upgradeQuotes}
                         onSelect={setSelectedSku}
                         disabled={paying}
                     />
@@ -440,12 +457,14 @@ function PlanCards({
     products,
     selectedCode,
     currentTier,
+    upgradeQuotes,
     onSelect,
     disabled,
 }: {
     products: PayProduct[];
     selectedCode: string | null;
     currentTier: string;
+    upgradeQuotes: PayUpgradeQuote[];
     onSelect: (code: string) => void;
     disabled: boolean;
 }) {
@@ -457,7 +476,14 @@ function PlanCards({
     ).code;
     const targetTier = (code: string) => (code.startsWith("SVIP_") ? "SVIP" : "VIP");
     const currentRank = tierRank(currentTier);
-    const isBlocked = (p: PayProduct) => tierRank(targetTier(p.code)) <= currentRank;
+    // 升级换购报价（同档补差价）：skuCode → quote；有报价的同档 SKU 可选（补差价升级）
+    const quoteFor = (code: string) => upgradeQuotes.find((q) => q.skuCode === code);
+    const isBlocked = (p: PayProduct) => {
+        const rank = tierRank(targetTier(p.code));
+        if (rank > currentRank) return false;
+        if (rank === currentRank) return !quoteFor(p.code); // 有差价报价的同档 = 可升级
+        return true; // 降档
+    };
     return (
         <section>
             <div className="flex items-baseline gap-2">
@@ -494,9 +520,16 @@ function PlanCards({
                             )}
                             <div className="flex items-center justify-between">
                                 <p className={cn("text-[13px]", blocked ? "text-tertiary" : "text-secondary")}>{p.title}</p>
-                                {blocked ? (
-                                    <span className="rounded-full bg-border-subtle px-1.5 py-0.5 text-[10px] text-tertiary">
-                                        {sameTier ? "当前档位" : "档位不高于现有"}
+                                {blocked || quoteFor(p.code) ? (
+                                    <span className={cn("rounded-full px-1.5 py-0.5 text-[10px]",
+                                        quoteFor(p.code)
+                                            ? "bg-amber-400/15 text-amber-600"
+                                            : "bg-border-subtle text-tertiary")}>
+                                        {quoteFor(p.code)
+                                            ? `补差价升级 ¥${formatYuan(quoteFor(p.code).amountCents)}`
+                                            : sameTier
+                                                ? "当前档位"
+                                                : "档位不高于现有"}
                                     </span>
                                 ) : null}
                             </div>
@@ -505,7 +538,9 @@ function PlanCards({
                                 {formatYuan(p.priceCents)}
                             </p>
                             <p className="mt-1 text-[11px] text-tertiary">
-                                {p.durationDays} 天 · 折合 ¥{formatYuan(monthly(p))}/月
+                                {quoteFor(p.code)
+                                    ? `升级补 ${p.durationDays} 天（总时长至 ${quoteFor(p.code).newExpireAt}）· 原价 ¥${formatYuan(p.priceCents)}`
+                                    : `${p.durationDays} 天 · 折合 ¥${formatYuan(monthly(p))}/月`}
                             </p>
                             {on && (
                                 <span className="absolute bottom-4 right-4 grid h-5 w-5 place-items-center rounded-full bg-amber-400 text-zinc-900">

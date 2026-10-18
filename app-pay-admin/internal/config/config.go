@@ -19,6 +19,9 @@ type Config struct {
 	RDBMS    RDBMSConfig    `yaml:"rdbms"`
 	WebUI    WebUIConfig    `yaml:"webui"`
 	Audit    AuditConfig    `yaml:"audit"`
+
+	AppPay AppPayConfig `yaml:"app_pay"`
+	Grant  GrantConfig  `yaml:"grant"`
 	Security SecurityConfig `yaml:"security"`
 	Log      LogConfig      `yaml:"log"`
 }
@@ -59,6 +62,23 @@ type WebUIConfig struct {
 	Enabled           bool   `yaml:"enabled"`
 	Token             string `yaml:"token"`
 	SessionTTLMinutes int    `yaml:"session_ttl_minutes"` // login session lifetime (0 = default 12h)
+}
+
+// AppPayConfig wires the refund-review workbench to app-pay's internal endpoints.
+// 资金写只发生在 app-pay 端点（审计/状态机一致性）；本控制台经 APISIX key-auth
+// (pay-ops consumer) 携带 PAY_OPS_KEY 与登录身份（operator）。ops_key 留空 = 复核功能隐藏。
+type AppPayConfig struct {
+	BaseURL             string `yaml:"base_url"`              // default http://apisix:9080
+	OpsKey              string `yaml:"ops_key"`               // PAY_OPS_KEY (pay-ops consumer)
+	TimeoutSeconds      int    `yaml:"timeout_seconds"`       // default 5
+	RefundReviewEnabled bool   `yaml:"refund_review_enabled"` // master switch
+}
+
+// GrantConfig mirrors app-pay GrantQuotaService 的日额度熔断：pay-admin 直写
+// pay_membership_event，若不自己执行同样的检查，控制台的补偿开通会绕过执行点。0 = 不限。
+type GrantConfig struct {
+	DailyMaxCount int `yaml:"daily_max_count"`
+	DailyMaxDays  int `yaml:"daily_max_days"`
 }
 
 // AuditConfig configures the JSONL audit trail for money-touching operations.
@@ -187,6 +207,16 @@ func applyEnvOverrides(cfg *Config) {
 	atoi("PAYADMIN__LOG__FILE__MAX_SIZE", &cfg.Log.File.MaxSize)
 	atoi("PAYADMIN__LOG__FILE__MAX_BACKUPS", &cfg.Log.File.MaxBackups)
 	atoi("PAYADMIN__LOG__FILE__MAX_AGE", &cfg.Log.File.MaxAge)
+	if v := get("PAYADMIN__APP_PAY__BASE_URL"); v != "" {
+		cfg.AppPay.BaseURL = v
+	}
+	if v := get("PAYADMIN__APP_PAY__OPS_KEY"); v != "" {
+		cfg.AppPay.OpsKey = v
+	}
+	atoi("PAYADMIN__APP_PAY__TIMEOUT_SECONDS", &cfg.AppPay.TimeoutSeconds)
+	boolVar("PAYADMIN__APP_PAY__REFUND_REVIEW_ENABLED", &cfg.AppPay.RefundReviewEnabled)
+	atoi("PAYADMIN__GRANT__DAILY_MAX_COUNT", &cfg.Grant.DailyMaxCount)
+	atoi("PAYADMIN__GRANT__DAILY_MAX_DAYS", &cfg.Grant.DailyMaxDays)
 	boolVar("PAYADMIN__LOG__FILE__COMPRESS", &cfg.Log.File.Compress)
 }
 

@@ -2,6 +2,7 @@ package com.mindbase.pay.scheduler;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.mindbase.pay.common.PayMetrics;
+import com.mindbase.pay.config.PayProperties;
 import com.mindbase.pay.mapper.PayOrderMapper;
 import com.mindbase.pay.model.PayCallbackLog;
 import com.mindbase.pay.model.PayOrder;
@@ -45,6 +46,7 @@ class ChannelQueryJobTest {
     private PaymentService paymentService;
     @Mock
     private JobLease lease;
+    private PayProperties props = com.mindbase.pay.testutil.TestPayProperties.defaults();
     @Mock
     private PayMetrics metrics;
 
@@ -53,7 +55,8 @@ class ChannelQueryJobTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
-        job = new ChannelQueryJob(orderMapper, channelRouter, paymentService, lease, metrics, clock);
+        job = new ChannelQueryJob(orderMapper, channelRouter, paymentService, lease, metrics,
+                props, clock, java.util.concurrent.Executors.newSingleThreadExecutor());
         when(lease.tryAcquire(anyString())).thenReturn(true);
     }
 
