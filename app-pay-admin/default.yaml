@@ -35,6 +35,19 @@ webui:
 # Money-touching operations (membership grant) are appended here as JSONL,
 # mirroring app-pay's pay-audit.jsonl convention (direct-DB writes bypass the
 # Java-side PayAuditLogger, so this service keeps its own durable trail).
+# app-pay 联动（退款复核工作台）：资金写只发生在 app-pay 端点（审计/状态机一致），
+# 本控制台经 APISIX key-auth（pay-ops consumer）携带 PAY_OPS_KEY 与登录身份。
+# ops_key 留空 = 复核功能隐藏（其余功能不受影响）。
+app_pay:
+  base_url: "http://apisix:9080"
+  ops_key: ""
+  timeout_seconds: 5
+  refund_review_enabled: true
+# ADMIN_GRANT 日额度（对齐 app-pay GrantQuotaService）：pay-admin 直写
+# pay_membership_event，必须自己执行同样的熔断，否则绕过执行点。0 = 不限。
+grant:
+  daily_max_count: 50
+  daily_max_days: 1000
 audit:
   file: "/app/logs/pay-admin-audit.jsonl"
 security:

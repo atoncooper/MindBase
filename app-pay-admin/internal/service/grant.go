@@ -23,6 +23,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -33,13 +34,21 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// GrantCaps mirrors app-pay GrantQuotaService 的日额度（pay-admin 直写 DB，
+// 必须自己执行同样的熔断，否则控制台的补偿开通绕过执行点）。0 = 不限该维度。
+type GrantCaps struct {
+	DailyMaxCount int
+	DailyMaxDays  int
+}
+
 // GrantService performs the controlled membership write.
 type GrantService struct {
 	audit *Audit
+	caps  GrantCaps
 }
 
-func NewGrantService(audit *Audit) *GrantService {
-	return &GrantService{audit: audit}
+func NewGrantService(audit *Audit, caps GrantCaps) *GrantService {
+	return &GrantService{audit: audit, caps: caps}
 }
 
 // GrantResult reports what the grant did (for the API response + audit).
@@ -50,9 +59,46 @@ type GrantResult struct {
 	Created    bool      // membership row did not exist before
 }
 
+// DailyQuotaError — router maps to 429 with the reason.
+type DailyQuotaError struct{ Msg string }
+
+func (e *DailyQuotaError) Error() string { return e.Msg }
+
+// checkDailyQuota counts ADMIN_GRANT events since local midnight (the same
+// table+filter app-pay GrantQuotaService uses, served by the V4 index
+// idx_pay_pme_type_created). Exceeding either cap aborts the grant.
+func (g *GrantService) checkDailyQuota(ctx context.Context, requestedDays int) error {
+	if g.caps.DailyMaxCount <= 0 && g.caps.DailyMaxDays <= 0 {
+		return nil
+	}
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	var count, totalDays int64
+	if err := db.DB.WithContext(ctx).Raw(
+		"SELECT COUNT(*), COALESCE(SUM(days), 0) FROM pay_membership_event " +
+			"WHERE type = 'ADMIN_GRANT' AND created_at >= ?", dayStart,
+	).Row().Scan(&count, &totalDays); err != nil {
+		// 统计失败不阻塞资金写（与 app-pay 侧 fail-open 一致），但要留痕
+		slog.Warn("[GRANT] daily quota query failed -- fail-open", "err", err)
+		return nil
+	}
+	if g.caps.DailyMaxCount > 0 && count >= int64(g.caps.DailyMaxCount) {
+		g.audit.Log("GRANT_DAILY_COUNT_EXCEEDED", "count", count, "max", g.caps.DailyMaxCount, "requested_days", requestedDays)
+		return &DailyQuotaError{Msg: fmt.Sprintf("日补偿开通次数已达上限（%d/%d）", count, g.caps.DailyMaxCount)}
+	}
+	if g.caps.DailyMaxDays > 0 && totalDays+int64(requestedDays) > int64(g.caps.DailyMaxDays) {
+		g.audit.Log("GRANT_DAILY_DAYS_EXCEEDED", "days", totalDays, "max", g.caps.DailyMaxDays, "requested_days", requestedDays)
+		return &DailyQuotaError{Msg: fmt.Sprintf("日补偿开通天数已达上限（%d/%d）", totalDays, g.caps.DailyMaxDays)}
+	}
+	return nil
+}
+
 // Grant extends uid's membership by days days. Validation of the request
 // happens at the router; this method is purely the transactional write.
 func (g *GrantService) Grant(ctx context.Context, operator string, uid int64, days int, reason string, tier string) (*GrantResult, error) {
+	if err := g.checkDailyQuota(ctx, days); err != nil {
+		return nil, err
+	}
 	var res *GrantResult
 	err := db.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var m model.PayMembership

@@ -15,6 +15,7 @@ import (
 	"app-pay-admin/internal/config"
 	"app-pay-admin/internal/db"
 	"app-pay-admin/internal/model"
+	"app-pay-admin/internal/appops"
 	"app-pay-admin/internal/repo"
 	"app-pay-admin/internal/service"
 
@@ -36,6 +37,7 @@ func setupTestDB(t *testing.T) {
 	if err := gdb.AutoMigrate(
 		&model.PayOrder{}, &model.PayMembership{}, &model.PayMembershipEvent{},
 		&model.PayCallbackLog{}, &model.PayProduct{}, &model.PayAdminUser{},
+		&model.PayRefundApproval{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -66,7 +68,7 @@ func newTestRouterFull(t *testing.T, token string) (http.Handler, string) {
 	// Windows cannot delete a file with an open handle: close before TempDir
 	// cleanup runs.
 	t.Cleanup(func() { _ = audit.Close() })
-	return New(cfg, service.NewGrantService(audit)), cfg.Audit.File
+	return New(cfg, service.NewGrantService(audit, service.GrantCaps{}), appops.New("", "", 5)), cfg.Audit.File
 }
 
 func doJSON(h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -277,7 +279,7 @@ func TestSecurityHeaders(t *testing.T) {
 	cfg.WebUI.Enabled = true
 	cfg.Security.CORS.AllowOrigins = []string{"http://localhost:3000"}
 	cfg.Audit.File = filepath.Join(t.TempDir(), "a.jsonl")
-	h := New(cfg, service.NewGrantService(service.NewAudit(cfg.Audit.File)))
+	h := New(cfg, service.NewGrantService(service.NewAudit(cfg.Audit.File), service.GrantCaps{}), appops.New("", "", 5))
 
 	// Baseline hardening on every response.
 	w := doJSON(h, "GET", "/health", "", nil)

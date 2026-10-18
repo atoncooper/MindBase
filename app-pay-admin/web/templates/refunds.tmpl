@@ -1,0 +1,44 @@
+{{define "content"}}
+<div class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">退款审批单</h2>
+    <div class="filter">
+      <span>状态：</span>
+      <a class="btn ghost sm {{if eq .Status "PENDING"}}active{{end}}" href="/refunds?status=PENDING">待处理</a>
+      <a class="btn ghost sm {{if eq .Status "APPROVED"}}active{{end}}" href="/refunds?status=APPROVED">已通过</a>
+      <a class="btn ghost sm {{if eq .Status "REJECTED"}}active{{end}}" href="/refunds?status=REJECTED">已驳回</a>
+      <a class="btn ghost sm {{if eq .Status ""}}active{{end}}" href="/refunds?status=ALL">全部</a>
+      <span class="ver">共 {{.Total}} 条</span>
+    </div>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>时间</th><th>订单号</th><th>发起人</th><th>原因</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>
+    {{range .Items}}
+      <tr>
+        <td>{{.CreatedAt}}</td>
+        <td><a href="/orders/{{.OrderNo}}">{{.OrderNo}}</a></td>
+        <td>{{.Maker}}</td>
+        <td class="reason">{{.MakerReason}}</td>
+        <td>{{.Status}}</td>
+        <td>
+          {{if and (eq .Status "PENDING") $.User.IsAdmin}}
+          <form method="post" action="/refunds/approve" class="inline">
+            <input type="hidden" name="order_no" value="{{.OrderNo}}">
+            <input name="reason" placeholder="复核意见（可选）" size="18">
+            <button class="btn primary sm" type="submit">复核通过并退款</button>
+          </form>
+          <form method="post" action="/refunds/reject" class="inline">
+            <input type="hidden" name="order_no" value="{{.OrderNo}}">
+            <button class="btn ghost sm" type="submit">驳回</button>
+          </form>
+          {{else}}-{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">无审批单（{{if eq .Status "PENDING"}}当前没有待复核退款{{else}}该状态暂无记录{{end}}）</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

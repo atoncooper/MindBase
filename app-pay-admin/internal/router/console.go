@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 
+	"app-pay-admin/internal/repo"
 	"app-pay-admin/web"
 
 	"github.com/gin-gonic/gin"
@@ -29,7 +30,7 @@ var pageTemplates map[string]*template.Template
 func init() {
 	ssrPages := []string{
 		"orders", "order_detail", "memberships", "member_events",
-		"events", "products", "grants", "users",
+		"events", "products", "grants", "users", "refunds",
 	}
 	pageTemplates = make(map[string]*template.Template, len(ssrPages)+2)
 	for _, p := range ssrPages {
@@ -87,12 +88,26 @@ func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
 	pages.GET("/products", r.pageProducts)
 	pages.GET("/grants", r.pageGrants)
 	pages.POST("/grants", r.handleGrantForm)
+	pages.GET("/refunds", adminPage(r.pageRefunds))
+	pages.POST("/refunds/approve", adminPage(r.handleRefundApproveForm))
+	pages.POST("/refunds/reject", adminPage(r.handleRefundRejectForm))
 	pages.GET("/users", r.pageUsers)
 	pages.POST("/users", r.handleUserCreate)
 	pages.POST("/users/:user_id/password", r.handleUserPassword)
 	pages.POST("/users/:user_id/delete", r.handleUserDelete)
 }
 
+// adminPage wraps a page/form handler with the admin-role check
+// (page flows answer with a redirect flash instead of a JSON 403).
+func adminPage(h gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s, ok := currentUser(c); !ok || s.Role != repo.RoleAdmin {
+			redirectFlash(c, "/", "err", "需要 admin 角色")
+			return
+		}
+		h(c)
+	}
+}
 // ── login / logout (form flow) ──────────────────────────────────────
 
 func loginPageHandler(auth *webuiAuthenticator) gin.HandlerFunc {

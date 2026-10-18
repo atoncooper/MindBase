@@ -157,12 +157,12 @@ func fmtStrPtr(p *string) string {
 
 var orderStatusText = map[string]string{
 	"CREATED": "已创建", "PAID": "已支付", "DELIVERED": "已交付",
-	"CLOSED": "已关闭", "REFUNDING": "退款中", "REFUNDED": "已退款",
+	"CLOSED": "已关闭", "REFUND_HOLD": "退款冻结", "REFUNDING": "退款中", "REFUNDED": "已退款",
 }
 
 var orderStatusClass = map[string]string{
 	"CREATED": "gray", "PAID": "blue", "DELIVERED": "green",
-	"CLOSED": "gray", "REFUNDING": "orange", "REFUNDED": "purple",
+	"CLOSED": "gray", "REFUND_HOLD": "red", "REFUNDING": "orange", "REFUNDED": "purple",
 }
 
 var eventTypeText = map[string]string{
@@ -189,7 +189,7 @@ type selectOpt struct {
 
 func statusOptions(current string) []selectOpt {
 	opts := make([]selectOpt, 0, len(orderStatusText))
-	for _, s := range []string{"CREATED", "PAID", "DELIVERED", "CLOSED", "REFUNDING", "REFUNDED"} {
+	for _, s := range []string{"CREATED", "PAID", "DELIVERED", "CLOSED", "REFUND_HOLD", "REFUNDING", "REFUNDED"} {
 		opts = append(opts, selectOpt{V: s, T: orderStatusText[s], Sel: s == current})
 	}
 	return opts

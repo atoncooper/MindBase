@@ -19,6 +19,7 @@ import (
 
 	_ "time/tzdata" // embed IANA tz database so Asia/Shanghai works in distroless
 
+	"app-pay-admin/internal/appops"
 	"app-pay-admin/internal/certgen"
 	"app-pay-admin/internal/config"
 	"app-pay-admin/internal/db"
@@ -124,10 +125,14 @@ func main() {
 	// pay-audit.jsonl; direct-DB writes bypass the Java-side PayAuditLogger).
 	audit := service.NewAudit(cfg.Audit.File)
 	defer audit.Close()
-	grants := service.NewGrantService(audit)
+	grants := service.NewGrantService(audit, service.GrantCaps{
+		DailyMaxCount: cfg.Grant.DailyMaxCount,
+		DailyMaxDays:  cfg.Grant.DailyMaxDays,
+	})
+	appopsClient := appops.New(cfg.AppPay.BaseURL, cfg.AppPay.OpsKey, cfg.AppPay.TimeoutSeconds)
 
 	// HTTP server (Gin): embedded admin console + /api/*.
-	handler := router.New(cfg, grants)
+	handler := router.New(cfg, grants, appopsClient)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}
 

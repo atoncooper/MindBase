@@ -107,3 +107,19 @@ type PayAdminUser struct {
 }
 
 func (PayAdminUser) TableName() string { return "payadmin_user" }
+// PayRefundApproval maps pay_refund_approval (V4 migration): 退款双人复核请求
+// （maker-checker）。Read-only for this service —— approve/reject 经 app-pay 的
+// internal 端点执行（审计/状态机一致性），资金写不发生在本控制台。
+type PayRefundApproval struct {
+	ID          int64      `gorm:"column:id;primaryKey;autoIncrement"`
+	OrderNo     string     `gorm:"column:order_no;type:varchar(64);not null"`
+	Maker       string     `gorm:"column:maker;type:varchar(64);not null"`
+	MakerReason string     `gorm:"column:maker_reason;type:varchar(200);not null"`
+	Status      string     `gorm:"column:status;type:varchar(20);not null"`
+	Checker     *string    `gorm:"column:checker;type:varchar(64)"`
+	CheckReason *string    `gorm:"column:check_reason;type:varchar(200)"`
+	CreatedAt   time.Time  `gorm:"column:created_at;not null"`
+	DecidedAt   *time.Time `gorm:"column:decided_at"`
+}
+
+func (PayRefundApproval) TableName() string { return "pay_refund_approval" }

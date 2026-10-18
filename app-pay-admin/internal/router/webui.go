@@ -73,6 +73,13 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, auth *webuiAuthenticator) {
 	// Money-touching write: admin only.
 	api.POST("/grants", requireAdmin(), r.apiGrant)
 
+	// Refund-review workbench : admin only; whole group 404s when
+	// PAYADMIN__APP_PAY__OPS_KEY is not configured.
+	refunds := api.Group("/refunds", requireAdmin(), r.refundGate())
+	refunds.GET("", r.apiListRefunds)
+	refunds.POST("/:order_no/approve", r.apiApproveRefund)
+	refunds.POST("/:order_no/reject", r.apiRejectRefund)
+
 	// Account management: admin only.
 	users := api.Group("/users", requireAdmin())
 	users.GET("", r.apiListUsers)

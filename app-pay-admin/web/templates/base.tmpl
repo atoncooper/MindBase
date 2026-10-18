@@ -30,6 +30,7 @@
       <a href="/events" {{if eq .Active "events"}}class="active"{{end}}>事件流水</a>
       <a href="/products" {{if eq .Active "products"}}class="active"{{end}}>SKU 商品</a>
       <a href="/grants" {{if eq .Active "grants"}}class="active"{{end}}>补偿开通</a>
+      {{if .User.IsAdmin}}<a href="/refunds" {{if eq .Active "refunds"}}class="active"{{end}}>退款复核</a>{{end}}
       {{if .User.IsAdmin}}<a href="/users" {{if eq .Active "users"}}class="active"{{end}}>账户</a>{{end}}
     </div>
   </nav>

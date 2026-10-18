@@ -19,6 +19,7 @@ package router
 import (
 	"strings"
 
+	"app-pay-admin/internal/appops"
 	"app-pay-admin/internal/config"
 	"app-pay-admin/internal/logger"
 	"app-pay-admin/internal/service"
@@ -27,7 +28,7 @@ import (
 	"net/http"
 )
 
-func New(cfg *config.Config, grants *service.GrantService) *gin.Engine {
+func New(cfg *config.Config, grants *service.GrantService, appops *appops.Client) *gin.Engine {
 	if !cfg.App.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -41,7 +42,7 @@ func New(cfg *config.Config, grants *service.GrantService) *gin.Engine {
 	e.Use(securityHeaders())
 	e.Use(corsMiddleware(cfg.Security.CORS.AllowOrigins))
 
-	r := &Router{cfg: cfg, grants: grants}
+	r := &Router{cfg: cfg, grants: grants, appops: appops}
 	r.registerRoutes(e)
 	return e
 }
@@ -49,6 +50,7 @@ func New(cfg *config.Config, grants *service.GrantService) *gin.Engine {
 type Router struct {
 	cfg    *config.Config
 	grants *service.GrantService
+	appops *appops.Client
 }
 
 func (r *Router) registerRoutes(e *gin.Engine) {
