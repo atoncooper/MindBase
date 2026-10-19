@@ -8,14 +8,18 @@ import type { WebFetchPort } from "./fetcher.js";
  * lives in the fetcher (html-cleaner.ts); all budgets (timeout/size/redirect hops/
  * per-host politeness) are enforced by the TimeoutManager and the port; the tool only
  * formats the result for the LLM.
+ * When configured, the DeepSeek official Fetch API is the primary provider (cloud-side
+ * rendering, Markdown result); the local fetcher only runs when DeepSeek is unavailable
+ * or fails — see deepseek.ts.
  */
 export function createFetchWebpageTool(port: WebFetchPort) {
   return defineTool({
     name: "fetch_webpage",
     description:
-      "抓取一个公开网页并提取正文（标题/摘要/正文/页面内链接）。正文会去除导航/广告/隐藏元素等噪声并优先提取主内容。" +
+      "抓取一个公开网页并提取正文。默认走 DeepSeek 官方抓取（云端渲染，返回标题+Markdown 正文，无页面内链接）；" +
+      "官方不可用或失败时自动回退本地抓取（去噪后正文 + 页面内链接）。" +
       "用户给出具体 URL、或问题涉及网页当前内容时调用。仅支持 http/https 公开地址；内网地址会被拒绝。" +
-      "需要更多页面时用返回的 links 逐个抓取。",
+      "需要更多页面时先搜索获取线索，再逐个抓取。",
     inputSchema: z.object({
       url: z.string().url().describe("要抓取的完整 URL（http/https）"),
       maxChars: z

@@ -216,6 +216,13 @@ web:
   #   SEARXNG_URL     自托管 SearXNG（需开启 json format）。
   searchTavilyApiKey: ${TAVILY_API_KEY:}
   searchSearxngUrl: ${SEARXNG_URL:}
+  # DeepSeek 官方网页搜索/抓取 API（https://api-docs.deepseek.com/zh-cn/guides/search）。
+  # 默认由 DeepSeek 提供：web_search 引擎链首位；fetch_webpage 官方代抓（云端渲染返回
+  # Markdown），DeepSeek 不可用/失败时才回退自研抓取（SSRF 防护/礼貌限速/站内链接）。
+  # 计费：¥5/1000 次成功请求（失败/空结果不计费）；限速 Search 100 QPS / Fetch 25 QPS。
+  deepseekApiKey: ${DEEPSEEK_API_KEY:}
+  deepseekApiBaseUrl: https://api.deepseek.com
+  deepseekFetchPrimary: true
 
 tools:
   # 模型未传 timeoutMs 时的默认预算

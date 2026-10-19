@@ -2,6 +2,7 @@ import { z } from "zod";
 import { config } from "../../config/index.js";
 import { createLogger } from "../../logger.js";
 import { defineTool } from "../base.js";
+import { createDeepSeekApiFromConfig } from "./deepseek.js";
 
 const log = createLogger("WEB_SEARCH");
 
@@ -22,6 +23,10 @@ export interface WebSearchHit {
   title: string;
   url: string;
   snippet: string;
+  /** DeepSeek 引擎独有：发布日期（date 截取 YYYY-MM-DD，未知省略） */
+  publishedAt?: string;
+  /** DeepSeek 引擎独有：权威层级 0-4（-1 未知时不展示） */
+  authority?: number;
 }
 
 function decodeEntities(s: string): string {
@@ -78,6 +83,37 @@ async function resolveBaiduLink(link: string, signal?: AbortSignal): Promise<str
     /* keep the baidu link */
   }
   return link;
+}
+
+/** DeepSeek 官方搜索引擎（keyed）：自研搜索服务，结构化结果 + 相关度/权威度分层，Agent/RAG 场景专用。
+ *  按成功请求计费（¥5/1000 次，空结果不计费）；snippet/summary 双轨摘要，正文走 fetch_webpage。 */
+async function deepseekSearch(query: string, limit: number, signal?: AbortSignal): Promise<WebSearchHit[]> {
+  const api = createDeepSeekApiFromConfig();
+  const results = await api.search({ query, count: limit, needContent: false, signal });
+  if (results.length === 0) throw new Error("deepseek 0 results");
+  return results.map((r) => ({
+    title: r.title,
+    url: r.url,
+    snippet: r.snippet || r.summary.slice(0, 300),
+    publishedAt: r.date ? r.date.slice(0, 10) : undefined,
+    authority: r.authority >= 0 ? r.authority : undefined,
+  }));
+}
+
+export interface SearchEngine {
+  name: string;
+  run: () => Promise<WebSearchHit[]>;
+}
+
+/** 引擎链按可用性有序组装：deepseek → tavily → searxng → baidu → bing；前面的成功即止。 */
+export function buildSearchEngines(query: string, limit: number, signal?: AbortSignal): SearchEngine[] {
+  const engines: SearchEngine[] = [];
+  if (config.web.deepseekApiKey) engines.push({ name: "deepseek", run: () => deepseekSearch(query, limit, signal) });
+  if (config.web.searchTavilyApiKey) engines.push({ name: "tavily", run: () => tavilySearch(query, limit, signal) });
+  if (config.web.searchSearxngUrl) engines.push({ name: "searxng", run: () => searxngSearch(query, limit, signal) });
+  engines.push({ name: "baidu", run: () => baiduSearch(query, limit, signal) });
+  engines.push({ name: "bing", run: () => bingSearch(query, limit, signal) });
+  return engines;
 }
 
 /** Tavily 引擎（keyed，最稳）：免费 1000 次/月，注册 https://tavily.com 取 key。 */
@@ -164,7 +200,8 @@ export function createWebSearchTool() {
   return defineTool({
     name: "web_search",
     description:
-      "联网搜索公开网页（百度为主、Bing 兜底）。返回与查询相关的标题、链接与摘要列表，用于收集外部/最新资料；" +
+      "联网搜索公开网页（配置 DeepSeek key 时首选官方结构化搜索，带相关度/权威分层与发布时间；否则百度为主、Bing 兜底）。" +
+      "返回与查询相关的标题、链接与摘要列表，用于收集外部/最新资料；" +
       "得到线索后可用 fetch_webpage 抓取具体页面正文。适合查考试大纲、行业标准、技术文档等公开信息。",
     inputSchema: z.object({
       query: z.string().min(1).max(200).describe("搜索关键词（可用空格组合多个词）"),
@@ -174,17 +211,14 @@ export function createWebSearchTool() {
       const limit = args.limit ?? 6;
       let hits: WebSearchHit[] = [];
       let engine = "(none)";
-      const engines: Array<{ name: string; run: () => Promise<WebSearchHit[]> }> = [];
-      if (config.web.searchTavilyApiKey) engines.push({ name: "tavily", run: () => tavilySearch(args.query, limit, signal) });
-      if (config.web.searchSearxngUrl) engines.push({ name: "searxng", run: () => searxngSearch(args.query, limit, signal) });
-      engines.push({ name: "baidu", run: () => baiduSearch(args.query, limit, signal) });
-      engines.push({ name: "bing", run: () => bingSearch(args.query, limit, signal) });
-      for (const engine of engines) {
+      const engines = buildSearchEngines(args.query, limit, signal);
+      for (const candidate of engines) {
         try {
-          hits = await engine.run();
+          hits = await candidate.run();
+          engine = candidate.name; // 修复：循环变量曾遮蔽外层标签，输出恒为 (none)
           break;
         } catch (err) {
-          log.warn(`[WEB_SEARCH] ${engine.name} failed → next engine: ${err instanceof Error ? err.message : err}`);
+          log.warn(`[WEB_SEARCH] ${candidate.name} failed → next engine: ${err instanceof Error ? err.message : err}`);
         }
       }
       if (hits.length === 0) {
@@ -195,6 +229,13 @@ export function createWebSearchTool() {
         lines.push(`[${i + 1}] ${h.title}`);
         lines.push(`    ${h.url}`);
         if (h.snippet) lines.push(`    ${h.snippet}`);
+        const meta = [
+          h.publishedAt ? `发布: ${h.publishedAt}` : "",
+          h.authority !== undefined ? `权威: ${h.authority}/4` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        if (meta) lines.push(`    （${meta}）`);
       });
       lines.push("", "需要页面正文时，用 fetch_webpage 抓取对应 URL。");
       return lines.join("\n");
