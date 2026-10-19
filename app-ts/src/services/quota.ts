@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
-import { resolveTier } from "../utils/membership.js";
+import { resolveTier, resolveTierDetailed, type ResolvedTier } from "../utils/membership.js";
 import { costMicroYuan } from "../repository/usage-ledger.js";
 import type { QuotaCounterStore } from "../repository/quota.js";
 import type { DegradeLevel } from "../utils/degrade.js";
@@ -58,6 +58,12 @@ export interface QuotaKindSummary {
 export interface QuotaSummary {
   enabled: boolean;
   tier: QuotaTier;
+  /**
+   * "app-pay" = 档位来自 app-pay 权威应答；"fallback" = 会员查询失败（网络/
+   * 鉴权/未配置 key）→ 按免费档展示。前端据此前者正常渲染、后者提示
+   * 「会员权益同步失败」，避免付费用户看到免费限额却毫无解释。
+   */
+  tierSource: "app-pay" | "fallback";
   kinds: QuotaKindSummary[];
   cost: {
     microYuan: number;
@@ -122,6 +128,8 @@ export class QuotaService {
   private readonly tierOf: (uid: string | undefined) => Promise<string>;
   private readonly nowFn: () => Date;
 
+  private readonly tierDetailOf: (uid: string | undefined) => Promise<ResolvedTier>;
+
   constructor(opts: {
     counter: QuotaCounterStore;
     resolveTier?: (uid: string | undefined) => Promise<string>;
@@ -129,6 +137,10 @@ export class QuotaService {
   }) {
     this.counter = opts.counter;
     this.tierOf = opts.resolveTier ?? resolveTier;
+    // 测试注入 resolveTier 时，detail 视为 app-pay 权威（不真发请求）
+    this.tierDetailOf = opts.resolveTier
+      ? async (uid) => ({ tier: await opts.resolveTier!(uid), source: "app-pay" })
+      : resolveTierDetailed;
     this.nowFn = opts.now ?? (() => new Date());
   }
 
@@ -284,13 +296,15 @@ export class QuotaService {
   /** GET /quota/summary payload: every configured kind + the cost block. */
   async summary(uid: string | undefined, clientKey?: string): Promise<QuotaSummary> {
     const now = this.nowFn();
-    const tier = this.tierNormalize(await this.tierOf(uid));
+    const detail = await this.tierDetailOf(uid);
+    const tier = this.tierNormalize(detail.tier);
     const resetAt = nextMidnight(now);
     const identity = this.identity(uid, clientKey);
     if (!config.quota.enabled || !identity) {
       return {
         enabled: config.quota.enabled,
         tier,
+        tierSource: detail.source,
         kinds: [],
         cost: { microYuan: 0, softMicroYuan: 0, guardMicroYuan: 0, guardEnabled: false, level: "L0", resetAt },
       };
@@ -309,6 +323,7 @@ export class QuotaService {
     return {
       enabled: true,
       tier,
+      tierSource: detail.source,
       kinds,
       cost: {
         microYuan: costVal,

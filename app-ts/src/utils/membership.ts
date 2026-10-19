@@ -24,6 +24,7 @@ const VALID_TIERS = new Set([TIER_VIP, TIER_SVIP]);
 
 interface CacheEntry {
   tier: string;
+  source: TierSource;
   expiresAt: number;
 }
 
@@ -42,22 +43,41 @@ function normalizeTier(view: unknown): string {
   return VALID_TIERS.has(tier) ? tier : TIER_FREE;
 }
 
+export type TierSource = "app-pay" | "fallback";
+
+export interface ResolvedTier {
+  tier: string;
+  /**
+   * "app-pay" = app-pay 权威应答（含真实的 active:false 免费用户）；
+   * "fallback" = 查询失败（网络/鉴权/未配置 key）→ 按免费档展示。前者是
+   * 用户真实档位，后者是降级口径——配额展示用 source 区分，避免"开了会员
+   * 仍按免费档限额"的静默降级对用户完全不可见。
+   */
+  source: TierSource;
+}
+
 /**
  * Return the membership tier for `uid` (`free` | `vip` | `svip`).
  * Must never throw and never block long: the chat admission path calls
  * this on every turn.
  */
 export async function resolveTier(uid: string | undefined): Promise<string> {
-  if (uid === undefined || uid === "" || uid === "0") return TIER_FREE;
+  return (await resolveTierDetailed(uid)).tier;
+}
+
+/** resolveTier 的带来源版本：配额摘要等展示面用它区分真实免费与降级免费。 */
+export async function resolveTierDetailed(uid: string | undefined): Promise<ResolvedTier> {
+  if (uid === undefined || uid === "" || uid === "0") return { tier: TIER_FREE, source: "fallback" };
   // uid 是 int64（app-pay BigInteger / app-auth snowflake），非纯数字视为非法
   // 输入：不发起网络请求，直接 fail-open free（与 0/空值同语义）。
-  if (!/^\d+$/.test(uid)) return TIER_FREE;
+  if (!/^\d+$/.test(uid)) return { tier: TIER_FREE, source: "fallback" };
 
   const now = Date.now();
   const hit = cache.get(uid);
-  if (hit && hit.expiresAt > now) return hit.tier;
+  if (hit && hit.expiresAt > now) return { tier: hit.tier, source: hit.source };
 
   let tier = TIER_FREE;
+  let source: TierSource = "fallback";
   if (config.appPay.apiKey) {
     try {
       const controller = new AbortController();
@@ -69,6 +89,7 @@ export async function resolveTier(uid: string | undefined): Promise<string> {
         });
         if (res.ok) {
           tier = normalizeTier(await res.json());
+          source = "app-pay";
         } else {
           log.warn(`[MEMBERSHIP] lookup uid=${uid} status=${res.status} (fail-open free)`);
         }
@@ -78,7 +99,10 @@ export async function resolveTier(uid: string | undefined): Promise<string> {
     } catch (err) {
       log.warn(`[MEMBERSHIP] lookup uid=${uid} failed: ${err instanceof Error ? err.message : err} (fail-open free)`);
     }
+  } else {
+    // 配置缺失是部署级事故：每个请求都免费档。启动时另有 [BOOT] error 日志。
+    log.warn("[MEMBERSHIP] appPay.apiKey empty — every uid resolves free (fallback)");
   }
-  cache.set(uid, { tier, expiresAt: now + config.appPay.cacheTtlMs });
-  return tier;
+  cache.set(uid, { tier, source, expiresAt: now + config.appPay.cacheTtlMs });
+  return { tier, source };
 }

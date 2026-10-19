@@ -342,7 +342,11 @@ openrouter:
   overridesJson: "{}"
 
 ocr:
-  enabled: false
+  # 图片解析兜底开关。错题图片出题：模型确认支持视觉时原图直读（不走 OCR）；
+  # 能力未知/文本档模型/超张数上限时才回落 OCR 转写——因此保持开启。
+  # 会话文档的图片上传必须经 OCR 转写（正文要进 embedding 索引，纯文本必需）。
+  # false 时 DisabledOcr 对图片硬拒「OCR 未启用」。
+  enabled: true
   # 视觉转写模型（网关 chat + 图片 part）；GLM-5.3-flash 支持视觉，与全局统一
   model: z-ai/glm-5.3-flash
   # 可选独立 key；默认复用 aiGateway.apiKey
