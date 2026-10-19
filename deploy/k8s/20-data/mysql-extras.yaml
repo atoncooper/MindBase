@@ -36,18 +36,14 @@ spec:
           image: mysql:8.4
           imagePullPolicy: IfNotPresent
           args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
           env:
-            - name: MYSQL_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_ROOT_PASSWORD }
             - name: MYSQL_DATABASE
               value: app_task
-            - name: MYSQL_USER
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_USER }
-            - name: MYSQL_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: APPTASK_MYSQL_PASSWORD }
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
@@ -104,18 +100,14 @@ spec:
           image: mysql:8.4
           imagePullPolicy: IfNotPresent
           args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
           env:
-            - name: MYSQL_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_ROOT_PASSWORD }
             - name: MYSQL_DATABASE
               value: app_pay
-            - name: MYSQL_USER
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_USER }
-            - name: MYSQL_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: PAY_MYSQL_PASSWORD }
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql

@@ -38,19 +38,11 @@ spec:
           image: atoncooper/mind-base-app-settings:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: APPSETTINGS__RDBMS__URL
-              value: "mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base"
-            - name: MINIO__ENDPOINT
-              value: "http://minio:9000"
-            - name: MINIO__ACCESS_KEY
-              value: "$(MINIO_ACCESS_KEY)"
-            - name: MINIO__SECRET_KEY
-              value: "$(MINIO_SECRET_KEY)"
-            - name: MINIO__BUCKET
-              value: "$(MINIO_BUCKET)"
             - name: APPSETTINGS__LOG__OUTPUT
               value: "both"
           ports:

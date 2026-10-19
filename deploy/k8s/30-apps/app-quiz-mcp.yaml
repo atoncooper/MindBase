@@ -38,9 +38,21 @@ spec:
           image: atoncooper/mind-base-app-quiz-mcp:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
+            # $(VAR) 只能引用 env 列表内变量（envFrom 不可见）——先取源值再派生
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: QUIZ_MCP_UID
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: QUIZ_MCP_UID, optional: true }
+            - name: QUIZ_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: QUIZ_MCP_AUTH_TOKEN, optional: true }
             - name: QUIZMCP__UPSTREAM__BASE_URL
               value: "http://apisix:9080"
             - name: QUIZMCP__UPSTREAM__API_KEY

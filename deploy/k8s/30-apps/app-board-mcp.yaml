@@ -38,9 +38,22 @@ spec:
           image: atoncooper/mind-base-app-board-mcp:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
+            # $(VAR) 只能引用 env 列表内变量（envFrom 不可见）——先取源值再派生；
+            # UID/AUTH_TOKEN 为可选键（缺失 = bearer 模式不可用，服务模式不受影响）
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: BOARD_MCP_UID
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: BOARD_MCP_UID, optional: true }
+            - name: BOARD_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: BOARD_MCP_AUTH_TOKEN, optional: true }
             - name: BOARDMCP__UPSTREAM__BASE_URL
               value: "http://apisix:9080"
             - name: BOARDMCP__UPSTREAM__API_KEY

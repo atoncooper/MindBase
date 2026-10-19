@@ -1,0 +1,29 @@
+# MetalLB L2 模式地址池 —— 集群级资源，独立 apply，不进 kustomization
+# （base 的 namespace: mind-base 会污染这里的 namespace，所以单独管理）
+#
+# 用法：
+#   1) 安装 MetalLB 本体：
+#      kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml
+#   2) 应用本文件（addresses 按实际节点内网 IP 修改）：
+#      kubectl apply -f deploy/k8s/metallb.yaml
+#   3) kubectl -n mind-base get svc nginx —— EXTERNAL-IP 应从 <pending> 变为池内地址
+#
+# 说明：L2 模式把池内 IP 绑到某个节点的网卡上，同 VPC 子网内直接可达；
+# 公网入口仍建议走 AWS NLB 指向节点，或临时把 nginx Service 改 NodePort。
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: node-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 172.31.47.187-172.31.47.189   # 3 台节点的内网 IP（按实际修改）
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2-advert
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - node-pool

@@ -41,17 +41,13 @@ spec:
           image: atoncooper/mind-base-app-board:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            # Redis read cache on DB /2 (main app uses /1); degrades to
-            # direct DB reads when Redis is down
-            - name: APPBOARD__REDIS__URL
-              value: redis://:$(REDIS_PASSWORD)@redis:6379/2
-            - name: APPBOARD__RDBMS__URL
-              value: mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base
-            - name: APPBOARD__MONGO__URI
-              value: $(MONGO__URI)
+            # 连接串来自 mindbase-defaults（APPBOARD__REDIS__URL=/2 读缓存、
+            # APPBOARD__RDBMS__URL、APPBOARD__MONGO__URI）；.env 同名键可覆盖
             - name: APPBOARD__MONGO__DB_NAME
               value: MindBase
             - name: APPBOARD__LOG__OUTPUT

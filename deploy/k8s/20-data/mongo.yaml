@@ -33,13 +33,11 @@ spec:
         - name: mongo
           image: mongo:7
           imagePullPolicy: IfNotPresent
-          env:
-            - name: MONGO_INITDB_ROOT_USERNAME
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: MONGO_USER }
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: MONGO_PASSWORD }
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
           ports:
             - containerPort: 27017
           volumeMounts:

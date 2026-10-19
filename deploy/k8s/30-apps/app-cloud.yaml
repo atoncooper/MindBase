@@ -41,34 +41,27 @@ spec:
           image: atoncooper/mind-base-app-cloud:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: APPCLOUD__RDBMS__URL
-              value: "mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base"
-            - name: REDIS__URL
-              value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-            - name: MONGO__URI
-              value: "$(MONGO__URI)"
-            - name: MINIO__ACCESS_KEY
-              value: "$(MINIO_ACCESS_KEY)"
-            - name: MINIO__SECRET_KEY
-              value: "$(MINIO_SECRET_KEY)"
-            - name: APISIX_CONSUMER_KEY
-              value: "$(APISIX_CONSUMER_KEY)"
-            - name: AI_GATEWAY__API_KEY
-              value: "$(AI_GATEWAY__API_KEY)"
-            - name: AI_GATEWAY__BASE_URL
-              value: "http://higress:8080/v1"
+            # AI_GATEWAY__* / 凭证类经 envFrom（mindbase-defaults 兜底 + .env 覆盖）
             - name: MILVUS__URI
               value: "http://milvus:19530"
             - name: APPCLOUD__LOG__OUTPUT
               value: "both"
+            # 提取码静态加密密钥（与 app-auth 同一 Secret；密钥不进数据库）
+            - name: SECURITY__API_KEY_ENCRYPTION_KEY_FILE
+              value: "/run/secrets/api_key_encryption_key"
           ports:
             - containerPort: 8007
           volumeMounts:
             - name: logs
               mountPath: /app/logs
+            - name: enc-key
+              mountPath: /run/secrets
+              readOnly: true
 
           readinessProbe:
             httpGet:
@@ -88,4 +81,7 @@ spec:
       volumes:
         - name: logs
           emptyDir: {}
+        - name: enc-key
+          secret:
+            secretName: api-key-encryption-key
 

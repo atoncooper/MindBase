@@ -37,18 +37,27 @@ spec:
           image: atoncooper/app-task:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            # Own database: independent MySQL instance (schema by db.Migrate)
-            - name: APPTASK__RDBMS__URL
-              value: mysql+aiomysql://$(APPTASK_MYSQL_USER):$(APPTASK_MYSQL_PASSWORD)@app-task-mysql:3306/app_task
+            # 独立库 URL 来自 mindbase-defaults（.env 的 APPTASK__RDBMS__URL 可覆盖）
             # Main app via APISIX gateway
             - name: APPTASK__APP__BASE_URL
               value: http://apisix:9080
-            - name: APPTASK__APP__CONSUMER_KEY
+            # 网关作用域执行器鉴权：派发到 apisix 的任务自动附 apikey 头
+            - name: APISIX_CONSUMER_KEY
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: APPTASK__APP__CONSUMER_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS
+              value: apisix:9080
+            - name: APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: NO_PROXY
+              value: localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal
             # app-pay timeout-delegation callback CA (lazy-loaded; fallback
             # polling takes over when app-pay is not deployed)
             - name: APPTASK__HTTP_EXECUTOR__CA_FILE

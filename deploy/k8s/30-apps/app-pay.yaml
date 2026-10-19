@@ -41,6 +41,8 @@ spec:
           imagePullPolicy: Always
           args: ["--spring.profiles.active=docker"]
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           ports:

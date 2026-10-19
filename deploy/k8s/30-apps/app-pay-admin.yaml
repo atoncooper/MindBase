@@ -40,11 +40,20 @@ spec:
           imagePullPolicy: Always
           args: ["-config", "config.docker.yaml"]
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: PAYADMIN__RDBMS__URL
-              value: mysql+aiomysql://$(PAY_MYSQL_USER):$(PAY_MYSQL_PASSWORD)@app-pay-mysql:3306/app_pay
+            # 退款复核工作台：OPS key 经 in-list 引用（envFrom 变量不可被 $(VAR) 引用）；
+            # 留空 = 复核功能在控制台隐藏（与 compose 行为一致）
+            - name: PAY_OPS_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_OPS_KEY, optional: true }
+            - name: PAYADMIN__APP_PAY__OPS_KEY
+              value: "$(PAY_OPS_KEY)"
+            - name: PAYADMIN__APP_PAY__BASE_URL
+              value: "http://apisix:9080"
           ports:
             - containerPort: 8003
           volumeMounts:

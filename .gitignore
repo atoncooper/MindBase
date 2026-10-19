@@ -135,3 +135,5 @@ NVIDIA Corporation/
 
 # 本地测试临时产物
 tmp-gotest/
+# gh CLI 本地配置（hosts.yml 可能含 OAuth token）
+.config/

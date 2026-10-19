@@ -38,13 +38,11 @@ spec:
           image: atoncooper/mind-base-app-quiz:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: APPQUIZ__RDBMS__URL
-              value: "mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base"
-            - name: MONGO__URI
-              value: "$(MONGO__URI)"
             - name: APPQUIZ__LOG__OUTPUT
               value: "both"
           ports:

@@ -28,6 +28,8 @@ kind: Deployment
 metadata:
   name: higress
 spec:
+  strategy:
+    type: Recreate          # /data 是 RWO PVC，滚动双副本会卡挂载
   replicas: 1
   selector:
     matchLabels:
@@ -53,9 +55,9 @@ spec:
             # Container-internal component traffic must not be hijacked by a
             # proxy injected from the host docker config (APISIX lesson)
             - name: NO_PROXY
-              value: localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+              value: localhost,127.0.0.1,higress,app-ts,apisix,nginx,frontend,mysql,mongo,redis
             - name: no_proxy
-              value: localhost,127.0.0.1,higress,backend,apisix,nginx,frontend,mysql,mongo,redis
+              value: localhost,127.0.0.1,higress,app-ts,apisix,nginx,frontend,mysql,mongo,redis
           ports:
             - containerPort: 8080
             - containerPort: 8443

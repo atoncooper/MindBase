@@ -38,11 +38,21 @@ spec:
       initContainers:
         - name: wait-upstreams
           image: busybox:1.36
-          command: ["sh", "-c", "until nc -z frontend 3000 && nc -z backend 8000 && nc -z apisix 9080 && nc -z minio 9000; do echo waiting for frontend/backend/apisix/minio; sleep 3; done"]
+          command: ["sh", "-c", "until nc -z frontend 3000 && nc -z app-ts 8000 && nc -z apisix 9080 && nc -z minio 9000; do echo waiting for frontend/app-ts/apisix/minio; sleep 3; done"]
       containers:
         - name: nginx
           image: nginx:alpine
           imagePullPolicy: IfNotPresent
+          # nginx.conf 的 resolver 写死了 Docker 内嵌 DNS 127.0.0.11（compose 专用）。
+          # K8s 下启动时改写为本 Pod resolv.conf 的集群 DNS，再以改写后的副本启动，
+          # 变量 proxy_pass（$apisix_upstream/$frontend_upstream/$minio_upstream）才能解析。
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              NS=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
+              cp /etc/nginx/nginx.conf /tmp/nginx.conf
+              sed -i "s/127\.0\.0\.11/${NS}/g" /tmp/nginx.conf
+              exec nginx -g 'daemon off;' -c /tmp/nginx.conf
           ports:
             - containerPort: 80
             - containerPort: 443
