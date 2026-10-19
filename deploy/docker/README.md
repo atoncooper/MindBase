@@ -74,6 +74,25 @@ docker compose --env-file ../../.env -f 31-app-bili.yml logs -f app-bili   # 日
 docker compose --env-file ../../.env -f 13-apisix.yml up -d --force-recreate apisix  # 改配置后重建
 ```
 
+### 合并代码后更新容器（重要）
+
+`up -d` 是幂等的：**镜像与配置都没变就原样保留容器**；且所有服务
+`pull_policy: missing`——本机已有旧 `:latest` 时 `up -d` **不会**拉取新镜像。
+所以"合并了 PR"不等于"线上已更新"，正确流程：
+
+1. 等 GitHub Actions 的 **Docker Build & Push** 工作流跑完（push main 自动触发，
+   构建并推送全部 `atoncooper/mind-base-*:latest`；未改动服务的镜像也会重建但内容不变）；
+2. 服务器上带 `--pull` 重跑启动脚本——脚本先 `docker compose pull` 再 `up -d`
+   （镜像更新 → 自动重建容器；拉取失败仅告警，继续用本地镜像）：
+
+```bash
+bash start-frontend.sh --pull    # server1
+bash start-backend.sh --pull     # server2
+```
+
+3. 或单服务手动更新：`docker compose ... pull <svc> && docker compose ... up -d <svc>`。
+   不要在服务器上本地 build——镜像一律来自 Docker Hub（CI 构建）。
+
 ## 六、跨机依赖：depends_on 为什么用不了，等价物是什么
 
 `depends_on`（含 `condition: service_healthy`）只在**同一台主机、同一个 compose

@@ -3,9 +3,15 @@
 # server1（边缘层）一键启动：证书 -> etcd -> minio -> apisix -> frontend -> nginx
 # 前提：仓库在本机 deploy/docker 的上两级（../../）；swarm 已建；overlay 已创建
 #   docker network create -d overlay --attachable mind-base-overlay
+# 用法：bash start-frontend.sh [--pull]
+#   --pull  先拉取各服务最新镜像再 up（合并代码后更新容器用）；默认不拉取
+#           （pull_policy: missing 下 up -d 不会以新 :latest 重建容器）。
 # ================================================================
 set -uo pipefail
 cd "$(dirname "$0")"
+
+PULL=0
+for a in "$@"; do [ "$a" = "--pull" ] && PULL=1; done
 
 # compose 插值变量来自 .env（软链到仓库根）
 [ -e .env ] || ln -sf ../../.env .env
@@ -13,7 +19,14 @@ cd "$(dirname "$0")"
 docker network inspect mind-base-overlay >/dev/null 2>&1 \
   || echo "⚠️  overlay 网络 mind-base-overlay 不存在：docker network create -d overlay --attachable mind-base-overlay"
 
-up() { docker compose --env-file ../../.env -f "$1" up -d "$2"; }
+up() {
+  if [ "$PULL" = "1" ]; then
+    printf '[pull]  %s\n' "$2"
+    docker compose --env-file ../../.env -f "$1" pull "$2" \
+      || echo "⚠️  $2 镜像拉取失败（Hub 不可达？）——继续使用本地镜像"
+  fi
+  docker compose --env-file ../../.env -f "$1" up -d "$2"
+}
 
 wait_ready() { # 容器名 [超时秒]
   local c="$1" t="${2:-180}" i=0 st=""

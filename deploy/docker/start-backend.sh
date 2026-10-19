@@ -4,9 +4,17 @@
 # 前提：../../ 下已有 .env、secrets/、app-pay/certs/、app-board/certs/（从 server1 拷贝）
 #       swarm worker 已加入；overlay 可见（docker network ls | grep mind-base-overlay）
 # 可选：90-higress（.env 未指向外部网关时）、95-app-pay-admin
+#
+# 用法：bash start-backend.sh [--pull]
+#   --pull  先从镜像仓库拉取各服务最新镜像再 up（合并代码后更新容器用）。
+#           默认不拉取——所有服务 pull_policy: missing，本机已有旧 :latest 时
+#           up -d 不会更新，必须显式 pull 才会以新镜像重建容器。
 # ================================================================
 set -uo pipefail
 cd "$(dirname "$0")"
+
+PULL=0
+for a in "$@"; do [ "$a" = "--pull" ] && PULL=1; done
 
 [ -e .env ] || ln -sf ../../.env .env
 
@@ -33,7 +41,14 @@ for p in ../../.env ../../secrets/api_key_encryption_key ../../app-pay/certs ../
   [ -e "$p" ] || echo "⚠️  缺少 $p —— 请从 server1 拷贝（app-pay/app-board 缺证书会拒启）"
 done
 
-up() { docker compose --env-file ../../.env -f "$1" up -d "$2"; }
+up() {
+  if [ "$PULL" = "1" ]; then
+    printf '[pull]  %s\n' "$2"
+    docker compose --env-file ../../.env -f "$1" pull "$2" \
+      || echo "⚠️  $2 镜像拉取失败（Hub 不可达？）——继续使用本地镜像"
+  fi
+  docker compose --env-file ../../.env -f "$1" up -d "$2"
+}
 
 wait_ready() {
   local c="$1" t="${2:-180}" i=0 st=""
