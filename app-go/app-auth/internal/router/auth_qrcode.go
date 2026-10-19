@@ -112,7 +112,7 @@ func pollQRCode(d Deps) gin.HandlerFunc {
 					slog.Info("[AUTH] corrected bili_mid", "from", biliMid, "to", info.Mid)
 					biliMid = info.Mid
 				}
-				nickname, avatar = info.Uname, info.Face
+				nickname, avatar = info.Uname, *service.NormalizeAvatarURL(&info.Face)
 			} else {
 				slog.Warn("[AUTH] fetch bilibili user info failed", "err", err)
 			}

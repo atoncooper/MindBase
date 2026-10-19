@@ -70,7 +70,7 @@ func resolveWechatIdentity(d Deps, c *gin.Context, code, state, purpose string) 
 			profile.Nickname = &info.Nickname
 		}
 		if info.HeadImgURL != "" {
-			profile.Avatar = &info.HeadImgURL
+			profile.Avatar = service.NormalizeAvatarURL(&info.HeadImgURL)
 		}
 	} else {
 		slog.Warn("[AUTH] wechat userinfo failed, continuing without profile")
