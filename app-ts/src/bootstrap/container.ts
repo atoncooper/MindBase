@@ -472,6 +472,10 @@ export async function bootstrap() {
     if (mongoResume) quizResumeStore = mongoResume;
     else log.warn("[BOOT] quiz resume plans: memory fallback (mongodb unreachable)");
   }
+  // quota 必须注入 quizGen/quizGrade：会员档位限额（config quota.limits 的
+  // generate/grade/ocr）只在注入 QuotaService 后生效；缺省会静默回落 app-quiz
+  // 的单档旧端点——付费会员在出题/批改/错题图片出题上被按 free 档限额，
+  // 而 /quota/summary 与权益对照表仍展示 VIP/SVIP 额度（口径不一致）。
   const quizGen = new QuizGenerationService({
     summaries: sessionSummary,
     appQuiz: appQuizClient,
@@ -483,8 +487,9 @@ export async function bootstrap() {
       : undefined,
     ocr,
     resumeStore: quizResumeStore,
+    quota,
   });
-  const quizGrade = new QuizGradingService({ appQuiz: appQuizClient });
+  const quizGrade = new QuizGradingService({ appQuiz: appQuizClient, quota });
   // 2.85 Blindspot map (AI attribution): scope from app-bili, graph via
   //      app-kg gRPC, quiz signals via app-quiz; probed names from the
   //      app-ts's own chat history.

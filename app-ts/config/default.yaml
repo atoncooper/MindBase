@@ -252,8 +252,8 @@ scheduling:
   queueMaxSize: 100
   # 排队等待上限：超过即报错结束本轮（须小于网关/代理的读超时）
   queueTimeoutMs: 60000
-  # 会员权重（SVIP > VIP > free），同级按先后顺序；tier 数据源当前为
-  # stub（人人 free，见 services/membership.ts），会员上线后接 app-pay
+  # 会员权重（SVIP > VIP > free），同级按先后顺序；tier 由 utils/membership.ts
+  # 实时解析（app-pay /internal/pay/membership/{uid}，60s TTL 缓存 + fail-open free）
   tierWeights: { free: 0, vip: 100, svip: 200 }
   # 防饿死：每等待该时长，有效权重 +agingStep（低权重长等者可越过晚到的高权重者）
   agingWindowMs: 30000
@@ -284,17 +284,17 @@ quota:
   # generate/grade 沿用 app-quiz 旧键（UTC 日）跨栈共享计数。
   # fail 方向：Redis 不可用 → 放行（可用性优先）；app-pay 不可用 → tier=free（防超卖）。
   enabled: true
-  # kind → 各档每日次数上限；-1 = 不限；未接入的消费点仅为预留，不生效
+  # kind → 各档每日次数上限；-1 = 不限；每个 kind 都有对应消费点（见行尾注释）
   limits:
     chat:        { free: 30,  vip: 100, svip: 300 }   # 登录聊天：free 前 15 条 L0 全量，其后 L1 省流（降级接入后生效），30 硬停
     chat_anon:   { free: 5,   vip: 5,   svip: 5 }      # 未登录（按 IP 哈希桶计数）
     chat_images: { free: 20,  vip: 100, svip: 300 }   # 聊天图片附件（张/日）
-    generate:    { free: 3,   vip: 20,  svip: 60 }    # 出题（批/日；tier 化接入后生效）
-    grade:       { free: 20,  vip: 100, svip: 300 }   # 批改（次/日；tier 化接入后生效）
-    kg_build:    { free: 1,   vip: 5,   svip: 20 }    # KG 构建（次/日；接入后生效）
-    vectorize:   { free: 50,  vip: 300, svip: 1000 }  # 视频向量化（分P/日；接入后生效）
-    ocr:         { free: 10,  vip: 50,  svip: 200 }   # 云盘 OCR 解析（次/日；接入后生效）
-    board:       { free: 20,  vip: 100, svip: 300 }   # Board AI 补全（次/日；接入后生效）
+    generate:    { free: 3,   vip: 20,  svip: 60 }    # 出题（批/日；quiz-generation peek+consume，计数沿用 app-quiz 共享键）
+    grade:       { free: 20,  vip: 100, svip: 300 }   # 批改（次/日；quiz-grading 提交扣减）
+    kg_build:    { free: 1,   vip: 5,   svip: 20 }    # KG 构建（次/日；/knowledge/kg/build peek+consume）
+    vectorize:   { free: 50,  vip: 300, svip: 1000 }  # 视频向量化（分P/日；向量化管线 peek+consume）
+    ocr:         { free: 10,  vip: 50,  svip: 200 }   # 错题图片/文件出题 OCR（次/日；quiz-generation 图片流）
+    board:       { free: 20,  vip: 100, svip: 300 }   # Board AI 补全（次/日；/chat/board/complete peek+consume）
     task_quiz_active: { free: 2, vip: 10, svip: 30 }  # 定时出题活跃任务数（存量口径，注册时校验，非日计数）
   # Free 聊天阶梯：前 l0Turns 条全量（L0），其后 L1 省流，硬停于 limits.chat.free
   freeLadder: { l0Turns: 15 }
