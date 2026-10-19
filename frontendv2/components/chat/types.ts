@@ -1,6 +1,6 @@
 // Shared chat types for the frontendv2 chat view.
 
-import type { ChatArtifact, ChatSource } from "@/lib/chat-stream";
+import type { ChatArtifact, ChatInteraction, ChatSource } from "@/lib/chat-stream";
 
 export interface ReasoningStep {
   step: number;
@@ -45,6 +45,14 @@ export interface ChatMessageData {
   // currently-running sub-agent name + how many are active. Cleared when the
   // delegation finishes (active=0).
   subAgent?: { agent: string; count: number };
+  // Structured AI→user interaction (ask_user → `interact` SSE frame): the
+  // confirm card / option chips / form rendered under the assistant text.
+  // Not persisted by the backend — disappears on history reload (same as
+  // reasoning streams).
+  interaction?: ChatInteraction;
+  // The user already answered this interaction (answer sent as the next
+  // ordinary user message); the card renders in a settled state afterwards.
+  interactionAnswered?: boolean;
   status: MessageStatus;
   // 多模态：用户消息附带的图片（data URL，仅本地实时态；历史重载后不含）
   images?: string[];

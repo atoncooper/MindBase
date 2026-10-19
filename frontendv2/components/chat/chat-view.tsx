@@ -11,7 +11,7 @@ import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
 import { chatApi, quotaApi, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
-import { streamChat, type ChatSource, type ChatArtifact, type StreamStep, type QueueStatus, type DelegateStatus } from "@/lib/chat-stream";
+import { streamChat, type ChatSource, type ChatArtifact, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
 // Stable empty array so `messages` doesn't change identity on every render
@@ -406,6 +406,16 @@ export function ChatView() {
                 ),
               }));
             },
+            onInteract: (interaction: ChatInteraction) => {
+              // ask_user 的结构化交互卡挂到本轮 assistant 消息上（answers 走
+              // handleInteractionAnswer → 作为下一条普通用户消息发送）。
+              updateActiveSession((s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId ? { ...m, interaction } : m
+                ),
+              }));
+            },
             onReset: () => {
               // A retried LLM run begins: clear the buffered content (the
               // backend replays pre-run content as chunks) and flush
@@ -545,6 +555,23 @@ export function ChatView() {
       if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
     [activeSessionId, updateActiveSession, streamQuestion]
+  );
+
+  // ---- Answer an AI interaction card (ask_user) ----
+  // Backend is round-based: the normalized answer (chip value / form fields)
+  // is sent as the NEXT ORDINARY user message; the card then renders settled.
+  const handleInteractionAnswer = useCallback(
+    (assistantMsgId: string, answer: string) => {
+      if (isStreaming || !answer.trim()) return;
+      updateActiveSession((s) => ({
+        ...s,
+        messages: s.messages.map((m) =>
+          m.id === assistantMsgId ? { ...m, interactionAnswered: true } : m
+        ),
+      }));
+      handleSend(answer);
+    },
+    [isStreaming, updateActiveSession, handleSend]
   );
 
   // ---- Slash-menu skill toggle (chips above the input) ----
@@ -904,6 +931,13 @@ export function ChatView() {
                       agent={message.agent}
                       queuePosition={message.queuePosition}
                       subAgent={message.subAgent}
+                      interaction={message.interaction}
+                      interactionAnswered={message.interactionAnswered}
+                      onInteractionAnswer={
+                        message.interaction && !message.interactionAnswered && !isStreaming
+                          ? (answer: string) => handleInteractionAnswer(message.id, answer)
+                          : undefined
+                      }
                       status={message.status}
                       error={message.error}
                       timestamp={message.timestamp}

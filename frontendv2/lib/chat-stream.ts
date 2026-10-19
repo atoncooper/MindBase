@@ -50,6 +50,32 @@ export interface DelegateStatus {
   index: number;
 }
 
+// Structured AI→user interaction (app-ts `interact` SSE frame, ask_user tool):
+// clarify option chips / confirm card / multi-field form. Mirrors the backend
+// InteractionPayload (app-ts src/context/types.ts). The user's normalized
+// answer is sent back as the next ordinary user message — the backend is
+// round-based (the ReAct loop stops on ask_user; no resume protocol).
+export interface ChatInteractionOption {
+  label: string;
+  value: string;
+}
+
+export interface ChatInteractionField {
+  name: string;
+  label: string;
+  type?: "text" | "email" | "datetime" | "select";
+  required?: boolean;
+  options?: ChatInteractionOption[];
+}
+
+export interface ChatInteraction {
+  kind: "clarify" | "confirm" | "form";
+  question: string;
+  options?: ChatInteractionOption[];
+  fields?: ChatInteractionField[];
+  context?: string;
+}
+
 export interface StreamCallbacks {
   onChunk: (accumulated: string, delta: string) => void;
   onSources?: (sources: ChatSource[]) => void;
@@ -74,6 +100,9 @@ export interface StreamCallbacks {
   // does not replay reasoning after reset, so clearing would lose the
   // thinking during ReAct loops.
   onReasoning?: (accumulated: string, delta: string) => void;
+  // Structured AI→user interaction (`interact` SSE frame): renders the
+  // confirm card / option chips / form. One per turn (ask_user stops the loop).
+  onInteract?: (interaction: ChatInteraction) => void;
 }
 
 /**
@@ -163,6 +192,10 @@ export async function streamChat(
               active: typeof data.active === "number" ? data.active : 0,
               index: typeof data.index === "number" ? data.index : 0,
             });
+          } else if (data.type === "interact") {
+            if (data.interact && typeof data.interact === "object") {
+              callbacks.onInteract?.(data.interact as ChatInteraction);
+            }
           } else if (data.type === "error") {
             errored = true;
             callbacks.onError?.(data.message || data.error || "请求失败", {

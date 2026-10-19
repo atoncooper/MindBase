@@ -33,6 +33,8 @@ export interface QuotaCostSummary {
 export interface QuotaSummary {
   enabled: boolean;
   tier: QuotaTier;
+  /** "app-pay" = 档位权威应答；"fallback" = 会员查询失败 → 按免费档展示（前端需提示同步失败） */
+  tierSource: "app-pay" | "fallback";
   kinds: QuotaKindSummary[];
   cost: QuotaCostSummary;
 }
