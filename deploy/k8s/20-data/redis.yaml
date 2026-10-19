@@ -49,9 +49,11 @@ spec:
             - --save
             - 300 10
           env:
+            # 命令行/探针的 $(REDIS_PASSWORD) 只能引用 env 列表内变量（envFrom 不可见）；
+            # 固定取 defaults ConfigMap，与各客户端 REDIS__URL 默认值同源
             - name: REDIS_PASSWORD
               valueFrom:
-                secretKeyRef: { name: mindbase-env, key: REDIS_PASSWORD }
+                configMapKeyRef: { name: mindbase-defaults, key: REDIS_PASSWORD }
           ports:
             - containerPort: 6379
           volumeMounts:
@@ -59,12 +61,12 @@ spec:
               mountPath: /data
           readinessProbe:
             exec:
-              command: ["redis-cli", "-a", "$(REDIS_PASSWORD)", "ping"]
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["redis-cli", "-a", "$(REDIS_PASSWORD)", "ping"]
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:

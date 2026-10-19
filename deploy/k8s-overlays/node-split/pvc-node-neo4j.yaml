@@ -1,0 +1,15 @@
+# neo4j：Deployment + 独立 PVC（RWO），与数据层同钉 database 节点
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neo4j
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: ip-172-31-38-145
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: database
+          effect: NoSchedule

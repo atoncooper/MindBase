@@ -37,18 +37,14 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3306
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
           env:
-            - name: MYSQL_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: MYSQL_ROOT_PASSWORD }
             - name: MYSQL_DATABASE
               value: mind_base
-            - name: MYSQL_USER
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: MYSQL_USER }
-            - name: MYSQL_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: mindbase-env, key: MYSQL_PASSWORD }
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql

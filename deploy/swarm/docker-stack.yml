@@ -1,0 +1,1125 @@
+# ================================================================
+# MindBase — Docker Swarm stack 文件（docker stack deploy 专用）
+# ================================================================
+# 与根目录 docker-compose.yml 的关系：
+#   - docker-compose.yml 继续服务开发/单机 docker compose up（build/profiles/env_file 语义）
+#   - 本文件是 Swarm 语义的等价翻译：同一套镜像与配置，按 swarm 服务模型编排
+#
+# 为什么 docker-compose.yml 不能直接用于 swarm（docker stack deploy 的差异）：
+#   1. build / pull_policy          → 直接忽略。Swarm 只认 image:，节点缺镜像时自行从
+#                                     registry 拉取 → 先 build+push（CI docker-build.yml 已发布
+#                                     atoncooper/mind-base-*），air-gapped 用 docker save|load 到每个节点
+#   2. env_file: .env               → 直接忽略。敏感变量必须内联进 environment（本文件已内联；
+#                                     ${VAR} 插值变量由部署 shell 导入 .env 提供）
+#   3. depends_on(+condition)       → 直接忽略。Swarm 无启动顺序 → 各服务自带 healthcheck，
+#                                     依赖未就绪时崩溃并由 restart_policy 自愈（Swarm 惯用法）
+#   4. restart: unless-stopped      → 忽略，改用 deploy.restart_policy
+#   5. profiles                     → 忽略且所有服务都会启动 → 开发专用服务（redis-commander/
+#                                     mongo-express/app-pay-test*）已从本文件剔除；
+#                                     本文件 ≈ 根 compose 的 full profile + higress
+#   6. container_name               → 忽略（与多副本冲突），服务名 = mindbase_<service>
+#   7. 相对路径 bind mount          → 直接报错（stack 要求绝对路径）→ 统一 ${MB_ROOT}
+#   8. networks.driver: bridge      → 必须 overlay（多机互通唯一驱动），本文件已声明
+#   9. ports 短语法 + 127.0.0.1 回环绑定 → ingress 路由网格不支持宿主 IP 绑定，且会把端口
+#                                     发布到【所有节点】的所有网卡 → 除对外入口（nginx 80/443、
+#                                     higress 控制台、app-pay-admin）外一律不发布端口：
+#                                     swarm 服务间互访走 overlay DNS，无需发布端口
+#                                     （MySQL/Redis/Mongo/Milvus 调试口临时开放见文件尾注释）
+#
+# 使用前提：
+#   1. docker swarm init（多机：manager 上 init，其余节点 docker swarm join）
+#   2. 本仓库部署到将运行 bind-mount 服务的节点，绝对路径记为 MB_ROOT（默认 /srv/mindbase）；
+#      至少需要：nginx/ apisix/ db/ secrets/ app-board/ mcp/app-board-mcp/ app-pay/ app-pay-admin/ data/
+#   3. .env 与单机 compose 用法一致；⚠️ APISIX_CONSUMER_KEY / PAY_OPS_KEY 必填——
+#      stack 插值没有 compose 的 :? 语法兜底，留空 = 服务间 key-auth 鉴权失败
+#
+# 部署 / 观测 / 销毁（用 shell 导入 .env 做插值，全引擎通用）：
+#   set -a; source .env; set +a
+#   docker stack deploy -c deploy/swarm/docker-stack.yml mindbase
+#   （引擎的 stack deploy 支持 --env-file 时可用等价写法：
+#     docker stack deploy -c deploy/swarm/docker-stack.yml --env-file .env mindbase）
+#   docker stack services mindbase      # 等 replicas 就绪（分母 = 期望副本数）
+#   docker service logs -f mindbase_apisix
+#   docker stack rm mindbase            # 命名卷数据保留，不随 stack 删除
+#
+# 多节点额外注意（单节点 swarm 无感）：
+#   - 命名卷是节点本地卷：有状态服务（3×MySQL/Mongo/Redis/etcd/MinIO/Milvus/Neo4j）
+#     一旦重新调度到别的节点，数据会"消失" → 用 placement 约束钉住（各服务已留模板：
+#     docker node update --label-add role=data <NODE>）
+#   - 证书 bind mount 有跨节点耦合：cert-gen 产出 nginx/app-board/mcp/pay 证书目录、
+#     app-board 首启生成 dev-CA、apisix 只读挂同一目录、app-pay 启动自检要求 certs 存在
+#     → 多节点时把这些服务钉到同一节点，或改用 swarm config/secret 分发证书
+#   - 三个 MySQL/Mongo/Milvus 仍是单副本：本文件只提供进程级自愈（崩溃重启），HA 需另行
+#     换集群形态（主从/PSMDB/Milvus cluster），副本数不解决存储共享问题
+#
+# 从 docker compose 迁移数据：stack 卷名带前缀（mindbase_mysql_data 等，全新空卷），
+#   如需保留原数据：停旧 compose → docker run --rm -v mysql_data:/from -v mindbase_mysql_data:/to
+#   alpine sh -c 'cp -a /from/. /to'（每个卷一次）
+# ================================================================
+
+# ---------------------------------------------------------------
+# Swarm configs（静态配置文件；内容变更后重新 deploy 即自动滚动生效）
+# ---------------------------------------------------------------
+configs:
+  nginx_conf:
+    file: ${MB_ROOT:-/srv/mindbase}/nginx/nginx.conf
+  nginx_locations:
+    file: ${MB_ROOT:-/srv/mindbase}/nginx/locations.conf
+  apisix_config:
+    file: ${MB_ROOT:-/srv/mindbase}/apisix/config.yaml
+  apisix_routes:
+    file: ${MB_ROOT:-/srv/mindbase}/apisix/apisix.yaml
+  mysql_init_sql:
+    file: ${MB_ROOT:-/srv/mindbase}/db/system.sql
+
+# ---------------------------------------------------------------
+# Swarm secrets（等价 compose 的 secrets/api_key_encryption_key bind mount；
+# 文件内容 = 一行 base64 key，部署时必须存在于 manager 上）
+# ---------------------------------------------------------------
+secrets:
+  api_key_encryption_key:
+    file: ${MB_ROOT:-/srv/mindbase}/secrets/api_key_encryption_key
+
+services:
+
+  # ==============================================================
+  # 证书一次性生成（幂等；每次 deploy 都会重跑，有效证书直接复用）
+  # 多节点：与 nginx/app-board/app-pay 钉到同一节点（写它们的 certs 目录）
+  # ==============================================================
+  cert-gen:
+    image: atoncooper/mind-base-certgen:latest
+    environment:
+      MB_CERT_NGINX_DIR: /out/nginx
+      MB_CERT_APPBOARD_DIR: /out/app-board
+      MB_CERT_MCP_DIR: /out/mcp
+      MB_CERT_PAY_DIR: /out/pay
+      MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
+    volumes:
+      - ${MB_ROOT:-/srv/mindbase}/nginx/certs:/out/nginx
+      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/out/app-board
+      - ${MB_ROOT:-/srv/mindbase}/mcp/app-board-mcp/certs:/out/mcp
+      - ${MB_ROOT:-/srv/mindbase}/app-pay/certs:/out/pay
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none          # 一次性任务：跑完即 completed（swarm 无 depends_on，
+                                 # nginx/apisix/app-pay 在证书就绪前崩溃重启自愈）
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+
+  # ==============================================================
+  # Reverse Proxy (Nginx) — SSL termination + 路由；唯一的对外入口
+  # ==============================================================
+  nginx:
+    image: nginx:alpine
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/nginx.conf
+      - source: nginx_locations
+        target: /etc/nginx/locations.conf
+    volumes:
+      - ${MB_ROOT:-/srv/mindbase}/nginx/certs:/etc/nginx/certs:ro
+      - certbot_www:/var/www/certbot
+      - nginx_video_cache:/var/cache/nginx/video
+      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
+    # swarm 加载器只认服务级 ports（长语法），不支持 deploy.ports；
+    # stack 下长语法端口默认走 ingress 路由网格（任一节点 IP 均可达）
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: ingress        # 对外入口，防火墙放行
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: ingress
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        window: 120s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Application
+  # ==============================================================
+
+  # frontendv2（Next.js）：nginx 按 location 代理 frontend:3000，无需发布端口
+  frontend:
+    image: atoncooper/mind-base-frontend:latest
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_APISIX_HOST=nginx:80
+      - MINIO_PROXY_DEST=http://nginx:80
+      - SHARE_DOMAIN=${SHARE_DOMAIN:-}
+      - SHARE_PUBLIC_IP=${SHARE_PUBLIC_IP:-}
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Infrastructure（有状态单例；多节点必须 placement 钉住，见文件头）
+  # ==============================================================
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=mind_base
+      - MYSQL_USER=${MYSQL_USER:-mind_base}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
+    configs:
+      - source: mysql_init_sql
+        target: /docker-entrypoint-initdb.d/01-init.sql
+    volumes:
+      - mysql_data:/var/lib/mysql
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first        # 数据库滚动更新必须先停后启
+        parallelism: 1
+        delay: 30s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  # app-task 独立 MySQL（schema 由 app-task db.Migrate 自建）
+  app-task-mysql:
+    image: mysql:8.4
+    environment:
+      - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_task
+      - MYSQL_USER=${APPTASK_MYSQL_USER:-app_task}
+      - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - app_task_mysql_data:/var/lib/mysql
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${APPTASK_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 30s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  # app-pay 独立 MySQL（Flyway 迁移；不发布宿主端口——swarm 下 IDE 调试用
+  # docker service update --publish-add 或 SSH 隧道，勿长期开公网）
+  app-pay-mysql:
+    image: mysql:8.4
+    environment:
+      - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_pay
+      - MYSQL_USER=${PAY_MYSQL_USER:-app_pay}
+      - MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - app_pay_mysql_data:/var/lib/mysql
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${PAY_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 30s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-mind-base}", "--notify-keyspace-events", "Ex", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", "900 1", "--save", "300 10"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 15s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  mongo:
+    image: mongo:7
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+    volumes:
+      - mongo_data:/data/db
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 30s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: ["etcd", "-advertise-client-urls=http://etcd:2379", "-listen-client-urls=http://0.0.0.0:2379", "-data-dir=/etcd"]
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 15s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  # MinIO（社区版上游已停发，项目自 vendor 构建；CI 已发布镜像）
+  minio:
+    image: atoncooper/mind-base-minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      # Plan 0021: Redis 事件通知 + 断传清理
+      - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
+      - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
+      - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
+      - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 30s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  milvus:
+    image: milvusdb/milvus:v2.6.22
+    command: ["milvus", "run", "standalone"]
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 60s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  # KG 图存储（可选组件：down 时 AI 栈优雅降级）
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-mind-base}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 30s
+      # 多节点：docker node update --label-add role=data <NODE> 后取消注释
+      # （swarm 加载器不接受空的 placement.constraints，注释掉而非留空）
+      # placement:
+      #   constraints:
+      #     - node.labels.role == data
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # APISIX 业务网关（standalone；不发布端口，入口只有 nginx）
+  # ==============================================================
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    configs:
+      - source: apisix_config
+        target: /usr/local/apisix/conf/config.yaml
+      - source: apisix_routes
+        target: /usr/local/apisix/conf/apisix.yaml
+    volumes:
+      # app-board dev-CA：apisix 信任 app-board 的 HTTPS upstream；
+      # ⚠️ 与 app-board 必须同节点（见文件头）
+      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/usr/local/apisix/conf/certs/board:ro
+    # 容器内清掉代理变量，防宿主 ~/.docker/config.json 注入劫持内网流量（同单机 compose）
+    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 15s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Go 应用服务（app-go/*，无状态；可按需 docker service scale 扩容）
+  # ==============================================================
+
+  # app-auth —— 身份认证（认证权威；共享主 MySQL + Redis）
+  app-auth:
+    image: atoncooper/mind-base-app-auth:latest
+    environment:
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      # Snowflake worker id 2（1 是已退役 Python backend）
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+    secrets:
+      - api_key_encryption_key      # 挂载 /run/secrets/api_key_encryption_key
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-cloud —— 云盘服务；多实例就绪（Redis 租约锁 + outbox 认领）：
+  #   docker service scale mindbase_app-cloud=N —— swarm 下无需宿主端口池，
+  #   多副本经 overlay VIP 自动负载均衡
+  app-cloud:
+    image: atoncooper/mind-base-app-cloud:latest
+    environment:
+      - APPCLOUD__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
+      - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
+      - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
+      - APPCLOUD__LOG__OUTPUT=both
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+    secrets:
+      - api_key_encryption_key
+    volumes:
+      - app_cloud_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-note —— 笔记服务（MySQL 元数据 + Mongo 正文）
+  app-note:
+    image: atoncooper/mind-base-app-note:latest
+    environment:
+      - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPNOTE__LOG__OUTPUT=both
+    volumes:
+      - app_note_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-quiz —— 测验存储
+  app-quiz:
+    image: atoncooper/mind-base-app-quiz:latest
+    environment:
+      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPQUIZ__LOG__OUTPUT=both
+    volumes:
+      - app_quiz_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-kg —— KG 图存储（gRPC 8013 / health 8014，仅内网）
+  app-kg:
+    image: atoncooper/mind-base-app-kg:latest
+    environment:
+      - APPKG__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - KG__URI=${KG__URI:-bolt://neo4j:7687}
+      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
+      - APPKG__LOG__OUTPUT=both
+    volumes:
+      - app_kg_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-settings —— 用户 AI 配置权威
+  app-settings:
+    image: atoncooper/mind-base-app-settings:latest
+    environment:
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
+    volumes:
+      - app_settings_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-bili —— B 站数据获取（须出公网访问 B 站与 DashScope）
+  app-bili:
+    image: atoncooper/mind-base-app-bili:latest
+    environment:
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 Higress 原生透传（/api/v1 → DashScope）
+      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - APPBILI__LOG__OUTPUT=both
+    secrets:
+      - api_key_encryption_key
+    volumes:
+      - app_bili_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # AI 域（app-ts，Node/Fastify）
+  # 注：env_file 在 stack deploy 下被忽略，.env 中 SDK 直读变量
+  #     （LangSmith/Tavily/SearXNG/skills store）已显式内联为透传
+  # ==============================================================
+  app-ts:
+    image: atoncooper/mind-base-app-ts:latest
+    environment:
+      - SERVER__HOST=0.0.0.0
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - APP_BILI_BASE_URL=http://app-bili:8010
+      - APP_TASK_BASE_URL=http://apisix:9080
+      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - OCR__ENABLED=${OCR__ENABLED:-true}
+      - OCR__MODEL=${OCR__MODEL:-z-ai/glm-5.3-flash}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # LLM 统一 GLM-5.3-flash（镜像重建含新 default.yaml 后可删）
+      - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
+      - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
+      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
+      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
+      - KG_GRPC__TARGET=app-kg:8013
+      - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
+      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
+      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
+      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
+      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - MILVUS__ADDRESS=milvus:19530
+      # stdout-only：镜像 /app/logs 属主未修复前文件日志 EACCES 会崩进程
+      - LOG__FILEENABLED=false
+      # —— .env 透传（stack 无 env_file；SDK 只认环境变量）——
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-}
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-MindBase}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      - SKILL_STORE__API_KEY=${SKILL_STORE__API_KEY:-}
+      - SKILL_STORE_API_KEY=${SKILL_STORE_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - SEARXNG_URL=${SEARXNG_URL:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OCR__API_KEY=${OCR__API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 15s
+        failure_action: rollback
+        monitor: 60s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # 任务调度栈（app-task + 独立 MySQL，经 APISIX 调主 app）
+  # ==============================================================
+  app-task:
+    image: atoncooper/app-task:latest          # 唯一纯远程镜像（源码在独立仓库）
+    environment:
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
+      - APPTASK__APP__BASE_URL=http://apisix:9080
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9080
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      - APPTASK__WEBUI__TOKEN=${APPTASK__WEBUI__TOKEN:-}
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      - APPTASK__LOG__OUTPUT=both
+      - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
+      - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
+    volumes:
+      - app_task_logs:/app/logs
+      # app-pay 开发 CA（cert-gen 产出；缺失时仅 https 委托回调报错、兜底轮询接管）
+      # ⚠️ 与 app-pay/cert-gen 同节点
+      - ${MB_ROOT:-/srv/mindbase}/app-pay/certs:/app/pay-certs:ro
+      - app_task_certs:/app/certs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # 支付域（app-pay + app-pay-admin）
+  # 注：application*.yaml 占位符消费的 ALIPAY_*/PAY_EXECUTOR_TOKEN 等
+  #     原来靠 env_file 注入，这里全部显式内联
+  # ==============================================================
+  app-pay:
+    image: atoncooper/mind-base-app-pay:latest
+    command: ["--spring.profiles.active=docker"]
+    environment:
+      - PAY_MYSQL_USER=${PAY_MYSQL_USER:-app_pay}
+      - PAY_MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
+      # 超时委托 executor 端点令牌（非空则强制校验）
+      - PAY_EXECUTOR_TOKEN=${PAY_EXECUTOR_TOKEN:-}
+      # 支付宝当面付凭证组（M2；留空 = 渠道停用，仅 MOCK/内部端点可用）
+      - ALIPAY_ENABLED=${ALIPAY_ENABLED:-false}
+      - ALIPAY_GATEWAY_URL=${ALIPAY_GATEWAY_URL:-}
+      - ALIPAY_APP_ID=${ALIPAY_APP_ID:-}
+      - ALIPAY_APP_PRIVATE_KEY=${ALIPAY_APP_PRIVATE_KEY:-}
+      - ALIPAY_PLATFORM_PUBLIC_KEY=${ALIPAY_PLATFORM_PUBLIC_KEY:-}
+      - ALIPAY_NOTIFY_URL=${ALIPAY_NOTIFY_URL:-}
+      # TLS 覆盖（默认 certs/pay.crt|key = 下方 bind mount，cert-gen 产出）
+      - PAY_TLS_ENABLED=${PAY_TLS_ENABLED:-true}
+      - PAY_TLS_CERT=${PAY_TLS_CERT:-}
+      - PAY_TLS_KEY=${PAY_TLS_KEY:-}
+    volumes:
+      - app_pay_logs:/app/logs
+      # ⚠️ 证书目录必须存在于 app-pay 所调度节点（cert-gen 同节点产出）
+      - ${MB_ROOT:-/srv/mindbase}/app-pay/certs:/app/certs:ro
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 10s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 20s
+        failure_action: rollback
+        monitor: 60s
+    networks:
+      - mind-base-net
+
+  # app-pay-admin —— 支付后台管理（不经 APISIX，浏览器直连）
+  # ⚠️ 单机 compose 绑 127.0.0.1；swarm ingress 会发布到【所有节点 IP】，
+  #    务必用防火墙/安全组限源 IP，或改走 SSH 隧道后删除本 ports 段
+  app-pay-admin:
+    image: atoncooper/mind-base-app-pay-admin:latest
+    command: ["-config", "config.docker.yaml"]
+    environment:
+      - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
+      - PAYADMIN__APP_PAY__OPS_KEY=${PAY_OPS_KEY:-}
+      - PAYADMIN__APP_PAY__BASE_URL=http://apisix:9080
+      - PAYADMIN__WEBUI__TOKEN=${PAYADMIN__WEBUI__TOKEN:-}
+    volumes:
+      - app_pay_admin_logs:/app/logs
+      - ${MB_ROOT:-/srv/mindbase}/app-pay-admin/certs:/app/certs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8003/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    ports:
+      - target: 8003
+        published: 8003
+        protocol: tcp
+        mode: ingress
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # 板域（app-board + 3×MCP server）
+  # ==============================================================
+
+  # app-board —— HTTPS-only（首启自生成 dev-CA+叶子并持久化到 certs 目录；
+  # ⚠️ 与 apisix（挂同一目录的 dev-ca.crt）同节点）
+  app-board:
+    image: atoncooper/mind-base-app-board:latest
+    environment:
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      # explicit 模式：加载 cert-gen 签发的叶子（auto 模式会在只读 bind 里重建 dev CA → EACCES）
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
+    volumes:
+      - app_board_logs:/app/logs
+      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/app/certs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-board-mcp —— MCP server（外部 MCP 宿主如需远程访问：取消 ports 注释并置
+  # BOARD_MCP_TLS_ENABLED=true，证书 cert-gen 统一签发）
+  app-board-mcp:
+    image: atoncooper/mind-base-app-board-mcp:latest
+    environment:
+      - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
+      - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
+      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
+      - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - BOARDMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - BOARDMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - BOARDMCP__LOG__OUTPUT=both
+      - BOARDMCP__LOG__FILE=/app/logs/app-board-mcp.log
+    volumes:
+      - app_board_mcp_logs:/app/logs
+      - ${MB_ROOT:-/srv/mindbase}/mcp/app-board-mcp/certs:/app/certs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+      # ports:                      # 外部 MCP 宿主直连时再开放（ingress 全节点）
+      #   - target: 8005
+      #     published: 8005
+      #     protocol: tcp
+      #     mode: ingress
+    networks:
+      - mind-base-net
+
+  # app-note-mcp
+  app-note-mcp:
+    image: atoncooper/mind-base-app-note-mcp:latest
+    environment:
+      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
+      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
+      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - NOTEMCP__LOG__OUTPUT=both
+      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
+    volumes:
+      - app_note_mcp_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # app-quiz-mcp
+  app-quiz-mcp:
+    image: atoncooper/mind-base-app-quiz-mcp:latest
+    environment:
+      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
+      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
+      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - QUIZMCP__LOG__OUTPUT=both
+      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
+    volumes:
+      - app_quiz_mcp_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Higress AI 网关 —— AI 流量统一出网（LLM/embedding/rerank/ASR）
+  # 供应商密钥在控制台配置并持久化于 ${MB_ROOT}/data/higress（须预建目录）
+  # 控制台 18081 有意对外开放：公网部署务必防火墙限源 IP
+  # ==============================================================
+  higress:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+    environment:
+      - GATEWAY_HTTP_PORT=8080
+      - GATEWAY_HTTPS_PORT=8443
+      - CONSOLE_PORT=8001
+      - NO_PROXY=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+      - no_proxy=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+    volumes:
+      # ⚠️ 部署前在目标节点执行 mkdir -p ${MB_ROOT}/data/higress/logs
+      - ${MB_ROOT:-/srv/mindbase}/data/higress:/data
+      - ${MB_ROOT:-/srv/mindbase}/data/higress/logs:/var/log/proxy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8001/ || wget -qO /dev/null http://127.0.0.1:8001/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    ports:
+      - target: 8001
+        published: 18081
+        protocol: tcp
+        mode: ingress          # 控制台（内部 8080 网关口不对宿主发布，走 overlay）
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: stop-first        # 配置持久化在本地 bind 目录，先停后启避免双写
+        parallelism: 1
+        delay: 30s
+        monitor: 120s
+    networks:
+      - mind-base-net
+
+# ---------------------------------------------------------------
+# 命名卷（节点本地；stack 前缀 mindbase_）。多节点必须配合 placement 约束，
+# 跨节点共享存储请另行接入（NFS/Longhorn 等）
+# ---------------------------------------------------------------
+volumes:
+  mysql_data:
+  redis_data:
+  mongo_data:
+  milvus_data:
+  etcd_data:
+  neo4j_data:
+  neo4j_logs:
+  minio_data:
+  certbot_www:
+  nginx_video_cache:
+  nginx_wallpaper_cache:
+  app_task_mysql_data:
+  app_task_certs:
+  app_task_logs:
+  app_pay_mysql_data:
+  app_pay_logs:
+  app_pay_admin_logs:
+  app_auth_logs:
+  app_cloud_logs:
+  app_note_logs:
+  app_quiz_logs:
+  app_kg_logs:
+  app_settings_logs:
+  app_bili_logs:
+  app_note_mcp_logs:
+  app_quiz_mcp_logs:
+  app_board_logs:
+  app_board_mcp_logs:
+
+networks:
+  mind-base-net:
+    driver: overlay
+    # driver_opts:
+    #   encrypted: "true"        # 多机跨不可信内网时开启 overlay 加密
+
+# ---------------------------------------------------------------
+# 附：临时开放调试端口示例（默认全部不发布；开放 = 暴露到所有节点 IP，用完即删）
+#   docker service update --publish-add published=3306,target=3306 mindbase_mysql
+#   docker service update --publish-rm published=3306,target=3306 mindbase_mysql
+# ---------------------------------------------------------------

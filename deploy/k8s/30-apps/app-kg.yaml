@@ -41,15 +41,13 @@ spec:
           image: atoncooper/mind-base-app-kg:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: APPKG__RDBMS__URL
-              value: "mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base"
             - name: KG__URI
               value: "bolt://neo4j:7687"
-            - name: KG__PASSWORD
-              value: "$(NEO4J_PASSWORD)"
             - name: APPKG__LOG__OUTPUT
               value: "both"
           ports:

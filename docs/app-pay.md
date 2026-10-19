@@ -192,3 +192,13 @@ cd app-pay && mvn test    # 20 个测试类 / 86 个用例，纯 JUnit 无外部
 - **约束**：同一会员同时仅允许一张待支付升级单（`UPGRADE_ORDER_PENDING`）；赠送/人工开通的会员无基准单，走人工流程（`UPGRADE_BASE_INVALID`）；
 - **档位墙豁免**：升级单支付确认时豁免第二道墙（同档按设计交付），权益事件标记 `UPGRADE`；
 - **接口**：`GET /pay/upgrade-quotes`（报价，前端商品卡展示差价）；建单复用 `POST /pay/orders`（服务端按同一公式计价，前端零信任）。
+
+
+## Let's Encrypt 证书存储路径（常见坑，2026-10）
+
+certbot Docker 容器有**两个目录**，不要混淆：
+- `/var/www/certbot` — ACME webroot 验证文件（临时 challenge 文件）
+- `/etc/letsencrypt` — **签发的证书和私钥**（fullchain.pem / privkey.pem）
+
+用 `docker run --rm` 跑 certbot 时如果没挂载 `/etc/letsencrypt`，证书随容器删除而丢失。
+正确做法：同时挂载两个卷，续期脚本用 `--keep-until-expiring`。

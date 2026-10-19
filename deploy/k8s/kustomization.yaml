@@ -20,6 +20,51 @@ kind: Kustomization
 
 namespace: mind-base
 
+# mindbase-defaults：compose ${VAR:-default} 的兜底值（dev 凭据与连接串，本就公开于 git）。
+# 所有工作负载 envFrom 顺序 = [mindbase-defaults, mindbase-env]——同名键以 .env
+# （mindbase-env Secret）为准，等价 compose 的 .env 覆盖语义；kustomize hash 变更自动滚动。
+configMapGenerator:
+  - name: mindbase-defaults
+    literals:
+      - MYSQL_USER=mind_base
+      - MYSQL_PASSWORD=mind-base
+      - MYSQL_ROOT_PASSWORD=root123
+      - MONGO_USER=admin
+      - MONGO_PASSWORD=mind-base
+      - MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
+      - APPBOARD__MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
+      - REDIS_PASSWORD=mind-base
+      - REDIS__URL=redis://:mind-base@redis:6379/1
+      - APPBOARD__REDIS__URL=redis://:mind-base@redis:6379/2
+      - NEO4J_PASSWORD=mind-base
+      - KG__PASSWORD=mind-base
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO__ENDPOINT=http://minio:9000
+      - MINIO__ACCESS_KEY=minioadmin
+      - MINIO__SECRET_KEY=minioadmin
+      - MINIO__BUCKET=drive-videos
+      - RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPAUTH__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPCLOUD__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPNOTE__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPQUIZ__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPKG__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPSETTINGS__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPBILI__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - APPTASK__RDBMS__URL=mysql+aiomysql://app_task:app-task@app-task-mysql:3306/app_task
+      - PAYADMIN__RDBMS__URL=mysql+aiomysql://app_pay:app-pay@app-pay-mysql:3306/app_pay
+      - APPTASK_MYSQL_ROOT_PASSWORD=root123
+      - APPTASK_MYSQL_USER=app_task
+      - APPTASK_MYSQL_PASSWORD=app-task
+      - PAY_MYSQL_ROOT_PASSWORD=root123
+      - PAY_MYSQL_USER=app_pay
+      - PAY_MYSQL_PASSWORD=app-pay
+      - AI_GATEWAY__BASE_URL=http://higress:8080/v1
+
 # NOTE: mysql-init-sql / apisix-config / nginx-conf ConfigMaps are NOT
 # generated here — their source files live at the repo root (db/, apisix/,
 # nginx/), which kustomize's load restrictor forbids referencing (and

@@ -38,23 +38,20 @@ spec:
           image: atoncooper/mind-base-app-bili:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: APPBILI__RDBMS__URL
-              value: "mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base"
-            - name: MONGO__URI
-              value: "$(MONGO__URI)"
-            - name: REDIS__URL
-              value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-            - name: AI_GATEWAY__API_KEY
-              value: "$(AI_GATEWAY__API_KEY)"
+            # ASR 原生透传固定 /api/v1（compose 同值；真实供应商 key 在网关侧）
             - name: AI_GATEWAY__BASE_URL
-              value: "http://higress:8080/v1"
-            - name: SECURITY__API_KEY_ENCRYPTION_KEY
-              value: "$(SECURITY__API_KEY_ENCRYPTION_KEY)"
+              value: "http://higress:8080/api/v1"
             - name: SECURITY__API_KEY_ENCRYPTION_KEY_FILE
               value: "/run/secrets/api_key_encryption_key"
+            # $(VAR) 只能引用 env 列表内变量（envFrom 不可见）——先取源值再派生
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
             - name: APPBILI__INTERNAL__API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: APPBILI__LOG__OUTPUT

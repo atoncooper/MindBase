@@ -38,13 +38,13 @@ spec:
           image: atoncooper/mind-base-app-ts:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
             - name: SERVER__HOST
               value: "0.0.0.0"
-            - name: REDIS__URL
-              value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
             - name: APP_BILI_BASE_URL
               value: "http://app-bili:8010"
             - name: APP_TASK_BASE_URL
@@ -53,32 +53,43 @@ spec:
               value: "http://app-auth:8006"
             - name: QUIZ_EXECUTOR_URL
               value: "http://apisix:9080/internal/quiz/generate-llm"
-            - name: MINIO__ENDPOINT
-              value: "http://minio:9000"
-            - name: MINIO__ACCESS_KEY
-              value: "$(MINIO_ACCESS_KEY)"
-            - name: MINIO__SECRET_KEY
-              value: "$(MINIO_SECRET_KEY)"
-            - name: MINIO__BUCKET
-              value: "$(MINIO_BUCKET)"
-            - name: OCR__ENABLED
-              value: "true"
-            - name: OCR__MODEL
-              value: "qwen-vl-ocr"
-            - name: MONGO__URI
-              value: "$(MONGO__URI)"
+            # .env 覆盖 AI_GATEWAY__BASE_URL 需 patch 此处（显式 env 优先于 envFrom）
             - name: AI_GATEWAY__BASE_URL
               value: "http://higress:8080/v1"
-            - name: AI_GATEWAY__API_KEY
-              value: "$(AI_GATEWAY__API_KEY)"
+            - name: OCR__ENABLED
+              value: "true"
+            # GLM-5.3-flash vision-capable（qwen3-max 已被上游下线，勿改回）
+            - name: OCR__MODEL
+              value: "z-ai/glm-5.3-flash"
             - name: APP_PAY_BASE_URL
               value: "http://apisix:9080/internal/pay"
             - name: APP_QUIZ_BASE_URL
               value: "http://apisix:9080/internal/quiz"
-            - name: KGGRPC__TARGET
+            # env 名必须是 KG_GRPC__（KGGRPC__ 会被 loader 静默忽略 → gRPC 回落
+            # 127.0.0.1 → KG 图存储 memory 降级、数据不持久化）
+            - name: KG_GRPC__TARGET
               value: "app-kg:8013"
-            - name: KGGRPC__PROTO_PATH
+            - name: KG_GRPC__PROTO_PATH
               value: "/app/proto/kg/v1/kg.proto"
+            # stdout-only：镜像 /app/logs 属主未修复前文件日志 EACCES 会崩进程
+            - name: LOG__FILEENABLED
+              value: "false"
+            # MCP 桥（note/quiz/board）：凭证走服务模式 X-Api-Key（= APISIX_CONSUMER_KEY）
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: NOTE_MCP__URL
+              value: "http://app-note-mcp:8009/mcp"
+            - name: NOTE_MCP__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: QUIZ_MCP__URL
+              value: "http://app-quiz-mcp:8012/mcp"
+            - name: QUIZ_MCP__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: BOARD_MCP__URL
+              value: "http://app-board-mcp:8005/mcp"
+            - name: BOARD_MCP__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
           ports:
             - containerPort: 8000
           volumeMounts:

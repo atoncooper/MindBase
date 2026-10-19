@@ -36,11 +36,13 @@ spec:
           image: neo4j:5-community
           imagePullPolicy: IfNotPresent
           env:
-            - name: NEO4J_AUTH
-              value: neo4j/$(NEO4J_PASSWORD)
+            # $(VAR) 依赖必须先定义后引用；口令取 defaults ConfigMap
+            # （与 app-kg 的 KG__PASSWORD 默认值同源）
             - name: NEO4J_PASSWORD
               valueFrom:
-                secretKeyRef: { name: mindbase-env, key: NEO4J_PASSWORD }
+                configMapKeyRef: { name: mindbase-defaults, key: NEO4J_PASSWORD }
+            - name: NEO4J_AUTH
+              value: neo4j/$(NEO4J_PASSWORD)
           ports:
             - containerPort: 7474
             - containerPort: 7687

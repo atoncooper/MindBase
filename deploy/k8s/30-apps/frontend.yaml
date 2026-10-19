@@ -29,19 +29,17 @@ spec:
       labels:
         app: frontend
     spec:
-      initContainers:
-        - name: wait-backend
-          image: busybox:1.36
-          command: ["sh", "-c", "until nc -z backend 8000; do echo waiting for backend; sleep 3; done"]
+      # 纯页面/SSR 服务，无前置依赖（nginx 对其按需反代）
       containers:
         - name: frontend
           image: atoncooper/mind-base-frontend:latest
           imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: mindbase-env          # SHARE_DOMAIN / SHARE_PUBLIC_IP / NEXT_PUBLIC_API_URL（可选）
           env:
             - name: NODE_ENV
               value: production
-            - name: NEXT_PUBLIC_API_URL
-              value: https://localhost
             - name: NEXT_PUBLIC_APISIX_HOST
               value: nginx:80
             # MinIO same-origin proxy target — read at runtime by rewrites()

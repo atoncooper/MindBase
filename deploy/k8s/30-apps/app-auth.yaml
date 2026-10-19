@@ -38,15 +38,11 @@ spec:
           image: atoncooper/mind-base-app-auth:latest
           imagePullPolicy: Always
           envFrom:
+            - configMapRef:
+                name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
           env:
-            - name: APPAUTH__RDBMS__URL
-              value: "mysql+aiomysql://$(MYSQL_USER):$(MYSQL_PASSWORD)@mysql:3306/mind_base"
-            - name: REDIS__URL
-              value: "redis://:$(REDIS_PASSWORD)@redis:6379/1"
-            - name: SECURITY__API_KEY_ENCRYPTION_KEY
-              value: "$(SECURITY__API_KEY_ENCRYPTION_KEY)"
             - name: SECURITY__API_KEY_ENCRYPTION_KEY_FILE
               value: "/run/secrets/api_key_encryption_key"
             - name: APPAUTH__WORKER_ID

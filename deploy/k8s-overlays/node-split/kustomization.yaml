@@ -1,0 +1,32 @@
+# MindBase — 节点分工 overlay：数据层钉 database 节点，应用层留在 worker
+#
+# 前提（一次性，先于首次 apply 完成）：
+#   1. database 节点打污点（应用 Pod 不会落上去）：
+#        kubectl taint node ip-172-31-38-145 dedicated=database:NoSchedule
+#   2. 默认 StorageClass 可用（kubeadm 裸集群需先装 local-path-provisioner，
+#      见 README §0；local-path 数据在节点本地，数据层必须先钉后起）
+#
+# Apply:  kubectl apply -k deploy/k8s-overlays/node-split
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # base 在 ../..（kustomize 拒绝引用祖先目录 = cycle detected，
+  # 故 overlay 必须置于 deploy/k8s 之外）
+  - ../../k8s
+
+patches:
+  # 全部数据 StatefulSet（mysql / app-task-mysql / app-pay-mysql / mongo /
+  # redis / etcd / minio / milvus）——target.kind 匹配，无需逐个点名
+  - path: data-node.yaml
+    target:
+      kind: StatefulSet
+  # 两个带独立 PVC 的 Deployment（RWO 卷，同样不能漂移）
+  - path: pvc-node-neo4j.yaml
+    target:
+      kind: Deployment
+      name: neo4j
+  - path: pvc-node-higress.yaml
+    target:
+      kind: Deployment
+      name: higress
