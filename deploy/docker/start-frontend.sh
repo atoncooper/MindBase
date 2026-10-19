@@ -10,6 +10,9 @@ cd "$(dirname "$0")"
 # compose 插值变量来自 .env（软链到仓库根）
 [ -e .env ] || ln -sf ../../.env .env
 
+docker network inspect mind-base-overlay >/dev/null 2>&1 \
+  || echo "⚠️  overlay 网络 mind-base-overlay 不存在：docker network create -d overlay --attachable mind-base-overlay"
+
 up() { docker compose --env-file ../../.env -f "$1" up -d "$2"; }
 
 wait_ready() { # 容器名 [超时秒]

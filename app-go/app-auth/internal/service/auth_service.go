@@ -16,6 +16,22 @@ import (
 	"gorm.io/gorm"
 )
 
+// NormalizeAvatarURL upgrades legacy http:// avatar links (bilibili face
+// i0.hdslb.com, WeChat headimg CDNs) to https://. Both CDNs serve over TLS;
+// the http form becomes mixed content on the HTTPS site and browsers silently
+// block the request — the "avatar never displays" bug. Site-relative URLs
+// (/avatar/file/...) and already-https links pass through unchanged.
+func NormalizeAvatarURL(u *string) *string {
+	if u == nil || *u == "" {
+		return u
+	}
+	if strings.HasPrefix(*u, "http://") {
+		upgraded := "https://" + strings.TrimPrefix(*u, "http://")
+		return &upgraded
+	}
+	return u
+}
+
 // Business-rule errors — the router layer maps them to HTTP 400/409.
 var (
 	ErrEmailTaken        = errors.New("该邮箱已注册")
@@ -417,7 +433,7 @@ func (s *AuthService) GetUserByUID(uid int64) (*UserInfo, error) {
 	info.CreatedAt = user.CreatedAt
 	if profile != nil {
 		info.Nickname = profile.Nickname
-		info.Avatar = profile.Avatar
+		info.Avatar = NormalizeAvatarURL(profile.Avatar)
 	}
 	return info, nil
 }
@@ -464,7 +480,7 @@ func (s *AuthService) GetFullProfile(uid int64) (*FullProfile, error) {
 	p.PhoneVerified = user.PhoneVerified != nil && *user.PhoneVerified
 	if profile != nil {
 		p.Nickname = profile.Nickname
-		p.Avatar = profile.Avatar
+		p.Avatar = NormalizeAvatarURL(profile.Avatar)
 		p.Bio = profile.Bio
 		if profile.Birthday != nil {
 			b := profile.Birthday.Format("2006-01-02")

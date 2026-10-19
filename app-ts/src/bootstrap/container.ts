@@ -192,6 +192,14 @@ export async function bootstrap() {
     log.info("[BOOT] quota counter: memory fallback (REDIS__URL not set)");
   }
   const quota = new QuotaService({ counter: quotaCounter });
+  if (!config.appPay.apiKey) {
+    // 部署级事故要启动时喊出来：key 缺失时所有用户档位永远按 free 解析
+    //（配额展示与加权排队静默降级），比线上逐请求 warn 更可发现。
+    log.error(
+      "[BOOT] APISIX_CONSUMER_KEY 未配置（appPay.apiKey 为空）——所有用户的会员档位将永远按 free 解析" +
+        "（配额展示与加权排队降级）。请在 .env 配置 APISIX_CONSUMER_KEY 并重启。",
+    );
+  }
   let usageLedger: UsageLedgerRepository = new MemoryUsageLedger();
   let mongoUsageLedger: MongoUsageLedger | null = null;
   if (config.mongo.uri) {
@@ -486,6 +494,9 @@ export async function bootstrap() {
       ? { forcedSection: (uid, ids) => skillManager!.forcedSection(uid, ids) }
       : undefined,
     ocr,
+    // 模型能力注册表：quizModel 确认支持视觉 → 错题图片原图直读（免 OCR 转写）；
+    // 能力未知/文本档 → OCR 兜底。与路由层 /chat 的视觉闸门同一数据源。
+    capabilities,
     resumeStore: quizResumeStore,
     quota,
   });

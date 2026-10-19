@@ -326,6 +326,11 @@ export function AccountView() {
                                         ? `AI 问答 ${quotaSummary.kinds.find((k) => k.kind === "chat")?.used ?? 0}/${quotaSummary.kinds.find((k) => k.kind === "chat")?.limit ?? 0}`
                                         : "每日用量"
                                 }
+                                tag={
+                                    quotaSummary?.tierSource === "fallback" ? (
+                                        <Tag tone="warn">权益同步失败</Tag>
+                                    ) : undefined
+                                }
                                 onClick={() => router.push("/quota")}
                             />
                             <ListRow
@@ -539,13 +544,16 @@ function Avatar({
     name: string | null;
     uid: number;
 }) {
+    const [failed, setFailed] = useState(false);
     const initial = name?.[0] || String(uid).slice(0, 1);
-    if (url) {
+    // URL 加载失败（外链头像被墙/防盗链/混合内容等）→ 回退首字母，不留破图
+    if (url && !failed) {
         return (
             // eslint-disable-next-line @next/next/no-img-element
             <img
                 src={url}
                 alt=""
+                onError={() => setFailed(true)}
                 className="h-[88px] w-[88px] shrink-0 rounded-full object-cover ring-1 ring-border"
             />
         );

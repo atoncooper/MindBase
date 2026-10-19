@@ -15,8 +15,9 @@ import {
   Sparkles,
   Pencil,
 } from "lucide-react";
-import type { ChatArtifact, ChatSource } from "@/lib/chat-stream";
+import type { ChatArtifact, ChatInteraction, ChatSource } from "@/lib/chat-stream";
 import type { ReasoningStep } from "./types";
+import { InteractionCard } from "./interaction-card";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -32,6 +33,11 @@ interface ChatMessageProps {
   // Sub-agent delegation live status (`delegate` SSE frame): currently-running
   // sub-agent + active count; cleared when the delegation finishes.
   subAgent?: { agent: string; count: number };
+  // Structured AI→user interaction (ask_user → `interact` SSE frame): rendered
+  // as a confirm card / option chips / form right under the answer text.
+  interaction?: ChatInteraction | null;
+  interactionAnswered?: boolean;
+  onInteractionAnswer?: (answer: string) => void;
   // 多模态：用户消息附带的图片（data URL；仅本地实时态）
   images?: string[];
   /** 点击缩略图 → 打开大图预览(灯箱) */
@@ -152,6 +158,9 @@ function ChatMessage({
   agent,
   queuePosition,
   subAgent,
+  interaction,
+  interactionAnswered,
+  onInteractionAnswer,
   images,
   onImageOpen,
   status = "completed",
@@ -474,6 +483,15 @@ function ChatMessage({
             </div>
           )}
         </div>
+
+        {/* Structured interaction (ask_user): confirm card / option chips / form */}
+        {interaction && onInteractionAnswer && (
+          <InteractionCard
+            interaction={interaction}
+            answered={!!interactionAnswered}
+            onAnswer={onInteractionAnswer}
+          />
+        )}
 
         {/* Sources - citation cards */}
         {safeSources.length > 0 && (

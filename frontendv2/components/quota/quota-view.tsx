@@ -190,6 +190,23 @@ export function QuotaView() {
                 </Card>
             )}
 
+            {summary && summary.enabled && summary.tierSource === "fallback" && (
+                <Card className="mt-5">
+                    <div className="flex items-start gap-3">
+                        <ShieldAlert className="mt-0.5 h-5 w-5" style={{ color: C.amber }} />
+                        <div>
+                            <p className="text-sm font-medium" style={{ color: C.text }}>
+                                会员权益同步失败，当前按免费档展示
+                            </p>
+                            <p className="mt-1 text-xs" style={{ color: C.text2 }}>
+                                你的会员档位暂时无法从支付服务确认（网络或内部鉴权异常）。额度将在恢复后自动按会员档位生效；
+                                若持续出现，请联系管理员检查 app-pay 服务连接与网关内部密钥配置。
+                            </p>
+                        </div>
+                    </div>
+                </Card>
+            )}
+
             {summary && summary.enabled && (
                 <>
                     {/* 第一行：今日概览 + 今日成本（双列栅格） */}

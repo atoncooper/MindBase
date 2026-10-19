@@ -74,7 +74,26 @@ docker compose --env-file ../../.env -f 31-app-bili.yml logs -f app-bili   # 日
 docker compose --env-file ../../.env -f 13-apisix.yml up -d --force-recreate apisix  # 改配置后重建
 ```
 
-## 六、证书（关于浏览器警告，必须说清楚）
+## 六、跨机依赖：depends_on 为什么用不了，等价物是什么
+
+`depends_on`（含 `condition: service_healthy`）只在**同一台主机、同一个 compose
+project 内**生效——等待的也是本地容器的 healthcheck。它不能引用另一台机器上的
+服务，更不能"探测一个远程 URL 视为依赖完成"。本目录每服务一份 compose（独立
+project、分属两台主机），所以**没有任何一份文件能声明跨机 depends_on**，跨机
+启动顺序靠三层保障：
+
+1. **启动脚本远程健康门（本次新增）**：`start-backend.sh` 的 `wait_http`——
+   在 overlay 内起一次性容器轮询 server1 的 minio `/minio/health/live` 与
+   apisix `http://apisix:9080/`（收到任意 HTTP 响应即视为存活，含 404）。
+   这就是"远程服务 OK = 依赖完成"的实现；超时只告警不阻断。探针镜像可用
+   `WAIT_CURL_IMAGE` 覆盖（默认 `curlimages/curl:8.11.1`，server2 需能拉取）。
+2. **网关侧健康检查**：APISIX 每个 upstream 配了 active check（5s `/health`），
+   节点不可用自动摘除、恢复自动加回——运行期的"depends"由网关持续验证。
+3. **应用内降级 + restart**：所有跨服务客户端带超时与 fail-open/fail-closed
+   语义（会员档位、知识库 scope、M2M 写面各自方向不同），容器
+   `restart: unless-stopped`——启动顺序错误造成的失败会在依赖恢复后自愈。
+
+## 七、证书（关于浏览器警告，必须说清楚）
 
 - Subject 已是完整字段：C=CN / ST=Sichuan / L=Chengdu / O=MindBase / OU=MindBase Platform；
   CA 的 CN=MindBase Root CA，叶子的 CN=访问主机名（MB_CERT_HOST）。
@@ -106,7 +125,7 @@ docker compose --env-file ../../.env -f 13-apisix.yml up -d --force-recreate api
   （相关叶子自动按新 SAN 重签）；全量重签 MB_CERT_FORCE=1。
 - server2 的 app-pay/app-board 必须用 server1 拷来的**同一套**证书（apisix 信任的就是这套 dev-CA）。
 
-## 七、验证
+## 八、验证
 
 ```bash
 # server2 → server1 按名解析
@@ -118,7 +137,7 @@ docker exec mind-base-app-ts wget -qO- http://127.0.0.1:8000/health
 # 端到端：浏览器 https://<MB_CERT_HOST> 登录 + 聊天；docker logs -f mind-base-apisix
 ```
 
-## 八、排障
+## 九、排障
 
 | 症状 | 检查 |
 |---|---|

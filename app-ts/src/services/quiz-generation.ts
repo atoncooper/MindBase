@@ -12,6 +12,7 @@ import type { RAGService } from "../rag/service.js";
 import type { Document } from "../rag/types.js";
 import { parseDocument } from "../doc-parser/index.js";
 import type { OcrClient } from "../doc-parser/ocr.js";
+import type { ModelCapabilityRegistry } from "../llm/model-capabilities.js";
 import { EXAM_BLUEPRINTS, blueprintTotal, blueprintScoredTotal, blueprintExamTotal, getBlueprint, type ExamBlueprint } from "./quiz-exam-blueprints.js";
 import type { QuotaService } from "./quota.js";
 import type { QuizResumePlan, QuizResumeStore } from "../repository/quiz-resume.js";
@@ -379,7 +380,13 @@ export const quizBatchSchema = z.object({
 export type QuizBatchGenerator = (args: { system: string; prompt: string; uid: string }) => Promise<QuizQuestionDict[]>;
 
 /** 上传材料（错题图片/参考试卷）→ 结构化题目记录。可注入用于测试。 */
-export type QuizExtractGenerator = (args: { system: string; prompt: string; uid: string }) => Promise<ExtractedQuestionRecord[]>;
+export type QuizExtractGenerator = (args: {
+  system: string;
+  prompt: string;
+  uid: string;
+  /** 视觉直读：模型确认支持视觉时附带原图 data URL（免 OCR 转写）；缺省 = 纯文本材料 */
+  images?: string[];
+}) => Promise<ExtractedQuestionRecord[]>;
 
 const defaultGenerator: QuizBatchGenerator = async (args) => {
   const { object } = await generateObject({
@@ -404,7 +411,21 @@ const defaultExtractGenerator: QuizExtractGenerator = async (args) => {
     providerOptions: { higress: { thinking: { type: "disabled" } } },
     schema: quizExtractSchema,
     system: args.system,
-    prompt: args.prompt,
+    // 视觉直读：附原图时用多模态 user content（text + image parts），模型直接读图提取；
+    // 纯文本材料仍走 prompt 字符串（两者互斥，generateObject 二选一）
+    ...(args.images && args.images.length > 0
+      ? {
+          messages: [
+            {
+              role: "user" as const,
+              content: [
+                { type: "text" as const, text: args.prompt },
+                ...args.images.map((url) => ({ type: "image" as const, image: url })),
+              ],
+            },
+          ],
+        }
+      : { prompt: args.prompt }),
     maxRetries: 2,
     abortSignal: AbortSignal.timeout(240_000),
     ...aiTelemetry("quiz.extract"),
@@ -597,6 +618,8 @@ export interface GenerationPersonalization {
 /** 上传出题文件上限（路由侧复用同一组常量） */
 export const MAX_QUIZ_FILES = 10;
 export const MAX_QUIZ_FILE_BYTES = 10 * 1024 * 1024;
+/** 视觉直读单次提取附图上限（payload 有界）；图片数超过该值整批回落 OCR 转写 */
+export const MAX_VISION_EXTRACT_IMAGES = 8;
 
 const QUIZ_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bmp"]);
 const QUIZ_TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "html", "htm", "pdf", "docx", "pptx"]);
@@ -1004,8 +1027,10 @@ export interface QuizGenerationDeps {
   prompts: PromptRegistry;
   /** 已装技能注入（出题个性化）；absent = 个性化无技能段 */
   skills?: { forcedSection(uid: string, skillIds: string[]): Promise<string> };
-  /** 视觉 OCR（错题图片/文件出题）；absent 或 disabled = 图片上传出题不可用 */
+  /** 视觉 OCR（错题图片/文件出题的兜底转写）；absent 或 disabled = 无视觉模型时图片上传出题不可用 */
   ocr?: OcrClient;
+  /** 模型能力注册表：判定 quizModel 是否确认支持视觉（确认 → 原图直读；未知/文本档 → OCR 兜底）。absent = 一律 OCR */
+  capabilities?: ModelCapabilityRegistry;
   /** 会员出题/批改配额（tier 化限额）；absent = 回落 app-quiz 单档旧端点 */
   quota?: QuotaService;
   /** 断点续跑计划快照（app-ts 自有域）；absent = 进程内 fallback（单测/降级） */
@@ -1819,8 +1844,16 @@ export class QuizGenerationService {
         throw new QuizGenerationError("文件过大（上限 " + Math.floor(MAX_QUIZ_FILE_BYTES / 1024 / 1024) + "MB）: " + f.filename, 413);
       }
     }
-    if (input.files.some((f) => isQuizImageFile(f.filename)) && !this.deps.ocr?.enabled) {
-      throw new QuizGenerationError("OCR 未启用（OCR__ENABLED=false），无法识别图片；可改传含文本层的 pdf/docx/txt", 415);
+    // 图片解析路由：模型确认支持视觉 → 原图直读（免 OCR）；否则需 OCR 兜底
+    //（未启用时显式拒绝并指引改传含文本层的文档）。能力未知/文本档一律按需 OCR。
+    if (
+      input.files.some((f) => isQuizImageFile(f.filename)) &&
+      !(this.visionConfirmed() || this.deps.ocr?.enabled)
+    ) {
+      throw new QuizGenerationError(
+        "图片解析不可用（当前模型未确认支持视觉且 OCR 未启用）；可改传含文本层的 pdf/docx/txt",
+        415,
+      );
     }
     const difficulty = ALLOWED_DIFFICULTIES.includes(input.difficulty ?? "") ? input.difficulty! : "medium";
 
@@ -2000,6 +2033,14 @@ export class QuizGenerationService {
     }
   }
 
+  /**
+   * 模型视觉确认：仅当能力注册表明确 vision=true（本地 override / OpenRouter 元数据，
+   * 非未知默认值）才走视觉直读；能力未知（"拿不准"）或文本档模型 → OCR 兜底转写。
+   */
+  private visionConfirmed(): boolean {
+    return !!this.deps.capabilities?.get(config.llm.quizModel).vision;
+  }
+
   private async runFilesGeneration(
     uid: string,
     quizUuid: string,
@@ -2014,51 +2055,102 @@ export class QuizGenerationService {
     distribution: Record<string, number>,
   ): Promise<void> {
     try {
-      // 1) 每个文件 → 文本（图片走 OCR 视觉转写，文本类走 parseDocument）
+      // 1) 图片解析路由（视觉直读优先，OCR 兜底）：
+      //    - 模型确认支持视觉（能力注册表 vision=true）且图片数不超上限 → 原图 data URL
+      //      直附提取调用，省去一次 OCR 转写（布局/图形信息不丢、少一次中间失真）；
+      //    - 模型未知/文本档，或图片数超过直读上限 → OCR 视觉转写为文本材料；
+      //    - 直读提取失败（上游拒图等）→ 自动回落 OCR 转写重试一次。
       this.pushProgress(uid, quizUuid, { stage: "extract", detail: "识别上传文件并结构化提取题目…" });
+      const imageFiles = input.files.filter((f) => isQuizImageFile(f.filename));
+      const visionDirect =
+        imageFiles.length > 0 && this.visionConfirmed() && imageFiles.length <= MAX_VISION_EXTRACT_IMAGES;
+      if (imageFiles.length > MAX_VISION_EXTRACT_IMAGES) {
+        log.warn("[QUIZ_GEN] " + imageFiles.length + " images exceed vision-direct cap " + MAX_VISION_EXTRACT_IMAGES + " — using OCR transcription");
+      }
+
+      // 图片解析配额（两种路径都按图片数计量；peek 先行，超限整个任务 429 失败）
+      if (this.deps.quota && imageFiles.length > 0) {
+        const gate = await this.deps.quota.peekKind(uid, "ocr", imageFiles.length);
+        if (gate?.verdict === "quota_exceeded") {
+          throw new QuizGenerationError(
+            `今日图片解析额度已用完（${gate.limit} 次/日），明日 0 点重试或改传含文本层的文件`,
+            429,
+          );
+        }
+      }
+
       const parts: string[] = [];
+      const imageDataUrls: string[] = [];
       for (let i = 0; i < input.files.length; i += 1) {
         const f = input.files[i];
-        let text = "";
         if (isQuizImageFile(f.filename)) {
-          // OCR 配额：peek 先行（超限整个任务 429 失败），识别成功后扣减
-          if (this.deps.quota) {
-            const gate = await this.deps.quota.peekKind(uid, "ocr");
-            if (gate?.verdict === "quota_exceeded") {
-              throw new QuizGenerationError(
-                `今日 OCR 识别额度已用完（${gate.limit} 次/日），明日 0 点重试或改传含文本层的文件`,
-                429,
-              );
+          if (visionDirect) {
+            imageDataUrls.push(`data:${f.mime || "image/png"};base64,${f.buffer.toString("base64")}`);
+          } else {
+            const text = await this.deps.ocr!.recognize(f.filename, f.buffer, f.mime || "image/png");
+            if (text.trim()) {
+              parts.push("=== 材料 " + (i + 1) + ": " + f.filename + "（OCR 转写） ===\n" + text.trim().slice(0, MAX_CONTEXT_CHARS));
             }
           }
-          text = await this.deps.ocr!.recognize(f.filename, f.buffer, f.mime || "image/png");
-          if (this.deps.quota) await this.deps.quota.consumeKind(uid, "ocr");
         } else {
-          text = (await parseDocument(f.filename, f.buffer)).text;
-        }
-        if (text.trim()) {
-          parts.push("=== 材料 " + (i + 1) + ": " + f.filename + " ===\n" + text.trim().slice(0, MAX_CONTEXT_CHARS));
+          const text = (await parseDocument(f.filename, f.buffer)).text;
+          if (text.trim()) {
+            parts.push("=== 材料 " + (i + 1) + ": " + f.filename + " ===\n" + text.trim().slice(0, MAX_CONTEXT_CHARS));
+          }
         }
       }
       const materialText = parts.join("\n\n");
-      if (!materialText.trim()) {
+      if (!materialText.trim() && imageDataUrls.length === 0) {
         throw new QuizGenerationError("未能从上传文件中识别出任何文字内容", 422);
       }
 
-      // 2) 结构化提取题目（错误画像 / 模仿材料），带 raw-text 兜底
-      const prompt = this.deps.prompts.render("quiz/extract-user", {
-        MATERIAL: "<material>\n" + materialText.slice(0, MAX_CONTEXT_CHARS * 2) + "\n</material>",
-        MAX_COUNT: "50",
-      });
+      // 2) 结构化提取题目（错误画像 / 模仿材料），带 raw-text 兜底；
+      //    视觉直读失败（上游拒图/模型拿不准）→ OCR 转写兜底重试一次
+      const system = this.deps.prompts.render("quiz/extract-system", {});
+      const buildPrompt = (material: string) =>
+        this.deps.prompts.render("quiz/extract-user", {
+          MATERIAL: "<material>\n" + material.slice(0, MAX_CONTEXT_CHARS * 2) + "\n</material>",
+          MAX_COUNT: "50",
+        });
       let records: ExtractedQuestionRecord[];
       try {
-        records = await this.extract({ system: this.deps.prompts.render("quiz/extract-system", {}), prompt, uid });
+        records = await this.extract({
+          system,
+          prompt: buildPrompt(
+            materialText + (imageDataUrls.length > 0 ? "\n\n（题目原文见本消息附带图片，请直接读图提取）" : ""),
+          ),
+          uid,
+          ...(imageDataUrls.length > 0 ? { images: imageDataUrls } : {}),
+        });
       } catch (err) {
-        const raw = (err as { text?: unknown }).text;
-        const salvaged = typeof raw === "string" ? extractQuestionRecords(raw) : undefined;
-        if (!salvaged?.length) throw err;
-        log.warn("[QUIZ_GEN] salvaged extracted records from raw model text (" + salvaged.length + ")");
-        records = salvaged;
+        if (imageDataUrls.length === 0) {
+          const raw = (err as { text?: unknown }).text;
+          const salvaged = typeof raw === "string" ? extractQuestionRecords(raw) : undefined;
+          if (!salvaged?.length) throw err;
+          log.warn("[QUIZ_GEN] salvaged extracted records from raw model text (" + salvaged.length + ")");
+          records = salvaged;
+        } else {
+          log.warn(
+            "[QUIZ_GEN] vision-direct extract failed (" +
+              (err instanceof Error ? err.message : String(err)) +
+              ") — falling back to OCR transcription",
+          );
+          const ocrParts: string[] = [];
+          for (const f of imageFiles) {
+            const text = await this.deps.ocr!.recognize(f.filename, f.buffer, f.mime || "image/png");
+            if (text.trim()) ocrParts.push(text.trim().slice(0, MAX_CONTEXT_CHARS));
+          }
+          if (ocrParts.length === 0) throw err;
+          const fallbackMaterial = [
+            ...parts,
+            ...ocrParts.map((t, i) => "=== 图片材料 " + (i + 1) + "（OCR 转写） ===\n" + t),
+          ].join("\n\n");
+          records = await this.extract({ system, prompt: buildPrompt(fallbackMaterial), uid });
+        }
+      }
+      // 图片解析计费：直读与转写都按图片数扣减（提取成功才扣，失败/重试不扣）
+      if (this.deps.quota && imageFiles.length > 0) {
+        await this.deps.quota.consumeKind(uid, "ocr", imageFiles.length);
       }
       if (records.length === 0) {
         throw new QuizGenerationError("未能从上传材料中提取出题目", 422);

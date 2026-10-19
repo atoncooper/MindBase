@@ -10,6 +10,25 @@ cd "$(dirname "$0")"
 
 [ -e .env ] || ln -sf ../../.env .env
 
+# depends_on 只在同一台主机/同一 compose project 内生效，跨机依赖（server1 的
+# minio/apisix）用它探测：在 overlay 里起一次性容器轮询远端 /health，收到任意
+# HTTP 响应（含 404，如 apisix 无兜底路由）即视为"远程依赖完成"。超时只告警
+# 不阻断——运行时另有 APISIX 主动健康检查 + 应用内 fail-open 自愈。
+CURL_IMAGE="${WAIT_CURL_IMAGE:-curlimages/curl:8.11.1}"
+
+wait_http() { # url [超时秒]
+  local url="$1" t="${2:-180}"
+  printf '[wait-http] %-46s ' "$url"
+  if docker run --rm --network mind-base-overlay "$CURL_IMAGE" \
+      timeout "$t" sh -c 'until curl -s -o /dev/null --max-time 4 "$1"; do sleep 3; done' _ "$url" 2>/dev/null; then
+    echo "OK"; return 0
+  fi
+  echo "TIMEOUT(${t}s) —— overlay 内不可达（安全组 4789/udp、7946/tcp+udp、2377/tcp；对端服务是否已起）"; return 0
+}
+
+docker network inspect mind-base-overlay >/dev/null 2>&1 \
+  || echo "⚠️  overlay 网络 mind-base-overlay 不存在（server1: docker network create -d overlay --attachable mind-base-overlay）"
+
 for p in ../../.env ../../secrets/api_key_encryption_key ../../app-pay/certs ../../app-board/certs; do
   [ -e "$p" ] || echo "⚠️  缺少 $p —— 请从 server1 拷贝（app-pay/app-board 缺证书会拒启）"
 done
@@ -35,6 +54,10 @@ up 21-mongo.yml mongo;                          wait_ready mind-base-mongo
 up 22-neo4j.yml neo4j;                          wait_ready mind-base-neo4j 180
 up 24-app-task-mysql.yml app-task-mysql;        wait_ready mind-base-app-task-mysql
 up 25-app-pay-mysql.yml app-pay-mysql;          wait_ready mind-base-app-pay-mysql
+
+echo "==> [1.5/4] 远程依赖门（server1 边缘层：minio / apisix —— 跨机 depends_on 等价物）"
+wait_http http://minio:9000/minio/health/live 300
+wait_http http://apisix:9080/ 300
 
 echo "==> [2/4] Milvus（etcd/minio 走 overlay 连 server1）"
 up 23-milvus.yml milvus
