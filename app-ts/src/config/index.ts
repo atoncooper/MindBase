@@ -186,9 +186,15 @@ export interface AppConfig {
     userAgent: string;
     /** politeness: min gap between requests to the same host */
     perHostIntervalMs: number;
-    /** 联网搜索源（引擎链按序：tavily → searxng → baidu → bing）。无任何配置时只剩爬虫兜底（质量不可靠） */
+    /** 联网搜索源（引擎链按序：deepseek → tavily → searxng → baidu → bing）。无任何配置时只剩爬虫兜底（质量不可靠） */
     searchTavilyApiKey: string;
     searchSearxngUrl: string;
+    /** DeepSeek 官方搜索/抓取 API key（api-docs.deepseek.com/zh-cn/guides/search）；空 = 不接入 */
+    deepseekApiKey: string;
+    /** DeepSeek Search/Fetch 基址（可指向网关/代理） */
+    deepseekApiBaseUrl: string;
+    /** fetch_webpage 默认走 DeepSeek Fetch API（云端代抓 Markdown），失败回退本地抓取；false = 本地先行 */
+    deepseekFetchPrimary: boolean;
   };
 
   tools: {

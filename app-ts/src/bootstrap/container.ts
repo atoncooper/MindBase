@@ -18,6 +18,7 @@ import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
+import { createFetchPortWithDeepseekPrimary } from "../tools/web/deepseek.js";
 import { HttpWebFetch } from "../tools/web/fetcher.js";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { AgentLifecycleManager } from "../agent/lifecycle.js";
@@ -260,7 +261,7 @@ export async function bootstrap() {
   const memoryStore = new MemoryMemoryStore();
   registry.register(createSaveMemoryTool(memoryStore));
   registry.register(createAskUserTool);
-  const webFetch = new HttpWebFetch();
+  const webFetch = createFetchPortWithDeepseekPrimary(new HttpWebFetch());
   registry.register(createFetchWebpageTool(webFetch));
   registry.register(createWebSearchTool());
 
