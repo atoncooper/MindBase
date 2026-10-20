@@ -43,7 +43,9 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
-            # $(VAR) 只能引用 env 列表内变量（envFrom 不可见）——先取源值再派生
+            # ⚠️ optional secretKeyRef 的键在 Secret 缺失时变量整体省略，下游 $(VAR) 会
+            # 原样保留成字面量（历史事故：NOTEMCP__UPSTREAM__UID="$(NOTE_MCP_UID)"）。
+            # 可选键一律直接 valueFrom 到目标名；只有必选键（APISIX_CONSUMER_KEY）允许 $(VAR) 派生
             - name: APISIX_CONSUMER_KEY
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
@@ -58,9 +60,11 @@ spec:
             - name: NOTEMCP__UPSTREAM__API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: NOTEMCP__UPSTREAM__UID
-              value: "$(NOTE_MCP_UID)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: NOTE_MCP_UID, optional: true }
             - name: NOTEMCP__SERVER__AUTH_TOKEN
-              value: "$(NOTE_MCP_AUTH_TOKEN)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: NOTE_MCP_AUTH_TOKEN, optional: true }
             - name: NOTEMCP__SERVER__SERVICE_API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: NOTEMCP__LOG__OUTPUT

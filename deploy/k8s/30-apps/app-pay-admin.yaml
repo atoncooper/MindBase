@@ -51,7 +51,8 @@ spec:
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: PAY_OPS_KEY, optional: true }
             - name: PAYADMIN__APP_PAY__OPS_KEY
-              value: "$(PAY_OPS_KEY)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_OPS_KEY, optional: true }
             - name: PAYADMIN__APP_PAY__BASE_URL
               value: "http://apisix:9080"
           ports:

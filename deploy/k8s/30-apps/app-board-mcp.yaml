@@ -44,7 +44,9 @@ spec:
                 name: mindbase-env
           env:
             # $(VAR) 只能引用 env 列表内变量（envFrom 不可见）——先取源值再派生；
-            # UID/AUTH_TOKEN 为可选键（缺失 = bearer 模式不可用，服务模式不受影响）
+            # ⚠️ optional secretKeyRef 的键在 Secret 缺失时变量整体省略，下游 $(VAR) 会
+            # 原样保留成字面量（历史事故：BOARDMCP__UPSTREAM__UID="$(BOARD_MCP_UID)"）。
+            # 可选键一律直接 valueFrom 到目标名；只有必选键（APISIX_CONSUMER_KEY）允许 $(VAR) 派生
             - name: APISIX_CONSUMER_KEY
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
@@ -59,9 +61,11 @@ spec:
             - name: BOARDMCP__UPSTREAM__API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: BOARDMCP__UPSTREAM__UID
-              value: "$(BOARD_MCP_UID)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: BOARD_MCP_UID, optional: true }
             - name: BOARDMCP__SERVER__AUTH_TOKEN
-              value: "$(BOARD_MCP_AUTH_TOKEN)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: BOARD_MCP_AUTH_TOKEN, optional: true }
             - name: BOARDMCP__SERVER__SERVICE_API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: BOARDMCP__LOG__OUTPUT
