@@ -58,9 +58,11 @@ spec:
             - name: QUIZMCP__UPSTREAM__API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: QUIZMCP__UPSTREAM__UID
-              value: "$(QUIZ_MCP_UID)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: QUIZ_MCP_UID, optional: true }
             - name: QUIZMCP__SERVER__AUTH_TOKEN
-              value: "$(QUIZ_MCP_AUTH_TOKEN)"
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: QUIZ_MCP_AUTH_TOKEN, optional: true }
             - name: QUIZMCP__SERVER__SERVICE_API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: QUIZMCP__LOG__OUTPUT

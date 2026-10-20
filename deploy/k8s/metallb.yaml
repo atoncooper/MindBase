@@ -17,7 +17,9 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-    - 172.31.47.187-172.31.47.189   # 3 台节点的内网 IP（按实际修改）
+    - 172.31.47.200-172.31.47.210   # VPC 子网里一段"未被占用"的空闲内网 IP
+      # ⚠️ 不要填节点自己的 IP（会与 kubelet 冲突）；
+      # ⚠️ AWS 上 L2 模式只对"同子网内的客户端"生效，公网入口请走 NodePort 或 AWS NLB
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement

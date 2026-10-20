@@ -38,6 +38,17 @@ spec:
                 name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
+          env:
+            # ⚠️ mongo 镜像只认 MONGO_INITDB_*（compose 由 ${MONGO_USER:-admin} 映射而来）；
+            # 直接 envFrom 传 MONGO_USER 镜像不识别 → 无认证启动 → 带凭据的客户端全部
+            # AuthenticationFailed（历史事故）。取值走 defaults，与各服务连接串同源；
+            # INITDB 仅在空数据目录时生效——已初始化的库要重建认证须删 PVC 重来。
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                configMapKeyRef: { name: mindbase-defaults, key: MONGO_USER }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                configMapKeyRef: { name: mindbase-defaults, key: MONGO_PASSWORD }
           ports:
             - containerPort: 27017
           volumeMounts:
@@ -49,11 +60,14 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 12
+            timeoutSeconds: 10
           livenessProbe:
             exec:
               command: ["mongosh", "--eval", "db.adminCommand('ping')"]
             initialDelaySeconds: 60
             periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 10
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { cpu: 500m, memory: 1Gi }

@@ -40,7 +40,7 @@ spec:
                 name: mindbase-defaults
             - secretRef:
                 name: mindbase-env
-            # Plan 0021: Redis event notification + abandoned upload cleanup
+          env:
             - name: MINIO_NOTIFY_REDIS_ENABLE_clouddrive
               value: "on"
             - name: MINIO_NOTIFY_REDIS_FORMAT_clouddrive

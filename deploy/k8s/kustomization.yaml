@@ -98,5 +98,5 @@ resources:
   - 30-apps/app-pay-admin.yaml
   - 30-apps/frontend.yaml
   - 30-apps/apisix.yaml
-  - 30-apps/higress.yaml
+  # - 30-apps/higress.yaml   # Higress 跑在独立服务器(106.53.220.71)，不随集群部署；恢复时取消注释
   - 30-apps/nginx.yaml
