@@ -1,0 +1,1106 @@
+# ================================================================
+# MindBase — CLIENT (single-user) Docker Compose
+# ================================================================
+# 服务端根 docker-compose.yml 的单人客户端最小化变体。同一份代码/.env/
+# 镜像模型（first-party 镜像一律本地构建，绝不自动拉 Hub），差异只在
+# 服务裁剪与资源约束：
+#
+#   1. 核心 20 个服务常驻（无 profiles 键，永远启动）；支付/定时任务/
+#      KG 图谱/Higress/调试 UI 移入 opt-in profile，单人客户端默认不启动：
+#        --profile kg     KG 图谱（neo4j + app-kg）
+#        --profile pay    会员/支付（app-pay-mysql + app-pay）
+#        --profile task   定时出题（app-task-mysql + app-task）
+#        --profile ai     Higress AI 网关（默认直连供应商，见 docs/client-compose.md）
+#        --profile tools  redis-commander / mongo-express
+#      核心服务没有 profiles 键，所以加 --profile 时核心照常启动。
+#   2. 每个服务 mem_limit 硬上限（大头的上限可用 .env 覆盖），防失控。
+#   3. 基础设施按单用户调参：
+#        MySQL: performance_schema/binlog/mysqlx 关闭、buffer pool 128M、
+#               redo 64M、max-connections 60
+#        Mongo: WiredTiger 缓存压到 256MB
+#        Redis: maxmemory 128MB
+#        MinIO: 控制台关闭（MINIO_BROWSER=off），不映射宿主端口
+#        Milvus: 内嵌 etcd——不再部署独立 etcd 容器（ETCD_USE_EMBED，已实测
+#                v2.6.22 启动/healthz OK），默认上限 1.5GB，只映射 19530 回环
+#        APISIX: 固定 1 worker（apisix/config.client.yaml，非根 config.yaml）
+#   4. 数据面端口全部绑 127.0.0.1；对外只留 nginx 80/443（端口可改）。
+#   5. json-file 日志轮转（10MB × 3），防止日志盘膨胀。
+#
+# 典型常驻内存：核心栈约 2.5~3GB（服务端全家桶约 7~9GB）。
+# 启用/裁剪说明与降级行为见 docs/client-compose.md。
+#
+# 启动:
+#   docker compose -f docker-compose.client.yml up -d --build
+# 可选功能（与核心同时启动）:
+#   docker compose -f docker-compose.client.yml --profile kg up -d
+# ================================================================
+
+# ⚠️ 独立项目名：与服务端根 compose（project=mindbase，卷名 mindbase_*）彻底隔离——
+# 共用项目名会让 up -d <同名服务> 直接重建服务端正在跑的容器（真实踩过）。
+# 两栈仍不能同时运行：container_name/宿主端口相同，先 down 其一再起另一个。
+# 代价：客户端卷前缀为 mindbase-client_*，是全新空库；数据迁移见 docs/client-compose.md。
+name: mindbase-client
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ==============================================================
+  # TLS certificate provisioning (one-shot init container)
+  # ==============================================================
+
+  cert-gen:
+    image: atoncooper/mind-base-certgen:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./scripts
+      dockerfile: certgen.Dockerfile
+    container_name: mind-base-cert-gen
+    environment:
+      MB_CERT_NGINX_DIR: /out/nginx
+      MB_CERT_APPBOARD_DIR: /out/app-board
+      MB_CERT_MCP_DIR: /out/mcp
+      MB_CERT_PAY_DIR: /out/pay
+      MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
+    volumes:
+      - ./nginx/certs:/out/nginx
+      - ./app-board/certs:/out/app-board
+      - ./mcp/app-board-mcp/certs:/out/mcp
+      - ./app-pay/certs:/out/pay
+    mem_limit: 128m
+    logging: *default-logging
+    restart: "no"
+
+  # ==============================================================
+  # Reverse Proxy (Nginx) — SSL termination + routing
+  # ==============================================================
+
+  nginx:
+    image: nginx:alpine
+    container_name: mind-base-nginx
+    ports:
+      # 客户端对外入口仅这两个端口；宿主 80/443 被占用时在 .env 改端口
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/locations.conf:/etc/nginx/locations.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - certbot_www:/var/www/certbot
+      - nginx_video_cache:/var/cache/nginx/video
+      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_started
+      apisix:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 64m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  frontend:
+    image: atoncooper/mind-base-frontend:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./frontendv2
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_APISIX_HOST: nginx:80
+        MINIO_PROXY_DEST: http://nginx:80
+    container_name: mind-base-frontend
+    ports:
+      # 回环即可：浏览器入口走 nginx（同源），直连 3000 仅本机调试用
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_APISIX_HOST=nginx:80
+      - MINIO_PROXY_DEST=http://nginx:80
+      - SHARE_DOMAIN=${SHARE_DOMAIN:-}
+      - SHARE_PUBLIC_IP=${SHARE_PUBLIC_IP:-}
+      # 单用户前端进程堆上限，防 V8 默认按宿主内存扩
+      - NODE_OPTIONS=--max-old-space-size=320
+    mem_limit: 384m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Infrastructure（单用户调参版）
+  # ==============================================================
+
+  mysql:
+    image: mysql:8.4
+    container_name: mind-base-mysql
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=mind_base
+      - MYSQL_USER=${MYSQL_USER:-mind_base}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-mind-base}
+    # 单用户压缩：关 performance_schema / binlog / X 插件，小 buffer pool。
+    # 数据目录沿用 mysql_data 卷，服务端导出的数据可直接挂载复用。
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --performance-schema=OFF
+      - --skip-log-bin
+      - --mysqlx=OFF
+      - --innodb-buffer-pool-size=128M
+      - --innodb-redo-log-capacity=64M
+      - --innodb-log-buffer-size=16M
+      - --max-connections=60
+      - --table-open-cache=400
+      - --skip-name-resolve
+      - --host-cache-size=0
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/system.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    mem_limit: ${MYSQL_MEM_LIMIT:-512m}
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: mind-base-redis
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-mind-base}
+      --notify-keyspace-events Ex
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+    volumes:
+      - redis_data:/data
+    mem_limit: 160m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  mongo:
+    image: mongo:7
+    container_name: mind-base-mongo
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+    # WiredTiger 默认缓存 = max(50%RAM-1GB, 256MB)，大内存宿主上会失控，
+    # 单用户压到 256MB（正文/修订/题目都是小文档，足够）
+    command:
+      - --wiredTigerCacheSizeGB
+      - "0.25"
+    volumes:
+      - mongo_data:/data/db
+    mem_limit: ${MONGO_MEM_LIMIT:-384m}
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ── etcd 已砍掉：Milvus standalone 改用内嵌 etcd（见下方 milvus 环境变量）──
+  # v2.6.22 实测：DEPLOY_MODE=STANDALONE + ETCD_USE_EMBED=true + ETCD_DATA_DIR
+  # 指向持久卷目录时正常启动、healthz OK、元数据落在 /var/lib/milvus/etcdData
+  # （milvus_data 卷内，随容器重建持久化）。
+  # ⚠️ DEPLOY_MODE 必须显式置 STANDALONE（大小写敏感）：Milvus 在 Go 包初始化期
+  # 读 DEPLOY_MODE（metricsinfo.DeployModeEnvKey），未设时视为分布式模式直接 panic。
+  # 兜底回退（内嵌 etcd 异常时）：milvus 的 ETCD_USE_EMBED 改 false、加回
+  # ETCD_ENDPOINTS=etcd:2379，取消注释本块，再 up -d etcd（先于 milvus 启动）。
+  #
+  # etcd:
+  #   image: quay.io/coreos/etcd:v3.5.14
+  #   container_name: mind-base-etcd
+  #   environment:
+  #     - ETCD_AUTO_COMPACTION_MODE=revision
+  #     - ETCD_AUTO_COMPACTION_RETENTION=1000
+  #     - ETCD_QUOTA_BACKEND_BYTES=1073741824
+  #     - ETCD_SNAPSHOT_COUNT=50000
+  #   command: >
+  #     etcd
+  #     -advertise-client-urls=http://etcd:2379
+  #     -listen-client-urls=http://0.0.0.0:2379
+  #     -data-dir=/etcd
+  #   volumes:
+  #     - etcd_data:/etcd
+  #   mem_limit: 256m
+  #   logging: *default-logging
+  #   healthcheck:
+  #     test: ["CMD", "etcdctl", "endpoint", "health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: unless-stopped
+  #   networks:
+  #     - mind-base-net
+
+  minio:
+    image: atoncooper/mind-base-minio:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./scripts
+      dockerfile: minio.Dockerfile
+    container_name: mind-base-minio
+    # 控制台关闭（省一个常驻进程）；nginx 代理 9000 出去，浏览器无需直连
+    ports: []
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BROWSER=off
+      # 云盘事件 → 向量化管道（Plan 0021），必须保留
+      - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
+      - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
+      - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
+      - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
+      - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
+    command: server /data
+    volumes:
+      - minio_data:/data
+    mem_limit: ${MINIO_MEM_LIMIT:-512m}
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  milvus:
+    image: milvusdb/milvus:v2.6.22
+    container_name: mind-base-milvus
+    command: milvus run standalone
+    ports:
+      # 只留 gRPC 调试口；9091 metrics 口不映射
+      - "127.0.0.1:${MILVUS_PORT:-19530}:19530"
+    environment:
+      # 内嵌 etcd：省掉独立 etcd 容器（v2.6.22 实测可用）。DEPLOY_MODE 必须
+      # 显式置 STANDALONE（大小写敏感），否则 Milvus 在包初始化期 panic。
+      - DEPLOY_MODE=STANDALONE
+      - ETCD_USE_EMBED=true
+      # 内嵌 etcd 数据落在 milvus_data 卷内，随容器重建持久化
+      - ETCD_DATA_DIR=/var/lib/milvus/etcdData
+      - MINIO_ADDRESS=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    # 全栈最大头：单人库规模 1.5GB 上限够用；全量重建/大集合加载 OOM 时调大
+    mem_limit: ${MILVUS_MEM_LIMIT:-1536m}
+    logging: *default-logging
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Gateway (APISIX standalone — 与根 compose 同一 apisix.yaml 路由面，
+  # 只是 config 换成客户端 2-worker 变体)
+  # ==============================================================
+
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    container_name: mind-base-apisix
+    # data_plane（yaml provider）不跑 init_etcd，无需依赖 etcd
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    volumes:
+      - ./apisix/config.client.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+      - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
+    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+    mem_limit: 256m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Application services（与根 compose 同镜像/同环境，仅加内存上限）
+  # ==============================================================
+
+  # Agent + RAG 服务（Node/Fastify）— chat/agent/RAG/KG/quiz/skills 全在这里
+  app-ts:
+    image: atoncooper/mind-base-app-ts:latest
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile: app-ts/Dockerfile
+    container_name: mind-base-app-ts
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - SERVER__HOST=0.0.0.0
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - APP_BILI_BASE_URL=http://app-bili:8010
+      - APP_TASK_BASE_URL=http://apisix:9080
+      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - OCR__ENABLED=${OCR__ENABLED:-true}
+      - OCR__MODEL=${OCR__MODEL:-z-ai/glm-5.3-flash}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      # 默认直连供应商（客户端无 Higress）；--profile ai 时删掉 .env 里的覆盖即可回网关
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
+      - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
+      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
+      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
+      # 客户端默认不部署 app-kg/neo4j：清洁禁用 KG（不注册 kg_search 工具，
+      # 无 gRPC 重试噪音）。--profile kg 时在 .env 置 KG__ENABLED=true + KG_GRPC__ENABLED=true
+      - KG__ENABLED=${KG__ENABLED:-false}
+      - KG_GRPC__ENABLED=${KG_GRPC__ENABLED:-false}
+      - KG_GRPC__TARGET=app-kg:8013
+      - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
+      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
+      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
+      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
+      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - MILVUS__ADDRESS=milvus:19530
+      - LOG__FILEENABLED=false
+      # 单用户 agent/向量化堆上限；大批量构建 OOM 时调大 APP_TS_NODE_HEAP
+      - NODE_OPTIONS=--max-old-space-size=${APP_TS_NODE_HEAP:-512}
+    ports:
+      - "127.0.0.1:${APP_TS_PORT:-8000}:8000"
+    mem_limit: ${APP_TS_MEM_LIMIT:-640m}
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-settings:
+    image: atoncooper/mind-base-app-settings:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-settings
+      dockerfile: Dockerfile
+    container_name: mind-base-app-settings
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_SETTINGS_PORT:-8015}:8015"
+    volumes:
+      - app_settings_logs:/app/logs
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-auth:
+    image: atoncooper/mind-base-app-auth:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-auth
+      dockerfile: Dockerfile
+    container_name: mind-base-app-auth
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_AUTH_PORT:-8006}:8006"
+    volumes:
+      - app_auth_logs:/app/logs
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-cloud:
+    image: atoncooper/mind-base-app-cloud:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-cloud
+      dockerfile: Dockerfile
+    container_name: mind-base-app-cloud
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPCLOUD__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
+      - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
+      - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
+      - APPCLOUD__LOG__OUTPUT=both
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - APPCLOUD__ATTEST__SECRET=${APP_CLOUD_ATTEST_SECRET:-}
+      # 客户端默认无 app-kg：空 base URL 关闭 L1 图写入，降级 Mongo 匹配
+      - APPCLOUD__KG__BASE_URL=${APP_CLOUD_KG_BASE_URL:-}
+      - APPCLOUD__KG__TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+    # 单实例：去掉服务端的 8007-8009 端口池，只留 8007 调试口
+    ports:
+      - "127.0.0.1:${APP_CLOUD_PORT:-8007}:8007"
+    volumes:
+      - app_cloud_logs:/app/logs
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+    mem_limit: 256m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-note:
+    image: atoncooper/mind-base-app-note:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-note
+      dockerfile: Dockerfile
+    container_name: mind-base-app-note
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPNOTE__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_NOTE_PORT:-8008}:8008"
+    volumes:
+      - app_note_logs:/app/logs
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-note-mcp:
+    image: atoncooper/mind-base-app-note-mcp:latest
+    pull_policy: never
+    build:
+      context: ./mcp/app-note-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-note-mcp
+    environment:
+      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
+      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
+      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - NOTEMCP__LOG__OUTPUT=both
+      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
+    ports:
+      - "127.0.0.1:8009:8009"
+    volumes:
+      - app_note_mcp_logs:/app/logs
+    mem_limit: 64m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-quiz:
+    image: atoncooper/mind-base-app-quiz:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-quiz
+      dockerfile: Dockerfile
+    container_name: mind-base-app-quiz
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPQUIZ__LOG__OUTPUT=both
+    ports:
+      - "127.0.0.1:${APP_QUIZ_PORT:-8011}:8011"
+    volumes:
+      - app_quiz_logs:/app/logs
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-quiz-mcp:
+    image: atoncooper/mind-base-app-quiz-mcp:latest
+    pull_policy: never
+    build:
+      context: ./mcp/app-quiz-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-quiz-mcp
+    environment:
+      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
+      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
+      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - QUIZMCP__LOG__OUTPUT=both
+      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
+    ports:
+      - "127.0.0.1:8012:8012"
+    volumes:
+      - app_quiz_mcp_logs:/app/logs
+    mem_limit: 64m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-board:
+    image: atoncooper/mind-base-app-board:latest
+    pull_policy: never
+    build:
+      context: ./app-board
+      dockerfile: Dockerfile
+    container_name: mind-base-app-board
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
+    volumes:
+      - app_board_logs:/app/logs
+      - ./app-board/certs:/app/certs
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-board-mcp:
+    image: atoncooper/mind-base-app-board-mcp:latest
+    pull_policy: never
+    build:
+      context: ./mcp/app-board-mcp
+      dockerfile: Dockerfile
+    container_name: mind-base-app-board-mcp
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+    environment:
+      - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
+      - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
+      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
+      - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - BOARDMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - BOARDMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - BOARDMCP__LOG__OUTPUT=both
+      - BOARDMCP__LOG__FILE=/app/logs/app-board-mcp.log
+    ports:
+      - "127.0.0.1:8005:8005"
+    volumes:
+      - app_board_mcp_logs:/app/logs
+      - ./mcp/app-board-mcp/certs:/app/certs
+    mem_limit: 64m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-bili:
+    image: atoncooper/mind-base-app-bili:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-bili
+      dockerfile: Dockerfile
+    container_name: mind-base-app-bili
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 DashScope 原生透传。默认仍指向 Higress（--profile ai 时可用）；
+      # 客户端直连模式在 .env 设 AI_GATEWAY_NATIVE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+      # （直连 DashScope 必须 sk- 密钥，网关消费者 key 会被判 InvalidApiKey）
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY_NATIVE_BASE_URL:-http://higress:8080/api/v1}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPBILI__LOG__OUTPUT=both
+    # 上限放宽：容器内含 ffmpeg 转码子进程（音频抽取峰值计入 cgroup）
+    ports:
+      - "127.0.0.1:${APP_BILI_PORT:-8010}:8010"
+    volumes:
+      - app_bili_logs:/app/logs
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+    mem_limit: 384m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ==============================================================
+  # Optional profiles（opt-in；核心服务无 profiles 键，加 --profile 不影响核心）
+  # ==============================================================
+
+  # ---- --profile kg：KG 图谱存储（neo4j ~0.5GB + app-kg）----
+  # 启用后需在 .env 追加：
+  #   KG__ENABLED=true
+  #   KG_GRPC__ENABLED=true
+  #   APP_CLOUD_KG_BASE_URL=http://app-kg:8014
+  neo4j:
+    image: neo4j:5-community
+    container_name: mind-base-neo4j
+    profiles: ["kg"]
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-mind-base}
+      # 单用户图谱堆预算：heap 350M + pagecache 128M
+      - NEO4J_server_memory_heap_initial__size=200m
+      - NEO4J_server_memory_heap_max__size=350m
+      - NEO4J_server_memory_pagecache_size=128m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    mem_limit: ${NEO4J_MEM_LIMIT:-512m}
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-kg:
+    image: atoncooper/mind-base-app-kg:latest
+    pull_policy: never
+    build:
+      context: ./app-go/app-kg
+      dockerfile: Dockerfile
+    container_name: mind-base-app-kg
+    profiles: ["kg"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPKG__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - KG__URI=${KG__URI:-bolt://neo4j:7687}
+      - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
+      - APPKG__LOG__OUTPUT=both
+      - APPKG__SERVER__INTERNAL_TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+    ports:
+      - "127.0.0.1:${APP_KG_GRPC_PORT:-8013}:8013"
+      - "127.0.0.1:${APP_KG_HEALTH_PORT:-8014}:8014"
+    volumes:
+      - app_kg_logs:/app/logs
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ---- --profile pay：会员/支付（Spring Boot JVM ~0.3GB heap + 独立 MySQL）----
+  # 客户端单人使用通常不需要；不开时 app-ts/app-cloud 会员档位 fail-open = free
+  app-pay-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-pay-mysql
+    profiles: ["pay", "pay-admin"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_pay
+      - MYSQL_USER=${PAY_MYSQL_USER:-app_pay}
+      - MYSQL_PASSWORD=${PAY_MYSQL_PASSWORD:-app-pay}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --performance-schema=OFF
+      - --skip-log-bin
+      - --mysqlx=OFF
+      - --innodb-buffer-pool-size=128M
+      - --innodb-redo-log-capacity=64M
+      - --max-connections=40
+      - --skip-name-resolve
+      - --host-cache-size=0
+    ports:
+      - "127.0.0.1:${PAY_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - app_pay_mysql_data:/var/lib/mysql
+    mem_limit: 384m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${PAY_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-pay:
+    image: atoncooper/mind-base-app-pay:latest
+    pull_policy: never
+    build:
+      context: ./app-pay
+      dockerfile: ${APP_PAY_DOCKERFILE:-Dockerfile}
+    container_name: mind-base-app-pay
+    profiles: ["pay"]
+    depends_on:
+      cert-gen:
+        condition: service_completed_successfully
+      app-pay-mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    # 容器感知 JVM：heap = 60% × cgroup 上限，SerialGC 省 GC 线程栈
+    environment:
+      - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=60.0 -XX:+UseSerialGC
+    command: ["--spring.profiles.active=docker"]
+    ports:
+      - "127.0.0.1:${APP_PAY_PORT:-8002}:8002"
+    volumes:
+      - app_pay_logs:/app/logs
+      - ./app-pay/certs:/app/certs:ro
+    mem_limit: ${APP_PAY_MEM_LIMIT:-512m}
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-pay-admin:
+    image: atoncooper/mind-base-app-pay-admin:latest
+    pull_policy: never
+    build:
+      context: ./app-pay-admin
+      dockerfile: Dockerfile
+    container_name: mind-base-app-pay-admin
+    profiles: ["pay-admin"]
+    depends_on:
+      app-pay-mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    command: ["-config", "config.docker.yaml"]
+    environment:
+      - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
+      - PAYADMIN__APP_PAY__OPS_KEY=${PAY_OPS_KEY:?err_PAY_OPS_KEY_not_set_in_.env}
+      - PAYADMIN__APP_PAY__BASE_URL=http://apisix:9080
+    ports:
+      - "127.0.0.1:${APP_PAY_ADMIN_PORT:-8003}:8003"
+    volumes:
+      - app_pay_admin_logs:/app/logs
+      - ./app-pay-admin/certs:/app/certs
+    mem_limit: 192m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ---- --profile task：定时出题任务执行器（独立 MySQL + 轮询 scheduler）----
+  # 不开时：定时出题邮件任务不跑；聊天内出题/批改（app-ts + app-quiz）不受影响
+  app-task-mysql:
+    image: mysql:8.4
+    container_name: mind-base-app-task-mysql
+    profiles: ["task"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=${APPTASK_MYSQL_ROOT_PASSWORD:-root123}
+      - MYSQL_DATABASE=app_task
+      - MYSQL_USER=${APPTASK_MYSQL_USER:-app_task}
+      - MYSQL_PASSWORD=${APPTASK_MYSQL_PASSWORD:-app-task}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --performance-schema=OFF
+      - --skip-log-bin
+      - --mysqlx=OFF
+      - --innodb-buffer-pool-size=128M
+      - --innodb-redo-log-capacity=64M
+      - --max-connections=40
+      - --skip-name-resolve
+      - --host-cache-size=0
+    volumes:
+      - app_task_mysql_data:/var/lib/mysql
+    mem_limit: 384m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${APPTASK_MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  app-task:
+    image: atoncooper/app-task:latest
+    container_name: mind-base-app-task
+    profiles: ["task"]
+    depends_on:
+      apisix:
+        condition: service_healthy
+      app-task-mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
+      - APPTASK__APP__BASE_URL=http://apisix:9080
+      - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9080
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
+      - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
+      - APPTASK__TIMEZONE=Asia/Shanghai
+      - APPTASK__LOG__OUTPUT=both
+      - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
+      - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+    ports:
+      - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
+    volumes:
+      - app_task_logs:/app/logs
+      - ./app-pay/certs:/app/pay-certs:ro
+      - app_task_certs:/app/certs
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ---- --profile ai：Higress AI 网关（密钥只在网关的服务端模式）----
+  # 客户端默认直连供应商（见 docs/client-compose.md 直连模式段）；开 ai profile 时
+  # 删除 .env 里的 AI_GATEWAY__BASE_URL / AI_GATEWAY_NATIVE_BASE_URL 直连覆盖即可
+  higress:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+    container_name: mind-base-higress
+    profiles: ["ai"]
+    environment:
+      - GATEWAY_HTTP_PORT=8080
+      - GATEWAY_HTTPS_PORT=8443
+      - CONSOLE_PORT=8001
+      - NO_PROXY=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+      - no_proxy=localhost,127.0.0.1,higress,apisix,nginx,frontend,mysql,mongo,redis
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18443:8443"
+      # 客户端收紧：控制台只绑回环（服务端对公网开放）
+      - "127.0.0.1:18081:8001"
+    volumes:
+      - ./data/higress:/data
+      - ./data/higress/logs:/var/log/proxy
+    mem_limit: ${HIGRESS_MEM_LIMIT:-1536m}
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8001/ || wget -qO /dev/null http://127.0.0.1:8001/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # ---- --profile tools：调试 UI（用完即关）----
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: mind-base-redis-ui
+    profiles: ["tools"]
+    ports:
+      - "127.0.0.1:${REDIS_UI_PORT:-8081}:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-mind-base}
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mind-base-mongo-ui
+    profiles: ["tools"]
+    ports:
+      - "127.0.0.1:${MONGO_UI_PORT:-8082}:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_USER:-admin}
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASSWORD:-mind-base}
+      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-mind-base}@mongo:27017/
+      - ME_CONFIG_BASICAUTH=false
+    mem_limit: 128m
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+volumes:
+  app_task_certs:
+  app_task_logs:
+  app_auth_logs:
+  app_cloud_logs:
+  app_note_logs:
+  app_quiz_logs:
+  app_kg_logs:
+  app_settings_logs:
+  app_bili_logs:
+  app_note_mcp_logs:
+  app_quiz_mcp_logs:
+  app_board_logs:
+  app_board_mcp_logs:
+  app_task_mysql_data:
+  app_pay_mysql_data:
+  app_pay_logs:
+  app_pay_admin_logs:
+  mysql_data:
+  redis_data:
+  mongo_data:
+  milvus_data:
+  neo4j_data:
+  neo4j_logs:
+  minio_data:
+  certbot_www:
+  nginx_video_cache:
+  nginx_wallpaper_cache:
+
+networks:
+  mind-base-net:
+    driver: bridge

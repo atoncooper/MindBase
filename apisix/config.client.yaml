@@ -1,0 +1,41 @@
+# APISIX standalone (yaml) mode configuration — CLIENT variant.
+# ⚠️ 与 apisix/config.yaml（服务端）保持同步：唯一差异是
+# nginx_config.worker_processes——服务端用 APISIX 默认 "auto"（每核一个
+# worker），客户端固定 1 个 worker（单人客户端事件循环足够，省掉每 worker
+# ~40MB 的 luaJIT 常驻；并发吃紧时改回 2/4 即可）。改服务端 config.yaml 时同步本文件。
+#
+# In APISIX 3.x, standalone = deployment.role "data_plane" +
+# role_data_plane.config_provider "yaml" (there is no "standalone" role).
+# With role=data_plane, the entrypoint skips `apisix init_etcd` entirely
+# (apisix/cli/ops.lua), so no etcd section is needed. Admin API is disabled
+# under yaml provider. Routes/upstreams/consumers are read from apisix.yaml
+# at startup (与根 compose 完全共用同一份路由面).
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+apisix:
+  # Control server: exposes /apisix/status for healthcheck (port 9090, in-container only)
+  control:
+    ip: 0.0.0.0
+    port: 9090
+  # Trust anchors for upstream TLS verification (cosocket ssl.verify).
+  # ca-bundle.crt = system CA pool + app-board dev CA (concatenated by the
+  # compose entrypoint into /tmp at container start). If app-board has not
+  # generated its CA yet (cold start ordering), the entrypoint falls back to
+  # the system pool and `docker compose restart apisix` after first app-board
+  # boot reloads it. (与服务端 config.yaml 相同的坑位与解法)
+  ssl:
+    ssl_trusted_certificate: /tmp/ca-bundle.crt
+
+nginx_config:
+  # CLIENT-only delta vs server config.yaml: pin 1 worker for a
+  # single-user memory budget (server defaults to one worker per core).
+  worker_processes: 1
+  # proxy_buffering off: /chat/* 与 /task-quiz/chat 是 SSE 流，APISIX 默认
+  # 缓冲上游响应会把逐 token 流式合并成整包投递。（说明同服务端 config.yaml：
+  # 该指令必须走 *_configuration_snippet 槽位，nginx_config.http.proxy_buffering
+  # 会被静默忽略）
+  http_server_location_configuration_snippet: |
+    proxy_buffering off;
