@@ -144,7 +144,7 @@ cd app-pay && mvn test    # 20 个测试类 / 86 个用例，纯 JUnit 无外部
 - **CI 漏洞门禁**：`ci-app-pay.yml` 增加 Trivy 依赖扫描（HIGH/CRITICAL 红）；`.github/dependabot.yml` 每周自动升级 PR。
 - **上游 TLS verify**：APISIX 3.11 不支持普通 https upstream 证书校验（见 upstream-app-pay 注释），已挂 `TODO(security)`，
   升级后翻 `verify:true` 并收紧 `https_verify_certificate`。
-- **备份与演练**：`ops/backup/app-pay-backup.sh`（MySQL dump + 审计 JSONL，30 天轮转）+ `ops/backup/README.md` 恢复演练清单。
+- **备份与演练**：`ops/archive/app-pay/backup/app-pay-backup.sh`（MySQL dump + 审计 JSONL，30 天轮转）+ `ops/archive/app-pay/backup/README.md` 恢复演练清单。
 
 ## 高并发加固（2026-10）
 ## （V5 索引：idx_pay_order_uid_status_paid / idx_pay_order_uid_created / idx_pay_order_status_created —— 频次检查 ICP、订单列表免 filesort、补单扫描免回表；交付事务 READ_COMMITTED 消除首购间隙锁死锁面；接受相事务折叠 fsync 4→3/笔）
@@ -164,8 +164,8 @@ cd app-pay && mvn test    # 20 个测试类 / 86 个用例，纯 JUnit 无外部
   多实例说明：闸门/冷却/查单节流均为单实例内存态（强度 = 配置值 × 实例数）；JobLease 已保证 job 不翻倍；
   Redis 集中化评估结论 —— 当前 1~3 实例规模下收益不抵新依赖，暂缓（触发条件：实例数 >3 或出现跨实例滥用）。
 - **PAY_EXECUTOR_TOKEN**：已激活（.env），超时执行器直连调用的唯一鉴权；旧注册定时器回调 401 由兜底轮询关单。
-- **告警与压测**：`ops/monitoring/app-pay-alerts.rules.yml`（对账差异/回调拒绝/渠道 QPS/风控激增/Hikari 饱和）+
-  `ops/loadtest/app-pay-loadtest.md` 压测基线手册（/test/pay/burst 幂等与吞吐场景）。
+- **告警与压测**：`ops/archive/app-pay/monitoring/app-pay-alerts.rules.yml`（对账差异/回调拒绝/渠道 QPS/风控激增/Hikari 饱和）+
+  `ops/archive/app-pay/loadtest/app-pay-loadtest.md` 压测基线手册（/test/pay/burst 幂等与吞吐场景）。
 
 ## pay-admin 退款复核工作台（2026-10）
 

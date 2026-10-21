@@ -9,7 +9,7 @@
  *
  * app-ts owns its own store (Mongo database mind_base_ts); Python's
  * mind_base.session_summaries is intentionally not read (old chat history is
- * not migrated — see docs/app-ts-cutover.md).
+ * not migrated — see docs/archive/app-ts-cutover.md).
  */
 
 export interface SessionSummaryDoc {

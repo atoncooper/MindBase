@@ -32,7 +32,7 @@ curl -k -X POST "$BASE/test/pay/burst" -H "Content-Type: application/json" \
 # 冷却闸门：同 uid 30s 内第二次建单 -> 429 ORDER_COOLDOWN；全局闸门 600/min -> 429 RISK_GLOBAL_GATE_EXCEEDED
 ```
 
-## 3. 观察指标（/actuator/prometheus 或 Grafana，规则见 ops/monitoring/app-pay-alerts.rules.yml）
+## 3. 观察指标（/actuator/prometheus 或 Grafana，规则见 ops/archive/app-pay/monitoring/app-pay-alerts.rules.yml）
 
 | 维度 | 指标 | 健康线 |
 |---|---|---|

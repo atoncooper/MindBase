@@ -15,7 +15,7 @@
 ## 数据所有权（共享 bilirag MySQL + Mongo）
 
 `quiz*` 表（题目/答案/错题）；Mongo `task_quiz_questions`（题目内容，
-与 app-task 调度域共享同库）。分享缓存语义见 docs/app-quiz-migration.md。
+与 app-task 调度域共享同库）。分享缓存语义见 docs/archive/app-quiz-migration.md。
 
 ## 运行
 
@@ -24,4 +24,4 @@ go run ./app-go/app-quiz
 docker compose up -d app-quiz
 ```
 
-配置入口 `default.yaml`（`APPQUIZ__` env 覆盖）。规范详见 AGENTS.md §2.17、docs/app-quiz-migration.md。
+配置入口 `default.yaml`（`APPQUIZ__` env 覆盖）。规范详见 AGENTS.md §2.17、docs/archive/app-quiz-migration.md。
