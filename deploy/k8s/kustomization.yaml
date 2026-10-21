@@ -100,3 +100,23 @@ resources:
   - 30-apps/apisix.yaml
   # - 30-apps/higress.yaml   # Higress 跑在独立服务器(106.53.220.71)，不随集群部署；恢复时取消注释
   - 30-apps/nginx.yaml
+
+# 数据层节点分工（README §7）：component 常驻启用，把 9 个带 PVC 的数据 workload
+# 钉到 database1/database2（tolerations 配套 dedicated=database 污点）；不想钉节点时注释掉本行
+components:
+  - components/node-split
+
+# ── 运维旋钮：镜像版本集中覆盖（kustomize images transformer）──────────────
+# 缺省用各清单内 tag；升级/回滚时取消注释改 newTag（生产建议加 digest 钉死），
+# 无需逐个改 30-apps/*.yaml。name 填清单里的镜像名（不带 tag）。
+# images:
+#   - name: atoncooper/mind-base-app-ts
+#     newTag: latest          # ← 改成具体版本号或注释 digest: sha256:...
+#   - name: atoncooper/mind-base-app-pay
+#     newTag: latest
+#   - name: atoncooper/mind-base-minio
+#     newTag: latest
+#   - name: milvusdb/milvus
+#     newTag: v2.6.22
+#   - name: mysql
+#     newTag: "8.4"

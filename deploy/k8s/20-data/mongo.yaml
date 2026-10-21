@@ -21,6 +21,7 @@ metadata:
 spec:
   serviceName: mongo
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: mongo
@@ -29,6 +30,7 @@ spec:
       labels:
         app: mongo
     spec:
+      terminationGracePeriodSeconds: 60
       containers:
         - name: mongo
           image: mongo:7
@@ -54,17 +56,21 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data/db
+          startupProbe:
+            exec:
+              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 12
           readinessProbe:
             exec:
               command: ["mongosh", "--eval", "db.adminCommand('ping')"]
-            initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 12
             timeoutSeconds: 10
           livenessProbe:
             exec:
               command: ["mongosh", "--eval", "db.adminCommand('ping')"]
-            initialDelaySeconds: 60
             periodSeconds: 30
             failureThreshold: 5
             timeoutSeconds: 10
@@ -75,6 +81,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

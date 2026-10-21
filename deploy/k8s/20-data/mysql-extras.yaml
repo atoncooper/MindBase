@@ -23,6 +23,7 @@ metadata:
 spec:
   serviceName: app-task-mysql
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-task-mysql
@@ -31,6 +32,7 @@ spec:
       labels:
         app: app-task-mysql
     spec:
+      terminationGracePeriodSeconds: 60
       containers:
         - name: mysql
           image: mysql:8.4
@@ -47,10 +49,14 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
+            periodSeconds: 10
+            failureThreshold: 12
           readinessProbe:
             exec:
               command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
-            initialDelaySeconds: 20
             periodSeconds: 10
             failureThreshold: 12
           resources:
@@ -60,6 +66,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
@@ -87,6 +94,7 @@ metadata:
 spec:
   serviceName: app-pay-mysql
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-pay-mysql
@@ -95,6 +103,7 @@ spec:
       labels:
         app: app-pay-mysql
     spec:
+      terminationGracePeriodSeconds: 60
       containers:
         - name: mysql
           image: mysql:8.4
@@ -111,10 +120,14 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
+            periodSeconds: 10
+            failureThreshold: 12
           readinessProbe:
             exec:
               command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
-            initialDelaySeconds: 20
             periodSeconds: 10
             failureThreshold: 12
           resources:
@@ -124,6 +137,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

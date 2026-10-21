@@ -21,6 +21,7 @@ metadata:
   name: app-note
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-note
@@ -51,17 +52,22 @@ spec:
             - name: logs
               mountPath: /app/logs
 
+          # startupProbe 门控启动期（60s 预算），通过后 readiness/liveness 立即接管
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8008
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             httpGet:
               path: /health
               port: 8008
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: 8008
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }

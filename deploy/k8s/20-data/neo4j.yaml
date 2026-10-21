@@ -23,6 +23,10 @@ metadata:
   name: neo4j
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
+  # RWO PVC 单副本 Deployment：滚动更新时新 pod 在异节点挂不上旧卷会卡死，用 Recreate
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: neo4j
@@ -31,6 +35,7 @@ spec:
       labels:
         app: neo4j
     spec:
+      terminationGracePeriodSeconds: 60
       containers:
         - name: neo4j
           image: neo4j:5-community
@@ -51,18 +56,23 @@ spec:
               mountPath: /data
             - name: logs
               mountPath: /logs
+          # 首次启动含系统库初始化，预算 180s
+          startupProbe:
+            httpGet:
+              path: /
+              port: 7474
+            periodSeconds: 10
+            failureThreshold: 18
           readinessProbe:
             httpGet:
               path: /
               port: 7474
-            initialDelaySeconds: 40
             periodSeconds: 15
             failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /
               port: 7474
-            initialDelaySeconds: 90
             periodSeconds: 30
           resources:
             requests: { cpu: 100m, memory: 512Mi }
@@ -79,6 +89,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: neo4j-data
 spec:
+  # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:

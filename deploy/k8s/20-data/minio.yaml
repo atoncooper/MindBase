@@ -22,6 +22,7 @@ metadata:
 spec:
   serviceName: minio
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: minio
@@ -30,10 +31,13 @@ spec:
       labels:
         app: minio
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: minio
           image: atoncooper/mind-base-minio:latest
-          imagePullPolicy: IfNotPresent
+          # :latest 必须配 Always（与 30-apps 其余镜像一致）——IfNotPresent 会让
+          # rollout restart 拉不到新构建；生产钉 digest 见 kustomization.yaml images 块
+          imagePullPolicy: Always
           args: ["server", "/data", "--console-address", ":9001"]
           envFrom:
             - configMapRef:
@@ -62,17 +66,21 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          startupProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             httpGet:
               path: /minio/health/live
               port: 9000
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /minio/health/live
               port: 9000
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 100m, memory: 256Mi }
@@ -81,6 +89,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

@@ -1,0 +1,29 @@
+# MindBase — 数据层节点分工 component（README §7）
+#
+# kustomize component：由 base kustomization 的 components: 字段启用，
+# 随 kubectl apply -k deploy/k8s 一起生效，无需单独 apply。
+# 选择 component 而非 overlay 的原因：overlay 无法嵌套在 base 目录内引用父级
+# （kustomize cycle 检测），component 同 root 不受限；且钉节点随首次 apply
+# 自动就位，满足 local-path PVC「先钉节点再调度」的绑定顺序（README §7）。
+#
+# 分配现状（换节点/调整时改对应 patch 的 hostname）：
+#   database1 (ip-172-31-38-145): mysql / app-task-mysql / app-pay-mysql / mongo /
+#                                 redis / etcd / minio / milvus  （8 个 StatefulSet）
+#   database2 (ip-172-31-41-149): neo4j
+#
+# ⚠️ local-path PV 绑定在「首次调度到的节点」：改某服务的 hostname = 搬家，必须按
+#    README §7 的搬节点流程删 PVC 重建，否则 pod 永远 Pending（卷挂不上）。
+# ⚠️ 本 component 会覆盖线上手工 patch 过的同名字段——apply 前先
+#    kubectl -n mind-base get pods -o wide 核对现状，不符时先改 hostname。
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - path: patches/database1-mysql.yaml
+  - path: patches/database1-app-task-mysql.yaml
+  - path: patches/database1-app-pay-mysql.yaml
+  - path: patches/database1-mongo.yaml
+  - path: patches/database1-redis.yaml
+  - path: patches/database1-etcd.yaml
+  - path: patches/database1-minio.yaml
+  - path: patches/database1-milvus.yaml
+  - path: patches/database2-neo4j.yaml

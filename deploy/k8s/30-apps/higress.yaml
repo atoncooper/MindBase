@@ -31,6 +31,7 @@ spec:
   strategy:
     type: Recreate          # /data 是 RWO PVC，滚动双副本会卡挂载
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: higress
@@ -65,16 +66,19 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 24
           readinessProbe:
             tcpSocket:
               port: 8080
-            initialDelaySeconds: 20
             periodSeconds: 10
             failureThreshold: 18
           livenessProbe:
             tcpSocket:
               port: 8080
-            initialDelaySeconds: 60
             periodSeconds: 30
           resources:
             requests: { cpu: 250m, memory: 512Mi }
@@ -89,6 +93,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: higress-data
 spec:
+  # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:

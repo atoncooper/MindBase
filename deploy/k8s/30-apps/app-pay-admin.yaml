@@ -22,6 +22,7 @@ metadata:
   name: app-pay-admin
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-pay-admin
@@ -62,15 +63,18 @@ spec:
               mountPath: /app/logs
             - name: certs
               mountPath: /app/certs
+          startupProbe:
+            tcpSocket:
+              port: 8003
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             tcpSocket:
               port: 8003
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
               port: 8003
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }

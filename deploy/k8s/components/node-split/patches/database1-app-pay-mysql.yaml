@@ -1,0 +1,17 @@
+# app-pay-mysql → database1（ip-172-31-38-145）——README §7 数据层节点分工。
+# 换节点时只改下面 hostname；database 节点若打 dedicated=database:NoSchedule 污点，
+# tolerations 与之配套，无污点时无副作用。
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-pay-mysql
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: ip-172-31-38-145
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: database
+          effect: NoSchedule
