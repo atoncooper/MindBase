@@ -306,7 +306,7 @@ deploy/k8s/                      K8s manifests（app-auth/app-cloud/app-note/…
 - [系统架构总览](docs/architecture.md)
 - [配置说明](docs/configuration.md)
 - [部署指南](docs/deployment.md)（含 app-cloud 多实例扩容）
-- [Python backend 退役记录](docs/python-decommission.md)
+- [Python backend 退役记录](docs/archive/python-decommission.md)
 - [快速入门（本地开发）](docs/getting-started.md)
 - [云盘服务](docs/app-cloud.md)
 - [笔记系统](docs/notes.md)

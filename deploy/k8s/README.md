@@ -5,7 +5,7 @@ MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-g
 （auth/cloud/note/bili/quiz/kg/settings）、app-board + 三个 MCP、app-task、
 app-pay/app-pay-admin）等价移植为 k8s 清单。
 
-> ⚠️ Python backend 已于 2026-10-06 退役（见 docs/python-decommission.md）——
+> ⚠️ Python backend 已于 2026-10-06 退役（见 docs/archive/python-decommission.md）——
 > 旧 `backend.yaml` 已删除，app-ts 沿用其 8000 端口与网关路由语义。
 
 **核心设计：所有 Service 名称与 compose 服务名完全一致**

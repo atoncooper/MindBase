@@ -4,7 +4,7 @@
 
 MindBase 是多服务系统：**app-ts**（Node/Fastify，AI 域：chat/agent/RAG/KG AI/向量化/quiz AI/task-quiz/blindspot/skills）、一组 **app-go** Go 微服务（auth/bili/note/quiz/cloud/kg/settings 各域权威）、**app-pay**（Java Spring Boot 交易/会员）、**app-board**（Go 板存储）、一个 Next.js 前端（`frontendv2/`）以及一组基础设施容器。
 
-> ⚠️ **Python backend（`app/`）已于 2026-10-06 彻底退役**：compose 无 backend 服务、APISIX 无 backend upstream 与 catch_all 兜底（未列举路径一律 404，新端点必须显式加路由）。退役过程见 [python-decommission.md](python-decommission.md)。
+> ⚠️ **Python backend（`app/`）已于 2026-10-06 彻底退役**：compose 无 backend 服务、APISIX 无 backend upstream 与 catch_all 兜底（未列举路径一律 404，新端点必须显式加路由）。退役过程见 [python-decommission.md](archive/python-decommission.md)。
 
 ```
 浏览器

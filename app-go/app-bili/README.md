@@ -28,4 +28,4 @@ go run ./app-go/app-bili         # 须出公网访问 B 站与 DashScope（经 H
 docker compose up -d app-bili
 ```
 
-配置入口 `default.yaml`（`APPBILI__` env 覆盖）。规范详见 AGENTS.md §2.16、docs/app-bili-migration.md。
+配置入口 `default.yaml`（`APPBILI__` env 覆盖）。规范详见 AGENTS.md §2.16、docs/archive/app-bili-migration.md。
