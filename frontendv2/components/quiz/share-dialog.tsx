@@ -216,7 +216,7 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
                                             value={expiresInDays}
                                             onChange={(e) => setExpiresInDays(e.target.value)}
                                             placeholder="如 7"
-                                            className="field h-9 text-[13px]"
+                                            className="field h-9 text-[16px] md:text-[13px]"
                                         />
                                     </div>
                                     <div>
@@ -229,7 +229,7 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
                                             value={password}
                                             onChange={(e) => setPassword(e.target.value)}
                                             placeholder="留空则无需密码"
-                                            className="field h-9 text-[13px]"
+                                            className="field h-9 text-[16px] md:text-[13px]"
                                         />
                                     </div>
                                     <button

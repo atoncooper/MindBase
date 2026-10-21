@@ -92,7 +92,7 @@ export function InstalledList({ refreshKey, onPreview, onChanged }: Props) {
                     disabled={uploading}
                     title="上传安装"
                     aria-label="上传安装"
-                    className="grid h-8 w-8 place-items-center rounded-full bg-foreground text-surface transition-opacity hover:opacity-90 disabled:opacity-40"
+                    className="grid h-10 w-10 place-items-center rounded-full bg-foreground text-surface transition-opacity hover:opacity-90 disabled:opacity-40 md:h-8 md:w-8"
                 >
                     {uploading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />

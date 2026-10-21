@@ -181,7 +181,7 @@ export function KgPanel({ selectedFolderIds }: { selectedFolderIds: number[] }) 
                 <div className="flex flex-col items-center rounded-2xl border border-border-subtle py-8 text-center">
                     <AlertCircle className="h-5 w-5 text-danger" />
                     <p className="mt-2 text-[13px] text-secondary">知识图谱状态加载失败</p>
-                    <button type="button" onClick={() => void init()} className="btn-pill btn-ghost mt-3 h-8 px-4 text-[12px]">
+                    <button type="button" onClick={() => void init()} className="btn-pill btn-ghost mt-3 h-10 px-4 text-[12px] md:h-8">
                         重试
                     </button>
                 </div>
@@ -254,7 +254,7 @@ export function KgPanel({ selectedFolderIds }: { selectedFolderIds: number[] }) 
                     <KgProgress build={build} onCancel={cancelTracking} />
                 ) : available && graph ? (
                     <>
-                        <div className="mt-4 grid grid-cols-4 gap-3">
+                        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
                             <StatCell label="实体" value={graph.entities} />
                             <StatCell label="关系" value={graph.relations} />
                             <StatCell label="证据" value={graph.evidence} />
@@ -265,13 +265,13 @@ export function KgPanel({ selectedFolderIds }: { selectedFolderIds: number[] }) 
                                 {stats?.pending_pages} 个分P 待抽取 / 需更新
                             </p>
                         )}
-                        <div className="mt-4 flex items-center justify-between gap-3 border-t border-border-subtle pt-4">
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border-subtle pt-4">
                             <p className="truncate text-[11px] text-secondary">{scopeNote}</p>
                             <button
                                 type="button"
                                 disabled={!available}
                                 onClick={() => void handleBuild()}
-                                className="btn-pill btn-primary h-8 shrink-0 px-4 text-[12px] disabled:opacity-50"
+                                className="btn-pill btn-primary h-10 shrink-0 px-4 text-[12px] disabled:opacity-50 md:h-8"
                             >
                                 <Network className="h-3.5 w-3.5" />
                                 构建知识图谱

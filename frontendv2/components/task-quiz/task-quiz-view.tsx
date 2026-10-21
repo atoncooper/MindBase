@@ -150,13 +150,13 @@ export function TaskQuizView() {
     }, [refreshList]);
 
     return (
-        <div className="flex h-[calc(100dvh-3rem)]">
-            {/* Left list — 任何宽度下都常驻显示，点击任务绝不收起/变窄；
-                窄屏(<sm)只把宽度收窄到 240px，而不是隐藏 */}
+        <div className="flex flex-col md:h-[calc(100dvh-3rem)] md:flex-row">
+            {/* Left list — 桌面端为常驻 320px 侧栏；手机端改为顶部 42vh 列表窗格
+                （内部滚动）+ 下方详情，两段上下堆叠 */}
             <aside
                 className={cn(
-                    "w-[320px] shrink-0 border-r border-border-subtle",
-                    "max-sm:w-[240px]",
+                    "h-[42vh] w-full shrink-0 border-b border-border-subtle",
+                    "md:h-auto md:w-[320px] md:border-b-0 md:border-r",
                 )}
             >
                 <TaskQuizList
@@ -170,7 +170,7 @@ export function TaskQuizView() {
             </aside>
 
             {/* Right detail — 始终与侧边栏并排 */}
-            <section className="min-w-0 flex-1">
+            <section className="min-w-0 md:flex-1">
                 <TaskQuizDetailPanel
                     detail={detail}
                     loading={loadingDetail}

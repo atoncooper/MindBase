@@ -99,7 +99,7 @@ export function ExportPaperDialog({ open, quiz, onClose }: ExportPaperDialogProp
                             </button>
                         </header>
 
-                        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+                        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
                             {/* 选项侧栏 */}
                             <aside className="flex w-full shrink-0 flex-col gap-6 overflow-y-auto border-b border-[#c4c7c5] px-6 py-5 md:w-[320px] md:border-b-0 md:border-r">
                                 <div>
@@ -187,7 +187,7 @@ export function ExportPaperDialog({ open, quiz, onClose }: ExportPaperDialogProp
                             </aside>
 
                             {/* 预览 */}
-                            <div className="min-h-0 flex-1 bg-[#e9eef6] p-4">
+                            <div className="min-h-0 h-[55vh] flex-none bg-[#e9eef6] p-4 md:h-auto md:flex-1">
                                 <iframe
                                     title="试卷预览"
                                     srcDoc={html}

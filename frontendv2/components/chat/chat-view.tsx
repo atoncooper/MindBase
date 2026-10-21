@@ -974,8 +974,8 @@ export function ChatView() {
           )}
         </div>
 
-        {/* Input area */}
-        <div className="shrink-0 px-5 pt-2 pb-2">
+        {/* Input area - bottom padding keeps clear of the iOS home indicator */}
+        <div className="shrink-0 px-5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto max-w-[768px]">
             {(() => {
               const chatKind = quotaSummary?.enabled

@@ -174,11 +174,11 @@ export function NotesView() {
     const handleBack = useCallback(() => setMobileEditor(false), []);
 
     return (
-        <div className="flex h-[calc(100dvh-3rem)] overflow-hidden">
+        <div className="flex h-[calc(100dvh-3rem-3.75rem-env(safe-area-inset-bottom,0px))] overflow-hidden md:h-[calc(100dvh-3rem)]">
             {/* List sidebar */}
             <aside
                 className={cn(
-                    "w-72 shrink-0 border-r border-border-subtle bg-surface",
+                    "w-full shrink-0 border-r border-border-subtle bg-surface md:w-72",
                     mobileEditor && "hidden md:block"
                 )}
             >
@@ -286,7 +286,7 @@ function EmptyState({
                 type="button"
                 disabled={busy}
                 onClick={onNew}
-                className="btn-pill btn-primary mt-6 h-9 px-5 text-[13px]"
+                className="btn-pill btn-primary mt-6 h-11 px-5 text-[13px] md:h-9"
             >
                 {busy ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

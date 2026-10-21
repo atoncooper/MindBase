@@ -101,9 +101,9 @@ export function UploadProgressPill({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 16 }}
                 transition={{ duration: 0.2 }}
-                className="pointer-events-none fixed bottom-5 left-1/2 z-40 -translate-x-1/2"
+                className="pointer-events-none fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-1/2 z-40 -translate-x-1/2 md:bottom-5"
             >
-                <div className="flex w-[320px] items-center gap-3 rounded-2xl border border-border bg-surface/95 px-3.5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.12)] backdrop-blur-xl">
+                <div className="flex w-[320px] max-w-[calc(100vw-2rem)] items-center gap-3 rounded-2xl border border-border bg-surface/95 px-3.5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.12)] backdrop-blur-xl">
                     <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
                         {done ? (
                             <Check className="h-4 w-4 text-success" />

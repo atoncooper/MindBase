@@ -23,6 +23,7 @@ metadata:
 spec:
   serviceName: mysql
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: mysql
@@ -31,6 +32,8 @@ spec:
       labels:
         app: mysql
     spec:
+      # InnoDB 优雅关停（刷脏/关 binlog）可能超过默认 30s
+      terminationGracePeriodSeconds: 60
       containers:
         - name: mysql
           image: mysql:8.4
@@ -50,17 +53,23 @@ spec:
               mountPath: /var/lib/mysql
             - name: init-sql
               mountPath: /docker-entrypoint-initdb.d
+          # startupProbe 门控启动期（首次启动含 system.sql 种子导入，预算 180s）；
+          # 通过后 readiness/liveness 立即接管，不再需要 initialDelaySeconds 硬编码
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
           readinessProbe:
             exec:
               command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
-            initialDelaySeconds: 20
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 12
           livenessProbe:
             exec:
               command: ["sh", "-c", "mysqladmin ping -h localhost -u root -p$(MYSQL_ROOT_PASSWORD)"]
-            initialDelaySeconds: 60
             periodSeconds: 30
             timeoutSeconds: 5
           resources:
@@ -74,6 +83,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

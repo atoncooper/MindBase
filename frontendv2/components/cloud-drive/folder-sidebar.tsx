@@ -361,7 +361,7 @@ function InlineCreateInput({
                 }}
                 maxLength={80}
                 placeholder="文件夹名称"
-                className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-tertiary"
+                className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground outline-none placeholder:text-tertiary md:text-[13px]"
             />
             {busy ? (
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
@@ -495,7 +495,9 @@ function FolderNode({
                         <div
                             className={cn(
                                 "flex shrink-0 items-center",
-                                active ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                                active
+                                    ? "opacity-100"
+                                    : "opacity-100 md:opacity-0 md:group-hover:opacity-100"
                             )}
                         >
                             <button
@@ -507,7 +509,7 @@ function FolderNode({
                                 }}
                                 title="新建子文件夹"
                                 aria-label={`在 ${folder.name} 中新建文件夹`}
-                                className="grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors hover:bg-accent-soft hover:text-accent"
+                                className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-accent-soft hover:text-accent"
                             >
                                 <FolderPlus className="h-3.5 w-3.5" />
                             </button>
@@ -520,7 +522,7 @@ function FolderNode({
                                 }}
                                 title="重命名"
                                 aria-label={`重命名 ${folder.name}`}
-                                className="grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
+                                className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-border-subtle hover:text-foreground"
                             >
                                 <Pencil className="h-3.5 w-3.5" />
                             </button>
@@ -532,7 +534,7 @@ function FolderNode({
                                 }}
                                 title="删除文件夹"
                                 aria-label={`删除 ${folder.name}`}
-                                className="grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors hover:bg-danger/10 hover:text-danger"
+                                className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-danger/10 hover:text-danger"
                             >
                                 <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -632,7 +634,7 @@ function RenameInput({
                     if (e.key === "Escape") onCancel();
                 }}
                 maxLength={80}
-                className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none"
+                className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground outline-none md:text-[13px]"
             />
             {busy ? (
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />

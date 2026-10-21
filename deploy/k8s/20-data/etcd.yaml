@@ -21,6 +21,7 @@ metadata:
 spec:
   serviceName: etcd
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: etcd
@@ -29,6 +30,7 @@ spec:
       labels:
         app: etcd
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: etcd
           image: quay.io/coreos/etcd:v3.5.14
@@ -52,15 +54,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /etcd
+          startupProbe:
+            exec:
+              command: ["etcdctl", "endpoint", "health"]
+            periodSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             exec:
               command: ["etcdctl", "endpoint", "health"]
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             exec:
               command: ["etcdctl", "endpoint", "health"]
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }
@@ -69,6 +74,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

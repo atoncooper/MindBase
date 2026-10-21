@@ -21,6 +21,7 @@ metadata:
   name: app-auth
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-auth
@@ -58,17 +59,22 @@ spec:
               mountPath: /run/secrets
               readOnly: true
 
+          # startupProbe 门控启动期（60s 预算），通过后 readiness/liveness 立即接管
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             httpGet:
               path: /health
               port: 8006
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: 8006
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }

@@ -889,3 +889,36 @@ body {
     color: var(--color-tertiary);
   }
 }
+
+/* ==================== Mobile adaptation ==================== */
+
+/* 手机端基础适配：
+   1) 去点按高亮；overflow-x 用 clip（不产生滚动容器，position:sticky 不受影响）。
+   2) 锁定 100% 文本缩放，防 iOS 横竖屏切换时自动放大字体。 */
+html,
+body {
+  overflow-x: clip;
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 底部 tab bar（.mobile-tab-bar，fixed）遮挡补偿：仅当 NavBar 实际渲染了
+   tab bar（已登录的导航页）时给 body 让位；/chat 等独立全屏视图不受影响。 */
+@media (max-width: 767.98px) {
+  body:has(.mobile-tab-bar) {
+    padding-bottom: calc(3.75rem + env(safe-area-inset-bottom));
+  }
+}
+
+/* ==== Mobile: quiz ==== */
+/* 手机端（<768px）quiz 域（.quiz-scope，Material 3）触控与输入适配：
+   图标/pill 按钮提升到 44px 触控目标，g-field 字号 16px 防 iOS 聚焦缩放，
+   segmented/chip 触控高度提升。>=768px 完全不受影响。 */
+@media (max-width: 767.98px) {
+  .quiz-scope .g-icon-btn { min-width: 44px; min-height: 44px; }
+  .quiz-scope .g-btn { min-height: 44px; }
+  .quiz-scope .g-field { font-size: 16px; }
+  .quiz-scope .g-segmented button { min-width: 44px; }
+  .quiz-scope .g-chip { min-height: 36px; }
+}

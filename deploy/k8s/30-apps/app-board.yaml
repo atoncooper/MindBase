@@ -24,6 +24,7 @@ metadata:
   name: app-board
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-board
@@ -68,15 +69,18 @@ spec:
             - name: tls
               mountPath: /app/certs
               readOnly: true
+          startupProbe:
+            tcpSocket:
+              port: 8004
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             tcpSocket:
               port: 8004
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
               port: 8004
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }

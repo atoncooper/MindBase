@@ -72,7 +72,7 @@ export function FileGrid({
                         type="button"
                         onClick={onLoadMore}
                         disabled={loadingMore}
-                        className="flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+                        className="flex items-center gap-1.5 rounded-full px-3.5 py-2.5 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 md:py-1.5"
                     >
                         {loadingMore ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />

@@ -588,7 +588,8 @@ function TierComparison({
     return (
         <section>
             <h2 className="text-[16px] font-semibold text-foreground">权益对照</h2>
-            <div className={cn("mt-3 overflow-hidden rounded-2xl border border-border bg-surface", CARD_SHADOW)}>
+            {/* 手机端 4 列表格可横向滑动，避免列挤压 */}
+            <div className={cn("mt-3 overflow-x-auto rounded-2xl border border-border bg-surface", CARD_SHADOW)}>
                 <table className="w-full text-[12px]">
                     <thead>
                         <tr className="border-b border-border text-left text-tertiary">

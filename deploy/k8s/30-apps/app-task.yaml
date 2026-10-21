@@ -20,6 +20,7 @@ metadata:
   name: app-task
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-task
@@ -74,15 +75,18 @@ spec:
             - name: pay-ca
               mountPath: /app/pay-certs
               readOnly: true
+          startupProbe:
+            tcpSocket:
+              port: 8001
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             tcpSocket:
               port: 8001
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
               port: 8001
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }

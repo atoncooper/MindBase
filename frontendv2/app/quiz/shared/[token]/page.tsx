@@ -110,7 +110,7 @@ export default function SharedQuizPage() {
                             if (e.key === "Enter" && password.trim()) void submitPassword();
                         }}
                         placeholder="输入访问密码"
-                        className="field h-10 text-center text-[14px]"
+                        className="field h-10 text-center text-[16px] md:text-[14px]"
                     />
                     {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
                     <button

@@ -173,7 +173,7 @@ export function VideoList({ mediaId }: VideoListProps) {
                         type="button"
                         disabled={loadingMore}
                         onClick={() => void load(page + 1, true)}
-                        className="btn-pill btn-ghost h-7 px-4 text-[12px]"
+                        className="btn-pill btn-ghost h-10 px-4 text-[12px] md:h-7"
                     >
                         {loadingMore ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
