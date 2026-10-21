@@ -1,3 +1,9 @@
+// Engine — the vectorization machinery: MinIO download → extraction →
+// chunk → embed → Milvus insert (+ Mongo full text), with the Python
+// pipeline's idempotency and rollback semantics. Pure machinery by design:
+// orchestration concerns (L1 summary, routing-graph writes) live in the
+// service layer and are injected through VectorizeHooks — this package must
+// not import the service package.
 package pipeline
 
 import (
@@ -11,55 +17,67 @@ import (
 	"strings"
 	"time"
 
-	"app-cloud/internal/minio"
+	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/model"
-	"app-cloud/internal/mongostore"
+	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/repo"
 
 	"gorm.io/gorm"
 )
 
-// VectorEngine is the contract the service.Pipeline drives: given file
-// metadata, produce + persist chunks and report counts (implemented by
-// Engine; nil engine = pipeline disabled).
-type VectorEngine interface {
-	Vectorize(ctx context.Context, f *model.CloudFile, content []byte) (int, error)
-	CountChunks(ctx context.Context, uploadUUID string) (int, error)
-	DeleteChunks(ctx context.Context, uploadUUID string) error
+// VectorStore — the port for vector persistence (implemented by
+// internal/milvusstore.MilvusStore). Keeping it here keeps this package free
+// of the milvus SDK, so its tests run on every platform.
+type VectorStore interface {
+	CountByUploadUUID(ctx context.Context, uploadUUID string) (int, error)
+	DeleteByUploadUUID(ctx context.Context, uploadUUID string) error
+	InsertChunks(ctx context.Context, uploadUUID string, uid int64, partition time.Time, rows []model.ChunkRow) error
 }
 
-// Engine is the VectorEngine implementation: MinIO download → extraction →
-// chunk → embed → Milvus insert (+ Mongo full text), with the Python
-// pipeline's idempotency and rollback semantics.
+// Engine implements the service layer's VectorEngine port (structural
+// typing — this package never imports service).
 type Engine struct {
 	db       *gorm.DB
 	minio    *minio.Client
 	mongo    *mongostore.MongoStore
-	milvus   *MilvusStore
+	milvus   VectorStore
 	embedder *Embedder
 	files    *repo.FileRepo
 	maxDoc   int64
 }
 
 func NewEngine(db *gorm.DB, mc *minio.Client, mongo *mongostore.MongoStore,
-	milvus *MilvusStore, embedder *Embedder, maxDoc int64) *Engine {
+	milvus VectorStore, embedder *Embedder, maxDoc int64) *Engine {
 	return &Engine{db: db, minio: mc, mongo: mongo, milvus: milvus,
 		embedder: embedder, files: repo.NewFileRepo(), maxDoc: maxDoc}
 }
 
+// VectorizeHooks carries optional service-layer callbacks fired at fixed
+// points of the run. Best-effort by contract: hook errors are ignored by the
+// engine (durable-state concerns belong to the hook implementation).
+type VectorizeHooks struct {
+	// AfterExtract fires once the full text is extracted and persisted to
+	// Mongo. text is the cleaned document text; contentHash is the sha256 of
+	// the downloaded bytes (the idempotency key).
+	AfterExtract func(ctx context.Context, f *model.CloudFile, text, contentHash string)
+}
+
 // Vectorize runs the full pipeline for one file. Returns the chunk count in
 // Milvus (the existing count when the idempotency guard short-circuits).
-// content is unused (the engine downloads from MinIO itself).
-func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, _ []byte) (int, error) {
+func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, hooks VectorizeHooks) (int, error) {
+	// Pre-check the STORED size before reading the object into memory: the
+	// upload path allows multi-GB objects for vectorizable mimes (e.g. a huge
+	// pdf), and a full read of one would exhaust worker memory.
+	if size, serr := e.minio.ObjectSize(ctx, f.ObjectKey); serr == nil && size > e.maxDoc {
+		return 0, fmt.Errorf("%w: stored size %d bytes > limit %d", ErrDocTooLarge, size, e.maxDoc)
+	}
 	data, err := e.minio.GetObject(ctx, f.ObjectKey)
 	if err != nil {
 		return 0, fmt.Errorf("minio download: %w", err)
 	}
+	// Defense in depth: the pre-check may have raced with a concurrent write.
 	if int64(len(data)) > e.maxDoc {
-		_ = e.files.UpdateMeta(e.db, f.UploadUUID, f.UID, map[string]any{
-			"vectorizable": false, "vector_status": "failed",
-		})
-		return 0, fmt.Errorf("document too large (%d bytes > %d) — marked non-vectorizable", len(data), e.maxDoc)
+		return 0, fmt.Errorf("%w: downloaded %d bytes > limit %d", ErrDocTooLarge, len(data), e.maxDoc)
 	}
 
 	contentHash := sha256Hex(data)
@@ -87,6 +105,9 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, _ []byte) (i
 	if err != nil {
 		return 0, err
 	}
+	if hooks.AfterExtract != nil {
+		hooks.AfterExtract(ctx, f, cleaned, contentHash)
+	}
 
 	// ── Phase 2: chunking ──
 	chunker := NewChunker()
@@ -113,9 +134,9 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, _ []byte) (i
 	if f.CreatedAt != nil {
 		partition = *f.CreatedAt
 	}
-	rows := make([]ChunkRow, len(chunks))
+	rows := make([]model.ChunkRow, len(chunks))
 	for i, ch := range chunks {
-		rows[i] = ChunkRow{
+		rows[i] = model.ChunkRow{
 			ChunkIndex:   i,
 			ChunkID:      f.UploadUUID + ":" + itoa(i),
 			Title:        displayTitle(f),
@@ -131,7 +152,9 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, _ []byte) (i
 		return 0, err
 	}
 
-	// ── Phase 5: metadata (doc_parser + doc_meta; hash only on success) ──
+	// ── Phase 5: metadata (doc_parser + doc_meta + content_hash, success only) ──
+	// content_hash closes the idempotency gate above: the next run of the
+	// same unchanged content short-circuits instead of re-embedding.
 	docMeta := map[string]any{}
 	if len(headings) > 0 {
 		docMeta["headings"] = headings
@@ -141,8 +164,9 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, _ []byte) (i
 	metaJSON, _ := json.Marshal(docMeta)
 	metaStr := string(metaJSON)
 	_ = e.files.UpdateMeta(e.db, f.UploadUUID, f.UID, map[string]any{
-		"doc_parser": source,
-		"doc_meta":   metaStr,
+		"doc_parser":   source,
+		"doc_meta":     metaStr,
+		"content_hash": contentHash,
 	})
 
 	return len(chunks), nil
@@ -176,7 +200,7 @@ func (e *Engine) extractText(ctx context.Context, f *model.CloudFile, data []byt
 	return parsed.Text, parsed.Source, parsed.Headings, nil
 }
 
-// CountChunks / DeleteChunks — service.VectorEngine reconciliation surface.
+// CountChunks / DeleteChunks — the service layer's reconciliation surface.
 func (e *Engine) CountChunks(ctx context.Context, uploadUUID string) (int, error) {
 	return e.milvus.CountByUploadUUID(ctx, uploadUUID)
 }
@@ -219,5 +243,6 @@ func itoa(i int) string {
 	return string(buf[pos:])
 }
 
-// ErrNotSupportedCheck lets the Pipeline map permanent skips.
-var _ = errors.Is
+// ErrDocTooLarge marks a stored document beyond the vectorization size
+// limit — permanent for this content (mapped to not_supported upstream).
+var ErrDocTooLarge = errors.New("document exceeds the vectorization size limit")

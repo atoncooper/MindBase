@@ -21,12 +21,12 @@ import (
 	_ "time/tzdata" // embed IANA tz database so Asia/Shanghai works in distroless
 
 	"app-cloud/internal/config"
-	"app-cloud/internal/db"
+	"app-cloud/internal/infra/db"
 	"app-cloud/internal/joblock"
 	"app-cloud/internal/logger"
-	"app-cloud/internal/minio"
-	"app-cloud/internal/model"
-	"app-cloud/internal/mongostore"
+	"app-cloud/internal/infra/milvusstore"
+	"app-cloud/internal/infra/minio"
+	"app-cloud/internal/infra/mongostore"
 	pipelinepkg "app-cloud/internal/pipeline"
 	"app-cloud/internal/repo"
 	"app-cloud/internal/router"
@@ -125,10 +125,16 @@ func main() {
 	quotaSvc := service.NewQuotaService(cfg, db.DB, pending)
 	uploadSvc := service.NewUploadService(cfg, db.DB, mc, rdb, quotaSvc, pending)
 	reconciler := service.NewReconciler(db.DB, mc)
-	pipe := service.NewPipeline(db.DB, mongoStore, redisPublisher{rdb}, cfg.WSBridge.Channel)
+	// L1 routing: summary generator + graph writer. Both best-effort — the
+	// pipeline tolerates either being absent.
+	docSummary := service.NewSummarizer(cfg.Pipeline.Summary, cfg.Pipeline.Embedding.APIKey, cfg.Pipeline.Embedding.BaseURL)
+	kgClient := service.NewKgClient(cfg.Kg)
+	pipe := service.NewPipeline(db.DB, mongoStore, redisPublisher{rdb}, cfg.WSBridge.Channel, quotaSvc,
+		docSummary, kgClient, cfg.Pipeline.Admission.MaxPerUID, cfg.Pipeline.Admission.MaxQueueDepth)
 	// Engine: extractors → chunk → embed (Higress) → Milvus cloud_drive.
+
 	if cfg.Pipeline.Enabled && cfg.Pipeline.Milvus.Enabled && strings.TrimSpace(cfg.Pipeline.Milvus.URI) != "" {
-		milvusStore, merr := pipelinepkg.NewMilvusStore(ctx, cfg.Pipeline.Milvus, cfg.Pipeline.Embedding.Dimension)
+		milvusStore, merr := milvusstore.NewMilvusStore(ctx, cfg.Pipeline.Milvus, cfg.Pipeline.Embedding.Dimension)
 		if merr != nil {
 			slog.Error("milvus schema guard / connect failed — refusing degraded vector writes", "err", merr)
 			os.Exit(1)
@@ -141,29 +147,32 @@ func main() {
 	} else {
 		slog.Warn("[PIPELINE] disabled — uploads will be marked not_supported for vectorization")
 	}
-	uploadSvc.SetCompletionHook(func(uploadUUID string, uid int64, file *model.CloudFile) {
-		if !cfg.Pipeline.Enabled {
-			return
-		}
-		// Durable outbox: the bounded worker pool drains cloud_vector_tasks.
-		if err := pipe.EnqueueTask(uploadUUID, uid); err != nil {
-			slog.Error("[CLOUD_UPLOAD] pipeline enqueue failed", "upload_uuid", uploadUUID, "err", err)
-		}
-	})
+	// Vectorization is USER-TRIGGERED ONLY (POST /cloud/video/{uuid}/process or
+	// /reprocess): uploads must NOT auto-enqueue pipeline tasks.
 	purgeSvc := service.NewPurgeService(db.DB, mc, mongoStore, pipe)
+	purgeSvc.SetGraphWriter(kgClient)
 	shareSvc := service.NewShareService(db.DB, mc, cfg.Minio.PresignExpire)
-	attestor := service.NewDeviceAttestor()
+	// Attestation HMAC key — MUST be identical across replicas (P0-2 fix):
+	// the share challenge/ticket chain is stateless and nginx round-robins
+	// /cloud/s/*, so a per-process random key breaks cross-replica verification.
+	// Invalid shapes were already rejected by config.Validate.
+	attestKey, aerr := cfg.Attest.KeyBytes()
+	if aerr != nil {
+		slog.Error("invalid attest secret", "err", aerr)
+		os.Exit(1)
+	}
+	attestor := service.NewDeviceAttestor(attestKey)
 
 	// Bounded vectorize worker pool draining the cloud_vector_tasks outbox
 	// (multi-replica safe: FOR UPDATE SKIP LOCKED claiming + stale requeue).
-	pipe.StartWorkers(cfg.Pipeline.Workers)
+	pipe.StartWorkers(cfg.Pipeline.Workers, cfg.Pipeline.MaxWorkers, cfg.Pipeline.Autoscale)
 
 	// Trash sweeper: physically purge soft-deleted files after N days.
 	// Reconciler: per-uid drift check (active users, rotating — never a
 	// bucket-wide scan); runs on the same stop channel.
 	sweeperStop := make(chan struct{})
-	go runTrashSweeper(cfg, purgeSvc, rdb, sweeperStop)
-	go runDailyReconciler(reconciler, rdb, sweeperStop)
+	go runTrashSweeper(cfg, purgeSvc, rdb, sweeperStop, jobLeaseTTL(cfg))
+	go runDailyReconciler(reconciler, rdb, sweeperStop, jobLeaseTTL(cfg))
 	defer pipe.StopWorkers(8 * time.Second)
 	defer close(sweeperStop)
 
@@ -216,10 +225,16 @@ func main() {
 // batch). Drift is logged; the DB ledger stays authoritative for quota.
 // The Redis lease makes each run single-winner across replicas; reconcile is
 // read-only reporting, so a rare duplicate boot-time catch-up is harmless.
-func runDailyReconciler(rec *service.Reconciler, rdb redis.UniversalClient, stop chan struct{}) {
+// jobLeaseTTL — configured background-job lease TTL (see JoblockConfig for
+// the sizing tradeoff between crash-recovery latency and rollout overlap).
+func jobLeaseTTL(cfg *config.Config) time.Duration {
+	return time.Duration(cfg.Joblock.LeaseTTLSecs) * time.Second
+}
+
+func runDailyReconciler(rec *service.Reconciler, rdb redis.UniversalClient, stop chan struct{}, leaseTTL time.Duration) {
 	run := func() {
 		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		release, ok := joblock.TryAcquire(lockCtx, rdb, jobReconciler, jobLeaseTTL)
+		release, ok := joblock.TryAcquire(lockCtx, rdb, jobReconciler, leaseTTL)
 		lockCancel()
 		if !ok {
 			slog.Info("[RECONCILE] lease held by another replica — skipping run")
@@ -257,7 +272,7 @@ func (p redisPublisher) Publish(ctx context.Context, channel string, message any
 // configured retention. One sweep tick is a no-op when nothing is eligible.
 // The Redis lease makes each tick single-winner across replicas: only the
 // lock holder runs PurgeExpired, the rest of the fleet skips that round.
-func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, rdb redis.UniversalClient, stop chan struct{}) {
+func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, rdb redis.UniversalClient, stop chan struct{}, leaseTTL time.Duration) {
 	interval := time.Duration(cfg.Trash.SweepIntervalSeconds) * time.Second
 	if interval <= 0 {
 		interval = time.Hour
@@ -270,7 +285,7 @@ func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, rdb redis.
 			return
 		case <-ticker.C:
 			lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			release, ok := joblock.TryAcquire(lockCtx, rdb, jobSweeper, jobLeaseTTL)
+			release, ok := joblock.TryAcquire(lockCtx, rdb, jobSweeper, leaseTTL)
 			lockCancel()
 			if !ok {
 				slog.Info("[TRASH_SWEEPER] lease held by another replica — skipping tick")
@@ -290,12 +305,11 @@ func runTrashSweeper(cfg *config.Config, purge *service.PurgeService, rdb redis.
 	}
 }
 
-// Background-job lease knobs (internal/joblock). The TTL comfortably exceeds
-// the 10-minute job context: a finished run releases via compare-and-delete
+// Background-job names (internal/joblock). The lease TTL is configured
+// (joblock.lease_ttl_seconds, default 900s): it comfortably exceeds the
+// 10-minute job context — a finished run releases via compare-and-delete
 // well before expiry, while a crashed holder frees the job for another
-// replica within jobLeaseTTL.
-const jobLeaseTTL = 15 * time.Minute
-
+// replica within TTL.
 const (
 	jobSweeper    = "trash-sweeper"
 	jobReconciler = "daily-reconciler"

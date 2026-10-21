@@ -134,5 +134,61 @@ func (m *MongoStore) DeleteParsedDocument(ctx context.Context, uploadUUID string
 	return err
 }
 
+// UpsertSummary stores the L1 routing summary alongside the parsed document
+// (same collection — one read serves both full text and routing metadata).
+// summaryContentHash ties the summary to the exact content version it was
+// generated from; the query layer treats a mismatch as stale.
+// sum is accepted as any (bson-marshalled via struct tags) so this package
+// stays decoupled from the service layer that owns the summary type.
+func (m *MongoStore) UpsertSummary(ctx context.Context, uploadUUID string, uid int64,
+	contentHash, model string, sum any) error {
+	if m == nil || m.db == nil {
+		return errors.New("mongo disabled")
+	}
+	_, err := m.db.Collection("cloud_drive_documents").UpdateOne(ctx,
+		bson.M{"upload_uuid": uploadUUID},
+		bson.M{"$set": bson.M{
+			"uid":                  uid,
+			"summary":              sum,
+			"summary_model":        model,
+			"summary_content_hash": contentHash,
+			"updated_at":           time.Now().UTC(),
+		}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+// GetSummariesByUUIDs returns summary sub-documents for the given files
+// (projection excludes the full text — the routing judge never needs it).
+func (m *MongoStore) GetSummariesByUUIDs(ctx context.Context, uid int64,
+	uploadUUIDs []string) ([]map[string]any, error) {
+	if m == nil || m.db == nil {
+		return nil, errors.New("mongo disabled")
+	}
+	if len(uploadUUIDs) == 0 {
+		return nil, nil
+	}
+	cur, err := m.db.Collection("cloud_drive_documents").Find(ctx,
+		bson.M{"uid": uid, "upload_uuid": bson.M{"$in": uploadUUIDs}, "summary": bson.M{"$exists": true}},
+		options.Find().SetProjection(bson.M{
+			"upload_uuid": 1, "title": 1, "summary": 1, "_id": 0,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := []map[string]any{}
+	for cur.Next(ctx) {
+		var row map[string]any
+		if err := cur.Decode(&row); err != nil {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, cur.Err()
+}
+
 // htmlTagRe strips residual HTML tags from parsed text (parity).
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)

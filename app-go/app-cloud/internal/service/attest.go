@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -37,10 +38,28 @@ type DeviceAttestor struct {
 	secret []byte // boot-random; a restart simply invalidates live tickets
 }
 
-func NewDeviceAttestor() *DeviceAttestor {
+// NewDeviceAttestor builds the attestor. sharedSecret (≥ 32 bytes) becomes
+// the HMAC key so every replica verifies what any other replica issued —
+// REQUIRED for multi-instance, where nginx round-robins /cloud/s/* and the
+// challenge/ticket chain is stateless. Empty input falls back to a
+// boot-random key with a warning: single-replica semantics only (a restart
+// also invalidates all live tickets in that mode). A non-empty but too-short
+// input logs an error and also falls back (config.Validate rejects it earlier).
+func NewDeviceAttestor(sharedSecret []byte) *DeviceAttestor {
+	if len(sharedSecret) >= 32 {
+		key := make([]byte, len(sharedSecret))
+		copy(key, sharedSecret)
+		return &DeviceAttestor{secret: key}
+	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		panic("device attestor: crypto/rand unavailable: " + err.Error())
+	}
+	if len(sharedSecret) > 0 {
+		slog.Error("[CLOUD_ATTEST] configured attest secret too short (<32 bytes) — falling back to boot-random; multi-replica share flows WILL break",
+			"configured_len", len(sharedSecret))
+	} else {
+		slog.Warn("[CLOUD_ATTEST] attest secret not configured — using boot-random key (single-replica ONLY; set APPCLOUD__ATTEST__SECRET for multi-instance)")
 	}
 	return &DeviceAttestor{secret: secret}
 }

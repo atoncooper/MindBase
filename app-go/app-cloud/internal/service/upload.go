@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"app-cloud/internal/config"
-	"app-cloud/internal/minio"
+	"app-cloud/internal/metrics"
+	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
 
@@ -88,14 +89,13 @@ func mimeAllowed(mime string) bool {
 // cloud_files row is created on complete, so abandoned uploads leave no DB
 // garbage. Parity with the Python CloudUploadService plus the new quota gate.
 type UploadService struct {
-	cfg        *config.Config
-	db         *gorm.DB
-	minio      *minio.Client
-	rdb        redis.UniversalClient
-	files      *repo.FileRepo
-	quota      *QuotaService
-	pending    *PendingUploads
-	onComplete func(uploadUUID string, uid int64, file *model.CloudFile) // pipeline hook
+	cfg     *config.Config
+	db      *gorm.DB
+	minio   *minio.Client
+	rdb     redis.UniversalClient
+	files   *repo.FileRepo
+	quota   *QuotaService
+	pending *PendingUploads
 }
 
 func NewUploadService(cfg *config.Config, db *gorm.DB, mc *minio.Client,
@@ -104,12 +104,6 @@ func NewUploadService(cfg *config.Config, db *gorm.DB, mc *minio.Client,
 		cfg: cfg, db: db, minio: mc, rdb: rdb,
 		files: repo.NewFileRepo(), quota: quota, pending: pending,
 	}
-}
-
-// SetCompletionHook registers the pipeline trigger (wired in main; keeps the
-// upload service decoupled from the pipeline package).
-func (s *UploadService) SetCompletionHook(fn func(uploadUUID string, uid int64, file *model.CloudFile)) {
-	s.onComplete = fn
 }
 
 type uploadMeta struct {
@@ -194,7 +188,7 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 		s.pending.Remove(ctx, uid, uploadUUID)
 		return nil, fmt.Errorf("redis upload meta write: %w", err)
 	}
-	s.SetHeartbeat(ctx, sessionUUID)
+	s.SetHeartbeat(ctx, sessionUUID, uploadUUID, uid)
 
 	slog.Info("[CLOUD_UPLOAD] init_upload complete", "uid", uid,
 		"filename", filename, "size", fileSize, "chunks", chunkCount,
@@ -238,6 +232,28 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 		return nil, err
 	}
 
+	// Size verification (quota-bypass guard): the declared file_size is
+	// client input — a client could declare a small size to pass the quota
+	// reserve, then upload far larger parts. Verify what actually landed in
+	// MinIO; any mismatch violates the upload contract: remove the stray
+	// object, release the reservation and the session, and store nothing.
+	actualSize, serr := s.minio.ObjectSize(ctx, meta.ObjectKey)
+	if serr != nil {
+		slog.Error("[CLOUD_UPLOAD] post-complete stat failed — object unverifiable", "upload_uuid", uploadUUID, "err", serr)
+		s.pending.Remove(ctx, uid, uploadUUID)
+		metrics.UploadComplete.WithLabelValues("stat_error").Inc()
+		return nil, fmt.Errorf("uploaded object could not be verified: %w", serr)
+	}
+	if actualSize != meta.FileSize {
+		slog.Error("[CLOUD_UPLOAD] size mismatch — rejecting upload and removing object",
+			"upload_uuid", uploadUUID, "uid", uid, "declared", meta.FileSize, "actual", actualSize)
+		_ = s.minio.DeleteObject(ctx, meta.ObjectKey)
+		_ = s.rdb.Del(ctx, uploadKeyPrefix+uploadUUID).Err()
+		s.pending.Remove(ctx, uid, uploadUUID)
+		metrics.UploadComplete.WithLabelValues("size_mismatch").Inc()
+		return nil, fmt.Errorf("Uploaded size mismatch: declared %d bytes, actual %d bytes — upload rejected", meta.FileSize, actualSize)
+	}
+
 	uploadStatus := "completed"
 	asrStatus := "pending"
 	vectorStatus := "pending"
@@ -262,25 +278,17 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 	if err := s.files.Create(s.db, row); err != nil {
 		slog.Error("[CLOUD_UPLOAD] DB create failed after MinIO complete — manual fix required!",
 			"upload_uuid", uploadUUID, "etag", etag, "err", err)
+		metrics.UploadComplete.WithLabelValues("db_error").Inc()
 		return nil, err
 	}
 	_ = s.rdb.Del(ctx, uploadKeyPrefix+uploadUUID).Err()
 	s.pending.Remove(ctx, uid, uploadUUID)
 
 	slog.Info("[CLOUD_UPLOAD] complete_upload done", "upload_uuid", uploadUUID, "etag", etag)
+	metrics.UploadComplete.WithLabelValues("ok").Inc()
 
-	// Fire-and-forget pipeline (parse → chunk → embed → vectorize).
-	if s.onComplete != nil {
-		file := row
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("[CLOUD_UPLOAD] pipeline panic", "upload_uuid", uploadUUID, "panic", r)
-				}
-			}()
-			s.onComplete(uploadUUID, uid, file)
-		}()
-	}
+	// Vectorization is user-triggered (process / reprocess endpoints) — an
+	// upload completion never enqueues pipeline tasks by itself.
 
 	return map[string]any{
 		"uploadUuid": uploadUUID,
@@ -289,17 +297,60 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 	}, nil
 }
 
-// SetHeartbeat refreshes the upload session heartbeat (5-min TTL).
-func (s *UploadService) SetHeartbeat(ctx context.Context, sessionUUID string) {
-	if err := s.rdb.Set(ctx, heartbeatKeyPrefix+sessionUUID, "alive",
+// heartbeatSession — value stored under the heartbeat key: the reverse
+// mapping (session → upload + owner) needed to renew the upload session
+// itself on every beat.
+type heartbeatSession struct {
+	UploadUUID string `json:"upload_uuid"`
+	UID        int64  `json:"uid"`
+}
+
+// SetHeartbeat registers a live heartbeat (5-min TTL) and stores the
+// (upload, uid) mapping so Heartbeat can renew the upload meta key.
+func (s *UploadService) SetHeartbeat(ctx context.Context, sessionUUID, uploadUUID string, uid int64) {
+	payload, _ := json.Marshal(heartbeatSession{UploadUUID: uploadUUID, UID: uid})
+	if err := s.rdb.Set(ctx, heartbeatKeyPrefix+sessionUUID, payload,
 		time.Duration(heartbeatTTL)*time.Second).Err(); err != nil {
 		slog.Warn("[CLOUD_UPLOAD] heartbeat Redis SETEX failed", "session_uuid", sessionUUID, "err", err)
 	}
 }
 
-// Heartbeat returns ack=true when the heartbeat write succeeded.
-func (s *UploadService) Heartbeat(ctx context.Context, sessionUUID string) bool {
-	s.SetHeartbeat(ctx, sessionUUID)
+// Heartbeat refreshes a live upload session: the heartbeat key AND the upload
+// meta TTL (session renewal). Previously only the heartbeat key was refreshed
+// while the meta expired a fixed 1h after init — any upload outlasting that
+// window failed complete/resume even while actively heartbeating (large files
+// on slow links). Renewal is owner-checked (meta uid == caller uid) and also
+// re-stamps the pending-ledger entry so an in-flight file keeps its quota
+// reservation. Legacy "alive" string values (pre-renewal sessions) still
+// refresh the beat key only and expire with their original meta TTL.
+func (s *UploadService) Heartbeat(ctx context.Context, sessionUUID string, uid int64) bool {
+	key := heartbeatKeyPrefix + sessionUUID
+	raw, err := s.rdb.Get(ctx, key).Result()
+	if err != nil {
+		// Session lapsed (>5min without a beat): ack false so the client
+		// treats the upload as dead and re-initialises via /resume.
+		return false
+	}
+	var hs heartbeatSession
+	if json.Unmarshal([]byte(raw), &hs) != nil || hs.UploadUUID == "" {
+		// Legacy "alive" value — refresh the beat only.
+		if expErr := s.rdb.Expire(ctx, key, time.Duration(heartbeatTTL)*time.Second).Err(); expErr != nil {
+			slog.Warn("[CLOUD_UPLOAD] heartbeat expire failed", "session_uuid", sessionUUID, "err", expErr)
+		}
+		return true
+	}
+	if hs.UID != uid {
+		// Not the owner: never renew someone else's upload session.
+		return false
+	}
+	if err := s.rdb.Set(ctx, key, raw, time.Duration(heartbeatTTL)*time.Second).Err(); err != nil {
+		slog.Warn("[CLOUD_UPLOAD] heartbeat refresh failed", "session_uuid", sessionUUID, "err", err)
+	}
+	if err := s.rdb.Expire(ctx, uploadKeyPrefix+hs.UploadUUID,
+		time.Duration(uploadMetaTTL)*time.Second).Err(); err != nil {
+		slog.Warn("[CLOUD_UPLOAD] upload meta renew failed", "upload_uuid", hs.UploadUUID, "err", err)
+	}
+	s.pending.Touch(ctx, uid, hs.UploadUUID)
 	return true
 }
 
@@ -337,26 +388,28 @@ func (s *UploadService) ResumeUpload(ctx context.Context, uploadUUID string, uid
 	}, nil
 }
 
-// uuid7 generates a time-ordered UUIDv7 string — byte-format equivalent to
-// the Python _generate_uuid7 (48-bit epoch ms + ver7 + 12+62 random bits).
+// uuid7 generates a time-ordered UUIDv7 string per RFC 9562: 48-bit
+// unix-ms timestamp + version 7 + 12 random bits (rand_a) + variant 10 +
+// 62 random bits (rand_b). UUIDs are opaque keys here (DB unique key, MinIO
+// object path); nothing parses their internals, so the correct bit layout is
+// freely chosen over any historical formatting quirk.
 func uuid7() (string, error) {
-	const uuid7EpochMS = int64(1577836800000) // 2020-01-01T00:00:00Z, same as Python
-	ts := uint64(time.Now().UnixMilli()-uuid7EpochMS) & 0xFFFFFFFFFFFF
-	b := make([]byte, 10)
-	if _, err := rand.Read(b); err != nil {
+	const uuid7EpochMS = int64(1577836800000) // 2020-01-01T00:00:00Z
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
 	r := uint64(0)
 	for _, by := range b {
 		r = r<<8 | uint64(by)
 	}
-	randA := (r >> 50) & 0xFFF
-	randB := r & 0x3FFFFFFFFFFFFFFF
+	ts := uint64(time.Now().UnixMilli()-uuid7EpochMS) & 0xFFFFFFFFFFFF
 	timeLow := ts & 0xFFFFFFFF
 	timeMid := (ts >> 32) & 0xFFFF
-	timeHi := ((ts >> 48) & 0xFFF) | 0x7000
-	clockSeq := (randA >> 2) | 0x8000
-	clockSeqLow := randA & 0xFF
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%02x%012x",
-		timeLow, timeMid, timeHi, clockSeq, clockSeqLow, randB), nil
+	timeHi := ((ts >> 48) & 0xFFF) | 0x7000 | uint64((r>>52)&0xFFF)
+	clockSeq := 0x8000 | uint64((r>>48)&0x3FFF)
+	node := r & 0xFFFFFFFFFFFF
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", timeLow, timeMid, timeHi, clockSeq, node), nil
 }
+
+

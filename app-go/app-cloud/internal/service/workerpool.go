@@ -20,7 +20,9 @@ import (
 	"log/slog"
 	"time"
 
+	"app-cloud/internal/metrics"
 	"app-cloud/internal/model"
+	"app-cloud/internal/repo"
 )
 
 const (
@@ -39,22 +41,90 @@ const (
 // janitor. workers <= 0 means defaultPipelineWorkers; the value is clamped to
 // [1, maxPipelineWorkers]. Idempotent: later calls are no-ops. Not
 // restartable after StopWorkers (process shutdown path only).
-func (p *Pipeline) StartWorkers(workers int) {
+func (p *Pipeline) StartWorkers(workers, maxWorkers int, autoscale bool) {
 	if workers <= 0 {
 		workers = defaultPipelineWorkers
 	}
-	if workers > maxPipelineWorkers {
-		workers = maxPipelineWorkers
+	if maxWorkers < workers {
+		maxWorkers = workers
+	}
+	if maxWorkers > maxPipelineWorkers {
+		maxWorkers = maxPipelineWorkers
 	}
 	p.startOnce.Do(func() {
+		p.minWorkers, p.maxWorkers, p.autoscale = workers, maxWorkers, autoscale
 		for i := 0; i < workers; i++ {
-			p.wg.Add(1)
-			go p.workerLoop(i)
+			p.spawnWorker(i)
 		}
 		p.wg.Add(1)
 		go p.janitorLoop()
-		slog.Info("[CLOUD_PIPELINE] worker pool started", "workers", workers, "worker_id", p.workerID)
+		if p.autoscale {
+			p.wg.Add(1)
+			go p.elasticLoop()
+		}
+		slog.Info("[CLOUD_PIPELINE] worker pool started", "workers", workers,
+			"max_workers", maxWorkers, "autoscale", autoscale, "worker_id", p.workerID)
 	})
+}
+
+// spawnWorker registers and starts one worker; the index is for logs only.
+func (p *Pipeline) spawnWorker(i int) {
+	p.workersMu.Lock()
+	p.curWorkers = i + 1
+	p.workersMu.Unlock()
+	p.wg.Add(1)
+	go p.workerLoop(i)
+}
+
+// elasticLoop implements depth-based elasticity WITHOUT any external infra:
+// every 15s it compares the pending backlog with the pool size and GROWS the
+// pool (never shrinks — StopWorkers tears everything down) toward maxWorkers
+// when pending > 2x workers. Growth-only keeps lifecycle management trivial;
+// an idle extra worker costs one goroutine each.
+// nextWorkerCount — the elastic growth rule (pure, tested): double the pool
+// while pending exceeds twice the current size, capped at maxWorkers, and
+// never shrink below the current count (growth-only).
+func nextWorkerCount(cur, pending, max int) int {
+	want := cur
+	if pending > cur*2 {
+		want = cur * 2
+	}
+	if want > max {
+		want = max
+	}
+	return want
+}
+
+func (p *Pipeline) elasticLoop() {
+	defer p.wg.Done()
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.stop:
+			return
+		case <-t.C:
+			pending, _, _, err := p.tasks.CountStates(p.db)
+			if err != nil {
+				continue
+			}
+			p.workersMu.Lock()
+			cur := p.curWorkers
+			want := nextWorkerCount(cur, int(pending), p.maxWorkers)
+			for i := cur; i < want; i++ {
+				p.curWorkers = i + 1
+				p.wg.Add(1)
+				go p.workerLoop(i)
+			}
+			grew := p.curWorkers - cur
+			p.workersMu.Unlock()
+			if grew > 0 {
+				slog.Info("[CLOUD_PIPELINE] elastic scale-out", "workers", p.curWorkers,
+					"pending", pending)
+				p.Wake()
+			}
+		}
+	}
 }
 
 // StopWorkers stops claiming new tasks and waits up to grace for in-flight
@@ -82,8 +152,9 @@ func (p *Pipeline) StopWorkers(grace time.Duration) {
 // wakes an idle worker. The row IS the queue: if this write fails nothing
 // would ever process the file, so the file is marked failed instead of being
 // left in a pending limbo.
-func (p *Pipeline) EnqueueTask(uploadUUID string, uid int64) error {
-	if err := p.tasks.Enqueue(p.db, uploadUUID, uid); err != nil {
+func (p *Pipeline) EnqueueTask(ctx context.Context, uploadUUID string, uid int64) error {
+	status := p.tierStatus(uid)
+	if err := p.tasks.Enqueue(p.db, uploadUUID, uid, status); err != nil {
 		_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "failed"})
 		return err
 	}
@@ -117,7 +188,10 @@ func (p *Pipeline) workerLoop(i int) {
 			}
 			continue
 		}
+		metrics.PipelineClaimed.Inc()
 		p.execute(task)
+		// execute ALWAYS terminates the outbox row (done/failed), even on panic.
+		metrics.PipelineClaimed.Dec()
 	}
 }
 
@@ -155,15 +229,70 @@ func (p *Pipeline) janitorLoop() {
 		case <-p.stop:
 			return
 		case <-t.C:
-			n, err := p.tasks.RequeueStale(p.db, time.Now().Add(-staleProcessingAfter))
+			// queue-depth observability first (post-requeue numbers land next tick)
+			if pending, low, processing, cerr := p.tasks.CountStates(p.db); cerr == nil {
+				metrics.QueueDepth.WithLabelValues("pending").Set(float64(pending))
+				metrics.QueueDepth.WithLabelValues("pending_low").Set(float64(low))
+				metrics.QueueDepth.WithLabelValues("processing").Set(float64(processing))
+			}
+			// stale claims (crash/kill) → requeue at the owner's current tier
+			cands, err := p.tasks.RequeueStaleCandidates(p.db, time.Now().Add(-staleProcessingAfter))
 			if err != nil {
 				slog.Warn("[CLOUD_PIPELINE] stale requeue scan failed", "err", err)
-			} else if n > 0 {
+			} else if n := p.requeueByTier(cands, false); n > 0 {
 				slog.Warn("[CLOUD_PIPELINE] requeued stale claims", "count", n)
+				metrics.PipelineRequeued.WithLabelValues("stale").Add(float64(n))
+				p.Wake()
+			}
+			// Bounded retry of terminal-failed tasks (transient gateway/storage
+			// errors): requeue with backoff, file status flipped back to pending
+			// in the same transaction, up to repo.MaxTaskAttempts total claims.
+			fcands, ferr := p.tasks.RequeueFailedCandidates(p.db, time.Now().Add(-repo.FailedRetryBackoff), repo.MaxTaskAttempts, repo.StaleReconciledMsg)
+			if ferr != nil {
+				slog.Warn("[CLOUD_PIPELINE] failed-retry requeue failed", "err", ferr)
+			} else if r := p.requeueByTier(fcands, true); r > 0 {
+				slog.Info("[CLOUD_PIPELINE] requeued failed tasks for retry", "count", r)
+				metrics.PipelineRequeued.WithLabelValues("failed_retry").Add(float64(r))
 				p.Wake()
 			}
 		}
 	}
+}
+
+// requeueByTier requeues candidates at their CURRENT tier priority and
+// returns the requeued count.
+func (p *Pipeline) requeueByTier(cands []repo.RequeueCandidate, resetFiles bool) int64 {
+	byStatus := map[string][]repo.RequeueCandidate{}
+	var order []string
+	for _, c := range cands {
+		st := p.tierStatus(c.UID)
+		if _, ok := byStatus[st]; !ok {
+			order = append(order, st)
+		}
+		byStatus[st] = append(byStatus[st], c)
+	}
+	var n int64
+	for _, st := range order {
+		cs := byStatus[st]
+		if resetFiles {
+			for _, c := range cs {
+				if err := p.tasks.RequeueOneWithFiles(p.db, c, st); err != nil {
+					slog.Warn("[CLOUD_PIPELINE] failed-retry requeue failed", "upload_uuid", c.UploadUUID, "err", err)
+					continue
+				}
+				n++
+			}
+			continue
+		}
+		ids := make([]int64, 0, len(cs))
+		for _, c := range cs {
+			ids = append(ids, c.ID)
+		}
+		if rn, err := p.tasks.RequeueIDs(p.db, st, ids); err == nil {
+			n += rn
+		}
+	}
+	return n
 }
 
 // execute runs one claimed task end-to-end and ALWAYS terminates the outbox
@@ -173,21 +302,26 @@ func (p *Pipeline) execute(task *model.CloudVectorTask) {
 	defer func() {
 		if r := recover(); r != nil {
 			logErr("[CLOUD_PIPELINE] panic", "worker", task.UploadUUID, r)
+			metrics.VectorizeRuns.WithLabelValues("panic").Inc()
 			_ = p.tasks.Finish(p.db, task.ID, "failed", fmt.Sprintf("panic: %v", r))
 		}
 	}()
 	f, err := p.files.GetByUUID(p.db, task.UploadUUID, task.UID)
 	if err != nil {
+		metrics.VectorizeRuns.WithLabelValues("failed").Inc()
 		_ = p.tasks.Finish(p.db, task.ID, "failed", err.Error())
 		return
 	}
 	if f == nil {
+		metrics.VectorizeRuns.WithLabelValues("failed").Inc()
 		_ = p.tasks.Finish(p.db, task.ID, "failed", "cloud_files row missing")
 		return
 	}
 	if _, err := p.RunSync(context.Background(), f); err != nil {
+		metrics.VectorizeRuns.WithLabelValues("failed").Inc()
 		_ = p.tasks.Finish(p.db, task.ID, "failed", err.Error())
 		return
 	}
+	metrics.VectorizeRuns.WithLabelValues("done").Inc()
 	_ = p.tasks.Finish(p.db, task.ID, "done", "")
 }

@@ -1,4 +1,4 @@
-package pipeline
+package milvusstore
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/model"
 
 	"github.com/milvus-io/milvus/client/v2/column"
 	"github.com/milvus-io/milvus/client/v2/entity"
@@ -128,22 +129,9 @@ func partitionName(t time.Time) string {
 	return t.Format("_2006_01")
 }
 
-// ChunkRow is one vectorized chunk to persist.
-type ChunkRow struct {
-	ChunkIndex   int
-	ChunkID      string
-	Title        string
-	Source       string
-	SourceType   string
-	SectionTitle string
-	ContentType  string
-	Text         string // embedding_text (what the model saw)
-	Vector       []float32
-}
-
 // InsertChunks writes chunk rows into the file's monthly partition.
 func (s *MilvusStore) InsertChunks(ctx context.Context, uploadUUID string, uid int64,
-	partition time.Time, rows []ChunkRow) error {
+	partition time.Time, rows []model.ChunkRow) error {
 	if len(rows) == 0 {
 		return nil
 	}

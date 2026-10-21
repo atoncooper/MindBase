@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"app-cloud/internal/minio"
+	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
 

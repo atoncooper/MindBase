@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"app-cloud/internal/minio"
+	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/repo"
 
 	"gorm.io/gorm"

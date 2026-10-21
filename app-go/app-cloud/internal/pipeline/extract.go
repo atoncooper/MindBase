@@ -22,6 +22,15 @@ var (
 	ErrNoParser     = errors.New("no parser for this file type")
 )
 
+// maxZipEntryBytes bounds a single decompressed OOXML zip entry. The upload
+// size limit applies to the COMPRESSED object; a crafted small docx/pptx can
+// otherwise expand to gigabytes of XML (zip bomb) and exhaust worker memory.
+// Legitimate document.xml/sharedStrings entries stay far below this.
+const maxZipEntryBytes = 64 << 20
+
+// ErrZipEntryTooLarge — a decompressed entry blew past maxZipEntryBytes.
+var ErrZipEntryTooLarge = errors.New("ooxml entry exceeds the decompression limit")
+
 // Heading is a detected document heading (markdown-style outline).
 type Heading struct {
 	Level int    `json:"level"`
@@ -167,10 +176,10 @@ func extractPptx(data []byte) (*Parsed, error) {
 		if err != nil {
 			continue
 		}
-		xmlData, err := io.ReadAll(rc)
+		xmlData, err := io.ReadAll(io.LimitReader(rc, maxZipEntryBytes+1))
 		rc.Close()
-		if err != nil {
-			continue
+		if err != nil || int64(len(xmlData)) > maxZipEntryBytes {
+			continue // skip oversized/degenerate slides, keep the rest
 		}
 		b.WriteString(stripXMLTags(string(xmlData)))
 		b.WriteString("\n\n")
@@ -216,7 +225,14 @@ func zipEntry(data []byte, name string) ([]byte, error) {
 				return nil, err
 			}
 			defer rc.Close()
-			return io.ReadAll(rc)
+			out, err := io.ReadAll(io.LimitReader(rc, maxZipEntryBytes+1))
+			if err != nil {
+				return nil, err
+			}
+			if int64(len(out)) > maxZipEntryBytes {
+				return nil, ErrZipEntryTooLarge
+			}
+			return out, nil
 		}
 	}
 	return nil, errZipEntryNotFound
@@ -229,7 +245,7 @@ type wT struct {
 }
 
 type wP struct {
-	Runs []wT `xml:"t"`
+	Runs []wT `xml:"r>t"`
 }
 
 type wDocument struct {

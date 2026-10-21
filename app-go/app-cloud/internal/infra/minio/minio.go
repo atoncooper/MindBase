@@ -201,6 +201,17 @@ func (c *Client) Exists(ctx context.Context, objectKey string) bool {
 	return err == nil
 }
 
+// ObjectSize returns the stored object's size. Used right after multipart
+// complete: the declared file_size is client input from init — the only size
+// that may count toward quota accounting is what actually landed in storage.
+func (c *Client) ObjectSize(ctx context.Context, objectKey string) (int64, error) {
+	info, err := c.sdk.StatObject(ctx, c.cfg.Bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	return info.Size, nil
+}
+
 // DeleteObject removes one object (purge path).
 func (c *Client) DeleteObject(ctx context.Context, objectKey string) error {
 	return c.sdk.RemoveObject(ctx, c.cfg.Bucket, objectKey, minio.RemoveObjectOptions{})

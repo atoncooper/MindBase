@@ -8,6 +8,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -26,12 +27,23 @@ type Config struct {
 	Mongo    MongoConfig    `yaml:"mongo"`
 	Minio    MinioConfig    `yaml:"minio"`
 	Upload   UploadConfig   `yaml:"upload"`
+	Attest   AttestConfig   `yaml:"attest"`
+	Joblock  JoblockConfig  `yaml:"joblock"`
 	Quota    QuotaConfig    `yaml:"quota"`
 	Trash    TrashConfig    `yaml:"trash"`
 	Pipeline PipelineConfig `yaml:"pipeline"`
+	Kg       KgConfig       `yaml:"kg"`
 	WSBridge WSBridgeConfig `yaml:"ws_bridge"`
 	CORS     CORSConfig     `yaml:"cors"`
 	Log      LogConfig      `yaml:"log"`
+}
+
+// KgConfig — app-kg internal cloud-doc routing endpoints (L1 graph writes;
+// best-effort: failures are logged, never fatal). Empty base URL disables
+// graph writes (summaries still land in Mongo).
+type KgConfig struct {
+	BaseURL string `yaml:"base_url"`
+	Token   string `yaml:"token"`
 }
 
 type AppConfig struct {
@@ -80,6 +92,47 @@ type UploadConfig struct {
 	UploadMetaTTL int   `yaml:"upload_meta_ttl"`
 }
 
+// JoblockConfig — Redis-lease tuning for the background jobs (trash sweeper,
+// daily reconciler). The TTL must comfortably exceed the job context timeout
+// (10 min) so a crashed holder cannot deadlock the tick, yet should not dwarf
+// the rollout interval: a replica taking over after a k8s rolling update
+// waits for the previous lease to expire. 15 min balances both.
+type JoblockConfig struct {
+	LeaseTTLSecs int `yaml:"lease_ttl_seconds"`
+}
+
+// DefaultJoblockLeaseTTLSecs applies when the value is unset or non-positive.
+const DefaultJoblockLeaseTTLSecs = 900
+
+// AttestConfig — public-share device-attestation HMAC key. MUST be identical
+// across all replicas of a multi-instance deployment: challenges/tickets are
+// stateless HMACs, so a per-process random key breaks when nginx round-robins
+// /cloud/s/* across replicas (challenge issued by A, attest hits B → verify
+// fails). Single-replica deployments may leave it empty (boot-random key).
+type AttestConfig struct {
+	Secret string `yaml:"secret"`
+}
+
+// KeyBytes parses the configured secret into HMAC key material:
+// 64 hex chars → 32 decoded bytes; otherwise any raw string ≥ 32 bytes is
+// used as-is. Empty → (nil, nil): the attestor falls back to a boot-random
+// key with a loud warning. Anything else is invalid and must fail startup.
+func (a AttestConfig) KeyBytes() ([]byte, error) {
+	s := strings.TrimSpace(a.Secret)
+	if s == "" {
+		return nil, nil
+	}
+	if len(s) == 64 {
+		if b, err := hex.DecodeString(s); err == nil {
+			return b, nil
+		}
+	}
+	if len(s) >= 32 {
+		return []byte(s), nil
+	}
+	return nil, fmt.Errorf("attest.secret must be 64 hex chars (32 bytes) or a raw string of at least 32 bytes")
+}
+
 type QuotaConfig struct {
 	Free               int64  `yaml:"free"`
 	VIP                int64  `yaml:"vip"`
@@ -114,8 +167,33 @@ type PipelineConfig struct {
 	Enabled    bool            `yaml:"enabled"`
 	MaxDocSize int64           `yaml:"max_doc_size"`
 	Workers    int             `yaml:"workers"`
+	MaxWorkers int             `yaml:"max_workers"`
+	Autoscale  bool            `yaml:"autoscale"`
+	Admission  AdmissionConfig `yaml:"admission"`
 	Embedding  EmbeddingConfig `yaml:"embedding"`
 	Milvus     MilvusConfig    `yaml:"milvus"`
+	Summary    SummaryConfig   `yaml:"summary"`
+}
+
+// AdmissionConfig — queue admission control (capacity layer): without it a
+// burst of manual triggers can enqueue unbounded work and starve the
+// downstream LLM/embedding gateways. Limits of 0 disable the check.
+type AdmissionConfig struct {
+	MaxPerUID    int64 `yaml:"max_per_uid"`
+	MaxQueueDepth int64 `yaml:"max_queue_depth"`
+}
+
+// SummaryConfig — L1 routing payload: a small-model structured summary
+// stored alongside the parsed document. Best-effort by design: any failure
+// is logged and skipped, never blocking vectorization (L2 covers). The model
+// MUST be routable by the same Higress gateway as the embedding config
+// (credentials/base URL are shared with it); an empty model disables the
+// stage cleanly.
+type SummaryConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Model         string `yaml:"model"`
+	MaxInputChars int    `yaml:"max_input_chars"`
+	MaxOutputTok  int    `yaml:"max_output_tokens"`
 }
 
 type WSBridgeConfig struct {
@@ -154,6 +232,9 @@ func Load(yamlBytes []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse default.yaml: %w", err)
 	}
 	applyEnvOverrides(&cfg)
+	if cfg.Joblock.LeaseTTLSecs <= 0 {
+		cfg.Joblock.LeaseTTLSecs = DefaultJoblockLeaseTTLSecs
+	}
 	return &cfg, nil
 }
 
@@ -235,10 +316,33 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPCLOUD__MINIO__PUBLIC_HOST"); v != "" {
 		cfg.Minio.PublicHost = v
 	}
+	if v := get("APPCLOUD__ATTEST__SECRET"); v != "" {
+		cfg.Attest.Secret = v
+	}
+	atoi("APPCLOUD__JOBLOCK__LEASE_TTL_SECS", &cfg.Joblock.LeaseTTLSecs)
 	if b, ok := getBool("APPCLOUD__PIPELINE__ENABLED"); ok {
 		cfg.Pipeline.Enabled = b
 	}
 	atoi("APPCLOUD__PIPELINE__WORKERS", &cfg.Pipeline.Workers)
+	atoi("APPCLOUD__PIPELINE__MAX_WORKERS", &cfg.Pipeline.MaxWorkers)
+	atol("APPCLOUD__PIPELINE__ADMISSION__MAX_PER_UID", &cfg.Pipeline.Admission.MaxPerUID)
+	atol("APPCLOUD__PIPELINE__ADMISSION__MAX_QUEUE_DEPTH", &cfg.Pipeline.Admission.MaxQueueDepth)
+	if b, ok := getBool("APPCLOUD__PIPELINE__AUTOSCALE"); ok {
+		cfg.Pipeline.Autoscale = b
+	}
+	if v := get("APPCLOUD__PIPELINE__SUMMARY__MODEL"); v != "" {
+		cfg.Pipeline.Summary.Model = v
+	}
+	if v := get("APPCLOUD__KG__BASE_URL"); v != "" {
+		cfg.Kg.BaseURL = v
+	}
+	if v := get("APPCLOUD__KG__TOKEN"); v != "" {
+		cfg.Kg.Token = v
+	}
+	if b, ok := getBool("APPCLOUD__PIPELINE__SUMMARY__ENABLED"); ok {
+		cfg.Pipeline.Summary.Enabled = b
+	}
+	atoi("APPCLOUD__PIPELINE__SUMMARY__MAX_INPUT_CHARS", &cfg.Pipeline.Summary.MaxInputChars)
 	if v := get("APPCLOUD__LOG__LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
@@ -269,6 +373,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Upload.ChunkSize <= 0 || cfg.Upload.MaxFileSize <= 0 {
 		return fmt.Errorf("upload.chunk_size / upload.max_file_size must be positive")
+	}
+	if _, err := cfg.Attest.KeyBytes(); err != nil {
+		return err
 	}
 	if cfg.Pipeline.Enabled && cfg.Pipeline.Embedding.Dimension <= 0 {
 		return fmt.Errorf("pipeline.embedding.dimension must be positive when pipeline enabled")

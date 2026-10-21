@@ -56,8 +56,30 @@ minio:
 upload:
   chunk_size: 10485760       # 10 MB (must match the Python CHUNK_SIZE clients rely on)
   max_file_size: 5368709120  # 5 GB
-  heartbeat_ttl: 300         # seconds
-  upload_meta_ttl: 3600      # seconds; Redis upload session window
+  heartbeat_ttl: 300         # seconds; each beat ALSO renews the session window below
+  upload_meta_ttl: 3600      # seconds; Redis upload session window counted from the LAST
+                             # heartbeat (uploads outliving it must keep beating)
+
+joblock:
+  # Redis-lease TTL for background jobs (trash sweeper / daily reconciler).
+  # MUST exceed the 10-min job context timeout (crashed holder must not
+  # deadlock the tick) and should stay close to the rollout interval (a
+  # replica waiting to take over after a k8s rolling update waits for expiry).
+  # env: APPCLOUD__JOBLOCK__LEASE_TTL_SECS
+  lease_ttl_seconds: 900
+
+attest:
+  # Public-share device-attestation HMAC key. MUST be identical on every
+  # replica of a multi-instance deployment: challenges/tickets are stateless
+  # HMACs verified by whichever replica nginx routes the request to — a
+  # per-process random key breaks cross-replica verification (share flows
+  # fail intermittently with 412 once you --scale app-cloud > 1).
+  # Format: 64 hex chars (32 bytes) or any raw string >= 32 bytes.
+  # Generate: openssl rand -hex 32
+  # env: APPCLOUD__ATTEST__SECRET (compose passes APP_CLOUD_ATTEST_SECRET)
+  # Empty => boot-random key: single-replica ONLY; a restart also invalidates
+  # all live tickets.
+  secret: ""
 
 quota:
   # tier → storage quota (bytes). Lookup: app-pay /internal/pay/membership/{uid}
@@ -81,6 +103,13 @@ pipeline:
   enabled: true              # Go-native parse→chunk→embed→vectorize pipeline
   max_doc_size: 52428800     # 50 MB; larger files are marked non-vectorizable
   workers: 4                 # per-instance vectorize worker pool; 0/negative = default 4, cap 32
+  max_workers: 16            # elastic ceiling: workers grow toward this when the queue backs up
+  autoscale: true            # grow workers (never shrink) while pending depth is high
+  admission:
+    # Capacity layer (plan 1.0.15): protect the downstream LLM/embedding
+    # gateways from unbounded trigger bursts. 0 disables the check.
+    max_per_uid: 3           # max in-flight vectorize tasks per user
+    max_queue_depth: 50000   # global pending+processing hard cap (429 beyond)
   embedding:
     base_url: http://higress:8080/v1  # override via AI_GATEWAY__BASE_URL (OpenAI-compatible)
     api_key: ""              # inject via AI_GATEWAY__API_KEY (.env)
@@ -93,6 +122,24 @@ pipeline:
     token: ""                # inject via MILVUS__TOKEN if auth enabled
     collection: cloud_drive  # existing collection (schema owned by the pipeline, guarded)
     analyzer: chinese        # BM25 analyzer; must match the existing collection
+  summary:
+    # L1 routing payload (plan 1.0.15): a small-model structured summary
+    # stored with the parsed document (Mongo) for doc-level retrieval.
+    # BEST-EFFORT: failures are logged and skipped — vectorization (L2) never
+    # blocks on it. Credentials/base URL are shared with embedding (same
+    # Higress gateway); the model MUST be routable there.
+    enabled: true
+    model: ""                # empty => stage skipped; env APPCLOUD__PIPELINE__SUMMARY__MODEL
+    max_input_chars: 60000   # full text truncated before the summary call
+    max_output_tokens: 1500
+
+kg:
+  # app-kg internal cloud-doc routing endpoints (health-mux JSON; L1 graph
+  # writes). Empty base URL disables graph writes — summaries still land in
+  # Mongo and L1 degrades to Mongo matching. Token must match app-kg's
+  # server.internal_token (compose passes the same APP_KG_INTERNAL_TOKEN).
+  base_url: "http://app-kg:8014"
+  token: ""                  # env APPCLOUD__KG__TOKEN
 
 ws_bridge:
   enabled: true              # publish status changes to Redis for the backend WS bridge

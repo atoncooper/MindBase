@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"app-cloud/internal/minio"
+	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/model"
-	"app-cloud/internal/mongostore"
+	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/repo"
 
 	"gorm.io/gorm"
@@ -27,12 +27,16 @@ type PurgeService struct {
 	minio    *minio.Client
 	mongo    *mongostore.MongoStore
 	files    *repo.FileRepo
-	pipeline *Pipeline // nil-tolerant: Milvus delete skipped when absent
+	pipeline *Pipeline         // nil-tolerant: Milvus delete skipped when absent
+	graph    CloudGraphWriter // nil-tolerant: Neo4j L1 node delete skipped when absent
 }
 
 func NewPurgeService(db *gorm.DB, mc *minio.Client, mongo *mongostore.MongoStore, pipeline *Pipeline) *PurgeService {
 	return &PurgeService{db: db, minio: mc, mongo: mongo, files: repo.NewFileRepo(), pipeline: pipeline}
 }
+
+// SetGraphWriter wires the L1 routing-graph delete path (optional).
+func (s *PurgeService) SetGraphWriter(w CloudGraphWriter) { s.graph = w }
 
 // PurgeFile physically deletes one soft-deleted file (owner-checked).
 func (s *PurgeService) PurgeFile(ctx context.Context, uploadUUID string, uid int64) error {
@@ -96,6 +100,13 @@ func (s *PurgeService) purgeRow(ctx context.Context, f *model.CloudFile) error {
 	// 3. Mongo parsed text
 	if err := s.mongo.DeleteParsedDocument(ctx, f.UploadUUID); err != nil {
 		slog.Warn("[CLOUD_PURGE] mongo delete failed", "upload_uuid", f.UploadUUID, "err", err)
+	}
+	// 3b. Neo4j L1 routing node (best-effort — Mongo is the source of truth
+	// for summaries; orphans self-heal on the next graph upsert cycle).
+	if s.graph != nil && s.graph.Enabled() {
+		if err := s.graph.DeleteCloudDocGraph(ctx, f.UID, f.UploadUUID); err != nil {
+			slog.Warn("[CLOUD_PURGE] kg delete failed", "upload_uuid", f.UploadUUID, "err", err)
+		}
 	}
 	// 4. DB row
 	if err := s.files.HardDelete(s.db, f.ID); err != nil {
