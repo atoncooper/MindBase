@@ -111,8 +111,9 @@ func main() {
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(server.Interceptor()),
 	)
+	graphStore := graph.New(st)
 	kgpb.RegisterKgGraphServer(grpcServer, server.New(server.Deps{
-		Graph: graph.New(st),
+		Graph: graphStore,
 	}))
 	healthSrv := health.NewServer()
 	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
@@ -128,7 +129,7 @@ func main() {
 	}()
 
 	healthAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.HealthPort)
-	healthHTTP := server.StartHealth(ctx, healthAddr, st)
+	healthHTTP := server.StartHealth(ctx, healthAddr, st, graphStore, cfg.Server.InternalToken)
 	slog.Info("app-kg health endpoint", "addr", healthAddr)
 
 	quit := make(chan os.Signal, 1)

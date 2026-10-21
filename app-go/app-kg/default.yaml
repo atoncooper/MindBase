@@ -31,6 +31,10 @@ server:
   host: 0.0.0.0
   grpc_port: 8013
   health_port: 8014
+  # HTTP cloud-doc routing endpoints (/internal/kg/cloud-doc/*) on the health
+  # mux — consumed by app-cloud. Empty = allow (network-internal only); set a
+  # shared token to require X-Internal-Token on those endpoints.
+  internal_token: ""
 
 timezone: Asia/Shanghai
 
