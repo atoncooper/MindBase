@@ -163,40 +163,92 @@ kubectl apply -k deploy/k8s && kubectl -n mind-base rollout restart deploy/apisi
 kubectl -n mind-base scale deploy/app-ts --replicas=2
 ```
 
+### 5b. 运维参数速查（标准改动位置，改这里、别散改）
+
+| 要改什么 | 改哪里 | 说明 |
+|---------|--------|------|
+| 镜像版本升级/回滚 | kustomization.yaml 末尾 images: 块（取消注释） | kustomize 集中覆盖，不逐个改 30-apps；生产建议 digest 钉死 |
+| 存储容量 | 20-data/*.yaml 的 volumeClaimTemplates + neo4j/higress PVC | 已建 PVC 扩容需 SC 支持 allowVolumeExpansion |
+| 存储类 | 各 PVC 里「# storageClassName:」注释行 | 缺省用集群默认 SC |
+| 节点分配 | components/node-split/patches/*.yaml 的 hostname | 搬节点流程见 §7 |
+| 副本数 | 各 Deployment 的 replicas | 应用层默认已多副本（app-cloud 2+HPA 2-6、nginx 2、apisix 2）；有状态服务保持 1（HA 路线见 plan/1.0.14） |
+| 探针启动预算 | 各 workload startupProbe 的 failureThreshold × periodSeconds | milvus 冷启 300s / app-pay JVM 180s / mysql 首次种子导入 180s，其余 30–75s |
+| 入口 IP | metallb.yaml 地址池 / nginx Service | 见 metallb.yaml 头部说明 |
+| 凭据/静态配置 | §1 Secret / §1b ConfigMap 重建流程 | .env 改动后重建 mindbase-env + rollout restart |
+
+探针约定（全套统一）：startupProbe 门控启动期（预算内没起来 = 容器重启兜底），
+通过后 readiness/liveness 立即接管——因此**不要再**往探针上加
+initialDelaySeconds，慢启动一律调 startupProbe 预算。
+
 ## 6. 未覆盖（后续按需）
 
-- HPA / PDB、网络策略（NetworkPolicy 限制 DB 仅被应用访问）、
-  cert-manager 自动证书、Prometheus 监控、备份（PVC 快照/CronJob mysqldump）。
+- 网络策略（NetworkPolicy 限制 DB 仅被应用访问）、cert-manager 自动证书、
+  Prometheus 抓取配置（app-cloud 已暴露 `/metrics`，集群内可达；抓取端与告警规则未建）、
+  备份（PVC 快照/CronJob mysqldump）。
+- 存储层 HA（分布式 MinIO 纠删 / MySQL 主从 / Redis Sentinel / Mongo RS / Milvus
+  distributed）——完整路线与触发条件见
+  [plan/1.0.14-AppCloud-Distributed](../../plan/1.0.14-AppCloud-Distributed/1.0.14-AppCloud-Distributed.md)。
+- HPA 生效前提：集群需安装 metrics-server（未装时 HPA 不动作，副本稳定在 2）。
 - 生产化前的硬性检查：替换所有 `change-me` 占位密钥、Higress 镜像钉 digest、
   nginx 正式证书、MySQL 关闭 root 远程。
 
-## 7. 节点分工：数据层钉 database 节点（node-split overlay）
+## 6b. 2026-10-20 分布式第一阶段（已落地）
 
-3 节点（1 control-plane + worker + database）的分工调度：
+| 变更 | 内容 | 说明 |
+|------|------|------|
+| app-cloud | replicas 2 + HPA(2-6, CPU 60%) + PDB(minAvailable 1) + hostname 打散 + terminationGracePeriodSeconds 30 | 多实例语义（租约/outbox/Lua 预留/共享 attest 密钥）已在服务侧完成，见 AGENTS.md §2.14 |
+| nginx / apisix | 各 replicas 2 + PDB(minAvailable 1) + hostname 打散 | 两者均无状态，消除入口/业务网关单点 |
+| redis | AOF everysec（RDB 保留） | 纯 RDB 快照间隔内 failover 会丢 app-cloud 上传会话与配额 pending 预留；everysec 最多丢 1s |
+| app-cloud `/metrics` | Prometheus 文本格式（HTTP 黄金指标 / 上传完成结果 / 配额预留结果 / 管线队列 / 租约竞争） | 集群内可达；nginx 不路由 /metrics |
+| joblock TTL | `joblock.lease_ttl_seconds`（默认 900，env `APPCLOUD__JOBLOCK__LEASE_TTL_SECS`） | 需 > 10min 任务超时；接近滚动更新间隔以便接管 |
 
-1. database 节点打污点（一次性，先于首次 apply）——应用 Pod 不会落上去：
+注意：Redis 的 `maxmemory 256mb + allkeys-lru` 意味着内存压力下会淘汰**带 TTL 的键**
+（上传会话/限流计数都可能被逐）——扩量前建议评估调大 maxmemory 或按用途拆实例。
+有状态服务 HA（MySQL 主从、分布式 MinIO、Sentinel）是第二阶段，未在本轮改动。
+
+## 7. 节点分工：数据层钉 database 节点（node-split component）
+
+当前集群 5 节点：1 control-plane + 2 worker + 2 database。数据层通过
+`components/node-split`（kustomize component，在 base kustomization 的
+`components:` 字段常驻启用）钉到 database 节点：
+
+| 节点角色 | patch 文件 | 承载（9 个带 PVC 的 workload） |
+|---------|-----------|------------------------------|
+| database1 | `patches/database1-*.yaml` | mysql / app-task-mysql / app-pay-mysql / mongo / redis / etcd / minio / milvus |
+| database2 | `patches/database2-neo4j.yaml` | neo4j |
+
+1. database 节点打污点（一次性）——应用 Pod 不会落上去（两个 database 都要打）：
 
    ```bash
    kubectl taint node <database节点名> dedicated=database:NoSchedule
    ```
 
-2. 数据层走 overlay 钉到 database 节点（自带 toleration）：
+   component 里的 tolerations 已按该污点配置；节点未打污点时 toleration 无副作用。
 
-   ```bash
-   kubectl apply -k deploy/k8s/overlays/node-split
-   ```
-
-   覆盖 8 个数据 StatefulSet（mysql / app-task-mysql / app-pay-mysql / mongo /
-   redis / etcd / minio / milvus）+ neo4j / higress（带 PVC 的 Deployment）。
-   nodeSelector 用 `kubernetes.io/hostname`，换节点时改
-   `overlays/node-split/*.yaml` 中的 hostname。
+2. 钉节点随 `kubectl apply -k deploy/k8s` 一起生效，无需单独 apply——
+   由此保证「钉节点先于首次 apply」的 local-path PVC 绑定顺序不会踩错。
+   换节点 / 调整分配：改 `components/node-split/patches/<node>-<服务名>.yaml`
+   里的 `kubernetes.io/hostname`（hostname 见各 patch 文件，单一事实来源）。
 
 3. 应用层无需 patch：control-plane（内置污点）与 database（第 1 步污点）
-   都不可调度，应用自动全部落在带 `node-role.kubernetes.io/worker` 标签的
-   worker 节点上；未来扩 worker 时打同样的 worker 标签即可参与调度。
+   都不可调度，应用自动全部落 worker 节点；未来扩 worker 时打同样的
+   worker 标签即可参与调度。（ROLES 显示 `work-2` 只是角色标签名不同，
+   应用调度靠污点隔离、不依赖 worker 标签，不受影响。）
 
-⚠️ local-path 的 PVC 数据绑定在**首次调度到的节点**——污点与 overlay 必须在
-首次 `apply` 之前就位，起错了要删 PVC 重建才能搬家。
+⚠️ local-path 的 PVC 数据绑定在**首次调度到的节点**——改某服务的 hostname = 搬家，
+   必须先删 PVC 重建，否则 pod 永远 Pending（旧卷挂不到新节点）：
+
+   ```bash
+   kubectl -n mind-base get pods -o wide      # ① 核对该服务当前所在节点
+   kubectl -n mind-base delete pvc <数据卷>    # ② 确认数据可弃/已备份后删
+   kubectl delete pv <对应 PV>                 # ③ PV 卡 Released 时手动清
+   kubectl apply -k deploy/k8s                 # ④ pod 在新节点重建 PVC
+   ```
+
+⚠️ component 会覆盖线上手工 patch 过的同名字段（nodeSelector/tolerations）——
+   apply 前先 `kubectl -n mind-base get pods -o wide` 核对现状，与 patches/*.yaml
+   不符时先改 hostname 再 apply。higress 未随集群部署（跑在独立服务器，base 中已注释），
+   恢复部署时在 `components/node-split/patches/` 补对应 patch（同为带 PVC 的 Deployment）。
 
 MetalLB（nginx LoadBalancer Service 的实现，kubeadm 裸集群默认无人认领）：
 安装本体后 `kubectl apply -f deploy/k8s/metallb.yaml`（文件头有说明）。

@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"app-cloud/internal/config"
 	"app-cloud/internal/logger"
-	"app-cloud/internal/minio"
-	"app-cloud/internal/mongostore"
+	"app-cloud/internal/metrics"
+	"app-cloud/internal/infra/minio"
+	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/repo"
 	"app-cloud/internal/service"
 
@@ -58,6 +60,9 @@ func New(d Deps) *gin.Engine {
 	e.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "app-cloud"})
 	})
+	// Prometheus exposition — cluster-internal only (nginx routes no /metrics).
+	e.GET("/metrics", gin.WrapH(metrics.Handler()))
+	e.Use(metricsMiddleware())
 
 	registerCloud(e, d)
 	registerWorkspaces(e, d)
@@ -114,4 +119,23 @@ func cors(cfg *config.Config) gin.HandlerFunc {
 
 func apiErr(c *gin.Context, status int, detail string) {
 	c.JSON(status, gin.H{"detail": detail})
+}
+
+// metricsMiddleware records the HTTP golden signals. The route label is the
+// registered pattern (c.FullPath, e.g. /cloud/video/:upload_uuid) so uuid
+// path params cannot explode label cardinality; unmatched paths collapse to
+// UNMATCHED.
+func metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		route := c.FullPath()
+		if route == "" {
+			route = "UNMATCHED"
+		}
+		method := c.Request.Method
+		status := strconv.Itoa(c.Writer.Status())
+		metrics.HTTPRequests.WithLabelValues(method, route, status).Inc()
+		metrics.HTTPDuration.WithLabelValues(method, route).Observe(time.Since(start).Seconds())
+	}
 }

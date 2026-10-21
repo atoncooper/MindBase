@@ -8,6 +8,7 @@ require (
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/milvus-io/milvus/client/v2 v2.5.6
 	github.com/minio/minio-go/v7 v7.0.87
+	github.com/prometheus/client_golang v1.14.0
 	github.com/redis/go-redis/v9 v9.14.0
 	go.mongodb.org/mongo-driver/v2 v2.5.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
@@ -85,7 +86,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
-	github.com/prometheus/client_golang v1.14.0 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect

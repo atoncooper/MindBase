@@ -20,10 +20,15 @@ kind: Deployment
 metadata:
   name: app-cloud
 spec:
-  # 多实例强化已完成（Redis 租约锁后台任务 / cloud_vector_tasks outbox 认领 /
-  # Lua 配额预留 / cloud_quota 计数自愈 / 下载上限条件更新）——上方 Service 已
-  # 做负载均衡，可安全调大 replicas。
-  replicas: 1
+  # Multi-instance hardening complete (Redis-leased background jobs /
+  # cloud_vector_tasks outbox claiming / atomic Lua quota reserve + post-reserve
+  # recheck / cloud_quota counter self-healing / conditional download caps /
+  # shared attest secret / complete-time size verification) — the Service above
+  # load-balances; default 2 replicas.
+  # Before scaling: N x rdbms.max_open_conns(10) must stay below
+  # mysql max_connections x 60%.
+  replicas: 2
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: app-cloud
@@ -32,6 +37,16 @@ spec:
       labels:
         app: app-cloud
     spec:
+      # Spread replicas across nodes (ScheduleAnyway: does not block scheduling when nodes are scarce)
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: app-cloud
+      # Matches app-side graceful shutdown (10s HTTP + 8s pipeline worker grace)
+      terminationGracePeriodSeconds: 30
       initContainers:
         - name: wait-deps
           image: busybox:1.36
@@ -63,17 +78,22 @@ spec:
               mountPath: /run/secrets
               readOnly: true
 
+          # startupProbe 门控启动期（60s 预算），通过后 readiness/liveness 立即接管
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8007
+            periodSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             httpGet:
               path: /health
               port: 8007
-            initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: 8007
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }
@@ -84,4 +104,36 @@ spec:
         - name: enc-key
           secret:
             secretName: api-key-encryption-key
+---
+# Keep at least one replica during rollouts / node maintenance.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-cloud
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: app-cloud
+---
+# CPU 60% autoscaling. Requires metrics-server: without it the HPA stays idle
+# and replicas hold at the Deployment count (>= 2); it engages once installed.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: app-cloud
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app-cloud
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
 

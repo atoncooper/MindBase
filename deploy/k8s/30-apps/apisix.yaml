@@ -23,7 +23,9 @@ kind: Deployment
 metadata:
   name: apisix
 spec:
-  replicas: 1
+  # standalone data_plane is stateless (routes declared in the ConfigMap) — 2 replicas remove the business-gateway single point
+  replicas: 2
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: apisix
@@ -32,6 +34,13 @@ spec:
       labels:
         app: apisix
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: apisix
       # standalone data_plane：不依赖 etcd（config.yaml role=data_plane 跳过 init_etcd）
       containers:
         - name: apisix
@@ -74,16 +83,19 @@ spec:
             - name: board-ca
               mountPath: /usr/local/apisix/conf/certs/board
               readOnly: true
+          startupProbe:
+            tcpSocket:
+              port: 9080
+            periodSeconds: 5
+            failureThreshold: 15
           readinessProbe:
             tcpSocket:
               port: 9080
-            initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 12
           livenessProbe:
             tcpSocket:
               port: 9080
-            initialDelaySeconds: 45
             periodSeconds: 30
           resources:
             requests: { cpu: 100m, memory: 256Mi }
@@ -98,3 +110,13 @@ spec:
             items:
               - key: dev-ca.crt
                 path: dev-ca.crt
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: apisix
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: apisix

@@ -449,6 +449,9 @@ services:
       - KG__URI=${KG__URI:-bolt://neo4j:7687}
       - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
       - APPKG__LOG__OUTPUT=both
+      # HTTP cloud-doc 路由端点（/internal/kg/cloud-doc/*，app-cloud 调用）令牌：
+      # 与 app-cloud 的 APPCLOUD__KG__TOKEN 共用同一值；留空 = 仅内网可达
+      - APPKG__SERVER__INTERNAL_TOKEN=${APP_KG_INTERNAL_TOKEN:-}
     ports:
       - "127.0.0.1:${APP_KG_GRPC_PORT:-8013}:8013"
       - "127.0.0.1:${APP_KG_HEALTH_PORT:-8014}:8014"
@@ -704,6 +707,15 @@ services:
       - APPCLOUD__LOG__OUTPUT=both
       # 提取码静态加密密钥（与 app-auth 共用同一 secrets 文件；密钥不进数据库）
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      # Public-share device-attestation HMAC key — MUST be identical across all
+      # app-cloud replicas (challenges/tickets are stateless; nginx round-robins
+      # /cloud/s/* across replicas). Generate: openssl rand -hex 32
+      # Empty => boot-random key, single-replica only
+      - APPCLOUD__ATTEST__SECRET=${APP_CLOUD_ATTEST_SECRET:-}
+      # L1 doc-routing graph writes (app-kg health-mux internal endpoints;
+      # empty base URL disables graph writes — L1 degrades to Mongo matching)
+      - APPCLOUD__KG__BASE_URL=${APP_CLOUD_KG_BASE_URL:-http://app-kg:8014}
+      - APPCLOUD__KG__TOKEN=${APP_KG_INTERNAL_TOKEN:-}
     # 宿主端口池 8007-8009：--scale 时副本依次占用；单实例默认仍 8007（调试口不变）
     ports:
       - "127.0.0.1:${APP_CLOUD_PORT:-8007}-${APP_CLOUD_PORT_MAX:-8009}:8007"

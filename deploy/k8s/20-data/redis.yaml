@@ -22,6 +22,7 @@ metadata:
 spec:
   serviceName: redis
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: redis
@@ -30,6 +31,7 @@ spec:
       labels:
         app: redis
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: redis
           image: redis:7-alpine
@@ -48,6 +50,15 @@ spec:
             - 900 1
             - --save
             - 300 10
+            # AOF everysec: with RDB-only persistence, a failover inside the
+            # snapshot window loses app-cloud upload sessions (forced client
+            # retries) and quota pending reservations (transient oversell
+            # window). everysec bounds the loss to ~1s. RDB stays on for
+            # faster restarts and as an AOF-corruption fallback.
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
           env:
             # 命令行/探针的 $(REDIS_PASSWORD) 只能引用 env 列表内变量（envFrom 不可见）；
             # 固定取 defaults ConfigMap，与各客户端 REDIS__URL 默认值同源
@@ -59,15 +70,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
+            periodSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             exec:
               command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
-            initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
               command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
-            initialDelaySeconds: 30
             periodSeconds: 30
           resources:
             requests: { cpu: 50m, memory: 128Mi }
@@ -76,6 +90,7 @@ spec:
     - metadata:
         name: data
       spec:
+        # storageClassName: local-path   # ← 运维按需指定；缺省用集群默认 SC
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

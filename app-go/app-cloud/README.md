@@ -13,6 +13,7 @@
 | `/cloud/s/{token}` | 公开分享页数据面（免登录；attest 设备证明 + access 提取码校验） |
 | `/workspaces/*` | RAG 工作区 CRUD/绑定/文件展开（APISIX 兜底路由） |
 | `/internal/cloud/reconcile?uid=` | 对账（loopback，仅运维） |
+| `/metrics` | Prometheus 指标（HTTP 黄金信号 / 上传完成结果 / 配额预留结果 / 管线队列 / 租约竞争；集群内可达，nginx 不路由） |
 | `/health` | 探活 |
 
 ## 数据所有权（共享 bilirag MySQL + MinIO/Mongo/Milvus）
@@ -30,6 +31,12 @@ MinIO `drive-videos`（`{uid}/{upload_uuid}/file{ext}`，唯一写者）；Mongo
 3. **配额**：init 即 Redis Lua 原子预留（并行 init 不超卖）；`cloud_quota` 计数 O(1) 读，
    每日对账以 SUM 为权威自愈
 4. **分享下载上限**：条件原子自增，并发不越限
+5. **配额防绕过**：complete 后 StatObject 校验实际落盘大小（声明≠实际 → 删对象、释放预留、拒绝入库）；
+   预留成功后复检 used+pending，超额回滚（关闭并发 complete 的 stale 快照窗口）
+6. **长上传会话**：心跳同时续传 upload meta TTL 与 pending 账本时间戳——慢链路大文件超过 1h 不再死亡；
+   心跳值含属主校验（JSON {upload_uuid, uid}）
+7. **分享 attest 密钥共享**：挑战/票据是无状态 HMAC，多副本必须共享 `attest.secret`
+   （env `APPCLOUD__ATTEST__SECRET` / compose `APP_CLOUD_ATTEST_SECRET`；留空=进程随机密钥，仅单副本可用）
 
 扩容：`docker compose up -d --scale app-cloud=N`（宿主端口池 8007-8009）；nginx resolver 自动纳用。
 
@@ -46,4 +53,5 @@ docker compose up -d app-cloud
 
 - 服务详解：[docs/app-cloud.md](../../docs/app-cloud.md)（架构图 / 上传生命周期 / 配额记账模型 / 红线）
 - 多实例设计：[plan/1.0.13-AppCloud-MultiReplica](../../plan/1.0.13-AppCloud-MultiReplica/1.0.13-AppCloud-MultiReplica.md)
+- 分布式演进：[plan/1.0.14-AppCloud-Distributed](../../plan/1.0.14-AppCloud-Distributed/1.0.14-AppCloud-Distributed.md)（存储层 HA 路线 / 一致性矩阵 / 触发条件）
 - 规范：AGENTS.md §2.14

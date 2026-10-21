@@ -114,6 +114,31 @@ func (p *PendingUploads) Remove(ctx context.Context, uid int64, uploadUUID strin
 	p.rdb.HDel(ctx, p.key(uid), uploadUUID)
 }
 
+// Touch re-stamps the entry's init timestamp so an actively uploading
+// (heartbeating) session keeps its quota reservation past the session window.
+// Called from the heartbeat path. Missing/corrupt entries are a no-op
+// (already completed, pruned, or owned by a legacy session); a lost touch
+// only means the reservation ages out one window early — the authoritative
+// SUM is re-derived on the next init, so this can never over-count.
+func (p *PendingUploads) Touch(ctx context.Context, uid int64, uploadUUID string) {
+	if p.rdb == nil {
+		return
+	}
+	key := p.key(uid)
+	raw, err := p.rdb.HGet(ctx, key, uploadUUID).Result()
+	if err != nil {
+		return
+	}
+	var e pendingEntry
+	if json.Unmarshal([]byte(raw), &e) != nil {
+		return
+	}
+	e.InitAt = time.Now().Unix()
+	if blob, jerr := json.Marshal(e); jerr == nil {
+		p.rdb.HSet(ctx, key, uploadUUID, string(blob))
+	}
+}
+
 // Sum returns the total in-flight bytes for a user, ignoring (and pruning)
 // entries whose init timestamp is older than the upload session TTL.
 func (p *PendingUploads) Sum(ctx context.Context, uid int64) int64 {

@@ -12,9 +12,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"app-cloud/internal/metrics"
 	"app-cloud/internal/model"
-	"app-cloud/internal/mongostore"
+	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/pipeline"
 	"app-cloud/internal/repo"
 
@@ -28,6 +30,28 @@ type RedisPublisher interface {
 
 // ErrNotFound maps to HTTP 404 at the router layer.
 var ErrNotFound = errors.New("not found")
+
+// VectorEngine — the port the pipeline service drives (implemented by
+// internal/pipeline.Engine via structural typing). Keeping the port here
+// keeps the service package free of the milvus dependency.
+type VectorEngine interface {
+	Vectorize(ctx context.Context, f *model.CloudFile, hooks pipeline.VectorizeHooks) (int, error)
+	CountChunks(ctx context.Context, uploadUUID string) (int, error)
+	DeleteChunks(ctx context.Context, uploadUUID string) error
+}
+
+// CloudGraphWriter — the port for L1 routing-graph writes (implemented by
+// KgClient; nil = graph writes disabled).
+type CloudGraphWriter interface {
+	Enabled() bool
+	UpsertCloudDocGraph(ctx context.Context, uid int64, uploadUUID, title, contentHash string, topics, entities []string) error
+	DeleteCloudDocGraph(ctx context.Context, uid int64, uploadUUID string) error
+}
+
+// Admission-control rejections (capacity layer) — the router maps both to
+// HTTP 429. Chinese text here is USER-FACING wire detail, not a comment.
+var ErrTooManyUserTasks = errors.New("该账号排队中的向量化任务已达上限，请等待完成后再试")
+var ErrQueueFull = errors.New("系统排队繁忙，当前任务较多，请稍后再试")
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 
@@ -70,7 +94,21 @@ type Pipeline struct {
 	mongo   *mongostore.MongoStore
 	rdb     RedisPublisher
 	channel string
-	engine  pipeline.VectorEngine // nil = pipeline disabled
+	engine  VectorEngine // nil = pipeline disabled
+	quota   *QuotaService // tier resolution for claim priority (nil → FIFO)
+	summary *Summarizer   // L1 summary generator (nil-safe via Enabled)
+	kg      *KgClient     // L1 routing-graph writer (nil-safe via Enabled)
+
+	// claim priority + elastic worker pool state
+	workersMu  sync.Mutex
+	curWorkers int
+	autoscale  bool
+	minWorkers int
+	maxWorkers int
+
+	// admission control caps (0 = check disabled)
+	admissionMaxPerUID int64
+	admissionMaxQueue  int64
 
 	// Durable task queue (workerpool.go): a fixed worker pool drains
 	// cloud_vector_tasks; wake nudges idle workers, stop shuts them down.
@@ -82,24 +120,53 @@ type Pipeline struct {
 	workerID  string
 }
 
-func NewPipeline(db *gorm.DB, mongo *mongostore.MongoStore, rdb RedisPublisher, channel string) *Pipeline {
+func NewPipeline(db *gorm.DB, mongo *mongostore.MongoStore, rdb RedisPublisher, channel string,
+	quota *QuotaService, summary *Summarizer, kg *KgClient, admissionMaxPerUID, admissionMaxQueue int64) *Pipeline {
 	hostname, _ := os.Hostname()
 	return &Pipeline{
 		db: db, files: repo.NewFileRepo(), tasks: repo.NewVectorTaskRepo(),
 		mongo: mongo, rdb: rdb, channel: channel,
+		quota:              quota,
+		summary:            summary,
+		kg:                 kg,
+		admissionMaxPerUID: admissionMaxPerUID,
+		admissionMaxQueue:  admissionMaxQueue,
 		wake:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		workerID: fmt.Sprintf("%s-%d", hostname, os.Getpid()),
 	}
 }
 
+// tierStatus maps the membership tier to a claim priority. Unknown/free →
+// pending_low (fail-closed, consistent with the quota stance); paid tiers →
+// pending. Priority is FIFO within a tier.
+func (p *Pipeline) tierStatus(uid int64) string {
+	if p.quota == nil {
+		return "pending"
+	}
+	tier, _ := p.quota.TierFor(context.Background(), uid)
+	if tier == "free" {
+		return "pending_low"
+	}
+	return "pending"
+}
+
 // SetEngine attaches the vector engine (nil disables the pipeline).
-func (p *Pipeline) SetEngine(e pipeline.VectorEngine) { p.engine = e }
+func (p *Pipeline) SetEngine(e VectorEngine) { p.engine = e }
 
 // pipelineTimeout bounds one full pipeline run (download → extract → embed
 // → Milvus). Without it a half-open MinIO/Mongo/Milvus connection leaves the
 // row in "processing" forever.
 const pipelineTimeout = 5 * time.Minute
+
+// docDisplayTitle — the title used for summaries, embedding prefixes and
+// graph nodes (user-set title wins over the original file name).
+func docDisplayTitle(f *model.CloudFile) string {
+	if f.Title != nil && strings.TrimSpace(*f.Title) != "" {
+		return *f.Title
+	}
+	return f.OriginalName
+}
 
 // staleProcessingAfter is how long a row may sit in "processing" before the
 // status endpoint reconciles it to failed (crash / panic / hang guard). Must
@@ -117,15 +184,32 @@ func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) er
 	if f == nil {
 		return ErrNotFound
 	}
+	// Admission control (capacity layer): cap per-user in-flight work and the
+	// global backlog BEFORE accepting the task — a burst sheds load as 429s
+	// instead of starving the LLM/embedding gateways behind the workers.
+	if p.admissionMaxPerUID > 0 {
+		if n, err := p.tasks.CountInFlightForUID(p.db, uid); err == nil && n >= p.admissionMaxPerUID {
+			return ErrTooManyUserTasks
+		}
+	}
+	if p.admissionMaxQueue > 0 {
+		pending, low, processing, err := p.tasks.CountStates(p.db)
+		if err == nil && pending+low+processing >= p.admissionMaxQueue {
+			return ErrQueueFull
+		}
+	}
 	// Mark pending; the claiming worker moves it to processing and pushes the
 	// WS status, so states stay truthful while the task waits in the queue.
 	if err := p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "pending"}); err != nil {
 		return err
 	}
-	return p.EnqueueTask(uploadUUID, uid)
+	return p.EnqueueTask(ctx, uploadUUID, uid)
 }
 
-// Reprocess deletes existing vectors then re-runs the pipeline.
+// Reprocess re-runs the pipeline for one file. The HTTP path is ENQUEUE-ONLY
+// (peak-shaving contract: no downstream calls in the request handler) — stale
+// vectors are removed by the worker itself (delete-before-write inside
+// Vectorize), so nothing here touches Milvus.
 func (p *Pipeline) Reprocess(ctx context.Context, uploadUUID string, uid int64) (string, error) {
 	f, err := p.files.GetByUUID(p.db, uploadUUID, uid)
 	if err != nil {
@@ -134,16 +218,13 @@ func (p *Pipeline) Reprocess(ctx context.Context, uploadUUID string, uid int64) 
 	if f == nil {
 		return "", ErrNotFound
 	}
-	if p.engine != nil {
-		_ = p.engine.DeleteChunks(ctx, uploadUUID) // stale chunks must not survive
-	}
 	taskID := uploadUUID + ":" + time.Now().Format("20060102150405")
 	// reset to pending so RunSync re-runs despite idempotency hash
 	if err := p.files.UpdateMeta(p.db, uploadUUID, uid,
 		map[string]any{"vector_status": "pending"}); err != nil {
 		return "", err
 	}
-	if err := p.EnqueueTask(uploadUUID, uid); err != nil {
+	if err := p.EnqueueTask(ctx, uploadUUID, uid); err != nil {
 		return "", err
 	}
 	return taskID, nil
@@ -175,12 +256,48 @@ func (p *Pipeline) RunSync(ctx context.Context, f *model.CloudFile) (int, error)
 	_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "processing"})
 	p.pushStatus(ctx, uid, uploadUUID, "processing", 0, "")
 
-	count, err := p.engine.Vectorize(ctx, f, nil) // engine downloads via MinIO itself
+	// L1 summary + routing-graph writes ride the same run via the hook point
+	// (best-effort: failures are logged and never block vectorization).
+	hooks := pipeline.VectorizeHooks{}
+	if p.summary.Enabled() {
+		hooks.AfterExtract = func(ctx context.Context, f *model.CloudFile, text, contentHash string) {
+			sum, serr := p.summary.Summarize(ctx, docDisplayTitle(f), text)
+			if serr != nil {
+				slog.Warn("[PIPELINE] summary failed — skipping (non-fatal)", "upload_uuid", f.UploadUUID, "err", serr)
+				metrics.SummaryTotal.WithLabelValues("error").Inc()
+				return
+			}
+			sum.SizeChars = utf8.RuneCountInString(text)
+			if uerr := p.mongo.UpsertSummary(ctx, f.UploadUUID, f.UID, contentHash, p.summary.ModelName(), sum); uerr != nil {
+				slog.Warn("[PIPELINE] summary persist failed — skipping (non-fatal)", "upload_uuid", f.UploadUUID, "err", uerr)
+				metrics.SummaryTotal.WithLabelValues("error").Inc()
+				return
+			}
+			metrics.SummaryTotal.WithLabelValues("ok").Inc()
+			if p.kg.Enabled() {
+				if gerr := p.kg.UpsertCloudDocGraph(ctx, f.UID, f.UploadUUID, docDisplayTitle(f), contentHash, sum.Topics, sum.Entities); gerr != nil {
+					slog.Warn("[PIPELINE] kg graph write failed — skipping (non-fatal)", "upload_uuid", f.UploadUUID, "err", gerr)
+					metrics.KgWriteTotal.WithLabelValues("error").Inc()
+					return
+				}
+				metrics.KgWriteTotal.WithLabelValues("ok").Inc()
+			} else {
+				metrics.KgWriteTotal.WithLabelValues("skipped").Inc()
+			}
+		}
+	} else {
+		metrics.SummaryTotal.WithLabelValues("skipped").Inc()
+	}
+	count, err := p.engine.Vectorize(ctx, f, hooks)
 	if err != nil {
-		// Permanent skips (encrypted / scanned / image-only docs) map to
-		// not_supported + vectorizable=false so they stop re-entering the
-		// pipeline — parity with the Python _NotSupportedDocError handling.
-		if errors.Is(err, pipeline.ErrEncryptedPDF) || errors.Is(err, pipeline.ErrEmptyPDFText) {
+		// Permanent skips map to not_supported + vectorizable=false so they
+		// stop re-entering the pipeline — parity with the Python
+		// _NotSupportedDocError handling: encrypted/scanned/image-only docs,
+		// types without a parser, oversized documents and decompression-limit
+		// hits can never succeed on a retry.
+		if errors.Is(err, pipeline.ErrEncryptedPDF) || errors.Is(err, pipeline.ErrEmptyPDFText) ||
+			errors.Is(err, pipeline.ErrNoParser) || errors.Is(err, pipeline.ErrDocTooLarge) ||
+			errors.Is(err, pipeline.ErrZipEntryTooLarge) {
 			_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{
 				"vectorizable": false, "vector_status": "not_supported",
 			})
@@ -246,8 +363,9 @@ func (p *Pipeline) ReconcileStaleProcessing(f *model.CloudFile) {
 		return
 	}
 	// Close the outbox row too, or the janitor would resurrect a task the
-	// user has already been told failed.
-	_ = p.tasks.FinishByUploadUUID(p.db, f.UploadUUID, "failed", "stale processing reconciled")
+	// user has already been told failed. The message doubles as the marker
+	// the failed-retry query excludes on.
+	_ = p.tasks.FinishByUploadUUID(p.db, f.UploadUUID, "failed", repo.StaleReconciledMsg)
 	slog.Warn("[CLOUD_PIPELINE] stale processing reconciled to failed",
 		"upload_uuid", f.UploadUUID, "age", time.Since(*f.UpdatedAt).Round(time.Second))
 	failed := "failed"

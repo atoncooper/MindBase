@@ -122,6 +122,20 @@ func (CloudShare) TableName() string { return "cloud_shares" }
 // upload_uuid; status mirrors the cloud_files.vector_status transition
 // (pending → processing → done/failed). Workers claim with FOR UPDATE SKIP
 // LOCKED (repo.ClaimNext) and a janitor requeues claims older than
+// ChunkRow — one vectorized chunk handed from the pipeline to the vector
+// store (shared vocabulary: pipeline builds it, milvusstore persists it).
+type ChunkRow struct {
+	ChunkIndex   int
+	ChunkID      string
+	Title        string
+	Source       string
+	SourceType   string
+	SectionTitle string
+	ContentType  string
+	Text         string // embedding_text (what the model saw)
+	Vector       []float32
+}
+
 // staleProcessingAfter — see service/workerpool.go.
 type CloudVectorTask struct {
 	ID         int64      `gorm:"column:id;primaryKey;autoIncrement" json:"id"`

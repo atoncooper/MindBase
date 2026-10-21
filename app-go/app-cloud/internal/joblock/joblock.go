@@ -19,6 +19,8 @@ import (
 	"encoding/hex"
 	"time"
 
+	"app-cloud/internal/metrics"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -35,6 +37,8 @@ const releaseScript = `if redis.call("get", KEYS[1]) == ARGV[1] then return redi
 // (release, true) on success — release is non-nil and idempotent — and
 // (nil, false) when another instance holds the lease or Redis errored
 // (fail-closed: skipping a tick is safer than N replicas sweeping).
+// Outcomes are exported as appcloud_joblock_acquire_total — sustained "held"
+// is normal (other replicas sweep), "error" streaks mean Redis trouble.
 //
 // A nil client (Redis unavailable at boot, main.go degradation path) degrades
 // to (no-op release, true): single-replica behaviour is preserved unchanged.
@@ -45,12 +49,19 @@ func TryAcquire(ctx context.Context, rdb redis.UniversalClient, name string, ttl
 	key := keyPrefix + name
 	token, err := newToken()
 	if err != nil {
+		metrics.JoblockAcquire.WithLabelValues(name, "error").Inc()
 		return nil, false
 	}
 	ok, err := rdb.SetNX(ctx, key, token, ttl).Result()
-	if err != nil || !ok {
+	if err != nil {
+		metrics.JoblockAcquire.WithLabelValues(name, "error").Inc()
 		return nil, false
 	}
+	if !ok {
+		metrics.JoblockAcquire.WithLabelValues(name, "held").Inc()
+		return nil, false
+	}
+	metrics.JoblockAcquire.WithLabelValues(name, "acquired").Inc()
 	var released bool
 	// Release deliberately uses context.Background(): the acquire ctx is
 	// usually already canceled by the time the job finishes, and a canceled

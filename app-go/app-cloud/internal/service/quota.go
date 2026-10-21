@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/metrics"
 	"app-cloud/internal/repo"
 
 	"gorm.io/gorm"
@@ -173,13 +175,38 @@ func (s *QuotaService) ReserveUpload(ctx context.Context, uid int64, uploadUUID 
 		// Legacy path (non-atomic): used + fileSize only. In-flight uploads
 		// already registered remain counted via their own session lifecycle.
 		if used+fileSize > quota {
+			metrics.QuotaReserve.WithLabelValues("legacy_exceeded").Inc()
 			return &QuotaExceededError{Used: used, Quota: quota, Requested: fileSize}
 		}
+		metrics.QuotaReserve.WithLabelValues("legacy_ok").Inc()
 		return nil
 	}
 	if !ok {
+		metrics.QuotaReserve.WithLabelValues("exceeded").Inc()
 		return &QuotaExceededError{Used: used + pending, Quota: quota, Requested: fileSize}
 	}
+	// Post-reserve recheck: `used` was snapshotted BEFORE the Lua eval. A
+	// concurrent complete landing in that gap moves bytes from the Redis
+	// ledger into MySQL (used grows, pending shrinks), so the stale snapshot
+	// under-counted and the reservation could overshoot the quota. Completions
+	// only ever INFLATE the live total (DB row is created before the ledger
+	// entry is removed), so a fresh re-read plus the live ledger sum is a safe
+	// upper bound: over quota → release this reservation and reject.
+	used2, rerr := s.repo.UsedBytes(s.db, uid)
+	if rerr != nil {
+		// Availability-first: a recheck infrastructure failure must not fail
+		// the upload — keep the reservation (pre-recheck semantics).
+		slog.Warn("[CLOUD_QUOTA] post-reserve recheck skipped (usage query failed)", "uid", uid, "err", rerr)
+		metrics.QuotaRecheckSkipped.Inc()
+		return nil
+	}
+	pending2 := s.pending.Sum(ctx, uid) // includes this reservation
+	if used2+pending2 > quota {
+		s.pending.Remove(ctx, uid, uploadUUID)
+		metrics.QuotaReserve.WithLabelValues("recheck_rejected").Inc()
+		return &QuotaExceededError{Used: used2 + pending2, Quota: quota, Requested: fileSize}
+	}
+	metrics.QuotaReserve.WithLabelValues("ok").Inc()
 	return nil
 }
 

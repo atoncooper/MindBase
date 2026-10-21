@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -93,12 +94,16 @@ type heartbeatReq struct {
 
 func heartbeat(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
 		var req heartbeatReq
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusOK, gin.H{"ack": false})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ack": d.Upload.Heartbeat(c.Request.Context(), req.SessionUUID)})
+		c.JSON(http.StatusOK, gin.H{"ack": d.Upload.Heartbeat(c.Request.Context(), req.SessionUUID, uid)})
 	}
 }
 
@@ -596,8 +601,14 @@ func triggerProcess(d Deps) gin.HandlerFunc {
 			return
 		}
 		if err := d.Process.Trigger(c.Request.Context(), c.Param("upload_uuid"), uid); err != nil {
-			if err == service.ErrNotFound {
+			if errors.Is(err, service.ErrNotFound) {
 				apiErr(c, http.StatusNotFound, "File not found")
+				return
+			}
+			if errors.Is(err, service.ErrTooManyUserTasks) || errors.Is(err, service.ErrQueueFull) {
+				// Admission control (capacity layer): shed load as 429 with the
+				// user-facing reason, never 500.
+				apiErr(c, http.StatusTooManyRequests, err.Error())
 				return
 			}
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")

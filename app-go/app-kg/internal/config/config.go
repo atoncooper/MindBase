@@ -35,6 +35,10 @@ type ServerConfig struct {
 	Host       string `yaml:"host"`
 	GrpcPort   int    `yaml:"grpc_port"`
 	HealthPort int    `yaml:"health_port"`
+	// InternalToken guards the HTTP cloud-doc routing endpoints on the health
+	// mux (/internal/kg/cloud-doc/*). Empty = allow (network-internal posture,
+	// same as the probe itself); set to require X-Internal-Token.
+	InternalToken string `yaml:"internal_token"`
 }
 
 type RDBMSConfig struct {
@@ -129,6 +133,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	atoi("APPKG__SERVER__GRPC_PORT", &cfg.Server.GrpcPort)
 	atoi("APPKG__SERVER__HEALTH_PORT", &cfg.Server.HealthPort)
+	if v := get("APPKG__SERVER__INTERNAL_TOKEN"); v != "" {
+		cfg.Server.InternalToken = v
+	}
 	if b, ok := getBool("APPKG__APP__DEBUG"); ok {
 		cfg.App.Debug = b
 	}
