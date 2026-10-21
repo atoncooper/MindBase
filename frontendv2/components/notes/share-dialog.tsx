@@ -142,7 +142,7 @@ export function ShareDialog({
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 16, scale: 0.97 }}
                         transition={{ duration: 0.22, ease: [0.28, 0.11, 0.32, 1] }}
-                        className="relative w-full max-w-[400px] overflow-hidden rounded-[20px] border border-border bg-surface shadow-[0_12px_40px_rgba(0,0,0,0.14),0_2px_8px_rgba(0,0,0,0.06)]"
+                        className="relative max-h-[85vh] w-full max-w-[400px] overflow-y-auto rounded-[20px] border border-border bg-surface shadow-[0_12px_40px_rgba(0,0,0,0.14),0_2px_8px_rgba(0,0,0,0.06)]"
                         role="dialog"
                         aria-modal="true"
                         aria-label="分享笔记"
@@ -204,7 +204,7 @@ export function ShareDialog({
                                         type="button"
                                         disabled={busy}
                                         onClick={handleRevoke}
-                                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-danger/20 bg-danger/5 py-2 text-[13px] font-medium text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-danger/20 bg-danger/5 py-3 text-[13px] font-medium text-danger transition-colors hover:bg-danger/10 disabled:opacity-50 md:py-2"
                                     >
                                         {busy ? (
                                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -231,14 +231,14 @@ export function ShareDialog({
                                             value={expiresIn}
                                             onChange={(e) => setExpiresIn(e.target.value)}
                                             placeholder="如 7"
-                                            className="field h-9 text-[13px]"
+                                            className="field h-11 text-[16px] md:h-9 md:text-[13px]"
                                         />
                                     </div>
                                     <button
                                         type="button"
                                         disabled={busy}
                                         onClick={handleCreate}
-                                        className="btn-pill btn-primary flex h-9 w-full text-[13px]"
+                                        className="btn-pill btn-primary flex h-11 w-full text-[13px] md:h-9"
                                     >
                                         {busy ? (
                                             <Loader2 className="h-4 w-4 animate-spin" />

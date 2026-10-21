@@ -83,7 +83,7 @@ export function StoreList({ onInstalled }: Props) {
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
                     placeholder="搜索技能仓库"
-                    className="h-10 w-full rounded-full border border-transparent bg-border-subtle pl-10 pr-10 text-[14px] text-foreground outline-none transition-colors placeholder:text-tertiary focus:border-border focus:bg-surface"
+                    className="h-10 w-full rounded-full border border-transparent bg-border-subtle pl-10 pr-10 text-[16px] text-foreground outline-none transition-colors placeholder:text-tertiary focus:border-border focus:bg-surface md:text-[14px]"
                 />
                 {q && (
                     <button

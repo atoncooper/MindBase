@@ -87,6 +87,8 @@ export function CloudDriveView() {
     const [deleteFolderTarget, setDeleteFolderTarget] = useState<CloudFolderTreeItem | null>(null);
     const [deleteFileUuid, setDeleteFileUuid] = useState<string | null>(null);
     const [busyAction, setBusyAction] = useState(false);
+    // 手机端文件夹抽屉（md 以上为常驻侧栏，此状态不生效）
+    const [foldersOpen, setFoldersOpen] = useState(false);
 
     // Persist preferences.
     useEffect(() => { writePref("cloud-drive:view", view); }, [view]);
@@ -426,9 +428,22 @@ export function CloudDriveView() {
             : findFolderName(folders, selectedFolderId) ?? "文件夹";
 
     return (
-        <div className="flex h-[calc(100dvh-3rem)] overflow-hidden">
-            {/* Sidebar */}
-            <aside className="hidden w-64 shrink-0 border-r border-border-subtle bg-surface md:block">
+        <div className="flex h-[calc(100dvh-3rem-3.75rem-env(safe-area-inset-bottom,0px))] overflow-hidden md:h-[calc(100dvh-3rem)]">
+            {/* 手机端文件夹抽屉遮罩（md 以上隐藏） */}
+            {foldersOpen && (
+                <div
+                    className="fixed inset-0 z-30 bg-black/30 md:hidden"
+                    onClick={() => setFoldersOpen(false)}
+                />
+            )}
+
+            {/* Sidebar：手机端覆盖式抽屉，md 以上静态侧栏 */}
+            <aside
+                className={cn(
+                    "fixed inset-y-0 left-0 z-40 w-72 border-r border-border-subtle bg-surface pt-12 pb-[calc(3.75rem+env(safe-area-inset-bottom,0px))] transition-transform duration-300 md:static md:z-auto md:w-64 md:shrink-0 md:pb-0 md:pt-0 md:translate-x-0",
+                    foldersOpen ? "translate-x-0" : "-translate-x-full"
+                )}
+            >
                 <FolderSidebar
                     folders={folders}
                     loading={foldersLoading}
@@ -437,6 +452,7 @@ export function CloudDriveView() {
                     onSelect={(id) => {
                         handleSelectFolder(id);
                         if (trashOpen) setTrashOpen(false);
+                        setFoldersOpen(false);
                     }}
                     onCreateFolder={handleCreateFolder}
                     onRenameFolder={handleRenameFolder}
@@ -444,7 +460,10 @@ export function CloudDriveView() {
                     quota={quota}
                     trashCount={trashCount}
                     trashOpen={trashOpen}
-                    onToggleTrash={handleToggleTrash}
+                    onToggleTrash={() => {
+                        handleToggleTrash();
+                        setFoldersOpen(false);
+                    }}
                 />
             </aside>
 
@@ -453,6 +472,7 @@ export function CloudDriveView() {
                 <UploadDropzone onFiles={(files) => void handleFiles(files)}>
                     <FileToolbar
                         title={currentFolderName}
+                        onOpenFolders={() => setFoldersOpen(true)}
                         view={view}
                         onViewChange={setView}
                         sort={sort}
@@ -569,7 +589,7 @@ export function CloudDriveView() {
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15 }}
                         className={cn(
-                            "fixed bottom-0 left-0 right-0 top-12 z-40 border-border-subtle bg-surface lg:static lg:z-auto lg:w-80 lg:border-l"
+                            "fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-0 right-0 top-12 z-40 border-border-subtle bg-surface md:bottom-0 lg:static lg:z-auto lg:w-80 lg:border-l"
                         )}
                     >
                         {detail ? (

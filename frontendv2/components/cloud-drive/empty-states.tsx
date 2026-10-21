@@ -22,7 +22,7 @@ export function EmptyFolder({ onUpload }: { onUpload?: () => void }) {
                 <button
                     type="button"
                     onClick={onUpload}
-                    className="btn-pill btn-primary mt-6 h-9 px-5 text-[13px]"
+                    className="btn-pill btn-primary mt-6 h-11 px-5 text-[13px] md:h-9"
                 >
                     <CloudUpload className="h-4 w-4" />
                     上传文件

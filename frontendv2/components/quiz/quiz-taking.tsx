@@ -126,7 +126,7 @@ export function QuizTaking({ quiz, onBack, onSubmitted }: QuizTakingProps) {
     }).length;
 
     return (
-        <div className="mx-auto flex h-[calc(100dvh-4rem)] w-full max-w-[860px] flex-col px-5 md:px-8">
+        <div className="mx-auto flex h-[calc(100dvh_-_7.75rem_-_env(safe-area-inset-bottom))] w-full max-w-[860px] flex-col px-5 md:h-[calc(100dvh-4rem)] md:px-8">
             {/* Header */}
             <div className="flex items-center gap-2.5 pt-5">
                 <button

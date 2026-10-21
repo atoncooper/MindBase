@@ -150,7 +150,10 @@ export function QuotaView() {
     const chatBar = chatRatio >= 100 ? C.red : chatRatio >= 80 ? C.amber : C.blue;
 
     return (
-        <div className="mx-auto max-w-[960px] px-5 py-8" style={{ background: C.pageBg, minHeight: "100vh" }}>
+        <div
+        className="mx-auto min-h-[calc(100dvh-3rem-3.75rem-env(safe-area-inset-bottom))] max-w-[960px] px-5 py-8 md:min-h-[calc(100vh-3rem)]"
+        style={{ background: C.pageBg }}
+      >
             {/* 页头：标题 + 刷新（Google 式圆形 icon button） */}
             <div className="flex items-center justify-between">
                 <div>

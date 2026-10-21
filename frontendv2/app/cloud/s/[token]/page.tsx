@@ -232,7 +232,7 @@ export default function CloudSharePage() {
 
     return (
         <div className="min-h-screen bg-background">
-            <div className="mx-auto max-w-[760px] px-6 py-16">
+            <div className="mx-auto max-w-[760px] px-6 py-10 md:py-16">
                 {/* 品牌行 */}
                 <div className="mb-10 flex items-center gap-2 text-[11px] uppercase tracking-wider text-tertiary">
                     <CloudDownload className="h-3 w-3" />
@@ -356,7 +356,7 @@ export default function CloudSharePage() {
                                 type="button"
                                 onClick={() => void unlock(true)}
                                 disabled={unlocking}
-                                className="btn-pill btn-primary flex h-10 w-full items-center justify-center gap-1.5 text-[13px] disabled:opacity-50"
+                                className="btn-pill btn-primary flex h-11 w-full items-center justify-center gap-1.5 text-[13px] disabled:opacity-50 md:h-10"
                             >
                                 {unlocking ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -381,14 +381,14 @@ export default function CloudSharePage() {
                                     }}
                                     placeholder="输入提取码"
                                     maxLength={8}
-                                    className="field h-10 flex-1 text-[14px]"
+                                    className="field h-10 flex-1 text-[16px] md:text-[14px]"
                                     autoFocus
                                 />
                                 <button
                                     type="button"
                                     onClick={() => void unlock()}
                                     disabled={unlocking || !code.trim()}
-                                    className="btn-pill btn-primary flex h-10 w-24 items-center justify-center gap-1.5 text-[13px] disabled:opacity-50"
+                                    className="btn-pill btn-primary flex h-11 w-24 items-center justify-center gap-1.5 text-[13px] disabled:opacity-50 md:h-10"
                                 >
                                     {unlocking ? (
                                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -407,7 +407,7 @@ export default function CloudSharePage() {
                             type="button"
                             onClick={() => void unlock()}
                             disabled={unlocking}
-                            className="btn-pill btn-primary mt-6 flex h-10 w-full items-center justify-center gap-1.5 text-[13px] disabled:opacity-50"
+                            className="btn-pill btn-primary mt-6 flex h-11 w-full items-center justify-center gap-1.5 text-[13px] disabled:opacity-50 md:h-10"
                         >
                             {unlocking ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />

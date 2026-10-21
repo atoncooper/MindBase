@@ -224,9 +224,14 @@ export function MindMapView() {
 
     return (
         <ToastProvider>
-            <div className="flex h-[calc(100vh-3rem)] overflow-hidden">
+            {/* 移动端：额外让位底部 tab bar（3.75rem + safe-area）；dvh 防地址栏跳动 */}
+            <div className="flex h-[calc(100dvh-3rem-3.75rem-env(safe-area-inset-bottom))] overflow-hidden md:h-[calc(100dvh-3rem)]">
                 {/* ── 左侧栏：kind 切换 + 搜索 + 新建 + 文件列表 ─────────── */}
-                <aside className="flex w-80 shrink-0 flex-col border-r border-border-subtle bg-surface">
+                {/* 移动端主从布局：选中板子时隐藏列表，编辑器内「← 返回」回到列表 */}
+                <aside className={cn(
+                    "w-full shrink-0 flex-col border-r border-border-subtle bg-surface md:w-80",
+                    selected ? "hidden md:flex" : "flex"
+                )}>
                     <div className="flex items-center gap-2 px-5 pb-3 pt-4">
                         <h1 className="text-[15px] font-medium tracking-tight">知识导图</h1>
                         <span className="text-xs text-tertiary">{boards.length}</span>
@@ -425,7 +430,10 @@ export function MindMapView() {
                 </aside>
 
                 {/* ── 右侧：完整编辑器（导图/白板按 board kind 内部分发） ── */}
-                <section className="relative flex min-w-0 flex-1 flex-col bg-background">
+                <section className={cn(
+                    "relative min-w-0 flex-1 flex-col bg-background",
+                    selected ? "flex" : "hidden md:flex"
+                )}>
                     {error && (
                         <div className="bg-danger/10 px-5 py-2 text-[13px] text-danger">{error}</div>
                     )}

@@ -90,7 +90,7 @@ export function FileInspector({
                             type="button"
                             onClick={() => onProcess(detail.uploadUuid)}
                             disabled={inFlight}
-                            className="btn-pill btn-ghost h-9 w-full text-[13px]"
+                            className="btn-pill btn-ghost h-11 w-full text-[13px] md:h-9"
                         >
                             {inFlight ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -104,7 +104,7 @@ export function FileInspector({
                             type="button"
                             onClick={() => onProcess(detail.uploadUuid)}
                             disabled={inFlight}
-                            className="btn-pill btn-primary h-9 w-full text-[13px]"
+                            className="btn-pill btn-primary h-11 w-full text-[13px] md:h-9"
                         >
                             {inFlight ? (
                                 <>
@@ -126,7 +126,7 @@ export function FileInspector({
 
                     <Link
                         href={`/cloud-drive/${detail.uploadUuid}`}
-                        className="btn-pill btn-ghost h-9 w-full text-[13px]"
+                        className="btn-pill btn-ghost h-11 w-full text-[13px] md:h-9"
                     >
                         <Eye className="h-4 w-4" />
                         查看

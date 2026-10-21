@@ -228,7 +228,7 @@ export function PageList({ bvid }: PageListProps) {
                                 disabled={busy || state === "processing"}
                                 onClick={() => void vectorizePage(page, state === "done")}
                                 className={cn(
-                                    "inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-colors",
+                                    "inline-flex h-9 shrink-0 items-center gap-1 rounded-full px-3 text-[11px] font-medium transition-colors md:h-7 md:px-2.5",
                                     state === "done"
                                         ? "text-secondary hover:bg-border-subtle hover:text-foreground"
                                         : "text-accent hover:bg-accent-soft",

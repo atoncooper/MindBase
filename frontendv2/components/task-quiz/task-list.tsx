@@ -155,7 +155,7 @@ export function TaskQuizList({
                     onClick={onNew}
                     title="新建任务"
                     aria-label="新建任务"
-                    className="grid h-7 w-7 place-items-center rounded-full text-secondary transition-all hover:bg-border-subtle hover:text-foreground active:scale-95"
+                    className="grid h-9 w-9 place-items-center rounded-full text-secondary transition-all hover:bg-border-subtle hover:text-foreground active:scale-95 md:h-7 md:w-7"
                 >
                     <Plus className="h-4 w-4" />
                 </button>
@@ -174,7 +174,7 @@ export function TaskQuizList({
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="搜索出题方向…"
-                        className="min-w-0 flex-1 bg-transparent text-[12px] text-foreground outline-none placeholder:text-tertiary"
+                        className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground outline-none placeholder:text-tertiary md:text-[12px]"
                     />
                     {query && (
                         <button
@@ -309,7 +309,7 @@ export function TaskQuizList({
                                             </div>
                                         </button>
                                         {/* 悬停出现：两段式删除（垃圾桶 → 对勾确认） */}
-                                        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                                        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100">
                                             {confirmId === task.taskId ? (
                                                 <>
                                                     <button
@@ -319,7 +319,7 @@ export function TaskQuizList({
                                                         disabled={deletingId === task.taskId}
                                                         onClick={() => void handleDelete(task.taskId)}
                                                         className={cn(
-                                                            "grid h-6 w-6 place-items-center rounded-md text-danger transition-colors hover:bg-danger/10",
+                                                            "grid h-8 w-8 place-items-center rounded-md text-danger transition-colors hover:bg-danger/10 md:h-6 md:w-6",
                                                             deletingId === task.taskId && "opacity-50",
                                                         )}
                                                     >
@@ -330,7 +330,7 @@ export function TaskQuizList({
                                                         aria-label="取消删除"
                                                         title="取消删除"
                                                         onClick={() => setConfirmId(null)}
-                                                        className="grid h-6 w-6 place-items-center rounded-md text-tertiary transition-colors hover:bg-border-subtle"
+                                                        className="grid h-8 w-8 place-items-center rounded-md text-tertiary transition-colors hover:bg-border-subtle md:h-6 md:w-6"
                                                     >
                                                         <X className="h-3.5 w-3.5" />
                                                     </button>
@@ -341,7 +341,7 @@ export function TaskQuizList({
                                                     aria-label="删除任务"
                                                     title="删除任务"
                                                     onClick={() => void handleDelete(task.taskId)}
-                                                    className="grid h-6 w-6 place-items-center rounded-md text-tertiary transition-colors hover:bg-border-subtle hover:text-danger"
+                                                    className="grid h-8 w-8 place-items-center rounded-md text-tertiary transition-colors hover:bg-border-subtle hover:text-danger md:h-6 md:w-6"
                                                 >
                                                     <Trash2 className="h-3.5 w-3.5" />
                                                 </button>

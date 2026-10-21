@@ -54,7 +54,7 @@ export function FolderCard({ folder, status, selected, onToggleSelect }: FolderC
                     aria-pressed={selected}
                     aria-label={selected ? "取消选择" : "选择此收藏夹"}
                     className={cn(
-                        "grid h-5 w-5 shrink-0 place-items-center rounded-full border transition-colors",
+                        "relative grid h-5 w-5 shrink-0 place-items-center rounded-full border transition-colors after:absolute after:-inset-2 after:rounded-full after:content-['']",
                         selected
                             ? "border-accent bg-accent text-white"
                             : "border-border text-transparent hover:border-accent"

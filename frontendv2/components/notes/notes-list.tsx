@@ -125,7 +125,7 @@ export function NotesList({
                     onClick={onNew}
                     title="新建笔记"
                     aria-label="新建笔记"
-                    className="grid h-7 w-7 place-items-center rounded-full text-secondary transition-all hover:bg-border-subtle hover:text-foreground active:scale-95"
+                    className="grid h-9 w-9 place-items-center rounded-full text-secondary transition-all hover:bg-border-subtle hover:text-foreground active:scale-95 md:h-7 md:w-7"
                 >
                     <Plus className="h-4 w-4" />
                 </button>
@@ -135,7 +135,7 @@ export function NotesList({
             <div className="px-3 pb-2.5">
                 <div
                     className={cn(
-                        "flex h-8 items-center gap-2 rounded-[10px] border border-transparent bg-border-subtle/70 px-2.5 transition-colors",
+                        "flex h-10 items-center gap-2 rounded-[10px] border border-transparent bg-border-subtle/70 px-2.5 transition-colors md:h-8",
                         "focus-within:bg-surface focus-within:border-accent/40 focus-within:shadow-[0_0_0_3px_rgba(0,113,227,0.12)]"
                     )}
                 >
@@ -144,7 +144,7 @@ export function NotesList({
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="搜索…"
-                        className="min-w-0 flex-1 bg-transparent text-[12px] text-foreground outline-none placeholder:text-tertiary"
+                        className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground outline-none placeholder:text-tertiary md:text-[12px]"
                     />
                     {query && (
                         <button
@@ -194,7 +194,7 @@ export function NotesList({
                                 <button
                                     type="button"
                                     onClick={onNew}
-                                    className="rounded-full bg-accent-soft px-3 py-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/15"
+                                    className="rounded-full bg-accent-soft px-3 py-2.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/15 md:py-1.5"
                                 >
                                     新建笔记
                                 </button>

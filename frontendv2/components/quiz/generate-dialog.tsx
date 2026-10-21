@@ -915,7 +915,7 @@ function DialogBody({
                                     <label className="text-[12px] font-medium uppercase tracking-wider text-[#747775]">
                                         题目数量（可选）
                                     </label>
-                                    <div className="mt-2.5 grid grid-cols-5 gap-2">
+                                    <div className="mt-2.5 grid grid-cols-3 gap-2 md:grid-cols-5">
                                         <button
                                             type="button"
                                             onClick={() => setCount("auto")}

@@ -70,12 +70,12 @@ export default function SharedNotePage() {
 
     return (
         <article className="min-h-screen bg-background">
-            <div className="mx-auto max-w-[720px] px-6 py-16 sm:px-10">
+            <div className="mx-auto max-w-[720px] px-6 py-10 md:py-16 md:px-10">
                 <div className="mb-8 flex items-center gap-2 text-[11px] uppercase tracking-wider text-tertiary">
                     <BookOpen className="h-3 w-3" />
                     <span>MindBase · 公开分享</span>
                 </div>
-                <h1 className="text-[34px] font-semibold leading-tight tracking-tight text-foreground">
+                <h1 className="break-words text-[28px] font-semibold leading-tight tracking-tight text-foreground md:text-[34px]">
                     {data.title || "无标题"}
                 </h1>
                 <p className="mt-3 text-[12px] text-secondary">

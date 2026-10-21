@@ -310,12 +310,12 @@ export function QuizList({ onNew, onSelect, onShare, onExport, onResume, refresh
                         {visible.map((it) => (
                             <div
                                 key={it.quiz_uuid + (it.submission_uuid ?? "")}
-                                className="group flex w-full items-center gap-3 px-3 py-2.5 transition-colors hover:bg-[rgba(31,31,31,0.03)] md:px-4"
+                                className="group flex w-full flex-wrap items-center justify-end gap-x-3 gap-y-1 px-3 py-2.5 transition-colors hover:bg-[rgba(31,31,31,0.03)] md:flex-nowrap md:justify-start md:gap-y-3 md:px-4"
                             >
                                 <button
                                     type="button"
                                     onClick={() => onSelect(it.quiz_uuid)}
-                                    className="flex min-w-0 flex-1 items-center gap-3.5 rounded-xl px-1 py-1.5 text-left"
+                                    className="flex min-w-0 flex-1 basis-full items-center gap-3.5 rounded-xl px-1 py-1.5 text-left md:basis-0"
                                 >
                                     <span className="g-lead-icon">
                                         <BookOpen className="h-[18px] w-[18px]" />
@@ -445,7 +445,7 @@ export function QuizList({ onNew, onSelect, onShare, onExport, onResume, refresh
                     onClick={() => setRenaming(null)}
                 >
                     <div
-                        className="g-card w-[420px] p-6"
+                        className="g-card w-[calc(100vw_-_2rem)] max-w-[420px] p-6"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <p className="text-[16px] font-medium text-[#1f1f1f]">重命名练习</p>
@@ -495,7 +495,7 @@ export function QuizList({ onNew, onSelect, onShare, onExport, onResume, refresh
                     onClick={() => (deleteBusy ? undefined : setDeleting(null))}
                 >
                     <div
-                        className="g-card w-[400px] p-6"
+                        className="g-card w-[calc(100vw_-_2rem)] max-w-[400px] p-6"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex items-center gap-2">

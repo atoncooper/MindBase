@@ -16,6 +16,7 @@ import {
     ArrowUpDown,
     CloudUpload,
     Check,
+    Folder,
     Loader2,
     Search,
     Share2,
@@ -29,6 +30,8 @@ export type SortOrder = "asc" | "desc";
 
 interface FileToolbarProps {
     title: string;
+    /** 手机端打开文件夹抽屉（md 以上侧栏常驻，不渲染） */
+    onOpenFolders?: () => void;
     view: ViewMode;
     onViewChange: (v: ViewMode) => void;
     sort: SortField;
@@ -51,6 +54,7 @@ const SORT_LABELS: Record<SortField, string> = {
 
 export function FileToolbar({
     title,
+    onOpenFolders,
     view,
     onViewChange,
     sort,
@@ -80,15 +84,26 @@ export function FileToolbar({
     return (
         <div className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-border-subtle bg-background/75 px-5 py-2.5 backdrop-blur-xl">
             {/* Search + Title */}
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-2">
+                {onOpenFolders && (
+                    <button
+                        type="button"
+                        onClick={onOpenFolders}
+                        title="文件夹"
+                        aria-label="打开文件夹列表"
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground md:hidden"
+                    >
+                        <Folder className="h-[18px] w-[18px]" />
+                    </button>
+                )}
                 {onSearchChange && (
-                    <div className="relative hidden sm:block">
+                    <div className="relative order-last min-w-0 w-full sm:order-none sm:w-auto">
                         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
                         <input
                             value={searchValue ?? ""}
                             onChange={(e) => onSearchChange(e.target.value)}
                             placeholder="搜索文件…"
-                            className="h-8 w-40 rounded-full border border-border-subtle bg-surface pl-8 pr-7 text-[12px] text-foreground outline-none transition-all placeholder:text-tertiary focus:w-56 focus:border-accent"
+                            className="h-10 w-full rounded-full border border-border-subtle bg-surface pl-8 pr-7 text-[16px] text-foreground outline-none transition-all placeholder:text-tertiary focus:border-accent sm:h-8 sm:w-40 sm:text-[12px] sm:focus:w-56"
                         />
                         {searchValue ? (
                             <button
@@ -107,7 +122,7 @@ export function FileToolbar({
             </div>
 
             {/* Actions */}
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
                 {onShareClick && (
                     <button
                         type="button"
@@ -224,7 +239,7 @@ export function FileToolbar({
                     type="button"
                     onClick={onUploadClick}
                     disabled={uploading}
-                    className="btn-pill btn-primary h-8 px-3.5 text-[12px]"
+                    className="btn-pill btn-primary h-10 px-3.5 text-[12px] md:h-8"
                 >
                     {uploading ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />

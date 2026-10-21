@@ -246,7 +246,7 @@ export function FavoritesView() {
                     <button
                         type="button"
                         onClick={() => setBindOpen(true)}
-                        className="btn-pill btn-primary mt-6 h-9 px-5 text-[13px]"
+                        className="btn-pill btn-primary mt-6 h-11 px-5 text-[13px] md:h-9"
                     >
                         扫码绑定 B 站
                     </button>
@@ -275,7 +275,7 @@ export function FavoritesView() {
                 <div className="flex flex-col items-center justify-center rounded-2xl border border-border-subtle py-16 text-center">
                     <AlertCircle className="h-7 w-7 text-danger" />
                     <p className="mt-3 text-[14px] text-foreground">{loadError}</p>
-                    <button type="button" onClick={() => void loadAll()} className="btn-pill btn-primary mt-5 h-9 px-5 text-[13px]">
+                    <button type="button" onClick={() => void loadAll()} className="btn-pill btn-primary mt-5 h-11 px-5 text-[13px] md:h-9">
                         重试
                     </button>
                 </div>
@@ -302,7 +302,7 @@ export function FavoritesView() {
                         type="button"
                         disabled={syncing}
                         onClick={() => void handleSync()}
-                        className="btn-pill btn-primary mt-6 h-9 px-5 text-[13px]"
+                        className="btn-pill btn-primary mt-6 h-11 px-5 text-[13px] md:h-9"
                     >
                         {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
                         同步 B站收藏夹
@@ -361,28 +361,28 @@ export function FavoritesView() {
                         animate={{ y: 0, opacity: 1 }}
                         exit={{ y: 80, opacity: 0 }}
                         transition={{ duration: 0.28, ease: [0.28, 0.11, 0.32, 1] }}
-                        className="sticky bottom-4 z-30 mt-6"
+                        className="sticky bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] z-30 mt-6 md:bottom-4"
                     >
                         <div className="mx-auto max-w-[640px] rounded-2xl border border-border bg-surface/90 p-3.5 shadow-[0_8px_32px_rgba(0,0,0,0.10)] backdrop-blur-xl">
                             {building && build ? (
                                 <BuildProgress build={build} onCancel={cancelBuildPoll} />
                             ) : (
-                                <div className="flex items-center gap-3">
-                                    <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-soft text-accent">
+                                <div className="flex items-center gap-2 md:gap-3">
+                                    <span className="hidden h-8 w-8 place-items-center rounded-full bg-accent-soft text-accent md:grid">
                                         <Sparkles className="h-4 w-4" />
                                     </span>
                                     <div className="min-w-0 flex-1">
                                         <p className="text-[13px] font-medium text-foreground">
                                             已选 {selectedCount} 个收藏夹
                                         </p>
-                                        <p className="text-[11px] text-secondary">
+                                        <p className="hidden text-[11px] text-secondary md:block">
                                             将提取音频转写并写入向量库
                                         </p>
                                     </div>
                                     <button
                                         type="button"
                                         onClick={() => setSelectedIds(new Set())}
-                                        className="btn-pill btn-ghost h-8 px-3 text-[12px]"
+                                        className="btn-pill btn-ghost h-10 px-3 text-[12px] md:h-8"
                                     >
                                         清除
                                     </button>
@@ -390,7 +390,7 @@ export function FavoritesView() {
                                         type="button"
                                         disabled={building}
                                         onClick={() => void handleBuild()}
-                                        className="btn-pill btn-primary h-8 px-4 text-[12px]"
+                                        className="btn-pill btn-primary h-10 px-4 text-[12px] md:h-8"
                                     >
                                         <Zap className="h-3.5 w-3.5" />
                                         构建知识库
@@ -438,7 +438,7 @@ function Header({ syncing, onSync, onRefresh, refreshing, count }: HeaderProps) 
                     disabled={syncing}
                     onClick={onRefresh}
                     title="刷新状态"
-                    className="grid h-8 w-8 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+                    className="grid h-11 w-11 place-items-center rounded-full text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 md:h-8 md:w-8"
                 >
                     <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
                 </button>
@@ -446,7 +446,7 @@ function Header({ syncing, onSync, onRefresh, refreshing, count }: HeaderProps) 
                     type="button"
                     disabled={syncing}
                     onClick={onSync}
-                    className="btn-pill btn-ghost h-8 px-3.5 text-[12px] disabled:opacity-50"
+                    className="btn-pill btn-ghost h-11 px-3.5 text-[12px] disabled:opacity-50 md:h-8"
                 >
                     {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CloudDownload className="h-3.5 w-3.5" />}
                     同步

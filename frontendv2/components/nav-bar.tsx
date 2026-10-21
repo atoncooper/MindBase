@@ -9,6 +9,7 @@ import { useState as useReactState } from "react";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { primaryNavItems, moreNavItems, accountNavItems } from "@/lib/nav-config";
+import { MobileTabBar } from "./mobile-tab-bar";
 
 interface NavBarProps {
   onLoginClick?: () => void;
@@ -45,7 +46,10 @@ export function NavBar({ onLoginClick }: NavBarProps) {
     pathname === href || pathname.startsWith(`${href}/`);
 
   return (
-    <header className="nav-blur sticky top-0 z-50">
+    <>
+      {/* MobileTabBar 必须是 header 的兄弟节点：nav-blur 的 backdrop-filter 会
+          创建 fixed 包含块，放进 header 内部会破坏 fixed 定位。 */}
+      <header className="nav-blur sticky top-0 z-50">
       <nav className="mx-auto flex h-12 max-w-[1100px] items-center justify-between px-5">
         {/* Brand */}
         <Link
@@ -204,7 +208,9 @@ export function NavBar({ onLoginClick }: NavBarProps) {
           </motion.div>
         )}
       </AnimatePresence>
-    </header>
+      </header>
+      <MobileTabBar />
+    </>
   );
 }
 
