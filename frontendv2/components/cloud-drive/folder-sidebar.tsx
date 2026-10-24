@@ -28,6 +28,7 @@ import {
     Loader2,
     X,
     FolderOpen,
+    Share2,
 } from "lucide-react";
 import { formatBytes, type CloudFolderTreeItem, type CloudQuotaResponse } from "@/lib/api/cloud";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,8 @@ interface FolderSidebarProps {
     onCreateFolder: (name: string, parentId: number | null) => Promise<void>;
     onRenameFolder: (id: number, name: string) => Promise<void>;
     onDeleteFolder: (folder: CloudFolderTreeItem) => void;
+    /** 文件夹分享入口（plan/1.0.16 §6）：可选，缺省不显示分享按钮 */
+    onShareFolder?: (folder: CloudFolderTreeItem) => void;
     /** storage card + trash entry (app-cloud capabilities) */
     quota?: CloudQuotaResponse | null;
     trashCount?: number;
@@ -87,6 +90,7 @@ export function FolderSidebar({
     onCreateFolder,
     onRenameFolder,
     onDeleteFolder,
+    onShareFolder,
     quota,
     trashCount = 0,
     trashOpen = false,
@@ -256,6 +260,7 @@ export function FolderSidebar({
                             onCreateFolder={onCreateFolder}
                             onRenameFolder={onRenameFolder}
                             onDeleteFolder={onDeleteFolder}
+                            onShareFolder={onShareFolder}
                         />
                     ))}
             </nav>
@@ -393,6 +398,7 @@ function FolderNode({
     onCreateFolder,
     onRenameFolder,
     onDeleteFolder,
+    onShareFolder,
 }: {
     folder: CloudFolderTreeItem;
     depth: number;
@@ -407,6 +413,7 @@ function FolderNode({
     onCreateFolder: (name: string, parentId: number | null) => Promise<void>;
     onRenameFolder: (id: number, name: string) => Promise<void>;
     onDeleteFolder: (folder: CloudFolderTreeItem) => void;
+    onShareFolder?: (folder: CloudFolderTreeItem) => void;
 }) {
     const hasChildren = folder.children.length > 0;
     const active = selectedFolderId === folder.id;
@@ -500,6 +507,20 @@ function FolderNode({
                                     : "opacity-100 md:opacity-0 md:group-hover:opacity-100"
                             )}
                         >
+                            {onShareFolder && (
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onShareFolder(folder);
+                                    }}
+                                    title="分享文件夹"
+                                    aria-label={`分享文件夹 ${folder.name}`}
+                                    className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-accent-soft hover:text-accent"
+                                >
+                                    <Share2 className="h-3.5 w-3.5" />
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={(e) => {
@@ -576,6 +597,7 @@ function FolderNode({
                             onCreateFolder={onCreateFolder}
                             onRenameFolder={onRenameFolder}
                             onDeleteFolder={onDeleteFolder}
+                            onShareFolder={onShareFolder}
                         />
                     ))}
                 </div>

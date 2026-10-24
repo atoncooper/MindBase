@@ -19,6 +19,7 @@ import (
 func registerCloud(e *gin.Engine, d Deps) {
 	g := e.Group("/cloud")
 	registerShareRoutes(e, d, g)
+	registerRefRoutes(g, d) // 1.0.16 — /cloud/refs 引用面
 
 	// ── upload ──
 	g.POST("/upload/init", initUpload(d))
@@ -353,6 +354,13 @@ func deleteFolder(d Deps) gin.HandlerFunc {
 		if _, err := d.Folders.SoftDeleteTree(d.DB, ids, uid); err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
+		}
+		// 1.0.16: a force-deleted subtree's folder shares are dropped
+		// (RevokeAllForFolder — the subtree ids cover shares pointing at any
+		// level). Soft deletes stay restorable and are NOT revoked; their
+		// shares simply resolve uniformly as 404 until restore.
+		if force {
+			_ = d.Share.RevokeAllForFolders(ids)
 		}
 		c.JSON(http.StatusOK, gin.H{"deleted": true, "affectedFiles": affected})
 	}

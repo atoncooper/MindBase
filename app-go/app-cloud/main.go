@@ -22,11 +22,11 @@ import (
 
 	"app-cloud/internal/config"
 	"app-cloud/internal/infra/db"
-	"app-cloud/internal/joblock"
-	"app-cloud/internal/logger"
 	"app-cloud/internal/infra/milvusstore"
 	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/infra/mongostore"
+	"app-cloud/internal/joblock"
+	"app-cloud/internal/logger"
 	pipelinepkg "app-cloud/internal/pipeline"
 	"app-cloud/internal/repo"
 	"app-cloud/internal/router"
@@ -134,16 +134,28 @@ func main() {
 	// Engine: extractors → chunk → embed (Higress) → Milvus cloud_drive.
 
 	if cfg.Pipeline.Enabled && cfg.Pipeline.Milvus.Enabled && strings.TrimSpace(cfg.Pipeline.Milvus.URI) != "" {
-		milvusStore, merr := milvusstore.NewMilvusStore(ctx, cfg.Pipeline.Milvus, cfg.Pipeline.Embedding.Dimension)
-		if merr != nil {
-			slog.Error("milvus schema guard / connect failed — refusing degraded vector writes", "err", merr)
+		// Bounded dial: Milvus unreachable (e.g. storage profile not started)
+		// must not hang boot forever — 10s then degrade, mirroring the
+		// pipeline-disabled state. SCHEMA-SHAPE drift keeps the fail-loud
+		// exit (a dim/field mismatch would silently poison retrieval).
+		milvusCtx, milvusCancel := context.WithTimeout(ctx, 10*time.Second)
+		milvusStore, merr := milvusstore.NewMilvusStore(milvusCtx, cfg.Pipeline.Milvus, cfg.Pipeline.Embedding.Dimension)
+		milvusCancel()
+		switch {
+		case merr == nil:
+			engine := pipelinepkg.NewEngine(db.DB, mc, mongoStore, milvusStore,
+				pipelinepkg.NewEmbedder(cfg.Pipeline.Embedding), cfg.Pipeline.MaxDocSize)
+			pipe.SetEngine(engine)
+			slog.Info("[PIPELINE] vector engine attached", "collection", cfg.Pipeline.Milvus.Collection,
+				"model", cfg.Pipeline.Embedding.Model, "dim", cfg.Pipeline.Embedding.Dimension)
+		case strings.HasPrefix(merr.Error(), "MILVUS SCHEMA GUARD"):
+			slog.Error("milvus schema guard failed — refusing degraded vector writes", "err", merr)
 			os.Exit(1)
+		default:
+			slog.Error("[PIPELINE] milvus unreachable at boot — vectorization DEGRADED "+
+				"(uploads will be marked not_supported; start the storage profile or set APPCLOUD__PIPELINE__ENABLED=false to silence)",
+				"err", merr)
 		}
-		engine := pipelinepkg.NewEngine(db.DB, mc, mongoStore, milvusStore,
-			pipelinepkg.NewEmbedder(cfg.Pipeline.Embedding), cfg.Pipeline.MaxDocSize)
-		pipe.SetEngine(engine)
-		slog.Info("[PIPELINE] vector engine attached", "collection", cfg.Pipeline.Milvus.Collection,
-			"model", cfg.Pipeline.Embedding.Model, "dim", cfg.Pipeline.Embedding.Dimension)
 	} else {
 		slog.Warn("[PIPELINE] disabled — uploads will be marked not_supported for vectorization")
 	}
@@ -152,6 +164,9 @@ func main() {
 	purgeSvc := service.NewPurgeService(db.DB, mc, mongoStore, pipe)
 	purgeSvc.SetGraphWriter(kgClient)
 	shareSvc := service.NewShareService(db.DB, mc, cfg.Minio.PresignExpire)
+	// 1.0.16 — "save to my drive" references (ledger rows over the original
+	// objects; reuses the share service's resolve + presign policy).
+	refSvc := service.NewRefService(db.DB, shareSvc)
 	// Attestation HMAC key — MUST be identical across replicas (P0-2 fix):
 	// the share challenge/ticket chain is stateless and nginx round-robins
 	// /cloud/s/*, so a per-process random key breaks cross-replica verification.
@@ -196,6 +211,7 @@ func main() {
 		Files:      repo.NewFileRepo(),
 		Folders:    repo.NewFolderRepo(),
 		Share:      shareSvc,
+		Ref:        refSvc,
 		Attestor:   attestor,
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

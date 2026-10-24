@@ -62,6 +62,13 @@
 - 属主可**随时查看明文**（列表接口解密返回）；legacy 哈希行不可逆，前端提供**重设提取码**（`PATCH /cloud/shares/{id}/code`，链接/token 不变只换码）。
 - 可选下载上限 `max_downloads`（弹窗可填），超限后 access 直接 404。
 
+### 审核（云盘分享，先分享后审核）
+
+- 分享创建后默认 `active`（进管理台待审核列表）；管理员在 **app-admin** 后台放行 / 封杀 / 解封。
+- **封杀 = 公开访问统一 404**（app-cloud `ResolveShare` 把 `banned` 与 `is_revoked` 同等处理），已保存的「引用」也立即失效；`is_revoked` 只属主可改，两者语义独立。
+- 审核为**受控内容预览**（Issue #154）：用户创建分享时须单独确认「管理员可依法查看分享内容用于审核」（app-cloud 后端强制，缺 → 422；确认时间/文案版本留档）。**审核员可查看任意分享的内容**（含撤销/过期/banned/历史未确认告知的分享），仅内联预览分享内文件（pdf/图片/音视频/文档纯文本），不提供下载，每次查看落 `preview_content` 审计。
+- 审核后台 UI 仅回环（`http://127.0.0.1:3001`，API 调试口 `127.0.0.1:8016`；独立账户体系）；详见 [app-admin.md](app-admin.md)。
+
 ## 四、部署检查清单
 
 - [ ] 改了 `frontendv2/**` 或 `app-go/**` 源码 → 必须 `docker compose build <服务>`（源码编译进镜像，**restart 无效**）；nginx 配置是 bind-mount → 改完 `nginx -s reload` 即可。

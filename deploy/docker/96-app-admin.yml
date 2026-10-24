@@ -1,0 +1,54 @@
+# app-admin 分享审核管理后台（UI + Go API，仅回环）—— server2
+#   docker compose --env-file ../../.env -f 96-app-admin.yml up -d
+# 浏览器经 SSH 隧道访问：ssh -L 3001:127.0.0.1:3001 <server2>
+#
+# ⚠️ 首次启动前 app-cloud 必须已跑过一次 Migrate（cloud_shares 的 moderation 列
+#    归 app-cloud 所有）；共享 bilirag MySQL 由 .env 的 RDBMS__URL 指定。
+name: mb-app-admin
+
+services:
+  app-admin-api:
+    image: atoncooper/mind-base-app-admin:latest
+    pull_policy: missing
+    container_name: mind-base-app-admin-api
+    env_file:
+      - ../../.env
+    environment:
+      # 共享 bilirag 库（与 app-auth/app-cloud 同库；RDBMS__URL 来自 .env）
+      - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
+      - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}
+      - APPADMIN__SEED__PASSWORD=${APPADMIN__SEED__PASSWORD:-app-admin}
+      - APPADMIN__LOG__OUTPUT=both
+      # Share-content review preview via app-cloud (Issue #154). The overlay
+      # network resolves app-cloud by service name; token = shared secret.
+      - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-http://app-cloud:8007}
+      - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+    ports:
+      - "127.0.0.1:${APP_ADMIN_PORT:-8016}:8016"
+    volumes:
+      - app_admin_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+  app-admin:
+    image: atoncooper/mind-base-app-admin-ui:latest
+    pull_policy: missing
+    container_name: mind-base-app-admin-ui
+    depends_on:
+      app-admin-api:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${APP_ADMIN_WEB_PORT:-3001}:80"
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_admin_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay

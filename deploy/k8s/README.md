@@ -1,9 +1,9 @@
 # MindBase — Kubernetes 部署
 
 本目录将 `docker-compose.yml` 的完整拓扑（3×MySQL、Redis、Mongo、Milvus+etcd、
-MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 七服务
-（auth/cloud/note/bili/quiz/kg/settings）、app-board + 三个 MCP、app-task、
-app-pay/app-pay-admin）等价移植为 k8s 清单。
+MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 八服务
+（auth/cloud/note/bili/quiz/kg/settings/admin）、app-board + 三个 MCP、app-task、
+app-pay/app-pay-admin、app-admin（分享审核后台，:8016 回环））等价移植为 k8s 清单。
 
 > ⚠️ Python backend 已于 2026-10-06 退役（见 docs/archive/python-decommission.md）——
 > 旧 `backend.yaml` 已删除，app-ts 沿用其 8000 端口与网关路由语义。
@@ -128,6 +128,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | Higress 控制台 | `kubectl -n mind-base port-forward svc/higress 18081:8001` → http://127.0.0.1:18081 初始化 admin、配 Provider（供应商真实 key 只在这里）/ Consumer `mindbase-backend`(BEARER) / 路由 `/v1`、`/api/v1`、`/api-ws`；**modelMapping 保持空透传** |
 | 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart deploy/app-ts deploy/app-cloud deploy/app-bili |
 | app-pay-admin | `kubectl -n mind-base port-forward svc/app-pay-admin 8003:8003` → https://127.0.0.1:8003（种子账户 admin / app-pay-admin，首登改密） |
+| app-admin | `kubectl -n mind-base port-forward svc/app-admin 8016:8016` → http://127.0.0.1:8016（分享审核后台，种子账户 admin / app-admin，首登强制改密）；前端 frontend-admin 本地 `pnpm dev`（/api 代理 8016） |
 | 入口地址 | nginx Service 是 LoadBalancer：本地集群直接用分配的地址；云上绑域名 + 正式证书（更新 nginx-tls Secret 后 restart nginx） |
 
 ## 4. 与 docker-compose 的差异（有意为之）

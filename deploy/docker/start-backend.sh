@@ -3,7 +3,7 @@
 # server2（数据层 + 后端）一键启动：数据层 -> milvus -> Go服务/MCP -> 支付/任务/AI
 # 前提：../../ 下已有 .env、secrets/、app-pay/certs/、app-board/certs/（从 server1 拷贝）
 #       swarm worker 已加入；overlay 可见（docker network ls | grep mind-base-overlay）
-# 可选：90-higress（.env 未指向外部网关时）、95-app-pay-admin
+# 可选：90-higress（.env 未指向外部网关时）、95-app-pay-admin、96-app-admin
 #
 # 用法：bash start-backend.sh [--pull]
 #   --pull  先从镜像仓库拉取各服务最新镜像再 up（合并代码后更新容器用）。
@@ -92,6 +92,6 @@ up 41-app-task.yml app-task;                    wait_ready mind-base-app-task 60
 up 43-app-ts.yml app-ts;                        wait_ready mind-base-app-ts 180
 
 echo
-echo "✅ server2 后端完成（可选：90-higress / 95-app-pay-admin 单独 up）"
+echo "✅ server2 后端完成（可选：90-higress / 95-app-pay-admin / 96-app-admin 单独 up）"
 echo "   验证跨机解析：docker exec mind-base-app-ts getent hosts minio"
 docker ps --format 'table {{.Names}}	{{.Status}}'

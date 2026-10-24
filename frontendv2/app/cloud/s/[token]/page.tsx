@@ -2,27 +2,41 @@
 
 /**
  * Public cloud share reading page (/cloud/s/<token>). No auth, no NavBar —
- * an anonymous visitor lander: file metadata, extraction-code gate, inline
- * preview (image / video / audio / pdf / text / markdown), an explicit
+ * an anonymous visitor lander: file/folder metadata, extraction-code gate,
+ * inline preview (image / video / audio / pdf / text / markdown), an explicit
  * "cannot preview" state for everything else, and download. All API calls
- * are anonymous same-origin fetches (cloudApi.getSharedInfo / accessShared).
+ * go through cloudApi's anonymous same-origin wrappers (lib/api/cloud.ts) —
+ * components never fetch raw endpoints themselves (plan/1.0.16 §6).
+ *
+ * plan/1.0.16 新增：
+ *  - targetType=folder → 列出 files，逐个预览/下载走 access {fileId}；
+ *  - 顶部「保存到我的云盘」：未登录 → 弹登录引导；已登录 → POST /cloud/refs
+ *    （保存为引用，不复制对象、不占配额；简化：存入根目录）。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { cloudApi, formatBytes, type CloudAttestation } from "@/lib/api/cloud";
+import { cloudApi, formatBytes, type CloudAttestation, type CloudSharePublicFile } from "@/lib/api/cloud";
 import { computeDeviceFingerprint, isAutomationEnv } from "@/lib/device-attest";
+import { useAuth } from "@/lib/auth";
+import { emitAppToast } from "@/lib/app-toast";
+import { LoginModal } from "@/components/login-modal";
+import type { UserInfo } from "@/lib/api";
 import { Markdown } from "@/components/markdown";
 import {
     AlertCircle,
     CloudDownload,
+    Copy,
+    Check,
     File as FileIcon,
     FileImage,
     FileText,
     FileVideo,
     FileWarning,
+    Folder,
     Loader2,
     Lock,
     Music,
+    Save,
     Unlock,
 } from "lucide-react";
 
@@ -53,6 +67,7 @@ type TextPreviewState =
 export default function CloudSharePage() {
     const params = useParams<{ token: string }>();
     const token = typeof params?.token === "string" ? params.token : "";
+    const auth = useAuth();
 
     const [info, setInfo] = useState<SharedInfo | null>(null);
     const [loading, setLoading] = useState(true);
@@ -60,6 +75,8 @@ export default function CloudSharePage() {
 
     const [code, setCode] = useState("");
     const [unlocking, setUnlocking] = useState(false);
+    // 逐文件操作时的 loading id（folder 列表按行转圈）
+    const [unlockingFileId, setUnlockingFileId] = useState<number | null>(null);
     const [accessError, setAccessError] = useState<string | null>(null);
     const [access, setAccess] = useState<SharedAccess | null>(null);
     // 设备证明票据（attest 签发，绑定 token + 指纹）
@@ -67,8 +84,17 @@ export default function CloudSharePage() {
     // 文本类预览内容（text/markdown 拉取 presigned URL 的正文渲染）
     const [textPreview, setTextPreview] = useState<TextPreviewState | null>(null);
 
+    // ── 保存到我的云盘（引用）──
+    const [saving, setSaving] = useState(false);
+    const [savedOk, setSavedOk] = useState(false);
+    const [loginOpen, setLoginOpen] = useState(false);
+    // 登录成功后自动续做「保存」
+    const pendingSaveRef = useRef(false);
+
     useEffect(() => {
         if (!token) {
+            // 缺 token 是同步可判定的前置错误：直接进入错误态，不发请求。
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setError("链接无效");
             setLoading(false);
             return;
@@ -108,7 +134,7 @@ export default function CloudSharePage() {
 
     /** 带 412 自动重证明的 access（票据过期 / 服务重启后挑战失效时自愈） */
     const doAccess = useCallback(
-        async (body: { code?: string; download?: boolean }): Promise<SharedAccess> => {
+        async (body: { code?: string; download?: boolean; fileId?: number }): Promise<SharedAccess> => {
             try {
                 return await cloudApi.accessShared(token, body, attestation ?? undefined);
             } catch (e) {
@@ -130,6 +156,16 @@ export default function CloudSharePage() {
         [token, attestation],
     );
 
+    const triggerDownload = (url: string) => {
+        const a = document.createElement("a");
+        a.href = url;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    };
+
+    /** 单文件分享：提取（预览）或下载 */
     const unlock = useCallback(
         async (download = false) => {
             if (!token) return;
@@ -142,12 +178,7 @@ export default function CloudSharePage() {
                 });
                 if (download) {
                     // 触发浏览器下载（presigned URL 可能同源 /minio-proxy 或绝对地址）
-                    const a = document.createElement("a");
-                    a.href = data.url;
-                    a.rel = "noopener";
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
+                    triggerDownload(data.url);
                     setUnlocking(false);
                     return;
                 }
@@ -162,10 +193,75 @@ export default function CloudSharePage() {
         [token, code, doAccess]
     );
 
+    /** folder 分享：指定条目预览/下载（access body 携带 fileId） */
+    const unlockFile = useCallback(
+        async (fileId: number, download = false) => {
+            if (!token) return;
+            setUnlockingFileId(download ? -fileId : fileId);
+            setAccessError(null);
+            try {
+                const data = await doAccess({
+                    ...(code.trim() ? { code: code.trim() } : {}),
+                    fileId,
+                    download,
+                });
+                if (download) {
+                    triggerDownload(data.url);
+                    return;
+                }
+                setTextPreview(null);
+                setAccess(data);
+            } catch (e) {
+                setAccessError(e instanceof Error ? e.message : "提取失败");
+            } finally {
+                setUnlockingFileId(null);
+            }
+        },
+        [token, code, doAccess]
+    );
+
+    // ── 保存到我的云盘（引用，非复制） ──
+    const saveToDrive = useCallback(async () => {
+        if (!info || saving) return;
+        if (auth.status !== "authenticated") {
+            pendingSaveRef.current = true;
+            setLoginOpen(true);
+            return;
+        }
+        setSaving(true);
+        try {
+            const res = await cloudApi.saveShareToDrive({
+                token,
+                ...(info.requiresCode && code.trim() ? { code: code.trim() } : {}),
+            });
+            setSavedOk(true);
+            emitAppToast("success", `已保存为引用（不占空间）${res.saved > 1 ? `，共 ${res.saved} 项` : ""}`);
+        } catch (e) {
+            emitAppToast("error", e instanceof Error ? e.message : "保存失败，请重试");
+        } finally {
+            setSaving(false);
+        }
+    }, [info, saving, auth.status, token, code]);
+
+    const handleLoginSuccess = useCallback(
+        (sessionToken: string, user: UserInfo) => {
+            // auth.login 持久化 token（AuthProvider 是全站登录态唯一来源）
+            auth.login(sessionToken, user);
+            setLoginOpen(false);
+            if (pendingSaveRef.current) {
+                pendingSaveRef.current = false;
+                void saveToDrive();
+            }
+        },
+        [auth, saveToDrive],
+    );
+
     // 文本类预览：access 成功后拉取正文（presigned URL 的 disposition 不影响
     // fetch 读体；超限或拉取失败 → 落到"无法展示"卡片 + 下载按钮）
     useEffect(() => {
         if (!access || !isTextualView(access.viewMode) || access.fileSize > TEXT_PREVIEW_CAP) {
+            // 清掉上一份 access 的正文，避免切换文件时闪现旧内容。
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setTextPreview(null);
             return;
         }
@@ -210,7 +306,10 @@ export default function CloudSharePage() {
         );
     }
 
-    const IconComp = fileIcon(info.mimeType);
+    const isFolder = info.targetType === "folder";
+    const files = isFolder ? (info.files ?? []) : [];
+    // 过期与否按“当前时刻”展示（与后端 expiresAt 比较），只影响展示分支。
+    // eslint-disable-next-line react-hooks/purity
     const expired = info.expiresAt ? new Date(info.expiresAt).getTime() < Date.now() : false;
 
     // 无法在线预览的统一判定（渲染为明确的"无法展示"卡片 + 下载）
@@ -239,18 +338,47 @@ export default function CloudSharePage() {
                     <span>MindBase · 文件分享</span>
                 </div>
 
-                {/* 文件卡片 */}
+                {/* ── 保存到我的云盘（引用） ── */}
+                {!expired && (
+                    <div className="mb-4 flex flex-col items-end gap-1.5">
+                        <button
+                            type="button"
+                            onClick={() => void saveToDrive()}
+                            disabled={saving || savedOk}
+                            title={savedOk ? "已保存，可在云盘查看" : "保存为引用，不占用云盘空间"}
+                            className="btn-pill btn-ghost flex h-9 items-center justify-center gap-1.5 px-4 text-[12px] disabled:opacity-60"
+                        >
+                            {saving ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : savedOk ? (
+                                <Check className="h-3.5 w-3.5" />
+                            ) : (
+                                <Save className="h-3.5 w-3.5" />
+                            )}
+                            {savedOk ? "已保存到我的云盘" : "保存到我的云盘"}
+                        </button>
+                        <p className="text-[11px] text-tertiary">
+                            {savedOk
+                                ? "已保存为引用（不占空间）· 可在云盘「全部文件」根目录查看"
+                                : "保存的是引用，不占用云盘空间 · 将存入「全部文件」根目录"}
+                        </p>
+                    </div>
+                )}
+
+                {/* 文件 / 文件夹卡片 */}
                 <div className="rounded-2xl border border-border bg-surface p-6 shadow-[0_8px_30px_rgba(0,0,0,0.06)]">
                     <div className="flex items-start gap-4">
                         <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
-                            <IconComp className="h-6 w-6" />
+                            {isFolder ? <Folder className="h-6 w-6" /> : (() => { const IconComp = fileIcon(info.mimeType); return <IconComp className="h-6 w-6" />; })()}
                         </span>
                         <div className="min-w-0 flex-1">
                             <h1 className="break-all text-[17px] font-semibold leading-snug text-foreground">
-                                {info.fileName}
+                                {isFolder ? (info.folderName ?? "共享文件夹") : info.fileName}
                             </h1>
                             <p className="mt-1 text-[12px] text-secondary">
-                                {formatBytes(info.fileSize)}
+                                {isFolder
+                                    ? `${files.length} 个文件${info.truncated ? "（仅列出前 2000 个）" : ""}`
+                                    : formatBytes(info.fileSize)}
                                 {info.expiresAt && !expired && (
                                     <>
                                         {" · "}
@@ -270,6 +398,19 @@ export default function CloudSharePage() {
                         <p className="mt-6 rounded-xl bg-warning/5 px-3.5 py-3 text-[13px] text-warning">
                             该分享已过期。
                         </p>
+                    ) : isFolder ? (
+                        <FolderShareBody
+                            files={files}
+                            requiresCode={info.requiresCode}
+                            code={code}
+                            onCodeChange={setCode}
+                            onUnlock={() => void unlock()}
+                            unlocking={unlocking}
+                            unlockingFileId={unlockingFileId}
+                            accessError={accessError}
+                            onPreview={(f) => void unlockFile(f.fileId)}
+                            onDownload={(f) => void unlockFile(f.fileId, true)}
+                        />
                     ) : access ? (
                         <div className="mt-6 space-y-4">
                             {/* ── 图片 ── */}
@@ -423,6 +564,158 @@ export default function CloudSharePage() {
                     通过 MindBase 公开分享 · 内容由分享者提供
                 </p>
             </div>
+
+            {/* 登录引导（保存前未登录） */}
+            <LoginModal
+                isOpen={loginOpen}
+                onClose={() => {
+                    pendingSaveRef.current = false;
+                    setLoginOpen(false);
+                }}
+                onSuccess={handleLoginSuccess}
+            />
+        </div>
+    );
+}
+
+/** folder 分享的文件列表 + 提取码门（plan/1.0.16 §6） */
+function FolderShareBody({
+    files,
+    requiresCode,
+    code,
+    onCodeChange,
+    onUnlock,
+    unlocking,
+    unlockingFileId,
+    accessError,
+    onPreview,
+    onDownload,
+}: {
+    files: CloudSharePublicFile[];
+    requiresCode: boolean;
+    code: string;
+    onCodeChange: (v: string) => void;
+    onUnlock: () => void;
+    unlocking: boolean;
+    unlockingFileId: number | null;
+    accessError: string | null;
+    onPreview: (file: CloudSharePublicFile) => void;
+    onDownload: (file: CloudSharePublicFile) => void;
+}) {
+    const [copiedId, setCopiedId] = useState<number | null>(null);
+
+    const copyCode = () => {
+        void navigator.clipboard.writeText(code);
+        setCopiedId(0);
+        setTimeout(() => setCopiedId(null), 1500);
+    };
+
+    return (
+        <div className="mt-6 space-y-4">
+            {requiresCode && (
+                <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-[13px] text-secondary">
+                        <Lock className="h-3.5 w-3.5" />
+                        <span>此分享设置了提取码</span>
+                    </div>
+                    <div className="flex gap-2">
+                        <input
+                            value={code}
+                            onChange={(e) => onCodeChange(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && code.trim()) onUnlock();
+                            }}
+                            placeholder="输入提取码"
+                            maxLength={8}
+                            className="field h-10 flex-1 text-[16px] md:text-[14px]"
+                        />
+                        <button
+                            type="button"
+                            onClick={onUnlock}
+                            disabled={unlocking || !code.trim()}
+                            className="btn-pill btn-primary flex h-11 w-24 items-center justify-center gap-1.5 text-[13px] disabled:opacity-50 md:h-10"
+                        >
+                            {unlocking ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                                <Unlock className="h-4 w-4" />
+                            )}
+                            提取
+                        </button>
+                        {code.trim() && (
+                            <button
+                                type="button"
+                                onClick={copyCode}
+                                title="复制提取码"
+                                aria-label="复制提取码"
+                                className="grid h-11 w-10 shrink-0 place-items-center rounded-[var(--radius)] border border-border text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+                            >
+                                {copiedId === 0 ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                            </button>
+                        )}
+                    </div>
+                    {accessError && <p className="text-[12px] text-danger">{accessError}</p>}
+                    <p className="text-[11px] text-tertiary">验证提取码后即可预览 / 下载下方文件。</p>
+                </div>
+            )}
+            {files.length === 0 ? (
+                <p className="py-10 text-center text-[13px] text-tertiary">此文件夹没有可分享的文件</p>
+            ) : (
+                <ul className="divide-y divide-border-subtle rounded-xl border border-border-subtle">
+                    {files.map((f) => {
+                        const IconComp = fileIcon(f.mimeType);
+                        const busy = unlockingFileId === f.fileId || unlockingFileId === -f.fileId;
+                        return (
+                            <li
+                                key={f.fileId}
+                                className="flex items-center gap-3 px-3 py-2.5"
+                            >
+                                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
+                                    <IconComp className="h-4 w-4" />
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                    <p className="truncate text-[13px] text-foreground" title={f.name}>
+                                        {f.name}
+                                    </p>
+                                    <p className="mt-0.5 truncate text-[11px] text-tertiary">
+                                        {f.path ? `${f.path} · ` : ""}
+                                        {formatBytes(f.size)}
+                                    </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2 text-[12px]">
+                                    <button
+                                        type="button"
+                                        onClick={() => onPreview(f)}
+                                        disabled={busy}
+                                        className="rounded-md px-2 py-1 text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
+                                    >
+                                        {unlockingFileId === f.fileId ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            "预览"
+                                        )}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => onDownload(f)}
+                                        disabled={busy}
+                                        className="rounded-md px-2 py-1 text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+                                    >
+                                        {unlockingFileId === -f.fileId ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            "下载"
+                                        )}
+                                    </button>
+                                </div>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
+            {accessError && !requiresCode && (
+                <p className="text-[12px] text-danger">{accessError}</p>
+            )}
         </div>
     );
 }

@@ -33,7 +33,8 @@ import { FileIconTile } from "./file-icon";
  * the Next server, so the relative form stays same-origin for every media
  * element below. Non-proxy URLs (custom MINIO__PUBLIC_ENDPOINT) are kept.
  */
-function toSameOriginUrl(url: string): string {
+/** Exported for the ref viewer (/cloud-drive/refs/[id]) which presigns through the same nginx /minio-proxy convention. */
+export function toSameOriginUrl(url: string): string {
     try {
         const u = new URL(url, window.location.origin);
         if (u.pathname.startsWith("/minio-proxy/")) return u.pathname + u.search;

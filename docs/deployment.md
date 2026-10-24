@@ -123,7 +123,7 @@ langsmith:
 docker compose up -d          # 默认 profile = 全栈（含 nginx/APISIX/Milvus/Neo4j/app-task/app-board）
 ```
 
-Optional add-ons: `--profile pay`（交易/会员）、`--profile pay-admin`（支付后台）、`--profile full`（全部）。各服务的部署与配置见 [app-pay.md](app-pay.md) / [app-pay-admin.md](app-pay-admin.md) / [app-board.md](app-board.md) / [app-task.md](app-task.md)。
+Optional add-ons: `--profile pay`（交易/会员）、`--profile pay-admin`（支付后台）、`--profile full`（全部）。默认 profile 已含分享审核后台：`app-admin` UI（:3001 回环）+ `app-admin-api`（:8016 回环）；各服务的部署与配置见 [app-pay.md](app-pay.md) / [app-pay-admin.md](app-pay-admin.md) / [app-admin.md](app-admin.md) / [app-board.md](app-board.md) / [app-task.md](app-task.md)。
 
 ### Daytona code sandbox (optional, for code agent)
 

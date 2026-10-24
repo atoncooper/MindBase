@@ -53,6 +53,17 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
   有效期 + 下载上限 + view/download 计数；访问发放 15 分钟短时效 presigned URL；
   **下载上限 = 条件原子自增**（`WHERE max_downloads IS NULL OR download_count < max_downloads`，
   并发不超限）；无效/过期/撤销/超限统一 404（防状态枚举）
+- **合规警告**：创建分享（文件/文件夹）必须 `legalAck: true`，否则 **422**「请先阅读并同意分享规范」。
+- **文件夹分享**：`POST /cloud/folders/:id/share`；公开页 `GET /cloud/s/{token}` 返回 `targetType`，folder 时附
+  `folderName` + `files[]`（`fileId/name/size/mimeType/path`，递归上限 2000、超出 `truncated: true`）；
+  `POST /cloud/s/{token}/access` 增加 `fileId`（必须属于该文件夹树，否则统一 404）。文件夹 force 删除 → 联动 revoke。
+- **审核（先分享后审核）**：`cloud_shares` 新增 `target_type/folder_id/legal_ack/moderation_status/reason/time/by`
+  （app-cloud Migrate 跑**幂等 ALTER**，守护测试 pin 白名单）；`ResolveShare` 对 `banned` 与 `is_revoked` 同等 404；
+  审核写入方 = app-admin（[app-admin.md](app-admin.md)），app-cloud 不提供审核端点。
+- **保存到我的云盘（引用，非复制）**：新表 `cloud_refs` + `POST /cloud/refs`（token+提取码校验、folder 分享镜像建文件夹、
+  同 uid+share+source 幂等、上限 2000 → 422；不做 attest）、`GET /cloud/refs?folderId=`、`DELETE /cloud/refs/:id`、
+  `GET /cloud/refs/:id/raw?download=`（经原对象 presign，失效统一 404「引用已失效」并落 `status=dead`）。
+  **引用不复制对象、不计配额**。
 - **回收站**：删除=仅软删（MinIO/Mongo/Milvus 保留）；恢复/彻底删除/清空端点；
   sweeper 每小时物理清理超 30 天对象（三存储级联 + 硬删行），**Redis 租约跨副本单执行**
 
@@ -71,6 +82,7 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 
 - 视频语义：可上传/预览/播放，向量化依赖 Mongo 既有 ASR 文本（无自动 ASR 链路）
 - **红线**：embedding 模型/维度变更 = `cloud_drive` 全量重建（启动 schema 守护会拒绝服务）
+- **启动容错（2026-10）**：Milvus 连接失败不再无限阻塞启动——10s 有界拨号后**降级**（上传标记 not_supported，日志 ERROR 响亮告警）；但 **schema 形状漂移（缺字段/dim 不符）仍然 fail loud 退出**（防检索被污染）。Mongo 不可用依旧优雅降级。
 
 ## 六、多实例强化（2026-10，①–⑤）
 
@@ -92,7 +104,7 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 
 ## 八、红线
 
-- ❌ Migrate 禁 ALTER/DROP（守护测试钉死 ownedTables）；cloud 表 schema 变更由 app-cloud 侧发起
+- ❌ Migrate 禁 ALTER/DROP（唯一例外：`cloud_shares` 1.0.16 审核/文件夹列组的**幂等 ALTER**，守护测试钉死白名单）；cloud 表 schema 变更由 app-cloud 侧发起
 - ❌ embedding 模型/维度变更前必须全量重建 cloud_drive 集合
 - ❌ backend（Python，已删）/其他服务只读 cloud 表；MinIO 云盘对象唯一写者 = app-cloud
 - ❌ 提取码不得明文入库；分享访问 URL 必须短时效

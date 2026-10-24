@@ -19,23 +19,24 @@ import (
 )
 
 type Config struct {
-	App      AppConfig      `yaml:"app"`
-	Server   ServerConfig   `yaml:"server"`
-	Timezone string         `yaml:"timezone"`
-	RDBMS    RDBMSConfig    `yaml:"rdbms"`
-	Redis    RedisConfig    `yaml:"redis"`
-	Mongo    MongoConfig    `yaml:"mongo"`
-	Minio    MinioConfig    `yaml:"minio"`
-	Upload   UploadConfig   `yaml:"upload"`
-	Attest   AttestConfig   `yaml:"attest"`
-	Joblock  JoblockConfig  `yaml:"joblock"`
-	Quota    QuotaConfig    `yaml:"quota"`
-	Trash    TrashConfig    `yaml:"trash"`
-	Pipeline PipelineConfig `yaml:"pipeline"`
-	Kg       KgConfig       `yaml:"kg"`
-	WSBridge WSBridgeConfig `yaml:"ws_bridge"`
-	CORS     CORSConfig     `yaml:"cors"`
-	Log      LogConfig      `yaml:"log"`
+	App         AppConfig         `yaml:"app"`
+	Server      ServerConfig      `yaml:"server"`
+	Timezone    string            `yaml:"timezone"`
+	RDBMS       RDBMSConfig       `yaml:"rdbms"`
+	Redis       RedisConfig       `yaml:"redis"`
+	Mongo       MongoConfig       `yaml:"mongo"`
+	Minio       MinioConfig       `yaml:"minio"`
+	Upload      UploadConfig      `yaml:"upload"`
+	Attest      AttestConfig      `yaml:"attest"`
+	AdminReview AdminReviewConfig `yaml:"admin_review"`
+	Joblock     JoblockConfig     `yaml:"joblock"`
+	Quota       QuotaConfig       `yaml:"quota"`
+	Trash       TrashConfig       `yaml:"trash"`
+	Pipeline    PipelineConfig    `yaml:"pipeline"`
+	Kg          KgConfig          `yaml:"kg"`
+	WSBridge    WSBridgeConfig    `yaml:"ws_bridge"`
+	CORS        CORSConfig        `yaml:"cors"`
+	Log         LogConfig         `yaml:"log"`
 }
 
 // KgConfig — app-kg internal cloud-doc routing endpoints (L1 graph writes;
@@ -113,6 +114,12 @@ type AttestConfig struct {
 	Secret string `yaml:"secret"`
 }
 
+// AdminReviewConfig protects the app-admin-only share-content preview
+// endpoint. Empty token disables the endpoint (fail closed).
+type AdminReviewConfig struct {
+	Token string `yaml:"token"`
+}
+
 // KeyBytes parses the configured secret into HMAC key material:
 // 64 hex chars → 32 decoded bytes; otherwise any raw string ≥ 32 bytes is
 // used as-is. Empty → (nil, nil): the attestor falls back to a boot-random
@@ -179,7 +186,7 @@ type PipelineConfig struct {
 // burst of manual triggers can enqueue unbounded work and starve the
 // downstream LLM/embedding gateways. Limits of 0 disable the check.
 type AdmissionConfig struct {
-	MaxPerUID    int64 `yaml:"max_per_uid"`
+	MaxPerUID     int64 `yaml:"max_per_uid"`
 	MaxQueueDepth int64 `yaml:"max_queue_depth"`
 }
 
@@ -318,6 +325,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := get("APPCLOUD__ATTEST__SECRET"); v != "" {
 		cfg.Attest.Secret = v
+	}
+	if v := get("APPCLOUD__ADMIN_REVIEW__TOKEN"); v != "" {
+		cfg.AdminReview.Token = v
 	}
 	atoi("APPCLOUD__JOBLOCK__LEASE_TTL_SECS", &cfg.Joblock.LeaseTTLSecs)
 	if b, ok := getBool("APPCLOUD__PIPELINE__ENABLED"); ok {

@@ -1,13 +1,20 @@
 // Package db initializes the GORM MySQL connection against the SHARED bilirag
 // database and applies app-cloud's schema ownership.
 //
-// Migration policy: CREATE TABLE IF NOT EXISTS only — never ALTER. The cloud
-// tables already exist with live data (created by the Python backend via
-// db/system.sql); GORM AutoMigrate is deliberately NOT used because it
+// Migration policy: CREATE TABLE IF NOT EXISTS — never schema drift. The
+// cloud tables already exist with live data (created by the Python backend
+// via db/system.sql); GORM AutoMigrate is deliberately NOT used because it
 // issues ALTERs that could drift a shared, in-production schema. The DDL
-// below mirrors db/system.sql verbatim (plus the new cloud_shares table,
-// owned by app-cloud from day one). Indexes are declared inline (MySQL 8 has
-// no CREATE INDEX IF NOT EXISTS).
+// below mirrors db/system.sql verbatim (plus the tables owned by app-cloud
+// from day one, incl. cloud_shares / cloud_refs). Indexes are declared
+// inline (MySQL 8 has no CREATE INDEX IF NOT EXISTS).
+//
+// 1.0.16 exception (Lead-approved): cloud_shares is app-cloud's OWN table,
+// so a PINNED idempotent ALTER set is allowed for exactly the seven
+// moderation/target columns + one index below — each statement runs only
+// when information_schema proves the column/index is missing
+// (ensureShareColumns). infra/db/guard_test.go pins that whole ALTER list:
+// nothing outside it may ever ALTER a shared table.
 package db
 
 import (
@@ -59,16 +66,89 @@ var ownedTables = []string{
 	"cloud_files",
 	"cloud_shares",
 	"cloud_vector_tasks",
+	"cloud_refs",
 	"cloud_quota",
 	"workspaces",
 	"workspace_bindings",
 }
 
-// Migrate creates the cloud schema if (and only if) it does not exist yet.
+// Migrate creates the cloud schema if (and only if) it does not exist yet,
+// then applies the pinned idempotent ALTER set for cloud_shares.
 func Migrate() error {
 	for _, ddl := range schemaDDL() {
 		if err := DB.Exec(ddl).Error; err != nil {
 			return fmt.Errorf("exec ddl: %w", err)
+		}
+	}
+	if err := ensureShareColumns(); err != nil {
+		return fmt.Errorf("ensure cloud_shares columns: %w", err)
+	}
+	return nil
+}
+
+// shareColumnAlter is one pinned idempotent ALTER: DDL is issued only when
+// information_schema shows the column missing (see ensureShareColumns).
+type shareColumnAlter struct {
+	column string
+	ddl    string
+}
+
+// shareColumnAlters is THE pinned ALTER set for cloud_shares (plan/1.0.16
+// §3.1 — Lead-approved). The guard test in this package compares it against
+// an exact literal whitelist: any addition/removal here MUST also update
+// that whitelist and the contract. Nothing else in the codebase may ALTER.
+func shareColumnAlters() []shareColumnAlter {
+	return []shareColumnAlter{
+		{column: "target_type", ddl: "alter table cloud_shares add column target_type varchar(10) not null default 'file'"},
+		{column: "folder_id", ddl: "alter table cloud_shares add column folder_id int null"},
+		{column: "legal_ack", ddl: "alter table cloud_shares add column legal_ack tinyint(1) not null default 0"},
+		{column: "content_review_ack", ddl: "alter table cloud_shares add column content_review_ack tinyint(1) not null default 0"},
+		{column: "content_review_policy_version", ddl: "alter table cloud_shares add column content_review_policy_version varchar(32) null"},
+		{column: "content_review_ack_at", ddl: "alter table cloud_shares add column content_review_ack_at datetime null"},
+		{column: "moderation_status", ddl: "alter table cloud_shares add column moderation_status varchar(10) not null default 'active'"},
+		{column: "moderation_reason", ddl: "alter table cloud_shares add column moderation_reason varchar(500) null"},
+		{column: "moderation_time", ddl: "alter table cloud_shares add column moderation_time datetime null"},
+		{column: "moderation_by", ddl: "alter table cloud_shares add column moderation_by varchar(64) null"},
+	}
+}
+
+// shareIndexDDL — the one pinned index ALTER for cloud_shares
+// (moderation listing scans in app-admin; moderation_status/cardinality, id).
+const shareIndexDDL = "alter table cloud_shares add index idx_cloud_shares_moderation (moderation_status, id)"
+
+const shareIndexName = "idx_cloud_shares_moderation"
+
+// ensureShareColumns applies shareColumnAlters() + shareIndexDDL idempotently:
+// each statement runs only if information_schema proves its column/index is
+// missing for THIS database (table_schema = DATABASE()). Racing replicas may
+// both pass the check and both ALTER; MySQL serializes the two ADD COLUMN
+// statements and the second one fails with a duplicate-column error, which is
+// surfaced here (a restart is then a no-op). Keep the statements one-per-call
+// so each failure names its exact change.
+func ensureShareColumns() error {
+	for _, alt := range shareColumnAlters() {
+		var n int64
+		if err := DB.Raw(
+			"SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'cloud_shares' AND column_name = ?",
+			alt.column).Scan(&n).Error; err != nil {
+			return fmt.Errorf("probe column %s: %w", alt.column, err)
+		}
+		if n > 0 {
+			continue
+		}
+		if err := DB.Exec(alt.ddl).Error; err != nil {
+			return fmt.Errorf("add column %s: %w", alt.column, err)
+		}
+	}
+	var in int64
+	if err := DB.Raw(
+		"SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'cloud_shares' AND index_name = ?",
+		shareIndexName).Scan(&in).Error; err != nil {
+		return fmt.Errorf("probe index %s: %w", shareIndexName, err)
+	}
+	if in == 0 {
+		if err := DB.Exec(shareIndexDDL).Error; err != nil {
+			return fmt.Errorf("add index %s: %w", shareIndexName, err)
 		}
 	}
 	return nil
@@ -124,6 +204,10 @@ func schemaDDL() []string {
 			constraint cloud_files_ibfk_2 foreign key (folder_id) references cloud_folders (id)
 		)`,
 		// New table — app-cloud owned from day one (Baidu-style shares).
+		// The 1.0.16 columns + idx_cloud_shares_moderation are mirrored here
+		// verbatim so FRESH deployments are born complete; the pinned idempotent
+		// ALTER set (ensureShareColumns) covers live deployments created before
+		// 1.0.16. Keep both in lockstep — guard_test.go pins both.
 		`create table if not exists cloud_shares (
 			id             int auto_increment primary key,
 			share_token    varchar(64) not null,
@@ -135,11 +219,45 @@ func schemaDDL() []string {
 			view_count     int         not null default 0,
 			download_count int         not null default 0,
 			is_revoked     tinyint(1)  not null default 0,
+			target_type    varchar(10) not null default 'file',
+			folder_id      int         null,
+			legal_ack      tinyint(1)  not null default 0,
+			content_review_ack tinyint(1) not null default 0,
+			content_review_policy_version varchar(32) null,
+			content_review_ack_at datetime null,
+			moderation_status varchar(10) not null default 'active',
+			moderation_reason varchar(500) null,
+			moderation_time   datetime     null,
+			moderation_by     varchar(64)  null,
 			created_at     datetime    null,
 			updated_at     datetime    null,
 			index idx_cloud_shares_uid (uid),
 			index idx_cloud_shares_file (file_id),
+			index idx_cloud_shares_moderation (moderation_status, id),
 			constraint uq_cloud_shares_token unique (share_token)
+		)`,
+		// "Save to my drive" references (1.0.16 §3.2) — no object copy, no
+		// quota. app-cloud owned from day one; refs resolve against the
+		// ORIGINAL cloud_files row at read time.
+		`create table if not exists cloud_refs (
+			id                 bigint auto_increment primary key,
+			uid                bigint       not null,
+			share_id           int          not null,
+			source_file_id     int          not null,
+			source_uid         bigint       not null,
+			source_upload_uuid varchar(64)  not null,
+			name               varchar(500) not null,
+			file_size          bigint       not null,
+			mime_type          varchar(128) not null,
+			folder_id          int          null,
+			status             varchar(10)  not null default 'alive',
+			created_at         datetime     null,
+			updated_at         datetime     null,
+			deleted_at         datetime     null,
+			index ix_cloud_refs_uid (uid),
+			index ix_cloud_refs_share (share_id),
+			index ix_cloud_refs_source (source_file_id),
+			index ix_cloud_refs_folder (uid, folder_id)
 		)`,
 		// Durable outbox for the vectorize pipeline (multi-replica hardening
 		// step ②): one row per upload_uuid, claimed FOR UPDATE SKIP LOCKED,

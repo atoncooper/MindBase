@@ -81,6 +81,12 @@ attest:
   # all live tickets.
   secret: ""
 
+admin_review:
+  # Shared only with app-admin; empty disables its internal content-preview endpoint.
+  # Generate a separate token: openssl rand -hex 32
+  # env: APPCLOUD__ADMIN_REVIEW__TOKEN
+  token: ""
+
 quota:
   # tier → storage quota (bytes). Lookup: app-pay /internal/pay/membership/{uid}
   # via APISIX key-auth; fail-closed → free tier when unreachable.

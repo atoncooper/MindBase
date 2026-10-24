@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"app-cloud/internal/config"
-	"app-cloud/internal/logger"
-	"app-cloud/internal/metrics"
 	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/infra/mongostore"
+	"app-cloud/internal/logger"
+	"app-cloud/internal/metrics"
 	"app-cloud/internal/repo"
 	"app-cloud/internal/service"
 
@@ -36,6 +36,7 @@ type Deps struct {
 	Files      *repo.FileRepo
 	Folders    *repo.FolderRepo
 	Share      *service.ShareService
+	Ref        *service.RefService // 1.0.16 — "save to my drive" references
 	Attestor   *service.DeviceAttestor
 	Reconciler *service.Reconciler
 }

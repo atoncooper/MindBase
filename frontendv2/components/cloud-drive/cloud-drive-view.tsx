@@ -10,6 +10,7 @@
  * and folder/file delete. All data flows through lib/api/cloud (cloudApi).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Loader2 } from "lucide-react";
 import {
@@ -17,6 +18,7 @@ import {
     type CloudFolderTreeItem,
     type CloudVideoItem,
     type CloudVideoDetailResponse,
+    type RefItem,
 } from "@/lib/api/cloud";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
@@ -25,6 +27,7 @@ import { FileToolbar, type ViewMode, type SortField, type SortOrder } from "./fi
 import { FileList } from "./file-list";
 import { FileGrid } from "./file-grid";
 import { FileInspector } from "./file-inspector";
+import { RefInspector } from "./ref-inspector";
 import { ShareDialog } from "./share-dialog";
 import { formatBytes, type CloudQuotaResponse, type CloudTrashItem } from "@/lib/api/cloud";
 import { UploadDropzone, UploadProgressPill } from "./upload-dropzone";
@@ -33,6 +36,7 @@ import { FileListSkeleton, NoFiles } from "./empty-states";
 const PAGE_SIZE = 50;
 
 export function CloudDriveView() {
+    const router = useRouter(); // 引用预览跳转 /cloud-drive/refs/[id]
     // ── Folders ──
     const [folders, setFolders] = useState<CloudFolderTreeItem[]>([]);
     const [foldersLoading, setFoldersLoading] = useState(true);
@@ -67,6 +71,12 @@ export function CloudDriveView() {
     const [shareOpen, setShareOpen] = useState(false);
     const [detail, setDetail] = useState<CloudVideoDetailResponse | null>(null);
     const [loadingDetail, setLoadingDetail] = useState(false);
+    // ── cloud_refs 引用（保存到我的云盘，非复制；plan/1.0.16 §6）──
+    const [refs, setRefs] = useState<RefItem[]>([]);
+    const [selectedRefId, setSelectedRefId] = useState<number | null>(null);
+    const [deleteRefTarget, setDeleteRefTarget] = useState<RefItem | null>(null);
+    // 文件夹分享目标（folder-sidebar 入口；null = 文件分享模式）
+    const [folderShareTarget, setFolderShareTarget] = useState<CloudFolderTreeItem | null>(null);
 
     // ── Preferences (persisted) ──
     const [view, setView] = useState<ViewMode>(() => readPref("cloud-drive:view", "list") as ViewMode);
@@ -147,6 +157,16 @@ export function CloudDriveView() {
         }
     }, []);
 
+    // ── cloud_refs 引用加载（按 folderId 合并进列表；失败静默空表）──
+    const refreshRefs = useCallback(async (folderId: number | null) => {
+        try {
+            const res = await cloudApi.listRefs(folderId);
+            setRefs(res.refs);
+        } catch {
+            setRefs([]);
+        }
+    }, []);
+
     // Initial load.
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -160,6 +180,12 @@ export function CloudDriveView() {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         void refreshVideos(selectedFolderId, 1, false);
     }, [selectedFolderId, sort, order, refreshVideos]);
+
+    // Reload refs when folder changes (引用跟随所在文件夹).
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        void refreshRefs(selectedFolderId);
+    }, [selectedFolderId, refreshRefs]);
 
     // Invalidate the persisted folder if it was deleted elsewhere (e.g. in
     // another tab) so we don't sit on a stale id with an empty file list.
@@ -223,6 +249,7 @@ export function CloudDriveView() {
     const handleSelectFolder = useCallback((id: number | null) => {
         setSelectedFolderId(id);
         setSelectedUuid(null);
+        setSelectedRefId(null);
     }, []);
 
     const handleSelectFile = useCallback((uuid: string) => {
@@ -231,7 +258,39 @@ export function CloudDriveView() {
         // while the [selectedUuid] effect skips refetch — a blank panel.)
         setSelectedUuid((prev) => (prev === uuid ? null : uuid));
         setDetail(null);
+        setSelectedRefId(null);
     }, []);
+
+    // ── cloud_refs handlers（引用不进上传/ASR/向量化菜单）──
+    const handleSelectRef = useCallback((id: number) => {
+        // dead 引用在列表层已被置灰无活动入口；此处只处理 alive。
+        setSelectedRefId((prev) => (prev === id ? null : id));
+        setSelectedUuid(null);
+        setDetail(null);
+    }, []);
+
+    const handlePreviewRef = useCallback(
+        (id: number) => {
+            router.push(`/cloud-drive/refs/${id}`);
+        },
+        [router],
+    );
+
+    const handleDeleteRef = useCallback(async () => {
+        const target = deleteRefTarget;
+        if (!target) return;
+        setBusyAction(true);
+        try {
+            await cloudApi.deleteRef(target.id);
+            setDeleteRefTarget(null);
+            setRefs((prev) => prev.filter((r) => r.id !== target.id));
+            if (selectedRefId === target.id) setSelectedRefId(null);
+        } catch {
+            // Keep dialog open on failure.
+        } finally {
+            setBusyAction(false);
+        }
+    }, [deleteRefTarget, selectedRefId]);
 
     const handleLoadMore = useCallback(async () => {
         setLoadingMore(true);
@@ -457,6 +516,10 @@ export function CloudDriveView() {
                     onCreateFolder={handleCreateFolder}
                     onRenameFolder={handleRenameFolder}
                     onDeleteFolder={setDeleteFolderTarget}
+                    onShareFolder={(folder) => {
+                        setFolderShareTarget(folder);
+                        setShareOpen(true);
+                    }}
                     quota={quota}
                     trashCount={trashCount}
                     trashOpen={trashOpen}
@@ -554,6 +617,10 @@ export function CloudDriveView() {
                                 hasMore={hasMore}
                                 loadingMore={loadingMore}
                                 onLoadMore={() => void handleLoadMore()}
+                                refs={refs}
+                                selectedRefId={selectedRefId}
+                                onSelectRef={handleSelectRef}
+                                onDeleteRef={(id) => setDeleteRefTarget(refs.find((r) => r.id === id) ?? null)}
                             />
                         ) : (
                             <FileGrid
@@ -563,6 +630,10 @@ export function CloudDriveView() {
                                 hasMore={hasMore}
                                 loadingMore={loadingMore}
                                 onLoadMore={() => void handleLoadMore()}
+                                refs={refs}
+                                selectedRefId={selectedRefId}
+                                onSelectRef={handleSelectRef}
+                                onDeleteRef={(id) => setDeleteRefTarget(refs.find((r) => r.id === id) ?? null)}
                             />
                         )}
                     </div>
@@ -581,6 +652,27 @@ export function CloudDriveView() {
 
             {/* Inspector (inline on lg+, full-screen overlay below) */}
             <AnimatePresence>
+                {selectedRefId != null && !selectedUuid && (() => {
+                    const refItem = refs.find((r) => r.id === selectedRefId);
+                    if (!refItem) return null;
+                    return (
+                        <motion.aside
+                            key="ref-inspector"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.15 }}
+                            className="fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-0 right-0 top-12 z-40 border-border-subtle bg-surface md:bottom-0 lg:static lg:z-auto lg:w-80 lg:border-l"
+                        >
+                            <RefInspector
+                                refItem={refItem}
+                                onPreview={handlePreviewRef}
+                                onDelete={() => setDeleteRefTarget(refItem)}
+                                onBack={() => setSelectedRefId(null)}
+                            />
+                        </motion.aside>
+                    );
+                })()}
                 {selectedUuid && (
                     <motion.aside
                         key="inspector"
@@ -646,12 +738,41 @@ export function CloudDriveView() {
                 onCancel={() => (busyAction ? undefined : setDeleteFileUuid(null))}
             />
 
-            {/* Share dialog */}
+            {/* Delete ref confirm（引用删除只动引用，不影响原文件/原文件夹） */}
+            <ConfirmDialog
+                open={deleteRefTarget !== null}
+                title="删除引用？"
+                message={
+                    deleteRefTarget
+                        ? "将移除引用「" + deleteRefTarget.name + "」。这不影响原文件和原文件夹。"
+                        : ""
+                }
+                confirmLabel="删除引用"
+                danger
+                busy={busyAction}
+                onConfirm={() => void handleDeleteRef()}
+                onCancel={() => (busyAction ? undefined : setDeleteRefTarget(null))}
+            />
+
+            {/* Share dialog（文件 / 文件夹两种 target） */}
             <ShareDialog
                 open={shareOpen}
-                uploadUuid={detail?.uploadUuid ?? selectedUuid}
-                fileName={detail?.originalName ?? "文件"}
-                onClose={() => setShareOpen(false)}
+                target={
+                    folderShareTarget
+                        ? { type: "folder", folderId: folderShareTarget.id }
+                        : selectedUuid
+                          ? { type: "file", uploadUuid: selectedUuid }
+                          : null
+                }
+                fileName={
+                    folderShareTarget
+                        ? folderShareTarget.name
+                        : (detail?.originalName ?? "文件")
+                }
+                onClose={() => {
+                    setShareOpen(false);
+                    setFolderShareTarget(null);
+                }}
             />
         </div>
     );

@@ -13,6 +13,7 @@
 | [app-board.md](app-board.md) | Developers / Ops | 思维导图/白板存储服务：API、乐观锁、TLS、配置 |
 | [app-pay.md](app-pay.md) | Developers / Ops | 交易/会员服务：订单状态机、渠道、审计、TLS、配置 |
 | [app-pay-admin.md](app-pay-admin.md) | Ops | 支付后台管理：查询、补偿开通、鉴权、TLS |
+| [app-admin.md](app-admin.md) | Ops | 分享审核后台：封杀/解封/放行、用户只读、审计、部署 |
 | [app-cloud.md](app-cloud.md) | Developers / Ops | 云盘服务：分块上传、配额记账、分享、回收站、向量化管道、多实例扩容 |
 | [mind-base-desktop.md](mind-base-desktop.md) | Users / Developers | 桌面端（Tauri 2，全本地）：功能、运行、打包 |
 | [notes.md](notes.md) | Developers | 笔记系统：分离存储、锚点、修订、分享、消毒 |
@@ -39,6 +40,7 @@
 | "思维导图/白板数据怎么存的？" | [app-board.md](app-board.md) |
 | "支付/会员服务怎么部署和配置？" | [app-pay.md](app-pay.md) |
 | "支付后台怎么进？怎么补偿开通？" | [app-pay-admin.md](app-pay-admin.md) |
+| "分享被举报怎么封杀？admin 后台怎么进？" | [app-admin.md](app-admin.md) |
 | "KG 存储与 gRPC 契约？" | [app-kg.md](app-kg.md) |
 | "云盘配额怎么记账？怎么横向扩容？" | [app-cloud.md](app-cloud.md) |
 | "桌面端怎么跑？" | [mind-base-desktop.md](mind-base-desktop.md) |

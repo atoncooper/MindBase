@@ -6,8 +6,10 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 
 	pdf "github.com/ledongthuc/pdf"
@@ -143,21 +145,77 @@ func extractXlsx(data []byte) (*Parsed, error) {
 	if err != nil {
 		return nil, fmt.Errorf("xlsx: %w", err)
 	}
-	var b strings.Builder
-	if err == nil {
-		for _, si := range parseSharedStrings(shared) {
-			b.WriteString(si)
-			b.WriteString("\n")
-		}
+	var sharedStrings []string
+	if len(shared) > 0 {
+		sharedStrings = parseSharedStrings(shared)
 	}
-	// numeric/inline cells: strip tags from the sheet XML as a coarse fallback
-	text := stripXMLTags(string(sheet))
-	b.WriteString(text)
-	out := strings.TrimSpace(b.String())
+	text := xlsxCellText(sheet, sharedStrings)
+	if strings.TrimSpace(text) == "" {
+		// Malformed/unknown sheet structure: coarse fallback.
+		text = stripXMLTags(string(sheet))
+	}
+	out := strings.TrimSpace(text)
 	if out == "" {
 		return nil, ErrEmptyPDFText
 	}
 	return &Parsed{Text: out, Source: "xlsx"}, nil
+}
+
+// OOXML spreadsheet cell/row shapes (namespace-agnostic: encoding/xml matches
+// local names). Cells are rendered in document order with tab-separated cells
+// and newline-separated rows — readable for content review, not a spreadsheet
+// renderer.
+type xlsxCell struct {
+	Type string `xml:"t,attr"`
+	V    string `xml:"v"`
+	IS   struct {
+		T string `xml:"t"`
+		R []struct {
+			T string `xml:"t"`
+		} `xml:"r"`
+	} `xml:"is"`
+}
+
+type xlsxRow struct {
+	Cells []xlsxCell `xml:"c"`
+}
+
+type xlsxSheet struct {
+	Rows []xlsxRow `xml:"sheetData>row"`
+}
+
+func xlsxCellText(sheetXML []byte, shared []string) string {
+	var sheet xlsxSheet
+	if err := xml.Unmarshal(sheetXML, &sheet); err != nil {
+		return ""
+	}
+	var rows []string
+	for _, row := range sheet.Rows {
+		cells := make([]string, 0, len(row.Cells))
+		for _, c := range row.Cells {
+			switch {
+			case c.Type == "s":
+				idx, err := strconv.Atoi(strings.TrimSpace(c.V))
+				if err == nil && idx >= 0 && idx < len(shared) {
+					cells = append(cells, shared[idx])
+				}
+			case c.Type == "inlineStr":
+				text := c.IS.T
+				for _, r := range c.IS.R {
+					text += r.T
+				}
+				cells = append(cells, text)
+			case strings.TrimSpace(c.V) != "":
+				cells = append(cells, strings.TrimSpace(c.V))
+			case strings.TrimSpace(c.IS.T) != "":
+				cells = append(cells, c.IS.T)
+			}
+		}
+		if len(cells) > 0 {
+			rows = append(rows, strings.Join(cells, "\t"))
+		}
+	}
+	return strings.Join(rows, "\n")
 }
 
 // ── pptx ─────────────────────────────────────────────────────────────
@@ -278,10 +336,15 @@ func runTexts(runs []wT) []string {
 	return out
 }
 
-// parseSharedStrings extracts <t> values from xl/sharedStrings.xml.
+// parseSharedStrings extracts <si> values from xl/sharedStrings.xml, including
+// rich-text runs (<si><r><t>…). xml.Unmarshal decodes numeric character
+// references (&#NNNN;) that spreadsheet editors use for non-ASCII text.
 func parseSharedStrings(xmlData []byte) []string {
 	type si struct {
 		T string `xml:"t"`
+		R []struct {
+			T string `xml:"t"`
+		} `xml:"r"`
 	}
 	type sst struct {
 		SIs []si `xml:"si"`
@@ -292,8 +355,12 @@ func parseSharedStrings(xmlData []byte) []string {
 	}
 	out := make([]string, 0, len(s.SIs))
 	for _, x := range s.SIs {
-		if strings.TrimSpace(x.T) != "" {
-			out = append(out, x.T)
+		text := x.T
+		for _, r := range x.R {
+			text += r.T
+		}
+		if strings.TrimSpace(text) != "" {
+			out = append(out, text)
 		}
 	}
 	return out
@@ -303,6 +370,9 @@ var xmlTagRe = regexp.MustCompile(`<[^>]*>`)
 
 func stripXMLTags(s string) string {
 	s = xmlTagRe.ReplaceAllString(s, " ")
+	// XML/HTML entities (including numeric &#NNNN; used by some spreadsheet
+	// writers) must be decoded, otherwise the console shows "&#22995;…".
+	s = html.UnescapeString(s)
 	// collapse whitespace runs
 	s = regexp.MustCompile(`[ \t]+`).ReplaceAllString(s, " ")
 	s = regexp.MustCompile(`\n{3,}`).ReplaceAllString(s, "\n\n")
