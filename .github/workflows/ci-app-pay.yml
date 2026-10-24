@@ -18,7 +18,7 @@ jobs:
       run:
         working-directory: app-pay
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-java@v4
         with:
@@ -35,7 +35,7 @@ jobs:
     # HIGH/CRITICAL CVE 直接红
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Trivy vulnerability scan (fail on HIGH/CRITICAL)
         run: |
           docker run --rm \
