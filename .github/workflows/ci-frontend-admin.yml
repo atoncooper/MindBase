@@ -1,0 +1,37 @@
+name: CI - Frontend Admin
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend-admin/**"
+      - ".github/workflows/ci-frontend-admin.yml"
+  pull_request:
+    paths:
+      - "frontend-admin/**"
+      - ".github/workflows/ci-frontend-admin.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend-admin/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (tsc --noEmit + vite build)
+        run: pnpm build

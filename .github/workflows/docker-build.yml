@@ -85,6 +85,14 @@ jobs:
             dockerfile: app-pay-admin/Dockerfile
             image: atoncooper/mind-base-app-pay-admin
             name: app-pay-admin
+          - context: ./app-go/app-admin
+            dockerfile: app-go/app-admin/Dockerfile
+            image: atoncooper/mind-base-app-admin
+            name: app-admin-api
+          - context: .
+            dockerfile: frontend-admin/Dockerfile
+            image: atoncooper/mind-base-app-admin-ui
+            name: app-admin-ui
           - context: ./app-pay
             dockerfile: app-pay/Dockerfile
             image: atoncooper/mind-base-app-pay

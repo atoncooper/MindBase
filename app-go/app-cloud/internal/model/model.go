@@ -99,23 +99,81 @@ type CloudFile struct {
 
 func (CloudFile) TableName() string { return "cloud_files" }
 
+// Target types for CloudShare. Legacy rows (pre-1.0.16) read back as
+// target_type='file' via the column DEFAULT share; empty string is treated
+// as "file" everywhere (see service.IsFolderShare).
+const (
+	ShareTargetFile   = "file"
+	ShareTargetFolder = "folder"
+)
+
+// Moderation status values (plan/1.0.16 §3.1 — written only by app-admin,
+// read here so banned shares resolve uniformly as 404).
+const (
+	ModerationActive   = "active"
+	ModerationApproved = "approved"
+	ModerationBanned   = "banned"
+)
+
 // CloudShare — Baidu-style share link (new table, owned by app-cloud).
+// The 1.0.16 share-contract, moderation, and content-review disclosure columns
+// are applied by the idempotent ALTER set in internal/infra/db (pinned by that
+// package's guard test) and mirrored in the CREATE-TABLE DDL verbatim.
 type CloudShare struct {
 	ID             int64      `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	ShareToken     string     `gorm:"column:share_token;uniqueIndex" json:"share_token"`
 	UID            int64      `gorm:"column:uid" json:"uid"`
-	FileID         int64      `gorm:"column:file_id" json:"file_id"`
+	FileID         int64      `gorm:"column:file_id" json:"file_id"` // 0 for folder shares
 	ExtractionCode *string    `gorm:"column:extraction_code" json:"extraction_code"`
 	ExpiresAt      *time.Time `gorm:"column:expires_at" json:"expires_at"`
 	MaxDownloads   *int       `gorm:"column:max_downloads" json:"max_downloads"`
 	ViewCount      int        `gorm:"column:view_count" json:"view_count"`
 	DownloadCount  int        `gorm:"column:download_count" json:"download_count"`
 	IsRevoked      bool       `gorm:"column:is_revoked" json:"is_revoked"`
-	CreatedAt      *time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt      *time.Time `gorm:"column:updated_at" json:"updated_at"`
+	// ── share-moderation companion columns (idempotent ALTER, 1.0.16) ──
+	TargetType                 string     `gorm:"column:target_type" json:"target_type"` // 'file' | 'folder'
+	FolderID                   *int64     `gorm:"column:folder_id" json:"folder_id"`     // set when TargetType=folder
+	LegalAck                   bool       `gorm:"column:legal_ack" json:"legal_ack"`     // compliance warning confirmed
+	ContentReviewAck           bool       `gorm:"column:content_review_ack" json:"content_review_ack"`
+	ContentReviewPolicyVersion *string    `gorm:"column:content_review_policy_version" json:"content_review_policy_version"`
+	ContentReviewAckAt         *time.Time `gorm:"column:content_review_ack_at" json:"content_review_ack_at"`
+	ModerationStatus           string     `gorm:"column:moderation_status" json:"moderation_status"` // active/approved/banned
+	ModerationReason           *string    `gorm:"column:moderation_reason" json:"moderation_reason"`
+	ModerationTime             *time.Time `gorm:"column:moderation_time" json:"moderation_time"`
+	ModerationBy               *string    `gorm:"column:moderation_by" json:"moderation_by"`
+	CreatedAt                  *time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt                  *time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (CloudShare) TableName() string { return "cloud_shares" }
+
+// IsFolderShare reports whether the share targets a folder. Legacy rows may
+// carry an empty target_type (column added later with a 'file' default).
+func (s CloudShare) IsFolderShare() bool { return s.TargetType == ShareTargetFolder }
+
+// CloudRef — "save to my drive" reference row (new table, owned by
+// app-cloud). A ref never copies the MinIO object and never counts toward
+// quota: preview/download re-resolves the ORIGINAL object and flips the row
+// to status='dead' the moment the source side (file deleted / share revoked
+// or banned / share expired) no longer validates (plan/1.0.16 §3.2).
+type CloudRef struct {
+	ID               int64      `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	UID              int64      `gorm:"column:uid" json:"uid"` // ref owner (saver)
+	ShareID          int64      `gorm:"column:share_id" json:"share_id"`
+	SourceFileID     int64      `gorm:"column:source_file_id" json:"source_file_id"`
+	SourceUID        int64      `gorm:"column:source_uid" json:"source_uid"`
+	SourceUploadUUID string     `gorm:"column:source_upload_uuid" json:"source_upload_uuid"`
+	Name             string     `gorm:"column:name" json:"name"` // snapshot name at save time
+	FileSize         int64      `gorm:"column:file_size" json:"file_size"`
+	MimeType         string     `gorm:"column:mime_type" json:"mime_type"`
+	FolderID         *int64     `gorm:"column:folder_id" json:"folder_id"` // saver's cloud_folders.id (nil = root)
+	Status           string     `gorm:"column:status" json:"status"`       // 'alive' | 'dead'
+	CreatedAt        *time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt        *time.Time `gorm:"column:updated_at" json:"updated_at"`
+	DeletedAt        *time.Time `gorm:"column:deleted_at" json:"deleted_at"`
+}
+
+func (CloudRef) TableName() string { return "cloud_refs" }
 
 // CloudVectorTask — durable outbox row for the vectorize pipeline (new table,
 // owned by app-cloud; multi-replica hardening step ②). One row per

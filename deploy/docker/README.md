@@ -11,7 +11,7 @@
 |---|---|---|
 | **server1**（manager，边缘层） | 00-certs / 10-frontend / 11-etcd / 12-minio / 13-apisix / 14-nginx | TLS 入口、网关、前端、对象存储 |
 | **server2**（worker，数据+后端） | 20-redis / 21-mongo / 22-neo4j / 23-milvus / 24-app-task-mysql / 25-app-pay-mysql / 30~37(app-go) / 38~40(MCP) / 41-app-task / 42-app-pay / 43-app-ts | 数据层 + 全部业务后端 |
-| 可选 | 90-higress / 95-app-pay-admin | .env 已指向外部 AI 网关就不用起 higress；pay-admin 用 SSH 隧道访问 |
+| 可选 | 90-higress / 95-app-pay-admin / 96-app-admin | .env 已指向外部 AI 网关就不用起 higress；pay-admin 用 SSH 隧道访问 8003、admin UI 用 SSH 隧道访问 3001 |
 
 > 主库 mind_base 用外部 MySQL（.env 的 RDBMS__URL），两份文件里都不含主 mysql；
 > app-task / app-pay 的两个专用小库（app_task / app_pay，表自动建）默认随 server2 起。

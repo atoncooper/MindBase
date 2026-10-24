@@ -17,6 +17,10 @@ out/
 data/
 logs/
 
+# Secret material is runtime-mounted; never send it in a build context.
+secrets/
+**/certs/
+
 # Environment (injected at runtime)
 .env
 .env.local

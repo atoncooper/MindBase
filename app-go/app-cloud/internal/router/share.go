@@ -1,9 +1,11 @@
 package router
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"app-cloud/internal/model"
@@ -16,9 +18,11 @@ import (
 // group) and the PUBLIC /cloud/s/* endpoints (no auth — reached via the
 // dedicated nginx location without auth_request).
 func registerShareRoutes(e *gin.Engine, d Deps, cloudGroup *gin.RouterGroup) {
-	// owner endpoints
+	// owner endpoints — file + folder (1.0.16)
 	cloudGroup.POST("/video/:upload_uuid/share", createShare(d))
 	cloudGroup.GET("/video/:upload_uuid/shares", listShares(d))
+	cloudGroup.POST("/folders/:folder_id/share", createFolderShare(d))
+	cloudGroup.GET("/folders/:folder_id/shares", listFolderShares(d))
 	cloudGroup.PATCH("/shares/:share_id/code", setShareCode(d))
 	cloudGroup.DELETE("/shares/:share_id", revokeShare(d))
 
@@ -31,6 +35,9 @@ func registerShareRoutes(e *gin.Engine, d Deps, cloudGroup *gin.RouterGroup) {
 	// ops endpoint: per-uid ledger vs MinIO drift report (loopback-only port;
 	// unauthenticated by design, see §2.14 deployment notes)
 	e.GET("/internal/cloud/reconcile", reconcileHandler(d))
+	// app-admin-only preview grant; the separate shared token and share/file
+	// scope checks keep the admin review plane away from arbitrary cloud files.
+	e.GET("/internal/cloud/admin-review/shares/:share_id/files/:file_id/preview", adminReviewPreview(d))
 }
 
 // reconcileHandler — GET /internal/cloud/reconcile?uid=
@@ -55,8 +62,17 @@ func reconcileHandler(d Deps) gin.HandlerFunc {
 	}
 }
 
+// shareCreateBody — file / folder share creation payload (1.0.16): the
+// compliance ack is mandatory — legalAck:false/missing → 422.
+type shareCreateBody struct {
+	Code             string `json:"code"`
+	ExpiresInDays    int    `json:"expiresInDays"`
+	MaxDownloads     *int   `json:"maxDownloads"`
+	LegalAck         bool   `json:"legalAck"`
+	ContentReviewAck bool   `json:"contentReviewAck"`
+}
+
 // createShare — POST /cloud/video/{uuid}/share
-// body: {code?: string, expiresInDays?: int, maxDownloads?: int|null}
 func createShare(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid, ok := currentUID(c)
@@ -72,21 +88,17 @@ func createShare(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "File not found")
 			return
 		}
-		var body struct {
-			Code          string `json:"code"`
-			ExpiresInDays int    `json:"expiresInDays"`
-			MaxDownloads  *int   `json:"maxDownloads"`
-		}
+		var body shareCreateBody
 		if err := c.ShouldBindJSON(&body); err != nil {
-			// empty body is fine — defaults apply
-			body = struct {
-				Code          string `json:"code"`
-				ExpiresInDays int    `json:"expiresInDays"`
-				MaxDownloads  *int   `json:"maxDownloads"`
-			}{}
+			// empty body is fine — defaults apply (but legalAck stays false → 422)
+			body = shareCreateBody{}
 		}
-		share, err := d.Share.CreateShare(uid, f.ID, body.Code, body.ExpiresInDays, body.MaxDownloads)
+		share, err := d.Share.CreateShare(uid, f.ID, body.Code, body.ExpiresInDays, body.MaxDownloads, body.LegalAck, body.ContentReviewAck)
 		if err != nil {
+			if errors.Is(err, service.ErrLegalAckRequired) || errors.Is(err, service.ErrContentReviewAckRequired) {
+				apiErr(c, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
 			if errors.Is(err, service.ErrNotFound) {
 				apiErr(c, http.StatusNotFound, "File not found")
 				return
@@ -101,6 +113,84 @@ func createShare(d Deps) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusCreated, shareView(share, true, code))
 	}
+}
+
+// createFolderShare — POST /cloud/folders/{folder_id}/share (1.0.16):
+// same body/semantics as the file share, target = the caller's folder.
+func createFolderShare(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		folderID, ok := parseShareFolderID(c)
+		if !ok {
+			return
+		}
+		var body shareCreateBody
+		if err := c.ShouldBindJSON(&body); err != nil {
+			body = shareCreateBody{}
+		}
+		share, err := d.Share.CreateFolderShare(uid, folderID, body.Code, body.ExpiresInDays, body.MaxDownloads, body.LegalAck, body.ContentReviewAck)
+		if err != nil {
+			if errors.Is(err, service.ErrLegalAckRequired) || errors.Is(err, service.ErrContentReviewAckRequired) {
+				apiErr(c, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			if errors.Is(err, service.ErrNotFound) {
+				apiErr(c, http.StatusNotFound, "文件夹不存在")
+				return
+			}
+			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+			return
+		}
+		code := ""
+		if body.Code != "" {
+			code = d.Share.ViewCode(share)
+		}
+		c.JSON(http.StatusCreated, shareView(share, true, code))
+	}
+}
+
+// listFolderShares — GET /cloud/folders/{folder_id}/shares (1.0.16).
+func listFolderShares(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		folderID, ok := parseShareFolderID(c)
+		if !ok {
+			return
+		}
+		if folder, err := d.Folders.GetByID(d.DB, folderID, uid); err != nil {
+			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+			return
+		} else if folder == nil {
+			apiErr(c, http.StatusNotFound, "文件夹不存在")
+			return
+		}
+		rows, err := d.Share.ListFolderShares(uid, folderID)
+		if err != nil {
+			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+			return
+		}
+		out := make([]gin.H, 0, len(rows))
+		for i := range rows {
+			out = append(out, shareView(&rows[i], true, d.Share.ViewCode(&rows[i])))
+		}
+		c.JSON(http.StatusOK, gin.H{"shares": out, "total": len(out)})
+	}
+}
+
+// parseShareFolderID — path param for the folder share endpoints.
+func parseShareFolderID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param("folder_id"), 10, 64)
+	if err != nil || id <= 0 {
+		apiErr(c, http.StatusUnprocessableEntity, "folder_id 不合法")
+		return 0, false
+	}
+	return id, true
 }
 
 // listShares — GET /cloud/video/{uuid}/shares
@@ -156,7 +246,10 @@ func revokeShare(d Deps) gin.HandlerFunc {
 }
 
 // shareInfo — GET /cloud/s/{token} (PUBLIC): metadata + whether a code is
-// required. Invalid shares read as 404 (no state enumeration).
+// required. Invalid shares read as 404 (no state enumeration). 1.0.16: the
+// shape gains targetType; folder shares add folderName + files[] (all live
+// members of the subtree, path-labeled, capped at SharedFilesLimit with
+// truncated: true).
 func shareInfo(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sf, err := d.Share.ResolveShare(c.Param("token"), true)
@@ -164,17 +257,48 @@ func shareInfo(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "分享不存在或已失效")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"fileName":     sf.File.OriginalName,
-			"fileSize":     sf.File.FileSize,
-			"mimeType":     sf.File.MimeType,
+		out := gin.H{
+			"targetType":   shareTargetType(sf.Share),
 			"requiresCode": sf.Share.ExtractionCode != nil,
 			"createdAt":    sf.Share.CreatedAt,
 			"expiresAt":    sf.Share.ExpiresAt,
 			// 浏览器设备证明挑战（签名 + token 绑定 + 10 分钟时效）
 			"challenge": d.Attestor.Issue(c.Param("token"), time.Now()),
-		})
+		}
+		if sf.Folder != nil {
+			out["folderName"] = sf.Folder.Name
+			entries, truncated, ferr := d.Share.SharedFolderFiles(sf.Share, service.SharedFilesLimit)
+			if ferr != nil {
+				apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+				return
+			}
+			files := make([]gin.H, 0, len(entries))
+			for i := range entries {
+				files = append(files, gin.H{
+					"fileId":   entries[i].File.ID,
+					"name":     entries[i].File.OriginalName,
+					"size":     entries[i].File.FileSize,
+					"mimeType": entries[i].File.MimeType,
+					"path":     entries[i].Path,
+				})
+			}
+			out["files"] = files
+			out["truncated"] = truncated
+		} else if sf.File != nil {
+			out["fileName"] = sf.File.OriginalName
+			out["fileSize"] = sf.File.FileSize
+			out["mimeType"] = sf.File.MimeType
+		}
+		c.JSON(http.StatusOK, out)
 	}
+}
+
+// shareTargetType — legacy rows (empty target_type) read as "file".
+func shareTargetType(sh *model.CloudShare) string {
+	if sh.IsFolderShare() {
+		return "folder"
+	}
+	return "file"
 }
 
 // shareAttest — POST /cloud/s/{token}/attest (PUBLIC): 浏览器设备证明。
@@ -216,6 +340,7 @@ func shareAccess(d Deps) gin.HandlerFunc {
 		var body struct {
 			Code     string `json:"code"`
 			Download bool   `json:"download"`
+			FileID   *int64 `json:"fileId"` // folder shares: pick one member
 		}
 		_ = c.ShouldBindJSON(&body)
 		sf, err := d.Share.ResolveShare(c.Param("token"), false)
@@ -235,11 +360,32 @@ func shareAccess(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "分享不存在或已失效")
 			return
 		}
-		res, err := d.Share.BuildAccess(c.Request.Context(), sf, body.Download)
+		var target *model.CloudFile
+		if sf.Folder != nil {
+			// Folder share: the caller picks a member. A missing/out-of-tree
+			// fileId reads uniformly as 404 — no tree enumeration.
+			if body.FileID == nil {
+				apiErr(c, http.StatusNotFound, "分享不存在或已失效")
+				return
+			}
+			target, err = d.Share.FolderShareFile(sf.Share, *body.FileID)
+			if err != nil {
+				if errors.Is(err, service.ErrShareNotFound) {
+					apiErr(c, http.StatusNotFound, "分享不存在或已失效")
+					return
+				}
+				apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+				return
+			}
+		} else {
+			target = sf.File // file share ignores fileId
+		}
+		res, err := d.Share.BuildAccessFor(c.Request.Context(), sf, target, body.Download)
 		if err != nil {
-			if errors.Is(err, service.ErrShareDownloadCap) {
-				// The cap was exhausted between resolve and access — uniform
-				// 404 keeps the no-state-enumeration stance.
+			if errors.Is(err, service.ErrShareDownloadCap) || errors.Is(err, service.ErrShareNotFound) {
+				// The cap was exhausted between resolve and access, or the
+				// picked member vanished — uniform 404 keeps the
+				// no-state-enumeration stance.
 				apiErr(c, http.StatusNotFound, "分享不存在或已失效")
 				return
 			}
@@ -252,18 +398,30 @@ func shareAccess(d Deps) gin.HandlerFunc {
 
 // shareView renders the owner-facing share shape. code（可能为空：legacy
 // 哈希行不可逆）是属主可见的明文提取码 —— 公开端点不经过此函数。
+// 1.0.16 增补：target_type/folder_id/legal_ack + moderation 三元组（属主
+// 可见审核态；公开端点不暴露）。
 func shareView(s *model.CloudShare, withToken bool, code string) gin.H {
 	out := gin.H{
-		"id":              s.ID,
-		"file_id":         s.FileID,
-		"has_code":        s.ExtractionCode != nil,
-		"extraction_code": code,
-		"expires_at":      s.ExpiresAt,
-		"max_downloads":   s.MaxDownloads,
-		"view_count":      s.ViewCount,
-		"download_count":  s.DownloadCount,
-		"is_revoked":      s.IsRevoked,
-		"created_at":      s.CreatedAt,
+		"id":                            s.ID,
+		"file_id":                       s.FileID,
+		"has_code":                      s.ExtractionCode != nil,
+		"extraction_code":               code,
+		"expires_at":                    s.ExpiresAt,
+		"max_downloads":                 s.MaxDownloads,
+		"view_count":                    s.ViewCount,
+		"download_count":                s.DownloadCount,
+		"is_revoked":                    s.IsRevoked,
+		"created_at":                    s.CreatedAt,
+		"target_type":                   shareTargetType(s),
+		"folder_id":                     s.FolderID,
+		"legal_ack":                     s.LegalAck,
+		"content_review_ack":            s.ContentReviewAck,
+		"content_review_policy_version": s.ContentReviewPolicyVersion,
+		"content_review_ack_at":         s.ContentReviewAckAt,
+		"moderation_status":             s.ModerationStatus,
+		"moderation_reason":             s.ModerationReason,
+		"moderation_time":               s.ModerationTime,
+		"moderation_by":                 s.ModerationBy,
 	}
 	if withToken {
 		out["share_token"] = s.ShareToken
@@ -297,5 +455,69 @@ func setShareCode(d Deps) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"updated": true})
+	}
+}
+
+// adminReviewPreview — GET /internal/cloud/admin-review/shares/{share_id}/
+// files/{file_id}/preview (app-admin-only). Bearer token = shared secret
+// (APPCLOUD__ADMIN_REVIEW__TOKEN); empty config = fail closed (503).
+//
+// The reviewer may inspect ANY recorded share — banned / revoked / expired /
+// pre-disclosure legacy shares included — because moderation often happens
+// after the owner removed the share. Only the share's own target scope is
+// enforced (file-share target or live member of the shared folder tree), and
+// every grant is audited by app-admin before it is minted. Response = the same
+// short-lived inline preview grant as public sharing — no download URL, the
+// public download counter is untouched.
+func adminReviewPreview(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+		if strings.TrimSpace(d.Cfg.AdminReview.Token) == "" {
+			apiErr(c, http.StatusServiceUnavailable, "content review preview disabled")
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(d.Cfg.AdminReview.Token)) != 1 {
+			apiErr(c, http.StatusUnauthorized, "invalid review token")
+			return
+		}
+		shareID, err := strconv.ParseInt(c.Param("share_id"), 10, 64)
+		if err != nil || shareID <= 0 {
+			apiErr(c, http.StatusUnprocessableEntity, "share_id 不合法")
+			return
+		}
+		fileID, err := strconv.ParseInt(c.Param("file_id"), 10, 64)
+		if err != nil || fileID <= 0 {
+			apiErr(c, http.StatusUnprocessableEntity, "file_id 不合法")
+			return
+		}
+		share, file, err := d.Share.AdminReviewFile(shareID, fileID)
+		if err != nil {
+			adminReviewError(c, err)
+			return
+		}
+		res, err := d.Share.BuildAdminReviewAccess(c.Request.Context(), share, file)
+		if err != nil {
+			adminReviewError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, res)
+	}
+}
+
+// adminReviewError maps share-review failures to precise console messages so
+// the operator sees WHY a file cannot be reviewed (revoked/expired vs missing
+// disclosure vs unsupported type) instead of a generic 500.
+func adminReviewError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrShareNotFound):
+		apiErr(c, http.StatusNotFound, "分享或文件不存在")
+	case errors.Is(err, service.ErrPreviewUnsupported),
+		errors.Is(err, service.ErrPreviewNoText),
+		errors.Is(err, service.ErrPreviewFailed):
+		apiErr(c, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, service.ErrPreviewTooLarge):
+		apiErr(c, http.StatusRequestEntityTooLarge, err.Error())
+	default:
+		apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 	}
 }

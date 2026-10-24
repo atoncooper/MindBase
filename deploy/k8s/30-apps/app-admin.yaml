@@ -1,0 +1,85 @@
+# app-admin — Go share-moderation admin console (port 8016).
+# Cluster-internal only (mirrors compose loopback binding): access with
+# `kubectl -n mind-base port-forward svc/app-admin 8016:8016`.
+# Direct-connects the shared bilirag MySQL (same as app-auth/app-cloud):
+# read-only users/rbac/cloud metadata + the ONLY write is the four moderation
+# columns on cloud_shares (never is_revoked; never AutoMigrate shared tables).
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-admin
+  labels:
+    app: app-admin
+spec:
+  selector:
+    app: app-admin
+  ports:
+    - name: http
+      port: 8016
+      targetPort: 8016
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-admin
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: app-admin
+  template:
+    metadata:
+      labels:
+        app: app-admin
+    spec:
+      initContainers:
+        - name: wait-mysql
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z mysql 3306; do echo waiting for mysql; sleep 3; done"]
+        - name: wait-app-cloud
+          # app-cloud owns the cloud_shares moderation columns (idempotent ALTER
+          # runs in its db.Migrate); wait for it to have started once.
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z app-cloud 8007; do echo waiting for app-cloud; sleep 3; done"]
+      containers:
+        - name: app-admin
+          image: atoncooper/mind-base-app-admin:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
+          env:
+            # Seed console account (insert-once; first login forces a password
+            # change). Override in .env: APPADMIN__SEED__USERNAME/PASSWORD.
+            - name: APPADMIN__SEED__USERNAME
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPADMIN__SEED__USERNAME, optional: true }
+            - name: APPADMIN__SEED__PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPADMIN__SEED__PASSWORD, optional: true }
+            - name: APPADMIN__LOG__OUTPUT
+              value: "both"
+          ports:
+            - containerPort: 8016
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+          startupProbe:
+            httpGet: { path: /health, port: 8016 }
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet: { path: /health, port: 8016 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8016 }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 256Mi }
+      volumes:
+        - name: logs
+          emptyDir: {}

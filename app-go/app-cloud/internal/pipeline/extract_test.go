@@ -118,9 +118,15 @@ func TestOoxmlRunMatchingIsNestedAware(t *testing.T) {
 // ── xlsx ──────────────────────────────────────────────────────────────
 
 func TestExtractXlsxReadsSharedStringsAndSheet(t *testing.T) {
+	// Real-world xlsx: shared-string cells (t="s" + index), numeric cells, and
+	// inline strings. Some editors encode non-ASCII as numeric character
+	// references (&#NNNN;) — the reviewed text must decode them.
 	data := buildZip(t, map[string]string{
-		"xl/sharedStrings.xml":     "<sst><si><t>共享字符串甲</t></si><si><t>乙</t></si></sst>",
-		"xl/worksheets/sheet1.xml": "<worksheet><row><c><v>123</v></c></row></worksheet>",
+		"xl/sharedStrings.xml": "<sst><si><t>共享字符串甲</t></si><si><t>乙</t></si></sst>",
+		"xl/worksheets/sheet1.xml": `<worksheet><sheetData><row>` +
+			`<c t="s"><v>0</v></c><c t="s"><v>1</v></c><c><v>123</v></c>` +
+			`<c t="inlineStr"><is><t>&#22995;&#21517;</t></is></c>` +
+			`</row></sheetData></worksheet>`,
 	})
 	p, err := Extract(xlsMime, "a.xlsx", data)
 	if err != nil {
@@ -129,8 +135,13 @@ func TestExtractXlsxReadsSharedStringsAndSheet(t *testing.T) {
 	if p.Source != "xlsx" {
 		t.Fatalf("source = %q", p.Source)
 	}
-	if !strings.Contains(p.Text, "共享字符串甲") || !strings.Contains(p.Text, "123") {
-		t.Fatalf("xlsx text lost: %q", p.Text)
+	for _, want := range []string{"共享字符串甲", "乙", "123", "姓名"} {
+		if !strings.Contains(p.Text, want) {
+			t.Fatalf("xlsx text lost %q: %q", want, p.Text)
+		}
+	}
+	if strings.Contains(p.Text, "&#") {
+		t.Fatalf("xlsx text kept XML entities: %q", p.Text)
 	}
 }
 

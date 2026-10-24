@@ -716,6 +716,9 @@ services:
       # empty base URL disables graph writes — L1 degrades to Mongo matching)
       - APPCLOUD__KG__BASE_URL=${APP_CLOUD_KG_BASE_URL:-http://app-kg:8014}
       - APPCLOUD__KG__TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+      # app-admin-only share-content review preview (Issue #154). Generate:
+      # openssl rand -hex 32; empty = review preview disabled (fail closed)
+      - APPCLOUD__ADMIN_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
     # 宿主端口池 8007-8009：--scale 时副本依次占用；单实例默认仍 8007（调试口不变）
     ports:
       - "127.0.0.1:${APP_CLOUD_PORT:-8007}-${APP_CLOUD_PORT_MAX:-8009}:8007"
@@ -1177,6 +1180,76 @@ services:
     networks:
       - mind-base-net
 
+  # app-admin-api —— 分享审核后台 API（Go + Gin；plan/1.0.16）
+  # 直连共享 bilirag MySQL：只读 users / rbac_* / cloud_* 元数据 + 仅 UPDATE
+  # cloud_shares 的 moderation 四列（绝不触碰 is_revoked；绝不 AutoMigrate——
+  # 自有 admin_user / admin_session / admin_audit 三表自建，有守护测试）。
+  # 直接查询共享 MySQL（不经 app-cloud API）；仅回环调试暴露 8016。前端统一入口
+  # 是 app-admin 服务（3001），它依赖本 API 和必要 schema owner。
+  # 种子账户 admin / app-admin（APPADMIN__SEED__
+  # 可覆盖，只插缺失），首登强制改密（must_change_password=1）。
+  app-admin-api:
+    image: atoncooper/mind-base-app-admin:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
+    build:
+      context: ./app-go/app-admin
+      dockerfile: Dockerfile
+    container_name: mind-base-app-admin-api
+    profiles: ["", "admin", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      app-cloud:
+        condition: service_started  # app-cloud 先跑 Migrate（moderation 列归属 cloud-back）
+        required: false             # app-cloud 属默认 profile；显式 --profile admin 时不应因缺它而拒绝解析
+      app-auth:
+        condition: service_started  # users / RBAC 表由 app-auth 建立，admin 只读
+        required: false             # 独立部署时 app-auth 可在另一套 compose 中运行
+    env_file:
+      - .env
+    environment:
+      # Shared bilirag database（与 app-auth/app-cloud 同库；走 .env 的 RDBMS__URL）
+      - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
+      - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}
+      - APPADMIN__SEED__PASSWORD=${APPADMIN__SEED__PASSWORD:-app-admin}
+      # Optional service-side peer IP/CIDR allowlist (comma-separated).
+      - APPADMIN__SECURITY__IP_ALLOWLIST=${APPADMIN__SECURITY__IP_ALLOWLIST:-}
+      # Share-content review preview via app-cloud (Issue #154): base URL
+      # defaults to the compose-internal app-cloud; token must equal
+      # APP_CLOUD_ADMIN_REVIEW_TOKEN. Both empty = preview disabled.
+      - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-http://app-cloud:8007}
+      - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+      - APPADMIN__LOG__OUTPUT=both
+    ports:
+      # 仅回环：管理后台不对公网暴露，本机浏览器直连 http://127.0.0.1:8016
+      - "127.0.0.1:${APP_ADMIN_PORT:-8016}:8016"
+    volumes:
+      - app_admin_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # app-admin —— 管理后台完整入口（Nginx 静态 SPA + /api 同源代理）。
+  # `docker compose up app-admin` 自动启动 UI、API、MySQL 及 schema 依赖。
+  # 浏览器只访问回环 3001；API 调试口 8016 也仅回环，不开放公网。
+  app-admin:
+    image: atoncooper/mind-base-app-admin-ui:latest
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: frontend-admin/Dockerfile
+    container_name: mind-base-app-admin-ui
+    profiles: ["", "admin", "full"]
+    depends_on:
+      app-admin-api:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${APP_ADMIN_WEB_PORT:-3001}:80"
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
   # ==============================================================
   # AI Gateway (profile=ai) — Higress all-in-one
   # Start: docker compose --profile ai up -d
@@ -1255,6 +1328,7 @@ volumes:
   app_pay_test_mysql_data:
   app_pay_test_logs:
   app_pay_admin_logs:
+  app_admin_logs:
   mysql_data:
   redis_data:
   mongo_data:

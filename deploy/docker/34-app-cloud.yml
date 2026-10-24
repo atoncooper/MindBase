@@ -23,6 +23,8 @@ services:
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      # app-admin-only review preview token (Issue #154); empty = disabled
+      - APPCLOUD__ADMIN_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
     ports:
       - "127.0.0.1:${APP_CLOUD_PORT:-8007}-${APP_CLOUD_PORT_MAX:-8009}:8007"
     volumes:

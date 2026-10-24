@@ -4,9 +4,9 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。可选知识图谱：LLM 从转写稿抽取实体与关系写入 Neo4j（带原文引文防幻觉），问答时支持跨视频实体关联检索。
 
-除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）与支付后台管理（app-pay-admin，Go）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖），以及一个 Flutter 移动端 **app-mobile**（🚧 测试阶段，尚未开发完成，见其 README）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
+除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）、支付后台管理（app-pay-admin，Go）与分享审核后台（app-admin，Go + frontend-admin）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖），以及一个 Flutter 移动端 **app-mobile**（🚧 测试阶段，尚未开发完成，见其 README）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
 
-后端按域拆分为独立服务：AI 域（chat/agent/RAG/KG/quiz 出题）在 **app-ts**（Node + Fastify + LangGraph multi-agent，:8000，沿用退役 Python backend 的端口），服务端 CRUD 在 **app-go** 各 Go 服务（app-auth 认证 / app-bili 获取 / app-note 笔记 / app-quiz 测验 / app-cloud 云盘 / app-kg 图存储 / app-settings 设置）。LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（用户无需配置任何 API Key）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。
+后端按域拆分为独立服务：AI 域（chat/agent/RAG/KG/quiz 出题）在 **app-ts**（Node + Fastify + LangGraph multi-agent，:8000，沿用退役 Python backend 的端口），服务端 CRUD 在 **app-go** 各 Go 服务（app-auth 认证 / app-bili 获取 / app-note 笔记 / app-quiz 测验 / app-cloud 云盘 / app-kg 图存储 / app-settings 设置 / app-admin 分享审核）。LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（用户无需配置任何 API Key）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。
 
 适合「收藏了很多但没时间整理」的学习者，把碎片化收藏变成可用的知识库。
 
@@ -28,6 +28,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 | **思维导图/白板服务 app-board**（API / 乐观锁 / TLS / 配置） | [`docs/app-board.md`](docs/app-board.md) |
 | **交易/会员服务 app-pay**（订单状态机 / 渠道 / 审计 / 配置） | [`docs/app-pay.md`](docs/app-pay.md) |
 | **支付后台 app-pay-admin**（查询 / 补偿开通 / 鉴权） | [`docs/app-pay-admin.md`](docs/app-pay-admin.md) |
+| **分享审核后台 app-admin**（封杀/解封/放行 / 用户只读 / 审计 / 部署） | [`docs/app-admin.md`](docs/app-admin.md) |
 | **云盘服务 app-cloud**（分块上传 / 配额记账 / 分享 / 回收站 / 向量化管道 / 多实例扩容） | [`docs/app-cloud.md`](docs/app-cloud.md) |
 | **桌面端 mind-base-desktop**（Tauri 2，全本地） | [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md) |
 | **移动端 app-mobile**（Flutter；🚧 测试阶段 / WIP，未开发完成） | [`app-mobile/README.md`](app-mobile/README.md) |
@@ -88,10 +89,18 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 - 文件夹树、上传（5GB 分片直传 MinIO）、搜索、排序、批量处理、配额用量条、回收站（软删 30 天）
 - 处理状态前端轮询（`vector_status`：pending → processing → done/failed/not_supported）
 - 存储配额（免费 10GB / VIP / SVIP，tier 来自 app-pay；init 即原子预留，不超卖）
-- 百度式分享（提取码 / 有效期 / 下载上限 / 短时效直链，免登录访问页）
+- 百度式分享（提取码 / 有效期 / 下载上限 / 短时效直链，免登录访问页）；合规警告（legalAck）+ 文件夹分享 + 「保存到我的云盘」（引用，不复制对象/不计配额）
 - 云盘文档一键转笔记（note agent 整理）、文档全文提取（pdf/docx/doc/html/md/txt）+ 向量化入 RAG
 - 多实例就绪（outbox 任务队列 + 原子配额预留 + 租约锁后台任务）
 - 详见 [`docs/app-cloud.md`](docs/app-cloud.md)
+
+### 分享审核（app-admin）
+
+- 分享默认「先分享后审核」：分享创建后进入管理台待审核列表；管理员可放行 / 封杀 / 解封（封杀原因必填并审计），banned 与已撤销同等公开 404，引用面同步失效
+- 管理台只读用户账户（uid/email/phone/nickname/status/RBAC 角色）与分享元数据（name/size/mimeType/path），**不提供任何下载**
+- 受控内容预览（Issue #154）：用户分享时单独确认「管理员可依法查看分享内容用于审核」（后端强制 + 版本留档）；管理员仅可内联预览分享内文件（pdf/图片/音视频，短时效 URL、无下载），每次查看落审计
+- Compose 完整入口 `app-admin`（Nginx UI :3001，回环）+ `app-admin-api`（Go API :8016，回环）；`docker compose up -d --build app-admin` 启动后台及其数据库/schema 依赖，默认 `admin` / `app-admin` 首登强制改密
+- 详见 [`docs/app-admin.md`](docs/app-admin.md)
 
 ### 题目练习
 
@@ -175,6 +184,7 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 cd app-go/app-cloud && go test ./...    # schema 守护（禁 ALTER）+ joblock 单测
 cd app-board && go test ./...           # Go 板存储（22 个测试）
 cd app-pay-admin && go test ./...       # Go 支付后台（31 个测试）
+cd app-go/app-admin && go test ./...    # 分享审核后台（httptest/内存，无需真实 MySQL）
 cd app-pay && mvn test                  # Java 交易服务（82 个测试）
 # app-task 测试随源码在独立仓库 atoncooper/app-task
 ```
@@ -190,6 +200,9 @@ cd app-ts && npm run typecheck && npm test
 ```bash
 cd frontendv2
 npm run lint && npx tsc --noEmit
+
+cd frontend-admin
+pnpm build                              # tsc --noEmit + vite build
 ```
 
 ---
@@ -225,11 +238,14 @@ app-go/                          Go 服务目录（每个服务自带 README.md�
   app-cloud/             云盘（:8007；分块上传/配额/分享/回收站/向量化管道，多实例就绪）
   app-kg/                KG 图存储（:8013 gRPC；Neo4j 唯一写者）
   app-settings/          设置（:8015；偏好/壁纸/头像）
+  app-admin/             分享审核 API（Compose app-admin-api :8016；只读用户/分享元数据 + 审核 4 列）
 
 mcp/                             MCP server（把域能力暴露给 Agent，Go + mcp-go）
   app-board-mcp/         思维导图/白板工具面（:8005）
   app-note-mcp/          笔记工具面（:8009）
   app-quiz-mcp/          测验工具面（:8012）
+
+frontend-admin/                  分享审核后台前端（Vite + React 18 + antd，dev :3001；Compose app-admin 提供静态入口）
 
 frontendv2/                      当前前端（第一代 frontend/ 已于 2026-10-01 删除）
   app/                   Next.js App Router（chat / favorites / notes / mindmap / cloud-drive /
@@ -314,6 +330,7 @@ deploy/k8s/                      K8s manifests（app-auth/app-cloud/app-note/…
 - [思维导图/白板服务](docs/app-board.md)
 - [交易/会员服务](docs/app-pay.md)
 - [支付后台管理](docs/app-pay-admin.md)
+- [分享审核后台](docs/app-admin.md)
 - [KG 存储服务](docs/app-kg.md)
 - [桌面端](docs/mind-base-desktop.md)
 - [公开分享体系](docs/sharing.md)

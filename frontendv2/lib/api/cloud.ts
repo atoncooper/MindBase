@@ -205,6 +205,13 @@ export interface CloudShareCreateParams {
     code?: string;
     expiresInDays?: number;
     maxDownloads?: number | null;
+    /** 合规警告已确认（app-cloud 强制 true，缺省/拒绝 → 422） */
+    legalAck?: boolean;
+    /**
+     * 内容审核告知单独确认（app-cloud 强制 true，缺省/拒绝 → 422）。
+     * 确认后管理员可依法审核该分享的文件内容（受控预览，不提供下载）。
+     */
+    contentReviewAck?: boolean;
 }
 
 export interface CloudShareView {
@@ -221,6 +228,20 @@ export interface CloudShareView {
     createdAt: string | null;
     shareToken?: string;
     shareUrl?: string;
+    /** 分享目标类型（文件夹分享支持新增后） */
+    targetType?: "file" | "folder";
+    /** target_type='folder' 时指向共享的 cloud_folders.id */
+    folderId?: number | null;
+    /** 合规警告已确认 */
+    legalAck?: boolean;
+    /** 内容审核告知单独确认（true 后管理员可受控预览该分享内容） */
+    contentReviewAck?: boolean;
+    /** 内容审核告知文案版本（确认留档） */
+    contentReviewPolicyVersion?: string | null;
+    moderationStatus?: "active" | "approved" | "banned";
+    moderationReason?: string | null;
+    moderationTime?: string | null;
+    moderationBy?: string | null;
 }
 
 export interface CloudShareInfoResponse {
@@ -232,6 +253,24 @@ export interface CloudShareInfoResponse {
     expiresAt: string | null;
     /** 浏览器设备证明挑战（签名 + token 绑定 + 10 分钟时效） */
     challenge?: string;
+    /** "file" | "folder"（文件夹分享公开面，plan/1.0.16 §4） */
+    targetType?: "file" | "folder";
+    /** folder 分享：共享文件夹名 */
+    folderName?: string;
+    /** folder 分享：递归全部存活文件（上限 2000） */
+    files?: CloudSharePublicFile[];
+    /** files 超过 2000 条时截断 */
+    truncated?: boolean;
+}
+
+/** folder 分享公开面的单文件元数据（fileId=cloud_files.id，access 时携带） */
+export interface CloudSharePublicFile {
+    fileId: number;
+    name: string;
+    size: number;
+    mimeType: string;
+    /** 相对共享文件夹的路径，如 "a/b" */
+    path: string;
 }
 
 export interface CloudAttestation {
@@ -240,6 +279,53 @@ export interface CloudAttestation {
 }
 
 export interface CloudShareAccessResponse {
+    url: string;
+    viewMode: CloudViewMode;
+    mimeType: string;
+    fileName: string;
+    fileSize: number;
+    expiresIn: number;
+}
+
+// ── cloud_refs 引用（保存到我的云盘，非复制；plan/1.0.16 §4 引用面） ──
+
+export interface RefItem {
+    id: number;
+    name: string;
+    size: number;
+    mimeType: string;
+    folderId: number | null;
+    /** 'alive' | 'dead'（dead = 原文件删除 / 来源分享被封禁等，不可预览） */
+    status: "alive" | "dead";
+    shareId: number;
+    sourceUploadUuid: string;
+    /** 实时原文件名（快照兜底） */
+    sourceName: string | null;
+    createdAt: string | null;
+    isRef: true;
+}
+
+export interface RefListResponse {
+    refs: RefItem[];
+    total: number;
+}
+
+export interface SaveShareToDriveParams {
+    token: string;
+    /** 分享设置了提取码时必带（错 → 401/403 同既有语义） */
+    code?: string;
+    /** 保存进的目标文件夹，缺省 = 根目录 */
+    targetFolderId?: number | null;
+}
+
+export interface SaveShareToDriveResponse {
+    saved: number;
+    /** folder 分享镜像建立的顶层文件夹 id */
+    rootFolderId?: number | null;
+}
+
+/** GET /cloud/refs/:id/raw（经原对象 presign；失效 → 404「引用已失效」） */
+export interface CloudRefRawResponse {
     url: string;
     viewMode: CloudViewMode;
     mimeType: string;
@@ -459,6 +545,59 @@ export const cloudApi = {
             headers: getAuthHeaders(),
             body: JSON.stringify({ code }),
         }),
+
+    // ── Folder share（plan/1.0.16 §4 Owner 面）──
+    /** 对文件夹创建分享（合规警告前置：data.legalAck 必须 true，否则 422） */
+    createFolderShare: async (folderId: number, data: CloudShareCreateParams) => {
+        const raw = await request<Record<string, unknown>>(`/cloud/folders/${folderId}/share`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        });
+        return snakeToCamel<CloudShareView>(raw);
+    },
+
+    listFolderShares: async (folderId: number) => {
+        const raw = await request<{ shares: CloudShareView[]; total: number }>(
+            `/cloud/folders/${folderId}/shares`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<{ shares: CloudShareView[]; total: number }>(raw);
+    },
+
+    // ── cloud_refs 引用面（保存到我的云盘 = 引用，非复制）──
+    /** 把公开分享保存为引用（未复制对象、不计配额）。folder 分享 → 镜像建文件夹 + 每文件一行。 */
+    saveShareToDrive: async (data: SaveShareToDriveParams) => {
+        const raw = await request<SaveShareToDriveResponse>("/cloud/refs", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify(data),
+        });
+        return snakeToCamel<SaveShareToDriveResponse>(raw);
+    },
+
+    /** 当前用户在指定文件夹下的引用列表（folderId 缺省 = 根目录） */
+    listRefs: async (folderId?: number | null) => {
+        const url = folderId != null ? `/cloud/refs?folderId=${folderId}` : "/cloud/refs";
+        const raw = await request<RefListResponse>(url, { headers: getAuthHeaders() });
+        return snakeToCamel<RefListResponse>(raw);
+    },
+
+    /** 删除引用（uid 校验软删；只动引用，原文件/原文件夹不受影响） */
+    deleteRef: (id: number) =>
+        request<{ deleted: boolean }>(`/cloud/refs/${id}`, {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    /** 引用原对象 presign URL（失效 → 404「引用已失效」；download=1 触发下载 disposition） */
+    rawRefFile: async (id: number, download = false) => {
+        const raw = await request<CloudRefRawResponse>(
+            `/cloud/refs/${id}/raw${download ? "?download=1" : ""}`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<CloudRefRawResponse>(raw);
+    },
 
     // ── Public share endpoints（/cloud/s/*，匿名访客）──
     // 必须同源相对路径：分享页访客来自任意域名/IP（链接用 SHARE_DOMAIN 生成），

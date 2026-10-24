@@ -1,0 +1,55 @@
+# app-admin default config, embedded into the binary via //go:embed.
+# Environment overrides use the APPADMIN__ prefix (double underscore = nesting),
+# e.g. APPADMIN__RDBMS__URL. Precedence: real env > project-root .env > yaml.
+app:
+  name: app-admin
+  debug: false
+server:
+  host: 0.0.0.0
+  port: 8016
+timezone: Asia/Shanghai
+# Shared bilirag database (same MySQL as app-auth/app-cloud); the URL is
+# injected by docker-compose from RDBMS__URL. Connection only + the three
+# admin_* own tables; cloud_*/users/rbac tables are read-only for moderation.
+rdbms:
+  url: ""
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+# Login session lifetime (DB-backed admin_session, sliding on each request).
+session:
+  ttl_minutes: 720
+security:
+  # Optional exact IPs/CIDRs for the admin API. Empty leaves network access
+  # control to loopback binding / firewall / VPN / Kubernetes networking.
+  # Environment form: APPADMIN__SECURITY__IP_ALLOWLIST=10.0.0.10/32,192.168.1.0/24
+  ip_allowlist: []
+  cors:
+    # Cross-origin whitelist (exact Origin match). The admin SPA is same-origin
+    # in production. Unsafe browser methods also require an allowed Origin as a
+    # CSRF defense. The Vite dev proxy rewrites Origin; other cross-origin
+    # frontends must be explicitly listed.
+    # APPADMIN__SECURITY__CORS__ALLOW_ORIGINS=http://127.0.0.1:3001
+    allow_origins: []
+# app-cloud internal share-content review preview. BOTH keys required;
+# anything missing disables the preview endpoint (fail closed). Generate a
+# dedicated token (openssl rand -hex 32) and put the SAME value in app-cloud's
+# APPCLOUD__ADMIN_REVIEW__TOKEN — never reuse another service's key.
+cloud_review:
+  base_url: "" # env: APPADMIN__CLOUD_REVIEW__BASE_URL  (e.g. http://app-cloud:8007)
+  token: ""    # env: APPADMIN__CLOUD_REVIEW__TOKEN
+# Seeded default admin account, inserted once (missing username only) with
+# must_change_password=1 so the first login is forced to change it.
+seed:
+  username: admin
+  password: app-admin
+log:
+  level: info          # debug|info|warn|error
+  format: json         # text|json
+  output: stdout       # stdout|file|both (compose sets APPADMIN__LOG__OUTPUT=both)
+  file:
+    path: /app/logs/app-admin.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

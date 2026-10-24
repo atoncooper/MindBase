@@ -19,9 +19,18 @@
 ## 数据所有权（共享 bilirag MySQL + MinIO/Mongo/Milvus）
 
 MySQL：`cloud_files` / `cloud_folders` / `cloud_shares` / `workspaces` / `workspace_bindings`
-+ 新表 `cloud_vector_tasks`（向量化 outbox）/ `cloud_quota`（用量计数，O(1) 配额读）——
-服务启动 `db.Migrate` 自建（CREATE IF NOT EXISTS，守护测试禁 ALTER）。
++ 新表 `cloud_vector_tasks`（向量化 outbox）/ `cloud_refs`（保存到我的云盘引用，1.0.16）/
+`cloud_quota`（用量计数，O(1) 配额读）——
+服务启动 `db.Migrate` 自建（CREATE IF NOT EXISTS；`cloud_shares` 另有一组**幂等 ALTER**：
+查 information_schema 列不存在才 ADD COLUMN，守护测试 pin 死这组 ALTER 白名单）。
 MinIO `drive-videos`（`{uid}/{upload_uuid}/file{ext}`，唯一写者）；Mongo 解析全文；Milvus `cloud_drive`。
+
+## 分享合规与引用（plan/1.0.16）
+
+- **合规警告（legalAck）**：创建分享（文件/文件夹）必须 `legalAck: true`，否则 **422**「请先阅读并同意分享规范」——后端强制，前端弹 Modal 兜底。
+- **文件夹分享**：`POST /cloud/folders/:id/share` / `GET /cloud/folders/:id/shares`；公开页 `GET /cloud/s/{token}` 返回 `targetType`，folder 时附 `folderName` + `files[]`（`fileId/name/size/mimeType/path`，递归上限 2000、超出 `truncated: true`）；`POST /cloud/s/{token}/access` 增加 `fileId`（必须属于该文件夹树，否则统一 404）。文件夹 force 删除 → `RevokeAllForFolder` 联动 revoke。
+- **审核联动**：`cloud_shares` 新增 `moderation_status/reason/time/by`（app-admin 直写）；`ResolveShare` 对 `banned` 与 revoked 同等统一 404，属主列表可见审核三元组。
+- **保存到我的云盘（引用）**：新表 `cloud_refs` + `POST /cloud/refs`（token+code 校验、folder 分享镜像建文件夹、幂等、2000 上限 422）、`GET /cloud/refs?folderId=`、`DELETE /cloud/refs/:id`、`GET /cloud/refs/:id/raw?download=`（经原对象 presign，复用 BuildAccess 的 disposition/XSS 政策；失效 → 404「引用已失效」并落 dead）。引用**不复制对象、不计配额**。
 
 ## 多实例语义（对比旧单实例行为的四点增强）
 

@@ -2,7 +2,7 @@
 
 > 本文是全系统的架构地图：服务清单、端口、请求路由、数据归属。改动了 compose / APISIX / nginx 后请同步更新本文。
 
-MindBase 是多服务系统：**app-ts**（Node/Fastify，AI 域：chat/agent/RAG/KG AI/向量化/quiz AI/task-quiz/blindspot/skills）、一组 **app-go** Go 微服务（auth/bili/note/quiz/cloud/kg/settings 各域权威）、**app-pay**（Java Spring Boot 交易/会员）、**app-board**（Go 板存储）、一个 Next.js 前端（`frontendv2/`）以及一组基础设施容器。
+MindBase 是多服务系统：**app-ts**（Node/Fastify，AI 域：chat/agent/RAG/KG AI/向量化/quiz AI/task-quiz/blindspot/skills）、一组 **app-go** Go 微服务（auth/bili/note/quiz/cloud/kg/settings/admin 各域权威）、**app-pay**（Java Spring Boot 交易/会员）、**app-board**（Go 板存储）、一个 Next.js 前端（`frontendv2/`）、分享审核后台 Compose 入口 **app-admin**（Nginx UI，:3001 回环）+ **app-admin-api**（Go API，:8016 回环）以及一组基础设施容器。
 
 > ⚠️ **Python backend（`app/`）已于 2026-10-06 彻底退役**：compose 无 backend 服务、APISIX 无 backend upstream 与 catch_all 兜底（未列举路径一律 404，新端点必须显式加路由）。退役过程见 [python-decommission.md](archive/python-decommission.md)。
 
@@ -34,6 +34,8 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 
 服务间协作（不经 APISIX）：app-ts → app-kg 走 **gRPC**（:8013）；app-ts/app-go 各服务经内网直连 MySQL/Mongo/Redis/Milvus/Neo4j/MinIO/Higress。
 
+**管理台（不经主站 nginx/APISIX）**：UI `app-admin :3001` 与 API `app-admin-api :8016` 都仅回环；浏览器访问 UI，UI Nginx 同源代理 `/api`。API 直连共享 MySQL 读用户/分享元数据、只写 `cloud_shares` 审核 4 列；受控内容预览（Issue #154）经 app-cloud `GET /internal/cloud/admin-review/*`（Bearer 共享令牌）换取短时效内联授权，每次查看落 `admin_audit`。`app-cloud` 同时负责审核列 schema migration，但不代理 admin 查询。
+
 开发模式（不跑 compose）下没有 nginx/APISIX：前端 dev server :3000 经 `next.config.ts` 的 rewrites 把 API 转发到 APISIX :9080（dev 网关），见 [getting-started.md](getting-started.md)。
 
 ---
@@ -60,6 +62,8 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-pay | Java 21 / Spring Boot 3（`app-pay/`） | 8002 | 127.0.0.1:8002 | pay | 交易/会员（HTTPS-only） |
 | app-pay-test | 同 app-pay 镜像 | 8002 | 127.0.0.1:18002 | pay-test | 测试实例（强制 MOCK 渠道，整库隔离） |
 | app-pay-admin | Go + Gin（`app-pay-admin/`） | 8003 | 127.0.0.1:8003 | pay-admin | 支付后台管理控制台（不经 APISIX） |
+| app-admin | Nginx（静态 SPA；配置 `nginx/app-admin.conf`） | 80 | 127.0.0.1:3001 | 默认 / admin | 分享审核 UI；同源 `/api` 代理至 app-admin-api |
+| app-admin-api | Go + Gin（`app-go/app-admin/`） | 8016 | 127.0.0.1:8016 | 默认 / admin | 直连 MySQL；只读用户/分享元数据 + 审核 4 列；不经 APISIX（详见 [app-admin.md](app-admin.md)） |
 | higress | Higress all-in-one | 8080 gw / 18081 console | 127.0.0.1:18080 / :18081 | ai | AI 网关：平台 LLM/embedding/rerank/ASR 出网统一入口 + 计量 |
 | frontend | Next.js 16（`frontendv2/`） | 3000 | `${FRONTEND_PORT:-3000}` | 默认（standalone） | 用户端 SPA（standalone 构建） |
 | nginx | nginx:alpine | 80 / 443 | 80 / 443 | 默认（standalone） | 统一入口：TLS、页面/接口分发、缓存 |
@@ -80,11 +84,12 @@ profile 汇总：
 
 | 命令 | 启动范围 |
 |------|---------|
-| `docker compose up -d` | 全栈（frontend/nginx/apisix/全部存储/app-ts/app-go 六服务/app-task/app-board 全家/app-pay-mysql） |
+| `docker compose up -d` | 全栈（frontend/nginx/apisix/全部存储/app-ts/app-go 八服务含 app-admin/app-task/app-board 全家/app-pay-mysql） |
 | `--profile ai` | + higress（AI 出网网关；平台 AI 流量强依赖，生产必开） |
 | `--profile pay` | + app-pay |
 | `--profile pay-test` | + app-pay-test（测试实例） |
 | `--profile pay-admin` | + app-pay-admin |
+| `--profile admin` | + app-admin（默认 profile 已含） |
 | `--profile full` | 全部以上（含 tools 管理界面） |
 | `--profile tools` | redis-commander / mongo-express |
 
@@ -139,7 +144,8 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | 获取域 5 表（collection/favorite_folders/video/video_versions/async_tasks） | MySQL `mind_base` | app-bili；`video.is_vectorized*`/`kg_*` 列分属 app-ts 账本陈旧化 / app-kg |
 | 笔记 3 表（notes/note_anchors/note_shares） | MySQL `mind_base` | app-note |
 | quiz 6 表（quiz_sets/quiz_submissions/quiz_answers/quiz_questions/quiz_task/quiz_task_answer） | MySQL `mind_base` | app-quiz |
-| 云盘 3 表（cloud_files/cloud_folders/cloud_shares）+ workspaces/workspace_bindings | MySQL `mind_base` | app-cloud |
+| 云盘 3 表（cloud_files/cloud_folders/cloud_shares）+ cloud_refs + workspaces/workspace_bindings | MySQL `mind_base` | app-cloud；`cloud_shares` 的 moderation 4 列由 app-admin 写（同库，审核即时生效） |
+| 管理台 3 表（admin_user/admin_session/admin_audit） | MySQL `mind_base` | app-admin 自有（仅 CREATE IF NOT EXISTS） |
 | 用户偏好（user_preferences） | MySQL `mind_base` | app-settings（BYOK 三表已于 2026-10-07 退役删除） |
 | 板元数据（board 表，AutoMigrate） | MySQL `mind_base` | app-board |
 | ASR 正文 / quiz 题目正文 / 板正文 | Mongo `mind_base`（`asr_documents`/`quiz_questions`/`task_quiz_questions`/`board_documents`） | app-bili / app-quiz / app-board 写；app-ts 跨库**只读** `asr_documents` |
@@ -163,6 +169,7 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | app-task | 独立仓库 `default.yaml`（嵌入镜像） | `APPTASK__` | [app-task.md](app-task.md) |
 | app-pay | `application.yaml` + docker/test profile（Flyway 管 schema） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
 | app-pay-admin | `default.yaml`（嵌入）+ config 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
+| app-admin | `default.yaml`（嵌入）+ config 覆盖层 | `APPADMIN__` | [app-admin.md](app-admin.md) |
 | app-board / 三个 MCP | `default.yaml`（嵌入） | `APPBOARD__` 等 | [app-board.md](app-board.md) / [app-board-mcp.md](app-board-mcp.md) |
 
 AI 出网统一走 Higress 网关（`AI_GATEWAY__*`，见 AGENTS.md §2.10）；供应商 key 只在网关与 `.env`，不进代码与日志。
@@ -192,5 +199,7 @@ src/
 | ci-app-bili / ci-app-note / ci-app-quiz / ci-app-settings / ci-app-kg | 对应 Go 服务 | gofmt / vet / test / build |
 | ci-app-pay | `app-pay/**` | mvn test（纯 JUnit，无外部 DB） |
 | ci-pay-admin | app-pay-admin | gofmt / vet / test / build |
-| docker-build | push main / tag | 构建并发布 17 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-pay-admin/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`） |
+| ci-app-admin | app-go/app-admin | gofmt / vet / test / build |
+| ci-frontend-admin | frontend-admin | tsc --noEmit + vite build |
+| docker-build | push main / tag | 构建并发布 18 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-pay-admin/app-admin/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`） |
 | desktop-release | tag `mind-base-desktop-v*` | Tauri 桌面端构建（Windows NSIS + macOS dmg）并发布 Release |
