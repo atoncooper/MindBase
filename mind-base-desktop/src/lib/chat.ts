@@ -4,9 +4,10 @@
  *
  * A turn streams back through a Tauri `Channel` as {@link ChatEvent}s:
  * `chunk` (answer deltas) → `sources` (retrieved provenance, capped at 5)
- * → `done`; `title` fires when the session earns an auto-generated name and
- * `error` on failure. Both sides of the turn are persisted by the backend,
- * so a reload of history is always authoritative.
+ * → `artifact` / `usage` (本轮产物与 token 用量) → `done`; `title` fires
+ * when the session earns an auto-generated name and `error` on failure.
+ * Both sides of the turn are persisted by the backend, so a reload of
+ * history is always authoritative (usage included).
  */
 
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -30,6 +31,13 @@ export interface ChatSource {
   pageIndex: number;
 }
 
+/** 一轮 LLM 调用的 token 用量（工具轮次与子代理已聚合；字段可能缺省）。 */
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
 /** One persisted message of a conversation. */
 export interface ChatMessageRow {
   msgId: string;
@@ -41,6 +49,51 @@ export interface ChatMessageRow {
   model: string;
   error: string;
   createdAt: number;
+  /** 该助手消息的 token 用量；用户消息 / 未计量轮次为 null。 */
+  usage?: TokenUsage | null;
+}
+
+/** 交互卡片的三种形态：单选澄清 / 确认执行 / 结构化表单。 */
+export type InteractionKind = "clarify" | "confirm" | "form";
+
+/** 澄清选项 / 确认按钮：label 用于展示，value 作为下一条用户消息发送。 */
+export interface InteractionOption {
+  label: string;
+  value: string;
+}
+
+/** 表单字段（type 决定控件；select 用 options 作下拉项）。 */
+export interface InteractionField {
+  name: string;
+  label: string;
+  type: "text" | "email" | "datetime" | "select";
+  /** 必填项：未填写时提交按钮置灰。空集合时 Rust 可能省略。 */
+  required?: boolean;
+  options?: InteractionOption[];
+}
+
+/**
+ * ask_user 触发的交互卡片（Rust 侧 `ChatEvent::Interact`）。
+ * 本轮随即结束，用户作答即作为**下一条用户消息**发送。
+ * options / fields 按形态取舍，空集合时 Rust 可能省略，故按可选处理。
+ */
+export interface ChatInteraction {
+  kind: InteractionKind;
+  question: string;
+  options?: InteractionOption[];
+  fields?: InteractionField[];
+  context?: string;
+}
+
+/** 本轮新生成的产物（exports/ 下的文件，与 exports_list 同构）。 */
+export interface ChatArtifact {
+  name: string;
+  path: string;
+  /** "markdown" | "pptx" | raw extension for anything else. */
+  kind: string;
+  sizeBytes: number;
+  /** File mtime, epoch seconds. */
+  modifiedAt: number;
 }
 
 /** Stream frames emitted during one turn. */
@@ -54,6 +107,10 @@ export type ChatEvent =
     }
   | { type: "chunk"; content: string }
   | { type: "sources"; sources: ChatSource[] }
+  | { type: "interact"; interact: ChatInteraction }
+  | { type: "artifact"; artifacts: ChatArtifact[] }
+  /** 本轮 token 用量（提供方未上报时不发）。 */
+  | { type: "usage"; usage: TokenUsage }
   | { type: "title"; title: string }
   | { type: "done"; msgId: string }
   | { type: "error"; message: string };
@@ -62,6 +119,8 @@ export type ChatEvent =
 export interface ChatTurnResult {
   msgId: string;
   answer: string;
+  /** 本轮聚合 token 用量；null = 提供方未上报。 */
+  usage?: TokenUsage | null;
 }
 
 /** List active conversations, most recently updated first. */
@@ -127,6 +186,12 @@ export async function chatAsk(
   provider: string | null = null,
   /** null = 不注入技能。 */
   skill: string | null = null,
+  /**
+   * 用户主动附带的图片（data URL；最多 4 张、单张 ≤5MB、合计 ≤15MB）。
+   * 只随本轮请求发送、不落库：后端仅把它作为本轮上下文的一条 user 消息，
+   * 刷新 / 切会话后历史只重放文本。
+   */
+  images: string[] = [],
 ): Promise<ChatTurnResult> {
   const channel = new Channel<ChatEvent>();
   channel.onmessage = onEvent;
@@ -135,6 +200,8 @@ export async function chatAsk(
     question,
     provider,
     skill,
+    // 不传图片时显式 null，对应 Rust 侧的 Option<Vec<String>>（None）。
+    images: images.length > 0 ? images : null,
     onEvent: channel,
   });
 }

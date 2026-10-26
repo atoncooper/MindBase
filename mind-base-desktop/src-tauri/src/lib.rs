@@ -20,6 +20,7 @@ mod ocr_server;
 mod prompts;
 mod python_runtime;
 mod quiz;
+mod rerank;
 mod resume;
 mod skills;
 mod slides;
@@ -28,6 +29,7 @@ mod updater;
 mod vectors;
 mod wbi;
 mod web_capture;
+mod web_search;
 mod whisper_server;
 
 use tauri::menu::{Menu, MenuItem};

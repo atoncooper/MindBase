@@ -10,8 +10,10 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { ChatMode, ChatSource } from "../../lib/chat";
+import type { ChatArtifact, ChatInteraction, ChatMode, ChatSource, TokenUsage } from "../../lib/chat";
 import { LinkifiedText } from "../../lib/linkify";
+import ArtifactList from "./ArtifactList";
+import InteractionCard from "./InteractionCard";
 import { MarkdownContent } from "./MarkdownContent";
 
 /** Write text to the clipboard with an execCommand fallback. */
@@ -106,6 +108,12 @@ function ClarifyCard({ payload }: { payload: ClarifyPayload }): React.JSX.Elemen
   );
 }
 
+/** ask_user 交互卡片在本轮消息里的状态（answered 后只读）。 */
+export interface MessageInteraction {
+  payload: ChatInteraction;
+  answered: boolean;
+}
+
 /** View-model message owned by ChatView. */
 export interface UiMessage {
   id: string;
@@ -116,6 +124,12 @@ export interface UiMessage {
   error: string;
   /** Harness progress lines (检索 query), shown while generating. */
   steps: string[];
+  /** ask_user 交互卡片（本轮结束后出现，作答 = 下一条用户消息）。 */
+  interaction?: MessageInteraction;
+  /** 本轮新生成的产物（exports/ 下的文件）。 */
+  artifacts?: ChatArtifact[];
+  /** 本轮 token 用量（Rust 侧 usage 事件 / 历史记录）；null = 未计量。 */
+  usage?: TokenUsage | null;
 }
 
 /**
@@ -172,6 +186,34 @@ const StepLog = memo(function StepLog({
     </details>
   );
 });
+
+/** 用量数字的紧凑展示：1234 → 1.2k，12345 → 12k，<1000 原样。 */
+function formatTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value < 1000) return String(Math.round(value));
+  const scaled = value / 1000;
+  return `${scaled >= 10 ? Math.round(scaled) : scaled.toFixed(1)}k`;
+}
+
+/** assistant 消息底部的 token 脚注（无 usage 不渲染）。 */
+function UsageFootnote({
+  usage,
+}: {
+  usage: TokenUsage | null | undefined;
+}): React.JSX.Element | null {
+  if (usage === null || usage === undefined) return null;
+  const input = usage.inputTokens ?? 0;
+  const output = usage.outputTokens ?? 0;
+  const total = usage.totalTokens ?? input + output;
+  if (input + output + total <= 0) return null;
+  return (
+    <p className="msg-usage" title="本轮 token 用量（含工具轮次与子代理聚合）">
+      tokens：输入 {formatTokenCount(input)} · 输出 {formatTokenCount(output)} · 合计
+      {" "}
+      {formatTokenCount(total)}
+    </p>
+  );
+}
 
 function SourceChips({ sources }: { sources: ChatSource[] }): React.JSX.Element | null {
   if (sources.length === 0) return null;
@@ -292,15 +334,20 @@ const MessageRow = memo(
     showCursor,
     liveAgent,
     planView,
+    interactionLocked,
     onRetry,
     onEditResend,
+    onAnswerInteraction,
   }: {
     message: UiMessage;
     showCursor: boolean;
     liveAgent: LiveAgentStatus | null;
     planView: PlanView | null;
+    /** 已有新一轮在跑：交互卡片暂不可作答（memo 比较器需感知，避免旧闭包）。 */
+    interactionLocked: boolean;
     onRetry: (messageId: string) => void;
     onEditResend: (messageId: string, text: string) => void;
+    onAnswerInteraction: (messageId: string, text: string) => void;
   }): React.JSX.Element {
     return message.role === "user" ? (
       <UserRow message={message} onEditResend={onEditResend} />
@@ -350,6 +397,14 @@ const MessageRow = memo(
           {message.steps.length > 0 && (
             <StepLog steps={message.steps} pending={message.status === "pending"} />
           )}
+          {message.interaction !== undefined && (
+            <InteractionCard
+              payload={message.interaction.payload}
+              answered={message.interaction.answered}
+              locked={interactionLocked || message.status === "pending"}
+              onAnswer={(text) => onAnswerInteraction(message.id, text)}
+            />
+          )}
           {message.content === "" && message.status === "pending" ? (
             <span className="typing-dots" aria-label="正在思考">
               <i />
@@ -374,12 +429,19 @@ const MessageRow = memo(
               ↻ 重试
             </button>
           )}
+          {message.artifacts !== undefined && message.artifacts.length > 0 && (
+            <ArtifactList artifacts={message.artifacts} />
+          )}
           <SourceChips sources={message.sources} />
+          <UsageFootnote usage={message.usage} />
         </div>
       </div>
     );
   },
-  (a, b) => a.message === b.message && a.showCursor === b.showCursor,
+  (a, b) =>
+    a.message === b.message &&
+    a.showCursor === b.showCursor &&
+    a.interactionLocked === b.interactionLocked,
 );
 
 export interface PlanStepView {
@@ -463,6 +525,8 @@ interface MessageListProps {
   onRetry: (messageId: string) => void;
   /** 编辑一条用户消息并重新发送（丢弃其后所有消息）。 */
   onEditResend: (messageId: string, text: string) => void;
+  /** 交互卡片作答：文本作为下一条用户消息发送。 */
+  onAnswerInteraction: (messageId: string, text: string) => void;
 }
 
 function MessageList({
@@ -475,6 +539,7 @@ function MessageList({
   onSuggestion,
   onRetry,
   onEditResend,
+  onAnswerInteraction,
 }: MessageListProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0);
@@ -530,8 +595,10 @@ function MessageList({
             showCursor={showCursor && message === lastMessage}
             liveAgent={message === lastMessage ? liveAgent : null}
             planView={message === lastMessage ? planView : null}
+            interactionLocked={busy}
             onRetry={onRetry}
             onEditResend={onEditResend}
+            onAnswerInteraction={onAnswerInteraction}
           />
         ))}
       </div>

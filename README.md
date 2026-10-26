@@ -143,7 +143,7 @@ docker compose up -d --build                  # 入口 http://localhost:3000（n
 
 ### 桌面端（mind-base-desktop）
 
-- Tauri 2 全本地应用（Windows/macOS）：聊天 agent、B 站知识库、混合检索、思维导图/白板、Quiz、笔记、简历/幻灯片 agent、学术研究 agent + 记忆架构
+- Tauri 2 全本地应用（Windows/macOS）：聊天 agent（含 ask_user 结构化交互、产物卡片、后台任务、web_search 联网搜索）、B 站知识库、混合检索、思维导图/白板、Quiz、笔记、简历/幻灯片 agent、学术研究 agent + 记忆架构
 - 与 Web 后端无运行时依赖，数据全在本机 SQLite
 - 详见 [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md)
 

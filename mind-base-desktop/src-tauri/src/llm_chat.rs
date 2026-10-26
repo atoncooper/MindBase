@@ -177,6 +177,63 @@ pub(crate) struct ToolCallReq {
     pub arguments: String,
 }
 
+/// Token accounting for one completion.
+///
+/// Mirrors the OpenAI `usage` object (DashScope compatible mode answers with
+/// the same shape). Counts default to 0 when a provider omits a field; the
+/// camelCase wire form is what the frontend and the `chat_messages.usage`
+/// JSON column store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TokenUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}
+
+impl TokenUsage {
+    /// True when every counter is zero (i.e. no measurable usage).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.input_tokens == 0 && self.output_tokens == 0 && self.total_tokens == 0
+    }
+
+    /// Accumulate another completion's counters into this one (saturating).
+    pub(crate) fn merge(&mut self, other: TokenUsage) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+    }
+}
+
+/// Parse one provider `usage` object (OpenAI / DashScope compatible shape:
+/// `prompt_tokens` / `completion_tokens` / `total_tokens`). Tolerates the
+/// `input_tokens` / `output_tokens` aliases and derives a missing total from
+/// the two halves; `None` when the payload carries no usable usage object.
+pub(crate) fn parse_provider_usage(value: Option<&serde_json::Value>) -> Option<TokenUsage> {
+    let object = value?.as_object()?;
+    if object.is_empty() {
+        return None;
+    }
+    let pick = |keys: [&str; 2]| {
+        keys.iter()
+            .find_map(|key| object.get(*key).and_then(serde_json::Value::as_u64))
+    };
+    let input_tokens = pick(["prompt_tokens", "input_tokens"]).unwrap_or_default();
+    let output_tokens = pick(["completion_tokens", "output_tokens"]).unwrap_or_default();
+    let total_tokens = object
+        .get("total_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+    })
+}
+
 /// Outcome of one streamed assistant turn. Accumulates text deltas, finish
 /// reason and tool-call fragments (the wire format splits each call's
 /// id/name/arguments across many chunks, keyed by index).
@@ -185,6 +242,10 @@ pub(crate) struct StreamTurn {
     pub content: String,
     pub finish_reason: String,
     pub tool_calls: Vec<ToolCallReq>,
+    /// Token usage reported by the provider for this turn (`None` when the
+    /// provider ignored `stream_options.include_usage` or the frame was cut
+    /// short). Some providers only send it on the final, choices-empty frame.
+    pub usage: Option<TokenUsage>,
     /// Raw fragment accumulator: (index, id, name, arguments).
     fragments: Vec<(i64, String, String, String)>,
     /// True when the caller's cancellation flag ended the stream early —
@@ -196,6 +257,13 @@ impl StreamTurn {
     /// Fold one SSE chunk JSON into the accumulator. Pure w.r.t. the outside
     /// world so fixtures can pin provider quirks.
     pub(crate) fn apply_chunk(&mut self, chunk: &serde_json::Value) {
+        // Usage is a top-level field, independent of `choices`: several
+        // providers (OpenAI, DashScope compatible mode) attach it to the
+        // final frame, whose `choices` array is empty. Only frames that
+        // actually carry a usage object update the accumulator.
+        if let Some(usage) = parse_provider_usage(chunk.get("usage")) {
+            self.usage = Some(usage);
+        }
         if let Some(reason) = chunk
             .pointer("/choices/0/finish_reason")
             .and_then(|v| v.as_str())
@@ -278,14 +346,44 @@ impl StreamTurn {
     }
 }
 
-/// Build the streaming chat-completions request body. Pure for tests.
+/// Whether to ask the provider for a usage frame in streaming responses
+/// (`stream_options.include_usage`, OpenAI-compatible). On by default;
+/// `MIND_BASE_STREAM_USAGE=off` restores the bare request body for the rare
+/// provider that rejects the field with a 400.
+pub(crate) fn stream_usage_enabled() -> bool {
+    match std::env::var("MIND_BASE_STREAM_USAGE") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "off" | "false" | "0" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Build the streaming chat-completions request body. Pure for tests (the
+/// usage toggle reads the environment, which defaults to on).
 pub(crate) fn build_stream_payload(model: &str, messages: &[ChatMessage]) -> serde_json::Value {
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": model,
         "messages": messages.iter().map(ChatMessage::to_payload).collect::<Vec<_>>(),
         "temperature": 0.3,
         "stream": true
-    })
+    });
+    if stream_usage_enabled() {
+        payload["stream_options"] = serde_json::json!({ "include_usage": true });
+    }
+    payload
+}
+
+/// The same body for a non-streaming call: streaming-only knobs are stripped
+/// (providers that reject `stream_options` do so regardless of `stream`).
+fn build_non_stream_payload(model: &str, messages: &[ChatMessage]) -> serde_json::Value {
+    let mut payload = build_stream_payload(model, messages);
+    payload["stream"] = serde_json::Value::Bool(false);
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("stream_options");
+    }
+    payload
 }
 
 /// Which provider backs this client.
@@ -413,10 +511,7 @@ impl ChatClient {
         agent: &ureq::Agent,
         messages: &[ChatMessage],
     ) -> Result<String, String> {
-        let payload = build_stream_payload(self.model_name(), messages);
-        // Non-streaming endpoint: reuse the same body shape minus "stream".
-        let mut payload = payload;
-        payload["stream"] = serde_json::Value::Bool(false);
+        let payload = build_non_stream_payload(self.model_name(), messages);
         let response = agent
             .post(&self.endpoint)
             .set("Authorization", &format!("Bearer {}", self.api_key))
@@ -450,8 +545,7 @@ impl ChatClient {
     ) -> Result<String, String> {
         let (primary, fallback) = api_keys::egress_agents(timeout, &self.endpoint)?;
         let attempt = |agent: &ureq::Agent, msgs: &[ChatMessage]| -> Result<String, String> {
-            let mut payload = build_stream_payload(self.model_name(), msgs);
-            payload["stream"] = serde_json::Value::Bool(false);
+            let payload = build_non_stream_payload(self.model_name(), msgs);
             let response = agent
                 .post(&self.endpoint)
                 .set("Authorization", &format!("Bearer {}", self.api_key))
@@ -630,8 +724,10 @@ impl ChatClient {
     }
 }
 
-/// Extract `choices[0].message.content` from a chat completion body.
-fn parse_chat_content(body: &str) -> Result<String, String> {
+/// Extract `choices[0].message.content` plus the non-streaming `usage`
+/// object from a chat completion body. The usage side-channel is what
+/// metered callers consume; title naming only reads the content.
+fn parse_chat_body(body: &str) -> Result<(String, Option<TokenUsage>), String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|err| format!("解析对话响应失败：{err}"))?;
     if let Some(message) = value.pointer("/error/message").and_then(|m| m.as_str()) {
@@ -646,7 +742,12 @@ fn parse_chat_content(body: &str) -> Result<String, String> {
     if content.is_empty() {
         return Err("对话模型返回了空内容".to_string());
     }
-    Ok(content)
+    Ok((content, parse_provider_usage(value.get("usage"))))
+}
+
+/// Content-only view of [`parse_chat_body`] (usage intentionally dropped).
+fn parse_chat_content(body: &str) -> Result<String, String> {
+    parse_chat_body(body).map(|(content, _usage)| content)
 }
 
 /// Clip long error bodies for display.
@@ -740,5 +841,107 @@ mod tests {
             .collect();
         assert_eq!(roles, ["system", "user", "assistant"]);
         assert_eq!(payload["messages"][2]["content"], "回答");
+        // Streaming requests ask the provider for a usage frame by default.
+        assert_eq!(payload["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn stream_turn_parses_usage_from_choices_empty_frame() {
+        let mut turn = StreamTurn::default();
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "content": "答" }, "finish_reason": null }]
+        }));
+        assert!(turn.usage.is_none(), "intermediate frames carry no usage");
+        // Final frame: choices is empty, usage rides alongside.
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [],
+            "usage": { "prompt_tokens": 1200, "completion_tokens": 300, "total_tokens": 1500 }
+        }));
+        let usage = turn.usage.expect("usage parsed");
+        assert_eq!(usage.input_tokens, 1200);
+        assert_eq!(usage.output_tokens, 300);
+        assert_eq!(usage.total_tokens, 1500);
+        assert_eq!(turn.content, "答");
+    }
+
+    #[test]
+    fn usage_parser_defaults_missing_fields_and_aliases() {
+        // OpenAI / DashScope shape, complete.
+        let usage = parse_provider_usage(Some(&serde_json::json!({
+            "prompt_tokens": 7, "completion_tokens": 5, "total_tokens": 12
+        })))
+        .expect("usage");
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens, usage.total_tokens),
+            (7, 5, 12)
+        );
+        // Missing total is derived from the halves.
+        let derived = parse_provider_usage(Some(&serde_json::json!({
+            "prompt_tokens": 4, "completion_tokens": 6
+        })))
+        .expect("usage");
+        assert_eq!(derived.total_tokens, 10);
+        // Missing fields fall back to 0.
+        let partial =
+            parse_provider_usage(Some(&serde_json::json!({ "completion_tokens": 3 })))
+                .expect("usage");
+        assert_eq!(
+            (partial.input_tokens, partial.output_tokens, partial.total_tokens),
+            (0, 3, 3)
+        );
+        // input_tokens / output_tokens aliases are accepted too.
+        let aliased = parse_provider_usage(Some(&serde_json::json!({
+            "input_tokens": 2, "output_tokens": 8
+        })))
+        .expect("usage");
+        assert_eq!(aliased.total_tokens, 10);
+        // Nothing usable: no usage frame must never zero out earlier data.
+        assert!(parse_provider_usage(None).is_none());
+        assert!(parse_provider_usage(Some(&serde_json::json!(null))).is_none());
+        assert!(parse_provider_usage(Some(&serde_json::json!({}))).is_none());
+    }
+
+    #[test]
+    fn token_usage_merges_and_serializes_camel_case() {
+        let mut total = TokenUsage {
+            input_tokens: 1,
+            output_tokens: 2,
+            total_tokens: 3,
+        };
+        total.merge(TokenUsage {
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+        });
+        assert_eq!(
+            (total.input_tokens, total.output_tokens, total.total_tokens),
+            (11, 22, 33)
+        );
+        let value = serde_json::to_value(total).expect("serialize");
+        assert_eq!(value["inputTokens"], 11);
+        assert_eq!(value["outputTokens"], 22);
+        assert_eq!(value["totalTokens"], 33);
+        // The DB column stores exactly this JSON and round-trips losslessly.
+        let parsed: TokenUsage = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(parsed, total);
+        assert!(TokenUsage::default().is_empty());
+        assert!(!total.is_empty());
+    }
+
+    #[test]
+    fn non_stream_body_exposes_content_and_usage() {
+        let body = r#"{
+            "choices": [ { "message": { "role": "assistant", "content": "答案" } } ],
+            "usage": { "prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13 }
+        }"#;
+        let (content, usage) = parse_chat_body(body).expect("parse");
+        assert_eq!(content, "答案");
+        let usage = usage.expect("usage");
+        assert_eq!(usage.total_tokens, 13);
+        // Bodies without usage still yield content (backward compatible).
+        let (content, usage) =
+            parse_chat_body(r#"{"choices":[{"message":{"content":"x"}}]}"#).expect("parse");
+        assert_eq!(content, "x");
+        assert!(usage.is_none());
     }
 }

@@ -9,14 +9,64 @@ export interface ChatSource {
   bvid?: string;
 }
 
-// One binary artifact (e.g. image) produced by a sub-agent such as the code
-// agent. Mirrors the backend `artifact` SSE frame payload.
-export interface ChatArtifact {
+// File-style artifact (image / downloadable file) produced by a sub-agent or a
+// tool (e.g. run_code). This is the legacy/history shape: identity is `name`.
+export interface ChatFileArtifact {
+  kind?: undefined;
   name: string;
   url?: string;
   minio_key?: string;
   content_type?: string;
   size?: number;
+}
+
+// Structured artifact: the app-ts agent emits `{kind, data}` (quiz /
+// quiz_grading today — see tools/quiz/index.ts → ResultCollector.pushArtifacts
+// → agent/react.ts tail frame). `data` is the domain payload the UI summarizes;
+// it is never rendered as free-form HTML.
+export interface ChatTypedArtifact {
+  kind: string;
+  data: unknown;
+  /** file-ish fields tolerated on a structured artifact (union ergonomics) */
+  name?: string;
+  url?: string;
+  content_type?: string;
+  size?: number;
+}
+
+// One artifact carried by an `artifact` SSE frame. The backend sends
+// `{ type: "artifact", artifacts: [...] }` (array); older payloads sent a single
+// `{ type: "artifact", artifact: {...} }`. Both are normalized here.
+export type ChatArtifact = ChatFileArtifact | ChatTypedArtifact;
+
+/** True for the structured `{kind, data}` shape (quiz / quiz_grading / future kinds). */
+export function isTypedArtifact(artifact: ChatArtifact): artifact is ChatTypedArtifact {
+  return typeof (artifact as ChatTypedArtifact).kind === "string";
+}
+
+/** Stable identity per artifact, used to de-duplicate within one turn. */
+export function artifactKey(artifact: ChatArtifact): string {
+  if (!isTypedArtifact(artifact)) return artifact.url || artifact.name || "";
+  let payload = "";
+  try {
+    payload = JSON.stringify(artifact.data) ?? "";
+  } catch {
+    payload = "";
+  }
+  return `${artifact.kind}:${payload.slice(0, 512)}`;
+}
+
+// Normalize an `artifact` frame payload: array form (current backend) or the
+// legacy single-artifact form. Unknown/non-object entries are dropped.
+function artifactsFromFrame(data: Record<string, unknown>): ChatArtifact[] {
+  const raw = Array.isArray(data.artifacts)
+    ? data.artifacts
+    : data.artifact && typeof data.artifact === "object"
+      ? [data.artifact]
+      : [];
+  return raw.filter(
+    (a): a is ChatArtifact => !!a && typeof a === "object" && !Array.isArray(a)
+  );
 }
 
 // One retrieval/tool step emitted by the agent stream.
@@ -76,6 +126,59 @@ export interface ChatInteraction {
   context?: string;
 }
 
+// Agent task plan: one step of the plan tool snapshot. Known statuses are
+// pending | in_progress | done | failed | skipped; unknown values render as "·"
+// so an older/newer backend never breaks the panel.
+export interface ChatPlanStep {
+  desc: string;
+  status: string;
+  note: string;
+}
+
+// Read-only task plan carried by the `plan` SSE frame (plan tool). The version
+// bumps on every mutation, so the same version is never appended twice. The plan
+// is display-only: the chat view keeps it in memory on the streaming assistant
+// message and a history reload loses it (same nature as the reasoning stream).
+export interface ChatPlan {
+  version: number;
+  steps: ChatPlanStep[];
+  /** done + skipped steps */
+  done: number;
+  total: number;
+}
+
+// Normalize a `plan` frame payload; drops malformed steps so the panel never
+// renders a half-parsed plan. Returns null when the frame carries no usable plan.
+function planFromFrame(data: Record<string, unknown>): ChatPlan | null {
+  const raw = data.plan;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const payload = raw as Record<string, unknown>;
+  const steps: ChatPlanStep[] = (Array.isArray(payload.steps) ? payload.steps : [])
+    .filter(
+      (step): step is Record<string, unknown> =>
+        !!step && typeof step === "object" && !Array.isArray(step)
+    )
+    .map((step) => ({
+      desc: typeof step.desc === "string" ? step.desc : "",
+      status: typeof step.status === "string" ? step.status : "pending",
+      note: typeof step.note === "string" ? step.note : "",
+    }))
+    .filter((step) => step.desc.trim().length > 0);
+  if (steps.length === 0) return null;
+  const rawTotal = typeof payload.total === "number" ? payload.total : steps.length;
+  const total = rawTotal > 0 ? rawTotal : steps.length;
+  const rawDone =
+    typeof payload.done === "number"
+      ? payload.done
+      : steps.filter((step) => step.status === "done" || step.status === "skipped").length;
+  return {
+    version: typeof payload.version === "number" ? payload.version : 0,
+    steps,
+    done: Math.min(Math.max(rawDone, 0), total),
+    total,
+  };
+}
+
 export interface StreamCallbacks {
   onChunk: (accumulated: string, delta: string) => void;
   onSources?: (sources: ChatSource[]) => void;
@@ -103,6 +206,9 @@ export interface StreamCallbacks {
   // Structured AI→user interaction (`interact` SSE frame): renders the
   // confirm card / option chips / form. One per turn (ask_user stops the loop).
   onInteract?: (interaction: ChatInteraction) => void;
+  // Task plan snapshot (`plan` SSE frame): the plan tool advances it at each
+  // mutating step boundary, so the panel updates live while the turn streams.
+  onPlan?: (plan: ChatPlan) => void;
 }
 
 /**
@@ -179,7 +285,11 @@ export async function streamChat(
             accumulated = "";
             callbacks.onReset?.();
           } else if (data.type === "artifact") {
-            callbacks.onArtifact?.(data.artifact as ChatArtifact);
+            // Backend frame: { type: "artifact", artifacts: [...] } (one frame per
+            // turn, emitted at the stream tail). Legacy: a single data.artifact.
+            for (const artifact of artifactsFromFrame(data)) {
+              callbacks.onArtifact?.(artifact);
+            }
           } else if (data.type === "queue") {
             callbacks.onQueueStatus?.({
               position: typeof data.position === "number" ? data.position : 0,
@@ -196,6 +306,9 @@ export async function streamChat(
             if (data.interact && typeof data.interact === "object") {
               callbacks.onInteract?.(data.interact as ChatInteraction);
             }
+          } else if (data.type === "plan") {
+            const plan = planFromFrame(data);
+            if (plan) callbacks.onPlan?.(plan);
           } else if (data.type === "error") {
             errored = true;
             callbacks.onError?.(data.message || data.error || "请求失败", {

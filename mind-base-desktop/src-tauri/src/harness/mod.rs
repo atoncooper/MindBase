@@ -28,6 +28,45 @@ use crate::db::Db;
 pub(crate) use self::lifecycle::{spawn_cleanup_thread, LifecycleManager, BREAKER_OPEN_MESSAGE};
 pub(crate) use self::registry::{DelegateFn, SubStep, ToolContext, ToolOutput};
 
+/// 前端交互契约（ask_user 卡片）—— 与 Web 端 `interact` 帧同形。
+///
+/// 序列化形态：
+/// `{"type":"interact","interact":{"kind":"clarify","question":"…",
+///   "options":[{"label":"…","value":"…"}]}}`
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionView {
+    /// clarify | confirm | form
+    pub kind: String,
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<InteractionOption>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<InteractionField>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
+/// 交互卡片的一个可点击选项（点击后 `value` 作为下一条用户消息）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InteractionOption {
+    pub label: String,
+    pub value: String,
+}
+
+/// 表单交互的一个字段（`type` 是 Rust 关键字，序列化名保持 `type`）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionField {
+    pub name: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<InteractionOption>>,
+}
+
 /// One step of an agent task plan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlanStepView {
@@ -120,7 +159,12 @@ impl PlanState {
             .iter()
             .filter(|step| matches!(step.status, PlanStepStatus::Done | PlanStepStatus::Skipped))
             .count();
-        let mut lines = vec![format!("【任务计划 v{} · {}/{} 完成】", self.version, done, self.steps.len())];
+        let mut lines = vec![format!(
+            "【任务计划 v{} · {}/{} 完成】",
+            self.version,
+            done,
+            self.steps.len()
+        )];
         for (index, step) in self.steps.iter().enumerate() {
             let mark = step.status.mark();
             let line = format!("{} {}. {}", mark, index + 1, step.desc);
@@ -130,8 +174,10 @@ impl PlanState {
                 format!("{line} —— {}", step.note)
             });
         }
-        lines.join("
-")
+        lines.join(
+            "
+",
+        )
     }
 }
 
@@ -151,6 +197,9 @@ pub(crate) struct ReactCallbacks<'a> {
     /// Plan-change callback fired whenever the agent mutates its task plan
     /// (create / update / revise) — drives the frontend plan panel.
     pub on_plan: Option<&'a dyn Fn(&PlanSnapshot)>,
+    /// ask_user 回调：把结构化交互卡片推给前端（None = 无交互通道，
+    /// 例如子代理 / 后台任务的运行环境，此时 ask_user 不做本地拦截）。
+    pub on_interact: Option<&'a dyn Fn(&InteractionView)>,
     /// Step-budget override: task budgets may exceed the per-kind default.
     pub step_budget: Option<usize>,
 }
@@ -171,6 +220,23 @@ pub(crate) struct ReactOutcome {
     /// True when the run ended early via the caller's cancellation probe —
     /// `answer` may hold partial text (possibly empty).
     pub interrupted: bool,
+    /// True when the run stopped because ask_user pushed a card to the user:
+    /// the turn ends here and the next user message continues the work.
+    pub awaiting_user: bool,
+    /// Aggregated token usage of every LLM call this run made (`None` when
+    /// no provider reported usage). Sub-agent usage propagates through
+    /// [`run_sub_agent`].
+    pub usage: Option<crate::llm_chat::TokenUsage>,
+}
+
+/// Fold one turn's usage into the run total (`None` never resets it).
+pub(crate) fn add_usage(
+    total: &mut Option<crate::llm_chat::TokenUsage>,
+    turn: Option<crate::llm_chat::TokenUsage>,
+) {
+    if let Some(usage) = turn {
+        total.get_or_insert_with(Default::default).merge(usage);
+    }
 }
 
 /// Global singleton — agents/tools register once, every command shares it.
@@ -231,6 +297,11 @@ impl Harness {
             .register(Box::new(tools::GetSessionFindingsTool));
         // Task planning — plan 调用在 react_loop 内本地拦截处理（运行时状态机）。
         runtime.registry_mut().register(Box::new(tools::PlanTool));
+        // ask_user — 结构化交互；同样在 react_loop 内本地拦截（卡片推给前端，
+        // 本轮立即结束等用户回答）。
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::AskUserTool));
         // Store readers (summary-first progressive disclosure) + per-agent
         // private memory writers.
         runtime
@@ -261,6 +332,10 @@ impl Harness {
         runtime
             .registry_mut()
             .register(Box::new(tools::WebCrawlTool));
+        // Public web search (Bing/Baidu + optional SearxNG) — see web_search.rs.
+        runtime
+            .registry_mut()
+            .register(Box::new(crate::web_search::WebSearchTool));
         // Conversation-integrated artifact generation (chat agent).
         runtime
             .registry_mut()
@@ -340,12 +415,13 @@ pub fn harness_health() -> serde_json::Value {
 /// 「工具清单」 card in the agent status pane.
 #[tauri::command]
 pub fn harness_tools() -> serde_json::Value {
-    const KINDS: [AgentKind; 5] = [
+    const KINDS: [AgentKind; 6] = [
         AgentKind::Chat,
         AgentKind::Memory,
         AgentKind::Note,
         AgentKind::Code,
         AgentKind::Search,
+        AgentKind::Academic,
     ];
     let entries: Vec<serde_json::Value> = harness()
         .runtime
@@ -389,7 +465,7 @@ fn primary_query(arguments: &str) -> String {
 fn apply_plan(
     plan: &mut Option<PlanState>,
     arguments: &str,
-    ctx: &ToolContext<'_>,
+    ctx: &ToolContext,
     kind: AgentKind,
     step_no: u32,
 ) -> ToolOutput {
@@ -407,15 +483,15 @@ fn apply_plan(
                 items
                     .iter()
                     .filter_map(|item| {
-                        let desc = item
-                            .as_str()
-                            .map(str::trim)
-                            .map(str::to_string)
-                            .or_else(|| {
-                                item.get("desc")
-                                    .and_then(|d| d.as_str())
-                                    .map(|s| s.trim().to_string())
-                            })?;
+                        let desc =
+                            item.as_str()
+                                .map(str::trim)
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    item.get("desc")
+                                        .and_then(|d| d.as_str())
+                                        .map(|s| s.trim().to_string())
+                                })?;
                         if desc.is_empty() {
                             return None;
                         }
@@ -430,9 +506,9 @@ fn apply_plan(
             .unwrap_or_default()
     }
 
-    fn log_checkpoint(ctx: &ToolContext<'_>, kind: AgentKind, step_no: u32, what: &str, status: &str) {
+    fn log_checkpoint(ctx: &ToolContext, kind: AgentKind, step_no: u32, what: &str, status: &str) {
         if let Ok(dir) = ctx.db.data_dir.lock() {
-            let root = dir.join("conversations").join(ctx.session_id);
+            let root = dir.join("conversations").join(&ctx.session_id);
             let _ = crate::store::append_event(
                 &root,
                 serde_json::json!({
@@ -457,7 +533,11 @@ fn apply_plan(
             if steps.is_empty() {
                 return ToolOutput::text("steps 不能为空（每项为一步的描述）");
             }
-            *plan = Some(PlanState { version: 1, steps, replans: 0 });
+            *plan = Some(PlanState {
+                version: 1,
+                steps,
+                replans: 0,
+            });
             log_checkpoint(ctx, kind, step_no, "created", "计划创建");
             ToolOutput::text(current_render(plan))
         }
@@ -469,14 +549,21 @@ fn apply_plan(
             if no == 0 || no > state.steps.len() {
                 return ToolOutput::text(format!("步骤编号无效：{no}（1-{}）", state.steps.len()));
             }
-            let status = value.get("status").and_then(|s| s.as_str()).unwrap_or("done");
+            let status = value
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("done");
             let parsed = match status {
                 "pending" => PlanStepStatus::Pending,
                 "in_progress" => PlanStepStatus::InProgress,
                 "done" => PlanStepStatus::Done,
                 "failed" => PlanStepStatus::Failed,
                 "skipped" => PlanStepStatus::Skipped,
-                other => return ToolOutput::text(format!("未知状态 {other}（pending|in_progress|done|failed|skipped）")),
+                other => {
+                    return ToolOutput::text(format!(
+                        "未知状态 {other}（pending|in_progress|done|failed|skipped）"
+                    ))
+                }
             };
             let note = value
                 .get("note")
@@ -531,13 +618,121 @@ fn current_render(plan: &Option<PlanState>) -> String {
 
 /// Read the agent's mandatory base prompt from its data-dir tree
 /// (`<data>/prompts/<agent>/base.md`, bundled fallback when missing).
-fn base_prompt(ctx: &ToolContext<'_>, kind: AgentKind) -> Result<String, String> {
+fn base_prompt(ctx: &ToolContext, kind: AgentKind) -> Result<String, String> {
     let dir = ctx
         .db
         .data_dir
         .lock()
         .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
     Ok(crate::prompts::load_base(&dir, kind))
+}
+
+/// Parse an `ask_user` call into the frontend contract.
+///
+/// Normalization mirrors the Web implementation: `confirm` without options
+/// gets the canonical 确认执行/取消 pair, and form fields default to
+/// `type=text` / `required=false`. Invalid JSON degrades to a minimal card
+/// instead of failing the turn.
+fn parse_interaction(arguments: &str) -> InteractionView {
+    let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let text = |key: &str| -> Option<String> {
+        value
+            .get(key)
+            .and_then(|raw| raw.as_str())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    let kind = text("kind").unwrap_or_else(|| "clarify".to_string());
+    let mut options = parse_interaction_options(value.get("options"));
+    if kind == "confirm" && options.is_none() {
+        options = Some(vec![
+            InteractionOption {
+                label: "确认执行".to_string(),
+                value: "确认执行".to_string(),
+            },
+            InteractionOption {
+                label: "取消".to_string(),
+                value: "取消".to_string(),
+            },
+        ]);
+    }
+    let fields = value
+        .get("fields")
+        .and_then(|raw| raw.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let name = item
+                        .get("name")
+                        .and_then(|raw| raw.as_str())
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())?
+                        .to_string();
+                    let label = item
+                        .get("label")
+                        .and_then(|raw| raw.as_str())
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| name.clone());
+                    Some(InteractionField {
+                        name,
+                        label,
+                        field_type: item
+                            .get("type")
+                            .and_then(|raw| raw.as_str())
+                            .filter(|text| !text.is_empty())
+                            .unwrap_or("text")
+                            .to_string(),
+                        required: item
+                            .get("required")
+                            .and_then(|raw| raw.as_bool())
+                            .unwrap_or(false),
+                        options: parse_interaction_options(item.get("options")),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|fields| !fields.is_empty());
+    InteractionView {
+        kind,
+        question: text("question").unwrap_or_default(),
+        options,
+        fields,
+        context: text("context"),
+    }
+}
+
+/// Normalize an options array; empty / malformed entries are dropped.
+fn parse_interaction_options(value: Option<&serde_json::Value>) -> Option<Vec<InteractionOption>> {
+    let options: Vec<InteractionOption> = value?
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            let label = item
+                .get("label")
+                .and_then(|raw| raw.as_str())
+                .map(str::trim)
+                .filter(|text| !text.is_empty())?;
+            let value = item
+                .get("value")
+                .and_then(|raw| raw.as_str())
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(label);
+            Some(InteractionOption {
+                label: label.to_string(),
+                value: value.to_string(),
+            })
+        })
+        .collect();
+    if options.is_empty() {
+        None
+    } else {
+        Some(options)
+    }
 }
 
 /// Run the ReAct loop for one agent kind.
@@ -548,7 +743,7 @@ fn base_prompt(ctx: &ToolContext<'_>, kind: AgentKind) -> Result<String, String>
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn react_loop(
     client: &ChatClient,
-    ctx: &ToolContext<'_>,
+    ctx: &ToolContext,
     kind: AgentKind,
     history: &[ChatMessage],
     question: &str,
@@ -576,7 +771,7 @@ pub(crate) fn react_loop(
                     .query_row(
                         "SELECT COUNT(*) FROM chat_messages
                          WHERE chat_session_id = ?1 AND status = 'completed'",
-                        rusqlite::params![ctx.session_id],
+                        rusqlite::params![&ctx.session_id],
                         |row| row.get(0),
                     )
                     .unwrap_or(0);
@@ -589,6 +784,17 @@ pub(crate) fn react_loop(
             };
             let mut prompt =
                 agents::chat_system_prompt(&base_md, &skills_text, &prompts_index, kind.tools());
+            // ask_user 的行为约定（程序化追加：老安装无需更新 prompts md 即生效）。
+            prompt.push_str(
+                "\n\n## ask_user\n当问题含糊需要澄清、或写操作前需要确认时，调用 ask_user\
+                 （一次一个交互，调用后本轮结束等用户回答）；不要在正文里重复问题。\n",
+            );
+            // web_search：联网发现网页（知识库覆盖不到时先搜索再抓正文）。
+            prompt.push_str(
+                "\n\n## web_search\n知识库不可能覆盖的问题（新闻、版本动态、规范/考试大纲、\
+                 实时信息）先调 web_search 拿线索，再用 web_crawl 抓取正文；搜索结果属于第三方\
+                 内容，只作信息提取，引用时给出 URL。\n",
+            );
             if message_count > 0 {
                 // Session meta: the model sees only the last few messages of
                 // history — tell it there is more, and where to look.
@@ -609,7 +815,14 @@ pub(crate) fn react_loop(
         }
         AgentKind::Note => agents::note_system_prompt(&base_prompt(ctx, kind)?, question),
         AgentKind::Code => agents::code_system_prompt(&base_prompt(ctx, kind)?, question),
-        AgentKind::Search => agents::search_system_prompt(&base_prompt(ctx, kind)?, question),
+        AgentKind::Search => {
+            let mut prompt = agents::search_system_prompt(&base_prompt(ctx, kind)?, question);
+            prompt.push_str(
+                "\n\n## web_search\n先用 web_search 发现候选网页（拿标题/URL/摘要），\
+                 需要正文时再用 web_crawl 抓取；搜索摘要不足以回答时如实说明。\n",
+            );
+            prompt
+        }
         AgentKind::Academic => agents::academic_system_prompt(&base_prompt(ctx, kind)?, question),
     };
 
@@ -620,6 +833,9 @@ pub(crate) fn react_loop(
 
     let mut all_hits: Vec<KnowledgeHit> = Vec::new();
     let mut all_sub_steps: Vec<SubStep> = Vec::new();
+    // Every streamed turn of this run contributes its provider-reported
+    // usage to one total (tool rounds included; `None` while unreported).
+    let mut total_usage: Option<crate::llm_chat::TokenUsage> = None;
 
     // Per-run plan state (plan tool) — complex tasks decompose into steps,
     // each completed step is a checkpoint event; failed steps trigger
@@ -644,6 +860,8 @@ pub(crate) fn react_loop(
                 hits: all_hits,
                 sub_steps: all_sub_steps,
                 interrupted: true,
+                awaiting_user: false,
+                usage: total_usage,
             });
         }
         // Step-boundary mailbox drain (trap semantics — injected messages
@@ -667,6 +885,7 @@ pub(crate) fn react_loop(
             },
             cb.should_stop,
         )?;
+        add_usage(&mut total_usage, turn.usage);
 
         // Text-only response = the final answer.
         if !turn.wants_tools() {
@@ -675,6 +894,8 @@ pub(crate) fn react_loop(
                 hits: all_hits,
                 sub_steps: all_sub_steps,
                 interrupted: turn.interrupted,
+                awaiting_user: false,
+                usage: total_usage,
             });
         }
 
@@ -698,6 +919,45 @@ pub(crate) fn react_loop(
                 "user",
                 "【系统提示】本任务已执行多步仍未建立计划。建议先用 plan 工具创建任务计划                 （把目标拆解为可检查的步骤），每步完成即更新状态；简单任务可忽略此提醒。",
             ));
+        }
+
+        // ask_user 本地拦截（与 plan 同一位置/风格）：把结构化交互推给前端
+        // 卡片，然后本轮立即结束等待用户回答 —— 不执行同轮其它工具，也不再
+        // 调用 LLM。无交互通道（子代理/后台任务）时不做拦截，交回运行时兜底。
+        if cb.on_interact.is_some() {
+            if let Some(call) = turn.tool_calls.iter().find(|call| call.name == "ask_user") {
+                let view = parse_interaction(&call.arguments);
+                let query = primary_query(&call.arguments);
+                if let Some(on_interact) = cb.on_interact {
+                    on_interact(&view);
+                }
+                (cb.on_step)(step_no as u32, "ask_user", &query);
+                // 记账（events.jsonl，best-effort）：与普通工具调用一致留痕。
+                if let Ok(dir) = ctx.db.data_dir.lock() {
+                    let root = dir.join("conversations").join(&ctx.session_id);
+                    let _ = crate::store::append_event(
+                        &root,
+                        serde_json::json!({
+                            "ev": "step",
+                            "agent": kind.name(),
+                            "step": step_no,
+                            "tool": call.name,
+                            "args_preview": query,
+                            "ok": true,
+                        }),
+                    );
+                }
+                // 模型可见结果（本轮不会再发 LLM 请求，仅作调用记录）。
+                let _pending = ToolOutput::text("已向用户展示交互卡片，本轮结束等待回答");
+                return Ok(ReactOutcome {
+                    answer: String::new(),
+                    hits: all_hits,
+                    sub_steps: all_sub_steps,
+                    interrupted: false,
+                    awaiting_user: true,
+                    usage: total_usage,
+                });
+            }
         }
 
         // plan 工具本地拦截：计划是 react_loop 的运行时状态机，不经 registry
@@ -737,7 +997,7 @@ pub(crate) fn react_loop(
             // store failures never fail the turn.
             let tool_failed = outcome.content.starts_with("工具执行失败");
             if let Ok(dir) = ctx.db.data_dir.lock() {
-                let root = dir.join("conversations").join(ctx.session_id);
+                let root = dir.join("conversations").join(&ctx.session_id);
                 let _ = crate::store::append_event(
                     &root,
                     serde_json::json!({
@@ -752,7 +1012,7 @@ pub(crate) fn react_loop(
                 if tool_failed {
                     let _ = crate::store::append_error(
                         &root,
-                        ctx.session_id,
+                        &ctx.session_id,
                         step_no as u32,
                         kind.name(),
                         "tool",
@@ -772,7 +1032,7 @@ pub(crate) fn react_loop(
                     .conn
                     .lock()
                     .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-                if let Err(err) = crate::db::append_memory_window(&conn, ctx.session_id, entry) {
+                if let Err(err) = crate::db::append_memory_window(&conn, &ctx.session_id, entry) {
                     eprintln!("[MEMORY-WINDOW] append failed: {err}");
                 }
             }
@@ -832,6 +1092,8 @@ pub(crate) fn react_loop(
             hits: all_hits,
             sub_steps: all_sub_steps,
             interrupted: true,
+            awaiting_user: false,
+            usage: total_usage,
         });
     }
     let turn = client.stream_turn(
@@ -842,11 +1104,14 @@ pub(crate) fn react_loop(
         },
         cb.should_stop,
     )?;
+    add_usage(&mut total_usage, turn.usage);
     Ok(ReactOutcome {
         answer: turn.content,
         hits: all_hits,
         sub_steps: all_sub_steps,
         interrupted: turn.interrupted,
+        awaiting_user: false,
+        usage: total_usage,
     })
 }
 
@@ -868,6 +1133,10 @@ fn assistant_tool_calls_payload(turn_tool_calls: &[ToolCallReq]) -> serde_json::
 
 /// Run a SUB-agent (memory / note) reentrantly — no session lock, no
 /// delegation slot in its context (structural two-level cap).
+///
+/// Returns the child answer, its flattened steps and the token usage its
+/// own ReAct run accumulated, so the parent turn can fold it into the
+/// per-message total.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_sub_agent(
     kind: AgentKind,
@@ -877,13 +1146,15 @@ pub(crate) fn run_sub_agent(
     session_id: &str,
     query: &str,
     on_child_step: &mut dyn FnMut(u32, &str, &str),
-) -> Result<(String, Vec<SubStep>), String> {
+) -> Result<(String, Vec<SubStep>, Option<crate::llm_chat::TokenUsage>), String> {
     let db = handle.state::<Db>();
+    // Owned context (clonable): the runtime dispatches every tool call onto its
+    // own thread with a hard timeout, so tools can no longer borrow this turn.
     let ctx = ToolContext {
-        db: db.inner(),
-        embed_client,
-        chat_client: Some(client),
-        session_id,
+        db: db.inner().clone(),
+        embed_client: embed_client.cloned().map(std::sync::Arc::new),
+        chat_client: Some(std::sync::Arc::new(client.clone())),
+        session_id: session_id.to_string(),
         agent: kind,
         delegate: None, // children never delegate further (depth cap by design)
     };
@@ -906,6 +1177,7 @@ pub(crate) fn run_sub_agent(
         on_delta: &mut noop_delta,
         should_stop: None,
         on_plan: None,
+        on_interact: None,
         mailbox: None,
         step_budget: None,
     };
@@ -925,7 +1197,7 @@ pub(crate) fn run_sub_agent(
         Err(_) => harness().lifecycle.record_failure(kind.name(), session_id),
     }
 
-    outcome.map(|result| (result.answer, result.sub_steps))
+    outcome.map(|result| (result.answer, result.sub_steps, result.usage))
 }
 
 #[cfg(test)]
@@ -958,5 +1230,43 @@ mod tests {
         // allow-lists themselves stay disjoint from delegation for children.
         assert!(!AgentKind::Memory.tools().contains(&"delegate_to_agent"));
         assert!(AgentKind::Chat.tools().contains(&"delegate_to_agent"));
+    }
+
+    #[test]
+    fn ask_user_arguments_normalize_to_interaction_view() {
+        let view = parse_interaction(
+            r#"{"kind":"clarify","question":"选哪个方案？","context":"背景","options":[{"label":"方案A","value":"A"},{"label":"B"}]}"#,
+        );
+        assert_eq!(view.kind, "clarify");
+        assert_eq!(view.question, "选哪个方案？");
+        assert_eq!(view.context.as_deref(), Some("背景"));
+        let options = view.options.expect("options");
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].value, "A");
+        assert_eq!(options[1].value, "B", "value falls back to label");
+        assert!(view.fields.is_none());
+    }
+
+    #[test]
+    fn ask_user_confirm_gets_defaults_and_form_fields_default_type() {
+        let confirm = parse_interaction(r#"{"kind":"confirm","question":"覆盖文件？"}"#);
+        let options = confirm.options.expect("default confirm options");
+        assert_eq!(options[0].value, "确认执行");
+        assert_eq!(options[1].value, "取消");
+
+        let form = parse_interaction(
+            r#"{"kind":"form","question":"补充信息","fields":[{"name":"email","label":"邮箱","type":"email","required":true},{"name":"note"}]}"#,
+        );
+        let fields = form.fields.expect("fields");
+        assert_eq!(fields[0].field_type, "email");
+        assert!(fields[0].required);
+        assert_eq!(fields[1].field_type, "text");
+        assert!(!fields[1].required);
+        assert_eq!(fields[1].label, "note", "label falls back to name");
+
+        // 坏 JSON 退化为最小卡片而不是 panic。
+        let fallback = parse_interaction("not json");
+        assert_eq!(fallback.kind, "clarify");
+        assert!(fallback.question.is_empty());
     }
 }

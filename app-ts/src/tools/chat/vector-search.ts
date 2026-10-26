@@ -30,7 +30,7 @@ export function createVectorSearchTool(rag: RAGService) {
       });
       if (docs.length === 0) {
         return {
-          content: "知识库中没有找到相关内容。可以尝试换个表述，或用 list_videos 浏览已有视频列表。",
+          content: "知识库中没有找到相关内容。可以尝试换个表述，或调整检索范围后重试。",
           sources: [],
         };
       }

@@ -55,6 +55,7 @@ export function createMainAgent(
       "save_memory",
       "delegate_to_agent",
       "ask_user",
+      "plan",
       "fetch_webpage",
       "web_search",
       ...(includeKgTool ? ["kg_search"] : []),

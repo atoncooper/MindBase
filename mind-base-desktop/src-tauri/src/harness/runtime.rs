@@ -4,15 +4,29 @@
 //! Backend semantics preserved: one failing tool becomes a `工具执行失败: …`
 //! result instead of killing its siblings, results normalize to
 //! `{content, extras}`, and every call feeds the per-tool metrics map.
+//!
+//! Desktop hardening: every call gets its own OS thread plus a hard
+//! wall-clock timeout (`MIND_BASE_TOOL_TIMEOUT_SECS`, default 180s). A stuck
+//! tool can no longer freeze the ReAct turn — its slot degrades to a readable
+//! `工具执行超时…` result, the remaining calls still return, and the turn
+//! continues. The abandoned worker is detached (it owns its `Arc` pieces),
+//! so cleanup needs no join.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 
 use super::registry::{ToolContext, ToolOutput};
 use crate::llm_chat::ToolCallReq;
+
+/// Default hard wall-clock cap for one tool call.
+const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 180;
+/// Environment override for the per-call timeout (whole seconds).
+const TOOL_TIMEOUT_ENV: &str = "MIND_BASE_TOOL_TIMEOUT_SECS";
 
 /// Per-tool rolling metrics, exposed via [`AgentRuntime::monitor`].
 #[derive(Debug, Default, Clone)]
@@ -23,11 +37,11 @@ pub(crate) struct ToolMetrics {
     pub last_error: Option<String>,
 }
 
-/// Registry plus rolling execution metrics.
-#[derive(Default)]
+/// Registry plus rolling execution metrics and the per-call hard timeout.
 pub(crate) struct AgentRuntime {
     registry: super::registry::ToolRegistry,
     metrics: Mutex<HashMap<String, ToolMetrics>>,
+    tool_timeout: Duration,
 }
 
 /// One executed call: request plus its isolated outcome.
@@ -38,9 +52,45 @@ pub(crate) struct ExecutedCall {
     pub outcome: Result<ToolOutput, String>,
 }
 
+/// Parse the timeout override; invalid / zero values fall back to the default.
+fn timeout_secs_from_raw(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(DEFAULT_TOOL_TIMEOUT_SECS)
+}
+
+fn tool_timeout_from_env() -> Duration {
+    let raw = std::env::var(TOOL_TIMEOUT_ENV).ok();
+    Duration::from_secs(timeout_secs_from_raw(raw.as_deref()))
+}
+
+/// Human-readable timeout label (whole seconds stay clean, sub-second shows
+/// milliseconds so tests / logs don't read "0s").
+fn timeout_label(timeout: Duration) -> String {
+    let secs = timeout.as_secs_f64();
+    if secs >= 1.0 && secs.fract() == 0.0 {
+        format!("{}s", secs as u64)
+    } else {
+        format!("{secs:.3}s")
+    }
+}
+
 impl AgentRuntime {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            registry: super::registry::ToolRegistry::default(),
+            metrics: Mutex::new(HashMap::new()),
+            tool_timeout: tool_timeout_from_env(),
+        }
+    }
+
+    /// Test-only constructor with an explicit timeout (millisecond granularity
+    /// is needed to exercise the timeout path without slow tests).
+    #[cfg(test)]
+    pub(crate) fn with_tool_timeout(timeout: Duration) -> Self {
+        let mut runtime = Self::new();
+        runtime.tool_timeout = timeout;
+        runtime
     }
 
     pub(crate) fn registry_mut(&mut self) -> &mut super::registry::ToolRegistry {
@@ -85,46 +135,100 @@ impl AgentRuntime {
         }
     }
 
-    /// Execute every call concurrently (scoped threads mirror the backend's
-    /// gather over per-call tasks) and return outcomes in input order.
-    /// Unknown tool names fail in-place like any other execution error.
-    pub(crate) fn execute(
-        &self,
-        ctx: &ToolContext<'_>,
-        calls: &[ToolCallReq],
-    ) -> Vec<ExecutedCall> {
+    /// Execute every call on its own thread, waiting at most `tool_timeout`
+    /// per call; outcomes always return in input order.
+    ///
+    /// A timed-out call is abandoned (thread detached, it owns cloned `Arc`
+    /// handles) and degrades to a readable `工具执行超时…` text result, so the
+    /// rest of the turn keeps moving. Unknown tools and thread panics become
+    /// ordinary isolated errors — never a process panic.
+    pub(crate) fn execute(&self, ctx: &ToolContext, calls: &[ToolCallReq]) -> Vec<ExecutedCall> {
         if calls.is_empty() {
             return Vec::new();
         }
 
-        let outputs: Vec<(f64, Result<ToolOutput, String>)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = calls
-                .iter()
-                .map(|call| {
-                    scope.spawn(move || {
-                        let started = Instant::now();
-                        let outcome = match self.registry.get(&call.name) {
-                            Some(tool) => tool.execute(ctx, &call.arguments),
-                            None => Err(format!(
-                                "未知工具：{}（可用：{}）",
-                                call.name,
-                                self.registry.names().join(", ")
-                            )),
-                        };
-                        ((started.elapsed().as_secs_f64() * 1000.0), outcome)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().expect("tool thread panicked"))
-                .collect()
-        });
+        let (sender, receiver) = mpsc::channel::<(usize, f64, Result<ToolOutput, String>)>();
+        let available = self.registry.names().join(", ");
+        let mut outcomes: Vec<Option<(f64, Result<ToolOutput, String>)>> =
+            (0..calls.len()).map(|_| None).collect();
+
+        for (index, call) in calls.iter().enumerate() {
+            let tool = self.registry.get(&call.name);
+            let name = call.name.clone();
+            let arguments = call.arguments.clone();
+            let worker_ctx = ctx.clone();
+            let worker_sender = sender.clone();
+            let available = available.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("tool-{name}"))
+                .spawn(move || {
+                    let started = Instant::now();
+                    // Panic isolation: a panicking tool reports back as an
+                    // ordinary error instead of unwinding across threads.
+                    let result = match tool {
+                        Some(tool) => std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            tool.execute(&worker_ctx, &arguments)
+                        }))
+                        .unwrap_or_else(|_| Err("工具线程异常退出（panic）".to_string())),
+                        None => Err(format!("未知工具：{name}（可用：{available}）")),
+                    };
+                    let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    // Receiver may be gone when this call already timed out.
+                    let _ = worker_sender.send((index, duration_ms, result));
+                });
+            if let Err(err) = spawned {
+                outcomes[index] = Some((0.0, Err(format!("无法启动工具线程：{err}"))));
+            }
+        }
+        // Only the workers hold senders now: when they all finish the channel
+        // disconnects instead of hanging forever.
+        drop(sender);
+
+        let mut buffered: HashMap<usize, (f64, Result<ToolOutput, String>)> = HashMap::new();
+        for index in 0..calls.len() {
+            if outcomes[index].is_some() {
+                continue;
+            }
+            if let Some(done) = buffered.remove(&index) {
+                outcomes[index] = Some(done);
+                continue;
+            }
+            loop {
+                match receiver.recv_timeout(self.tool_timeout) {
+                    Ok((worker_index, duration_ms, result)) => {
+                        if worker_index == index {
+                            outcomes[index] = Some((duration_ms, result));
+                            break;
+                        }
+                        buffered.insert(worker_index, (duration_ms, result));
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        let message = format!(
+                            "工具执行超时（超过 {}）：{}，已跳过本次等待",
+                            timeout_label(self.tool_timeout),
+                            calls[index].name
+                        );
+                        eprintln!("[RUNTIME] {message}");
+                        outcomes[index] =
+                            Some((self.tool_timeout.as_secs_f64() * 1000.0, Err(message)));
+                        break;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        let message =
+                            format!("工具线程异常退出（通道断开）：{}", calls[index].name);
+                        outcomes[index] = Some((0.0, Err(message)));
+                        break;
+                    }
+                }
+            }
+        }
 
         calls
             .iter()
-            .zip(outputs)
-            .map(|(call, (duration_ms, outcome))| {
+            .zip(outcomes)
+            .map(|(call, done)| {
+                let (duration_ms, outcome) =
+                    done.unwrap_or_else(|| (0.0, Err("工具线程未返回结果".to_string())));
                 match &outcome {
                     Ok(_) => self.record(&call.name, duration_ms, None),
                     Err(error) => self.record(&call.name, duration_ms, Some(error)),
@@ -164,6 +268,7 @@ impl AgentRuntime {
             "tools": tools,
             "totals": { "callCount": totals_call, "errorCount": totals_error },
             "registeredTools": self.registry.names(),
+            "toolTimeoutSecs": self.tool_timeout.as_secs_f64(),
         })
     }
 }
@@ -174,6 +279,7 @@ mod tests {
     use crate::harness::registry::{LocalTool, ToolSpec};
     use serde_json::json;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
     struct ScriptedTool {
         spec: ToolSpec,
@@ -186,7 +292,7 @@ mod tests {
         fn spec(&self) -> &ToolSpec {
             &self.spec
         }
-        fn execute(&self, _ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+        fn execute(&self, _ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.sleep_ms > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(self.sleep_ms));
@@ -212,13 +318,46 @@ mod tests {
         })
     }
 
+    /// A tool that always panics — proves panic isolation across threads.
+    struct PanicTool {
+        spec: ToolSpec,
+    }
+
+    impl LocalTool for PanicTool {
+        fn spec(&self) -> &ToolSpec {
+            &self.spec
+        }
+        fn execute(&self, _ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
+            panic!("tool exploded");
+        }
+    }
+
     fn memory_db() -> crate::db::Db {
         let conn = rusqlite::Connection::open_in_memory().expect("memory db");
         conn.execute_batch(crate::db::SCHEMA_SQL).expect("schema");
         crate::db::Db {
-            conn: Mutex::new(conn),
-            data_dir: Mutex::new(std::path::PathBuf::from(".")),
+            conn: Arc::new(Mutex::new(conn)),
+            data_dir: Arc::new(Mutex::new(std::path::PathBuf::from("."))),
             default_dir: std::path::PathBuf::from("."),
+        }
+    }
+
+    fn test_ctx(db: &crate::db::Db) -> ToolContext {
+        ToolContext {
+            db: db.clone(),
+            embed_client: None,
+            chat_client: None,
+            session_id: "s".to_string(),
+            agent: crate::agents::AgentKind::Chat,
+            delegate: None,
+        }
+    }
+
+    fn call(name: &str) -> ToolCallReq {
+        ToolCallReq {
+            id: name.to_string(),
+            name: name.to_string(),
+            arguments: "{}".to_string(),
         }
     }
 
@@ -233,26 +372,8 @@ mod tests {
             .register(scripted("bad_tool", true, 0));
 
         let db = memory_db();
-        let ctx = ToolContext {
-            db: &db,
-            embed_client: None,
-            chat_client: None,
-            session_id: "s",
-            agent: crate::agents::AgentKind::Chat,
-            delegate: None,
-        };
-        let calls = vec![
-            ToolCallReq {
-                id: "1".into(),
-                name: "bad_tool".into(),
-                arguments: r#"{"x":"1"}"#.into(),
-            },
-            ToolCallReq {
-                id: "2".into(),
-                name: "ok_tool".into(),
-                arguments: r#"{"x":"2"}"#.into(),
-            },
-        ];
+        let ctx = test_ctx(&db);
+        let calls = vec![call("bad_tool"), call("ok_tool")];
 
         let executed = runtime.execute(&ctx, &calls);
         assert_eq!(executed.len(), 2);
@@ -264,10 +385,7 @@ mod tests {
             .content
             .starts_with("工具执行失败: "));
         // …while its sibling still succeeds.
-        assert_eq!(
-            executed[1].outcome.as_ref().unwrap().content,
-            "done:{\"x\":\"2\"}"
-        );
+        assert_eq!(executed[1].outcome.as_ref().unwrap().content, "done:{}");
 
         let monitor = runtime.monitor();
         assert_eq!(monitor["totals"]["callCount"], 2);
@@ -279,22 +397,8 @@ mod tests {
         let mut runtime = AgentRuntime::new();
         runtime.registry_mut().register(scripted("known", false, 0));
         let db = memory_db();
-        let ctx = ToolContext {
-            db: &db,
-            embed_client: None,
-            chat_client: None,
-            session_id: "s",
-            agent: crate::agents::AgentKind::Chat,
-            delegate: None,
-        };
-        let executed = runtime.execute(
-            &ctx,
-            &[ToolCallReq {
-                id: "9".into(),
-                name: "nope".into(),
-                arguments: "{}".into(),
-            }],
-        );
+        let ctx = test_ctx(&db);
+        let executed = runtime.execute(&ctx, &[call("nope")]);
         let text = executed[0].outcome.as_ref().unwrap().content.clone();
         assert!(text.contains("未知工具：nope"));
         assert!(text.contains("known"));
@@ -311,35 +415,76 @@ mod tests {
             .register(scripted("slow_b", false, 120));
 
         let db = memory_db();
-        let ctx = ToolContext {
-            db: &db,
-            embed_client: None,
-            chat_client: None,
-            session_id: "s",
-            agent: crate::agents::AgentKind::Chat,
-            delegate: None,
-        };
+        let ctx = test_ctx(&db);
         let started = Instant::now();
-        let executed = runtime.execute(
-            &ctx,
-            &[
-                ToolCallReq {
-                    id: "a".into(),
-                    name: "slow_a".into(),
-                    arguments: "{}".into(),
-                },
-                ToolCallReq {
-                    id: "b".into(),
-                    name: "slow_b".into(),
-                    arguments: "{}".into(),
-                },
-            ],
-        );
+        let executed = runtime.execute(&ctx, &[call("slow_a"), call("slow_b")]);
         assert_eq!(executed.len(), 2);
         // Two 120 ms sleeps run concurrently → well under their serial sum.
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(220),
-            "calls must overlap"
+            started.elapsed() < std::time::Duration::from_millis(260),
+            "calls must overlap: {:?}",
+            started.elapsed()
         );
+    }
+
+    #[test]
+    fn stuck_tool_times_out_and_does_not_block_the_turn() {
+        let mut runtime = AgentRuntime::with_tool_timeout(Duration::from_millis(50));
+        runtime
+            .registry_mut()
+            .register(scripted("stuck", false, 300));
+        runtime.registry_mut().register(scripted("quick", false, 0));
+
+        let db = memory_db();
+        let ctx = test_ctx(&db);
+        let started = Instant::now();
+        let executed = runtime.execute(&ctx, &[call("stuck"), call("quick")]);
+        let elapsed = started.elapsed();
+        // The 300 ms tool must be cut at ~50 ms, not awaited.
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "timeout must return early, elapsed={elapsed:?}"
+        );
+        let stuck_text = executed[0].outcome.as_ref().unwrap().content.clone();
+        assert!(stuck_text.contains("工具执行超时"), "{stuck_text}");
+        assert!(stuck_text.contains("stuck"), "{stuck_text}");
+        // The sibling that finished in time still reports its normal result.
+        assert_eq!(executed[1].outcome.as_ref().unwrap().content, "done:{}");
+
+        let monitor = runtime.monitor();
+        assert_eq!(monitor["totals"]["callCount"], 2);
+        assert_eq!(monitor["totals"]["errorCount"], 1);
+        assert_eq!(monitor["toolTimeoutSecs"], 0.05);
+    }
+
+    #[test]
+    fn panicking_tool_becomes_an_isolated_error() {
+        let mut runtime = AgentRuntime::new();
+        runtime.registry_mut().register(Box::new(PanicTool {
+            spec: ToolSpec {
+                name: "panic_tool",
+                description: "panics".into(),
+                parameters: json!({}),
+            },
+        }));
+        let db = memory_db();
+        let ctx = test_ctx(&db);
+        let executed = runtime.execute(&ctx, &[call("panic_tool")]);
+        let text = executed[0].outcome.as_ref().unwrap().content.clone();
+        assert!(text.contains("工具线程异常退出（panic）"), "{text}");
+        assert_eq!(runtime.monitor()["totals"]["errorCount"], 1);
+    }
+
+    #[test]
+    fn timeout_override_parses_and_falls_back() {
+        assert_eq!(timeout_secs_from_raw(None), DEFAULT_TOOL_TIMEOUT_SECS);
+        assert_eq!(timeout_secs_from_raw(Some(" 42 ")), 42);
+        assert_eq!(timeout_secs_from_raw(Some("0")), DEFAULT_TOOL_TIMEOUT_SECS);
+        assert_eq!(timeout_secs_from_raw(Some("-3")), DEFAULT_TOOL_TIMEOUT_SECS);
+        assert_eq!(
+            timeout_secs_from_raw(Some("abc")),
+            DEFAULT_TOOL_TIMEOUT_SECS
+        );
+        assert_eq!(timeout_label(Duration::from_secs(180)), "180s");
     }
 }

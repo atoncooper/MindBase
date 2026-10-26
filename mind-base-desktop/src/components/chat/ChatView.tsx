@@ -8,6 +8,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  ClipboardEvent as ReactClipboardEvent,
+  DragEvent as ReactDragEvent,
+} from "react";
 import {
   chatAsk,
   chatTitlePrefix,
@@ -23,6 +27,18 @@ import {
   stopChat,
 } from "../../lib/chat";
 import type { ChatEvent, ChatMode, ChatSessionRow } from "../../lib/chat";
+import {
+  CHAT_IMAGE_MAX_COUNT,
+  CHAT_IMAGE_MAX_TOTAL_BYTES,
+  createImageAttachment,
+  formatImageSize,
+  imageDisplayName,
+  pickImageFiles,
+  readImageAsDataUrl,
+  totalImageBytes,
+  validateImageFile,
+  type ChatImageAttachment,
+} from "../../lib/chat-images";
 import type { PendingJump } from "../../lib/router";
 import { listProviders, type ProviderStatus } from "../../lib/api-keys";
 import { listSkills, type SkillMeta } from "../../lib/skills";
@@ -31,6 +47,8 @@ import SessionSidebar from "./SessionSidebar";
 import MessageList, { parseClarify } from "./MessageList";
 import SummaryModal from "./SummaryModal";
 import SkillMenu from "./SkillMenu";
+import ImageAttachmentStrip from "./ImageAttachmentStrip";
+import SpawnTaskModal from "./SpawnTaskModal";
 import type { UiMessage } from "./MessageList";
 
 /** localStorage key remembering the sidebar fold across restarts. */
@@ -80,11 +98,36 @@ function SendIcon(): React.JSX.Element {
   );
 }
 
+/** Queue glyph for the background-task entry (top bar). */
+function TaskIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" rx="1.6" />
+      <rect x="13" y="4" width="7" height="7" rx="1.6" />
+      <rect x="4" y="13" width="7" height="7" rx="1.6" />
+      <path d="M13.6 16.5h6.4M16.8 13.3v6.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /** Stop-square glyph for the interrupt button (shown while generating). */
 function StopIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <rect x="7" y="7" width="10" height="10" rx="2" />
+    </svg>
+  );
+}
+
+/** 回形针 glyph：输入框左侧的「添加图片」入口。 */
+function PaperclipIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      <path
+        d="M20 11.4 12.3 19a4.6 4.6 0 0 1-6.5-6.5l8.3-8.2a3.1 3.1 0 0 1 4.4 4.4l-8.2 8.2a1.6 1.6 0 0 1-2.3-2.3l7.5-7.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -120,6 +163,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   );
   // 打开中的会话总结弹窗（null = 关闭）。
   const [summaryTarget, setSummaryTarget] = useState<{ id: string; title: string } | null>(null);
+  // 后台任务弹窗（agent + 任务描述 → agent_task_spawn）。
+  const [spawnOpen, setSpawnOpen] = useState(false);
   // 对话提供方选择：null = 跟随 API 设置的默认；已配置密钥的对话类提供方才可选。
   const [chatProvider, setChatProvider] = useState<string | null>(null);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
@@ -129,6 +174,14 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const [allSkills, setAllSkills] = useState<SkillMeta[]>([]);
   const [skillMenu, setSkillMenu] = useState<{ query: string; index: number } | null>(null);
   const [attachedSkill, setAttachedSkill] = useState<SkillMeta | null>(null);
+  // 本轮待发送的图片附件（选择 / 粘贴 / 拖拽统一走 addImageFiles）：发送成功
+  // 后清空、失败保留让用户可直接重发；生成中禁用增删（按钮 / 删除键置灰）。
+  const [pendingImages, setPendingImages] = useState<ChatImageAttachment[]>([]);
+  const [imageError, setImageError] = useState("");
+  const [imageDragActive, setImageDragActive] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  // dragenter/dragleave 在嵌套子元素间会成对抖动，用计数抵消后再收高亮。
+  const imageDragDepth = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,6 +214,10 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const runToken = useRef(0);
   const localCounter = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // MessageRow 是 memo 行，会缓存交互卡作答那次渲染的闭包：作答必须读最新
+  // 的 send / busy，否则回合收尾的旧闭包（busy=true）会让点击静默失效。
+  const sendRef = useRef<(text?: string) => Promise<void>>(async () => undefined);
+  const busyRef = useRef(false);
 
   // Auto-grow the composer with its content, capped at ~8 lines.
   useEffect(() => {
@@ -280,6 +337,95 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     inputRef.current?.focus();
   }
 
+  /**
+   * 统一的图片入口（选择 / 粘贴 / 拖拽）：先按与后端相同的规则做前端预校验
+   * （数量 ≤4、类型、单张 ≤5MB、合计 ≤15MB），再逐个读成 data URL。不合规
+   * 的文件不加入，并在输入框上方给出中文原因。
+   */
+  async function addImageFiles(files: File[]): Promise<void> {
+    if (busy || files.length === 0) return;
+    let next = pendingImages;
+    let error = "";
+    for (const file of files) {
+      if (next.length >= CHAT_IMAGE_MAX_COUNT) {
+        error = `最多只能附带 ${CHAT_IMAGE_MAX_COUNT} 张图片（已选 ${next.length} 张）`;
+        break;
+      }
+      const invalid = validateImageFile(file);
+      if (invalid !== null) {
+        error = `「${imageDisplayName(file)}」${invalid}`;
+        continue;
+      }
+      if (totalImageBytes(next) + file.size > CHAT_IMAGE_MAX_TOTAL_BYTES) {
+        error = `图片总大小不能超过 15MB（已选 ${formatImageSize(totalImageBytes(next))}）`;
+        continue;
+      }
+      try {
+        const dataUrl = await readImageAsDataUrl(file);
+        next = [...next, createImageAttachment(file, dataUrl)];
+        setPendingImages(next);
+      } catch {
+        error = `「${imageDisplayName(file)}」读取失败，请重试`;
+      }
+    }
+    setImageError(error);
+  }
+
+  function hasFileDrag(event: ReactDragEvent<HTMLDivElement>): boolean {
+    return Array.from(event.dataTransfer.types).includes("Files");
+  }
+
+  /** 拖拽悬停在输入区：高亮 + 阻止 webview 打开文件。 */
+  function handleImageDragEnter(event: ReactDragEvent<HTMLDivElement>): void {
+    if (!hasFileDrag(event)) return;
+    event.preventDefault();
+    imageDragDepth.current += 1;
+    setImageDragActive(true);
+  }
+
+  function handleImageDragOver(event: ReactDragEvent<HTMLDivElement>): void {
+    if (!hasFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleImageDragLeave(event: ReactDragEvent<HTMLDivElement>): void {
+    if (!hasFileDrag(event)) return;
+    imageDragDepth.current = Math.max(0, imageDragDepth.current - 1);
+    if (imageDragDepth.current === 0) setImageDragActive(false);
+  }
+
+  function handleImageDrop(event: ReactDragEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    imageDragDepth.current = 0;
+    setImageDragActive(false);
+    if (busy) return;
+    const dropped = Array.from(event.dataTransfer.files);
+    const images = pickImageFiles(dropped);
+    if (images.length === 0) {
+      if (dropped.length > 0) setImageError("只能拖入图片文件（PNG / JPEG / WEBP / GIF）");
+      return;
+    }
+    void addImageFiles(images);
+  }
+
+  /** 粘贴截图 / 从剪贴板复制的图片文件。 */
+  function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>): void {
+    if (busy) return;
+    const clipboard = event.clipboardData;
+    if (clipboard === null) return;
+    const fromFiles = Array.from(clipboard.files);
+    const fromItems = Array.from(clipboard.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    const images = pickImageFiles(fromFiles.length > 0 ? fromFiles : fromItems);
+    if (images.length === 0) return;
+    // 截图粘贴时剪贴板常同时带文字和图片，图片优先。
+    event.preventDefault();
+    void addImageFiles(images);
+  }
+
   const patchLastAssistant = useCallback(
     (patch: Partial<UiMessage>) => {
       setMessages((prev) => {
@@ -291,6 +437,22 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     },
     [],
   );
+
+  /**
+   * 交互卡作答：先标记该消息的卡片为已作答（只读），再把作答内容作为下一条
+   * 用户消息发出——与手输走同一条 send 路径（会话创建/技能注入一致）。
+   */
+  const answerInteraction = useCallback((messageId: string, text: string): void => {
+    if (busyRef.current) return;
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.id === messageId && message.interaction !== undefined
+          ? { ...message, interaction: { ...message.interaction, answered: true } }
+          : message,
+      ),
+    );
+    void sendRef.current(text);
+  }, []);
 
   // Codex 式澄清候选：最后一条消息是「已完成」的助手回复且命中澄清协议
   // 时，在输入框上方展示可点选的方向，点选即作为新消息发送。生成中 /
@@ -335,6 +497,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             sources: Array.isArray(row.sources) ? row.sources : [],
             error: row.error,
             steps: [],
+            // 历史重载与实时表现一致：后端落库的 usage JSON 一并回溯。
+            usage: row.usage ?? null,
           })),
         );
       },
@@ -451,6 +615,39 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       case "sources":
         patchLastAssistant({ sources: event.sources });
         break;
+      case "usage":
+        // token 用量帧：挂到本轮 pending 助手消息，done 时随消息保留。
+        patchLastAssistant({ usage: event.usage });
+        break;
+      case "interact":
+        // ask_user：本轮随即结束，交互卡挂到当前 pending 助手消息上，作答
+        // 即作为下一条用户消息发送（applyEvent 不接管发送）。
+        if (!event.interact) break;
+        patchLastAssistant({
+          interaction: { payload: event.interact, answered: false },
+        });
+        break;
+      case "artifact": {
+        // 本轮新生成的产物：按 path 去重后追加到当前助手消息。
+        const incoming = Array.isArray(event.artifacts) ? event.artifacts : [];
+        if (incoming.length === 0) break;
+        setMessages((prev) => {
+          if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
+          const next = [...prev];
+          const last = next[next.length - 1];
+          const existing = last.artifacts ?? [];
+          const seen = new Set(existing.map((item) => item.path));
+          const merged = [...existing];
+          for (const item of incoming) {
+            if (seen.has(item.path)) continue;
+            seen.add(item.path);
+            merged.push(item);
+          }
+          next[next.length - 1] = { ...last, artifacts: merged };
+          return next;
+        });
+        break;
+      }
       case "title":
         setSessions((prev) =>
           prev.map((session) =>
@@ -472,7 +669,10 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             content:
               interruptRequestedRef.current && last.content.trim() === ""
                 ? "（已手动中断本次生成）"
-                : last.content,
+                : last.interaction !== undefined && last.content.trim() === ""
+                  ? // 与后端落库的兜底文案一致：历史重载与实时表现相同。
+                    "（已向你提问，请在上方卡片作答）"
+                  : last.content,
           };
           return next;
         });
@@ -489,7 +689,12 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   }
 
   async function send(text?: string): Promise<void> {
-    const question = (text ?? input).trim();
+    // 显式传入 text 的路径（澄清选项 / 交互卡作答）不携带输入框里暂存的图片：
+    // 那些图片属于用户正在编辑的这一轮。
+    const outgoingImages = text === undefined ? pendingImages : [];
+    // 只附图片也可以发送：补一句默认问题（后端 chat_ask 要求问题非空）。
+    const question =
+      (text ?? input).trim() || (outgoingImages.length > 0 ? "请分析这张图片。" : "");
     if (question === "" || busy) return;
 
     setInput("");
@@ -522,12 +727,33 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       ...prev,
       { id: `local-user-${stamp}`, role: "user", content: question, status: "completed", sources: [], error: "", steps: [] },
     ]);
-    await runTurn(sid, question);
+    const succeeded = await runTurn(
+      sid,
+      question,
+      outgoingImages.map((image) => image.dataUrl),
+    );
+    // 发送成功才清空附件；失败保留，用户可直接重试（图片不落库）。
+    if (succeeded) {
+      setPendingImages([]);
+      setImageError("");
+    }
   }
 
-  /** 流式执行一轮对话：插入 pending 占位、消费事件、失败标记。 */
-  async function runTurn(targetId: string, question: string): Promise<void> {
-    if (busy) return;
+  // 每轮渲染把最新闭包交给交互卡（见 sendRef 注释）。
+  sendRef.current = send;
+  busyRef.current = busy;
+
+  /**
+   * 流式执行一轮对话：插入 pending 占位、消费事件、失败标记。
+   * `imageDataUrls` 是本轮用户主动附带的图片（data URL，仅本轮上下文有效，
+   * 刷新 / 切会话不重放）；返回本轮是否成功完成，供调用方决定是否清空附件。
+   */
+  async function runTurn(
+    targetId: string,
+    question: string,
+    imageDataUrls: string[] = [],
+  ): Promise<boolean> {
+    if (busy) return false;
     localCounter.current += 1;
     const stamp = `${Date.now()}-${localCounter.current}`;
     setMessages((prev) => [
@@ -539,12 +765,21 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     setStopping(false);
 
     const token = ++runToken.current;
+    let succeeded = false;
     try {
-      await chatAsk(targetId, question, (event) => {
-        if (runToken.current === token) applyEvent(event);
-      }, chatProvider, attachedSkill?.folder ?? null);
+      await chatAsk(
+        targetId,
+        question,
+        (event) => {
+          if (runToken.current === token) applyEvent(event);
+        },
+        chatProvider,
+        attachedSkill?.folder ?? null,
+        imageDataUrls,
+      );
       // 技能是单次注入：随本轮发出后即清除（retry 不带技能）。
       setAttachedSkill(null);
+      succeeded = true;
     } catch (err) {
       if (runToken.current === token) {
         patchLastAssistant({ status: "failed", error: toErrorMessage(err) });
@@ -554,6 +789,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       // Re-sort the sidebar so the active conversation floats to the top.
       void listSessions().then((rows) => setSessions(rows), () => undefined);
     }
+    // 会话已切走（token 失效）时不算成功：不能清掉用户在新会话里暂存的附件。
+    return succeeded && runToken.current === token;
   }
 
   /** 重试失败的回复：沿用其上方的用户消息，移除失败气泡后重新生成。 */
@@ -604,6 +841,20 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         }
       />
       <div className="chat-main">
+        {/* 顶栏：后台任务入口（独立任务不占用当前对话流）。 */}
+        <div className="chat-topbar">
+          <button
+            type="button"
+            className="chat-topbar__action"
+            title="把一件独立工作交给后台 agent，不占用当前对话"
+            onClick={() => setSpawnOpen(true)}
+          >
+            <span className="chat-topbar__icon" aria-hidden="true">
+              <TaskIcon />
+            </span>
+            后台任务
+          </button>
+        </div>
         {/* key=mode：切换模式时消息区整棵重挂，触发 mode-in 过渡动画。 */}
         <MessageList
           key={mode}
@@ -615,8 +866,18 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           onSuggestion={(text) => setInput(text)}
           onRetry={retry}
           onEditResend={editResend}
+          onAnswerInteraction={answerInteraction}
         />
-        <div className="composer-wrap">
+        <div
+          className={imageDragActive ? "composer-wrap composer-wrap--dragover" : "composer-wrap"}
+          onDragEnter={handleImageDragEnter}
+          onDragOver={handleImageDragOver}
+          onDragLeave={handleImageDragLeave}
+          onDrop={handleImageDrop}
+        >
+        {imageDragActive && (
+          <p className="composer-drop-hint">松开即可添加图片（PNG / JPEG / WEBP / GIF，最多 4 张）</p>
+        )}
         {loadError !== "" && <p className="error-text composer__error">{loadError}</p>}
         {clarifyVisible && clarify !== null && (
           <div className="clarify-bar" role="group" aria-label="澄清选项">
@@ -662,6 +923,15 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             </div>
           </div>
         )}
+        <ImageAttachmentStrip
+          images={pendingImages}
+          disabled={busy}
+          onRemove={(id) => {
+            setPendingImages((prev) => prev.filter((image) => image.id !== id));
+            setImageError("");
+          }}
+        />
+        {imageError !== "" && <p className="error-text composer__error">{imageError}</p>}
         {attachedSkill !== null && (
           <div className="skill-chip-row">
             <span className="skill-chip" title="该技能全文将随下一条消息强制注入">
@@ -712,6 +982,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
                 setSkillMenu(null);
               }
             }}
+            onPaste={handleComposerPaste}
             onKeyDown={(event) => {
               if (skillMenu !== null) {
                 if (event.key === "ArrowDown" && filteredSkills.length > 0) {
@@ -743,6 +1014,29 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
               }
             }}
           />
+          <input
+            ref={imageInputRef}
+            className="composer__image-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              // 清空 value：允许重复选择同一张图，下一次 change 仍会触发。
+              event.target.value = "";
+              void addImageFiles(files);
+            }}
+          />
+          <button
+            type="button"
+            className="composer__attach"
+            disabled={busy}
+            aria-label="添加图片"
+            title={busy ? "生成中，暂不能添加图片" : "添加图片（支持选择 / 粘贴 / 拖拽）"}
+            onClick={() => imageInputRef.current?.click()}
+          >
+            <PaperclipIcon />
+          </button>
           <div className="provider-picker" ref={pickerRef}>
             <button
               type="button"
@@ -836,8 +1130,12 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           ) : (
             <button
               type="button"
-              className={input.trim() === "" ? "composer__send composer__send--muted" : "composer__send"}
-              disabled={busy || input.trim() === ""}
+              className={
+                input.trim() === "" && pendingImages.length === 0
+                  ? "composer__send composer__send--muted"
+                  : "composer__send"
+              }
+              disabled={busy || (input.trim() === "" && pendingImages.length === 0)}
               aria-label={busy ? "生成中" : "发送"}
               title="Enter 发送 · Shift+Enter 换行"
               onClick={() => void send()}
@@ -854,6 +1152,9 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           sessionTitle={summaryTarget.title}
           onClose={() => setSummaryTarget(null)}
         />
+      )}
+      {spawnOpen && (
+        <SpawnTaskModal sessionId={activeId} onClose={() => setSpawnOpen(false)} />
       )}
     </div>
   );

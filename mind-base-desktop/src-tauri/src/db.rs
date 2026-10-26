@@ -12,7 +12,7 @@
 //! must never fail startup because of stale relocation state.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -124,6 +124,7 @@ pub(crate) const SCHEMA_SQL: &str =
          sources         TEXT NOT NULL DEFAULT '[]',          -- JSON array
          model           TEXT NOT NULL DEFAULT '',
          error           TEXT NOT NULL DEFAULT '',
+         usage           TEXT NOT NULL DEFAULT '{}',         -- JSON token usage
          created_at      INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_chat_messages_session
@@ -272,6 +273,36 @@ fn run_column_migrations(conn: &Connection) {
     }
 }
 
+/// True when the `chat_messages` table already carries the `usage` column.
+fn chat_messages_has_usage_column(conn: &Connection) -> bool {
+    let mut statement = match conn.prepare("PRAGMA table_info(chat_messages)") {
+        Ok(statement) => statement,
+        Err(_) => return false,
+    };
+    let names = statement.query_map([], |row| row.get::<_, String>(1));
+    match names {
+        Ok(names) => names.filter_map(Result::ok).any(|name| name == "usage"),
+        Err(_) => false,
+    }
+}
+
+/// Idempotent migration for `chat_messages.usage` (token accounting JSON).
+///
+/// SCHEMA_SQL covers fresh databases; existing data directories predate
+/// the column, so a PRAGMA-guarded `ADD COLUMN` runs on every launch and
+/// self-heals old installs exactly once. Failures are logged, never fatal
+/// (startup must not break because of a migration hiccup).
+fn ensure_chat_message_usage_column(conn: &Connection) {
+    if chat_messages_has_usage_column(conn) {
+        return;
+    }
+    if let Err(err) = conn.execute_batch(
+        "ALTER TABLE chat_messages ADD COLUMN usage TEXT NOT NULL DEFAULT '{}';",
+    ) {
+        eprintln!("[db] chat_messages.usage migration failed: {err}");
+    }
+}
+
 /// One-time data migration: graded sessions previously stored only in
 /// `quiz_records` become read-only rows in `quiz_sets`, so the quiz history
 /// keeps one source of truth. Question bodies were never persisted for those,
@@ -337,10 +368,11 @@ fn migrate_quiz_records_to_sets(conn: &Connection) {
 ///
 /// Lock order (to stay deadlock-free): `conn` first, then `data_dir`. No
 /// code path acquires them in reverse order or nests other locks in between.
+#[derive(Clone)]
 pub struct Db {
-    pub conn: Mutex<Connection>,
+    pub conn: Arc<Mutex<Connection>>,
     /// Active data directory (host of the db file); updated on relocation.
-    pub data_dir: Mutex<PathBuf>,
+    pub data_dir: Arc<Mutex<PathBuf>>,
     /// OS default app-data dir; pointer-file anchor and reset target.
     pub default_dir: PathBuf,
 }
@@ -446,6 +478,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|err| format!("failed to initialize schema: {err}"))?;
     run_column_migrations(conn);
+    ensure_chat_message_usage_column(conn);
     migrate_quiz_records_to_sets(conn);
     backfill_vectors_fts(conn);
     Ok(())
@@ -533,8 +566,8 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     };
 
     Ok(Db {
-        conn: Mutex::new(conn),
-        data_dir: Mutex::new(used_dir),
+        conn: Arc::new(Mutex::new(conn)),
+        data_dir: Arc::new(Mutex::new(used_dir)),
         default_dir,
     })
 }
@@ -879,5 +912,89 @@ mod tests {
         assert!(is_strict_subdir(child, parent));
         assert!(!is_strict_subdir(sibling_prefix, parent));
         assert!(!is_strict_subdir(parent, parent));
+    }
+
+    #[test]
+    fn fresh_schema_has_chat_message_usage_column() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        ensure_schema(&conn).expect("schema bootstrap");
+        assert!(
+            chat_messages_has_usage_column(&conn),
+            "fresh databases get the usage column from SCHEMA_SQL"
+        );
+        // The column defaults to the empty usage object for every row.
+        conn.execute(
+            "INSERT INTO chat_messages(msg_id, chat_session_id, role, content, created_at)
+             VALUES('m1', 's1', 'assistant', 'hi', 1)",
+            [],
+        )
+        .expect("insert");
+        let usage: String = conn
+            .query_row(
+                "SELECT usage FROM chat_messages WHERE msg_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("usage default");
+        assert_eq!(usage, "{}");
+    }
+
+    #[test]
+    fn legacy_chat_messages_gain_usage_column_idempotently() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        // Pre-usage schema: rows written by older builds must survive.
+        conn.execute_batch(
+            "CREATE TABLE chat_messages(
+                 msg_id          TEXT PRIMARY KEY,
+                 chat_session_id TEXT NOT NULL,
+                 role            TEXT NOT NULL,
+                 content         TEXT NOT NULL,
+                 status          TEXT NOT NULL DEFAULT 'completed',
+                 sources         TEXT NOT NULL DEFAULT '[]',
+                 model           TEXT NOT NULL DEFAULT '',
+                 error           TEXT NOT NULL DEFAULT '',
+                 created_at      INTEGER NOT NULL
+             );
+             INSERT INTO chat_messages(msg_id, chat_session_id, role, content, created_at)
+             VALUES('old', 's1', 'assistant', 'legacy answer', 1);",
+        )
+        .expect("legacy schema");
+        assert!(!chat_messages_has_usage_column(&conn));
+
+        ensure_chat_message_usage_column(&conn);
+        // Second run is a no-op (no duplicate-column error, no data loss).
+        ensure_chat_message_usage_column(&conn);
+
+        assert!(chat_messages_has_usage_column(&conn));
+        let (content, usage): (String, String) = conn
+            .query_row(
+                "SELECT content, usage FROM chat_messages WHERE msg_id = 'old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legacy row readable");
+        assert_eq!(content, "legacy answer");
+        assert_eq!(usage, "{}");
+    }
+
+    #[test]
+    fn ensure_schema_heals_legacy_chat_messages_table() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE chat_messages(
+                 msg_id          TEXT PRIMARY KEY,
+                 chat_session_id TEXT NOT NULL,
+                 role            TEXT NOT NULL,
+                 content         TEXT NOT NULL,
+                 status          TEXT NOT NULL DEFAULT 'completed',
+                 sources         TEXT NOT NULL DEFAULT '[]',
+                 model           TEXT NOT NULL DEFAULT '',
+                 error           TEXT NOT NULL DEFAULT '',
+                 created_at      INTEGER NOT NULL
+             );",
+        )
+        .expect("legacy schema");
+        ensure_schema(&conn).expect("startup self-heals the old database");
+        assert!(chat_messages_has_usage_column(&conn));
     }
 }

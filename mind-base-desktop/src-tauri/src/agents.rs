@@ -73,6 +73,8 @@ impl AgentKind {
                 "get_compressed_summary",
                 "get_session_findings",
                 "plan",
+                "ask_user",
+                "web_search",
                 "delegate_to_agent",
                 "load_skill",
                 "load_prompt",
@@ -125,7 +127,7 @@ impl AgentKind {
                 "write_file",
                 "list_dir",
             ],
-            AgentKind::Search => &["search_docs", "web_crawl"],
+            AgentKind::Search => &["web_search", "search_docs", "web_crawl"],
             AgentKind::Academic => &[
                 "vector_search",
                 "search_chat_history",
@@ -344,6 +346,10 @@ mod tests {
         assert_eq!(AgentKind::Note.max_steps(), 5);
         assert!(AgentKind::Chat.tools().contains(&"delegate_to_agent"));
         assert!(AgentKind::Chat.tools().contains(&"load_prompt"));
+        // 结构化交互只给顶层 chat（子代理/后台任务没有用户可答）。
+        assert!(AgentKind::Chat.tools().contains(&"ask_user"));
+        assert!(!AgentKind::Note.tools().contains(&"ask_user"));
+        assert!(!AgentKind::Code.tools().contains(&"ask_user"));
         assert!(!AgentKind::Memory.tools().contains(&"delegate_to_agent"));
         assert!(!AgentKind::Memory.tools().contains(&"load_prompt"));
         assert!(AgentKind::Note.tools().contains(&"save_note"));

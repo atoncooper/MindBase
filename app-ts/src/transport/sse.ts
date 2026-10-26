@@ -1,8 +1,8 @@
-import type { Artifact, InteractionPayload, Source } from "../context/types.js";
+import type { Artifact, InteractionPayload, PlanSnapshot, Source } from "../context/types.js";
 
 /**
  * SSE frame protocol: semantics aligned with Python agent_sse.py.
- * route/chunk/reasoning/step/sources/artifact/interact/error/done + reset.
+ * route/chunk/reasoning/step/sources/artifact/interact/plan/error/done + reset.
  *
  * reset: sent when a retryable failure aborts a turn attempt mid-stream — the frontend
  * must clear accumulated text/reasoning; the retried attempt streams fresh content.
@@ -25,6 +25,14 @@ import type { Artifact, InteractionPayload, Source } from "../context/types.js";
  * renders it as a confirm card / option chips / form. The user's normalized answer
  * (button click → canonical text) is sent as the next ordinary message — the execution
  * model stays round-based (no suspended state, no resume protocol).
+ *
+ * plan frame: an agent task-plan snapshot produced by the plan tool
+ * (create/update/revise). Emitted at the end of every step whose plan version
+ * changed — the model updates the plan between tool steps, so the panel advances
+ * live — plus one tail fallback if the last mutation never reached a step boundary.
+ * Display only: read-only in the frontend, kept in memory for the turn, never
+ * persisted to the message store and no resume protocol (a refresh loses it, same
+ * as reasoning). Older clients that ignore unknown frame types degrade silently.
  *
  * usage frame: INTERNAL ONLY — consumed by the chat service for persistence, never
  * forwarded to the HTTP layer.
@@ -54,6 +62,7 @@ export type SseFrame =
   | { type: "artifact"; artifacts: Artifact[] }
   | { type: "interact"; interact: InteractionPayload }
   | { type: "delegate"; agent: string; status: "start" | "done"; active: number; index: number }
+  | { type: "plan"; plan: PlanSnapshot }
   | { type: "queue"; position: number; waitedMs: number }
   | { type: "reset" }
   | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } }

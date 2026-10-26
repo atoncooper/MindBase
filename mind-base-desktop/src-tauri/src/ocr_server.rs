@@ -277,7 +277,8 @@ mod tests {
 
     #[test]
     fn unknown_bundle_is_rejected() {
-        let dir = std::env::temp_dir().join(format!("mb-ocr-test-{}", std::process::id()));
+        // 每个测试用独立目录：共用同一个 pid 目录会在并行测试时互删（flaky）。
+        let dir = std::env::temp_dir().join(format!("mb-ocr-test-unknown-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(start_model_download(dir.clone(), "nope".to_string()).is_err());
         assert!(resolve_model_dir(&dir, "nope").is_none());
@@ -286,7 +287,7 @@ mod tests {
 
     #[test]
     fn bundle_layout_detection() {
-        let dir = std::env::temp_dir().join(format!("mb-ocr-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mb-ocr-test-bundle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let bundle = bundle_dir(&dir, "pp-ocrv4-mobile");
         std::fs::create_dir_all(&bundle).unwrap();

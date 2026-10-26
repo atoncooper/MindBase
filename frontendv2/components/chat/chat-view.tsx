@@ -11,7 +11,7 @@ import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
 import { chatApi, quotaApi, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
-import { streamChat, type ChatSource, type ChatArtifact, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
+import { streamChat, artifactKey, type ChatSource, type ChatArtifact, type ChatPlan, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
 // Stable empty array so `messages` doesn't change identity on every render
@@ -374,8 +374,10 @@ export function ChatView() {
                 messages: s.messages.map((m) => {
                   if (m.id !== assistantMsgId) return m;
                   const existing = m.artifacts ?? [];
-                  const key = artifact.url || artifact.name;
-                  if (key && existing.some((a) => (a.url || a.name) === key)) return m;
+                  // Structured artifacts (quiz / quiz_grading) carry no url/name — identity
+                  // comes from kind + payload so replayed frames stay de-duplicated.
+                  const key = artifactKey(artifact);
+                  if (key && existing.some((a) => artifactKey(a) === key)) return m;
                   return { ...m, artifacts: [...existing, artifact] };
                 }),
               }));
@@ -416,13 +418,29 @@ export function ChatView() {
                 ),
               }));
             },
+            onPlan: (plan: ChatPlan) => {
+              // Plan tool snapshot: hangs off this turn's assistant message and is
+              // advanced live at each mutating step boundary. Frontend memory only.
+              updateActiveSession((s) => ({
+                ...s,
+                messages: s.messages.map((m) => (m.id === assistantMsgId ? { ...m, plan } : m)),
+              }));
+            },
             onReset: () => {
               // A retried LLM run begins: clear the buffered content (the
               // backend replays pre-run content as chunks) and flush
-              // immediately so no stale text lingers for up to 80ms.
+              // immediately so no stale text lingers for up to 80ms. The plan
+              // panel is turn-scoped display state too, so it clears as well;
+              // a later plan mutation in the retried attempt re-emits it.
               latestContent = "";
               flushPending = true;
               flushStream();
+              updateActiveSession((s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId ? { ...m, plan: undefined } : m
+                ),
+              }));
             },
             onReasoning: (accumulated) => {
               latestReasoning = accumulated;
@@ -933,6 +951,7 @@ export function ChatView() {
                       subAgent={message.subAgent}
                       interaction={message.interaction}
                       interactionAnswered={message.interactionAnswered}
+                      plan={message.plan}
                       onInteractionAnswer={
                         message.interaction && !message.interactionAnswered && !isStreaming
                           ? (answer: string) => handleInteractionAnswer(message.id, answer)

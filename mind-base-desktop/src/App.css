@@ -7653,3 +7653,491 @@ body {
   color: var(--ink-2);
   font-size: 11px;
 }
+
+
+/* ---------------------------------------------------------------------------
+   Chat 顶栏：后台任务入口（独立 agent 任务，不占用当前对话流）。
+   --------------------------------------------------------------------------- */
+
+.chat-topbar {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 36px 0;
+}
+
+.chat-topbar__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.chat-topbar__action:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background-color: var(--wash);
+}
+
+.chat-topbar__icon {
+  display: inline-flex;
+}
+
+.chat-topbar__icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 后台任务弹窗 ------------------------------------------------------------- */
+
+.spawn-modal {
+  width: min(520px, calc(100vw - 48px));
+}
+
+.spawn-modal__intro {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.spawn-modal__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.spawn-modal__row--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.spawn-modal__label {
+  flex-shrink: 0;
+  width: 108px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.spawn-modal__row--stack .spawn-modal__label {
+  width: auto;
+}
+
+.spawn-modal__agent {
+  flex: 1;
+}
+
+.spawn-modal__task {
+  width: 100%;
+  height: auto;
+  min-height: 88px;
+  padding: 6px 2px;
+  resize: vertical;
+  line-height: 1.6;
+  font-size: 12.5px;
+}
+
+.spawn-modal__budget {
+  width: 160px;
+}
+
+.spawn-modal__gate {
+  margin: 14px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background-color: var(--wash);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.spawn-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* ---------------------------------------------------------------------------
+   交互卡片（ask_user）：clarify 单选 / confirm 确认 / form 表单。
+   与清晰卡（.clarify-card）同一视觉语言：左侧墨色竖线 + 浅底 + 圆点选项，
+   但卡片内可作答（作答 = 下一条用户消息），已作答后整体置灰只读。
+   --------------------------------------------------------------------------- */
+
+.interaction-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--ink);
+  border-radius: 10px;
+  background-color: var(--wash);
+  padding: 12px 16px;
+}
+
+.interaction-card--done {
+  opacity: 0.7;
+}
+
+.interaction-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.interaction-card__done-note {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.interaction-card__question {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.interaction-card__context {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  word-break: break-word;
+}
+
+.interaction-card__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.interaction-card__option {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: var(--surface);
+  color: var(--ink);
+  padding: 6px 14px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.interaction-card__option:hover:not(:disabled) {
+  background-color: var(--wash);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.interaction-card__option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.interaction-card__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.interaction-card__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+
+.interaction-card__label {
+  display: flex;
+  gap: 3px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.interaction-card__required {
+  color: var(--danger);
+}
+
+.interaction-card__input {
+  width: 100%;
+  background-color: var(--surface);
+}
+
+.interaction-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.interaction-card__hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------------------
+   本轮产物列表（artifact 事件，generate_resume / generate_slides 等）。
+   单行紧凑排版：类型徽标 + 文件名 + 大小/日期 + 打开。
+   --------------------------------------------------------------------------- */
+
+.artifact-list {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 12px;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--surface);
+}
+
+.artifact-list__head {
+  margin: 0 0 4px;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+
+.artifact-list__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 2px;
+}
+
+.artifact-row + .artifact-row {
+  border-top: 1px solid var(--line);
+}
+
+.artifact-row__badge {
+  flex-shrink: 0;
+  min-width: 34px;
+  padding: 1px 5px;
+  text-align: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.artifact-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-row__name {
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-row__meta {
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+.artifact-row__open {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+/* ---------------------------------------------------------------------------
+   Composer 主动图片输入（选择 / 粘贴 / 拖拽）。
+   与技能 chip 同一视觉语言：浅底 chip、墨色字、圆形删除键。
+   --------------------------------------------------------------------------- */
+
+/* 隐藏的原生文件选择器：由回形针按钮代点。 */
+.composer__image-input {
+  display: none;
+}
+
+/* 回形针按钮：与提供方选择器同尺寸，落在 textarea 与提供方之间。 */
+.composer__attach {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 5px;
+  border: none;
+  border-radius: 7px;
+  background-color: transparent;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.composer__attach svg {
+  width: 16px;
+  height: 16px;
+}
+
+.composer__attach:hover:not(:disabled) {
+  color: var(--ink);
+  background-color: var(--wash);
+}
+
+.composer__attach:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 已选图片缩略图条：单行可横向滚动，不挤压输入区高度。 */
+.image-chip-row {
+  max-width: 780px;
+  margin: 0 auto 6px;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.image-chip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 230px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background-color: var(--wash);
+}
+
+.image-chip__thumb {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 7px;
+  background-color: var(--line);
+}
+
+.image-chip__meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.image-chip__name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.image-chip__size {
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.image-chip__remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background-color: transparent;
+  color: var(--ink-2);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.image-chip__remove:hover:not(:disabled) {
+  background-color: var(--line);
+  color: var(--ink);
+}
+
+.image-chip__remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 拖拽悬停：输入区换虚线强调边框，提示「可放下」。 */
+.composer-wrap--dragover .composer {
+  border-color: var(--ink-2);
+  border-style: dashed;
+  box-shadow: 0 0 0 3px var(--wash);
+}
+
+.composer-drop-hint {
+  max-width: 780px;
+  margin: 0 auto 6px;
+  padding: 7px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background-color: var(--wash);
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: center;
+}
+
+/* Token 用量脚注：assistant 消息底部的一行小字（按轮聚合，含工具轮次与
+   子代理），与步骤摘要同字号、同灰度，不抢正文。 */
+.msg-usage {
+  margin: 8px 0 0;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
