@@ -7,7 +7,7 @@
 | 维度 | 说明 |
 |------|------|
 | 技术栈 | Tauri 2（Rust shell）+ React 19 + TypeScript + Vite 8 |
-| 版本 | 0.1.13（`src-tauri/tauri.conf.json` / `Cargo.toml` / `package.json`；三处已对齐） |
+| 版本 | 0.1.14（`src-tauri/tauri.conf.json` / `Cargo.toml` / `package.json`；三处已对齐） |
 | 数据 | 本机 SQLite（Tauri IPC → Rust 层读写），无网络后端依赖 |
 | 外部调用 | 仅 LLM Provider（DashScope/DeepSeek/OpenRouter）、B 站（WBI 签名收藏夹/AI 大纲）、Context7 文档搜索、GitHub 更新检查 |
 | 打包 | Windows NSIS（currentUser，中/英）；macOS dmg |

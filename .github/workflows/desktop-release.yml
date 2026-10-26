@@ -111,9 +111,19 @@ jobs:
             (Get-ChildItem "src-tauri/target/release/bundle/msi/*.msi")
           ) | ForEach-Object { $_.FullName }
           if ($files.Count -eq 0) { Write-Error "未找到构建产物"; exit 1 }
-          gh release create $env:GITHUB_REF_NAME @files `
-            --title "MindBase Desktop $env:GITHUB_REF_NAME" `
-            --generate-notes
+          # 版本介绍优先使用仓库内手工维护的 RELEASE_NOTES_<version>.md；缺失时
+          # 回退到 GitHub 自动生成（What's Changed）。标题统一为产品名 + v版本号。
+          $version = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $notesFile = "RELEASE_NOTES_$version.md"
+          if (Test-Path $notesFile) {
+            gh release create $env:GITHUB_REF_NAME @files `
+              --title "MindBase Desktop v$version" `
+              --notes-file $notesFile
+          } else {
+            gh release create $env:GITHUB_REF_NAME @files `
+              --title "MindBase Desktop $env:GITHUB_REF_NAME" `
+              --generate-notes
+          }
 
           # 签名更新通道清单：windows-x86_64 → NSIS 安装包（tauri 2.11 直接
           # 签安装包本体，更新器按 .sig 校验后以静默模式执行）。
@@ -124,7 +134,7 @@ jobs:
           $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
           $latest = [ordered]@{
             version  = $version
-            notes    = ""
+            notes    = "详见 https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:GITHUB_REF_NAME"
             pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             platforms = [ordered]@{
               "windows-x86_64" = [ordered]@{ signature = $sig; url = "$base/$($setup.Name)" }

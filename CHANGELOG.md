@@ -2,6 +2,24 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [mind-base-desktop 0.1.14] — 2026-10-26
+
+桌面端首个「agent 能力对齐」版本；完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.1.14.md](mind-base-desktop/RELEASE_NOTES_0.1.14.md)（同时作为 GitHub Release 正文）。
+
+### Added
+
+- **结构化交互 / 联网 / 多模态 / 成本与稳定性**：`ask_user` 交互卡片、`web_search` 联网搜索、主动图片输入、后台任务入口、exports 产物卡片、token 用量脚注、DashScope `gte-rerank` 精排、工具执行硬超时、文件工具沙箱。
+- **academic agent 全链路可达**：delegate 目标、后台任务 `parse_agent`、`harness_tools` 归属补齐。
+
+### Fixed
+
+- 日志模块时间转换测试的纪元常量笔误；OCR 测试共用临时目录导致的并行 flaky。
+- package-lock / Cargo.lock 版本字段同步（0.1.14）。
+
+### Packaging
+
+- 版本号 0.1.13 → 0.1.14（`package.json` / `tauri.conf.json` / `Cargo.toml` / lockfiles）；`desktop-release` 工作流发布时优先读取 `RELEASE_NOTES_<version>.md` 作为 Release 正文，缺失才回退自动生成。
+
 ## [Unreleased] — 2026-09-25
 
 ### Changed
