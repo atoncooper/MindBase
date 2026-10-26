@@ -57,24 +57,20 @@ jobs:
         if: matrix.platform == 'windows'
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1
 
-      # evermeet.cx 静态构建（GPL，同 gyan.dev 的许可注意项）。下载两个
-      # 单二进制 zip 并按 Tauri externalBin 要求以 target triple 命名。
+      # eugeneware/ffmpeg-static 提供 macOS arm64 的静态 ffmpeg/ffprobe
+      # （上游 evermeet.cx 已返回 410 Gone）。静态构建避免 Homebrew 的动态库
+      # 依赖被打进侧车却又无法在用户机器上解析。GPL 许可注意项同 Windows。
       - name: Provision FFmpeg sidecar (macOS)
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
           mkdir -p src-tauri/binaries
           triple="aarch64-apple-darwin"
+          base="https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
           for tool in ffmpeg ffprobe; do
-            case "$tool" in
-              ffmpeg)  url="https://evermeet.cx/ffmpeg/getrelease/zip" ;;
-              ffprobe) url="https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ;;
-            esac
-            curl -fL --retry 3 -o "${tool}.zip" "$url"
-            unzip -o -j "${tool}.zip" "${tool}"
+            curl -fL --retry 3 -o "${tool}" "${base}/${tool}-darwin-arm64"
+            chmod +x "${tool}"
             mv "${tool}" "src-tauri/binaries/${tool}-${triple}"
-            rm "${tool}.zip"
-            chmod +x "src-tauri/binaries/${tool}-${triple}"
           done
 
       - name: Verify tag matches app version
