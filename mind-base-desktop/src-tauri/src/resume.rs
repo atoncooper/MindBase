@@ -242,7 +242,7 @@ pub(crate) fn generate_resume_to_file(
 // ---------------------------------------------------------------------------
 
 /// One generated artifact in the exports directory.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportEntry {
     pub name: String,
@@ -274,7 +274,8 @@ pub async fn exports_list(app: AppHandle) -> Result<Vec<ExportEntry>, String> {
 }
 
 /// Sync directory scan behind [`exports_list`]; missing dir = empty list.
-fn list_exports_dir(dir: &std::path::Path) -> Vec<ExportEntry> {
+/// Also used by the chat turn to surface this turn's artifacts as a card.
+pub(crate) fn list_exports_dir(dir: &std::path::Path) -> Vec<ExportEntry> {
     let read = std::fs::read_dir(dir);
     let Ok(read) = read else {
         return Vec::new();

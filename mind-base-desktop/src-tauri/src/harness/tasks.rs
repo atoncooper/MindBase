@@ -207,11 +207,13 @@ fn run_task(
                 crate::embeddings::embed_client_from_conn_opt(&conn)?,
             )
         };
+        // Owned context: each tool call runs on its own thread (hard timeout),
+        // so nothing may borrow this task's locals.
         let ctx = crate::harness::ToolContext {
-            db: db.inner(),
-            embed_client: embed_client.as_ref(),
-            chat_client: Some(&chat_client),
-            session_id: &session_id,
+            db: db.inner().clone(),
+            embed_client: embed_client.clone().map(Arc::new),
+            chat_client: Some(Arc::new(chat_client.clone())),
+            session_id: session_id.clone(),
             agent,
             delegate: None,
         };
@@ -246,6 +248,9 @@ fn run_task(
             on_delta: &mut noop_delta,
             should_stop: Some(&should_stop),
             on_plan: Some(&on_plan),
+            // 后台任务没有用户可答：不拦截 ask_user（一旦模型误用会得到
+            // 运行时的「由运行时处理」错误文本，任务继续）。
+            on_interact: None,
             mailbox: Some(&drain_mailbox),
             step_budget: Some(budget.max_steps),
         };
@@ -404,6 +409,7 @@ fn parse_agent(name: &str) -> Result<AgentKind, String> {
         "note" => Ok(AgentKind::Note),
         "code" => Ok(AgentKind::Code),
         "search" => Ok(AgentKind::Search),
+        "academic" => Ok(AgentKind::Academic),
         other => Err(format!("未知 agent：{other}")),
     }
 }

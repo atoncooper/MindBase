@@ -16,6 +16,7 @@ import { McpClient, registerMcpTools } from "../mcp/index.js";
 import { buildServer } from "../transport/http/server.js";
 import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
+import { createPlanTool } from "../tools/harness/plan.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import { createFetchPortWithDeepseekPrimary } from "../tools/web/deepseek.js";
@@ -61,6 +62,8 @@ import type { QuizResumeStore } from "../repository/quiz-resume.js";
 import type { ChatSessionRepository, MessageRepository } from "../repository/persistence.js";
 import { MemoryVideoMetaRepository, defaultSeed } from "../repository/memory/video-meta.js";
 import { MemoryMemoryStore } from "../repository/memory/memory-store.js";
+import { MongoMemoryStore } from "../repository/mongo/memory-store.js";
+import type { MemoryRepository } from "../repository/memory-store.js";
 import { NoopCodeExecution } from "../tools/code/code-execution.js";
 import { MemorySessionDocumentStore } from "../repository/memory/session-docs.js";
 import { GrpcKgGraphRepository } from "../repository/grpc/kg-graph.js";
@@ -258,9 +261,27 @@ export async function bootstrap() {
     registry.register(createListVideosTool(videoMeta));
     registry.register(createGetVideoSummariesTool(videoMeta));
   }
-  const memoryStore = new MemoryMemoryStore();
+  // Long-term memory: Mongo keeps save_memory durable across restarts; memory
+  // only when Mongo is unreachable/unconfigured (logs an explicit warning —
+  // silently dropping memories on restart is a data-loss bug, not a fallback).
+  let memoryStore: MemoryRepository = new MemoryMemoryStore();
+  let mongoMemoryStore: MongoMemoryStore | null = null;
+  if (config.mongo.uri) {
+    mongoMemoryStore = await MongoMemoryStore.connect();
+    if (mongoMemoryStore) {
+      memoryStore = mongoMemoryStore;
+      log.info(`[BOOT] long-term memory: mongodb db=${config.mongo.database} collection=memory_entries`);
+    } else {
+      log.warn("[BOOT] long-term memory: memory fallback (mongodb unreachable) — memories are lost on restart");
+    }
+  } else {
+    log.warn("[BOOT] long-term memory: memory fallback (MONGO__URI not set) — memories are lost on restart");
+  }
   registry.register(createSaveMemoryTool(memoryStore));
   registry.register(createAskUserTool);
+  // Task plan state machine (in-process, keyed by chatSessionId; main agent only via
+  // its toolNames list). Snapshots leave as `plan` SSE frames for the live plan panel.
+  registry.register(createPlanTool());
   const webFetch = createFetchPortWithDeepseekPrimary(new HttpWebFetch());
   registry.register(createFetchWebpageTool(webFetch));
   registry.register(createWebSearchTool());
@@ -467,7 +488,7 @@ export async function bootstrap() {
   );
   const chat = new ChatService(harness, sessions, messages, compression, (id, q) => {
     void generateTitle(sessions, prompts, id, q);
-  }, admission, chatImages, quota, usageLedger);
+  }, admission, chatImages, quota, usageLedger, prompts);
   const resolveFolderScope = kgRepository
     ? (uid: string, folderIds: number[]) => kgRepository!.resolveScope(uid, folderIds)
     : undefined;
@@ -570,6 +591,7 @@ export async function bootstrap() {
     await (mongoSkillMeta instanceof MongoSkillMetaStore ? mongoSkillMeta.close() : Promise.resolve());
     await redisQuotaCounter?.close();
     await mongoUsageLedger?.close();
+    await mongoMemoryStore?.close();
     reconJob.stop();
     await biliEvents.stop();
     await shutdownTracing();

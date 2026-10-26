@@ -6,6 +6,8 @@
 //! get_compressed_summary), the four note tools (wrapping notes.rs internals),
 //! delegate_to_agent and the skills loader.
 
+use std::path::{Component, Path};
+
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tauri::Manager;
@@ -37,16 +39,56 @@ fn spec(name: &'static str, description: &str, parameters: Value) -> ToolSpec {
 // Shared fetch helpers (lock discipline: embed outside, store inside)
 // ---------------------------------------------------------------------------
 
-fn fetch_vector_hits(ctx: &ToolContext<'_>, query: &str) -> Result<Vec<KnowledgeHit>, String> {
+fn fetch_vector_hits(ctx: &ToolContext, query: &str) -> Result<Vec<KnowledgeHit>, String> {
     let embed_client = ctx
         .embed_client
+        .as_deref()
         .ok_or("向量检索不可用：当前未配置向量化（Embedding）密钥，请基于已有资料或历史对话回答")?;
     let vector = embed_client.embed_query(query)?;
-    let conn = ctx.db.conn.lock().map_err(lock_err)?;
     // Hybrid: cosine + BM25 fused — exact terms (错误码、专有名词) stop
-    // getting buried under merely-similar chunks.
-    let raw = crate::vectors::hybrid_search_conn(&conn, &vector, query, SEARCH_K, None)?;
-    crate::ingest::join_metadata(&conn, raw)
+    // getting buried under merely-similar chunks. The DB lock is released
+    // before rerank so the network call never blocks other tools.
+    let hits = {
+        let conn = ctx.db.conn.lock().map_err(lock_err)?;
+        crate::vectors::hybrid_search_conn(&conn, &vector, query, SEARCH_K, None)?
+    };
+    let hits = rerank_hits(ctx, query, hits);
+    let conn = ctx.db.conn.lock().map_err(lock_err)?;
+    crate::ingest::join_metadata(&conn, hits)
+}
+
+/// Optional semantic rerank over the fused candidates. Any failure (no key,
+/// network, bad response) silently keeps the fusion order — retrieval must
+/// never regress because the rerank provider is down.
+fn rerank_hits(
+    ctx: &ToolContext,
+    query: &str,
+    hits: Vec<crate::vectors::SearchHit>,
+) -> Vec<crate::vectors::SearchHit> {
+    if hits.len() < 2 {
+        return hits;
+    }
+    let client = match ctx.db.conn.lock() {
+        Ok(conn) => crate::rerank::RerankClient::from_conn(&conn),
+        Err(err) => {
+            eprintln!("[RERANK] 数据库锁不可用，保留融合顺序：{err}");
+            return hits;
+        }
+    };
+    match client {
+        Ok(Some(client)) => match client.rerank(query, &hits) {
+            Ok(order) => crate::rerank::reorder(hits, &order),
+            Err(err) => {
+                eprintln!("[RERANK] 精排失败，保留融合顺序：{err}");
+                hits
+            }
+        },
+        Ok(None) => hits,
+        Err(err) => {
+            eprintln!("[RERANK] 初始化失败，保留融合顺序：{err}");
+            hits
+        }
+    }
 }
 
 fn lock_err(
@@ -70,7 +112,7 @@ impl LocalTool for VectorSearchTool {
         &SPEC_VECTOR_SEARCH
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let query = super::registry::require_string_arg(arguments, "query")?;
         let hits = fetch_vector_hits(ctx, &query)?;
         let content = format!(
@@ -167,7 +209,7 @@ impl LocalTool for ListDocumentsTool {
         &SPEC_LIST_DOCUMENTS
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, _arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
         let rows = fetch_document_list(&conn)?;
         Ok(ToolOutput::text(format_document_list(&rows)))
@@ -255,7 +297,7 @@ impl LocalTool for SearchChatHistoryTool {
         &SPEC_SEARCH_HISTORY
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let query = super::registry::require_string_arg(arguments, "query")?;
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
         let rows = fetch_history_matches(&conn, &query)?;
@@ -291,9 +333,9 @@ const VISION_MAX_IMAGES: usize = 3;
 /// Longest edge of the downscaled JPEG sent to the model.
 const VISION_MAX_EDGE: u32 = 1024;
 
-fn collect_vision_images(ctx: &ToolContext<'_>, hits: &[KnowledgeHit]) -> Vec<String> {
+fn collect_vision_images(ctx: &ToolContext, hits: &[KnowledgeHit]) -> Vec<String> {
     // 开关一：模型能力（名称启发式）。
-    let Some(client) = ctx.chat_client else {
+    let Some(client) = ctx.chat_client.as_deref() else {
         return Vec::new();
     };
     if !crate::llm_chat::model_supports_vision(client.model_name()) {
@@ -504,9 +546,9 @@ impl LocalTool for GetSessionFindingsTool {
         &SPEC_SESSION_FINDINGS
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, _arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
-        let lines = list_session_findings(&conn, ctx.session_id)?;
+        let lines = list_session_findings(&conn, &ctx.session_id)?;
         if lines.is_empty() {
             return Ok(ToolOutput::text(
                 "【会话黑板】暂无已沉淀的发现。".to_string(),
@@ -538,16 +580,16 @@ static SPEC_SESSION_FINDINGS: std::sync::LazyLock<ToolSpec> = std::sync::LazyLoc
 
 use std::path::PathBuf;
 
-fn conversations_root(ctx: &ToolContext<'_>) -> Result<PathBuf, String> {
+fn conversations_root(ctx: &ToolContext) -> Result<PathBuf, String> {
     let dir = ctx
         .db
         .data_dir
         .lock()
         .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
-    Ok(dir.join("conversations").join(ctx.session_id))
+    Ok(dir.join("conversations").join(&ctx.session_id))
 }
 
-fn agent_memory_root(ctx: &ToolContext<'_>) -> Result<PathBuf, String> {
+fn agent_memory_root(ctx: &ToolContext) -> Result<PathBuf, String> {
     let dir = ctx
         .db
         .data_dir
@@ -577,7 +619,7 @@ impl LocalTool for ListHistoryTool {
         &SPEC_LIST_HISTORY
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let limit = optional_int(arguments, "limit").unwrap_or(20).clamp(1, 100) as usize;
         let root = conversations_root(ctx)?;
         let records = crate::store::list_records(&root.join("index.jsonl"))?;
@@ -614,7 +656,7 @@ impl LocalTool for ReadTurnTool {
         &SPEC_READ_TURN
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let turn_id = super::registry::require_string_arg(arguments, "turn_id")?;
         let section = optional_str(arguments, "section").unwrap_or_else(|| "summary".to_string());
         let root = conversations_root(ctx)?;
@@ -665,7 +707,7 @@ impl LocalTool for ListErrorsTool {
         &SPEC_LIST_ERRORS
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let limit = optional_int(arguments, "limit").unwrap_or(20).clamp(1, 100) as usize;
         let root = conversations_root(ctx)?;
         let records = crate::store::list_records(&root.join("errors.jsonl"))?;
@@ -714,7 +756,7 @@ impl LocalTool for ReadErrorTool {
         &SPEC_READ_ERROR
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let err_id = super::registry::require_string_arg(arguments, "err_id")?;
         let full = arguments.contains("\"full\": true") || arguments.contains("\"full\":true");
         let root = conversations_root(ctx)?;
@@ -764,7 +806,7 @@ impl LocalTool for SearchContentTool {
         &SPEC_SEARCH_CONTENT
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let query = super::registry::require_string_arg(arguments, "query")?;
         let root = conversations_root(ctx)?;
         let hits = crate::store::grep_parts(&root, &query)?;
@@ -827,7 +869,7 @@ impl LocalTool for MemoryWriteTool {
         &SPEC_MEMORY_WRITE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let title = super::registry::require_string_arg(arguments, "title")?;
         let content = super::registry::require_string_arg(arguments, "content")?;
         let root = agent_memory_root(ctx)?;
@@ -887,7 +929,7 @@ impl LocalTool for MemorySearchTool {
         &SPEC_MEMORY_SEARCH
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let query = super::registry::require_string_arg(arguments, "query")?;
         let root = agent_memory_root(ctx)?;
         let hits = crate::store::grep_parts(&root, &query)?;
@@ -960,7 +1002,7 @@ impl LocalTool for PlanTool {
         &SPEC_PLAN
     }
 
-    fn execute(&self, _ctx: &ToolContext<'_>, _arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
         Err("plan 由运行时处理".to_string())
     }
 }
@@ -979,6 +1021,88 @@ static SPEC_PLAN: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
                 "status": { "type": "string", "description": "步骤状态：pending | in_progress | done | failed | skipped（update 时）" },
                 "note": { "type": "string", "description": "备注（如失败原因、完成说明）" },
                 "reason": { "type": "string", "description": "修订原因（revise 时必填）" }
+            }
+        }),
+    )
+});
+
+// ---------------------------------------------------------------------------
+// ask_user — 结构化用户交互（澄清 / 确认 / 表单）。与 plan 一样，调用在
+// react_loop 中被本地拦截：构造 InteractionView 推给前端卡片、本轮立即结束
+// 等用户回答；此处的 execute 仅作兜底，正常不会触达。
+// ---------------------------------------------------------------------------
+
+pub(crate) struct AskUserTool;
+
+impl LocalTool for AskUserTool {
+    fn spec(&self) -> &ToolSpec {
+        &SPEC_ASK_USER
+    }
+
+    fn execute(&self, _ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
+        Err("ask_user 由运行时处理".to_string())
+    }
+}
+
+static SPEC_ASK_USER: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
+    spec(
+        "ask_user",
+        "向用户发起结构化交互（澄清 / 确认 / 表单），前端渲染为可点击卡片。                   需要用户补充关键信息（clarify）、写操作前需要确认（confirm）、或一次收集多个字段（form）时调用；                   调用后**本轮立即结束**，等用户回答后再继续。一次只发起一个交互，不要替用户作答，         也不要在回复正文里重复卡片里的问题。",
+        json!({
+            "type": "object",
+            "required": ["kind", "question"],
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["clarify", "confirm", "form"],
+                    "description": "clarify=澄清提问（带选项）；confirm=写操作前确认（确认卡片）；form=多字段表单（一次收集）"
+                },
+                "question": {
+                    "type": "string",
+                    "description": "问题/确认文案，一句话说清要用户决定什么"
+                },
+                "options": {
+                    "type": "array",
+                    "description": "clarify/confirm 的候选选项（用户点击后其 value 作为下一条消息发送）",
+                    "items": {
+                        "type": "object",
+                        "required": ["label", "value"],
+                        "properties": {
+                            "label": { "type": "string", "description": "按钮/选项文案" },
+                            "value": { "type": "string", "description": "规范化答案（点击后作为下一条用户消息）" }
+                        }
+                    }
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "kind=form 时的字段列表",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "label"],
+                        "properties": {
+                            "name": { "type": "string", "description": "字段标识" },
+                            "label": { "type": "string", "description": "字段展示名" },
+                            "type": { "type": "string", "enum": ["text", "email", "datetime", "select"] },
+                            "required": { "type": "boolean", "description": "是否必填（默认 false）" },
+                            "options": {
+                                "type": "array",
+                                "description": "type=select 时的候选选项",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["label", "value"],
+                                    "properties": {
+                                        "label": { "type": "string" },
+                                        "value": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "context": {
+                    "type": "string",
+                    "description": "补充背景：为什么问、确认后会发生什么"
+                }
             }
         }),
     )
@@ -1049,11 +1173,11 @@ impl LocalTool for GetRecentContextTool {
         &SPEC_RECENT_CONTEXT
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let n = optional_int(arguments, "n_messages").unwrap_or(RECENT_DEFAULT);
         let n = n.clamp(1, RECENT_MAX);
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
-        let messages = fetch_recent_messages(&conn, ctx.session_id, n)?;
+        let messages = fetch_recent_messages(&conn, &ctx.session_id, n)?;
         Ok(ToolOutput::text(format!(
             "【最近对话记录 — 本地】\n{}",
             render_messages(&messages)
@@ -1081,11 +1205,11 @@ impl LocalTool for GetFullHistoryTool {
         &SPEC_FULL_HISTORY
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let n = optional_int(arguments, "n_messages").unwrap_or(FULL_HISTORY_DEFAULT);
         let n = n.clamp(1, RECENT_MAX);
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
-        let messages = fetch_recent_messages(&conn, ctx.session_id, n)?;
+        let messages = fetch_recent_messages(&conn, &ctx.session_id, n)?;
         Ok(ToolOutput::text(format!(
             "【完整历史记录 — 本地】\n{}",
             render_messages(&messages)
@@ -1129,7 +1253,7 @@ fn optional_str(arguments: &str, name: &str) -> Option<String> {
 /// chat model. Best-effort: any failure returns Err and the tool reports it
 /// back to the calling agent instead of aborting the turn.
 fn generate_summary(
-    ctx: &ToolContext<'_>,
+    ctx: &ToolContext,
     chat_client: &crate::llm_chat::ChatClient,
 ) -> Result<String, String> {
     let (older_text, kept_count, compressed_count) = {
@@ -1138,7 +1262,7 @@ fn generate_summary(
             .query_row(
                 "SELECT COUNT(*) FROM chat_messages
                  WHERE chat_session_id = ?1 AND status = 'completed'",
-                rusqlite::params![ctx.session_id],
+                rusqlite::params![&ctx.session_id],
                 |row| row.get(0),
             )
             .optional()
@@ -1147,7 +1271,7 @@ fn generate_summary(
         if total <= SUMMARY_TRIGGER_COUNT {
             return Err("当前会话消息不多，无需压缩摘要".to_string());
         }
-        let messages = fetch_recent_messages(&conn, ctx.session_id, total.min(200))?;
+        let messages = fetch_recent_messages(&conn, &ctx.session_id, total.min(200))?;
         let split_at = messages.len() - 6;
         let older = &messages[..split_at];
         let text = render_messages(older);
@@ -1175,7 +1299,7 @@ fn generate_summary(
              compressed_count = excluded.compressed_count,
              updated_at = excluded.updated_at",
         rusqlite::params![
-            ctx.session_id,
+            &ctx.session_id,
             summary,
             kept_count,
             compressed_count,
@@ -1204,7 +1328,7 @@ impl LocalTool for GetCompressedSummaryTool {
         &SPEC_COMPRESSED_SUMMARY
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, _arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
         // (summary, kept_count, total) — kept_count is the message count at
         // generation time; a pile-up of newer messages makes it stale.
         let cached: Option<(String, i64, i64)> = {
@@ -1214,7 +1338,7 @@ impl LocalTool for GetCompressedSummaryTool {
                         (SELECT COUNT(*) FROM chat_messages
                          WHERE chat_session_id = s.session_id AND status = 'completed')
                  FROM session_summaries s WHERE s.session_id = ?1",
-                rusqlite::params![ctx.session_id],
+                rusqlite::params![&ctx.session_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
@@ -1228,7 +1352,7 @@ impl LocalTool for GetCompressedSummaryTool {
             ),
             // Stale or absent: regenerate when a chat client is available.
             other => {
-                let Some(chat_client) = ctx.chat_client else {
+                let Some(chat_client) = ctx.chat_client.as_deref() else {
                     return match other {
                         Some((summary, kept_count, total)) => Ok(ToolOutput::text(format!(
                             "【历史记忆 — 压缩摘要（已过期：摘要覆盖到第 {kept_count} 条，其后有 {} 条新消息，当前无法重新生成）】\n{summary}",
@@ -1267,7 +1391,7 @@ impl LocalTool for SaveNoteTool {
         &SPEC_SAVE_NOTE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
         let title = value
@@ -1320,7 +1444,7 @@ impl LocalTool for ListNotesTool {
         &SPEC_LIST_NOTES
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, _arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
         let guard = ctx.db.conn.lock().map_err(lock_err)?;
         let rows = crate::notes::notes_list_internal(&guard, None)?;
         if rows.is_empty() {
@@ -1365,7 +1489,7 @@ impl LocalTool for GetNoteTool {
         &SPEC_GET_NOTE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let note_id = super::registry::require_string_arg(arguments, "note_id")?;
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
         let detail = crate::notes::get_detail_conn(&conn, &note_id)?
@@ -1400,7 +1524,7 @@ impl LocalTool for UpdateNoteTool {
         &SPEC_UPDATE_NOTE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
         let note_id = value
@@ -1465,8 +1589,8 @@ impl LocalTool for DelegateToAgentTool {
         &SPEC_DELEGATE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
-        let Some(delegate) = ctx.delegate else {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
+        let Some(delegate) = ctx.delegate.as_deref() else {
             return Err("委托通道不存在：只有顶层 chat 循环可以发起委托".to_string());
         };
         let agent_name = super::registry::require_string_arg(arguments, "agent_name")?;
@@ -1487,11 +1611,11 @@ impl LocalTool for DelegateToAgentTool {
 static SPEC_DELEGATE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "delegate_to_agent",
-        "把一个自包含子任务委托给专职代理执行。可用目标：memory（检索历史对话细节）、note（创建或修改笔记）、code（编写代码，仅生成不执行）、search（联网检索）、academic（学术论文的写作/审查/修改/理解）。查技术库/框架官方文档）。",
+        "把一个自包含子任务委托给专职代理执行。可用目标：memory（检索历史对话细节）、note（创建或修改笔记）、code（编写代码，仅生成不执行）、search（查技术库/框架官方文档并联网检索）、academic（学术论文的写作/审查/修改/理解）。",
         json!({
             "type": "object",
             "properties": {
-                "agent_name": { "type": "string", "enum": ["memory", "note", "code", "search"], "description": "目标代理" },
+                "agent_name": { "type": "string", "enum": ["memory", "note", "code", "search", "academic"], "description": "目标代理" },
                 "query": { "type": "string", "description": "一句清晰自包含的任务描述" }
             },
             "required": ["agent_name", "query"]
@@ -1511,7 +1635,7 @@ impl LocalTool for LoadSkillTool {
         &SPEC_LOAD_SKILL
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let name = super::registry::require_string_arg(arguments, "name")?;
         // Lock order (see db.rs): conn first, then data_dir.
         let conn = ctx.db.conn.lock().map_err(lock_err)?;
@@ -1552,7 +1676,7 @@ impl LocalTool for LoadPromptTool {
         &SPEC_LOAD_PROMPT
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let name = super::registry::require_string_arg(arguments, "name")?;
         let dir = ctx
             .db
@@ -1798,7 +1922,7 @@ impl LocalTool for SearchDocsTool {
         &SPEC_SEARCH_DOCS
     }
 
-    fn execute(&self, _ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let library_name = super::registry::require_string_arg(arguments, "library_name")?;
         let query = super::registry::require_string_arg(arguments, "query")?;
 
@@ -1864,7 +1988,7 @@ impl LocalTool for WebCrawlTool {
         &SPEC_WEB_CRAWL
     }
 
-    fn execute(&self, _ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let url = super::registry::require_string_arg(arguments, "url")?;
         is_safe_url(&url)?;
         let html = http_agent(&url)?
@@ -1932,7 +2056,7 @@ impl LocalTool for GenerateResumeTool {
         &SPEC_GENERATE_RESUME
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
         let target_role = value
@@ -1948,6 +2072,7 @@ impl LocalTool for GenerateResumeTool {
             .filter(|p| !p.is_empty());
         let client = ctx
             .chat_client
+            .as_deref()
             .ok_or("简历生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key")?;
         // Lock discipline: history read + data_dir resolve under one short
         // lock, then the LLM work runs lock-free.
@@ -1996,7 +2121,7 @@ impl LocalTool for GenerateSlidesTool {
         &SPEC_GENERATE_SLIDES
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
         let topic = value
@@ -2023,12 +2148,13 @@ impl LocalTool for GenerateSlidesTool {
             .filter(|s| !s.is_empty());
         let client = ctx
             .chat_client
+            .as_deref()
             .ok_or("PPT 生成不可用：当前未配置对话模型，请先在「API 设置」中填写 API Key")?;
         // Ground the outline in knowledge-base material by default — the
         // single biggest lever on deck quality (opt out via use_knowledge=false).
         let mut context_block = String::new();
         if value.get("use_knowledge").and_then(|u| u.as_bool()) != Some(false) {
-            if let Some(embed_client) = ctx.embed_client {
+            if let Some(embed_client) = ctx.embed_client.as_deref() {
                 if let Ok(query_vector) = embed_client.embed_query(&topic) {
                     let conn = ctx.db.conn.lock().map_err(lock_err)?;
                     if let Ok(raw) =
@@ -2129,6 +2255,106 @@ const FILE_WRITE_CAP: usize = 8 * 1024 * 1024;
 /// 目录列举条目上限。
 const LIST_DIR_CAP: usize = 200;
 
+/// 工具层唯一的文件系统边界（read_file / write_file / list_dir 共用）。
+///
+/// - 相对路径 → `<data_dir>/agent-files/<agent>/<rel>`（保留原始设计：每个
+///   agent 一个落笔区，避免不同 agent 的同名相对路径互相覆盖）；
+/// - 绝对路径 → 先做词法规约（`.` / `..`），把已存在的前缀 canonicalize
+///   （解析符号链接）后再校验，结果必须仍位于 `<data_dir>` 之内；
+/// - 任何越界统一返回中文错误，绝不把路径逃逸交给上层。
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(std::path::MAIN_SEPARATOR.to_string()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // pop() 在只剩根/前缀时返回 false —— 此时 .. 无处可退，直接丢弃。
+                let _ = out.pop();
+            }
+            Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
+}
+
+/// canonicalize 最近的已存在祖先，再把不存在的尾段拼回去 —— 这样还没落盘的
+/// 目标文件也能获得符号链接安全的真实路径。
+fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match std::fs::canonicalize(&existing) {
+            Ok(mut resolved) => {
+                for segment in tail.iter().rev() {
+                    resolved.push(segment);
+                }
+                return Ok(resolved);
+            }
+            Err(_) => match existing.file_name().map(|name| name.to_os_string()) {
+                Some(name) => {
+                    tail.push(name);
+                    if !existing.pop() {
+                        return Err("无法解析路径（没有可用的祖先目录）".to_string());
+                    }
+                }
+                None => return Err("无法解析路径（没有可用的祖先目录）".to_string()),
+            },
+        }
+    }
+}
+
+const PATH_ESCAPE_MESSAGE: &str = "路径越界：只能访问应用数据目录内的文件";
+
+/// Pure half of `resolve_agent_path` — testable without a `Db`.
+fn resolve_agent_path_in(data_dir: &Path, agent: &str, raw: &str) -> Result<PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("path 不能为空".to_string());
+    }
+    let raw_path = Path::new(raw);
+    // 两套边界：相对路径锁在本 agent 的落笔区（agent-files/<agent>/），绝对路径锁在 data_dir。
+    let (candidate, scope) = if raw_path.is_absolute() {
+        (lexical_normalize(raw_path), data_dir.to_path_buf())
+    } else {
+        let agent_root = data_dir.join("agent-files").join(agent);
+        (
+            lexical_normalize(&agent_root.join(raw_path)),
+            agent_root.to_path_buf(),
+        )
+    };
+
+    // 边界目录必须存在；不存在时按需建出来，保证 canonicalize 可判定。
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)
+            .map_err(|err| format!("创建数据目录失败（{}）：{err}", data_dir.display()))?;
+    }
+    if !scope.exists() {
+        std::fs::create_dir_all(&scope)
+            .map_err(|err| format!("创建目录失败（{}）：{err}", scope.display()))?;
+    }
+    let root = std::fs::canonicalize(&scope)
+        .map_err(|err| format!("无法解析目录（{}）：{err}", scope.display()))?;
+    let resolved = canonicalize_with_missing_tail(&candidate)?;
+    if resolved.starts_with(&root) {
+        Ok(candidate)
+    } else {
+        Err(PATH_ESCAPE_MESSAGE.to_string())
+    }
+}
+
+/// Resolve a tool-supplied path against the app data directory.
+fn resolve_agent_path(ctx: &ToolContext, raw: &str) -> Result<PathBuf, String> {
+    let data_dir = ctx
+        .db
+        .data_dir
+        .lock()
+        .map_err(|err| format!("failed to acquire data dir lock: {err}"))?
+        .clone();
+    resolve_agent_path_in(&data_dir, ctx.agent.name(), raw)
+}
+
 pub(crate) struct ReadFileTool;
 
 impl LocalTool for ReadFileTool {
@@ -2136,17 +2362,17 @@ impl LocalTool for ReadFileTool {
         &SPEC_READ_FILE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
-        let _ = ctx;
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
-        let path = value
+        let raw_path = value
             .get("path")
             .and_then(|p| p.as_str())
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .ok_or("path 不能为空")?;
-        let path = std::path::Path::new(path);
+        let path = resolve_agent_path(ctx, raw_path)?;
+        let path = path.as_path();
         let metadata = std::fs::metadata(path)
             .map_err(|err| format!("无法读取文件信息（{}）：{err}", path.display()))?;
         if !metadata.is_file() {
@@ -2178,12 +2404,12 @@ impl LocalTool for ReadFileTool {
 static SPEC_READ_FILE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "read_file",
-        "读取用户文件系统里的一个文本文件（代码/笔记/文档/配置等，上限 2MB）。         path 必须是绝对路径；用户提到某个文件时用它读取内容再处理。",
+        "读取应用数据目录内的一个文本文件（代码/笔记/文档/配置等，上限 2MB）。                  path 可为绝对路径（必须位于应用数据目录内），或相对于本 agent 专属目录 agent-files/<agent>/ 的相对路径；                  目录外的路径（含 .. 越界）会被拒绝。用户提到某个文件时用它读取内容再处理。",
         json!({
             "type": "object",
             "required": ["path"],
             "properties": {
-                "path": { "type": "string", "description": "文件绝对路径" }
+                "path": { "type": "string", "description": "文件路径（应用数据目录内的绝对路径，或相对 agent-files 的相对路径）" }
             }
         }),
     )
@@ -2196,7 +2422,7 @@ impl LocalTool for WriteFileTool {
         &SPEC_WRITE_FILE
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
         let raw_path = value
@@ -2216,14 +2442,9 @@ impl LocalTool for WriteFileTool {
                 content.len()
             ));
         }
-        // 相对路径锚定到本 agent 的专属沙箱目录——工具返回的绝对路径
-        // 可直接用作回复中的文件链接（代码交付 = 写文件 + 链接）。
-        let data_dir = ctx
-            .db
-            .data_dir
-            .lock()
-            .map_err(|err| format!("failed to acquire data dir lock: {err}"))?;
-        let path = resolve_write_path(ctx.agent, &data_dir, raw_path)?;
+        // 路径统一受沙箱约束：相对路径落 <data_dir>/agent-files/，绝对路径
+        // 必须仍在 data_dir 内——工具返回的绝对路径可直接用作回复中的文件链接。
+        let path = resolve_agent_path(ctx, raw_path)?;
         if path.is_dir() {
             return Err(format!("{} 是目录，请给出完整的文件路径", path.display()));
         }
@@ -2254,34 +2475,11 @@ impl LocalTool for WriteFileTool {
     }
 }
 
-/// Resolve a write_file path. Absolute paths stay as-is; relative paths are
-/// anchored under the calling agent's own sandbox
-/// (`<data_dir>/agent-files/<agent>/`), so a task that only knows "write
-/// main.py" lands in a deterministic per-agent location. `..` segments are
-/// rejected — the sandbox must not be escapable.
-fn resolve_write_path(
-    agent: crate::agents::AgentKind,
-    data_dir: &std::path::Path,
-    raw: &str,
-) -> Result<std::path::PathBuf, String> {
-    let candidate = std::path::Path::new(raw);
-    if candidate.is_absolute() {
-        return Ok(candidate.to_path_buf());
-    }
-    if raw.split(['/', '\\']).any(|seg| seg == "..") {
-        return Err("相对路径不允许包含 .. 段（会越出 agent 专属目录）".to_string());
-    }
-    Ok(data_dir
-        .join("agent-files")
-        .join(agent.name())
-        .join(candidate))
-}
-
 static SPEC_WRITE_FILE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "write_file",
-        "把文本内容写入用户文件系统（覆盖或追加，自动创建父目录）。\
-         绝对路径直接写入；相对路径落在本 agent 的专属目录 agent-files/<agent>/ 下（不可用 .. 越级）。\
+        "把文本内容写入应用数据目录内的文件（覆盖或追加，自动创建父目录）。\
+         相对路径落在本 agent 专属目录 agent-files/<agent>/ 下；绝对路径必须位于应用数据目录内，越界（含 .. 逃逸）会被拒绝。\
          工具返回写入的绝对路径——生成类代码交付用它把代码写入文件，并在回复中输出 \
          [文件名](绝对路径) 形式的链接（路径反斜杠写成 /）。\
          覆盖已有文件前先向用户确认。",
@@ -2289,7 +2487,7 @@ static SPEC_WRITE_FILE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new
             "type": "object",
             "required": ["path", "content"],
             "properties": {
-                "path": { "type": "string", "description": "目标文件路径（绝对路径，或相对本 agent 专属目录的相对路径）" },
+                "path": { "type": "string", "description": "目标文件路径（应用数据目录内的绝对路径，或相对本 agent 专属目录 agent-files/<agent>/ 的相对路径）" },
                 "content": { "type": "string", "description": "要写入的完整文本内容" },
                 "append": { "type": "boolean", "description": "true=追加到文件末尾（默认覆盖）" }
             }
@@ -2304,18 +2502,18 @@ impl LocalTool for ListDirTool {
         &SPEC_LIST_DIR
     }
 
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String> {
-        let _ = ctx;
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String> {
         let value: Value =
             serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
-        let path = value
+        let raw_path = value
             .get("path")
             .and_then(|p| p.as_str())
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .ok_or("path 不能为空")?;
-        let entries = std::fs::read_dir(std::path::Path::new(path))
-            .map_err(|err| format!("无法列出目录（{path}）：{err}"))?;
+        let path = resolve_agent_path(ctx, raw_path)?;
+        let entries = std::fs::read_dir(&path)
+            .map_err(|err| format!("无法列出目录（{}）：{err}", path.display()))?;
         let mut lines: Vec<String> = Vec::new();
         for entry in entries.take(LIST_DIR_CAP + 1) {
             let entry = match entry {
@@ -2334,12 +2532,12 @@ impl LocalTool for ListDirTool {
             }
         }
         if lines.is_empty() {
-            return Ok(ToolOutput::text(format!("{path} 是空目录")));
+            return Ok(ToolOutput::text(format!("{} 是空目录", path.display())));
         }
         Ok(ToolOutput::text(format!(
             "{}：
 {}",
-            path,
+            path.display(),
             lines.join(
                 "
 "
@@ -2351,12 +2549,12 @@ impl LocalTool for ListDirTool {
 static SPEC_LIST_DIR: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "list_dir",
-        "列出一个目录下的文件与子目录（上限 200 项）。用于探测用户提到的位置、         寻找文件，或确认保存路径是否存在。",
+        "列出应用数据目录内一个目录的文件与子目录（上限 200 项）。                  path 可为绝对路径（必须位于应用数据目录内），或相对于本 agent 专属目录 agent-files/<agent>/ 的相对路径；                  越界路径会被拒绝。用于探测位置、寻找文件，或确认保存路径是否存在。",
         json!({
             "type": "object",
             "required": ["path"],
             "properties": {
-                "path": { "type": "string", "description": "目录绝对路径" }
+                "path": { "type": "string", "description": "目录路径（应用数据目录内的绝对路径，或相对 agent-files 的相对路径）" }
             }
         }),
     )
@@ -2366,32 +2564,67 @@ static SPEC_LIST_DIR: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|
 mod tests {
     use super::*;
 
+    fn test_data_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mindbase-fs-{tag}-{}", crate::db::local_id()));
+        std::fs::create_dir_all(dir.join("agent-files")).expect("create test data dir");
+        dir
+    }
+
     #[test]
-    fn write_path_anchors_relative_to_agent_sandbox_and_blocks_traversal() {
-        let data_dir = std::path::Path::new("D:/data");
-        let code = crate::agents::AgentKind::Code;
-        // 绝对路径原样保留
+    fn resolve_agent_path_anchors_relative_and_blocks_escape() {
+        let dir = test_data_dir("paths");
+        // 相对路径锚定在本 agent 专属目录 agent-files/<agent>/
         assert_eq!(
-            resolve_write_path(code, data_dir, "D:/abs/main.py").expect("abs"),
-            std::path::PathBuf::from("D:/abs/main.py")
-        );
-        // 相对路径锚定到 agent 专属沙箱
-        assert_eq!(
-            resolve_write_path(code, data_dir, "main.py").expect("rel"),
-            std::path::PathBuf::from("D:/data/agent-files/code/main.py")
+            resolve_agent_path_in(&dir, "code", "main.py").expect("rel"),
+            dir.join("agent-files").join("code").join("main.py")
         );
         assert_eq!(
-            resolve_write_path(code, data_dir, "auth/main.py").expect("nested"),
-            std::path::PathBuf::from("D:/data/agent-files/code/auth/main.py")
+            resolve_agent_path_in(&dir, "code", "auth/main.py").expect("nested"),
+            dir.join("agent-files").join("code").join("auth").join("main.py")
         );
-        // .. 越级被拒绝（两种分隔符写法）
-        assert!(resolve_write_path(code, data_dir, "../escape.py").is_err());
-        assert!(resolve_write_path(code, data_dir, "a/../../escape.py").is_err());
-        // agent 隔离：不同 agent 的同名文件落点不同
+        // 原始隔离语义：不同 agent 的同名相对路径落点不同
         assert_ne!(
-            resolve_write_path(code, data_dir, "main.py").expect("code"),
-            resolve_write_path(crate::agents::AgentKind::Chat, data_dir, "main.py").expect("chat")
+            resolve_agent_path_in(&dir, "code", "main.py").expect("code"),
+            resolve_agent_path_in(&dir, "chat", "main.py").expect("chat")
         );
+        // 相对路径的 .. 不能逃出本 agent 目录
+        assert_eq!(
+            resolve_agent_path_in(&dir, "code", "../escape.py").unwrap_err(),
+            PATH_ESCAPE_MESSAGE
+        );
+        // data_dir 内的绝对路径放行（exports 是 data_dir 子目录）
+        let inside = dir.join("exports").join("report.md");
+        assert_eq!(
+            resolve_agent_path_in(&dir, "code", inside.to_str().unwrap()).expect("abs inside"),
+            inside
+        );
+        // data_dir 之外的绝对路径（含 .. 逃逸）一律拒绝
+        let escaping = dir
+            .join("agent-files")
+            .join("..")
+            .join("..")
+            .join("escape.py");
+        assert_eq!(
+            resolve_agent_path_in(&dir, "code", escaping.to_str().unwrap()).unwrap_err(),
+            PATH_ESCAPE_MESSAGE
+        );
+        let outside = std::env::temp_dir().join("mindbase-outside.txt");
+        assert_eq!(
+            resolve_agent_path_in(&dir, "code", outside.to_str().unwrap()).unwrap_err(),
+            PATH_ESCAPE_MESSAGE
+        );
+        // 空路径直接拒绝
+        assert!(resolve_agent_path_in(&dir, "code", "   ").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lexical_normalize_folds_dot_segments() {
+        let dir = test_data_dir("normalize");
+        let normalized =
+            lexical_normalize(&dir.join("agent-files").join("a").join("..").join("b.txt"));
+        assert_eq!(normalized, dir.join("agent-files").join("b.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn memory_db() -> rusqlite::Connection {

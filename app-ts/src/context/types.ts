@@ -56,11 +56,46 @@ export interface InteractionPayload {
   context?: string;
 }
 
+/**
+ * One step of the agent's task plan (plan tool). Mirrors the desktop PlanStepView
+ * and is serialized verbatim into the `plan` SSE frame.
+ */
+export type PlanStepStatus = "pending" | "in_progress" | "done" | "failed" | "skipped";
+
+export interface PlanStepView {
+  desc: string;
+  status: PlanStepStatus;
+  note: string;
+}
+
+/**
+ * Read-only plan snapshot shown to the user. `done` counts done + skipped steps;
+ * the frontend keeps it in memory for the turn only (never persisted, no resume
+ * protocol, refresh loses it — same nature as the reasoning stream).
+ */
+export interface PlanSnapshot {
+  version: number;
+  steps: PlanStepView[];
+  done: number;
+  total: number;
+}
+
 /** Collects tool-produced sources / artifacts / interactions within a single conversation turn, emitted together at the SSE stream tail */
 export class ResultCollector {
   readonly sources: Source[] = [];
   readonly artifacts: Artifact[] = [];
   readonly interactions: InteractionPayload[] = [];
+  /**
+   * Latest plan snapshot produced by the plan tool this turn (source of the
+   * `plan` SSE frame). Absent until a plan mutation succeeds; the ReAct loop
+   * emits a frame at every step boundary where the version changed.
+   */
+  plan?: PlanSnapshot;
+
+  /** Register the latest plan snapshot (one per successful plan-tool mutation). */
+  setPlan(plan: PlanSnapshot): void {
+    this.plan = plan;
+  }
 
   pushSources(sources: Source[] | undefined): void {
     if (!sources) return;

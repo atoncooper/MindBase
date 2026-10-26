@@ -19,6 +19,8 @@ import type { QuotaGate, QuotaService } from "./quota.js";
 import { costMicroYuan, type UsageLedgerRepository } from "../repository/usage-ledger.js";
 import { today } from "../utils/datetime.js";
 import { historyLimitFor, noteTurnLevel } from "../utils/degrade.js";
+import type { PromptRegistry } from "../agent/prompts/loader.js";
+import { buildBoardSystemSection, type BoardContextParams } from "./board-context.js";
 
 /**
  * Endpoint-level orchestration (mirrors Python services/chat/orchestrator.py):
@@ -40,6 +42,12 @@ export interface AskStreamRequest {
   clientKey?: string;
   /** user-selected installed skills forced into the system prompt */
   skillIds?: string[];
+  /**
+   * Board (mindmap/whiteboard) chat context parsed at the HTTP layer: the user
+   * asked from inside a board node. Rendered into the agent's system prompt as a
+   * controlled section (never into tool args / identity).
+   */
+  board?: BoardContextParams;
 }
 
 const log = createLogger("CHAT");
@@ -104,6 +112,8 @@ export class ChatService {
     private readonly quota?: QuotaService | null,
     /** usage ledger; absent → cost accounting disabled */
     private readonly ledger?: UsageLedgerRepository | null,
+    /** prompt registry for turn-level system directives (board context); absent → no injection */
+    private readonly prompts?: PromptRegistry,
   ) {}
 
   private get admissionQueue(): WeightedAdmissionQueue | null {
@@ -169,6 +179,11 @@ export class ChatService {
     let usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined;
     let hadError = false;
 
+    // Board chat: the turn was asked from inside a mindmap/whiteboard node → the
+    // controlled board-context section (prompts/chat/board-context.md) rides on
+    // extraSystem; the agent's own red lines stay authoritative.
+    const extraSystem = this.buildExtraSystem(req.board);
+
     const admission = this.admissionQueue;
     let ticket: AdmissionTicket | null = null;
     try {
@@ -190,6 +205,7 @@ export class ChatService {
         })),
         agentName: req.agentName,
         skillIds: req.skillIds,
+        ...(extraSystem ? { extraSystem } : {}),
       })) {
         if (frame.type === "chunk") {
           fullContent += frame.content;
@@ -270,6 +286,12 @@ export class ChatService {
         else admission.cancel(ticket); // defensive; unreachable today
       }
     }
+  }
+
+  /** Board context → extraSystem section (undefined when the turn carries no board info). */
+  private buildExtraSystem(board: BoardContextParams | undefined): string | undefined {
+    if (!board || !this.prompts) return undefined;
+    return buildBoardSystemSection(this.prompts, board);
   }
 
   /**

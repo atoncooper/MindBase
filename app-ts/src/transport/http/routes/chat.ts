@@ -18,6 +18,7 @@ import { MAX_UPLOAD_BYTES, MAX_IMAGES_PER_TURN, MAX_IMAGE_DATA_URL_CHARS, DATA_U
 import { isVisionBlocked, type ModelCapabilityRegistry } from "../../../llm/model-capabilities.js";
 import { config } from "../../../config/index.js";
 import { hashClientKey } from "../../../services/quota.js";
+import { parseBoardContext } from "../../../services/board-context.js";
 
 const log = createLogger("HTTP");
 
@@ -167,6 +168,9 @@ export function registerChatRoutes(
         folder_ids?: number[];
         images?: string[];
         skill_ids?: string[];
+        /** board (mindmap/whiteboard) chat context — user input, sanitized below */
+        board_uuid?: string;
+        board_anchor_text?: string;
       };
       const query = (body.question ?? body.query)?.trim();
       if (!query) {
@@ -190,6 +194,12 @@ export function registerChatRoutes(
           detail: `当前模型 ${config.llm.model} 不支持视觉，无法识别图片。请切换支持视觉的模型（如 z-ai/glm-5.3-flash、qwen-vl 系列）后再发送图片。`,
         });
       }
+
+      // Board chat params: BoardChatPanel attaches the board uuid + node label it was
+      // asked from. Both are USER INPUT — parsed/truncated here (64 / 200 chars, control
+      // chars stripped) and rendered downstream into a controlled systemPrompt section;
+      // they never reach tool arguments. Absent/invalid → the turn proceeds unchanged.
+      const board = parseBoardContext(body);
 
       // Declare takeover of the raw response (SSE writes directly to reply.raw, Fastify no longer intervenes)
       reply.hijack();
@@ -234,6 +244,7 @@ export function registerChatRoutes(
           scope,
           images: images.length > 0 ? images : undefined,
           skillIds: Array.isArray(body.skill_ids) ? body.skill_ids.filter((s) => typeof s === 'string') : undefined,
+          ...(board ? { board } : {}),
         })) {
           if (closed) break;
           reply.raw.write(`data: ${JSON.stringify(frame)}\n\n`);

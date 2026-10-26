@@ -17,12 +17,31 @@
 
 ### Fixed
 
+- **桌面端文件工具越权写（write_file 可写任意绝对路径）**：`read_file`/`write_file`/`list_dir` 统一接入沙箱解析——相对路径锁定在 `<data_dir>/agent-files/<agent>/`（保留每 agent 隔离落点），绝对路径仅允许应用数据目录内，`..` 规约后越界统一拒绝；工具描述同步标注限制。
+- **artifact 帧失配（Web 端产物永不渲染）**：后端发 `{type:"artifact",artifacts:[...]}`，frontendv2 只读 `data.artifact`。修复：前端兼容数组/旧单对象两种形态，并按 `kind` 渲染 quiz / quiz_grading / 文件型产物。
+- **桌面端测试基线**：`logging::tests::epoch_civil_conversion_is_correct` 的纪元常量笔误（951897296→951827696，2000-02-29T12:34:56Z）；`ocr_server` 两个测试共用同一 pid 临时目录导致并行互删（flaky），改为每测试独立目录。
+- **提示词漂移**：`app-ts/prompts/agents/main.md` 删除已关闭的 `list_videos`/`get_video_summaries` 指引；`vector_search` 空结果提示不再指向未注册工具。
+- **锁文件版本同步**：`mind-base-desktop/package-lock.json` / `src-tauri/Cargo.lock` 版本字段对齐 0.1.13（此前分别滞后在 0.1.7 / 0.1.12）。
 - **cert-gen 启动失败（exit 2）**：git autocrlf 把 `scripts/gen-certs.sh` 工作区副本转成 CRLF，容器内 `set -eu
 ` 报 illegal option 并连锁阻塞 mysql/app-pay-mysql 的启动依赖。修复：`.gitattributes` 对全部 `*.sh` 强制 LF + certgen 镜像构建期剥除 CR 双保险；存量 shell 脚本工作区已归一。
 - **APISIX→app-pay https 上游 500**：APISIX 3.11 对带 `tls:` 块（即使仅 `verify: false`）的 https 上游在建立连接时 `parse_pem_cert(nil)` 崩溃，导致 `/internal/pay/*`（会员查询/补偿开通）自上线起不可用。修复：移除 `upstream-app-pay` 的 `tls:` 块（默认不校验上游证书，语义等价）；云盘配额的 VIP/SVIP 提额随之打通（SVIP grant→配额 60TB 已实测）。
 
 ### Added
 
+- **桌面端 agent 能力补齐（mind-base-desktop）**：
+  - `ask_user` 结构化交互（clarify 选项 / confirm 确认 / form 表单）：本轮结束等回答，作答作为下一条消息；程序化注入系统提示，老安装无需改 prompts md。
+  - 产物卡片：`generate_resume`/`generate_slides` 等本轮写入 `exports/` 的文件通过 `ChatEvent::Artifact` 推送到消息内，可一键打开。
+  - 后台任务入口：聊天顶栏「后台任务」派发给 6 个 agent（chat/memory/note/code/search/academic），Agent 状态页可查看/注入/停止（后端 spawn 命令此前无 UI 入口）。
+  - `web_search` 联网搜索工具：SearxNG（`MIND_BASE_SEARXNG_URL`）→ Bing → Baidu 引擎链，带反爬识别与代理出口；chat/search agent 均绑定并附提示词指引。
+  - academic agent 全链路可达：delegate 目标枚举、后台任务 `parse_agent`、`harness_tools` agent 归属。
+  - 检索精排：`vector_search` 在 RRF 融合后增加可选 DashScope `gte-rerank-v2` 精排（有 DashScope key 即生效，`MIND_BASE_RERANK=off` 关闭，`MIND_BASE_RERANK_MODEL/URL` 可覆盖；网络/解析失败自动回退融合顺序，不阻断检索）。
+  - 主动图片输入：聊天输入框支持粘贴 / 拖拽 / 选择图片（≤4 张、单张 ≤5MB、合计 ≤15MB，data URL 校验），仅视觉模型可用（非视觉模型给出中文提示）；图片随本轮请求发送、不落库。
+  - token 计量：`llm_chat` 解析流式/非流式 usage（`stream_options.include_usage`，`MIND_BASE_STREAM_USAGE=off` 可关），`ReactOutcome` 汇总全部 ReAct 轮次 + 成功委托的子代理；新增 `ChatEvent::Usage`、`chat_messages.usage` 列（旧库 PRAGMA 守护幂等补列）与消息底部 tokens 脚注。
+  - 工具执行硬超时：`AgentRuntime` 每工具独立线程 + `recv_timeout`（`MIND_BASE_TOOL_TIMEOUT_SECS`，默认 180s），超时降级为可读错误且本轮继续；配合 `Db` 内部 Arc 化、`ToolContext` 去生命周期（owned + Clone）、工具注册表 `Arc<dyn LocalTool>`，panic 也按单工具隔离。
+- **Web 端 agent 能力补齐（app-ts + frontendv2）**：
+  - 长期记忆持久化：新增 `MongoMemoryStore`（`memory_entries`，索引 uid+createdAt），Mongo 不可达时回落内存并告警；`save_memory` 与召回链路不变。
+  - 板聊上下文：chat 路由解析 `board_uuid`/`board_anchor_text`（截断+清洗+模板化），经 `ChatService → harness.extraSystem` 注入主 agent 系统提示，文案落在 `prompts/chat/board-context.md`。
+  - plan 工具与计划面板：app-ts 新增 `plan`（create/update/revise；按 chatSessionId 进程内状态，TTL 2h、上限 500 会话），SSE 新增 `plan` 帧（每次变更在 step 边界实时推送），frontendv2 渲染步骤状态面板；主 agent 绑定工具并补提示词。
 - **移动端 app-mobile（Flutter）首次入库（🚧 测试阶段，尚未开发完成）**：B站收藏知识库的 Flutter 客户端，零后端改动、走同一套 APISIX 路由。已具备：聊天（SSE 流式 / 抽屉会话 / reasoning / 来源 / artifact，帧语义对齐 frontendv2）、收藏夹、笔记（Markdown + If-Match 乐观并发）、云盘、测验、会员中心（Google 式扁平 UI）、设置与登录（B站扫码 + 密码）。工程面：全平台 MiSans 字体统一（斜体/等宽链/字重映射守护测试 + `ext.app.fontProbe` 运行时探针）、组件主题 TextStyle 从 textTheme 派生（修复 ListTile 字体继承断裂）、侧边栏边缘右滑 + 半屏宽度 + push 不关抽屉、输入框桌面 Enter 发送与拍照/相册/文件附件、金样回归（侧边栏/笔记/会员中心）与 20 项测试全绿。**请勿用于生产**：推送通知、云盘后台上传等未完成，iOS 未实测，详见 `app-mobile/README.md`。
 - **云盘服务迁移（app-go/app-cloud）**：云盘整体迁至独立 Go 服务（:8007），并完善为对标百度网盘的能力面——**存储配额**（免费 10GB / VIP 6TB / SVIP 60TB，init 上传即校验超限 413，用量条上屏）、**百度式分享**（token 链接 + 可选 4 位提取码（哈希存储）+ 有效期 + 下载上限 + 查看/下载计数，公开页 `/cloud/s/{token}` 免登录可达，访问发放 15 分钟短时效预签名 URL）、**回收站**（删除改软删，MinIO/Mongo/Milvus 数据保留 30 天供恢复，后台 sweeper 自动清理；新增恢复/彻底删除端点）、**文件搜索**。**文档解析+向量化管线全部 Go 重写**（PDF/docx/xlsx/pptx/markdown/html/文本提取 → 语义分块 → Higress 网关 embedding → Milvus cloud_drive（启动 schema 守护）→ Mongo 全文 → 三层一致性校验），同一 bucket/key 零数据迁移，RAG 混合检索无缝命中 Go 写入的向量。backend 云盘代码全量删除（cloud router / upload/processing/cleanup 服务 / cloud 仓储 / doc_parser，保留笔记转化用的只读 document_text），APISIX 新增 `/cloud/*` 兜底路由直达 app-cloud——云盘请求在代码与网关两个层面都不再经过 Python backend；WS 状态经 Redis pub/sub 桥接保持前端推送不变。
 - **SVIP 档位**：app-pay SKU 种子新增 SVIP 月/季/年（占位价），`MembershipService.extend` 支持 tier（订单 SKU 前缀 `SVIP_*` 自动判定），运营补偿开通（API + PayAdmin 界面）可选档位；云盘配额按 membership tier 自动生效。

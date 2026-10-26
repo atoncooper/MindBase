@@ -147,6 +147,12 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
       }
     }
 
+    // Plan frame dedupe: the plan tool bumps the snapshot version on every
+    // successful mutation. A frame is emitted when a step ends and the version
+    // differs from the last one already sent (retried attempts replay mutations,
+    // so version — not position — is the dedupe key).
+    let lastPlanVersion = -1;
+
     // One streaming attempt: consumes fullStream, forwards frames, returns the outcome.
     // Collector state (sources/artifacts/interactions) survives across attempts — tool
     // results from a failed attempt stay valid; only the assistant TEXT is reset.
@@ -238,6 +244,13 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
                 durationMs: startedAt ? Date.now() - startedAt : undefined,
               },
             };
+            // plan tool (registered on the main agent only): the snapshot was set on
+            // the collector during execution → push it right after this step's done
+            // frame so the frontend panel advances live instead of at the stream tail.
+            if (collector.plan && collector.plan.version !== lastPlanVersion) {
+              lastPlanVersion = collector.plan.version;
+              yield { type: "plan", plan: collector.plan };
+            }
             if (p.toolName === "delegate_to_agent") {
               const toolInput = (p.input ?? p.args) as Record<string, unknown> | undefined;
               const agentName = typeof toolInput?.agent === "string" ? toolInput.agent : lastDelegateAgent;
@@ -326,8 +339,14 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
       }
     }
 
-    // Stream tail: artifact → sources → interact → error? → done (mirrors the Python agent_sse tail order;
-    // the structured interaction frame lands right before the closing frames so the frontend renders it last)
+    // Stream tail: plan fallback → artifact → sources → interact → error? → done (mirrors the Python
+    // agent_sse tail order; the structured interaction frame lands right before the closing frames so the
+    // frontend renders it last). The fallback only fires when the final plan mutation never reached a
+    // step boundary (normal path: emitted live in the tool-result branch above).
+    if (collector.plan && collector.plan.version !== lastPlanVersion) {
+      lastPlanVersion = collector.plan.version;
+      yield { type: "plan", plan: collector.plan };
+    }
     if (collector.artifacts.length > 0) {
       yield { type: "artifact", artifacts: collector.artifacts };
     }

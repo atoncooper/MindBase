@@ -15,9 +15,10 @@ import {
   Sparkles,
   Pencil,
 } from "lucide-react";
-import type { ChatArtifact, ChatInteraction, ChatSource } from "@/lib/chat-stream";
+import { isTypedArtifact, type ChatArtifact, type ChatInteraction, type ChatPlan, type ChatSource } from "@/lib/chat-stream";
 import type { ReasoningStep } from "./types";
 import { InteractionCard } from "./interaction-card";
+import { PlanPanel } from "./plan-panel";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -38,6 +39,9 @@ interface ChatMessageProps {
   interaction?: ChatInteraction | null;
   interactionAnswered?: boolean;
   onInteractionAnswer?: (answer: string) => void;
+  // Live task plan (plan tool → `plan` SSE frame): compact checklist rendered
+  // above the answer body. Frontend memory only; a history reload loses it.
+  plan?: ChatPlan | null;
   // 多模态：用户消息附带的图片（data URL；仅本地实时态）
   images?: string[];
   /** 点击缩略图 → 打开大图预览(灯箱) */
@@ -148,6 +152,155 @@ function EditableUserMessage({
   );
 }
 
+// ---- Artifacts (tool / sub-agent products) ----------------------------------
+// Two shapes arrive over the stream (normalized in lib/chat-stream.ts):
+//   * structured { kind, data } — quiz / quiz_grading today; summarized here
+//   * file-style { name, url?, content_type? } — image / download
+// Anything unrecognized degrades to a collapsed JSON block, never to raw HTML.
+
+function numField(data: unknown, key: string): number | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const v = (data as Record<string, unknown>)[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function strField(data: unknown, key: string): string | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const v = (data as Record<string, unknown>)[key];
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+function arrayLen(data: unknown, key: string): number | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const v = (data as Record<string, unknown>)[key];
+  return Array.isArray(v) ? v.length : undefined;
+}
+
+// Safe JSON preview for unknown artifact kinds; never throws on cycles.
+function jsonPreview(data: unknown, max = 600): string {
+  try {
+    const text = JSON.stringify(data, null, 2) ?? String(data);
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  } catch {
+    return String(data);
+  }
+}
+
+// Summary card for a structured artifact: badge + title + optional detail line.
+function StructuredArtifactCard({
+  badge,
+  title,
+  detail,
+}: {
+  badge: string;
+  title: string;
+  detail?: string;
+}) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-xl border border-border-subtle bg-surface px-3 py-2">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent-soft text-[11px] font-medium text-accent">
+        {badge}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] text-foreground">{title}</span>
+        {detail && <span className="block truncate text-[11px] text-tertiary">{detail}</span>}
+      </span>
+    </div>
+  );
+}
+
+// File-style artifact card: image preview, download link, or a bare name chip.
+function FileArtifactCard({
+  name,
+  url,
+  contentType,
+}: {
+  name: string;
+  url?: string;
+  contentType?: string;
+}) {
+  const isImage = !!contentType?.startsWith("image/");
+  if (isImage && url) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border-subtle">
+        <a href={url} target="_blank" rel="noopener noreferrer" title={name}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt={name} className="max-h-48 object-cover" loading="lazy" />
+        </a>
+      </div>
+    );
+  }
+  if (url) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border-subtle">
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex max-w-full items-center gap-1.5 px-3 py-2 text-[13px] text-accent hover:underline"
+        >
+          <span className="truncate">{name}</span>
+          <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+        </a>
+      </div>
+    );
+  }
+  return (
+    <div className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-border-subtle px-3 py-2 text-[13px] text-secondary">
+      <span className="truncate">{name}</span>
+    </div>
+  );
+}
+
+function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
+  if (!isTypedArtifact(artifact)) {
+    // Legacy file-style artifact (image / downloadable file).
+    return <FileArtifactCard name={artifact.name} url={artifact.url} contentType={artifact.content_type} />;
+  }
+
+  const { kind, data } = artifact;
+  if (kind === "quiz") {
+    const count = arrayLen(data, "questions");
+    const topic = strField(data, "topic");
+    return (
+      <StructuredArtifactCard
+        badge="题"
+        title={count != null ? `已生成 ${count} 道题` : "已生成题目"}
+        detail={topic ?? (count == null ? jsonPreview(data, 80) : undefined)}
+      />
+    );
+  }
+  if (kind === "quiz_grading") {
+    const score = numField(data, "score");
+    const total = numField(data, "total");
+    const detail =
+      score != null && total != null
+        ? `得分 ${score}/${total}`
+        : jsonPreview(data, 80);
+    return <StructuredArtifactCard badge="批" title="已批改" detail={detail} />;
+  }
+  // A structured artifact that also carries a file location (e.g. an exported
+  // quiz PDF/image) → render it as an image preview / download link.
+  if (artifact.url) {
+    return (
+      <FileArtifactCard
+        name={artifact.name ?? kind}
+        url={artifact.url}
+        contentType={artifact.content_type}
+      />
+    );
+  }
+  // Unknown structured kind → collapsed JSON detail (no raw HTML rendering).
+  return (
+    <details className="rounded-xl border border-border-subtle bg-surface px-3 py-2 sm:col-span-2">
+      <summary className="cursor-pointer truncate text-[13px] text-foreground">产物 · {kind}</summary>
+      <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] text-secondary">
+        {jsonPreview(data)}
+      </pre>
+    </details>
+  );
+}
+
 function ChatMessage({
   role,
   content,
@@ -161,6 +314,7 @@ function ChatMessage({
   interaction,
   interactionAnswered,
   onInteractionAnswer,
+  plan,
   images,
   onImageOpen,
   status = "completed",
@@ -433,6 +587,13 @@ function ChatMessage({
           </div>
         )}
 
+        {/* Task plan (plan tool): live checklist above the answer body */}
+        {plan && plan.steps.length > 0 && (
+          <div className="mb-3">
+            <PlanPanel plan={plan} />
+          </div>
+        )}
+
         {/* Content / loading / error */}
         <div className={isFailed ? "rounded-xl border border-danger/20 bg-danger/5 p-3" : ""}>
           {isPending && !content && !reasoning ? (
@@ -526,34 +687,14 @@ function ChatMessage({
           </div>
         )}
 
-        {/* Artifacts - images/files produced by sub-agents */}
+        {/* Artifacts - structured (quiz / quiz_grading) summary cards + images/files */}
         {safeArtifacts.length > 0 && (
           <div className="mt-3">
             <div className="mb-1.5 text-[12px] font-medium text-secondary">生成产物</div>
-            <div className="flex flex-wrap gap-2">
-              {safeArtifacts.map((art, i) => {
-                const isImage = art.content_type?.startsWith("image/");
-                return (
-                  <div key={i} className="overflow-hidden rounded-xl border border-border-subtle">
-                    {isImage && art.url ? (
-                      <a href={art.url} target="_blank" rel="noopener noreferrer" title={art.name}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={art.url} alt={art.name} className="max-h-48 object-cover" loading="lazy" />
-                      </a>
-                    ) : (
-                      <a
-                        href={art.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-2 text-[13px] text-accent hover:underline"
-                      >
-                        <span className="truncate">{art.name}</span>
-                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                      </a>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="grid gap-2 sm:grid-cols-2">
+              {safeArtifacts.map((art, i) => (
+                <ArtifactCard key={i} artifact={art} />
+              ))}
             </div>
           </div>
         )}

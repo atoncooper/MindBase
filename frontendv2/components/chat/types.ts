@@ -1,6 +1,6 @@
 // Shared chat types for the frontendv2 chat view.
 
-import type { ChatArtifact, ChatInteraction, ChatSource } from "@/lib/chat-stream";
+import type { ChatArtifact, ChatInteraction, ChatPlan, ChatSource } from "@/lib/chat-stream";
 
 export interface ReasoningStep {
   step: number;
@@ -53,6 +53,9 @@ export interface ChatMessageData {
   // The user already answered this interaction (answer sent as the next
   // ordinary user message); the card renders in a settled state afterwards.
   interactionAnswered?: boolean;
+  // Live task plan for this turn (`plan` SSE frame / plan tool). Frontend memory
+  // only — never persisted, so a history reload loses it (same as reasoning).
+  plan?: ChatPlan;
   status: MessageStatus;
   // 多模态：用户消息附带的图片（data URL，仅本地实时态；历史重载后不含）
   images?: string[];

@@ -46,24 +46,28 @@ impl ToolOutput {
 pub(crate) type DelegateFn =
     dyn Fn(&str, &str) -> Result<(String, Vec<SubStep>), String> + Send + Sync + 'static;
 
-/// Per-turn resources every tool may touch. Carries `&Db` directly (not an
-/// AppHandle) so unit tests can build contexts over in-memory databases.
-/// Network-capable tools resolve their own locking windows (embed outside
-/// the lock, store inside).
-pub(crate) struct ToolContext<'a> {
-    pub db: &'a crate::db::Db,
+/// Per-turn resources every tool may touch.
+///
+/// Owned (clonable) rather than borrowed so every tool call can be dispatched
+/// onto its own thread with a hard timeout (see `harness::runtime`). `Db` is
+/// cheap to clone (internally `Arc`), and the two clients are shared behind
+/// `Arc`. Network-capable tools resolve their own locking windows (embed
+/// outside the lock, store inside).
+#[derive(Clone)]
+pub(crate) struct ToolContext {
+    pub db: crate::db::Db,
     /// Absent when no DashScope key is configured — embedding-backed tools
     /// self-report unavailability instead of failing the whole turn.
-    pub embed_client: Option<&'a crate::embeddings::EmbedClient>,
+    pub embed_client: Option<std::sync::Arc<crate::embeddings::EmbedClient>>,
     /// Present when a conversational provider is configured — needed by tools
     /// that themselves call an LLM (compressed-summary generation).
-    pub chat_client: Option<&'a crate::llm_chat::ChatClient>,
-    pub session_id: &'a str,
+    pub chat_client: Option<std::sync::Arc<crate::llm_chat::ChatClient>>,
+    pub session_id: String,
     /// Which agent's ReAct loop this context serves — scopes agent-owned
     /// resources (load_prompt reads this agent's own prompt tree).
     pub agent: crate::agents::AgentKind,
     /// Present only while the chat agent's ReAct loop is running.
-    pub delegate: Option<&'a DelegateFn>,
+    pub delegate: Option<std::sync::Arc<DelegateFn>>,
 }
 
 /// Wire identity of one registered tool.
@@ -74,21 +78,24 @@ pub(crate) struct ToolSpec {
     pub parameters: Value,
 }
 
-/// Behavior half of a tool. `Send + Sync` so scoped-thread execution works.
+/// Behavior half of a tool. `Send + Sync` so each call can run on its own
+/// thread (hard timeout in the runtime).
 pub(crate) trait LocalTool: Send + Sync {
     fn spec(&self) -> &ToolSpec;
-    fn execute(&self, ctx: &ToolContext<'_>, arguments: &str) -> Result<ToolOutput, String>;
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String>;
 }
 
 /// Registry keyed by tool name; late registration overwrites with a warning
-/// (mirrors backend registry.register).
+/// (mirrors backend registry.register). Tools live behind `Arc` so a call can
+/// be handed to a detached worker thread without borrowing the registry.
 #[derive(Default)]
 pub(crate) struct ToolRegistry {
-    tools: Vec<Box<dyn LocalTool>>,
+    tools: Vec<std::sync::Arc<dyn LocalTool>>,
 }
 
 impl ToolRegistry {
     pub(crate) fn register(&mut self, tool: Box<dyn LocalTool>) {
+        let tool: std::sync::Arc<dyn LocalTool> = std::sync::Arc::from(tool);
         let name = tool.spec().name;
         if self
             .tools
@@ -101,11 +108,11 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
-    pub(crate) fn get(&self, name: &str) -> Option<&dyn LocalTool> {
+    pub(crate) fn get(&self, name: &str) -> Option<std::sync::Arc<dyn LocalTool>> {
         self.tools
             .iter()
             .find(|tool| tool.spec().name == name)
-            .map(|tool| tool.as_ref())
+            .cloned()
     }
 
     pub(crate) fn names(&self) -> Vec<&'static str> {
@@ -146,7 +153,7 @@ mod tests {
         fn spec(&self) -> &ToolSpec {
             &self.spec
         }
-        fn execute(&self, _ctx: &ToolContext<'_>, _arguments: &str) -> Result<ToolOutput, String> {
+        fn execute(&self, _ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
             Ok(ToolOutput::text("ok"))
         }
     }

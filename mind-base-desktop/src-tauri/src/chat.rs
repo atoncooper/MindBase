@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use base64::Engine as _;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -22,7 +23,7 @@ use crate::agents::AgentKind;
 use crate::db::{self, Db};
 use crate::embeddings::embed_client_from_conn_opt;
 use crate::ingest::KnowledgeHit;
-use crate::llm_chat::{chat_client_from_conn, ChatClient, ChatMessage};
+use crate::llm_chat::{chat_client_from_conn, ChatClient, ChatMessage, TokenUsage};
 
 /// How many completed history messages ride along as conversation context
 /// (backend: last 6 messages = 3 turns).
@@ -37,6 +38,116 @@ const DEFAULT_TITLES: [&str; 4] = ["", "新对话", "未命名对话", "Untitled
 const TITLE_MAX_CHARS: usize = 18;
 /// Wall-clock cap for the LLM title refinement call.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(8);
+
+// ---------------------------------------------------------------------------
+// 用户主动附带的图片（data URL）校验
+// ---------------------------------------------------------------------------
+
+/// 一轮最多附带的图片数量。
+const MAX_USER_IMAGES: usize = 4;
+/// 单张图片解码后的上限（5MB）。
+const MAX_USER_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// 一轮所有图片解码后的合计上限（15MB）。
+const MAX_USER_IMAGES_TOTAL_BYTES: u64 = 15 * 1024 * 1024;
+/// 允许的 data URL 前缀（MIME 大小写不敏感）。jpeg / jpg 都接受——webview
+/// 的 FileReader 对 .jpg 可能产出 image/jpeg，也可能保留 image/jpg。
+const USER_IMAGE_PREFIXES: [&str; 5] = [
+    "data:image/png;base64,",
+    "data:image/jpeg;base64,",
+    "data:image/jpg;base64,",
+    "data:image/webp;base64,",
+    "data:image/gif;base64,",
+];
+
+/// 取出 data URL 里 `base64,` 之后的原始 base64 段。
+fn image_data_url_payload(image: &str) -> Result<&str, String> {
+    for prefix in USER_IMAGE_PREFIXES {
+        if image
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        {
+            return Ok(&image[prefix.len()..]);
+        }
+    }
+    Err(
+        "格式不支持：必须是以 data:image/(png|jpeg|jpg|webp|gif);base64, 开头的 data URL"
+            .to_string(),
+    )
+}
+
+/// base64 段的解码字节数：先做字符集 / 长度 / 填充校验，再按 3/4 估算。
+/// 估算超过单张上限时直接返回估算值，**不真正解码**——否则一张几十 MB 的
+/// 图片会在参数校验阶段就把内存打满（前端拦不住恶意调用方）。
+fn image_base64_decoded_bytes(payload: &str) -> Result<u64, String> {
+    let bytes = payload.as_bytes();
+    if bytes.is_empty() {
+        return Err("的内容为空：base64 数据缺失".to_string());
+    }
+    if bytes.len() % 4 != 0 {
+        return Err("的 base64 数据非法：长度必须是 4 的倍数".to_string());
+    }
+    let padding = bytes.iter().rev().take_while(|byte| **byte == b'=').count();
+    if padding > 2 {
+        return Err("的 base64 数据非法：填充符 '=' 过多".to_string());
+    }
+    let data = &bytes[..bytes.len() - padding];
+    if data
+        .iter()
+        .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/')))
+    {
+        return Err("的 base64 数据非法：包含非 base64 字符".to_string());
+    }
+    let estimated = (bytes.len() as u64 / 4) * 3 - padding as u64;
+    if estimated > MAX_USER_IMAGE_BYTES {
+        return Ok(estimated);
+    }
+    // 估算在上限内才真正解码：既精确校验尾部填充位，也拿到准确字节数。
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.as_bytes())
+        .map(|decoded| decoded.len() as u64)
+        .map_err(|_| "的 base64 数据非法：无法解码".to_string())
+}
+
+fn bytes_to_mb(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// 校验用户主动附带的图片（data URL）：数量、MIME 前缀、base64 合法性与
+/// 解码体积（单张 ≤5MB、合计 ≤15MB）。返回去首尾空白后的 data URL 列表；
+/// 任何一项不合法都返回中文错误（指明第几张、为什么）。
+pub(crate) fn validate_user_images(images: &[String]) -> Result<Vec<String>, String> {
+    if images.len() > MAX_USER_IMAGES {
+        return Err(format!(
+            "最多只能附带 {MAX_USER_IMAGES} 张图片（当前 {} 张），请减少后再发送",
+            images.len()
+        ));
+    }
+    let mut validated = Vec::with_capacity(images.len());
+    let mut total_bytes: u64 = 0;
+    for (index, raw) in images.iter().enumerate() {
+        let position = index + 1;
+        let image = raw.trim();
+        let payload = image_data_url_payload(image)
+            .map_err(|reason| format!("第 {position} 张图片{reason}"))?;
+        let decoded_bytes = image_base64_decoded_bytes(payload)
+            .map_err(|reason| format!("第 {position} 张图片{reason}"))?;
+        if decoded_bytes > MAX_USER_IMAGE_BYTES {
+            return Err(format!(
+                "第 {position} 张图片过大（约 {:.1}MB），单张不能超过 5MB",
+                bytes_to_mb(decoded_bytes)
+            ));
+        }
+        total_bytes += decoded_bytes;
+        if total_bytes > MAX_USER_IMAGES_TOTAL_BYTES {
+            return Err(format!(
+                "图片总大小超过 15MB（当前约 {:.1}MB），请减少数量或压缩后再发送",
+                bytes_to_mb(total_bytes)
+            ));
+        }
+        validated.push(image.to_string());
+    }
+    Ok(validated)
+}
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -117,6 +228,9 @@ pub struct ChatMessageRow {
     pub model: String,
     pub error: String,
     pub created_at: i64,
+    /// Provider-reported token usage of the turn that produced this
+    /// message (`None` for user rows / unmetered providers).
+    pub usage: Option<TokenUsage>,
 }
 
 /// Provenance entry attached to an assistant message (backend source shape).
@@ -159,8 +273,20 @@ pub enum ChatEvent {
         version: u32,
         steps: Vec<crate::harness::PlanStepView>,
     },
+    /// ask_user 结构化交互：前端渲染澄清选项 / 确认卡 / 表单。
+    Interact {
+        interact: crate::harness::InteractionView,
+    },
+    /// 本轮导出的文件（exports 内新增产物）：前端渲染文件卡片。
+    Artifact {
+        artifacts: Vec<crate::resume::ExportEntry>,
+    },
     Chunk {
         content: String,
+    },
+    /// 本轮 token 用量（含工具轮次与子代理聚合；提供方未上报时不发）。
+    Usage {
+        usage: TokenUsage,
     },
     Sources {
         sources: Vec<ChatSource>,
@@ -223,6 +349,24 @@ impl DeltaBatcher {
 pub struct ChatTurnResult {
     pub msg_id: String,
     pub answer: String,
+    /// 本轮聚合 token 用量（None = 提供方未上报）。
+    pub usage: Option<TokenUsage>,
+}
+
+/// Parse the persisted `chat_messages.usage` JSON back into counters.
+/// `{}` (schema default / unmetered turn), unreadable payloads and
+/// all-zero objects all mean "no usage recorded".
+pub(crate) fn usage_from_json(raw: &str) -> Option<TokenUsage> {
+    let usage: TokenUsage = serde_json::from_str(raw).ok()?;
+    (!usage.is_empty()).then_some(usage)
+}
+
+/// Serialize usage for the JSON column (`{}` when nothing was measured).
+pub(crate) fn usage_to_json(usage: Option<TokenUsage>) -> String {
+    usage
+        .filter(|usage| !usage.is_empty())
+        .and_then(|usage| serde_json::to_string(&usage).ok())
+        .unwrap_or_else(|| "{}".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -573,13 +717,14 @@ pub fn chat_history(db: State<'_, Db>, session_id: String) -> Result<Vec<ChatMes
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     let mut statement = conn
         .prepare(
-            "SELECT msg_id, chat_session_id, role, content, status, sources, model, error, created_at
+            "SELECT msg_id, chat_session_id, role, content, status, sources, model, error, created_at, usage
              FROM chat_messages WHERE chat_session_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|err| format!("failed to load history: {err}"))?;
     let rows = statement
         .query_map(params![session_id], |row| {
             let sources_raw: String = row.get(5)?;
+            let usage_raw: String = row.get(9)?;
             Ok(ChatMessageRow {
                 msg_id: row.get(0)?,
                 chat_session_id: row.get(1)?,
@@ -590,6 +735,7 @@ pub fn chat_history(db: State<'_, Db>, session_id: String) -> Result<Vec<ChatMes
                 model: row.get(6)?,
                 error: row.get(7)?,
                 created_at: row.get(8)?,
+                usage: usage_from_json(&usage_raw),
             })
         })
         .map_err(|err| format!("failed to query history: {err}"))?;
@@ -786,6 +932,8 @@ pub fn chat_summary_get(
 /// One grounded streaming turn: persist both sides, retrieve context, stream
 /// the answer, finalize persistence — reporting progress via `on_event`.
 /// `skill`（来自输入框 / 菜单）非空时把该技能全文作为本轮 system 指令强制注入。
+/// `images`（用户主动上传 / 粘贴 / 拖拽的图片 data URL，前端不传即 None）只
+/// 附加到本轮上下文，**不持久化**（见下方 history_for_turn 的注释）。
 #[tauri::command]
 pub async fn chat_ask(
     app: AppHandle,
@@ -793,12 +941,15 @@ pub async fn chat_ask(
     question: String,
     provider: Option<String>,
     skill: Option<String>,
+    images: Option<Vec<String>>,
     on_event: Channel<ChatEvent>,
 ) -> Result<ChatTurnResult, String> {
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("请输入问题".to_string());
     }
+    // 图片在碰任何数据库 / 网络之前先校验：数量、MIME 前缀、base64 与体积。
+    let user_images = validate_user_images(images.as_deref().unwrap_or(&[]))?;
 
     // Precheck + history under one short lock.
     let (history, embed_client, chat_client, was_default_title, skill_body) = {
@@ -818,6 +969,13 @@ pub async fn chat_ask(
             _ => chat_client_from_conn(&conn)?,
         }
         .ok_or_else(|| "未配置任何对话模型，请先在「API 设置」中填写提供方密钥".to_string())?;
+        // 模型能力闸门：名字启发式判定不支持视觉时直接拒绝本轮，避免把
+        // 图片塞给纯文本模型后拿到难懂的 400；提示用户去 API 设置换模型。
+        if !user_images.is_empty()
+            && !crate::llm_chat::model_supports_vision(chat_client.model_name())
+        {
+            return Err("当前对话模型不支持图片输入，请在「API 设置」切换到视觉模型（如 qwen-vl / gpt-4o）后再试".to_string());
+        }
         // 强制注入技能：显式选择无效（不存在/被禁用）时整轮报错，不静默忽略。
         let skill_body = match skill.as_deref().map(str::trim) {
             Some(name) if !name.is_empty() => {
@@ -839,6 +997,8 @@ pub async fn chat_ask(
     };
 
     let assistant_msg_id = db::local_id();
+    // 本轮起始时间（UNIX 秒）：收尾时用它筛选本轮新产出的 exports 文件。
+    let turn_started = now_secs();
 
     // Persist the turn skeleton before any network work.
     {
@@ -905,19 +1065,28 @@ pub async fn chat_ask(
     // fast path) → lifecycle gate → ReAct loop with the full tool registry.
     // 强制注入的技能作为一条尾部 system 消息进入本轮上下文（单轮生效，
     // 不持久化——下一轮需要时用户再次 / 选择）。
-    let history_for_turn = match &skill_body {
-        Some(body) => {
-            let mut with_skill = history.clone();
-            with_skill.push(ChatMessage::new(
-                "system",
-                format!(
-                    "## 用户强制注入的技能（本轮必须严格遵循）\n\n用户通过输入框 / 菜单显式附加了以下技能指令，其要求优先于默认行为：\n\n{body}"
-                ),
-            ));
-            with_skill
-        }
-        None => history,
-    };
+    let mut history_for_turn = history;
+    if let Some(body) = &skill_body {
+        history_for_turn.push(ChatMessage::new(
+            "system",
+            format!(
+                "## 用户强制注入的技能（本轮必须严格遵循）\n\n用户通过输入框 / 菜单显式附加了以下技能指令，其要求优先于默认行为：\n\n{body}"
+            ),
+        ));
+    }
+    // 本轮附带的图片作为一条额外的 user 消息追加在 history 末尾——顺序是
+    // history → （技能 system）→ 图片 user → 本轮 question（react_loop 自己
+    // 追加），图片只出现一次、也不打断技能注入的顺序。
+    //
+    // 历史不持久化图片：chat_messages 表没有 images 列（与 reasoning 同性质，
+    // 都不落库），刷新 / 切换会话后历史只重放文本，图片不会重放；需要时用户
+    // 重新附带。这里刻意不改 schema。
+    if !user_images.is_empty() {
+        let mut image_message =
+            ChatMessage::new("user", "（本轮用户主动附带了图片，见紧随其后的这个问题）");
+        image_message.images = user_images;
+        history_for_turn.push(image_message);
+    }
     // Register the cancellation flag for this turn BEFORE the blocking run
     // so a stop press during any phase (routing / tools / streaming) flips it.
     let cancel_token = Arc::new(AtomicBool::new(false));
@@ -961,6 +1130,11 @@ pub async fn chat_ask(
         // a structurally empty delegate slot (two-level cap). Consecutive
         // failures per target short-circuit after the backend's threshold.
         const DELEGATE_FAILURE_THRESHOLD: u32 = 2;
+        // Sub-agent usage sink: the delegate bridge return shape is fixed
+        // by the tool layer, so child usage is collected here and folded
+        // into the parent outcome once the loop returns.
+        let sub_usage: Arc<Mutex<Option<TokenUsage>>> = Arc::new(Mutex::new(None));
+        let sub_usage_sink = Arc::clone(&sub_usage);
         let bridge_handle = handle.clone();
         let bridge_client = chat_client.clone();
         let bridge_embed = embed_client.clone();
@@ -1006,7 +1180,10 @@ pub async fn chat_ask(
                 query,
                 &mut on_child_step,
             ) {
-                Ok((answer, _sub_steps)) => {
+                Ok((answer, _sub_steps, child_usage)) => {
+                    if let Ok(mut sink) = sub_usage_sink.lock() {
+                        crate::harness::add_usage(&mut sink, child_usage);
+                    }
                     crate::harness::harness()
                         .lifecycle
                         .reset_delegate_failures(&bridge_session, agent_name);
@@ -1028,13 +1205,15 @@ pub async fn chat_ask(
         });
 
         let db = handle.state::<Db>();
+        // Owned context: tool calls are dispatched onto detached worker threads
+        // with a hard timeout, so nothing may borrow this turn's locals.
         let ctx = crate::harness::ToolContext {
-            db: db.inner(),
-            embed_client: embed_client.as_ref(),
-            chat_client: Some(&chat_client),
-            session_id: &session_id,
+            db: db.inner().clone(),
+            embed_client: embed_client.clone().map(std::sync::Arc::new),
+            chat_client: Some(std::sync::Arc::new(chat_client.clone())),
+            session_id: session_id.clone(),
             agent: crate::agents::AgentKind::Chat,
-            delegate: Some(delegate_box.as_ref()),
+            delegate: Some(std::sync::Arc::from(delegate_box)),
         };
 
         let mut batcher = DeltaBatcher::new(event_channel.clone());
@@ -1056,6 +1235,17 @@ pub async fn chat_ask(
             );
         };
 
+        // ask_user 卡片 → 前端 interact 帧（结构化交互；本轮随后结束等回答）。
+        let interact_channel = event_channel.clone();
+        let on_interact = move |view: &crate::harness::InteractionView| {
+            emit(
+                &ChatEvent::Interact {
+                    interact: view.clone(),
+                },
+                &interact_channel,
+            );
+        };
+
         let mut callbacks = crate::harness::ReactCallbacks {
             on_step: &mut |step_no, action, query| {
                 emit(
@@ -1070,11 +1260,12 @@ pub async fn chat_ask(
             on_delta: &mut |delta| batcher.push(delta),
             should_stop: Some(&should_stop),
             on_plan: Some(&on_plan),
+            on_interact: Some(&on_interact),
             mailbox: None,
             step_budget: None,
         };
 
-        let outcome = crate::harness::react_loop(
+        let mut outcome = crate::harness::react_loop(
             &chat_client,
             &ctx,
             AgentKind::Chat,
@@ -1084,6 +1275,13 @@ pub async fn chat_ask(
             None,
             &mut callbacks,
         );
+        // 子代理轮次的 usage 不在主循环的 total 里：委托返回值经 sink 收齐后
+        // 在这里补进本轮总计。
+        if let Ok(sub_total) = sub_usage.lock() {
+            if let Ok(result) = outcome.as_mut() {
+                crate::harness::add_usage(&mut result.usage, *sub_total);
+            }
+        }
         match &outcome {
             Ok(_) => harness_arc.lifecycle.record_success("chat", &session_id),
             Err(_) => harness_arc.lifecycle.record_failure("chat", &session_id),
@@ -1103,6 +1301,8 @@ pub async fn chat_ask(
 
     match outcome {
         Ok(result) => {
+            // Copy out before `result.answer` is moved below.
+            let turn_usage = result.usage;
             let sources = collect_sources(&result.hits);
             if !sources.is_empty() {
                 emit(
@@ -1122,13 +1322,23 @@ pub async fn chat_ask(
                 .map_err(|err| format!("failed to begin transaction: {err}"))?;
             // An interrupted turn keeps whatever streamed before the cut; a
             // cut before any text lands gets a visible marker instead of an
-            // empty bubble on history reload.
+            // empty bubble on history reload. ask_user 结束的轮次同理：卡片
+            // 已经承载问题，正文只留一句引导，避免历史里出现空气泡。
             let answer = if result.answer.trim().is_empty() && result.interrupted {
                 "（已手动中断本次生成）".to_string()
+            } else if result.answer.trim().is_empty() && result.awaiting_user {
+                "（已向你提问，请在上方卡片作答）".to_string()
             } else {
                 result.answer
             };
-            complete_assistant_message_tx(&tx, &assistant_msg_id, &answer, &sources, &model_name)?;
+            complete_assistant_message_tx(
+                &tx,
+                &assistant_msg_id,
+                &answer,
+                &sources,
+                &model_name,
+                turn_usage,
+            )?;
             touch_session_conn(&tx, &session_for_finalize)?;
             tx.commit()
                 .map_err(|err| format!("failed to finalize turn: {err}"))?;
@@ -1153,6 +1363,32 @@ pub async fn chat_ask(
                     eprintln!("[STORE] turn append failed: {err}");
                 }
             }
+            // 本轮导出的产物：扫描 exports 里本轮（含 2s 容差）新增/修改的
+            // 文件，非空则推一张文件卡片。扫描失败静默跳过，绝不影响主流程。
+            let turn_artifacts: Vec<crate::resume::ExportEntry> = {
+                let data_dir = db
+                    .data_dir
+                    .lock()
+                    .map(|dir| dir.clone())
+                    .unwrap_or_default();
+                let turn_started_ms = turn_started.saturating_mul(1000);
+                crate::resume::list_exports_dir(&crate::resume::exports_dir(&data_dir))
+                    .into_iter()
+                    .filter(|entry| entry.modified_at * 1000 + 2000 >= turn_started_ms)
+                    .collect()
+            };
+            if !turn_artifacts.is_empty() {
+                emit(
+                    &ChatEvent::Artifact {
+                        artifacts: turn_artifacts,
+                    },
+                    &on_event,
+                );
+            }
+            // tokens 用量帧：与 artifact 并列，在 done 之前（有值才发）。
+            if let Some(usage) = turn_usage.filter(|usage| !usage.is_empty()) {
+                emit(&ChatEvent::Usage { usage }, &on_event);
+            }
             emit(
                 &ChatEvent::Done {
                     msg_id: assistant_msg_id.clone(),
@@ -1162,6 +1398,7 @@ pub async fn chat_ask(
             Ok(ChatTurnResult {
                 msg_id: assistant_msg_id,
                 answer,
+                usage: turn_usage,
             })
         }
         Err(error) => {
@@ -1196,19 +1433,23 @@ pub async fn chat_ask(
     }
 }
 
-/// Persist the completed assistant message (content + sources JSON + model).
+/// Persist the completed assistant message (content + sources JSON + model
+/// + aggregated token usage JSON).
 fn complete_assistant_message_tx(
     conn: &Connection,
     msg_id: &str,
     content: &str,
     sources: &[ChatSource],
     model: &str,
+    usage: Option<TokenUsage>,
 ) -> Result<(), String> {
     let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".to_string());
+    let usage_json = usage_to_json(usage);
     conn.execute(
-        "UPDATE chat_messages SET status = 'completed', content = ?2, sources = ?3, model = ?4
+        "UPDATE chat_messages SET status = 'completed', content = ?2, sources = ?3, model = ?4,
+             usage = ?5
          WHERE msg_id = ?1",
-        params![msg_id, content, sources_json, model],
+        params![msg_id, content, sources_json, model, usage_json],
     )
     .map_err(|err| format!("failed to complete message: {err}"))?;
     Ok(())
@@ -1348,5 +1589,211 @@ mod tests {
         let mut no_url = hit("d4", "", "无链接", "", 1.0, "x");
         no_url.url = String::new();
         assert!(collect_sources(&[no_url]).is_empty());
+    }
+
+    #[test]
+    fn interact_event_serializes_to_frontend_contract() {
+        let event = ChatEvent::Interact {
+            interact: crate::harness::InteractionView {
+                kind: "clarify".to_string(),
+                question: "选哪个方案？".to_string(),
+                options: Some(vec![crate::harness::InteractionOption {
+                    label: "方案A".to_string(),
+                    value: "A".to_string(),
+                }]),
+                fields: None,
+                context: None,
+            },
+        };
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["type"], "interact");
+        assert_eq!(value["interact"]["kind"], "clarify");
+        assert_eq!(value["interact"]["question"], "选哪个方案？");
+        assert_eq!(value["interact"]["options"][0]["label"], "方案A");
+        assert_eq!(value["interact"]["options"][0]["value"], "A");
+        assert!(value["interact"].get("fields").is_none());
+        assert!(value["interact"].get("context").is_none());
+    }
+
+    #[test]
+    fn interaction_field_and_artifact_event_serialize_for_frontend() {
+        let view = crate::harness::InteractionView {
+            kind: "form".to_string(),
+            question: "补充信息".to_string(),
+            options: None,
+            fields: Some(vec![crate::harness::InteractionField {
+                name: "email".to_string(),
+                label: "邮箱".to_string(),
+                field_type: "email".to_string(),
+                required: true,
+                options: None,
+            }]),
+            context: Some("为什么要问".to_string()),
+        };
+        let value = serde_json::to_value(&view).expect("serialize view");
+        assert_eq!(value["fields"][0]["type"], "email");
+        assert_eq!(value["fields"][0]["required"], true);
+
+        let artifact = ChatEvent::Artifact {
+            artifacts: vec![crate::resume::ExportEntry {
+                name: "简历.md".to_string(),
+                path: "D:/data/exports/简历.md".to_string(),
+                kind: "markdown".to_string(),
+                size_bytes: 12,
+                modified_at: 100,
+            }],
+        };
+        let value = serde_json::to_value(&artifact).expect("serialize artifact");
+        assert_eq!(value["type"], "artifact");
+        assert_eq!(value["artifacts"][0]["name"], "简历.md");
+        assert_eq!(value["artifacts"][0]["sizeBytes"], 12);
+        assert_eq!(value["artifacts"][0]["modifiedAt"], 100);
+    }
+
+    #[test]
+    fn awaiting_user_turn_falls_back_to_card_hint() {
+        // 收尾文案属于纯逻辑，直接断言分支语义（不依赖 Tauri state）。
+        let answer = String::new();
+        let awaiting = true;
+        let interrupted = false;
+        let resolved = if answer.trim().is_empty() && interrupted {
+            "（已手动中断本次生成）".to_string()
+        } else if answer.trim().is_empty() && awaiting {
+            "（已向你提问，请在上方卡片作答）".to_string()
+        } else {
+            answer
+        };
+        assert_eq!(resolved, "（已向你提问，请在上方卡片作答）");
+    }
+
+    // -- validate_user_images ------------------------------------------------
+
+    fn image_data_url(mime: &str, bytes: &[u8]) -> String {
+        format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    #[test]
+    fn validate_user_images_accepts_one_legal_image() {
+        let raw = image_data_url("image/png", b"not-really-a-png-but-bytes");
+        assert_eq!(
+            validate_user_images(std::slice::from_ref(&raw)).unwrap(),
+            vec![raw.clone()]
+        );
+        // 首尾空白（前端多行拼接可能带换行）在返回前被裁掉。
+        let padded = format!("  {raw}\n");
+        assert_eq!(validate_user_images(&[padded]).unwrap(), vec![raw]);
+        // jpg / webp / gif 前缀同样接受，MIME 大小写不敏感。
+        for mime in ["image/jpeg", "image/jpg", "image/webp", "image/gif"] {
+            let url = image_data_url(mime, b"x");
+            assert!(validate_user_images(&[url]).is_ok(), "{mime}");
+        }
+        assert!(validate_user_images(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn validate_user_images_rejects_more_than_four() {
+        let images: Vec<String> = (0..5)
+            .map(|index| image_data_url("image/png", &[index as u8]))
+            .collect();
+        let error = validate_user_images(&images).unwrap_err();
+        assert!(error.contains("最多只能附带 4 张图片"), "{error}");
+        assert!(error.contains("当前 5 张"), "{error}");
+    }
+
+    #[test]
+    fn validate_user_images_rejects_wrong_prefix() {
+        let images = vec![
+            "data:text/plain;base64,aGVsbG8=".to_string(),
+            "https://example.com/a.png".to_string(),
+            "data:image/svg+xml;base64,PHN2Zz4=".to_string(),
+        ];
+        for image in images {
+            let error = validate_user_images(&[image]).unwrap_err();
+            assert!(error.contains("第 1 张图片格式不支持"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_user_images_rejects_empty_base64() {
+        for image in [
+            "data:image/png;base64,".to_string(),
+            "data:image/png;base64,   ".to_string(),
+        ] {
+            let error = validate_user_images(&[image]).unwrap_err();
+            assert!(error.contains("第 1 张图片的内容为空"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_user_images_rejects_oversized_single_image() {
+        // 约 5.5MB 的纯 base64 文本 → 估算解码 >5MB。校验走 capped 分支，
+        // 绝不解码（否则测试自身就要为一张超大图分配内存）。
+        let payload = "A".repeat(7 * 1024 * 1024);
+        let image = format!("data:image/png;base64,{payload}");
+        let error = validate_user_images(&[image]).unwrap_err();
+        assert!(error.contains("第 1 张图片过大"), "{error}");
+        assert!(error.contains("单张不能超过 5MB"), "{error}");
+    }
+
+    #[test]
+    fn validate_user_images_rejects_illegal_base64() {
+        for payload in ["!!!!", "abcde", "ab=c", "A==="] {
+            let image = format!("data:image/png;base64,{payload}");
+            let error = validate_user_images(&[image]).unwrap_err();
+            assert!(
+                error.contains("第 1 张图片") && error.contains("base64 数据非法"),
+                "payload={payload}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_user_images_rejects_total_over_limit() {
+        // 4 张各 4MB（解码后）= 16MB > 合计 15MB；单张都在 5MB 以内。
+        let payload = "A".repeat(4 * 1024 * 1024 / 3 * 4 + 4);
+        let image = format!("data:image/jpeg;base64,{payload}");
+        let images = vec![image; 4];
+        let error = validate_user_images(&images).unwrap_err();
+        assert!(error.contains("图片总大小超过 15MB"), "{error}");
+    }
+
+    // -- token usage --------------------------------------------------------
+
+    #[test]
+    fn usage_event_serializes_to_frontend_contract() {
+        let event = ChatEvent::Usage {
+            usage: TokenUsage {
+                input_tokens: 1200,
+                output_tokens: 300,
+                total_tokens: 1500,
+            },
+        };
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["type"], "usage");
+        assert_eq!(value["usage"]["inputTokens"], 1200);
+        assert_eq!(value["usage"]["outputTokens"], 300);
+        assert_eq!(value["usage"]["totalTokens"], 1500);
+    }
+
+    #[test]
+    fn usage_json_column_roundtrips_and_blank_is_none() {
+        let usage = TokenUsage {
+            input_tokens: 12,
+            output_tokens: 34,
+            total_tokens: 46,
+        };
+        let raw = usage_to_json(Some(usage));
+        assert_eq!(usage_from_json(&raw), Some(usage), "column JSON round-trips");
+        assert_eq!(usage_from_json("{}"), None);
+        assert_eq!(usage_from_json(""), None);
+        assert_eq!(usage_from_json("not json"), None);
+        assert_eq!(usage_to_json(None), "{}");
+        // All-zero usage is indistinguishable from no usage: keep it empty
+        // so the UI never renders a meaningless 0/0/0 footnote.
+        assert_eq!(usage_to_json(Some(TokenUsage::default())), "{}");
+        assert_eq!(usage_from_json(&usage_to_json(Some(TokenUsage::default()))), None);
     }
 }
