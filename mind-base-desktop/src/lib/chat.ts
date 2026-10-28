@@ -192,6 +192,8 @@ export async function chatAsk(
    * 刷新 / 切会话后历史只重放文本。
    */
   images: string[] = [],
+  /** 当前科研项目 id：非空时后端把项目简报注入本轮 system 上下文。 */
+  researchProjectId: string | null = null,
 ): Promise<ChatTurnResult> {
   const channel = new Channel<ChatEvent>();
   channel.onmessage = onEvent;
@@ -202,6 +204,7 @@ export async function chatAsk(
     skill,
     // 不传图片时显式 null，对应 Rust 侧的 Option<Vec<String>>（None）。
     images: images.length > 0 ? images : null,
+    researchProjectId,
     onEvent: channel,
   });
 }

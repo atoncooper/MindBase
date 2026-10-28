@@ -410,6 +410,7 @@ fn parse_agent(name: &str) -> Result<AgentKind, String> {
         "code" => Ok(AgentKind::Code),
         "search" => Ok(AgentKind::Search),
         "academic" => Ok(AgentKind::Academic),
+        "research" => Ok(AgentKind::Research),
         other => Err(format!("未知 agent：{other}")),
     }
 }

@@ -942,6 +942,8 @@ pub async fn chat_ask(
     provider: Option<String>,
     skill: Option<String>,
     images: Option<Vec<String>>,
+    // 当前科研项目：非空时把项目简报作为本轮 system 上下文注入。
+    research_project_id: Option<String>,
     on_event: Channel<ChatEvent>,
 ) -> Result<ChatTurnResult, String> {
     let question = question.trim().to_string();
@@ -952,7 +954,7 @@ pub async fn chat_ask(
     let user_images = validate_user_images(images.as_deref().unwrap_or(&[]))?;
 
     // Precheck + history under one short lock.
-    let (history, embed_client, chat_client, was_default_title, skill_body) = {
+    let (history, embed_client, chat_client, was_default_title, skill_body, research_brief) = {
         let db = app.state::<Db>();
         let conn = db
             .conn
@@ -987,12 +989,22 @@ pub async fn chat_ask(
             }
             _ => None,
         };
+        // 科研控制台只在主聊天里对话：把项目简报作为本轮 system 上下文。
+        let research_brief = match research_project_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(project_id) => crate::research::project_briefing(&conn, project_id).ok(),
+            None => None,
+        };
         (
             history,
             embed_client,
             chat_client,
             is_default_title(&session.title),
             skill_body,
+            research_brief,
         )
     };
 
@@ -1086,6 +1098,19 @@ pub async fn chat_ask(
             ChatMessage::new("user", "（本轮用户主动附带了图片，见紧随其后的这个问题）");
         image_message.images = user_images;
         history_for_turn.push(image_message);
+    }
+    // 科研项目上下文：只注入本轮（不落库），回答需结合控制台里的项目事实。
+    if let Some(brief) = research_brief {
+        history_for_turn.push(ChatMessage::new(
+            "system",
+            format!(
+                "## 当前科研项目上下文
+
+{brief}
+
+                 用户正在该科研项目的控制台里发起对话。回答时结合上述项目事实（阶段、产物、文献、数据、决策）给出下一步建议；                 未提供的数字、文献或结果不要编造，需要时提示用户回控制台补齐。"
+            ),
+        ));
     }
     // Register the cancellation flag for this turn BEFORE the blocking run
     // so a stop press during any phase (routing / tools / streaming) flips it.

@@ -37,6 +37,7 @@ export type Route =
   | { view: "import" }
   | { view: "favorites" }
   | { view: "skills" }
+  | { view: "research" }
   | { view: "settings"; tab: SettingsTab };
 
 export const HOME_HASH = "#/";
@@ -49,6 +50,7 @@ export const KNOWLEDGE_HASH = "#/knowledge";
 export const IMPORT_HASH = "#/import";
 export const FAVORITES_HASH = "#/favorites";
 export const SKILLS_HASH = "#/skills";
+export const RESEARCH_HASH = "#/research";
 export const SETTINGS_SYSTEM_HASH = "#/settings/system";
 export const SETTINGS_API_HASH = "#/settings/api";
 export const SETTINGS_AGENT_HASH = "#/settings/agent";
@@ -103,6 +105,9 @@ export function parseHash(): Route {
   }
   if (/^#\/skills\/?$/.test(window.location.hash)) {
     return { view: "skills" };
+  }
+  if (/^#\/research\/?$/.test(window.location.hash)) {
+    return { view: "research" };
   }
   return { view: "home" };
 }

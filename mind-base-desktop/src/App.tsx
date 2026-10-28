@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
+import "./components/settings/google-settings.css";
 import SystemSettings from "./components/SystemSettings";
 import ApiSettings from "./components/ApiSettings";
 import AgentStatusView from "./components/AgentStatusView";
@@ -24,6 +25,7 @@ import MindMapView from "./components/mindmap/MindMapView";
 import MindMapEditorView from "./components/mindmap/MindMapEditorView";
 import FavoritesView from "./components/FavoritesView";
 import SkillsView from "./components/SkillsView";
+import ResearchView from "./components/ResearchView";
 import NavRail from "./components/NavRail";
 import {
   SETTINGS_API_HASH,
@@ -69,6 +71,8 @@ function viewMeta(route: ReturnType<typeof useHashRoute>): { subtitle: string } 
       return { subtitle: "知识导图" };
     case "skills":
       return { subtitle: "技能管理" };
+    case "research":
+      return { subtitle: "科研工作台" };
     default:
       return { subtitle: "设置" };
   }
@@ -82,10 +86,9 @@ function App() {
   // object — 更新只在设置内以弹窗呈现，不再有全局横幅。
   const updateState = useUpdateCheck(3000);
   const inSettings = route.view === "settings";
-  // The chat / notes / mindmap-editor workspaces are full-bleed: they skip
-  // the .shell card entirely and own every pixel of the main column
-  // (sidebar + streaming conversation). Chat is the default route (home).
-  const inFull = route.view === "home" || route.view === "notes" || route.view === "mindmap-edit";
+  // The chat / notes / mindmap-editor / research workspaces are full-bleed:
+  // they skip the .shell card entirely and own every pixel of the main column.
+  const inFull = route.view === "home" || route.view === "notes" || route.view === "mindmap-edit" || route.view === "research";
   const meta = viewMeta(route);
   // Ctrl+K 命令面板 + 跨视图跳转的 pending 状态（由目标视图消费）。
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -158,11 +161,13 @@ function App() {
     return (
       <div className="app-frame">
         <NavRail route={route} />
-      <main className="main-col main-col--chat">
+      <main className={route.view === "research" ? "main-col main-col--workspace" : "main-col main-col--chat"}>
         {route.view === "notes" ? (
           <NotesView pending={pending} onPendingConsumed={() => setPending(null)} />
         ) : route.view === "mindmap-edit" ? (
           <MindMapEditorView mapId={route.mapId} />
+        ) : route.view === "research" ? (
+          <ResearchView />
         ) : (
           <ChatView pending={pending} onPendingConsumed={() => setPending(null)} />
         )}
@@ -177,7 +182,7 @@ function App() {
       <NavRail route={route} />
 
       <main className="main-col">
-        <div className="shell shell--full">
+        <div className={inSettings ? "shell shell--full settings-scope" : "shell shell--full"}>
           <header className="header">
             <div className="header__text">
               <h1 className="header__title">{meta.subtitle}</h1>

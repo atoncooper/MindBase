@@ -8,37 +8,39 @@
  */
 
 :root {
+  /* Google 亮色：页面 #f8f9fa / 卡片 #fff / 侧栏 #f0f4f9 / 描边 #dadce0 */
+  --page: #f8f9fa;
   --paper: #ffffff;
   --surface: #ffffff;
-  /* ChatGPT 式近黑：文本主色，同时是少数实体件的底色。 */
-  --ink: #0d0d0d;
-  --ink-2: #5d5d5b;
-  --line: #ececeb;
-  --line-strong: #d9d9d6;
-  --wash: #f4f4f2;
-  /* Quiet-paper layering: rails/sidebars separate from the paper by tone,
-     not by hairline borders. */
-  --rail: #f9f9f7;
-  /* 激活导航项 / 会话项的再深一档填充（比 hover 更笃定的色调层）。 */
-  --hover-deep: #e9e9e7;
-  --shadow-lift: 0 4px 16px rgba(0, 0, 0, 0.06);
-  /* Semantic status colors — the only color in the system. */
-  --ok: #1e8e3e;
-  --ok-bg: #e7f3ea;
-  --danger: #d93025;
-  --danger-bg: #fcebe9;
-  /* Google 产品色（简历 / PPT 页专用）：主按钮蓝（Google Workspace 蓝），
-     深色档用 Google dark 的 #8ab4f8 + 深字。 */
-  --g-blue: #1a73e8;
-  --g-blue-hover: #1765cc;
+  --ink: #1f1f1f;
+  --ink-2: #5f6368;
+  --line: #dadce0;
+  --line-strong: #c4c7c5;
+  --wash: #f1f3f4;
+  --rail: #f0f4f9;
+  --hover-deep: #e8eaed;
+  --shadow-lift: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --ok: #146c2e;
+  --ok-bg: #e6f4ea;
+  --danger: #b3261e;
+  --danger-bg: #fce8e6;
+  /* Google 主色：主按钮 / 选中态 / 进度条 / 徽标 */
+  --primary: #0b57d0;
+  --primary-hover: #0a4cb5;
+  --on-primary: #ffffff;
+  --primary-container: #d3e3fd;
+  --on-primary-container: #041e49;
+  /* Google 产品色（简历 / PPT 页专用） */
+  --g-blue: #0b57d0;
+  --g-blue-hover: #0a4cb5;
   --g-blue-ink: #ffffff;
   /* 测验页（Google Forms 紫）。 */
   --g-purple: #7248b9;
   --g-purple-hover: #5e3a9e;
   --g-purple-ink: #ffffff;
-  /* 用户消息气泡：ChatGPT 式暖灰容器（不再用蓝色）。 */
-  --user-bubble: #ececeb;
-  --user-bubble-ink: #0d0d0d;
+  /* 用户消息气泡：Google 灰蓝容器。 */
+  --user-bubble: #f0f4f9;
+  --user-bubble-ink: #1f1f1f;
 
   /* 代码语法三色（画布代码节点与代码编辑对话框共用）：靛/青/赭，
      与连线强调色同源；深色档在 :root[data-theme="dark"] 提亮。 */
@@ -68,28 +70,34 @@
 /* 暗色主题：由 lib/theme.ts 把解析结果写到 <html data-theme>，浅色档与
    系统档浅色都不带属性，天然落在 :root 默认变量上。 */
 :root[data-theme="dark"] {
-  --paper: #212121;
-  --surface: #2b2b2a;
-  --ink: #ececec;
-  --ink-2: #a6a6a2;
-  --line: #3a3a38;
-  --line-strong: #4d4d4a;
-  --wash: #2f2f2e;
-  --rail: #181818;
-  --hover-deep: #383836;
+  --page: #131314;
+  --paper: #1e1f20;
+  --surface: #1e1f20;
+  --ink: #e3e3e3;
+  --ink-2: #c4c7c5;
+  --line: #444746;
+  --line-strong: #5f6368;
+  --wash: #282a2c;
+  --rail: #1e1f20;
+  --hover-deep: #333537;
   --shadow-lift: 0 4px 16px rgba(0, 0, 0, 0.4);
   --ok: #6dd58c;
-  --ok-bg: #1f2d22;
-  --danger: #f28b82;
-  --danger-bg: #38211e;
+  --ok-bg: rgba(109, 213, 140, 0.14);
+  --danger: #f2b8b5;
+  --danger-bg: rgba(242, 184, 181, 0.14);
+  --primary: #8ab4f8;
+  --primary-hover: #aecbfa;
+  --on-primary: #062e6f;
+  --primary-container: #0842a0;
+  --on-primary-container: #d3e3fd;
   --g-blue: #8ab4f8;
   --g-blue-hover: #aecbfa;
   --g-blue-ink: #1b1b1a;
   --g-purple: #d0bcff;
   --g-purple-hover: #e2d4ff;
   --g-purple-ink: #1b1b1a;
-  --user-bubble: #2f2f2e;
-  --user-bubble-ink: #ececec;
+  --user-bubble: #282a2c;
+  --user-bubble-ink: #e3e3e3;
   --code-keyword: #7b97c9;
   --code-string: #6cc3a9;
   --code-literal: #cf9873;
@@ -98,7 +106,7 @@
 
 body {
   margin: 0;
-  background-color: var(--paper);
+  background-color: var(--page);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -147,7 +155,12 @@ body {
 
 /* Layout -------------------------------------------------------------- */
 
+/* 宽度必须显式 100%：.main-col 是纵向 flex 容器，而这里又有 margin:auto
+   （用于居中窄栏），交叉轴 auto margin 会让 flex item 放弃 stretch、退化为
+   内容自适应宽度——页面内容少时整页缩成窄条，加内容才慢慢变宽。 */
 .shell {
+  width: 100%;
+  box-sizing: border-box;
   max-width: 660px;
   margin: 0 auto;
   padding: 28px 24px 48px;
@@ -198,6 +211,18 @@ body {
 
 .shell--full .cfg-label {
   font-size: 13px;
+}
+
+/* 窄窗口：页面留白与卡片内边距同步收窄，保证内容宽度不被 44px 大边距吃掉
+   （Tauri 默认窗口仅 800×600，最大化前的第一屏也能铺满可读宽度）。 */
+@media (max-width: 900px) {
+  .shell--full {
+    padding: 24px 24px 40px;
+  }
+
+  .shell--full .card {
+    padding: 18px 18px 20px;
+  }
 }
 
 /* Staggered reveal on load; each card rises a beat after the previous one. */
@@ -726,8 +751,8 @@ body {
   width: 30px;
   height: 30px;
   border-radius: 9px;
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  color: var(--on-primary);
   display: grid;
   place-items: center;
   font-size: 12px;
@@ -793,8 +818,8 @@ body {
 /* Active route: tonal fill — the label carries the weight, no inversion. */
 .rail-btn--active,
 .rail-btn--active:hover {
-  background-color: var(--hover-deep);
-  color: var(--ink);
+  background-color: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
 .rail-btn svg {
@@ -875,6 +900,20 @@ body {
 
 .ledger-row {
   border-bottom: 1px solid var(--line);
+}
+
+/* 模型配置分组标题（编程套餐 / 官方 API / 聚合端点 / 用途槽）。 */
+.ledger-section {
+  margin: 20px 0 4px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+
+.vault-ledger:first-of-type .ledger-section {
+  margin-top: 4px;
 }
 
 .ledger-row__head {
@@ -979,8 +1018,8 @@ body {
 .ledger-row__badge {
   padding: 2px 8px;
   border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  color: var(--on-primary);
   font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.1em;
@@ -1146,7 +1185,7 @@ body {
 
 .model-item__progress-fill {
   height: 100%;
-  background-color: var(--ink);
+  background-color: var(--primary);
   border-radius: 999px;
   transition: width 0.4s ease;
 }
@@ -1198,7 +1237,7 @@ body {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background-color: var(--ink);
+  background-color: var(--primary);
 }
 
 .provider-menu {
@@ -1359,9 +1398,9 @@ body {
 }
 
 .card--invert .button--primary {
-  background-color: var(--paper);
-  border-color: var(--paper);
-  color: var(--ink);
+  background-color: var(--on-primary);
+  border-color: var(--on-primary);
+  color: var(--primary);
 }
 
 .card--invert .button--primary:hover:not(:disabled) {
@@ -1507,13 +1546,13 @@ body {
 }
 
 .status--info {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary-container);
+  border-color: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
 .status--info::before {
-  border-color: var(--paper);
+  border-color: currentColor;
 }
 
 /* Buttons ---------------------------------------------------------------- */
@@ -1551,13 +1590,13 @@ body {
 }
 
 .button--primary {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 
 .button--primary:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--ink) 86%, var(--paper));
+  background-color: var(--primary-hover);
   border-color: transparent;
   transform: none;
   box-shadow: none;
@@ -1652,15 +1691,15 @@ body {
 }
 
 .checkbox-row input:checked {
-  background-color: var(--ink);
+  background-color: var(--primary);
 }
 
 .checkbox-row input:checked::after {
   content: "";
   width: 8px;
   height: 4px;
-  border-left: 1.5px solid var(--paper);
-  border-bottom: 1.5px solid var(--paper);
+  border-left: 1.5px solid var(--on-primary);
+  border-bottom: 1.5px solid var(--on-primary);
   transform: rotate(-45deg) translateY(-1px);
 }
 
@@ -2112,8 +2151,8 @@ body {
   flex-shrink: 0;
   padding: 3px 10px;
   border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  color: var(--on-primary);
   font-family: var(--font-sans);
   font-size: 10px;
   letter-spacing: 0.06em;
@@ -2238,8 +2277,8 @@ body {
   flex-shrink: 0;
   padding: 1px 8px;
   border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  color: var(--on-primary);
   font-family: var(--font-sans);
   font-size: 9.5px;
   letter-spacing: 0.06em;
@@ -2585,6 +2624,9 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  /* 常驻滚动条槽位：设置页等长页面有滚动条、短页面没有，预留后两边内容
+     宽度一致，切 tab 不再左右跳。 */
+  scrollbar-gutter: stable;
   /* flex 列：让 .shell 可以 flex:1 撑满视口（简历/PPT 页内对话的等高基础）。 */
   display: flex;
   flex-direction: column;
@@ -2679,7 +2721,7 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: var(--ink);
+  background-color: var(--primary);
   animation: breathe 1.4s ease-in-out infinite;
 }
 .ingest__busy__text {
@@ -2701,7 +2743,7 @@ body {
 .ingest__bar__fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--ink);
+  background: var(--primary);
   transition: width 0.3s ease;
 }
 .ingest__bar--indeterminate::after {
@@ -2896,6 +2938,14 @@ body {
    =========================================================================== */
 
 .main-col--chat {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 全幅工作区（科研工作台）：与 chat 同为整窗工作区，但语义独立——
+   子视图（.research-scope）自己负责顶栏、侧栏与内部滚动。 */
+.main-col--workspace {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3743,8 +3793,8 @@ body {
   margin-bottom: 2px;
   border: none;
   border-radius: 999px;
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  color: var(--on-primary);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -3887,8 +3937,8 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  color: var(--on-primary);
   font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 600;
@@ -3983,9 +4033,9 @@ body {
 }
 
 .clarify-bar__option:hover .clarify-bar__num {
-  background-color: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background-color: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 
 .clarify-bar__text {
@@ -5366,13 +5416,13 @@ body {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background-color: var(--paper);
+  background-color: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: transform 0.2s ease;
 }
 
 .skill-switch:checked {
-  background-color: var(--ink);
+  background-color: var(--primary);
 }
 
 .skill-switch:checked::after {
@@ -6195,9 +6245,9 @@ body {
 
 /* 激活态需压过 :hover 的底色，否则激活按钮悬停时会变成浅底浅字。 */
 .mm-btn.mm-btn--active {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
 }
 
 .mm-btn:disabled {
@@ -6810,9 +6860,9 @@ body {
 }
 
 .mm-style-mini--active {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
 }
 
 .mm-overlay {
@@ -8140,4 +8190,33 @@ body {
   letter-spacing: 0.03em;
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
+}
+
+/* 科研项目 ↔ 主聊天：当前绑定项目提示条（控制台只做状态同步）。 */
+.chat-research-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  background-color: var(--wash);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.chat-research-bar b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.chat-research-bar .spacer {
+  flex: 1;
+}
+
+.chat-research-bar .button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
 }

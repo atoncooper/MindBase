@@ -1,0 +1,650 @@
+/* ===========================================================================
+   对话工作区 —— Google Gemini 视觉体系
+   ---------------------------------------------------------------------------
+   与设置页 / 科研工作台同一套 Material 3 令牌：浅色页面 #fff + 侧栏 #f0f4f9，
+   深色 #131314 + #1e1f20，主色 #0b57d0 / #8ab4f8。规则都收敛在 .chat-layout
+   下（只存在于对话路由），不影响其它视图。
+   =========================================================================== */
+
+.chat-layout {
+  --ch-bg: #ffffff;
+  --ch-sidebar: #f0f4f9;
+  --ch-surface: #ffffff;
+  --ch-surface-2: #f0f4f9;
+  --ch-card-border: #dadce0;
+  --ch-divider: #e0e3e1;
+  --ch-primary: #0b57d0;
+  --ch-primary-hover: #0a4cb5;
+  --ch-on-primary: #ffffff;
+  --ch-primary-container: #d3e3fd;
+  --ch-on-primary-container: #041e49;
+  --ch-text: #1f1f1f;
+  --ch-text-2: #444746;
+  --ch-text-3: #5f6368;
+  --ch-hover: rgba(31, 31, 31, 0.06);
+  --ch-bubble: #f0f4f9;
+  --ch-elev-1: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+  --ch-elev-2: 0 2px 6px 2px rgba(60, 64, 67, 0.15), 0 1px 2px rgba(60, 64, 67, 0.3);
+
+  background: var(--ch-bg);
+  color: var(--ch-text);
+}
+
+:root[data-theme="dark"] .chat-layout {
+  --ch-bg: #131314;
+  --ch-sidebar: #1e1f20;
+  --ch-surface: #1e1f20;
+  --ch-surface-2: #282a2c;
+  --ch-card-border: #444746;
+  --ch-divider: #3c4043;
+  --ch-primary: #8ab4f8;
+  --ch-primary-hover: #aecbfa;
+  --ch-on-primary: #062e6f;
+  --ch-primary-container: #0842a0;
+  --ch-on-primary-container: #d3e3fd;
+  --ch-text: #e3e3e3;
+  --ch-text-2: #c4c7c5;
+  --ch-text-3: #9aa0a6;
+  --ch-hover: rgba(227, 227, 227, 0.08);
+  --ch-bubble: #282a2c;
+  --ch-elev-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px 1px rgba(0, 0, 0, 0.3);
+  --ch-elev-2: 0 2px 6px 2px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- 会话侧栏 ---------------------------------------------------------- */
+
+.chat-layout .chat-sidebar {
+  width: 280px;
+  padding: 12px 10px;
+  gap: 10px;
+  background: var(--ch-sidebar);
+}
+
+.chat-layout .chat-sidebar--collapsed {
+  width: 64px;
+  padding: 12px 8px;
+}
+
+.chat-layout .chat-sidebar__top {
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.chat-layout .chat-sidebar__new {
+  height: 40px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 999px;
+  background: var(--ch-surface);
+  color: var(--ch-text);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.chat-layout .chat-sidebar__new svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-layout .chat-sidebar__new:hover:not(:disabled) {
+  background: var(--ch-surface-2);
+  border-color: var(--ch-card-border);
+  color: var(--ch-text);
+}
+
+.chat-layout .chat-sidebar__top .icon-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--ch-text-2);
+}
+
+.chat-layout .chat-sidebar__top .icon-button:hover:not(:disabled) {
+  background: var(--ch-hover);
+  color: var(--ch-text);
+}
+
+.chat-layout .chat-sidebar__empty {
+  margin: 12px 8px;
+  font-size: 12px;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .session-list {
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.chat-layout .session-item {
+  border-radius: 10px;
+  padding: 0;
+}
+
+.chat-layout .session-item:hover {
+  background: var(--ch-hover);
+}
+
+.chat-layout .session-item--active,
+.chat-layout .session-item--active:hover {
+  background: var(--ch-primary-container);
+}
+
+.chat-layout .session-item__body {
+  padding: 9px 10px;
+  gap: 2px;
+}
+
+.chat-layout .session-item__title {
+  font-size: 13px;
+  color: var(--ch-text);
+}
+
+.chat-layout .session-item--active .session-item__title {
+  color: var(--ch-on-primary-container);
+  font-weight: 500;
+}
+
+.chat-layout .session-item__time {
+  font-size: 10.5px;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .session-item--active .session-item__time {
+  color: var(--ch-on-primary-container);
+  opacity: 0.7;
+}
+
+.chat-layout .session-item__actions .icon-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .session-item__actions .icon-button:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--ch-text);
+}
+
+/* 收起态窄脊：只有图标 / 圆点，不渲染任何文字。 */
+.chat-layout .chat-sidebar__spine {
+  gap: 8px;
+}
+
+.chat-layout .spine-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  color: var(--ch-text-2);
+}
+
+.chat-layout .spine-btn:hover:not(:disabled) {
+  background: var(--ch-hover);
+  color: var(--ch-text);
+}
+
+.chat-layout .spine-divider {
+  width: 24px;
+  background: var(--ch-divider);
+}
+
+.chat-layout .spine-list {
+  gap: 4px;
+}
+
+.chat-layout .spine-item {
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.chat-layout .spine-item:hover {
+  background: var(--ch-hover);
+  border-color: transparent;
+}
+
+.chat-layout .spine-item--active,
+.chat-layout .spine-item--active:hover {
+  background: var(--ch-primary-container);
+}
+
+/* 会话切换器在收起态只显示一个圆点（无文字）。 */
+.chat-layout .spine-item__glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ch-text-3);
+}
+
+.chat-layout .spine-item--active .spine-item__glyph {
+  background: var(--ch-on-primary-container);
+}
+
+/* ---- 顶栏：模式分段 + 后台任务 ---------------------------------------- */
+
+.chat-layout .chat-topbar {
+  height: 56px;
+  padding: 10px 24px 0;
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.chat-layout .chat-topbar__spacer {
+  flex: 1;
+}
+
+.chat-layout .chat-mode {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(64px, 1fr));
+  padding: 3px;
+  background: transparent;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 999px;
+}
+
+.chat-layout .chat-mode__thumb {
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  background: var(--ch-surface);
+  box-shadow: none;
+  border: 1px solid var(--ch-card-border);
+}
+
+:root[data-theme="dark"] .chat-layout .chat-mode__thumb {
+  background: var(--ch-surface-2);
+  border-color: transparent;
+}
+
+.chat-layout .chat-mode__seg {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .chat-mode__seg:hover {
+  color: var(--ch-text);
+}
+
+.chat-layout .chat-mode__seg.is-active {
+  color: var(--ch-primary);
+  font-weight: 500;
+}
+
+.chat-layout .chat-topbar__action {
+  height: 34px;
+  padding: 0 14px;
+  border-color: var(--ch-card-border);
+  color: var(--ch-text-2);
+  font-size: 12.5px;
+}
+
+.chat-layout .chat-topbar__action:hover {
+  border-color: var(--ch-primary);
+  background: color-mix(in srgb, var(--ch-primary) 8%, transparent);
+  color: var(--ch-primary);
+}
+
+/* ---- 消息区 ------------------------------------------------------------ */
+
+.chat-layout .chat-main {
+  background: var(--ch-bg);
+}
+
+.chat-layout .msg-list {
+  max-width: 780px;
+  padding: 28px 32px 24px;
+  gap: 24px;
+}
+
+.chat-layout .bubble--user {
+  max-width: 78%;
+  border-radius: 18px;
+  padding: 10px 16px;
+  background: var(--ch-bubble);
+  color: var(--ch-text);
+  font-size: 14.5px;
+  line-height: 1.75;
+}
+
+.chat-layout .msg-row--assistant {
+  color: var(--ch-text);
+}
+
+.chat-layout .msg-user__actions .icon-button {
+  color: var(--ch-text-3);
+}
+
+/* ---- 空状态：Gemini 式问候 + 建议胶囊 -------------------------------- */
+
+.chat-layout .chat-empty {
+  gap: 8px;
+  padding: 32px 24px;
+}
+
+.chat-layout .chat-empty__kicker {
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .chat-empty__title {
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--ch-text);
+}
+
+.chat-layout .chat-empty__text {
+  max-width: 520px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .chat-empty__suggestions {
+  margin-top: 22px;
+  gap: 8px;
+}
+
+.chat-layout .suggest-chip {
+  padding: 8px 16px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 999px;
+  background: var(--ch-surface);
+  color: var(--ch-text-2);
+  font-size: 12.5px;
+}
+
+.chat-layout .suggest-chip:hover {
+  background: var(--ch-surface-2);
+  border-color: var(--ch-card-border);
+  color: var(--ch-text);
+}
+
+/* ---- 输入区（Gemini composer） --------------------------------------- */
+
+.chat-layout .composer-wrap {
+  padding: 8px 24px 22px;
+}
+
+.chat-layout .composer {
+  max-width: 780px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 10px 12px 10px 18px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 28px;
+  background: var(--ch-surface);
+  box-shadow: none;
+}
+
+/* Gemini 式底部操作行：附件 / 模型药丸靠左，发送键靠右。 */
+.chat-layout .composer__bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.chat-layout .composer__spacer {
+  flex: 1;
+}
+
+.chat-layout .composer:hover:not(:focus-within) {
+  border-color: var(--ch-card-border);
+}
+
+.chat-layout .composer:focus-within {
+  border-color: var(--ch-primary);
+  box-shadow: 0 0 0 1px var(--ch-primary);
+}
+
+.chat-layout .composer__input {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--ch-text);
+  min-height: 38px;
+  padding: 8px 0;
+}
+
+.chat-layout .composer__input::placeholder {
+  color: var(--ch-text-3);
+}
+
+.chat-layout .composer__attach {
+  width: 38px;
+  height: 38px;
+  margin-bottom: 0;
+  border-radius: 50%;
+  color: var(--ch-text-2);
+}
+
+.chat-layout .composer__attach svg {
+  width: 19px;
+  height: 19px;
+}
+
+.chat-layout .composer__attach:hover:not(:disabled) {
+  background: var(--ch-surface-2);
+  color: var(--ch-text);
+}
+
+/* 模型选择：Gemini 式药丸（sparkle + 当前模型名 + chevron）。 */
+.chat-layout .provider-picker {
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.chat-layout .chat-topbar__action-label {
+  display: inline;
+}
+
+.chat-layout .provider-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  max-width: 220px;
+  padding: 0 12px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ch-text-2);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-layout .provider-pill:hover:not(:disabled) {
+  background: var(--ch-surface-2);
+  color: var(--ch-text);
+}
+
+.chat-layout .provider-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chat-layout .provider-pill svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  color: var(--ch-primary);
+}
+
+.chat-layout .provider-pill svg:last-child {
+  width: 13px;
+  height: 13px;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .provider-pill__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-layout .provider-menu {
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: auto;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 14px;
+  background: var(--ch-surface);
+  box-shadow: var(--ch-elev-2);
+}
+
+.chat-layout .provider-menu__item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--ch-text);
+}
+
+.chat-layout .provider-menu__item:hover {
+  background: var(--ch-hover);
+}
+
+.chat-layout .provider-menu__item--active {
+  background: var(--ch-primary-container);
+  color: var(--ch-on-primary-container);
+}
+
+.chat-layout .provider-menu__empty {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .composer__send {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--ch-primary);
+  color: var(--ch-on-primary);
+}
+
+.chat-layout .composer__send svg {
+  width: 18px;
+  height: 18px;
+}
+
+.chat-layout .composer__send:hover:not(:disabled) {
+  background: var(--ch-primary-hover);
+}
+
+.chat-layout .composer__send:disabled,
+.chat-layout .composer__send--muted {
+  background: var(--ch-surface-2);
+  color: var(--ch-text-3);
+  cursor: default;
+}
+
+.chat-layout .composer__send--stop {
+  background: var(--ch-text);
+  color: var(--ch-bg);
+}
+
+.chat-layout .composer__send--stop:hover:not(:disabled) {
+  background: var(--ch-text-2);
+}
+
+.chat-layout .composer-drop-hint,
+.chat-layout .composer__error {
+  max-width: 780px;
+}
+
+.chat-layout .image-chip-row {
+  max-width: 780px;
+}
+
+/* ---- 窄窗口：自动收起侧栏，优先保证消息宽度 -------------------------- */
+
+@media (max-width: 1100px) {
+  .chat-layout .chat-sidebar {
+    width: 244px;
+  }
+
+  .chat-layout .msg-list {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+}
+
+@media (max-width: 980px) {
+  .chat-layout .chat-sidebar {
+    width: 64px;
+    padding: 12px 8px;
+  }
+
+  .chat-layout .chat-sidebar__body {
+    display: none;
+  }
+
+  .chat-layout .chat-sidebar__spine {
+    display: flex;
+  }
+
+  .chat-layout .chat-topbar {
+    padding: 8px 16px 0;
+  }
+
+  /* 窄窗强制收起：该宽度下展开会挤扁消息区，隐藏“展开历史”避免死控件。 */
+  .chat-layout .chat-sidebar__spine .icon-button[aria-label="展开历史"] {
+    display: none;
+  }
+
+  .chat-layout .composer-wrap {
+    padding: 8px 16px 18px;
+  }
+
+  .chat-layout .msg-list {
+    padding: 22px 20px 20px;
+  }
+}
+
+@media (max-width: 760px) {
+  .chat-layout .chat-mode {
+    grid-template-columns: repeat(3, minmax(52px, 1fr));
+  }
+
+  .chat-layout .chat-mode__seg {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+
+  .chat-layout .chat-topbar__action {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+
+  .chat-layout .chat-topbar__action-label {
+    display: none;
+  }
+
+  .chat-layout .chat-empty__title {
+    font-size: 26px;
+  }
+
+  .chat-layout .bubble--user {
+    max-width: 88%;
+  }
+}
