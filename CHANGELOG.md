@@ -2,6 +2,33 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [mind-base-desktop 0.1.15] — 2026-10-29
+
+桌面端「Google 化」大版本：全站 Google 配色、Gemini 风格对话、Coding Plan / OpenCode 模型配置、科研工作台与项目信息编辑。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.1.15.md](mind-base-desktop/RELEASE_NOTES_0.1.15.md)（同时作为 GitHub Release 正文）。
+
+### Added
+
+- **模型配置中心**：目录驱动提供方（DeepSeek、GLM 编程套餐国际/国内、Kimi 编程套餐、MiniMax 国际/国内、Qwen Token 套餐国际/国内、小米 Token 套餐 AMS/国内、OpenCode Zen/Go、Anthropic/OpenAI/Moonshot 官方、DashScope/OpenRouter/自定义兼容端点）；协议感知的测试连接、模型列表拉取、设为默认。
+- **Anthropic Messages 协议适配**：请求/流式/工具调用/图片/tool_result/token 用量双向翻译，Claude、MiniMax、Kimi Coding 等套餐可正常对话。
+- **科研工作台**：六阶段步骤条、项目信息、阶段产物、动态、文献导入/核验/导出、数据画像/脚本、章节写作/DOCX 导出；项目信息支持内联编辑（名称/论文类型/领域/目标期刊/截止日期）。
+- **Gemini 风格对话**：顶栏模式分段、空态问候与建议胶囊、两行 composer、模型药丸与加号附件/上箭头发送。
+
+### Changed
+
+- **全局 Google 配色**：页面 `#f8f9fa` / 卡片白 / 侧栏 `#f0f4f9` / 主色 `#0b57d0`（深色 `#131314` / `#1e1f20` / `#8ab4f8`）；主按钮、选中态、进度条、徽标统一蓝色；新增 `--page` 区分页面底色与卡片表面。
+- 设置页改为 Google Workspace 风格（M3 tabs / 卡片 / 控件）；对话侧栏收起态不渲染文字。
+
+### Fixed
+
+- `.shell` 因 flex + `margin:auto` 退化为 shrink-to-fit，内容少时页面缩成窄条。
+- 窄窗留白过大、滚动条导致的宽度跳动；长表格撑出横向滚动条。
+- 设置页 scoped 样式压过 `[hidden]`，三个 tab 同时渲染。
+- 对话侧栏收起时文字逐字竖排、窄窗出现点不动的「展开历史」控件。
+
+### Packaging
+
+- 版本号 0.1.14 → 0.1.15（`package.json` / `package-lock.json` / `tauri.conf.json` / `Cargo.toml` / `Cargo.lock`）；desktop-release 工作流优先读取 `RELEASE_NOTES_0.1.15.md` 作为 Release 正文。
+
 ## [mind-base-desktop 0.1.14] — 2026-10-26
 
 桌面端首个「agent 能力对齐」版本；完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.1.14.md](mind-base-desktop/RELEASE_NOTES_0.1.14.md)（同时作为 GitHub Release 正文）。
