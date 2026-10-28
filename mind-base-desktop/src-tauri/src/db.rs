@@ -243,7 +243,140 @@ pub(crate) const SCHEMA_SQL: &str =
          created_at INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_mind_map_snapshots
-         ON mind_map_snapshots(map_id, created_at DESC);";
+         ON mind_map_snapshots(map_id, created_at DESC);
+     CREATE TABLE IF NOT EXISTS research_projects(
+         id            TEXT PRIMARY KEY,
+         title         TEXT NOT NULL,
+         paper_kind    TEXT NOT NULL DEFAULT 'journal',
+         field         TEXT NOT NULL DEFAULT '',
+         language      TEXT NOT NULL DEFAULT 'zh',
+         target_venue  TEXT NOT NULL DEFAULT '',
+         current_stage TEXT NOT NULL DEFAULT 'topic',
+         privacy       TEXT NOT NULL DEFAULT 'local',
+         deadline      TEXT NOT NULL DEFAULT '',
+         meta_json     TEXT NOT NULL DEFAULT '{}',
+         created_at    INTEGER NOT NULL,
+         updated_at    INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_research_projects_updated ON research_projects(updated_at DESC);
+     CREATE TABLE IF NOT EXISTS research_stages(
+         project_id  TEXT NOT NULL,
+         stage       TEXT NOT NULL,
+         status      TEXT NOT NULL DEFAULT 'locked',
+         entered_at  INTEGER,
+         approved_at INTEGER,
+         gate_json   TEXT NOT NULL DEFAULT '[]',
+         PRIMARY KEY(project_id, stage)
+     );
+     CREATE TABLE IF NOT EXISTS project_artifacts(
+         id         TEXT PRIMARY KEY,
+         project_id TEXT NOT NULL,
+         stage      TEXT NOT NULL DEFAULT '',
+         kind       TEXT NOT NULL DEFAULT 'doc',
+         title      TEXT NOT NULL DEFAULT '',
+         path       TEXT NOT NULL DEFAULT '',
+         version    INTEGER NOT NULL DEFAULT 1,
+         sha256     TEXT NOT NULL DEFAULT '',
+         status     TEXT NOT NULL DEFAULT 'draft',
+         meta_json  TEXT NOT NULL DEFAULT '{}',
+         created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_project_artifacts_project ON project_artifacts(project_id, stage);
+     CREATE TABLE IF NOT EXISTS literature_refs(
+         id           TEXT PRIMARY KEY,
+         project_id   TEXT NOT NULL,
+         cite_key     TEXT NOT NULL,
+         doi          TEXT NOT NULL DEFAULT '',
+         title        TEXT NOT NULL,
+         authors_json TEXT NOT NULL DEFAULT '[]',
+         year         INTEGER,
+         venue        TEXT NOT NULL DEFAULT '',
+         type         TEXT NOT NULL DEFAULT 'article',
+         url          TEXT NOT NULL DEFAULT '',
+         status       TEXT NOT NULL DEFAULT 'unverified',
+         csl_json     TEXT NOT NULL DEFAULT '{}',
+         note         TEXT NOT NULL DEFAULT '',
+         created_at   INTEGER NOT NULL,
+         UNIQUE(project_id, cite_key)
+     );
+     CREATE INDEX IF NOT EXISTS idx_literature_refs_project ON literature_refs(project_id, status);
+     CREATE TABLE IF NOT EXISTS citations(
+         id          TEXT PRIMARY KEY,
+         project_id  TEXT NOT NULL,
+         artifact_id TEXT NOT NULL DEFAULT '',
+         ref_id      TEXT NOT NULL,
+         locator     TEXT NOT NULL DEFAULT '',
+         claim       TEXT NOT NULL DEFAULT '',
+         created_at  INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_citations_project ON citations(project_id, ref_id);
+     CREATE TABLE IF NOT EXISTS datasets(
+         id           TEXT PRIMARY KEY,
+         project_id   TEXT NOT NULL,
+         name         TEXT NOT NULL,
+         path         TEXT NOT NULL DEFAULT '',
+         sha256       TEXT NOT NULL DEFAULT '',
+         rows         INTEGER,
+         cols         INTEGER,
+         privacy      TEXT NOT NULL DEFAULT 'local',
+         schema_json  TEXT NOT NULL DEFAULT '{}',
+         profile_json TEXT NOT NULL DEFAULT '{}',
+         created_at   INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_datasets_project ON datasets(project_id);
+     CREATE TABLE IF NOT EXISTS experiment_runs(
+         id            TEXT PRIMARY KEY,
+         project_id    TEXT NOT NULL,
+         name          TEXT NOT NULL,
+         dataset_ids   TEXT NOT NULL DEFAULT '[]',
+         config_json   TEXT NOT NULL DEFAULT '{}',
+         script_path   TEXT NOT NULL DEFAULT '',
+         script_sha256 TEXT NOT NULL DEFAULT '',
+         env_json      TEXT NOT NULL DEFAULT '{}',
+         metrics_json  TEXT NOT NULL DEFAULT '{}',
+         status        TEXT NOT NULL DEFAULT 'planned',
+         conclusion    TEXT NOT NULL DEFAULT '',
+         created_at    INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_experiment_runs_project ON experiment_runs(project_id, created_at DESC);
+     CREATE TABLE IF NOT EXISTS manuscript_sections(
+         id         TEXT PRIMARY KEY,
+         project_id TEXT NOT NULL,
+         section    TEXT NOT NULL,
+         ord        INTEGER NOT NULL DEFAULT 0,
+         path       TEXT NOT NULL DEFAULT '',
+         words      INTEGER NOT NULL DEFAULT 0,
+         status     TEXT NOT NULL DEFAULT 'draft',
+         updated_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_manuscript_sections_project ON manuscript_sections(project_id, ord);
+     CREATE TABLE IF NOT EXISTS guidance_notes(
+         id             TEXT PRIMARY KEY,
+         project_id     TEXT NOT NULL,
+         session_date   TEXT NOT NULL DEFAULT '',
+         questions_json TEXT NOT NULL DEFAULT '[]',
+         notes          TEXT NOT NULL DEFAULT '',
+         created_at     INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_guidance_notes_project ON guidance_notes(project_id, created_at DESC);
+     CREATE TABLE IF NOT EXISTS decisions(
+         id            TEXT PRIMARY KEY,
+         project_id    TEXT NOT NULL,
+         ts            INTEGER NOT NULL,
+         decision      TEXT NOT NULL,
+         rationale     TEXT NOT NULL DEFAULT '',
+         evidence_refs TEXT NOT NULL DEFAULT '[]'
+     );
+     CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, ts DESC);
+     CREATE TABLE IF NOT EXISTS project_events(
+         id           INTEGER PRIMARY KEY AUTOINCREMENT,
+         project_id   TEXT NOT NULL,
+         ts           INTEGER NOT NULL,
+         actor        TEXT NOT NULL,
+         type         TEXT NOT NULL,
+         payload_json TEXT NOT NULL DEFAULT '{}'
+     );
+     CREATE INDEX IF NOT EXISTS idx_project_events_project ON project_events(project_id, ts DESC);";
 
 /// Additive column migrations for databases created by older builds.
 ///

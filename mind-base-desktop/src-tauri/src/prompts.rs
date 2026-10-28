@@ -115,6 +115,41 @@ const BUNDLED: &[(&str, &str, &str)] = &[
         "理解论文.md",
         include_str!("../prompts/academic/理解论文.md"),
     ),
+    (
+        "research",
+        "base.md",
+        include_str!("../prompts/research/base.md"),
+    ),
+    (
+        "research",
+        "选题.md",
+        include_str!("../prompts/research/选题.md"),
+    ),
+    (
+        "research",
+        "研究设计.md",
+        include_str!("../prompts/research/研究设计.md"),
+    ),
+    (
+        "research",
+        "指导.md",
+        include_str!("../prompts/research/指导.md"),
+    ),
+    (
+        "research",
+        "实验.md",
+        include_str!("../prompts/research/实验.md"),
+    ),
+    (
+        "research",
+        "写作.md",
+        include_str!("../prompts/research/写作.md"),
+    ),
+    (
+        "research",
+        "投稿.md",
+        include_str!("../prompts/research/投稿.md"),
+    ),
 ];
 
 pub(crate) fn prompts_dir(data_dir: &Path) -> PathBuf {

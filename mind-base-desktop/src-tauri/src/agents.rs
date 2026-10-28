@@ -32,6 +32,8 @@ pub(crate) enum AgentKind {
     Search,
     /// 学术研究：论文的写作 / 审查 / 修改 / 精读理解。
     Academic,
+    /// 科研项目：期刊论文全流程（选题/设计/指导/实验/写作/投稿）。
+    Research,
 }
 
 impl AgentKind {
@@ -43,6 +45,7 @@ impl AgentKind {
             AgentKind::Code => "code",
             AgentKind::Search => "search",
             AgentKind::Academic => "academic",
+            AgentKind::Research => "research",
         }
     }
 
@@ -58,6 +61,8 @@ impl AgentKind {
             AgentKind::Code => 4,
             // 论文写作/修改分节交付，需要多轮 write_file。
             AgentKind::Academic => 12,
+            // 科研阶段任务通常比单篇写作长：允许更多检索/读写轮次。
+            AgentKind::Research => 14,
         }
     }
 
@@ -140,6 +145,18 @@ impl AgentKind {
                 "get_session_findings",
                 "plan",
             ],
+            // 科研 agent 默认不写长期记忆（未发表内容保密），工具层收紧。
+            AgentKind::Research => &[
+                "vector_search",
+                "search_chat_history",
+                "read_file",
+                "write_file",
+                "list_dir",
+                "load_prompt",
+                "memory_search",
+                "get_session_findings",
+                "plan",
+            ],
         }
     }
 
@@ -153,6 +170,7 @@ impl AgentKind {
             AgentKind::Code => "代码助手。编写完整可运行的代码并附讲解（桌面端不执行代码）。".to_string(),
             AgentKind::Search => "文档搜索助手。检索技术库/框架的官方文档并整理返回。".to_string(),
             AgentKind::Academic => "学术研究助手。论文的写作、审查、修改与精读理解，遵循学术规范与引用纪律。".to_string(),
+            AgentKind::Research => "科研项目助手。按选题/研究设计/指导/实验/写作/投稿六个阶段推进期刊论文，基于项目证据与数据给出下一步。".to_string(),
         }
     }
 }
@@ -309,6 +327,18 @@ pub(crate) fn code_system_prompt(base_md: &str, query: &str) -> String {
 /// academic 系统提示词：base（学者人设与诚信红线）+ 当前请求 footer。
 /// 四种工作模式（写/审/改/读）经 load_prompt 加载对应模式提示词。
 pub(crate) fn academic_system_prompt(base_md: &str, question: &str) -> String {
+    format!(
+        "{base}
+
+## 当前请求
+{question}",
+        base = base_md.trim()
+    )
+}
+
+/// research 系统提示词：base（科研人设 + 证据纪律）+ 当前请求 footer。
+/// 完整的项目简报与阶段指令由 research_ask 在调用前拼装。
+pub(crate) fn research_system_prompt(base_md: &str, question: &str) -> String {
     format!(
         "{base}
 

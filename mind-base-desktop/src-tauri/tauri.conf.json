@@ -26,7 +26,7 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
-    "resources": ["scripts/whisper_server.py", "scripts/doc_extract.py", "scripts/ocr_extract.py", "scripts/pptx_build.py"],
+    "resources": ["scripts/whisper_server.py", "scripts/doc_extract.py", "scripts/ocr_extract.py", "scripts/pptx_build.py", "scripts/dataset_profile.py", "scripts/build_docx.py"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

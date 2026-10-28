@@ -89,3 +89,36 @@ export interface ProviderTestResult {
 export async function testProviderConfig(provider: string): Promise<ProviderTestResult> {
   return invoke<ProviderTestResult>("test_provider_config", { provider });
 }
+
+/** Protocol family used by a provider endpoint. */
+export type ProviderProtocol = "openai-completions" | "anthropic-messages";
+
+/** One entry of the backend-driven model provider catalog. */
+export interface ProviderCatalogEntry {
+  /** Stable provider id (deepseek / zai-coding-cn / kimi-coding / ...). */
+  id: string;
+  label: string;
+  /** Group id: coding / official / aggregator / purpose. */
+  group: string;
+  groupLabel: string;
+  protocol: ProviderProtocol;
+  protocolLabel: string;
+  /** Official default base URL; empty for the custom provider. */
+  defaultBase: string;
+  /** Default model when none is stored; empty = model required. */
+  defaultModel: string;
+  models: string[];
+  /** Whether the provider can back the chat UI / default provider. */
+  chat: boolean;
+  hint: string;
+}
+
+/** Snapshot the provider catalog (coding plans, official APIs, aggregators). */
+export async function listProviderCatalog(): Promise<ProviderCatalogEntry[]> {
+  return invoke<ProviderCatalogEntry[]>("provider_catalog");
+}
+
+/** Ask one configured provider for its advertised model list (GET /models). */
+export async function listProviderModels(provider: string): Promise<string[]> {
+  return invoke<string[]>("list_provider_models", { provider });
+}

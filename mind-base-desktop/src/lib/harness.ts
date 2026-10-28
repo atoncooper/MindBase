@@ -96,6 +96,7 @@ export const AGENT_LABELS: Record<string, string> = {
   note: "note 笔记",
   code: "code 代码",
   search: "search 搜索",
+  research: "research 科研",
   academic: "academic 学术",
 };
 

@@ -12,12 +12,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
   listProviders,
+  listProviderCatalog,
+  listProviderModels,
   saveProviderConfig,
   clearProviderKey,
   setDefaultProvider,
   testProviderConfig,
 } from "../lib/api-keys";
-import type { ProviderStatus } from "../lib/api-keys";
+import type { ProviderCatalogEntry, ProviderStatus } from "../lib/api-keys";
 import { getConfig, setConfig as persistConfig } from "../lib/config";
 import type { AppConfig, LocalAsrConfig, LocalOcrConfig } from "../lib/config";
 import {
@@ -34,7 +36,7 @@ import { toErrorMessage } from "../lib/updater";
 import BiliAccountCard from "./BiliAccountCard";
 import type { ItemState, Feedback } from "../lib/ui-state";
 
-/** Display labels for key providers; unknown providers fall back to the id. */
+/** 目录加载失败时的兜底显示名（正常路径使用 providerCatalog 的 label）。 */
 const PROVIDER_LABELS: Record<string, string> = {
   dashscope: "DashScope（通义百炼）",
   openrouter: "OpenRouter",
@@ -44,80 +46,21 @@ const PROVIDER_LABELS: Record<string, string> = {
   ocr: "OCR 文字识别",
 };
 
-function providerLabel(provider: string): string {
-  return PROVIDER_LABELS[provider] ?? provider;
+function providerLabel(
+  provider: string,
+  catalog: ProviderCatalogEntry[] | null,
+): string {
+  const match = catalog?.find((entry) => entry.id === provider);
+  return match?.label ?? PROVIDER_LABELS[provider] ?? provider;
 }
 
-/** Default OpenAI-compatible endpoints, shown as placeholders. */
-const DEFAULT_BASE_URLS: Record<string, string> = {
-  dashscope: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  deepseek: "https://api.deepseek.com/v1",
-  asr: "https://dashscope.aliyuncs.com/api/v1",
-  embedding: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  ocr: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-};
-
-/** Well-known model suggestions per provider (free-text is allowed). */
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  dashscope: ["qwen-max", "qwen-plus", "qwen-turbo", "deepseek-v3", "deepseek-r1"],
-  openrouter: [
-    "openai/gpt-4o",
-    "openai/gpt-4o-mini",
-    "anthropic/claude-sonnet-4.5",
-    "google/gemini-2.0-flash-001",
-  ],
-  deepseek: ["deepseek-chat", "deepseek-reasoner"],
-  asr: ["paraformer-realtime-v2", "paraformer-realtime-v1", "paraformer-v2", "paraformer-v1", "sensevoice-v1"],
-  embedding: [
-    "text-embedding-v4",
-    "text-embedding-v3",
-    "text-embedding-v2",
-    "liquid/lfm-2.5-embedding-350m:free",
-    "openai/text-embedding-3-small",
-    "openai/text-embedding-3-large",
-  ],
-  ocr: ["qwen-vl-ocr", "qwen-vl-ocr-latest"],
-};
-
-/** Human-readable byte size (模型卡片与选择器共用). */
+/** Human-readable byte size (本地模型卡片共用). */
 function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)}GB`;
-  if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)}MB`;
-  if (bytes >= 1_000) return `${Math.round(bytes / 1_000)}KB`;
-  return `${bytes}B`;
+  if (bytes >= 1_000_000_000) return (bytes / 1_000_000_000).toFixed(1) + "GB";
+  if (bytes >= 1_000_000) return Math.round(bytes / 1_000_000) + "MB";
+  if (bytes >= 1_000) return Math.round(bytes / 1_000) + "KB";
+  return bytes + "B";
 }
-
-/**
- * API 卡片内的小节分组：对话模型走通用 LLM 槽；ASR / 向量化是用途槽，
- * 未配置时自动回退 DashScope 密钥。
- */
-const PROVIDER_GROUPS: Array<{
-  title: string;
-  hint: string;
-  providers: string[];
-}> = [
-  {
-    title: "对话模型",
-    hint: "聊天问答、会话总结、测验出题等对话类调用",
-    providers: ["dashscope", "deepseek", "openrouter"],
-  },
-  {
-    title: "语音转写 ASR",
-    hint: "视频入库时的语音转文字。云端模式走 DashScope（未配置 Key 时回退 DashScope 密钥；Base URL 以 wss:// 开头走实时流式，需选 paraformer-realtime-* 模型）；本地模式由本应用自动下载模型并启动本地服务，无需任何 API Key",
-    providers: ["asr"],
-  },
-  {
-    title: "向量化 Embedding",
-    hint: "知识库入库与检索的向量化；支持任意 OpenAI 兼容 Embedding 端点（DashScope/OpenRouter/OpenAI 等）。Base URL 留空用 DashScope 默认，未配置时回退 DashScope 密钥",
-    providers: ["embedding"],
-  },
-  {
-    title: "OCR 文字识别",
-    hint: "图片 / 截图 / PDF 页面的文字识别；云端走 OpenAI 兼容多模态端点（DashScope qwen-vl-ocr 等），Base URL 留空用 DashScope 默认，未配置时回退 DashScope 密钥",
-    providers: ["ocr"],
-  },
-];
 
 /** Draft form state for one provider. */
 interface ProviderDraft {
@@ -184,6 +127,11 @@ interface ApiSettingsProps {
 
 function ApiSettings({ hidden }: ApiSettingsProps) {
   const [providers, setProviders] = useState<ItemState<ProviderStatus[]>>({ status: "loading" });
+  // 模型提供方目录（编程套餐 / 官方 API / 聚合端点 / 用途槽），后端是唯一事实来源。
+  const [catalog, setCatalog] = useState<ItemState<ProviderCatalogEntry[]>>({ status: "loading" });
+  // 「获取模型」按提供方缓存的端点返回值，与目录推荐模型合并去重。
+  const [modelLists, setModelLists] = useState<Record<string, string[]>>({});
+  const [fetchingModels, setFetchingModels] = useState<string | null>(null);
   // Per-provider drafts; seeded from the first successful load so empty
   // inputs mean the stored/default value rather than an unknown.
   const [drafts, setDrafts] = useState<Record<string, ProviderDraft>>({});
@@ -237,6 +185,15 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
         if (cancelled) return;
         console.warn("[api-keys] failed to load provider config", toErrorMessage(err));
         setProviders({ status: "error" });
+      },
+    );
+
+    void listProviderCatalog().then(
+      (entries) => {
+        if (!cancelled) setCatalog({ status: "ok", value: entries });
+      },
+      () => {
+        if (!cancelled) setCatalog({ status: "error" });
       },
     );
 
@@ -463,6 +420,37 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
       }));
     } finally {
       setBusyProvider(null);
+    }
+  }
+
+  /** 从提供方端点拉取模型列表（GET /models），填充模型输入框候选。 */
+  async function handleFetchModels(provider: string): Promise<void> {
+    setFetchingModels(provider);
+    setRowFeedback((prev) => ({ ...prev, [provider]: null }));
+    try {
+      const models = await listProviderModels(provider);
+      if (models.length === 0) {
+        setRowFeedback((prev) => ({
+          ...prev,
+          [provider]: { kind: "error", text: "端点没有返回模型列表（可能不支持 /models）" },
+        }));
+      } else {
+        setModelLists((prev) => ({ ...prev, [provider]: models }));
+        setRowFeedback((prev) => ({
+          ...prev,
+          [provider]: {
+            kind: "ok",
+            text: "已获取 " + models.length + " 个模型，可在模型输入框中下拉选择",
+          },
+        }));
+      }
+    } catch (err) {
+      setRowFeedback((prev) => ({
+        ...prev,
+        [provider]: { kind: "error", text: "获取模型失败：" + toErrorMessage(err) },
+      }));
+    } finally {
+      setFetchingModels(null);
     }
   }
 
@@ -955,8 +943,15 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
     const showKey = showKeys[entry.provider] ?? false;
     const open = openProvider === entry.provider;
     const busy = busyProvider !== null;
-    const group =
-      PROVIDER_GROUPS.find((candidate) => candidate.providers.includes(entry.provider))?.title ?? "";
+    const meta =
+      catalog.status === "ok"
+        ? catalog.value.find((candidate) => candidate.id === entry.provider)
+        : undefined;
+    const group = meta?.groupLabel ?? "";
+    const protocolLabel = meta?.protocolLabel ?? "";
+    const suggestions = Array.from(
+      new Set([...(meta?.models ?? []), ...(modelLists[entry.provider] ?? [])]),
+    );
     const note = rowFeedback[entry.provider] ?? null;
     const modelText = draft?.model.trim() ?? "";
     const headId = `ledger-head-${entry.provider}`;
@@ -983,8 +978,17 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
             {String(index + 1).padStart(2, "0")}
           </span>
           <span className="ledger-row__id">
-            <span className="ledger-row__name">{providerLabel(entry.provider)}</span>
-            {group !== "" && <span className="ledger-row__group">{group}</span>}
+            <span className="ledger-row__name">
+              {providerLabel(entry.provider, catalog.status === "ok" ? catalog.value : null)}
+            </span>
+            {group !== "" && (
+              <span className="ledger-row__group">
+                {group}
+                {protocolLabel !== "" && meta?.group !== "purpose"
+                  ? " · " + protocolLabel
+                  : ""}
+              </span>
+            )}
           </span>
           <span className="ledger-row__state">
             {(isAsr || isOcr) && (
@@ -1062,7 +1066,11 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
                     aria-labelledby={`label-url-${entry.provider}`}
                     autoComplete="off"
                     spellCheck={false}
-                    placeholder={DEFAULT_BASE_URLS[entry.provider] ?? "默认端点"}
+                    placeholder={
+                      meta?.defaultBase !== undefined && meta.defaultBase !== ""
+                        ? meta.defaultBase
+                        : "必填：https://host/v1"
+                    }
                     value={draft?.baseUrl ?? ""}
                     disabled={busy}
                     onChange={(event) => updateDraft(entry.provider, { baseUrl: event.target.value })}
@@ -1080,13 +1088,17 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
                     autoComplete="off"
                     spellCheck={false}
                     list={`model-suggestions-${entry.provider}`}
-                    placeholder={`如 ${MODEL_SUGGESTIONS[entry.provider]?.[0] ?? "qwen-max"}，留空用默认`}
+                    placeholder={
+                      suggestions.length > 0
+                        ? "如 " + suggestions[0] + "，留空用默认"
+                        : "填写模型名（如 glm-4.7）"
+                    }
                     value={draft?.model ?? ""}
                     disabled={busy}
                     onChange={(event) => updateDraft(entry.provider, { model: event.target.value })}
                   />
                   <datalist id={`model-suggestions-${entry.provider}`}>
-                    {(MODEL_SUGGESTIONS[entry.provider] ?? []).map((model) => (
+                    {suggestions.map((model) => (
                       <option value={model} key={model} />
                     ))}
                   </datalist>
@@ -1108,10 +1120,23 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
                   <button
                     type="button"
                     className="button"
+                    disabled={busy || !entry.hasKey || fetchingModels === entry.provider}
+                    title={entry.hasKey ? "从端点 /models 拉取模型列表" : "请先保存 API Key"}
+                    onClick={() => void handleFetchModels(entry.provider)}
+                  >
+                    {fetchingModels === entry.provider ? "获取中…" : "获取模型"}
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
                     disabled={busy || !entry.hasKey}
                     title={
                       entry.hasKey
-                        ? `探测 ${DEFAULT_BASE_URLS[entry.provider] ?? "端点"}/models`
+                        ? "探测 " +
+                          (meta?.defaultBase || "端点") +
+                          (meta?.protocol === "anthropic-messages"
+                            ? "/v1/models（Anthropic）"
+                            : "/models")
                         : "请先保存 API Key"
                     }
                     onClick={() => void handleTest(entry.provider)}
@@ -1120,7 +1145,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
                   </button>
                 </>
               ) : null}
-              {["dashscope", "deepseek", "openrouter"].includes(entry.provider) && (
+              {meta?.chat === true && (
                 <button
                   type="button"
                   className="button"
@@ -1146,6 +1171,9 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
               ) : null}
             </div>
 
+            {meta?.hint !== undefined && meta.hint !== "" && (
+              <p className="hint-text">{meta.hint}</p>
+            )}
             {note !== null && (
               <p className={note.kind === "error" ? "error-text" : "hint-text"}>{note.text}</p>
             )}
@@ -1186,7 +1214,7 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
 
       <section className="card">
         <h2 className="card__title">
-          <span className="card__index">02</span>API 密钥
+          <span className="card__index">02</span>模型配置
         </h2>
         {providers.status !== "ok" ? (
           <p className="placeholder">
@@ -1197,11 +1225,32 @@ function ApiSettings({ hidden }: ApiSettingsProps) {
         ) : (
           <>
             <p className="card-hint">
-              全部仅保存在这台电脑的本地数据库中，界面只显示掩码，不会回传任何服务器。
-              Base URL 留空使用官方默认端点；ASR / 向量化未配置时回退 DashScope 密钥。
+              编程套餐（GLM / Kimi / MiniMax / Qwen / 小米等）、官方 API 与聚合端点统一在这里配置：
+              选提供方 → 填 Key → 保存 → 测试连接 / 获取模型。全部只保存在本机数据库，
+              界面只显示掩码。Base URL 留空使用官方默认端点；ASR / 向量化未配置时回退 DashScope 密钥。
             </p>
 
-            <div className="vault-ledger">{providers.value.map(renderProviderRow)}</div>
+            {(() => {
+              const catalogEntries = catalog.status === "ok" ? catalog.value : null;
+              const ordered = providers.value;
+              const groups: Array<{ label: string; entries: ProviderStatus[] }> = [];
+              for (const entry of ordered) {
+                const label =
+                  catalogEntries?.find((candidate) => candidate.id === entry.provider)
+                    ?.groupLabel ?? "其他";
+                const last = groups[groups.length - 1];
+                if (last !== undefined && last.label === label) last.entries.push(entry);
+                else groups.push({ label, entries: [entry] });
+              }
+              return groups.map((group) => (
+                <div className="vault-ledger" key={group.label}>
+                  <p className="ledger-section">{group.label}</p>
+                  {group.entries.map((entry) =>
+                    renderProviderRow(entry, ordered.indexOf(entry)),
+                  )}
+                </div>
+              ));
+            })()}
           </>
         )}
       </section>

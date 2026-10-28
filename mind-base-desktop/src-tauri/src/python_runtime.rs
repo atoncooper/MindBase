@@ -206,6 +206,95 @@ pub(crate) fn ensure_pptx_python(data_dir: &Path) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
+/// 找到一个可用的系统 Python（`python` / `python3` / `py`）。
+///
+/// 仅作为降级路径使用：嵌入式运行时尚未就绪、且任务不需要任何第三方
+/// 依赖时（例如纯 CSV 画像），没必要为了一个标准库脚本下载整套运行时。
+fn find_system_python() -> Option<PathBuf> {
+    for candidate in ["python", "python3", "py"] {
+        let usable = Command::new(candidate)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if usable {
+            return Some(PathBuf::from(candidate));
+        }
+    }
+    None
+}
+
+/// 确保有解释器能运行 `scripts/dataset_profile.py`（数据集导入画像）。
+///
+/// - CSV 画像只用标准库：已有嵌入式运行时就用它，否则先用系统 Python，
+///   避免为导入一个纯文本表就下载整套运行时；
+/// - xlsx 画像需要 openpyxl：安装到嵌入式运行时（首次使用可能较慢）。
+/// 返回解释器路径。
+pub(crate) fn ensure_dataset_python(data_dir: &Path, need_excel: bool) -> Result<PathBuf, String> {
+    if !need_excel {
+        let exe = python_exe(data_dir);
+        if exe.is_file() {
+            return Ok(exe);
+        }
+        if let Some(system) = find_system_python() {
+            return Ok(system);
+        }
+        // 系统也没有 Python：退回嵌入式运行时（下载 + 引导 pip）。
+        ensure_python_base(data_dir)?;
+        return Ok(python_exe(data_dir));
+    }
+
+    const REQUIRED: &[&str] = &["openpyxl"];
+    const PACKAGES: &[&str] = &["openpyxl"];
+    let exe = python_exe(data_dir);
+    if exe.is_file() && REQUIRED.iter().all(|module| can_import(&exe, module)) {
+        return Ok(exe);
+    }
+    ensure_python_base(data_dir)?;
+    let exe = python_exe(data_dir);
+    if !REQUIRED.iter().all(|module| can_import(&exe, module)) {
+        crate::logging::info("python", "安装数据集画像依赖（openpyxl）…");
+        install_packages(&exe, &python_dir(data_dir), PACKAGES)?;
+        crate::logging::info("python", "数据集画像依赖安装完成");
+    }
+    if !REQUIRED.iter().all(|module| can_import(&exe, module)) {
+        return Err("嵌入式 Python 已就绪但 openpyxl 不可用（xlsx 画像依赖）".to_string());
+    }
+    Ok(exe)
+}
+
+/// 确保嵌入式 Python 能执行用户分析脚本（`analysis_run`）：
+/// pandas / numpy / matplotlib / openpyxl 按需安装（首次可能数分钟）。
+/// 返回解释器路径。
+pub(crate) fn ensure_analysis_python(data_dir: &Path) -> Result<PathBuf, String> {
+    const REQUIRED: &[&str] = &["pandas", "numpy", "matplotlib", "openpyxl"];
+    const PACKAGES: &[&str] = &["pandas", "numpy", "matplotlib", "openpyxl"];
+    let exe = python_exe(data_dir);
+    if exe.is_file() && REQUIRED.iter().all(|module| can_import(&exe, module)) {
+        return Ok(exe);
+    }
+    ensure_python_base(data_dir)?;
+    let exe = python_exe(data_dir);
+    if !REQUIRED.iter().all(|module| can_import(&exe, module)) {
+        crate::logging::info(
+            "python",
+            "安装分析脚本依赖（pandas / numpy / matplotlib / openpyxl）…",
+        );
+        install_packages(&exe, &python_dir(data_dir), PACKAGES)?;
+        crate::logging::info("python", "分析脚本依赖安装完成");
+    }
+    if !REQUIRED.iter().all(|module| can_import(&exe, module)) {
+        return Err(
+            "嵌入式 Python 已就绪但分析依赖（pandas / numpy / matplotlib / openpyxl）不可用"
+                .to_string(),
+        );
+    }
+    Ok(exe)
+}
+
 /// Whether the installed onnxruntime exposes the CUDA execution provider.
 fn onnxruntime_has_cuda(exe: &Path) -> bool {
     Command::new(exe)

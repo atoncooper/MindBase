@@ -25,17 +25,8 @@ use tauri::{AppHandle, State};
 
 use crate::db::Db;
 
-/// Providers that may hold a stored configuration. `asr` / `embedding` are
-/// purpose slots: they override the conversational DashScope key for their
-/// specific pipeline and fall back to it when unset.
-const KNOWN_PROVIDERS: [&str; 6] = [
-    "dashscope",
-    "openrouter",
-    "deepseek",
-    "asr",
-    "embedding",
-    "ocr",
-];
+// Provider allowlist lives in crate::ai_providers — the same catalog drives
+// the settings UI, validation, endpoint resolution and the chat client.
 
 /// Upper bound for any accepted key; real provider keys stay far below this.
 const MAX_KEY_LEN: usize = 256;
@@ -55,23 +46,6 @@ const MASK_TAIL: usize = 4;
 /// Minimum length for head+tail masking; shorter keys collapse to stars only.
 const MASK_MIN_LEN: usize = MASK_HEAD + MASK_TAIL + 4;
 
-/// Official OpenAI-compatible endpoints used when no custom Base URL is set.
-const DEFAULT_ENDPOINTS: [(&str, &str); 6] = [
-    (
-        "dashscope",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    ),
-    ("openrouter", "https://openrouter.ai/api/v1"),
-    ("deepseek", "https://api.deepseek.com/v1"),
-    ("asr", "https://dashscope.aliyuncs.com/api/v1"),
-    (
-        "embedding",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    ),
-    // OCR 走 DashScope 兼容模式的多模态端点（qwen-vl-ocr 系列模型），
-    // /models 探针与其他兼容模式提供方一致。
-    ("ocr", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-];
 
 /// Path appended to an endpoint to reach its cheap auth-check resource;
 /// listing models verifies the key without consuming tokens.
@@ -117,11 +91,8 @@ fn mask_key(key: &str) -> String {
 /// Validate and normalize a provider identifier against the allowlist.
 fn validate_provider(provider: &str) -> Result<String, String> {
     let normalized = provider.trim().to_ascii_lowercase();
-    if !KNOWN_PROVIDERS.contains(&normalized.as_str()) {
-        return Err(format!(
-            "不支持的提供方：{provider:?}（可选：{}）",
-            KNOWN_PROVIDERS.join(" / ")
-        ));
+    if !crate::ai_providers::is_known(&normalized) {
+        return Err(format!("不支持的提供方：{provider:?}"));
     }
     Ok(normalized)
 }
@@ -239,11 +210,11 @@ fn read_status(conn: &Connection, provider: &str) -> Result<ProviderStatus, Stri
 /// Snapshot every known provider, in allowlist order.
 fn list_statuses(conn: &Connection) -> Result<Vec<ProviderStatus>, String> {
     let default_provider = crate::config::load(conn)?.default_chat_provider;
-    KNOWN_PROVIDERS
+    crate::ai_providers::PROVIDERS
         .iter()
-        .map(|provider| {
-            let mut status = read_status(conn, provider)?;
-            status.is_default = default_provider.as_deref() == Some(*provider);
+        .map(|entry| {
+            let mut status = read_status(conn, entry.id)?;
+            status.is_default = default_provider.as_deref() == Some(entry.id);
             Ok(status)
         })
         .collect()
@@ -286,11 +257,7 @@ pub(crate) fn read_model(conn: &Connection, provider: &str) -> Result<String, St
 
 /// Official endpoint for a provider; empty string when unknown.
 pub(crate) fn default_endpoint(provider: &str) -> &'static str {
-    DEFAULT_ENDPOINTS
-        .iter()
-        .find(|(name, _)| *name == provider)
-        .map(|(_, url)| *url)
-        .unwrap_or_default()
+    crate::ai_providers::default_base(provider)
 }
 
 /// Join an endpoint (custom or default) with the probe path.
@@ -311,8 +278,23 @@ fn build_models_url(custom_base: &str, provider: &str) -> Option<String> {
     } else {
         custom_base.trim().trim_end_matches('/').to_string()
     };
+    // custom 提供方没有默认端点：未填 Base URL 时无 probes 可打。
+    if base.trim().is_empty() {
+        return None;
+    }
 
     if provider != "asr" {
+        // Anthropic 协议的模型列表在 /v1/models 下（Base 自带 /v1 时不重复）。
+        if crate::ai_providers::protocol_of(provider)
+            == crate::ai_providers::ApiProtocol::AnthropicMessages
+        {
+            let probed = if base.ends_with("/v1") {
+                base
+            } else {
+                format!("{base}/v1")
+            };
+            return Some(format!("{probed}{PROBE_PATH}"));
+        }
         return Some(format!("{base}{PROBE_PATH}"));
     }
 
@@ -621,26 +603,38 @@ fn request_models(
     agent: &ureq::Agent,
     url: &str,
     key: &str,
-) -> Result<(u16, Option<usize>), String> {
-    let response = agent
-        .get(url)
-        .set("Authorization", &format!("Bearer {key}"))
-        .set("Accept", "application/json")
-        .call();
-    match response {
+    protocol: crate::ai_providers::ApiProtocol,
+) -> Result<(u16, Option<Vec<String>>), String> {
+    let request = agent.get(url).set("Accept", "application/json");
+    let request = match protocol {
+        crate::ai_providers::ApiProtocol::OpenAiCompletions => {
+            request.set("Authorization", &format!("Bearer {key}"))
+        }
+        crate::ai_providers::ApiProtocol::AnthropicMessages => request
+            .set("x-api-key", key)
+            .set("anthropic-version", "2023-06-01")
+            // 兼容网关（MiniMax / Kimi Coding 等）常读 Bearer 头；官方 API 忽略它。
+            .set("Authorization", &format!("Bearer {key}")),
+    };
+    match request.call() {
         Ok(resp) => {
             let status = resp.status();
-            let count = resp
-                .into_string()
-                .ok()
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-                .and_then(|value| {
-                    value
-                        .get("data")
-                        .and_then(|data| data.as_array())
-                        .map(|items| items.len())
-                });
-            Ok((status, count))
+            let ids = resp.into_string().ok().and_then(|body| {
+                let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+                let array = value
+                    .get("data")
+                    .or_else(|| value.get("models"))
+                    .and_then(|items| items.as_array())?;
+                Some(
+                    array
+                        .iter()
+                        .filter_map(|item| {
+                            item.get("id").and_then(|id| id.as_str()).map(str::to_string)
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            });
+            Ok((status, ids))
         }
         Err(ureq::Error::Status(code, _)) => Ok((code, None)),
         Err(ureq::Error::Transport(transport)) => Err(transport.to_string()),
@@ -650,18 +644,24 @@ fn request_models(
 /// Probe through the configured egress route; on transport errors retry
 /// once via the fallback (direct) — same resilience rule as before, now
 /// sourced from the user's proxy setting instead of the environment.
-fn run_probe(provider: String, url: String, key: String) -> Result<ProviderTestResult, String> {
+fn run_probe(
+    provider: String,
+    url: String,
+    key: String,
+    protocol: crate::ai_providers::ApiProtocol,
+) -> Result<ProviderTestResult, String> {
     let started = Instant::now();
     let (primary, fallback) = egress_agents(PROBE_TIMEOUT, &url)?;
-    let outcome = request_models(&primary, &url, &key).or_else(|first_err| {
+    let outcome = request_models(&primary, &url, &key, protocol).or_else(|first_err| {
         let fallback = fallback.ok_or_else(|| first_err.clone())?;
-        request_models(&fallback, &url, &key)
+        request_models(&fallback, &url, &key, protocol)
             .map_err(|retry_err| format!("{first_err}; fallback: {retry_err}"))
     });
 
     let latency_ms = started.elapsed().as_millis() as u64;
     match outcome {
-        Ok((status, model_count)) => {
+        Ok((status, ids)) => {
+            let model_count = ids.map(|list| list.len());
             let (ok, detail) = describe_status(status, model_count);
             Ok(ProviderTestResult {
                 provider,
@@ -831,6 +831,7 @@ pub async fn test_provider_config(
     };
 
     let models_url = build_models_url(&base_url, &provider);
+    let protocol = crate::ai_providers::protocol_of(&provider);
     let result = tauri::async_runtime::spawn_blocking(move || {
         if let Some((cfg, data_dir)) = local_asr_test {
             return run_local_asr_test(&cfg, &data_dir);
@@ -838,7 +839,7 @@ pub async fn test_provider_config(
         // WebSocket ASR has no HTTP `/models` route — skip the generic probe
         // and start neutral; the real-time transcription probe is the verdict.
         let mut outcome = match &models_url {
-            Some(url) => run_probe(provider.clone(), url.clone(), key.clone())?,
+            Some(url) => run_probe(provider.clone(), url.clone(), key.clone(), protocol)?,
             None => ProviderTestResult {
                 provider: provider.clone(),
                 ok: false,
@@ -846,7 +847,11 @@ pub async fn test_provider_config(
                 endpoint: base_url.clone(),
                 http_status: None,
                 model_count: None,
-                detail: "WebSocket 端点：以实时转写探测为准".to_string(),
+                detail: if provider == "asr" {
+                    "WebSocket 端点：以实时转写探测为准".to_string()
+                } else {
+                    "尚未配置 Base URL，无法探测".to_string()
+                },
                 asr_model_ok: None,
                 asr_note: None,
                 embedding_note: None,
@@ -863,6 +868,46 @@ pub async fn test_provider_config(
     .map_err(|err| format!("probe task failed: {err}"))??;
 
     Ok(result)
+}
+
+/// 模型配置目录：设置页的数据源（含分组、协议、默认端点与推荐模型）。
+#[tauri::command]
+pub fn provider_catalog() -> Vec<crate::ai_providers::ProviderDef> {
+    crate::ai_providers::PROVIDERS.to_vec()
+}
+
+/// 从提供方端点拉取可用模型列表（GET /models，按协议鉴权），供设置页选择。
+#[tauri::command]
+pub fn list_provider_models(provider: String, db: State<'_, Db>) -> Result<Vec<String>, String> {
+    let provider = validate_provider(&provider)?;
+    let (key, base_url) = {
+        let conn = db
+            .conn
+            .lock()
+            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+        match read_raw_config(&conn, &provider)? {
+            Some((key, base_url)) => (key, base_url),
+            None => return Err("请先保存 API Key 再获取模型列表".to_string()),
+        }
+    };
+    let Some(url) = build_models_url(&base_url, &provider) else {
+        return Err("该端点不提供模型列表".to_string());
+    };
+    let protocol = crate::ai_providers::protocol_of(&provider);
+    let (primary, fallback) = egress_agents(PROBE_TIMEOUT, &url)?;
+    let outcome = request_models(&primary, &url, &key, protocol).or_else(|first_err| {
+        let fallback = fallback.ok_or_else(|| first_err.clone())?;
+        request_models(&fallback, &url, &key, protocol)
+            .map_err(|retry_err| format!("{first_err}; fallback: {retry_err}"))
+    })?;
+    let (status, ids) = outcome;
+    if status != 200 {
+        return Err(format!("获取模型列表失败（HTTP {status}）"));
+    }
+    let mut ids = ids.unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }
 
 /// Read one provider's stored credential + config for the connectivity probe.
@@ -1192,15 +1237,15 @@ pub fn set_default_provider(
     db: State<'_, Db>,
 ) -> Result<Vec<ProviderStatus>, String> {
     // 仅对话类提供方可设为默认；None = 清除默认（回到自动优先级链）。
-    const CHAT_PROVIDERS: [&str; 3] = ["dashscope", "deepseek", "openrouter"];
+    let chat_ids: Vec<&str> = crate::ai_providers::chat_ids().collect();
     let normalized = match provider.as_deref().map(str::trim) {
         None | Some("") => None,
         Some(value) => {
             let lowered = value.to_ascii_lowercase();
-            if !CHAT_PROVIDERS.contains(&lowered.as_str()) {
+            if !chat_ids.contains(&lowered.as_str()) {
                 return Err(format!(
                     "只能将对话类提供方设为默认（可选：{}）",
-                    CHAT_PROVIDERS.join(" / ")
+                    chat_ids.join(" / ")
                 ));
             }
             Some(lowered)
@@ -1296,10 +1341,29 @@ mod tests {
     }
 
     #[test]
-    fn provider_allowlist_rejects_unknown() {
-        assert!(validate_provider("anthropic").is_err());
+    fn provider_allowlist_accepts_coding_plans_and_rejects_unknown() {
+        assert!(validate_provider("anthropic").is_ok());
+        assert!(validate_provider("zai-coding-cn").is_ok());
+        assert!(validate_provider("kimi-coding").is_ok());
+        assert!(validate_provider("qwen-token-plan-cn").is_ok());
         assert!(validate_provider("").is_err());
         assert!(validate_provider("dashscope; DROP TABLE api_keys").is_err());
+    }
+
+    #[test]
+    fn anthropic_probe_urls_use_v1_models() {
+        assert_eq!(
+            build_models_url("", "anthropic"),
+            Some("https://api.anthropic.com/v1/models".to_string())
+        );
+        assert_eq!(
+            build_models_url("https://api.minimax.io/anthropic", "minimax"),
+            Some("https://api.minimax.io/anthropic/v1/models".to_string())
+        );
+        assert_eq!(
+            build_models_url("", "kimi-coding"),
+            Some("https://api.kimi.com/coding/v1/models".to_string())
+        );
     }
 
     #[test]

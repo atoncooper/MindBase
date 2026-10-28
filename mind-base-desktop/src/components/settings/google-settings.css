@@ -1,0 +1,862 @@
+/* ===========================================================================
+   设置页（系统设置 / API 设置 / Agent）—— Google Workspace 视觉体系
+   ---------------------------------------------------------------------------
+   与科研工作台同一套 Material 3 令牌：浅色 #f8f9fa 页面 / 白卡 / #dadce0 描边
+   / #0b57d0 主色；深色 #131314 页面 / #1e1f20 面 / #8ab4f8 主色。所有规则都
+   收敛在 .settings-scope 下（App 在设置路由给 .shell 加该类），不影响其它域。
+   =========================================================================== */
+
+.settings-scope {
+  --gs-bg: #f8f9fa;
+  --gs-surface: #ffffff;
+  --gs-surface-2: #f1f3f4;
+  --gs-card-border: #dadce0;
+  --gs-divider: #e0e3e1;
+  --gs-outline: #747775;
+  --gs-outline-variant: #c4c7c5;
+  --gs-primary: #0b57d0;
+  --gs-primary-hover: #0a4cb5;
+  --gs-on-primary: #ffffff;
+  --gs-primary-container: #d3e3fd;
+  --gs-on-primary-container: #041e49;
+  --gs-text: #1f1f1f;
+  --gs-text-2: #444746;
+  --gs-text-3: #5f6368;
+  --gs-hover: rgba(31, 31, 31, 0.06);
+  --gs-ok: #146c2e;
+  --gs-ok-bg: #e6f4ea;
+  --gs-error: #b3261e;
+  --gs-error-bg: #fce8e6;
+  --gs-warn: #8f5000;
+  --gs-warn-bg: #fef7e0;
+  --gs-elev-1: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+
+  min-height: 100%;
+  background: var(--gs-bg);
+  color: var(--gs-text);
+  letter-spacing: 0;
+}
+
+:root[data-theme="dark"] .settings-scope {
+  --gs-bg: #131314;
+  --gs-surface: #1e1f20;
+  --gs-surface-2: #282a2c;
+  --gs-card-border: #444746;
+  --gs-divider: #3c4043;
+  --gs-outline: #8e918f;
+  --gs-outline-variant: #5f6368;
+  --gs-primary: #8ab4f8;
+  --gs-primary-hover: #aecbfa;
+  --gs-on-primary: #062e6f;
+  --gs-primary-container: #0842a0;
+  --gs-on-primary-container: #d3e3fd;
+  --gs-text: #e3e3e3;
+  --gs-text-2: #c4c7c5;
+  --gs-text-3: #9aa0a6;
+  --gs-hover: rgba(227, 227, 227, 0.08);
+  --gs-ok: #6dd58c;
+  --gs-ok-bg: rgba(109, 213, 140, 0.14);
+  --gs-error: #f2b8b5;
+  --gs-error-bg: rgba(242, 184, 181, 0.14);
+  --gs-warn: #fdd663;
+  --gs-warn-bg: rgba(253, 214, 99, 0.14);
+  --gs-elev-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px 1px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- 页头 -------------------------------------------------------------- */
+
+.settings-scope .header {
+  padding-bottom: 20px;
+}
+
+.settings-scope .header__title {
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: var(--gs-text);
+}
+
+.settings-scope .header__subtitle {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .chip {
+  padding: 3px 10px;
+  border-color: var(--gs-card-border);
+  border-radius: 999px;
+  color: var(--gs-text-2);
+  font-size: 11.5px;
+}
+
+/* ---- 一级 tab：M3 primary tabs（3px 圆角指示条） ----------------------- */
+
+.settings-scope .tabs {
+  display: flex;
+  align-self: stretch;
+  gap: 2px;
+  padding: 0;
+  border-bottom: 1px solid var(--gs-divider);
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-scope .tab {
+  position: relative;
+  height: 48px;
+  padding: 0 18px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--gs-text-3);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.settings-scope .tab:hover {
+  color: var(--gs-text);
+  background: var(--gs-hover);
+}
+
+.settings-scope .tab--active,
+.settings-scope .tab--active:hover {
+  background: transparent;
+  box-shadow: none;
+  color: var(--gs-primary);
+  font-weight: 500;
+}
+
+.settings-scope .tab--active::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--gs-primary);
+}
+
+/* ---- 卡片 -------------------------------------------------------------- */
+
+.settings-scope .settings-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* pane 的可见性由 hidden 属性控制：scoped display:flex  specificity 更高，
+   必须显式压掉，否则三个 tab 会同时显示。 */
+.settings-scope .settings-pane[hidden] {
+  display: none;
+}
+
+.settings-scope .card {
+  padding: 20px 24px;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 16px;
+  background: var(--gs-surface);
+  box-shadow: none;
+}
+
+.settings-scope .card__title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--gs-text);
+}
+
+.settings-scope .card__title::after {
+  background: var(--gs-divider);
+}
+
+.settings-scope .card__index {
+  color: var(--gs-text-3);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.settings-scope .card__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 14px;
+}
+
+.settings-scope .card-hint {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .hint-text {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .placeholder {
+  margin: 4px 0 0;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .error-text {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--gs-error-bg);
+  color: var(--gs-error);
+  font-size: 12.5px;
+}
+
+/* ---- 键值行（Google 列表行） ------------------------------------------- */
+
+.settings-scope .rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-scope .row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .row:last-child {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
+
+.settings-scope .row__label {
+  flex: none;
+  width: 132px;
+  font-size: 13px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .row__value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--gs-text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.settings-scope .row__value--path {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--gs-text-2);
+}
+
+/* ---- 按钮：M3 药丸 ----------------------------------------------------- */
+
+.settings-scope .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 18px;
+  border: 1px solid var(--gs-outline-variant);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--gs-primary);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-scope .button:hover:not(:disabled) {
+  border-color: var(--gs-primary);
+  background: color-mix(in srgb, var(--gs-primary) 8%, transparent);
+  color: var(--gs-primary);
+}
+
+.settings-scope .button:active:not(:disabled) {
+  transform: none;
+}
+
+.settings-scope .button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.settings-scope .button--primary {
+  border-color: var(--gs-primary);
+  background: var(--gs-primary);
+  color: var(--gs-on-primary);
+}
+
+.settings-scope .button--primary:hover:not(:disabled) {
+  border-color: var(--gs-primary-hover);
+  background: var(--gs-primary-hover);
+  color: var(--gs-on-primary);
+  box-shadow: var(--gs-elev-1);
+}
+
+.settings-scope .icon-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--gs-text-2);
+}
+
+.settings-scope .icon-button:hover:not(:disabled) {
+  background: var(--gs-hover);
+  color: var(--gs-text);
+}
+
+/* ---- 表单：M3 outlined ------------------------------------------------- */
+
+.settings-scope .cfg-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .cfg-row + .cfg-row {
+  margin-top: 0;
+}
+
+.settings-scope .cfg-row:last-of-type {
+  border-bottom: 0;
+}
+
+.settings-scope .cfg-row--wide {
+  grid-template-columns: 132px minmax(0, 1fr);
+}
+
+.settings-scope .cfg-label {
+  font-size: 12.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .cfg-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--gs-outline-variant);
+  border-radius: 8px;
+  background: var(--gs-surface);
+  color: var(--gs-text);
+  font-family: inherit;
+  font-size: 13.5px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-scope .cfg-input:hover:not(:disabled) {
+  border-color: var(--gs-outline);
+}
+
+.settings-scope .cfg-input:focus {
+  outline: none;
+  border-color: var(--gs-primary);
+  box-shadow: 0 0 0 1px var(--gs-primary);
+}
+
+.settings-scope .cfg-input::placeholder {
+  color: var(--gs-text-3);
+}
+
+.settings-scope .cfg-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-scope .cfg-input--narrow {
+  width: 140px;
+}
+
+.settings-scope .text-input {
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--gs-outline-variant);
+  border-radius: 8px;
+  background: var(--gs-surface);
+  color: var(--gs-text);
+  font-family: inherit;
+  font-size: 13.5px;
+}
+
+.settings-scope .text-input:focus {
+  outline: none;
+  border-color: var(--gs-primary);
+  box-shadow: 0 0 0 1px var(--gs-primary);
+}
+
+.settings-scope .checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+  font-size: 13px;
+  color: var(--gs-text-2);
+  cursor: pointer;
+}
+
+.settings-scope .checkbox-row input {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 2px solid var(--gs-outline);
+  border-radius: 3px;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-scope .checkbox-row input:checked {
+  border-color: var(--gs-primary);
+  background: var(--gs-primary);
+}
+
+.settings-scope .checkbox-row input:checked::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid var(--gs-on-primary);
+  border-bottom: 2px solid var(--gs-on-primary);
+  transform: rotate(-45deg) translateY(-1px);
+}
+
+.settings-scope .checkbox-row input:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.settings-scope .quiz-type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+/* ---- 状态徽标 / chip --------------------------------------------------- */
+
+.settings-scope .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-2);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.settings-scope .status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.settings-scope .status--ok {
+  background: var(--gs-ok-bg);
+  color: var(--gs-ok);
+}
+
+.settings-scope .status--ok::before {
+  background: currentColor;
+  border-color: currentColor;
+}
+
+.settings-scope .status--error {
+  background: var(--gs-error-bg);
+  color: var(--gs-error);
+}
+
+.settings-scope .status--error::before {
+  content: "×";
+  width: auto;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  background: none;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.settings-scope .status--info {
+  background: var(--gs-primary);
+  color: var(--gs-on-primary);
+}
+
+.settings-scope .status--info::before {
+  border-color: currentColor;
+}
+
+.settings-scope .status--live::before {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+/* ---- B 站账号 ---------------------------------------------------------- */
+
+.settings-scope .account-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0 8px;
+}
+
+.settings-scope .account-row__avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--gs-surface-2);
+}
+
+.settings-scope .account-row__avatar--empty {
+  display: block;
+}
+
+.settings-scope .account-row__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--gs-text);
+}
+
+.settings-scope .account-row__sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .account-row--expired .account-row__name {
+  color: var(--gs-text-3);
+}
+
+/* ---- 模型配置档案（ledger） ------------------------------------------- */
+
+.settings-scope .vault-ledger {
+  margin-top: 8px;
+  border-top: 0;
+}
+
+.settings-scope .ledger-section {
+  margin: 22px 0 4px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .vault-ledger:first-of-type .ledger-section {
+  margin-top: 6px;
+}
+
+.settings-scope .ledger-row {
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .ledger-row__head {
+  gap: 14px;
+  padding: 13px 4px;
+  border-radius: 10px;
+}
+
+.settings-scope .ledger-row__head:hover {
+  background: var(--gs-hover);
+}
+
+.settings-scope .ledger-row__index {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .ledger-row__name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--gs-text);
+}
+
+.settings-scope .ledger-row__group {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .ledger-row__model {
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.settings-scope .ledger-row__mask {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.settings-scope .ledger-row__unset {
+  padding: 1px 8px;
+  border: 1px dashed var(--gs-outline-variant);
+  border-radius: 999px;
+  color: var(--gs-text-3);
+  font-size: 10.5px;
+}
+
+.settings-scope .ledger-row__badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--gs-primary-container);
+  color: var(--gs-on-primary-container);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.settings-scope .ledger-row__chevron {
+  color: var(--gs-text-3);
+}
+
+.settings-scope .ledger-row__panel-inner {
+  padding: 0 6px 0 40px;
+}
+
+.settings-scope .ledger-row.is-open .ledger-row__panel-inner {
+  padding-bottom: 14px;
+}
+
+/* ---- ASR / OCR 模式切换：M3 分段控件 ---------------------------------- */
+
+.settings-scope .asr-mode-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 10px;
+}
+
+.settings-scope .asr-mode-switch__options {
+  display: inline-flex;
+  width: fit-content;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--gs-outline-variant);
+  border-radius: 999px;
+}
+
+.settings-scope .asr-mode-switch__option {
+  height: 34px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--gs-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.settings-scope .asr-mode-switch__option + .asr-mode-switch__option {
+  border-left: 1px solid var(--gs-outline-variant);
+}
+
+.settings-scope .asr-mode-switch__option.is-active {
+  background: var(--gs-primary-container);
+  color: var(--gs-on-primary-container);
+  box-shadow: none;
+}
+
+/* ---- 本地模型列表 ----------------------------------------------------- */
+
+.settings-scope .model-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-scope .model-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .model-item:last-child {
+  border-bottom: 0;
+}
+
+.settings-scope .model-item__name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--gs-text);
+}
+
+.settings-scope .model-item__meta {
+  font-size: 11px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .model-item__state {
+  margin-left: auto;
+}
+
+.settings-scope .model-item__progress {
+  flex-basis: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--gs-surface-2);
+  overflow: hidden;
+}
+
+.settings-scope .model-item__progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--gs-primary);
+}
+
+/* ---- Agent 状态 / 工具清单 -------------------------------------------- */
+
+.settings-scope .agent-task {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 12px;
+  background: var(--gs-surface);
+}
+
+.settings-scope .agent-task__meta {
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .agent-badge {
+  padding: 2px 9px;
+  border: none;
+  border-radius: 999px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-2);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.settings-scope .tool-row {
+  padding: 11px 2px;
+  border-top: 1px solid var(--gs-divider);
+}
+
+.settings-scope .tool-row:first-of-type {
+  border-top: 0;
+}
+
+.settings-scope .tool-row__name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--gs-text);
+}
+
+.settings-scope .tool-row__desc {
+  font-size: 11.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .plan-panel {
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: var(--gs-surface-2);
+}
+
+.settings-scope .plan-panel__head {
+  font-family: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .plan-step {
+  font-size: 12px;
+}
+
+.settings-scope .plan-step--done .plan-step__desc {
+  color: var(--gs-text-3);
+}
+
+.settings-scope .plan-step--in_progress .plan-step__desc {
+  color: var(--gs-text);
+  font-weight: 500;
+}
+
+.settings-scope .plan-step__note {
+  color: var(--gs-text-3);
+}
+
+/* ---- 窄窗口 ------------------------------------------------------------ */
+
+@media (max-width: 900px) {
+  .settings-scope.shell--full {
+    padding: 24px 24px 40px;
+  }
+
+  .settings-scope .card {
+    padding: 18px 18px 20px;
+  }
+
+  .settings-scope .row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .settings-scope .row__label {
+    width: auto;
+  }
+
+  .settings-scope .row__value {
+    text-align: left;
+  }
+
+  .settings-scope .cfg-row,
+  .settings-scope .cfg-row--wide {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .settings-scope .ledger-row__panel-inner {
+    padding-left: 8px;
+  }
+}

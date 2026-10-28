@@ -415,13 +415,14 @@ pub fn harness_health() -> serde_json::Value {
 /// 「工具清单」 card in the agent status pane.
 #[tauri::command]
 pub fn harness_tools() -> serde_json::Value {
-    const KINDS: [AgentKind; 6] = [
+    const KINDS: [AgentKind; 7] = [
         AgentKind::Chat,
         AgentKind::Memory,
         AgentKind::Note,
         AgentKind::Code,
         AgentKind::Search,
         AgentKind::Academic,
+        AgentKind::Research,
     ];
     let entries: Vec<serde_json::Value> = harness()
         .runtime
@@ -824,6 +825,7 @@ pub(crate) fn react_loop(
             prompt
         }
         AgentKind::Academic => agents::academic_system_prompt(&base_prompt(ctx, kind)?, question),
+        AgentKind::Research => agents::research_system_prompt(&base_prompt(ctx, kind)?, question),
     };
 
     let mut convo: Vec<ChatMessage> = Vec::with_capacity(history.len() + 2);
@@ -911,7 +913,11 @@ pub(crate) fn react_loop(
             && !turn.tool_calls.is_empty()
             && matches!(
                 kind,
-                AgentKind::Chat | AgentKind::Code | AgentKind::Academic | AgentKind::Note
+                AgentKind::Chat
+                    | AgentKind::Code
+                    | AgentKind::Academic
+                    | AgentKind::Note
+                    | AgentKind::Research
             )
         {
             plan_reminder_done = true;

@@ -1,0 +1,1492 @@
+/* ===========================================================================
+   科研工作台（桌面端）—— Google Workspace 视觉体系
+   ---------------------------------------------------------------------------
+   全屏工作区：左侧项目栏（Google Drive 类似）+ 右侧项目页（M3 主 tab +
+   卡片内容区）。所有颜色/圆角/阴影收敛在 .research-scope 的 --rs-* 变量里，
+   浅色 = Google 亮色（#f8f9fa 底 / 白卡 / #dadce0 描边 / #0b57d0 主色），
+   深色 = Google 暗色（#131314 底 / #1e1f20 面 / #8ab4f8 主色），自动跟随
+   应用的 data-theme 切换，不影响其余域（测验 / 对话 / 设置）的样式。
+   =========================================================================== */
+
+.research-scope {
+  /* ---- Google 亮色令牌 ---- */
+  --rs-bg: #f8f9fa;
+  --rs-surface: #ffffff;
+  --rs-surface-2: #f1f3f4;
+  --rs-surface-3: #e8eaed;
+  --rs-card-border: #dadce0;
+  --rs-divider: #e0e3e1;
+  --rs-outline: #747775;
+  --rs-outline-variant: #c4c7c5;
+  --rs-primary: #0b57d0;
+  --rs-primary-hover: #0a4cb5;
+  --rs-on-primary: #ffffff;
+  --rs-primary-container: #d3e3fd;
+  --rs-on-primary-container: #041e49;
+  --rs-text: #1f1f1f;
+  --rs-text-2: #444746;
+  --rs-text-3: #5f6368;
+  --rs-hover: rgba(31, 31, 31, 0.06);
+  --rs-active: rgba(31, 31, 31, 0.1);
+  --rs-ok: #146c2e;
+  --rs-ok-bg: #e6f4ea;
+  --rs-error: #b3261e;
+  --rs-error-bg: #fce8e6;
+  --rs-warn: #8f5000;
+  --rs-warn-bg: #fef7e0;
+  --rs-elev-1:
+    0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+  --rs-elev-2:
+    0 2px 6px 2px rgba(60, 64, 67, 0.15), 0 1px 2px rgba(60, 64, 67, 0.3);
+
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--rs-bg);
+  color: var(--rs-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+:root[data-theme="dark"] .research-scope {
+  --rs-bg: #131314;
+  --rs-surface: #1e1f20;
+  --rs-surface-2: #282a2c;
+  --rs-surface-3: #333537;
+  --rs-card-border: #444746;
+  --rs-divider: #3c4043;
+  --rs-outline: #8e918f;
+  --rs-outline-variant: #5f6368;
+  --rs-primary: #8ab4f8;
+  --rs-primary-hover: #aecbfa;
+  --rs-on-primary: #062e6f;
+  --rs-primary-container: #0842a0;
+  --rs-on-primary-container: #d3e3fd;
+  --rs-text: #e3e3e3;
+  --rs-text-2: #c4c7c5;
+  --rs-text-3: #9aa0a6;
+  --rs-hover: rgba(227, 227, 227, 0.08);
+  --rs-active: rgba(227, 227, 227, 0.12);
+  --rs-ok: #6dd58c;
+  --rs-ok-bg: rgba(109, 213, 140, 0.14);
+  --rs-error: #f2b8b5;
+  --rs-error-bg: rgba(242, 184, 181, 0.14);
+  --rs-warn: #fdd663;
+  --rs-warn-bg: rgba(253, 214, 99, 0.14);
+  --rs-elev-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px 1px rgba(0, 0, 0, 0.3);
+  --rs-elev-2: 0 2px 6px 2px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- 顶栏：Google 式 app bar（白底 + 细分隔线） ------------------------ */
+
+.rs-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 0 24px;
+  background: var(--rs-surface);
+  border-bottom: 1px solid var(--rs-divider);
+}
+
+.rs-topbar__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rs-topbar__logo {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--rs-primary-container);
+  color: var(--rs-on-primary-container);
+}
+
+.rs-topbar__logo svg {
+  width: 20px;
+  height: 20px;
+}
+
+.rs-topbar__text {
+  min-width: 0;
+}
+
+.rs-topbar__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: var(--rs-text);
+}
+
+.rs-topbar__sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--rs-text-3);
+}
+
+.rs-topbar__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- 主体：左项目栏 + 右项目页 ----------------------------------------- */
+
+.rs-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.rs-rail {
+  flex: none;
+  width: 296px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--rs-surface);
+  border-right: 1px solid var(--rs-divider);
+}
+
+.rs-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin: 14px 12px 6px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--rs-surface-2);
+  color: var(--rs-text-3);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rs-search:focus-within {
+  background: var(--rs-surface);
+  box-shadow: 0 0 0 2px var(--rs-primary);
+  color: var(--rs-text-2);
+}
+
+.rs-search svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.rs-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--rs-text);
+}
+
+.rs-search input::placeholder {
+  color: var(--rs-text-3);
+}
+
+.rs-rail__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 18px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--rs-text-3);
+}
+
+.rs-rail__count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--rs-surface-2);
+  color: var(--rs-text-2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rs-rail__note {
+  margin: 8px 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--rs-text-3);
+}
+
+.rs-projects {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 12px;
+}
+
+.research-project {
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--rs-text);
+  transition: background-color 0.12s ease;
+}
+
+.research-project:hover {
+  background: var(--rs-hover);
+}
+
+.research-project.is-active,
+.research-project.is-active:hover {
+  background: var(--rs-primary-container);
+}
+
+.research-project__title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--rs-text);
+}
+
+.research-project.is-active .research-project__title {
+  font-weight: 500;
+  color: var(--rs-on-primary-container);
+}
+
+.research-project__meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--rs-text-3);
+}
+
+.research-project.is-active .research-project__meta {
+  color: var(--rs-on-primary-container);
+  opacity: 0.75;
+}
+
+/* 侧栏底部：AI 对话绑定状态（Google 侧栏的 secondary block 语气） */
+.rs-rail__ai {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--rs-surface-2);
+}
+
+.rs-rail__ai-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rs-text-2);
+}
+
+.rs-rail__ai-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rs-text-3);
+}
+
+.rs-rail__foot {
+  flex: none;
+  margin: 0;
+  padding: 10px 18px 14px;
+  font-size: 11px;
+  color: var(--rs-text-3);
+}
+
+.rs-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--rs-bg);
+}
+
+/* ---- 项目页头 ---------------------------------------------------------- */
+
+.rs-banner {
+  flex: none;
+  margin: 12px 32px 0;
+  cursor: pointer;
+}
+
+.rs-projecthead {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 22px 32px 14px;
+}
+
+.rs-projecthead__text {
+  min-width: 0;
+  flex: 1;
+}
+
+.rs-breadcrumb {
+  margin: 0 0 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--rs-text-3);
+}
+
+.rs-projecttitle {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--rs-text);
+  overflow-wrap: anywhere;
+}
+
+.rs-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.rs-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--rs-surface-2);
+  color: var(--rs-text-2);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.rs-chip--primary {
+  background: var(--rs-primary-container);
+  color: var(--rs-on-primary-container);
+}
+
+.rs-chip--plain {
+  padding: 0;
+  background: transparent;
+  color: var(--rs-text-3);
+}
+
+.rs-projecthead__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 18px;
+}
+
+/* ---- 一级 Tabs（M3 primary tabs：3px 圆角指示条） ---------------------- */
+
+.rs-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--rs-divider);
+  background: var(--rs-bg);
+}
+
+.rs-tab {
+  position: relative;
+  height: 48px;
+  padding: 0 16px;
+  border: none;
+  background: none;
+  color: var(--rs-text-3);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.rs-tab:hover {
+  color: var(--rs-text);
+  background: var(--rs-hover);
+}
+
+.rs-tab--active,
+.rs-tab--active:hover {
+  color: var(--rs-primary);
+  background: transparent;
+}
+
+.rs-tab--active::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--rs-primary);
+}
+
+/* ---- 页签内容：内部滚动，始终填满剩余高度 ------------------------------ */
+
+.rs-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 32px 40px;
+  scrollbar-gutter: stable;
+}
+
+.rs-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---- 空状态：居中铺满右侧工作区 --------------------------------------- */
+
+.rs-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 32px;
+  text-align: center;
+}
+
+.rs-empty__icon {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  background: var(--rs-primary-container);
+  color: var(--rs-on-primary-container);
+}
+
+.rs-empty__icon svg {
+  width: 32px;
+  height: 32px;
+}
+
+.rs-empty__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--rs-text);
+}
+
+.rs-empty__text {
+  margin: 0;
+  max-width: 440px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--rs-text-3);
+}
+
+.rs-empty__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ---- 卡片（Google 白卡：1px 描边 + 16px 圆角，无重阴影） --------------- */
+
+.research-scope .card {
+  padding: 20px 24px;
+  border: 1px solid var(--rs-card-border);
+  border-radius: 16px;
+  background: var(--rs-surface);
+  box-shadow: none;
+}
+
+.research-scope .research-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.research-scope .research-section-head h3 {
+  margin: 0;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--rs-text);
+}
+
+.research-scope .research-section-head .spacer {
+  flex: 1;
+}
+
+.research-scope .hint-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--rs-text-3);
+}
+
+.research-scope p.hint-text {
+  margin: 8px 0 0;
+}
+
+.research-scope .research-section-head .hint-text {
+  margin: 0;
+}
+
+.research-scope .spacer {
+  flex: 1;
+}
+
+/* ---- 按钮：M3 药丸（次按钮描边蓝字 / 主按钮填充蓝） -------------------- */
+
+.research-scope .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--rs-outline-variant);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--rs-primary);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease;
+}
+
+.research-scope .button:hover:not(:disabled) {
+  border-color: var(--rs-primary);
+  background: color-mix(in srgb, var(--rs-primary) 8%, transparent);
+  color: var(--rs-primary);
+}
+
+.research-scope .button:active:not(:disabled) {
+  transform: none;
+}
+
+.research-scope .button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.research-scope .button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.research-scope .button--primary {
+  border-color: var(--rs-primary);
+  background: var(--rs-primary);
+  color: var(--rs-on-primary);
+}
+
+.research-scope .button--primary:hover:not(:disabled) {
+  border-color: var(--rs-primary-hover);
+  background: var(--rs-primary-hover);
+  color: var(--rs-on-primary);
+  box-shadow: var(--rs-elev-1);
+}
+
+.research-scope .research-btn-sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+.research-scope .icon-button {
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--rs-text-2);
+}
+
+.research-scope .icon-button:hover:not(:disabled) {
+  background: var(--rs-hover);
+  color: var(--rs-text);
+}
+
+.research-scope .icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ---- 输入 / 下拉 / 文本域（M3 outlined） ------------------------------- */
+
+.research-scope .text-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--rs-outline-variant);
+  border-radius: 8px;
+  background: var(--rs-surface);
+  color: var(--rs-text);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.research-scope .text-input::placeholder {
+  color: var(--rs-text-3);
+}
+
+.research-scope .text-input:focus {
+  outline: none;
+  border-color: var(--rs-primary);
+  box-shadow: 0 0 0 1px var(--rs-primary);
+}
+
+.research-scope .research-select {
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--rs-outline-variant);
+  border-radius: 8px;
+  background: var(--rs-surface);
+  color: var(--rs-text);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.research-scope .research-select:focus {
+  outline: none;
+  border-color: var(--rs-primary);
+  box-shadow: 0 0 0 1px var(--rs-primary);
+}
+
+.research-scope .research-textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--rs-outline-variant);
+  border-radius: 10px;
+  background: var(--rs-surface);
+  color: var(--rs-text);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.research-scope .research-textarea:focus {
+  outline: none;
+  border-color: var(--rs-primary);
+  box-shadow: 0 0 0 1px var(--rs-primary);
+}
+
+.research-scope .research-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+/* ---- 分段控件（导入格式等，M3 segmented button） ----------------------- */
+
+.research-scope .tabs {
+  display: inline-flex;
+  align-self: center;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--rs-outline-variant);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.research-scope .tab {
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--rs-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.research-scope .tab + .tab {
+  border-left: 1px solid var(--rs-outline-variant);
+}
+
+.research-scope .tab:hover {
+  background: var(--rs-hover);
+  color: var(--rs-text);
+}
+
+.research-scope .tab--active,
+.research-scope .tab--active:hover {
+  background: var(--rs-primary-container);
+  color: var(--rs-on-primary-container);
+}
+
+/* ---- 状态徽标 / 统计 chip --------------------------------------------- */
+
+.research-scope .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--rs-surface-2);
+  color: var(--rs-text-2);
+  font-family: inherit;
+  font-size: 11.5px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.research-scope .status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.research-scope .status--ok {
+  background: var(--rs-ok-bg);
+  color: var(--rs-ok);
+}
+
+.research-scope .status--ok::before {
+  background: currentColor;
+  border-color: currentColor;
+}
+
+.research-scope .status--error {
+  background: var(--rs-error-bg);
+  color: var(--rs-error);
+}
+
+.research-scope .status--error::before {
+  content: "×";
+  width: auto;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  background: none;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.research-scope .status--live::before {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.research-scope .status--info {
+  background: var(--rs-primary);
+  border-color: transparent;
+  color: var(--rs-on-primary);
+}
+
+.research-scope .status--info::before {
+  border-color: currentColor;
+}
+
+.research-scope .chip {
+  align-self: center;
+  padding: 3px 10px;
+  border: 1px solid var(--rs-card-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--rs-text-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* ---- 表格（Google 数据表：细线、表头弱化、行悬停） -------------------- */
+
+.research-scope .research-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.research-scope .research-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rs-divider);
+  background: transparent;
+  color: var(--rs-text-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.research-scope .research-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--rs-divider);
+  color: var(--rs-text);
+  font-size: 13px;
+  vertical-align: top;
+  /* 除首列（标题/路径，可换行）外一律单行：状态/版本/阶段等短列不再折字。 */
+  white-space: nowrap;
+}
+
+.research-scope .research-table td:first-child {
+  min-width: 180px;
+  white-space: normal;
+}
+
+.research-scope .research-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.research-scope .research-table tbody tr:hover {
+  background: var(--rs-hover);
+}
+
+.research-scope .research-table__title {
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.research-scope .research-table__meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rs-text-3);
+  word-break: break-all;
+}
+
+/* 表格行内操作走 Google 文本按钮：去掉描边，避免每行都是「药丸」的噪声。 */
+.research-scope .research-table .button {
+  height: 28px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.research-scope .research-table .button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--rs-hover);
+}
+
+/* ---- 阶段进度条（Google 步骤条：圆点 + 连接线） ------------------------ */
+
+.research-scope .research-stages {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  padding: 4px 0 2px;
+}
+
+.research-scope .research-stage {
+  position: relative;
+  flex: 1;
+  min-width: 118px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.research-scope .research-stage:hover {
+  background: var(--rs-hover);
+}
+
+.research-scope .research-stage:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+/* 连接线：从本步圆点右缘连到下一步圆点左缘。 */
+.research-scope .research-stage + .research-stage::before {
+  content: "";
+  position: absolute;
+  top: 23px;
+  left: -8px;
+  right: calc(100% - 36px);
+  height: 2px;
+  background: var(--rs-divider);
+}
+
+.research-scope .research-stage__dot {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--rs-outline);
+  border-radius: 50%;
+  background: var(--rs-surface);
+  color: var(--rs-text-3);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.research-scope .research-stage__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--rs-text);
+}
+
+.research-scope .research-stage__status {
+  font-size: 11px;
+  color: var(--rs-text-3);
+}
+
+.research-scope .research-stage.is-done .research-stage__dot {
+  border-color: var(--rs-ok);
+  background: var(--rs-ok);
+  color: var(--rs-surface);
+}
+
+.research-scope .research-stage.is-done .research-stage__status {
+  color: var(--rs-ok);
+}
+
+.research-scope .research-stage.is-active .research-stage__dot {
+  border-color: var(--rs-primary);
+  background: var(--rs-primary);
+  color: var(--rs-on-primary);
+}
+
+.research-scope .research-stage.is-active .research-stage__label,
+.research-scope .research-stage.is-active .research-stage__status {
+  color: var(--rs-primary);
+}
+
+.research-scope .research-stage.is-submitted .research-stage__dot {
+  border-color: var(--rs-primary);
+  color: var(--rs-primary);
+}
+
+.research-scope .research-stage.is-rework .research-stage__dot {
+  border-color: var(--rs-error);
+  color: var(--rs-error);
+}
+
+/* ---- 栅格 / 行 --------------------------------------------------------- */
+
+.research-scope .research-grid2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.research-scope .research-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-scope .research-row .text-input {
+  flex: 1;
+  min-width: 180px;
+  width: auto;
+}
+
+/* ---- 空状态（卡内） ---------------------------------------------------- */
+
+.research-scope .research-empty {
+  padding: 30px 12px;
+  text-align: center;
+}
+
+.research-scope .research-empty p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--rs-text-3);
+}
+
+/* ---- 数据集 / 子卡 ----------------------------------------------------- */
+
+.research-scope .research-dataset {
+  padding: 14px 16px;
+  border: 1px solid var(--rs-card-border);
+  border-radius: 12px;
+  background: var(--rs-surface);
+}
+
+.research-scope .research-dataset + .research-dataset {
+  margin-top: 10px;
+}
+
+.research-scope .research-dataset__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-scope .research-dataset__name {
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--rs-text);
+}
+
+.research-scope .research-dataset__path {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--rs-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-scope .research-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--rs-card-border);
+  border-radius: 10px;
+  background: var(--rs-surface-2);
+}
+
+.research-scope .research-result .hint-text {
+  flex: 1;
+  word-break: break-all;
+}
+
+/* ---- 运行控制台 -------------------------------------------------------- */
+
+.research-scope .research-console {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--rs-card-border);
+  border-radius: 10px;
+  background: var(--rs-surface-2);
+  color: var(--rs-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.research-scope .research-console--error {
+  margin-top: 8px;
+  border-color: var(--rs-error);
+  background: var(--rs-error-bg);
+  color: var(--rs-error);
+}
+
+/* ---- 写作：章节列表 + 编辑区 ------------------------------------------ */
+
+.research-scope .research-write {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.research-scope .research-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.research-scope .research-section-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rs-text-2);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.research-scope .research-section-item:hover {
+  background: var(--rs-hover);
+  color: var(--rs-text);
+}
+
+.research-scope .research-section-item.is-active,
+.research-scope .research-section-item.is-active:hover {
+  background: var(--rs-primary-container);
+  color: var(--rs-on-primary-container);
+  font-weight: 500;
+}
+
+.research-scope .research-section-item__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-scope .research-section-item__words {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-text-3);
+}
+
+.research-scope .research-editor {
+  min-height: 460px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+/* ---- 新建项目对话框（M3 dialog） -------------------------------------- */
+
+.research-scope .modal-backdrop {
+  background: rgba(32, 33, 36, 0.5);
+}
+
+.research-scope .modal {
+  width: min(520px, calc(100vw - 48px));
+  padding: 24px;
+  border: none;
+  border-radius: 28px;
+  background: var(--rs-surface);
+  box-shadow:
+    0 8px 12px 6px rgba(0, 0, 0, 0.15),
+    0 4px 4px 0 rgba(0, 0, 0, 0.3);
+}
+
+.research-scope .modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.research-scope .modal__title {
+  margin: 0;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--rs-text);
+}
+
+.research-scope .modal .hint-text {
+  margin: 6px 0 0;
+}
+
+.research-scope .research-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.research-scope .research-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.research-scope .research-field label {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rs-text-2);
+}
+
+.research-scope .research-field .text-input,
+.research-scope .research-field .research-select {
+  width: 100%;
+}
+
+.research-scope .research-field__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.research-scope .research-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+/* ---- 提示条 ------------------------------------------------------------ */
+
+.research-scope .error-text {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--rs-error-bg);
+  color: var(--rs-error);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* ---- 响应式：窄窗口收窄侧栏、折叠栅格 --------------------------------- */
+
+@media (max-width: 1180px) {
+  .research-scope .research-grid2,
+  .research-scope .research-write {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .research-scope .research-sections {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .research-scope .research-section-item {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .research-scope .research-stages {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .research-scope .research-stage {
+    flex: 1 0 30%;
+  }
+
+  .research-scope .research-stage + .research-stage::before {
+    display: none;
+  }
+}
+
+@media (max-width: 1000px) {
+  .rs-rail {
+    width: 248px;
+  }
+
+  .rs-topbar {
+    padding: 0 16px;
+  }
+
+  .rs-projecthead,
+  .rs-content {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .rs-banner {
+    margin-left: 20px;
+    margin-right: 20px;
+  }
+
+  .rs-tabs {
+    padding: 0 12px;
+  }
+}
+
+@media (max-width: 860px) {
+  .rs-rail {
+    width: 200px;
+  }
+
+  .rs-topbar__sub,
+  .rs-rail__ai,
+  .rs-rail__foot {
+    display: none;
+  }
+
+  .rs-projecthead {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .rs-projecthead__actions {
+    padding-top: 0;
+  }
+}
+
+/* ---- 项目信息键值表（Google 设置行） ---------------------------------- */
+
+.research-scope .rs-kv {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.research-scope .rs-kv > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rs-divider);
+}
+
+.research-scope .rs-kv > div:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.research-scope .rs-kv dt {
+  flex: none;
+  width: 80px;
+  font-size: 12.5px;
+  color: var(--rs-text-3);
+}
+
+.research-scope .rs-kv dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--rs-text);
+  overflow-wrap: anywhere;
+}
+
+/* ---- 项目信息内联编辑 -------------------------------------------------- */
+
+.research-scope .rs-info-edit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.research-scope .rs-info-edit .research-field:first-child {
+  grid-column: 1 / -1;
+}
+
+.research-scope .rs-info-edit .research-field label {
+  font-size: 12px;
+  color: var(--rs-text-3);
+}
+
+.research-scope .rs-info-edit .research-field .text-input,
+.research-scope .rs-info-edit .research-field .research-select {
+  width: 100%;
+}
+
+.research-scope .rs-info-edit__hint {
+  grid-column: 1 / -1;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rs-text-3);
+}
+
+/* ---- 最近动态（Google 活动流） ---------------------------------------- */
+
+.research-scope .rs-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.research-scope .rs-activity li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rs-divider);
+}
+
+.research-scope .rs-activity li:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.research-scope .rs-activity__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--rs-primary);
+}
+
+.research-scope .rs-activity__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.research-scope .rs-activity__kind {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rs-text);
+}
+
+.research-scope .rs-activity__meta {
+  font-size: 11.5px;
+  color: var(--rs-text-3);
+}
+
+/* 表格横向滚动容器：窄窗口下数据表列多时只在卡片内横滚，不撑破页面。 */
+.research-scope .rs-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}

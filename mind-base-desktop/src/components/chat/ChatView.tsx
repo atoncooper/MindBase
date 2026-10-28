@@ -40,7 +40,16 @@ import {
   type ChatImageAttachment,
 } from "../../lib/chat-images";
 import type { PendingJump } from "../../lib/router";
-import { listProviders, type ProviderStatus } from "../../lib/api-keys";
+import { RESEARCH_HASH, navigate } from "../../lib/router";
+import { STAGE_LABELS, getResearchProject, type ResearchProject } from "../../lib/research";
+import {
+  getActiveResearchProjectId,
+  setActiveResearchProject,
+  subscribeResearchContext,
+  takePendingResearchPrompt,
+  takeResearchNewChatFlag,
+} from "../../lib/research-context";
+import { listProviderCatalog, listProviders, type ProviderStatus } from "../../lib/api-keys";
 import { listSkills, type SkillMeta } from "../../lib/skills";
 import { toErrorMessage } from "../../lib/updater";
 import SessionSidebar from "./SessionSidebar";
@@ -51,10 +60,19 @@ import ImageAttachmentStrip from "./ImageAttachmentStrip";
 import SpawnTaskModal from "./SpawnTaskModal";
 import type { UiMessage } from "./MessageList";
 
+import "./chat-google.css";
+
 /** localStorage key remembering the sidebar fold across restarts. */
 const RAIL_COLLAPSED_KEY = "mb.chat.rail-collapsed";
 
-/** 对话类提供方 → 显示名（与 API 设置一致）。 */
+/** 顶栏模式切换（Gemini 式分段控件）：chat=普通对话、resume=简历、slides=PPT。 */
+const CHAT_MODE_TABS: ReadonlyArray<{ id: ChatMode; label: string }> = [
+  { id: "chat", label: "对话" },
+  { id: "resume", label: "简历" },
+  { id: "slides", label: "PPT" },
+];
+
+/** 对话类提供方 → 显示名（目录加载失败时的兜底；正常由 provider_catalog 驱动）。 */
 const CHAT_PROVIDER_LABELS: Record<string, string> = {
   dashscope: "DashScope",
   deepseek: "DeepSeek",
@@ -88,12 +106,40 @@ interface ChatViewProps {
   onPendingConsumed: () => void;
 }
 
-/** Paper-plane glyph for the round send button. */
+/** Arrow-up glyph for the round send button (Gemini 式). */
 function SendIcon(): React.JSX.Element {
   return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+      <path d="M12 19V6" strokeLinecap="round" />
+      <path d="m6.5 11.5 5.5-5.5 5.5 5.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 圆环加号：输入框旁的上传 / 附件入口。 */
+function PlusIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Gemini 式四角星：模型选择药丸的前缀图标。 */
+function SparkleIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 3.5c.5 3.4 2.6 5.5 6 6-3.4.5-5.5 2.6-6 6-.5-3.4-2.6-5.5-6-6 3.4-.5 5.5-2.6 6-6z" />
+      <path d="M19 15.5c.25 1.7 1.3 2.75 3 3-1.7.25-2.75 1.3-3 3-.25-1.7-1.3-2.75-3-3 1.7-.25 2.75-1.3 3-3z" />
+    </svg>
+  );
+}
+
+/** 下拉 chevron（模型药丸 / 菜单）。 */
+function ChevronDownIcon(): React.JSX.Element {
+  return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M4.5 11.2 19.5 4.8c.5-.2 1 .3.8.8l-6.4 15c-.2.5-.9.5-1.1 0l-2.4-5.6-5.9-2.7c-.5-.2-.5-.9 0-1.1z" strokeLinejoin="round" />
-      <path d="m10.4 15 9.9-9.9" strokeLinecap="round" />
+      <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -119,18 +165,6 @@ function StopIcon(): React.JSX.Element {
   );
 }
 
-/** 回形针 glyph：输入框左侧的「添加图片」入口。 */
-function PaperclipIcon(): React.JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-      <path
-        d="M20 11.4 12.3 19a4.6 4.6 0 0 1-6.5-6.5l8.3-8.2a3.1 3.1 0 0 1 4.4 4.4l-8.2 8.2a1.6 1.6 0 0 1-2.3-2.3l7.5-7.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Element {
   // 对话工作模式（右上角分段选择器切换）：chat=普通对话、resume=简历制作、
@@ -152,6 +186,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     steps: { desc: string; status: string; note: string }[];
   } | null>(null);
   const [input, setInput] = useState("");
+  /** 控制台当前绑定的科研项目（提示条 + 本轮 system 上下文）。 */
+  const [researchProject, setResearchProject] = useState<ResearchProject | null>(null);
   const [busy, setBusy] = useState(false);
   // True between pressing 停止 and the turn actually finishing.
   const [stopping, setStopping] = useState(false);
@@ -169,6 +205,9 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const [chatProvider, setChatProvider] = useState<string | null>(null);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [providerOptions, setProviderOptions] = useState<ProviderStatus[]>([]);
+  // 目录驱动的对话提供方显示名（含编程套餐）；加载失败时回退静态表。
+  const [providerLabels, setProviderLabels] =
+    useState<Record<string, string>>(CHAT_PROVIDER_LABELS);
   // 技能：全量清单（菜单数据源）、"/" 菜单状态（query=过滤词 + 高亮下标）、
   // 已附加技能（发送时强制注入本轮，发送后清空）。
   const [allSkills, setAllSkills] = useState<SkillMeta[]>([]);
@@ -196,6 +235,24 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       cancelled = true;
     };
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void listProviderCatalog().then(
+      (entries) => {
+        if (cancelled) return;
+        const labels: Record<string, string> = {};
+        for (const entry of entries) {
+          if (entry.chat) labels[entry.id] = entry.label;
+        }
+        if (Object.keys(labels).length > 0) setProviderLabels(labels);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 点击选择器外部时收起菜单。
   const pickerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -214,6 +271,44 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const runToken = useRef(0);
   const localCounter = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // 科研控制台只负责项目状态；主聊天跟随“当前项目”，控制台切换后重挂即同步。
+  useEffect(() => {
+    let cancelled = false;
+    const sync = (): void => {
+      const id = getActiveResearchProjectId();
+      if (id === null) {
+        setResearchProject(null);
+        return;
+      }
+      void getResearchProject(id).then(
+        (detail) => {
+          if (!cancelled) setResearchProject(detail.project);
+        },
+        () => {
+          if (!cancelled) {
+            setResearchProject(null);
+            setActiveResearchProject(null);
+          }
+        },
+      );
+    };
+    sync();
+    const unsubscribe = subscribeResearchContext(sync);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  // 控制台“在主对话中讨论”带过来的一次性草稿：填入输入框，不自动发送。
+  useEffect(() => {
+    const prompt = takePendingResearchPrompt();
+    if (prompt !== null && prompt.trim() !== "") {
+      setInput(prompt);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, []);
   // MessageRow 是 memo 行，会缓存交互卡作答那次渲染的闭包：作答必须读最新
   // 的 send / busy，否则回合收尾的旧闭包（busy=true）会让点击静默失效。
   const sendRef = useRef<(text?: string) => Promise<void>>(async () => undefined);
@@ -268,6 +363,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       (rows) => {
         if (cancelled) return;
         setSessions(rows);
+        // 从科研控制台进入：强制新开草稿，不接续上次的无关会话。
+        if (takeResearchNewChatFlag()) return;
         // 点「对话」进入时自动落到最近的会话（列表首位）；但命令面板已
         // 指定目标会话时让位——pending effect 负责选中，避免竞态覆盖。
         if (pending?.kind === "open-session") return;
@@ -776,6 +873,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         chatProvider,
         attachedSkill?.folder ?? null,
         imageDataUrls,
+        getActiveResearchProjectId(),
       );
       // 技能是单次注入：随本轮发出后即清除（retry 不带技能）。
       setAttachedSkill(null);
@@ -820,14 +918,17 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     void runTurn(activeId, question);
   }
 
+  const modeIndex = Math.max(
+    0,
+    CHAT_MODE_TABS.findIndex((option) => option.id === mode),
+  );
+
   return (
     <div className={collapsed ? "chat-layout chat-layout--folded" : "chat-layout"}>
       <SessionSidebar
         sessions={visibleSessionRows(sessions, mode)}
         activeId={activeId}
         collapsed={collapsed}
-        mode={mode}
-        onSwitchMode={switchMode}
         onToggleCollapsed={() => setCollapsed((value) => !value)}
         onSelect={selectSession}
         onCreate={startDraft}
@@ -841,8 +942,49 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         }
       />
       <div className="chat-main">
-        {/* 顶栏：后台任务入口（独立任务不占用当前对话流）。 */}
+        {researchProject !== null && (
+          <div className="chat-research-bar" role="status">
+            <span>科研项目</span>
+            <b>{researchProject.title}</b>
+            <span>· {STAGE_LABELS[researchProject.currentStage] ?? researchProject.currentStage}</span>
+            <span className="spacer" />
+            <button type="button" className="button" onClick={() => navigate(RESEARCH_HASH)}>
+              打开控制台
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => {
+                setActiveResearchProject(null);
+                setResearchProject(null);
+              }}
+            >
+              解除关联
+            </button>
+          </div>
+        )}
+        {/* 顶栏：左 = 模式分段（Gemini 式），右 = 后台任务入口。 */}
         <div className="chat-topbar">
+          <div className="chat-mode" role="tablist" aria-label="对话模式">
+            <span
+              className="chat-mode__thumb"
+              style={{ transform: "translateX(" + modeIndex * 100 + "%)" }}
+              aria-hidden="true"
+            />
+            {CHAT_MODE_TABS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="tab"
+                aria-selected={mode === option.id}
+                className={mode === option.id ? "chat-mode__seg is-active" : "chat-mode__seg"}
+                onClick={() => switchMode(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <span className="chat-topbar__spacer" />
           <button
             type="button"
             className="chat-topbar__action"
@@ -852,7 +994,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             <span className="chat-topbar__icon" aria-hidden="true">
               <TaskIcon />
             </span>
-            后台任务
+            <span className="chat-topbar__action-label">后台任务</span>
           </button>
         </div>
         {/* key=mode：切换模式时消息区整棵重挂，触发 mode-in 过渡动画。 */}
@@ -1027,6 +1169,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
               void addImageFiles(files);
             }}
           />
+          <div className="composer__bottom">
           <button
             type="button"
             className="composer__attach"
@@ -1035,34 +1178,35 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             title={busy ? "生成中，暂不能添加图片" : "添加图片（支持选择 / 粘贴 / 拖拽）"}
             onClick={() => imageInputRef.current?.click()}
           >
-            <PaperclipIcon />
+            <PlusIcon />
           </button>
           <div className="provider-picker" ref={pickerRef}>
             <button
               type="button"
-              className="provider-icon"
+              className="provider-pill"
               disabled={busy}
-              aria-label="选择对话提供方"
+              aria-label="选择对话模型"
               title={
                 chatProvider === null
-                  ? "对话提供方：默认（跟随 API 设置）"
-                  : `对话提供方：${CHAT_PROVIDER_LABELS[chatProvider] ?? chatProvider}`
+                  ? "当前：默认模型（跟随模型配置）"
+                  : "当前：" + (providerLabels[chatProvider] ?? chatProvider)
               }
               onClick={() => {
                 setProviderMenuOpen((value) => !value);
-                // 每次展开都重拉：在 API 设置里新配的 key 无需重进页面即可出现。
+                // 每次展开都重拉：在模型配置里新配的 key 无需重进页面即可出现。
                 void listProviders().then(
                   (statuses) => setProviderOptions(statuses.filter((p) => p.hasKey)),
                   () => undefined,
                 );
               }}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                <path d="m12 3 9 5-9 5-9-5 9-5z" strokeLinejoin="round" />
-                <path d="m3 12.5 9 5 9-5" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="m3 17 9 5 9-5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              {chatProvider !== null && <span className="provider-icon__dot" aria-hidden="true" />}
+              <SparkleIcon />
+              <span className="provider-pill__label">
+                {chatProvider === null
+                  ? "默认模型"
+                  : (providerLabels[chatProvider] ?? chatProvider)}
+              </span>
+              <ChevronDownIcon />
             </button>
             {providerMenuOpen && (
               <div className="provider-menu" role="menu">
@@ -1082,7 +1226,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
                   默认（跟随 API 设置）
                 </button>
                 {providerOptions
-                  .filter((p) => p.provider in CHAT_PROVIDER_LABELS)
+                  .filter((p) => p.provider in providerLabels)
                   .map((p) => (
                     <button
                       key={p.provider}
@@ -1098,16 +1242,17 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
                         setProviderMenuOpen(false);
                       }}
                     >
-                      {CHAT_PROVIDER_LABELS[p.provider] ?? p.provider}
+                      {providerLabels[p.provider] ?? p.provider}
                       {p.isDefault ? " · 默认" : ""}
                     </button>
                   ))}
-                {providerOptions.filter((p) => p.provider in CHAT_PROVIDER_LABELS).length === 0 && (
+                {providerOptions.filter((p) => p.provider in providerLabels).length === 0 && (
                   <p className="provider-menu__empty">还没有已配置密钥的对话提供方</p>
                 )}
               </div>
             )}
           </div>
+          <span className="composer__spacer" aria-hidden="true" />
           {busy ? (
             <button
               type="button"
@@ -1143,6 +1288,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
               <SendIcon />
             </button>
           )}
+          </div>
         </div>
         </div>
       </div>

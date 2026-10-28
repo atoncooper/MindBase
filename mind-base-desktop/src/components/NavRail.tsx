@@ -16,6 +16,7 @@ import {
   MINDMAP_HASH,
   QUIZ_HASH,
   NOTES_HASH,
+  RESEARCH_HASH,
   RESUME_HASH,
   SETTINGS_API_HASH,
   SETTINGS_SYSTEM_HASH,
@@ -174,6 +175,17 @@ function MindMapIcon(): React.JSX.Element {
   );
 }
 
+/** Flask glyph for the research workspace. */
+function FlaskIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M9 3h6" />
+      <path d="M10 3v5.2L5.4 17a2.2 2.2 0 0 0 2 3.2h9.2a2.2 2.2 0 0 0 2-3.2L14 8.2V3" />
+      <path d="M7.3 14.5h9.4" />
+    </svg>
+  );
+}
+
 interface RailItem {
   id: string;
   label: string;
@@ -189,6 +201,7 @@ const MAIN_RAIL_ITEMS: ReadonlyArray<RailItem> = [
   { id: "resume", label: "简历", hash: RESUME_HASH, icon: ResumeIcon, active: (r) => r.view === "resume" },
   { id: "slides", label: "PPT", hash: SLIDES_HASH, icon: SlidesIcon, active: (r) => r.view === "slides" },
   { id: "notes", label: "笔记", hash: NOTES_HASH, icon: NoteIcon, active: (r) => r.view === "notes" },
+  { id: "research", label: "科研", hash: RESEARCH_HASH, icon: FlaskIcon, active: (r) => r.view === "research" },
   { id: "knowledge", label: "知识库", hash: KNOWLEDGE_HASH, icon: LibraryIcon, active: (r) => r.view === "knowledge" },
   { id: "mindmap", label: "导图", hash: MINDMAP_HASH, icon: MindMapIcon, active: (r) => r.view === "mindmap" || r.view === "mindmap-edit" },
   { id: "import", label: "文件入库", hash: IMPORT_HASH, icon: ImportIcon, active: (r) => r.view === "import" },

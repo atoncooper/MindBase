@@ -1,18 +1,22 @@
 mod agents;
+mod ai_providers;
 mod api_keys;
 mod asr;
 mod bilibili;
 mod chat;
 mod chunker;
 mod config;
+mod dataset;
 mod db;
 mod embeddings;
 mod ffmpeg;
 mod file_ingest;
 mod harness;
 mod ingest;
+mod literature;
 mod llm_chat;
 mod logging;
+mod manuscript;
 mod media_cache;
 mod mindmap;
 mod notes;
@@ -20,6 +24,7 @@ mod ocr_server;
 mod prompts;
 mod python_runtime;
 mod quiz;
+mod research;
 mod rerank;
 mod resume;
 mod skills;
@@ -147,6 +152,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             api_keys::list_api_keys,
+            api_keys::provider_catalog,
+            api_keys::list_provider_models,
             api_keys::save_provider_config,
             api_keys::clear_provider_key,
             api_keys::test_provider_config,
@@ -214,6 +221,26 @@ pub fn run() {
             quiz::quiz_set_save_answers,
             quiz::quiz_set_finish,
             quiz::quiz_set_delete,
+            research::research_projects_list,
+            research::research_project_create,
+            research::research_project_get,
+            research::research_project_update,
+            research::research_stage_update,
+            research::research_artifact_add,
+            research::research_events_list,
+            research::research_ask,
+            manuscript::manuscript_list,
+            manuscript::manuscript_save,
+            manuscript::manuscript_delete,
+            manuscript::export_docx,
+            literature::literature_list,
+            literature::literature_import,
+            literature::literature_verify,
+            literature::literature_delete,
+            literature::literature_export_bibtex,
+            dataset::dataset_list,
+            dataset::dataset_import,
+            dataset::analysis_run,
             resume::exports_list,
             mindmap::mindmap_create,
             mindmap::mindmap_list,
