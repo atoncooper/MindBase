@@ -6,43 +6,45 @@ data stays in local storage.
 
 ## Architecture
 
-The Rust shell (`src-tauri/src/`) mirrors the backend's `app/harness` + `app/services` layering,
-re-implemented for a single machine:
+The Rust shell (`src-tauri/src/`) is split into domain **packages** — one directory plus a
+`mod.rs` front door per package — mirroring the backend's service layering. The authoritative
+layout, dependency rules and splitting conventions live in
+[docs/desktop-rust-architecture.md](../docs/desktop-rust-architecture.md).
 
 ```
-React UI (src/)                     Rust commands (src-tauri/src/)
-┌──────────────────┐   Tauri IPC   ┌─────────────────────────────────────┐
-│ ChatView / Quiz  │ ────────────► │ chat.rs · quiz.rs · ingest.rs …     │
-│ NotesView / …    │ ◄── events ── │            │                        │
-└──────────────────┘               │            ▼                        │
-                                   │  harness/  AgentHarness             │
-                                   │  ├── orchestrator.rs  LLM 路由       │
-                                   │  ├── lifecycle.rs     熔断+会话锁+TTL │
-                                   │  ├── registry.rs      工具注册表      │
-                                   │  ├── runtime.rs       并发执行+指标   │
-                                   │  ├── scheduler.rs     队列(默认旁路)  │
-                                   │  └── tools.rs         本地工具实现    │
-                                   │            │                        │
-                                   │  agents.rs (chat/memory/note ReAct) │
-                                   │            ▼                        │
-                                   │  vectors.rs + db.rs (SQLite 向量库)  │
-                                   └─────────────────────────────────────┘
+React UI (src/)                     Rust packages (src-tauri/src/)
+┌──────────────────┐   Tauri IPC   ┌──────────────────────────────────────────┐
+│ ChatView / Quiz  │ ────────────► │ app/         shell · setup · tray · IPC  │
+│ NotesView / …    │ ◄── events ── │  ├ workspace/  notes·quiz·mindmap·…      │
+└──────────────────┘               │  ├ agent/      harness·chat·skills·tools │
+                                   │  ├ knowledge/  bilibili·ingest·vectors   │
+                                   │  ├ media/      asr·whisper·ocr·ffmpeg    │
+                                   │  ├ llm/        providers·client·embed    │
+                                   │  └ infra/      sqlite·config·logging     │
+                                   └──────────────────────────────────────────┘
 ```
 
-- **harness/** — five-piece port of the backend's AgentHarness: an LLM router with a 3 s timeout
-  that unconditionally falls back to `chat`, circuit breakers (3 failures / 30 s cooldown) plus
-  per-session locks and TTL cleanup, a registry-driven concurrent tool runtime with per-tool
-  metrics, and a per-agent bounded-queue scheduler that is scaffolding by default.
-- **agents.rs** — chat / memory / note / code / search descriptors sharing one generic ReAct
-  loop. Sub-agents are reached only through `delegate_to_agent` (memory retrieves past
-  conversation, note edits the notebook, code writes but never executes code, search queries
-  Context7 docs with web-crawl fallback — the only optional-network tools), depth-capped at
-  two levels with consecutive-failure short-circuit; their internal tool rounds stream to the
-  UI as `subStep` events rendered indented under the parent turn. The summary agent runs as a
-  standalone streaming command (`chat_summarize`) behind the sidebar 总结 button, with
-  save-as-note in the dialog.
+- **app/** — Tauri shell only: builder assembly, startup wiring, tray and the single IPC
+  registry (`app/commands.rs`). No business logic.
+- **agent/** — the local AgentHarness (orchestrator / lifecycle / registry / runtime /
+  scheduler / tools), agent descriptors sharing one generic ReAct loop, chat sessions,
+  editable prompt defaults, skill packs and the web-search tool. Sub-agents are reached only
+  through `delegate_to_agent` (memory / note / code / search), depth-capped at two levels.
+  The summary agent runs as a standalone streaming command (`chat_summarize`).
+- **knowledge/** — Bilibili acquisition (QR login, favorites, WBI-signed content), ingestion
+  (transcribe → rule-based chunking → embed → store), local document import, URL capture, and
+  the SQLite vector store with FTS hybrid retrieval.
+- **media/** — media runtimes: cloud DashScope ASR + realtime WebSocket, managed local
+  faster-whisper / OCR sidecars, ffmpeg resolution and the audio cache quota.
+- **llm/** — outbound model access: provider catalog, credentials and egress proxy, the
+  streaming chat client (OpenAI-compatible + Anthropic), embeddings and rerank.
+- **workspace/** — user-facing document domains: notes, quiz, mind map, research, manuscript,
+  literature, dataset, resume and slides.
+- **infra/** — SQLite (schema + migrations + data-directory relocation), config, file logging,
+  conversation artifacts on disk, embedded Python provisioning and the signed updater.
 - **Local data** — everything (documents, chunks, vectors, notes, revisions, sessions, summaries)
   lives in one SQLite database under the data directory; the vector store is brute-force cosine.
+
 
 ## Data directory
 
@@ -95,7 +97,7 @@ backend's production pipeline (`app/services/`):
 3. **搜索 / 对话** — the home view is a ChatGPT-style conversation workspace: a sidebar of
    sessions (create / rename / delete, auto-titled from the first message with an LLM and
    guarded so manual renames win) plus a streaming chat column. Each turn runs through the
-   local harness (`src-tauri/src/harness/`): an orchestrator picks the agent (only `chat` is
+   local harness (`src-tauri/src/agent/harness/`): an orchestrator picks the agent (only `chat` is
    routable today, matching production backend posture), a lifecycle layer gates it with
    per-agent circuit breakers and per-session locks, and a registry-driven ReAct loop lets the
    model call tools — `vector_search`, `list_documents`, `search_chat_history`,

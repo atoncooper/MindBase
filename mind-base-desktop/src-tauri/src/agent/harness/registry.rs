@@ -1,0 +1,194 @@
+//! Tool registry — the desktop counterpart of app/tools/{base,registry}.py.
+//!
+//! Every capability an agent can invoke registers one [`LocalTool`]: a wire
+//! spec (name / description / JSON-schema parameters) plus an `execute` that
+//! receives the per-turn [`ToolContext`]. The OpenAI `tools` array sent to
+//! the model is generated from registered specs — never hand-maintained.
+//!
+//! Mirrors the backend contract where a tool returns `{"content": str,
+//! **extras}`: extras ride out of [`ToolOutput`] as provenance hits or
+//! nested-agent steps.
+
+use serde_json::Value;
+
+use crate::knowledge::ingest::KnowledgeHit;
+
+/// Nested agent progress surfaced through `delegate_to_agent`.
+#[derive(Debug, Clone)]
+pub(crate) struct SubStep {
+    pub action: String,
+    pub query: String,
+    pub preview: String,
+}
+
+/// Normalized tool result: model-facing text plus structured extras.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ToolOutput {
+    pub content: String,
+    pub hits: Vec<KnowledgeHit>,
+    pub sub_steps: Vec<SubStep>,
+    /// Vision attachments (image data URLs) — carried onto the tool-result
+    /// message for vision-capable models (视觉模型读图).
+    pub images: Vec<String>,
+}
+
+impl ToolOutput {
+    pub(crate) fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Reentrant sub-agent runner installed by the top-level chat loop; the
+/// delegate tool calls it instead of reaching into agent modules directly.
+pub(crate) type DelegateFn =
+    dyn Fn(&str, &str) -> Result<(String, Vec<SubStep>), String> + Send + Sync + 'static;
+
+/// Per-turn resources every tool may touch.
+///
+/// Owned (clonable) rather than borrowed so every tool call can be dispatched
+/// onto its own thread with a hard timeout (see `harness::runtime`). `Db` is
+/// cheap to clone (internally `Arc`), and the two clients are shared behind
+/// `Arc`. Network-capable tools resolve their own locking windows (embed
+/// outside the lock, store inside).
+#[derive(Clone)]
+pub(crate) struct ToolContext {
+    pub db: crate::infra::db::Db,
+    /// Absent when no DashScope key is configured — embedding-backed tools
+    /// self-report unavailability instead of failing the whole turn.
+    pub embed_client: Option<std::sync::Arc<crate::llm::embeddings::EmbedClient>>,
+    /// Present when a conversational provider is configured — needed by tools
+    /// that themselves call an LLM (compressed-summary generation).
+    pub chat_client: Option<std::sync::Arc<crate::llm::client::ChatClient>>,
+    pub session_id: String,
+    /// Which agent's ReAct loop this context serves — scopes agent-owned
+    /// resources (load_prompt reads this agent's own prompt tree).
+    pub agent: crate::agent::agents::AgentKind,
+    /// Present only while the chat agent's ReAct loop is running.
+    pub delegate: Option<std::sync::Arc<DelegateFn>>,
+}
+
+/// Wire identity of one registered tool.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolSpec {
+    pub name: &'static str,
+    pub description: String,
+    pub parameters: Value,
+}
+
+/// Behavior half of a tool. `Send + Sync` so each call can run on its own
+/// thread (hard timeout in the runtime).
+pub(crate) trait LocalTool: Send + Sync {
+    fn spec(&self) -> &ToolSpec;
+    fn execute(&self, ctx: &ToolContext, arguments: &str) -> Result<ToolOutput, String>;
+}
+
+/// Registry keyed by tool name; late registration overwrites with a warning
+/// (mirrors backend registry.register). Tools live behind `Arc` so a call can
+/// be handed to a detached worker thread without borrowing the registry.
+#[derive(Default)]
+pub(crate) struct ToolRegistry {
+    tools: Vec<std::sync::Arc<dyn LocalTool>>,
+}
+
+impl ToolRegistry {
+    pub(crate) fn register(&mut self, tool: Box<dyn LocalTool>) {
+        let tool: std::sync::Arc<dyn LocalTool> = std::sync::Arc::from(tool);
+        let name = tool.spec().name;
+        if self
+            .tools
+            .iter()
+            .any(|existing| existing.spec().name == name)
+        {
+            eprintln!("[REGISTRY] tool `{name}` registered twice; overwriting");
+            self.tools.retain(|existing| existing.spec().name != name);
+        }
+        self.tools.push(tool);
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<std::sync::Arc<dyn LocalTool>> {
+        self.tools
+            .iter()
+            .find(|tool| tool.spec().name == name)
+            .cloned()
+    }
+
+    pub(crate) fn names(&self) -> Vec<&'static str> {
+        self.tools.iter().map(|tool| tool.spec().name).collect()
+    }
+
+    /// Full wire specs of every registered tool (name + description) — used
+    /// by the agent-status UI and the `harness_tools` command.
+    pub(crate) fn specs(&self) -> Vec<ToolSpec> {
+        self.tools.iter().map(|tool| tool.spec().clone()).collect()
+    }
+}
+
+/// Parse the required string argument `name` out of raw tool arguments.
+pub(crate) fn require_string_arg(arguments: &str, name: &str) -> Result<String, String> {
+    let value: Value =
+        serde_json::from_str(arguments).map_err(|err| format!("工具参数解析失败：{err}"))?;
+    let parsed = value
+        .get(name)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if parsed.is_empty() {
+        return Err(format!("工具参数缺少 {name}"));
+    }
+    Ok(parsed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    struct DummyTool {
+        spec: ToolSpec,
+    }
+    impl LocalTool for DummyTool {
+        fn spec(&self) -> &ToolSpec {
+            &self.spec
+        }
+        fn execute(&self, _ctx: &ToolContext, _arguments: &str) -> Result<ToolOutput, String> {
+            Ok(ToolOutput::text("ok"))
+        }
+    }
+
+    fn dummy(name: &'static str) -> DummyTool {
+        DummyTool {
+            spec: ToolSpec {
+                name,
+                description: format!("{name} 描述"),
+                parameters: json!({"type": "object", "properties": {}}),
+            },
+        }
+    }
+
+    #[test]
+    fn registration_overwrites_and_lists() {
+        let mut registry = ToolRegistry::default();
+        registry.register(Box::new(dummy("alpha")));
+        registry.register(Box::new(dummy("beta")));
+        assert_eq!(registry.names(), vec!["alpha", "beta"]);
+
+        // Same-name registration replaces rather than duplicates.
+        registry.register(Box::new(dummy("alpha")));
+        assert_eq!(registry.names(), vec!["beta", "alpha"]);
+        assert!(registry.get("alpha").is_some());
+        assert!(registry.get("missing").is_none());
+    }
+
+    #[test]
+    fn require_string_arg_trims_and_rejects_empty() {
+        assert_eq!(
+            require_string_arg(r#"{"query": " 词 "}"#, "query").unwrap(),
+            "词"
+        );
+        assert!(require_string_arg("{}", "query").is_err());
+        assert!(require_string_arg("broken", "query").is_err());
+    }
+}

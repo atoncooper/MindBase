@@ -12,6 +12,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ChatArtifact, ChatInteraction, ChatMode, ChatSource, TokenUsage } from "../../lib/chat";
 import { LinkifiedText } from "../../lib/linkify";
+import { CheckGlyph, CopyGlyph, PencilGlyph } from "../icons";
 import ArtifactList from "./ArtifactList";
 import InteractionCard from "./InteractionCard";
 import { MarkdownContent } from "./MarkdownContent";
@@ -305,13 +306,13 @@ const UserRow = memo(function UserRow({
             setEditing(true);
           }}
         >
-          ✎
+          <PencilGlyph />
         </button>
         <button
           type="button"
           className="icon-button"
-          aria-label="复制"
-          title="复制"
+          aria-label={copied ? "已复制" : "复制"}
+          title={copied ? "已复制" : "复制"}
           onClick={() => {
             void copyToClipboard(message.content).then((ok) => {
               if (!ok) return;
@@ -320,7 +321,7 @@ const UserRow = memo(function UserRow({
             });
           }}
         >
-          {copied ? "✓" : "⧉"}
+          {copied ? <CheckGlyph /> : <CopyGlyph />}
         </button>
       </div>
     </div>
