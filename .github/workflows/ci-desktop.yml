@@ -1,0 +1,73 @@
+name: Desktop CI
+
+# mind-base-desktop：PR / main 上的 Rust 与前端校验。
+# 之前桌面端只有 tag 触发的 desktop-release.yml，PR 阶段没有任何检查；
+# 本工作流补上「能编译 + 测试通过 + 前端能构建」三道闸门。
+#
+# 说明：
+# - Tauri 的 tauri.conf.json 把 frontendDist 指向 ../dist，且 bundle.externalBin
+#   声明了 ffmpeg/ffprobe sidecar（binaries/ 被 gitignore），因此先构建前端、
+#   再创建占位 sidecar，cargo check 才能通过（仅校验存在性，不执行）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mind-base-desktop/**"
+      - ".github/workflows/ci-desktop.yml"
+  pull_request:
+    paths:
+      - "mind-base-desktop/**"
+      - ".github/workflows/ci-desktop.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Rust + frontend
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mind-base-desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mind-base-desktop/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build frontend (required by Tauri's frontendDist)
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mind-base-desktop/src-tauri -> target
+
+      - name: Create placeholder sidecars (externalBin is gitignored)
+        shell: pwsh
+        working-directory: mind-base-desktop/src-tauri
+        run: |
+          New-Item -ItemType Directory -Force binaries | Out-Null
+          foreach ($name in @("ffmpeg", "ffprobe")) {
+            New-Item -ItemType File -Force "binaries/$name-x86_64-pc-windows-msvc.exe" | Out-Null
+          }
+
+      - name: Cargo check
+        working-directory: mind-base-desktop/src-tauri
+        run: cargo check --all-targets --locked
+
+      - name: Cargo test
+        working-directory: mind-base-desktop/src-tauri
+        run: cargo test --lib --locked
