@@ -3262,8 +3262,11 @@ body {
   animation: msg-in 0.32s cubic-bezier(0.21, 0.6, 0.35, 1) both;
 }
 
+/* User turn: bubble on top, hover actions (edit / copy) tucked under its
+   bottom-right corner — Gemini-style. */
 .msg-row--user {
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .msg-row--assistant {
@@ -3283,25 +3286,44 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* 用户消息 hover 操作条：编辑 / 复制，贴气泡右下，默认隐形。 */
+/* 用户消息 hover 操作条：编辑 / 复制，贴气泡右下角（Gemini 式）。操作条
+   高度常驻，显隐只做淡入 + 2px 上浮，不会把下面的消息顶走。 */
 .msg-user__actions {
   display: flex;
   gap: 2px;
   justify-content: flex-end;
   margin-top: 4px;
+  min-height: 28px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 
 .msg-row--user:hover .msg-user__actions,
 .msg-user__actions:focus-within {
   opacity: 1;
+  transform: none;
+  pointer-events: auto;
 }
 
 .msg-user__actions .icon-button {
-  width: 26px;
-  height: 26px;
-  font-size: 12px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--ink-2);
+}
+
+.msg-user__actions .icon-button:hover:not(:disabled) {
+  color: var(--ink);
+  background-color: var(--wash);
+}
+
+.msg-user__actions .icon-button svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* 用户消息行内编辑（Gemini 式「编辑并重新发送」）。 */
