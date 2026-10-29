@@ -1,285 +1,31 @@
-mod agents;
-mod ai_providers;
-mod api_keys;
-mod asr;
-mod bilibili;
-mod chat;
-mod chunker;
-mod config;
-mod dataset;
-mod db;
-mod embeddings;
-mod ffmpeg;
-mod file_ingest;
-mod harness;
-mod ingest;
-mod literature;
-mod llm_chat;
-mod logging;
-mod manuscript;
-mod media_cache;
-mod mindmap;
-mod notes;
-mod ocr_server;
-mod prompts;
-mod python_runtime;
-mod quiz;
-mod research;
-mod rerank;
-mod resume;
-mod skills;
-mod slides;
-mod store;
-mod updater;
-mod vectors;
-mod wbi;
-mod web_capture;
-mod web_search;
-mod whisper_server;
+//! MindBase desktop — Tauri application library.
+//!
+//! Package layout (each directory is one package with a `mod.rs` front door):
+//!
+//! | package | responsibility |
+//! |---------|----------------|
+//! | `app` | Tauri shell: builder, startup wiring, tray, IPC registration |
+//! | `agent` | local AgentHarness, agent kinds, chat sessions, skills, tools |
+//! | `knowledge` | Bilibili acquisition, ingestion, chunking, vector search |
+//! | `media` | ASR (cloud + local whisper), OCR, ffmpeg, media cache |
+//! | `llm` | provider catalog, credentials, chat client, embeddings, rerank |
+//! | `workspace` | notes, quiz, mind map, research, manuscript, literature, dataset |
+//! | `infra` | SQLite, config, logging, embedded Python, updater |
+//!
+//! Cross-package calls only ever go "downhill": `app` → `workspace`/`agent` →
+//! `knowledge`/`media` → `llm` → `infra`, so a package can be read — and later
+//! extracted into its own crate — without pulling in the UI.
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+mod agent;
+mod app;
+mod infra;
+mod knowledge;
+mod llm;
+mod media;
+mod workspace;
 
-/// Show / un-minimize / focus the main window (tray click & global hotkey).
-fn reveal_main(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
-
+/// Entry point used by `main.rs` (and the mobile entry point).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        // Required state for resolving bundled sidecar binaries (ffmpeg).
-        .plugin(tauri_plugin_shell::init())
-        // Native folder picker behind the data-directory relocation UI.
-        .plugin(tauri_plugin_dialog::init())
-        // Signed seamless updates (latest.json + minisign); the commands in
-        // updater.rs drive the plugin with the app's own proxy routing.
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        // System-wide Ctrl+K: reveal the window and open the command palette
-        // even when the app is not focused. The frontend listens for the
-        // `palette-open` event and toggles its panel accordingly.
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["CommandOrControl+K"])
-                .expect("failed to register global shortcut Ctrl+K")
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        reveal_main(app);
-                        let _ = app.emit("palette-open", ());
-                    }
-                })
-                .build(),
-        )
-        .setup(|app| {
-            // Open the SQLite database under the active data dir (pointer
-            // file may redirect it) and share it as managed state. Fail
-            // fast: without the data layer the app has no usable feature
-            // set.
-            let db = db::init(app.handle())?;
-            // Initialise the file logger under the active data dir so ASR and
-            // pipeline failures can be inspected on disk, and seed the
-            // editable agent-prompt defaults (<data>/prompts/**.md).
-            if let Ok(dir) = db.data_dir.lock() {
-                logging::init(&dir);
-                prompts::seed_defaults(&dir);
-            }
-            // Cache the ffmpeg binary for vision-attachment downscaling
-            // (resolved with the user's override from the stored config).
-            if let Ok(conn) = db.conn.lock() {
-                let override_path = config::load(&conn)
-                    .ok()
-                    .and_then(|cfg| cfg.ffmpeg_path_override);
-                drop(conn);
-                ffmpeg::cache_ffmpeg_path(app.handle(), override_path.as_deref());
-            }
-            // Seed the process-wide egress-proxy snapshot from the stored
-            // config so outbound requests route correctly from the first use.
-            if let Ok(conn) = db.conn.lock() {
-                api_keys::refresh_proxy_setting(&conn);
-            }
-            app.manage(db);
-            // Parked signed update (checked → awaiting user confirmation).
-            app.manage(updater::PendingUpdate::default());
-            logging::info("main", "MindBase desktop started");
-
-            // Local ASR mode: warm the server up at startup (installs deps
-            // and downloads the model on first use). Runs off the startup
-            // path; ingestion re-checks and retries when it actually runs.
-            whisper_server::startup_spawn(app.handle());
-
-            // System tray: closing the window hides to tray (see
-            // on_window_event); the tray is the way back and the only exit.
-            let show = MenuItem::with_id(app, "tray-show", "显示 MindBase", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "tray-quit", "退出 MindBase", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show, &quit])?;
-            TrayIconBuilder::with_id("main-tray")
-                .icon(app.default_window_icon().expect("app icon missing").clone())
-                .tooltip("MindBase")
-                .menu(&tray_menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "tray-show" => reveal_main(app),
-                    "tray-quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click {
-                        button: tauri::tray::MouseButton::Left,
-                        button_state: tauri::tray::MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        reveal_main(tray.app_handle());
-                    }
-                })
-                .build(app)?;
-            Ok(())
-        })
-        // Closing the window hides it to the tray instead of exiting — the
-        // app keeps running in the background (global hotkey + tray remain
-        // live). Real exit only via the tray menu's 退出 MindBase.
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
-        .invoke_handler(tauri::generate_handler![
-            api_keys::list_api_keys,
-            api_keys::provider_catalog,
-            api_keys::list_provider_models,
-            api_keys::save_provider_config,
-            api_keys::clear_provider_key,
-            api_keys::test_provider_config,
-            api_keys::test_proxy,
-            config::get_config,
-            config::set_config,
-            db::get_data_dir,
-            db::set_data_dir,
-            db::reset_data_dir,
-            ffmpeg::ffmpeg_status,
-            updater::check_update,
-            updater::download_update,
-            updater::run_update_installer,
-            updater::updater_check,
-            updater::updater_install,
-            vectors::get_vector_stats,
-            vectors::upsert_doc_chunks,
-            vectors::search_vectors,
-            vectors::delete_doc_vectors,
-            bilibili::bili_session_status,
-            bilibili::bili_logout,
-            bilibili::login::bili_qr_generate,
-            bilibili::login::bili_qr_poll,
-            bilibili::login::bili_session_verify,
-            bilibili::favorites::bili_list_folders,
-            bilibili::favorites::bili_list_folder_videos,
-            bilibili::favorites::bili_video_pages,
-            whisper_server::local_asr_model_status,
-            whisper_server::local_asr_model_download,
-            ocr_server::local_ocr_model_status,
-            ocr_server::local_ocr_model_download,
-            ingest::ingest_video,
-            ingest::delete_document,
-            ingest::list_documents,
-            ingest::search_knowledge,
-            file_ingest::scan_import_paths,
-            file_ingest::ingest_files,
-            web_capture::capture_urls,
-            chat::chat_sessions_list,
-            chat::chat_session_create,
-            chat::chat_session_rename,
-            chat::chat_session_delete,
-            chat::chat_history,
-            chat::chat_ask,
-            chat::stop_chat,
-            notes::notes_list,
-            notes::note_create,
-            notes::note_get,
-            notes::note_update,
-            notes::note_save,
-            notes::note_rename,
-            notes::note_delete,
-            notes::note_toggle_pin,
-            notes::revisions_list,
-            notes::revision_get,
-            notes::revision_restore,
-            notes::anchor_add,
-            notes::anchor_delete,
-            quiz::quiz_source_chunks,
-            quiz::quiz_generate,
-            quiz::quiz_grade,
-            quiz::quiz_set_create,
-            quiz::quiz_set_list,
-            quiz::quiz_set_get,
-            quiz::quiz_set_save_answers,
-            quiz::quiz_set_finish,
-            quiz::quiz_set_delete,
-            research::research_projects_list,
-            research::research_project_create,
-            research::research_project_get,
-            research::research_project_update,
-            research::research_stage_update,
-            research::research_artifact_add,
-            research::research_events_list,
-            research::research_ask,
-            manuscript::manuscript_list,
-            manuscript::manuscript_save,
-            manuscript::manuscript_delete,
-            manuscript::export_docx,
-            literature::literature_list,
-            literature::literature_import,
-            literature::literature_verify,
-            literature::literature_delete,
-            literature::literature_export_bibtex,
-            dataset::dataset_list,
-            dataset::dataset_import,
-            dataset::analysis_run,
-            resume::exports_list,
-            mindmap::mindmap_create,
-            mindmap::mindmap_list,
-            mindmap::mindmap_get,
-            mindmap::mindmap_save,
-            mindmap::mindmap_rename,
-            mindmap::mindmap_delete,
-            mindmap::mindmap_export_save,
-            mindmap::mindmap_icon_pack_save,
-            mindmap::mindmap_icon_pack_list,
-            mindmap::mindmap_icon_pack_delete,
-            mindmap::mindmap_snapshot_create,
-            mindmap::mindmap_snapshot_list,
-            mindmap::mindmap_snapshot_restore,
-            mindmap::mindmap_template_save,
-            mindmap::mindmap_template_list,
-            mindmap::mindmap_template_delete,
-            harness::harness_health,
-            harness::harness_tools,
-            chat::chat_summarize,
-            chat::chat_summary_get,
-            skills::skills_list,
-            skills::skills_set_enabled,
-            skills::skills_open_dir,
-            skills::skills_install_from_path,
-            skills::skills_install_zip,
-            skills::skills_store_search,
-            skills::skills_store_install,
-            skills::skills_uninstall,
-            api_keys::set_default_provider,
-            harness::tasks::agent_task_spawn,
-            harness::tasks::agent_task_inject,
-            harness::tasks::agent_task_stop,
-            harness::tasks::agent_task_get,
-            harness::tasks::agent_task_list,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-    // Stop the local ASR server we spawned (no-op if the user ran one
-    // manually or none was started).
-    whisper_server::shutdown();
+    app::run();
 }
