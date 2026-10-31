@@ -74,6 +74,8 @@ pub(crate) struct EmbedClient {
     base_url: String,
     api_key: String,
     model: String,
+    /// Stable id for OpenCode's routing header (only sent to opencode.ai).
+    session_id: String,
 }
 
 impl EmbedClient {
@@ -86,6 +88,7 @@ impl EmbedClient {
             base_url,
             api_key,
             model,
+            session_id: format!("mindbase-embed-{}", crate::infra::db::local_id()),
         })
     }
 
@@ -109,10 +112,20 @@ impl EmbedClient {
         let attempt = |agent: &ureq::Agent| -> Result<String, String> {
             let mut payload = Self::build_payload(texts);
             payload["model"] = serde_json::Value::String(self.model.clone());
-            let response = agent
+            let mut request = agent
                 .post(&url)
                 .set("Authorization", &format!("Bearer {}", self.api_key))
-                .set("Content-Type", "application/json")
+                .set("Content-Type", "application/json");
+            // OpenCode (zen/go) requires a routing session header on every request.
+            if self.base_url.contains("opencode.ai") {
+                request = request
+                    .set("x-opencode-session", &self.session_id)
+                    .set(
+                        "User-Agent",
+                        &format!("MindBase-Desktop/{}", env!("CARGO_PKG_VERSION")),
+                    );
+            }
+            let response = request
                 .send_json(payload)
                 .map_err(|err| match err {
                     ureq::Error::Status(code, response) => {

@@ -231,11 +231,21 @@ impl ChatClient {
                     turn.apply_chunk(&chunk);
                     if turn.content.len() > before {
                         emitted = true;
-                        on_delta(&turn.content[before..]);
+                        // DSML 标记不给用户看：出现后停止推送原始标记。
+                        if !turn.content.contains("DSML") {
+                            on_delta(&turn.content[before..]);
+                        }
                     }
                 }
             }
             turn.tool_calls = turn.take_tool_calls();
+            if turn.tool_calls.is_empty() {
+                if let Some((cleaned, calls)) = super::dsml::parse(&turn.content) {
+                    turn.content = cleaned;
+                    turn.tool_calls = calls;
+                    turn.finish_reason = "tool_calls".to_string();
+                }
+            }
             if !turn.interrupted && turn.content.is_empty() && turn.tool_calls.is_empty() {
                 // Clean end with no content and no calls is authoritative.
                 return Err(("对话模型返回了空内容".to_string(), false));

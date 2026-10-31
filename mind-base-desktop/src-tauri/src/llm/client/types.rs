@@ -133,12 +133,19 @@ pub(crate) struct TokenUsage {
     pub output_tokens: u64,
     #[serde(default)]
     pub total_tokens: u64,
+    /// Provider-reported cache-hit tokens (DeepSeek prompt_cache_hit_tokens /
+    /// OpenAI prompt_tokens_details.cached_tokens / Anthropic cache_read_input_tokens).
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 impl TokenUsage {
     /// True when every counter is zero (i.e. no measurable usage).
     pub(crate) fn is_empty(&self) -> bool {
-        self.input_tokens == 0 && self.output_tokens == 0 && self.total_tokens == 0
+        self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.total_tokens == 0
+            && self.cached_tokens == 0
     }
 
     /// Accumulate another completion's counters into this one (saturating).
@@ -146,6 +153,7 @@ impl TokenUsage {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+        self.cached_tokens = self.cached_tokens.saturating_add(other.cached_tokens);
     }
 }
 
@@ -215,6 +223,9 @@ pub(crate) struct ChatClient {
     pub(super) model: String,
     pub(super) provider_id: String,
     pub(super) protocol: ApiProtocol,
+    /// Stable per-conversation id. OpenCode requires it in `x-opencode-session`
+    /// (routing + prompt caching); other providers ignore it.
+    pub(super) session_id: String,
 }
 
 impl ChatClient {
@@ -242,6 +253,7 @@ impl ChatClient {
             model,
             provider_id: def.id.to_string(),
             protocol: def.protocol,
+            session_id: generated_session_id(),
         })
     }
 
@@ -261,9 +273,18 @@ impl ChatClient {
         &self.provider_id
     }
 
+    /// Override the routing session id (chat passes its conversation id).
+    pub(crate) fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        let session_id = session_id.into();
+        if !session_id.trim().is_empty() {
+            self.session_id = session_id;
+        }
+        self
+    }
+
     /// Attach protocol-specific auth headers to one request.
     pub(super) fn authorize(&self, request: ureq::Request) -> ureq::Request {
-        match self.protocol {
+        let request = match self.protocol {
             ApiProtocol::OpenAiCompletions => {
                 request.set("Authorization", &format!("Bearer {}", self.api_key))
             }
@@ -272,7 +293,8 @@ impl ChatClient {
                 .set("anthropic-version", "2023-06-01")
                 // 兼容网关（MiniMax / Kimi Coding 等）读取 Bearer；官方忽略。
                 .set("Authorization", &format!("Bearer {}", self.api_key)),
-        }
+        };
+        apply_opencode_headers(request, &self.provider_id, &self.session_id)
     }
 
     /// Request body for both protocols (stream / non-stream, optional tools).
@@ -392,5 +414,92 @@ pub(super) fn truncate(text: &str, max_chars: usize) -> String {
     } else {
         let cut: String = text.chars().take(max_chars).collect();
         format!("{cut}…")
+    }
+}
+
+/// OpenCode routing session id: chat passes its conversation id; other call
+/// sites (summary / quiz / research) use a per-client generated one so the
+/// header is never missing (OpenCode Go rejects requests without it).
+fn generated_session_id() -> String {
+    format!("mindbase-{}", crate::infra::db::local_id())
+}
+
+fn opencode_header_pairs(provider_id: &str, session_id: &str) -> Vec<(&'static str, String)> {
+    if !provider_id.starts_with("opencode") {
+        return Vec::new();
+    }
+    vec![
+        // OpenCode Go: stable per-conversation id for routing + prompt caching.
+        ("x-opencode-session", session_id.to_string()),
+        // Identify the client (their abuse policy prefers a product UA over SDK defaults).
+        (
+            "User-Agent",
+            format!("MindBase-Desktop/{}", env!("CARGO_PKG_VERSION")),
+        ),
+    ]
+}
+
+fn apply_opencode_headers(
+    request: ureq::Request,
+    provider_id: &str,
+    session_id: &str,
+) -> ureq::Request {
+    opencode_header_pairs(provider_id, session_id)
+        .into_iter()
+        .fold(request, |request, (name, value)| request.set(name, &value))
+}
+
+#[cfg(test)]
+mod opencode_header_tests {
+    use super::*;
+
+    fn client(provider_id: &str) -> ChatClient {
+        ChatClient {
+            endpoint: "https://example.invalid/v1/chat/completions".to_string(),
+            api_key: "test-key".to_string(),
+            model: "test-model".to_string(),
+            provider_id: provider_id.to_string(),
+            protocol: ApiProtocol::OpenAiCompletions,
+            session_id: generated_session_id(),
+        }
+    }
+
+    #[test]
+    fn opencode_clients_get_a_stable_session_header() {
+        for provider in [
+            "opencode",
+            "opencode-claude",
+            "opencode-go",
+            "opencode-go-claude",
+        ] {
+            let client = client(provider).with_session("chat-session-123");
+            assert!(client.session_id == "chat-session-123", "{provider}");
+            assert!(client.provider_id.starts_with("opencode"));
+        }
+        // Default id is non-empty even without an explicit conversation id.
+        assert!(client("opencode-go").session_id.starts_with("mindbase-"));
+        // Non-OpenCode providers do not take the header path.
+        assert!(!client("deepseek").provider_id.starts_with("opencode"));
+    }
+
+    #[test]
+    fn opencode_header_pairs_include_session_and_user_agent() {
+        let pairs = opencode_header_pairs("opencode-go", "chat-session-123");
+        assert!(pairs
+            .iter()
+            .any(|(name, value)| *name == "x-opencode-session" && value == "chat-session-123"));
+        let user_agent = pairs
+            .iter()
+            .find(|(name, _)| *name == "User-Agent")
+            .map(|(_, value)| value.clone())
+            .expect("user agent");
+        assert!(user_agent.starts_with("MindBase-Desktop/"));
+        assert!(opencode_header_pairs("deepseek", "x").is_empty());
+    }
+
+    #[test]
+    fn with_session_ignores_blank_ids() {
+        let client = client("opencode-go").with_session("   ");
+        assert!(client.session_id.starts_with("mindbase-"));
     }
 }

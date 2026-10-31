@@ -140,3 +140,52 @@ pub(super) fn record_event_conn(
         params![project_id, now_secs(), actor, kind, payload_json],
     );
 }
+
+/// 阶段状态流转（命令与 agent 工具共用）：只允许一个 active 阶段。
+pub(super) fn update_stage_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    stage: &str,
+    status: &str,
+    gate_json: Option<&str>,
+    now: i64,
+) -> Result<(), String> {
+    if !super::STAGES.contains(&stage) {
+        return Err(format!("未知阶段：{stage}"));
+    }
+    if !super::ALLOWED_STATUS.contains(&status) {
+        return Err(format!("未知阶段状态：{status}"));
+    }
+    if get_project_conn(conn, project_id)?.is_none() {
+        return Err(format!("研究项目不存在：{project_id}"));
+    }
+    let entered_at = if status == "active" { Some(now) } else { None };
+    let approved_at = if status == "approved" || status == "frozen" {
+        Some(now)
+    } else {
+        None
+    };
+    conn.execute(
+        "UPDATE research_stages SET status = ?3, \
+             entered_at = COALESCE(?4, entered_at), \
+             approved_at = COALESCE(?5, approved_at), \
+             gate_json = COALESCE(?6, gate_json) \
+         WHERE project_id = ?1 AND stage = ?2",
+        rusqlite::params![project_id, stage, status, entered_at, approved_at, gate_json],
+    )
+    .map_err(|err| format!("failed to update research stage: {err}"))?;
+    if status == "active" {
+        conn.execute(
+            "UPDATE research_stages SET status = 'submitted' WHERE project_id = ?1 AND stage <> ?2 AND status = 'active'",
+            rusqlite::params![project_id, stage],
+        )
+        .map_err(|err| format!("failed to pause previous stage: {err}"))?;
+        conn.execute(
+            "UPDATE research_projects SET current_stage = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![project_id, stage, now],
+        )
+        .map_err(|err| format!("failed to update current stage: {err}"))?;
+    }
+    record_event_conn(conn, project_id, "agent", "stage.updated", "{}");
+    Ok(())
+}

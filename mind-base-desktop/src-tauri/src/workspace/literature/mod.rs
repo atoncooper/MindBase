@@ -26,6 +26,7 @@ mod bibtex;
 mod commands;
 mod csl;
 mod crossref;
+mod pdf;
 mod store;
 mod types;
 mod util;
@@ -36,8 +37,8 @@ mod util;
 pub use types::{LiteratureImportResult, LiteratureRef};
 
 pub(crate) use commands::{
-    literature_delete, literature_export_bibtex, literature_import, literature_list,
-    literature_verify,
+    literature_delete, literature_download_pdf, literature_export_bibtex, literature_import,
+    literature_list, literature_verify,
 };
 
 // `#[tauri::command]` emits hidden `__cmd__*` / `__tauri_command_name_*` macros next to each
@@ -45,8 +46,58 @@ pub(crate) use commands::{
 // have to be re-exported alongside the functions they belong to.
 #[doc(hidden)]
 pub(crate) use commands::{
-    __cmd__literature_delete, __cmd__literature_export_bibtex, __cmd__literature_import,
-    __cmd__literature_list, __cmd__literature_verify, __tauri_command_name_literature_delete,
+    __cmd__literature_delete, __cmd__literature_download_pdf, __cmd__literature_export_bibtex,
+    __cmd__literature_import, __cmd__literature_list, __cmd__literature_verify, __tauri_command_name_literature_delete,
     __tauri_command_name_literature_export_bibtex, __tauri_command_name_literature_import,
-    __tauri_command_name_literature_list, __tauri_command_name_literature_verify,
+    __tauri_command_name_literature_download_pdf, __tauri_command_name_literature_list,
+    __tauri_command_name_literature_verify,
 };
+
+// ---------------------------------------------------------------------------
+// Agent / 工具层可用的包内封装（不经过 Tauri State）
+// ---------------------------------------------------------------------------
+
+pub(crate) use crossref::SearchHit;
+pub(crate) use pdf::LiteraturePdf;
+pub(crate) use pdf::download_conn as download_pdf_conn;
+
+pub(crate) fn list_refs(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<Vec<LiteratureRef>, String> {
+    if !store::project_exists(conn, project_id)? {
+        return Err(format!("研究项目不存在：{project_id}"));
+    }
+    store::list_refs_conn(conn, project_id)
+}
+
+pub(crate) fn import_text(
+    conn: &mut rusqlite::Connection,
+    project_id: &str,
+    format: &str,
+    content: &str,
+) -> Result<LiteratureImportResult, String> {
+    commands::import_text_conn(conn, project_id, format, content)
+}
+
+pub(crate) fn export_bibtex(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<String, String> {
+    if !store::project_exists(conn, project_id)? {
+        return Err(format!("研究项目不存在：{project_id}"));
+    }
+    bibtex::export_bibtex_conn(conn, project_id)
+}
+
+pub(crate) fn search(query: &str, rows: usize) -> Result<Vec<SearchHit>, String> {
+    crossref::search_blocking(query, rows)
+}
+
+pub(crate) fn verify_ref(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    ref_id: &str,
+) -> Result<LiteratureRef, String> {
+    commands::verify_ref_conn(conn, project_id, ref_id)
+}

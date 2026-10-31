@@ -41,12 +41,15 @@ pub async fn chat_ask(
     images: Option<Vec<String>>,
     // 当前科研项目：非空时把项目简报作为本轮 system 上下文注入。
     research_project_id: Option<String>,
+    // 重新生成：替换最后一条助手消息，且不重复写入用户问题。
+    regenerate: Option<bool>,
     on_event: Channel<ChatEvent>,
 ) -> Result<ChatTurnResult, String> {
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("请输入问题".to_string());
     }
+    let regenerate = regenerate.unwrap_or(false);
     // 图片在碰任何数据库 / 网络之前先校验：数量、MIME 前缀、base64 与体积。
     let user_images = validate_user_images(images.as_deref().unwrap_or(&[]))?;
 
@@ -59,7 +62,11 @@ pub async fn chat_ask(
             .map_err(|err| format!("failed to acquire database lock: {err}"))?;
         let session =
             get_session_conn(&conn, &session_id)?.ok_or_else(|| "会话不存在".to_string())?;
-        let history = recent_history_conn(&conn, &session_id, HISTORY_WINDOW)?;
+        let mut history = recent_history_conn(&conn, &session_id, HISTORY_WINDOW)?;
+        // 重新生成：把上一条助手回答从上下文里移除，本轮由新回答替代。
+        if regenerate && history.last().map(|msg| msg.role == "assistant").unwrap_or(false) {
+            history.pop();
+        }
         // 向量化客户端可选：只配了对话密钥（如仅 OpenRouter）时跳过检索，
         // vector_search 工具会自行给出友好提示。
         let embed_client = embed_client_from_conn_opt(&conn)?;
@@ -68,6 +75,8 @@ pub async fn chat_ask(
             _ => chat_client_from_conn(&conn)?,
         }
         .ok_or_else(|| "未配置任何对话模型，请先在「API 设置」中填写提供方密钥".to_string())?;
+        // OpenCode Go 要求每个会话稳定的 x-opencode-session（路由 + prompt 缓存）。
+        let chat_client = chat_client.with_session(&session_id);
         // 模型能力闸门：名字启发式判定不支持视觉时直接拒绝本轮，避免把
         // 图片塞给纯文本模型后拿到难懂的 400；提示用户去 API 设置换模型。
         if !user_images.is_empty()
@@ -105,6 +114,8 @@ pub async fn chat_ask(
         )
     };
 
+    super::live::start(&session_id, &question);
+
     let assistant_msg_id = db::local_id();
     // 本轮起始时间（UNIX 秒）：收尾时用它筛选本轮新产出的 exports 文件。
     let turn_started = now_secs();
@@ -119,15 +130,28 @@ pub async fn chat_ask(
         let tx = conn
             .unchecked_transaction()
             .map_err(|err| format!("failed to begin transaction: {err}"))?;
-        insert_message_conn(
-            &tx,
-            &db::local_id(),
-            &session_id,
-            "user",
-            &question,
-            "completed",
-            "",
-        )?;
+        if regenerate {
+            // 替换最后一条助手消息：删旧回复，不重复写 user（问题已在历史里）。
+            tx.execute(
+                "DELETE FROM chat_messages WHERE msg_id = (
+                     SELECT msg_id FROM chat_messages
+                     WHERE chat_session_id = ?1 AND role = 'assistant'
+                     ORDER BY created_at DESC, rowid DESC LIMIT 1
+                 )",
+                rusqlite::params![session_id],
+            )
+            .map_err(|err| format!("failed to replace previous answer: {err}"))?;
+        } else {
+            insert_message_conn(
+                &tx,
+                &db::local_id(),
+                &session_id,
+                "user",
+                &question,
+                "completed",
+                "",
+            )?;
+        }
         insert_message_conn(
             &tx,
             &assistant_msg_id,
@@ -205,7 +229,12 @@ pub async fn chat_ask(
 
 {brief}
 
-                 用户正在该科研项目的控制台里发起对话。回答时结合上述项目事实（阶段、产物、文献、数据、决策）给出下一步建议；                 未提供的数字、文献或结果不要编造，需要时提示用户回控制台补齐。"
+                 用户正在该科研项目的控制台里发起对话。回答纪律：
+                 - 只引用项目里**已登记**的文献（academic_literature action=list）、数据集/实验、产物；没有就写「未导入/待补」，不要引用无关的知识库素材（B站收藏、课程文档等）；
+                 - 本项目问题优先用学术工具（academic_literature / academic_project / academic_manuscript / academic_evidence）与 web_search；vector_search 只在用户明确问及知识库内容时使用；
+                 - 需要修改项目/稿件/证据时直接调用工具完成，不要只给建议；
+                 - 只有「阶段建议/决策」才调用 academic_project(action=save_advice) 存入控制台；文献导入、数据、稿件等操作不要写成建议；
+                 - 未提供的数字、文献或结果不要编造。"
             ),
         ));
     }
@@ -227,6 +256,7 @@ pub async fn chat_ask(
     // The file store (L1 transcript) needs the raw question after the
     // closure below has moved `question`.
     let question_for_store = question.clone();
+    let live_session = session_id.clone();
     let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<
         crate::agent::harness::ReactOutcome,
@@ -272,17 +302,36 @@ pub async fn chat_ask(
                     "委托已短路:{agent_name} 在本次对话中已连续失败 {failures} 次，不再委托。请直接基于已有信息回答。"
                 ));
             }
-            let kind = match agent_name {
-                "memory" => AgentKind::Memory,
-                "note" => AgentKind::Note,
-                "code" => AgentKind::Code,
-                "search" => AgentKind::Search,
-                "academic" => AgentKind::Academic,
-                other => return Err(format!("不可委托的目标：{other}")),
+            let builtin_kind = match agent_name {
+                "memory" => Some(AgentKind::Memory),
+                "note" => Some(AgentKind::Note),
+                "code" => Some(AgentKind::Code),
+                "search" => Some(AgentKind::Search),
+                "academic" => Some(AgentKind::Academic),
+                "research" => Some(AgentKind::Research),
+                _ => None,
             };
+            // 未命中内置 agent 时解析主 agent 自建的自定义 agent（DB 持久化）。
+            let custom_agent = if builtin_kind.is_none() {
+                find_custom_agent(&bridge_handle, agent_name)
+            } else {
+                None
+            };
+            if builtin_kind.is_none() && custom_agent.is_none() {
+                return Err(format!(
+                    "不可委托的目标：{agent_name}（内置 agent 或先用 create_agent 创建自定义 agent）"
+                ));
+            }
             // Forward each child tool round to the UI as it happens so the
             // user sees sub-agent progress while delegation is in flight.
             let mut on_child_step = |step_no: u32, action: &str, child_query: &str| {
+                super::live::set_sub_step(
+                    &bridge_session,
+                    step_no,
+                    agent_name,
+                    action,
+                    child_query,
+                );
                 emit(
                     &ChatEvent::SubStep {
                         step: step_no,
@@ -293,16 +342,43 @@ pub async fn chat_ask(
                     &bridge_events,
                 );
             };
-            match crate::agent::harness::run_sub_agent(
-                kind,
-                &bridge_handle,
-                &bridge_client,
-                bridge_embed.as_ref(),
-                &bridge_session,
-                query,
-                &mut on_child_step,
-            ) {
+            let started = std::time::Instant::now();
+            let delegated = if let Some(kind) = builtin_kind {
+                crate::agent::harness::run_sub_agent(
+                    kind,
+                    &bridge_handle,
+                    &bridge_client,
+                    bridge_embed.as_ref(),
+                    &bridge_session,
+                    query,
+                    &mut on_child_step,
+                )
+            } else {
+                let agent = custom_agent.expect("custom agent checked above");
+                crate::agent::harness::run_custom_agent(
+                    &bridge_handle,
+                    &bridge_client,
+                    bridge_embed.as_ref(),
+                    &bridge_session,
+                    &agent.name,
+                    &agent.system_prompt,
+                    query,
+                    &mut on_child_step,
+                )
+            };
+            match delegated {
                 Ok((answer, _sub_steps, child_usage)) => {
+                    let steps_count = _sub_steps.len() as u32;
+                    emit(
+                        &ChatEvent::AgentRun {
+                            agent: agent_name.to_string(),
+                            ok: true,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            steps: steps_count,
+                            usage: child_usage,
+                        },
+                        &bridge_events,
+                    );
                     if let Ok(mut sink) = sub_usage_sink.lock() {
                         crate::agent::harness::add_usage(&mut sink, child_usage);
                     }
@@ -322,7 +398,19 @@ pub async fn chat_ask(
                     );
                     Ok((answer, _sub_steps))
                 }
-                Err(error) => Err(error),
+                Err(error) => {
+                    emit(
+                        &ChatEvent::AgentRun {
+                            agent: agent_name.to_string(),
+                            ok: false,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            steps: 0,
+                            usage: None,
+                        },
+                        &bridge_events,
+                    );
+                    Err(error)
+                }
             }
         });
 
@@ -347,7 +435,9 @@ pub async fn chat_ask(
 
         // plan 状态变化 → 推送计划清单事件（前端实时渲染计划面板）。
         let plan_channel = event_channel.clone();
+        let plan_session = session_id.clone();
         let on_plan = move |snapshot: &crate::agent::harness::PlanSnapshot| {
+            super::live::set_plan(&plan_session, snapshot);
             emit(
                 &ChatEvent::Plan {
                     version: snapshot.version,
@@ -370,6 +460,7 @@ pub async fn chat_ask(
 
         let mut callbacks = crate::agent::harness::ReactCallbacks {
             on_step: &mut |step_no, action, query| {
+                super::live::set_step(&session_id, step_no, action, query);
                 emit(
                     &ChatEvent::Step {
                         step: step_no,
@@ -379,7 +470,10 @@ pub async fn chat_ask(
                     &event_channel,
                 );
             },
-            on_delta: &mut |delta| batcher.push(delta),
+            on_delta: &mut |delta| {
+                super::live::append_answer(&session_id, delta);
+                batcher.push(delta);
+            },
             should_stop: Some(&should_stop),
             on_plan: Some(&on_plan),
             on_interact: Some(&on_interact),
@@ -517,6 +611,7 @@ pub async fn chat_ask(
                 },
                 &on_event,
             );
+            super::live::clear(&live_session);
             Ok(ChatTurnResult {
                 msg_id: assistant_msg_id,
                 answer,
@@ -524,6 +619,7 @@ pub async fn chat_ask(
             })
         }
         Err(error) => {
+            super::live::clear(&live_session);
             let db = app.state::<Db>();
             let conn = db
                 .conn
@@ -572,4 +668,17 @@ mod tests {
         };
         assert_eq!(resolved, "（已向你提问，请在上方卡片作答）");
     }
+}
+
+/// Look up a user-created custom agent by name (DB-backed).
+fn find_custom_agent(
+    handle: &tauri::AppHandle,
+    name: &str,
+) -> Option<crate::agent::custom_agents::CustomAgent> {
+    use tauri::Manager as _;
+    let db = handle.state::<Db>();
+    let conn = db.conn.lock().ok()?;
+    crate::agent::custom_agents::get_by_name(&conn, name)
+        .ok()
+        .flatten()
 }

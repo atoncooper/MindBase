@@ -20,13 +20,20 @@ import {
   CHAT_MODE_STORAGE_KEY,
   deleteSession,
   getHistory,
+  getLiveChatState,
   listSessions,
   MODE_SUFFIX,
   normalizeChatMode,
   renameSession,
   stopChat,
 } from "../../lib/chat";
-import type { ChatEvent, ChatMode, ChatSessionRow } from "../../lib/chat";
+import type {
+  ChatEvent,
+  ChatMessageRow,
+  ChatMode,
+  ChatSessionRow,
+  LiveChatState,
+} from "../../lib/chat";
 import {
   CHAT_IMAGE_MAX_COUNT,
   CHAT_IMAGE_MAX_TOTAL_BYTES,
@@ -44,6 +51,7 @@ import { RESEARCH_HASH, navigate } from "../../lib/router";
 import { STAGE_LABELS, getResearchProject, type ResearchProject } from "../../lib/research";
 import {
   getActiveResearchProjectId,
+  notifyResearchDataChanged,
   setActiveResearchProject,
   subscribeResearchContext,
   takePendingResearchPrompt,
@@ -51,9 +59,12 @@ import {
 } from "../../lib/research-context";
 import { listProviderCatalog, listProviders, type ProviderStatus } from "../../lib/api-keys";
 import { listSkills, type SkillMeta } from "../../lib/skills";
+import { listAgentTasks } from "../../lib/harness";
 import { toErrorMessage } from "../../lib/updater";
 import SessionSidebar from "./SessionSidebar";
 import MessageList, { parseClarify } from "./MessageList";
+import ChatUsageBar from "./ChatUsageBar";
+import AgentActivityPanel from "./AgentActivityPanel";
 import SummaryModal from "./SummaryModal";
 import SkillMenu from "./SkillMenu";
 import ImageAttachmentStrip from "./ImageAttachmentStrip";
@@ -64,6 +75,8 @@ import "./chat-google.css";
 
 /** localStorage key remembering the sidebar fold across restarts. */
 const RAIL_COLLAPSED_KEY = "mb.chat.rail-collapsed";
+/** 记住最后打开的会话：切视图再回来仍落在同一个会话（便于恢复进行中的回合）。 */
+const ACTIVE_SESSION_KEY = "mb.chat.active-session";
 
 /** 顶栏模式切换（Gemini 式分段控件）：chat=普通对话、resume=简历、slides=PPT。 */
 const CHAT_MODE_TABS: ReadonlyArray<{ id: ChatMode; label: string }> = [
@@ -166,6 +179,63 @@ function StopIcon(): React.JSX.Element {
 }
 
 
+/** 后端历史行 → 前端消息（历史与实时恢复共用同一映射）。 */
+function historyToUiMessages(rows: ChatMessageRow[]): UiMessage[] {
+  return rows.map((row) => ({
+    id: row.msgId,
+    role: row.role,
+    content: row.content,
+    status:
+      row.status === "failed"
+        ? "failed"
+        : row.status === "pending"
+          ? "pending"
+          : "completed",
+    sources: Array.isArray(row.sources) ? row.sources : [],
+    error: row.error,
+    steps: [],
+    usage: row.usage ?? null,
+  }));
+}
+
+/** 后端 live 快照 → 本地待完成消息（切回会话时恢复流式现场）。 */
+function applyLiveSnapshot(
+  state: LiveChatState,
+  setters: {
+    setMessages: React.Dispatch<React.SetStateAction<UiMessage[]>>;
+  },
+): void {
+  setters.setMessages((prev) => {
+    const next = [...prev];
+    const steps = [
+      ...state.steps.map((step) => describeStep(step.action, step.query)),
+      ...state.subSteps.map(
+        (step) => `子agent步骤（${step.agent}）· ${describeStep(step.action, step.query)}`,
+      ),
+    ];
+    const last = next[next.length - 1];
+    if (last !== undefined && last.role === "assistant") {
+      next[next.length - 1] = {
+        ...last,
+        status: "pending",
+        content: state.answer,
+        steps,
+      };
+    } else {
+      next.push({
+        id: `live-${state.sessionId}`,
+        role: "assistant",
+        content: state.answer,
+        status: "pending",
+        sources: [],
+        error: "",
+        steps,
+      });
+    }
+    return next;
+  });
+}
+
 function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Element {
   // 对话工作模式（右上角分段选择器切换）：chat=普通对话、resume=简历制作、
   // slides=PPT 制作。模式决定会话列表的过滤（按标题后缀）与新会话的命名；
@@ -201,6 +271,14 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const [summaryTarget, setSummaryTarget] = useState<{ id: string; title: string } | null>(null);
   // 后台任务弹窗（agent + 任务描述 → agent_task_spawn）。
   const [spawnOpen, setSpawnOpen] = useState(false);
+  // Agent 活动面板（当前对话子代理 + 收藏夹 + 后台任务）。
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  // 对话内正在运行的子代理（agent 名 → 最近动作）；主助手不显示身份。
+  const [agentRuns, setAgentRuns] = useState<Record<string, { action: string; step: number }>>({});
+  // 本挂载实例正在流式的会话（用于判断是否需要从后端恢复现场）。
+  const streamingSessionRef = useRef<string | null>(null);
+  // 运行中的后台任务数量：只有 >0 时才显示 Agent 活动入口。
+  const [bgActive, setBgActive] = useState(0);
   // 对话提供方选择：null = 跟随 API 设置的默认；已配置密钥的对话类提供方才可选。
   const [chatProvider, setChatProvider] = useState<string | null>(null);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
@@ -370,8 +448,11 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         if (pending?.kind === "open-session") return;
         const expected = jumpMode !== null ? normalizeChatMode(jumpMode) : mode;
         const visible = visibleSessionRows(rows, expected);
-        // 落到当前模式下最近的会话（草稿态留给各模式自己的空态引导）。
-        if (expected === "chat" && rows.length > 0) selectSession(rows[0].chatSessionId);
+        // 优先回到上次停留的会话（切视图/重启后便于恢复进行中的回合），否则落最近会话。
+        const stored = window.localStorage.getItem(ACTIVE_SESSION_KEY);
+        const storedRow = stored === null ? undefined : visible.find((row) => row.chatSessionId === stored);
+        if (storedRow !== undefined) selectSession(storedRow.chatSessionId);
+        else if (expected === "chat" && rows.length > 0) selectSession(rows[0].chatSessionId);
         else if (expected !== "chat" && visible.length > 0) selectSession(visible[0].chatSessionId);
       },
       (err) => {
@@ -578,6 +659,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
   function selectSession(sessionId: string): void {
     if (sessionId === activeId) return;
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
     const token = ++runToken.current;
     setActiveId(sessionId);
     setMessages([]);
@@ -585,19 +667,20 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       (rows) => {
         // 过期响应丢弃：快速连续切换会话时，慢的旧历史不得覆盖新会话。
         if (runToken.current !== token) return;
-        setMessages(
-          rows.map((row) => ({
-            id: row.msgId,
-            role: row.role,
-            content: row.content,
-            status: row.status === "failed" ? "failed" : "completed",
-            sources: Array.isArray(row.sources) ? row.sources : [],
-            error: row.error,
-            steps: [],
-            // 历史重载与实时表现一致：后端落库的 usage JSON 一并回溯。
-            usage: row.usage ?? null,
-          })),
-        );
+        setMessages(historyToUiMessages(rows));
+        // 历史里若有 pending 助手消息，说明回合仍在后端运行：立刻恢复现场。
+        if (rows.some((row) => row.status === "pending")) {
+          void getLiveChatState(sessionId).then(
+            (state) => {
+              if (state === null || runToken.current !== token) return;
+              setBusy(true);
+              setLiveAgent(state.liveAgent ?? null);
+              setPlanView(state.plan ?? null);
+              applyLiveSnapshot(state, { setMessages });
+            },
+            () => undefined,
+          );
+        }
       },
       (err) => {
         if (runToken.current === token) setLoadError(toErrorMessage(err));
@@ -605,9 +688,53 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     );
   }
 
+  // 切走 / 切会话后恢复进行中的回合：轮询后端 live 快照，完成后回填历史。
+  useEffect(() => {
+    if (activeId === null) return;
+    let cancelled = false;
+    let hydrated = false;
+    const tick = (): void => {
+      if (cancelled) return;
+      // 当前会话正由本组件的流式通道更新，无需轮询。
+      if (streamingSessionRef.current === activeId) return;
+      void getLiveChatState(activeId).then(
+        (state) => {
+          if (cancelled) return;
+          if (state !== null) {
+            hydrated = true;
+            setBusy(true);
+            setStopping(false);
+            setLiveAgent(state.liveAgent ?? null);
+            setPlanView(state.plan ?? null);
+            applyLiveSnapshot(state, { setMessages });
+          } else if (hydrated) {
+            hydrated = false;
+            setBusy(false);
+            setLiveAgent(null);
+            setPlanView(null);
+            void getHistory(activeId).then(
+              (rows) => {
+                if (!cancelled) setMessages(historyToUiMessages(rows));
+              },
+              () => undefined,
+            );
+          }
+        },
+        () => undefined,
+      );
+    };
+    tick();
+    const timer = window.setInterval(tick, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeId]);
+
   /** Draft state: an unnamed conversation created on the first message. */
   function startDraft(): void {
     runToken.current += 1;
+    window.localStorage.removeItem(ACTIVE_SESSION_KEY);
     setActiveId(null);
     setMessages([]);
   }
@@ -662,10 +789,35 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     }
   }
 
+  // 后台任务轮询：仅用于「是否有 agent 在跑」的入口显隐（5s 一次，轻量）。
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = (): void => {
+      void listAgentTasks().then(
+        (rows) => {
+          if (cancelled) return;
+          setBgActive(
+            rows.filter((task) => task.status === "running" || task.status === "pending").length,
+          );
+        },
+        () => undefined,
+      );
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   function applyEvent(event: ChatEvent): void {
     switch (event.type) {
       case "step":
-        setLiveAgent({ name: "chat 主力", action: describeStep(event.action, event.query), step: event.step });
+        // 学术工具改动了项目数据 → 控制台/文献页下一次可见时刷新。
+        if (event.action.startsWith("academic_")) notifyResearchDataChanged();
+        // 主 agent 对用户透明：只显示进度，不暴露身份。
+        setLiveAgent({ name: "", action: describeStep(event.action, event.query), step: event.step });
         setMessages((prev) => {
           if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
           const next = [...prev];
@@ -681,6 +833,10 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         setPlanView({ version: event.version, steps: event.steps });
         break;
       case "subStep":
+        setAgentRuns((prev) => ({
+          ...prev,
+          [event.agent]: { action: describeStep(event.action, event.query), step: event.step },
+        }));
         setLiveAgent({
           name: `${event.agent}（子代理）`,
           action: describeStep(event.action, event.query),
@@ -697,6 +853,32 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
               `子agent步骤（${event.agent}）· ${describeStep(event.action, event.query)}`,
             ],
           };
+          return next;
+        });
+        break;
+      case "agentRun":
+        setMessages((prev) => {
+          if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
+          const next = [...prev];
+          const last = next[next.length - 1];
+          next[next.length - 1] = {
+            ...last,
+            agentRuns: [
+              ...(last.agentRuns ?? []),
+              {
+                agent: event.agent,
+                ok: event.ok,
+                durationMs: event.durationMs,
+                steps: event.steps,
+                usage: event.usage ?? null,
+              },
+            ],
+          };
+          return next;
+        });
+        setAgentRuns((prev) => {
+          const next = { ...prev };
+          delete next[event.agent];
           return next;
         });
         break;
@@ -775,11 +957,13 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         });
         interruptRequestedRef.current = false;
         setLiveAgent(null);
+        setAgentRuns({});
         setPlanView(null);
         break;
       case "error":
         patchLastAssistant({ status: "failed", error: event.message });
         setLiveAgent(null);
+        setAgentRuns({});
         setPlanView(null);
         break;
     }
@@ -796,7 +980,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
     setInput("");
     localCounter.current += 1;
-    setLiveAgent({ name: "chat 主力", action: "思考中…", step: 0 });
+    setLiveAgent({ name: "", action: "思考中…", step: 0 });
     setPlanView(null);
 
     // Resolve or create the target conversation first.
@@ -849,6 +1033,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     targetId: string,
     question: string,
     imageDataUrls: string[] = [],
+    regenerate = false,
   ): Promise<boolean> {
     if (busy) return false;
     localCounter.current += 1;
@@ -862,8 +1047,13 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     setStopping(false);
 
     const token = ++runToken.current;
+    streamingSessionRef.current = targetId;
     let succeeded = false;
     try {
+      // 科研项目上下文只在「对话」模式注入：简历 / PPT 是独立生成流程，
+      // 不能继承科研控制台绑定的项目简报，否则产出的简历 / PPT 会被科研阶段、
+      // 文献与数据带偏（这正是"做 PPT 却像在做科研"的根因）。
+      const researchProjectId = mode === "chat" ? getActiveResearchProjectId() : null;
       await chatAsk(
         targetId,
         question,
@@ -873,7 +1063,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         chatProvider,
         attachedSkill?.folder ?? null,
         imageDataUrls,
-        getActiveResearchProjectId(),
+        researchProjectId,
+        regenerate,
       );
       // 技能是单次注入：随本轮发出后即清除（retry 不带技能）。
       setAttachedSkill(null);
@@ -883,12 +1074,28 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         patchLastAssistant({ status: "failed", error: toErrorMessage(err) });
       }
     } finally {
+      streamingSessionRef.current = null;
       if (runToken.current === token) setBusy(false);
       // Re-sort the sidebar so the active conversation floats to the top.
       void listSessions().then((rows) => setSessions(rows), () => undefined);
     }
     // 会话已切走（token 失效）时不算成功：不能清掉用户在新会话里暂存的附件。
     return succeeded && runToken.current === token;
+  }
+
+  /** 重新生成最后一条助手回答：本地移除旧回复，后端替换落库记录。 */
+  function regenerate(messageId: string): void {
+    if (busy || activeId === null) return;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 1) return;
+    const previous = messages[index - 1];
+    if (previous.role !== "user") return;
+    // 只允许最后一条助手消息（后端按「最新助手消息」替换）。
+    if (messages.slice(index + 1).some((message) => message.role === "assistant")) return;
+    const question = previous.content.trim();
+    if (question === "") return;
+    setMessages((prev) => prev.slice(0, index));
+    void runTurn(activeId, question, [], true);
   }
 
   /** 重试失败的回复：沿用其上方的用户消息，移除失败气泡后重新生成。 */
@@ -901,7 +1108,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     const question = previous.content.trim();
     if (question === "") return;
     setMessages((prev) => prev.slice(0, index));
-    void runTurn(activeId, question);
+    void runTurn(activeId, question, [], true);
   }
 
   /**
@@ -942,7 +1149,8 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
         }
       />
       <div className="chat-main">
-        {researchProject !== null && (
+        {/* 科研项目提示条只在「对话」模式出现；简历 / PPT 模式与科研无关。 */}
+        {researchProject !== null && mode === "chat" && (
           <div className="chat-research-bar" role="status">
             <span>科研项目</span>
             <b>{researchProject.title}</b>
@@ -985,6 +1193,29 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             ))}
           </div>
           <span className="chat-topbar__spacer" />
+          {(Object.keys(agentRuns).length > 0 || bgActive > 0) && (
+            <div className="agent-activity">
+              <button
+                type="button"
+                className={agentPanelOpen ? "agent-activity__trigger is-open" : "agent-activity__trigger"}
+                title="查看正在运行的 agent 与后台任务"
+                aria-expanded={agentPanelOpen}
+                onClick={() => setAgentPanelOpen((value) => !value)}
+              >
+                <span className="agent-activity__dot" aria-hidden="true" />
+                <span className="agent-activity__label">
+                  {Object.keys(agentRuns).length + bgActive} 个 agent 运行中
+                </span>
+              </button>
+              <AgentActivityPanel
+                open={agentPanelOpen}
+                onClose={() => setAgentPanelOpen(false)}
+                running={agentRuns}
+                sessionId={activeId}
+                onSpawn={() => setSpawnOpen(true)}
+              />
+            </div>
+          )}
           <button
             type="button"
             className="chat-topbar__action"
@@ -1007,6 +1238,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           planView={planView}
           onSuggestion={(text) => setInput(text)}
           onRetry={retry}
+          onRegenerate={regenerate}
           onEditResend={editResend}
           onAnswerInteraction={answerInteraction}
         />
@@ -1290,6 +1522,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           )}
           </div>
         </div>
+        <ChatUsageBar messages={messages} busy={busy} />
         </div>
       </div>
       {summaryTarget !== null && (

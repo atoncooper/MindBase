@@ -234,6 +234,21 @@ export function deleteLiterature(projectId: string, refId: string): Promise<void
 }
 
 /** 导出项目全部文献为 BibTeX 全文（不落盘；空库返回空字符串）。 */
+/** 文献 PDF 下载结果：本地路径 / 在线地址（非开放获取时）。 */
+export interface LiteraturePdfDownload {
+  path: string | null;
+  url: string;
+  message: string;
+}
+
+/** 下载文献 PDF；拿不到 PDF（订阅/登录页）时返回在线地址。 */
+export function downloadLiteraturePdf(
+  projectId: string,
+  refId: string,
+): Promise<LiteraturePdfDownload> {
+  return invoke<LiteraturePdfDownload>("literature_download_pdf", { projectId, refId });
+}
+
 export function exportLiteratureBibtex(projectId: string): Promise<string> {
   return invoke<string>("literature_export_bibtex", { projectId });
 }
@@ -383,6 +398,18 @@ export function askResearch(
   history?: ResearchChatTurn[],
 ): Promise<string> {
   return invoke<string>("research_ask", { projectId, question, history: history ?? null });
+}
+
+/** 控制台展示的最新 AI 阶段建议（Rust 侧 guidance_notes 最新一条）。 */
+export interface ResearchAdvice {
+  question: string;
+  notes: string;
+  createdAt: number;
+}
+
+/** 读取最新 AI 建议（控制台刷新时回填，避免每次都是静态文案）。 */
+export function getLatestResearchAdvice(projectId: string): Promise<ResearchAdvice | null> {
+  return invoke<ResearchAdvice | null>("research_advice_latest", { projectId });
 }
 
 /** 每个阶段的「下一步该做什么」提示（展示用静态文案，不参与推理）。 */

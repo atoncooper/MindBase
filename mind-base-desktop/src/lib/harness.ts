@@ -6,6 +6,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { TokenUsage } from "./chat";
+
 /** Shape of the Rust `harness_health` command output. */
 export interface HarnessHealth {
   runtime: {
@@ -41,6 +43,8 @@ export interface AgentTaskView {
   maxSteps: number;
   deadlineSecs: number;
   maxToolCalls: number;
+  /** 该后台任务自己的 token 用量（None = 未计量）。 */
+  usage?: TokenUsage | null;
 }
 
 export interface PlanStepView {

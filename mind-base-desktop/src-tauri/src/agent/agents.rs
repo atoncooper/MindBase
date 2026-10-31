@@ -95,6 +95,25 @@ impl AgentKind {
                 "read_file",
                 "write_file",
                 "list_dir",
+                "run_command",
+                "git",
+                "gh",
+                "run_sandboxed",
+                "automation_start",
+                "automation_status",
+                "automation_log_search",
+                "automation_log_read",
+                "automation_kill",
+                "automation_retry",
+                "automation_due",
+                "automation_list",
+                "usage_stats",
+                "create_agent",
+                "list_agents",
+                "academic_literature",
+                "academic_project",
+                "academic_manuscript",
+                "academic_evidence",
             ],
             // Memory binds everything (backend behavior) minus delegation.
             AgentKind::Memory => &[
@@ -110,6 +129,7 @@ impl AgentKind {
                 "search_content",
                 "memory_write",
                 "memory_search",
+                "usage_stats",
             ],
             AgentKind::Note => &[
                 "save_note",
@@ -134,6 +154,11 @@ impl AgentKind {
             ],
             AgentKind::Search => &["web_search", "search_docs", "web_crawl"],
             AgentKind::Academic => &[
+                "web_search",
+                "academic_literature",
+                "academic_project",
+                "academic_manuscript",
+                "academic_evidence",
                 "vector_search",
                 "search_chat_history",
                 "read_file",
@@ -143,11 +168,14 @@ impl AgentKind {
                 "memory_search",
                 "memory_write",
                 "get_session_findings",
+                "delegate_to_agent",
                 "plan",
             ],
             // 科研 agent 默认不写长期记忆（未发表内容保密），工具层收紧。
             AgentKind::Research => &[
-                "vector_search",
+                "web_search",
+                "academic_literature",
+                "academic_project",
                 "search_chat_history",
                 "read_file",
                 "write_file",
@@ -155,6 +183,7 @@ impl AgentKind {
                 "load_prompt",
                 "memory_search",
                 "get_session_findings",
+                "delegate_to_agent",
                 "plan",
             ],
         }
@@ -393,7 +422,7 @@ mod tests {
         assert!(AgentKind::Academic.tools().contains(&"write_file"));
         assert!(AgentKind::Academic.tools().contains(&"load_prompt"));
         assert!(AgentKind::Academic.tools().contains(&"plan"));
-        assert!(!AgentKind::Academic.tools().contains(&"delegate_to_agent"));
+        assert!(AgentKind::Academic.tools().contains(&"delegate_to_agent"));
     }
 
     #[test]

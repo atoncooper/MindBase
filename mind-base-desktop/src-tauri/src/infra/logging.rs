@@ -18,6 +18,10 @@ use std::sync::{Mutex, OnceLock};
 /// Log levels, ordered by severity.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Level {
+    /// 预留级别：需要更细的诊断时调用 `log_line(Level::Debug, ..)`。
+    /// 当前没有调用点（因此触发 dead_code 提示），显式豁免而不是删掉级别，
+    /// 以保持与 INFO/WARN/ERROR 对称的日志级别表。
+    #[allow(dead_code)]
     Debug,
     Info,
     Warn,

@@ -71,6 +71,8 @@ struct TaskEntry {
     plan: Arc<Mutex<Option<crate::agent::harness::PlanSnapshot>>>,
     started_at: Instant,
     budget: TaskBudget,
+    /// Token usage reported by the task's own ReAct run (None = unmetered).
+    usage: Option<crate::llm::client::TokenUsage>,
 }
 
 static TASKS: OnceLock<Mutex<HashMap<String, TaskEntry>>> = OnceLock::new();
@@ -100,6 +102,8 @@ pub struct TaskView {
     pub max_steps: usize,
     pub deadline_secs: u64,
     pub max_tool_calls: u32,
+    /// Token usage reported by the task's own ReAct run.
+    pub usage: Option<crate::llm::client::TokenUsage>,
 }
 
 fn finalize(
@@ -108,6 +112,7 @@ fn finalize(
     result: Option<String>,
     error: Option<String>,
     steps_done: u32,
+    usage: Option<crate::llm::client::TokenUsage>,
 ) {
     let mut registry = registry().lock().expect("task registry poisoned");
     if let Some(entry) = registry.get_mut(task_id) {
@@ -115,6 +120,7 @@ fn finalize(
         entry.result = result;
         entry.error = error;
         entry.steps_done = steps_done;
+        entry.usage = usage;
     }
 }
 
@@ -152,6 +158,7 @@ pub(crate) fn spawn_task(
         plan: Arc::new(Mutex::new(None)),
         started_at: Instant::now(),
         budget,
+        usage: None,
     };
     registry()
         .lock()
@@ -270,6 +277,7 @@ fn run_task(
     let steps_done = tool_counter.load(Ordering::Relaxed);
     match outcome {
         Ok(result) => {
+            let usage = result.usage;
             let answer = if result.answer.trim().is_empty() {
                 "（任务被中断，无完整输出）".to_string()
             } else {
@@ -312,7 +320,7 @@ fn run_task(
                     );
                 }
             }
-            finalize(&task_id, status, Some(answer), None, steps_done);
+            finalize(&task_id, status, Some(answer), None, steps_done, usage);
         }
         Err(error) => {
             finalize(
@@ -321,6 +329,7 @@ fn run_task(
                 None,
                 Some(error.clone()),
                 steps_done,
+                None,
             );
             let db = handle.state::<Db>();
             let lock = db.data_dir.lock();
@@ -395,6 +404,7 @@ fn view_map(entry: &TaskEntry, task_id: &str) -> TaskView {
         max_steps: entry.budget.max_steps,
         deadline_secs: entry.budget.deadline_secs,
         max_tool_calls: entry.budget.max_tool_calls,
+        usage: entry.usage,
     }
 }
 

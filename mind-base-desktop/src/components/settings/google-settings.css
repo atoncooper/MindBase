@@ -598,6 +598,56 @@
   color: var(--gs-text-3);
 }
 
+/* 边界保护：长 provider / 模型 / key 不撑破行，窄窗下保持单行省略。 */
+.settings-scope .ledger-row__head {
+  min-width: 0;
+}
+
+.settings-scope .ledger-row__name,
+.settings-scope .ledger-row__group {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-scope .ledger-row__state {
+  min-width: 0;
+}
+
+.settings-scope .ledger-row__model {
+  min-width: 0;
+  max-width: min(220px, 34vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-scope .ledger-row__mask {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-scope .ledger-row__panel-inner {
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.settings-scope .cfg-input {
+  min-width: 0;
+}
+
+.settings-scope .card-hint {
+  overflow-wrap: anywhere;
+}
+
+/* wrap 行内长 URL / 提示文本，避免把卡片撑出边界。 */
+.settings-scope .hint-text {
+  overflow-wrap: anywhere;
+}
+
 .settings-scope .ledger-row__name {
   font-size: 13.5px;
   font-weight: 500;

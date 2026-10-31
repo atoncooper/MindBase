@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use tauri::State;
 
 use crate::infra::db::{self, Db};
@@ -10,13 +10,13 @@ use crate::infra::db::{self, Db};
 use super::briefing::{build_briefing, stage_prompt_name};
 use super::store::{
     detail_conn, get_project_conn, list_artifacts_conn, list_projects_conn, list_stages_conn,
-    record_event_conn,
+    record_event_conn, update_stage_conn,
 };
 use super::{
-    ChatTurnInput, ProjectCreateInput, ProjectDetail, ProjectUpdateInput, ResearchEvent,
-    ResearchProject,
+    ChatTurnInput, ProjectCreateInput, ProjectDetail, ProjectUpdateInput, ResearchAdvice,
+    ResearchEvent, ResearchProject,
 };
-use super::{now_secs, ALLOWED_STATUS, STAGES};
+use super::{now_secs, STAGES};
 
 #[tauri::command]
 pub fn research_projects_list(db: State<'_, Db>) -> Result<Vec<ResearchProject>, String> {
@@ -185,49 +185,19 @@ pub fn research_stage_update(
     status: String,
     gate_json: Option<String>,
 ) -> Result<ProjectDetail, String> {
-    if !STAGES.contains(&stage.as_str()) {
-        return Err(format!("未知阶段：{stage}"));
-    }
-    if !ALLOWED_STATUS.contains(&status.as_str()) {
-        return Err(format!("未知阶段状态：{status}"));
-    }
     let conn = db
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    if get_project_conn(&conn, &project_id)?.is_none() {
-        return Err(format!("研究项目不存在：{project_id}"));
-    }
     let now = now_secs();
-    let entered_at = if status == "active" { Some(now) } else { None };
-    let approved_at = if status == "approved" || status == "frozen" {
-        Some(now)
-    } else {
-        None
-    };
-    conn.execute(
-        "UPDATE research_stages SET status = ?3, \
-             entered_at = COALESCE(?4, entered_at), \
-             approved_at = COALESCE(?5, approved_at), \
-             gate_json = COALESCE(?6, gate_json) \
-         WHERE project_id = ?1 AND stage = ?2",
-        params![project_id, stage, status, entered_at, approved_at, gate_json],
-    )
-    .map_err(|err| format!("failed to update research stage: {err}"))?;
-    if status == "active" {
-        // 只允许一个“进行中”阶段：切到新阶段时，旧的进行中降为待审核。
-        conn.execute(
-            "UPDATE research_stages SET status = 'submitted' WHERE project_id = ?1 AND stage <> ?2 AND status = 'active'",
-            params![project_id, stage],
-        )
-        .map_err(|err| format!("failed to pause previous stage: {err}"))?;
-        conn.execute(
-            "UPDATE research_projects SET current_stage = ?2, updated_at = ?3 WHERE id = ?1",
-            params![project_id, stage, now],
-        )
-        .map_err(|err| format!("failed to update current stage: {err}"))?;
-    }
-    record_event_conn(&conn, &project_id, "user", "stage.updated", "{}");
+    update_stage_conn(
+        &conn,
+        &project_id,
+        &stage,
+        &status,
+        gate_json.as_deref(),
+        now,
+    )?;
     detail_conn(&conn, &project_id)
 }
 
@@ -313,6 +283,7 @@ pub fn research_events_list(
 
 #[tauri::command]
 pub async fn research_ask(
+    app: tauri::AppHandle,
     db: State<'_, Db>,
     project_id: String,
     question: String,
@@ -343,7 +314,7 @@ pub async fn research_ask(
         }
     }
 
-    let (briefing, current_stage, client, data_dir) = {
+    let (briefing, current_stage, client, embed_client, data_dir) = {
         let conn = db
             .conn
             .lock()
@@ -355,12 +326,13 @@ pub async fn research_ask(
         let briefing = build_briefing(&conn, &project, &stages, &artifacts)?;
         let client = crate::llm::client::chat_client_from_conn(&conn)?
             .ok_or_else(|| "未配置对话模型，请先在「API 设置」中填写提供方密钥".to_string())?;
+        let embed_client = crate::llm::embeddings::embed_client_from_conn_opt(&conn)?;
         let dir = db
             .data_dir
             .lock()
             .map_err(|err| format!("failed to acquire data dir lock: {err}"))?
             .clone();
-        (briefing, project.current_stage, client, dir)
+        (briefing, project.current_stage, client, embed_client, dir)
     };
 
     let base = crate::agent::prompts::load_base(&data_dir, crate::agent::agents::AgentKind::Research);
@@ -371,27 +343,90 @@ pub async fn research_ask(
     )
     .unwrap_or_default();
 
-    let system = format!(
-        "{base}\n\n{stage_prompt}\n\n## 项目简报\n{briefing}\n\n\
-         ## 输出纪律\n\
-         - 结论先行，再给依据与下一步；不要复述项目简报。\n\
-         - 引用项目文献时用 [n] 编号并对应上面的文献列表；未核实/不存在就明说。\n\
-         - 实验数字只能来自已登记的数据与分析结果；没有就写「待补」。\n\
-         - 需要用户补信息时，最多问 2 个最关键的问题。\n"
+    // 科研助手升级为 ReAct：带工具（文献/项目/稿件/证据/检索/委托），
+    // 不再是一次性的「嘴说」。项目简报 + 阶段 prompt + 最近对话都放进任务上下文。
+    let mut task = String::new();
+    task.push_str("【项目简报】\n");
+    task.push_str(&briefing);
+    if !stage_prompt.trim().is_empty() {
+        task.push_str("\n\n【当前阶段指引】\n");
+        task.push_str(stage_prompt.trim());
+    }
+    if !turns.is_empty() {
+        task.push_str("\n\n【最近对话】\n");
+        for (role, content) in &turns {
+            task.push_str(&format!(
+                "{}：{}\n",
+                if role == "user" { "用户" } else { "助手" },
+                content
+            ));
+        }
+    }
+    task.push_str("\n\n【当前问题】\n");
+    task.push_str(&question);
+    task.push_str(
+        "\n\n要求：结论先行；引用项目文献时给出 [cite_key]；实验数字只能来自已登记数据集/实验，\
+         没有就写「待补」；需要改项目/稿件时用工具完成，不要只给建议；\
+         只有「阶段建议/决策」才调用 academic_project(action=save_advice) 保存到控制台，\
+         文献/数据/稿件操作不要保存成建议。",
     );
 
-    let mut messages: Vec<crate::llm::client::ChatMessage> =
-        Vec::with_capacity(turns.len() + 2);
-    messages.push(crate::llm::client::ChatMessage::new("system", system));
-    for (role, content) in turns {
-        messages.push(crate::llm::client::ChatMessage::new(&role, content));
-    }
-    messages.push(crate::llm::client::ChatMessage::new("user", question));
-
-    let joined = tauri::async_runtime::spawn_blocking(move || {
-        client.complete_turn(std::time::Duration::from_secs(180), &messages)
+    let session_id = format!("research-{project_id}");
+    let prompt_for_run = format!("{base}\n\n{task}");
+    let app_for_run = app.clone();
+    let client_for_run = client.clone();
+    let embed_for_run = embed_client.clone();
+    let answer = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let mut noop_step = |_: u32, _: &str, _: &str| {};
+        let (answer, _steps, _usage) = crate::agent::harness::run_sub_agent(
+            crate::agent::agents::AgentKind::Research,
+            &app_for_run,
+            &client_for_run,
+            embed_for_run.as_ref(),
+            &session_id,
+            &prompt_for_run,
+            &mut noop_step,
+        )?;
+        Ok(answer)
     })
     .await
-    .map_err(|err| format!("研究助手执行失败：{err}"))?;
-    joined
+    .map_err(|err| format!("科研助手执行失败：{err}"))??;
+    if answer.trim().is_empty() {
+        return Err("科研助手没有产出内容（可能达到步数/时间上限），请重试或缩小问题范围".to_string());
+    }
+    Ok(answer)
+}
+
+/// 读取控制台展示的最新 AI 阶段建议（guidance_notes 最新一条）。
+#[tauri::command]
+pub fn research_advice_latest(
+    db: State<'_, Db>,
+    project_id: String,
+) -> Result<Option<ResearchAdvice>, String> {
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
+    if get_project_conn(&conn, &project_id)?.is_none() {
+        return Err(format!("研究项目不存在：{project_id}"));
+    }
+    conn.query_row(
+        "SELECT questions_json, notes, created_at FROM guidance_notes \
+         WHERE project_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        params![project_id],
+        |row| {
+            let questions: String = row.get(0)?;
+            let question = serde_json::from_str::<Vec<String>>(&questions)
+                .ok()
+                .and_then(|items| items.into_iter().next())
+                .unwrap_or_default();
+            Ok(ResearchAdvice {
+                question,
+                notes: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|err| format!("读取最新建议失败：{err}"))
 }

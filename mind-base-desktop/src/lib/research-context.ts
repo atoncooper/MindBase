@@ -82,3 +82,16 @@ export function takeResearchNewChatFlag(): boolean {
     return false;
   }
 }
+
+export const RESEARCH_DATA_EVENT = "mb:research-data";
+
+/** 主聊天里的学术工具改动了项目数据（文献/稿件/证据等）→ 通知控制台刷新。 */
+export function notifyResearchDataChanged(): void {
+  window.dispatchEvent(new CustomEvent(RESEARCH_DATA_EVENT));
+}
+
+export function subscribeResearchDataChange(listener: () => void): () => void {
+  const onCustom = (): void => listener();
+  window.addEventListener(RESEARCH_DATA_EVENT, onCustom);
+  return () => window.removeEventListener(RESEARCH_DATA_EVENT, onCustom);
+}
