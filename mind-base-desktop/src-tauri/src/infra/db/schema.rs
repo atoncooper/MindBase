@@ -330,7 +330,83 @@ pub(crate) const SCHEMA_SQL: &str =
          type         TEXT NOT NULL,
          payload_json TEXT NOT NULL DEFAULT '{}'
      );
-     CREATE INDEX IF NOT EXISTS idx_project_events_project ON project_events(project_id, ts DESC);";
+     CREATE INDEX IF NOT EXISTS idx_project_events_project ON project_events(project_id, ts DESC);
+     -- Long-running automation tasks (AI-supervised). Log bodies live on disk;
+     -- these tables only keep task/run state, log segment pointers and reports.
+     CREATE TABLE IF NOT EXISTS automation_tasks(
+         id             INTEGER PRIMARY KEY AUTOINCREMENT,
+         name           TEXT    NOT NULL,
+         command        TEXT    NOT NULL,
+         cwd            TEXT    NOT NULL DEFAULT '',
+         interval_secs  INTEGER NOT NULL DEFAULT 600,
+         max_attempts   INTEGER NOT NULL DEFAULT 3,
+         state          TEXT    NOT NULL DEFAULT 'pending',
+         attempt        INTEGER NOT NULL DEFAULT 0,
+         last_report_at INTEGER NOT NULL DEFAULT 0,
+         created_at     INTEGER NOT NULL,
+         updated_at     INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_automation_tasks_state ON automation_tasks(state, updated_at DESC);
+     CREATE TABLE IF NOT EXISTS automation_runs(
+         id             INTEGER PRIMARY KEY AUTOINCREMENT,
+         task_id        INTEGER NOT NULL,
+         attempt        INTEGER NOT NULL,
+         pid            INTEGER,
+         started_at     INTEGER NOT NULL,
+         ended_at       INTEGER,
+         exit_code      INTEGER,
+         state          TEXT    NOT NULL DEFAULT 'running',
+         restart_reason TEXT    NOT NULL DEFAULT ''
+     );
+     CREATE INDEX IF NOT EXISTS idx_automation_runs_task ON automation_runs(task_id, id DESC);
+     CREATE TABLE IF NOT EXISTS automation_logs(
+         id           INTEGER PRIMARY KEY AUTOINCREMENT,
+         task_id      INTEGER NOT NULL,
+         run_id       INTEGER,
+         path         TEXT    NOT NULL,
+         kind         TEXT    NOT NULL DEFAULT 'stdout',
+         start_offset INTEGER NOT NULL DEFAULT 0,
+         end_offset   INTEGER NOT NULL DEFAULT 0,
+         bytes        INTEGER NOT NULL DEFAULT 0,
+         created_at   INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_automation_logs_task ON automation_logs(task_id, id DESC);
+     CREATE TABLE IF NOT EXISTS automation_reports(
+         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+         task_id    INTEGER NOT NULL,
+         run_id     INTEGER,
+         kind       TEXT    NOT NULL,
+         summary    TEXT    NOT NULL DEFAULT '',
+         tail       TEXT    NOT NULL DEFAULT '',
+         created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_automation_reports_task ON automation_reports(task_id, id DESC);
+     -- LLM token usage ledger (DeepSeek-Harness-style stats): one row per completed
+     -- assistant turn; task_id is set when the turn belongs to an automation task.
+     CREATE TABLE IF NOT EXISTS llm_usage(
+         id             INTEGER PRIMARY KEY AUTOINCREMENT,
+         ts             INTEGER NOT NULL,
+         session_id     TEXT    NOT NULL DEFAULT '',
+         purpose        TEXT    NOT NULL DEFAULT 'chat',
+         model          TEXT    NOT NULL DEFAULT '',
+         task_id        INTEGER,
+         input_tokens   INTEGER NOT NULL DEFAULT 0,
+         output_tokens  INTEGER NOT NULL DEFAULT 0,
+         cached_tokens  INTEGER NOT NULL DEFAULT 0,
+         total_tokens   INTEGER NOT NULL DEFAULT 0
+     );
+     CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts DESC);
+     CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id, ts DESC);
+     CREATE INDEX IF NOT EXISTS idx_llm_usage_task ON llm_usage(task_id, ts DESC);
+     -- 主 agent 自建的自定义子代理（角色提示词 + 描述），可被 delegate_to_agent 复用。
+     CREATE TABLE IF NOT EXISTS custom_agents(
+         id            TEXT PRIMARY KEY,
+         name          TEXT NOT NULL UNIQUE,
+         description   TEXT NOT NULL DEFAULT '',
+         system_prompt TEXT NOT NULL DEFAULT '',
+         created_at    INTEGER NOT NULL,
+         updated_at    INTEGER NOT NULL
+     );";
 
 /// Apply pragmas plus schema bootstrap to a fresh connection.
 pub(super) fn ensure_schema(conn: &Connection) -> Result<(), String> {

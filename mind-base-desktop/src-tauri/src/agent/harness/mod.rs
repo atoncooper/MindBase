@@ -45,7 +45,7 @@ pub use self::interaction::InteractionView;
 pub use self::interaction::{InteractionField, InteractionOption};
 pub use self::plan::{PlanSnapshot, PlanStepView};
 pub(crate) use self::react::{add_usage, react_loop, ReactCallbacks, ReactOutcome};
-pub(crate) use self::subagent::run_sub_agent;
+pub(crate) use self::subagent::{run_custom_agent, run_sub_agent};
 
 /// Global singleton — agents/tools register once, every command shares it.
 static HARNESS: OnceLock<Arc<Harness>> = OnceLock::new();
@@ -58,6 +58,16 @@ pub(crate) struct Harness {
 }
 
 impl Harness {
+    /// Look up one registered tool by name (test support / introspection).
+    pub(crate) fn tool(&self, name: &str) -> Option<std::sync::Arc<dyn registry::LocalTool>> {
+        self.runtime.registry().get(name)
+    }
+
+    /// Names of every registered tool (test support / diagnostics).
+    pub(crate) fn tool_names(&self) -> Vec<&'static str> {
+        self.runtime.registry().names()
+    }
+
     fn new() -> Self {
         let mut runtime = runtime::AgentRuntime::new();
         runtime
@@ -161,6 +171,42 @@ impl Harness {
         runtime
             .registry_mut()
             .register(Box::new(tools::ListDirTool));
+        // Local shell execution (pwsh / cmd / bash) — gated by
+        // AppConfig.shell_enabled (default off) inside the tool itself.
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::RunCommandTool));
+        // Structured git / GitHub CLI tools (same config gate + audit as run_command).
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::GitTool));
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::GhTool));
+        // OS-level sandboxed execution (AppContainer / bubblewrap / seatbelt).
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::RunSandboxedTool));
+        // Long-running automation tasks (AI-supervised): start/status/logs/kill/retry/due.
+        for tool in [
+            Box::new(tools::StartAutomationTool) as Box<dyn registry::LocalTool>,
+            Box::new(tools::AutomationStatusTool),
+            Box::new(tools::AutomationLogSearchTool),
+            Box::new(tools::AutomationLogReadTool),
+            Box::new(tools::AutomationKillTool),
+            Box::new(tools::AutomationRetryTool),
+            Box::new(tools::AutomationDueTool),
+            Box::new(tools::AutomationListTool),
+            Box::new(tools::UsageStatsTool),
+            Box::new(tools::CreateAgentTool),
+            Box::new(tools::ListAgentsTool),
+            Box::new(tools::AcademicLiteratureTool),
+            Box::new(tools::AcademicProjectTool),
+            Box::new(tools::AcademicManuscriptTool),
+            Box::new(tools::AcademicEvidenceTool),
+        ] {
+            runtime.registry_mut().register(tool);
+        }
 
         let mut orchestrator = orchestrator::Orchestrator::new();
         // Only chat is routable today — identical to the production backend;

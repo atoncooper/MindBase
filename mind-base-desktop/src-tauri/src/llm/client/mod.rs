@@ -18,6 +18,7 @@ mod anthropic;
 mod openai;
 mod stream;
 mod types;
+mod dsml;
 mod usage;
 mod vision;
 

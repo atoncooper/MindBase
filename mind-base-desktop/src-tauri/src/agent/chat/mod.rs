@@ -12,6 +12,7 @@ mod context;
 mod history;
 mod images;
 mod sessions;
+mod live;
 mod streaming;
 mod summary;
 mod types;
@@ -36,6 +37,9 @@ pub use self::summary::{
     __tauri_command_name_chat_summary_get,
 };
 pub(crate) use self::context::format_context_blocks;
+pub(crate) use self::live::chat_live_state;
+#[doc(hidden)]
+pub(crate) use self::live::{__cmd__chat_live_state, __tauri_command_name_chat_live_state};
 pub(crate) use self::sessions::epoch_to_date;
 // Payload / helper items only used inside this package today; kept re-exported
 // so their historical `crate::agent::chat::*` paths stay valid.

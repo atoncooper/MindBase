@@ -8214,6 +8214,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 子代理运行记录：次数 / 耗时 / 步数 / token，和用量脚注同灰度。 */
+.msg-agents {
+  margin: 4px 0 0;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 科研项目 ↔ 主聊天：当前绑定项目提示条（控制台只做状态同步）。 */
 .chat-research-bar {
   display: flex;

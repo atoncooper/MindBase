@@ -11,6 +11,7 @@
 //! - [`slides`] — slide outlines and export.
 
 pub(crate) mod dataset;
+pub(crate) mod experiment;
 pub(crate) mod literature;
 pub(crate) mod manuscript;
 pub(crate) mod mindmap;

@@ -71,7 +71,11 @@ fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
 const PATH_ESCAPE_MESSAGE: &str = "路径越界：只能访问应用数据目录内的文件";
 
 /// Pure half of `resolve_agent_path` — testable without a `Db`.
-fn resolve_agent_path_in(data_dir: &Path, agent: &str, raw: &str) -> Result<PathBuf, String> {
+pub(super) fn resolve_agent_path_in(
+    data_dir: &Path,
+    agent: &str,
+    raw: &str,
+) -> Result<PathBuf, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("path 不能为空".to_string());
@@ -134,6 +138,8 @@ impl LocalTool for ReadFileTool {
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .ok_or("path 不能为空")?;
+        let offset = value.get("offset").and_then(|v| v.as_u64());
+        let limit = value.get("limit").and_then(|v| v.as_u64());
         let path = resolve_agent_path(ctx, raw_path)?;
         let path = path.as_path();
         let metadata = std::fs::metadata(path)
@@ -141,9 +147,31 @@ impl LocalTool for ReadFileTool {
         if !metadata.is_file() {
             return Err(format!("{} 不是文件（目录请用 list_dir）", path.display()));
         }
+        // 分段读取（大日志 / 大文件）：offset/limit 均以字节计，limit 上限 64KB。
+        if offset.is_some() || limit.is_some() {
+            let start = offset.unwrap_or(0);
+            let want = limit.unwrap_or(64 * 1024).clamp(1, 64 * 1024);
+            if start > metadata.len() {
+                return Err(format!("offset {start} 超过文件大小 {}", metadata.len()));
+            }
+            let (text, total) = crate::infra::exec_log::read_slice(path, start, want as usize)?;
+            if text.as_bytes().contains(&0) {
+                return Err("这是二进制文件，无法按文本读取".to_string());
+            }
+            let read_bytes = want.min(total - start) as usize;
+            let next = start + read_bytes as u64;
+            let mut header = format!(
+                "已读取 {}（offset={start}，读取 {read_bytes} 字节，文件共 {total} 字节）",
+                path.display()
+            );
+            if next < total {
+                header.push_str(&format!("；下一段 offset={next}"));
+            }
+            return Ok(ToolOutput::text(format!("{header}：\n{text}")));
+        }
         if metadata.len() > FILE_READ_CAP {
             return Err(format!(
-                "文件过大（{} 字节，上限 {}）：只支持文本文件，且请用 list_dir 先确认目标",
+                "文件过大（{} 字节，上限 {}）：请带 offset/limit 分段读取，或先用 list_dir 确认目标",
                 metadata.len(),
                 FILE_READ_CAP
             ));
@@ -167,12 +195,17 @@ impl LocalTool for ReadFileTool {
 static SPEC_READ_FILE: std::sync::LazyLock<ToolSpec> = std::sync::LazyLock::new(|| {
     spec(
         "read_file",
-        "读取应用数据目录内的一个文本文件（代码/笔记/文档/配置等，上限 2MB）。                  path 可为绝对路径（必须位于应用数据目录内），或相对于本 agent 专属目录 agent-files/<agent>/ 的相对路径；                  目录外的路径（含 .. 越界）会被拒绝。用户提到某个文件时用它读取内容再处理。",
+        "读取应用数据目录内的一个文本文件（代码/笔记/文档/配置/执行日志等）。\
+         整读上限 2MB；文件更大或只想看某一段时，传 offset/limit（字节，limit ≤ 65536）分段读取——\
+         命令输出日志（<data_dir>/logs/exec/*.log）很大时用这种方式翻看，不要把整份日志塞进上下文。\
+         path 可为绝对路径（必须位于应用数据目录内），或相对于本 agent 专属目录 agent-files/<agent>/ 的相对路径；目录外的路径（含 .. 越界）会被拒绝。",
         json!({
             "type": "object",
             "required": ["path"],
             "properties": {
-                "path": { "type": "string", "description": "文件路径（应用数据目录内的绝对路径，或相对 agent-files 的相对路径）" }
+                "path": { "type": "string", "description": "文件路径（应用数据目录内的绝对路径，或相对 agent-files 的相对路径）" },
+                "offset": { "type": "integer", "minimum": 0, "description": "分段读取的起始字节偏移（默认 0）" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 65536, "description": "本次读取的字节数（默认 65536，上限 65536）" }
             }
         }),
     )

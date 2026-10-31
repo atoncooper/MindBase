@@ -193,6 +193,11 @@ pub struct AppConfig {
     /// 发给支持视觉的对话模型（默认关——原图会以 base64 发往云端，涉及隐私取舍）。
     #[serde(default)]
     pub vision_enabled: bool,
+    /// 本机命令执行开关：开启后 Agent 才能调用 run_command（pwsh / cmd / bash）。
+    /// 默认关闭——命令继承当前用户权限，工具层只约束 cwd / 超时 / 输出，
+    /// 见 agent/harness/tools/shell.rs 的安全边界说明。
+    #[serde(default)]
+    pub shell_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -210,6 +215,7 @@ impl Default for AppConfig {
             proxy_http: None,
             proxy_https: None,
             vision_enabled: false,
+            shell_enabled: false,
         }
     }
 }
@@ -369,6 +375,12 @@ pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_execution_is_disabled_by_default() {
+        // 命令执行是可选能力：默认关闭，必须在设置页显式开启。
+        assert!(!AppConfig::default().shell_enabled);
+    }
 
     #[test]
     fn local_asr_defaults_are_cpu_friendly() {

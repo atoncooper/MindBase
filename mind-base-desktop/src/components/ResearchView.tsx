@@ -11,9 +11,10 @@ import { useEffect, useMemo, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   PAPER_KIND_LABELS, RESEARCH_STAGES, STAGE_ADVICE, STAGE_LABELS,
-  addResearchArtifact, createResearchProject, getResearchProject, listResearchEvents,
-  listResearchProjects, updateResearchProject, updateResearchStage,
-  type ProjectDetail, type ResearchEvent, type ResearchProject,
+  addResearchArtifact, askResearch, createResearchProject, getLatestResearchAdvice,
+  getResearchProject, listResearchEvents, listResearchProjects, updateResearchProject,
+  updateResearchStage, type ProjectDetail, type ResearchAdvice, type ResearchEvent,
+  type ResearchProject,
 } from "../lib/research";
 import DataTab from "./research/DataTab";
 import LiteratureTab from "./research/LiteratureTab";
@@ -26,6 +27,7 @@ import {
   setActiveResearchProject,
   setPendingResearchPrompt,
   setResearchNewChatFlag,
+  subscribeResearchDataChange,
 } from "../lib/research-context";
 import { SearchGlyph } from "./icons";
 import "./research/research.css";
@@ -110,6 +112,13 @@ export default function ResearchView(): React.JSX.Element {
   const [form, setForm] = useState({ title: "", paperKind: "journal", targetVenue: "", deadline: "" });
   const [artifactTitle, setArtifactTitle] = useState("");
   const [artifactKind, setArtifactKind] = useState("doc");
+  // 控制台内联 AI 助手：最新建议 + 提问草稿 + 运行态。
+  const [latestAdvice, setLatestAdvice] = useState<ResearchAdvice | null>(null);
+  const [askDraft, setAskDraft] = useState("");
+  const [askBusy, setAskBusy] = useState(false);
+  // 聊天里的学术工具改动数据后，强制重挂当前 tab 拉取最新内容。
+  const [dataVersion, setDataVersion] = useState(0);
+  const [askError, setAskError] = useState<string | null>(null);
   // 项目信息内联编辑（标题 / 论文类型 / 领域 / 目标期刊 / 截止日期）。
   const [editingInfo, setEditingInfo] = useState(false);
   const [infoDraft, setInfoDraft] = useState({
@@ -137,8 +146,24 @@ export default function ResearchView(): React.JSX.Element {
     const next = await getResearchProject(projectId);
     setDetail(next);
     setEvents(await listResearchEvents(projectId, 20));
+    try {
+      setLatestAdvice(await getLatestResearchAdvice(projectId));
+    } catch {
+      setLatestAdvice(null);
+    }
   }
   useEffect(() => { void loadProjects(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    return subscribeResearchDataChange(() => {
+      setDataVersion((value) => value + 1);
+      const id = getActiveResearchProjectId() ?? selectedId;
+      if (id !== null) {
+        void loadDetail(id).catch(() => undefined);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   const filtered = useMemo<ResearchProject[]>(() => {
     const keyword = query.trim().toLowerCase();
@@ -189,6 +214,28 @@ export default function ResearchView(): React.JSX.Element {
     } catch (err) { setError(errorText(err)); }
     finally { setBusy(false); }
   }
+  /** 控制台内联提问：直接走 research_ask（ReAct + 工具），结果落库并回填。 */
+  async function askInline(question?: string): Promise<void> {
+    if (detail === null || askBusy) return;
+    const prompt = (question ?? askDraft).trim();
+    if (prompt === "") {
+      setAskError("先写一句问题，或直接用「让助手分析当前阶段」");
+      return;
+    }
+    setAskBusy(true);
+    setAskError(null);
+    try {
+      const answer = await askResearch(detail.project.id, prompt);
+      setLatestAdvice({ question: prompt, notes: answer, createdAt: Math.floor(Date.now() / 1000) });
+      setAskDraft("");
+      setEvents(await listResearchEvents(detail.project.id, 20));
+    } catch (err) {
+      setAskError(errorText(err));
+    } finally {
+      setAskBusy(false);
+    }
+  }
+
   async function handleAddArtifact(): Promise<void> {
     if (detail === null) return;
     const title = artifactTitle.trim();
@@ -418,7 +465,7 @@ export default function ResearchView(): React.JSX.Element {
                 ))}
               </nav>
 
-              <div className="rs-content">
+              <div className="rs-content" key={dataVersion}>
                 {tab === "overview" && (
                   <div className="rs-pane">
                     <section className="card">
@@ -452,11 +499,47 @@ export default function ResearchView(): React.JSX.Element {
                           <h3>当前阶段建议</h3>
                           <span className="rs-chip rs-chip--primary">{currentStageLabel}</span>
                           <span className="spacer" />
-                          <button type="button" className="button research-btn-sm" onClick={() => openInChat("请结合当前科研项目的阶段、产物、文献与数据，给出这个阶段的下一步建议与主要风险。")}>
+                          <button type="button" className="button research-btn-sm" onClick={() => void askInline("请结合当前科研项目的阶段、产物、文献与数据，给出这个阶段的下一步建议与主要风险。")}>
                             让 AI 拆解
                           </button>
                         </div>
-                        <p className="hint-text" style={{ margin: 0 }}>{advice}</p>
+                        <p className="hint-text rs-advice__text">
+                          {latestAdvice !== null ? latestAdvice.notes : advice}
+                        </p>
+                        <p className="rs-advice__meta">
+                          {latestAdvice !== null
+                            ? "AI 建议 · " + formatDateTime(latestAdvice.createdAt)
+                            : "阶段提示（静态）；可让助手基于项目事实生成并保存"}
+                        </p>
+                        <div className="rs-advice__ask">
+                          <textarea
+                            className="rs-advice__input"
+                            rows={2}
+                            value={askDraft}
+                            placeholder="问助手：这个阶段下一步做什么？还缺哪些证据？"
+                            disabled={askBusy}
+                            onChange={(event) => setAskDraft(event.target.value)}
+                          />
+                          <div className="rs-advice__actions">
+                            <button
+                              type="button"
+                              className="button button--primary research-btn-sm"
+                              disabled={askBusy}
+                              onClick={() => void askInline()}
+                            >
+                              {askBusy ? "分析中…" : "让助手分析"}
+                            </button>
+                            <button
+                              type="button"
+                              className="button research-btn-sm"
+                              disabled={askBusy}
+                              onClick={() => void askInline("请结合当前科研项目的阶段、产物、文献与数据，给出这个阶段的下一步建议与主要风险。")}
+                            >
+                              拆解当前阶段
+                            </button>
+                          </div>
+                          {askError !== null && <p className="error-text rs-advice__error">{askError}</p>}
+                        </div>
                       </section>
 
                       <section className="card">

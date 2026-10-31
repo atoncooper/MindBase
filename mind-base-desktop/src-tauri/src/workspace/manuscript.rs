@@ -112,6 +112,101 @@ fn project_meta_conn(
     .ok_or_else(|| format!("研究项目不存在：{project_id}"))
 }
 
+/// Agent / 工具层：列出章节（含正文）。
+pub(crate) fn sections(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ManuscriptSection>, String> {
+    project_meta_conn(conn, project_id)?;
+    list_sections_conn(conn, project_id)
+}
+
+/// Agent / 工具层：写入/更新一个章节（正文落盘 + 更新 DB）。
+pub(crate) fn save_section(
+    conn: &Connection,
+    data_dir: &Path,
+    project_id: &str,
+    section: &str,
+    content: &str,
+) -> Result<ManuscriptSection, String> {
+    let section = section.trim().to_string();
+    if section.is_empty() {
+        return Err("章节名称不能为空".to_string());
+    }
+    project_meta_conn(conn, project_id)?;
+    let now = now_secs();
+    let words = content.chars().count() as i64;
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM manuscript_sections WHERE project_id = ?1 AND section = ?2",
+            params![project_id, section],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("failed to look up section: {err}"))?;
+    let id = match existing {
+        Some(id) => {
+            conn.execute(
+                "UPDATE manuscript_sections SET words = ?3, status = 'draft', updated_at = ?4 \
+                 WHERE project_id = ?1 AND section = ?2",
+                params![project_id, section, words, now],
+            )
+            .map_err(|err| format!("failed to update section: {err}"))?;
+            id
+        }
+        None => {
+            let id = db::local_id();
+            conn.execute(
+                "INSERT INTO manuscript_sections(id, project_id, section, ord, path, words, status, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, '', ?5, 'draft', ?6)",
+                params![id, project_id, section, section_ord(&section), words, now],
+            )
+            .map_err(|err| format!("failed to insert section: {err}"))?;
+            id
+        }
+    };
+    let dir = data_dir
+        .join("research")
+        .join(project_id)
+        .join("manuscript")
+        .join("sections");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join(format!("{}.md", safe_name(&section)));
+    std::fs::write(&file, content.as_bytes()).ok();
+    let content_path = file.to_string_lossy().to_string();
+    conn.execute(
+        "UPDATE manuscript_sections SET path = ?2 WHERE id = ?1",
+        params![id, content_path],
+    )
+    .map_err(|err| format!("failed to record section path: {err}"))?;
+    conn.execute(
+        "UPDATE research_projects SET updated_at = ?2 WHERE id = ?1",
+        params![project_id, now],
+    )
+    .map_err(|err| format!("failed to touch project: {err}"))?;
+    let mut saved = conn
+        .query_row(
+            "SELECT id, section, ord, path, words, status, updated_at \
+             FROM manuscript_sections WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(ManuscriptSection {
+                    id: row.get(0)?,
+                    section: row.get(1)?,
+                    ord: row.get(2)?,
+                    path: row.get(3)?,
+                    words: row.get(4)?,
+                    status: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    content: String::new(),
+                })
+            },
+        )
+        .map_err(|err| format!("failed to reload section: {err}"))?;
+    saved.content = content.to_string();
+    Ok(saved)
+}
+
 #[tauri::command]
 pub fn manuscript_list(
     db: State<'_, Db>,
@@ -121,8 +216,7 @@ pub fn manuscript_list(
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    project_meta_conn(&conn, &project_id)?;
-    list_sections_conn(&conn, &project_id)
+    sections(&conn, &project_id)
 }
 
 #[tauri::command]

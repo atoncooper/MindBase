@@ -114,5 +114,16 @@ pub(super) fn complete_assistant_message_tx(
         params![msg_id, content, sources_json, model, usage_json],
     )
     .map_err(|err| format!("failed to complete message: {err}"))?;
+    // Ledger: one row per completed turn, tagged with session/model (DSH-style stats).
+    if let Some(usage) = usage {
+        let session_id: String = conn
+            .query_row(
+                "SELECT chat_session_id FROM chat_messages WHERE msg_id = ?1",
+                params![msg_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+        let _ = crate::infra::usage::record(conn, &session_id, "chat", model, usage, None);
+    }
     Ok(())
 }

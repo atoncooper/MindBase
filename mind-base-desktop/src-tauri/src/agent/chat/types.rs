@@ -96,6 +96,15 @@ pub enum ChatEvent {
     Chunk {
         content: String,
     },
+    /// 一个子代理运行结束：耗时 / 步数 / 该子代理自己的 token 用量。
+    /// 用于前端记录「哪个 agent 跑了多久、花了多少 token、跑了几轮」。
+    AgentRun {
+        agent: String,
+        ok: bool,
+        duration_ms: u64,
+        steps: u32,
+        usage: Option<TokenUsage>,
+    },
     /// 本轮 token 用量（含工具轮次与子代理聚合；提供方未上报时不发）。
     Usage {
         usage: TokenUsage,
@@ -247,12 +256,36 @@ mod tests {
     // -- token usage --------------------------------------------------------
 
     #[test]
+    fn agent_run_event_serializes_usage_and_timing() {
+        let event = ChatEvent::AgentRun {
+            agent: "academic".to_string(),
+            ok: true,
+            duration_ms: 1234,
+            steps: 3,
+            usage: Some(TokenUsage {
+                input_tokens: 100,
+                output_tokens: 40,
+                total_tokens: 140,
+                cached_tokens: 60,
+            }),
+        };
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["type"], "agentRun");
+        assert_eq!(value["agent"], "academic");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["durationMs"], 1234);
+        assert_eq!(value["steps"], 3);
+        assert_eq!(value["usage"]["cachedTokens"], 60);
+    }
+
+    #[test]
     fn usage_event_serializes_to_frontend_contract() {
         let event = ChatEvent::Usage {
             usage: TokenUsage {
                 input_tokens: 1200,
                 output_tokens: 300,
                 total_tokens: 1500,
+                cached_tokens: 200,
             },
         };
         let value = serde_json::to_value(&event).expect("serialize");
@@ -260,6 +293,7 @@ mod tests {
         assert_eq!(value["usage"]["inputTokens"], 1200);
         assert_eq!(value["usage"]["outputTokens"], 300);
         assert_eq!(value["usage"]["totalTokens"], 1500);
+        assert_eq!(value["usage"]["cachedTokens"], 200);
     }
 
     #[test]
@@ -268,6 +302,7 @@ mod tests {
             input_tokens: 12,
             output_tokens: 34,
             total_tokens: 46,
+            cached_tokens: 0,
         };
         let raw = usage_to_json(Some(usage));
         assert_eq!(usage_from_json(&raw), Some(usage), "column JSON round-trips");

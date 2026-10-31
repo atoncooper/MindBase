@@ -36,6 +36,8 @@ export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** 缓存命中 token（DeepSeek prompt_cache_hit_tokens / OpenAI cached_tokens）。 */
+  cachedTokens?: number;
 }
 
 /** One persisted message of a conversation. */
@@ -96,10 +98,38 @@ export interface ChatArtifact {
   modifiedAt: number;
 }
 
+/** 后端 chat_live_state：进行中回合的实时快照（切走/切回恢复用）。 */
+export interface LiveChatState {
+  sessionId: string;
+  question: string;
+  answer: string;
+  steps: { step: number; action: string; query: string }[];
+  subSteps: { step: number; agent: string; action: string; query: string }[];
+  liveAgent?: { name: string; action: string; step: number } | null;
+  plan?: { version: number; steps: { desc: string; status: string; note: string }[] } | null;
+  startedAt: number;
+}
+
+/** 读取正在进行的回合（None = 当前没有在跑）。 */
+export function getLiveChatState(sessionId: string): Promise<LiveChatState | null> {
+  return invoke<LiveChatState | null>("chat_live_state", { sessionId });
+}
+
+/** 一个子代理运行记录（后端 AgentRun 事件）。 */
+export interface AgentRunStat {
+  agent: string;
+  ok: boolean;
+  durationMs: number;
+  steps: number;
+  /** 该子代理自己的 token 用量（可能缺省）。 */
+  usage?: TokenUsage | null;
+}
+
 /** Stream frames emitted during one turn. */
 export type ChatEvent =
   | { type: "step"; step: number; action: string; query: string }
   | { type: "subStep"; step: number; agent: string; action: string; query: string }
+  | ({ type: "agentRun" } & AgentRunStat)
   | {
       type: "plan";
       version: number;
@@ -194,6 +224,8 @@ export async function chatAsk(
   images: string[] = [],
   /** 当前科研项目 id：非空时后端把项目简报注入本轮 system 上下文。 */
   researchProjectId: string | null = null,
+  /** true = 重新生成：替换最后一条助手消息，不重复写入用户问题。 */
+  regenerate = false,
 ): Promise<ChatTurnResult> {
   const channel = new Channel<ChatEvent>();
   channel.onmessage = onEvent;
@@ -205,6 +237,7 @@ export async function chatAsk(
     // 不传图片时显式 null，对应 Rust 侧的 Option<Vec<String>>（None）。
     images: images.length > 0 ? images : null,
     researchProjectId,
+    regenerate,
     onEvent: channel,
   });
 }

@@ -9,6 +9,7 @@
 
 pub(crate) mod agents;
 pub(crate) mod chat;
+pub(crate) mod custom_agents;
 pub(crate) mod harness;
 pub(crate) mod prompts;
 pub(crate) mod skills;

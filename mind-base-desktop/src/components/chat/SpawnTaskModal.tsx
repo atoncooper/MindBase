@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AGENT_LABELS, spawnAgentTask } from "../../lib/harness";
+import { spawnAgentTask } from "../../lib/harness";
 import { useToast } from "../../lib/toast";
 import { toErrorMessage } from "../../lib/updater";
 
@@ -21,7 +21,6 @@ interface SpawnTaskModalProps {
 
 function SpawnTaskModal({ sessionId, onClose }: SpawnTaskModalProps): React.JSX.Element {
   const toast = useToast();
-  const [agent, setAgent] = useState("chat");
   const [task, setTask] = useState("");
   const [maxSteps, setMaxSteps] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,7 +53,7 @@ function SpawnTaskModal({ sessionId, onClose }: SpawnTaskModalProps): React.JSX.
     setError("");
     try {
       await spawnAgentTask({
-        agent,
+        agent: "chat",
         task: trimmed,
         sessionId,
         maxSteps: parsedMaxSteps(),
@@ -92,25 +91,9 @@ function SpawnTaskModal({ sessionId, onClose }: SpawnTaskModalProps): React.JSX.
           </button>
         </div>
         <p className="spawn-modal__intro">
-          把一件独立工作交给后台 agent 执行，当前对话照常进行；运行中的任务可在
+          把一件独立工作交给后台执行，当前对话照常进行；由主助手自动调度合适的 agent；运行中的任务可在
           「设置 → Agent」页查看进度、注入要求或停止。
         </p>
-
-        <label className="spawn-modal__row">
-          <span className="spawn-modal__label">agent</span>
-          <select
-            className="cfg-input spawn-modal__agent"
-            value={agent}
-            disabled={busy}
-            onChange={(event) => setAgent(event.target.value)}
-          >
-            {Object.entries(AGENT_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
 
         <label className="spawn-modal__row spawn-modal__row--stack">
           <span className="spawn-modal__label">任务描述</span>

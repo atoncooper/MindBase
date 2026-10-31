@@ -2,6 +2,32 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [mind-base-desktop 0.1.16] — 2026-10-31
+
+桌面端「Agent 协同 + 学术工作流」版本：学术 agent 可实际检索/导入/核验文献、管理项目阶段、读写稿件、导入数据与跑分析脚本；主 agent 可创建自定义子代理；自动化长任务、token 统计、实时状态恢复与重新生成一并上线。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.1.16.md](mind-base-desktop/RELEASE_NOTES_0.1.16.md)。
+
+### Added
+
+- **Agent 协同**：chat → research 委托；academic/research → search/memory 二层委托；create_agent / list_agents 自定义 agent（SQLite 持久化、角色提示词、保留内置名）；AgentRun 事件（耗时/步数/token）。
+- **学术工具**：academic_literature（Crossref 检索/导入/导出/核验/PDF 下载）、academic_project（列表/简报/阶段/保存建议）、academic_manuscript（章节读写）、academic_evidence（数据集导入、分析脚本、实验记录）；research_ask 升级 ReAct。
+- **自动化与成本**：长任务 supervisor + 日志分区 + 报告调度（8 个 automation 工具）；llm_usage token 账本与 usage_stats 工具；缓存命中字段；输入框下方会话用量条。
+- **对话体验**：后端 live 快照 + 前端轮询恢复（切会话/切视图/刷新不丢实时状态）；最后一条回答重新生成（后端替换、不重复写 user）；DSML 工具调用兜底解析。
+- **工程**：Rust 新增 toolkit / sandbox / automation 包；测试迁入 tests 分包；VS Code 工作区/任务/扩展配置。
+
+### Changed
+
+- 科研控制台不再把每条回答自动写成「阶段建议」，只有 AI 显式 save_advice 才落库；文献/数据/稿件操作只更新对应数据。
+- 主 agent 对用户透明（聊天不再显示身份）；科研上下文引用纪律收紧（只引用项目已登记证据，无关知识库素材不得引用）。
+- OpenCode 系提供方请求自动携带 x-opencode-session + 自有 UA。
+
+### Fixed
+
+- 科研控制台建议不落库 / 文献导入后前端不刷新；聊天切走后实时步骤与 pending 消息丢失；API 设置长文本溢出与输入框边距；logging 死代码警告。
+
+### Packaging
+
+- 版本号 0.1.15 → 0.1.16（package / tauri / Cargo 及 lockfiles）；desktop-release 读取 RELEASE_NOTES_0.1.16.md 作为 Release 正文。
+
 ## [mind-base-desktop 0.1.15] — 2026-10-29
 
 桌面端「Google 化」大版本：全站 Google 配色、Gemini 风格对话、Coding Plan / OpenCode 模型配置、科研工作台与项目信息编辑。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.1.15.md](mind-base-desktop/RELEASE_NOTES_0.1.15.md)（同时作为 GitHub Release 正文）。

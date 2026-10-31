@@ -13,6 +13,8 @@
 
 pub(crate) mod config;
 pub(crate) mod db;
+pub(crate) mod exec_log;
+pub(crate) mod usage;
 pub(crate) mod logging;
 pub(crate) mod python_runtime;
 pub(crate) mod store;

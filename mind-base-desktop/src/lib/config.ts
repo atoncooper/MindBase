@@ -28,6 +28,8 @@ export interface AppConfig {
   proxyHttps?: string | null;
   /** 视觉读图开关：命中的图片文档原图随上下文发给支持视觉的模型（默认关）。 */
   visionEnabled?: boolean;
+  /** 本机命令执行开关（pwsh / cmd / bash）：默认关；开启后 Agent 才能调用 run_command。 */
+  shellEnabled?: boolean;
 }
 
 /** 本地 whisper 服务设置（与 Rust `LocalAsrConfig` 对齐）。服务由应用通过

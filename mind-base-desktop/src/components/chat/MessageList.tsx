@@ -10,7 +10,14 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { ChatArtifact, ChatInteraction, ChatMode, ChatSource, TokenUsage } from "../../lib/chat";
+import type {
+  AgentRunStat,
+  ChatArtifact,
+  ChatInteraction,
+  ChatMode,
+  ChatSource,
+  TokenUsage,
+} from "../../lib/chat";
 import { LinkifiedText } from "../../lib/linkify";
 import { CheckGlyph, CopyGlyph, PencilGlyph } from "../icons";
 import ArtifactList from "./ArtifactList";
@@ -131,6 +138,8 @@ export interface UiMessage {
   artifacts?: ChatArtifact[];
   /** 本轮 token 用量（Rust 侧 usage 事件 / 历史记录）；null = 未计量。 */
   usage?: TokenUsage | null;
+  /** 本轮调用过的子代理（耗时 / 步数 / token；后端 AgentRun 事件）。 */
+  agentRuns?: AgentRunStat[];
 }
 
 /**
@@ -205,13 +214,52 @@ function UsageFootnote({
   if (usage === null || usage === undefined) return null;
   const input = usage.inputTokens ?? 0;
   const output = usage.outputTokens ?? 0;
+  const cached = usage.cachedTokens ?? 0;
   const total = usage.totalTokens ?? input + output;
   if (input + output + total <= 0) return null;
+  const cacheRate = input > 0 ? Math.round((cached / input) * 100) : 0;
   return (
-    <p className="msg-usage" title="本轮 token 用量（含工具轮次与子代理聚合）">
-      tokens：输入 {formatTokenCount(input)} · 输出 {formatTokenCount(output)} · 合计
+    <p
+      className="msg-usage"
+      title={`本轮 token 用量（含工具轮次与子代理聚合）${cached > 0 ? ` · 缓存命中 ${cached}（${cacheRate}%）` : ""}`}
+    >
+      tokens：输入 {formatTokenCount(input)} · 输出 {formatTokenCount(output)}
+      {cached > 0 ? ` · 缓存命中 ${formatTokenCount(cached)}（${cacheRate}%）` : ""} · 合计
       {" "}
       {formatTokenCount(total)}
+    </p>
+  );
+}
+
+/** 子代理运行记录脚注：次数 / 总耗时 / 步数 / token（无记录不渲染）。 */
+function AgentRunFootnote({
+  runs,
+}: {
+  runs: AgentRunStat[] | undefined;
+}): React.JSX.Element | null {
+  if (runs === undefined || runs.length === 0) return null;
+  const grouped = new Map<
+    string,
+    { count: number; ms: number; steps: number; tokens: number; failed: number }
+  >();
+  for (const run of runs) {
+    const item = grouped.get(run.agent) ?? { count: 0, ms: 0, steps: 0, tokens: 0, failed: 0 };
+    item.count += 1;
+    item.ms += run.durationMs;
+    item.steps += run.steps;
+    item.tokens +=
+      run.usage?.totalTokens ?? (run.usage?.inputTokens ?? 0) + (run.usage?.outputTokens ?? 0);
+    if (!run.ok) item.failed += 1;
+    grouped.set(run.agent, item);
+  }
+  const parts = Array.from(grouped.entries()).map(([agent, item]) => {
+    const tokens = item.tokens > 0 ? ` · ${formatTokenCount(item.tokens)} tok` : "";
+    const failed = item.failed > 0 ? ` · ${item.failed} 次失败` : "";
+    return `${agent} ${item.count} 次 · ${(item.ms / 1000).toFixed(1)}s · ${item.steps} 步${tokens}${failed}`;
+  });
+  return (
+    <p className="msg-agents" title="子代理运行记录（次数 · 总耗时 · 步数 · token）">
+      子代理：{parts.join("；")}
     </p>
   );
 }
@@ -336,7 +384,9 @@ const MessageRow = memo(
     liveAgent,
     planView,
     interactionLocked,
+    canRegenerate,
     onRetry,
+    onRegenerate,
     onEditResend,
     onAnswerInteraction,
   }: {
@@ -346,7 +396,10 @@ const MessageRow = memo(
     planView: PlanView | null;
     /** 已有新一轮在跑：交互卡片暂不可作答（memo 比较器需感知，避免旧闭包）。 */
     interactionLocked: boolean;
+    /** 是否允许重新生成这条回答（仅最后一条已完成的助手消息）。 */
+    canRegenerate: boolean;
     onRetry: (messageId: string) => void;
+    onRegenerate: (messageId: string) => void;
     onEditResend: (messageId: string, text: string) => void;
     onAnswerInteraction: (messageId: string, text: string) => void;
   }): React.JSX.Element {
@@ -362,7 +415,9 @@ const MessageRow = memo(
           {message.status === "pending" && liveAgent !== null && (
             <div className="agent-live" role="status">
               <span className="agent-live__dot" aria-hidden="true" />
-              <span className="agent-live__name">{liveAgent.name}</span>
+              {liveAgent.name !== "" && (
+                <span className="agent-live__name">{liveAgent.name}</span>
+              )}
               <span className="agent-live__action">
                 {liveAgent.step > 0 ? `第 ${liveAgent.step} 步 · ` : ""}
                 {liveAgent.action}
@@ -430,11 +485,22 @@ const MessageRow = memo(
               ↻ 重试
             </button>
           )}
+          {message.status === "completed" && canRegenerate && (
+            <button
+              type="button"
+              className="msg-retry"
+              title="用同一个问题重新生成这条回答（会替换旧回答）"
+              onClick={() => onRegenerate(message.id)}
+            >
+              ↻ 重新生成
+            </button>
+          )}
           {message.artifacts !== undefined && message.artifacts.length > 0 && (
             <ArtifactList artifacts={message.artifacts} />
           )}
           <SourceChips sources={message.sources} />
           <UsageFootnote usage={message.usage} />
+          <AgentRunFootnote runs={message.agentRuns} />
         </div>
       </div>
     );
@@ -442,7 +508,8 @@ const MessageRow = memo(
   (a, b) =>
     a.message === b.message &&
     a.showCursor === b.showCursor &&
-    a.interactionLocked === b.interactionLocked,
+    a.interactionLocked === b.interactionLocked &&
+    a.canRegenerate === b.canRegenerate,
 );
 
 export interface PlanStepView {
@@ -524,6 +591,8 @@ interface MessageListProps {
   onSuggestion: (text: string) => void;
   /** 重试一条失败的回复（沿用其上方用户消息重新生成）。 */
   onRetry: (messageId: string) => void;
+  /** 重新生成最后一条已完成的回答。 */
+  onRegenerate: (messageId: string) => void;
   /** 编辑一条用户消息并重新发送（丢弃其后所有消息）。 */
   onEditResend: (messageId: string, text: string) => void;
   /** 交互卡片作答：文本作为下一条用户消息发送。 */
@@ -539,6 +608,7 @@ function MessageList({
   mode = "chat",
   onSuggestion,
   onRetry,
+  onRegenerate,
   onEditResend,
   onAnswerInteraction,
 }: MessageListProps): React.JSX.Element {
@@ -566,6 +636,47 @@ function MessageList({
   }, [messages]);
 
   if (messages.length === 0) {
+    if (busy) {
+      return (
+        <div className={`msg-scroll msg-list mode-in ${className}`.trim()}>
+          <div className="msg-row msg-row--assistant">
+            <div className="assistant-block">
+              <div className="agent-live" role="status">
+                <span className="agent-live__dot" aria-hidden="true" />
+                {liveAgent !== null && (
+                  <>
+                    {liveAgent.name !== "" && (
+                      <span className="agent-live__name">{liveAgent.name}</span>
+                    )}
+                    <span className="agent-live__action">
+                      {liveAgent.step > 0 ? `第 ${liveAgent.step} 步 · ` : ""}
+                      {liveAgent.action}
+                    </span>
+                  </>
+                )}
+                {liveAgent === null && (
+                  <span className="agent-live__action">正在恢复执行现场…</span>
+                )}
+              </div>
+              {planView !== null && (
+                <div className="plan-panel" role="status">
+                  <div className="plan-panel__head">
+                    任务计划 v{planView.version} ·{" "}
+                    {planView.steps.filter((s) => s.status === "done" || s.status === "skipped").length}
+                    /{planView.steps.length} 完成
+                  </div>
+                </div>
+              )}
+              <span className="typing-dots" aria-label="正在运行">
+                <i />
+                <i />
+                <i />
+              </span>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={`msg-scroll chat-empty mode-in ${className}`.trim()}>
         <p className="chat-empty__kicker">{MODE_EMPTY_COPY[mode].kicker}</p>
@@ -583,6 +694,8 @@ function MessageList({
   }
 
   const lastMessage = messages[messages.length - 1];
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const canRegenerate = !busy && lastAssistant !== undefined && lastAssistant.status === "completed";
   const showCursor =
     busy && lastMessage !== undefined && lastMessage.role === "assistant" && lastMessage.status === "pending";
 
@@ -597,7 +710,9 @@ function MessageList({
             liveAgent={message === lastMessage ? liveAgent : null}
             planView={message === lastMessage ? planView : null}
             interactionLocked={busy}
+            canRegenerate={canRegenerate && message === lastAssistant}
             onRetry={onRetry}
+            onRegenerate={onRegenerate}
             onEditResend={onEditResend}
             onAnswerInteraction={onAnswerInteraction}
           />

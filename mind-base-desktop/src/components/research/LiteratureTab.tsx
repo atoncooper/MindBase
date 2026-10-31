@@ -5,10 +5,11 @@
 
 import { useEffect, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { useToast } from "../../lib/toast";
 import {
-  deleteLiterature, exportLiteratureBibtex, importLiterature, listLiterature,
-  parseAuthors, verifyLiterature,
+  deleteLiterature, downloadLiteraturePdf, exportLiteratureBibtex, importLiterature,
+  listLiterature, parseAuthors, verifyLiterature,
   type LiteratureFormat, type LiteratureImportResult, type LiteratureRef,
 } from "../../lib/research";
 import { copyToClipboard, errorText, formatYear } from "./common";
@@ -40,6 +41,7 @@ export default function LiteratureTab({ projectId }: { projectId: string }): Rea
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [pdfBusyId, setPdfBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -84,6 +86,48 @@ export default function LiteratureTab({ projectId }: { projectId: string }): Rea
       toast.success(updated.status === "verified" ? "Crossref 核验通过" : "核验已返回", { title: "文献核验" });
     } catch (err) { setError(errorText(err)); toast.error(errorText(err), { title: "文献核验失败" }); }
     finally { setVerifyingId(null); }
+  }
+
+  /** 文献在线地址：优先 url，其次 DOI 解析地址。 */
+  function onlineUrl(ref: LiteratureRef): string {
+    if (ref.url.trim() !== "") return ref.url.trim();
+    if (ref.doi.trim() !== "") return "https://doi.org/" + ref.doi.trim();
+    return "";
+  }
+
+  /** 下载 PDF；拿不到 PDF 时退回在线预览。 */
+  async function handlePdf(ref: LiteratureRef): Promise<void> {
+    setPdfBusyId(ref.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await downloadLiteraturePdf(projectId, ref.id);
+      if (result.path !== null) {
+        toast.success(result.message, { title: "文献 PDF" });
+        await openPath(result.path);
+      } else {
+        toast.warning(result.message, { title: "无法直接下载 PDF" });
+        await openUrl(result.url);
+      }
+    } catch (err) {
+      setError(errorText(err));
+      toast.error(errorText(err), { title: "PDF 下载失败" });
+    } finally {
+      setPdfBusyId(null);
+    }
+  }
+
+  async function handleOnline(ref: LiteratureRef): Promise<void> {
+    const url = onlineUrl(ref);
+    if (url === "") {
+      setNotice("该文献没有 URL / DOI，无法在线预览");
+      return;
+    }
+    try {
+      await openUrl(url);
+    } catch (err) {
+      setError(errorText(err));
+    }
   }
 
   async function handleDelete(ref: LiteratureRef): Promise<void> {
@@ -178,7 +222,7 @@ export default function LiteratureTab({ projectId }: { projectId: string }): Rea
           <div className="research-empty"><p>还没有文献。选题 / 研究设计阶段建议先导入 10–20 条核心文献。</p></div>
         ) : (
           <div className="rs-table-wrap"><table className="research-table">
-            <thead><tr><th>标题</th><th style={{ width: 64 }}>年份</th><th style={{ width: 90 }}>状态</th><th style={{ width: 140 }}>操作</th></tr></thead>
+            <thead><tr><th>标题</th><th style={{ width: 64 }}>年份</th><th style={{ width: 90 }}>状态</th><th style={{ width: 260 }}>操作</th></tr></thead>
             <tbody>
               {refs.map((row) => {
                 const authors = parseAuthors(row.authorsJson);
@@ -191,6 +235,14 @@ export default function LiteratureTab({ projectId }: { projectId: string }): Rea
                     <td><span className={statusClass(row.status)}>{STATUS_LABEL[row.status] ?? row.status}</span></td>
                     <td>
                       <div className="research-row" style={{ flexWrap: "nowrap", gap: 4 }}>
+                        <button type="button" className="button research-btn-sm" disabled={pdfBusyId === row.id}
+                          title="下载 PDF（开放获取）；拿不到就打开在线预览"
+                          onClick={() => void handlePdf(row)}>
+                          {pdfBusyId === row.id ? "下载中…" : "下载/预览"}
+                        </button>
+                        <button type="button" className="button research-btn-sm" disabled={onlineUrl(row) === ""}
+                          title={onlineUrl(row) === "" ? "没有 URL / DOI" : "在浏览器中在线预览"}
+                          onClick={() => void handleOnline(row)}>在线</button>
                         <button type="button" className="button research-btn-sm" disabled={verifyingId === row.id} onClick={() => void handleVerify(row)}>
                           {verifyingId === row.id ? "核验中…" : "核验"}
                         </button>
@@ -204,7 +256,7 @@ export default function LiteratureTab({ projectId }: { projectId: string }): Rea
             </tbody>
           </table></div>
         )}
-        {refs.length > 0 && <p className="hint-text" style={{ marginTop: 10 }}>「未找到」表示 Crossref 查不到，可能是 DOI 缺失或标题改写。</p>}
+        {refs.length > 0 && <p className="hint-text" style={{ marginTop: 10 }}>「未找到」表示 Crossref 查不到，可能是 DOI 缺失或标题改写。下载/预览会先取开放 PDF，付费墙文献会退回浏览器在线打开。</p>}
       </div>
     </div>
   );

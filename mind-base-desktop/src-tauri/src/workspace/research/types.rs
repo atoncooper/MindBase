@@ -92,3 +92,12 @@ pub struct ChatTurnInput {
     pub role: String,
     pub content: String,
 }
+
+/// 控制台里展示的最新 AI 阶段建议（guidance_notes 最新一条）。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchAdvice {
+    pub question: String,
+    pub notes: String,
+    pub created_at: i64,
+}

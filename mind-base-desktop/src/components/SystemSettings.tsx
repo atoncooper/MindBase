@@ -146,6 +146,8 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
   const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; text: string } | null>(
     null,
   );
+  // 命令执行开关：默认关闭；保存后下一次工具调用立即生效（工具每次读配置）。
+  const [shellFeedback, setShellFeedback] = useState<Feedback>(null);
   // 更新弹窗：手动检查发现新版本时自动弹出；已知更新可经「查看更新」回看。
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   // 武装位：手动检查发起时置位，结果落地（update 非空）即自动开弹窗。
@@ -241,6 +243,24 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
       setProxyTestResult({ ok: false, text: toErrorMessage(err) });
     } finally {
       setProxyTesting(false);
+    }
+  }
+
+  /** 切换本机命令执行开关（默认关；仅影响 Agent 的 run_command 工具）。 */
+  async function handleToggleShell(enabled: boolean): Promise<void> {
+    if (config.status !== "ok") return;
+    setShellFeedback(null);
+    try {
+      const stored = await persistConfig({ ...config.value, shellEnabled: enabled });
+      setConfig({ status: "ok", value: stored });
+      setShellFeedback({
+        kind: "ok",
+        text: enabled
+          ? "✓ 命令执行已开启：Agent 可在应用数据目录内运行本机命令并读取输出"
+          : "✓ 命令执行已关闭",
+      });
+    } catch (err) {
+      setShellFeedback({ kind: "error", text: `保存失败：${toErrorMessage(err)}` });
     }
   }
 
@@ -511,7 +531,41 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
 
       <section className="card">
         <h2 className="card__title">
-          <span className="card__index">05</span>配置摘要
+          <span className="card__index">05</span>命令执行
+        </h2>
+        {config.status !== "ok" ? (
+          <p className="placeholder">
+            {config.status === "loading" ? "加载中…" : "配置读取失败"}
+          </p>
+        ) : (
+          <>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={config.value.shellEnabled === true}
+                onChange={(event) => void handleToggleShell(event.target.checked)}
+              />
+              允许 Agent 在本机执行命令与 git / gh 操作（pwsh / cmd / bash）
+            </label>
+            <p className="hint-text">
+              默认关闭。开启后 Agent 可在应用数据目录内运行命令并读取输出（git / npm / cargo / python 等），也可通过 git / gh 工具对指定仓库执行结构化操作（git 需安装 git；gh 需安装 GitHub CLI 并 gh auth login）。
+              普通命令继承当前用户权限，工具层只限制工作目录、超时与输出大小，不是操作系统级沙箱；
+              需要真正隔离时用 run_sandboxed：Windows 走 AppContainer（默认断网、只能读写沙箱目录；
+              需要联网传 network=on）、Linux 走 bubblewrap、macOS 走 seatbelt。
+              每次执行记录到数据目录的 logs/shell-audit.jsonl。
+            </p>
+            {shellFeedback !== null && (
+              <p className={shellFeedback.kind === "error" ? "error-text" : "hint-text"}>
+                {shellFeedback.text}
+              </p>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="card">
+        <h2 className="card__title">
+          <span className="card__index">06</span>配置摘要
         </h2>
         {config.status !== "ok" ? (
           <p className="placeholder">
@@ -532,6 +586,14 @@ function SystemSettings({ hidden, updateState }: SystemSettingsProps) {
               <dd className="row__value">
                 <span className={config.value.autoCheckUpdates ? "status status--ok" : "status"}>
                   {config.value.autoCheckUpdates ? "已开启" : "已关闭"}
+                </span>
+              </dd>
+            </div>
+            <div className="row">
+              <dt className="row__label">命令执行</dt>
+              <dd className="row__value">
+                <span className={config.value.shellEnabled ? "status status--ok" : "status"}>
+                  {config.value.shellEnabled ? "已开启" : "已关闭"}
                 </span>
               </dd>
             </div>

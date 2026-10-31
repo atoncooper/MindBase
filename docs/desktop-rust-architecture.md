@@ -10,7 +10,7 @@
 任何功能都要在平铺文件里找，职责边界只能靠记忆维持。
 
 现在：按**领域包（package）**分层，每个包一个目录 + `mod.rs` 门面；包内大文件再按内聚职责
-拆成子模块。重构后 191 个文件、38,192 行（增量全部来自模块头注释与门面重导出），
+拆成子模块。重构后 199 个文件、40,776 行（增量全部来自模块头注释、门面重导出与沙箱包），
 **最大单文件 595 行、0 个文件超过 800 行**，`lib.rs` 只剩 31 行包声明。
 
 ## 2. 包清单与依赖方向
@@ -29,6 +29,7 @@ app         Tauri 外壳：Builder、启动装配、托盘、IPC 命令注册
 
 ```
 app  →  workspace / agent  →  knowledge / media  →  llm  →  infra
+                              agent  →  sandbox（OS 隔离原语）
 ```
 
 - `app` 只做装配与命令注册，不写业务逻辑（这也是 `lib.rs` 只剩包声明的原因）。
@@ -37,6 +38,10 @@ app  →  workspace / agent  →  knowledge / media  →  llm  →  infra
 - `knowledge` / `media` 互不依赖：`knowledge::ingest` 需要转写就调 `media::asr`，`media` 不知道
   「知识库」的存在。
 - `infra` 是地基，原则上不反向依赖业务包。
+- `sandbox` 是独立的 OS 隔离原语包（AppContainer / bubblewrap / seatbelt），只依赖
+  标准库 + `windows` crate，可被任意上层复用；它不感知 agent / tools / 配置。
+- `toolkit` 是与 agent 无关的工具执行层（process / shell / git / gh），被
+  `agent::harness::tools` 的薄适配器调用；它的测试直接打包 API，不需要 harness。
 
 **已知例外（本次重构是「只搬家、不重写」，历史耦合原样保留；新代码不要模仿）**
 
@@ -64,6 +69,13 @@ src/
 │   ├── setup.rs            # 启动装配：DB、日志、prompts、ffmpeg、代理、托盘、ASR 预热
 │   ├── tray.rs             # 托盘图标 + reveal_main
 │   └── commands.rs         # 唯一的 IPC 注册表（按包分组，125 个命令）
+├── automation/             # 长时自动化任务（supervisor / log_index / report / scheduler）
+├── toolkit/                # 与 agent 无关的工具执行层
+│   ├── mod.rs              #   包说明与依赖方向
+│   ├── process.rs          #   子进程执行 / 输出落文件 / 超时杀树 / 审计
+│   ├── shell.rs            #   pwsh / cmd / bash 构造与断网包装
+│   ├── git.rs              #   git action 参数构造与执行
+│   └── gh.rs               #   gh action 参数构造与执行
 ├── agent/                  # Agent 域
 │   ├── harness/            # 五件套 + ReAct + 计划/交互/健康检查/子代理
 │   │   ├── mod.rs          #   Harness 单例 + 门面
@@ -151,6 +163,9 @@ knowledge/ingest.rs  →  knowledge/ingest/
 | 新的文档类型 | `workspace/<kind>.rs`，并在 `workspace/mod.rs` 声明 |
 | 新的本地 sidecar | `media/`（进程管理 + 健康探测成套放同一子模块） |
 | 表 / 配置 / 日志 / 路径 | `infra/`（不要在业务包里直接拼 SQL/路径） |
+| 新的 OS 隔离 / 进程执行原语 | `sandbox/`（按平台加后端，工具层只做适配） |
+| 新的通用命令/Git 执行能力 | `toolkit/`（纯实现；agent 工具只做 LocalTool 适配） |
+| 新的长任务/自动化能力 | `automation/`（日志分区 + supervisor + 报告节奏；工具层只做适配） |
 
 ## 6. 验证
 
@@ -166,11 +181,11 @@ cargo test --lib             # 基线：269 passed / 3 ignored
 
 | 指标 | 重构前 | 重构后 |
 |------|--------|--------|
-| `src/` 下 .rs 文件数 | 51 | 191 |
-| 代码总行数 | 36,467 | 38,192（+模块头/门面重导出，无逻辑新增） |
+| `src/` 下 .rs 文件数 | 51 | 199 |
+| 代码总行数 | 36,467 | 40,776（+模块头/门面重导出/沙箱包，无逻辑新增） |
 | 最大单文件 | 2,763（harness/tools.rs） | 595（knowledge/bilibili/login.rs） |
 | > 800 行的文件 | 18 | 0 |
-| > 500 行的文件 | 20 | 5 |
+| > 500 行的文件 | 20 | 6 |
 | `lib.rs` | 280（含启动/托盘/命令注册） | 31（只做包声明） |
 | 包（目录）数 | 2 | 7 + 每个已拆模块的子包 |
 | `cargo test --lib` | 269 passed / 3 ignored | 269 passed / 3 ignored（不变） |
@@ -180,3 +195,99 @@ cargo test --lib             # 基线：269 passed / 3 ignored
 注册不变（`#[tauri::command]` 生成的 `__cmd__*` 宏也一并重导出）。
 
 > 下次再出现 > 500 行的文件，按 §4 的约定就地拆成「门面 + 子模块」，不要让它长回去。
+
+## 8. 沙箱实现与复用库调研（2026-10-30）
+
+沙箱独立为 `sandbox/` 包（`mod.rs` / `windows.rs` / `unix.rs`），工具层
+`agent::harness::tools::sandbox` 只做参数解析 / 开关 / 审计；OS 隔离实现可被其它上层复用。
+
+调研的现成 Rust 库：
+
+| crate | 版本/活跃度 | 覆盖平台 | 结论 |
+|-------|------------|----------|------|
+| `rappct` | 0.13.3，2026-10，41k dl，MIT | Windows AppContainer/LPAC + 能力 + 进程启动 + ACL | **评估后未采用**：其 `launch_in_container_with_io` 在本机（Windows 11 25H2 / build 26200）稳定返回 `E_INVALIDARG (0x80070057)`，连最简单的 `cmd /C echo` 也失败；保留 windows-rs 自实现，rappct 可等上游修复后再替换 |
+| `heel` | 0.7.1，2026-10 | macOS seatbelt / Linux Landlock+seccomp / Windows AppContainer+Job | 覆盖面最好且带网络策略（DenyAll/代理白名单），但依赖树重（hyper/smol/pty 等）、较新，暂不引入；可作后续跨平台替换候选 |
+| `skarn-sandbox` | 1.0.1，2026-09 | macOS seatbelt / Linux Landlock+seccomp / Windows AppContainer | 统一 Policy API，但下载量小（5k）、需要外部 worker，暂不引入 |
+| `birdcage` | 0.8.1，157k dl | Linux Landlock+seccomp / macOS seatbelt（Windows 不支持） | Linux/macOS 可用它替换 bwrap/sandbox-exec 依赖，但无法在当前 Windows 环境验证，暂不引入 |
+| `nono` / `hakoniwa` / `landlock` | — | Linux（部分 macOS） | 平台单一，不满足 Windows |
+
+当前实现：
+- Windows：windows-rs 直接 `CreateAppContainerProfile` + `SECURITY_CAPABILITIES`（network=on 时加
+  internetClient `S-1-15-3-1`）+ 可继承管道 + Job Object 超时杀进程树；沙箱目录用 `icacls` 授权给
+  AppContainer SID。
+- Linux/macOS：bubblewrap / sandbox-exec，系统工具缺失时明确报错。
+
+> 后续若 `rappct` 修复启动问题或 `heel` 成熟，可只替换 `sandbox/windows.rs` / `sandbox/unix.rs`，
+> 工具层与包接口不变（这是分包的主要收益）。
+
+### 执行输出：落文件 + 摘要，不经过内存
+
+命令类工具（`run_command` / `git` / `gh` / `run_sandboxed`）的 stdout/stderr **直接重定向到**
+`<data_dir>/logs/exec/` 下的文件（`infra/exec_log.rs` 统一管理路径、头 2KB + 尾 4KB 摘要、
+64MB/200 文件保留策略与按字节分段读取）；工具只回传摘要与日志路径，模型需要全文时用 `read_file`
+的 `offset`/`limit` 分段读取。这样大输出（构建日志、批量 diff、训练输出）不会堆在内存或上下文里。
+
+## 9. 测试分层（2026-10-30）
+
+标准 Rust 布局：**单元测试内联 + 包内 `tests/` 集成测试**；`tests/` 再按域分包
+（每个子目录的 `main.rs` 被 Cargo 自动识别为一个独立测试 crate）。
+
+```text
+tests/
+├── common/mod.rs        # 只含 std 辅助（不引用 agent/harness）
+├── toolkit/             # process / shell / git / gh
+├── sandbox/             # appcontainer / network
+├── infra/               # exec_log / config
+├── knowledge/           # chunker
+├── workspace/           # notes markdown / quiz parse
+└── agent/               # 工具契约（唯一使用 TestHarness）
+```
+
+分层规则：
+- **非 agent**（toolkit / sandbox / infra / knowledge / workspace）：直接调用 `pub mod toolkit`、
+  `pub mod sandbox`，或经 `src/testing.rs` 的只读包装访问 `pub(crate)` 逻辑
+  （exec_log 摘要/分页/配额、chunker、markdown 消毒、quiz 解析），不初始化 agent；
+- **agent 层**（`tests/agent`）：配置开关、工具注册表、cwd 边界、输出摘要、read_file 分页，
+  只有这一类测试使用 `TestHarness`；
+- **单测**：纯函数 / 解析器 / 需要私有实现的逻辑仍内联 `#[cfg(test)] mod tests`（语言惯例，
+  集成测试只能看到 `pub` API）。
+
+命中数（2026-10-30）：单测 276（273 passed / 3 ignored）+ tests/ 44（43 passed / 1 ignored）
+= **320 tests，0 failed**。基线命令：`cargo test`（CI 同命令）；单域 `cargo test --test <domain>`。
+
+## 10. Agent 协同与透明化（2026-10-31）
+
+拓扑是「星型 + 一层再委托」，不是 mesh：
+
+| 层 | 可以委托谁 | 说明 |
+|---|---|---|
+| chat（顶层，对用户透明） | memory / note / code / search / academic / research | 用户只看到「助手处理中」，不暴露主 agent 身份 |
+| academic / research（子代理） | search / memory | 只能再委托一层；孙代理不能继续委托（结构性上限） |
+| 其他子代理 | — | 无 delegate 通道 |
+| 主 agent 自建 agent | 运行时不限（chat 工具集） | create_agent 持久化「名字 + 角色提示词」，之后 delegate_to_agent 按名字复用；list_agents 查看 |
+
+共享机制：
+
+- 同一 session_id：历史、记忆窗口、向量检索、文件目录；
+- 委托成功自动写 session findings（黑板），所有带 get_session_findings 的 agent 可读；
+- 子代理步骤以 SubStep 事件推给前端；token 用量合并回父回合；
+- 同一目标连续失败 2 次熔断（避免委托风暴）。
+
+前端可见性（默认安静，有运行才出现）：
+
+- 主 agent 名字默认隐藏，只显示进度/动作；
+- 顶栏只在「有子代理或后台任务在跑」时出现一个轻量入口（N 个 agent 运行中），
+  点开仅显示运行中的子代理与后台任务（可停止），空闲时完全不渲染；
+- 子代理运行结束发 AgentRun 事件（agent / ok / duration_ms / steps / usage），
+  前端按 agent 聚合为助手消息脚注：次数 · 总耗时 · 步数 · token；
+- 后台任务 TaskView 增加 usage（token 用量）与 elapsed/steps，面板可见；
+- 后台任务弹窗不再让用户选 agent，统一由主 agent（chat）调度；
+- 自定义 agent（create_agent）：存 SQLite（custom_agents 表），委托时把角色提示词包成任务说明，
+  与聊天共享 session/知识库/文件；可用 list_agents 列出内置 + 自定义 agent；
+- 学术工具（academic/research 可用）：
+  academic_literature（Crossref 检索 / 文献列表 / BibTeX·CSL 导入 / BibTeX 导出 / 单条核验）、
+  academic_project（项目列表 / 简报 / 阶段流转）、
+  academic_manuscript（章节列表 / 读取 / 写入，正文落 manuscript/sections/*.md）、
+  academic_evidence（数据集列表 / 数据文件导入含 Python 画像 / 分析脚本执行 / 实验记录列表 / 登记实验运行）、web_search；
+  科研工作台的 research_ask 已从单次 completion 升级为 ReAct（同一套工具 + 项目简报注入）；
+- 后台任务仍可独立运行，不阻塞当前对话。

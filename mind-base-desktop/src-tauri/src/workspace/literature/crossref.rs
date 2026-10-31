@@ -92,6 +92,73 @@ pub(super) fn verify_blocking(doi: &str, local_title: &str) -> Result<VerifyOutc
     }
 }
 
+/// 一条 Crossref 检索结果（AI 选文献用）。
+#[derive(Debug, Clone)]
+pub(crate) struct SearchHit {
+    pub title: String,
+    pub doi: String,
+    pub authors: Vec<String>,
+    pub year: Option<i64>,
+    pub venue: String,
+    pub url: String,
+}
+
+/// 按书目信息检索 Crossref（阻塞；调用方在工具线程里执行）。
+pub(super) fn search_blocking(query: &str, rows: usize) -> Result<Vec<SearchHit>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("检索词不能为空".to_string());
+    }
+    let rows = rows.clamp(1, 10);
+    let url = format!(
+        "{CROSSREF_WORKS}?query.bibliographic={}&rows={rows}&select=DOI,title,author,issued,container-title,URL",
+        url_encode(query, false)
+    );
+    let agent = build_crossref_agent();
+    let response = agent.get(&url).call().map_err(|err| match err {
+        ureq::Error::Status(code, _) => format!("Crossref 返回 HTTP {code}，请稍后重试"),
+        ureq::Error::Transport(err) => {
+            format!("访问 Crossref 失败：{err}（请检查网络或代理设置）")
+        }
+    })?;
+    let payload: Value = response
+        .into_json()
+        .map_err(|err| format!("Crossref 响应解析失败：{err}"))?;
+    let items = payload
+        .get("message")
+        .and_then(|message| message.get("items"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(items.iter().map(search_hit).collect())
+}
+
+fn search_hit(item: &Value) -> SearchHit {
+    let meta = crossref_meta(item);
+    let authors = item
+        .get("author")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|author| {
+                    let family = author.get("family").and_then(Value::as_str).unwrap_or("");
+                    let given = author.get("given").and_then(Value::as_str).unwrap_or("");
+                    let name = format!("{family} {given}").trim().to_string();
+                    (!name.is_empty()).then_some(name)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    SearchHit {
+        title: meta.title,
+        doi: meta.doi,
+        authors,
+        year: meta.year,
+        venue: meta.venue,
+        url: meta.url,
+    }
+}
+
 fn crossref_meta(item: &Value) -> CrossrefMeta {
     CrossrefMeta {
         doi: item

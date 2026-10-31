@@ -1,6 +1,6 @@
 [package]
 name = "mind-base-desktop"
-version = "0.1.15"
+version = "0.1.16"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -13,6 +13,11 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "mind_base_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# 测试布局（标准 Rust）：
+# - 单元测试：源码内联 `#[cfg(test)] mod tests`（需要访问私有实现）；
+# - 端到端 / 集成测试：本包 `tests/` 目录（cargo 自动编译为独立测试 crate），
+#   通过 crate 的 `TestHarness` 公共测试 API 访问内部能力（见 src/testing.rs）。
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -50,6 +55,23 @@ tauri-plugin-updater = "2.11.0"
 
 # Test-only: backdate mtimes to exercise LRU eviction order and the grace window.
 # (cross-platform mtime setting isn't exposed by std)
+# Windows AppContainer sandbox backend (agent/harness/tools/sandbox.rs).
+# Windows AppContainer sandbox backend (sandbox package).
+# NOTE: rappct 0.13 was evaluated for reuse but its launch path returns
+# E_INVALIDARG on Windows 11 25H2/build 26200, so the backend uses windows-rs
+# directly (see docs/desktop-rust-architecture.md §8).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Isolation",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
+] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 filetime = "0.2"
 

@@ -30,6 +30,21 @@ pub(crate) fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     if let Ok(conn) = db.conn.lock() {
         crate::llm::api_keys::refresh_proxy_setting(&conn);
     }
+    // Long-running automation tasks from the previous session cannot be
+    // reattached (Child handles are gone) — mark them interrupted so the AI /
+    // user can decide whether to retry instead of silently believing they run.
+    if let Ok(conn) = db.conn.lock() {
+        if let Ok(count) =
+            crate::automation::supervisor::reconcile(&conn, crate::automation::now_secs())
+        {
+            if count > 0 {
+                crate::infra::logging::warn(
+                    "automation",
+                    &format!("{count} 个遗留自动化任务已标记为 interrupted"),
+                );
+            }
+        }
+    }
     app.manage(db);
     // Parked signed update (checked → awaiting user confirmation).
     app.manage(crate::infra::updater::PendingUpdate::default());

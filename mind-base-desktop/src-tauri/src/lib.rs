@@ -8,6 +8,8 @@
 //! | `agent` | local AgentHarness, agent kinds, chat sessions, skills, tools |
 //! | `knowledge` | Bilibili acquisition, ingestion, chunking, vector search |
 //! | `media` | ASR (cloud + local whisper), OCR, ffmpeg, media cache |
+//! | `sandbox` | OS-level sandboxed process execution (AppContainer / bubblewrap / seatbelt) |
+//! | `toolkit` | agent-free command execution: process capture, shell, git, gh |
 //! | `llm` | provider catalog, credentials, chat client, embeddings, rerank |
 //! | `workspace` | notes, quiz, mind map, research, manuscript, literature, dataset |
 //! | `infra` | SQLite, config, logging, embedded Python, updater |
@@ -22,7 +24,15 @@ mod infra;
 mod knowledge;
 mod llm;
 mod media;
+pub mod automation;
+pub mod sandbox;
+#[doc(hidden)]
+pub mod testing;
+pub mod toolkit;
 mod workspace;
+
+#[doc(hidden)]
+pub use testing::TestHarness;
 
 /// Entry point used by `main.rs` (and the mobile entry point).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

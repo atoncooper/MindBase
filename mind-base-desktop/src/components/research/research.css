@@ -1490,3 +1490,72 @@
   max-width: 100%;
   overflow-x: auto;
 }
+
+/* ---- 控制台内联 AI 助手（阶段建议 + 提问） ----------------------------- */
+
+.research-scope .rs-advice__text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.75;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.research-scope .rs-advice__meta {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--rs-text-3);
+}
+
+.research-scope .rs-advice__ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rs-card-border);
+}
+
+.research-scope .rs-advice__input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid var(--rs-outline-variant);
+  border-radius: 10px;
+  background: var(--rs-surface);
+  color: var(--rs-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.research-scope .rs-advice__input:focus {
+  outline: none;
+  border-color: var(--rs-primary);
+  box-shadow: 0 0 0 1px var(--rs-primary);
+}
+
+.research-scope .rs-advice__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.research-scope .rs-advice__error {
+  margin: 4px 0 0;
+}
+
+/* 文本域在卡片里保持可读高度（默认 .text-input 的 40px 只适合单行）。 */
+.research-scope textarea.text-input {
+  height: auto;
+  min-height: 80px;
+  padding: 10px 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.research-scope .research-row + .research-row {
+  margin-top: 8px;
+}

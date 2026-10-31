@@ -97,6 +97,11 @@ impl AgentRuntime {
         &mut self.registry
     }
 
+    /// Read-only registry view (test support / tool lookup).
+    pub(crate) fn registry(&self) -> &super::registry::ToolRegistry {
+        &self.registry
+    }
+
     /// Wire specs of every registered tool (agent-status UI / tool listing).
     pub(crate) fn tool_specs(&self) -> Vec<super::registry::ToolSpec> {
         self.registry.specs()

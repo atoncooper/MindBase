@@ -20,8 +20,8 @@ mod types;
 pub(crate) use briefing::project_briefing;
 pub(crate) use commands::*;
 pub(crate) use types::{
-    ChatTurnInput, ProjectCreateInput, ProjectDetail, ProjectUpdateInput, ResearchArtifact,
-    ResearchEvent, ResearchProject, ResearchStage,
+    ChatTurnInput, ProjectCreateInput, ProjectDetail, ProjectUpdateInput, ResearchAdvice,
+    ResearchArtifact, ResearchEvent, ResearchProject, ResearchStage,
 };
 
 /// Canonical stage order. Kept in sync with the frontend RESEARCH_STAGES.
@@ -50,4 +50,23 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|delta| delta.as_secs() as i64)
         .unwrap_or_default()
+}
+
+/// Agent 工具层可用的阶段流转（不经过 Tauri State）。
+pub(crate) fn update_stage(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    stage: &str,
+    status: &str,
+    gate_json: Option<&str>,
+    now: i64,
+) -> Result<(), String> {
+    store::update_stage_conn(conn, project_id, stage, status, gate_json, now)
+}
+
+/// Agent 工具层：列出全部研究项目（id/标题/当前阶段）。
+pub(crate) fn list_projects(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<ResearchProject>, String> {
+    store::list_projects_conn(conn)
 }
