@@ -63,6 +63,12 @@
 - 直接覆盖安装；SQLite 新增列/表均自动迁移，本地数据与配置兼容。
 - 旧版导入的 Word 文档建议重新导入一次，以记录原始文件并启用原生 Word 展示与参考文献自动解析。
 
+## 📥 下载与升级
+- **Windows x64**：[NSIS 安装包](https://github.com/atoncooper/MindBase/releases/download/mind-base-desktop-v0.2.0/mind-base-desktop_0.2.0_x64-setup.exe) · [MSI 安装包](https://github.com/atoncooper/MindBase/releases/download/mind-base-desktop-v0.2.0/mind-base-desktop_0.2.0_x64_en-US.msi)
+- **macOS Apple Silicon**：[DMG](https://github.com/atoncooper/MindBase/releases/download/mind-base-desktop-v0.2.0/mind-base-desktop_0.2.0_aarch64.dmg) · [自动更新包 .app.tar.gz](https://github.com/atoncooper/MindBase/releases/download/mind-base-desktop-v0.2.0/mind-base-desktop.app.tar.gz)
+- **自动更新**：应用通过 `latest.json` 检查更新（Windows x86_64 / macOS arm64），下载后签名校验并静默安装；0.1.x 用户也可直接覆盖安装。
+- 安装包签名与 `latest.json` 校验值随 Release 一同发布；如遇 SmartScreen 提示请核对发布者与下载来源。
+
 ## ⚠️ 已知限制
 - SSH 功能（SFTP、端口转发、日志）缺少真实服务器端到端验证；仅完成编译/单测。
 - 端口转发目前仅本地转发；remote forwarding / SOCKS 未实现。
