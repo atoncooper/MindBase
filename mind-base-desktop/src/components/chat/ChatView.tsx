@@ -62,7 +62,7 @@ import { listSkills, type SkillMeta } from "../../lib/skills";
 import { listAgentTasks } from "../../lib/harness";
 import { toErrorMessage } from "../../lib/updater";
 import SessionSidebar from "./SessionSidebar";
-import MessageList, { parseClarify } from "./MessageList";
+import MessageList, { parseClarify, sanitizeAssistantContent } from "./MessageList";
 import ChatUsageBar from "./ChatUsageBar";
 import AgentActivityPanel from "./AgentActivityPanel";
 import SummaryModal from "./SummaryModal";
@@ -117,6 +117,13 @@ interface ChatViewProps {
   /** 命令面板的跨视图跳转请求；本视图消费后经 onPendingConsumed 归零。 */
   pending: PendingJump | null;
   onPendingConsumed: () => void;
+}
+
+/** 排队待发送的一条消息：文本 + 附件 dataUrl 快照（技能不随队列携带）。 */
+interface QueuedMessage {
+  id: string;
+  text: string;
+  images: string[];
 }
 
 /** Arrow-up glyph for the round send button (Gemini 式). */
@@ -184,7 +191,8 @@ function historyToUiMessages(rows: ChatMessageRow[]): UiMessage[] {
   return rows.map((row) => ({
     id: row.msgId,
     role: row.role,
-    content: row.content,
+    content: row.role === "assistant" ? sanitizeAssistantContent(row.content) : row.content,
+    reasoning: row.reasoning ?? "",
     status:
       row.status === "failed"
         ? "failed"
@@ -218,14 +226,15 @@ function applyLiveSnapshot(
       next[next.length - 1] = {
         ...last,
         status: "pending",
-        content: state.answer,
+        content: sanitizeAssistantContent(state.answer),
         steps,
       };
     } else {
       next.push({
         id: `live-${state.sessionId}`,
         role: "assistant",
-        content: state.answer,
+        content: sanitizeAssistantContent(state.answer),
+        reasoning: "",
         status: "pending",
         sources: [],
         error: "",
@@ -297,6 +306,15 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const [imageError, setImageError] = useState("");
   const [imageDragActive, setImageDragActive] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  // 生成中继续发送的消息进入队列：当前回合结束后按顺序自动发送。
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const queueRef = useRef<QueuedMessage[]>([]);
+  const queueNoticeTimer = useRef<number | null>(null);
+  const [queueNotice, setQueueNotice] = useState("");
+  // 是否有一轮对话正在执行（state busy 只用于 UI；队列续发需要同步标记）。
+  const runningRef = useRef(false);
+  // 离开对话视图（卸载）后不再续发队列，避免在用户看不到的地方发消息。
+  const mountedRef = useRef(true);
   // dragenter/dragleave 在嵌套子元素间会成对抖动，用计数抵消后再收高亮。
   const imageDragDepth = useRef(0);
 
@@ -349,6 +367,10 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   const runToken = useRef(0);
   const localCounter = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // 队列续发发生在上一轮 runTurn 的 finally 里，闭包中的 activeId 可能还是
+  // 旧值（首条消息刚建会话时尤其明显）：用 ref 读最新会话 id。
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
 
   // 科研控制台只负责项目状态；主聊天跟随“当前项目”，控制台切换后重挂即同步。
   useEffect(() => {
@@ -391,6 +413,22 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
   // 的 send / busy，否则回合收尾的旧闭包（busy=true）会让点击静默失效。
   const sendRef = useRef<(text?: string) => Promise<void>>(async () => undefined);
   const busyRef = useRef(false);
+
+  // 队列提示定时器 / 卸载后的队列续发清理。
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      queueRef.current = [];
+      if (queueNoticeTimer.current !== null) window.clearTimeout(queueNoticeTimer.current);
+    };
+  }, []);
+
+  // 空闲兜底续发：会话切换后旧回合 token 失效（finally 不再 drain），
+  // 但用户随后又排队的新消息仍应在下一帧继续发送。
+  useEffect(() => {
+    if (!busy && queueRef.current.length > 0) drainQueue();
+  }, [busy, queue.length]);
 
   // Auto-grow the composer with its content, capped at ~8 lines.
   useEffect(() => {
@@ -659,6 +697,9 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
   function selectSession(sessionId: string): void {
     if (sessionId === activeId) return;
+    // 排队消息属于旧会话，切走即清空，避免自动发到新会话。
+    clearQueue("切换会话");
+    activeIdRef.current = sessionId;
     window.localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
     const token = ++runToken.current;
     setActiveId(sessionId);
@@ -733,6 +774,9 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
 
   /** Draft state: an unnamed conversation created on the first message. */
   function startDraft(): void {
+    // 新建草稿会切离当前会话，排队消息一并清空。
+    clearQueue("新建对话");
+    activeIdRef.current = null;
     runToken.current += 1;
     window.localStorage.removeItem(ACTIVE_SESSION_KEY);
     setActiveId(null);
@@ -882,6 +926,19 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           return next;
         });
         break;
+      case "reasoning":
+        // 思考过程增量：追加到最后一条 assistant（仅思考模型会发）。
+        setMessages((prev) => {
+          if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
+          const next = [...prev];
+          const last = next[next.length - 1];
+          next[next.length - 1] = {
+            ...last,
+            reasoning: (last.reasoning ?? "") + event.content,
+          };
+          return next;
+        });
+        break;
       case "chunk":
         setMessages((prev) => {
           if (prev.length === 0 || prev[prev.length - 1].role !== "assistant") return prev;
@@ -945,13 +1002,14 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             ...last,
             id: event.msgId,
             status: "completed",
-            content:
+            content: sanitizeAssistantContent(
               interruptRequestedRef.current && last.content.trim() === ""
                 ? "（已手动中断本次生成）"
                 : last.interaction !== undefined && last.content.trim() === ""
                   ? // 与后端落库的兜底文案一致：历史重载与实时表现相同。
                     "（已向你提问，请在上方卡片作答）"
                   : last.content,
+            ),
           };
           return next;
         });
@@ -969,22 +1027,65 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     }
   }
 
-  async function send(text?: string): Promise<void> {
-    // 显式传入 text 的路径（澄清选项 / 交互卡作答）不携带输入框里暂存的图片：
-    // 那些图片属于用户正在编辑的这一轮。
-    const outgoingImages = text === undefined ? pendingImages : [];
-    // 只附图片也可以发送：补一句默认问题（后端 chat_ask 要求问题非空）。
-    const question =
-      (text ?? input).trim() || (outgoingImages.length > 0 ? "请分析这张图片。" : "");
-    if (question === "" || busy) return;
+  // --- 消息队列 -----------------------------------------------------------
 
-    setInput("");
+  function syncQueue(next: QueuedMessage[]): void {
+    queueRef.current = next;
+    setQueue(next);
+  }
+
+  /** 生成中发送：问题 + 当前附件快照入队，清空输入，等本轮结束自动发送。 */
+  function enqueueMessage(text: string, images: string[]): void {
+    localCounter.current += 1;
+    syncQueue([
+      ...queueRef.current,
+      { id: `queued-${Date.now()}-${localCounter.current}`, text, images },
+    ]);
+    setQueueNotice("");
+  }
+
+  function removeQueued(id: string): void {
+    syncQueue(queueRef.current.filter((item) => item.id !== id));
+  }
+
+  /** 清空队列（切换会话/新建草稿时调用，避免发到错误会话）。 */
+  function clearQueue(reason?: string): void {
+    const count = queueRef.current.length;
+    syncQueue([]);
+    if (count === 0 || reason === undefined) return;
+    setQueueNotice("已清空 " + count + " 条排队消息（" + reason + "）");
+    if (queueNoticeTimer.current !== null) window.clearTimeout(queueNoticeTimer.current);
+    queueNoticeTimer.current = window.setTimeout(() => setQueueNotice(""), 4000);
+  }
+
+  /** 当前回合结束后继续发送队首消息（失败/中断也继续下一条）。 */
+  function drainQueue(): void {
+    if (runningRef.current || !mountedRef.current) return;
+    const next = queueRef.current[0];
+    if (next === undefined) return;
+    syncQueue(queueRef.current.slice(1));
+    void dispatch(next.text, next.images, {
+      skillFolder: null,
+      consumeSkill: false,
+      fromQueue: true,
+    });
+  }
+
+  /**
+   * 发送一条消息（创建会话 → 乐观 user 气泡 → runTurn）。手动发送与队列
+   * 续发共用；返回本轮是否成功完成（失败/中断为 false，不影响后续队列）。
+   */
+  async function dispatch(
+    question: string,
+    imageDataUrls: string[],
+    options: { skillFolder: string | null; consumeSkill: boolean; fromQueue: boolean },
+  ): Promise<boolean> {
     localCounter.current += 1;
     setLiveAgent({ name: "", action: "思考中…", step: 0 });
     setPlanView(null);
 
     // Resolve or create the target conversation first.
-    let sid = activeId;
+    let sid = activeIdRef.current;
     try {
       if (sid === null) {
         // 非对话模式显式命名「摘要——类型」：后端只改默认名，显式命名
@@ -993,12 +1094,14 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           mode === "chat" ? undefined : `${chatTitlePrefix(question)}${MODE_SUFFIX[mode]}`,
         );
         sid = created.chatSessionId;
+        activeIdRef.current = sid;
         setSessions((prev) => [created, ...prev]);
         setActiveId(sid);
       }
     } catch (err) {
       setLoadError(toErrorMessage(err));
-      return;
+      if (options.fromQueue) drainQueue();
+      return false;
     }
 
     // Optimistic user bubble; the pending assistant placeholder lives in
@@ -1006,12 +1109,43 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     const stamp = `${Date.now()}-${localCounter.current}`;
     setMessages((prev) => [
       ...prev,
-      { id: `local-user-${stamp}`, role: "user", content: question, status: "completed", sources: [], error: "", steps: [] },
+      { id: `local-user-${stamp}`, role: "user", content: question, reasoning: "", status: "completed", sources: [], error: "", steps: [] },
     ]);
-    const succeeded = await runTurn(
-      sid,
+    return runTurn(sid, question, imageDataUrls, false, options.skillFolder, options.consumeSkill);
+  }
+
+  async function send(text?: string): Promise<void> {
+    // 显式传入 text 的路径（澄清选项 / 交互卡作答）不携带输入框里暂存的图片：
+    // 那些图片属于用户正在编辑的这一轮。
+    const outgoingImages = text === undefined ? pendingImages : [];
+    // 只附图片也可以发送：补一句默认问题（后端 chat_ask 要求问题非空）。
+    const question =
+      (text ?? input).trim() || (outgoingImages.length > 0 ? "请分析这张图片。" : "");
+    if (question === "") return;
+
+    // 生成中：问题与附件快照入队，清空输入/附件，当前回合结束后顺序发送。
+    if (busyRef.current) {
+      enqueueMessage(
+        question,
+        outgoingImages.map((image) => image.dataUrl),
+      );
+      setInput("");
+      if (text === undefined) {
+        setPendingImages([]);
+        setImageError("");
+      }
+      return;
+    }
+
+    setInput("");
+    const succeeded = await dispatch(
       question,
       outgoingImages.map((image) => image.dataUrl),
+      {
+        skillFolder: attachedSkill?.folder ?? null,
+        consumeSkill: true,
+        fromQueue: false,
+      },
     );
     // 发送成功才清空附件；失败保留，用户可直接重试（图片不落库）。
     if (succeeded) {
@@ -1034,13 +1168,18 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
     question: string,
     imageDataUrls: string[] = [],
     regenerate = false,
+    skillFolder: string | null = attachedSkill?.folder ?? null,
+    consumeSkill = true,
   ): Promise<boolean> {
-    if (busy) return false;
+    // busy 是渲染态；队列续发发生在同一回合 finally 内（此时 busy 仍为 true），
+    // 用同步 ref 防止重入。
+    if (runningRef.current) return false;
+    runningRef.current = true;
     localCounter.current += 1;
     const stamp = `${Date.now()}-${localCounter.current}`;
     setMessages((prev) => [
       ...prev,
-      { id: `local-assistant-${stamp}`, role: "assistant", content: "", status: "pending", sources: [], error: "", steps: [] },
+      { id: `local-assistant-${stamp}`, role: "assistant", content: "", reasoning: "", status: "pending", sources: [], error: "", steps: [] },
     ]);
     setBusy(true);
     interruptRequestedRef.current = false;
@@ -1061,13 +1200,14 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           if (runToken.current === token) applyEvent(event);
         },
         chatProvider,
-        attachedSkill?.folder ?? null,
+        skillFolder,
         imageDataUrls,
         researchProjectId,
         regenerate,
       );
-      // 技能是单次注入：随本轮发出后即清除（retry 不带技能）。
-      setAttachedSkill(null);
+      // 技能是单次注入：随本轮发出后即清除（retry 不带技能；队列消息不带技能，
+      // 因此也不消费用户为下一轮手动附加的技能）。
+      if (consumeSkill) setAttachedSkill(null);
       succeeded = true;
     } catch (err) {
       if (runToken.current === token) {
@@ -1075,12 +1215,19 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
       }
     } finally {
       streamingSessionRef.current = null;
-      if (runToken.current === token) setBusy(false);
+      runningRef.current = false;
+      if (runToken.current === token) {
+        setBusy(false);
+        // 当前回合结束（成功 / 失败 / 手动中断）后继续发送队列中的下一条；
+        // 切走会话时 token 已失效，队列也已在切换时清空。
+        drainQueue();
+      }
       // Re-sort the sidebar so the active conversation floats to the top.
       void listSessions().then((rows) => setSessions(rows), () => undefined);
     }
     // 会话已切走（token 失效）时不算成功：不能清掉用户在新会话里暂存的附件。
-    return succeeded && runToken.current === token;
+    // 队列续发会开启新一轮并刷新 token，但会话未变时仍算本轮成功。
+    return succeeded && (runToken.current === token || activeIdRef.current === targetId);
   }
 
   /** 重新生成最后一条助手回答：本地移除旧回复，后端替换落库记录。 */
@@ -1324,6 +1471,37 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             </span>
           </div>
         )}
+        {queueNotice !== "" && <p className="chat-queue__notice">{queueNotice}</p>}
+        {queue.length > 0 && (
+          <div className="chat-queue" role="status" aria-label="待发送消息队列">
+            <div className="chat-queue__head">
+              <span className="chat-queue__title">排队中 {queue.length} 条</span>
+              <button type="button" className="chat-queue__clear" onClick={() => clearQueue()}>
+                清空全部
+              </button>
+            </div>
+            <div className="chat-queue__items">
+              {queue.map((item, index) => (
+                <span className="chat-queue__chip" key={item.id} title={item.text}>
+                  <span className="chat-queue__index">{index + 1}</span>
+                  <span className="chat-queue__text">{item.text}</span>
+                  {item.images.length > 0 && (
+                    <span className="chat-queue__images">图×{item.images.length}</span>
+                  )}
+                  <button
+                    type="button"
+                    className="chat-queue__remove"
+                    aria-label="删除这条排队消息"
+                    title="删除"
+                    onClick={() => removeQueued(item.id)}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="composer">
           {skillMenu !== null && (
             <SkillMenu
@@ -1486,6 +1664,16 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
           </div>
           <span className="composer__spacer" aria-hidden="true" />
           {busy ? (
+            <>
+            <button
+              type="button"
+              className="composer__queue-send"
+              disabled={input.trim() === "" && pendingImages.length === 0}
+              title="当前回复结束后自动发送（Enter 同样入队）"
+              onClick={() => void send()}
+            >
+              排队发送
+            </button>
             <button
               type="button"
               className="composer__send composer__send--stop"
@@ -1504,6 +1692,7 @@ function ChatView({ pending, onPendingConsumed }: ChatViewProps): React.JSX.Elem
             >
               <StopIcon />
             </button>
+            </>
           ) : (
             <button
               type="button"

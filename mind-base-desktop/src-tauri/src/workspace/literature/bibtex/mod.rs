@@ -318,7 +318,7 @@ fn bibtex_type_from_csl(csl_type: &str) -> &'static str {
 mod tests {
     use super::*;
     use super::export::bibtex_document;
-    use super::super::types::{LiteratureRef, STATUS_UNVERIFIED};
+    use super::super::types::LiteratureRef;
 
     fn bibtex_entry(content: &str) -> ParsedRef {
         let (entries, errors) = parse_bibtex(content);
@@ -375,7 +375,7 @@ mod tests {
             venue: entry.venue.clone(),
             entry_type: entry.entry_type.clone(),
             url: entry.url.clone(),
-            status: STATUS_UNVERIFIED.to_string(),
+            status: "unverified".to_string(),
             note: String::new(),
         };
         let text = bibtex_document(&[reference]);

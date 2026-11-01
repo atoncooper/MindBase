@@ -1,21 +1,23 @@
-//! `literature_refs` / `citations` / `project_events` SQL access (all SQL lives here).
+//! 文献库（literature_refs / citations）与文献事件 SQL。
+//!
+//! ParsedRef / CrossrefMeta 是 workspace::literature 的解析中间类型；
+//! 本文件只负责落库，解析与联网核验仍留在 workspace::literature。
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection};
 
+use super::{execute, query_all, query_optional, RepoError, RepoResult};
 use crate::infra::db;
+use crate::workspace::literature::{CrossrefMeta, LiteratureRef, ParsedRef};
 
-use super::types::{CrossrefMeta, LiteratureRef, ParsedRef, STATUS_UNVERIFIED, STATUS_VERIFIED};
-use super::util::now_secs;
-
-/// 查询列顺序必须与 `row_to_ref` 的索引一一对应（type 是 SQL 关键字，需加引号）。
+/// 查询列顺序必须与 row_to_ref 的索引一一对应（type 是 SQL 关键字，需加引号）。
 const LIT_COLS: &str =
     "id, cite_key, doi, title, authors_json, year, venue, \"type\", url, status, note";
 
-// ---------------------------------------------------------------------------
-// 行映射与数据访问
-// ---------------------------------------------------------------------------
+/// 存储层的状态字面量（与 workspace::literature::types 的常量保持同值）。
+const STATUS_UNVERIFIED: &str = "unverified";
+const STATUS_VERIFIED: &str = "verified";
 
-fn row_to_ref(row: &Row<'_>) -> rusqlite::Result<LiteratureRef> {
+fn row_to_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<LiteratureRef> {
     Ok(LiteratureRef {
         id: row.get(0)?,
         cite_key: row.get(1)?,
@@ -31,58 +33,60 @@ fn row_to_ref(row: &Row<'_>) -> rusqlite::Result<LiteratureRef> {
     })
 }
 
-pub(super) fn project_exists(conn: &Connection, project_id: &str) -> Result<bool, String> {
-    conn.query_row(
+/// 研究项目是否存在（文献写入前的前置校验，业务层负责报错文案）。
+pub(crate) fn project_exists(conn: &Connection, project_id: &str) -> RepoResult<bool> {
+    let hit = query_optional(
+        conn,
         "SELECT 1 FROM research_projects WHERE id = ?1",
         params![project_id],
         |_| Ok(()),
-    )
-    .optional()
-    .map(|hit| hit.is_some())
-    .map_err(|err| format!("读取研究项目失败：{err}"))
+    )?;
+    Ok(hit.is_some())
 }
 
-pub(super) fn list_refs_conn(conn: &Connection, project_id: &str) -> Result<Vec<LiteratureRef>, String> {
-    let mut stmt = conn
-        .prepare(&format!(
+/// 项目文献列表（导入时间倒序）。
+pub(crate) fn list_refs_conn(
+    conn: &Connection,
+    project_id: &str,
+) -> RepoResult<Vec<LiteratureRef>> {
+    query_all(
+        conn,
+        &format!(
             "SELECT {LIT_COLS} FROM literature_refs WHERE project_id = ?1 \
              ORDER BY created_at DESC, rowid DESC"
-        ))
-        .map_err(|err| format!("准备文献查询失败：{err}"))?;
-    let rows = stmt
-        .query_map(params![project_id], row_to_ref)
-        .map_err(|err| format!("查询文献失败：{err}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("读取文献失败：{err}"))
+        ),
+        params![project_id],
+        row_to_ref,
+    )
 }
 
-pub(super) fn get_ref_conn(
+/// 按 (project_id, id) 查一条文献。
+pub(crate) fn get_ref_conn(
     conn: &Connection,
     project_id: &str,
     ref_id: &str,
-) -> Result<Option<LiteratureRef>, String> {
-    conn.query_row(
+) -> RepoResult<Option<LiteratureRef>> {
+    query_optional(
+        conn,
         &format!("SELECT {LIT_COLS} FROM literature_refs WHERE project_id = ?1 AND id = ?2"),
         params![project_id, ref_id],
         row_to_ref,
     )
-    .optional()
-    .map_err(|err| format!("读取文献失败：{err}"))
 }
 
 /// 批量写入导入条目，返回（新写入数、重复跳过数、新行）。
 ///
 /// cite_key 在项目内唯一：ON CONFLICT DO NOTHING 让重复导入保持幂等，
 /// 而不是报错或覆盖已有记录（已有记录可能已被核验/批注）。
-pub(super) fn insert_parsed_conn(
+pub(crate) fn insert_parsed_conn(
     conn: &mut Connection,
     project_id: &str,
     parsed: Vec<ParsedRef>,
-) -> Result<(usize, usize, Vec<LiteratureRef>), String> {
+) -> RepoResult<(usize, usize, Vec<LiteratureRef>)> {
     let now = now_secs();
     let tx = conn
         .transaction()
-        .map_err(|err| format!("开启数据库事务失败：{err}"))?;
+        .map_err(|err| RepoError::new(format!("开启数据库事务失败：{err}")))?;
     let mut imported = 0usize;
     let mut skipped = 0usize;
     let mut refs: Vec<LiteratureRef> = Vec::new();
@@ -92,29 +96,28 @@ pub(super) fn insert_parsed_conn(
         let authors_json =
             serde_json::to_string(&entry.authors).unwrap_or_else(|_| "[]".to_string());
         let csl_json = entry.csl.to_string();
-        let changed = tx
-            .execute(
-                "INSERT INTO literature_refs(
-                     id, project_id, cite_key, doi, title, authors_json, year, venue,
-                     \"type\", url, status, csl_json, note, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'unverified', ?11, '', ?12)
-                 ON CONFLICT(project_id, cite_key) DO NOTHING",
-                params![
-                    id,
-                    project_id,
-                    entry.cite_key,
-                    entry.doi,
-                    entry.title,
-                    authors_json,
-                    entry.year,
-                    entry.venue,
-                    entry.entry_type,
-                    entry.url,
-                    csl_json,
-                    now,
-                ],
-            )
-            .map_err(|err| format!("写入文献失败：{err}"))?;
+        let changed = execute(
+            &tx,
+            "INSERT INTO literature_refs(
+                 id, project_id, cite_key, doi, title, authors_json, year, venue,
+                 \"type\", url, status, csl_json, note, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'unverified', ?11, '', ?12)
+             ON CONFLICT(project_id, cite_key) DO NOTHING",
+            params![
+                id,
+                project_id,
+                entry.cite_key,
+                entry.doi,
+                entry.title,
+                authors_json,
+                entry.year,
+                entry.venue,
+                entry.entry_type,
+                entry.url,
+                csl_json,
+                now,
+            ],
+        )?;
         if changed == 0 {
             skipped += 1;
             continue;
@@ -136,54 +139,60 @@ pub(super) fn insert_parsed_conn(
     }
 
     tx.commit()
-        .map_err(|err| format!("提交数据库事务失败：{err}"))?;
+        .map_err(|err| RepoError::new(format!("提交数据库事务失败：{err}")))?;
     Ok((imported, skipped, refs))
 }
 
 /// 删除文献，并级联清理 citations（该表没有外键约束，只能手动清）。
 /// 幂等：目标不存在时也返回成功，避免前端重复点击报错。
-pub(super) fn delete_ref_conn(conn: &mut Connection, project_id: &str, ref_id: &str) -> Result<(), String> {
+pub(crate) fn delete_ref_conn(
+    conn: &mut Connection,
+    project_id: &str,
+    ref_id: &str,
+) -> RepoResult<()> {
     let tx = conn
         .transaction()
-        .map_err(|err| format!("开启数据库事务失败：{err}"))?;
-    tx.execute(
+        .map_err(|err| RepoError::new(format!("开启数据库事务失败：{err}")))?;
+    execute(
+        &tx,
         "DELETE FROM citations WHERE project_id = ?1 AND ref_id = ?2",
         params![project_id, ref_id],
-    )
-    .map_err(|err| format!("清理文献引用失败：{err}"))?;
-    tx.execute(
+    )?;
+    execute(
+        &tx,
         "DELETE FROM literature_refs WHERE project_id = ?1 AND id = ?2",
         params![project_id, ref_id],
-    )
-    .map_err(|err| format!("删除文献失败：{err}"))?;
+    )?;
     tx.commit()
-        .map_err(|err| format!("提交数据库事务失败：{err}"))?;
+        .map_err(|err| RepoError::new(format!("提交数据库事务失败：{err}")))?;
     Ok(())
 }
 
-pub(super) fn mark_status_conn(
+/// 更新文献状态并回读（unverified / verified / missing）。
+pub(crate) fn mark_status_conn(
     conn: &Connection,
     project_id: &str,
     ref_id: &str,
     status: &str,
-) -> Result<LiteratureRef, String> {
-    conn.execute(
+) -> RepoResult<LiteratureRef> {
+    execute(
+        conn,
         "UPDATE literature_refs SET status = ?1 WHERE project_id = ?2 AND id = ?3",
         params![status, project_id, ref_id],
-    )
-    .map_err(|err| format!("更新文献状态失败：{err}"))?;
-    get_ref_conn(conn, project_id, ref_id)?.ok_or_else(|| format!("文献不存在：{ref_id}"))
+    )?;
+    get_ref_conn(conn, project_id, ref_id)?
+        .ok_or_else(|| RepoError::new(format!("文献不存在：{ref_id}")))
 }
 
 /// 用 Crossref 元数据补全并置为 verified。只补空字段/以 Crossref 为准的字段：
 /// title 采用 Crossref 的规范标题，DOI 仅在本地为空时回填（用户手填的 DOI 不覆盖）。
-pub(super) fn apply_verified_conn(
+pub(crate) fn apply_verified_conn(
     conn: &Connection,
     project_id: &str,
     ref_id: &str,
     existing: &LiteratureRef,
     meta: &CrossrefMeta,
-) -> Result<LiteratureRef, String> {
+) -> RepoResult<LiteratureRef> {
     let title = if meta.title.trim().is_empty() {
         existing.title.clone()
     } else {
@@ -206,7 +215,8 @@ pub(super) fn apply_verified_conn(
     };
     let year = meta.year.or(existing.year);
 
-    conn.execute(
+    execute(
+        conn,
         "UPDATE literature_refs SET status = ?1, title = ?2, year = ?3, venue = ?4, url = ?5, \
              doi = ?6 WHERE project_id = ?7 AND id = ?8",
         params![
@@ -219,29 +229,73 @@ pub(super) fn apply_verified_conn(
             project_id,
             ref_id
         ],
-    )
-    .map_err(|err| format!("更新文献核验结果失败：{err}"))?;
-    get_ref_conn(conn, project_id, ref_id)?.ok_or_else(|| format!("文献不存在：{ref_id}"))
+    )?;
+    get_ref_conn(conn, project_id, ref_id)?
+        .ok_or_else(|| RepoError::new(format!("文献不存在：{ref_id}")))
 }
 
-/// 写项目事件（时间线）。审计属于旁路：写失败不影响主流程。
-pub(super) fn record_event_conn(conn: &Connection, project_id: &str, kind: &str, payload_json: &str) {
-    let _ = conn.execute(
+/// 写项目事件（时间线）。审计属于旁路：写失败不影响主流程（调用方忽略返回值）。
+pub(crate) fn record_event_conn(
+    conn: &Connection,
+    project_id: &str,
+    kind: &str,
+    payload_json: &str,
+) -> RepoResult<usize> {
+    execute(
+        conn,
         "INSERT INTO project_events(project_id, ts, actor, type, payload_json) \
          VALUES (?1, ?2, 'user', ?3, ?4)",
         params![project_id, now_secs(), kind, payload_json],
-    );
+    )
+}
+
+/// DOCX 导出 payload 需要的参考文献子集。
+#[derive(Debug, Clone)]
+pub(crate) struct ReferenceRow {
+    pub title: String,
+    pub authors_json: String,
+    pub year: Option<i64>,
+    pub venue: String,
+    pub doi: String,
+}
+
+/// 项目参考文献（按导入时间正序，DOCX 导出用）。
+pub(crate) fn references_for_export(
+    conn: &Connection,
+    project_id: &str,
+) -> RepoResult<Vec<ReferenceRow>> {
+    query_all(
+        conn,
+        "SELECT title, authors_json, year, venue, doi FROM literature_refs \
+         WHERE project_id = ?1 ORDER BY created_at ASC",
+        params![project_id],
+        |row| {
+            Ok(ReferenceRow {
+                title: row.get(0)?,
+                authors_json: row.get(1)?,
+                year: row.get(2)?,
+                venue: row.get(3)?,
+                doi: row.get(4)?,
+            })
+        },
+    )
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|delta| delta.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use crate::workspace::literature::ParsedRef;
 
     #[test]
     fn duplicate_cite_keys_are_skipped() {
-        let mut conn = Connection::open_in_memory().expect("内存数据库");
-        conn.execute_batch(crate::infra::db::SCHEMA_SQL).expect("建表");
+        let mut conn = crate::repositories::manuscript::open_test_connection();
 
         let entry = ParsedRef {
             cite_key: "smith2020study".to_string(),

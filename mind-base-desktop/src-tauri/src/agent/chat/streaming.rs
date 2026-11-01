@@ -16,7 +16,7 @@ use super::sessions::{
     get_session_conn, guarded_update_title_conn, spawn_title_refinement, touch_session_conn,
     turn_cancels,
 };
-use super::types::{emit, now_secs, ChatEvent, ChatTurnResult, DeltaBatcher};
+use super::types::{emit, now_secs, ChatEvent, ChatTurnResult, DeltaBatcher, ReasoningBatcher};
 use crate::agent::agents::AgentKind;
 use crate::infra::db::{self, Db};
 use crate::llm::client::{chat_client_from_conn, ChatMessage, TokenUsage};
@@ -253,6 +253,9 @@ pub async fn chat_ask(
     let event_channel = on_event.clone();
     let model_name = chat_client.model_name().to_string();
     let session_for_finalize = session_id.clone();
+    // 思考过程累计缓冲：spawn_blocking 内写，主流程收尾时读取并持久化。
+    let reasoning_buf = Arc::new(Mutex::new(String::new()));
+    let reasoning_for_run = reasoning_buf.clone();
     // The file store (L1 transcript) needs the raw question after the
     // closure below has moved `question`.
     let question_for_store = question.clone();
@@ -458,39 +461,51 @@ pub async fn chat_ask(
             );
         };
 
-        let mut callbacks = crate::agent::harness::ReactCallbacks {
-            on_step: &mut |step_no, action, query| {
-                super::live::set_step(&session_id, step_no, action, query);
-                emit(
-                    &ChatEvent::Step {
-                        step: step_no,
-                        action: action.to_string(),
-                        query: query.to_string(),
-                    },
-                    &event_channel,
-                );
-            },
-            on_delta: &mut |delta| {
-                super::live::append_answer(&session_id, delta);
-                batcher.push(delta);
-            },
-            should_stop: Some(&should_stop),
-            on_plan: Some(&on_plan),
-            on_interact: Some(&on_interact),
-            mailbox: None,
-            step_budget: None,
+        // Reasoning（思考模型）：累计到本轮局部缓冲用于持久化，同时 50ms 合帧
+        // 推送 ChatEvent::Reasoning；非思考模型没有 reasoning delta → 零事件。
+        let mut reasoning_batcher = ReasoningBatcher::new(event_channel.clone());
+        let reasoning_sink = reasoning_for_run.clone();
+        let mut outcome = {
+            let mut on_reasoning = |reasoning: &str| {
+                if let Ok(mut buffer) = reasoning_sink.lock() {
+                    buffer.push_str(reasoning);
+                }
+                reasoning_batcher.push(reasoning);
+            };
+            let mut callbacks = crate::agent::harness::ReactCallbacks {
+                on_step: &mut |step_no, action, query| {
+                    super::live::set_step(&session_id, step_no, action, query);
+                    emit(
+                        &ChatEvent::Step {
+                            step: step_no,
+                            action: action.to_string(),
+                            query: query.to_string(),
+                        },
+                        &event_channel,
+                    );
+                },
+                on_delta: &mut |delta| {
+                    super::live::append_answer(&session_id, delta);
+                    batcher.push(delta);
+                },
+                should_stop: Some(&should_stop),
+                on_plan: Some(&on_plan),
+                on_interact: Some(&on_interact),
+                on_reasoning: Some(&mut on_reasoning),
+                mailbox: None,
+                step_budget: None,
+            };
+            crate::agent::harness::react_loop(
+                &chat_client,
+                &ctx,
+                AgentKind::Chat,
+                &history_for_turn,
+                &question,
+                0,
+                None,
+                &mut callbacks,
+            )
         };
-
-        let mut outcome = crate::agent::harness::react_loop(
-            &chat_client,
-            &ctx,
-            AgentKind::Chat,
-            &history_for_turn,
-            &question,
-            0,
-            None,
-            &mut callbacks,
-        );
         // 子代理轮次的 usage 不在主循环的 total 里：委托返回值经 sink 收齐后
         // 在这里补进本轮总计。
         if let Ok(sub_total) = sub_usage.lock() {
@@ -504,10 +519,17 @@ pub async fn chat_ask(
         }
         // 收尾帧：无论成败都把残余 delta 冲出去（错误路径也保留已生成内容）。
         batcher.flush();
+        reasoning_batcher.flush();
         outcome
     })
     .await
     .map_err(|err| format!("task failed: {err}"))?;
+
+    // 思考过程在阻塞线程里累计完成，这里取出用于持久化（非思考模型为空串）。
+    let full_reasoning = reasoning_buf
+        .lock()
+        .map(|buffer| buffer.clone())
+        .unwrap_or_default();
 
     // The turn is over either way — drop its cancel registration so a stale
     // session id can never abort a future turn.
@@ -554,6 +576,7 @@ pub async fn chat_ask(
                 &sources,
                 &model_name,
                 turn_usage,
+                &full_reasoning,
             )?;
             touch_session_conn(&tx, &session_for_finalize)?;
             tx.commit()

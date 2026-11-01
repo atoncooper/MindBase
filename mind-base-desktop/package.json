@@ -1,14 +1,15 @@
 {
   "name": "mind-base-desktop",
   "private": true,
-  "version": "0.1.16",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "fetch:ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1"
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.mjs",
+    "fetch:ffmpeg:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -17,14 +18,20 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-opener": "^2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "docx-preview": "^0.4.1",
+    "katex": "^0.19.1",
     "lxgw-wenkai-screen-webfont": "^1.7.0",
     "prismjs": "^1.30.0",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "simple-mind-map": "^0.14.0-fix.3"
   },
   "devDependencies": {

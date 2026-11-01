@@ -19,6 +19,7 @@ import {
   RESEARCH_HASH,
   RESUME_HASH,
   SETTINGS_API_HASH,
+  SETTINGS_REMOTE_HASH,
   SETTINGS_SYSTEM_HASH,
   SKILLS_HASH,
   SLIDES_HASH,
@@ -71,14 +72,16 @@ function LibraryIcon(): React.JSX.Element {
   );
 }
 
-/** Document glyph for the notes view. */
+/** Note-with-pencil glyph for the notes view（与简历 / 文件入库的文档图标区分）。 */
 function NoteIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M6 3h9l5 5v13H6z" />
-      <path d="M15 3v5h5" />
-      <path d="M9 13h7" />
-      <path d="M9 17h5" />
+      <path d="M5 3h8l5 5v6.5" />
+      <path d="M13 3v5h5" />
+      <path d="M5 3v18h6.5" />
+      <path d="M8 11h5" />
+      <path d="M8 14.5h3.5" />
+      <path d="m16.8 13.6 3 3-4.2 4.2-3.4.4.4-3.4z" />
     </svg>
   );
 }
@@ -92,14 +95,15 @@ function StarIcon(): React.JSX.Element {
   );
 }
 
-/** Upload-onto-document glyph for the file-import view. */
+/** Inbox glyph for the file-import view（与笔记 / 简历的文档图标区分）。 */
 function ImportIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M6 3h9l5 5v13H6z" />
-      <path d="M15 3v5h5" />
-      <path d="M12 10v7" />
-      <path d="m9 13 3-3 3 3" />
+      <path d="M4 12.5 6.5 4h11L20 12.5" />
+      <path d="M4 12.5h4.2l1.4 2.5h4.8l1.4-2.5H20" />
+      <path d="M4 12.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5.5" />
+      <path d="M12 6.2v5" />
+      <path d="m9.8 9.4 2.2 2.2 2.2-2.2" />
     </svg>
   );
 }
@@ -110,6 +114,17 @@ function GearIcon(): React.JSX.Element {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
       <circle cx="12" cy="12" r="3.2" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+/** Terminal glyph for the remote-server (SSH) tab. */
+function TerminalIcon(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path d="m7.5 9.5 3 2.5-3 2.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13 15h4" strokeLinecap="round" />
     </svg>
   );
 }
@@ -135,14 +150,16 @@ function PuzzleIcon(): React.JSX.Element {
   );
 }
 
-/** Document glyph for the resume generator view. */
+/** ID-badge glyph for the resume generator view（区别于笔记 / 文件入库）。 */
 function ResumeIcon(): React.JSX.Element {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M6 3h9l4 4v14H6z" />
-      <path d="M15 3v4h4" />
-      <path d="M9 12h6" />
-      <path d="M9 16h6" />
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <circle cx="9" cy="10.5" r="2.2" />
+      <path d="M5.8 16.4c.7-1.6 1.9-2.4 3.2-2.4s2.5.8 3.2 2.4" />
+      <path d="M15 9.5h4" />
+      <path d="M15 12.5h4" />
+      <path d="M15 15.5h2.5" />
     </svg>
   );
 }
@@ -213,6 +230,7 @@ const MAIN_RAIL_ITEMS: ReadonlyArray<RailItem> = [
 const SETTINGS_RAIL_ITEMS: ReadonlyArray<RailItem> = [
   { id: "system", label: "系统设置", hash: SETTINGS_SYSTEM_HASH, icon: GearIcon, active: (r) => r.view === "settings" && r.tab === "system" },
   { id: "api", label: "API 设置", hash: SETTINGS_API_HASH, icon: PlugIcon, active: (r) => r.view === "settings" && r.tab === "api" },
+  { id: "remote", label: "远程服务器", hash: SETTINGS_REMOTE_HASH, icon: TerminalIcon, active: (r) => r.view === "settings" && r.tab === "remote" },
 ];
 
 function NavRail({ route }: { route: Route }) {

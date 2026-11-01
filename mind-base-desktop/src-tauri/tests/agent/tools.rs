@@ -81,6 +81,26 @@ fn command_family_tools_are_registered() {
 }
 
 #[test]
+fn remote_exec_is_registered_and_lists_hosts_without_credentials() {
+    let h = TestHarness::new("agent-remote");
+    let names = h.registered_tools();
+    assert!(
+        names.iter().any(|name| name == "remote_exec"),
+        "remote_exec missing from registry"
+    );
+    // 未配置远程服务器时给出引导（不会尝试连接）。
+    let output = h
+        .run_tool("code", "remote_exec", r#"{"action":"hosts"}"#)
+        .expect("hosts action should succeed without hosts");
+    assert!(output.contains("尚未配置远程服务器"), "{output}");
+    // run 缺少 host 时返回中文错误。
+    let err = h
+        .run_tool("code", "remote_exec", r#"{"action":"run","command":"ls"}"#)
+        .expect_err("missing host must fail");
+    assert!(err.contains("host"), "{err}");
+}
+
+#[test]
 fn cwd_outside_data_dir_is_rejected() {
     let h = TestHarness::new("agent-cwd");
     h.set_shell_enabled(true);

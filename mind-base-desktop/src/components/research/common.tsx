@@ -28,6 +28,41 @@ export function formatDateTime(ts: number): string {
   });
 }
 
+/** 秒级时间戳 → 本地「MM-DD HH:mm:ss」（最近动态精确到秒）。 */
+export function formatDateTimeSeconds(ts: number): string {
+  if (ts <= 0) return "—";
+  const date = new Date(ts * 1000);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return (
+    pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " "
+    + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds())
+  );
+}
+
+/** 秒级时间戳 → 本地「MM-DD HH:mm」（时间区间展示用）。 */
+function formatDateTimeMinute(ts: number): string {
+  if (ts <= 0) return "—";
+  const date = new Date(ts * 1000);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return (
+    pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " "
+    + pad(date.getHours()) + ":" + pad(date.getMinutes())
+  );
+}
+
+/**
+ * 「最近动态」时间文案。
+ *
+ * - 折叠分组跨度 < 60 秒（含单条事件 firstTs == ts）：显示精确到秒；
+ * - 跨度 ≥ 60 秒：显示「最早时间 – 最新时间」区间；
+ * - firstTs 缺失 / 非法（旧后端）时退化为 ts，保证不出现 NaN。
+ */
+export function formatActivityTime(ts: number, firstTs: number): string {
+  const start = Number.isFinite(firstTs) && firstTs > 0 ? firstTs : ts;
+  if (start >= ts || ts - start < 60) return formatDateTimeSeconds(ts);
+  return formatDateTimeMinute(start) + " – " + formatDateTimeMinute(ts);
+}
+
 /** 年份展示（缺失显示破折号）。 */
 export function formatYear(year: number | null): string {
   return year === null ? "—" : String(year);
@@ -55,6 +90,15 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     document.body.removeChild(area);
     return ok;
   }
+}
+
+/**
+ * 文本域自适应高度：内容变高时撑开（上限由 CSS 的 max-height 兜住）。
+ * 用法：onInput={(event) => autoGrowTextarea(event.currentTarget)}
+ */
+export function autoGrowTextarea(element: HTMLTextAreaElement): void {
+  element.style.height = "auto";
+  element.style.height = element.scrollHeight + "px";
 }
 
 /**

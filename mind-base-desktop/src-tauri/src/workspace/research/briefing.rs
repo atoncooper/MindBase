@@ -1,8 +1,12 @@
 //! Research assistant briefing: project snapshot + stage-specific prompt body.
+//!
+//! 只做展示文案拼装；数据访问走 repositories::research::stats 的只读摘要查询。
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
-use super::store::{get_project_conn, list_artifacts_conn, list_stages_conn};
+use crate::repositories::research::stats;
+
+use super::service;
 use super::{ResearchArtifact, ResearchProject, ResearchStage};
 use super::{STAGE_LABELS, STAGES};
 
@@ -74,83 +78,45 @@ pub(super) fn build_briefing(
     }
 
     // Literature (metadata only — never bodies).
-    let mut stmt = conn
-        .prepare(
-            "SELECT title, year, status FROM literature_refs WHERE project_id = ?1 \
-             ORDER BY created_at DESC LIMIT 15",
-        )
-        .map_err(|err| format!("failed to prepare literature brief: {err}"))?;
-    let rows = stmt
-        .query_map(params![&project.id], |row| {
-            let title: String = row.get(0)?;
-            let year: Option<i64> = row.get(1)?;
-            let status: String = row.get(2)?;
-            Ok((title, year, status))
-        })
-        .map_err(|err| format!("failed to query literature brief: {err}"))?;
-    let literature: Vec<(String, Option<i64>, String)> = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("failed to read literature brief: {err}"))?;
+    let literature = stats::recent_literature(conn, &project.id, 15)?;
     if literature.is_empty() {
         out.push_str("- 文献：尚未导入（提示用户用「文献」页导入 BibTeX/CSL）\n");
     } else {
         out.push_str(&format!("- 文献（最近 {} 条）：\n", literature.len()));
-        for (index, (title, year, status)) in literature.iter().enumerate() {
+        for (index, row) in literature.iter().enumerate() {
             out.push_str(&format!(
                 "  - [{}] {} ({}) {}\n",
                 index + 1,
-                title,
-                year.map(|value| value.to_string()).unwrap_or_else(|| "n.d.".to_string()),
-                status
+                row.title,
+                row.year
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "n.d.".to_string()),
+                row.status
             ));
         }
     }
 
     // Datasets (profile summary only — never raw rows).
-    let mut stmt = conn
-        .prepare(
-            "SELECT name, rows, cols, privacy FROM datasets WHERE project_id = ?1 \
-             ORDER BY created_at DESC LIMIT 8",
-        )
-        .map_err(|err| format!("failed to prepare dataset brief: {err}"))?;
-    let rows = stmt
-        .query_map(params![&project.id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|err| format!("failed to query dataset brief: {err}"))?;
-    let datasets: Vec<(String, Option<i64>, Option<i64>, String)> = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("failed to read dataset brief: {err}"))?;
+    let datasets = stats::recent_datasets(conn, &project.id, 8)?;
     if !datasets.is_empty() {
         out.push_str("- 数据集：\n");
-        for (name, row_count, col_count, privacy) in datasets {
+        for row in datasets {
             out.push_str(&format!(
                 "  - {}（{} 行 × {} 列，{}）\n",
-                name,
-                row_count.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
-                col_count.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
-                privacy
+                row.name,
+                row.rows
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                row.cols
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                row.privacy
             ));
         }
     }
 
     // Recent decisions.
-    let mut stmt = conn
-        .prepare(
-            "SELECT decision FROM decisions WHERE project_id = ?1 ORDER BY ts DESC LIMIT 8",
-        )
-        .map_err(|err| format!("failed to prepare decision brief: {err}"))?;
-    let rows = stmt
-        .query_map(params![&project.id], |row| row.get::<_, String>(0))
-        .map_err(|err| format!("failed to query decision brief: {err}"))?;
-    let decisions: Vec<String> = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("failed to read decision brief: {err}"))?;
+    let decisions = stats::recent_decisions(conn, &project.id, 8)?;
     if !decisions.is_empty() {
         out.push_str("- 最近决策：\n");
         for decision in decisions {
@@ -164,9 +130,6 @@ pub(super) fn build_briefing(
 /// 主聊天用：拼装一个项目的简报（阶段/产物/文献/数据/决策摘要）。
 /// 只读、不写事件；项目不存在时返回错误。
 pub(crate) fn project_briefing(conn: &Connection, project_id: &str) -> Result<String, String> {
-    let project = get_project_conn(conn, project_id)?
-        .ok_or_else(|| format!("研究项目不存在：{project_id}"))?;
-    let stages = list_stages_conn(conn, project_id)?;
-    let artifacts = list_artifacts_conn(conn, project_id)?;
-    build_briefing(conn, &project, &stages, &artifacts)
+    let detail = service::detail(conn, project_id)?;
+    build_briefing(conn, &detail.project, &detail.stages, &detail.artifacts)
 }

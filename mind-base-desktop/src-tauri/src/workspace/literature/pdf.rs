@@ -10,7 +10,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::store::{get_ref_conn, project_exists, record_event_conn};
+use crate::repositories::literature::{get_ref_conn, project_exists, record_event_conn};
 
 const PDF_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PDF_BYTES: usize = 80 * 1024 * 1024;
@@ -116,7 +116,7 @@ pub(crate) fn download_conn(
     };
     std::fs::write(&path, &bytes)
         .map_err(|err| format!("写入 PDF 失败（{}）：{err}", path.display()))?;
-    record_event_conn(
+    let _ = record_event_conn(
         conn,
         project_id,
         "literature.downloaded",

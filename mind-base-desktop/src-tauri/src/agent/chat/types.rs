@@ -34,6 +34,8 @@ pub struct ChatMessageRow {
     /// user | assistant
     pub role: String,
     pub content: String,
+    /// 思考模型的推理过程（非思考模型 / 用户消息为空串）。
+    pub reasoning: String,
     /// pending | completed | failed
     pub status: String,
     pub sources: serde_json::Value,
@@ -92,6 +94,10 @@ pub enum ChatEvent {
     /// 本轮导出的文件（exports 内新增产物）：前端渲染文件卡片。
     Artifact {
         artifacts: Vec<crate::workspace::resume::ExportEntry>,
+    },
+    /// 思考过程增量（思考模型；与正文 chunk 分开渲染）。
+    Reasoning {
+        content: String,
     },
     Chunk {
         content: String,
@@ -159,6 +165,42 @@ impl DeltaBatcher {
         if !self.buffer.is_empty() {
             let content = std::mem::take(&mut self.buffer);
             emit(&ChatEvent::Chunk { content }, &self.channel);
+        }
+        self.last_flush = std::time::Instant::now();
+    }
+}
+
+/// reasoning 合帧器：与 DeltaBatcher 相同的 50ms 节奏，但推送
+/// ChatEvent::Reasoning（思考过程单独渲染，不与正文混排）。
+pub(super) struct ReasoningBatcher {
+    channel: Channel<ChatEvent>,
+    buffer: String,
+    last_flush: std::time::Instant,
+    interval: std::time::Duration,
+}
+
+impl ReasoningBatcher {
+    pub(super) fn new(channel: Channel<ChatEvent>) -> Self {
+        Self {
+            channel,
+            buffer: String::new(),
+            last_flush: std::time::Instant::now(),
+            interval: std::time::Duration::from_millis(50),
+        }
+    }
+
+    pub(super) fn push(&mut self, delta: &str) {
+        self.buffer.push_str(delta);
+        if self.last_flush.elapsed() >= self.interval {
+            self.flush();
+        }
+    }
+
+    /// 帧结束必须调用：把残余 reasoning 发出去。
+    pub(super) fn flush(&mut self) {
+        if !self.buffer.is_empty() {
+            let content = std::mem::take(&mut self.buffer);
+            emit(&ChatEvent::Reasoning { content }, &self.channel);
         }
         self.last_flush = std::time::Instant::now();
     }
@@ -276,6 +318,16 @@ mod tests {
         assert_eq!(value["durationMs"], 1234);
         assert_eq!(value["steps"], 3);
         assert_eq!(value["usage"]["cachedTokens"], 60);
+    }
+
+    #[test]
+    fn reasoning_event_serializes_with_content() {
+        let event = ChatEvent::Reasoning {
+            content: "先想一步".to_string(),
+        };
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["type"], "reasoning");
+        assert_eq!(value["content"], "先想一步");
     }
 
     #[test]

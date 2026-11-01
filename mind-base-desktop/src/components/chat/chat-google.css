@@ -317,10 +317,45 @@
   color: var(--ch-text);
 }
 
+/* 空回复 / 工具调用协议泄漏的兜底提示（避免空白气泡或渲染原始标记）。 */
+.chat-layout .msg-fallback {
+  margin: 4px 0 6px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--ch-text-3);
+}
+
 .chat-layout .msg-user__actions {
   gap: 2px;
   margin-top: 4px;
   min-height: 30px;
+}
+
+/* 助手回复底部操作行：复制 / 重新生成（图标按钮，右对齐弱化 hover）。 */
+.chat-layout .msg-assistant__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 6px;
+  min-height: 30px;
+}
+
+.chat-layout .msg-assistant__actions .icon-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .msg-assistant__actions .icon-button:hover:not(:disabled) {
+  color: var(--ch-text);
+  background: var(--ch-hover);
+}
+
+.chat-layout .msg-assistant__actions .icon-button svg {
+  width: 17px;
+  height: 17px;
 }
 
 .chat-layout .msg-user__actions .icon-button {
@@ -386,6 +421,61 @@
   background: var(--ch-surface-2);
   border-color: var(--ch-card-border);
   color: var(--ch-text);
+}
+
+/* ---- 思考过程（仅思考模型有 reasoning 时渲染） ----------------------- */
+
+.chat-layout .msg-reasoning {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 12px;
+  background: var(--ch-surface-2);
+}
+
+.chat-layout .msg-reasoning summary {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--ch-text-3);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.chat-layout .msg-reasoning summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-layout .msg-reasoning summary::before {
+  content: "▸ ";
+  color: var(--ch-text-3);
+}
+
+.chat-layout .msg-reasoning[open] summary::before {
+  content: "▾ ";
+}
+
+.chat-layout .msg-reasoning summary:hover {
+  color: var(--ch-text-2);
+}
+
+.chat-layout .msg-reasoning--thinking summary {
+  color: var(--ch-primary);
+}
+
+.chat-layout .msg-reasoning__body {
+  max-height: 320px;
+  margin-top: 6px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--ch-divider);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--ch-text-3);
 }
 
 /* ---- 输入区（Gemini composer） --------------------------------------- */
@@ -870,6 +960,139 @@
   max-width: 780px;
 }
 
+/* ---- 消息排队（生成中继续发送） --------------------------------------- */
+
+.chat-layout .chat-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 780px;
+  margin: 0 auto 8px;
+}
+
+.chat-layout .chat-queue__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--ch-text-3);
+}
+
+.chat-layout .chat-queue__title {
+  font-weight: 500;
+  color: var(--ch-text-2);
+}
+
+.chat-layout .chat-queue__clear {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ch-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-layout .chat-queue__clear:hover {
+  background: var(--ch-hover);
+}
+
+.chat-layout .chat-queue__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-layout .chat-queue__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(320px, 70vw);
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 999px;
+  background: var(--ch-surface);
+  color: var(--ch-text-2);
+  font-size: 12px;
+}
+
+.chat-layout .chat-queue__index {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ch-primary-container);
+  color: var(--ch-on-primary-container);
+  font-size: 10px;
+}
+
+.chat-layout .chat-queue__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-layout .chat-queue__images {
+  flex: none;
+  color: var(--ch-text-3);
+  font-size: 10.5px;
+}
+
+.chat-layout .chat-queue__remove {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ch-text-3);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-layout .chat-queue__remove:hover {
+  background: var(--ch-hover);
+  color: var(--ch-text);
+}
+
+.chat-layout .chat-queue__notice {
+  max-width: 780px;
+  margin: 0 auto 6px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--ch-text-3);
+}
+
+/* 生成中：停止按钮旁的「排队发送」药丸按钮。 */
+.chat-layout .composer__queue-send {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--ch-card-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ch-primary);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-layout .composer__queue-send:hover:not(:disabled) {
+  background: var(--ch-hover);
+}
+
+.chat-layout .composer__queue-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- 窄窗口：自动收起侧栏，优先保证消息宽度 -------------------------- */
 
 @media (max-width: 1100px) {
@@ -943,5 +1166,14 @@
 
   .chat-layout .bubble--user {
     max-width: 88%;
+  }
+
+  .chat-layout .composer__queue-send {
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+
+  .chat-layout .chat-queue__chip {
+    max-width: 100%;
   }
 }

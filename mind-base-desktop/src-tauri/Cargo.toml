@@ -1,6 +1,6 @@
 [package]
 name = "mind-base-desktop"
-version = "0.1.16"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -47,7 +47,16 @@ base64 = "0.22"
 # (SKILL.md + manifest.json; deflate only, no bzip/zstd needed).
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # WebSocket streaming ASR (DashScope api-ws real-time recognition).
-tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
+tokio = { version = "1", features = ["rt", "net", "time", "io-util", "sync", "fs"] }
+# SSH 远程执行（纯 Rust）。ring + rsa 组合已在本机验证可编译；
+# 只用于 agent 的 remote_exec 工具与「系统设置 → 远程服务器」连通性测试。
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
+# SFTP 子系统客户端（复用同一 SSH 会话的 channel，见 infra/ssh/sftp.rs）。
+russh-sftp = "3"
+# 跨平台系统凭据库：Windows Credential Manager / macOS Keychain /
+# 跨平台系统凭据库：Windows Credential Manager / macOS Keychain / Linux Secret Service
+# （keyring 4 的默认 feature v1 按目标平台自动选择后端）。
+keyring = "4"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 http = "1"
@@ -65,6 +74,7 @@ windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
   "Win32_Security_Isolation",
   "Win32_System_JobObjects",
   "Win32_System_Pipes",
@@ -83,3 +93,4 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+

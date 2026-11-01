@@ -15,6 +15,21 @@ mod pipeline;
 mod scan;
 mod types;
 
+use std::path::Path;
+
+/// 供论文导入等场景复用：用 bundled Python 抽取一个文档的标题与正文文本。
+///
+/// 覆盖 doc_extract.py 支持的 txt / md / pdf / docx / html 等格式；会自动
+/// ensure 所需 Python 运行时依赖（pymupdf / python-docx 按需），失败返回中文错误。
+#[allow(dead_code)] // 目前由 research 导入模块调用；命令注册前暂时无引用。
+pub(crate) fn extract_document_text(data_dir: &Path, file: &Path) -> Result<(String, String), String> {
+    let exe = crate::infra::python_runtime::ensure_doc_extract_python(
+        data_dir, true, true, false,
+    )?;
+    let extracted = extract::extract_text(&exe, file)?;
+    Ok((extracted.title, extracted.text))
+}
+
 #[allow(unused_imports)]
 pub use self::pipeline::ingest_files;
 #[allow(unused_imports)]

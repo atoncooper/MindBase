@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// The `.pth` file that controls sys.path for the embeddable build.
+#[cfg(windows)]
 const PTH_FILE: &str = "python312._pth";
 
 /// Run the embedded interpreter with the given arguments, capturing nothing.
@@ -31,6 +32,7 @@ pub(super) fn run_python(exe: &Path, args: &[String], cwd: &Path) -> Result<(), 
 
 /// Append `Lib\site-packages` and `import site` to the `.pth` file so
 /// pip-installed packages resolve.
+#[cfg(windows)]
 pub(super) fn enable_site_packages(py_dir: &Path) -> Result<(), String> {
     let pth = py_dir.join(PTH_FILE);
     if !pth.is_file() {
@@ -57,6 +59,7 @@ pub(super) fn enable_site_packages(py_dir: &Path) -> Result<(), String> {
 }
 
 /// Extract a zip archive into `target_dir` with a zip-slip guard.
+#[cfg(windows)]
 pub(super) fn extract_zip(target_dir: &Path, bytes: &[u8]) -> Result<(), String> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|err| format!("zip 解析失败：{err}"))?;

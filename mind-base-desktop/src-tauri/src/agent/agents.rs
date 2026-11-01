@@ -3,8 +3,9 @@
 //!
 //! All five share one ReAct engine (harness::react_loop); each contributes a
 //! system prompt, a tool subset and its own step budget. task_quiz is
-//! intentionally absent (server scheduler); code runs in generate-only mode
-//! (no cloud sandbox on a fully-local desktop).
+//! intentionally absent (server scheduler); code runs in generate-only mode on
+//! the desktop itself, but may run commands on user-configured SSH hosts through
+//! the remote_exec tool (no cloud sandbox on a fully-local desktop).
 
 /// One retrieval-window entry of the memory agent (backend shape).
 /// Serialized into `memory_windows` (Phase 1: the window survives restarts).
@@ -114,6 +115,7 @@ impl AgentKind {
                 "academic_project",
                 "academic_manuscript",
                 "academic_evidence",
+                "academic_code",
             ],
             // Memory binds everything (backend behavior) minus delegation.
             AgentKind::Memory => &[
@@ -151,6 +153,8 @@ impl AgentKind {
                 "plan",
                 "write_file",
                 "list_dir",
+                // 代码助手可在用户配置的远程服务器上执行命令（SSH 远程执行）。
+                "remote_exec",
             ],
             AgentKind::Search => &["web_search", "search_docs", "web_crawl"],
             AgentKind::Academic => &[
@@ -159,6 +163,7 @@ impl AgentKind {
                 "academic_project",
                 "academic_manuscript",
                 "academic_evidence",
+                "academic_code",
                 "vector_search",
                 "search_chat_history",
                 "read_file",
@@ -176,6 +181,9 @@ impl AgentKind {
                 "web_search",
                 "academic_literature",
                 "academic_project",
+                "academic_manuscript",
+                "academic_evidence",
+                "academic_code",
                 "search_chat_history",
                 "read_file",
                 "write_file",
@@ -196,7 +204,7 @@ impl AgentKind {
             AgentKind::Chat => "收藏夹知识库助手。使用ReAct模式回答用户关于B站视频内容和云盘文档的问题。支持向量检索、视频列表、视频总结等工具。适用于绝大多数用户问答场景。".to_string(),
             AgentKind::Memory => "记忆检索助手。检索历史对话、压缩摘要与完整上下文，回答关于过往对话的问题。".to_string(),
             AgentKind::Note => "笔记助手。创建、查询、分析用户的本地笔记，可先做向量检索再落笔。".to_string(),
-            AgentKind::Code => "代码助手。编写完整可运行的代码并附讲解（桌面端不执行代码）。".to_string(),
+            AgentKind::Code => "代码助手。编写完整可运行的代码并附讲解；可在用户配置的远程服务器上通过 SSH 执行命令做验证（本机不执行代码）。".to_string(),
             AgentKind::Search => "文档搜索助手。检索技术库/框架的官方文档并整理返回。".to_string(),
             AgentKind::Academic => "学术研究助手。论文的写作、审查、修改与精读理解，遵循学术规范与引用纪律。".to_string(),
             AgentKind::Research => "科研项目助手。按选题/研究设计/指导/实验/写作/投稿六个阶段推进期刊论文，基于项目证据与数据给出下一步。".to_string(),
@@ -415,6 +423,9 @@ mod tests {
         // code：仅生成——不绑任何执行类工具；search 绑联网双工具。
         assert!(AgentKind::Code.tools().contains(&"vector_search"));
         assert!(!AgentKind::Code.tools().contains(&"run_code"));
+        // 远程执行只给 Code agent（凭据由设置页管理，命令走黑名单）。
+        assert!(AgentKind::Code.tools().contains(&"remote_exec"));
+        assert!(!AgentKind::Chat.tools().contains(&"remote_exec"));
         assert!(AgentKind::Search.tools().contains(&"search_docs"));
         assert!(AgentKind::Search.tools().contains(&"web_crawl"));
         // academic：论文交付走文件，绑 write_file 与模式加载

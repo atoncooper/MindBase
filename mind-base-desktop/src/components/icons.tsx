@@ -49,6 +49,62 @@ export function CopyGlyph(): React.JSX.Element {
   );
 }
 
+/** 刷新 / 重新生成 glyph（圆形箭头，Material 风格描边）。 */
+export function RefreshGlyph(): React.JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20.5 11a8.5 8.5 0 1 1-2.49-6.01" />
+      <path d="M20.5 4v7h-7" />
+    </svg>
+  );
+}
+
+/** 左向 chevron（收起侧栏）。 */
+export function ChevronLeftGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m15 5-7 7 7 7" />
+    </svg>
+  );
+}
+
+/** 右向 chevron（展开侧栏）。 */
+export function ChevronRightGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m9 5 7 7-7 7" />
+    </svg>
+  );
+}
+
+/** 左侧栏面板 glyph（写作台左栏开关）。 */
+export function PanelLeftGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M9.5 4.5v15" />
+    </svg>
+  );
+}
+
+/** 右侧栏面板 glyph（写作台大纲开关）。 */
+export function PanelRightGlyph(): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M14.5 4.5v15" />
+    </svg>
+  );
+}
+
 /** 勾选 glyph（复制成功反馈）。 */
 export function CheckGlyph(): React.JSX.Element {
   return (

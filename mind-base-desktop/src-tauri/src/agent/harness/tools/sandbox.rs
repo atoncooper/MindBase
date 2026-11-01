@@ -99,16 +99,13 @@ impl LocalTool for RunSandboxedTool {
         if command.len() > MAX_COMMAND_BYTES {
             return Err(format!("命令过长（{} 字节，上限 {MAX_COMMAND_BYTES}）", command.len()));
         }
+        let data_dir = cli::data_dir(ctx)?;
+        // 危险命令黑名单：在 spawn 之前拦截（沙箱内同样不允许灾难性命令）。
+        crate::infra::command_guard::check(&data_dir, &command)?;
         let shell = SandboxShell::parse(value.get("shell").and_then(Value::as_str))?;
         let network = SandboxNetwork::parse(value.get("network").and_then(Value::as_str))?;
         let timeout = clamp_timeout(value.get("timeout_ms").and_then(Value::as_u64));
         let dir = sandbox_dir(ctx)?;
-        let data_dir = ctx
-            .db
-            .data_dir
-            .lock()
-            .map_err(|err| format!("failed to acquire data dir lock: {err}"))?
-            .clone();
 
         // 输出落文件：工具只回传头/尾摘要与日志路径，避免大输出经内存传递。
         let log_dir = crate::infra::exec_log::log_root(&data_dir);

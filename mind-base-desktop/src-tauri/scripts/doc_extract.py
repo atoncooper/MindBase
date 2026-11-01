@@ -85,6 +85,88 @@ def extract_pdf(path):
     return title, text
 
 
+def _docx_style_name(paragraph):
+    try:
+        style = paragraph.style
+    except Exception:
+        return ""
+    return (getattr(style, "name", "") or "") if style is not None else ""
+
+
+def _docx_heading_level(paragraph):
+    """Heading 1-4 / 标题 1-4 → level, else 0."""
+    name = _docx_style_name(paragraph).strip().lower()
+    for prefix in ("heading", "标题"):
+        if name.startswith(prefix):
+            digits = "".join(ch for ch in name if ch.isdigit())
+            if digits:
+                return max(1, min(4, int(digits)))
+    return 0
+
+
+def _docx_list_prefix(paragraph):
+    name = _docx_style_name(paragraph).strip().lower()
+    if "list" in name or "列表" in name:
+        if "bullet" in name or "项目符号" in name:
+            return "- "
+        if "number" in name or "编号" in name:
+            return "1. "
+    return ""
+
+
+def _docx_cell_text(cell, paragraph_text):
+    parts = []
+    for paragraph in cell.paragraphs:
+        text = paragraph_text(paragraph).strip()
+        if text:
+            parts.append(text)
+    return "<br>".join(parts)
+
+
+def _docx_escape_cell(text):
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("|", "\\|")
+    return text.replace("\n", "<br>").strip()
+
+
+def _docx_table_markdown(table, paragraph_text):
+    """Standard Markdown table: first row is the header, then |---| separator."""
+    rows = []
+    for row in table.rows:
+        rows.append(
+            [
+                _docx_escape_cell(_docx_cell_text(cell, paragraph_text))
+                for cell in row.cells
+            ]
+        )
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    for row in rows:
+        row.extend([""] * (width - len(row)))
+    lines = [
+        "| " + " | ".join(rows[0]) + " |",
+        "|" + "|".join(["---"] * width) + "|",
+    ]
+    for row in rows[1:]:
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
+def _docx_iter_blocks(document):
+    """Paragraphs and tables in true body order."""
+    try:
+        iterator = document.iter_inner_content()
+    except AttributeError:
+        for paragraph in document.paragraphs:
+            yield paragraph
+        for table in document.tables:
+            yield table
+        return
+    for block in iterator:
+        yield block
+
+
 def extract_docx(path):
     try:
         import docx  # python-docx
@@ -94,13 +176,31 @@ def extract_docx(path):
         document = docx.Document(path)
     except Exception as exc:
         raise ScriptError(f"无法打开 DOCX：{exc}") from exc
-    blocks = [para.text for para in document.paragraphs if para.text and para.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text and cell.text.strip()]
-            if cells:
-                blocks.append(" | ".join(cells))
-    text = "\n".join(blocks)
+    try:
+        from docx_math import paragraph_text  # shared OMML → LaTeX helper
+    except Exception:  # noqa: BLE001 — preview/import must still work without it
+        def paragraph_text(paragraph):
+            return paragraph.text or ""
+    blocks = []
+    for block in _docx_iter_blocks(document):
+        if block.__class__.__name__ == "Table":
+            markdown = _docx_table_markdown(block, paragraph_text)
+            if markdown:
+                blocks.append("")
+                blocks.append(markdown)
+                blocks.append("")
+            continue
+        paragraph = block
+        text = paragraph_text(paragraph).strip()
+        if not text:
+            continue
+        level = _docx_heading_level(paragraph)
+        if level:
+            blocks.append("#" * level + " " + text)
+            continue
+        prefix = _docx_list_prefix(paragraph)
+        blocks.append(prefix + text if prefix else text)
+    text = "\n".join(blocks).strip()
     if not text.strip():
         raise ScriptError("该 DOCX 没有可提取的正文")
     meta_title = ""

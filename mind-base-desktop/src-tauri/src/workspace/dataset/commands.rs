@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use rusqlite::params;
 use serde_json::{json, Value};
 use tauri::State;
 
@@ -10,8 +9,10 @@ use crate::infra::db::{self, Db};
 
 use super::analysis::run_analysis_script;
 use super::import::{archive_and_profile, slugify, ALLOWED_EXT};
-use super::store::{dataset_from_row, ensure_project, record_event, DATASET_COLS};
-use super::{ensure_project_dirs, now_secs, project_root, AnalysisResult, DatasetRow};
+use super::{
+    ensure_project, ensure_project_dirs, now_secs, project_root, record_event, AnalysisResult,
+    DatasetRow,
+};
 
 /// 列出某研究项目已导入的数据集（最新在前）。
 #[tauri::command]
@@ -25,16 +26,7 @@ pub fn dataset_list(db: State<'_, Db>, project_id: String) -> Result<Vec<Dataset
         .lock()
         .map_err(|err| format!("无法获取数据库锁：{err}"))?;
     ensure_project(&conn, &project_id)?;
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT {DATASET_COLS} FROM datasets WHERE project_id = ?1 ORDER BY created_at DESC"
-        ))
-        .map_err(|err| format!("准备数据集查询失败：{err}"))?;
-    let rows = stmt
-        .query_map(params![project_id], |row| dataset_from_row(row))
-        .map_err(|err| format!("查询数据集失败：{err}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("读取数据集失败：{err}"))
+    crate::repositories::dataset::list(&conn, &project_id).map_err(Into::into)
 }
 
 /// 导入一个本地数据文件：归档到项目目录 → MD5 → Python 画像 → 写库。
@@ -111,47 +103,8 @@ pub async fn dataset_import(
     let profile_json = profile.to_string();
     let stored_path = target.to_string_lossy().to_string();
 
-    let id = db::local_id();
-    let created_at = now_secs();
-    {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|err| format!("无法获取数据库锁：{err}"))?;
-        conn.execute(
-            "INSERT INTO datasets(
-                 id, project_id, name, path, sha256, rows, cols, privacy,
-                 schema_json, profile_json, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'local', ?8, ?9, ?10)",
-            params![
-                id,
-                project_id,
-                display_name,
-                stored_path,
-                sha256,
-                rows,
-                cols,
-                schema_json,
-                profile_json,
-                created_at,
-            ],
-        )
-        .map_err(|err| format!("写入数据集记录失败：{err}"))?;
-        record_event(
-            &conn,
-            &project_id,
-            "dataset.imported",
-            &json!({
-                "dataset": id.clone(),
-                "name": display_name.clone(),
-                "rows": rows,
-                "cols": cols,
-            }),
-        );
-    }
-
-    Ok(DatasetRow {
-        id,
+    let row = DatasetRow {
+        id: db::local_id(),
         name: display_name,
         path: stored_path,
         sha256,
@@ -160,8 +113,28 @@ pub async fn dataset_import(
         privacy: "local".to_string(),
         schema_json,
         profile_json,
-        created_at,
-    })
+        created_at: now_secs(),
+    };
+    {
+        let conn = db
+            .conn
+            .lock()
+            .map_err(|err| format!("无法获取数据库锁：{err}"))?;
+        crate::repositories::dataset::insert(&conn, &project_id, &row)?;
+        record_event(
+            &conn,
+            &project_id,
+            "dataset.imported",
+            &json!({
+                "dataset": row.id,
+                "name": row.name,
+                "rows": row.rows,
+                "cols": row.cols,
+            }),
+        );
+    }
+
+    Ok(row)
 }
 
 /// 在项目根目录执行一段分析脚本，返回 stdout / stderr / 退出码。

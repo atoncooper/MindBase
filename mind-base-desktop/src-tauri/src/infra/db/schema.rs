@@ -3,7 +3,8 @@
 use rusqlite::Connection;
 
 use super::migrations::{
-    ensure_chat_message_usage_column, migrate_quiz_records_to_sets, run_column_migrations,
+    ensure_chat_message_usage_column, ensure_manuscript_document_index,
+    migrate_manuscript_documents, migrate_quiz_records_to_sets, run_column_migrations,
 };
 
 /// Schema bootstrap statement. Idempotent so it is safe to run on every launch.
@@ -79,6 +80,7 @@ pub(crate) const SCHEMA_SQL: &str =
          model           TEXT NOT NULL DEFAULT '',
          error           TEXT NOT NULL DEFAULT '',
          usage           TEXT NOT NULL DEFAULT '{}',         -- JSON token usage
+         reasoning       TEXT NOT NULL DEFAULT '',            -- 思考过程（非思考模型为空）
          created_at      INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_chat_messages_session
@@ -293,17 +295,31 @@ pub(crate) const SCHEMA_SQL: &str =
          created_at    INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_experiment_runs_project ON experiment_runs(project_id, created_at DESC);
+     CREATE TABLE IF NOT EXISTS manuscript_documents(
+         id          TEXT PRIMARY KEY,
+         project_id  TEXT NOT NULL,
+         kind        TEXT NOT NULL DEFAULT 'draft',
+         title       TEXT NOT NULL DEFAULT '初稿',
+         source_path TEXT NOT NULL DEFAULT '',   -- 导入的原始文件（项目根内相对路径）
+         created_at  INTEGER NOT NULL,
+         updated_at  INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_manuscript_documents_project ON manuscript_documents(project_id, updated_at DESC);
      CREATE TABLE IF NOT EXISTS manuscript_sections(
-         id         TEXT PRIMARY KEY,
-         project_id TEXT NOT NULL,
-         section    TEXT NOT NULL,
-         ord        INTEGER NOT NULL DEFAULT 0,
-         path       TEXT NOT NULL DEFAULT '',
-         words      INTEGER NOT NULL DEFAULT 0,
-         status     TEXT NOT NULL DEFAULT 'draft',
-         updated_at INTEGER NOT NULL
+         id          TEXT PRIMARY KEY,
+         project_id  TEXT NOT NULL,
+         document_id TEXT NOT NULL DEFAULT '',
+         section     TEXT NOT NULL,
+         ord         INTEGER NOT NULL DEFAULT 0,
+         path        TEXT NOT NULL DEFAULT '',
+         words       INTEGER NOT NULL DEFAULT 0,
+         status      TEXT NOT NULL DEFAULT 'draft',
+         updated_at  INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_manuscript_sections_project ON manuscript_sections(project_id, ord);
+     -- NOTE: idx_manuscript_sections_document 依赖迁移列 document_id，必须在
+     -- run_column_migrations 之后创建（见 migrations::ensure_manuscript_document_index）；
+     -- 写在这里会让旧库启动时因 no such column 直接失败。
      CREATE TABLE IF NOT EXISTS guidance_notes(
          id             TEXT PRIMARY KEY,
          project_id     TEXT NOT NULL,
@@ -416,8 +432,11 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|err| format!("failed to initialize schema: {err}"))?;
     run_column_migrations(conn);
+    // 依赖 document_id 列的索引必须在加列之后创建（旧库否则会 no such column）。
+    ensure_manuscript_document_index(conn);
     ensure_chat_message_usage_column(conn);
     migrate_quiz_records_to_sets(conn);
+    migrate_manuscript_documents(conn);
     backfill_vectors_fts(conn);
     Ok(())
 }

@@ -12,6 +12,9 @@ import { memo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { remarkLinkify } from "../../lib/linkify";
 
@@ -28,7 +31,8 @@ function allowUrl(url: string): string {
   return "";
 }
 
-const MD_PLUGINS = [remarkGfm, remarkBreaks, remarkLinkify];
+const MD_PLUGINS = [remarkGfm, remarkBreaks, remarkLinkify, remarkMath];
+const MD_REHYPE_PLUGINS = [rehypeKatex];
 
 /** Flatten a React node tree into its plain text (for the copy button). */
 function extractText(node: React.ReactNode): string {
@@ -126,6 +130,7 @@ function MarkdownContentImpl({
     <div className={streaming ? "md-content markdown-body is-streaming" : "md-content markdown-body"}>
       <ReactMarkdown
         remarkPlugins={MD_PLUGINS}
+      rehypePlugins={MD_REHYPE_PLUGINS}
         urlTransform={allowUrl}
         components={MD_COMPONENTS}
       >

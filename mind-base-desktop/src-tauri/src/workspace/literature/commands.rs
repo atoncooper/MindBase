@@ -8,11 +8,12 @@ use crate::infra::db::Db;
 use super::bibtex::{export_bibtex_conn, parse_bibtex};
 use super::csl::parse_csl;
 use super::crossref::verify_blocking;
-use super::store::{
-    apply_verified_conn, delete_ref_conn, get_ref_conn, insert_parsed_conn, list_refs_conn,
-    mark_status_conn, project_exists, record_event_conn,
-};
+use super::ensure_project;
 use super::types::{LiteratureImportResult, LiteratureRef, VerifyOutcome, STATUS_MISSING};
+use crate::repositories::literature::{
+    apply_verified_conn, delete_ref_conn, get_ref_conn, insert_parsed_conn, list_refs_conn,
+    mark_status_conn, record_event_conn,
+};
 
 // ---------------------------------------------------------------------------
 // 命令
@@ -32,7 +33,7 @@ pub fn literature_list(
         .conn
         .lock()
         .map_err(|err| format!("获取数据库锁失败：{err}"))?;
-    list_refs_conn(&conn, &project_id)
+    list_refs_conn(&conn, &project_id).map_err(Into::into)
 }
 
 /// 导入 BibTeX / CSL-JSON 文本。
@@ -64,9 +65,7 @@ pub async fn literature_verify(
             .conn
             .lock()
             .map_err(|err| format!("获取数据库锁失败：{err}"))?;
-        if !project_exists(&conn, &project_id)? {
-            return Err(format!("研究项目不存在：{project_id}"));
-        }
+        ensure_project(&conn, &project_id)?;
         get_ref_conn(&conn, &project_id, &ref_id)?.ok_or_else(|| format!("文献不存在：{ref_id}"))?
     };
     if existing.doi.trim().is_empty() && existing.title.trim().is_empty() {
@@ -89,7 +88,7 @@ pub async fn literature_verify(
         }
         VerifyOutcome::Missing => mark_status_conn(&conn, &project_id, &ref_id, STATUS_MISSING)?,
     };
-    record_event_conn(
+    let _ = record_event_conn(
         &conn,
         &project_id,
         "literature.verified",
@@ -123,11 +122,9 @@ pub(crate) fn import_text_conn(
         };
         return Err(format!("未能从内容中解析出任何文献条目{detail}"));
     }
-    if !project_exists(conn, project_id)? {
-        return Err(format!("研究项目不存在：{project_id}"));
-    }
+    ensure_project(conn, project_id)?;
     let (imported, skipped, refs) = insert_parsed_conn(conn, project_id, entries)?;
-    record_event_conn(
+    let _ = record_event_conn(
         conn,
         project_id,
         "literature.imported",
@@ -148,9 +145,7 @@ pub(crate) fn verify_ref_conn(
     project_id: &str,
     ref_id: &str,
 ) -> Result<LiteratureRef, String> {
-    if !project_exists(conn, project_id)? {
-        return Err(format!("研究项目不存在：{project_id}"));
-    }
+    ensure_project(conn, project_id)?;
     let existing = get_ref_conn(conn, project_id, ref_id)?
         .ok_or_else(|| format!("文献不存在：{ref_id}"))?;
     if existing.doi.trim().is_empty() && existing.title.trim().is_empty() {
@@ -163,7 +158,7 @@ pub(crate) fn verify_ref_conn(
         }
         VerifyOutcome::Missing => mark_status_conn(conn, project_id, ref_id, STATUS_MISSING)?,
     };
-    record_event_conn(
+    let _ = record_event_conn(
         conn,
         project_id,
         "literature.verified",
@@ -184,7 +179,7 @@ pub fn literature_delete(
         .lock()
         .map_err(|err| format!("获取数据库锁失败：{err}"))?;
     delete_ref_conn(&mut conn, &project_id, &ref_id)?;
-    record_event_conn(
+    let _ = record_event_conn(
         &conn,
         &project_id,
         "literature.deleted",

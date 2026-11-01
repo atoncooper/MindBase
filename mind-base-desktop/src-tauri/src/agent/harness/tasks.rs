@@ -258,6 +258,7 @@ fn run_task(
             // 后台任务没有用户可答：不拦截 ask_user（一旦模型误用会得到
             // 运行时的「由运行时处理」错误文本，任务继续）。
             on_interact: None,
+            on_reasoning: None,
             mailbox: Some(&drain_mailbox),
             step_budget: Some(budget.max_steps),
         };

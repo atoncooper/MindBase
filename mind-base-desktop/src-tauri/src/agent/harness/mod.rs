@@ -187,6 +187,10 @@ impl Harness {
         runtime
             .registry_mut()
             .register(Box::new(tools::RunSandboxedTool));
+        // SSH 远程执行（用户配置的远程服务器；命令过黑名单后才下发）。
+        runtime
+            .registry_mut()
+            .register(Box::new(tools::RemoteExecTool));
         // Long-running automation tasks (AI-supervised): start/status/logs/kill/retry/due.
         for tool in [
             Box::new(tools::StartAutomationTool) as Box<dyn registry::LocalTool>,
@@ -204,6 +208,7 @@ impl Harness {
             Box::new(tools::AcademicProjectTool),
             Box::new(tools::AcademicManuscriptTool),
             Box::new(tools::AcademicEvidenceTool),
+            Box::new(tools::AcademicCodeTool),
         ] {
             runtime.registry_mut().register(tool);
         }
