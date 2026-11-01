@@ -153,6 +153,122 @@ impl Default for LocalOcrConfig {
     }
 }
 
+/// 一台 SSH 远程服务器的配置（「系统设置 → 远程服务器」维护）。
+///
+/// 只由设置页写入；`remote_exec` 工具读取但绝不回传密码/口令。
+/// 所有字段带 serde default：没有 `sshHosts` 字段的旧配置反序列化后得到空列表。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SshHostConfig {
+    /// 用户可读的唯一主机名（Agent 用它选择目标主机）。
+    pub name: String,
+    /// 主机名或 IP。
+    pub host: String,
+    /// SSH 端口（默认 22）。
+    pub port: u16,
+    /// 登录用户名。
+    pub username: String,
+    /// 认证方式：`password` 或 `key`。
+    pub auth: String,
+    /// 密码认证的密码（配置里只保存系统凭据库引用 keyring:<scope>；
+    /// API/内存边界仍是明文，仅设置页回填使用）。
+    pub password: String,
+    /// 密钥认证的私钥文件路径（OpenSSH / PKCS#8 均可）。
+    pub key_path: String,
+    /// 私钥口令（可为空；空字符串表示私钥无口令）。
+    pub passphrase: String,
+    /// 登录后的默认工作目录；空 = 不切换（在远端 home 执行）。
+    pub remote_dir: String,
+    /// 已固定的主机公钥 SHA256 指纹（空 = 尚未 TOFU 信任；Agent 使用前必须非空）。
+    pub fingerprint: String,
+    /// 绑定的科研项目 id（空 = 未绑定；Agent 传 project_id 时必须与之匹配）。
+    pub project_id: String,
+    /// 是否授权 Agent（remote_exec 工具）使用本主机（默认 false，仅用户可开）。
+    pub allow_agent: bool,
+    /// 是否记录交互会话日志（默认 false；只记录终端输出，不含输入/凭据）。
+    pub log_session: bool,
+}
+
+impl Default for SshHostConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            host: String::new(),
+            port: 22,
+            username: String::new(),
+            auth: "password".to_string(),
+            password: String::new(),
+            key_path: String::new(),
+            passphrase: String::new(),
+            remote_dir: String::new(),
+            fingerprint: String::new(),
+            project_id: String::new(),
+            allow_agent: false,
+            log_session: false,
+        }
+    }
+}
+
+/// 校验并规范化 SSH 主机列表（设置页保存与命令执行前复用）。
+///
+/// 规则：`name` / `host` / `username` 非空、`port` 在 1..=65535、`name`
+/// 唯一、`auth` 为 `password` / `key`、密码模式要求 password 非空、密钥模式
+/// 要求 keyPath 非空。返回去掉首尾空白的列表（密码/口令原样保留——
+/// 口令可能含空格，不能 trim）。
+pub fn validate_ssh_hosts(hosts: &[SshHostConfig]) -> Result<Vec<SshHostConfig>, String> {
+    let mut validated = Vec::with_capacity(hosts.len());
+    let mut seen_names = std::collections::HashSet::new();
+    for (index, raw) in hosts.iter().enumerate() {
+        let label = if raw.name.trim().is_empty() {
+            format!("#{}", index + 1)
+        } else {
+            raw.name.trim().to_string()
+        };
+        let mut host = raw.clone();
+        host.name = host.name.trim().to_string();
+        host.host = host.host.trim().to_string();
+        host.username = host.username.trim().to_string();
+        host.auth = host.auth.trim().to_ascii_lowercase();
+        host.key_path = host.key_path.trim().to_string();
+        host.remote_dir = host.remote_dir.trim().to_string();
+        host.fingerprint = host.fingerprint.trim().to_string();
+        host.project_id = host.project_id.trim().to_string();
+
+        if host.name.is_empty() {
+            return Err(format!("远程服务器 {label}：名称不能为空"));
+        }
+        if host.host.is_empty() {
+            return Err(format!("远程服务器 {label}：主机地址不能为空"));
+        }
+        if host.username.is_empty() {
+            return Err(format!("远程服务器 {label}：用户名不能为空"));
+        }
+        if host.port == 0 {
+            return Err(format!(
+                "远程服务器 {label}：端口 {} 无效（必须在 1–65535 之间）",
+                host.port
+            ));
+        }
+        if !matches!(host.auth.as_str(), "password" | "key") {
+            return Err(format!(
+                "远程服务器 {label}：认证方式 {:?} 无效（只能是 password 或 key）",
+                raw.auth
+            ));
+        }
+        if host.auth == "password" && host.password.is_empty() {
+            return Err(format!("远程服务器 {label}：密码认证需要填写密码"));
+        }
+        if host.auth == "key" && host.key_path.is_empty() {
+            return Err(format!("远程服务器 {label}：密钥认证需要填写私钥文件路径"));
+        }
+        if !seen_names.insert(host.name.clone()) {
+            return Err(format!("远程服务器名称重复：{}", host.name));
+        }
+        validated.push(host);
+    }
+    Ok(validated)
+}
+
 /// Typed application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +314,10 @@ pub struct AppConfig {
     /// 见 agent/harness/tools/shell.rs 的安全边界说明。
     #[serde(default)]
     pub shell_enabled: bool,
+    /// SSH 远程服务器列表（「系统设置 → 远程服务器」维护）。默认空；
+    /// 旧配置没有该字段时反序列化为空列表（向后兼容）。
+    #[serde(default)]
+    pub ssh_hosts: Vec<SshHostConfig>,
 }
 
 impl Default for AppConfig {
@@ -216,6 +336,7 @@ impl Default for AppConfig {
             proxy_https: None,
             vision_enabled: false,
             shell_enabled: false,
+            ssh_hosts: Vec::new(),
         }
     }
 }
@@ -322,7 +443,10 @@ pub fn get_config(db: State<'_, Db>) -> Result<AppConfig, String> {
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    load(&conn)
+    // 磁盘上是密文；设置页需要明文（密码框回填）。
+    let mut config = load(&conn)?;
+    config.ssh_hosts = crate::infra::secret::reveal_hosts_credentials(&config.ssh_hosts);
+    Ok(config)
 }
 
 /// Validate an optional user-entered proxy address; an empty/whitespace
@@ -344,12 +468,14 @@ pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, Str
     let update_repo = validate_update_repo(&config.update_repo)?;
     let proxy_http = validate_proxy_addr(config.proxy_http.as_deref())?;
     let proxy_https = validate_proxy_addr(config.proxy_https.as_deref())?;
+    let ssh_hosts = validate_ssh_hosts(&config.ssh_hosts)?;
     let config = AppConfig {
         update_repo,
         proxy_http,
         proxy_https,
         local_asr: normalize_local_asr(config.local_asr),
         local_ocr: normalize_local_ocr(config.local_ocr),
+        ssh_hosts,
         ..config
     };
     crate::infra::logging::info(
@@ -364,7 +490,20 @@ pub fn set_config(config: AppConfig, db: State<'_, Db>) -> Result<AppConfig, Str
         .conn
         .lock()
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    save(&conn, &config)?;
+    // 全量保存：被移除的主机顺手清理其系统凭据库条目（best effort）。
+    if let Ok(previous) = load(&conn) {
+        for old_host in previous.ssh_hosts.iter() {
+            if !config.ssh_hosts.iter().any(|host| host.name == old_host.name) {
+                crate::infra::secret::forget_host_credentials(&old_host.name);
+            }
+        }
+    }
+    // 凭据只在落库时写入系统凭据库；返回给前端/内存的仍是明文。
+    let stored = AppConfig {
+        ssh_hosts: crate::infra::secret::protect_hosts_credentials(&config.ssh_hosts),
+        ..config.clone()
+    };
+    save(&conn, &stored)?;
     // Agents are built per request, so refreshing the in-process proxy
     // snapshot makes the new setting take effect on the next request —
     // no restart needed.
@@ -501,5 +640,99 @@ mod tests {
         let cfg = AppConfig::default();
         assert_eq!(cfg.proxy_http, None);
         assert_eq!(cfg.proxy_https, None);
+    }
+
+    fn sample_host(name: &str) -> SshHostConfig {
+        SshHostConfig {
+            name: name.to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: "deploy".to_string(),
+            auth: "password".to_string(),
+            password: "secret".to_string(),
+            key_path: String::new(),
+            passphrase: String::new(),
+            remote_dir: String::new(),
+            fingerprint: String::new(),
+            project_id: String::new(),
+            allow_agent: false,
+            log_session: false,
+        }
+    }
+
+    #[test]
+    fn ssh_hosts_default_to_empty_and_old_configs_still_load() {
+        assert!(AppConfig::default().ssh_hosts.is_empty());
+        // 旧版本写下的配置没有 sshHosts 字段，必须照常反序列化。
+        let legacy: AppConfig = serde_json::from_str(r#"{"theme":"dark","shellEnabled":true}"#)
+            .expect("legacy config deserializes");
+        assert_eq!(legacy.theme, "dark");
+        assert!(legacy.shell_enabled);
+        assert!(legacy.ssh_hosts.is_empty());
+        // SshHostConfig 的 serde 字段名是 camelCase。
+        let host = sample_host("prod");
+        let json = serde_json::to_string(&host).expect("serialize host");
+        assert!(json.contains("\"keyPath\""), "{json}");
+        assert!(json.contains("\"remoteDir\""), "{json}");
+        assert!(json.contains("\"username\""), "{json}");
+        assert!(json.contains("\"fingerprint\""), "{json}");
+        assert!(json.contains("\"projectId\""), "{json}");
+        assert!(json.contains("\"allowAgent\":false"), "{json}");
+        assert!(json.contains("\"logSession\":false"), "{json}");
+    }
+
+    #[test]
+    fn validate_ssh_hosts_normalizes_and_accepts_valid_entries() {
+        let mut host = sample_host("  prod  ");
+        host.host = " 10.0.0.1 ".to_string();
+        host.username = " root ".to_string();
+        host.auth = " PASSWORD ".to_string();
+        host.remote_dir = " /srv/app ".to_string();
+        let validated = validate_ssh_hosts(&[host]).expect("valid hosts");
+        assert_eq!(validated[0].name, "prod");
+        assert_eq!(validated[0].host, "10.0.0.1");
+        assert_eq!(validated[0].username, "root");
+        assert_eq!(validated[0].auth, "password");
+        assert_eq!(validated[0].remote_dir, "/srv/app");
+        // 密码/口令里的空格不能被 trim 掉。
+        let mut with_spaced_password = sample_host("spaced");
+        with_spaced_password.password = " pass word ".to_string();
+        let validated = validate_ssh_hosts(&[with_spaced_password]).expect("password kept");
+        assert_eq!(validated[0].password, " pass word ");
+    }
+
+    #[test]
+    fn validate_ssh_hosts_rejects_invalid_entries() {
+        // 名称重复
+        assert!(validate_ssh_hosts(&[sample_host("a"), sample_host("a")]).is_err());
+        // 空名称
+        assert!(validate_ssh_hosts(&[sample_host("   ")]).is_err());
+        // 空主机
+        let mut empty_host = sample_host("h");
+        empty_host.host = "  ".to_string();
+        assert!(validate_ssh_hosts(&[empty_host]).is_err());
+        // 空用户名
+        let mut empty_user = sample_host("h");
+        empty_user.username = String::new();
+        assert!(validate_ssh_hosts(&[empty_user]).is_err());
+        // 端口 0
+        let mut bad_port = sample_host("h");
+        bad_port.port = 0;
+        assert!(validate_ssh_hosts(&[bad_port]).is_err());
+        // 非法 auth
+        let mut bad_auth = sample_host("h");
+        bad_auth.auth = "agent".to_string();
+        assert!(validate_ssh_hosts(&[bad_auth]).is_err());
+        // 密码模式缺密码
+        let mut no_password = sample_host("h");
+        no_password.password = String::new();
+        assert!(validate_ssh_hosts(&[no_password]).is_err());
+        // 密钥模式缺 keyPath
+        let mut key_host = sample_host("h");
+        key_host.auth = "key".to_string();
+        key_host.password = String::new();
+        assert!(validate_ssh_hosts(&[key_host.clone()]).is_err());
+        key_host.key_path = "C:/Users/me/.ssh/id_ed25519".to_string();
+        assert!(validate_ssh_hosts(&[key_host]).is_ok());
     }
 }

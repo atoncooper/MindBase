@@ -2,6 +2,33 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [mind-base-desktop 0.2.0] — 2026-11-01
+
+桌面端「科研工作台 + SSH 远程 + 对话体验」版本：科研控制台补齐 repositories 数据层、AI 选刊与 AI 计划、论文导入与原生 Word/PDF 展示、Google Docs 风格写作；SSH 升级为独立包，支持主机管理、交互终端、SFTP、本地端口转发、会话日志与跨平台凭据；对话新增思考过程、消息排队、DeepSeek 官方搜索，并修复工具参数泄漏与空回复。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.2.0.md](mind-base-desktop/RELEASE_NOTES_0.2.0.md)。
+
+### Added
+
+- **科研工作台**：repositories 数据层；AI 推荐期刊；AI 研究计划（生成/持久化/勾选/AI 执行）；论文导入（PDF/DOCX/MD/TXT/TeX/HTML）与原生 Word/PDF 优先展示；DOCX 表格转 Markdown、OMML 公式转 LaTeX；导入时自动解析参考文献入库；文件导入与文件 tab 等高布局。
+- **写作**：Google Docs 风格只读全文画布 + 阅读内编辑；文档选择 popover（搜索/类型筛选/新建/重命名/删除）；大纲抽屉；导出结果条；阅读整篇 + 目录 + 进度 + KaTeX。
+- **SSH**：infra/ssh 子包；主机管理/连接测试/指纹固定；xterm 交互终端 + 高亮命令输入；SFTP；本地端口转发；会话日志；已知主机；keyring 跨平台凭据与 DPAPI 迁移。
+- **对话**：思考过程展示与持久化；消息排队；DeepSeek Search/Fetch 优先；重新生成/重试 refresh 图标；AI 回复复制图标；科研侧栏收起。
+- **跨平台**：macOS/Linux Python venv；跨平台 FFmpeg sidecar 脚本；docs/desktop-cross-platform.md。
+
+### Changed
+
+- 学术 agent 提示词：项目模式强制 academic_project / academic_literature / academic_manuscript 工作流；最终回答必须自然语言总结；正文避免过度加粗/标题化。
+- 写作默认原生文档，Markdown 仅在原生渲染失败时作为回退；导入文件保留原文件。
+- 分析脚本编辑器升级为 VS Code 风格（Prism 高亮/行号/Tab 缩进/IME）。
+
+### Fixed
+
+- 启动 panic（manuscript_sections.document_id 索引先于列迁移）；科研动态事件 payload/分页/时间戳；阶段切换器与侧边栏图标重复。
+- 对话工具调用参数泄漏成正文、空回复、重新生成无说明；导入/脚本 textarea 溢出；新建项目输入框溢出与截止日期选择器；远程上传 base64 跨平台兼容。
+
+### Packaging
+
+- 版本号 0.1.16 → 0.2.0（package / tauri / Cargo 及 lockfiles）；desktop-release 读取 RELEASE_NOTES_0.2.0.md 作为 Release 正文。
+
 ## [mind-base-desktop 0.1.16] — 2026-10-31
 
 桌面端「Agent 协同 + 学术工作流」版本：学术 agent 可实际检索/导入/核验文献、管理项目阶段、读写稿件、导入数据与跑分析脚本；主 agent 可创建自定义子代理；自动化长任务、token 统计、实时状态恢复与重新生成一并上线。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.1.16.md](mind-base-desktop/RELEASE_NOTES_0.1.16.md)。

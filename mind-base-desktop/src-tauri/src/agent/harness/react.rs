@@ -28,6 +28,8 @@ pub(crate) struct ReactCallbacks<'a> {
     /// ask_user 回调：把结构化交互卡片推给前端（None = 无交互通道，
     /// 例如子代理 / 后台任务的运行环境，此时 ask_user 不做本地拦截）。
     pub on_interact: Option<&'a dyn Fn(&InteractionView)>,
+    /// 思考模型的 reasoning 增量回调（None = 丢弃，不向前端推送）。
+    pub on_reasoning: Option<&'a mut dyn FnMut(&str)>,
     /// Step-budget override: task budgets may exceed the per-kind default.
     pub step_budget: Option<usize>,
 }
@@ -36,6 +38,150 @@ impl ReactCallbacks<'_> {
     fn stopped(&self) -> bool {
         self.should_stop.is_some_and(|check| check())
     }
+}
+
+// ---------------------------------------------------------------------------
+// 工具调用泄漏检测 / 修复与兜底文案
+// ---------------------------------------------------------------------------
+
+/// 修复轮提示：模型把工具参数当正文或没给总结时注入（最多一次）。
+const REPAIR_PROMPT: &str = "你上一轮没有给出面向用户的最终回答：要么是空回复，要么把工具调用的参数/协议片段当成了正文。\
+请立即补救：① 如果还有未完成的写入（例如第 8 节、参考文献、某个章节），用正确的工具调用完成；\
+② 全部完成后，用中文自然语言总结：做了什么、产物名称与位置、下一步建议。\
+禁止输出工具调用 XML、参数 JSON、<|...|> 等特殊标记，也不要把工具名当正文。";
+
+/// 强制总结轮提示：修复后仍无效时，tools=None 再要一次纯总结。
+const FORCE_SUMMARY_PROMPT: &str = "请用中文、面向用户地总结本轮已完成的操作、产物名称与位置、以及下一步建议。\
+不要调用任何工具，不要输出工具调用协议、参数 JSON 或 <|...|> 特殊标记。";
+
+/// 把 JSON 里长度 >80 字符的字符串值收集出来（典型是工具 content 参数）。
+fn collect_long_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.chars().count() > 80 {
+                out.push(trimmed.to_string());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_long_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_long_strings(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 粗判一段文字是否像自然语言（中文占比高或字母数字占比很高）。
+fn looks_like_natural_language(content: &str) -> bool {
+    let total = content.chars().filter(|ch| !ch.is_whitespace()).count();
+    if total == 0 {
+        return false;
+    }
+    let cjk = content
+        .chars()
+        .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
+        .count();
+    let alnum = content.chars().filter(|ch| ch.is_alphanumeric()).count();
+    cjk * 10 >= total || alnum * 10 >= total * 7
+}
+
+/// 检测「工具调用泄漏成正文」：特殊标记 / 上一轮原始参数的长子串 /
+/// 参数里解析出的长字符串值 / 明显的调用协议片段。
+pub(crate) fn looks_like_tool_echo(content: &str, last_tool_args: &[String]) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    const MARKERS: [&str; 7] = [
+        "<｜",
+        "<|tool",
+        "<|end▁of▁sentence",
+        "<|end_of_sentence",
+        "<|im_start",
+        "<|im_end",
+        "▁",
+    ];
+    if MARKERS.iter().any(|marker| trimmed.contains(marker)) {
+        return true;
+    }
+    // 上一轮任一工具调用的原始 arguments JSON 被大段复读。
+    for raw in last_tool_args {
+        let raw = raw.trim();
+        if raw.chars().count() > 80 && trimmed.contains(raw) {
+            return true;
+        }
+    }
+    // arguments JSON 里解析出的长字符串（典型是 write 的 content 参数）被复读。
+    let mut long_values: Vec<String> = Vec::new();
+    for raw in last_tool_args {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+            collect_long_strings(&value, &mut long_values);
+        }
+    }
+    if long_values
+        .iter()
+        .any(|value| trimmed.contains(value.as_str()))
+    {
+        return true;
+    }
+    // 调用协议片段，且整体几乎没有自然语言特征（避免误伤正常讨论）。
+    let protocol = trimmed.contains("\"tool_calls\"")
+        || trimmed.contains("\"function\":")
+        || trimmed.contains("\"arguments\":")
+        || trimmed.contains("<function=")
+        || trimmed.contains("</function>");
+    protocol && !looks_like_natural_language(trimmed)
+}
+
+/// 确定性兜底文案：模型两次都没给出可用总结时，保证 UI 有可见文字。
+fn fallback_summary(tool_names: &[String], steps: usize) -> String {
+    let mut unique: Vec<&str> = Vec::new();
+    for name in tool_names {
+        if !unique.contains(&name.as_str()) {
+            unique.push(name.as_str());
+        }
+    }
+    let tools = if unique.is_empty() {
+        "未记录到工具调用".to_string()
+    } else {
+        format!("{} 次（{}）", tool_names.len(), unique.join("、"))
+    };
+    format!(
+        "本轮操作已执行：共 {steps} 步，工具调用 {tools}。模型未能生成可用的中文总结\
+（上一轮输出疑似工具参数/空回复，已被拦截且不会保存）。请到「写作 / 文件 / 产物」区域查看最新生成内容；\
+如仍有章节缺失，请重新生成并说明缺哪一节。"
+    )
+}
+
+/// 强制总结轮：tools=None 再要一次纯自然语言总结（流式经 on_delta 展示）。
+fn stream_forced_summary(
+    client: &ChatClient,
+    convo: &mut Vec<ChatMessage>,
+    cb: &mut ReactCallbacks<'_>,
+    total_usage: &mut Option<crate::llm::client::TokenUsage>,
+) -> Result<String, String> {
+    convo.push(ChatMessage::new("user", FORCE_SUMMARY_PROMPT));
+    let turn = client.stream_turn_with_reasoning(
+        convo,
+        None,
+        &mut |delta| {
+            (cb.on_delta)(delta);
+        },
+        &mut |reasoning| {
+            if let Some(on_reasoning) = cb.on_reasoning.as_mut() {
+                (on_reasoning)(reasoning);
+            }
+        },
+        cb.should_stop,
+    )?;
+    add_usage(total_usage, turn.usage);
+    Ok(turn.content)
 }
 
 /// Everything one finished ReAct run produced.
@@ -183,6 +329,11 @@ pub(crate) fn react_loop(
         std::collections::HashMap::new();
     const REPEAT_LIMIT: u32 = 3;
 
+    // 工具调用泄漏修复状态：最近一轮原始 arguments、调用过的工具名、执行步数。
+    let mut last_tool_args: Vec<String> = Vec::new();
+    let mut tool_names: Vec<String> = Vec::new();
+    let mut repaired_once = false;
+
     let max_steps = cb.step_budget.unwrap_or_else(|| kind.max_steps());
     for step_no in 1..=max_steps {
         // Between-steps cancellation point (a stop pressed while tools were
@@ -210,20 +361,74 @@ pub(crate) fn react_loop(
                 ));
             }
         }
-        let turn = client.stream_turn(
+        let turn = client.stream_turn_with_reasoning(
             &convo,
             Some(schema_for(kind)),
             &mut |delta| {
                 (cb.on_delta)(delta);
             },
+            &mut |reasoning| {
+                if let Some(on_reasoning) = cb.on_reasoning.as_mut() {
+                    (on_reasoning)(reasoning);
+                }
+            },
             cb.should_stop,
         )?;
         add_usage(&mut total_usage, turn.usage);
 
-        // Text-only response = the final answer.
+        // Text-only response = 候选最终回答；但可能是工具参数泄漏 / 空回复。
         if !turn.wants_tools() {
+            if turn.interrupted {
+                // 用户中断：保留已生成正文；但泄漏片段不返回（交给上层显示中断标记）。
+                let answer = if looks_like_tool_echo(&turn.content, &last_tool_args) {
+                    String::new()
+                } else {
+                    turn.content
+                };
+                return Ok(ReactOutcome {
+                    answer,
+                    hits: all_hits,
+                    sub_steps: all_sub_steps,
+                    interrupted: true,
+                    awaiting_user: false,
+                    usage: total_usage,
+                });
+            }
+            let invalid = turn.content.trim().is_empty()
+                || looks_like_tool_echo(&turn.content, &last_tool_args);
+            if !invalid {
+                return Ok(ReactOutcome {
+                    answer: turn.content,
+                    hits: all_hits,
+                    sub_steps: all_sub_steps,
+                    interrupted: false,
+                    awaiting_user: false,
+                    usage: total_usage,
+                });
+            }
+            // 修复轮（最多一次）：提示补工具调用 + 自然语言总结，允许继续调工具。
+            if !repaired_once {
+                repaired_once = true;
+                convo.push(ChatMessage::new("user", REPAIR_PROMPT));
+                continue;
+            }
+            // 修复后仍无效：强制总结轮（tools=None，走 on_delta 流式）。
+            let summary = stream_forced_summary(client, &mut convo, cb, &mut total_usage)?;
+            if !summary.trim().is_empty() && !looks_like_tool_echo(&summary, &last_tool_args) {
+                return Ok(ReactOutcome {
+                    answer: summary,
+                    hits: all_hits,
+                    sub_steps: all_sub_steps,
+                    interrupted: turn.interrupted,
+                    awaiting_user: false,
+                    usage: total_usage,
+                });
+            }
+            // 仍失败：确定性兜底文案，保证 UI 永远有可见文字（泄漏内容不返回）。
+            let fallback = fallback_summary(&tool_names, step_no);
+            (cb.on_delta)(&fallback);
             return Ok(ReactOutcome {
-                answer: turn.content,
+                answer: fallback,
                 hits: all_hits,
                 sub_steps: all_sub_steps,
                 interrupted: turn.interrupted,
@@ -231,6 +436,14 @@ pub(crate) fn react_loop(
                 usage: total_usage,
             });
         }
+
+        // 记录本轮工具调用，供泄漏检测与兜底文案使用。
+        last_tool_args = turn
+            .tool_calls
+            .iter()
+            .map(|call| call.arguments.clone())
+            .collect();
+        tool_names.extend(turn.tool_calls.iter().map(|call| call.name.clone()));
 
         convo.push(ChatMessage::assistant_with_tool_calls(
             turn.content.clone(),
@@ -433,20 +646,20 @@ pub(crate) fn react_loop(
             usage: total_usage,
         });
     }
-    let turn = client.stream_turn(
-        &convo,
-        None,
-        &mut |delta| {
-            (cb.on_delta)(delta);
-        },
-        cb.should_stop,
-    )?;
-    add_usage(&mut total_usage, turn.usage);
+    // 预算用尽：强制总结轮 + 泄漏检测 + 确定性兜底（泄漏内容绝不返回）。
+    let summary = stream_forced_summary(client, &mut convo, cb, &mut total_usage)?;
+    let answer = if !summary.trim().is_empty() && !looks_like_tool_echo(&summary, &last_tool_args) {
+        summary
+    } else {
+        let fallback = fallback_summary(&tool_names, max_steps);
+        (cb.on_delta)(&fallback);
+        fallback
+    };
     Ok(ReactOutcome {
-        answer: turn.content,
+        answer,
         hits: all_hits,
         sub_steps: all_sub_steps,
-        interrupted: turn.interrupted,
+        interrupted: false,
         awaiting_user: false,
         usage: total_usage,
     })
@@ -481,5 +694,63 @@ mod tests {
         }]);
         assert_eq!(payload[0]["type"], "function");
         assert_eq!(payload[0]["function"]["name"], "vector_search");
+    }
+
+    #[test]
+    fn tool_echo_detection_flags_special_markers_and_protocol() {
+        assert!(looks_like_tool_echo("正文<|tool▁calls|>", &[]));
+        assert!(looks_like_tool_echo("<|end▁of▁sentence|>", &[]));
+        assert!(looks_like_tool_echo("前言 <｜begin▁of▁sentence｜>", &[]));
+        assert!(looks_like_tool_echo(
+            r#"{"tool_calls":[{"id":"a","type":"function","function":{"name":"x","arguments":"{}"}}]}"#,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn tool_echo_detection_flags_raw_args_and_parsed_long_values() {
+        let long_body = "## 8.1 研究计划\n".repeat(12);
+        let raw_args = serde_json::json!({
+            "action": "write",
+            "section": "8 预期成果",
+            "content": long_body,
+        })
+        .to_string();
+        assert!(looks_like_tool_echo(&raw_args, &[raw_args.clone()]));
+        // 参数里解析出的长字符串值被当成正文（真实线上案例形态）。
+        let echoed = format!("write\n## 8.1 研究计划\n{long_body}");
+        assert!(looks_like_tool_echo(&echoed, &[raw_args.clone()]));
+        // 与上一轮参数无关的长文本不算泄漏。
+        assert!(!looks_like_tool_echo(
+            &"这是正常的总结文本，说明已写入第 8 节与参考文献。".repeat(4),
+            &[raw_args]
+        ));
+    }
+
+    #[test]
+    fn tool_echo_detection_keeps_normal_and_empty_text() {
+        assert!(!looks_like_tool_echo("", &[]));
+        assert!(!looks_like_tool_echo("   ", &[]));
+        assert!(!looks_like_tool_echo(
+            "已完成开题报告第 8 节与参考文献的写入，产物位于写作页的初稿文档，下一步请审阅。",
+            &[]
+        ));
+        // 正常讨论里出现 tool_calls 字眼但句子是自然语言 → 不误判。
+        assert!(!looks_like_tool_echo(
+            "tool_calls 是模型调用工具时的协议字段，这里只是解释它的含义。",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn fallback_summary_mentions_tools_and_steps() {
+        let text = fallback_summary(
+            &["academic_manuscript".to_string(), "academic_manuscript".to_string()],
+            3,
+        );
+        assert!(text.contains("共 3 步"), "{text}");
+        assert!(text.contains("academic_manuscript"), "{text}");
+        assert!(text.contains("写作"), "{text}");
+        assert!(text.contains("重新生成"), "{text}");
     }
 }

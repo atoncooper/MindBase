@@ -69,24 +69,25 @@ pub fn chat_history(db: State<'_, Db>, session_id: String) -> Result<Vec<ChatMes
         .map_err(|err| format!("failed to acquire database lock: {err}"))?;
     let mut statement = conn
         .prepare(
-            "SELECT msg_id, chat_session_id, role, content, status, sources, model, error, created_at, usage
+            "SELECT msg_id, chat_session_id, role, content, reasoning, status, sources, model, error, created_at, usage
              FROM chat_messages WHERE chat_session_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|err| format!("failed to load history: {err}"))?;
     let rows = statement
         .query_map(params![session_id], |row| {
-            let sources_raw: String = row.get(5)?;
-            let usage_raw: String = row.get(9)?;
+            let sources_raw: String = row.get(6)?;
+            let usage_raw: String = row.get(10)?;
             Ok(ChatMessageRow {
                 msg_id: row.get(0)?,
                 chat_session_id: row.get(1)?,
                 role: row.get(2)?,
                 content: row.get(3)?,
-                status: row.get(4)?,
+                reasoning: row.get(4)?,
+                status: row.get(5)?,
                 sources: serde_json::from_str(&sources_raw).unwrap_or(serde_json::json!([])),
-                model: row.get(6)?,
-                error: row.get(7)?,
-                created_at: row.get(8)?,
+                model: row.get(7)?,
+                error: row.get(8)?,
+                created_at: row.get(9)?,
                 usage: usage_from_json(&usage_raw),
             })
         })
@@ -104,14 +105,15 @@ pub(super) fn complete_assistant_message_tx(
     sources: &[ChatSource],
     model: &str,
     usage: Option<TokenUsage>,
+    reasoning: &str,
 ) -> Result<(), String> {
     let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".to_string());
     let usage_json = usage_to_json(usage);
     conn.execute(
         "UPDATE chat_messages SET status = 'completed', content = ?2, sources = ?3, model = ?4,
-             usage = ?5
+             usage = ?5, reasoning = ?6
          WHERE msg_id = ?1",
-        params![msg_id, content, sources_json, model, usage_json],
+        params![msg_id, content, sources_json, model, usage_json, reasoning],
     )
     .map_err(|err| format!("failed to complete message: {err}"))?;
     // Ledger: one row per completed turn, tagged with session/model (DSH-style stats).
@@ -127,3 +129,65 @@ pub(super) fn complete_assistant_message_tx(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn memory_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(crate::infra::db::SCHEMA_SQL)
+            .expect("apply schema");
+        conn
+    }
+
+    #[test]
+    fn reasoning_defaults_empty_and_roundtrips_on_complete() {
+        let conn = memory_conn();
+        insert_message_conn(
+            &conn,
+            "m1",
+            "s1",
+            "assistant",
+            "",
+            "pending",
+            "deepseek-reasoner",
+        )
+        .expect("insert pending message");
+        let default_reasoning: String = conn
+            .query_row(
+                "SELECT reasoning FROM chat_messages WHERE msg_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("default reasoning");
+        assert_eq!(default_reasoning, "", "insert 默认空 reasoning");
+
+        complete_assistant_message_tx(
+            &conn,
+            "m1",
+            "最终回答",
+            &[],
+            "deepseek-reasoner",
+            None,
+            "先分析问题，再作答",
+        )
+        .expect("complete assistant message");
+        let (content, stored): (String, String) = conn
+            .query_row(
+                "SELECT content, reasoning FROM chat_messages WHERE msg_id = 'm1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read message");
+        assert_eq!(content, "最终回答");
+        assert_eq!(stored, "先分析问题，再作答");
+
+        // recent_history 只取 role/content：推理不进入模型上下文。
+        let history = recent_history_conn(&conn, "s1", 6).expect("recent history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "最终回答");
+        assert_eq!(history[0].role, "assistant");
+    }
+}
+

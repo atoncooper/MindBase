@@ -3,8 +3,6 @@
 use serde::Serialize;
 use serde_json::Value;
 
-pub(super) const STATUS_UNVERIFIED: &str = "unverified";
-pub(super) const STATUS_VERIFIED: &str = "verified";
 pub(super) const STATUS_MISSING: &str = "missing";
 
 // ---------------------------------------------------------------------------
@@ -47,26 +45,26 @@ pub struct LiteratureImportResult {
 
 /// 解析器的中间产物：尚未落库的一条引用。
 #[derive(Debug, Default, Clone)]
-pub(super) struct ParsedRef {
-    pub(super) cite_key: String,
-    pub(super) doi: String,
-    pub(super) title: String,
-    pub(super) authors: Vec<String>,
-    pub(super) year: Option<i64>,
-    pub(super) venue: String,
-    pub(super) entry_type: String,
-    pub(super) url: String,
-    pub(super) csl: Value,
+pub(crate) struct ParsedRef {
+    pub(crate) cite_key: String,
+    pub(crate) doi: String,
+    pub(crate) title: String,
+    pub(crate) authors: Vec<String>,
+    pub(crate) year: Option<i64>,
+    pub(crate) venue: String,
+    pub(crate) entry_type: String,
+    pub(crate) url: String,
+    pub(crate) csl: Value,
 }
 
 /// Crossref 返回的、用于补全本地记录的子集。
 #[derive(Debug, Default, Clone)]
-pub(super) struct CrossrefMeta {
-    pub(super) doi: String,
-    pub(super) title: String,
-    pub(super) year: Option<i64>,
-    pub(super) venue: String,
-    pub(super) url: String,
+pub(crate) struct CrossrefMeta {
+    pub(crate) doi: String,
+    pub(crate) title: String,
+    pub(crate) year: Option<i64>,
+    pub(crate) venue: String,
+    pub(crate) url: String,
 }
 
 /// 核验结果：命中（带回补全字段）/ 未找到（DOI 404 或标题检索无相似命中）。

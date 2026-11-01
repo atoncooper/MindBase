@@ -181,6 +181,24 @@ impl TestHarness {
         )
         .expect("stage status")
     }
+
+    /// 项目事件流：(actor, type, payload_json)，按 id 升序。
+    pub fn research_events(&self, project_id: &str) -> Vec<(String, String, String)> {
+        let conn = self.db.conn.lock().expect("db lock");
+        let mut stmt = conn
+            .prepare(
+                "SELECT actor, type, payload_json FROM project_events \
+                 WHERE project_id = ?1 ORDER BY id ASC",
+            )
+            .expect("prepare research events");
+        let rows = stmt
+            .query_map(rusqlite::params![project_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("query research events");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("read research events")
+    }
 }
 
 /// 自定义 agent 断言辅助（create_agent 工具 / 存储层测试用）。

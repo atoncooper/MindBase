@@ -3,21 +3,28 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(windows)]
 use super::download::download_bytes;
 use super::layout::{python_dir, python_exe};
+#[cfg(not(windows))]
+use super::layout::venv_dir;
 use super::onnx::ensure_onnxruntime_gpu;
-use super::scripts::{enable_site_packages, extract_zip, run_python};
+#[cfg(windows)]
+use super::scripts::{enable_site_packages, extract_zip};
+use super::scripts::run_python;
 use crate::media::asr::StageLog;
 
 /// The Windows embeddable Python distribution to fetch — tried in order,
 /// domestic mirrors first (the official python.org host is often slow or
 /// unreachable from mainland networks).
+#[cfg(windows)]
 const PY_EMBED_URLS: &[&str] = &[
     "https://mirrors.huaweicloud.com/python/3.12.7/python-3.12.7-embed-amd64.zip",
     "https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip",
 ];
 
-/// get-pip.py mirrors (domestic first).
+/// get-pip.py mirrors (domestic first; Windows embeddable only).
+#[cfg(windows)]
 const GET_PIP_URLS: &[&str] = &[
     "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/get-pip.py",
     "https://bootstrap.pypa.io/get-pip.py",
@@ -139,20 +146,30 @@ pub(crate) fn ensure_doc_extract_python(
     if exe.is_file() {
         return Ok(exe);
     }
-    for candidate in ["python", "py"] {
-        let usable = Command::new(candidate)
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if usable {
-            return Ok(PathBuf::from(candidate));
+    #[cfg(windows)]
+    {
+        // Windows 降级路径保持原有候选顺序（python → py），不引入行为变化。
+        for candidate in ["python", "py"] {
+            let usable = Command::new(candidate)
+                .arg("--version")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if usable {
+                return Ok(PathBuf::from(candidate));
+            }
         }
     }
-    crate::infra::logging::info("python", "未找到系统 Python，开始下载嵌入式运行时…");
+    #[cfg(not(windows))]
+    {
+        if let Some(system) = find_system_python() {
+            return Ok(system);
+        }
+    }
+    crate::infra::logging::info("python", "未找到系统 Python，开始准备本地 Python 运行时…");
     ensure_python_base(data_dir)?;
     Ok(python_exe(data_dir))
 }
@@ -179,12 +196,18 @@ pub(crate) fn ensure_pptx_python(data_dir: &Path) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-/// 找到一个可用的系统 Python（`python` / `python3` / `py`）。
+/// 系统 Python 候选名：Windows 常用 python/py；macOS/Linux 必须是 python3。
+#[cfg(windows)]
+const SYSTEM_PYTHON_CANDIDATES: &[&str] = &["python", "python3", "py"];
+#[cfg(not(windows))]
+const SYSTEM_PYTHON_CANDIDATES: &[&str] = &["python3", "python"];
+
+/// 找到一个可用的系统 Python（Windows: python/python3/py；macOS/Linux: python3/python）。
 ///
-/// 仅作为降级路径使用：嵌入式运行时尚未就绪、且任务不需要任何第三方
-/// 依赖时（例如纯 CSV 画像），没必要为了一个标准库脚本下载整套运行时。
+/// 降级路径：运行时尚未就绪、且任务不需要第三方依赖时（如纯 CSV 画像），
+/// 没必要为了一个标准库脚本下载/创建整套运行时；macOS/Linux 也用它来创建 venv。
 fn find_system_python() -> Option<PathBuf> {
-    for candidate in ["python", "python3", "py"] {
+    for candidate in SYSTEM_PYTHON_CANDIDATES {
         let usable = Command::new(candidate)
             .arg("--version")
             .stdin(std::process::Stdio::null())
@@ -308,22 +331,26 @@ pub(crate) fn ensure_ocr_python(
     Ok(exe)
 }
 
-/// Provision the embedded runtime skeleton (download, .pth, pip bootstrap)
-/// without installing any extra package. Shared by the dashscope (cloud ASR)
-/// and whisper-server (local ASR) paths. Returns the interpreter path.
+/// Ensure the local Python runtime skeleton exists, without installing any
+/// extra package. Shared by the dashscope (cloud ASR) and whisper-server
+/// (local ASR) paths. Returns the interpreter path.
 ///
-/// Windows-only for now: the embeddable distribution and the pip bootstrap
-/// layout are Windows-specific. On macOS the caller degrades to a system
-/// `python3` where possible (plain text extraction) and the local ASR / OCR
-/// features report this error instead of a cryptic download failure.
+/// - Windows：下载/解压官方 embeddable 发行版 + 启用 .pth + 引导 pip（行为不变）；
+/// - macOS/Linux：用系统 python3 创建/复用 <data_dir>/python-venv，并确保 pip 可用。
 fn ensure_python_base(data_dir: &Path) -> Result<PathBuf, String> {
-    if cfg!(not(windows)) {
-        return Err(
-            "本地 Python 运行时暂未适配 macOS（本地 ASR / 本地 OCR / 带依赖的文档解析不可用），\
-             请使用云端模式"
-                .to_string(),
-        );
+    #[cfg(windows)]
+    {
+        ensure_python_base_windows(data_dir)
     }
+    #[cfg(not(windows))]
+    {
+        ensure_python_base_venv(data_dir)
+    }
+}
+
+/// Windows：官方 embeddable 运行时（下载 → 解压 → .pth → get-pip）。
+#[cfg(windows)]
+fn ensure_python_base_windows(data_dir: &Path) -> Result<PathBuf, String> {
     let exe = python_exe(data_dir);
     let py_dir = python_dir(data_dir);
     if !exe.is_file() {
@@ -356,6 +383,109 @@ fn ensure_python_base(data_dir: &Path) -> Result<PathBuf, String> {
         crate::infra::logging::info("python", "pip 引导完成");
     }
     Ok(exe)
+}
+
+/// macOS/Linux：用系统 python3 创建/复用 venv（<data_dir>/python-venv），
+/// 并确保 venv 内 pip 可用（ensurepip 兜底）。依赖装进该 venv，不污染系统环境。
+#[cfg(not(windows))]
+fn ensure_python_base_venv(data_dir: &Path) -> Result<PathBuf, String> {
+    let venv = venv_dir(data_dir);
+    let exe = python_exe(data_dir);
+    if exe.is_file() && interpreter_usable(&exe) {
+        ensure_pip_available(&exe, &venv)?;
+        return Ok(exe);
+    }
+    let system = find_system_python().ok_or_else(|| {
+        "未找到系统 Python 3：macOS 请先安装 Python 3（python.org 安装包或 brew install python）；\
+         Debian/Ubuntu 请执行 sudo apt install python3 python3-venv python3-pip"
+            .to_string()
+    })?;
+    crate::infra::logging::info(
+        "python",
+        &format!(
+            "使用系统 Python 创建虚拟环境（{} -> {}）…",
+            system.display(),
+            venv.display()
+        ),
+    );
+    if let Some(parent) = venv.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("无法创建 Python 运行目录 {}：{err}", parent.display()))?;
+    }
+    let output = Command::new(&system)
+        .args(["-m", "venv"])
+        .arg(&venv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("运行 {} -m venv 失败：{err}", system.display()))?;
+    if !output.status.success() {
+        let stderr: String = String::from_utf8_lossy(&output.stderr).chars().take(800).collect();
+        return Err(format!(
+            "创建 Python 虚拟环境失败（{}）：{}；Debian/Ubuntu 需 sudo apt install python3-venv python3-pip，macOS 需安装 Python 3",
+            system.display(),
+            stderr.trim()
+        ));
+    }
+    if !exe.is_file() {
+        return Err(format!("虚拟环境创建完成但缺少解释器：{}", exe.display()));
+    }
+    ensure_pip_available(&exe, &venv)?;
+    crate::infra::logging::info("python", "Python 虚拟环境就绪");
+    Ok(exe)
+}
+
+/// 解释器可运行（--version 退出码为 0）。
+#[cfg(not(windows))]
+fn interpreter_usable(exe: &Path) -> bool {
+    Command::new(exe)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// venv 内 pip 可用（python -m pip --version）。
+#[cfg(not(windows))]
+fn pip_available(exe: &Path, py_dir: &Path) -> bool {
+    Command::new(exe)
+        .args(["-m", "pip", "--version"])
+        .current_dir(py_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// 确保 venv 内有 pip：先检查，缺失时 -m ensurepip --upgrade 兜底。
+#[cfg(not(windows))]
+fn ensure_pip_available(exe: &Path, py_dir: &Path) -> Result<(), String> {
+    if pip_available(exe, py_dir) {
+        return Ok(());
+    }
+    crate::infra::logging::info("python", "虚拟环境缺少 pip，尝试 ensurepip…");
+    let _ = run_python(
+        exe,
+        &[
+            "-m".to_string(),
+            "ensurepip".to_string(),
+            "--upgrade".to_string(),
+        ],
+        py_dir,
+    );
+    if pip_available(exe, py_dir) {
+        return Ok(());
+    }
+    Err(
+        "Python 虚拟环境缺少 pip：Debian/Ubuntu 请安装 python3-venv python3-pip；macOS 请安装完整 Python 3"
+            .to_string(),
+    )
 }
 
 /// Ensure a working embedded Python (with dashscope) under `data_dir`.

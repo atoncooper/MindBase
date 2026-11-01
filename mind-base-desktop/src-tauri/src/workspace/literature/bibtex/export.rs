@@ -3,7 +3,7 @@
 use rusqlite::Connection;
 
 use super::bibtex_type_from_csl;
-use super::super::store::list_refs_conn;
+use crate::repositories::literature::list_refs_conn;
 use super::super::types::LiteratureRef;
 
 // ---------------------------------------------------------------------------

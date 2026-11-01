@@ -21,6 +21,9 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 #[derive(Debug, Default)]
 pub(crate) struct StreamTurn {
     pub content: String,
+    /// 思考模型的推理过程（reasoning_content / reasoning delta），与 content
+    /// 分开累计；不进入对话历史上下文，只用于前端展示与持久化。
+    pub reasoning: String,
     pub finish_reason: String,
     pub tool_calls: Vec<ToolCallReq>,
     /// Token usage reported by the provider for this turn (`None` when the
@@ -32,6 +35,26 @@ pub(crate) struct StreamTurn {
     /// True when the caller's cancellation flag ended the stream early —
     /// `content` holds whatever was generated before the cut.
     pub interrupted: bool,
+}
+
+/// 提取一帧里的 reasoning delta：优先 reasoning_content（DeepSeek 等），
+/// 其次 reasoning（字符串；若是对象取 content 字段）。
+fn reasoning_delta(chunk: &serde_json::Value) -> Option<String> {
+    let delta = chunk.pointer("/choices/0/delta")?;
+    if let Some(text) = delta
+        .get("reasoning_content")
+        .and_then(|value| value.as_str())
+    {
+        return Some(text.to_string());
+    }
+    let reasoning = delta.get("reasoning")?;
+    if let Some(text) = reasoning.as_str() {
+        return Some(text.to_string());
+    }
+    reasoning
+        .get("content")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }
 
 impl StreamTurn {
@@ -58,6 +81,9 @@ impl StreamTurn {
             .and_then(|c| c.as_str())
         {
             self.content.push_str(content);
+        }
+        if let Some(reasoning) = reasoning_delta(chunk) {
+            self.reasoning.push_str(&reasoning);
         }
         if let Some(fragments) = chunk
             .pointer("/choices/0/delta/tool_calls")
@@ -140,6 +166,20 @@ impl ChatClient {
         messages: &[ChatMessage],
         tools: Option<serde_json::Value>,
         on_delta: &mut dyn FnMut(&str),
+        should_stop: Option<&dyn Fn() -> bool>,
+    ) -> Result<StreamTurn, String> {
+        // 旧调用方不需要 reasoning：委托并传 no-op 回调。
+        self.stream_turn_with_reasoning(messages, tools, on_delta, &mut |_| {}, should_stop)
+    }
+
+    /// 与 stream_turn 相同，但把思考模型的 reasoning delta 通过 on_reasoning
+    /// 单独回调（reasoning 不混入 content，也不进入对话历史上下文）。
+    pub(crate) fn stream_turn_with_reasoning(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<serde_json::Value>,
+        on_delta: &mut dyn FnMut(&str),
+        on_reasoning: &mut dyn FnMut(&str),
         should_stop: Option<&dyn Fn() -> bool>,
     ) -> Result<StreamTurn, String> {
         // Fresh long-timeout agents: the shared HTTP_TIMEOUT would cut off
@@ -228,7 +268,11 @@ impl ChatClient {
                 };
                 for chunk in chunks {
                     let before = turn.content.len();
+                    let before_reasoning = turn.reasoning.len();
                     turn.apply_chunk(&chunk);
+                    if turn.reasoning.len() > before_reasoning {
+                        on_reasoning(&turn.reasoning[before_reasoning..]);
+                    }
                     if turn.content.len() > before {
                         emitted = true;
                         // DSML 标记不给用户看：出现后停止推送原始标记。
@@ -319,6 +363,46 @@ mod tests {
         assert_eq!(calls[0].id, "call-1");
         assert_eq!(calls[0].name, "vector_search");
         assert_eq!(calls[0].arguments, r#"{"query":"检索"}"#);
+    }
+
+    #[test]
+    fn reasoning_deltas_accumulate_separately_from_content() {
+        let mut turn = StreamTurn::default();
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "reasoning_content": "思考1" } }]
+        }));
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "reasoning": "思考2" } }]
+        }));
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "reasoning": { "content": "思考3" } } }]
+        }));
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "content": "回答" } }]
+        }));
+        assert_eq!(turn.reasoning, "思考1思考2思考3");
+        assert_eq!(turn.content, "回答", "reasoning 不混入正文");
+
+        // 普通 chunk 不产生推理。
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "content": "！" } }]
+        }));
+        assert_eq!(turn.reasoning, "思考1思考2思考3");
+    }
+
+    #[test]
+    fn reasoning_content_takes_precedence_over_reasoning() {
+        let mut turn = StreamTurn::default();
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "reasoning_content": "A", "reasoning": "B" } }]
+        }));
+        assert_eq!(turn.reasoning, "A");
+
+        let mut turn = StreamTurn::default();
+        turn.apply_chunk(&serde_json::json!({
+            "choices": [{ "delta": { "reasoning": { "content": "C" } } }]
+        }));
+        assert_eq!(turn.reasoning, "C");
     }
 
     #[test]

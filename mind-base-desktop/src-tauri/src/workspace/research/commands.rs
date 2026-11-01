@@ -1,30 +1,34 @@
 //! Tauri commands for research projects and the non-streaming research assistant.
+//!
+//! 命令层只做参数解析、DB 锁、目录 I/O 与错误转换；业务规则在
+//! [`super::service`]，SQL 在 `crate::repositories::research`。
 
 use std::path::PathBuf;
+use std::sync::MutexGuard;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::Connection;
 use tauri::State;
 
 use crate::infra::db::{self, Db};
 
 use super::briefing::{build_briefing, stage_prompt_name};
-use super::store::{
-    detail_conn, get_project_conn, list_artifacts_conn, list_projects_conn, list_stages_conn,
-    record_event_conn, update_stage_conn,
-};
+use super::{ai, service};
 use super::{
     ChatTurnInput, ProjectCreateInput, ProjectDetail, ProjectUpdateInput, ResearchAdvice,
-    ResearchEvent, ResearchProject,
+    ResearchEventPage, ResearchOverviewStats, ResearchPlan, ResearchProject, VenueSuggestion,
 };
-use super::{now_secs, STAGES};
+use super::now_secs;
+
+fn conn_guard<'a>(db: &'a State<'_, Db>) -> Result<MutexGuard<'a, Connection>, String> {
+    db.conn
+        .lock()
+        .map_err(|err| format!("failed to acquire database lock: {err}"))
+}
 
 #[tauri::command]
 pub fn research_projects_list(db: State<'_, Db>) -> Result<Vec<ResearchProject>, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    list_projects_conn(&conn)
+    let conn = conn_guard(&db)?;
+    service::list_projects(&conn)
 }
 
 #[tauri::command]
@@ -32,70 +36,11 @@ pub fn research_project_create(
     db: State<'_, Db>,
     input: ProjectCreateInput,
 ) -> Result<ProjectDetail, String> {
-    let title = input.title.trim();
-    if title.is_empty() {
-        return Err("项目名称不能为空".to_string());
-    }
     let id = db::local_id();
     let now = now_secs();
-    let paper_kind = input
-        .paper_kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("journal")
-        .to_string();
-    let language = input
-        .language
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("zh")
-        .to_string();
-    let privacy = input
-        .privacy
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("local")
-        .to_string();
-
     {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        conn.execute(
-            "INSERT INTO research_projects(
-                 id, title, paper_kind, field, language, target_venue, current_stage,
-                 privacy, deadline, meta_json, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'topic', ?7, ?8, '{}', ?9, ?9)",
-            params![
-                id,
-                title,
-                paper_kind,
-                input.field.as_deref().unwrap_or(""),
-                language,
-                input.target_venue.as_deref().unwrap_or(""),
-                privacy,
-                input.deadline.as_deref().unwrap_or(""),
-                now,
-            ],
-        )
-        .map_err(|err| format!("failed to insert research project: {err}"))?;
-
-        for (index, stage) in STAGES.iter().enumerate() {
-            let status = if index == 0 { "active" } else { "locked" };
-            let entered_at = if index == 0 { Some(now) } else { None };
-            conn.execute(
-                "INSERT INTO research_stages(project_id, stage, status, entered_at, approved_at, gate_json) \
-                 VALUES (?1, ?2, ?3, ?4, NULL, '[]')",
-                params![id, stage, status, entered_at],
-            )
-            .map_err(|err| format!("failed to insert research stage: {err}"))?;
-        }
-
-        record_event_conn(&conn, &id, "user", "project.created", "{}");
+        let conn = conn_guard(&db)?;
+        service::create_project(&conn, &id, input, now)?;
     }
 
     // Project directory is a convenience: a failure here (e.g. read-only disk)
@@ -119,20 +64,14 @@ pub fn research_project_create(
         }
     }
 
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    detail_conn(&conn, &id)
+    let conn = conn_guard(&db)?;
+    service::detail(&conn, &id)
 }
 
 #[tauri::command]
 pub fn research_project_get(db: State<'_, Db>, project_id: String) -> Result<ProjectDetail, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    detail_conn(&conn, &project_id)
+    let conn = conn_guard(&db)?;
+    service::detail(&conn, &project_id)
 }
 
 #[tauri::command]
@@ -141,40 +80,8 @@ pub fn research_project_update(
     project_id: String,
     input: ProjectUpdateInput,
 ) -> Result<ResearchProject, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    let current = get_project_conn(&conn, &project_id)?
-        .ok_or_else(|| format!("研究项目不存在：{project_id}"))?;
-    let title = input
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or(current.title);
-    let paper_kind = input.paper_kind.unwrap_or(current.paper_kind);
-    let field = input.field.unwrap_or(current.field);
-    let language = input.language.unwrap_or(current.language);
-    let target_venue = input.target_venue.unwrap_or(current.target_venue);
-    let privacy = input.privacy.unwrap_or(current.privacy);
-    let deadline = input.deadline.unwrap_or(current.deadline);
-    let meta_json = input.meta_json.unwrap_or(current.meta_json);
-    let now = now_secs();
-    conn.execute(
-        "UPDATE research_projects SET title = ?2, paper_kind = ?3, field = ?4, language = ?5, \
-             target_venue = ?6, privacy = ?7, deadline = ?8, meta_json = ?9, updated_at = ?10 \
-         WHERE id = ?1",
-        params![
-            project_id, title, paper_kind, field, language, target_venue, privacy, deadline,
-            meta_json, now
-        ],
-    )
-    .map_err(|err| format!("failed to update research project: {err}"))?;
-    record_event_conn(&conn, &project_id, "user", "project.updated", "{}");
-    get_project_conn(&conn, &project_id)?
-        .ok_or_else(|| format!("研究项目不存在：{project_id}"))
+    let conn = conn_guard(&db)?;
+    service::update_project(&conn, &project_id, input, now_secs())
 }
 
 #[tauri::command]
@@ -185,20 +92,17 @@ pub fn research_stage_update(
     status: String,
     gate_json: Option<String>,
 ) -> Result<ProjectDetail, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    let now = now_secs();
-    update_stage_conn(
+    let conn = conn_guard(&db)?;
+    service::update_stage(
         &conn,
         &project_id,
         &stage,
         &status,
         gate_json.as_deref(),
-        now,
+        "user",
+        now_secs(),
     )?;
-    detail_conn(&conn, &project_id)
+    service::detail(&conn, &project_id)
 }
 
 #[tauri::command]
@@ -210,43 +114,18 @@ pub fn research_artifact_add(
     title: String,
     path: Option<String>,
 ) -> Result<ProjectDetail, String> {
-    let title = title.trim();
-    if title.is_empty() {
-        return Err("产物标题不能为空".to_string());
-    }
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    let project = get_project_conn(&conn, &project_id)?
-        .ok_or_else(|| format!("研究项目不存在：{project_id}"))?;
-    let stage = stage
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&project.current_stage)
-        .to_string();
-    let kind = kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("doc")
-        .to_string();
-    let id = db::local_id();
-    let now = now_secs();
-    conn.execute(
-        "INSERT INTO project_artifacts(id, project_id, stage, kind, title, path, version, sha256, status, meta_json, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, '', 'draft', '{}', ?7)",
-        params![id, project_id, stage, kind, title, path.as_deref().unwrap_or(""), now],
-    )
-    .map_err(|err| format!("failed to insert artifact: {err}"))?;
-    conn.execute(
-        "UPDATE research_projects SET updated_at = ?2 WHERE id = ?1",
-        params![project_id, now],
-    )
-    .map_err(|err| format!("failed to touch project: {err}"))?;
-    record_event_conn(&conn, &project_id, "user", "artifact.added", "{}");
-    detail_conn(&conn, &project_id)
+    let conn = conn_guard(&db)?;
+    service::add_artifact(
+        &conn,
+        &db::local_id(),
+        &project_id,
+        stage.as_deref(),
+        kind.as_deref(),
+        &title,
+        path.as_deref(),
+        now_secs(),
+    )?;
+    service::detail(&conn, &project_id)
 }
 
 #[tauri::command]
@@ -254,31 +133,11 @@ pub fn research_events_list(
     db: State<'_, Db>,
     project_id: String,
     limit: Option<i64>,
-) -> Result<Vec<ResearchEvent>, String> {
-    let limit = limit.unwrap_or(50).clamp(1, 500);
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, ts, actor, type, payload_json FROM project_events \
-             WHERE project_id = ?1 ORDER BY id DESC LIMIT ?2",
-        )
-        .map_err(|err| format!("failed to prepare event list: {err}"))?;
-    let rows = stmt
-        .query_map(params![project_id, limit], |row| {
-            Ok(ResearchEvent {
-                id: row.get(0)?,
-                ts: row.get(1)?,
-                actor: row.get(2)?,
-                kind: row.get(3)?,
-                payload_json: row.get(4)?,
-            })
-        })
-        .map_err(|err| format!("failed to query events: {err}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("failed to read events: {err}"))
+    before_id: Option<i64>,
+) -> Result<ResearchEventPage, String> {
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    let conn = conn_guard(&db)?;
+    service::events_page(&conn, &project_id, limit, before_id)
 }
 
 #[tauri::command]
@@ -315,15 +174,9 @@ pub async fn research_ask(
     }
 
     let (briefing, current_stage, client, embed_client, data_dir) = {
-        let conn = db
-            .conn
-            .lock()
-            .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-        let project = get_project_conn(&conn, &project_id)?
-            .ok_or_else(|| format!("研究项目不存在：{project_id}"))?;
-        let stages = list_stages_conn(&conn, &project_id)?;
-        let artifacts = list_artifacts_conn(&conn, &project_id)?;
-        let briefing = build_briefing(&conn, &project, &stages, &artifacts)?;
+        let conn = conn_guard(&db)?;
+        let detail = service::detail(&conn, &project_id)?;
+        let briefing = build_briefing(&conn, &detail.project, &detail.stages, &detail.artifacts)?;
         let client = crate::llm::client::chat_client_from_conn(&conn)?
             .ok_or_else(|| "未配置对话模型，请先在「API 设置」中填写提供方密钥".to_string())?;
         let embed_client = crate::llm::embeddings::embed_client_from_conn_opt(&conn)?;
@@ -332,7 +185,13 @@ pub async fn research_ask(
             .lock()
             .map_err(|err| format!("failed to acquire data dir lock: {err}"))?
             .clone();
-        (briefing, project.current_stage, client, embed_client, dir)
+        (
+            briefing,
+            detail.project.current_stage,
+            client,
+            embed_client,
+            dir,
+        )
     };
 
     let base = crate::agent::prompts::load_base(&data_dir, crate::agent::agents::AgentKind::Research);
@@ -403,30 +262,116 @@ pub fn research_advice_latest(
     db: State<'_, Db>,
     project_id: String,
 ) -> Result<Option<ResearchAdvice>, String> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|err| format!("failed to acquire database lock: {err}"))?;
-    if get_project_conn(&conn, &project_id)?.is_none() {
-        return Err(format!("研究项目不存在：{project_id}"));
+    let conn = conn_guard(&db)?;
+    service::advice_latest(&conn, &project_id)
+}
+
+/// 读取阶段建议历史（控制台「阶段建议」列表用），按时间倒序。
+#[tauri::command]
+pub fn research_advice_list(
+    db: State<'_, Db>,
+    project_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<ResearchAdvice>, String> {
+    let limit = limit.unwrap_or(5).clamp(1, 20);
+    let conn = conn_guard(&db)?;
+    service::advice_list(&conn, &project_id, limit)
+}
+
+/// 更新阶段门禁勾选（UI 状态，不写事件），返回最新项目详情。
+#[tauri::command]
+pub fn research_stage_gate_set(
+    db: State<'_, Db>,
+    project_id: String,
+    stage: String,
+    gate_json: String,
+) -> Result<ProjectDetail, String> {
+    if gate_json.chars().count() > 20_000 {
+        return Err("阶段门禁内容过长（上限 20000 字符）".to_string());
     }
-    conn.query_row(
-        "SELECT questions_json, notes, created_at FROM guidance_notes \
-         WHERE project_id = ?1 ORDER BY created_at DESC LIMIT 1",
-        params![project_id],
-        |row| {
-            let questions: String = row.get(0)?;
-            let question = serde_json::from_str::<Vec<String>>(&questions)
-                .ok()
-                .and_then(|items| items.into_iter().next())
-                .unwrap_or_default();
-            Ok(ResearchAdvice {
-                question,
-                notes: row.get(1)?,
-                created_at: row.get(2)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|err| format!("读取最新建议失败：{err}"))
+    let parsed: serde_json::Value = serde_json::from_str(&gate_json)
+        .map_err(|err| format!("阶段门禁 JSON 解析失败：{err}"))?;
+    if !parsed.is_object() {
+        return Err("阶段门禁必须是 JSON 对象".to_string());
+    }
+    let conn = conn_guard(&db)?;
+    service::set_stage_gate(&conn, &project_id, &stage, &gate_json)?;
+    service::detail(&conn, &project_id)
+}
+
+/// 阶段资料总览统计（文献/数据集/实验/产物/稿件/建议计数）。
+#[tauri::command]
+pub fn research_overview_stats(
+    db: State<'_, Db>,
+    project_id: String,
+) -> Result<ResearchOverviewStats, String> {
+    let conn = conn_guard(&db)?;
+    service::overview_stats(&conn, &project_id)
+}
+
+/// AI 推荐 3-5 个目标期刊/会议（结合项目信息与近期文献渠道），并记事件。
+// 命令由 Lead 在 app/commands.rs 注册；注册前暂无 crate 内调用方。
+#[allow(dead_code)]
+#[tauri::command]
+pub async fn research_venue_recommend(
+    db: State<'_, Db>,
+    project_id: String,
+) -> Result<Vec<VenueSuggestion>, String> {
+    let conn = db.conn.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ai::recommend_venues(&conn, &project_id, now_secs())
+    })
+    .await
+    .map_err(|err| format!("期刊推荐任务执行失败：{err}"))?
+}
+
+/// 读取某阶段已生成的 AI 研究计划（没有返回 None）。
+#[allow(dead_code)]
+#[tauri::command]
+pub fn research_plan_get(
+    db: State<'_, Db>,
+    project_id: String,
+    stage: String,
+) -> Result<Option<ResearchPlan>, String> {
+    let conn = conn_guard(&db)?;
+    service::plan_get(&conn, &project_id, &stage)
+}
+
+/// AI 生成并持久化某阶段研究计划（事件 plan.generated）。
+#[allow(dead_code)]
+#[tauri::command]
+pub async fn research_plan_generate(
+    db: State<'_, Db>,
+    project_id: String,
+    stage: String,
+) -> Result<ResearchPlan, String> {
+    let conn = db.conn.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ai::generate_plan(&conn, &project_id, &stage, now_secs())
+    })
+    .await
+    .map_err(|err| format!("研究计划生成任务执行失败：{err}"))?
+}
+
+/// 勾选/取消计划任务：写 gate_json.checks + plan.task 事件，返回最新项目详情。
+#[allow(dead_code)]
+#[tauri::command]
+pub fn research_plan_task_set(
+    db: State<'_, Db>,
+    project_id: String,
+    stage: String,
+    task_id: String,
+    done: bool,
+) -> Result<ProjectDetail, String> {
+    let conn = conn_guard(&db)?;
+    service::plan_task_set(
+        &conn,
+        &project_id,
+        &stage,
+        &task_id,
+        done,
+        "user",
+        now_secs(),
+    )?;
+    service::detail(&conn, &project_id)
 }

@@ -53,6 +53,8 @@ export interface ChatMessageRow {
   createdAt: number;
   /** 该助手消息的 token 用量；用户消息 / 未计量轮次为 null。 */
   usage?: TokenUsage | null;
+  /** 思考过程（仅思考模型有；非思考模型为空串）。 */
+  reasoning: string;
 }
 
 /** 交互卡片的三种形态：单选澄清 / 确认执行 / 结构化表单。 */
@@ -136,6 +138,8 @@ export type ChatEvent =
       steps: { desc: string; status: string; note: string }[];
     }
   | { type: "chunk"; content: string }
+  /** 思考过程增量（仅思考模型；50ms 合帧，前端直接追加）。 */
+  | { type: "reasoning"; content: string }
   | { type: "sources"; sources: ChatSource[] }
   | { type: "interact"; interact: ChatInteraction }
   | { type: "artifact"; artifacts: ChatArtifact[] }

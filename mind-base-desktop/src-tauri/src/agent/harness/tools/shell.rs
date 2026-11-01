@@ -105,10 +105,12 @@ impl LocalTool for RunCommandTool {
                 shell::MAX_COMMAND_BYTES
             ));
         }
+        let data_dir = cli::data_dir(ctx)?;
+        // 危险命令黑名单：在 spawn 之前拦截（命中直接返回中文错误，不执行）。
+        crate::infra::command_guard::check(&data_dir, &command)?;
         let shell_kind = shell::ShellKind::parse(value.get("shell").and_then(Value::as_str))?;
         let network = shell::NetworkMode::parse(value.get("network").and_then(Value::as_str))?;
         let timeout = shell::clamp_timeout(value.get("timeout_ms").and_then(Value::as_u64));
-        let data_dir = cli::data_dir(ctx)?;
         let cwd = resolve_cwd(&data_dir, ctx, value.get("cwd").and_then(Value::as_str))?;
         let log_dir = process::log_root(&data_dir);
 

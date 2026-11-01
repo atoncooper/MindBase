@@ -8,13 +8,16 @@ use rusqlite::Connection;
 /// runs on its own and "duplicate column" failures are silently accepted —
 /// that error *is* the success state for an already-migrated database.
 /// Anything else is logged but never fatal (startup must self-heal).
-const COLUMN_MIGRATIONS: [&str; 6] = [
+const COLUMN_MIGRATIONS: [&str; 9] = [
     "ALTER TABLE api_keys ADD COLUMN base_url TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE api_keys ADD COLUMN model TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE documents ADD COLUMN source_type TEXT NOT NULL DEFAULT 'video';",
     "ALTER TABLE documents ADD COLUMN file_path TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE documents ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE mind_maps ADD COLUMN kind TEXT NOT NULL DEFAULT 'mindmap';",
+    "ALTER TABLE manuscript_sections ADD COLUMN document_id TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE chat_messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE manuscript_documents ADD COLUMN source_path TEXT NOT NULL DEFAULT '';",
 ];
 
 /// Apply [`COLUMN_MIGRATIONS`], tolerating already-applied ones.
@@ -27,6 +30,20 @@ pub(super) fn run_column_migrations(conn: &Connection) {
             }
             eprintln!("[db] column migration failed ({statement}): {text}");
         }
+    }
+}
+
+/// 创建依赖迁移列 `document_id` 的索引。
+///
+/// 这条语句不能放在 SCHEMA_SQL 里：SCHEMA_SQL 在列迁移之前执行，旧库的
+/// `manuscript_sections` 还没有 `document_id`，`CREATE INDEX` 会报
+/// `no such column` 并让整个启动 setup hook 失败。失败只记录日志，不阻塞启动。
+pub(super) fn ensure_manuscript_document_index(conn: &Connection) {
+    if let Err(err) = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_manuscript_sections_document \
+         ON manuscript_sections(project_id, document_id, ord);",
+    ) {
+        eprintln!("[db] manuscript document index migration failed: {err}");
     }
 }
 
@@ -121,9 +138,134 @@ pub(super) fn migrate_quiz_records_to_sets(conn: &Connection) {
     }
 }
 
+/// One-time data migration: sections written by pre-document builds have no
+/// `document_id`; each such project gets a default 「初稿」 document and its
+/// legacy sections are attached to it. Idempotent: projects whose sections all
+/// carry a document_id are skipped (no rows match).
+pub(super) fn migrate_manuscript_documents(conn: &Connection) {
+    let projects: Vec<String> = {
+        let mut statement = match conn
+            .prepare("SELECT DISTINCT project_id FROM manuscript_sections WHERE document_id = ''")
+        {
+            Ok(statement) => statement,
+            Err(err) => {
+                eprintln!("[db] manuscript document migration failed to prepare: {err}");
+                return;
+            }
+        };
+        let mut projects: Vec<String> = Vec::new();
+        match statement.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => {
+                for project in rows.filter_map(Result::ok) {
+                    projects.push(project);
+                }
+            }
+            Err(err) => {
+                eprintln!("[db] manuscript document migration failed to read: {err}");
+                return;
+            }
+        }
+        projects
+    };
+    for project_id in projects {
+        let document_id = super::local_id();
+        let now = now_secs();
+        let migrate = || -> Result<(), rusqlite::Error> {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "INSERT INTO manuscript_documents(id, project_id, kind, title, created_at, updated_at) \
+                 VALUES (?1, ?2, 'draft', '初稿', ?3, ?3)",
+                rusqlite::params![document_id, project_id, now],
+            )?;
+            tx.execute(
+                "UPDATE manuscript_sections SET document_id = ?1 \
+                 WHERE project_id = ?2 AND document_id = ''",
+                rusqlite::params![document_id, project_id],
+            )?;
+            tx.commit()
+        };
+        if let Err(err) = migrate() {
+            eprintln!(
+                "[db] manuscript document migration failed for project {project_id}: {err}"
+            );
+        }
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|delta| delta.as_secs() as i64)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_manuscript_sections_gain_default_document_idempotently() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        // Pre-document schema: sections exist but carry no document_id.
+        conn.execute_batch(
+            "CREATE TABLE manuscript_documents(
+                 id         TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 kind       TEXT NOT NULL DEFAULT 'draft',
+                 title      TEXT NOT NULL DEFAULT '初稿',
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE manuscript_sections(
+                 id         TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 section    TEXT NOT NULL,
+                 ord        INTEGER NOT NULL DEFAULT 0,
+                 path       TEXT NOT NULL DEFAULT '',
+                 words      INTEGER NOT NULL DEFAULT 0,
+                 status     TEXT NOT NULL DEFAULT 'draft',
+                 updated_at INTEGER NOT NULL
+             );
+             INSERT INTO manuscript_sections(id, project_id, section, ord, updated_at)
+             VALUES('s1', 'p1', '摘要', 0, 1), ('s2', 'p1', '1 引言', 1, 1), ('s3', 'p2', '正文', 0, 1);",
+        )
+        .expect("legacy schema");
+
+        run_column_migrations(&conn);
+        migrate_manuscript_documents(&conn);
+        // Second run must be a no-op (no duplicate default documents).
+        migrate_manuscript_documents(&conn);
+
+        let documents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM manuscript_documents", [], |row| row.get(0))
+            .expect("document count");
+        assert_eq!(documents, 2, "one default document per project");
+        let kinds: Vec<(String, String)> = conn
+            .prepare("SELECT kind, title FROM manuscript_documents ORDER BY title")
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(kinds.len(), 2);
+        assert!(kinds.iter().all(|(kind, title)| kind == "draft" && title == "初稿"));
+        let unassigned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM manuscript_sections WHERE document_id = ''",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unassigned count");
+        assert_eq!(unassigned, 0, "all legacy sections attached");
+        let per_document: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM manuscript_sections s                  JOIN manuscript_documents d ON d.id = s.document_id AND d.project_id = s.project_id",
+                [],
+                |row| row.get(0),
+            )
+            .expect("joined count");
+        assert_eq!(per_document, 3);
+    }
 
     #[test]
     fn legacy_chat_messages_gain_usage_column_idempotently() {
@@ -161,5 +303,94 @@ mod tests {
             .expect("legacy row readable");
         assert_eq!(content, "legacy answer");
         assert_eq!(usage, "{}");
+    }
+
+    #[test]
+    fn legacy_chat_messages_gain_reasoning_column() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE chat_messages(
+                 msg_id          TEXT PRIMARY KEY,
+                 chat_session_id TEXT NOT NULL,
+                 role            TEXT NOT NULL,
+                 content         TEXT NOT NULL,
+                 status          TEXT NOT NULL DEFAULT 'completed',
+                 sources         TEXT NOT NULL DEFAULT '[]',
+                 model           TEXT NOT NULL DEFAULT '',
+                 error           TEXT NOT NULL DEFAULT '',
+                 usage           TEXT NOT NULL DEFAULT '{}',
+                 created_at      INTEGER NOT NULL
+             );
+             INSERT INTO chat_messages(msg_id, chat_session_id, role, content, created_at)
+             VALUES('old', 's1', 'assistant', 'legacy answer', 1);",
+        )
+        .expect("legacy schema");
+
+        // 其它表的 ALTER 会因缺表失败并被容忍；chat_messages 的 reasoning 生效。
+        run_column_migrations(&conn);
+        run_column_migrations(&conn);
+
+        let has_reasoning = {
+            let mut statement = conn
+                .prepare("PRAGMA table_info(chat_messages)")
+                .expect("pragma");
+            let columns: Vec<String> = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("columns")
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|name| name == "reasoning")
+        };
+        assert!(has_reasoning, "旧库应通过列迁移补上 reasoning");
+        let reasoning: String = conn
+            .query_row(
+                "SELECT reasoning FROM chat_messages WHERE msg_id = 'old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row reasoning");
+        assert_eq!(reasoning, "", "历史行默认空 reasoning");
+    }
+
+    #[test]
+    fn legacy_manuscript_documents_gain_source_path_column() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE manuscript_documents(
+                 id         TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 kind       TEXT NOT NULL DEFAULT 'draft',
+                 title      TEXT NOT NULL DEFAULT '初稿',
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             INSERT INTO manuscript_documents(id, project_id, created_at, updated_at)
+             VALUES('old', 'p1', 1, 1);",
+        )
+        .expect("legacy schema");
+
+        run_column_migrations(&conn);
+        run_column_migrations(&conn);
+
+        let has_source_path = {
+            let mut statement = conn
+                .prepare("PRAGMA table_info(manuscript_documents)")
+                .expect("pragma");
+            let columns: Vec<String> = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("columns")
+                .filter_map(Result::ok)
+                .collect();
+            columns.iter().any(|name| name == "source_path")
+        };
+        assert!(has_source_path, "旧库应通过列迁移补上 source_path");
+        let source_path: String = conn
+            .query_row(
+                "SELECT source_path FROM manuscript_documents WHERE id = 'old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row source_path");
+        assert_eq!(source_path, "", "历史文档默认空 source_path");
     }
 }

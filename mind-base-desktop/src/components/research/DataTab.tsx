@@ -7,10 +7,12 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useToast } from "../../lib/toast";
 import {
-  cellText, datasetMissingTotal, importDataset, listDatasets, parseDatasetProfile, runAnalysis,
-  type AnalysisResult, type DatasetRow,
+  cellText, datasetMissingTotal, importAnalysisScript, importDataset, listAnalysisScripts,
+  listDatasets, parseDatasetProfile, runAnalysis,
+  type AnalysisResult, type DatasetRow, type SavedScript,
 } from "../../lib/research";
-import { errorText, formatDate } from "./common";
+import { errorText, formatDate, formatDateTime } from "./common";
+import CodeEditor from "./CodeEditor";
 
 const SCRIPT_TEMPLATE = [
   "# 分析脚本：在本项目根目录执行（cwd = research/<项目ID>），可用相对路径访问 data/ 与 analysis/",
@@ -43,6 +45,9 @@ export default function DataTab({ projectId }: { projectId: string }): React.JSX
   const [script, setScript] = useState(SCRIPT_TEMPLATE);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  // 项目已保存脚本（analysis/scripts/）：供「项目脚本」下拉载入历史脚本。
+  const [scripts, setScripts] = useState<SavedScript[]>([]);
+  const [scriptImporting, setScriptImporting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +58,50 @@ export default function DataTab({ projectId }: { projectId: string }): React.JSX
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [projectId]);
+
+  /** 拉取项目已保存的分析脚本；旧后端 / 目录缺失时退化为空列表，不阻塞数据 tab。 */
+  async function loadScripts(): Promise<void> {
+    try {
+      setScripts(await listAnalysisScripts(projectId));
+    } catch {
+      setScripts([]);
+    }
+  }
+  useEffect(() => {
+    void loadScripts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  /** 选择本地脚本文件（.py/.pyw/.txt）载入编辑器；只读，不改原文件。 */
+  async function pickScriptFile(): Promise<void> {
+    const selected = await open({
+      multiple: false,
+      title: "选择要导入的分析脚本",
+      filters: [{ name: "Python 脚本", extensions: ["py", "pyw", "txt"] }],
+    });
+    const path = (Array.isArray(selected) ? selected[0] : selected) ?? null;
+    if (path === null || path === "") return;
+    await loadScriptFile(path);
+  }
+
+  /** 读取脚本文件到编辑器（「导入脚本」与「项目脚本」下拉共用）。 */
+  async function loadScriptFile(path: string): Promise<void> {
+    setScriptImporting(true); setError(null); setNotice(null);
+    try {
+      const imported = await importAnalysisScript(path);
+      setScript(imported.content);
+      // 后端返回的 name 已去掉扩展名；再做一次防御性裁剪，避免落盘出现 xx.py.py。
+      setScriptName(imported.name.replace(/\.(py|pyw|txt)$/i, "").trim() || "分析脚本");
+      setResult(null);
+      setNotice("已导入脚本「" + imported.name + "」：" + imported.path);
+      toast.success("脚本已载入编辑器；运行后写入 analysis/scripts/", { title: "导入脚本" });
+    } catch (err) {
+      setError(errorText(err));
+      toast.error(errorText(err), { title: "导入脚本失败" });
+    } finally {
+      setScriptImporting(false);
+    }
+  }
 
   async function pickFile(): Promise<void> {
     const selected = await open({ multiple: false, title: "选择要导入的数据文件", filters: [{ name: "数据文件", extensions: ["csv", "xlsx", "xls"] }] });
@@ -77,6 +126,8 @@ export default function DataTab({ projectId }: { projectId: string }): React.JSX
       const output = await runAnalysis(projectId, name, script);
       setResult(output);
       toast.success(output.exitCode === 0 ? "分析脚本执行完成" : "脚本退出码 " + output.exitCode, { title: "运行分析" });
+      // 运行会把脚本写入 analysis/scripts/，刷新「项目脚本」下拉。
+      await loadScripts();
     } catch (err) { setError(errorText(err)); toast.error(errorText(err), { title: "运行分析失败" }); }
     finally { setRunning(false); }
   }
@@ -167,15 +218,50 @@ export default function DataTab({ projectId }: { projectId: string }): React.JSX
       </div>
 
       <div className="card">
-        <div className="research-section-head"><h3>分析脚本</h3><span className="hint-text">Python · 本机执行 · 默认 120s 超时</span></div>
+        <div className="research-section-head">
+          <h3>分析脚本</h3>
+          <span className="hint-text">Python · 本机执行 · 默认 120s 超时</span>
+          <span className="spacer" />
+          <button type="button" className="button research-btn-sm" disabled={scriptImporting} onClick={() => void pickScriptFile()}>
+            {scriptImporting ? "导入中…" : "导入脚本"}
+          </button>
+        </div>
+        <p className="hint-text">可手写，也可导入 .py；运行时会写入 analysis/scripts/。</p>
         <div className="research-field" style={{ maxWidth: 360 }}>
           <label htmlFor="analysis-script-name">脚本名称（用于落盘文件名）</label>
-          <input id="analysis-script-name" className="text-input" value={scriptName} onChange={(event) => setScriptName(event.target.value)} />
+          <input id="analysis-script-name" className="text-input" value={scriptName} autoComplete="off" placeholder="例如：baseline_analysis" onChange={(event) => setScriptName(event.target.value)} />
+          <span className="rs-field-hint">运行时会写入 analysis/scripts/&lt;脚本名&gt;.py；同名会覆盖。</span>
+        </div>
+        <div className="research-field" style={{ maxWidth: 360, marginTop: 12 }}>
+          <label htmlFor="analysis-script-saved">项目脚本</label>
+          <select
+            id="analysis-script-saved"
+            className="research-select"
+            value=""
+            disabled={scriptImporting || scripts.length === 0}
+            onChange={(event) => {
+              const path = event.target.value;
+              if (path !== "") void loadScriptFile(path);
+            }}
+          >
+            <option value="">{scripts.length === 0 ? "暂无已保存脚本" : "选择已保存脚本…（" + scripts.length + "）"}</option>
+            {scripts.map((row) => (
+              <option key={row.path} value={row.path}>{row.name + " · " + formatDateTime(row.modifiedAt)}</option>
+            ))}
+          </select>
         </div>
         <div className="research-field" style={{ marginTop: 12 }}>
           <label htmlFor="analysis-script">脚本内容</label>
-          <textarea id="analysis-script" className="research-textarea research-mono" style={{ minHeight: 180 }}
-            value={script} onChange={(event) => setScript(event.target.value)} spellCheck={false} />
+          <CodeEditor
+            id="analysis-script"
+            value={script}
+            onChange={setScript}
+            language="python"
+            minHeight={200}
+            maxHeight={420}
+            ariaLabel="分析脚本内容"
+          />
+          <span className="rs-field-hint">支持手写或导入；可写 pandas/numpy 等，标准输出会显示在下方。</span>
         </div>
         <div className="research-row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
           <span className="hint-text" style={{ flex: 1 }}>脚本写入 analysis/scripts/，stdout 落到 analysis/outputs/。</span>

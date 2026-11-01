@@ -228,19 +228,26 @@ static SPEC_ACADEMIC_PROJECT: std::sync::LazyLock<ToolSpec> = std::sync::LazyLoc
         "科研项目工具。action：\
          brief=读取项目简报（阶段/证据/文献/数据/稿件摘要，回答或写作前先看）；\
          stage_update=推进/回退阶段（topic/design/advise/experiment/writing/submission；\
-         status：locked/submitted/active/approved/frozen）。\
-         需要 project_id（研究项目 id）。",
+         status：locked/submitted/active/approved/frozen）；\
+         save_advice=保存阶段建议；\
+         plan_get=读取当前阶段 AI 研究计划（还没有时提示先生成）；\
+         plan_generate=AI 生成当前阶段研究计划（目标/任务/交付物/验收/风险，生成后持久化）；\
+         plan_task_set=勾选/取消计划任务（done=true/false，写入阶段门禁 checks）。\
+         需要 project_id（研究项目 id）；plan_* 需要 stage；plan_task_set 需要 task_id + done。\
+         AI 生成计划后请逐项执行，并用 plan_task_set 勾选完成；用户也可在控制台手动勾选。",
         json!({
             "type": "object",
             "required": ["action"],
             "properties": {
-                "action": {"type": "string", "enum": ["list", "brief", "stage_update", "save_advice"]},
+                "action": {"type": "string", "enum": ["list", "brief", "stage_update", "save_advice", "plan_get", "plan_generate", "plan_task_set"]},
                 "project_id": {"type": "string"},
                 "stage": {"type": "string", "enum": ["topic", "design", "advise", "experiment", "writing", "submission"]},
                 "status": {"type": "string", "enum": ["locked", "submitted", "active", "approved", "frozen"]},
                 "gate_json": {"type": "string", "description": "可选：阶段门禁/检查项 JSON"},
                 "notes": {"type": "string", "description": "save_advice 的建议正文（会显示在控制台「当前阶段建议」）"},
-                "question": {"type": "string", "description": "可选：这条建议对应的问题"}
+                "question": {"type": "string", "description": "可选：这条建议对应的问题"},
+                "task_id": {"type": "string", "description": "plan_task_set：计划任务 id（如 t1）"},
+                "done": {"type": "boolean", "description": "plan_task_set：true=完成，false=取消完成"}
             }
         }),
     )
@@ -302,28 +309,14 @@ impl LocalTool for AcademicProjectTool {
                     .filter(|text| !text.is_empty())
                     .unwrap_or("阶段建议");
                 let now = crate::automation::now_secs();
-                guard
-                    .execute(
-                        "INSERT INTO guidance_notes(id, project_id, session_date, questions_json, notes, created_at) \
-                         VALUES(?1, ?2, '', ?3, ?4, ?5)",
-                        rusqlite::params![
-                            crate::infra::db::local_id(),
-                            project_id,
-                            serde_json::json!([question]).to_string(),
-                            notes,
-                            now
-                        ],
-                    )
-                    .map_err(|err| format!("保存建议失败：{err}"))?;
-                let _ = guard.execute(
-                    "INSERT INTO project_events(project_id, ts, actor, type, payload_json) \
-                     VALUES(?1, ?2, 'agent', 'ai.advice', ?3)",
-                    rusqlite::params![
-                        project_id,
-                        now,
-                        serde_json::json!({"chars": notes.chars().count()}).to_string()
-                    ],
-                );
+                research::save_advice(
+                    &guard,
+                    &crate::infra::db::local_id(),
+                    project_id,
+                    question,
+                    notes,
+                    now,
+                )?;
                 Ok(ToolOutput::text(format!(
                     "已保存阶段建议到控制台（{} 字）；控制台「当前阶段建议」会显示这条。",
                     notes.chars().count()
@@ -345,15 +338,98 @@ impl LocalTool for AcademicProjectTool {
                     stage,
                     status,
                     gate_json,
+                    "agent",
                     crate::automation::now_secs(),
                 )?;
                 Ok(ToolOutput::text(format!(
                     "项目 {project_id} 阶段 {stage} 已更新为 {status}；用 action=brief 查看最新简报。"
                 )))
             }
-            other => Err(format!("不支持的 action：{other}（可选 list / brief / stage_update）")),
+            "plan_get" => {
+                let stage = value
+                    .get("stage")
+                    .and_then(Value::as_str)
+                    .ok_or("plan_get 需要 stage")?;
+                match research::plan_get(&guard, project_id, stage)? {
+                    Some(plan) => Ok(ToolOutput::text(format_plan_text(&plan))),
+                    None => Ok(ToolOutput::text(format!(
+                        "项目 {project_id} 的 {stage} 阶段还没有 AI 研究计划；用 action=plan_generate 生成一份。"
+                    ))),
+                }
+            }
+            "plan_generate" => {
+                let stage = value
+                    .get("stage")
+                    .and_then(Value::as_str)
+                    .ok_or("plan_generate 需要 stage")?;
+                // 生成要调用 LLM，先释放 DB 锁（ai 层会自己短锁读上下文/写持久化）。
+                drop(guard);
+                let plan = research::generate_ai_plan(
+                    &db_conn,
+                    project_id,
+                    stage,
+                    crate::automation::now_secs(),
+                )?;
+                Ok(ToolOutput::text(format!(
+                    "已生成并保存 {stage} 阶段研究计划。\n{}",
+                    format_plan_text(&plan)
+                )))
+            }
+            "plan_task_set" => {
+                let stage = value
+                    .get("stage")
+                    .and_then(Value::as_str)
+                    .ok_or("plan_task_set 需要 stage")?;
+                let task_id = value
+                    .get("task_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or("plan_task_set 需要 task_id（如 t1）")?;
+                let done = value
+                    .get("done")
+                    .and_then(Value::as_bool)
+                    .ok_or("plan_task_set 需要 done（true/false）")?;
+                research::plan_task_set(
+                    &guard,
+                    project_id,
+                    stage,
+                    task_id,
+                    done,
+                    "agent",
+                    crate::automation::now_secs(),
+                )?;
+                Ok(ToolOutput::text(format!(
+                    "计划任务 {task_id}（{stage}）已标记为{}；用户可在控制台看到勾选状态。",
+                    if done { "完成" } else { "未完成" }
+                )))
+            }
+            other => Err(format!(
+                "不支持的 action：{other}（可选 list / brief / stage_update / save_advice / plan_get / plan_generate / plan_task_set）"
+            )),
         }
     }
+}
+
+/// 把研究计划格式化成模型可读的文本（任务带可勾选 id）。
+fn format_plan_text(plan: &crate::workspace::research::ResearchPlan) -> String {
+    let mut out = format!("【{} 阶段研究计划】\n目标：{}\n任务：\n", plan.stage, plan.goal);
+    for task in &plan.tasks {
+        out.push_str(&format!("- [{}] {}\n", task.id, task.label));
+    }
+    let section = |title: &str, items: &[String]| -> String {
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!("{title}：{}\n", items.join("；"))
+        }
+    };
+    out.push_str(&section("交付物", &plan.deliverables));
+    out.push_str(&section("验收标准", &plan.acceptance));
+    out.push_str(&section("风险", &plan.risks));
+    out.push_str(&section("自检提示", &plan.prompts));
+    out.push_str("\n逐项执行后，用 action=plan_task_set（stage + task_id + done）勾选完成；用户也可在控制台手动勾选。");
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -366,18 +442,22 @@ static SPEC_ACADEMIC_MANUSCRIPT: std::sync::LazyLock<ToolSpec> =
     std::sync::LazyLock::new(|| {
         spec(
             "academic_manuscript",
-            "稿件章节工具。action：list=列出章节（字数/状态）；read=读某章节正文；\\
-             write=写入/覆盖某章节（自动落盘到项目 manuscript/sections/<章节>.md）。\\
-             需要 project_id；read/write 需要 section（如「3 方法」「摘要」）。\\
-             写作前先用 academic_project(action=brief) 看证据，引用文献用 academic_literature。",
+            "写作文档/章节工具。文档类型 kind：proposal=开题报告 / plan=研究计划 / draft=初稿 / revision=修改稿 / cover_letter=投稿信 / custom=自定义；每份文档有独立章节与导出。action：create_document=新建文档（kind+title+可选 sections，返回 document_id，并记 manuscript.document_created 事件）；documents=列出项目写作文档（document_id / 类型 / 标题 / 章节数 / 字数）；list=列出文档章节（字数/状态）；read=读某章节正文；export_docx=导出该文档 Word（.docx）；export_latex=导出该文档 LaTeX（.tex + 可选 .bib）；\\
+             write=写入/覆盖某章节（落盘到 manuscript/documents/<document_id>/<章节>.md）。\\
+             需要 project_id；可选 document_id（缺省=最近更新的文档；若还没有任何文档则自动创建「初稿」）。read/write 需要 section（如「3 方法」「摘要」）。\\
+             写作产出以 Word(.docx) / LaTeX(.tex) 为主；write 的 content 用 Markdown + LaTeX 数学（$...$）；导出按文档章节自动转换并登记产物。写作前先用 academic_project(action=brief) 看证据，引用文献用 academic_literature。",
             json!({
                 "type": "object",
                 "required": ["action", "project_id"],
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "read", "write"]},
+                    "action": {"type": "string", "enum": ["create_document", "documents", "list", "read", "write", "export_docx", "export_latex"]},
                     "project_id": {"type": "string"},
+                    "document_id": {"type": "string", "description": "写作文档 id（缺省=最近更新的文档；可用 action=documents 查看）"},
+                    "kind": {"type": "string", "enum": ["proposal", "plan", "draft", "revision", "cover_letter", "custom"], "description": "create_document 的文档类型：研究计划用 plan，论文用 draft/revision，开题报告用 proposal，投稿信用 cover_letter"},
+                    "title": {"type": "string", "description": "create_document 的文档标题（如「研究计划」「初稿」）"},
+                    "sections": {"type": "array", "items": {"type": "string"}, "description": "create_document 的默认章节名数组（可选，按顺序建空章节）"},
                     "section": {"type": "string", "description": "章节名，例如 摘要 / 1 引言 / 3 方法"},
-                    "content": {"type": "string", "description": "write 的正文（Markdown）"}
+                    "content": {"type": "string", "description": "write 的正文（Markdown + LaTeX 数学 $...$）"}
                 }
             }),
         )
@@ -406,62 +486,236 @@ impl LocalTool for AcademicManuscriptTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|name| !name.is_empty());
+        let document_id = value
+            .get("document_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
         let db_conn = conn(ctx);
         let guard = db_conn.lock().map_err(|_| "数据库锁失败".to_string())?;
         match action {
-            "list" => {
-                let sections = crate::workspace::manuscript::sections(&guard, project_id)?;
-                if sections.is_empty() {
-                    return Ok(ToolOutput::text(format!("项目 {project_id} 还没有稿件章节")));
+            "create_document" => {
+                let kind = value
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or("draft");
+                let title = value
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let sections: Vec<String> = value
+                    .get("sections")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|section| !section.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let data_dir = ctx
+                    .db
+                    .data_dir
+                    .lock()
+                    .map_err(|err| format!("获取数据目录锁失败：{err}"))?
+                    .clone();
+                let created = crate::workspace::manuscript::create_document(
+                    &guard,
+                    std::path::Path::new(&data_dir),
+                    project_id,
+                    kind,
+                    title,
+                    &sections,
+                )?;
+                let _ = crate::repositories::research::events::append(
+                    &guard,
+                    project_id,
+                    "agent",
+                    "manuscript.document_created",
+                    &json!({
+                        "documentId": created.id,
+                        "kind": created.kind,
+                        "title": created.title,
+                    })
+                    .to_string(),
+                    crate::automation::now_secs(),
+                );
+                Ok(ToolOutput::text(format!(
+                    "已创建写作文档「{}」（{}，{} 章）· document_id={}\n用 action=write + document_id 写章节；导出用 export_docx / export_latex。",
+                    created.title, created.kind, created.section_count, created.id
+                )))
+            }
+            "documents" => {
+                let documents = crate::workspace::manuscript::document_list(&guard, project_id)?;
+                if documents.is_empty() {
+                    return Ok(ToolOutput::text(format!(
+                        "项目 {project_id} 还没有写作文档（首次 write 会自动创建「初稿」）"
+                    )));
                 }
-                let mut out = format!("稿件章节（{}）：\n", sections.len());
-                for item in sections {
+                let mut out = format!("写作文档（{}）：\n", documents.len());
+                for document in documents {
                     out.push_str(&format!(
-                        "- {}（{} 字，{}）\n",
-                        item.section, item.words, item.status
+                        "- {}（{}，{} 章，{} 字）· document_id={}\n",
+                        document.title,
+                        document.kind,
+                        document.section_count,
+                        document.words,
+                        document.id
                     ));
                 }
                 Ok(ToolOutput::text(out))
             }
-            "read" => {
-                let section = section.ok_or("read 需要 section")?;
-                let sections = crate::workspace::manuscript::sections(&guard, project_id)?;
-                let found = sections
-                    .into_iter()
-                    .find(|item| item.section == section)
-                    .ok_or_else(|| format!("章节不存在：{section}（先用 action=list 查看）"))?;
-                Ok(ToolOutput::text(format!(
-                    "## {}（{} 字）\n\n{}",
-                    found.section, found.words, found.content
-                )))
+            "list" | "read" | "write" | "export_docx" | "export_latex" => {
+                let document =
+                    crate::workspace::manuscript::resolve_document(&guard, project_id, document_id)?;
+                match action {
+                    "list" => {
+                        let sections = crate::workspace::manuscript::sections(
+                            &guard,
+                            project_id,
+                            &document.id,
+                        )?;
+                        if sections.is_empty() {
+                            return Ok(ToolOutput::text(format!(
+                                "文档「{}」（{}）还没有章节",
+                                document.title, document.kind
+                            )));
+                        }
+                        let mut out = format!(
+                            "文档「{}」（{}）章节（{}）：\n",
+                            document.title,
+                            document.kind,
+                            sections.len()
+                        );
+                        for item in sections {
+                            out.push_str(&format!(
+                                "- {}（{} 字，{}）\n",
+                                item.section, item.words, item.status
+                            ));
+                        }
+                        Ok(ToolOutput::text(out))
+                    }
+                    "read" => {
+                        let section = section.ok_or("read 需要 section")?;
+                        let sections = crate::workspace::manuscript::sections(
+                            &guard,
+                            project_id,
+                            &document.id,
+                        )?;
+                        let found = sections
+                            .into_iter()
+                            .find(|item| item.section == section)
+                            .ok_or_else(|| format!("章节不存在：{section}（先用 action=list 查看）"))?;
+                        Ok(ToolOutput::text(format!(
+                            "## {}（{} 字）\n\n{}",
+                            found.section, found.words, found.content
+                        )))
+                    }
+                    "write" => {
+                        let section = section.ok_or("write 需要 section")?;
+                        let content = value
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .ok_or("write 需要 content")?;
+                        let data_dir = {
+                            let dir = ctx
+                                .db
+                                .data_dir
+                                .lock()
+                                .map_err(|_| "数据目录锁失败".to_string())?;
+                            dir.clone()
+                        };
+                        let saved = crate::workspace::manuscript::save_section(
+                            &guard,
+                            &data_dir,
+                            project_id,
+                            &document.id,
+                            section,
+                            content,
+                        )?;
+                        Ok(ToolOutput::text(format!(
+                            "已写入章节「{}」（{} 字）→ {}（文档「{}」）",
+                            saved.section, saved.words, saved.path, document.title
+                        )))
+                    }
+                    "export_docx" => {
+                        let data_dir = {
+                            let dir = ctx
+                                .db
+                                .data_dir
+                                .lock()
+                                .map_err(|_| "数据目录锁失败".to_string())?;
+                            dir.clone()
+                        };
+                        let (payload, sections_count, words) =
+                            crate::workspace::manuscript::build_docx_payload(
+                                &guard,
+                                project_id,
+                                &document.id,
+                            )?;
+                        // 渲染要起 Python 子进程：先放掉 DB 锁，避免阻塞其它命令。
+                        drop(guard);
+                        let out_path = crate::workspace::manuscript::docx_export_path(
+                            std::path::Path::new(&data_dir),
+                            crate::workspace::manuscript::payload_title(&payload),
+                        )?;
+                        crate::workspace::manuscript::render_docx(
+                            std::path::Path::new(&data_dir),
+                            &payload,
+                            &out_path,
+                        )?;
+                        {
+                            let guard =
+                                db_conn.lock().map_err(|_| "数据库锁失败".to_string())?;
+                            crate::workspace::manuscript::register_export_artifact(
+                                &guard,
+                                project_id,
+                                &out_path,
+                            );
+                        }
+                        Ok(ToolOutput::text(format!(
+                            "已导出文档「{}」Word（{} 章，{} 字）：{}",
+                            document.title,
+                            sections_count,
+                            words,
+                            out_path.display()
+                        )))
+                    }
+                    "export_latex" => {
+                        let data_dir = {
+                            let dir = ctx
+                                .db
+                                .data_dir
+                                .lock()
+                                .map_err(|_| "数据目录锁失败".to_string())?;
+                            dir.clone()
+                        };
+                        let exported = crate::workspace::manuscript_latex::export_latex(
+                            &guard,
+                            std::path::Path::new(&data_dir),
+                            project_id,
+                            &document.id,
+                        )?;
+                        let mut out = format!(
+                            "已导出文档「{}」LaTeX（{} 章，{} 字）：{}",
+                            document.title, exported.sections, exported.words, exported.path
+                        );
+                        if !exported.bib_path.is_empty() {
+                            out.push_str(&format!("\n参考文献：{}", exported.bib_path));
+                        }
+                        Ok(ToolOutput::text(out))
+                    }
+                    _ => unreachable!(),
+                }
             }
-            "write" => {
-                let section = section.ok_or("write 需要 section")?;
-                let content = value
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .ok_or("write 需要 content")?;
-                let data_dir = {
-                    let dir = ctx
-                        .db
-                        .data_dir
-                        .lock()
-                        .map_err(|_| "数据目录锁失败".to_string())?;
-                    dir.clone()
-                };
-                let saved = crate::workspace::manuscript::save_section(
-                    &guard,
-                    &data_dir,
-                    project_id,
-                    section,
-                    content,
-                )?;
-                Ok(ToolOutput::text(format!(
-                    "已写入章节「{}」（{} 字）→ {}",
-                    saved.section, saved.words, saved.path
-                )))
-            }
-            other => Err(format!("不支持的 action：{other}（可选 list / read / write）")),
+            other => Err(format!(
+                "不支持的 action：{other}（可选 create_document / documents / list / read / write / export_docx / export_latex）"
+            )),
         }
     }
 }
@@ -659,3 +913,107 @@ impl LocalTool for AcademicEvidenceTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn test_ctx(tag: &str) -> (ToolContext, std::path::PathBuf, String) {
+        let conn = rusqlite::Connection::open_in_memory().expect("内存数据库");
+        conn.execute_batch(crate::infra::db::SCHEMA_SQL)
+            .expect("建表");
+        let data_dir = std::env::temp_dir().join(format!(
+            "mb-academic-tools-{tag}-{}",
+            crate::infra::db::local_id()
+        ));
+        std::fs::create_dir_all(&data_dir).expect("数据目录");
+        let project_id = format!("project-tools-{tag}");
+        let project = crate::workspace::research::ResearchProject {
+            id: project_id.clone(),
+            title: "工具测试项目".to_string(),
+            paper_kind: "journal".to_string(),
+            field: String::new(),
+            language: "zh".to_string(),
+            target_venue: String::new(),
+            current_stage: "writing".to_string(),
+            privacy: "local".to_string(),
+            deadline: String::new(),
+            meta_json: "{}".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        crate::repositories::research::projects::insert(&conn, &project).expect("insert project");
+        let ctx = ToolContext {
+            db: crate::infra::db::Db {
+                conn: Arc::new(Mutex::new(conn)),
+                data_dir: Arc::new(Mutex::new(data_dir.clone())),
+                default_dir: data_dir.clone(),
+            },
+            embed_client: None,
+            chat_client: None,
+            session_id: "test".to_string(),
+            agent: crate::agent::agents::AgentKind::Academic,
+            delegate: None,
+        };
+        (ctx, data_dir, project_id)
+    }
+
+    #[test]
+    fn create_document_creates_plan_and_records_event() {
+        let (ctx, data_dir, project_id) = test_ctx("create-document");
+        let out = AcademicManuscriptTool
+            .execute(
+                &ctx,
+                &json!({
+                    "action": "create_document",
+                    "project_id": project_id,
+                    "kind": "plan",
+                    "title": "研究计划",
+                    "sections": ["研究背景", "研究目标"],
+                })
+                .to_string(),
+            )
+            .expect("create_document");
+        assert!(out.content.contains("研究计划"), "unexpected: {}", out.content);
+        assert!(
+            out.content.contains("document_id="),
+            "document id missing: {}",
+            out.content
+        );
+
+        let guard = ctx.db.conn.lock().expect("db lock");
+        let (kind, payload): (String, String) = guard
+            .query_row(
+                "SELECT type, payload_json FROM project_events \
+                 WHERE project_id = ?1 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("event row");
+        drop(guard);
+        assert_eq!(kind, "manuscript.document_created");
+        let payload: Value = serde_json::from_str(&payload).expect("payload json");
+        assert_eq!(payload["kind"], "plan");
+        assert_eq!(payload["title"], "研究计划");
+        assert!(
+            payload["documentId"]
+                .as_str()
+                .map(|id| !id.is_empty())
+                .unwrap_or(false),
+            "documentId missing: {payload}"
+        );
+
+        // 新文档能在 documents action 里看到（章节数 = 2）。
+        let listed = AcademicManuscriptTool
+            .execute(
+                &ctx,
+                &json!({"action": "documents", "project_id": project_id}).to_string(),
+            )
+            .expect("documents");
+        assert!(listed.content.contains("研究计划"), "unexpected: {}", listed.content);
+        assert!(listed.content.contains("2 章"), "unexpected: {}", listed.content);
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+}
+

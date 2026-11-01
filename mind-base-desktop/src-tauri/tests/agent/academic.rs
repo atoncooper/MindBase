@@ -226,6 +226,67 @@ fn dataset_import_and_analysis_validate_inputs() {
 }
 
 #[test]
+fn stage_update_records_one_payload_rich_event_and_is_noop_on_repeat() {
+    let h = TestHarness::new("agent-academic-stage-events");
+    let project_id = h.create_research_project("事件测试项目");
+    assert!(
+        h.research_events(&project_id).is_empty(),
+        "fresh project must start with an empty event stream"
+    );
+
+    let args = serde_json::json!({
+        "action": "stage_update",
+        "project_id": project_id,
+        "stage": "topic",
+        "status": "active",
+    })
+    .to_string();
+    h.run_tool("chat", "academic_project", &args)
+        .expect("stage_update");
+
+    let events = h.research_events(&project_id);
+    let stage_events: Vec<_> = events
+        .iter()
+        .filter(|(_, kind, _)| kind == "stage.updated")
+        .collect();
+    assert_eq!(
+        stage_events.len(),
+        1,
+        "expected exactly one stage.updated event: {events:?}"
+    );
+    let event = stage_events[0];
+    assert_eq!(
+        event.0, "agent",
+        "stage_update via tool must be attributed to the agent"
+    );
+    assert_eq!(event.1, "stage.updated");
+    assert!(
+        event.2.contains(r#""from":"locked""#),
+        "payload missing from: {}",
+        event.2
+    );
+    assert!(
+        event.2.contains(r#""to":"active""#),
+        "payload missing to: {}",
+        event.2
+    );
+
+    // 同一个 stage_update 再调一次：阶段状态没变，不应再写事件。
+    h.run_tool("chat", "academic_project", &args)
+        .expect("repeat stage_update");
+    let events = h.research_events(&project_id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind, _)| kind == "stage.updated")
+            .count(),
+        1,
+        "no-op stage_update must not append another event: {events:?}"
+    );
+    assert_eq!(h.research_stage_status(&project_id, "topic"), "active");
+}
+
+#[test]
 fn literature_download_reports_missing_ref_without_network() {
     let h = TestHarness::new("agent-academic-pdf");
     let project_id = h.create_research_project("PDF 测试项目");

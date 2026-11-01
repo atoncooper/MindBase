@@ -19,7 +19,7 @@ import type {
   TokenUsage,
 } from "../../lib/chat";
 import { LinkifiedText } from "../../lib/linkify";
-import { CheckGlyph, CopyGlyph, PencilGlyph } from "../icons";
+import { CheckGlyph, CopyGlyph, PencilGlyph, RefreshGlyph } from "../icons";
 import ArtifactList from "./ArtifactList";
 import InteractionCard from "./InteractionCard";
 import { MarkdownContent } from "./MarkdownContent";
@@ -122,11 +122,52 @@ export interface MessageInteraction {
   answered: boolean;
 }
 
+/** 工具调用协议泄漏时的统一替换文案（不要把原始标记当答案渲染）。 */
+const TOOL_LEAK_FALLBACK = "（模型返回了工具调用格式而非正文，请重新生成或重试）";
+
+/**
+ * 最小清理助手正文：仅当整段明显是工具调用协议/参数时替换为提示文案，
+ * 正常正文原样返回（不改 Markdown 内容）。
+ */
+export function sanitizeAssistantContent(content: string): string {
+  const trimmed = content.trim();
+  if (trimmed === "") return content;
+  const markerStart =
+    trimmed.startsWith("<｜") || trimmed.startsWith("<|tool") || trimmed.startsWith("<|");
+  const wrappedMarker =
+    (trimmed.startsWith("<｜") && trimmed.endsWith("｜>")) ||
+    (trimmed.startsWith("<|tool") && trimmed.endsWith("|>"));
+  const hasToolKey = /"(tool_calls|function|arguments)"\s*:/.test(trimmed);
+  const jsonLike =
+    (trimmed.startsWith("{") || trimmed.startsWith("[")) && hasToolKey;
+  const bareToolArgs =
+    hasToolKey &&
+    /[{}[\]]/.test(trimmed) &&
+    !/[\u4e00-\u9fff]/.test(trimmed) &&
+    !/[.!?。！？]/.test(trimmed);
+  if (markerStart || wrappedMarker || jsonLike || bareToolArgs) {
+    return TOOL_LEAK_FALLBACK;
+  }
+  return content;
+}
+
+/** 空回复兜底：已完成/失败但没有任何正文时，说明本轮做了什么。 */
+export function emptyAssistantFallback(steps: number): string {
+  const stepPart = steps > 0 ? `已执行 ${steps} 个步骤。` : "";
+  return (
+    "（本轮没有返回文字说明；" +
+    stepPart +
+    "请查看上方执行步骤/产物，或点「重新生成」让我补充说明。）"
+  );
+}
+
 /** View-model message owned by ChatView. */
 export interface UiMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** 思考过程（仅思考模型有；空串/缺省 = 不渲染）。 */
+  reasoning?: string;
   status: "pending" | "completed" | "failed";
   sources: ChatSource[];
   error: string;
@@ -141,6 +182,44 @@ export interface UiMessage {
   /** 本轮调用过的子代理（耗时 / 步数 / token；后端 AgentRun 事件）。 */
   agentRuns?: AgentRunStat[];
 }
+
+/**
+ * 可折叠的「思考过程」块（仅思考模型有 reasoning 时渲染）：
+ * - 生成中且正文尚未开始时默认展开，摘要显示「思考中…」；
+ * - 正文开始 / 回合结束后自动收起，用户可随时手动展开回看；
+ * - reasoning 为空（非思考模型）时由调用方直接不渲染。
+ */
+const ReasoningBlock = memo(function ReasoningBlock({
+  reasoning,
+  pending,
+  hasContent,
+}: {
+  reasoning: string;
+  pending: boolean;
+  hasContent: boolean;
+}): React.JSX.Element {
+  const thinking = pending && !hasContent;
+  const [open, setOpen] = useState(thinking);
+  const wasThinking = useRef(thinking);
+  useEffect(() => {
+    if (wasThinking.current && !thinking) setOpen(false);
+    else if (!wasThinking.current && thinking) setOpen(true);
+    wasThinking.current = thinking;
+  }, [thinking]);
+
+  return (
+    <details
+      className={thinking ? "msg-reasoning msg-reasoning--thinking" : "msg-reasoning"}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        思考过程 · {reasoning.length} 字{thinking ? " · 思考中…" : ""}
+      </summary>
+      <div className="msg-reasoning__body">{reasoning}</div>
+    </details>
+  );
+});
 
 /**
  * 折叠的执行步骤日志：
@@ -403,6 +482,8 @@ const MessageRow = memo(
     onEditResend: (messageId: string, text: string) => void;
     onAnswerInteraction: (messageId: string, text: string) => void;
   }): React.JSX.Element {
+    // 复制成功的短暂反馈（1.5s 后恢复 CopyGlyph）；内部 state 不参与 memo 比较。
+    const [copied, setCopied] = useState(false);
     return message.role === "user" ? (
       <UserRow message={message} onEditResend={onEditResend} />
     ) : (
@@ -461,14 +542,29 @@ const MessageRow = memo(
               onAnswer={(text) => onAnswerInteraction(message.id, text)}
             />
           )}
-          {message.content === "" && message.status === "pending" ? (
+          {message.reasoning !== undefined && message.reasoning.trim() !== "" && (
+            <ReasoningBlock
+              reasoning={message.reasoning}
+              pending={message.status === "pending"}
+              hasContent={message.content !== ""}
+            />
+          )}
+          {message.content.trim() === "" && message.status === "pending" ? (
             <span className="typing-dots" aria-label="正在思考">
               <i />
               <i />
               <i />
             </span>
+          ) : message.content.trim() === "" ? (
+            // 完成/失败但没有任何正文：兜底说明，避免空白气泡。
+            <p className="msg-fallback">{emptyAssistantFallback(message.steps.length)}</p>
           ) : (
             ((): React.JSX.Element => {
+              // 工具调用协议/参数泄漏：替换为提示文案，不把原始标记当答案渲染。
+              const content = sanitizeAssistantContent(message.content);
+              if (content !== message.content) {
+                return <p className="msg-fallback">{content}</p>;
+              }
               // 澄清协议命中 → 静态展示卡片（可点选候选在输入框上方）。
               const clarify = parseClarify(message.content);
               if (clarify !== null) {
@@ -480,27 +576,57 @@ const MessageRow = memo(
           {message.status === "failed" && message.error !== "" && (
             <p className="error-text">{message.error}</p>
           )}
-          {message.status === "failed" && (
-            <button type="button" className="msg-retry" onClick={() => onRetry(message.id)}>
-              ↻ 重试
-            </button>
-          )}
-          {message.status === "completed" && canRegenerate && (
-            <button
-              type="button"
-              className="msg-retry"
-              title="用同一个问题重新生成这条回答（会替换旧回答）"
-              onClick={() => onRegenerate(message.id)}
-            >
-              ↻ 重新生成
-            </button>
-          )}
           {message.artifacts !== undefined && message.artifacts.length > 0 && (
             <ArtifactList artifacts={message.artifacts} />
           )}
           <SourceChips sources={message.sources} />
           <UsageFootnote usage={message.usage} />
           <AgentRunFootnote runs={message.agentRuns} />
+          {(message.status === "failed" ||
+            (message.status === "completed" &&
+              (canRegenerate || message.content.trim() !== ""))) && (
+            <div className="msg-assistant__actions">
+              {message.status === "completed" && message.content.trim() !== "" && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={copied ? "已复制" : "复制"}
+                  title={copied ? "已复制" : "复制"}
+                  onClick={() => {
+                    void copyToClipboard(message.content).then((ok) => {
+                      if (!ok) return;
+                      setCopied(true);
+                      window.setTimeout(() => setCopied(false), 1500);
+                    });
+                  }}
+                >
+                  {copied ? <CheckGlyph /> : <CopyGlyph />}
+                </button>
+              )}
+              {message.status === "completed" && canRegenerate && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="重新生成"
+                  title="重新生成这条回答（会替换旧回答）"
+                  onClick={() => onRegenerate(message.id)}
+                >
+                  <RefreshGlyph />
+                </button>
+              )}
+              {message.status === "failed" && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="重试"
+                  title="重试"
+                  onClick={() => onRetry(message.id)}
+                >
+                  <RefreshGlyph />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );

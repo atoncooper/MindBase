@@ -69,7 +69,20 @@ export interface ResearchEvent {
   actor: string;
   kind: string;
   payloadJson: string;
+  /** 连续相同事件条数（由后端服务端折叠后提供，≥1）。 */
+  repeat: number;
+  /** 该折叠分组内最早一条事件的时间（单条事件时等于 ts）。 */
+  firstTs: number;
 }
+
+/** 一页事件（按 id 倒序：最新在前）+ 是否还有更早的事件。 */
+export interface ResearchEventPage {
+  events: ResearchEvent[];
+  hasMore: boolean;
+}
+
+/** 「最近动态」默认每页条数（后端 limit 参数）。 */
+export const RESEARCH_EVENTS_PAGE_SIZE = 20;
 
 export interface ProjectCreateInput {
   title: string;
@@ -138,8 +151,21 @@ export function addResearchArtifact(
   });
 }
 
-export function listResearchEvents(projectId: string, limit = 20): Promise<ResearchEvent[]> {
-  return invoke<ResearchEvent[]>("research_events_list", { projectId, limit });
+/**
+ * 列出一页项目事件（追加式事件流，最新在前）。
+ *
+ * 分页游标是事件 id：传 beforeId 时只取 id < beforeId 的更早事件。
+ * 返回值带 hasMore，界面据此决定是否显示「加载更多」。
+ */
+export function listResearchEvents(
+  projectId: string,
+  options?: { limit?: number; beforeId?: number },
+): Promise<ResearchEventPage> {
+  return invoke<ResearchEventPage>("research_events_list", {
+    projectId,
+    limit: options?.limit ?? RESEARCH_EVENTS_PAGE_SIZE,
+    beforeId: options?.beforeId ?? null,
+  });
 }
 
 /** Display labels for the six stages (kept next to the ids). */
@@ -150,6 +176,16 @@ export const STAGE_LABELS: Record<string, string> = {
   experiment: "实验",
   writing: "写作",
   submission: "投稿",
+};
+
+/** Display labels for the per-stage status values. */
+export const STAGE_STATUS_LABELS: Record<string, string> = {
+  locked: "未开始",
+  active: "进行中",
+  submitted: "待审核",
+  approved: "已通过",
+  frozen: "已冻结",
+  rework: "需返工",
 };
 
 /** Display labels for paper kinds. */
@@ -342,6 +378,38 @@ export function runAnalysis(
   return invoke<AnalysisResult>("analysis_run", { projectId, name, script });
 }
 
+/** 导入到编辑器的本地分析脚本（只读源文件，不改原文件）。 */
+export interface ImportedScript {
+  /** 文件名（去扩展名，用作脚本名称默认值）。 */
+  name: string;
+  /** 脚本原文。 */
+  content: string;
+  /** 源文件绝对路径。 */
+  path: string;
+}
+
+/** 项目内已保存的分析脚本（analysis/scripts/ 下的历史脚本）。 */
+export interface SavedScript {
+  /** 文件名（去扩展名）。 */
+  name: string;
+  /** 文件绝对路径。 */
+  path: string;
+  /** 文件大小（字节）。 */
+  size: number;
+  /** 最后修改时间（秒级时间戳）。 */
+  modifiedAt: number;
+}
+
+/** 读取本地分析脚本文件（.py / .pyw / .txt）到编辑器。 */
+export function importAnalysisScript(path: string): Promise<ImportedScript> {
+  return invoke<ImportedScript>("analysis_script_import", { path });
+}
+
+/** 列出项目已保存的分析脚本（analysis/scripts/，按修改时间倒序）。 */
+export function listAnalysisScripts(projectId: string): Promise<SavedScript[]> {
+  return invoke<SavedScript[]>("analysis_scripts_list", { projectId });
+}
+
 /**
  * 解析 profileJson。
  *
@@ -412,6 +480,101 @@ export function getLatestResearchAdvice(projectId: string): Promise<ResearchAdvi
   return invoke<ResearchAdvice | null>("research_advice_latest", { projectId });
 }
 
+/** 读取阶段建议历史（按时间倒序，默认最近 5 条）。 */
+export function listResearchAdvice(projectId: string, limit = 5): Promise<ResearchAdvice[]> {
+  return invoke<ResearchAdvice[]>("research_advice_list", { projectId, limit });
+}
+
+/** 写入某阶段 gate_json（关键任务勾选等 UI 状态），返回最新项目详情。 */
+export function setResearchStageGate(
+  projectId: string,
+  stage: string,
+  gateJson: string,
+): Promise<ProjectDetail> {
+  return invoke<ProjectDetail>("research_stage_gate_set", { projectId, stage, gateJson });
+}
+
+/** AI 推荐的投稿期刊 / 会议候选。 */
+export interface VenueSuggestion {
+  /** 期刊 / 会议名（采纳后写入项目 targetVenue）。 */
+  venue: string;
+  /** 推荐理由（结合题目、领域、论文类型与近期文献）。 */
+  reason: string;
+  /** 匹配度 0-100。 */
+  matchScore: number;
+}
+
+/** 阶段计划里的一条可勾选任务（AI 计划由后端生成稳定短 id）。 */
+export interface ResearchPlanTask {
+  id: string;
+  label: string;
+}
+
+/** AI 生成的阶段研究计划（后端持久化在项目 meta_json.plans）。 */
+export interface ResearchPlan {
+  stage: string;
+  goal: string;
+  tasks: ResearchPlanTask[];
+  deliverables: string[];
+  acceptance: string[];
+  risks: string[];
+  prompts: string[];
+  /** 生成时间（秒级时间戳）。 */
+  generatedAt: number;
+  /** 计划来源（ai / template 等；历史未知值原样展示）。 */
+  source: string;
+}
+
+/** 让 AI 按项目简报 + 文献方向推荐 3-5 个目标期刊 / 会议。 */
+export function recommendResearchVenues(projectId: string): Promise<VenueSuggestion[]> {
+  return invoke<VenueSuggestion[]>("research_venue_recommend", { projectId });
+}
+
+/** 读取某阶段的 AI 计划；没有生成过时返回 null（前端回退静态模板）。 */
+export function getResearchPlan(projectId: string, stage: string): Promise<ResearchPlan | null> {
+  return invoke<ResearchPlan | null>("research_plan_get", { projectId, stage });
+}
+
+/** 生成（或重新生成）某阶段的 AI 研究计划并持久化。 */
+export function generateResearchPlan(projectId: string, stage: string): Promise<ResearchPlan> {
+  return invoke<ResearchPlan>("research_plan_generate", { projectId, stage });
+}
+
+/** 勾选 / 取消勾选某阶段计划任务，返回最新项目详情。 */
+export function setResearchPlanTask(
+  projectId: string,
+  stage: string,
+  taskId: string,
+  done: boolean,
+): Promise<ProjectDetail> {
+  return invoke<ProjectDetail>("research_plan_task_set", { projectId, stage, taskId, done });
+}
+
+/** 科研控制台「本阶段资料」总览计数（后端聚合）。 */
+export interface ResearchOverviewStats {
+  /** 文献总数。 */
+  literatureTotal: number;
+  /** 已核实的文献数。 */
+  literatureVerified: number;
+  /** 数据集个数。 */
+  datasets: number;
+  /** 实验运行次数。 */
+  experiments: number;
+  /** 已登记产物数。 */
+  artifacts: number;
+  /** 论文章节数。 */
+  manuscriptSections: number;
+  /** 论文章节总字数。 */
+  manuscriptWords: number;
+  /** AI 建议（guidance_notes）条数。 */
+  adviceCount: number;
+}
+
+/** 读取阶段资料总览计数（文献 / 数据 / 实验 / 产物 / 稿件 / 建议）。 */
+export function getResearchOverviewStats(projectId: string): Promise<ResearchOverviewStats> {
+  return invoke<ResearchOverviewStats>("research_overview_stats", { projectId });
+}
+
 /** 每个阶段的「下一步该做什么」提示（展示用静态文案，不参与推理）。 */
 export const STAGE_ADVICE: Record<string, string> = {
   topic: "先把研究问题收敛成一句可证伪的陈述，再核对近三年同方向的文献缺口与目标期刊的选题偏好。",
@@ -447,6 +610,144 @@ export const DEFAULT_MANUSCRIPT_SECTIONS = [
 
 export type ManuscriptSectionName = (typeof DEFAULT_MANUSCRIPT_SECTIONS)[number];
 
+/** 写作文档类型：开题报告 / 研究计划 / 初稿 / 修改稿 / 投稿信 / 自定义。 */
+export type ManuscriptDocumentKind = "proposal" | "plan" | "draft" | "revision" | "cover_letter" | "custom";
+
+/** 新建文档下拉的顺序与中文名（顺序即展示顺序）。 */
+export const MANUSCRIPT_DOCUMENT_KINDS: Array<{ value: ManuscriptDocumentKind; label: string }> = [
+  { value: "proposal", label: "开题报告" },
+  { value: "plan", label: "研究计划" },
+  { value: "draft", label: "初稿" },
+  { value: "revision", label: "修改稿" },
+  { value: "cover_letter", label: "投稿信" },
+  { value: "custom", label: "自定义" },
+];
+
+/** 文档类型 → 中文名（历史 / 未知类型原样显示）。 */
+export const MANUSCRIPT_DOCUMENT_KIND_LABELS: Record<string, string> = {
+  proposal: "开题报告",
+  plan: "研究计划",
+  draft: "初稿",
+  revision: "修改稿",
+  cover_letter: "投稿信",
+  custom: "自定义",
+};
+
+/** 一个写作文档（manuscript_documents 行 + 章节统计）。 */
+export interface ManuscriptDocument {
+  id: string;
+  /** 文档类型（ManuscriptDocumentKind；历史脏数据可能为其他字符串）。 */
+  kind: string;
+  title: string;
+  /** 章节数（后端聚合）。 */
+  sectionCount: number;
+  /** 总字数（后端聚合）。 */
+  words: number;
+  updatedAt: number;
+  /** 导入论文的原始文件在项目文件根内的相对路径（如 imported/论文.docx）；普通新建文档为空。 */
+  sourcePath: string;
+}
+
+/** 列出项目的写作文档（按更新时间倒序）。 */
+export function listManuscriptDocuments(projectId: string): Promise<ManuscriptDocument[]> {
+  return invoke<ManuscriptDocument[]>("manuscript_documents_list", { projectId });
+}
+
+/** 新建文档：按 kind 建目录并按 ord 写入默认章节（空正文）。 */
+export function createManuscriptDocument(
+  projectId: string,
+  kind: ManuscriptDocumentKind | string,
+  title: string,
+  sections: string[],
+): Promise<ManuscriptDocument> {
+  return invoke<ManuscriptDocument>("manuscript_document_create", { projectId, kind, title, sections });
+}
+
+/** 重命名文档。 */
+export function updateManuscriptDocument(
+  projectId: string,
+  documentId: string,
+  title: string,
+): Promise<ManuscriptDocument> {
+  return invoke<ManuscriptDocument>("manuscript_document_update", { projectId, documentId, title });
+}
+
+/** 删除文档（级联删除该文档的章节，不可恢复）。 */
+export function deleteManuscriptDocument(projectId: string, documentId: string): Promise<void> {
+  return invoke<void>("manuscript_document_delete", { projectId, documentId });
+}
+
+/** 导入已有论文（PDF/DOCX/MD/TEX/TXT/HTML）后的结果。 */
+export interface ImportedPaper {
+  /** 新建的写作文档 id（draft 类型）。 */
+  documentId: string;
+  title: string;
+  kind: string;
+  /** 拆分出的章节名（按顺序）。 */
+  sections: string[];
+  /** 用户选择的源文件绝对路径。 */
+  sourcePath: string;
+  /** 从参考文献段自动解析并入项目文献库的条数（0 = 未识别到）。 */
+  referencesImported?: number;
+  /** 复制到项目 imported/ 后的绝对路径。 */
+  copiedPath: string;
+}
+
+/** 把已有论文导入为写作文档（自动拆分章节，原文件复制到项目 imported/）。 */
+export function importResearchPaper(
+  projectId: string,
+  sourcePath: string,
+  title?: string,
+): Promise<ImportedPaper> {
+  return invoke<ImportedPaper>("research_import_paper", {
+    projectId,
+    sourcePath,
+    title: title ?? null,
+  });
+}
+
+/** export_latex 的返回：.tex 路径 + 参考文献 .bib 路径（无文献时为空串）。 */
+export interface LatexExport {
+  /** 导出的 .tex 绝对路径。 */
+  path: string;
+  /** 参考文献 .bib 绝对路径；项目没有文献引用时为空字符串。 */
+  bibPath: string;
+  /** 本次合并的章节数。 */
+  sections: number;
+  /** 全文总字数。 */
+  words: number;
+}
+
+/** 列出某文档的论文章节（不存在的章节后端不会返回）。 */
+export function listManuscript(projectId: string, documentId: string): Promise<ManuscriptSection[]> {
+  return invoke<ManuscriptSection[]>("manuscript_list", { projectId, documentId });
+}
+
+/** 保存一个章节正文（章节不存在时后端会创建；按章节名落盘 Markdown 并统计字数）。 */
+export function saveManuscript(
+  projectId: string,
+  documentId: string,
+  section: string,
+  content: string,
+): Promise<ManuscriptSection> {
+  return invoke<ManuscriptSection>("manuscript_save", { projectId, documentId, section, content });
+}
+
+/** 删除某文档的一个章节（不可恢复）。 */
+export function deleteManuscript(projectId: string, documentId: string, section: string): Promise<void> {
+  return invoke<void>("manuscript_delete", { projectId, documentId, section });
+}
+
+/** 把某文档的全部已保存章节合并导出为 DOCX。 */
+export function exportDocx(projectId: string, documentId: string): Promise<DocxExport> {
+  return invoke<DocxExport>("export_docx", { projectId, documentId });
+}
+
+/** 把某文档的全部已保存章节导出为 LaTeX（.tex + 可选 references.bib）。 */
+export function exportLatex(projectId: string, documentId: string): Promise<LatexExport> {
+  return invoke<LatexExport>("export_latex", { projectId, documentId });
+}
+
 /** 一个论文章节（manuscript_sections 行，字段与 Rust DTO 一致）。 */
 export interface ManuscriptSection {
   id: string;
@@ -480,26 +781,3 @@ export interface DocxExport {
   words: number;
 }
 
-/** 列出项目的论文章节（不存在的章节后端不会返回）。 */
-export function listManuscript(projectId: string): Promise<ManuscriptSection[]> {
-  return invoke<ManuscriptSection[]>("manuscript_list", { projectId });
-}
-
-/** 保存一个章节正文（后端按章节名落盘 Markdown 并统计字数）。 */
-export function saveManuscript(
-  projectId: string,
-  section: string,
-  content: string,
-): Promise<ManuscriptSection> {
-  return invoke<ManuscriptSection>("manuscript_save", { projectId, section, content });
-}
-
-/** 删除一个章节（不可恢复）。 */
-export function deleteManuscript(projectId: string, section: string): Promise<void> {
-  return invoke<void>("manuscript_delete", { projectId, section });
-}
-
-/** 把全部已保存章节合并导出为 DOCX。 */
-export function exportDocx(projectId: string): Promise<DocxExport> {
-  return invoke<DocxExport>("export_docx", { projectId });
-}

@@ -65,6 +65,8 @@ pub fn start(
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
         .unwrap_or_else(|| data_dir.to_path_buf());
+    // 危险命令黑名单：自动化任务与 agent 命令共用同一份规则，命中即拒绝启动。
+    crate::infra::command_guard::check(data_dir, &task.command)?;
     let (program, args) = build_invocation(
         ShellKind::platform_default(),
         &task.command,

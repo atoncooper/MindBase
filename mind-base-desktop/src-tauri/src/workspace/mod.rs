@@ -14,6 +14,7 @@ pub(crate) mod dataset;
 pub(crate) mod experiment;
 pub(crate) mod literature;
 pub(crate) mod manuscript;
+pub(crate) mod manuscript_latex;
 pub(crate) mod mindmap;
 pub(crate) mod notes;
 pub(crate) mod quiz;

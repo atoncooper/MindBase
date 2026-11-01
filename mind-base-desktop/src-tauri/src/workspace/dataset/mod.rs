@@ -19,7 +19,7 @@
 //!
 //! Module layout:
 //! - [`types`] — webview DTOs.
-//! - [`store`] — dataset row mapping, project check and audit events.
+//! - SQL 全部在 `crate::repositories::dataset`（repository 层）。
 //! - [`import`] — archiving + MD5 + Python profiling + slug.
 //! - [`analysis`] — analysis script execution.
 //! - [`commands`] — Tauri commands.
@@ -29,10 +29,11 @@ use std::path::{Path, PathBuf};
 mod analysis;
 mod commands;
 mod import;
-mod store;
+mod script;
 mod types;
 
 pub(crate) use commands::*;
+pub(crate) use script::*;
 pub(crate) use types::{AnalysisResult, DatasetRow};
 
 fn now_secs() -> i64 {
@@ -40,6 +41,28 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|delta| delta.as_secs() as i64)
         .unwrap_or_default()
+}
+
+/// 校验研究项目存在（和 research 模块的报错口径一致）。
+pub(super) fn ensure_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<(), String> {
+    if crate::repositories::dataset::project_exists(conn, project_id)? {
+        Ok(())
+    } else {
+        Err(format!("研究项目不存在：{project_id}"))
+    }
+}
+
+/// 追加审计事件；事件流是附加信息，写失败不能影响业务写入。
+pub(super) fn record_event(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    kind: &str,
+    payload: &serde_json::Value,
+) {
+    let _ = crate::repositories::dataset::record_event(conn, project_id, kind, &payload.to_string());
 }
 
 /// 项目根目录：`<data_dir>/research/<project_id>`（与 research.rs 一致）。
@@ -68,18 +91,8 @@ pub(crate) fn list_datasets(
     conn: &rusqlite::Connection,
     project_id: &str,
 ) -> Result<Vec<DatasetRow>, String> {
-    store::ensure_project(conn, project_id)?;
-    let mut statement = conn
-        .prepare(&format!(
-            "SELECT {} FROM datasets WHERE project_id = ?1 ORDER BY created_at DESC",
-            store::DATASET_COLS
-        ))
-        .map_err(|err| format!("准备数据集查询失败：{err}"))?;
-    let rows = statement
-        .query_map(rusqlite::params![project_id], store::dataset_from_row)
-        .map_err(|err| format!("查询数据集失败：{err}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("读取数据集失败：{err}"))
+    ensure_project(conn, project_id)?;
+    crate::repositories::dataset::list(conn, project_id).map_err(Into::into)
 }
 
 /// Agent / 工具层：导入本地数据文件（阻塞；归档 + MD5 + Python 画像 + 落库）。
@@ -89,7 +102,7 @@ pub(crate) fn import_dataset(
     project_id: &str,
     source: &Path,
 ) -> Result<DatasetRow, String> {
-    store::ensure_project(conn, project_id)?;
+    ensure_project(conn, project_id)?;
     if !source.is_file() {
         return Err(format!("源文件不存在：{}", source.display()));
     }
@@ -124,35 +137,8 @@ pub(crate) fn import_dataset(
         .to_string();
     let profile_json = profile.to_string();
     let stored_path = target.to_string_lossy().to_string();
-    let id = crate::infra::db::local_id();
-    let created_at = now_secs();
-    conn.execute(
-        "INSERT INTO datasets(
-             id, project_id, name, path, sha256, rows, cols, privacy,
-             schema_json, profile_json, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'local', ?8, ?9, ?10)",
-        rusqlite::params![
-            id,
-            project_id,
-            display_name,
-            stored_path,
-            sha256,
-            rows,
-            cols,
-            schema_json,
-            profile_json,
-            created_at,
-        ],
-    )
-    .map_err(|err| format!("写入数据集记录失败：{err}"))?;
-    store::record_event(
-        conn,
-        project_id,
-        "dataset.imported",
-        &serde_json::json!({"dataset": id, "name": display_name, "rows": rows, "cols": cols}),
-    );
-    Ok(DatasetRow {
-        id,
+    let row = DatasetRow {
+        id: crate::infra::db::local_id(),
         name: display_name,
         path: stored_path,
         sha256,
@@ -161,8 +147,16 @@ pub(crate) fn import_dataset(
         privacy: "local".to_string(),
         schema_json,
         profile_json,
-        created_at,
-    })
+        created_at: now_secs(),
+    };
+    crate::repositories::dataset::insert(conn, project_id, &row)?;
+    record_event(
+        conn,
+        project_id,
+        "dataset.imported",
+        &serde_json::json!({"dataset": row.id, "name": row.name, "rows": row.rows, "cols": row.cols}),
+    );
+    Ok(row)
 }
 
 /// Agent / 工具层：执行分析脚本（阻塞；120s 超时 kill；输出落 analysis/outputs）。
@@ -176,12 +170,12 @@ pub(crate) fn run_analysis(
     if script.trim().is_empty() {
         return Err("分析脚本内容不能为空".to_string());
     }
-    store::ensure_project(conn, project_id)?;
+    ensure_project(conn, project_id)?;
     let slug = import::slugify(name);
     let root = project_root(data_dir, project_id);
     ensure_project_dirs(&root)?;
     let result = analysis::run_analysis_script(data_dir, &root, &slug, script)?;
-    store::record_event(
+    record_event(
         conn,
         project_id,
         "analysis.run",

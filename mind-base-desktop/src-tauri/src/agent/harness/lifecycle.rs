@@ -301,13 +301,16 @@ mod tests {
         {
             let mut inner = manager.inner.lock().unwrap();
             if let Some(session) = inner.sessions.get_mut("s1") {
-                session.last_active = Instant::now() - Duration::from_secs(SESSION_TTL_SECS + 10);
+                // `Instant - Duration` panics when the process uptime is shorter
+                // than the subtracted span (e.g. a freshly booted CI runner).
+                // Move last_active into the past when possible; otherwise keep
+                // "now" and let a zero TTL expire it deterministically.
+                session.last_active = Instant::now()
+                    .checked_sub(Duration::from_secs(SESSION_TTL_SECS + 10))
+                    .unwrap_or_else(Instant::now);
             }
         }
-        assert_eq!(
-            manager.cleanup_expired(Duration::from_secs(SESSION_TTL_SECS)),
-            1
-        );
+        assert_eq!(manager.cleanup_expired(Duration::ZERO), 1);
         assert_eq!(manager.active_sessions(), 0);
     }
 

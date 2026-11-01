@@ -12,6 +12,7 @@
 //! | `toolkit` | agent-free command execution: process capture, shell, git, gh |
 //! | `llm` | provider catalog, credentials, chat client, embeddings, rerank |
 //! | `workspace` | notes, quiz, mind map, research, manuscript, literature, dataset |
+//! | `repositories` | 数据访问层（已迁移：科研 / 写作 / 文献 / 数据 / 实验） |
 //! | `infra` | SQLite, config, logging, embedded Python, updater |
 //!
 //! Cross-package calls only ever go "downhill": `app` → `workspace`/`agent` →
@@ -24,6 +25,7 @@ mod infra;
 mod knowledge;
 mod llm;
 mod media;
+mod repositories;
 pub mod automation;
 pub mod sandbox;
 #[doc(hidden)]

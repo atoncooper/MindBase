@@ -15,7 +15,7 @@
 //!
 //! Module layout:
 //! - [`types`] — DTOs (`LiteratureRef`, import result) + parser intermediates.
-//! - [`store`] — `literature_refs` / `citations` / `project_events` SQL access.
+//! - SQL 全部在 `crate::repositories::literature`（repository 层），本包只做解析/联网/编排。
 //! - [`bibtex`] — hand-written BibTeX parser and BibTeX document export.
 //! - [`csl`] — CSL-JSON parser and BibTeX→CSL record conversion.
 //! - [`crossref`] — blocking Crossref verification (DOI lookup / title search).
@@ -27,9 +27,12 @@ mod commands;
 mod csl;
 mod crossref;
 mod pdf;
-mod store;
 mod types;
 mod util;
+
+use crate::repositories::literature as literature_repo;
+
+pub(crate) use types::{CrossrefMeta, ParsedRef};
 
 // Kept at this path for existing/future call sites (`crate::workspace::literature::LiteratureRef`);
 // nothing outside the package reads it yet, so the re-export would otherwise warn as unused.
@@ -61,14 +64,24 @@ pub(crate) use crossref::SearchHit;
 pub(crate) use pdf::LiteraturePdf;
 pub(crate) use pdf::download_conn as download_pdf_conn;
 
+/// 校验研究项目存在（报错口径与既有命令一致）。
+pub(super) fn ensure_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<(), String> {
+    if literature_repo::project_exists(conn, project_id)? {
+        Ok(())
+    } else {
+        Err(format!("研究项目不存在：{project_id}"))
+    }
+}
+
 pub(crate) fn list_refs(
     conn: &rusqlite::Connection,
     project_id: &str,
 ) -> Result<Vec<LiteratureRef>, String> {
-    if !store::project_exists(conn, project_id)? {
-        return Err(format!("研究项目不存在：{project_id}"));
-    }
-    store::list_refs_conn(conn, project_id)
+    ensure_project(conn, project_id)?;
+    literature_repo::list_refs_conn(conn, project_id).map_err(Into::into)
 }
 
 pub(crate) fn import_text(
@@ -84,9 +97,7 @@ pub(crate) fn export_bibtex(
     conn: &rusqlite::Connection,
     project_id: &str,
 ) -> Result<String, String> {
-    if !store::project_exists(conn, project_id)? {
-        return Err(format!("研究项目不存在：{project_id}"));
-    }
+    ensure_project(conn, project_id)?;
     bibtex::export_bibtex_conn(conn, project_id)
 }
 

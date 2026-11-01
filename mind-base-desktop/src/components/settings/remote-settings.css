@@ -1,0 +1,1132 @@
+/* ===========================================================================
+   独立「远程服务器」设置页（Xshell 风格）：顶部工具条 + 会话列表 + 连接配置
+   + xterm 交互终端。复用 google-settings.css 的 Material 3 令牌，全部规则收敛
+   在 .settings-scope 下，不影响其它设置页。
+   =========================================================================== */
+
+.settings-scope .remote-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 16px;
+  background: var(--gs-surface);
+}
+
+.settings-scope .remote-topbar__left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-scope .remote-topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.settings-scope .remote-search {
+  width: min(300px, 36vw);
+}
+
+/* 远程页撑满设置视口：左侧会话列表 + 右侧面板两栏，终端占满剩余高度。 */
+.settings-scope .settings-pane.remote-page {
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-scope .remote-workspace {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+/* ---- 左侧会话列表 ------------------------------------------------------- */
+
+.settings-scope .card.remote-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 16px 14px;
+}
+
+.settings-scope .remote-sidebar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px 8px;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .remote-sidebar__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-sidebar__count {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.settings-scope .remote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-height: 120px;
+  margin: 8px -6px 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+}
+
+.settings-scope .remote-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--gs-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.settings-scope .remote-item:hover {
+  background: var(--gs-hover);
+}
+
+.settings-scope .remote-item--active,
+.settings-scope .remote-item--active:hover {
+  background: var(--gs-primary-container);
+  color: var(--gs-on-primary-container);
+}
+
+.settings-scope .remote-item--active .remote-item__target {
+  color: var(--gs-on-primary-container);
+  opacity: 0.78;
+}
+
+.settings-scope .remote-item--active .remote-item__auth {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--gs-on-primary-container);
+}
+
+.settings-scope .remote-item__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gs-outline-variant);
+}
+
+.settings-scope .remote-item__dot--on {
+  background: var(--gs-ok);
+  box-shadow: 0 0 0 3px var(--gs-ok-bg);
+}
+
+.settings-scope .remote-item__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-scope .remote-item__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-scope .remote-item__target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-item__auth {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-2);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.settings-scope .remote-sidebar__hint {
+  margin: 10px 4px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--gs-divider);
+}
+
+/* ---- 右侧连接配置 ------------------------------------------------------- */
+
+.settings-scope .remote-editor {
+  min-width: 0;
+}
+
+.settings-scope .remote-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-scope .card .remote-card__title {
+  margin: 0 0 12px;
+}
+
+.settings-scope .remote-editor__target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-editor .cfg-row:last-of-type {
+  border-bottom: 0;
+}
+
+.settings-scope .remote-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-test--ok {
+  color: var(--gs-text-2);
+}
+
+.settings-scope .remote-test__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 右侧 tab 面板（终端 / 文件 / 转发 / 主机指纹） -------------------- */
+
+.settings-scope .card.remote-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 16px 14px;
+}
+
+.settings-scope .remote-panel__tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .remote-panel__tab {
+  position: relative;
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--gs-text-3);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.settings-scope .remote-panel__tab:hover {
+  color: var(--gs-text);
+  background: var(--gs-hover);
+}
+
+.settings-scope .remote-panel__tab--active,
+.settings-scope .remote-panel__tab--active:hover {
+  color: var(--gs-primary);
+  background: transparent;
+}
+
+.settings-scope .remote-panel__tab--active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--gs-primary);
+}
+
+.settings-scope .remote-panel__tab--muted {
+  opacity: 0.62;
+}
+
+.settings-scope .remote-panel__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-scope .remote-tabpane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-scope .remote-tabpane[hidden] {
+  display: none;
+}
+
+.settings-scope .remote-tabpane__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1;
+  padding: 24px;
+  text-align: center;
+}
+
+.settings-scope .remote-tabpane__empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gs-text-2);
+}
+
+.settings-scope .remote-tabpane__empty-text {
+  margin: 0;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--gs-text-3);
+}
+
+/* ---- 终端 -------------------------------------------------------------- */
+
+.settings-scope .remote-terminal__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.settings-scope .remote-terminal__spacer {
+  flex: 1;
+}
+
+.settings-scope .remote-terminal__bar .button {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.settings-scope .remote-terminal__logbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--gs-divider);
+  border-radius: 8px;
+  background: var(--gs-surface-2);
+}
+
+.settings-scope .remote-terminal__loglabel {
+  font-size: 11px;
+  color: var(--gs-text-3);
+  white-space: nowrap;
+}
+
+.settings-scope .remote-terminal__logpath {
+  flex: 1;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--gs-text-2);
+}
+
+.settings-scope .remote-terminal__logbar .button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+.settings-scope .remote-terminal {
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-scope .remote-terminal__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  border: 1px solid #333333;
+  border-radius: 10px;
+  background: #1e1e1e;
+  overflow: hidden;
+}
+
+.settings-scope .remote-terminal__xterm {
+  position: absolute;
+  inset: 8px;
+}
+
+.settings-scope .remote-terminal__xterm .xterm {
+  height: 100%;
+}
+
+.settings-scope .remote-terminal__hint {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+  text-align: center;
+}
+
+.settings-scope .remote-terminal__hint-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #c8c8c8;
+}
+
+.settings-scope .remote-terminal__hint-text {
+  margin: 0;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #8b8b8b;
+}
+
+.settings-scope .remote-terminal__notice {
+  margin: 8px 0 0;
+}
+
+/* ---- 文件（SFTP） ------------------------------------------------------ */
+
+.settings-scope .remote-files {
+  gap: 8px;
+}
+
+.settings-scope .remote-files__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-scope .remote-files__bar .button {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.settings-scope .remote-files__path {
+  flex: 1;
+  min-width: 160px;
+}
+
+.settings-scope .remote-files__newdir .cfg-input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.settings-scope .remote-files__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  background: var(--gs-surface);
+}
+
+.settings-scope .remote-files__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 128px auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 460px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--gs-divider);
+  font-size: 12px;
+}
+
+.settings-scope .remote-files__row:last-child {
+  border-bottom: 0;
+}
+
+.settings-scope .remote-files__row:hover {
+  background: var(--gs-hover);
+}
+
+.settings-scope .remote-files__row--dir {
+  cursor: pointer;
+}
+
+.settings-scope .remote-files__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-files__name svg {
+  flex: none;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-files__row--dir .remote-files__name svg {
+  color: var(--gs-primary);
+}
+
+.settings-scope .remote-files__size,
+.settings-scope .remote-files__time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-files__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.settings-scope .remote-files__actions .button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+.settings-scope .remote-files__empty {
+  margin: 0;
+  padding: 22px 12px;
+  text-align: center;
+  color: var(--gs-text-3);
+  font-size: 12px;
+}
+
+/* ---- 本地端口转发 ------------------------------------------------------ */
+
+.settings-scope .remote-forwards {
+  gap: 8px;
+}
+
+.settings-scope .remote-forward-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.settings-scope .remote-forward-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-scope .remote-forward-form__field > span {
+  font-size: 11px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-forward-form .cfg-input {
+  height: 34px;
+}
+
+.settings-scope .remote-forward-form .button {
+  height: 34px;
+}
+
+.settings-scope .remote-forwards__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  background: var(--gs-surface);
+}
+
+.settings-scope .remote-forward {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .remote-forward:last-child {
+  border-bottom: 0;
+}
+
+.settings-scope .remote-forward__route {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-forward__time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--gs-text-3);
+  white-space: nowrap;
+}
+
+.settings-scope .remote-forward .button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+/* ---- 已知主机 / 指纹管理 ----------------------------------------------- */
+
+.settings-scope .remote-known {
+  gap: 8px;
+}
+
+.settings-scope .remote-known__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  background: var(--gs-surface);
+}
+
+.settings-scope .remote-known__row {
+  display: grid;
+  grid-template-columns:
+    minmax(100px, 1.1fr) minmax(140px, 1.5fr) minmax(100px, 1fr)
+    64px 72px auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 680px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--gs-divider);
+  font-size: 12px;
+}
+
+.settings-scope .remote-known__row:last-child {
+  border-bottom: 0;
+}
+
+.settings-scope .remote-known__row--head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-3);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.settings-scope .remote-known__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-known__target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--gs-text-2);
+}
+
+.settings-scope .remote-known__project {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--gs-text-2);
+}
+
+.settings-scope .remote-known__agent {
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-known__agent--on {
+  color: var(--gs-ok);
+}
+
+.settings-scope .remote-known__fp {
+  white-space: nowrap;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-known__fp--ok {
+  color: var(--gs-ok);
+}
+
+.settings-scope .remote-known__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-scope .remote-known__actions .button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+/* ---- 安全：指纹固定 / 项目绑定 / Agent 授权 ---------------------------- */
+
+.settings-scope .remote-item__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 2px;
+}
+
+.settings-scope .remote-item__badge {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--gs-surface-2);
+  color: var(--gs-text-3);
+  font-size: 10px;
+}
+
+.settings-scope .remote-item__badge--project {
+  background: var(--gs-primary-container);
+  color: var(--gs-on-primary-container);
+}
+
+.settings-scope .remote-item__badge--agent {
+  background: var(--gs-ok-bg);
+  color: var(--gs-ok);
+}
+
+.settings-scope .remote-item__badge--ok {
+  color: var(--gs-ok);
+}
+
+.settings-scope .remote-item--active .remote-item__badge {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--gs-on-primary-container);
+}
+
+.settings-scope .remote-allow-agent {
+  min-height: 40px;
+}
+
+.settings-scope .remote-allow-agent__hint {
+  margin: -2px 0 6px;
+}
+
+.settings-scope .remote-security {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 12px;
+  background: var(--gs-surface-2);
+}
+
+.settings-scope .remote-security__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.settings-scope .remote-security__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-security__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+
+.settings-scope .remote-security__label {
+  flex: none;
+  width: 88px;
+  font-size: 12.5px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-security__fp {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gs-text-2);
+}
+
+.settings-scope .remote-security__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.settings-scope .remote-security__actions .button {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12.5px;
+}
+
+.settings-scope .remote-security__alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.settings-scope .remote-security__alert-text {
+  flex: 1;
+  min-width: 220px;
+  margin: 0;
+}
+
+/* ---- 终端字号 ---------------------------------------------------------- */
+
+.settings-scope .remote-terminal__font {
+  min-width: 38px;
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ---- 终端命令输入（Prism 高亮覆盖层 + 透明 textarea） ------------------ */
+
+.settings-scope .remote-cmd {
+  --cmd-comment: #6a737d;
+  --cmd-punct: #393a34;
+  --cmd-keyword: #af00db;
+  --cmd-string: #a31515;
+  --cmd-number: #098658;
+  --cmd-function: #795e26;
+  --cmd-variable: #001080;
+  margin-top: 8px;
+}
+
+:root[data-theme="dark"] .settings-scope .remote-cmd {
+  --cmd-comment: #6a9955;
+  --cmd-punct: #d4d4d4;
+  --cmd-keyword: #c586c0;
+  --cmd-string: #ce9178;
+  --cmd-number: #b5cea8;
+  --cmd-function: #dcdcaa;
+  --cmd-variable: #9cdcfe;
+}
+
+.settings-scope .remote-cmd__editor {
+  position: relative;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 10px;
+  background: var(--gs-surface);
+  overflow: hidden;
+}
+
+.settings-scope .remote-cmd__editor:focus-within {
+  border-color: var(--gs-primary);
+  box-shadow: 0 0 0 1px var(--gs-primary);
+}
+
+.settings-scope .remote-cmd__pre,
+.settings-scope .remote-cmd__input {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.settings-scope .remote-cmd__pre {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--gs-text);
+  pointer-events: none;
+}
+
+.settings-scope .remote-cmd__pre code {
+  font: inherit;
+  white-space: inherit;
+}
+
+.settings-scope .remote-cmd__input {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 34px;
+  max-height: 132px;
+  border: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--gs-text);
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+}
+
+.settings-scope .remote-cmd__input::placeholder {
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-cmd__input::selection {
+  background: color-mix(in srgb, var(--gs-primary) 22%, transparent);
+}
+
+.settings-scope .remote-cmd__input:disabled {
+  cursor: default;
+}
+
+.settings-scope .remote-cmd__hint {
+  margin: 6px 2px 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-cmd .token.comment,
+.settings-scope .remote-cmd .token.prolog,
+.settings-scope .remote-cmd .token.doctype,
+.settings-scope .remote-cmd .token.cdata {
+  color: var(--cmd-comment);
+}
+
+.settings-scope .remote-cmd .token.punctuation,
+.settings-scope .remote-cmd .token.operator {
+  color: var(--cmd-punct);
+}
+
+.settings-scope .remote-cmd .token.keyword,
+.settings-scope .remote-cmd .token.boolean,
+.settings-scope .remote-cmd .token.builtin {
+  color: var(--cmd-keyword);
+}
+
+.settings-scope .remote-cmd .token.string,
+.settings-scope .remote-cmd .token.char,
+.settings-scope .remote-cmd .token.attr-value {
+  color: var(--cmd-string);
+}
+
+.settings-scope .remote-cmd .token.number,
+.settings-scope .remote-cmd .token.tag,
+.settings-scope .remote-cmd .token.attr-name,
+.settings-scope .remote-cmd .token.constant {
+  color: var(--cmd-number);
+}
+
+.settings-scope .remote-cmd .token.function,
+.settings-scope .remote-cmd .token.class-name {
+  color: var(--cmd-function);
+}
+
+.settings-scope .remote-cmd .token.variable,
+.settings-scope .remote-cmd .token.environment,
+.settings-scope .remote-cmd .token.parameter {
+  color: var(--cmd-variable);
+}
+
+/* ---- 连接配置弹窗 ------------------------------------------------------ */
+
+.settings-scope .remote-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.settings-scope .remote-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: 86vh;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 16px;
+  background: var(--gs-surface);
+  box-shadow: var(--gs-elev-1);
+  overflow: hidden;
+}
+
+.settings-scope .remote-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--gs-divider);
+}
+
+.settings-scope .remote-dialog__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-scope .remote-dialog__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-dialog__subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gs-text-3);
+}
+
+.settings-scope .remote-dialog__close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--gs-text-3);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.settings-scope .remote-dialog__close:hover {
+  background: var(--gs-hover);
+  color: var(--gs-text);
+}
+
+.settings-scope .remote-dialog__body {
+  min-height: 0;
+  padding: 4px 20px 18px;
+  overflow-y: auto;
+}
+
+.settings-scope .remote-editor--embedded {
+  border: none;
+  background: transparent;
+}
+
+/* ---- 窄窗口 ------------------------------------------------------------ */
+
+@media (max-width: 1100px) {
+  .settings-scope .remote-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-scope .remote-sidebar {
+    max-height: 280px;
+  }
+
+  .settings-scope .remote-dialog-overlay {
+    padding: 12px;
+  }
+
+  .settings-scope .remote-dialog {
+    max-height: 92vh;
+  }
+
+  .settings-scope .remote-dialog__head {
+    padding: 14px 16px 10px;
+  }
+
+  .settings-scope .remote-dialog__body {
+    padding: 2px 16px 16px;
+  }
+
+  .settings-scope .card.remote-panel {
+    min-height: 460px;
+  }
+
+  .settings-scope .remote-forward-form {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .settings-scope .remote-forward-form .button {
+    grid-column: 1 / -1;
+  }
+
+  .settings-scope .remote-search {
+    width: 100%;
+  }
+}

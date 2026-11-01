@@ -6,13 +6,6 @@ const CITE_STOPWORDS: [&str; 17] = [
     "toward", "towards", "using",
 ];
 
-pub(super) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|delta| delta.as_secs() as i64)
-        .unwrap_or_default()
-}
-
 /// 去 LaTeX 花括号与常见转义，并把空白折叠成单个空格。
 pub(super) fn clean_bibtex_value(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());

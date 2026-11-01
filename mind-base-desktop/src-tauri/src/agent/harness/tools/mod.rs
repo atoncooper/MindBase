@@ -11,6 +11,7 @@
 //! call sites keep their paths unchanged.
 
 mod academic;
+mod academic_code;
 mod artifacts;
 mod automation;
 mod cli;
@@ -26,6 +27,7 @@ mod knowledge;
 mod memory;
 mod notes;
 mod prompts;
+mod remote;
 mod sandbox;
 mod session_store;
 mod usage;
@@ -37,6 +39,7 @@ mod web;
 pub(crate) use academic::{
     AcademicEvidenceTool, AcademicLiteratureTool, AcademicManuscriptTool, AcademicProjectTool,
 };
+pub(crate) use academic_code::AcademicCodeTool;
 pub(crate) use artifacts::{GenerateResumeTool, GenerateSlidesTool};
 pub(crate) use automation::{
     AutomationDueTool, AutomationKillTool, AutomationListTool, AutomationLogReadTool,
@@ -60,6 +63,7 @@ pub(crate) use memory::{
 };
 pub(crate) use notes::{GetNoteTool, ListNotesTool, SaveNoteTool, UpdateNoteTool};
 pub(crate) use prompts::LoadPromptTool;
+pub(crate) use remote::RemoteExecTool;
 pub(crate) use sandbox::RunSandboxedTool;
 pub(crate) use session_store::{
     ListErrorsTool, ListHistoryTool, ReadErrorTool, ReadTurnTool, SearchContentTool,

@@ -15,6 +15,7 @@
  * - `#/mindmap/:id`          → one mind map editor (full-bleed canvas)
  * - `#/settings/system`      → settings, 系统设置 tab
  * - `#/settings/api`         → settings, API 设置 tab
+ * - `#/settings/remote`      → settings, 远程服务器（SSH 会话 / 交互终端） tab
  *
  * Anything unparsable degrades to home — a desktop app must never blank out
  * because of a stale hash.
@@ -22,7 +23,7 @@
 
 import { useEffect, useState } from "react";
 
-export type SettingsTab = "system" | "api" | "agent";
+export type SettingsTab = "system" | "api" | "agent" | "remote";
 
 export type Route =
   | { view: "home" }
@@ -54,6 +55,7 @@ export const RESEARCH_HASH = "#/research";
 export const SETTINGS_SYSTEM_HASH = "#/settings/system";
 export const SETTINGS_API_HASH = "#/settings/api";
 export const SETTINGS_AGENT_HASH = "#/settings/agent";
+export const SETTINGS_REMOTE_HASH = "#/settings/remote";
 
 /** Hash of one persisted quiz set's detail page. */
 export function quizSetHash(id: string): string {
@@ -67,7 +69,7 @@ export function mindMapHash(id: string): string {
 
 /** Parse the current location hash into a [`Route`]. */
 export function parseHash(): Route {
-  const match = /^#\/settings\/(system|api|agent)\/?$/.exec(window.location.hash);
+  const match = /^#\/settings\/(system|api|agent|remote)\/?$/.exec(window.location.hash);
   if (match !== null) {
     return { view: "settings", tab: match[1] as SettingsTab };
   }

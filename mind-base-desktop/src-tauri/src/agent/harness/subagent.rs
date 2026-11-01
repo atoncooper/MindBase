@@ -169,6 +169,7 @@ fn run_sub_agent_inner(
         should_stop: None,
         on_plan: None,
         on_interact: None,
+        on_reasoning: None,
         mailbox: None,
         step_budget: None,
     };

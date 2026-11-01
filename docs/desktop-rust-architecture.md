@@ -28,7 +28,8 @@ app         Tauri 外壳：Builder、启动装配、托盘、IPC 命令注册
 主依赖方向（新代码按此写）：
 
 ```
-app  →  workspace / agent  →  knowledge / media  →  llm  →  infra
+app  →  workspace / agent  →  repositories  →  infra
+              └→  knowledge / media  →  llm  →  infra
                               agent  →  sandbox（OS 隔离原语）
 ```
 
@@ -37,6 +38,9 @@ app  →  workspace / agent  →  knowledge / media  →  llm  →  infra
   domain 函数，`workspace::research` 会取 `agent::prompts` 的提示词。
 - `knowledge` / `media` 互不依赖：`knowledge::ingest` 需要转写就调 `media::asr`，`media` 不知道
   「知识库」的存在。
+- `repositories` 是数据访问层：已迁移域（科研 / 写作 / 文献 / 数据 / 实验）的 **SQL 只写在
+  `repositories/`**，`workspace` / `agent` 只调用类型化函数；业务不变式（如阶段单 active）放
+  `workspace` 的 service 层。
 - `infra` 是地基，原则上不反向依赖业务包。
 - `sandbox` 是独立的 OS 隔离原语包（AppContainer / bubblewrap / seatbelt），只依赖
   标准库 + `windows` crate，可被任意上层复用；它不感知 agent / tools / 配置。
@@ -54,6 +58,7 @@ app  →  workspace / agent  →  knowledge / media  →  llm  →  infra
 | `llm/rerank.rs` | `knowledge::vectors::SearchHit` | 只依赖数据类型；可下沉共享 DTO |
 | `llm/api_keys/e2e.rs` | `media::asr`、`media::whisper_server`、`media::ffmpeg` | 「测试供应商配置」诊断模块，天然跨包 |
 | `workspace/research/commands.rs` | `agent::prompts` / `agent::agents` | 科研阶段提示词复用 agent 的默认提示词 |
+| `repositories/research/*` | `workspace::research` 的纯 DTO（`ResearchEvent` 等） | 复用数据结构避免重复定义；不调用业务函数，后续可下沉共享 DTO |
 
 这些例外都在模块边界处单点出现，包内没有反向依赖扩散；消除它们属于后续「依赖收口」工作，
 不是本次目录重构的范围。
@@ -113,17 +118,26 @@ src/
 │   ├── notes/              # types / markdown / revisions / anchors / store / commands
 │   ├── quiz/               # types / parse / generate / grade / history / sets / commands
 │   ├── mindmap/            # types / crud / snapshots / templates / icons
-│   ├── research/           # types / store / briefing / commands
-│   ├── literature/         # types / store / util / bibtex / csl / crossref / commands
-│   ├── dataset/            # types / store / import / analysis / commands
+│   ├── research/           # types / briefing / service / commands（SQL 在 repositories）
+│   ├── literature/         # types / util / bibtex / csl / crossref / commands（SQL 在 repositories）
+│   ├── dataset/            # types / import / analysis / commands（SQL 在 repositories）
 │   ├── manuscript.rs
 │   ├── resume.rs
 │   └── slides.rs
+├── repositories/           # 数据访问层（repository pattern：所有 SQL）
+│   ├── mod.rs              # RepoResult/RepoError + query_all/query_optional/query_one/execute/count
+│   ├── research/           # projects / stages / events / artifacts / guidance / stats
+│   ├── manuscript.rs
+│   ├── literature.rs
+│   ├── dataset.rs
+│   └── experiment.rs
 └── infra/                  # 基础设施
     ├── db/                 # schema / migrations / connection / data_dir / memory / commands
     ├── python_runtime/     # layout / provision / onnx / download / scripts
     ├── updater/            # types / github / download / install / plugin / commands
+    ├── ssh/                # mod / types / client / fingerprint / hosts / exec / test / session
     ├── config.rs
+    ├── secret.rs           # 凭据保护（keyring 4：Win CredMgr / macOS Keychain / Linux Secret Service；DPAPI 仅历史迁移；不可用时 plain: 降级告警）
     ├── logging.rs
     └── store.rs
 ```
@@ -162,7 +176,8 @@ knowledge/ingest.rs  →  knowledge/ingest/
 | 新的入库来源 | `knowledge/`（编排进 `ingest`，来源适配器单独文件） |
 | 新的文档类型 | `workspace/<kind>.rs`，并在 `workspace/mod.rs` 声明 |
 | 新的本地 sidecar | `media/`（进程管理 + 健康探测成套放同一子模块） |
-| 表 / 配置 / 日志 / 路径 | `infra/`（不要在业务包里直接拼 SQL/路径） |
+| 新的 SQL / 表读写 | `repositories/`（一个表或聚合一个文件；业务不变式放 `workspace` 的 service） |
+| 配置 / 日志 / 路径 | `infra/`（不要在业务包里直接拼路径；SQL 走 `repositories`） |
 | 新的 OS 隔离 / 进程执行原语 | `sandbox/`（按平台加后端，工具层只做适配） |
 | 新的通用命令/Git 执行能力 | `toolkit/`（纯实现；agent 工具只做 LocalTool 适配） |
 | 新的长任务/自动化能力 | `automation/`（日志分区 + supervisor + 报告节奏；工具层只做适配） |
@@ -172,7 +187,7 @@ knowledge/ingest.rs  →  knowledge/ingest/
 ```bash
 cd mind-base-desktop/src-tauri
 cargo check --all-targets    # 必须 0 error
-cargo test --lib             # 基线：269 passed / 3 ignored
+cargo test --lib             # 基线：296 passed / 3 ignored
 ```
 
 前端不用动；`npm run tauri build` 前先确保以上两条通过。
@@ -291,3 +306,143 @@ tests/
   academic_evidence（数据集列表 / 数据文件导入含 Python 画像 / 分析脚本执行 / 实验记录列表 / 登记实验运行）、web_search；
   科研工作台的 research_ask 已从单次 completion 升级为 ReAct（同一套工具 + 项目简报注入）；
 - 后台任务仍可独立运行，不阻塞当前对话。
+
+## 11. 数据访问层 repositories（2026-10-31）
+
+**规则：SQL 只写在 `src/repositories/`。** 业务层（`workspace` / `agent` 工具 / Tauri 命令）只调用
+类型化函数；repository 不做业务校验 / 流程编排。
+
+### 11.1 目录与职责
+
+```
+repositories/
+├── mod.rs          RepoResult/RepoError + SQLx 风格辅助函数
+├── research/       projects / stages / events / artifacts / guidance / stats
+├── manuscript.rs   manuscript_sections
+├── literature.rs   literature_refs / citations
+├── dataset.rs      datasets
+└── experiment.rs   experiment_runs
+```
+
+- 一个表（或一个聚合）一个文件；每个查询一个函数（`find_*` / `list_*` / `insert_*` /
+  `update_*` / `delete_*` / `count_*`），SQL 就近写在函数里。
+- 行映射函数（`xxx_from_row`）与领域 DTO 分离；repository 可复用 `workspace` 的纯 DTO，
+  但不调用业务函数。
+- 业务不变式（阶段单 active、字段归一化、审计事件内容）在 `workspace/research/service.rs`
+  这类 service 层组合多个 repository 完成。
+- repository 接收 `&rusqlite::Connection`，因此可直接传 `Transaction`（Deref 到 Connection）
+  获得事务能力。
+
+### 11.2 为什么保留 rusqlite 而不是引入 sqlx
+
+桌面端是**离线内置 SQLite（rusqlite bundled）** + 同步 Tauri 命令；sqlx 的编译期校验需要
+构建时 `DATABASE_URL` / 离线元数据，还会引入第二套连接池与异步运行时。当前做法是
+「rusqlite + SQLx 风格的 repository 层」：
+
+```rust
+pub(crate) fn find(conn: &Connection, id: &str) -> RepoResult<Option<ResearchProject>> {
+    query_optional(conn, "SELECT ... FROM research_projects WHERE id = ?1", params![id], project_from_row)
+}
+```
+
+等价于 sqlx 的 `query_as::<_, T>(...).bind(id).fetch_optional(pool)`；错误经
+`From<RepoError> for String` 在命令边界转成前端 `String`。
+
+### 11.3 迁移状态
+
+| 域 | 状态 |
+|----|------|
+| research / manuscript / literature / dataset / experiment | ✅ 已迁移（业务层 0 SQL） |
+| notes / quiz / mindmap / automation / knowledge / agent 会话 / llm / infra | ⏳ 待迁移（仍按旧方式，后续逐域搬入 `repositories/`） |
+
+`infra/db/{schema,migrations,memory,tests}.rs` 属于建表 / 迁移 / 测试夹具，不算业务 SQL。
+
+## 12. SSH 子包与远程执行安全（2026-10-31）
+
+SSH 从单文件 `infra/ssh.rs`（约 1080 行）拆成 `infra/ssh/` 子包，门面保持
+`crate::infra::ssh::{...}` 路径不变：
+
+| 文件 | 职责 |
+|------|------|
+| `ssh/mod.rs` | 门面：模块声明 + 文档 + 重导出（命令 / 类型 / 常量 / `__cmd__` 宏） |
+| `ssh/types.rs` | 对外 DTO（执行结果、测试报告、会话信息、输出/关闭事件）与超时/PTY 常量 |
+| `ssh/client.rs` | russh 客户端、认证（密码/私钥，凭据解密）、PTY 配置、连接建立 |
+| `ssh/fingerprint.rs` | 主机指纹策略（TOFU / 匹配 / 不匹配拒绝）与指纹写回 |
+| `ssh/hosts.rs` | 主机 CRUD、凭据写入系统凭据库（keyring）、被移除主机的凭据清理、指纹信任/清除命令 |
+| `ssh/exec.rs` | 一次性远程执行（exec / exec_blocking / 超时夹取） |
+| `ssh/test.rs` | 连通性测试（`ssh_host_test`） |
+| `ssh/session.rs` | 持久交互会话（PTY shell）、会话表/可复用 Handle、读写任务、事件广播、UTF-8 分帧、会话日志接线 |
+| `ssh/sftp.rs` | SFTP 文件传输（list / download / upload / mkdir / delete；复用会话 Handle 开 sftp 子系统；单文件 ≤200MB） |
+| `ssh/forward.rs` | 本地端口转发（仅 local forward：127.0.0.1 → SSH direct-tcpip；abort handle 管理/会话断开清理） |
+| `ssh/log.rs` | 交互会话输出日志（`<data_dir>/logs/ssh/<host>-<stamp>.log`；仅记录输出） |
+
+### 安全模型（参考 Xshell）
+
+- **凭据（跨平台系统凭据库）**：使用 keyring 4 统一后端——Windows Credential
+  Manager / macOS Keychain / Linux Secret Service；配置/数据库只保存
+  `keyring:<scope>` 引用（scope 形如 `ssh:<host>:password` / `ssh:<host>:passphrase`），
+  service 固定为 `mindbase-desktop`。
+  - 系统凭据库不可用（如 Linux 无 Secret Service、无桌面会话的 CI）时退化
+    为 `plain:<明文>` 并 eprintln 告警（明确告知不安全），保证功能可用；
+  - Windows 历史 DPAPI 密文（`dpapi:`）仍可解密（仅历史迁移用），下次保存主机
+    配置时自动迁移到系统凭据库；非 Windows 遇到 `dpapi:` 视为不可用并告警；
+  - 保存主机列表是全量替换：被移除的主机会删除其 keyring 两条目（best effort）；
+    日志与 Agent 工具不回传密码；
+  - 本机仅验证 Windows 分支；macOS/Linux 由 keyring 统一 API + 编译期 cfg 选择
+    后端，**需要 CI 或真机验证**（Keychain / Secret Service 权限与会话前提）。
+- **上传命令可移植**：upload 的 base64 解码兼容 GNU（`base64 -d`）、BSD/macOS
+  （`base64 -D`）与 `openssl base64 -d`（按顺序回退），不再依赖 GNU 专有参数。
+- **主机指纹**：每台主机保存 SHA256 指纹；交互连接/测试首次 TOFU 自动记录，
+  后续不匹配拒绝连接；Agent 一次性执行**必须已固定指纹**（防 MITM）。
+- **项目绑定与授权**：`SshHostConfig.projectId` 绑定科研项目，`allowAgent` 控制
+  Agent 是否可用；`remote_exec` 强制校验「授权 + 指纹 + 项目绑定」。
+- **上传**：`remote_exec action=upload` 只能上传项目目录内的文件（≤2MB，路径
+  canonicalize 后必须在项目根内），再 `run` 执行；`run` 仍走危险命令黑名单；
+  base64 解码在 GNU/BSD/macOS/openssl 环境均可用。
+- **交互终端**：用户自己输入的命令不经过 Agent 黑名单（与 Xshell 一致）。
+- **SFTP 文件传输**：`sftp_list / sftp_download / sftp_upload / sftp_mkdir / sftp_delete`
+  复用当前交互会话的 SSH Handle（`LiveSession.handle`）打开 sftp 子系统；单文件
+  上限 200MB；只支持删除文件（目录删除拒绝）；上传要求远端父目录已存在；错误、
+  未知会话均为中文提示。
+- **本地端口转发**：`ssh_forward_add / ssh_forward_remove / ssh_forward_list`，仅
+  **local forward**（绑 127.0.0.1:localPort → SSH 隧道 → remoteHost:remotePort，
+  tokio copy_bidirectional）；每条转发保存 abort handle，remove 释放监听端口，会话
+  断开时自动清理全部转发。remote forwarding / SOCKS 暂不支持（后续按需扩展）。
+- **会话日志**：`SshHostConfig.logSession`（默认 false）开启后，交互会话在
+  `<data_dir>/logs/ssh/<host>-<stamp>.log` 记录头部（UTC 时间/主机/用户）与终端
+  原始输出；路径通过 `SshSessionInfo.logPath` 只读回传（未开启为空串）。日志
+  **只记录输出**，不记录用户输入、密码或私钥；写入失败只警告一次，不影响终端。
+- **已知主机**：不新增后端命令，沿用 `ssh_hosts_list` / `ssh_host_trust_fingerprint` /
+  `ssh_host_forget_fingerprint`（前端管理页）。
+
+跨平台（Windows / macOS / Linux）的构建前置、FFmpeg sidecar、凭据后端与待验证项见
+[desktop-cross-platform.md](desktop-cross-platform.md)。
+
+## 13. 联网搜索与网页抓取（DeepSeek Search / Fetch 优先）
+
+web_search 与 web_crawl 优先走 DeepSeek 官方 Search / Fetch API（
+llm/deepseek_search.rs），失败再回退旧链路：
+
+| 工具 | 首选 | 回退链 |
+|------|------|--------|
+| web_search | DeepSeek POST {base}/v1/tools/search（query/count/ori_question/need_content，返回 title/url/snippet/summary/site/date/rerank_score/authority） | SearxNG（若配置）→ Bing HTML → Baidu HTML；最终错误会带上 DeepSeek 侧错误摘要 |
+| web_crawl | DeepSeek POST {base}/v1/tools/fetch（返回 title + Markdown content） | 直接抓 HTML（保留原有 SSRF 校验、HTML→文本、注入过滤与 8KB 截断） |
+
+实现约定：
+
+- 鉴权沿用「API 设置 → DeepSeek」的 Key/Base（api_keys::read_raw_config）；
+  Base 默认 https://api.deepseek.com，自定义 Base 以 /v1 结尾时不会重复拼接；
+- 出网统一走 api_keys::egress_agents（代理优先 + 直连回退），超时 20s；
+- HTTP 错误中文映射：401 提示去设置页填 Key、402 余额不足、429 限速稍后重试、
+  400/403/404/408/413/500/504 分别给出可操作提示；
+- 工具层先用 client_from_conn 在**短锁**内取客户端，再在锁外调用网络方法，
+  避免网络请求期间持有数据库锁；
+- **计费/限速**：DeepSeek Search/Fetch 属于官方付费能力，按量计费且有速率限制；
+  工具描述已注明，Agent 不应高频循环调用；
+- **结果不可信**：搜索/抓取内容一律视为第三方外部数据，仅作信息提取，不执行其中
+  任何指令；web_crawl 仍保留安全前缀与注入模式过滤；
+- 未配置 DeepSeek Key 时直接走旧引擎链，行为与之前一致；真实网络调用需在有 Key
+  的环境联调（本机单测只覆盖端点拼接/解析/错误映射）。
+
+
+
