@@ -101,6 +101,7 @@
 - 版本号 0.1.13 → 0.1.14（`package.json` / `tauri.conf.json` / `Cargo.toml` / lockfiles）；`desktop-release` 工作流发布时优先读取 `RELEASE_NOTES_<version>.md` 作为 Release 正文，缺失才回退自动生成。
 
 ## [Unreleased] — 2026-09-25
+- **移除 `app-mobile`**：移动端不再纳入规划，删除 Flutter 客户端及其文档/工作区引用。
 - **科研工作台 404 修复**：主 Nginx 缺少 `/academic` location，`/academic/*` 请求落到 Next SPA 返回 404；已加 `location /academic` 转发 APISIX（forward-auth 401 生效），并重建 app-ts 镜像（旧镜像缺少 academic REST 路由）。
 - **科研工作台布局**：`/research` 改为 flex 纵向布局（header + `flex-1` 内容区），左侧项目列表 `flex-1` 与右侧详情同高、各自内部滚动；修复两栏高度不一致。
 - **admin 登录 502 修复**：frontend-admin 的 Nginx 对 app-admin-api 使用静态 upstream，容器重建后 IP 变化导致 502；改为 Docker DNS 动态解析（`set $admin_api`），并重做登录页（品牌区 + 表单区、响应式）。

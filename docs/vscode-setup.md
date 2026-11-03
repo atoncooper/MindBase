@@ -1,7 +1,7 @@
 # VS Code 配置说明（多语言单仓）
 
 本仓同时包含 Rust（`mind-base-desktop/src-tauri`）、TS/Node（`frontendv2` / `app-ts` /
-`mind-base-desktop/src`）、Go（`app-go/*`、`mcp/*`）、Java（`app-pay`）、CMake（`app-mobile`）。
+`mind-base-desktop/src`）、Go（`app-go/*`、`mcp/*`）、Java（`app-pay`）。
 VS Code 默认工作区只按「桌面端 Rust + 前端」优化，避免打开仓库就触发无关语言的构建。
 
 ## 1. 为什么每次启动都在跑 Java 构建

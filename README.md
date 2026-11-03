@@ -4,7 +4,7 @@ MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转
 
 核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。可选知识图谱：LLM 从转写稿抽取实体与关系写入 Neo4j（带原文引文防幻觉），问答时支持跨视频实体关联检索。
 
-除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）、支付后台管理（app-pay-admin，Go）与分享审核后台（app-admin，Go + frontend-admin）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖），以及一个 Flutter 移动端 **app-mobile**（🚧 测试阶段，尚未开发完成，见其 README）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
+除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）、支付后台管理（app-pay-admin，Go）与分享审核后台（app-admin，Go + frontend-admin）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
 
 后端按域拆分为独立服务：AI 域（chat/agent/RAG/KG/quiz 出题）在 **app-ts**（Node + Fastify + LangGraph multi-agent，:8000，沿用退役 Python backend 的端口），服务端 CRUD 在 **app-go** 各 Go 服务（app-auth 认证 / app-bili 获取 / app-note 笔记 / app-quiz 测验 / app-cloud 云盘 / app-kg 图存储 / app-settings 设置 / app-admin 分享审核）。LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（用户无需配置任何 API Key）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。
 
