@@ -1,89 +1,119 @@
-# 代码执行记录回溯
+# 代码执行（run_code 链路）
 
-> code agent 每次执行 `run_code`（含失败重试）都持久化到 MongoDB，支持从 admin 后台和 chat 历史回溯"当时跑了什么代码、stdout 是什么、产出了什么"。
+> 本文描述应用侧怎么把一段代码交给隔离沙箱、拿到什么结果、失败时如何降级。
+> 控制层实现细节见 [features.md](features.md) §5 与 [academic-agent.md](academic-agent.md) §沙箱；部署见 [deploy/docker/opensandbox](../deploy/docker/opensandbox/README.md)。
 
-## 背景
+---
 
-code agent 在 Daytona 临时沙箱里执行代码，沙箱执行完即删。若不持久化，执行细节随沙箱丢失，无法回溯。本方案在 `runtime_dispatch` 节点落库，完整保留代码 / stdout / 产物。
+## 一、工具契约
 
-## 数据模型
+`run_code` 由 `code` 与 `academic` 子 agent 使用，输入：
 
-MongoDB collection `code_executions`（`app/repository/code_execution_repository.py`）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `language` | `javascript` / `python` | 运行语言 |
+| `code` | string，1–20000 字符 | 完整代码 |
+| `timeoutMs` | 正整数，可选 | 单次执行预算，默认 10000 |
 
-| 字段 | 说明 |
-|------|------|
-| `exec_id` | UUID4，主键 |
-| `uid` | 用户 id |
-| `chat_session_id` | 关联会话（MySQL `chat_sessions`） |
-| `assistant_msg_id` | 关联 assistant 消息（MongoDB `chat_messages.msg_id`），消息级回溯 |
-| `delegate_query` | 触发 code agent 的子查询 |
-| `code` | 完整代码（不截断） |
-| `language` | `python` / `javascript` / `typescript` |
-| `stdout` | 完整 stdout（不截断） |
-| `exit_code` | 0=成功，非 0=失败 |
-| `latency_ms` | 执行耗时 |
-| `error` | 失败时的错误信息 |
-| `timeout` | 是否超时 |
-| `artifacts` | 产物列表 `[{name, minio_key, url, content_type, size}]` |
-| `created_at` | 时间戳 |
+身份（`uid`）由工具运行时从 `ToolRunContext` 注入，**不是** LLM 可写字段；它经 `X-Uid` 头传给控制层，用于配额、租约与审计归属。
 
-索引：`exec_id`(unique) / `assistant_msg_id+created_at` / `chat_session_id+created_at` / `uid+created_at`。
+返回给模型的是中文纯文本：`exit` / `exit_code` / `execution_id` / 产物列表 / stdout（截断 4000 字符）/ stderr（截断 2000 字符）。
 
-## 产物协议（图片等二进制）
+---
 
-沙箱即删，文件无法保留。code agent 的 prompt（`app/agent/code/prompts.py`）指示生成的代码用标记协议把产物以 base64 输出到 stdout：
+## 二、执行边界
 
-```python
-import base64
-with open("heart.png", "rb") as f:
-    print("<<ARTIFACT_START:heart.png>>" + base64.b64encode(f.read()).decode() + "<<ARTIFACT_END>>")
+工具层唯一沙箱边界是 `CodeExecutionPort`，组合根按配置选择实现：
+
+```text
+run_code ──► CodeExecutionPort
+                ├── HttpCodeExecution   POST /v1/executions + 轮询（X-API-Key + X-Uid）
+                └── NoopCodeExecution   sandbox.enabled=false 时的诚实降级
 ```
 
-`run_code` 工具（`app/tools/code/run_code.py`）：
-1. `_extract_artifacts(stdout)` 解析标记，base64 解码（单个上限 10MB，超出跳过）
-2. `_upload_artifacts` 上传 MinIO（key=`code-artifacts/{uid}/{uuid}/{name}`），返回 presigned URL
-3. 标记从 content 清理（替换为 `[已提取产物: name]`），避免 base64 污染 LLM context
-4. artifacts 元数据经 `ToolMessage.additional_kwargs` 传到 `runtime_dispatch` 落库 + SSE
+- `HttpCodeExecution`：向 app-sandbox 创建执行，轮询到终态；本地超时与取消信号都收敛为「不可用」。
+- `NoopCodeExecution`：不执行任何代码，返回统一的可读错误。
 
-LLM 不遵守标记格式时，只是没产物（文本回溯仍有效）。MinIO 禁用时跳过产物，文本记录正常落库。
+**失败策略**：两种实现都**不允许抛出**到 ReAct 循环。任何失败都返回 `sandboxAvailable=false` + 中文 `error`，模型据此告诉用户「代码没有被实际运行」，绝不伪造成功结果。
 
-## 接口
+---
 
-### 用户接口（`app/routers/code_executions.py`）
+## 三、调用链
 
-| 方法 | 路径 | 说明 |
+```text
+agent (run_code)
+  │
+  ▼
+app-ts  CodeExecutionPort
+  │  APISIX key-auth  /internal/sandbox/v1/*
+  ▼
+app-sandbox :8017（Go 控制层）
+  │  租约复用 → 配额校验 → 准入队列 → 运行时执行 → 产物登记 → 审计
+  ▼
+OpenSandbox lifecycle + execd（隔离容器内执行）
+```
+
+控制层职责：
+
+- **租约复用**：`uid + project + purpose + specHash → lease`，TTL 到期回收，避免每次执行新建沙箱；
+- **配额**：`academic_run` / `sandbox_concurrent` / `sandbox_cpu_seconds` / `sandbox_artifact_bytes` × 会员档位；
+- **准入**：全局与每 uid 并发上限、有界队列（满则 503 / 429）；
+- **审计**：uid / 项目 / 镜像 / 耗时 / exitCode / 产物 hash / request_id 全生命周期落 `sandbox_audit`；
+- **回收**：执行超时、租约 TTL、孤儿 sweeper。
+
+---
+
+## 四、结果与持久化
+
+| 数据 | 位置 | 说明 |
 |------|------|------|
-| GET | `/chat/messages/{msg_id}/code-executions` | 某条 assistant 消息的执行记录列表（归属校验，跨用户 404） |
-| GET | `/chat/messages/{msg_id}/code-executions/{exec_id}` | 单条详情（含完整 code/stdout/artifacts） |
+| 执行记录 | MySQL `sandbox_execution` | 状态机、stdout/stderr 预览、exitCode、耗时、request_id |
+| 租约 | MySQL `sandbox_lease` | 复用键、运行时 id、TTL |
+| 产物元数据 | MySQL `sandbox_artifact` | name / size / sha256 / type / objectKey |
+| 审计 | MySQL `sandbox_audit` | 全生命周期事件与 actor |
+| 学术执行记录 | Mongo `academic_runs` | 脚本 sha256 / exitCode / 产物 / 耗时（`academic_evidence` 工具写入） |
+| 产物对象 | MinIO | 预签名短时效 URL |
 
-### Admin 接口（`app/routers/admin_code_executions.py`，`require_admin`）
+控制层对 stdout/stderr 只保留截断预览（`previewBytes`），管理台不展示代码正文与完整输出；产物只暴露元数据与短时效链接，不提供下载。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/admin/code-executions` | 全局列表（按 uid/session_id/msg_id/时间筛选，newest first） |
-| GET | `/admin/code-executions/{exec_id}` | 详情（admin scope，不校验归属） |
-| DELETE | `/admin/code-executions/{exec_id}` | 删除记录 + MinIO 产物 |
+---
 
-> admin 接口当前暂挂主 FastAPI app，未来迁移到独立 app-admin 服务。
+## 五、配置
 
-## SSE 产物事件
+`app-ts/config/default.yaml`：
 
-`agent_sse.py` 在流末尾（sources/done 前）发 `type:"artifact"` 帧，前端聊天视图经 `chat-stream.ts` 的 `onArtifact` 回调累积到 message，`chat-message.tsx` 渲染图片（`content_type` 为 image 时 `<img>`，否则下载链接）。
+```yaml
+sandbox:
+  enabled: false                 # true 时注册 HttpCodeExecution，否则 run_code 诚实降级
+  baseUrl: http://127.0.0.1:9080/internal/sandbox
+  apiKey: ""                     # 与 APISIX consumer key / app-sandbox X-API-Key 一致
+  timeoutMs: 60000
+  pollIntervalMs: 500
+```
 
-## 配置依赖
+对应环境变量（loader 的 `SECTION__KEY` 机制）：`SANDBOX__ENABLED` / `SANDBOX__BASE_URL` / `SANDBOX__API_KEY` / `SANDBOX__TIMEOUT_MS` / `SANDBOX__POLL_INTERVAL_MS`。
 
-- **MongoDB**：`code_executions` collection（`mongo.enabled=true`）
-- **MinIO**：产物存储（`minio.enabled=true`，禁用则跳过产物）
-- **Daytona**：代码沙箱（`daytona.enabled=true`）
+app-sandbox 侧另有 `SANDBOX__RUNTIME__*`（运行时、镜像、资源上限）、`SANDBOX__QUOTA__*`、`SANDBOX__ADMISSION__*`、`SANDBOX__LEASE__*`，默认值见 `app-go/app-sandbox/default.yaml`；OpenSandbox 的 `OPENSANDBOX_API_KEY` 两侧必须一致。
 
-## 回溯场景
+---
 
-1. **chat 历史展开**：用户点 assistant 消息 → 调 `GET /chat/messages/{msg_id}/code-executions` → 看代码 + stdout + 产物。
-2. **admin 审计**：管理员在 web-admin（待建）→ `GET /admin/code-executions?uid=&since=` → 按用户/时间筛查执行记录，排查问题。
-3. **产物查看**：artifacts 的 `url` 是 MinIO presigned URL，可直接访问。
+## 六、部署
 
-## 已知限制
+```bash
+# 单机最小链路（OpenSandbox lifecycle + app-sandbox）
+docker compose --profile sandbox up -d opensandbox-server app-sandbox
 
-- 持久化是 best-effort：Mongo 故障时只 warning，不阻断 agent 主流程。
-- 产物依赖 LLM 遵守标记协议；不遵守则无产物，文本记录仍有效。
-- 标准 `logging`（run_code/delegate/code_agent）未桥接到 loguru，相关日志不进 `logs/app.log`（已知可观测性盲区）。
+# 生产 K8s
+kubectl apply -k deploy/k8s/40-sandbox     # OpenSandbox 控制面/运行时/热池（见该目录 README）
+```
+
+单机形态挂载 Docker socket 创建 sibling 沙箱容器，**仅适用于可信单机环境**；多租户生产请使用 K8s 运行时与网络策略。
+
+---
+
+## 七、已知限制
+
+- 产物链路：执行产物登记接口已就绪；真实 execd 取文件 → MinIO 预签名仍在验证，未验证前以元数据为准。
+- 取消：远端 exec 的取消语义依赖 OpenSandbox，当前以本地取消 + 超时兜底。
+- sweeper 的 leader 选举、真实 MySQL DDL、K8s runtime 仍在验证。
+- 历史说明：Python 时代的「Mongo `code_executions` 持久化 + Daytona」实现已随 backend 退役，执行记录改由 app-sandbox 承载（本文已按现状重写）。

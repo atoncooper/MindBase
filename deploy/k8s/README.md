@@ -200,7 +200,7 @@ initialDelaySeconds，慢启动一律调 startupProbe 预算。
   备份（PVC 快照/CronJob mysqldump）。
 - 存储层 HA（分布式 MinIO 纠删 / MySQL 主从 / Redis Sentinel / Mongo RS / Milvus
   distributed）——完整路线与触发条件见
-  [plan/1.0.14-AppCloud-Distributed](../../plan/1.0.14-AppCloud-Distributed/1.0.14-AppCloud-Distributed.md)。
+  `plan/1.0.14-AppCloud-Distributed`（本地设计文档，不入 git）。
 - HPA 生效前提：集群需安装 metrics-server（未装时 HPA 不动作，副本稳定在 2）。
 - 生产化前的硬性检查：替换所有 `change-me` 占位密钥、Higress 镜像钉 digest、
   nginx 正式证书、MySQL 关闭 root 远程。

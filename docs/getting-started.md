@@ -1,134 +1,318 @@
-# Getting Started — Local Development
+# 本地开发入门（Getting Started）
 
-Run MindBase on your machine for development.
+在本地把 MindBase 跑起来并开始改代码。本文只讲**开发环境**：前置依赖、`.env` 配置、两条启动路径（容器起基础设施 + 本地跑应用 / 全 Docker）、验证链路、测试与常见问题。
 
-> ⚠️ **2026-10-06 Python backend 已彻底退役**：本文写作时 `app/`（FastAPI backend）仍存在，其中涉及 backend 服务、`docker compose` 服务清单、Swagger :8000/docs 等内容已过时。当前服务清单、端口与路由以 [architecture.md](architecture.md) 为权威；配置体系见 [configuration.md](configuration.md)。
-
----
-
-## Prerequisites
-
-| Tool | Version | Check |
-|------|---------|-------|
-| Python | >= 3.11 | `python --version` |
-| Node.js | >= 18 | `node --version` |
-| ffmpeg | any recent | `ffmpeg -version` |
-| MySQL | 8.x | required — provide via `RDBMS__URL` (no SQLite fallback in defaults) |
-| Git | 2.x | `git --version` |
-
-> **Windows users**: install ffmpeg via `winget install ffmpeg` or [ffmpeg.org](https://ffmpeg.org). Ensure `ffmpeg.exe` is on your PATH.
+> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（auth / cloud / note / bili / quiz / kg / settings / admin）与 **app-board**（Go，HTTPS-only）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-pay-admin**、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
+> 旧 Python backend（`app/`）已于 2026-10-06 彻底退役，任何 `pip install` / `uvicorn app.main:app` / `app/config/default.yaml` 的说法都已失效。
+>
+> 服务清单、端口、网关路由以 [architecture.md](architecture.md) 为权威；配置体系（各服务 YAML / env 前缀 / 密钥清单）见 [configuration.md](configuration.md)；生产部署见 [deployment.md](deployment.md)。
 
 ---
 
-## Quick start (5 minutes)
+## 1. 前置依赖
+
+| 工具 | 版本 / 要求 | 用途与核对方式 |
+|------|------------|----------------|
+| Git | 2.x | 拉代码 |
+| Node.js | **≥ 22.17**（`app-ts/package.json` 的 `engines`；CI 用 Node 22） | app-ts、frontendv2、frontend-admin |
+| npm | 随 Node 提供 | app-ts / frontendv2 依赖安装 |
+| pnpm | 任意近期版本（`corepack enable` 即可） | 仅 frontend-admin（有 `pnpm-lock.yaml`） |
+| Go | **1.25+**（`app-go/*/go.mod`；`app-sandbox` 为 1.24） | app-go 各服务与 `mcp/` 下的 MCP server |
+| Java + Maven | **JDK 21** + Maven 3.9+ | 仅 app-pay（`pom.xml` `java.version=21`） |
+| Docker + Compose | Docker Engine/Desktop，**Compose v2**（`docker compose version`） | 基础设施与全栈启动 |
+| ffmpeg / ffprobe | 任意近期版本 | **仅本地直跑 app-bili 做 ASR 时需要**；容器镜像已内置静态 ffmpeg |
+| openssl | 任意近期版本 | 生成主密钥文件（本地跑 app-pay 时也用它生成 HTTPS 证书） |
+
+> 你不需要在本机装 MySQL / Mongo / Redis / Milvus / MinIO / Neo4j / APISIX：它们都跑在容器里。
+> Windows 建议 Docker Desktop + WSL2 后端；下文命令以 bash 为例，PowerShell 差异见 §2.2 与 §3.3。
+
+---
+
+## 2. 第一次配置
+
+### 2.1 拉代码
 
 ```bash
-# 1. Clone
-git clone <repo-url> && cd mind-base
+git clone https://github.com/atoncooper/MindBase.git
+cd MindBase
+```
 
-# 2. Environment
+### 2.2 `.env` 与主密钥文件
+
+```bash
 cp .env.example .env
-# Edit .env — fill in LLM__API_KEY at minimum
-
-# 3. Backend
-pip install -r requirements.txt
-python -m uvicorn app.main:app --reload --port 8000
-
-# 4. Frontend (new terminal)
-cd frontendv2
-npm install
-npm run dev
+mkdir -p secrets
+openssl rand -base64 32 > secrets/api_key_encryption_key
 ```
 
-Open **http://localhost:3000** — the backend Swagger is at **http://localhost:8000/docs**.
+PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Force secrets | Out-Null
+openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_key
+```
+
+规则（详见 [configuration.md](configuration.md)）：`.env` **只放密钥 / 含凭证的连接串**（`secrets/` 已 gitignored）；开关、模型名、超时、并发等普通配置进各服务自己的 YAML。变量名用双下划线嵌套（`MINIO__ACCESS_KEY` → `minio.access_key`）。
+
+### 2.3 必填项
+
+| 项 | 说明 |
+|----|------|
+| `secrets/api_key_encryption_key` | app-auth / app-cloud / app-bili 共用的用户凭证加密主密钥（一行 base64）。**不是**环境变量文件内容，而是独立密钥文件；compose 把它挂到 `/run/secrets/`。文件缺失时容器会反复重启（Docker 会把缺失的绑定源建成目录），日志报读取失败。**部署后不可更换**，否则已加密数据无法解密。 |
+| `APISIX_CONSUMER_KEY` | 服务间 key-auth 共享密钥。compose 强制要求（未设置直接报错 `err_APISIX_CONSUMER_KEY_not_set_in_.env`）。**必须与 `apisix/apisix.yaml` 里 `consumers.internal.key` 一致**（standalone 模式不做 env 插值）——仓库内置的开发值是 `D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre`；改成自己的值时两边都要改。 |
+| `AI_GATEWAY__API_KEY` | 平台 AI 出网凭证（LLM / embedding / OCR）。用 `--profile ai` 的 Higress 时填 Higress consumer `mindbase-backend` 的 key（在网关控制台 `http://127.0.0.1:18081` 配置，详见 configuration.md）；不用 Higress 时可直接填供应商 key，并把 `AI_GATEWAY__BASE_URL` 指向供应商的 OpenAI 兼容口。**留空时 app-bili 会启动失败**（`asr.api_key` 必填），app-ts 的 AI 调用也会在调用时报错。 |
+
+### 2.4 按需开启的可选项
+
+| 变量 | 作用 |
+|------|------|
+| `APPTASK_EMAIL_API_KEY` | 定时出题邮件（Resend）；为空时邮件 worker 走 dry-run |
+| `PAY_OPS_KEY` | `--profile pay-admin` 必需（compose 强制）；app-pay-admin 调资金写端点用 |
+| `SANDBOX_ADMIN_TOKEN` | app-admin 的沙箱管理代理令牌（与 app-sandbox `SANDBOX__ADMIN__TOKEN` 同值） |
+| `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 管理后台「分享内容受控预览」（app-admin ↔ app-cloud 同值） |
+| `TAVILY_API_KEY` / `SEARXNG_URL` | `web_search` 的优质搜索源（不配只剩爬虫兜底） |
+| `DEEPSEEK_API_KEY` | DeepSeek 官方网页搜索/抓取 |
+| `LANGSMITH_API_KEY` 等 | LLM 链路追踪（SDK 直接读 env，全组设置才生效） |
+| `BOARD_MCP_UID` / `BOARD_MCP_AUTH_TOKEN` | 外部 MCP 宿主连接 board-mcp 用（服务模式不需要） |
 
 ---
 
-## Minimal `.env`
+## 3. 路径 A（推荐）：容器起后端，本地跑 app-ts / frontendv2
 
-```env
-LLM__API_KEY=sk-your-dashscope-key
-```
+适合日常改 AI 域或前端：基础设施与 Go 服务跑容器，app-ts 与 frontendv2 在本机热重载。
 
-> All other settings fall back to `app/config/default.yaml`. See [configuration.md](configuration.md) for the full reference.
-
----
-
-## Database
-
-`rdbms.url` has **no default** — inject it via env:
-
-```env
-RDBMS__URL=mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base
-```
-
-The easiest local setup is the MySQL container from the compose file (`docker compose up -d mysql`), or point `RDBMS__URL` at any MySQL/PostgreSQL instance. SQLite (`sqlite+aiosqlite:///./data/mind_base.db`) also works for pure local dev if you set it explicitly.
-
----
-
-## Project structure (development)
-
-```
-app/
-├── main.py              # FastAPI entry point, middleware, lifespan
-├── routers/             # HTTP endpoints (thin — parameter parsing only)
-├── services/            # Business logic
-│   ├── rag/             # Vector retrieval, chunking, LLM prompts
-│   └── auth/            # User lifecycle, tokens
-├── repository/          # Database access (SQL / ORM)
-├── infra/               # Infrastructure (MySQL, Milvus, Redis, Mongo, …)
-├── config/              # YAML configuration (default.yaml)
-├── response/            # Pydantic API schemas (request / response models)
-├── agent/               # LangGraph agents (chat / memory / note / code / search / summary / quiz)
-├── harness/             # AgentHarness orchestration (orchestrator + runtime)
-├── tools/               # @register_tool auto-discovered tools
-└── models.py            # SQLAlchemy ORM models only
-
-frontendv2/              # current frontend (first-gen frontend/ removed 2026-10-01)
-├── app/                 # Next.js App Router (page.tsx, layout.tsx)
-├── components/          # React components (chat / account / settings / billing / notes / cloud-drive / quiz)
-├── lib/api/             # API client (modular, no direct fetch in components)
-└── lib/chat-stream.ts   # SSE stream parsing
-
-docs/                    # Documentation
-```
-
----
-
-## Development workflow
-
-1. **Backend changes** → auto-reload via uvicorn `--reload`
-2. **Frontend changes** → HMR via Next.js dev server
-3. **New API endpoint** → add router → register in `main.py` → test at `/docs`
-4. **New response model** → add to `app/response/<module>.py` → re-export in `__init__.py`
-
-### Type checking & linting
+### 3.1 启动全栈（然后让出 8000 / 3000）
 
 ```bash
-# Backend
-pip install ruff mypy
-ruff check app/
-mypy app/
-
-# Frontend
-cd frontendv2
-npm run lint
-npx tsc --noEmit
+docker compose up -d --build   # 首次会构建 first-party 镜像，几分钟
+docker compose ps              # 全部 running / healthy 再继续
+docker compose stop app-ts frontend
 ```
+
+说明：裸 `docker compose up -d` 就是全栈（见 §4）。停掉 `app-ts` / `frontend` 只是把 8000 / 3000 端口让给本地进程；其余 Go 服务、MCP server、网关、存储继续跑在容器里，正好是本地 app-ts 的外部依赖。
+
+### 3.2 让宿主能访问 APISIX(:9080) 与 MinIO(:9000)
+
+默认 compose **不把 APISIX 和 MinIO 的 API 端口映射到宿主**（只走容器网络与 nginx）。但本地 app-ts 的出站调用（app-task / app-pay / app-quiz / 沙箱）走 `127.0.0.1:9080`，frontendv2 的 dev 代理也指向 `localhost:9080`，所以本地开发要加一个 override：
+
+```yaml
+# docker-compose.override.yml —— 本地开发用，不要提交
+services:
+  apisix:
+    ports:
+      - "127.0.0.1:9080:9080"
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+```
+
+`docker compose` 会自动合并同目录下的 `docker-compose.override.yml`；生效：
+
+```bash
+docker compose up -d apisix minio
+```
+
+（compose 对 `ports` 是合并语义，MinIO 控制台 9001 不会丢。）
+
+### 3.3 本地跑 app-ts
+
+app-ts **不会自己读 `.env`**（compose 里是 `env_file` 注入），本地启动前要把变量导入当前 shell：
+
+```bash
+cd app-ts
+npm ci
+
+# 连接串 / 密钥（值取自 compose 内置默认值与 .env）
+export MONGO__URI='mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin'
+export REDIS__URL='redis://:mind-base@127.0.0.1:6379/1'
+export MINIO__ENDPOINT='http://127.0.0.1:9000'
+export MINIO__ACCESS_KEY=minioadmin
+export MINIO__SECRET_KEY=minioadmin
+export MINIO__BUCKET=drive-videos
+export APISIX_CONSUMER_KEY='<与 apisix.yaml 一致的 key>'
+export AI_GATEWAY__BASE_URL='http://127.0.0.1:18080/v1'   # 用 --profile ai 起的 Higress；或供应商兼容口
+export AI_GATEWAY__API_KEY='<key>'
+
+npm run dev    # tsx watch，监听 127.0.0.1:8000
+```
+
+PowerShell 里把 `export KEY='value'` 换成 `$env:KEY='value'`（逐条执行），其余步骤相同。
+
+- `MILVUS__ADDRESS` 默认就是 `127.0.0.1:19530`（`app-ts/config/default.yaml`），正好命中容器映射，通常不用设。
+- `KG_GRPC__TARGET` 默认 `127.0.0.1:8013`，app-kg 容器也映射了 8013，本地 app-ts 可直接用 KG。
+- 各 MCP server 的默认地址是 `127.0.0.1:8005/8009/8012`，容器已映射，无需改。
+- 缺少 `MONGO__URI` / `REDIS__URL` / `MINIO__ENDPOINT` 时对应能力**显式降级**（会话落内存、不订阅事件、skills 关闭），启动不会崩；需要持久化就按上面导出。
+- 个人非敏感覆盖可写 `app-ts/config/local.yaml`（gitignored），优先级高于 `default.yaml`。
+
+### 3.4 本地跑 frontendv2
+
+```bash
+cd frontendv2
+npm ci
+npm run dev     # http://localhost:3000
+```
+
+开发模式由 `next.config.ts` 的 rewrites 把 API 请求转发到 `NEXT_PUBLIC_APISIX_HOST`（默认 `localhost:9080`），所以需要 §3.2 的 9080 映射且 apisix 在跑；`/minio-proxy/` 媒体代理默认指向 `http://localhost`（即 compose nginx :80）。需要换目标时：
+
+```bash
+NEXT_PUBLIC_APISIX_HOST=127.0.0.1:9080 npm run dev
+```
+
+### 3.5 本地跑某个 Go 服务
+
+**每个 `app-go/*` 都是独立 Go module**（仓库根没有 `go.mod`/`go.work`），必须进入服务目录启动；服务会从工作目录向上读项目根 `.env`：
+
+```bash
+docker compose stop app-note        # 先让出 8008
+cd app-go/app-note
+APPNOTE__RDBMS__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base' \
+MONGO__URI='mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin' \
+go run .
+```
+
+各服务的 MySQL 连接串是**带服务前缀**的变量（共享的 `MONGO__URI`/`REDIS__URL`/`MINIO__*`/`AI_GATEWAY__*` 才无前缀）。`Validate` 会在缺必填项时报错，按报错文案补即可：
+
+| 服务 | 端口 | 本地启动必填 |
+|------|------|--------------|
+| app-auth | 8006 | `APPAUTH__RDBMS__URL` |
+| app-cloud | 8007 | `APPCLOUD__RDBMS__URL` + `MINIO__ACCESS_KEY`/`MINIO__SECRET_KEY`（缺访问密钥直接拒启；另需 `MINIO__ENDPOINT=http://127.0.0.1:9000`） |
+| app-note | 8008 | `APPNOTE__RDBMS__URL`（+ `MONGO__URI` 存正文） |
+| app-bili | 8010 | `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
+| app-quiz | 8011 | `APPQUIZ__RDBMS__URL`（+ `MONGO__URI`） |
+| app-kg | 8013 gRPC / 8014 health | `APPKG__RDBMS__URL` + `KG__URI`（+ `KG__PASSWORD` 或 `NEO4J_PASSWORD`） |
+| app-settings | 8015 | `APPSETTINGS__RDBMS__URL` |
+| app-admin | 8016 | `APPADMIN__RDBMS__URL`（种子账户 `admin` / `app-admin`，首登强制改密） |
+| app-sandbox | 8017 | `SANDBOX__DATABASE__DSN`（或 `RDBMS__URL`）+ `SANDBOX__AUTH__API_KEY`；本机无 OpenSandbox 时用 `SANDBOX__RUNTIME__TYPE=fake` |
+
+不适合本地直跑、建议直接用容器的：
+
+- **app-pay**（Java）：`cd app-pay && mvn spring-boot:run`，但服务端强制 HTTPS，先跑 `app-pay/scripts/gen-dev-cert.ps1`（或 `.sh`）生成 `app-pay/certs/`；
+- **app-task**：本仓无源码（镜像来自独立仓库），compose 默认拉取；
+- **app-board**（8004）：不映射宿主端口，开发时经 app-board-mcp（8005）访问即可。
 
 ---
 
-## Running with Docker (dev)
+## 4. 路径 B：全 Docker
 
 ```bash
-# Full stack (default profile): backend, frontend, nginx, APISIX, MySQL, Redis,
-# Mongo, MinIO, Milvus, Neo4j, app-task, app-board
-docker compose up -d
-
-# Optional extras on top of the full stack
-docker compose --profile pay up -d         # + payment/membership service (app-pay)
-docker compose --profile pay-admin up -d   # + payment admin console (app-pay-admin)
-docker compose --profile tools up -d       # + redis-commander / mongo-express
+docker compose up -d --build
+docker compose ps
 ```
 
-See [architecture.md](architecture.md) for the complete service/port/profile table.
+首次会构建 frontend / app-ts / 各 Go 服务 / MCP / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 nginx / app-board / app-board-mcp / app-pay 的开发证书，无需手工准备 TLS。
+
+### 4.1 profile 的真实语义
+
+用 `docker compose config --services` 实测（服务带 `profiles: [""]` 表示属于默认集合）：
+
+| 命令 | 实际启动 |
+|------|----------|
+| `docker compose up -d` | **29 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-auth / app-cloud / app-note / app-bili / app-quiz / app-kg / app-settings / app-admin(+api) / app-board(+3 个 MCP) / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
+| `docker compose --profile full up -d` | **37 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-admin + app-pay-test(+MySQL) + redis-commander / mongo-express |
+| `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
+| `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
+| `docker compose --profile pay-admin up -d` | 只有 6 个：app-pay-admin + app-pay-mysql + mysql/mongo/redis + cert-gen（需要 `PAY_OPS_KEY`） |
+
+**结论**：单独传 `--profile X` 会**排除默认全栈**。要在已运行的全栈上追加可选组件，分两步：
+
+```bash
+docker compose up -d                              # 先起全栈
+docker compose --profile ai up -d                 # 再追加 Higress（不动已在跑的服务）
+docker compose --profile sandbox up -d            # 再追加沙箱控制层
+```
+
+或一次到底：`docker compose --profile full up -d`。注意加了 `--profile sandbox` 后 app-ts 仍需 `SANDBOX_ENABLED=true` 才会启用 `run_code`（见 §7）。
+
+### 4.2 本地入口
+
+| 入口 | 地址 | 说明 |
+|------|------|------|
+| 用户端（nginx） | http://localhost ／ https://localhost | 统一入口；443 用开发 CA 自签证书 |
+| 用户端（frontend 容器直连） | http://localhost:3000 | compose `frontend` 服务 |
+| 管理后台 UI | http://127.0.0.1:3001 | app-admin 静态站，同源代理 `/api` 到 8016 |
+| 管理后台 API | http://127.0.0.1:8016 | 仅回环，不经 APISIX |
+| app-task 控制台 | http://127.0.0.1:8001/ | 默认账户 `admin` / `app-task-admin`，首登改密 |
+| Higress 控制台（`--profile ai`） | http://127.0.0.1:18081 | 配置供应商与 consumer key |
+| MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
+| Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
+
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-auth 8006、app-cloud 8007、app-note 8008、app-bili 8010、app-quiz 8011、app-kg 8013/8014、app-settings 8015、app-sandbox 8017、app-pay 8002 HTTPS、app-pay-admin 8003、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+
+---
+
+## 5. 验证链路
+
+### 5.1 各服务健康检查
+
+```bash
+curl -s http://127.0.0.1:8000/health     # app-ts：{"status":"ok","milvus":{...}}
+for p in 8006 8007 8008 8010 8011 8015 8016; do
+  printf '%s ' "$p"; curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$p/health"
+done
+curl -s  http://127.0.0.1:8014/health    # app-kg：MySQL/Neo4j 不可用 → 503
+curl -sk https://127.0.0.1:8002/health   # app-pay：HTTPS-only，-k 跳过自签校验
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端页面
+```
+
+注意：app-ts 的 `/health` **只要进程活着就返回 200**，向量库是否就绪看响应里的 `milvus.available`；`/health` 不是 APISIX 路由，别用 `http://localhost/health` 验后端，直接打回环端口。
+
+### 5.2 最小端到端
+
+打开 http://localhost（或本地 dev 的 http://localhost:3000）→ B 站 App 扫码登录（app-auth + MySQL + Redis 正常即可）→ 进「收藏夹」同步一个收藏夹触发知识库构建（ASR + 向量化，需要几分钟）→ 构建完成后在聊天里就收藏内容提问，应看到流式回答与来源。
+
+前提：AI 网关 / 供应商 key 可用（否则聊天报错）、Milvus 就绪（`milvus.available=true`）、app-bili 能出公网访问 B 站与语音识别服务。
+
+---
+
+## 6. 测试与静态检查
+
+| 范围 | 命令 |
+|------|------|
+| app-ts | `cd app-ts && npm ci && npm run typecheck`（= `npx tsc --noEmit`）；`npm test`（= `npx vitest run`，离线、不依赖 Mongo/Milvus 实例） |
+| frontendv2 | `cd frontendv2 && npm ci && npx tsc --noEmit && npm run lint`；`npm run build`（生产构建） |
+| frontend-admin | `cd frontend-admin && pnpm install --frozen-lockfile && pnpm build`（= `tsc --noEmit && vite build`） |
+| Go 单服务 | `cd app-go/app-note && go vet ./... && go test -count=1 ./...`（CI 同款顺序还包含 `gofmt -l .` 与 `go build`） |
+| app-sandbox | `cd app-go/app-sandbox && go test ./tests/`（内存 repo + fake runtime，不需要真实 MySQL） |
+| app-pay | `cd app-pay && mvn test`（纯 JUnit，无外部数据库） |
+
+> Windows 上 `gofmt -l .` 会把所有 CRLF 文件都列出来（误报），格式化检查请在 WSL / Linux 或 CI 上跑；`go vet` / `go test` 在 Windows 正常。
+> 提交前的 CI 清单见 `.github/workflows/ci-*.yml`。
+
+---
+
+## 7. 常见问题
+
+**端口被占用。** 常见冲突：3000（compose `frontend` 与本地 `npm run dev` 二选一，或用 `FRONTEND_PORT` 改容器端口）、8000（compose `app-ts` 与本地 dev，可用 `APP_TS_PORT` 改）、80/443（nginx；根 compose 固定映射，Windows 上常被 IIS/其他服务占用，需先停占用进程或改 `docker-compose.yml`；`docker-compose.client.yml` 支持 `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT`）、3001（compose app-admin UI 与 frontend-admin `pnpm dev`）、8016、3306。先 `docker compose stop <服务>` 再用本地进程。
+
+**`docker compose` 启动直接报 `err_APISIX_CONSUMER_KEY_not_set_in_.env` / `err_PAY_OPS_KEY_not_set_in_.env`。** 这是 compose 的强制校验，按 §2.3 / §2.4 填 `.env`。
+
+**服务起来了但服务间调用全 401/403（APISIX key-auth 拒绝、或下游报 API key 无效）。** `.env` 的 `APISIX_CONSUMER_KEY` 与 `apisix/apisix.yaml` 里 `consumers.internal.key` 不一致（standalone 模式 apisix 不读 env）。两边改成同一个值再重启。
+
+**app-auth / app-cloud / app-bili 反复重启。** 多半是 `secrets/api_key_encryption_key` 没建：compose 会把缺失的绑定源建成**目录**，服务读取失败退出。补上文件后 `docker compose up -d app-auth app-cloud app-bili`。
+
+**改了 `.env` 不生效。** 各服务只在启动时读取：容器要 `docker compose up -d <服务>` 重建；本地 app-ts 要重启 `npm run dev`（且注意它**不会**自动加载 `.env`，见 §3.3）。
+
+**Mongo / Milvus 没起。** app-ts 仍能启动但降级：启动日志出现 `memory fallback`（会话落内存、重启即丢），向量检索返回空、`/health` 里 `milvus.available=false`。补 `docker compose up -d mongo milvus` 后重启 app-ts。
+
+**MinIO 相关功能不可用。** `MINIO__ENDPOINT` 为空时 skills 关闭；云盘 / 壁纸 / 技能都需要 MinIO，且 app-cloud **缺 MinIO 凭证会直接拒启**。容器默认不映射 9000 到宿主，本地进程需要它时按 §3.2 加映射。
+
+**`run_code` 提示「代码没有实际运行」。** 沙箱默认关闭（`sandbox.enabled=false` 时走 `NoopCodeExecution` 诚实降级）。启用：`docker compose --profile sandbox up -d opensandbox-server app-sandbox`，再在 app-ts 侧设 `SANDBOX_ENABLED=true`（`SANDBOX__BASE_URL` 默认经 APISIX `/internal/sandbox/v1/*`）；本地无 OpenSandbox 时可给 app-sandbox 设 `SANDBOX__RUNTIME__TYPE=fake` 只做链路演示。细节见 [code-execution.md](code-execution.md)。
+
+**只用 `--profile ai` 结果全栈没起来。** profile 语义见 §4.1：单 profile 不含默认服务。先裸 `up -d`，再追加 profile；或一次 `--profile full up -d`。
+
+**前端本地 dev 数据全挂 / 图片 404。** dev 代理的目标 `localhost:9080`（APISIX）或 `http://localhost`（nginx）在宿主不可达：确认 apisix / nginx 在跑，且按 §3.2 映射了 9080。
+
+**`go run ./app-go/app-note` 报 `cannot find main module`。** 每个 Go 服务是独立 module，必须 `cd app-go/app-note && go run .`。
+
+**`https://localhost` 证书不受信。** 用的是开发 CA（`nginx/certs/dev-ca.crt`），把它导入系统/浏览器信任库即可；也可以先用 `http://localhost`。
+
+---
+
+## 8. 相关文档
+
+- 架构与配置：[architecture.md](architecture.md)（服务清单 / 端口 / 网关路由，权威）、[configuration.md](configuration.md)（配置入口与密钥清单）、[project-structure.md](project-structure.md)（目录索引）、[features.md](features.md)（功能清单）、[api.md](api.md)（API 概览）。
+- 运行与部署：[setup-guide.md](setup-guide.md)（只用 Docker 跑起来）、[deployment.md](deployment.md)（生产 / HTTPS / 备份）、[client-compose.md](client-compose.md)（单人客户端 compose）、[faq.md](faq.md)。
+- 专题：[academic-agent.md](academic-agent.md)（学术 Agent）、[code-execution.md](code-execution.md)（`run_code` 沙箱与降级）、[app-admin.md](app-admin.md)（分享审核 / 沙箱管理代理）。
+
+完整文档索引见 [docs/README.md](README.md)。

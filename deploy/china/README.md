@@ -1,4 +1,7 @@
-# 🇨🇳 中国区 Docker 部署指南
+# 🇨🇳 中国区 Docker 部署指南（历史快照）
+
+> ⚠️ **本目录是 Python backend 时代的历史快照，不再随主线更新**：其中的 `docker-compose.yml` 与 `Dockerfile.backend` 引用的 backend 服务已于 2026-10 退役，**不能直接用于当前版本**；当前部署请用根 `docker-compose.yml` + [docs/deployment.md](../../docs/deployment.md)。
+> 仍然可用且推荐参考的部分：下面「镜像拉取与加速」一节的 `registry-mirrors` 配置（对当前所有镜像拉取同样生效）。
 
 本目录包含 MindBase 的中国区优化 Docker 部署文件，解决了中国大陆网络环境下多个境外镜像源不可达的问题。
 

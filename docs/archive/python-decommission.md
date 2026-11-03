@@ -31,7 +31,7 @@ backend 可以被删除，当且仅当以下全部成立：
 | B 站获取 / ASR / build 编排 | `app-go/app-bili`（:8010） | [app-bili-migration.md](app-bili-migration.md) |
 | quiz 存储（历史/错题/导出/分享） | `app-go/app-quiz`（:8011）+ `mcp/app-quiz-mcp` | [app-quiz-migration.md](app-quiz-migration.md) |
 | 用户 embedding/ASR 配置 | `app-go/app-settings`（:8015） | AGENTS.md §2.19 |
-| KG 存储（Neo4j + kg 记账） | `app-go/app-kg`（gRPC :8013） | [app-kg.md](app-kg.md) |
+| KG 存储（Neo4j + kg 记账） | `app-go/app-kg`（gRPC :8013） | [app-kg.md](../app-kg.md) |
 | chat ask/stream、sessions、history、agent、RAG | `app-ts`（:8000，沿用退役 Python backend 的端口） | [app-ts-cutover.md](app-ts-cutover.md) |
 | 思维导图 AI 补全 `/chat/board/complete` | `app-ts`（`src/services/board-completion.ts` + `src/transport/http/routes/board.ts`） | 本文档 §3.B |
 | 会话总结 `/chat/sessions/{id}/summary`（SSE + latest） | `app-ts`（`src/services/session-summary.ts` + `src/transport/http/routes/session-summary.ts` + `prompts/summary.md` + Mongo `mind_base_ts.session_summaries`） | 本文档 §3.B |
