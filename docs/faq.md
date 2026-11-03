@@ -108,7 +108,7 @@ MySQL 用 `mysqldump`（业务库 `mind_base`、`mind_base_ts` 相关集合在 M
 
 **Q：桌面端和 Web 后端是什么关系？**
 
-相互独立。桌面端完全本地（SQLite），不依赖 Web 后端；Web 端的学术 agent、科研工作台与桌面端同源演进，但运行形态与数据互不相通。详见 [mind-base-desktop.md](mind-base-desktop.md)。
+相互独立。桌面端已拆分为独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)：完全本地（SQLite），不依赖 Web 后端；Web 端的学术 agent、科研工作台与桌面端同源演进，但运行形态与数据互不相通。
 
 ---
 

@@ -12,6 +12,10 @@
 - **架构文档补齐**：`docs/architecture.md` 增加 app-sandbox / opensandbox-server 服务与端口、`/academic` 与 `/internal/sandbox` 路由、沙箱 5 表数据归属、app-sandbox 配置入口、CI 现状（app-cloud/app-sandbox 无独立 workflow、docker-build 19 镜像）。
 - **文档索引与链接清理**：重写 `docs/README.md` 索引（覆盖全部现行文档与归档）；移除指向 `plan/`（不入 git）、`app-mobile`、根 `AGENTS.md`（不入 git）的失效链接，修正 archive 相对路径与 `deploy/` 下两处失效链接；`api/README.md` 标注为 Python 时代历史存档，`deploy/china/README.md` 标注为历史快照（仅镜像加速器配置仍适用）。
 
+### Removed
+
+- **桌面端拆分为独立仓库**：`mind-base-desktop/`（Tauri 2 + Rust + React）迁至 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)（含全部 git 历史；该仓库新增 README、MIT LICENSE 与 CI/Release workflow）。本仓删除桌面端源码、`docs/{mind-base-desktop,desktop-cross-platform,desktop-rust-architecture,automation}.md` 四篇文档、`.github/workflows/{ci-desktop,desktop-release}.yml`，并同步清理 README / architecture / features / faq / project-structure / docs 索引 / vscode 配置中的相关引用。
+
 ## [mind-base-desktop 0.2.0] — 2026-11-01
 
 桌面端「科研工作台 + SSH 远程 + 对话体验」版本：科研控制台补齐 repositories 数据层、AI 选刊与 AI 计划、论文导入与原生 Word/PDF 展示、Google Docs 风格写作；SSH 升级为独立包，支持主机管理、交互终端、SFTP、本地端口转发、会话日志与跨平台凭据；对话新增思考过程、消息排队、DeepSeek 官方搜索，并修复工具参数泄漏与空回复。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.2.0.md](mind-base-desktop/RELEASE_NOTES_0.2.0.md)。

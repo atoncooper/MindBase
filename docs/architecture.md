@@ -162,7 +162,7 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | 限流/验证码/quiz quota/分享缓存/事件桥（`bili:page_ready`） | Redis | app-auth / app-quiz / app-ts；app-board 用 db 2 |
 | 定时任务定义/日志/邮件队列/WebUI 账户 | MySQL `app_task` | app-task 独有 |
 | 订单/会员/支付事件/回调流水/SKU/job lock | MySQL `app_pay`（Flyway 迁移） | app-pay 独有；pay-admin 只读共享 + 补偿开通 |
-| 桌面端全部数据 | 本机 SQLite | mind-base-desktop 完全本地，不经网络后端 |
+| 桌面端全部数据 | 本机 SQLite | 独立仓库 [mind-base-desktop](https://github.com/atoncooper/mind-base-desktop) 完全本地，不经网络后端 |
 
 ## 配置体系
 
@@ -209,4 +209,3 @@ src/
 | ci-app-admin | app-go/app-admin | gofmt / vet / test / build |
 | ci-frontend-admin | frontend-admin | tsc --noEmit + vite build |
 | docker-build | push main / tag | 构建并发布 19 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-pay-admin/app-admin/app-admin-ui/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`；app-sandbox 尚未纳入） |
-| ci-desktop / desktop-release | `mind-base-desktop/**` | PR 期 cargo check；tag `mind-base-desktop-v*` 时构建 Tauri 桌面端（Windows NSIS + macOS dmg）并发布 Release |

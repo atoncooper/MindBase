@@ -1,16 +1,18 @@
 # VS Code 配置说明（多语言单仓）
 
-本仓同时包含 Rust（`mind-base-desktop/src-tauri`）、TS/Node（`frontendv2` / `app-ts` /
-`mind-base-desktop/src`）、Go（`app-go/*`、`mcp/*`）、Java（`app-pay`）。
-VS Code 默认工作区只按「桌面端 Rust + 前端」优化，避免打开仓库就触发无关语言的构建。
+本仓同时包含 TS/Node（`frontendv2` / `app-ts` / `frontend-admin`）、Go（`app-go/*`、`mcp/*`、
+`app-board`、`app-pay-admin`）、Java（`app-pay`）与脚本工程。
 
-## 1. 为什么每次启动都在跑 Java 构建
+> 桌面端（Tauri 2 + Rust）已拆分为独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)，
+> 本仓不再包含 Rust 工程，相关 rust-analyzer / cargo 任务配置随源码一并迁出。
 
-根目录工作区里存在 `app-pay/pom.xml`，而旧的 `.vscode/settings.json` 配了
+## 1. 为什么每次打开都在跑 Java 构建
+
+根目录工作区里存在 `app-pay/pom.xml`，旧的 `.vscode/settings.json` 配了
 `java.jdt.ls.java.home`、`maven.executable.path` 等；Java 扩展一旦激活就会扫描并
 **自动 import + 构建 Maven 工程**，于是每次打开 VS Code 都跑 Maven。
 
-现在根工作区已关闭：
+现在根工作区已关闭（设置仅本地生效，`.vscode/` 在 `.gitignore` 中）：
 
 ```jsonc
 "java.import.maven.enabled": false,
@@ -19,44 +21,23 @@ VS Code 默认工作区只按「桌面端 Rust + 前端」优化，避免打开�
 "java.configuration.updateBuildConfiguration": "disabled",
 ```
 
-JDK / Maven 路径保留（给 Java 专用工作区用）。
+JDK / Maven 路径保留，供 Java 专用工作区使用。
 
-## 2. 为什么 Rust 插件「用不上」
-
-rust-analyzer 默认只在**工作区根目录**找 `Cargo.toml`；本仓根目录没有（Rust 工程在
-`mind-base-desktop/src-tauri`，且它本身是含 `tests/` 成员的 Cargo workspace）。
-因此分析器一直没有 linked project，表现为无补全 / 一直 Loading / 报
-"No Cargo.toml found"。
-
-修复（已写入 `.vscode/settings.json`）：
-
-```jsonc
-"rust-analyzer.linkedProjects": ["mind-base-desktop/src-tauri/Cargo.toml"],
-"rust-analyzer.check.command": "check",
-"rust-analyzer.check.extraArgs": ["--workspace"],
-```
-
-> 若仍不生效：确认已安装扩展 `rust-lang.rust-analyzer`（打开仓库时会提示安装）；
-> 确认窗口不是 **Restricted Mode**（受限模式不会启动语言服务器，点信任即可）；
-> 然后执行命令面板 → “rust-analyzer: Restart Server”。
-
-> 注意：仓库根 `.gitignore` 第 36 行忽略了 `.vscode/`，所以这些设置是**本地生效**、不会随
-> 仓库分发；若希望团队共享，需要把 `.vscode/` 从 `.gitignore` 移除后提交。
-
-## 3. 日常用法
+## 2. 日常用法
 
 | 场景 | 做法 |
 |---|---|
-| 默认（Rust + 前端） | 直接打开仓库根目录 |
+| 默认（前后端 / Go 日常开发） | 直接打开仓库根目录；Java 不自动构建 |
 | 改 Java（app-pay） | `code .vscode/app-pay.code-workspace`（只把 app-pay 作为根，Java import 重新开启） |
-| 构建 | `Ctrl+Shift+B` → `rust: cargo check (workspace)` |
-| 测试 | 任务 `rust: cargo test`，或终端 `cargo test` |
-| 桌面端联调 | 任务 `desktop: tauri dev` |
+| 前端 | `cd frontendv2 && npm run dev`；管理台 `cd frontend-admin && pnpm dev` |
+| AI 域 | `cd app-ts && npm run dev` |
+| Go 服务 | 每个服务是独立 module：`cd app-go/app-note && go run .` |
+| 测试 | 见 [project-structure.md](project-structure.md)「测试矩阵」 |
 
-## 4. 其他优化
+## 3. 其他优化
 
-- `cmake.configureOnOpen: false`：`CMake Tools` 扩展打开仓库时不做自动配置。仓内目前没有 CMake 工程（历史原生目标已随移动端移除），保留该开关只为阻止扩展扫描/无谓配置；`.vscode/settings.json` 里遗留的 `cmake.sourceDirectory` 已指向不存在的目录，可择机清理。
-- `files.watcherExclude` / `search.exclude` / `files.exclude`：排除
-  `target`、`node_modules`、`dist`、`.next`、`logs`、`data`，减少启动抖动与搜索噪音；
-- `.vscode/extensions.json`：只推荐 Rust/桌面端扩展；
-- `.vscode/tasks.json`：cargo check/test、npm build、tauri dev 任务。
+- `cmake.configureOnOpen: false`：仓内没有 CMake 工程（历史原生目标已移除），保留该开关只为阻止扩展扫描与无谓配置。
+- `files.watcherExclude` / `search.exclude` / `files.exclude`：排除 `node_modules`、`dist`、`.next`、`target`、
+  `logs`、`data`，减少启动抖动与搜索噪音。
+- `.vscode/` 被 `.gitignore` 忽略，这些设置**本地生效、不随仓库分发**；若希望团队共享，需把
+  `.vscode/` 从 `.gitignore` 移除后提交。
