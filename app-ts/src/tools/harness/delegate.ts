@@ -51,6 +51,14 @@ export function createDelegateTool(lifecycle: AgentLifecycleManager, delegates: 
       if (result.sources.length > 0) {
         ctx.collector.pushSources(result.sources);
       }
+      // Preserve the sub-agent's non-text outputs: UI cards, billing usage, its
+      // last plan snapshot (only when the main turn has none yet) and structured
+      // interactions. Dropping these used to silently under-count tokens and hide
+      // every artifact produced behind a delegation.
+      if (result.artifacts.length > 0) ctx.collector.pushArtifacts(result.artifacts);
+      if (result.usage) ctx.collector.addDelegatedUsage(result.usage);
+      if (result.plan && !ctx.collector.plan) ctx.collector.setPlan(result.plan);
+      for (const interaction of result.interactions) ctx.collector.pushInteraction(interaction);
       const prefix = result.failed ? "[委托失败] " : "";
       return `${prefix}${truncate(result.content)}`;
     },

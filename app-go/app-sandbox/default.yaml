@@ -1,0 +1,111 @@
+# ============================================================
+# app-sandbox (Go) - default configuration
+# ============================================================
+# Code-execution control plane: leases / executions / artifacts /
+# daily usage / audit on the shared mind_base MySQL, a pluggable
+# runtime (fake | opensandbox) and quota from app-pay.
+#
+# Merge order (later overrides earlier):
+#   1. default.yaml            <- this file (embedded in the binary)
+#   2. Environment variables   <- prefix SANDBOX__, double-underscore nesting
+#   Shared fallbacks: RDBMS__URL, APISIX_CONSUMER_KEY, APP_PAY_BASE_URL
+# Secrets MUST be injected via env, never committed in YAML.
+# ============================================================
+
+app:
+  name: app-sandbox
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8017
+
+timezone: Asia/Shanghai
+
+# Shared mind_base MySQL (same instance as app-auth/app-note/...).
+# Injected with SANDBOX__DATABASE__DSN or the shared RDBMS__URL.
+database:
+  dsn: ""
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+
+# Shared gateway consumer key (APISIX_CONSUMER_KEY): every /v1 and
+# /internal request must present it as X-API-Key / apikey.
+auth:
+  apiKey: ""
+
+# Internal admin API: app-admin calls /internal/admin/* with
+# this shared token (X-Admin-Token). Independent from the APISIX consumer key
+# and never sent to browsers. Empty token disables the admin API (503).
+admin:
+  token: ""
+
+runtime:
+  type: fake                 # fake | opensandbox
+  image: python:3.12
+  resources:
+    cpu: 500m
+    memory: 512Mi
+  opensandbox:
+    lifecycleBaseUrl: ""     # e.g. http://opensandbox-lifecycle:8080
+    execdBaseUrl: ""
+    execdPort: 44772          # execd in-sandbox HTTP port (endpoint resolution)
+    poolRef: ""              # K8s warm Pool name (e.g. pool-python); empty = direct image create
+    apiKey: ""
+    createTimeoutMs: 60000
+    execTimeoutMs: 600000
+
+execution:
+  maxTimeoutMs: 600000       # hard cap for a single execution (plan: 600s)
+  previewBytes: 4096         # stdout/stderr preview kept per stream
+  maxCodeBytes: 262144       # 256 KiB source limit
+  idempotencyTtlSeconds: 300 # optional Idempotency-Key window
+
+lease:
+  ttlSeconds: 1800           # lease TTL (plan: 30min)
+  maxPerUid: 3               # hard ceiling; quota sandbox_concurrent is usually lower
+
+admission:
+  maxConcurrent: 8           # global in-flight executions
+  maxPerUid: 2               # per-user in-flight executions
+  queueSize: 32              # bounded wait queue (full -> 503)
+  queueTimeoutMs: 30000      # queue wait timeout (expired -> 429)
+
+# Daily quotas by membership tier. Unreachable app-pay => free (fail-open,
+# never oversell a paid tier).
+quota:
+  enabled: true
+  appPay:
+    baseUrl: ""              # fallback APP_PAY_BASE_URL, e.g. http://apisix:9080/internal/pay
+    apiKey: ""               # fallback APISIX_CONSUMER_KEY
+    timeoutMs: 2000
+    cacheTtlMs: 60000
+  limits:
+    academic_run:           {free: 20,     vip: 200,   svip: 600}
+    sandbox_concurrent:     {free: 1,      vip: 3,     svip: 5}
+    sandbox_cpu_seconds:    {free: 300,    vip: 3600,  svip: 10800}
+    sandbox_artifact_bytes: {free: 52428800, vip: 524288000, svip: 2147483648}
+
+artifacts:
+  presignTtlSeconds: 900     # 15min presigned URLs (MinIO; the fake store returns fake://)
+  maxFileBytes: 20971520     # 20MB per file
+  maxTotalBytes: 104857600   # 100MB per execution
+  defaultGlobs:
+    - /workspace/analysis/outputs/**
+
+sweeper:
+  intervalMs: 15000
+  orphanDryRun: true         # true = log orphan/missing runtime resources only
+  createTimeoutMs: 60000     # a lease stuck in creating longer than this fails
+
+log:
+  level: info
+  format: json
+  output: stdout
+  file:
+    path: /app/logs/app-sandbox.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true

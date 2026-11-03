@@ -27,7 +27,7 @@ export function setUnauthorizedHandler(fn: UnauthorizedHandler | null): void {
   unauthorizedHandler = fn;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let resp: Response;
   try {
     resp = await fetch(path, {
@@ -71,11 +71,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return JSON.parse(text.replace(/("(?:uid|ownerUid)"\s*:\s*)(\d{16,})/g, '$1"$2"')) as T;
 }
 
-function post<T>(path: string, body?: unknown): Promise<T> {
+export function post<T>(path: string, body?: unknown): Promise<T> {
   return request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) });
 }
 
-function qs(params: Record<string, string | number | boolean | undefined>): string {
+export function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === "") continue;

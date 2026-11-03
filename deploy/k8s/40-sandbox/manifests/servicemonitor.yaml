@@ -1,0 +1,39 @@
+# Prometheus Operator ServiceMonitor for app-sandbox (/metrics).
+# Requires the Prometheus Operator CRDs; adjust the release label to match
+# your Prometheus selector (kube-prometheus-stack uses release: kube-prometheus-stack).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: app-sandbox
+  namespace: mind-base
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [mind-base]
+  selector:
+    matchLabels:
+      app: app-sandbox
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+# OpenSandbox controller metrics (chart must enable controller.metrics.enabled).
+# The controller chart does not expose a metrics Service by default, so scrape
+# the pod's metrics container port via a PodMonitor instead.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: opensandbox-controller
+  namespace: opensandbox-system
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensandbox-controller
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s

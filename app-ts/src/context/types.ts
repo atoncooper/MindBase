@@ -80,11 +80,20 @@ export interface PlanSnapshot {
   total: number;
 }
 
+/** Token usage reported for one model call / sub-agent run. */
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
 /** Collects tool-produced sources / artifacts / interactions within a single conversation turn, emitted together at the SSE stream tail */
 export class ResultCollector {
   readonly sources: Source[] = [];
   readonly artifacts: Artifact[] = [];
   readonly interactions: InteractionPayload[] = [];
+  /** Token usage of delegated sub-agents this turn (merged into the turn usage frame). */
+  readonly delegatedUsage: TokenUsage[] = [];
   /**
    * Latest plan snapshot produced by the plan tool this turn (source of the
    * `plan` SSE frame). Absent until a plan mutation succeeds; the ReAct loop
@@ -111,6 +120,11 @@ export class ResultCollector {
 
   pushArtifacts(artifacts: Artifact[] | undefined): void {
     if (artifacts) this.artifacts.push(...artifacts);
+  }
+
+  /** Record one delegated run's token usage so the turn frame (and billing) stays complete. */
+  addDelegatedUsage(usage: TokenUsage | undefined): void {
+    if (usage) this.delegatedUsage.push(usage);
   }
 
   /** One interaction per turn: returns false when one was already registered. */

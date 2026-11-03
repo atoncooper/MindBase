@@ -60,6 +60,17 @@ spec:
             - name: APPADMIN__SEED__PASSWORD
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: APPADMIN__SEED__PASSWORD, optional: true }
+            # Sandbox admin proxy: app-admin reads app-sandbox /internal/admin/*
+            # server-side; the token is the same shared value as
+            # SANDBOX__ADMIN__TOKEN (empty = sandbox pages return 503).
+            - name: APPADMIN__SANDBOX_ADMIN__BASE_URL
+              value: http://app-sandbox:8017
+            - name: APPADMIN__SANDBOX_ADMIN__TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-env
+                  key: SANDBOX_ADMIN_TOKEN
+                  optional: true
             - name: APPADMIN__LOG__OUTPUT
               value: "both"
           ports:

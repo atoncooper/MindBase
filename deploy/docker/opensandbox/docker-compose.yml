@@ -1,0 +1,47 @@
+# Minimal OpenSandbox (Docker runtime) — standalone compose stack.
+#
+#   export OPENSANDBOX_API_KEY=$(openssl rand -hex 32)
+#   docker compose -f deploy/docker/opensandbox/docker-compose.yml up -d
+#   curl -H "OPEN-SANDBOX-API-KEY: $OPENSANDBOX_API_KEY" http://127.0.0.1:8080/health
+#
+# This starts ONLY the lifecycle server; it is enough to create/execute
+# sandboxes with the SDK/CLI. For MindBase, use the root docker-compose
+# profile "sandbox", which also runs app-sandbox/app-ts.
+name: mb-opensandbox
+
+services:
+  opensandbox-server:
+    image: ${OPEN_SANDBOX_IMAGE:-sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server:release-1.2.0}
+    container_name: mb-opensandbox-server
+    restart: unless-stopped
+    environment:
+      - OPENSANDBOX_SERVER_API_KEY=${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY in .env or the shell}
+      - SANDBOX_CONFIG_PATH=/etc/opensandbox/config.toml
+    volumes:
+      # Root-equivalent: only run on a trusted single host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config.toml:/etc/opensandbox/config.toml:ro
+      - opensandbox_data:/root/.opensandbox
+    ports:
+      - "127.0.0.1:${OPEN_SANDBOX_PORT:-8080}:8080"
+    # Client-dev floor: 0.5 CPU / 512 MB is enough for the lifecycle server;
+    # raise OPEN_SANDBOX_CPUS / OPEN_SANDBOX_MEMORY if creation is slow or OOM.
+    deploy:
+      resources:
+        limits:
+          cpus: "${OPEN_SANDBOX_CPUS:-0.5}"
+          memory: "${OPEN_SANDBOX_MEMORY:-512M}"
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  opensandbox_data: {}

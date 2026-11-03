@@ -9,6 +9,7 @@ import {
   Crown,
   Settings,
   UserCircle,
+  FlaskConical,
   Sparkles,
   Target,
   Waypoints,
@@ -40,6 +41,8 @@ export const navItems: NavItem[] = [
   { id: "cloud-drive", label: "云盘", href: "/cloud-drive", icon: Cloud, placement: "primary" },
   { id: "quiz", label: "题目练习", href: "/quiz", icon: BookOpen, placement: "primary" },
   { id: "task-quiz", label: "定时出题", href: "/task-quiz", icon: CalendarClock, placement: "primary" },
+  // Research workspace is a top-level entry (daily workflow for the academic agent).
+  { id: "research", label: "科研", href: "/research", icon: FlaskConical, placement: "primary" },
   // Low-frequency modules collapsed under "更多"
   // Task monitoring (/tasks) and usage billing (/billing) are temporarily
   // disabled: their route pages and API modules were removed; restore via git.

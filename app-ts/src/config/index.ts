@@ -104,6 +104,8 @@ export interface AppConfig {
     uri: string;
     database: string;
     timeoutMs: number;
+    /** Mongo ORM implementation for adapters that opt in (MikroORM pilot). */
+    orm: "mikro" | "driver";
     sessionsCollection: string;
     messagesCollection: string;
   };
@@ -179,6 +181,21 @@ export interface AppConfig {
     /** per-tool LLM context budget for bridged MCP tool output (truncation ceiling) */
     maxContentChars: number;
   };
+  sandbox: {
+    /**
+     * Code execution: false = run_code uses the Noop port
+     * (honest "not executed" degradation); true = remote app-sandbox control plane.
+     */
+    enabled: boolean;
+    /** app-sandbox control-plane base URL (APISIX key-auth internal route) */
+    baseUrl: string;
+    /** shared M2M key (apikey for APISIX + X-API-Key for app-sandbox) */
+    apiKey: string;
+    /** local deadline for create+poll (ms) */
+    timeoutMs: number;
+    /** execution-status poll interval (ms) */
+    pollIntervalMs: number;
+  };
   search: { defaultK: number };
   web: {
     maxBytes: number;
@@ -215,6 +232,8 @@ export interface AppConfig {
   };
   agent: {
     maxSteps: number;
+    /** Per-agent ReAct step budget overrides (missing → maxSteps). */
+    maxStepsByAgent: Record<string, number>;
     routingTimeoutMs: number;
     circuitFailureThreshold: number;
     circuitCooldownMs: number;
@@ -280,6 +299,28 @@ export interface AppConfig {
     refreshHours: number;
     timeoutMs: number;
     overridesJson: string;
+  };
+  academic: {
+    /**
+     * Master switch for the academic workspace: false = the three
+     * academic tools are not registered and the academic sub-agent is not created,
+     * so delegate_to_agent reports it as unavailable (graceful degradation).
+     */
+    enabled: boolean;
+    literature: {
+      /** Crossref REST base URL — primary search source, and the only authority used for DOI verification. */
+      crossrefBaseUrl: string;
+      /** OpenAlex REST base URL — fallback used when Crossref errors or maps to zero hits. */
+      openalexBaseUrl: string;
+      /** arXiv Atom API base URL — preprint search only; never used to verify a DOI. */
+      arxivBaseUrl: string;
+      /** Per-request deadline for literature HTTP calls (an independent budget, not the shared tool timeout). */
+      timeoutMs: number;
+      /** polite-pool contact for Crossref/OpenAlex; empty = no contact param */
+      mailto: string;
+      /** per-query result cap (1-25 enforced by the client) */
+      maxResults: number;
+    };
   };
   ocr: {
     enabled: boolean;

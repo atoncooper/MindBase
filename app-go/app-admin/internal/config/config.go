@@ -28,8 +28,10 @@ type Config struct {
 	Security SecurityConfig `yaml:"security"`
 	// CloudReview — app-cloud internal preview wiring (see CloudReviewConfig).
 	CloudReview CloudReviewConfig `yaml:"cloud_review"`
-	Seed        SeedConfig        `yaml:"seed"`
-	Log         LogConfig         `yaml:"log"`
+	// SandboxAdmin — app-sandbox internal admin plane (see SandboxAdminConfig).
+	SandboxAdmin SandboxAdminConfig `yaml:"sandbox_admin"`
+	Seed         SeedConfig         `yaml:"seed"`
+	Log          LogConfig          `yaml:"log"`
 }
 
 type AppConfig struct {
@@ -66,6 +68,17 @@ type SecurityConfig struct {
 // Both values required together; either missing = preview disabled (fail
 // closed). The token is a dedicated shared secret, NOT an API key of any user.
 type CloudReviewConfig struct {
+	BaseURL string `yaml:"base_url"`
+	Token   string `yaml:"token"`
+}
+
+// SandboxAdminConfig wires the sandbox console proxy (/api/sandbox/*) to
+// app-sandbox's /internal/admin/* surface. Both values are
+// required together; either missing disables the proxy (503, fail closed) while
+// the rest of the console keeps working. The token is a dedicated shared secret
+// between app-admin and app-sandbox — NOT an APISIX consumer key, and never sent
+// to the browser.
+type SandboxAdminConfig struct {
 	BaseURL string `yaml:"base_url"`
 	Token   string `yaml:"token"`
 }
@@ -185,6 +198,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPADMIN__CLOUD_REVIEW__TOKEN"); v != "" {
 		cfg.CloudReview.Token = v
 	}
+	if v := get("APPADMIN__SANDBOX_ADMIN__BASE_URL"); v != "" {
+		cfg.SandboxAdmin.BaseURL = v
+	}
+	if v := get("APPADMIN__SANDBOX_ADMIN__TOKEN"); v != "" {
+		cfg.SandboxAdmin.Token = v
+	}
 	if v := get("APPADMIN__SEED__USERNAME"); v != "" {
 		cfg.Seed.Username = v
 	}
@@ -231,10 +250,11 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("security.cors.allow_origins entry %q: %w", origin, err)
 		}
 	}
-	// Review preview wiring is OPTIONAL: a lone base URL or token would
-	// silently half-enable the plane, but blocking the whole console over an
-	// optional feature is worse — NormalizeCloudReview (called by main) clears
-	// the mismatch and disables the preview with a warning instead.
+	// The optional upstream planes (cloud review preview, sandbox console proxy)
+	// are NOT validated here: a lone base URL or token would silently half-enable
+	// one, but blocking the whole console over an optional feature is worse —
+	// NormalizeCloudReview / NormalizeSandboxAdmin (called by main) clear the
+	// mismatch and disable that plane with a warning instead.
 	return nil
 }
 
@@ -250,6 +270,22 @@ func NormalizeCloudReview(cfg *Config) bool {
 		return false // intentionally disabled
 	}
 	cfg.CloudReview.BaseURL, cfg.CloudReview.Token = "", ""
+	return true // half-wired → cleared + warned
+}
+
+// NormalizeSandboxAdmin resolves the same all-or-nothing invariant for the
+// sandbox console proxy: when base URL and token are not BOTH set, both are
+// cleared (proxy disabled, /api/sandbox/* answers 503) and true is returned so
+// main can warn loudly. Fully wired or fully empty returns false.
+func NormalizeSandboxAdmin(cfg *Config) bool {
+	base, token := strings.TrimSpace(cfg.SandboxAdmin.BaseURL), strings.TrimSpace(cfg.SandboxAdmin.Token)
+	if base != "" && token != "" {
+		return false // fully wired
+	}
+	if base == "" && token == "" {
+		return false // intentionally disabled
+	}
+	cfg.SandboxAdmin.BaseURL, cfg.SandboxAdmin.Token = "", ""
 	return true // half-wired → cleared + warned
 }
 

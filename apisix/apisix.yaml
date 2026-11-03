@@ -269,6 +269,38 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
+  # app-sandbox —— 沙箱控制层（Go；租约/配额/审计/产物/准入/回收）
+  - id: upstream-app-sandbox
+    name: app-sandbox
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 60
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "app-sandbox:8017": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+
   # app-bili —— B 站数据获取服务（Go；收藏夹/ASR/知识库 build 编排；
   # schema 所有权自 Python backend 迁入本服务）
   - id: upstream-app-bili
@@ -540,6 +572,25 @@ routes:
     upstream_id: upstream-app-task
     plugins:
       key-auth: {}
+
+  # app-ts -> app-sandbox 控制层（M2M，key-auth；仅放行 /v1 执行面，管理面不经网关）。
+  # 只允许服务端调用；app-ts 侧仅在 sandbox.enabled=true 时使用。
+  - id: sandbox_internal
+    uri: /internal/sandbox/v1/*
+    methods: [GET, POST, DELETE]
+    priority: 100
+    upstream_id: upstream-app-sandbox
+    plugins:
+      request-id: {}
+      key-auth: {}
+      proxy-rewrite:
+        regex_uri: ["^/internal/sandbox/(v1/.*)", "/$1"]
+      limit-req:
+        rate: 30
+        burst: 15
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
 
   # User -> app-quiz scheduled-quiz business detail (forward-auth, X-Uid injected).
   # 业务行 quiz_task/quiz_task_answer + Mongo task_quiz_questions 归 app-quiz；
@@ -1062,6 +1113,25 @@ routes:
   # /preferences + /wallpaper + /avatar -> app-settings（用户 KV 偏好 + 壁纸/
   # 头像上传与服务，2026-10-06 迁自 Python；wallpaper/file、avatar/file 无鉴权
   # —— <img> 直读语义，lenient verify 无凭证时放行）。
+  # /academic/* -> app-ts（网页端科研工作台 REST，plan/1.0.17 Phase 2；uid 由
+  # forward-auth 注入 X-Uid，数据在 app-ts 自有库 mind_base_ts.academic_*）。
+  # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: academic_ts
+    uris: [/academic, /academic/*]
+    priority: 55
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-auth:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
   - id: prefs_wallpaper_user
     uris: [/preferences, /preferences/*, /wallpaper, /wallpaper/*, /avatar, /avatar/*]
     priority: 50

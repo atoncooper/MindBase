@@ -1,0 +1,18 @@
+# OpenSandbox control plane and sandbox workload namespaces.
+#   opensandbox-system : lifecycle server / controller / ingress gateway (Helm)
+#   opensandbox        : sandbox Pods + Pool (CRs)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opensandbox-system
+  labels:
+    app.kubernetes.io/part-of: mind-base
+    app.kubernetes.io/component: sandbox-control-plane
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opensandbox
+  labels:
+    app.kubernetes.io/part-of: mind-base
+    app.kubernetes.io/component: sandbox-workloads

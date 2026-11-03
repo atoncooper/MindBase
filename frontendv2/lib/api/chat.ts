@@ -96,6 +96,7 @@ export interface ChatRequestPayload {
     images?: string[];  // 多模态：随消息附带的图片（data URL；需当前模型 vision=true）
     board_uuid?: string;  // 板聊：请求限定在某块板子上（后端直路由 board agent）
     board_anchor_text?: string;  // 板聊：画布当前选中节点纯文本（作为建议锚点上下文）
+    academic_project_id?: string;  // 科研项目上下文：后端解析项目并注入受控项目 section（/research → /chat）
 }
 
 export const chatApi = {

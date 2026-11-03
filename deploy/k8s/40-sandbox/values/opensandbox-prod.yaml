@@ -1,0 +1,55 @@
+# Production profile: HA gateway, metrics, topology spread, prod-sized resources.
+# Fill in imagePullSecrets / nodeSelector / tolerations for your cluster before
+# using this file as-is.
+opensandbox-controller:
+  controller:
+    replicaCount: 2                     # leader election is built into the operator
+    metrics:
+      enabled: true
+      port: 8080
+      secure: false                     # scrape plain HTTP; secure=true requires RBAC bind
+    resources:
+      requests: {cpu: 200m, memory: 256Mi}
+      limits: {cpu: "1", memory: 1Gi}
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: opensandbox-controller
+
+ingress-gateway:
+  imagePullSecrets: []
+  gateway:
+    replicaCount: 3
+    resources:
+      requests: {cpu: 500m, memory: 512Mi}
+      limits: {cpu: "2", memory: 2Gi}
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: opensandbox-ingress-gateway
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: opensandbox-ingress-gateway
+
+opensandbox-server:
+  imagePullSecrets: []
+  server:
+    replicaCount: 1                     # keep 1; see upstream HA caveat in README
+    resources:
+      requests: {cpu: "1", memory: 2Gi}
+      limits: {cpu: "4", memory: 8Gi}
+    nodeSelector: {}
+    tolerations: []
+    priorityClassName: ""

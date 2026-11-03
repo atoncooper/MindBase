@@ -4,11 +4,12 @@
 //
 // File layout (one concern per file):
 //
-//	router.go - engine assembly / health / middleware helpers
-//	auth.go   - login / logout / me / password + session gate + throttle
-//	users.go  - read-only user list / detail
-//	shares.go - share list / detail / ban / unban / approve (role gate)
-//	audit.go  - audit ledger list
+//	router.go  - engine assembly / health / middleware helpers
+//	auth.go    - login / logout / me / password + session gate + throttle
+//	users.go   - read-only user list / detail
+//	shares.go  - share list / detail / ban / unban / approve (role gate)
+//	audit.go   - audit ledger list
+//	sandbox.go - sandbox console proxy (reads viewer+, cancel/release admin)
 package router
 
 import (
@@ -27,19 +28,29 @@ import (
 
 // Router carries the service dependencies for all handlers.
 type Router struct {
-	cfg    *config.Config
-	auth   *service.AuthService
-	users  *service.UserService
-	shares *service.ShareService
-	audits *service.AuditService
+	cfg     *config.Config
+	auth    *service.AuthService
+	users   *service.UserService
+	shares  *service.ShareService
+	audits  *service.AuditService
+	sandbox *service.SandboxService
 }
 
 // New builds the Gin engine: strict proxies, structured access log, security
 // headers, optional CORS whitelist, /health + /api/*.
+//
+// sandboxSvc is optional: a nil (or disabled) sandbox proxy keeps every other
+// console page working and answers /api/sandbox/* with 503.
 func New(cfg *config.Config, auth *service.AuthService, users *service.UserService,
-	shares *service.ShareService, audits *service.AuditService) *gin.Engine {
+	shares *service.ShareService, audits *service.AuditService,
+	sandboxSvc *service.SandboxService) *gin.Engine {
 	if !cfg.App.Debug {
 		gin.SetMode(gin.ReleaseMode)
+	}
+	if sandboxSvc == nil {
+		// Defensive default: tests may omit this optional dependency; the routes
+		// then answer 503 instead of dereferencing nil.
+		sandboxSvc = service.NewSandboxService(nil)
 	}
 	e := gin.New()
 	// Trust no proxy: gin's default (trust everything) lets clients spoof
@@ -52,7 +63,7 @@ func New(cfg *config.Config, auth *service.AuthService, users *service.UserServi
 	e.Use(ipAllowlistMiddleware(cfg.Security.IPAllowlist))
 	e.Use(corsMiddleware(cfg.Security.CORS.AllowOrigins))
 
-	r := &Router{cfg: cfg, auth: auth, users: users, shares: shares, audits: audits}
+	r := &Router{cfg: cfg, auth: auth, users: users, shares: shares, audits: audits, sandbox: sandboxSvc}
 	r.registerRoutes(e)
 	return e
 }
@@ -92,6 +103,11 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 	// share/target scope + audits, app-cloud resolves the disclosure ack and
 	// mints the short-lived INLINE grant. viewer role gets 403.
 	moderation.GET("/files/:file_id/preview", r.apiPreviewShareFile)
+
+	// Sandbox console proxy: reads are viewer+, cancel
+	// execution / release lease are admin-only. app-sandbox stays the single
+	// source of truth for sandbox state; app-admin only gates, proxies and audits.
+	r.registerSandboxRoutes(api)
 }
 
 // securityHeaders adds baseline admin-console hardening: no framing, no MIME

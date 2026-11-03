@@ -1,0 +1,60 @@
+# End-to-end smoke test: create a sandbox execution through app-sandbox,
+# poll until terminal, assert exitCode=0 and the expected stdout.
+# Run in namespace mind-base after the stack is up:
+#   kubectl -n mind-base delete job sandbox-smoke --ignore-not-found
+#   kubectl apply -f deploy/k8s/40-sandbox/manifests/smoke-test-job.yaml
+#   kubectl -n mind-base logs job/sandbox-smoke
+# Requires: mindbase-env Secret with APISIX_CONSUMER_KEY.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sandbox-smoke
+  namespace: mind-base
+  labels:
+    app: sandbox-smoke
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: sandbox-smoke
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: python:3.12-alpine
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-env
+                  key: APISIX_CONSUMER_KEY
+            - name: BASE_URL
+              value: http://app-sandbox:8017
+          command: ["python", "-c"]
+          args:
+            - |
+              import json, os, time, urllib.request
+              base = os.environ["BASE_URL"]
+              headers = {"Content-Type": "application/json", "X-Uid": "1", "X-API-Key": os.environ["API_KEY"]}
+              req = urllib.request.Request(base + "/v1/executions", method="POST",
+                  data=json.dumps({"language": "python", "code": "print(6*7)"}).encode(),
+                  headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  created = json.load(r)
+              eid = created["executionId"]
+              print("created", eid)
+              deadline = time.time() + 120
+              while time.time() < deadline:
+                  req = urllib.request.Request(base + "/v1/executions/" + eid, headers=headers)
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      body = json.load(r)
+                  if body.get("done"):
+                      assert body.get("exitCode") == 0, body
+                      assert "42" in (body.get("stdoutPreview") or ""), body
+                      print("sandbox smoke OK:", eid)
+                      break
+                  time.sleep(2)
+              else:
+                  raise SystemExit("execution did not finish in time")

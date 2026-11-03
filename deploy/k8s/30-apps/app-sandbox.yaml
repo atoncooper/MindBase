@@ -1,0 +1,147 @@
+# app-sandbox — code-execution control plane (Go, :8017).
+# Cluster-internal only:
+#   - app-ts reaches it through APISIX (/internal/sandbox/v1/*)
+#   - app-admin reaches it directly (/api/sandbox/* proxy) in the same namespace
+# Runtime = OpenSandbox lifecycle server in namespace opensandbox-system; sandbox
+# Pods live in namespace opensandbox (see deploy/k8s/40-sandbox/README.md).
+# Prereqs (created by 40-sandbox/install.sh, not committed):
+#   - Secret opensandbox-api-key (api-key) IN THIS NAMESPACE, same value as the
+#     secret used by opensandbox-server;
+#   - Secret mindbase-env already contains APISIX_CONSUMER_KEY and
+#     SANDBOX_ADMIN_TOKEN (optional; empty disables the admin API).
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-sandbox
+  labels:
+    app: app-sandbox
+spec:
+  selector:
+    app: app-sandbox
+  ports:
+    - name: http
+      port: 8017
+      targetPort: 8017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-sandbox
+spec:
+  # Single active replica: the in-process Idempotency-Key cache and the sweeper
+  # assume one leader (see app-go/app-sandbox/README.md). Keep Recreate so a
+  # rollout never runs two sweepers against the same tables.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: app-sandbox
+  template:
+    metadata:
+      labels:
+        app: app-sandbox
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: wait-mysql
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z mysql 3306; do echo waiting for mysql; sleep 3; done"]
+        - name: wait-opensandbox
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z opensandbox-server.opensandbox-system.svc.cluster.local 80; do echo waiting for opensandbox-server; sleep 3; done"]
+      containers:
+        - name: app-sandbox
+          image: atoncooper/mind-base-app-sandbox:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
+          env:
+            # Quota tier lookup must reach app-pay; without it every SVIP/VIP
+            # silently falls back to the free-tier limits.
+            - name: APP_PAY_BASE_URL
+              value: http://apisix:9080/internal/pay
+            - name: SANDBOX__RUNTIME__TYPE
+              value: opensandbox
+            - name: SANDBOX__RUNTIME__OPENSANDBOX__LIFECYCLE_BASE_URL
+              value: http://opensandbox-server.opensandbox-system.svc.cluster.local:80
+            - name: SANDBOX__RUNTIME__OPENSANDBOX__EXECD_PORT
+              value: "44772"
+            - name: SANDBOX__RUNTIME__OPENSANDBOX__POOL_REF
+              value: pool-python
+            - name: SANDBOX__RUNTIME__OPENSANDBOX__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: opensandbox-api-key
+                  key: api-key
+            - name: SANDBOX__ADMIN__TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mindbase-env
+                  key: SANDBOX_ADMIN_TOKEN
+                  optional: true
+            - name: SANDBOX__LOG__OUTPUT
+              value: "both"
+          ports:
+            - name: http
+              containerPort: 8017
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8017
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8017
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8017
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+# Single replica: maxUnavailable=1 keeps node drains working; scale-out requires
+# leader election / DB-backed idempotency first (see app-go/app-sandbox/README.md).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-sandbox
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: app-sandbox

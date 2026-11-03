@@ -6,6 +6,7 @@ import AdminLayout from "./components/AdminLayout";
 import RequireAuth from "./components/RequireAuth";
 import Audit from "./pages/Audit";
 import Login from "./pages/Login";
+import Sandbox from "./pages/Sandbox";
 import Shares from "./pages/Shares";
 import Users from "./pages/Users";
 
@@ -37,6 +38,7 @@ export default function App() {
           <Route index element={<Navigate to="/shares" replace />} />
           <Route path="shares" element={<Shares />} />
           <Route path="users" element={<Users />} />
+          <Route path="sandbox" element={<Sandbox />} />
           <Route path="audit" element={<Audit />} />
           <Route path="*" element={<Navigate to="/shares" replace />} />
         </Route>

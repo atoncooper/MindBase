@@ -29,6 +29,7 @@ import (
 	"app-admin/internal/logger"
 	"app-admin/internal/repo"
 	"app-admin/internal/router"
+	"app-admin/internal/sandbox"
 	"app-admin/internal/service"
 )
 
@@ -87,6 +88,12 @@ func main() {
 		slog.Warn("[CLOUD_REVIEW] base_url/token half-configured — content preview DISABLED " +
 			"(set both APPADMIN__CLOUD_REVIEW__BASE_URL and APPADMIN__CLOUD_REVIEW__TOKEN)")
 	}
+	// Optional sandbox console proxy: half-configured = warn + disable
+	// (/api/sandbox/* answers 503); the rest of the console is unaffected.
+	if config.NormalizeSandboxAdmin(cfg) {
+		slog.Warn("[SANDBOX_ADMIN] base_url/token half-configured — sandbox console proxy DISABLED " +
+			"(set both APPADMIN__SANDBOX_ADMIN__BASE_URL and APPADMIN__SANDBOX_ADMIN__TOKEN)")
+	}
 
 	// MySQL (GORM): the shared bilirag database. cloud_shares / users / rbac_*
 	// rows are read or the four moderation columns are UPDATEd — db.Migrate
@@ -123,12 +130,19 @@ func main() {
 	if !review.Enabled() {
 		slog.Info("[CLOUD_REVIEW] preview disabled — APPADMIN__CLOUD_REVIEW__BASE_URL/TOKEN not both set")
 	}
+	// Sandbox console proxy client: unwired → every /api/sandbox/*
+	// route answers 503 with {"detail":"sandbox 管理未配置"}; nothing else changes.
+	sandboxAdmin := sandbox.NewClient(cfg.SandboxAdmin.BaseURL, cfg.SandboxAdmin.Token)
+	if !sandboxAdmin.Enabled() {
+		slog.Info("[SANDBOX_ADMIN] console proxy disabled — APPADMIN__SANDBOX_ADMIN__BASE_URL/TOKEN not both set")
+	}
 	auth := service.NewAuthService(cfg.Session.TTLMinutes)
 	users := service.NewUserService()
 	shares := service.NewShareService(review)
 	audits := service.NewAuditService()
+	sandboxSvc := service.NewSandboxService(sandboxAdmin)
 
-	handler := router.New(cfg, auth, users, shares, audits)
+	handler := router.New(cfg, auth, users, shares, audits, sandboxSvc)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}
 

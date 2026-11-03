@@ -19,6 +19,7 @@ import { isVisionBlocked, type ModelCapabilityRegistry } from "../../../llm/mode
 import { config } from "../../../config/index.js";
 import { hashClientKey } from "../../../services/quota.js";
 import { parseBoardContext } from "../../../services/board-context.js";
+import { parseAcademicContext } from "../../../services/academic-context.js";
 
 const log = createLogger("HTTP");
 
@@ -171,6 +172,8 @@ export function registerChatRoutes(
         /** board (mindmap/whiteboard) chat context — user input, sanitized below */
         board_uuid?: string;
         board_anchor_text?: string;
+        /** research-workbench project the turn was asked from (user input, sanitized) */
+        academic_project_id?: string;
       };
       const query = (body.question ?? body.query)?.trim();
       if (!query) {
@@ -200,6 +203,7 @@ export function registerChatRoutes(
       // chars stripped) and rendered downstream into a controlled systemPrompt section;
       // they never reach tool arguments. Absent/invalid → the turn proceeds unchanged.
       const board = parseBoardContext(body);
+      const academic = parseAcademicContext(body);
 
       // Declare takeover of the raw response (SSE writes directly to reply.raw, Fastify no longer intervenes)
       reply.hijack();
@@ -224,7 +228,9 @@ export function registerChatRoutes(
       // frontend contract: folder_ids resolve to a bvid scope via app-kg (MySQL
       // collection/favorite_folders); unavailable resolver → unscoped fail-open
       let scope = body.scope;
-      const uid = body.uid ?? getRequestContext()?.uid;
+      // Identity is gateway-injected only: a body-supplied uid must never override
+      // the X-Uid derived from forward-auth (tenant boundary).
+      const uid = getRequestContext()?.uid;
       if (body.folder_ids && body.folder_ids.length > 0 && deps.resolveFolderScope && uid !== undefined) {
         const bvids = await deps.resolveFolderScope(uid, body.folder_ids).catch((err) => {
           log.warn(`[HTTP] folder scope resolution failed (unscoped): ${err instanceof Error ? err.message : err}`);
@@ -245,6 +251,7 @@ export function registerChatRoutes(
           images: images.length > 0 ? images : undefined,
           skillIds: Array.isArray(body.skill_ids) ? body.skill_ids.filter((s) => typeof s === 'string') : undefined,
           ...(board ? { board } : {}),
+          ...(academic ? { academicProjectId: academic.projectId } : {}),
         })) {
           if (closed) break;
           reply.raw.write(`data: ${JSON.stringify(frame)}\n\n`);

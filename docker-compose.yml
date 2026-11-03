@@ -358,6 +358,11 @@ services:
       - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
       # app-quiz storage writes for quiz AI orchestration (APISIX key-auth route)
       - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
+      # app-sandbox control plane (optional; enabled=false → NoopCodeExecution,
+      # run_code honestly reports "sandbox not configured")
+      - SANDBOX__ENABLED=${SANDBOX_ENABLED:-false}
+      - SANDBOX__BASE_URL=${SANDBOX_BASE_URL:-http://apisix:9080/internal/sandbox}
+      - SANDBOX__API_KEY=${APISIX_CONSUMER_KEY:-}
       # gRPC data faces (kg graph + chat folder scope; same app-kg service).
       # env 名必须是 KG_GRPC__（loader 按 kgGrpc → KG_GRPC 推导；旧写法 KGGRPC__
       # 被静默忽略 → gRPC 回落 127.0.0.1 → KG 图存储 memory 降级、数据不持久化）
@@ -421,6 +426,112 @@ services:
       - "127.0.0.1:${APP_SETTINGS_PORT:-8015}:8015"
     volumes:
       - app_settings_logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - mind-base-net
+
+  # opensandbox-server —— 最小 OpenSandbox 生命周期服务（Docker runtime）。
+  # 仅 --profile sandbox/full 启动；通过 Docker socket 创建 sibling sandbox 容器
+  # （execd 注入），不对外暴露（仅 127.0.0.1 调试端口）。API Key 由 .env 的
+  # OPENSANDBOX_API_KEY 注入，app-sandbox 用同一值。
+  opensandbox-server:
+    image: ${OPEN_SANDBOX_IMAGE:-sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server:release-1.2.0}
+    container_name: mind-base-opensandbox-server
+    profiles: ["sandbox", "full"]
+    restart: unless-stopped
+    environment:
+      # Empty = server refuses to start (non-interactive); set it in .env for --profile sandbox.
+      - OPENSANDBOX_SERVER_API_KEY=${OPENSANDBOX_API_KEY:-}
+      - SANDBOX_CONFIG_PATH=/etc/opensandbox/config.toml
+    volumes:
+      # Root-equivalent: trusted single-host only. See deploy/docker/opensandbox/README.md
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./deploy/docker/opensandbox/config.toml:/etc/opensandbox/config.toml:ro
+      - opensandbox_data:/root/.opensandbox
+    ports:
+      - "127.0.0.1:${OPEN_SANDBOX_PORT:-8080}:8080"
+    # Server floor: the lifecycle server is light; sandbox containers get their
+    # own limits from app-sandbox runtime.resources. Raise via env if needed.
+    deploy:
+      resources:
+        limits:
+          cpus: "${OPEN_SANDBOX_CPUS:-1.0}"
+          memory: "${OPEN_SANDBOX_MEMORY:-768M}"
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - mind-base-net
+
+  # app-sandbox — 沙箱控制层（Go；租约/配额/审计/产物/准入）。默认不随主栈启动，
+  # 用 --profile sandbox（或 full）显式启用；app-ts 侧 sandbox.enabled=false 时
+  # 不会调用它（NoopCodeExecution 诚实降级）。
+  app-sandbox:
+    image: atoncooper/mind-base-app-sandbox:latest
+    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build app-sandbox
+    build:
+      context: ./app-go/app-sandbox
+      dockerfile: Dockerfile
+    container_name: mind-base-app-sandbox
+    profiles: ["sandbox", "full"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+        required: false   # artifact store is still Fake; minio is not required for exec
+      opensandbox-server:
+        condition: service_healthy
+        required: false   # SANDBOX_RUNTIME_TYPE=fake 时可单独调试控制层
+    env_file:
+      - .env
+    environment:
+      - SANDBOX__DATABASE__DSN=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - SANDBOX__AUTH__API_KEY=${APISIX_CONSUMER_KEY:-}
+      # 配额档位解析必须走 app-pay；缺这个 URL 时 TierFor 直接按 free 处理
+      # （所有 SVIP/VIP 都会被降为普通用户额度）。
+      - APP_PAY_BASE_URL=${APP_PAY_BASE_URL:-http://apisix:9080/internal/pay}
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
+      # 默认走真实 OpenSandbox；仅本地演示可显式设 SANDBOX_RUNTIME_TYPE=fake。
+      - SANDBOX__RUNTIME__TYPE=${SANDBOX_RUNTIME_TYPE:-opensandbox}
+      - SANDBOX__RUNTIME__OPENSANDBOX__LIFECYCLE_BASE_URL=${OPEN_SANDBOX_LIFECYCLE_URL:-http://opensandbox-server:8080/v1}
+      - SANDBOX__RUNTIME__OPENSANDBOX__API_KEY=${OPENSANDBOX_API_KEY:-}
+      - SANDBOX__RUNTIME__IMAGE=${OPEN_SANDBOX_SANDBOX_IMAGE:-python:3.12}
+      # Per-sandbox execution limits (request.resourceLimits passed to OpenSandbox).
+      # Keep the client-dev floor low; production overrides via .env.
+      - SANDBOX__RUNTIME__RESOURCES__CPU=${SANDBOX_SANDBOX_CPU:-250m}
+      - SANDBOX__RUNTIME__RESOURCES__MEMORY=${SANDBOX_SANDBOX_MEMORY:-256Mi}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - SANDBOX__ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
+      - SANDBOX__LOG__OUTPUT=both
+    # Control-plane floor: Go service + small in-process caches.
+    deploy:
+      resources:
+        limits:
+          cpus: "${APPSANDBOX_CPUS:-0.5}"
+          memory: "${APPSANDBOX_MEMORY:-256M}"
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+      restart_policy:
+        condition: on-failure
+    # host.docker.internal is where OpenSandbox publishes sandbox execd ports.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${APP_SANDBOX_PORT:-8017}:8017"
+    volumes:
+      - app_sandbox_logs:/app/logs
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -1205,6 +1316,9 @@ services:
       app-auth:
         condition: service_started  # users / RBAC 表由 app-auth 建立，admin 只读
         required: false             # 独立部署时 app-auth 可在另一套 compose 中运行
+      app-sandbox:
+        condition: service_started
+        required: false             # sandbox 管理是可选面板；未启动时管理页显示未配置
     env_file:
       - .env
     environment:
@@ -1220,6 +1334,11 @@ services:
       # APP_CLOUD_ADMIN_REVIEW_TOKEN. Both empty = preview disabled.
       - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-http://app-cloud:8007}
       - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+      # Sandbox control plane admin proxy (app-sandbox /internal/admin/*).
+      # base_url defaults to the compose-internal service; token must equal
+      # SANDBOX_ADMIN_TOKEN. Both empty = sandbox admin disabled (503).
+      - APPADMIN__SANDBOX_ADMIN__BASE_URL=${APPADMIN__SANDBOX_ADMIN__BASE_URL:-http://app-sandbox:8017}
+      - APPADMIN__SANDBOX_ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
       - APPADMIN__LOG__OUTPUT=both
     ports:
       # 仅回环：管理后台不对公网暴露，本机浏览器直连 http://127.0.0.1:8016
@@ -1316,6 +1435,8 @@ volumes:
   app_note_logs:
   app_quiz_logs:
   app_kg_logs:
+  opensandbox_data:
+  app_sandbox_logs:
   app_settings_logs:
   app_bili_logs:
   app_note_mcp_logs:

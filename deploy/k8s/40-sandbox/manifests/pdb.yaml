@@ -1,0 +1,27 @@
+# PodDisruptionBudgets for the OpenSandbox control plane.
+# The charts do not render PDBs, so they are managed here.
+# Applied by install.sh only for the prod profile (the dev gateway runs one
+# replica and cannot satisfy a minAvailable budget).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: opensandbox-server
+  namespace: opensandbox-system
+spec:
+  # Single active lifecycle server (upstream has no general multi-replica HA):
+  # allow voluntary eviction but keep the API interruption visible to operators.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensandbox-server
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: opensandbox-ingress-gateway
+  namespace: opensandbox-system
+spec:
+  minAvailable: 2       # requires replicas >= 3 (prod overlay sets 3)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensandbox-ingress-gateway

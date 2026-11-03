@@ -1,12 +1,22 @@
 import { useState } from "react";
-import { App as AntApp, Button, Card, Form, Input } from "antd";
-import { LockOutlined, UserOutlined } from "@ant-design/icons";
+import { App as AntApp, Button, Form, Input } from "antd";
+import {
+  AuditOutlined,
+  CloudServerOutlined,
+  LockOutlined,
+  SafetyCertificateOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
 import { Navigate, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { setMe, useAuth } from "../auth";
 import type { LoginResult } from "../api/types";
 import ChangePasswordModal from "../components/ChangePasswordModal";
 
+/**
+ * Admin login: split brand/form card. The form is intentionally quiet — the
+ * console is loopback-only, so the page prioritises clarity over marketing.
+ */
 export default function Login() {
   const navigate = useNavigate();
   const { message } = AntApp.useApp();
@@ -24,46 +34,75 @@ export default function Login() {
       const result = await api.login(values.username, values.password);
       setMe(result);
       if (result.mustChangePassword) {
-        // 首登强制改密：先改密（POST /api/me/password），再进后台
+        // First login must rotate the seeded password before entering the console.
         setForcePwd(result);
       } else {
         navigate("/shares", { replace: true });
       }
     } catch (err) {
-      message.error(err instanceof Error ? err.message : "登录失败");
+      message.error(err instanceof Error ? err.message : "登录失败，请稍后重试");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        background: "#f5f5f7",
-      }}
-    >
-      <Card style={{ width: 380 }} styles={{ body: { padding: "32px 32px 24px" } }}>
-        <div style={{ textAlign: "center", marginBottom: 24 }}>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>MindBase 管理后台</div>
-          <div style={{ color: "#888", marginTop: 4, fontSize: 13 }}>
-            仅限管理员（RBAC admin / viewer 角色）
+    <div className="login-page">
+      <div className="login-shell">
+        <aside className="login-brand">
+          <div>
+            <div className="login-mark">MB</div>
+            <h1>MindBase 管理后台</h1>
+            <p>分享审核 · 沙箱运维 · 审计追溯</p>
+            <ul className="login-features">
+              <li>
+                <SafetyCertificateOutlined /> 分享内容审核与放行
+              </li>
+              <li>
+                <CloudServerOutlined /> 沙箱执行、租约与配额
+              </li>
+              <li>
+                <AuditOutlined /> 管理操作全量审计
+              </li>
+            </ul>
           </div>
-        </div>
-        <Form onFinish={submit} autoComplete="off">
-          <Form.Item name="username" rules={[{ required: true, message: "请输入用户名" }]}>
-            <Input prefix={<UserOutlined />} placeholder="用户名" autoFocus autoComplete="username" />
-          </Form.Item>
-          <Form.Item name="password" rules={[{ required: true, message: "请输入密码" }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="密码" autoComplete="current-password" />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" block loading={loading}>
-            登录
-          </Button>
-        </Form>
-      </Card>
+          <div className="login-brand-foot">仅回环访问 · 所有管理操作留痕</div>
+        </aside>
+
+        <section className="login-panel">
+          <div className="login-panel-head">
+            <h2>登录</h2>
+            <p>使用管理员账户继续</p>
+          </div>
+          <Form layout="vertical" requiredMark={false} onFinish={submit} autoComplete="off" size="large">
+            <Form.Item
+              label="用户名"
+              name="username"
+              rules={[{ required: true, message: "请输入用户名" }]}
+            >
+              <Input prefix={<UserOutlined />} placeholder="admin" autoFocus autoComplete="username" />
+            </Form.Item>
+            <Form.Item
+              label="密码"
+              name="password"
+              rules={[{ required: true, message: "请输入密码" }]}
+            >
+              <Input.Password
+                prefix={<LockOutlined />}
+                placeholder="请输入密码"
+                autoComplete="current-password"
+              />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" block loading={loading}>
+              登录
+            </Button>
+          </Form>
+          <div className="login-hint">
+            首次登录需修改初始密码；账户与角色由管理员在控制台维护。
+            若持续返回 502，请确认 app-admin-api 容器状态。
+          </div>
+        </section>
+      </div>
       {forcePwd ? (
         <ChangePasswordModal
           mandatory

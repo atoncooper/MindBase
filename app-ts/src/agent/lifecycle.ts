@@ -2,7 +2,13 @@ import { config } from "../config/index.js";
 import { CircuitBreaker } from "./circuit.js";
 import type { Agent, AgentFactory, AgentInvokeInput } from "./types.js";
 import type { SseFrame } from "../transport/sse.js";
-import type { Source } from "../context/types.js";
+import type {
+  Artifact,
+  InteractionPayload,
+  PlanSnapshot,
+  Source,
+  TokenUsage,
+} from "../context/types.js";
 import { createLogger } from "../logger.js";
 
 /**
@@ -172,20 +178,30 @@ export class AgentLifecycleManager {
   /**
    * Re-entrant call (mirrors Python invoke_reentrant): lets delegate_to_agent invoke sub-agents from inside the graph.
    * Does not take the session lock (the Promise-chain lock is not re-entrant; re-entry would deadlock); the circuit breaker still applies.
-   * Non-streaming: collapses into {content, sources, failed}.
+   * Non-streaming, but preserves the frames the caller must not lose: token usage
+   * (billing), artifacts (UI cards), the sub-agent's last plan snapshot and any
+   * structured interaction.
    */
   async invokeReentrant(
     agentName: string,
     sessionId: string,
     input: AgentInvokeInput,
-  ): Promise<{ content: string; sources: Source[]; failed: boolean }> {
+  ): Promise<{
+    content: string;
+    sources: Source[];
+    failed: boolean;
+    usage?: TokenUsage;
+    artifacts: Artifact[];
+    plan?: PlanSnapshot;
+    interactions: InteractionPayload[];
+  }> {
     const breaker = this.breakers.get(agentName);
     if (!breaker) {
-      return { content: `agent "${agentName}" 未注册`, sources: [], failed: true };
+      return { content: `agent "${agentName}" 未注册`, sources: [], failed: true, artifacts: [], interactions: [] };
     }
     if (breaker.isTripped) {
       this.recordRejected(agentName);
-      return { content: `agent "${agentName}" 熔断中，请稍后重试`, sources: [], failed: true };
+      return { content: `agent "${agentName}" 熔断中，请稍后重试`, sources: [], failed: true, artifacts: [], interactions: [] };
     }
 
     const factory = this.factories.get(agentName)!;
@@ -194,12 +210,20 @@ export class AgentLifecycleManager {
     this.recordStart(agentName);
     let content = "";
     const sources: Source[] = [];
+    const artifacts: Artifact[] = [];
+    const interactions: InteractionPayload[] = [];
+    let plan: PlanSnapshot | undefined;
+    let usage: TokenUsage | undefined;
     let failed = false;
     let lastError: string | undefined;
     try {
       for await (const frame of agent.run(input)) {
         if (frame.type === "chunk") content += frame.content;
         else if (frame.type === "sources") sources.push(...frame.sources);
+        else if (frame.type === "artifact") artifacts.push(...frame.artifacts);
+        else if (frame.type === "plan") plan = frame.plan;
+        else if (frame.type === "interact") interactions.push(frame.interact);
+        else if (frame.type === "usage") usage = frame.usage;
         else if (frame.type === "error") {
           failed = true;
           breaker.recordFailure();
@@ -216,7 +240,7 @@ export class AgentLifecycleManager {
       this.recordEnd(agentName, startedAt, "failed", 0, message);
       content = `子 agent 执行失败: ${message}`;
     }
-    return { content, sources, failed };
+    return { content, sources, failed, ...(usage ? { usage } : {}), artifacts, ...(plan ? { plan } : {}), interactions };
   }
 
   /** Promise-chain lock: serializes turns for the same session.

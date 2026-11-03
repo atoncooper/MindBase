@@ -48,6 +48,12 @@ export interface AskStreamRequest {
    * controlled section (never into tool args / identity).
    */
   board?: BoardContextParams;
+  /**
+   * Academic project parsed at the HTTP layer: the user asked from inside a
+   * research-workbench project. Resolved against the caller's projects and
+   * rendered into the system prompt as a controlled section.
+   */
+  academicProjectId?: string;
 }
 
 const log = createLogger("CHAT");
@@ -114,6 +120,11 @@ export class ChatService {
     private readonly ledger?: UsageLedgerRepository | null,
     /** prompt registry for turn-level system directives (board context); absent → no injection */
     private readonly prompts?: PromptRegistry,
+    /** renders the academic-project section for a turn; absent/unknown → no injection */
+    private readonly academicContextSection?: (
+      uid: string | undefined,
+      projectId: string,
+    ) => Promise<string | undefined>,
   ) {}
 
   private get admissionQueue(): WeightedAdmissionQueue | null {
@@ -179,10 +190,9 @@ export class ChatService {
     let usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined;
     let hadError = false;
 
-    // Board chat: the turn was asked from inside a mindmap/whiteboard node → the
-    // controlled board-context section (prompts/chat/board-context.md) rides on
-    // extraSystem; the agent's own red lines stay authoritative.
-    const extraSystem = this.buildExtraSystem(req.board);
+    // Turn-level context directives (board node / academic project) ride on
+    // extraSystem; the agent's own prompt and red lines stay authoritative.
+    const extraSystem = await this.buildExtraSystem(req.board, req.uid, req.academicProjectId);
 
     const admission = this.admissionQueue;
     let ticket: AdmissionTicket | null = null;
@@ -288,10 +298,29 @@ export class ChatService {
     }
   }
 
-  /** Board context → extraSystem section (undefined when the turn carries no board info). */
-  private buildExtraSystem(board: BoardContextParams | undefined): string | undefined {
-    if (!board || !this.prompts) return undefined;
-    return buildBoardSystemSection(this.prompts, board);
+  /**
+   * Turn-level system directives: board context plus (when the caller came from
+   * the research workbench) the academic project section. Returns undefined when
+   * the turn carries neither; a failed/foreign project lookup is ignored so a
+   * stale project id can never fail the conversation.
+   */
+  private async buildExtraSystem(
+    board: BoardContextParams | undefined,
+    uid: string | undefined,
+    academicProjectId: string | undefined,
+  ): Promise<string | undefined> {
+    const sections: string[] = [];
+    if (board && this.prompts) {
+      sections.push(buildBoardSystemSection(this.prompts, board));
+    }
+    if (academicProjectId && this.academicContextSection) {
+      const section = await this.academicContextSection(uid, academicProjectId).catch((err: unknown) => {
+        log.warn(`[CHAT] academic context ignored project=${academicProjectId}: ${err instanceof Error ? err.message : err}`);
+        return undefined;
+      });
+      if (section) sections.push(section);
+    }
+    return sections.length > 0 ? sections.join("\n\n") : undefined;
   }
 
   /**

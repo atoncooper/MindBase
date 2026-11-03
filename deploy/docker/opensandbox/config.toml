@@ -1,0 +1,63 @@
+# Minimal OpenSandbox lifecycle server (Docker runtime).
+# Used by deploy/docker/opensandbox/docker-compose.yml and the root compose
+# profile "sandbox". The server talks to the host Docker daemon through
+# /var/run/docker.sock and creates sibling sandbox containers with execd.
+#
+# Security: the Docker socket is root-equivalent. This file is for a trusted
+# single-host deployment; never expose the server port publicly.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# API key comes from OPENSANDBOX_SERVER_API_KEY (env) — do not commit a value.
+api_key = ""
+# Host used in returned sandbox endpoint URLs. The app-sandbox container gets an
+# extra_hosts entry for host.docker.internal (host-gateway on Linux).
+eip = "host.docker.internal"
+max_sandbox_timeout_seconds = 86400
+
+[proxy]
+# Server runs in a compose network while sandboxes use the default Docker
+# bridge, so target the host-mapped port instead of the bridge container IP.
+resolve_internal = false
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+# execd is injected into every sandbox; keep it close to the server release.
+execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:release-1.2.0"
+
+[storage]
+allowed_host_paths = []
+volume_default_size = "1Gi"
+
+[store]
+type = "sqlite"
+path = "/root/.opensandbox/opensandbox.db"
+
+[docker]
+network_mode = "bridge"
+port_range_min = 40000
+port_range_max = 60000
+# 0.0.0.0 keeps the published execd ports reachable from the app-sandbox
+# container via host.docker.internal. Restrict with a host firewall in prod.
+publish_host = "0.0.0.0"
+host_ip = "host.docker.internal"
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+pids_limit = 4096
+seccomp_profile = ""
+
+[ingress]
+mode = "direct"
+
+[egress]
+image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:release-1.2.0"
+mode = "dns"
+readiness_timeout_seconds = 30.0
+
+[renew_intent]
+enabled = false
+min_interval_seconds = 60
