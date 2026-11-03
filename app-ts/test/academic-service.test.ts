@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
 import { AcademicService } from "../src/services/academic.js";
 import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/services/literature-client.js";
@@ -57,14 +57,22 @@ describe("academic service: projects", () => {
   });
 
   it("lists projects newest-first with counters", async () => {
-    const { service } = setup();
-    const first = await service.createProject(UID, { title: "A" });
-    const second = await service.createProject(UID, { title: "B" });
-    await service.addLiterature(UID, first.project.id, { title: "Paper", doi: "10.1/x" });
-    const { projects } = await service.listProjects(UID);
-    expect(projects.map((p) => p.title)).toEqual(["B", "A"]);
-    expect(projects.find((p) => p.id === first.project.id)?.literatureCount).toBe(1);
-    expect(second.project.literatureCount).toBe(0);
+    // Pin the clock: two projects created in the same millisecond would tie on
+    // updatedAt/createdAt, making the newest-first assertion depend on UUID order.
+    let clock = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => clock++);
+    try {
+      const { service } = setup();
+      const first = await service.createProject(UID, { title: "A" });
+      const second = await service.createProject(UID, { title: "B" });
+      await service.addLiterature(UID, first.project.id, { title: "Paper", doi: "10.1/x" });
+      const { projects } = await service.listProjects(UID);
+      expect(projects.map((p) => p.title)).toEqual(["B", "A"]);
+      expect(projects.find((p) => p.id === first.project.id)?.literatureCount).toBe(1);
+      expect(second.project.literatureCount).toBe(0);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("updates stage/plans/advice with key-merge semantics and clears on empty values", async () => {
