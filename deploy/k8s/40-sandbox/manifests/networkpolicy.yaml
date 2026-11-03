@@ -1,0 +1,77 @@
+# Optional NetworkPolicies for the sandbox plane.
+# Apply after verifying the labels (kubectl get pods --show-labels):
+#   kubectl apply -f deploy/k8s/40-sandbox/manifests/networkpolicy.yaml
+#
+# Scope:
+#   - lifecycle server accepts traffic only from app-sandbox (mind-base)
+#   - ingress gateway accepts traffic only from app-sandbox (mind-base)
+#   - sandbox Pods accept execd traffic only from the gateway
+# These policies are Ingress-only: DNS, Kubernetes API and registry egress stay
+# open (per-sandbox egress is enforced by the OpenSandbox egress sidecar).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensandbox-server-ingress
+  namespace: opensandbox-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opensandbox-server
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mind-base
+          podSelector:
+            matchLabels:
+              app: app-sandbox
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensandbox-ingress-gateway
+  namespace: opensandbox-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opensandbox-ingress-gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mind-base
+          podSelector:
+            matchLabels:
+              app: app-sandbox
+        # Optional: expose sandbox routes to an external ingress controller.
+        # - namespaceSelector:
+        #     matchLabels:
+        #       kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 28888
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-pods-exec
+  namespace: opensandbox
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opensandbox-system
+      ports:
+        - protocol: TCP
+          port: 44772

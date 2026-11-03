@@ -30,8 +30,21 @@ import { createNoteAgent } from "../agent/note/agent.js";
 import { createCodeAgent } from "../agent/code/agent.js";
 import { createQuizAgent } from "../agent/quiz/agent.js";
 import { createBoardAgent } from "../agent/board/agent.js";
+import { createAcademicAgent } from "../agent/academic/agent.js";
+import { createAcademicProjectTool } from "../tools/academic/project.js";
+import { createAcademicLiteratureTool } from "../tools/academic/literature.js";
+import { createAcademicManuscriptTool } from "../tools/academic/manuscript.js";
+import { createLiteratureClient } from "../services/literature-client.js";
+import { AcademicService } from "../services/academic.js";
+import { createAcademicEvidenceTool } from "../tools/academic/evidence.js";
+import { MemoryAcademicEvidenceStore } from "../repository/memory/academic-evidence.js";
+import { MongoAcademicEvidenceStore } from "../repository/mongo/academic-evidence.js";
+import { MikroAcademicEvidenceStore } from "../repository/mongo/mikro/academic-evidence.js";
+import { MemoryAcademicStore } from "../repository/memory/academic.js";
+import { MongoAcademicStore } from "../repository/mongo/academic.js";
 import { AgentHarness } from "../harness/app.js";
 import { ChatService } from "../services/chat.js";
+import { buildAcademicSystemSection } from "../services/academic-context.js";
 import { BoardCompletionService } from "../services/board-completion.js";
 import { SessionSummaryService } from "../services/session-summary.js";
 import { QuizGenerationService } from "../services/quiz-generation.js";
@@ -65,6 +78,7 @@ import { MemoryMemoryStore } from "../repository/memory/memory-store.js";
 import { MongoMemoryStore } from "../repository/mongo/memory-store.js";
 import type { MemoryRepository } from "../repository/memory-store.js";
 import { NoopCodeExecution } from "../tools/code/code-execution.js";
+import { HttpCodeExecution } from "../tools/code/http-execution.js";
 import { MemorySessionDocumentStore } from "../repository/memory/session-docs.js";
 import { GrpcKgGraphRepository } from "../repository/grpc/kg-graph.js";
 import { MemoryKgGraphRepository } from "../repository/memory/kg-graph.js";
@@ -362,8 +376,19 @@ export async function bootstrap() {
   } else {
     log.info("[BOOT] note MCP disabled — save_note not registered");
   }
-  const codeExec = new NoopCodeExecution();
+  // Code execution: the composition root is the only place
+  // that decides remote vs stub. Enabled = app-sandbox control plane (HTTP +
+  // X-Uid); otherwise the Noop port keeps the honest "not executed" answer.
+  const codeExec = config.sandbox.enabled
+    ? new HttpCodeExecution({
+        baseUrl: config.sandbox.baseUrl,
+        apiKey: config.sandbox.apiKey,
+        timeoutMs: config.sandbox.timeoutMs,
+        pollIntervalMs: config.sandbox.pollIntervalMs,
+      })
+    : new NoopCodeExecution();
   registry.register(createRunCodeTool(codeExec));
+  log.info(`[BOOT] run_code tool registered (store=${config.sandbox.enabled ? "remote" : "stub"})`);
   // Quiz generation: the quiz agent authors questions; persistence goes through
   // app-quiz-mcp (save_quiz / save_grading) — never the quiz tables directly.
   if (config.quizMcp.enabled) {
@@ -381,6 +406,77 @@ export async function bootstrap() {
     log.info(`[BOOT] quiz MCP tools registered (${config.quizMcp.url})`);
   } else {
     log.info("[BOOT] quiz MCP disabled — quiz tools not registered");
+  }
+  // 3.9 Academic research workspace: research projects, the
+  //     literature library and manuscript documents.
+  //     Store selection happens HERE and only here (composition root, per
+  //     app-ts/AGENTS.md section 3): Mongo (mind_base_ts academic_*) is the durable
+  //     choice, picked only when a Mongo URI is configured AND connect() succeeds.
+  //     Any other outcome degrades to the in-process MemoryAcademicStore so the
+  //     agent stays usable — that fallback loses every research record on restart,
+  //     which is why it is warned about explicitly (silent loss would be a data bug).
+  //     mongoAcademic is declared outside the branch only because shutdown needs it.
+  let mongoAcademic: MongoAcademicStore | null = null;
+  let mongoAcademicEvidence: MongoAcademicEvidenceStore | MikroAcademicEvidenceStore | null = null;
+  let academicService: AcademicService | undefined;
+  if (config.academic.enabled) {
+    mongoAcademic = config.mongo.uri ? await MongoAcademicStore.connect() : null;
+    if (!mongoAcademic) {
+      log.warn("[BOOT] academic store: memory fallback (mongodb unreachable/unconfigured) — research data is lost on restart");
+    }
+    // One adapter instance backs all three tools: projects/literature/documents/
+    // events are separate contracts over the same record model, so sharing it keeps
+    // the three tool views consistent by construction.
+    const academic = mongoAcademic ?? new MemoryAcademicStore();
+    // The only literature network client; built here (not inside the tool) so the
+    // injectable fetch/timeout stay a composition-root concern.
+    const literatureClient = createLiteratureClient();
+    // Registration must happen before the HTTP server accepts traffic: the agent
+    // runtime resolves tool names per invocation and silently skips unknown ones,
+    // so a missing registration degrades into an agent with fewer tools instead of
+    // throwing. The academic agent itself is constructed in section 4 from the
+    // manifest roster.
+    registry.register(
+      createAcademicProjectTool({
+        projects: academic,
+        events: academic,
+        literature: academic,
+        documents: academic,
+      }),
+    );
+    registry.register(createAcademicLiteratureTool({ literature: academic, projects: academic, events: academic, client: literatureClient }));
+    registry.register(createAcademicManuscriptTool({ documents: academic, projects: academic, events: academic }));
+    // Evidence layer (datasets + analysis runs): durable in its own Mongo
+    // collection (academic_runs); a failed connect degrades to the in-process store
+    // with an explicit warning, same policy as the project store above.
+    if (config.mongo.uri) {
+      if (config.mongo.orm === "mikro") {
+        mongoAcademicEvidence = await MikroAcademicEvidenceStore.connect();
+        if (!mongoAcademicEvidence) {
+          log.warn("[BOOT] MikroORM unavailable — falling back to the direct MongoDB driver");
+        }
+      }
+      mongoAcademicEvidence ??= await MongoAcademicEvidenceStore.connect();
+    }
+    if (!mongoAcademicEvidence) {
+      log.warn("[BOOT] academic evidence store: memory fallback (mongodb unreachable/unconfigured) — run records are lost on restart");
+    }
+    const evidence = mongoAcademicEvidence ?? new MemoryAcademicEvidenceStore();
+    registry.register(createAcademicEvidenceTool({ runs: evidence, projects: academic, events: academic }));
+    // One repository instance backs both the agent tools and the /academic/* REST
+    // surface, so chat edits and the workbench UI observe the same state.
+    academicService = new AcademicService({
+      projects: academic,
+      literature: academic,
+      documents: academic,
+      events: academic,
+      client: literatureClient,
+    });
+    log.info(`[BOOT] academic tools registered (store=${mongoAcademic ? "mongodb" : "memory"})`);
+  } else {
+    // Nothing is registered, so section 4 does not create the academic sub-agent
+    // either and delegate_to_agent reports it as unavailable.
+    log.info("[BOOT] academic disabled — academic tools/agent not registered");
   }
   // MCP dynamic tool bridge (src/mcp/): the app-board-mcp server OWNS its tools —
   // they are discovered via tools/list and registered verbatim; auth headers are
@@ -463,11 +559,25 @@ export async function bootstrap() {
   const codeAgent = createCodeAgent(runtime, prompts, contextBinding);
   const quizAgent = createQuizAgent(runtime, prompts, contextBinding);
   const boardAgent = createBoardAgent(runtime, prompts, contextBinding);
+  // academic is a delegate-only sub-agent (manifest roster); its tools were
+  // registered in section 3.9 above. Created only when the domain is enabled:
+  // without its tools the agent could do nothing, and leaving it out of the
+  // lifecycle makes delegate_to_agent answer "unknown agent" instead of starting a
+  // useless sub-agent run (the roster comes from the manifest and is not
+  // env-dependent, so the two views can legitimately differ here).
+  const academicAgent = config.academic.enabled
+    ? createAcademicAgent(runtime, prompts, {
+        context: contextBinding,
+        memoryStore,
+        skillsSection: skillManager ? (uid: string) => skillManager!.indexSection(uid) : undefined,
+      })
+    : undefined;
   lifecycle.register(mainAgent.name, () => mainAgent);
   lifecycle.register(noteAgent.name, () => noteAgent);
   lifecycle.register(codeAgent.name, () => codeAgent);
   lifecycle.register(quizAgent.name, () => quizAgent);
   lifecycle.register(boardAgent.name, () => boardAgent);
+  if (academicAgent) lifecycle.register(academicAgent.name, () => academicAgent);
   orchestrator.register(mainAgent, true);
 
   const harness = new AgentHarness(registry, runtime, orchestrator, lifecycle);
@@ -486,9 +596,29 @@ export async function bootstrap() {
       ? `[BOOT] chat admission: maxConcurrent=${config.scheduling.maxConcurrent} queueMaxSize=${config.scheduling.queueMaxSize} timeoutMs=${config.scheduling.queueTimeoutMs}`
       : "[BOOT] chat admission: disabled",
   );
+  // The workbench's "ask AI" link sends academic_project_id with the turn; this
+  // resolver renders a controlled project section into the system prompt. A
+  // missing/foreign project (or Mongo fallback) simply yields no section.
+  const academicContextSection = academicService
+    ? async (uid: string | undefined, projectId: string) => {
+        if (uid === undefined) return undefined;
+        try {
+          const detail = await academicService!.getProject(uid, projectId);
+          return buildAcademicSystemSection(prompts, {
+            id: detail.project.id,
+            title: detail.project.title,
+            stage: detail.project.stage,
+            literatureCount: detail.project.literatureCount,
+            documentCount: detail.project.documentCount,
+          });
+        } catch {
+          return undefined;
+        }
+      }
+    : undefined;
   const chat = new ChatService(harness, sessions, messages, compression, (id, q) => {
     void generateTitle(sessions, prompts, id, q);
-  }, admission, chatImages, quota, usageLedger, prompts);
+  }, admission, chatImages, quota, usageLedger, prompts, academicContextSection);
   const resolveFolderScope = kgRepository
     ? (uid: string, folderIds: number[]) => kgRepository!.resolveScope(uid, folderIds)
     : undefined;
@@ -560,6 +690,7 @@ export async function bootstrap() {
     taskQuiz: config.taskQuiz.enabled ? { generation: taskQuizGeneration, appTask, appAuth, quota } : undefined,
     blindspot,
     skills: skillManager && skillStore ? { manager: skillManager, store: skillStore } : undefined,
+    academic: academicService,
   });
 
   // 7. Redis event bridge: bili:page_ready → vectorization (no-op without REDIS__URL)
@@ -592,6 +723,10 @@ export async function bootstrap() {
     await redisQuotaCounter?.close();
     await mongoUsageLedger?.close();
     await mongoMemoryStore?.close();
+    // Release the academic Mongo client only when the durable store was actually
+    // used; the memory fallback leaves mongoAcademic null, so this is a no-op there.
+    await mongoAcademic?.close();
+    await mongoAcademicEvidence?.close();
     reconJob.stop();
     await biliEvents.stop();
     await shutdownTracing();

@@ -1,0 +1,44 @@
+# OpenSandbox umbrella chart — shared values (all environments).
+# Install: deploy/k8s/40-sandbox/install.sh (defaults to profile=prod).
+base:
+  enabled: true
+  crds:
+    install: true
+    keep: true
+
+opensandbox-controller:
+  controller:
+    replicaCount: 1
+    logLevel: info
+    metrics:
+      enabled: false          # enable in prod overlay for Prometheus scraping
+      port: 8080
+      secure: false
+
+ingress-gateway:
+  enabled: true
+  gateway:
+    gatewayRouteMode: header
+    service:
+      type: ClusterIP
+      port: 80
+    # OSEP-0011 route signing is optional; enable both server + gateway with
+    # the same Secret when exposing sandbox routes outside the cluster.
+    secureAccess:
+      existingSecret: ""
+
+opensandbox-server:
+  server:
+    replicaCount: 1          # upstream: no general multi-replica server HA
+    gateway:
+      enabled: true
+      host: opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local
+      gatewayRouteMode: header
+      secureAccess:
+        existingSecret: ""
+
+opensandbox-node-agent:
+  enabled: false
+
+fast-sandbox:
+  enabled: false

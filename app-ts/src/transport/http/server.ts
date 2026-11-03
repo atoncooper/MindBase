@@ -31,6 +31,7 @@ import { registerVectorPageRoutes } from "././routes/vector-page.js";
 import { registerTaskQuizRoutes } from "././routes/task-quiz.js";
 import { registerBlindspotRoutes } from "././routes/blindspot.js";
 import { registerSkillsRoutes } from "././routes/skills.js";
+import { registerAcademicRoutes } from "././routes/academic.js";
 import type { SkillManager, SkillStoreClient } from "../../skills/manager.js";
 import type { BlindspotService } from "../../services/blindspot.js";
 import { registerKnowledgeRoutes } from "././routes/knowledge.js";
@@ -96,6 +97,8 @@ export interface BuildServerOptions {
   blindspot?: BlindspotService;
   /** skills subsystem; absent = routes not registered */
   skills?: { manager: SkillManager; store: SkillStoreClient };
+  /** academic workspace; absent = /academic/* not registered */
+  academic?: import("../../services/academic.js").AcademicService;
   /** scheduled-quiz flow (agent chat + register + executor callback); absent = routes not registered */
   taskQuiz?: {
     generation: TaskQuizGenerationService;
@@ -201,6 +204,9 @@ export async function buildServer(opts: BuildServerOptions) {
   }
   if (opts.chatStores) {
     registerChatSessionRoutes(app, { sessions: opts.chatStores.sessions, messages: opts.chatStores.messages, chatImages: opts.chatImages, sessionDocs: opts.sessionDocs });
+  }
+  if (opts.academic) {
+    registerAcademicRoutes(app, { academic: opts.academic });
   }
   registerOpenAiCompat(app, { harness: opts.harness, model: config.llm.model, limiter });
   if (opts.kg) {

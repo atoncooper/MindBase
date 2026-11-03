@@ -1,0 +1,19 @@
+# Dev / single-node profile: minimal resources, no HA, fast rollout.
+opensandbox-controller:
+  controller:
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+
+ingress-gateway:
+  gateway:
+    replicaCount: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+
+opensandbox-server:
+  server:
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {cpu: "1", memory: 2Gi}

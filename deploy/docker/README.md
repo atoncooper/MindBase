@@ -16,6 +16,13 @@
 > 主库 mind_base 用外部 MySQL（.env 的 RDBMS__URL），两份文件里都不含主 mysql；
 > app-task / app-pay 的两个专用小库（app_task / app_pay，表自动建）默认随 server2 起。
 
+## 可选：OpenSandbox（沙箱运行时）
+
+科研代码执行需要沙箱时，单机最小部署见 [opensandbox/README.md](opensandbox/README.md)：
+`docker compose -f deploy/docker/opensandbox/docker-compose.yml up -d`；或直接用 root
+`docker-compose.yml` 的 `--profile sandbox`（同时起 opensandbox-server + app-sandbox）。
+多机 split 部署不包含沙箱控制层；生产/多租户请用 K8s（`deploy/k8s/40-sandbox`）。
+
 ## 二、前置条件
 
 1. swarm：server1 manager、server2 worker 已互 join（docker node ls 两行）

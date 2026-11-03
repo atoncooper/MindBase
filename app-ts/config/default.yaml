@@ -115,6 +115,9 @@ mongo:
   uri: ${MONGO__URI}
   database: mind_base_ts
   timeoutMs: 5000
+  # Mongo 适配器实现：mikro = MikroORM（EntitySchema，学术 evidence 试点），
+  # driver = 直接 mongodb 驱动。MikroORM 初始化失败会自动回退到 driver。
+  orm: ${MONGO__ORM:mikro}
   sessionsCollection: chat_sessions
   messagesCollection: chat_messages
 
@@ -200,6 +203,22 @@ boardMcp:
   # /chat/board/complete 的模型覆盖（留空 = llm.model）
   completionModel: ${BOARD_MCP__COMPLETION_MODEL:}
 
+sandbox:
+  # 代码执行沙箱控制层（app-sandbox，plan/1.0.18 §十）。false = run_code 使用
+  # NoopCodeExecution 诚实降级（不联网，明确告知代码未实际运行）。
+  # 环境变量覆盖（loader 的 SECTION__KEY 机制）：SANDBOX__ENABLED /
+  # SANDBOX__BASE_URL / SANDBOX__API_KEY / SANDBOX__TIMEOUT_MS / SANDBOX__POLL_INTERVAL_MS
+  enabled: false
+  # app-sandbox 控制层基址：经 APISIX key-auth 内部路由 /internal/sandbox/*（网关重写
+  # 为 /* 后到达 app-sandbox:8017，见 plan §四）
+  baseUrl: http://127.0.0.1:9080/internal/sandbox
+  # M2M 共享 key：apikey 供 APISIX key-auth、X-API-Key 供 app-sandbox 自校验
+  apiKey: ${APISIX_CONSUMER_KEY}
+  # 本地总预算（创建 + 轮询）；单次执行预算由 run_code 的 timeoutMs 传给沙箱
+  timeoutMs: 60000
+  # 执行状态轮询间隔
+  pollIntervalMs: 500
+
 search:
   defaultK: 8
 
@@ -241,6 +260,14 @@ tools:
 
 agent:
   maxSteps: 10
+  # 按 agent 覆盖 ReAct 步数（未列出的用 maxSteps）；对齐桌面端：note 5 / code 4 /
+  # quiz 12 / board 6 / academic 12（写作与批量导入需要更多轮次）
+  maxStepsByAgent:
+    note: 5
+    code: 4
+    quiz: 12
+    board: 6
+    academic: 12
   routingTimeoutMs: 3000
   circuitFailureThreshold: 3
   circuitCooldownMs: 30000
@@ -322,6 +349,21 @@ quota:
   gatewayUsageCollection: ai_gateway_usage
   # /internal/ai-usage 可选共享令牌（X-Usage-Token；空 = 不校验，仅内网可达）
   gatewayUsageToken: ${QUOTA__GATEWAY_USAGE_TOKEN:}
+
+academic:
+  # 学术/科研能力（plan/1.0.17）：academic 子 agent + 项目/文献/稿件工具。
+  # false = 工具与 agent 均不注册（graceful degradation）
+  enabled: true
+  literature:
+    # 文献检索外部源；Crossref 优先、OpenAlex 兜底、arXiv 供预印本检索
+    crossrefBaseUrl: https://api.crossref.org
+    openalexBaseUrl: https://api.openalex.org
+    arxivBaseUrl: https://export.arxiv.org
+    timeoutMs: 15000
+    # 礼貌池联系人（Crossref/OpenAlex 建议填写邮箱；空 = 不附加 mailto 参数）
+    mailto: ${ACADEMIC__LITERATURE__MAILTO:}
+    # 单次检索返回上限（客户端内部钳制 1-25）
+    maxResults: 10
 
 prompts:
   dir: prompts

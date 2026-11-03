@@ -3,7 +3,9 @@
 本目录将 `docker-compose.yml` 的完整拓扑（3×MySQL、Redis、Mongo、Milvus+etcd、
 MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 八服务
 （auth/cloud/note/bili/quiz/kg/settings/admin）、app-board + 三个 MCP、app-task、
-app-pay/app-pay-admin、app-admin（分享审核后台，:8016 回环））等价移植为 k8s 清单。
+app-pay/app-pay-admin、app-admin（分享审核后台 + 沙箱管理，:8016 回环）、
+app-sandbox（沙箱控制层））等价移植为 k8s 清单；OpenSandbox 运行时（lifecycle
+server / controller / ingress-gateway / warm pool）见 [40-sandbox](40-sandbox/README.md)。
 
 > ⚠️ Python backend 已于 2026-10-06 退役（见 docs/archive/python-decommission.md）——
 > 旧 `backend.yaml` 已删除，app-ts 沿用其 8000 端口与网关路由语义。
@@ -90,6 +92,9 @@ kubectl -n mind-base create configmap nginx-conf \
 
 - `.env` 只需要放「想覆盖的键 + 必填密钥」；没写的键自动落到 defaults；
 - `APISIX_CONSUMER_KEY` 是唯一**硬必需**键（多处 valueFrom 直引用，缺失 = Pod 起不来）；
+- 沙箱（可选）：`SANDBOX_ENABLED=true`、`SANDBOX_BASE_URL=http://apisix:9080/internal/sandbox`、
+  `SANDBOX_API_KEY=$APISIX_CONSUMER_KEY`、`SANDBOX_ADMIN_TOKEN`（app-sandbox 与 app-admin 同值）、
+  `OPENSANDBOX_API_KEY`（与 [40-sandbox](40-sandbox/README.md) 安装时的值一致）；
 - `BOARD/NOTE/QUIZ_MCP_UID`、`*_MCP_AUTH_TOKEN`、`PAY_OPS_KEY` 为 optional 引用
   （缺失 = 对应功能停用，不影响启动）；
 - 少数服务特定值以显式 `env:` 写死（显式 env 优先于 envFrom），想用 .env 覆盖它们时
@@ -111,7 +116,12 @@ kubectl -n mind-base create configmap nginx-conf \
 
 ## 2. 部署 / 更新
 
+> 启用沙箱（app-ts `SANDBOX_ENABLED=true`）时，**先**安装 OpenSandbox
+> 运行时（见 [40-sandbox/README.md](40-sandbox/README.md)），再 apply 主栈；
+> 否则 app-sandbox 的 initContainer 会等待 `opensandbox-server`。
+
 ```bash
+bash deploy/k8s/40-sandbox/install.sh   # 仅启用沙箱时需要
 kubectl apply -k deploy/k8s
 kubectl -n mind-base get pods -w
 ```
@@ -128,7 +138,8 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | Higress 控制台 | `kubectl -n mind-base port-forward svc/higress 18081:8001` → http://127.0.0.1:18081 初始化 admin、配 Provider（供应商真实 key 只在这里）/ Consumer `mindbase-backend`(BEARER) / 路由 `/v1`、`/api/v1`、`/api-ws`；**modelMapping 保持空透传** |
 | 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart deploy/app-ts deploy/app-cloud deploy/app-bili |
 | app-pay-admin | `kubectl -n mind-base port-forward svc/app-pay-admin 8003:8003` → https://127.0.0.1:8003（种子账户 admin / app-pay-admin，首登改密） |
-| app-admin | `kubectl -n mind-base port-forward svc/app-admin 8016:8016` → http://127.0.0.1:8016（分享审核后台，种子账户 admin / app-admin，首登强制改密）；前端 frontend-admin 本地 `pnpm dev`（/api 代理 8016） |
+| app-admin | `kubectl -n mind-base port-forward svc/app-admin 8016:8016` → http://127.0.0.1:8016（分享审核后台 + 沙箱管理，种子账户 admin / app-admin，首登强制改密）；前端 frontend-admin 本地 `pnpm dev`（/api 代理 8016） |
+| app-sandbox | `kubectl -n mind-base port-forward svc/app-sandbox 8017:8017` → `/health`、`/ready`；运行时依赖 40-sandbox 的 OpenSandbox |
 | 入口地址 | nginx Service 是 LoadBalancer：本地集群直接用分配的地址；云上绑域名 + 正式证书（更新 nginx-tls Secret 后 restart nginx） |
 
 ## 4. 与 docker-compose 的差异（有意为之）
@@ -146,7 +157,8 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | 数据持久化 | named volumes | PVC（mysql 10Gi×3、mongo 10Gi、redis 5Gi、etcd 5Gi、minio 20Gi、milvus 20Gi、neo4j 10Gi、higress 5Gi）；服务日志与 nginx 缓存为 emptyDir |
 | 环境变量分层 | `env_file: .env` + compose `${VAR:-default}` | envFrom 两层（见 §1c）；`$(VAR)` 派生改 in-list 模式 |
 
-探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
+| 沙箱运行时 | compose `--profile sandbox` + 可选 fake runtime | OpenSandbox Helm（40-sandbox）；`app-sandbox` 强制 `runtime.type=opensandbox` + warm pool `pool-python` |
+| 探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
 redis-cli ping / etcdctl endpoint health / minio health/live / backend /health）；
 无 HTTP 健康端点的 TLS 服务（app-pay/app-board/app-pay-admin）用 tcpSocket 探活；
 app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。

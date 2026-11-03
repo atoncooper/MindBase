@@ -12,6 +12,7 @@
 export { API_BASE_URL, requestErrorStatus } from "./client";
 
 // Feature domains
+export * from "./academic";
 export * from "./auth";
 export * from "./favorites";
 export * from "./knowledge";

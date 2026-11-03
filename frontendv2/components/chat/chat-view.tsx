@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronDown, X } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, FlaskConical, X } from "lucide-react";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
@@ -10,7 +11,8 @@ import { ChatSessionFiles } from "./chat-session-files";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
-import { chatApi, quotaApi, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
+import { academicApi, chatApi, quotaApi, type AcademicProjectSummary, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
+import { STAGE_LABELS } from "@/components/research/research-ui";
 import { streamChat, artifactKey, type ChatSource, type ChatArtifact, type ChatPlan, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
@@ -78,7 +80,15 @@ interface QuotaBlockInfo {
   upgradeSku?: string;
 }
 
-export function ChatView() {
+interface ChatViewProps {
+  /**
+   * 科研项目上下文（来自 /chat?academic_project=<id>，由 /research 详情页跳转带入）。
+   * 缺省 = 普通聊天；传入后底部请求体带 academic_project_id，后端把项目注入受控系统提示。
+   */
+  academicProjectId?: string;
+}
+
+export function ChatView({ academicProjectId }: ChatViewProps = {}) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -114,6 +124,35 @@ export function ChatView() {
   // on every streamed token and would re-trigger the effect).
   const loadedRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
+
+  // ---- 科研项目上下文（/chat?academic_project=<id>）----
+  // 只用于顶部横幅展示；请求体字段直接取 props。拉取失败静默降级为普通聊天，
+  // 绝不阻塞会话加载或发送。
+  // 缓存带 id：URL 参数变化时旧数据自动失效，无需在 effect 内同步清空 state。
+  const [loadedAcademicProject, setLoadedAcademicProject] = useState<{
+    id: string;
+    project: AcademicProjectSummary;
+  } | null>(null);
+  useEffect(() => {
+    if (!academicProjectId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await academicApi.getProject(academicProjectId);
+        if (!cancelled) setLoadedAcademicProject({ id: academicProjectId, project: detail.project });
+      } catch {
+        // 项目不存在/无权访问/网络失败：横幅不显示，聊天照常（后端同样会忽略无效 id）
+        if (!cancelled) setLoadedAcademicProject(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [academicProjectId]);
+  const academicProject =
+    loadedAcademicProject && loadedAcademicProject.id === academicProjectId
+      ? loadedAcademicProject.project
+      : null;
 
   const updateActiveSession = useCallback((updater: (s: UISession) => UISession) => {
     setSessions((prev) =>
@@ -349,6 +388,8 @@ export function ChatView() {
             chat_session_id: activeSessionId,
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
             ...(images && images.length > 0 ? { images } : {}),
+            // 科研项目上下文：仅在 URL 带入项目时附加，普通聊天请求体保持不变。
+            ...(academicProjectId ? { academic_project_id: academicProjectId } : {}),
           },
           controller.signal
         );
@@ -539,7 +580,7 @@ export function ChatView() {
         void refreshQuota();
       }
     },
-    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds]
+    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds, academicProjectId]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
@@ -914,6 +955,24 @@ export function ChatView() {
         {loadError && (
           <div className="border-b border-danger/10 bg-danger/5 px-4 py-2 text-[12px] text-danger">
             {loadError}
+          </div>
+        )}
+
+        {/* 科研项目上下文横幅：仅当 URL 带入项目且成功拉取时显示 */}
+        {academicProject && (
+          <div className="flex items-center gap-2 border-b border-accent/10 bg-accent-soft px-4 py-2 text-[12px] text-foreground">
+            <FlaskConical className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">
+              正在科研项目：
+              <span className="font-medium">{academicProject.title}</span>
+              <span className="text-secondary">（阶段 {STAGE_LABELS[academicProject.stage]}）</span>
+            </span>
+            <Link
+              href="/research"
+              className="shrink-0 text-accent transition-opacity hover:opacity-80 hover:underline"
+            >
+              返回科研工作台
+            </Link>
           </div>
         )}
 

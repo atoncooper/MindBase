@@ -20,7 +20,8 @@ func newTestRouter() *gin.Engine {
 		service.NewAuthService(0),
 		service.NewUserService(),
 		service.NewShareService(nil),
-		service.NewAuditService())
+		service.NewAuditService(),
+		service.NewSandboxService(nil))
 }
 
 func hit(e *gin.Engine, path string) (int, string) {
@@ -63,7 +64,8 @@ func TestIPAllowlistUsesPeerAddressNotForwardedHeader(t *testing.T) {
 		service.NewAuthService(0),
 		service.NewUserService(),
 		service.NewShareService(nil),
-		service.NewAuditService())
+		service.NewAuditService(),
+		service.NewSandboxService(nil))
 
 	request := func(remoteAddr, forwardedFor string) int {
 		rec := httptest.NewRecorder()
@@ -94,7 +96,8 @@ func TestOriginGateAllowsSameOriginAndConfiguredSPAOnly(t *testing.T) {
 		service.NewAuthService(0),
 		service.NewUserService(),
 		service.NewShareService(nil),
-		service.NewAuditService())
+		service.NewAuditService(),
+		service.NewSandboxService(nil))
 
 	request := func(host, method, origin string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -129,7 +132,8 @@ func TestOriginGateValidatesPreflight(t *testing.T) {
 		service.NewAuthService(0),
 		service.NewUserService(),
 		service.NewShareService(nil),
-		service.NewAuditService())
+		service.NewAuditService(),
+		service.NewSandboxService(nil))
 
 	request := func(method, headers string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

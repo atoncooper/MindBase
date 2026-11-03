@@ -38,6 +38,15 @@ security:
 cloud_review:
   base_url: "" # env: APPADMIN__CLOUD_REVIEW__BASE_URL  (e.g. http://app-cloud:8007)
   token: ""    # env: APPADMIN__CLOUD_REVIEW__TOKEN
+# app-sandbox internal admin plane backing the /api/sandbox/* console proxy
+# BOTH keys required; either missing disables the proxy (503 on
+# /api/sandbox/*) while the rest of the console keeps working (fail closed).
+# The token is a dedicated shared secret — generate one (openssl rand -hex 32)
+# and put the SAME value in app-sandbox (SANDBOX__ADMIN__TOKEN); never reuse
+# another service's key and never expose it to the browser.
+sandbox_admin:
+  base_url: "" # env: APPADMIN__SANDBOX_ADMIN__BASE_URL  (e.g. http://app-sandbox:8017)
+  token: ""    # env: APPADMIN__SANDBOX_ADMIN__TOKEN
 # Seeded default admin account, inserted once (missing username only) with
 # must_change_password=1 so the first login is forced to change it.
 seed:

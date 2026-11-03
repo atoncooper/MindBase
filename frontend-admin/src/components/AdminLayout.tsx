@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Dropdown, Layout, Menu, Tag } from "antd";
 import {
   AuditOutlined,
+  CloudServerOutlined,
   DownOutlined,
   LogoutOutlined,
   KeyOutlined,
@@ -66,6 +67,7 @@ export default function AdminLayout() {
           items={[
             { key: "/shares", icon: <ShareAltOutlined />, label: "分享审核" },
             { key: "/users", icon: <TeamOutlined />, label: "用户" },
+            { key: "/sandbox", icon: <CloudServerOutlined />, label: "沙箱" },
             { key: "/audit", icon: <AuditOutlined />, label: "审计日志" },
           ]}
         />

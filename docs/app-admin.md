@@ -126,3 +126,40 @@ cd frontend-admin && pnpm build        # tsc --noEmit + vite build
 覆盖：配置覆盖优先级、迁移守护（只建三张自有表）、登录/限流/会话、角色闸门、分页参数校验、审核 reason 必填、审计写入、CORS/安全头、内容预览审计与非分享范围 404 语义。
 
 > 完整契约与验收清单：[plan/1.0.16-ShareModeration](../plan/1.0.16-ShareModeration/1.0.16-ShareModeration.md)。后端架构与红线见根 `AGENTS.md` §2.21。
+
+## 沙箱管理（plan/1.0.19）
+
+> 在分享审核之外，app-admin 兼作**沙箱控制层（app-sandbox）的管理面板**。app-admin 不直连 sandbox_* 表：所有数据经 app-sandbox 的 `/internal/admin/*` 内部 API 获取，沙箱状态以控制层为唯一真相。
+
+**角色**：`viewer` 只读（页面按钮禁用）；`admin` 可执行「取消执行」「强制回收租约」。真正的门禁在 app-admin `requireAdmin()`（403 兜底）。
+
+**代理端点**（app-admin `/api/sandbox/*`，session 登录后）：
+
+| 方法 | 路径 | 角色 | 上游 app-sandbox |
+|---|---|---|---|
+| GET | `/api/sandbox/overview` | viewer+ | `GET /internal/admin/overview` |
+| GET | `/api/sandbox/executions` | viewer+ | `GET /internal/admin/executions` |
+| GET | `/api/sandbox/executions/:id` | viewer+ | `GET /internal/admin/executions/:id` |
+| POST | `/api/sandbox/executions/:id/cancel` | admin | `POST /internal/admin/executions/:id/cancel` |
+| GET | `/api/sandbox/leases` | viewer+ | `GET /internal/admin/leases` |
+| POST | `/api/sandbox/leases/:id/release` | admin | `DELETE /internal/admin/leases/:id` |
+| GET | `/api/sandbox/quota` | viewer+ | `GET /internal/admin/quota` |
+| GET | `/api/sandbox/audit` | viewer+ | `GET /internal/admin/audit` |
+| GET | `/api/sandbox/config` | viewer+ | `GET /internal/admin/config` |
+
+**错误映射**：未配置 → 503 `{detail:"sandbox 管理未配置"}`；上游 4xx → 原状态 + detail；上游 5xx/不可达/非法 JSON → 502 `{detail:"sandbox 服务不可用"}`。上游 401/403 收敛为 502（避免管理端 SPA 误判登录过期）。写操作成功后写 app-admin 审计（`sandbox.execution.cancel` / `sandbox.lease.release`），审计失败则整次操作返回 500（前端可刷新确认真实状态）。
+
+**配置**（两边同时设置才启用；半配置自动清空并告警）：
+
+```bash
+# app-sandbox 侧：/internal/admin/* 的共享令牌
+SANDBOX__ADMIN__TOKEN=$(openssl rand -hex 32)
+# app-admin-api 侧：同一令牌 + 控制层地址
+APPADMIN__SANDBOX_ADMIN__BASE_URL=http://app-sandbox:8017
+APPADMIN__SANDBOX_ADMIN__TOKEN=<与 SANDBOX__ADMIN__TOKEN 相同>
+```
+
+**页面（frontend-admin `/sandbox`）**：概览（租约/执行状态、24h 失败、运行时配置摘要）；执行（uid/项目/状态/时间过滤 + 分页表格 + 详情 Drawer：stdout/stderr 截断预览、产物元数据、审计时间线 + admin 取消执行）；租约（过滤 + admin 强制回收）；配额（uid/日期 → 档位与 4 个 kind 用量/限额）；审计（uid/action/时间过滤）。
+
+**安全**：不展示代码正文与完整 stdout/stderr（仅控制层 `previewBytes` 截断预览）；产物只给元数据（name/size/sha256/type），不展示 objectKey、不提供下载；`/config` 不返回任何密钥；写操作双审计（app-admin 操作审计 + app-sandbox `sandbox_audit`，actor=admin，request_id 贯通）。
+

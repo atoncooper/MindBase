@@ -330,6 +330,38 @@ upstreams:
           http_statuses: [404, 500, 502, 503, 504]
 
   # app-bili —— B 站数据获取服务（Go；本机 go run ./app-go/app-bili）
+  # app-sandbox —— 沙箱控制层（Go；租约/配额/审计/产物/准入/回收）
+  - id: upstream-app-sandbox
+    name: app-sandbox
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    retries: 2
+    timeout:
+      connect: 5
+      send: 5
+      read: 60
+    keepalive_pool:
+      size: 10
+      idle_timeout: 60
+      requests: 100
+    nodes:
+      "192.168.138.1:8017": 1
+    checks:
+      active:
+        type: http
+        http_path: /health
+        timeout: 1
+        interval: 5
+        healthy:
+          interval: 5
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          http_statuses: [404, 500, 502, 503, 504]
+
   - id: upstream-app-bili
     name: app-bili
     type: roundrobin
@@ -884,6 +916,43 @@ routes:
         status_code: 401
 
   # Python note agent 工具落库通道（service-to-service, key-auth + X-Uid）
+  # /academic/* -> app-ts（网页端科研工作台 REST，plan/1.0.17 Phase 2；uid 由
+  # forward-auth 注入 X-Uid，数据在 app-ts 自有库 mind_base_ts.academic_*）。
+  # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
+  - id: academic_ts
+    uris: [/academic, /academic/*]
+    priority: 55
+    upstream_id: upstream-app-ts
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://192.168.138.1:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # app-ts -> app-sandbox 控制层（M2M，key-auth；仅放行 /v1 执行面，管理面不经网关）
+  - id: sandbox_internal
+    uri: /internal/sandbox/v1/*
+    methods: [GET, POST, DELETE]
+    priority: 100
+    upstream_id: upstream-app-sandbox
+    plugins:
+      request-id: {}
+      key-auth: {}
+      proxy-rewrite:
+        regex_uri: ["^/internal/sandbox/(v1/.*)", "/$1"]
+      limit-req:
+        rate: 30
+        burst: 15
+        rejected_code: 429
+        key_type: var
+        key: remote_addr
+
   - id: note_internal
     uri: /internal/note/*
     methods: [GET, POST, PUT, DELETE, PATCH]

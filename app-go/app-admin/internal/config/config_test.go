@@ -14,6 +14,8 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("APPADMIN__APP__DEBUG", "true")
 	t.Setenv("APPADMIN__SECURITY__IP_ALLOWLIST", " 192.0.2.0/24, 2001:db8::1 ")
 	t.Setenv("APPADMIN__SECURITY__CORS__ALLOW_ORIGINS", " http://127.0.0.1:3001 , http://admin.example.com ")
+	t.Setenv("APPADMIN__SANDBOX_ADMIN__BASE_URL", "http://app-sandbox:8017")
+	t.Setenv("APPADMIN__SANDBOX_ADMIN__TOKEN", "sandbox-secret")
 	t.Setenv("APPADMIN__LOG__OUTPUT", "both")
 
 	var cfg Config
@@ -42,6 +44,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if cfg.Log.Output != "both" {
 		t.Fatalf("log.output override lost: %q", cfg.Log.Output)
+	}
+	if cfg.SandboxAdmin.BaseURL != "http://app-sandbox:8017" || cfg.SandboxAdmin.Token != "sandbox-secret" {
+		t.Fatalf("sandbox_admin override lost: %+v", cfg.SandboxAdmin)
 	}
 }
 
@@ -110,6 +115,49 @@ func TestValidateCloudReviewAllOrNothing(t *testing.T) {
 
 	none := base()
 	if NormalizeCloudReview(none) {
+		t.Fatal("both empty is intentionally disabled, not a mismatch")
+	}
+}
+
+// The sandbox console proxy follows the same all-or-nothing rule as the cloud
+// review preview: a lone base URL/token is cleared and reported (proxy 503),
+// never half-enabled, and must not block startup.
+func TestValidateSandboxAdminAllOrNothing(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			RDBMS: RDBMSConfig{URL: "x"},
+			Seed:  SeedConfig{Username: "a", Password: "b"},
+		}
+	}
+	both := base()
+	both.SandboxAdmin = SandboxAdminConfig{BaseURL: "http://app-sandbox:8017", Token: "t"}
+	if err := Validate(both); err != nil {
+		t.Fatalf("fully wired sandbox proxy rejected: %v", err)
+	}
+	if NormalizeSandboxAdmin(both) {
+		t.Fatal("fully wired config must survive normalization")
+	}
+
+	loneURL := base()
+	loneURL.SandboxAdmin = SandboxAdminConfig{BaseURL: "http://app-sandbox:8017"}
+	if err := Validate(loneURL); err != nil {
+		t.Fatalf("half wiring must not block startup: %v", err)
+	}
+	if !NormalizeSandboxAdmin(loneURL) {
+		t.Fatal("half wiring must be reported as disabled")
+	}
+	if loneURL.SandboxAdmin.BaseURL != "" || loneURL.SandboxAdmin.Token != "" {
+		t.Fatalf("half wiring must be cleared: %+v", loneURL.SandboxAdmin)
+	}
+
+	loneToken := base()
+	loneToken.SandboxAdmin = SandboxAdminConfig{Token: "t"}
+	if !NormalizeSandboxAdmin(loneToken) {
+		t.Fatal("lone token must be reported as disabled")
+	}
+
+	none := base()
+	if NormalizeSandboxAdmin(none) {
 		t.Fatal("both empty is intentionally disabled, not a mismatch")
 	}
 }

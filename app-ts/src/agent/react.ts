@@ -3,7 +3,7 @@ import { aiTelemetry } from "../llm/tracing.js";
 import { config } from "../config/index.js";
 import { maxOutputTokensFor } from "../utils/degrade.js";
 import { createGatewayModel } from "../llm/provider.js";
-import { ResultCollector } from "../context/types.js";
+import { ResultCollector, type TokenUsage } from "../context/types.js";
 import type { AgentRuntime } from "../tools/runtime.js";
 import type { SseFrame } from "../transport/sse.js";
 import type { Agent, AgentInvokeInput } from "./types.js";
@@ -17,6 +17,28 @@ import type { ContextCompressionService } from "../services/context-compression.
 export function stopOnToolCall(toolName: string) {
   return ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolName: string }> }> }) =>
     steps.some((s) => (s.toolCalls ?? []).some((c) => c.toolName === toolName));
+}
+
+/**
+ * ReAct step budget for one agent: the per-agent override wins over the global
+ * budget. Writing/import-heavy sub-agents (academic) need more than a Q&A turn,
+ * while note/code are deliberately cheap.
+ */
+export function maxStepsFor(agentName: string): number {
+  return config.agent.maxStepsByAgent?.[agentName] ?? config.agent.maxSteps;
+}
+
+/** Sum token usage across the main stream and delegated sub-agent runs. */
+function sumUsage(parts: TokenUsage[]): TokenUsage | undefined {
+  if (parts.length === 0) return undefined;
+  return parts.reduce<TokenUsage>(
+    (acc, part) => ({
+      inputTokens: (acc.inputTokens ?? 0) + (part.inputTokens ?? 0),
+      outputTokens: (acc.outputTokens ?? 0) + (part.outputTokens ?? 0),
+      totalTokens: (acc.totalTokens ?? 0) + (part.totalTokens ?? 0),
+    }),
+    {},
+  );
 }
 
 /**
@@ -173,7 +195,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
         ...(maxOutputTokensFor(input.uid) > 0 ? { maxOutputTokens: maxOutputTokensFor(input.uid) } : {}),
         ...aiTelemetry(`agent.${opts.name}`),
         // structured interaction ends the turn normally (round-based ask_user)
-        stopWhen: [stepCountIs(config.agent.maxSteps), stopOnToolCall("ask_user")],
+        stopWhen: [stepCountIs(maxStepsFor(opts.name)), stopOnToolCall("ask_user")],
         onError: ({ error }) => {
           createLogger("AGENT").error(`[AGENT/${opts.name}] stream error: ${error instanceof Error ? error.message : String(error)}`);
         },
@@ -361,7 +383,10 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
       // an empty assistant bubble is worse than an explicit failure
       yield { type: "error", message: "模型未返回有效内容（可能已达最大工具步数），请重试或换个问法" };
     }
-    yield { type: "usage", usage: usage ?? {} };
+    // Include delegated sub-agent usage: the outer streamText usage only covers the
+    // main agent, while billing/quota must account for the whole turn.
+    const turnUsage = sumUsage([...(usage ? [usage] : []), ...collector.delegatedUsage]);
+    yield { type: "usage", usage: turnUsage ?? {} };
     yield { type: "done" };
   }
 
