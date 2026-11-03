@@ -2,6 +2,16 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] — 2026-11-03
+
+### Documentation
+
+- **根 README 重写为项目介绍**：从「功能清单 + 目录索引 + 接口表」改为定位、核心能力、架构一览、快速开始与文档导航；结构、API、FAQ 分别迁入独立文档，避免与代码漂移。
+- **新增文档**：`docs/features.md`（功能全景：问答/科研/沙箱/KG/笔记/云盘/测验/会员/管理台）、`docs/project-structure.md`（目录、代码落位、依赖方向、测试矩阵）、`docs/api.md`（请求入口、鉴权、前缀、SSE 帧、错误约定）、`docs/faq.md`（运行环境、数据、AI 密钥、科研沙箱、管理台、开发）。
+- **重写过期文档**：`docs/setup-guide.md`（普通用户 Docker 上手：密钥文件、必填项、Higress 控制台配置供应商、验证与排错，移除「把 DashScope key 填进 .env」的旧流程）、`docs/getting-started.md`（当前 Node 22.17 / Go 1.25 / compose 技术栈，含 `.env` 必填项、APISIX 9080 override、逐服务本地启动与测试）、`docs/deployment.md`（入口/密钥、profiles 真实语义、HTTPS、监控、备份恢复、扩容、沙箱与 K8s、升级回滚）、`docs/code-execution.md`（run_code → app-sandbox → OpenSandbox 链路，替代 Python/Daytona 描述）。
+- **架构文档补齐**：`docs/architecture.md` 增加 app-sandbox / opensandbox-server 服务与端口、`/academic` 与 `/internal/sandbox` 路由、沙箱 5 表数据归属、app-sandbox 配置入口、CI 现状（app-cloud/app-sandbox 无独立 workflow、docker-build 19 镜像）。
+- **文档索引与链接清理**：重写 `docs/README.md` 索引（覆盖全部现行文档与归档）；移除指向 `plan/`（不入 git）、`app-mobile`、根 `AGENTS.md`（不入 git）的失效链接，修正 archive 相对路径与 `deploy/` 下两处失效链接；`api/README.md` 标注为 Python 时代历史存档，`deploy/china/README.md` 标注为历史快照（仅镜像加速器配置仍适用）。
+
 ## [mind-base-desktop 0.2.0] — 2026-11-01
 
 桌面端「科研工作台 + SSH 远程 + 对话体验」版本：科研控制台补齐 repositories 数据层、AI 选刊与 AI 计划、论文导入与原生 Word/PDF 展示、Google Docs 风格写作；SSH 升级为独立包，支持主机管理、交互终端、SFTP、本地端口转发、会话日志与跨平台凭据；对话新增思考过程、消息排队、DeepSeek 官方搜索，并修复工具参数泄漏与空回复。完整介绍见 [mind-base-desktop/RELEASE_NOTES_0.2.0.md](mind-base-desktop/RELEASE_NOTES_0.2.0.md)。

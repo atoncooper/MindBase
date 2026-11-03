@@ -1,344 +1,143 @@
-# MindBase 知识库
+# MindBase
 
-MindBase 是一个个人知识库 RAG 系统，把 B 站收藏和云盘文档转化为可检索、可问答、可复习的知识。
+> 把收藏变成可检索、可问答、可产出的个人知识库。
 
-核心链路：同步 B 站收藏夹 → ASR 语音转文字 → 文本向量化（embedding）→ 写入 Milvus → ReAct Agent 流式问答（来源追踪）。可选知识图谱：LLM 从转写稿抽取实体与关系写入 Neo4j（带原文引文防幻觉），问答时支持跨视频实体关联检索。
+MindBase 是一套**自托管的个人知识库与 AI 研究工作台**：把 B 站收藏、云盘文档这类碎片化素材，变成能检索、能追问、能引用、能用于写作与出题的结构化知识。
 
-除问答外，AI 还能自动生成 Markdown 笔记（Note Agent）、在 Daytona 沙箱运行代码（Code Agent）、按内容出题练习（Quiz）、定时出题邮件提醒（app-task，Go 独立服务）、编辑思维导图与白板（app-board，Go 独立服务）。可选会员支付（app-pay，Java 独立服务）、支付后台管理（app-pay-admin，Go）与分享审核后台（app-admin，Go + frontend-admin）。另有一个完全本地的桌面端（mind-base-desktop，Tauri 2，无后端依赖）。前端采用 Apple 风格界面：顶部导航栏承载功能，黑白极简，壁纸背景（静态/动态 mp4）。
+它的起点是一条完整的知识管道——同步收藏 → 语音转写（ASR）→ 文本切块与向量化 → 写入 Milvus → 多 agent 流式问答并给出引用来源。在管道之上，MindBase 继续长出知识图谱、笔记、题目练习、思维导图与白板、云盘，以及一条面向科研的完整工作流：项目管理、文献检索与核验、论文稿件撰写、分析脚本在隔离沙箱中执行。
 
-后端按域拆分为独立服务：AI 域（chat/agent/RAG/KG/quiz 出题）在 **app-ts**（Node + Fastify + LangGraph multi-agent，:8000，沿用退役 Python backend 的端口），服务端 CRUD 在 **app-go** 各 Go 服务（app-auth 认证 / app-bili 获取 / app-note 笔记 / app-quiz 测验 / app-cloud 云盘 / app-kg 图存储 / app-settings 设置 / app-admin 分享审核）。LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（用户无需配置任何 API Key）。存储：MySQL + Milvus + MongoDB + Redis + MinIO + Neo4j（可选，知识图谱）+ Daytona（可选）。前端 Next.js 16。
+整套系统可以完全跑在自己的机器或集群里：数据落在自己的数据库，模型请求经自己部署的 AI 网关出网，用户不需要配置任何 API Key。
 
-适合「收藏了很多但没时间整理」的学习者，把碎片化收藏变成可用的知识库。
+**适合谁**：收藏夹里堆满「以后再看」的学习者、需要管理文献与写作的研究者、希望私有部署 AI 知识库的个人与团队。
 
 ---
 
-## 部署与启动
+## 核心能力
 
-详细的本地开发与生产部署步骤已拆到 `docs/`（README 只保留入口与最简命令，避免与 docs 重复漂移）。按场景选文档：
-
-| 场景 | 文档 |
+| 能力 | 说明 |
 |------|------|
-| **直接用 Docker 本地跑起来（⭐ 普通用户入口：装 Docker → 拉代码 → 申请 API Key → 配 .env → 启动 → 验证 → 开始用）** | [`docs/setup-guide.md`](docs/setup-guide.md) |
-| **系统架构总览**（服务清单/端口、nginx→APISIX 路由、数据归属、CI） | [`docs/architecture.md`](docs/architecture.md) |
-| **本地开发**（前置 → 克隆/依赖 → 配 .env → 起后端/前端 → 验证全链路） | [`docs/getting-started.md`](docs/getting-started.md) |
-| **环境变量 / 配置参考**（完整变量表、YAML 分层加载、密钥） | [`docs/configuration.md`](docs/configuration.md) |
-| **Docker 生产部署**（一键启动、profiles、HTTPS、监控、备份） | [`docs/deployment.md`](docs/deployment.md) |
-| **中国大陆镜像部署**（Docker Hub 大陆直连不稳时的本地构建替代方案） | [`deploy/china/README.md`](deploy/china/README.md) |
-| **定时出题任务 app-task**（功能 / 独立启动 / WebUI 登录 / 配置） | [`docs/app-task.md`](docs/app-task.md) |
-| **思维导图/白板服务 app-board**（API / 乐观锁 / TLS / 配置） | [`docs/app-board.md`](docs/app-board.md) |
-| **交易/会员服务 app-pay**（订单状态机 / 渠道 / 审计 / 配置） | [`docs/app-pay.md`](docs/app-pay.md) |
-| **支付后台 app-pay-admin**（查询 / 补偿开通 / 鉴权） | [`docs/app-pay-admin.md`](docs/app-pay-admin.md) |
-| **分享审核后台 app-admin**（封杀/解封/放行 / 用户只读 / 审计 / 部署） | [`docs/app-admin.md`](docs/app-admin.md) |
-| **云盘服务 app-cloud**（分块上传 / 配额记账 / 分享 / 回收站 / 向量化管道 / 多实例扩容） | [`docs/app-cloud.md`](docs/app-cloud.md) |
-| **桌面端 mind-base-desktop**（Tauri 2，全本地） | [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md) |
-| **移动端 app-mobile**（Flutter；🚧 测试阶段 / WIP，未开发完成） | [`app-mobile/README.md`](app-mobile/README.md) |
-| **公开分享体系**（笔记/云盘/测验分享链接、域名策略、设备证明、提取码） | [`docs/sharing.md`](docs/sharing.md) |
+| **知识库问答** | ReAct agent 流式回答，按收藏夹 / 分 P / 云盘文档检索，答案带来源；子 agent 按任务类型分工（笔记、代码、学术、出题、思维导图） |
+| **科研工作台** | 项目六阶段推进、Crossref / OpenAlex / arXiv 文献检索与 DOI 核验、BibTeX 与稿件导出、分析脚本在沙箱内真实执行 |
+| **知识图谱与盲区** | 从转写稿抽取实体与关系（每条关系必须带原文引文，防幻觉），子图检索与证据回捞，按盲区一键出题 |
+| **笔记 / 题目 / 思维导图** | Markdown 笔记与公开分享、按内容出题与批改、错题本与训练数据导出、思维导图与白板 |
+| **云盘** | 5GB 分片直传、配额记账、提取码分享、文档解析与向量化，多实例就绪 |
+| **会员与运营** | 会员档位驱动配额与排队权重；管理台承担分享审核、用户只读查询、审计与沙箱运维 |
+| **桌面端** | Tauri 2 全本地应用，与 Web 后端零运行时依赖，数据只在本机 |
+| **平台化底座** | 统一网关鉴权、AI 出网统一、配额与计量、健康检查与指标、Docker Compose 与 K8s 部署 |
 
-### 最简命令（TL;DR）
-
-```bash
-# 本地开发（后端建议直接用 compose 起 app-ts 全家桶；裸跑见 docs/getting-started.md）
-docker compose up -d app-ts                   # AI 域后端 → http://localhost:8000（/health）
-cd frontendv2 && npm run dev                  # 前端 → http://localhost:3000
-
-# Docker 部署（默认 profile = 全栈，含 Milvus/Neo4j/APISIX/nginx/app-task/app-board）
-cp .env.example .env                          # 至少填 LLM__API_KEY、SESSION__SECRET、
-                                              # SECURITY__API_KEY_ENCRYPTION_KEY、APISIX_CONSUMER_KEY
-docker compose up -d --build                  # 入口 http://localhost:3000（nginx 80/443 亦可）
-
-# 定时出题（默认 profile 已含 app-task，镜像自动拉取；WebUI 控制台 http://localhost:8001/
-# 登录 admin / app-task-admin，生产务必改密）
-# app-task 源码在独立仓库 github.com/atoncooper/app-task（镜像 atoncooper/app-task）
-```
-
-> ⚠️ 环境变量、profile 服务范围、HTTPS/TLS、故障排查、Daytona 代码沙箱等细节请在对应的 docs/ 文档中查阅，README 不再重复维护。
+功能细节与入口见 [docs/features.md](docs/features.md)。
 
 ---
 
-## 功能模块
-
-### 对话（Agentic Chat）
-
-- **入口**：导航栏 `对话`
-- **Agent**：Chat（默认路由）+ Memory / Note / Code / Search（经 `delegate_to_agent` 调用）+ Summary（会话总结，按钮触发）
-- **流式 SSE**：route / chunk / step / sources / done / error 六种事件（`lib/chat-stream.ts` 解析）
-- **工具**：vector_search / kg_search（知识图谱实体关联检索，Neo4j 可用时注册）/ list_videos / get_video_summaries / run_code（Daytona）/ run_skill_code / delegate_to_agent 等
-- 上下文自动压缩：token 预算触发的会话摘要，控制长对话成本
-
-### 收藏夹
-
-- **入口**：导航栏 `收藏夹`
-- 同步 B 站收藏夹与视频列表，分 P 查看、ASR 内容、向量化状态
-- **知识图谱面板**：一键从视频转写稿抽取实体与关系写入 Neo4j（幂等，内容未变自动跳过），展示实体 / 关系 / 证据 / 覆盖视频统计与构建进度；未连接 Neo4j 时自动降级为不可用态
-
-### 知识图谱（kg_search）与盲区图
-
-- **图谱**：构建链路 = 收藏夹 → 已转写分P → LLM 结构化抽取（每条关系必须携带原文引文）→ 校验防幻觉边 → 写 Neo4j + 实体向量进 Milvus；查询链路 = 实体链接 → 子图多跳扩展 → 证据回捞（按用户收藏范围过滤）。前端 `/graph` 提供力导向可视化
-- **盲区图**（`/blindspot`）：基于图谱与答题数据定位知识盲区实体，支持对盲区一键出题
-
-### 思维导图 / 白板（app-board）
-
-- **入口**：导航栏 `思维导图`（`/mindmap`）
-- Drive 风格板列表 + 完整编辑器（simple-mind-map，从桌面端移植）；800ms 防抖自动保存 + Ctrl+S
-- 存储：独立 Go 服务 app-board（MySQL 元数据 + Mongo 正文，`If-Match` 乐观并发锁）；白板（Excalidraw）存储契约就绪，编辑器 P3 接入
-- 详见 [`docs/app-board.md`](docs/app-board.md)
-
-### 云盘（app-cloud）
-
-- **入口**：导航栏 `云盘`
-- 文件夹树、上传（5GB 分片直传 MinIO）、搜索、排序、批量处理、配额用量条、回收站（软删 30 天）
-- 处理状态前端轮询（`vector_status`：pending → processing → done/failed/not_supported）
-- 存储配额（免费 10GB / VIP / SVIP，tier 来自 app-pay；init 即原子预留，不超卖）
-- 百度式分享（提取码 / 有效期 / 下载上限 / 短时效直链，免登录访问页）；合规警告（legalAck）+ 文件夹分享 + 「保存到我的云盘」（引用，不复制对象/不计配额）
-- 云盘文档一键转笔记（note agent 整理）、文档全文提取（pdf/docx/doc/html/md/txt）+ 向量化入 RAG
-- 多实例就绪（outbox 任务队列 + 原子配额预留 + 租约锁后台任务）
-- 详见 [`docs/app-cloud.md`](docs/app-cloud.md)
-
-### 分享审核（app-admin）
-
-- 分享默认「先分享后审核」：分享创建后进入管理台待审核列表；管理员可放行 / 封杀 / 解封（封杀原因必填并审计），banned 与已撤销同等公开 404，引用面同步失效
-- 管理台只读用户账户（uid/email/phone/nickname/status/RBAC 角色）与分享元数据（name/size/mimeType/path），**不提供任何下载**
-- 受控内容预览（Issue #154）：用户分享时单独确认「管理员可依法查看分享内容用于审核」（后端强制 + 版本留档）；管理员仅可内联预览分享内文件（pdf/图片/音视频，短时效 URL、无下载），每次查看落审计
-- Compose 完整入口 `app-admin`（Nginx UI :3001，回环）+ `app-admin-api`（Go API :8016，回环）；`docker compose up -d --build app-admin` 启动后台及其数据库/schema 依赖，默认 `admin` / `app-admin` 首登强制改密
-- 详见 [`docs/app-admin.md`](docs/app-admin.md)
-
-### 题目练习
-
-- **入口**：导航栏 `题目练习`
-- 按收藏夹/分 P/会话总结出题（LLM 结构化输出），提交批改、历史回看
-- 错题本 + 训练数据导出（JSONL / CSV / SFT）
-
-### 定时出题（app-task）
-
-- **入口**：`/task-quiz`（对话定义任务）+ `/tasks`（任务列表/答题）
-- 用户与 AI 对话定义"到某时间出一道题"，AI 按北京时间随机生成触发时间（避开睡觉/午休）
-- 到点自动 LLM 生成题目，HTML 邮件发给用户+抄送人，限时答题；超时未答发"未完成语录"提醒
-- 独立 Go 调度服务（自写 DB 轮询 scheduler + 邮件投递队列 + WebUI 控制台），源码在独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)，运行态详见 [`docs/app-task.md`](docs/app-task.md)
-
-### 技能（Skills）
-
-- **入口**：导航栏 `技能`
-- 技能包安装/卸载（MinIO 存储），技能商店（GitHub topic `mindbase-skill`，默认关）
-- `run_skill_code` 在 Daytona 沙箱执行技能代码（`DAYTONA__ENABLED` 闸门）
-
-### 笔记
-
-- **入口**：导航栏 `笔记`
-- Markdown 编辑器、锚点定位、修订历史、公开分享（免登录只读，服务端二次消毒）
-- 详见 [`docs/notes.md`](docs/notes.md)
-
-### 会员 / 支付（可选服务）
-
-- app-pay（Java Spring Boot）：SKU / 订单 / 支付宝当面付（沙箱）/ 会员态，全链路 HTTPS + 资金审计
-- app-pay-admin（Go）：只读运营查询 + 会员补偿开通（`http://127.0.0.1:8003`，默认 `admin` / `app-pay-admin`）
-- 详见 [`docs/app-pay.md`](docs/app-pay.md) / [`docs/app-pay-admin.md`](docs/app-pay-admin.md)
-
-### 个人中心
-
-- **入口**：导航栏 `个人中心` / `会员中心`
-- 个人资料、安全绑定（B 站/邮箱/密码/微信）、退出登录
-- 会员开通与订单（渠道由 `GET /pay/channels` 决定：支付宝当面付 / MOCK）
-- 登录方式：B 站扫码、账号密码（图形验证码）、邮箱注册、手机短信、微信扫码（各自有配置开关，未启用自动隐藏）
-- AI 能力统一走 Higress 平台网关，**用户无需配置任何 API Key**（BYOK 已于 2026-10-07 退役）
-
-### 桌面端（mind-base-desktop）
-
-- Tauri 2 全本地应用（Windows/macOS）：聊天 agent（含 ask_user 结构化交互、产物卡片、后台任务、web_search 联网搜索）、B 站知识库、混合检索、思维导图/白板、Quiz、笔记、简历/幻灯片 agent、学术研究 agent + 记忆架构
-- 与 Web 后端无运行时依赖，数据全在本机 SQLite
-- 详见 [`docs/mind-base-desktop.md`](docs/mind-base-desktop.md)
-
----
-
-## API 概览
-
-| 模块 | 前缀 | 主要端点 |
-|------|------|---------|
-| 认证 | `/auth` | 扫码登录（B站/微信）/ 密码/邮箱/手机登录 / token 管理 / 验证码 |
-| 收藏夹 | `/favorites/v2` | 列表 / 同步 / 视频 / 分P 元数据 |
-| 知识库 | `/knowledge` | 构建 / 状态 / 清空 / 知识图谱 kg（build / active / status / stats / subgraph） |
-| 盲区 | `/blindspot` | 盲区图 / 实体详情 / 盲区出题 |
-| 聊天 | `/chat` | ask/agent/stream（SSE）/ sessions / history / 会话总结 |
-| ASR | `/asr` | create / update / reasr / versions |
-| 向量化 | `/vec/page` | create / revector / status |
-| 笔记 | `/notes` | CRUD / anchors / revisions / share / convert-from-cloud |
-| 思维导图 | `/board` | boards CRUD（If-Match 乐观锁）/ pin |
-| 题目 | `/quiz` | generate / generate-from-summary / submit / history / export / share |
-| 定时出题 | `/task-quiz` `/tasks` | chat（定义任务）/ register / answer / 列表 |
-| 云盘 | `/cloud` | 分片上传 / folders / files / quota / trash / share / 处理状态 / raw 预览 |
-| 工作区 | `/workspaces` | RAG 工作区 CRUD / 绑定 / 文件展开 |
-| 技能 | `/skills` | installed / install / uninstall / store |
-| 支付 | `/pay` | products / orders / membership（可选 app-pay 服务） |
-| 壁纸 | `/wallpaper` | upload / file / preset |
-| 偏好 | `/preferences` | get / update（KV：wallpaper / theme） |
-| 运维 | `/agent` `/health` `/cache/stats` | harness 运行时观测（admin）/ 健康检查 / 缓存命中率 |
-
-完整交互式文档：启动后访问 `http://localhost:8000/docs`
-
----
-
-## 测试
-
-### Go 独立服务测试（守护测试 + 单测）
-
-```bash
-cd app-go/app-cloud && go test ./...    # schema 守护（禁 ALTER）+ joblock 单测
-cd app-board && go test ./...           # Go 板存储（22 个测试）
-cd app-pay-admin && go test ./...       # Go 支付后台（31 个测试）
-cd app-go/app-admin && go test ./...    # 分享审核后台（httptest/内存，无需真实 MySQL）
-cd app-pay && mvn test                  # Java 交易服务（82 个测试）
-# app-task 测试随源码在独立仓库 atoncooper/app-task
-```
-
-### AI 域（app-ts，vitest 全量离线；Mongo 用例无实例自动 skip）
-
-```bash
-cd app-ts && npm run typecheck && npm test
-```
-
-### 前端
-
-```bash
-cd frontendv2
-npm run lint && npx tsc --noEmit
-
-cd frontend-admin
-pnpm build                              # tsc --noEmit + vite build
-```
-
----
-
-## 开发约束
-
-- **前端**：所有请求通过 `frontendv2/lib/api/`，组件内不直接 `fetch`
-- **后端 Router**：只做参数解析 + 鉴权 + 调 service，不写业务逻辑
-- **分层**：router → service → repository → DB/Milvus/Mongo，禁止反向调用
-- **Agent**：新子 agent 仿 memory/note 模式（5 节点 ReAct + handlers + `list_tool_defs(names=[...])` 过滤），经 `delegate_to_agent` 接入
-- **配置**：新增配置项同步更新 `.env.example` + `default.yaml` + `docs/configuration.md`
-- **安全**：不提交 `.env` / 数据库 / 密钥；API Key 用 `SecretStr`；不打印完整 prompt
-- **提交**：`[模块] type: 说明`（模块如 chat/rag/frontend/board/pay/agent）
-- 完整开发规范见 [AGENTS.md](AGENTS.md)
-
----
-
-## 目录索引
+## 架构一览
 
 ```text
-app-ts/                          AI 域服务（Node + Fastify :8000，LangGraph multi-agent）
-  src/agent/             子 agent（main / note / code / quiz / board，ReAct）
-  src/rag/               chunk / embed / Milvus / rerank / RRF
-  src/transport/         http 路由 + SSE + gRPC + 内部客户端
-  src/bootstrap/         组合根（DI 装配）
-  config/default.yaml    配置；prompts/*.md 提示词；test/ vitest 离线单测
-
-app-go/                          Go 服务目录（每个服务自带 README.md）
-  app-auth/              身份认证（:8006；网关 verify 面 → X-Uid/X-Roles）
-  app-bili/              B 站获取（:8010；收藏夹/整理/ASR/build 编排，含 ffmpeg）
-  app-note/              笔记（:8008；If-Match 乐观并发 + 分离存储）
-  app-quiz/              测验存储（:8011；确定性判题/分享/错题本）
-  app-cloud/             云盘（:8007；分块上传/配额/分享/回收站/向量化管道，多实例就绪）
-  app-kg/                KG 图存储（:8013 gRPC；Neo4j 唯一写者）
-  app-settings/          设置（:8015；偏好/壁纸/头像）
-  app-admin/             分享审核 API（Compose app-admin-api :8016；只读用户/分享元数据 + 审核 4 列）
-
-mcp/                             MCP server（把域能力暴露给 Agent，Go + mcp-go）
-  app-board-mcp/         思维导图/白板工具面（:8005）
-  app-note-mcp/          笔记工具面（:8009）
-  app-quiz-mcp/          测验工具面（:8012）
-
-frontend-admin/                  分享审核后台前端（Vite + React 18 + antd，dev :3001；Compose app-admin 提供静态入口）
-
-frontendv2/                      当前前端（第一代 frontend/ 已于 2026-10-01 删除）
-  app/                   Next.js App Router（chat / favorites / notes / mindmap / cloud-drive /
-                         quiz / task-quiz / graph / blindspot / skills / billing / settings ...）
-  components/            UI 组件（按功能域组织）
-  lib/api/               唯一 API 调用入口（分模块封装，禁止组件内直接 fetch）
-  lib/chat-stream.ts     SSE 流式响应解析
-  lib/board-store.ts     思维导图存储桥（桌面端 mindmap.ts 的 Web 版）
-  app/globals.css        Tailwind v4 主题 tokens（Apple 风格设计系统）
-
-app-board/                       思维导图/白板存储服务（Go + Gin，:8004，HTTPS-only）
-  internal/              config / db / mongo / redis缓存 / repo / service / router / tls
-  certs/                 自动生成的开发 CA + 叶子证书（APISIX 信任锚）
-
-app-pay/                         交易/会员服务（Java 21 + Spring Boot 3 + MyBatis-Plus，:8002 HTTPS-only）
-app-pay-admin/                   支付后台管理（Go + Gin SSR，:8003 回环）
-
-mind-base-desktop/               桌面端（Tauri 2 + React 19，全本地 SQLite）
-app-mobile/                      移动端（Flutter，🚧 测试阶段）
-
-apisix/                          APISIX 网关声明式配置（路由/上游/forward-auth/key-auth）
-nginx/                           nginx 统一入口（TLS + 页面/接口分发 + 缓存）
-docs/                            文档索引（docs/README.md：架构/部署/迁移/各服务详解）
-plan/                            架构分析与实施计划（plan/1.0.x 编号制）
-
-docker-compose.yml               主服务（默认 profile = 全栈）
-docker-compose.daytona.yml       Daytona 代码沙箱（可选）
-deploy/china/                    中国大陆镜像部署替代方案
-deploy/k8s/                      K8s manifests（app-auth/app-cloud/app-note/…）
+浏览器 / 桌面端
+   │
+   ▼
+nginx（TLS + 静态页 + 缓存）
+   │
+   ▼
+APISIX（统一鉴权 / 路由 / 限流）
+   │
+   ├── app-ts         AI 域：chat / agent / RAG / 知识图谱编排 / 向量化 / 学术
+   ├── app-go/*       各域权威服务：认证 / 云盘 / 笔记 / B 站获取 / 测验 / 知识图谱存储 / 设置 / 管理台
+   ├── app-board      思维导图与白板存储
+   ├── app-pay        交易与会员（可选）
+   └── app-sandbox    沙箱控制层：租约 / 配额 / 审计 / 产物 / 准入
+          │
+          ▼
+      OpenSandbox 运行时（隔离执行用户代码）
 ```
 
----
+- **数据**：MySQL（业务元数据）、MongoDB（会话 / 笔记正文 / 学术数据）、Milvus（向量）、Neo4j（知识图谱）、Redis（限流 / 缓存 / 事件）、MinIO（文件对象）。
+- **AI 出网**：LLM / Embedding / Rerank / ASR 统一经 **Higress AI 网关**，供应商密钥只在网关侧；网关侧用量回流到平台计量。
+- **拆分原则**：AI 能力集中在 app-ts，领域数据由各自 Go / Java 服务独占写入，网关只做鉴权与路由——每个域只有一个写者，读多写少的服务可水平扩容。
+- **技术栈**：Next.js 16 + React + Tailwind（前端）、Node 22 + Fastify（AI 域）、Go 1.25 + Gin（领域服务）、Java 21 + Spring Boot（交易）、Tauri 2（桌面端）。
 
-## 常见问题
-
-### Q: 本地开发用什么数据库？
-
-必须配置 `RDBMS__URL`（默认 YAML 不带 SQLite 兜底）。本地最简单起一个 MySQL Docker；Docker 部署 compose 会自动起 MySQL 并注入连接串。
-
-### Q: 壁纸/云盘上传需要 MinIO 吗？
-
-是。壁纸自定义上传和云盘文件都存 MinIO（Docker 部署默认启用）。本地裸跑需 `MINIO__ENABLED=true` + 配置 `MINIO__ACCESS_KEY` / `MINIO__SECRET_KEY`；未启用时壁纸仍可用预设图，云盘功能降级。
-
-### Q: Code Agent / 技能代码需要 Daytona 吗？
-
-是。`run_code` / `run_skill_code` 在 Daytona 沙箱运行代码。未配置时（`DAYTONA__ENABLED=false`）工具不注册，delegate 到 code agent 会 fallback，其他 agent 不受影响。可用 `docker-compose.daytona.yml` 自托管。
-
-### Q: 笔记功能需要 MongoDB 吗？
-
-是。笔记正文和修订存 MongoDB，元数据存 MySQL。未连接 MongoDB 时创建/更新笔记抛 `RuntimeError`。
-
-### Q: 知识图谱需要 Neo4j 吗？
-
-是。构建与检索都依赖 Neo4j（compose 已内置 `neo4j` 服务，默认 profile 自动拉起）。未连接时自动降级：`kg_search` 工具不注册、图谱面板显示不可用，其余功能不受影响。密码经 `.env` 的 `NEO4J_PASSWORD` 与后端 `KG__PASSWORD` 共享。
-
-### Q: 思维导图/白板数据存哪里？
-
-元数据在主 MySQL 的 `board` 表，正文在 Mongo `board_documents` 集合，由独立 Go 服务 app-board 管理（经 APISIX `/board/*` 访问，`If-Match` 乐观锁防并发覆盖）。
-
-### Q: 支付/会员是必装的吗？
-
-不是。app-pay 系列在 `--profile pay` / `--profile full` 才启动；主知识库功能完全不依赖它。
-
-### Q: AI 请求走哪？需要自己配 API Key 吗？
-
-不需要。平台代发起的 LLM/Embedding/ASR 请求统一经 **Higress AI 网关**出网（compose `--profile ai`），
-供应商密钥只配置在网关控制台（127.0.0.1:18081），不进 `.env`、不下发给前端——BYOK（用户自带 Key）已于 2026-10-07 整体退役。模型切换/新增供应商都在网关侧完成。
+完整的服务清单、端口、路由与数据归属见 [docs/architecture.md](docs/architecture.md)。
 
 ---
 
-## 相关文档
+## 快速开始
 
-- [文档索引（全量清单）](docs/README.md)
-- [系统架构总览](docs/architecture.md)
-- [配置说明](docs/configuration.md)
-- [部署指南](docs/deployment.md)（含 app-cloud 多实例扩容）
-- [Python backend 退役记录](docs/archive/python-decommission.md)
-- [快速入门（本地开发）](docs/getting-started.md)
-- [云盘服务](docs/app-cloud.md)
-- [笔记系统](docs/notes.md)
-- [定时出题任务](docs/app-task.md)
-- [思维导图/白板服务](docs/app-board.md)
-- [交易/会员服务](docs/app-pay.md)
-- [支付后台管理](docs/app-pay-admin.md)
-- [分享审核后台](docs/app-admin.md)
-- [KG 存储服务](docs/app-kg.md)
-- [桌面端](docs/mind-base-desktop.md)
-- [公开分享体系](docs/sharing.md)
-- [代码执行](docs/code-execution.md)
-- [开发规范](AGENTS.md)
+### Docker（推荐首次体验）
+
+```bash
+git clone https://github.com/atoncooper/MindBase.git
+cd MindBase
+cp .env.example .env      # 至少填 AI_GATEWAY__API_KEY 与 APISIX_CONSUMER_KEY（见文件内注释）
+docker compose up -d      # 默认 profile 即全栈
+```
+
+打开 <http://localhost:3000> 登录（B 站扫码 / 账号密码）。首次启动会拉取镜像并初始化数据库，耗时取决于网络。
+
+可选能力按 profile 追加（先起全栈，再追加；单独指定 `--profile X` 只会启动该 profile 的服务）：
+
+```bash
+docker compose up -d                       # 已起全栈
+# AI 能力必须追加网关：供应商密钥在 Higress 控制台 http://127.0.0.1:18081 配置
+docker compose --profile ai up -d
+docker compose --profile sandbox up -d     # 科研代码执行：沙箱控制层 + OpenSandbox
+docker compose --profile pay up -d         # 会员 / 支付
+# 或者一次起「全栈 + 全部可选组件」
+docker compose --profile full up -d
+```
+
+逐步说明（依赖检查、密钥准备、Higress 控制台配置供应商、启动后验证）见 [docs/setup-guide.md](docs/setup-guide.md)；生产部署、HTTPS、监控与备份见 [docs/deployment.md](docs/deployment.md)。
+
+### 本地开发
+
+需要 Docker、Node.js ≥ 22.17、Go 1.25+（按需）。日常改 AI 域或前端时：容器跑全栈，本地热重载 `app-ts` 与 `frontendv2` 两个进程，并导出连接串与密钥（app-ts 不读 `.env`）；还需一个本地 `docker-compose.override.yml` 把 APISIX `9080` 映射到宿主，供前端 dev 代理与 app-ts 出站调用。
+
+完整命令、override 示例、逐服务本地启动方式、测试与排错见 [docs/getting-started.md](docs/getting-started.md)。
+
+---
+
+## 文档
+
+| 想了解 | 看这里 |
+|--------|--------|
+| 用 Docker 直接跑起来 | [docs/setup-guide.md](docs/setup-guide.md) |
+| 本地开发环境与命令 | [docs/getting-started.md](docs/getting-started.md) |
+| 系统组成、端口、路由、数据归属 | [docs/architecture.md](docs/architecture.md) |
+| 功能全景与入口 | [docs/features.md](docs/features.md) |
+| API 前缀、鉴权、SSE 与错误约定 | [docs/api.md](docs/api.md) |
+| 目录结构、依赖方向、测试矩阵 | [docs/project-structure.md](docs/project-structure.md) |
+| 配置项与密钥 | [docs/configuration.md](docs/configuration.md) |
+| 生产部署与运维 | [docs/deployment.md](docs/deployment.md) |
+| 科研工作台与学术 Agent | [docs/academic-agent.md](docs/academic-agent.md) |
+| 管理台（分享审核 / 沙箱运维） | [docs/app-admin.md](docs/app-admin.md) |
+| 常见问题 | [docs/faq.md](docs/faq.md) |
+
+全部文档索引见 [docs/README.md](docs/README.md)；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## 项目状态
+
+MindBase 处于活跃开发中。Python 后端已于 2026-10 退役，AI 域由 app-ts 承接（迁移记录见 [docs/archive/python-decommission.md](docs/archive/python-decommission.md)）。
+
+近期重点：
+
+- 科研工作台与学术 agent：项目管理、文献核验、稿件写作，以及聊天内项目上下文；
+- 沙箱控制层：租约复用、档位配额、审计与产物，OpenSandbox 的 Docker / K8s 部署；
+- 管理台：分享审核、受控预览、沙箱运维面板；
+- 存储演进：MongoDB 访问逐步迁移到 MikroORM（见 [docs/mikro-orm.md](docs/mikro-orm.md)）。
+
+已知边界（会随实现推进更新）：沙箱真实运行时与大规格镜像仍在验证；MikroORM 迁移覆盖部分仓储；浏览器端到端回归尚未全覆盖。
+
+---
+
+## 参与开发
+
+- 开发规范、目录落位与测试矩阵见 [docs/project-structure.md](docs/project-structure.md)；
+- 提交前请本地跑通对应测试（app-ts `npm run typecheck && npm test`、Go `go test ./...`、前端 `npm run lint`）；CI 按目录分服务执行；
+- 提交信息格式：`[模块] type: 说明`；不要提交 `.env`、密钥或构建产物；
+- 新增端点必须显式配置网关路由（APISIX 无兜底路由）。
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -27,7 +27,8 @@
 # + Milvus, no task-quiz:                                 docker compose --profile storage up -d
 # App only (external DB):                                 docker compose --profile standalone up -d
 # Everything + admin tools (redis-commander, mongo-express): docker compose --profile full up -d
-# + Higress AI gateway (unified egress for AI requests):     docker compose --profile ai up -d
+# AI gateway only (append to an already-running stack):      docker compose --profile ai up -d
+#   NOTE: passing any --profile drops the "" default set, so run plain `up -d` first.
 
 services:
   # ==============================================================

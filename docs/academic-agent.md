@@ -1,8 +1,7 @@
 # 网页端学术 Agent（academic）
 
-> 状态：**Phase 1 + 1.5 + 2 已落地**（2026-11-01）；Phase 3 评估见 plan §十二。
-> 计划：[plan/1.0.17-WebAcademicAgent](../plan/1.0.17-WebAcademicAgent/1.0.17-WebAcademicAgent.md)
-> 桌面端母方案：[plan/1.0.12-AcademicAgent](../plan/1.0.12-AcademicAgent/1.0.12-AcademicAgent.md)
+> 状态：**Phase 1 + 1.5 + 2 已落地**（2026-11-01）；Phase 3 评估见 §十三；沙箱控制层见 §十五。
+> 设计文档：`plan/1.0.17-WebAcademicAgent`、`plan/1.0.12-AcademicAgent`（本地维护，不入 git）
 > 契约唯一来源：`app-ts/src/repository/academic.ts`
 
 ---
@@ -675,7 +674,7 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 5. **协作与并发**：REST 写入的乐观并发（If-Match）、事件流分页、软删除/回收站（按需）；
 6. **可选增强**：delegate 链路透传子 agent artifact，让聊天内直接渲染学术卡片（协议向后兼容）。
 
-> 完整验收标准与桌面端映射见 [plan/1.0.17-WebAcademicAgent](../plan/1.0.17-WebAcademicAgent/1.0.17-WebAcademicAgent.md) §十（Phase 1.5）与 §六（分期）。
+> 完整验收标准与桌面端映射见 `plan/1.0.17-WebAcademicAgent` §十（Phase 1.5）与 §六（分期）（本地设计文档，不入 git）。
 
 ---
 
@@ -748,9 +747,9 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 
 ## 十三、Phase 3 评估（证据层与导出）
 
-完整评估见 [plan/1.0.17 §十二](../plan/1.0.17-WebAcademicAgent/1.0.17-WebAcademicAgent.md)。结论摘要：
+完整评估见 `plan/1.0.17` §十二（本地设计文档，不入 git）。结论摘要：
 
-- **不做**任意代码执行 / 数据集分析脚本运行（多租户 RCE 面；app-ts 无沙箱，`NoopCodeExecution`）。
+- **不做** app-ts 进程内代码执行（多租户 RCE 面）；执行能力由独立沙箱控制层承载（见 §十五），app-ts 仅保留 `CodeExecutionPort` 边界。
 - V1 证据层 = 数据集/实验记录**元数据** + 云盘文件引用 + DOCX/投稿包导出 + 引用一致性检查（导出前校验正文 citeKey 是否在库/已核验）。
 - 若未来确需执行，另立独立沙箱 runner（容器隔离 + 队列 + 配额 + 审计），不挪用 app-ts 进程。
 
@@ -795,7 +794,7 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 
 ## 十五、沙箱控制层（app-sandbox，P0/M1）
 
-> 计划：[plan/1.0.18-SandboxControlPlane](../plan/1.0.18-SandboxControlPlane/1.0.18-SandboxControlPlane.md)。OpenSandbox 负责“沙箱怎么被创建/执行/删除”；app-sandbox 是产品控制层，负责“MindBase 怎么使用沙箱”。
+> 设计文档：`plan/1.0.18-SandboxControlPlane`（本地维护，不入 git）。OpenSandbox 负责“沙箱怎么被创建/执行/删除”；app-sandbox 是产品控制层，负责“MindBase 怎么使用沙箱”。
 
 **能力**
 

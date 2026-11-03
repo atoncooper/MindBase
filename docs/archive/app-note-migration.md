@@ -1,6 +1,6 @@
 # app-note 笔记服务迁移（app/ → app-go/app-note）
 
-> 2026-10-04。规范见 [AGENTS.md §2.15](../AGENTS.md)；本文是实施记录 + 切流/回滚手册。
+> 2026-10-04。规范见 `AGENTS.md` §2.15（本地开发规范，不入 git）；本文是实施记录 + 切流/回滚手册。
 >
 > **状态：已切流 + Python 侧已下线**（APISIX `notes_user` 指向 app-note；`main.py` 已注销 notes 路由；旧 Python 笔记代码已删除，见 §5）。
 

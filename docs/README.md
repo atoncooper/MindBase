@@ -1,61 +1,119 @@
-# Documentation
+# 文档索引
 
-| Document | Audience | Description |
-|----------|----------|-------------|
-| [architecture.md](architecture.md) | All | ⭐ 系统架构总览：服务清单/端口、nginx→APISIX 路由、数据归属、配置体系、CI |
-| [setup-guide.md](setup-guide.md) | Users / Ops | 用 Docker 直接本地跑起来：装 Docker → 配置 → 启动 → 验证 → 开始用 |
-| [getting-started.md](getting-started.md) | Developers | Local setup, project structure, workflow |
-| [configuration.md](configuration.md) | All | 多服务配置体系：各服务 YAML 入口、共享 env、Higress AI 网关、密钥清单 |
-| [deployment.md](deployment.md) | DevOps / SRE | Production deployment: Docker, HTTPS, monitoring, backup |
-| [app-kg.md](app-kg.md) | Developers | KG 存储服务（Go + gRPC）：Neo4j、记账、proto 契约 |
-| [service-key-auth.md](service-key-auth.md) | Developers / Ops | 服务间 key-auth 体系：路由、密钥、问题与演进方向 |
-| [app-task.md](app-task.md) | Users / Ops | 定时出题任务：纯调度器、执行模型、WebUI、executor 对接、配置 |
-| [app-board.md](app-board.md) | Developers / Ops | 思维导图/白板存储服务：API、乐观锁、TLS、配置 |
-| [app-pay.md](app-pay.md) | Developers / Ops | 交易/会员服务：订单状态机、渠道、审计、TLS、配置 |
-| [app-pay-admin.md](app-pay-admin.md) | Ops | 支付后台管理：查询、补偿开通、鉴权、TLS |
-| [app-admin.md](app-admin.md) | Ops | 分享审核后台：封杀/解封/放行、用户只读、审计、部署 |
-| [app-cloud.md](app-cloud.md) | Developers / Ops | 云盘服务：分块上传、配额记账、分享、回收站、向量化管道、多实例扩容 |
-| [mind-base-desktop.md](mind-base-desktop.md) | Users / Developers | 桌面端（Tauri 2，全本地）：功能、运行、打包 |
-| [notes.md](notes.md) | Developers | 笔记系统：分离存储、锚点、修订、分享、消毒 |
-| [code-execution.md](code-execution.md) | Developers | Code Agent 代码执行：数据模型、产物协议、SSE 事件 |
-| [docker-deployment.md](docker-deployment.md) | DevOps | Legacy Docker Compose guide（已被 deployment.md 取代，仅存档） |
+> 本目录按「读者 / 场景」组织：**项目是什么、能做什么**看根 [README](../README.md)；
+> **开发规范与红线**以仓库根 `AGENTS.md`（本地维护，不入 git）为准，目录落位与测试见 [project-structure.md](project-structure.md)。新增/重命名文档时请同步登记本索引。
 
 ---
 
-## Where to find
+## 一、快速开始
 
-| Concern | Document |
-|---------|----------|
-| "系统整体长什么样？端口/路由/数据归属？" | [architecture.md](architecture.md) |
-| "Python backend 去哪了？某端点现在谁承接？" | [archive/python-decommission.md](archive/python-decommission.md) + [architecture.md](architecture.md) |
-| "I cloned the repo, how do I run it?" | [getting-started.md](getting-started.md) |
-| "我不会开发，只想用 Docker 跑起来" | [setup-guide.md](setup-guide.md) |
-| "What env vars do I need?" | [configuration.md](configuration.md) |
-| "How do I deploy to production?" | [deployment.md](deployment.md) |
-| "How do I configure HTTPS?" | [deployment.md](deployment.md) |
-| "How do I switch the LLM provider?" | [configuration.md](configuration.md) |
-| "前端 API 层怎么组织？某域调哪个服务？" | [frontendv2/lib/api/README.md](../frontendv2/lib/api/README.md) |
-| "聊天域/向量域怎么切到 app-ts 的？" | [archive/app-ts-cutover.md](archive/app-ts-cutover.md) |
-| "app-task 是什么？怎么启动？" | [app-task.md](app-task.md) |
-| "思维导图/白板数据怎么存的？" | [app-board.md](app-board.md) |
-| "支付/会员服务怎么部署和配置？" | [app-pay.md](app-pay.md) |
-| "支付后台怎么进？怎么补偿开通？" | [app-pay-admin.md](app-pay-admin.md) |
-| "分享被举报怎么封杀？admin 后台怎么进？" | [app-admin.md](app-admin.md) |
-| "KG 存储与 gRPC 契约？" | [app-kg.md](app-kg.md) |
-| "云盘配额怎么记账？怎么横向扩容？" | [app-cloud.md](app-cloud.md) |
-| "桌面端怎么跑？" | [mind-base-desktop.md](mind-base-desktop.md) |
+| 文档 | 适合谁 | 内容 |
+|---|---|---|
+| [setup-guide.md](setup-guide.md) | 普通用户 / 运维 | ⭐ 用 Docker 直接跑起来：装 Docker → 拉代码 → 申请 API Key → 配 .env → 启动 → 验证 |
+| [getting-started.md](getting-started.md) | 开发者 | 本地开发：前置依赖、克隆/安装、最小 .env、起后端与前端、验证全链路 |
+| [architecture.md](architecture.md) | 所有人 | 系统架构总览：服务清单/端口、nginx → APISIX 路由、数据归属、配置体系、CI |
+| [configuration.md](configuration.md) | 所有人 | 配置体系：各服务 YAML 入口、共享 `env`、Higress AI 网关、密钥清单 |
+| [deployment.md](deployment.md) | DevOps / SRE | 生产部署：Docker、HTTPS、监控、备份与升级 |
 
----
+## 二、按主题深入
 
-## 历史归档（archive/）
+### 2.1 架构与平台
 
-一次性事件的过程记录（退役/切流/迁移）：只读存档，不再随实现更新；
-现行规范以 AGENTS.md 与 docs/ 其余文档为准。
+| 文档 | 内容 |
+|---|---|
+| [architecture.md](architecture.md) | 服务拓扑、端口、网关路由、数据归属（本目录入口文档） |
+| [configuration.md](configuration.md) | 分层配置与共享环境变量约定 |
+| [service-key-auth.md](service-key-auth.md) | 服务间 API Key 体系：app-auth 签发 + APISIX 校验、防串用、演进方向 |
+| [client-compose.md](client-compose.md) | `docker-compose.client.yml` 客户端部署：与服务端 compose 的差异、裁剪与降级行为 |
+| [deployment.md](deployment.md) | 生产部署、HTTPS（Caddy）、监控与备份 |
 
-| Document | Description |
-|----------|-------------|
+### 2.2 AI 与 Agent
+
+| 文档 | 内容 |
+|---|---|
+| [academic-agent.md](academic-agent.md) | 网页端学术 Agent：项目/文献/稿件/证据工具、REST、数据模型、性能与运维、故障排查 |
+| [code-execution.md](code-execution.md) | 代码执行（run_code）：沙箱边界、控制层调用链、结果与持久化、失败降级 |
+| [automation.md](automation.md) | AI 监督型长任务：工具面、报告节奏与去重、中断/重试/恢复 |
+| [mikro-orm.md](mikro-orm.md) | app-ts MongoDB 的 MikroORM 采用说明与分阶段迁移计划 |
+
+### 2.3 业务服务（app-*）
+
+| 文档 | 内容 |
+|---|---|
+| [app-task.md](app-task.md) | 定时出题任务：调度模型、数据表、WebUI、executor 对接、配置 |
+| [app-board.md](app-board.md) | 思维导图/白板存储服务：API、乐观锁、缓存、TLS、配置 |
+| [app-board-mcp.md](app-board-mcp.md) | 思维导图/白板 MCP server：工具面、认证、限流、TLS、服务模式接入 |
+| [app-pay.md](app-pay.md) | 交易/会员服务：订单状态机、支付渠道、审计、TLS、配置 |
+| [app-pay-admin.md](app-pay-admin.md) | 支付后台管理：查询、补偿开通、鉴权、界面 |
+| [app-admin.md](app-admin.md) | 云盘分享审核后台：封杀/解封/放行、用户只读、审计、部署 |
+| [app-cloud.md](app-cloud.md) | 云盘服务：分块上传、配额记账、分享/回收站、向量化管道、多实例扩容 |
+| [app-kg.md](app-kg.md) | 知识图谱：app-kg（gRPC 存储）+ app-ts（AI 编排）、proto 契约、已知取舍 |
+
+### 2.4 内容能力
+
+| 文档 | 内容 |
+|---|---|
+| [notes.md](notes.md) | 笔记系统：MySQL/Mongo 分离存储、锚点、修订、分享、Markdown 消毒 |
+| [sharing.md](sharing.md) | 公开分享体系：分享链接域名链、设备证明、提取码、部署检查清单 |
+
+### 2.5 桌面端（mind-base-desktop）
+
+| 文档 | 内容 |
+|---|---|
+| [mind-base-desktop.md](mind-base-desktop.md) | 桌面端（Tauri 2，全本地）：定位、功能、运行与打包、目录结构 |
+| [desktop-cross-platform.md](desktop-cross-platform.md) | 三平台构建：平台支持、构建前置、FFmpeg sidecar、SSH 凭据存储 |
+| [desktop-rust-architecture.md](desktop-rust-architecture.md) | Rust 分包架构：包清单与依赖方向、目录结构、包内拆分约定 |
+
+### 2.6 开发环境
+
+| 文档 | 内容 |
+|---|---|
+| [vscode-setup.md](vscode-setup.md) | VS Code 多语言单仓配置：Java 自动构建、rust-analyzer、任务与工作区 |
+
+## 三、项目介绍配套文档
+
+根 README 只做项目介绍（是什么 / 能做什么 / 怎么开始）；下列文档承接具体展开：
+
+| 文档 | 内容 |
+|---|---|
+| [features.md](features.md) | 功能全景：知识库问答、科研工作台与沙箱、KG、笔记、云盘、测验、会员、管理台 |
+| [project-structure.md](project-structure.md) | 仓库目录、代码落位、依赖方向与测试矩阵 |
+| [api.md](api.md) | API 概览：请求入口、鉴权、按域前缀、SSE 帧与错误约定 |
+| [faq.md](faq.md) | 常见问题：运行环境、数据存储、AI 密钥、科研沙箱、管理台与运维 |
+
+## 四、按问题找文档
+
+| 我想知道 / 要做什么 | 先看 |
+|---|---|
+| 系统整体长什么样？端口、路由、数据归谁？ | [architecture.md](architecture.md) |
+| 我克隆了仓库，怎么在本地跑起来？ | [getting-started.md](getting-started.md) |
+| 我不会开发，只想用 Docker 跑起来 | [setup-guide.md](setup-guide.md) |
+| 需要配哪些环境变量 / 怎么换模型或网关？ | [configuration.md](configuration.md) |
+| 怎么部署到生产、怎么配 HTTPS？ | [deployment.md](deployment.md) |
+| 服务间调用为什么要 API Key？怎么防串用？ | [service-key-auth.md](service-key-auth.md) |
+| 学术 Agent / 科研项目 / 文献核验怎么工作？ | [academic-agent.md](academic-agent.md) |
+| 代码执行和产物记录怎么存、怎么回放？ | [code-execution.md](code-execution.md) |
+| 定时出题、白板、支付、云盘、KG 各服务怎么配？ | [app-task.md](app-task.md) / [app-board.md](app-board.md) / [app-pay.md](app-pay.md) / [app-cloud.md](app-cloud.md) / [app-kg.md](app-kg.md) |
+| 笔记/分享的存储与防护？ | [notes.md](notes.md) / [sharing.md](sharing.md) |
+| 桌面端怎么跑/怎么打包？ | [mind-base-desktop.md](mind-base-desktop.md) |
+| VS Code 里为什么总在构建 / 没有 Rust 补全？ | [vscode-setup.md](vscode-setup.md) |
+| 历史迁移与切流过程（只读存档） | [archive/](archive/)（见下节） |
+
+## 五、历史归档（archive/）
+
+一次性事件的过程记录（退役/切流/迁移）：只读存档，不再随实现更新；现行规范以 AGENTS.md 与本目录其余文档为准。
+
+| 文档 | 内容 |
+|---|---|
 | [python-decommission.md](archive/python-decommission.md) | Python backend 退役唯一记录：DoD、迁移归宿表、收尾清单、部署冒烟清单 |
 | [app-ts-cutover.md](archive/app-ts-cutover.md) | 聊天域 + settings 切流 app-ts/app-settings：拓扑、上线步骤、冒烟、取舍 |
 | [app-bili-migration.md](archive/app-bili-migration.md) | B 站获取域迁 app-bili：反爬、ASR、build 编排、事件桥 |
 | [app-note-migration.md](archive/app-note-migration.md) | 笔记域迁 app-note：存储零迁移、wire 契约、MCP |
 | [app-quiz-migration.md](archive/app-quiz-migration.md) | quiz 存储域迁 app-quiz：同库接管、分享缓存、internal 面 |
+
+---
+
+## 维护约定
+
+- 新增/删除/改名文档：同一 PR 内更新本索引，避免再出现指向不存在文件的链接。
+- 索引只放「入口 + 一句话说明」；功能细节写进对应文档，不在本页重复，避免与正文漂移。

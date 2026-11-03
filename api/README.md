@@ -1,4 +1,7 @@
-# MindBase API Documentation
+# MindBase API Documentation（历史存档）
+
+> ⚠️ **已过期**：`openapi.yaml` 是 Python backend 时代（2026-10 已退役）的 OpenAPI 规格，**不代表当前服务**。
+> 当前 API 概览见 [docs/api.md](../docs/api.md)，契约以各服务路由源码与专项文档为准；下方提及的 FastAPI `:8000/docs` / `:8000/redoc` 均已不存在。
 
 Complete OpenAPI 3.0 specification for the MindBase knowledge base system.
 
@@ -15,8 +18,7 @@ python -m http.server 8080
 ### Option 2: Online editor
 
 1. Go to https://editor.swagger.io
-2. File → Import URL → `http://localhost:8000/openapi.yaml`
-   Or paste the contents of `openapi.yaml` directly.
+2. 打开 https://editor.swagger.io ，导入本目录的 `api/openapi.yaml` 文件内容。
 
 ### Option 3: FastAPI built-in docs
 

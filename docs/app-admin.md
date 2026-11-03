@@ -125,9 +125,9 @@ cd frontend-admin && pnpm build        # tsc --noEmit + vite build
 
 覆盖：配置覆盖优先级、迁移守护（只建三张自有表）、登录/限流/会话、角色闸门、分页参数校验、审核 reason 必填、审计写入、CORS/安全头、内容预览审计与非分享范围 404 语义。
 
-> 完整契约与验收清单：[plan/1.0.16-ShareModeration](../plan/1.0.16-ShareModeration/1.0.16-ShareModeration.md)。后端架构与红线见根 `AGENTS.md` §2.21。
+> 后端架构与红线见根 `AGENTS.md` §2.21（本地开发规范，不入 git）；完整契约与验收清单见本文各节的测试覆盖说明。
 
-## 沙箱管理（plan/1.0.19）
+## 沙箱管理
 
 > 在分享审核之外，app-admin 兼作**沙箱控制层（app-sandbox）的管理面板**。app-admin 不直连 sandbox_* 表：所有数据经 app-sandbox 的 `/internal/admin/*` 内部 API 获取，沙箱状态以控制层为唯一真相。
 

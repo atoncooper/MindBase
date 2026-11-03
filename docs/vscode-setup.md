@@ -55,7 +55,7 @@ rust-analyzer 默认只在**工作区根目录**找 `Cargo.toml`；本仓根目�
 
 ## 4. 其他优化
 
-- `cmake.configureOnOpen: false`：打开仓库不再自动配置 `app-mobile/windows`；
+- `cmake.configureOnOpen: false`：`CMake Tools` 扩展打开仓库时不做自动配置。仓内目前没有 CMake 工程（历史原生目标已随移动端移除），保留该开关只为阻止扩展扫描/无谓配置；`.vscode/settings.json` 里遗留的 `cmake.sourceDirectory` 已指向不存在的目录，可择机清理。
 - `files.watcherExclude` / `search.exclude` / `files.exclude`：排除
   `target`、`node_modules`、`dist`、`.next`、`logs`、`data`，减少启动抖动与搜索噪音；
 - `.vscode/extensions.json`：只推荐 Rust/桌面端扩展；

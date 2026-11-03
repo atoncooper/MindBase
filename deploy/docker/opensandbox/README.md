@@ -56,7 +56,7 @@ OPEN_SANDBOX_MEMORY=1G
 ```
 
 这些限制是 **Compose 层**的 cgroup 上限；sandbox 执行容器同时受 OpenSandbox
-create 请求的 `resourceLimits` 约束。生产 K8s 部署在 [deploy/k8s/40-sandbox](../k8s/40-sandbox/README.md)
+create 请求的 `resourceLimits` 约束。生产 K8s 部署在 [deploy/k8s/40-sandbox](../../k8s/40-sandbox/README.md)
 的 values/Pool 中调资源。
 
 ## 安全边界与限制

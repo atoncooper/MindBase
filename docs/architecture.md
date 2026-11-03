@@ -2,7 +2,7 @@
 
 > 本文是全系统的架构地图：服务清单、端口、请求路由、数据归属。改动了 compose / APISIX / nginx 后请同步更新本文。
 
-MindBase 是多服务系统：**app-ts**（Node/Fastify，AI 域：chat/agent/RAG/KG AI/向量化/quiz AI/task-quiz/blindspot/skills）、一组 **app-go** Go 微服务（auth/bili/note/quiz/cloud/kg/settings/admin 各域权威）、**app-pay**（Java Spring Boot 交易/会员）、**app-board**（Go 板存储）、一个 Next.js 前端（`frontendv2/`）、分享审核后台 Compose 入口 **app-admin**（Nginx UI，:3001 回环）+ **app-admin-api**（Go API，:8016 回环）以及一组基础设施容器。
+MindBase 是多服务系统：**app-ts**（Node 22/Fastify，AI 域：chat/agent/RAG/KG AI/向量化/quiz AI/task-quiz/blindspot/skills/学术 agent 与科研 REST）、一组 **app-go** Go 微服务（auth/bili/note/quiz/cloud/kg/settings/admin/sandbox 各域权威）、**app-pay**（Java Spring Boot 交易/会员）、**app-board**（Go 板存储）、一个 Next.js 前端（`frontendv2/`）、分享审核与沙箱运维入口 **app-admin**（Nginx UI，:3001 回环）+ **app-admin-api**（Go API，:8016 回环）、沙箱执行链 **app-sandbox**（Go 控制层，:8017）+ **opensandbox-server**（OpenSandbox lifecycle），以及一组基础设施容器。
 
 > ⚠️ **Python backend（`app/`）已于 2026-10-06 彻底退役**：compose 无 backend 服务、APISIX 无 backend upstream 与 catch_all 兜底（未列举路径一律 404，新端点必须显式加路由）。退役过程见 [python-decommission.md](archive/python-decommission.md)。
 
@@ -29,7 +29,8 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
   ├──► app-settings :8015  用户偏好/壁纸（preferences/wallpaper；BYOK 已退役）
   ├──► app-task :8001      定时任务执行器（独立仓库镜像）
   ├──► app-pay :8002       Java 交易/会员（HTTPS-only，回环暴露）
-  └──► app-board :8004     思维导图/白板存储（HTTPS-only）
+  ├──► app-board :8004     思维导图/白板存储（HTTPS-only）
+  └──► app-sandbox :8017   沙箱控制层（租约/配额/审计/产物；内部面 key-auth）
 ```
 
 服务间协作（不经 APISIX）：app-ts → app-kg 走 **gRPC**（:8013）；app-ts/app-go 各服务经内网直连 MySQL/Mongo/Redis/Milvus/Neo4j/MinIO/Higress。
@@ -46,7 +47,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 
 | 服务 | 实现 | 容器端口 | 宿主端口（回环调试口） | Profile | 说明 |
 |------|------|---------|---------|---------|------|
-| app-ts | Node 20 + Fastify（`app-ts/`） | 8000 | 127.0.0.1:8000 | 默认（ts） | AI 域唯一实现（沿用退役 Python backend 的端口） |
+| app-ts | Node 22 + Fastify（`app-ts/`） | 8000 | 127.0.0.1:8000 | 默认（ts） | AI 域唯一实现：chat/agent/RAG/KG AI/向量化/学术 agent 与科研 REST（沿用退役 Python backend 的端口） |
 | app-auth | Go + Gin（`app-go/app-auth/`） | 8006 | 127.0.0.1:8006 | 默认（auth） | 认证权威；APISIX forward-auth 后端 |
 | app-cloud | Go + Gin（`app-go/app-cloud/`） | 8007 | 127.0.0.1:8007 | 默认（cloud） | 云盘权威 + workspaces |
 | app-note | Go + Gin（`app-go/app-note/`） | 8008 | 127.0.0.1:8008 | 默认（note） | 笔记权威 |
@@ -63,7 +64,9 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-pay-test | 同 app-pay 镜像 | 8002 | 127.0.0.1:18002 | pay-test | 测试实例（强制 MOCK 渠道，整库隔离） |
 | app-pay-admin | Go + Gin（`app-pay-admin/`） | 8003 | 127.0.0.1:8003 | pay-admin | 支付后台管理控制台（不经 APISIX） |
 | app-admin | Nginx（静态 SPA；配置 `nginx/app-admin.conf`） | 80 | 127.0.0.1:3001 | 默认 / admin | 分享审核 UI；同源 `/api` 代理至 app-admin-api |
-| app-admin-api | Go + Gin（`app-go/app-admin/`） | 8016 | 127.0.0.1:8016 | 默认 / admin | 直连 MySQL；只读用户/分享元数据 + 审核 4 列；不经 APISIX（详见 [app-admin.md](app-admin.md)） |
+| app-admin-api | Go + Gin（`app-go/app-admin/`） | 8016 | 127.0.0.1:8016 | 默认 / admin | 直连 MySQL；只读用户/分享元数据 + 审核 4 列；代理沙箱管理面；不经 APISIX（详见 [app-admin.md](app-admin.md)） |
+| app-sandbox | Go + Gin（`app-go/app-sandbox/`） | 8017 | 127.0.0.1:${APP_SANDBOX_PORT:-8017} | sandbox / full | 沙箱控制层：租约复用、档位配额、审计、产物、准入与 sweeper；app-ts 经 APISIX `sandbox_internal` 调用，管理面仅 app-admin 可调 |
+| opensandbox-server | OpenSandbox lifecycle server（Docker runtime） | 8080 | 127.0.0.1:${OPEN_SANDBOX_PORT:-8080} | sandbox / full | 负责沙箱创建/执行/删除，挂载 Docker socket（单机可信环境）；生产 K8s 见 [deploy/k8s/40-sandbox](../deploy/k8s/40-sandbox/README.md) |
 | higress | Higress all-in-one | 8080 gw / 18081 console | 127.0.0.1:18080 / :18081 | ai | AI 网关：平台 LLM/embedding/rerank/ASR 出网统一入口 + 计量 |
 | frontend | Next.js 16（`frontendv2/`） | 3000 | `${FRONTEND_PORT:-3000}` | 默认（standalone） | 用户端 SPA（standalone 构建） |
 | nginx | nginx:alpine | 80 / 443 | 80 / 443 | 默认（standalone） | 统一入口：TLS、页面/接口分发、缓存 |
@@ -95,7 +98,7 @@ profile 汇总：
 
 （`standalone`/`storage`/`ts`/`auth`/`cloud`/`note`/`quiz`/`bili`/`kg`/`settings`/`board`/`task` 等单域 profile 用于在最小集合上单独操作某个服务；裸 `up` 已含全部默认服务。）
 
-另有一个独立 compose：`docker-compose.daytona.yml`（自托管 Daytona 代码沙箱）。
+另有一个历史 compose：`docker-compose.daytona.yml`（旧 Daytona 代码沙箱方案，已由 `app-sandbox` + OpenSandbox 取代，仅作存档；当前沙箱用 `--profile sandbox`）。
 
 ---
 
@@ -104,7 +107,7 @@ profile 汇总：
 ### nginx（`nginx/nginx.conf` + `locations.conf`）
 
 - 80 / 443 两个 server 共用 `locations.conf`；443 用 `nginx/certs/` 自签开发证书（`scripts/gen-nginx-dev-cert.sh` 生成）。
-- **页面路由（→ frontend）**：`/`、`/chat`、`/notes`、`/quiz`、`/favorites`、`/tasks`、`/skills`、`/settings`、`/blindspot` 等精确路径返回 SPA；`/wallpapers/` 静态资源。
+- **页面路由（→ frontend）**：`/`、`/chat`、`/research`、`/notes`、`/quiz`、`/favorites`、`/tasks`、`/skills`、`/settings`、`/blindspot` 等精确路径返回 SPA；`/wallpapers/` 静态资源。
 - **双用途分发**：既是前端页面又是 API 前缀的路径（如 `/tasks`、`/notes`），通过 `X-Requested-With: XMLHttpRequest` 请求头区分——API 请求内部改写转 APISIX，页面请求转 frontend 并走缓存。
 - **API 转发（→ apisix）**：`/auth` `/chat`（SSE 关缓冲）`/knowledge` `/asr` `/vec` `/notes` `/quiz` `/board/` `/task-quiz/` `/tasks` `/skills` `/blindspot` `/preferences` `/wallpaper` `/workspaces` 等。
 - **直连（绕 APISIX）**：`/cloud/` → app-cloud（5GB 上传；身份经 auth_request 子请求向 app-auth 验证并注入 X-Uid/X-Roles；`/cloud/s/` 公开分享免鉴权）；`/minio-proxy/` → minio。
@@ -131,6 +134,8 @@ profile 汇总：
 | `/pay/*` | app-pay（https） | forward-auth（`/pay/callback/*` 免登录渠道验签） |
 | `/internal/pay/*` | app-pay（https） | key-auth |
 | `/board/*` | app-board（https） | forward-auth（OPTIONS 预检免鉴权） |
+| `/academic` `/academic/*` | app-ts（`academic_ts`，priority 55） | forward-auth（科研工作台 REST；uid 由网关注入） |
+| `/internal/sandbox/*` | app-sandbox | key-auth（app-ts 执行面；管理面 `/internal/admin/*` 不经网关） |
 
 forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Authorization: Bearer <bili_session>`：无凭证放行（公有端点），无效 401，有效则经 proxy-rewrite **剥离客户端伪造的头**后注入 `X-Uid`/`X-Roles`。**下游服务信任网关注入的头，不自验会话；nginx `/cloud/` 的 auth_request 语义相同。**
 
@@ -146,6 +151,7 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | quiz 6 表（quiz_sets/quiz_submissions/quiz_answers/quiz_questions/quiz_task/quiz_task_answer） | MySQL `mind_base` | app-quiz |
 | 云盘 3 表（cloud_files/cloud_folders/cloud_shares）+ cloud_refs + workspaces/workspace_bindings | MySQL `mind_base` | app-cloud；`cloud_shares` 的 moderation 4 列由 app-admin 写（同库，审核即时生效） |
 | 管理台 3 表（admin_user/admin_session/admin_audit） | MySQL `mind_base` | app-admin 自有（仅 CREATE IF NOT EXISTS） |
+| 沙箱控制层 5 表（sandbox_lease/sandbox_execution/sandbox_artifact/sandbox_usage_daily/sandbox_audit） | MySQL `mind_base`（随共享 `RDBMS__URL`，可用 `SANDBOX__DATABASE__DSN` 覆盖） | app-sandbox（AutoMigrate，schema 权威）；产物对象在 MinIO |
 | 用户偏好（user_preferences） | MySQL `mind_base` | app-settings（BYOK 三表已于 2026-10-07 退役删除） |
 | 板元数据（board 表，AutoMigrate） | MySQL `mind_base` | app-board |
 | ASR 正文 / quiz 题目正文 / 板正文 | Mongo `mind_base`（`asr_documents`/`quiz_questions`/`task_quiz_questions`/`board_documents`） | app-bili / app-quiz / app-board 写；app-ts 跨库**只读** `asr_documents` |
@@ -170,6 +176,7 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | app-pay | `application.yaml` + docker/test profile（Flyway 管 schema） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
 | app-pay-admin | `default.yaml`（嵌入）+ config 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
 | app-admin | `default.yaml`（嵌入）+ config 覆盖层 | `APPADMIN__` | [app-admin.md](app-admin.md) |
+| app-sandbox | `default.yaml`（嵌入）+ config 覆盖层 | `SANDBOX__`（DB 走共享 `RDBMS__URL` 或 `SANDBOX__DATABASE__DSN`） | [features.md](features.md) §5 / [academic-agent.md](academic-agent.md) §沙箱 |
 | app-board / 三个 MCP | `default.yaml`（嵌入） | `APPBOARD__` 等 | [app-board.md](app-board.md) / [app-board-mcp.md](app-board-mcp.md) |
 
 AI 出网统一走 Higress 网关（`AI_GATEWAY__*`，见 AGENTS.md §2.10）；供应商 key 只在网关与 `.env`，不进代码与日志。
@@ -196,10 +203,10 @@ src/
 |----------|------|------|
 | ci-frontend | `frontendv2/**` | tsc --noEmit + ESLint + next build |
 | ci-app-ts | `app-ts/**` | typecheck + vitest |
-| ci-app-bili / ci-app-note / ci-app-quiz / ci-app-settings / ci-app-kg | 对应 Go 服务 | gofmt / vet / test / build |
+| ci-app-bili / ci-app-note / ci-app-quiz / ci-app-settings / ci-app-kg | 对应 Go 服务 | gofmt / vet / test / build（app-cloud 与 app-sandbox 目前无独立 workflow，依赖本地构建与 compose 验证） |
 | ci-app-pay | `app-pay/**` | mvn test（纯 JUnit，无外部 DB） |
 | ci-pay-admin | app-pay-admin | gofmt / vet / test / build |
 | ci-app-admin | app-go/app-admin | gofmt / vet / test / build |
 | ci-frontend-admin | frontend-admin | tsc --noEmit + vite build |
-| docker-build | push main / tag | 构建并发布 18 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-pay-admin/app-admin/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`） |
-| desktop-release | tag `mind-base-desktop-v*` | Tauri 桌面端构建（Windows NSIS + macOS dmg）并发布 Release |
+| docker-build | push main / tag | 构建并发布 19 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-pay-admin/app-admin/app-admin-ui/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`；app-sandbox 尚未纳入） |
+| ci-desktop / desktop-release | `mind-base-desktop/**` | PR 期 cargo check；tag `mind-base-desktop-v*` 时构建 Tauri 桌面端（Windows NSIS + macOS dmg）并发布 Release |
