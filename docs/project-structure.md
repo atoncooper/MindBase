@@ -17,7 +17,6 @@
 | `app-pay/` | 交易 / 会员服务（Java 21 + Spring Boot 3 + MyBatis-Plus，HTTPS-only） |
 | `app-pay-admin/` | 支付运营后台（Go + Gin，服务端渲染，回环） |
 | `mcp/` | MCP server（board / note / quiz 工具面），把域能力暴露给 agent |
-| `mind-base-desktop/` | 桌面端（Tauri 2 + React 19，全本地 SQLite） |
 | `apisix/` | APISIX 声明式配置（路由 / 上游 / forward-auth / key-auth / 限流） |
 | `nginx/` | 统一入口（TLS、静态页、页面与接口分发、缓存） |
 | `db/` | MySQL 初始化 schema（`system.sql`） |
@@ -150,9 +149,8 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 | app-pay | `mvn test` | 纯 JUnit，无外部 DB |
 | frontendv2 | `npm run lint`、`npx tsc --noEmit`、`next build` | CI `ci-frontend` |
 | frontend-admin | `pnpm build` | tsc --noEmit + vite build |
-| 桌面端 | `cargo check` / `npm run tauri build` | CI `ci-desktop` / `desktop-release` |
 
-CI 工作流在 `.github/workflows/`：按目录分服务触发，`docker-build` 在 push main / tag 时构建镜像，`desktop-release` 在 `mind-base-desktop-v*` tag 时发布安装包。
+CI 工作流在 `.github/workflows/`：按目录分服务触发，`docker-build` 在 push main / tag 时构建镜像。桌面端（独立仓库）的 CI 与 Release 在该仓库内维护。
 
 ---
 

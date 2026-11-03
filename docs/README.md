@@ -33,7 +33,6 @@
 |---|---|
 | [academic-agent.md](academic-agent.md) | 网页端学术 Agent：项目/文献/稿件/证据工具、REST、数据模型、性能与运维、故障排查 |
 | [code-execution.md](code-execution.md) | 代码执行（run_code）：沙箱边界、控制层调用链、结果与持久化、失败降级 |
-| [automation.md](automation.md) | AI 监督型长任务：工具面、报告节奏与去重、中断/重试/恢复 |
 | [mikro-orm.md](mikro-orm.md) | app-ts MongoDB 的 MikroORM 采用说明与分阶段迁移计划 |
 
 ### 2.3 业务服务（app-*）
@@ -56,19 +55,13 @@
 | [notes.md](notes.md) | 笔记系统：MySQL/Mongo 分离存储、锚点、修订、分享、Markdown 消毒 |
 | [sharing.md](sharing.md) | 公开分享体系：分享链接域名链、设备证明、提取码、部署检查清单 |
 
-### 2.5 桌面端（mind-base-desktop）
+> 桌面端（Tauri 2，全本地）已拆分为独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)，其文档在该仓库 `docs/` 维护；本仓不再包含桌面端源码与文档。
+
+### 2.5 开发环境
 
 | 文档 | 内容 |
 |---|---|
-| [mind-base-desktop.md](mind-base-desktop.md) | 桌面端（Tauri 2，全本地）：定位、功能、运行与打包、目录结构 |
-| [desktop-cross-platform.md](desktop-cross-platform.md) | 三平台构建：平台支持、构建前置、FFmpeg sidecar、SSH 凭据存储 |
-| [desktop-rust-architecture.md](desktop-rust-architecture.md) | Rust 分包架构：包清单与依赖方向、目录结构、包内拆分约定 |
-
-### 2.6 开发环境
-
-| 文档 | 内容 |
-|---|---|
-| [vscode-setup.md](vscode-setup.md) | VS Code 多语言单仓配置：Java 自动构建、rust-analyzer、任务与工作区 |
+| [vscode-setup.md](vscode-setup.md) | VS Code 多语言单仓配置：Java 自动构建、任务与工作区 |
 
 ## 三、项目介绍配套文档
 
@@ -95,7 +88,7 @@
 | 代码执行和产物记录怎么存、怎么回放？ | [code-execution.md](code-execution.md) |
 | 定时出题、白板、支付、云盘、KG 各服务怎么配？ | [app-task.md](app-task.md) / [app-board.md](app-board.md) / [app-pay.md](app-pay.md) / [app-cloud.md](app-cloud.md) / [app-kg.md](app-kg.md) |
 | 笔记/分享的存储与防护？ | [notes.md](notes.md) / [sharing.md](sharing.md) |
-| 桌面端怎么跑/怎么打包？ | [mind-base-desktop.md](mind-base-desktop.md) |
+| 桌面端怎么跑/怎么打包？ | 独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop) |
 | VS Code 里为什么总在构建 / 没有 Rust 补全？ | [vscode-setup.md](vscode-setup.md) |
 | 历史迁移与切流过程（只读存档） | [archive/](archive/)（见下节） |
 

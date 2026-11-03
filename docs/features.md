@@ -185,12 +185,12 @@ MindBase 的能力围绕三条主线：
 
 ## 13. 桌面端
 
-**位置**：`mind-base-desktop/`（Tauri 2 + React 19，Windows / macOS）
+**位置**：独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)（Tauri 2 + React 19，Windows / macOS / Linux）
 
 - 与 Web 后端**无运行时依赖**，数据全部在本机 SQLite。
 - 能力：聊天 agent（结构化交互、产物卡片、后台任务、联网搜索）、B 站知识库与混合检索、思维导图/白板、Quiz、笔记、简历/幻灯片 agent、科研工作台与学术 agent + 记忆架构。
 
-详见 [mind-base-desktop.md](mind-base-desktop.md)。
+详见该仓库的 README 与 `docs/`（本仓不再维护桌面端源码与文档）。
 
 ---
 
