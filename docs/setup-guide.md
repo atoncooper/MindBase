@@ -81,7 +81,7 @@ cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 | `SANDBOX_ENABLED=true` | 让 AI 服务真正调用沙箱（默认 `false` 时 `run_code` 会如实提示未配置）。 |
 | `SANDBOX_ADMIN_TOKEN` | 管理台「沙箱」面板令牌（与 app-sandbox 同值）；留空 = 面板禁用，不影响其他后台功能。 |
 | `APPTASK_EMAIL_API_KEY` | 定时出题邮件（Resend 的 `re_` 开头 key）；不填时邮件只记 dry_run，不会真的发送。 |
-| `PAY_MYSQL_*` / `PAY_OPS_KEY` | 会员 / 支付：`--profile pay-admin` 必须有 `PAY_OPS_KEY`（compose 强制），前者用本地默认值即可。 |
+| `PAY_MYSQL_*` / `PAY_OPS_KEY` | 会员 / 支付：`PAY_MYSQL_*` 用本地默认值即可；`PAY_OPS_KEY` 可选（管理台「退款复核」用，留空则该页隐藏）。 |
 | `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 管理台「分享内容受控预览」。 |
 | `TAVILY_API_KEY` / `SEARXNG_URL`、`LANGSMITH_*`、`BOARD_MCP_*` | 可选增强：联网搜索质量、调用链追踪、外部 MCP 宿主接入。 |
 
@@ -89,7 +89,7 @@ cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 
 ## 4. 启动
 
-### 4.1 先起主栈（默认即全栈，不含 AI 网关 / 沙箱 / 支付后台）
+### 4.1 先起主栈（默认即全栈，不含 AI 网关 / 沙箱；管理台已含支付运营）
 
 ```bash
 docker compose up -d
@@ -108,8 +108,7 @@ docker compose ps
 ```bash
 docker compose --profile ai up -d          # AI 网关（AI 能力必须）
 docker compose --profile sandbox up -d     # 科研代码执行：沙箱控制层 + OpenSandbox
-docker compose --profile pay up -d         # 会员 / 支付
-docker compose --profile pay-admin up -d   # 支付后台（需 PAY_OPS_KEY）
+docker compose --profile pay up -d         # 会员 / 支付（支付运营在默认管理台内）
 docker compose --profile tools up -d       # Redis / Mongo 网页管理工具
 ```
 
@@ -174,7 +173,7 @@ curl -s http://127.0.0.1:8017/health      # 沙箱控制层（需先启 sandbox�
 4. 「**科研**」：科研工作台（项目六阶段、文献检索与核验、稿件写作）。其中「在沙箱里跑分析脚本」需要 4.2 的 `--profile sandbox` 与 3.4 的 `SANDBOX_ENABLED=true`。
 5. 「**题目练习**」生成 / 批改题目；「**定时出题**」设定时间后自动出题并发邮件（需 3.4 的邮件配置）。
 6. 其他入口：「更多」→ 知识图谱 / 知识盲区；「笔记」「思维导图」「云盘」「技能」；右上角「设置」改偏好与壁纸。
-7. 管理与运维：管理台（分享审核、沙箱面板）；支付后台需 4.2 的 `--profile pay-admin`，浏览器打开 `http://127.0.0.1:8003`（默认 `admin` / `app-pay-admin`，首登改密）。
+7. 管理与运维：管理台 `http://127.0.0.1:3001`（分享审核、沙箱面板、支付运营、账户与审计；默认 `admin` / `app-admin`，首登改密）。支付运营读 `app-pay` 库（`--profile pay`），退款复核需 `PAY_OPS_KEY`。
 
 ## 8. 常见问题
 

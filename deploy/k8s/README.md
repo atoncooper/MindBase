@@ -3,7 +3,7 @@
 本目录将 `docker-compose.yml` 的完整拓扑（3×MySQL、Redis、Mongo、Milvus+etcd、
 MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 八服务
 （auth/cloud/note/bili/quiz/kg/settings/admin）、app-board + 三个 MCP、app-task、
-app-pay/app-pay-admin、app-admin（分享审核后台 + 沙箱管理，:8016 回环）、
+app-pay、app-admin（统一管理后台：分享审核 + 支付运营 + 沙箱 + 账户 + 审计，:8016 回环）、
 app-sandbox（沙箱控制层））等价移植为 k8s 清单；OpenSandbox 运行时（lifecycle
 server / controller / ingress-gateway / warm pool）见 [40-sandbox](40-sandbox/README.md)。
 
@@ -137,8 +137,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 |------|------|
 | Higress 控制台 | `kubectl -n mind-base port-forward svc/higress 18081:8001` → http://127.0.0.1:18081 初始化 admin、配 Provider（供应商真实 key 只在这里）/ Consumer `mindbase-backend`(BEARER) / 路由 `/v1`、`/api/v1`、`/api-ws`；**modelMapping 保持空透传** |
 | 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart deploy/app-ts deploy/app-cloud deploy/app-bili |
-| app-pay-admin | `kubectl -n mind-base port-forward svc/app-pay-admin 8003:8003` → https://127.0.0.1:8003（种子账户 admin / app-pay-admin，首登改密） |
-| app-admin | `kubectl -n mind-base port-forward svc/app-admin 8016:8016` → http://127.0.0.1:8016（分享审核后台 + 沙箱管理，种子账户 admin / app-admin，首登强制改密）；前端 frontend-admin 本地 `pnpm dev`（/api 代理 8016） |
+| app-admin | `kubectl -n mind-base port-forward svc/app-admin 8016:8016` → http://127.0.0.1:8016（统一后台：分享审核 + 支付运营 + 沙箱 + 账户 + 审计，种子账户 admin / app-admin，首登强制改密）；前端 frontend-admin 本地 `pnpm dev`（/api 代理 8016）。支付运营读 app-pay-mysql，退款复核需 `.env` 的 `PAY_OPS_KEY` |
 | app-sandbox | `kubectl -n mind-base port-forward svc/app-sandbox 8017:8017` → `/health`、`/ready`；运行时依赖 40-sandbox 的 OpenSandbox |
 | 入口地址 | nginx Service 是 LoadBalancer：本地集群直接用分配的地址；云上绑域名 + 正式证书（更新 nginx-tls Secret 后 restart nginx） |
 
@@ -160,7 +159,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | 沙箱运行时 | compose `--profile sandbox` + 可选 fake runtime | OpenSandbox Helm（40-sandbox）；`app-sandbox` 强制 `runtime.type=opensandbox` + warm pool `pool-python` |
 | 探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
 redis-cli ping / etcdctl endpoint health / minio health/live / backend /health）；
-无 HTTP 健康端点的 TLS 服务（app-pay/app-board/app-pay-admin）用 tcpSocket 探活；
+无 HTTP 健康端点的 TLS 服务（app-pay/app-board）用 tcpSocket 探活；
 app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。
 
 ## 5. 日常运维

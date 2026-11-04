@@ -20,12 +20,20 @@ import (
 )
 
 type Config struct {
-	App      AppConfig      `yaml:"app"`
-	Server   ServerConfig   `yaml:"server"`
-	Timezone string         `yaml:"timezone"`
-	RDBMS    RDBMSConfig    `yaml:"rdbms"`
+	App      AppConfig    `yaml:"app"`
+	Server   ServerConfig `yaml:"server"`
+	Timezone string       `yaml:"timezone"`
+	RDBMS    RDBMSConfig  `yaml:"rdbms"`
+	// PayRDBMS is the OPTIONAL second connection: app_pay on the dedicated
+	// app-pay-mysql instance (pay_* schema owned by app-pay / Java Flyway).
+	// Empty url = payment console disabled (/api/pay/** answers 503) while the
+	// rest of the console keeps working.
+	PayRDBMS RDBMSConfig    `yaml:"pay_rdbms"`
 	Session  SessionConfig  `yaml:"session"`
 	Security SecurityConfig `yaml:"security"`
+	// Pay configures the payment-operations console (grant quota, refund-review
+	// upstream, fund-audit JSONL path).
+	Pay PayConfig `yaml:"pay"`
 	// CloudReview — app-cloud internal preview wiring (see CloudReviewConfig).
 	CloudReview CloudReviewConfig `yaml:"cloud_review"`
 	// SandboxAdmin — app-sandbox internal admin plane (see SandboxAdminConfig).
@@ -52,16 +60,76 @@ type RDBMSConfig struct {
 }
 
 // SessionConfig: DB-backed login session lifetime (admin_session table,
-// HttpOnly cookie, sliding expiry on each authenticated request).
+// HttpOnly cookie, sliding expiry on each authenticated request) plus the
+// device / IP binding rules re-checked whenever a session is presented.
 type SessionConfig struct {
-	TTLMinutes int `yaml:"ttl_minutes"` // 0 = default 12h
+	TTLMinutes    int    `yaml:"ttl_minutes"`    // 0 = default 12h
+	DeviceBinding string `yaml:"device_binding"` // ""|off|id|strict
+	IPBinding     string `yaml:"ip_binding"`     // ""|off|subnet|exact
+	IPv4Prefix    int    `yaml:"ipv4_prefix"`    // 0 = default 24
+	IPv6Prefix    int    `yaml:"ipv6_prefix"`    // 0 = default 64
+}
+
+// DeviceBindingMode normalizes the device-fingerprint policy. Only id and
+// strict enable the check; empty or unknown values mean off (no header
+// required, no session device comparison).
+func (s SessionConfig) DeviceBindingMode() string {
+	switch mode := strings.ToLower(strings.TrimSpace(s.DeviceBinding)); mode {
+	case "id", "strict":
+		return mode
+	default:
+		return "off"
+	}
+}
+
+// IPBindingMode normalizes the session IP policy. Only exact and subnet enable
+// the check; everything else means off.
+func (s SessionConfig) IPBindingMode() string {
+	switch mode := strings.ToLower(strings.TrimSpace(s.IPBinding)); mode {
+	case "exact", "subnet":
+		return mode
+	default:
+		return "off"
+	}
+}
+
+// IPv4PrefixOr returns the effective IPv4 subnet size with the documented
+// default applied when the field is unset or out of range.
+func (s SessionConfig) IPv4PrefixOr() int {
+	if s.IPv4Prefix >= 1 && s.IPv4Prefix <= 32 {
+		return s.IPv4Prefix
+	}
+	return 24
+}
+
+// IPv6PrefixOr returns the effective IPv6 subnet size (default 64).
+func (s SessionConfig) IPv6PrefixOr() int {
+	if s.IPv6Prefix >= 1 && s.IPv6Prefix <= 128 {
+		return s.IPv6Prefix
+	}
+	return 64
+}
+
+// LoginConfig bounds repeated failed logins. Both budgets are enforced on every
+// attempt: the short IP window stops one host hammering the endpoint, while the
+// longer account window protects a single account across rotating addresses.
+type LoginConfig struct {
+	MaxFailsPerIP        int `yaml:"max_fails_per_ip"`       // 0 = default 10
+	IPWindowSeconds      int `yaml:"ip_window_seconds"`      // 0 = default 60
+	MaxFailsPerAccount   int `yaml:"max_fails_per_account"`  // 0 = default 10
+	AccountWindowSeconds int `yaml:"account_window_seconds"` // 0 = default 900
 }
 
 type SecurityConfig struct {
 	IPAllowlist []string `yaml:"ip_allowlist"`
-	CORS        struct {
+	// TrustedProxies lists the reverse proxies whose X-Forwarded-* headers may
+	// be believed (IP or CIDR). Empty = forwarded headers are never trusted and
+	// the TCP peer address is the client address.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	CORS           struct {
 		AllowOrigins []string `yaml:"allow_origins"`
 	} `yaml:"cors"`
+	Login LoginConfig `yaml:"login"`
 }
 
 // CloudReviewConfig wires the app-cloud internal share-content review preview.
@@ -81,6 +149,33 @@ type CloudReviewConfig struct {
 type SandboxAdminConfig struct {
 	BaseURL string `yaml:"base_url"`
 	Token   string `yaml:"token"`
+}
+
+// PayConfig configures the payment-operations console.
+type PayConfig struct {
+	Grant     PayGrantConfig `yaml:"grant"`
+	Ops       PayOpsConfig   `yaml:"ops"`
+	AuditFile string         `yaml:"audit_file"`
+}
+
+// PayGrantConfig mirrors app-pay GrantQuotaService's daily cap: app-admin
+// writes pay_membership_event directly, so it must enforce the same circuit
+// breaker or the console grant would bypass the execution point. 0 = unlimited.
+type PayGrantConfig struct {
+	DailyMaxCount int `yaml:"daily_max_count"`
+	DailyMaxDays  int `yaml:"daily_max_days"`
+}
+
+// PayOpsConfig wires the refund-review workbench to app-pay's internal
+// endpoints. The fund write happens in app-pay (audit/state-machine
+// consistency); the console carries PAY_OPS_KEY through APISIX key-auth
+// (pay-ops consumer) plus the logged-in operator identity. key empty = the
+// whole refund-review group stays hidden (404).
+type PayOpsConfig struct {
+	BaseURL             string `yaml:"base_url"`              // default http://apisix:9080 (compose injects)
+	Key                 string `yaml:"key"`                   // PAY_OPS_KEY (pay-ops consumer)
+	TimeoutSeconds      int    `yaml:"timeout_seconds"`       // default 5
+	RefundReviewEnabled bool   `yaml:"refund_review_enabled"` // master switch
 }
 
 // SeedConfig: default admin account inserted on first boot (missing username
@@ -184,11 +279,26 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	atoi("APPADMIN__SERVER__PORT", &cfg.Server.Port)
 	atoi("APPADMIN__SESSION__TTL_MINUTES", &cfg.Session.TTLMinutes)
+	if v := get("APPADMIN__SESSION__DEVICE_BINDING"); v != "" {
+		cfg.Session.DeviceBinding = v
+	}
+	if v := get("APPADMIN__SESSION__IP_BINDING"); v != "" {
+		cfg.Session.IPBinding = v
+	}
+	atoi("APPADMIN__SESSION__IPV4_PREFIX", &cfg.Session.IPv4Prefix)
+	atoi("APPADMIN__SESSION__IPV6_PREFIX", &cfg.Session.IPv6Prefix)
 	// Security lists accept comma-separated environment values; an explicitly
 	// empty value clears a list supplied by a YAML overlay.
 	if v, ok := os.LookupEnv("APPADMIN__SECURITY__IP_ALLOWLIST"); ok {
 		cfg.Security.IPAllowlist = splitList(v)
 	}
+	if v, ok := os.LookupEnv("APPADMIN__SECURITY__TRUSTED_PROXIES"); ok {
+		cfg.Security.TrustedProxies = splitList(v)
+	}
+	atoi("APPADMIN__SECURITY__LOGIN__MAX_FAILS_PER_IP", &cfg.Security.Login.MaxFailsPerIP)
+	atoi("APPADMIN__SECURITY__LOGIN__IP_WINDOW_SECONDS", &cfg.Security.Login.IPWindowSeconds)
+	atoi("APPADMIN__SECURITY__LOGIN__MAX_FAILS_PER_ACCOUNT", &cfg.Security.Login.MaxFailsPerAccount)
+	atoi("APPADMIN__SECURITY__LOGIN__ACCOUNT_WINDOW_SECONDS", &cfg.Security.Login.AccountWindowSeconds)
 	if v, ok := os.LookupEnv("APPADMIN__SECURITY__CORS__ALLOW_ORIGINS"); ok {
 		cfg.Security.CORS.AllowOrigins = splitList(v)
 	}
@@ -203,6 +313,26 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := get("APPADMIN__SANDBOX_ADMIN__TOKEN"); v != "" {
 		cfg.SandboxAdmin.Token = v
+	}
+	// Payment operations: second database + grant quota + refund-review upstream.
+	if v := get("APPADMIN__PAY_RDBMS__URL"); v != "" {
+		cfg.PayRDBMS.URL = v
+	}
+	atoi("APPADMIN__PAY_RDBMS__MAX_OPEN_CONNS", &cfg.PayRDBMS.MaxOpenConns)
+	atoi("APPADMIN__PAY_RDBMS__MAX_IDLE_CONNS", &cfg.PayRDBMS.MaxIdleConns)
+	atoi("APPADMIN__PAY_RDBMS__CONN_MAX_LIFETIME", &cfg.PayRDBMS.ConnMaxLifetime)
+	atoi("APPADMIN__PAY__GRANT__DAILY_MAX_COUNT", &cfg.Pay.Grant.DailyMaxCount)
+	atoi("APPADMIN__PAY__GRANT__DAILY_MAX_DAYS", &cfg.Pay.Grant.DailyMaxDays)
+	if v := get("APPADMIN__PAY__OPS__BASE_URL"); v != "" {
+		cfg.Pay.Ops.BaseURL = v
+	}
+	if v := get("APPADMIN__PAY__OPS__KEY"); v != "" {
+		cfg.Pay.Ops.Key = v
+	}
+	atoi("APPADMIN__PAY__OPS__TIMEOUT_SECONDS", &cfg.Pay.Ops.TimeoutSeconds)
+	boolVar("APPADMIN__PAY__OPS__REFUND_REVIEW_ENABLED", &cfg.Pay.Ops.RefundReviewEnabled)
+	if v := get("APPADMIN__PAY__AUDIT_FILE"); v != "" {
+		cfg.Pay.AuditFile = v
 	}
 	if v := get("APPADMIN__SEED__USERNAME"); v != "" {
 		cfg.Seed.Username = v
@@ -250,11 +380,45 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("security.cors.allow_origins entry %q: %w", origin, err)
 		}
 	}
+	for _, entry := range cfg.Security.TrustedProxies {
+		if err := validateIPOrCIDR(entry); err != nil {
+			return fmt.Errorf("security.trusted_proxies entry %q: %w", entry, err)
+		}
+	}
+	if err := validateSessionPolicy(cfg); err != nil {
+		return err
+	}
 	// The optional upstream planes (cloud review preview, sandbox console proxy)
 	// are NOT validated here: a lone base URL or token would silently half-enable
 	// one, but blocking the whole console over an optional feature is worse —
 	// NormalizeCloudReview / NormalizeSandboxAdmin (called by main) clear the
 	// mismatch and disable that plane with a warning instead.
+	return nil
+}
+
+// validateSessionPolicy rejects unknown binding modes and out-of-range subnet
+// sizes. Zero prefixes mean "unset" and are normalized to the defaults.
+func validateSessionPolicy(cfg *Config) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.Session.DeviceBinding)) {
+	case "", "off", "id", "strict":
+	default:
+		return fmt.Errorf("session.device_binding must be off, id or strict, got %q", cfg.Session.DeviceBinding)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Session.IPBinding)) {
+	case "", "off", "subnet", "exact":
+	default:
+		return fmt.Errorf("session.ip_binding must be off, subnet or exact, got %q", cfg.Session.IPBinding)
+	}
+	if cfg.Session.IPv4Prefix == 0 {
+		cfg.Session.IPv4Prefix = 24
+	} else if cfg.Session.IPv4Prefix < 1 || cfg.Session.IPv4Prefix > 32 {
+		return fmt.Errorf("session.ipv4_prefix must be between 1 and 32, got %d", cfg.Session.IPv4Prefix)
+	}
+	if cfg.Session.IPv6Prefix == 0 {
+		cfg.Session.IPv6Prefix = 64
+	} else if cfg.Session.IPv6Prefix < 1 || cfg.Session.IPv6Prefix > 128 {
+		return fmt.Errorf("session.ipv6_prefix must be between 1 and 128, got %d", cfg.Session.IPv6Prefix)
+	}
 	return nil
 }
 
@@ -286,6 +450,22 @@ func NormalizeSandboxAdmin(cfg *Config) bool {
 		return false // intentionally disabled
 	}
 	cfg.SandboxAdmin.BaseURL, cfg.SandboxAdmin.Token = "", ""
+	return true // half-wired → cleared + warned
+}
+
+// NormalizePayOps resolves the all-or-nothing invariant for the refund-review
+// workbench: the upstream base URL and the ops key must be set TOGETHER. Half
+// wiring is cleared (the workbench stays hidden, 404) and true is returned so
+// main can warn loudly; a fully wired or fully empty config returns false.
+func NormalizePayOps(cfg *Config) bool {
+	base, key := strings.TrimSpace(cfg.Pay.Ops.BaseURL), strings.TrimSpace(cfg.Pay.Ops.Key)
+	if base != "" && key != "" {
+		return false // fully wired
+	}
+	if base == "" && key == "" {
+		return false // intentionally disabled
+	}
+	cfg.Pay.Ops.BaseURL, cfg.Pay.Ops.Key = "", ""
 	return true // half-wired → cleared + warned
 }
 

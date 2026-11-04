@@ -18,3 +18,12 @@ export function formatTime(value: string | null | undefined): string {
   const d = dayjs(value);
   return d.isValid() ? d.format("YYYY-MM-DD HH:mm:ss") : value;
 }
+
+/** 整数分 → 元（元 = 分/100 整数部分，角分 = 分%100 补零）。 */
+export function formatCents(cents: number | null | undefined): string {
+  if (cents === null || cents === undefined || !Number.isFinite(cents)) return "-";
+  const abs = Math.abs(Math.trunc(cents));
+  const yuan = Math.floor(abs / 100);
+  const fen = abs % 100;
+  return `${cents < 0 ? "-" : ""}¥${yuan}.${String(fen).padStart(2, "0")}`;
+}

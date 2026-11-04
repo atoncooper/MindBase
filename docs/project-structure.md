@@ -10,12 +10,11 @@
 | 目录 / 文件 | 作用 |
 |-------------|------|
 | `frontendv2/` | 用户端 Web（Next.js 16 App Router），用户可见的全部页面 |
-| `frontend-admin/` | 管理后台 SPA（Vite + React 18 + antd），分享审核 / 用户 / 审计 / 沙箱 |
+| `frontend-admin/` | 统一管理后台 SPA（Vite + React 18 + antd），分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计 |
 | `app-ts/` | AI 域服务（Node 22 + Fastify + tsx）：chat / agent / RAG / KG AI / 向量化 / quiz AI / task-quiz / skills / 学术 |
 | `app-go/` | 各领域 Go 微服务：auth / cloud / note / bili / quiz / kg / settings / admin / sandbox |
 | `app-board/` | 思维导图 / 白板存储服务（Go + Gin，HTTPS-only） |
 | `app-pay/` | 交易 / 会员服务（Java 21 + Spring Boot 3 + MyBatis-Plus，HTTPS-only） |
-| `app-pay-admin/` | 支付运营后台（Go + Gin，服务端渲染，回环） |
 | `mcp/` | MCP server（board / note / quiz 工具面），把域能力暴露给 agent |
 | `apisix/` | APISIX 声明式配置（路由 / 上游 / forward-auth / key-auth / 限流） |
 | `nginx/` | 统一入口（TLS、静态页、页面与接口分发、缓存） |
@@ -144,7 +143,7 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 | 范围 | 命令 | 说明 |
 |------|------|------|
 | app-ts | `npm run typecheck`、`npm test` | vitest 离线；Mongo / Milvus 用例无实例自动 skip |
-| Go 服务 | `go test ./...` | 各 `app-go/app-*` 与 `app-board` / `app-pay-admin` / `mcp/*` |
+| Go 服务 | `go test ./...` | 各 `app-go/app-*` 与 `app-board` / `mcp/*` |
 | app-sandbox | `go test ./...`（`tests/` 目录） | black-box；MySQL 用例需 `SANDBOX__TEST_DSN` |
 | app-pay | `mvn test` | 纯 JUnit，无外部 DB |
 | frontendv2 | `npm run lint`、`npx tsc --noEmit`、`next build` | CI `ci-frontend` |

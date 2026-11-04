@@ -58,7 +58,7 @@ spec:
             - name: APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
             - name: NO_PROXY
-              value: localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal
+              value: localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal
             # app-pay timeout-delegation callback CA (lazy-loaded; fallback
             # polling takes over when app-pay is not deployed)
             - name: APPTASK__HTTP_EXECUTOR__CA_FILE

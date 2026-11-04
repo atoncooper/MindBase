@@ -138,7 +138,7 @@ cd app-pay && mvn test    # 20 个测试类 / 86 个用例，纯 JUnit 无外部
 
 - **审计哈希链**：`pay-audit.jsonl` 每行携带 `chain/prev/hash`（SHA-256 链），启动从磁盘最后一条续链，跨重启不断链；
   改动历史行会破坏后续全部可验证性。多实例分叉按 chain id 分组校验（单实例为完整链）。
-- **买家信息掩码**：`OrderView` 的 `buyerLogonId/buyerUserId` 统一掩码；DB 与 app-pay-admin（直连库）保留全值。
+- **买家信息掩码**：`OrderView` 的 `buyerLogonId/buyerUserId` 统一掩码；DB 与 app-admin（第二连接直连库，运营查询）保留全值。
 - **支付频次风控**：`pay.risk.max-paid-orders-per-day / max-paid-amount-per-day-cents`（滚动 24h，下单时拦截，
   429 `RISK_VELOCITY_EXCEEDED` + `RISK_VELOCITY_BLOCKED` 审计）。
 - **CI 漏洞门禁**：`ci-app-pay.yml` 增加 Trivy 依赖扫描（HIGH/CRITICAL 红）；`.github/dependabot.yml` 每周自动升级 PR。
@@ -167,19 +167,21 @@ cd app-pay && mvn test    # 20 个测试类 / 86 个用例，纯 JUnit 无外部
 - **告警与压测**：`ops/archive/app-pay/monitoring/app-pay-alerts.rules.yml`（对账差异/回调拒绝/渠道 QPS/风控激增/Hikari 饱和）+
   `ops/archive/app-pay/loadtest/app-pay-loadtest.md` 压测基线手册（/test/pay/burst 幂等与吞吐场景）。
 
-## pay-admin 退款复核工作台（2026-10）
+## 退款复核工作台（2026-10 上线；2026-11-03 并入 app-admin）
 
-- **退款审批工作台**：pay-admin 新增"退款复核"页（admin only）——待审列表直读 `pay_refund_approval`，
-  approve/reject 经 APISIX（pay-ops consumer，`PAY_OPS_KEY`）调 app-pay 的 internal 端点执行；
-  **operator = 控制台登录账号（服务端注入）**，替代 curl 自报身份；maker != checker 由 app-pay 强制。
-  `PAYADMIN__APP_PAY__OPS_KEY` 未配置时整组 404 隐藏；密钥只注入 pay-admin 容器（compose fail-closed）。
+- **退款审批工作台**：统一管理台 app-admin 的「支付运营 → 退款复核」页（admin only）——待审列表直读
+  `pay_refund_approval`，approve/reject 经 APISIX（pay-ops consumer，`PAY_OPS_KEY`）调 app-pay 的
+  internal 端点执行；**operator = 控制台登录账号（服务端注入）**，替代 curl 自报身份；maker != checker
+  由 app-pay 强制。`APPADMIN__PAY__OPS__KEY` 未配置时整组 404 隐藏；密钥只注入 app-admin-api 容器。
+  原独立服务 app-pay-admin（:8003 / profile pay-admin / SSR WebUI / 自带账户）已退役，
+  详见 [app-admin.md](app-admin.md)。
 - **REFUND_HOLD 冻结单**：订单筛选/状态映射补齐（红色标记），冻结单经退款复核流人工处理。
-- **Grant 额度对齐**：pay-admin 直写 DB 原本绕过 app-pay 的日额度执行点——Grant 现在执行同一熔断
-  （`PAYADMIN__GRANT__DAILY_MAX_COUNT=50` / `DAILY_MAX_DAYS=1000`，按 (type,created_at) 聚合），超限 429 + 审计；
+- **Grant 额度对齐**：app-admin 直写 DB 原本绕过 app-pay 的日额度执行点——Grant 现在执行同一熔断
+  （`pay.grant.daily_max_count=50` / `daily_max_days=1000`，按 (type,created_at) 聚合），超限 429 + 审计；
   统计查询失败 fail-open（不阻塞资金写，留 WARN）。
-- **网络安全**：审计 JSONL 哈希链（chain/prev/hash，跨重启续链）对齐 app-pay；安全响应头
-  （nosniff/frame-ancestors 'none'/no-referrer）与 cookie SameSite=Strict+HttpOnly 为既有实现（本次核对确认）。
-- **明确不做**：退款/关单/SKU 改价的直接 DB 写（红线不变）；会话存储仍是内存态（重启即下线，控制台规模可接受）。
+- **网络安全**：审计 JSONL 哈希链（chain/prev/hash，跨重启续链）对齐 app-pay（app-admin 侧落
+  `logs/pay-audit.jsonl`）；管理台统一 cookie SameSite=Lax + HttpOnly（TLS 下 Secure）+ 安全响应头。
+- **明确不做**：退款/关单/SKU 改价的直接 DB 写（红线不变，退款只经 internal 端点）。
 
 ## 升级换购（同档补差价，2026-10）
 

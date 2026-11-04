@@ -1,6 +1,6 @@
 // Shared query-param helpers for the paginated read endpoints (users /
 // shares / audit): page starts at 1, pageSize in 1..100, default 20
-// (plan/1.0.16 pagination convention).
+// (console pagination convention).
 package router
 
 import (

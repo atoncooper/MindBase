@@ -1,9 +1,11 @@
-# app-admin 分享审核管理后台（UI + Go API，仅回环）—— server2
+# app-admin 统一管理后台（UI + Go API，仅回环）—— server2
 #   docker compose --env-file ../../.env -f 96-app-admin.yml up -d
 # 浏览器经 SSH 隧道访问：ssh -L 3001:127.0.0.1:3001 <server2>
+# 页面：分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计（原 95-app-pay-admin 已并入）
 #
 # ⚠️ 首次启动前 app-cloud 必须已跑过一次 Migrate（cloud_shares 的 moderation 列
 #    归 app-cloud 所有）；共享 bilirag MySQL 由 .env 的 RDBMS__URL 指定。
+#    支付运营直连 app-pay-mysql（25-app-pay-mysql.yml 单独 up），未起时 /api/pay/* 返回 503。
 name: mb-app-admin
 
 services:
@@ -19,11 +21,23 @@ services:
       # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
       - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}
       - APPADMIN__SEED__PASSWORD=${APPADMIN__SEED__PASSWORD:-app-admin}
+      # 可信反向代理（overlay 网段）：用于登录限流/会话 IP-设备绑定/审计；
+      # 只有这些 peer 的 X-Forwarded-* 被采信，空 = 永不信任。
+      - APPADMIN__SECURITY__TRUSTED_PROXIES=${APPADMIN__SECURITY__TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12}
       - APPADMIN__LOG__OUTPUT=both
       # Share-content review preview via app-cloud (Issue #154). The overlay
       # network resolves app-cloud by service name; token = shared secret.
       - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-http://app-cloud:8007}
       - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+      # 支付运营（原 app-pay-admin 能力并入）：第二 GORM 连接直连 app_pay 库。
+      # 留空 = 支付管理未配置（/api/pay/* 503），不影响分享审核/账户/沙箱。
+      - APPADMIN__PAY_RDBMS__URL=${PAY_ADMIN_RDBMS_URL:-mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay}
+      # 退款复核：经 APISIX pay-ops consumer 调 app-pay internal 端点（不直写库）。
+      # 未配置 key 时退款复核整组 404 隐藏；其余支付查询不受影响。
+      - APPADMIN__PAY__OPS__BASE_URL=${APPADMIN__PAY__OPS__BASE_URL:-http://apisix:9080}
+      - APPADMIN__PAY__OPS__KEY=${PAY_OPS_KEY:-}
+      # 资金审计 JSONL（补偿开通/退款确认哈希链，365 天），落 app_admin_logs 卷
+      - APPADMIN__PAY__AUDIT_FILE=/app/logs/pay-audit.jsonl
     ports:
       - "127.0.0.1:${APP_ADMIN_PORT:-8016}:8016"
     volumes:

@@ -1,5 +1,5 @@
 // Package dto defines the admin-plane JSON response DTOs (wire contract,
-// plan/1.0.16 section 5).
+// docs/app-admin.md).
 //
 // It is deliberately a leaf package: no imports from repo/service/router, no
 // business logic — only the exact JSON shapes the contract pins. The service

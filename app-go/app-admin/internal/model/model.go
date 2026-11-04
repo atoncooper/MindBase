@@ -7,7 +7,7 @@
 //     rbac_user_role / user_profile are owned by app-cloud / app-auth -
 //     plain row mappings here, NEVER migrated, never ALTERed. The only
 //     write into shared tables is the four moderation columns on
-//     cloud_shares via UPDATE (plan/1.0.16 section 3.1 / 5).
+//     cloud_shares via UPDATE.
 //   - No MinIO / object storage dependency at all: only name / size
 //     metadata ever leaves the DB (admin must not see user file contents).
 package model
@@ -35,12 +35,16 @@ func (AdminUser) TableName() string { return "admin_user" }
 // AdminSession is the DB-backed login session (HttpOnly cookie admin_session,
 // sliding 12h expiry - touched on every authenticated request).
 type AdminSession struct {
-	SessionToken string     `gorm:"column:session_token;type:varchar(128);primaryKey"`
-	AdminUserID  int64      `gorm:"column:admin_user_id;not null;index"`
-	ExpiresAt    time.Time  `gorm:"column:expires_at;not null"`
-	IP           *string    `gorm:"column:ip;type:varchar(64)"`
-	UserAgent    *string    `gorm:"column:user_agent;type:varchar(500)"`
-	CreatedAt    *time.Time `gorm:"column:created_at"`
+	SessionToken string    `gorm:"column:session_token;type:varchar(128);primaryKey"`
+	AdminUserID  int64     `gorm:"column:admin_user_id;not null;index"`
+	ExpiresAt    time.Time `gorm:"column:expires_at;not null"`
+	IP           *string   `gorm:"column:ip;type:varchar(64)"`
+	UserAgent    *string   `gorm:"column:user_agent;type:varchar(500)"`
+	// DeviceHash is the server-side fingerprint of the login device (never the
+	// raw device id). Empty for sessions issued while device binding was off;
+	// such rows are rejected once the binding is enabled.
+	DeviceHash string     `gorm:"column:device_hash;type:varchar(64);not null;default:''"`
+	CreatedAt  *time.Time `gorm:"column:created_at"`
 }
 
 func (AdminSession) TableName() string { return "admin_session" }
@@ -112,8 +116,8 @@ type RbacRole struct {
 func (RbacRole) TableName() string { return "rbac_role" }
 
 // CloudShare maps cloud_shares (owner = app-cloud, which also owns the
-// target_type / folder_id / legal_ack / moderation_* columns from plan 1.0.16
-// section 3.1). app-admin only ever UPDATEs the four moderation columns.
+// target_type / folder_id / legal_ack / moderation_* columns).
+// app-admin only ever UPDATEs the four moderation columns.
 type CloudShare struct {
 	ID               int64      `gorm:"column:id;primaryKey"`
 	ShareToken       string     `gorm:"column:share_token"`

@@ -161,3 +161,181 @@ func TestValidateSandboxAdminAllOrNothing(t *testing.T) {
 		t.Fatal("both empty is intentionally disabled, not a mismatch")
 	}
 }
+
+// Payment-operations config: the second database, grant quota and the
+// refund-review upstream all map onto APPADMIN__PAY_* env vars.
+func TestApplyPayEnvOverrides(t *testing.T) {
+	t.Setenv("APPADMIN__PAY_RDBMS__URL", "mysql+aiomysql://u:p@app-pay-mysql:3306/app_pay")
+	t.Setenv("APPADMIN__PAY_RDBMS__MAX_OPEN_CONNS", "7")
+	t.Setenv("APPADMIN__PAY_RDBMS__MAX_IDLE_CONNS", "3")
+	t.Setenv("APPADMIN__PAY_RDBMS__CONN_MAX_LIFETIME", "600")
+	t.Setenv("APPADMIN__PAY__GRANT__DAILY_MAX_COUNT", "12")
+	t.Setenv("APPADMIN__PAY__GRANT__DAILY_MAX_DAYS", "345")
+	t.Setenv("APPADMIN__PAY__OPS__BASE_URL", "http://apisix:9080")
+	t.Setenv("APPADMIN__PAY__OPS__KEY", "pay-ops-key")
+	t.Setenv("APPADMIN__PAY__OPS__TIMEOUT_SECONDS", "9")
+	t.Setenv("APPADMIN__PAY__OPS__REFUND_REVIEW_ENABLED", "true")
+	t.Setenv("APPADMIN__PAY__AUDIT_FILE", "/app/logs/pay-audit.jsonl")
+
+	var cfg Config
+	applyEnvOverrides(&cfg)
+
+	if cfg.PayRDBMS.URL != "mysql+aiomysql://u:p@app-pay-mysql:3306/app_pay" ||
+		cfg.PayRDBMS.MaxOpenConns != 7 || cfg.PayRDBMS.MaxIdleConns != 3 || cfg.PayRDBMS.ConnMaxLifetime != 600 {
+		t.Fatalf("pay_rdbms override lost: %+v", cfg.PayRDBMS)
+	}
+	if cfg.Pay.Grant.DailyMaxCount != 12 || cfg.Pay.Grant.DailyMaxDays != 345 {
+		t.Fatalf("pay.grant override lost: %+v", cfg.Pay.Grant)
+	}
+	if cfg.Pay.Ops.BaseURL != "http://apisix:9080" || cfg.Pay.Ops.Key != "pay-ops-key" ||
+		cfg.Pay.Ops.TimeoutSeconds != 9 || !cfg.Pay.Ops.RefundReviewEnabled {
+		t.Fatalf("pay.ops override lost: %+v", cfg.Pay.Ops)
+	}
+	if cfg.Pay.AuditFile != "/app/logs/pay-audit.jsonl" {
+		t.Fatalf("pay.audit_file override lost: %q", cfg.Pay.AuditFile)
+	}
+}
+
+// Session device / IP binding and the login throttle budgets map onto
+// APPADMIN__SESSION__* / APPADMIN__SECURITY__LOGIN__* env vars.
+func TestApplySessionSecurityEnvOverrides(t *testing.T) {
+	t.Setenv("APPADMIN__SESSION__DEVICE_BINDING", "id")
+	t.Setenv("APPADMIN__SESSION__IP_BINDING", "exact")
+	t.Setenv("APPADMIN__SESSION__IPV4_PREFIX", "20")
+	t.Setenv("APPADMIN__SESSION__IPV6_PREFIX", "56")
+	t.Setenv("APPADMIN__SECURITY__TRUSTED_PROXIES", " 172.16.0.0/12 , 10.1.2.3 ")
+	t.Setenv("APPADMIN__SECURITY__LOGIN__MAX_FAILS_PER_IP", "3")
+	t.Setenv("APPADMIN__SECURITY__LOGIN__IP_WINDOW_SECONDS", "30")
+	t.Setenv("APPADMIN__SECURITY__LOGIN__MAX_FAILS_PER_ACCOUNT", "7")
+	t.Setenv("APPADMIN__SECURITY__LOGIN__ACCOUNT_WINDOW_SECONDS", "1200")
+
+	var cfg Config
+	applyEnvOverrides(&cfg)
+
+	if got := cfg.Session.DeviceBindingMode(); got != "id" {
+		t.Fatalf("session.device_binding mode = %q, want id", got)
+	}
+	if got := cfg.Session.IPBindingMode(); got != "exact" {
+		t.Fatalf("session.ip_binding mode = %q, want exact", got)
+	}
+	if cfg.Session.IPv4Prefix != 20 || cfg.Session.IPv6Prefix != 56 {
+		t.Fatalf("session prefixes: %+v", cfg.Session)
+	}
+	if len(cfg.Security.TrustedProxies) != 2 ||
+		cfg.Security.TrustedProxies[0] != "172.16.0.0/12" || cfg.Security.TrustedProxies[1] != "10.1.2.3" {
+		t.Fatalf("trusted proxies: %+v", cfg.Security.TrustedProxies)
+	}
+	if cfg.Security.Login.MaxFailsPerIP != 3 || cfg.Security.Login.IPWindowSeconds != 30 ||
+		cfg.Security.Login.MaxFailsPerAccount != 7 || cfg.Security.Login.AccountWindowSeconds != 1200 {
+		t.Fatalf("login limits: %+v", cfg.Security.Login)
+	}
+}
+
+// Unknown binding modes and out-of-range prefixes fail loud; zero prefixes are
+// normalized to the documented defaults.
+func TestValidateSessionPolicy(t *testing.T) {
+	valid := func() *Config {
+		return &Config{RDBMS: RDBMSConfig{URL: "x"}, Seed: SeedConfig{Username: "a", Password: "b"}}
+	}
+
+	cfg := valid()
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("empty binding config rejected: %v", err)
+	}
+	if cfg.Session.IPv4Prefix != 24 || cfg.Session.IPv6Prefix != 64 {
+		t.Fatalf("zero prefixes must normalize to 24/64: %+v", cfg.Session)
+	}
+	if got := cfg.Session.DeviceBindingMode(); got != "off" {
+		t.Fatalf("empty device_binding must mean off, got %q", got)
+	}
+	if got := cfg.Session.IPBindingMode(); got != "off" {
+		t.Fatalf("empty ip_binding must mean off, got %q", got)
+	}
+
+	for _, binding := range []string{"", "off", "id", "strict"} {
+		cfg = valid()
+		cfg.Session.DeviceBinding = binding
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("device_binding %q rejected: %v", binding, err)
+		}
+	}
+	cfg = valid()
+	cfg.Session.DeviceBinding = "fingerprint"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("unknown device_binding must be rejected")
+	}
+
+	for _, binding := range []string{"", "off", "subnet", "exact"} {
+		cfg = valid()
+		cfg.Session.IPBinding = binding
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("ip_binding %q rejected: %v", binding, err)
+		}
+	}
+	cfg = valid()
+	cfg.Session.IPBinding = "prefix"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("unknown ip_binding must be rejected")
+	}
+
+	cfg = valid()
+	cfg.Session.IPv4Prefix = 33
+	if err := Validate(cfg); err == nil {
+		t.Fatal("ipv4_prefix 33 must be rejected")
+	}
+	cfg = valid()
+	cfg.Session.IPv6Prefix = 129
+	if err := Validate(cfg); err == nil {
+		t.Fatal("ipv6_prefix 129 must be rejected")
+	}
+	cfg = valid()
+	cfg.Session.IPv4Prefix, cfg.Session.IPv6Prefix = 20, 56
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("custom prefixes rejected: %v", err)
+	}
+
+	cfg = valid()
+	cfg.Security.TrustedProxies = []string{"not-an-ip"}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("invalid trusted_proxies entry must be rejected")
+	}
+	cfg = valid()
+	cfg.Security.TrustedProxies = []string{"172.16.0.0/12", "10.1.2.3"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid trusted proxies rejected: %v", err)
+	}
+}
+
+// Refund-review wiring is all-or-nothing: base URL + ops key must both be set;
+// half wiring is cleared (workbench stays hidden) and reported to main.
+func TestNormalizePayOps(t *testing.T) {
+	both := &Config{}
+	both.Pay.Ops.BaseURL = "http://apisix:9080"
+	both.Pay.Ops.Key = "k"
+	if NormalizePayOps(both) {
+		t.Fatal("fully wired pay ops must survive normalization")
+	}
+	if both.Pay.Ops.BaseURL == "" || both.Pay.Ops.Key == "" {
+		t.Fatalf("fully wired pay ops must not be cleared: %+v", both.Pay.Ops)
+	}
+
+	loneURL := &Config{}
+	loneURL.Pay.Ops.BaseURL = "http://apisix:9080"
+	if !NormalizePayOps(loneURL) {
+		t.Fatal("lone base url must be reported as disabled")
+	}
+	if loneURL.Pay.Ops.BaseURL != "" || loneURL.Pay.Ops.Key != "" {
+		t.Fatalf("half wiring must be cleared: %+v", loneURL.Pay.Ops)
+	}
+
+	loneKey := &Config{}
+	loneKey.Pay.Ops.Key = "k"
+	if !NormalizePayOps(loneKey) {
+		t.Fatal("lone ops key must be reported as disabled")
+	}
+
+	none := &Config{}
+	if NormalizePayOps(none) {
+		t.Fatal("both empty is intentionally disabled, not a mismatch")
+	}
+}

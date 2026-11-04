@@ -62,9 +62,8 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-task | Go + Gin（独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)，镜像 `atoncooper/app-task`） | 8001 | `${APP_TASK_PORT:-8001}` | 默认（task） | 定时任务执行器 + 邮件投递 + WebUI |
 | app-pay | Java 21 / Spring Boot 3（`app-pay/`） | 8002 | 127.0.0.1:8002 | pay | 交易/会员（HTTPS-only） |
 | app-pay-test | 同 app-pay 镜像 | 8002 | 127.0.0.1:18002 | pay-test | 测试实例（强制 MOCK 渠道，整库隔离） |
-| app-pay-admin | Go + Gin（`app-pay-admin/`） | 8003 | 127.0.0.1:8003 | pay-admin | 支付后台管理控制台（不经 APISIX） |
 | app-admin | Nginx（静态 SPA；配置 `nginx/app-admin.conf`） | 80 | 127.0.0.1:3001 | 默认 / admin | 分享审核 UI；同源 `/api` 代理至 app-admin-api |
-| app-admin-api | Go + Gin（`app-go/app-admin/`） | 8016 | 127.0.0.1:8016 | 默认 / admin | 直连 MySQL；只读用户/分享元数据 + 审核 4 列；代理沙箱管理面；不经 APISIX（详见 [app-admin.md](app-admin.md)） |
+| app-admin-api | Go + Gin（`app-go/app-admin/`） | 8016 | 127.0.0.1:8016 | 默认 / admin | 直连共享 MySQL（只读用户/分享元数据 + 审核 4 列）+ 第二连接 app_pay（支付运营只读 + 补偿开通/退款复核）；代理沙箱管理面；不经 APISIX（详见 [app-admin.md](app-admin.md)） |
 | app-sandbox | Go + Gin（`app-go/app-sandbox/`） | 8017 | 127.0.0.1:${APP_SANDBOX_PORT:-8017} | sandbox / full | 沙箱控制层：租约复用、档位配额、审计、产物、准入与 sweeper；app-ts 经 APISIX `sandbox_internal` 调用，管理面仅 app-admin 可调 |
 | opensandbox-server | OpenSandbox lifecycle server（Docker runtime） | 8080 | 127.0.0.1:${OPEN_SANDBOX_PORT:-8080} | sandbox / full | 负责沙箱创建/执行/删除，挂载 Docker socket（单机可信环境）；生产 K8s 见 [deploy/k8s/40-sandbox](../deploy/k8s/40-sandbox/README.md) |
 | higress | Higress all-in-one | 8080 gw / 18081 console | 127.0.0.1:18080 / :18081 | ai | AI 网关：平台 LLM/embedding/rerank/ASR 出网统一入口 + 计量 |
@@ -91,7 +90,6 @@ profile 汇总：
 | `--profile ai` | + higress（AI 出网网关；平台 AI 流量强依赖，生产必开） |
 | `--profile pay` | + app-pay |
 | `--profile pay-test` | + app-pay-test（测试实例） |
-| `--profile pay-admin` | + app-pay-admin |
 | `--profile admin` | + app-admin（默认 profile 已含） |
 | `--profile full` | 全部以上（含 tools 管理界面） |
 | `--profile tools` | redis-commander / mongo-express |
@@ -161,7 +159,7 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | 文件（云盘/技能 zip/壁纸） | MinIO | 预签名 URL 经 `/minio-proxy/` 同源访问 |
 | 限流/验证码/quiz quota/分享缓存/事件桥（`bili:page_ready`） | Redis | app-auth / app-quiz / app-ts；app-board 用 db 2 |
 | 定时任务定义/日志/邮件队列/WebUI 账户 | MySQL `app_task` | app-task 独有 |
-| 订单/会员/支付事件/回调流水/SKU/job lock | MySQL `app_pay`（Flyway 迁移） | app-pay 独有；pay-admin 只读共享 + 补偿开通 |
+| 订单/会员/支付事件/回调流水/SKU/job lock | MySQL `app_pay`（Flyway 迁移） | app-pay 独有；app-admin 经第二连接只读共享 + 补偿开通（唯一资金写），退款复核经 app-pay internal 端点 |
 | 桌面端全部数据 | 本机 SQLite | 独立仓库 [mind-base-desktop](https://github.com/atoncooper/mind-base-desktop) 完全本地，不经网络后端 |
 
 ## 配置体系
@@ -174,8 +172,7 @@ forward-auth 统一调 app-auth 的 `POST /internal/auth/verify` 宽验证 `Auth
 | app-go 各服务 | `internal/config/default.yaml`（embed）← env 覆盖 | `APPAUTH__` / `APPCLOUD__` / `APPNOTE__` / `APPBILI__` / `APPQUIZ__` / `APPKG__` | AGENTS.md §2.13-2.19 |
 | app-task | 独立仓库 `default.yaml`（嵌入镜像） | `APPTASK__` | [app-task.md](app-task.md) |
 | app-pay | `application.yaml` + docker/test profile（Flyway 管 schema） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
-| app-pay-admin | `default.yaml`（嵌入）+ config 覆盖层 | `PAYADMIN__` | [app-pay-admin.md](app-pay-admin.md) |
-| app-admin | `default.yaml`（嵌入）+ config 覆盖层 | `APPADMIN__` | [app-admin.md](app-admin.md) |
+| app-admin | `default.yaml`（嵌入）+ config 覆盖层 | `APPADMIN__`（含 `APPADMIN__PAY_*` / `APPADMIN__PAY__*`） | [app-admin.md](app-admin.md) |
 | app-sandbox | `default.yaml`（嵌入）+ config 覆盖层 | `SANDBOX__`（DB 走共享 `RDBMS__URL` 或 `SANDBOX__DATABASE__DSN`） | [features.md](features.md) §5 / [academic-agent.md](academic-agent.md) §沙箱 |
 | app-board / 三个 MCP | `default.yaml`（嵌入） | `APPBOARD__` 等 | [app-board.md](app-board.md) / [app-board-mcp.md](app-board-mcp.md) |
 
@@ -205,7 +202,6 @@ src/
 | ci-app-ts | `app-ts/**` | typecheck + vitest |
 | ci-app-bili / ci-app-note / ci-app-quiz / ci-app-settings / ci-app-kg | 对应 Go 服务 | gofmt / vet / test / build（app-cloud 与 app-sandbox 目前无独立 workflow，依赖本地构建与 compose 验证） |
 | ci-app-pay | `app-pay/**` | mvn test（纯 JUnit，无外部 DB） |
-| ci-pay-admin | app-pay-admin | gofmt / vet / test / build |
 | ci-app-admin | app-go/app-admin | gofmt / vet / test / build |
 | ci-frontend-admin | frontend-admin | tsc --noEmit + vite build |
-| docker-build | push main / tag | 构建并发布 19 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-pay-admin/app-admin/app-admin-ui/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`；app-sandbox 尚未纳入） |
+| docker-build | push main / tag | 构建并发布 18 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-auth/app-cloud/app-note/app-bili/app-quiz/app-kg/app-settings/app-ts/app-board/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-admin/app-admin-ui/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`；app-sandbox 尚未纳入） |

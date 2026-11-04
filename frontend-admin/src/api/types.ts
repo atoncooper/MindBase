@@ -1,4 +1,4 @@
-// 契约 §5：app-admin API 类型定义（frontend-admin 内唯一数据形状来源）
+// app-admin API 类型定义（frontend-admin 内唯一数据形状来源）
 
 export type AdminRole = "admin" | "viewer";
 

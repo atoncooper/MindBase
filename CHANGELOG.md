@@ -4,6 +4,13 @@
 
 ## [Unreleased] — 2026-11-03
 
+### Changed
+
+- **支付后台并入统一管理后台**：独立服务 `app-pay-admin`（Go + SSR WebUI，:8003，profile `pay-admin`）退役，支付运营能力（订单 / 会员 / 权益事件 / 回调流水 / SKU 查询、会员补偿开通、退款复核）并入 `app-admin`（`app-go/app-admin` API + `frontend-admin` SPA）。统一账户 `admin_user` / `admin_session` / `admin_audit`、统一角色 admin/viewer、统一入口 :3001（API :8016，均仅回环）。app-admin 新增第二 GORM 连接直连 `app_pay`（只读 + 会员补偿开通，唯一资金写）；退款复核经 APISIX pay-ops consumer 调 app-pay internal 端点执行。配置迁移 `PAYADMIN__*` → `APPADMIN__PAY_*` / `APPADMIN__PAY__*`；资金审计 JSONL 统一为 `logs/pay-audit.jsonl`（哈希链，365 天）。旧 `payadmin_user` 账户不迁移（运维在「账户」页重建）。
+- **部署/CI 同步退役**：compose 删除 `app-pay-admin` 服务与 `app_pay_admin_logs` 卷、移除 `--profile pay-admin`；删除 `deploy/docker/95-app-pay-admin.yml`、`deploy/k8s/30-apps/app-pay-admin.yaml`、`.github/workflows/ci-pay-admin.yml` 与 docker-build 矩阵条目；`deploy/docker/96-app-admin.yml`、k8s `app-admin`、swarm stack 的 app-admin 注入支付库 / ops key / 资金审计路径。
+- **文档**：`docs/app-admin.md` 重写为统一后台（分享审核 + 支付运营 + 沙箱 + 统一账户/审计 + 配置/API/启动/迁移说明/红线）；删除 `docs/app-pay-admin.md`；同步更新文档索引、架构、配置、部署、功能、API、FAQ 等引用。
+- **管理后台登录安全加固**：所有管理端请求携带 `X-Device-Id`，登录会话绑定设备指纹（SHA-256，strict/id/off 可配）；会话 IP 绑定（exact/subnet，IPv4 /24、IPv6 /64）；可信代理白名单解析真实客户端 IP；IP 级 + 账户级双限流，登录失败/新设备/新 IP/会话设备或 IP 不匹配全部写入审计；CORS 仅接受同源/精确 Origin（拒绝 `*`/`null`，放行 `X-Device-Id`），并增加 CORP/COOP 安全头。
+
 ### Documentation
 
 - **根 README 重写为项目介绍**：从「功能清单 + 目录索引 + 接口表」改为定位、核心能力、架构一览、快速开始与文档导航；结构、API、FAQ 分别迁入独立文档，避免与代码漂移。

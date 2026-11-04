@@ -1,14 +1,19 @@
 // Session gate + auth endpoints: cookie name admin_session (HttpOnly,
 // SameSite=Lax so the same-origin SPA and dev proxy both work), sliding 12h
-// TTL enforced by the service, login throttle 10 failures / minute / IP.
+// TTL enforced by the service, the device / IP binding checks re-run on every
+// authenticated request, and the login throttle budgets held by the service.
 package router
 
 import (
+	"crypto/subtle"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"app-admin/internal/config"
 	"app-admin/internal/dto"
 	"app-admin/internal/repo"
 	"app-admin/internal/service"
@@ -40,13 +45,7 @@ func identityOf(c *gin.Context) (adminIdentity, bool) {
 	return id, ok
 }
 
-// secureCookie decides whether the session cookie gets the Secure flag based
-// on the transport actually seen by this process.
-func secureCookie(c *gin.Context) bool {
-	return c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
-}
-
-// setSessionCookie / clearSessionCookie centralise cookie attributes.
+// setSessionCookie centralises the cookie attributes.
 func setSessionCookie(c *gin.Context, token string, maxAge int, secure bool) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     sessionCookie,
@@ -59,7 +58,7 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, secure bool) {
 	})
 }
 
-func clearSessionCookie(c *gin.Context) {
+func clearSessionCookie(c *gin.Context, secure bool) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    "",
@@ -67,12 +66,23 @@ func clearSessionCookie(c *gin.Context) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   secureCookie(c),
+		Secure:   secure,
 	})
 }
 
-// sessionGate resolves the admin_session cookie to a live DB session and
-// slides its expiry (sliding 12h). 401 with {"detail": ...} otherwise.
+// clientIP resolves the real client address honouring the trusted-proxy list.
+func (r *Router) clientIP(c *gin.Context) string {
+	return clientIP(c, r.trustedProxies)
+}
+
+// sessionCookieSecure reports whether the cookie may carry the Secure flag.
+func (r *Router) sessionCookieSecure(c *gin.Context) bool {
+	return secureCookie(c, r.trustedProxies)
+}
+
+// sessionGate resolves the admin_session cookie to a live DB session, re-checks
+// its device / IP binding and only then slides its expiry. 401 with
+// {"detail": ...} otherwise.
 func (r *Router) sessionGate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, _ := c.Cookie(sessionCookie)
@@ -92,6 +102,16 @@ func (r *Router) sessionGate() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if !r.sessionBindingOK(c, token, bundle) {
+			return // rejection response already written
+		}
+		// Sliding expiry only after the binding checks pass, so a rejected
+		// request cannot keep a stolen session alive.
+		if err := r.auth.TouchSession(token); err != nil {
+			serverError(c, err, "touch session")
+			c.Abort()
+			return
+		}
 		c.Set(ctxIdentity, adminIdentity{
 			UserID:             bundle.User.ID,
 			Username:           bundle.User.Username,
@@ -100,6 +120,71 @@ func (r *Router) sessionGate() gin.HandlerFunc {
 		})
 		c.Next()
 	}
+}
+
+// sessionBindingOK re-checks the presented session against the current request:
+// device fingerprint (when enabled) and client address (off / exact / subnet).
+// A mismatch means the cookie is being replayed from another device or network,
+// so the row is deleted, the attempt audited and the caller told to log in
+// again. Sessions created before device binding was enabled carry no hash and
+// therefore always fail the device check after an upgrade.
+func (r *Router) sessionBindingOK(c *gin.Context, token string, bundle *repo.SessionBundle) bool {
+	ip := r.clientIP(c)
+	deviceMode := r.cfg.Session.DeviceBindingMode()
+	if deviceMode != "off" {
+		fingerprint, err := deviceFingerprint(c, deviceMode)
+		if err != nil || bundle.Session.DeviceHash == "" ||
+			subtle.ConstantTimeCompare([]byte(bundle.Session.DeviceHash), []byte(fingerprint)) != 1 {
+			r.dropMismatchedSession(c, token, bundle, "session_device_mismatch", ip, fingerprint)
+			return false
+		}
+	}
+	ipMode := r.cfg.Session.IPBindingMode()
+	if ipMode != "off" && !sessionIPMatches(bundle.Session.IP, ip, ipMode, r.cfg.Session) {
+		r.dropMismatchedSession(c, token, bundle, "session_ip_mismatch", ip, "")
+		return false
+	}
+	return true
+}
+
+// dropMismatchedSession invalidates the presented session and answers 401 in
+// the shared error shape.
+func (r *Router) dropMismatchedSession(c *gin.Context, token string, bundle *repo.SessionBundle,
+	action, ip, fingerprint string) {
+	_ = repo.DeleteSession(token)
+	detailText := "ip=" + truncateStr(ip, 60) + " device=" + devicePrefix(fingerprint)
+	_ = repo.RecordAudit(bundle.User.Username, action, "session",
+		strconv.FormatInt(bundle.User.ID, 10), detailText)
+	clearSessionCookie(c, r.sessionCookieSecure(c))
+	detail(c, http.StatusUnauthorized, "login required")
+	c.Abort()
+}
+
+// sessionIPMatches compares the stored session address with the current client
+// address under the configured policy. An empty / unparsable stored value or a
+// family mismatch fails closed.
+func sessionIPMatches(stored *string, current, mode string, sessionCfg config.SessionConfig) bool {
+	if stored == nil || strings.TrimSpace(*stored) == "" {
+		return false
+	}
+	storedIP := net.ParseIP(strings.TrimSpace(*stored))
+	currentIP := net.ParseIP(strings.TrimSpace(current))
+	if storedIP == nil || currentIP == nil {
+		return false
+	}
+	if mode == "exact" {
+		return storedIP.Equal(currentIP)
+	}
+	storedV4, currentV4 := storedIP.To4(), currentIP.To4()
+	if storedV4 != nil || currentV4 != nil {
+		if storedV4 == nil || currentV4 == nil {
+			return false
+		}
+		mask := net.CIDRMask(sessionCfg.IPv4PrefixOr(), 32)
+		return storedV4.Mask(mask).Equal(currentV4.Mask(mask))
+	}
+	mask := net.CIDRMask(sessionCfg.IPv6PrefixOr(), 128)
+	return storedIP.To16().Mask(mask).Equal(currentIP.To16().Mask(mask))
 }
 
 // requireAdmin gates admin-only writes (ban / unban / approve). Password
@@ -127,8 +212,15 @@ func (r *Router) apiLogin(c *gin.Context) {
 		detail(c, http.StatusBadRequest, "json body with username/password required")
 		return
 	}
-	ip := c.ClientIP()
-	user, token, err := r.auth.Login(req.Username, req.Password, ip, c.Request.UserAgent())
+	// Resolve the fingerprint before touching the throttle: a malformed device
+	// header is a client bug, not a credential guess.
+	fingerprint, err := deviceFingerprint(c, r.cfg.Session.DeviceBindingMode())
+	if err != nil {
+		detail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	ip := r.clientIP(c)
+	user, token, err := r.auth.Login(req.Username, req.Password, ip, c.Request.UserAgent(), fingerprint)
 	switch {
 	case errors.Is(err, service.ErrThrottled):
 		c.Header("Retry-After", strconv.Itoa(int(time.Minute.Seconds())))
@@ -138,7 +230,7 @@ func (r *Router) apiLogin(c *gin.Context) {
 	case err != nil:
 		serverError(c, err, "login")
 	default:
-		setSessionCookie(c, token, r.auth.TTLSeconds(), secureCookie(c))
+		setSessionCookie(c, token, r.auth.TTLSeconds(), r.sessionCookieSecure(c))
 		c.JSON(http.StatusOK, dto.SessionInfo{
 			Username:           user.Username,
 			Role:               user.Role,
@@ -150,11 +242,11 @@ func (r *Router) apiLogin(c *gin.Context) {
 func (r *Router) apiLogout(c *gin.Context) {
 	id, _ := identityOf(c)
 	token, _ := c.Cookie(sessionCookie)
-	if err := r.auth.Logout(id.Username, token, c.ClientIP()); err != nil {
+	if err := r.auth.Logout(id.Username, token, r.clientIP(c)); err != nil {
 		serverError(c, err, "logout")
 		return
 	}
-	clearSessionCookie(c)
+	clearSessionCookie(c, r.sessionCookieSecure(c))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -201,6 +293,14 @@ func (r *Router) apiChangePassword(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// truncateStr bounds a value before it lands in a fixed-width audit column.
+func truncateStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 // bcrypt stays referenced: hashing itself lives in the repo/service layers.

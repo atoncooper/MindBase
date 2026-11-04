@@ -2,7 +2,7 @@
 
 在本地把 MindBase 跑起来并开始改代码。本文只讲**开发环境**：前置依赖、`.env` 配置、两条启动路径（容器起基础设施 + 本地跑应用 / 全 Docker）、验证链路、测试与常见问题。
 
-> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（auth / cloud / note / bili / quiz / kg / settings / admin）与 **app-board**（Go，HTTPS-only）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-pay-admin**、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
+> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（auth / cloud / note / bili / quiz / kg / settings / admin）与 **app-board**（Go，HTTPS-only）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
 > 旧 Python backend（`app/`）已于 2026-10-06 彻底退役，任何 `pip install` / `uvicorn app.main:app` / `app/config/default.yaml` 的说法都已失效。
 >
 > 服务清单、端口、网关路由以 [architecture.md](architecture.md) 为权威；配置体系（各服务 YAML / env 前缀 / 密钥清单）见 [configuration.md](configuration.md)；生产部署见 [deployment.md](deployment.md)。
@@ -68,7 +68,7 @@ openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_ke
 | 变量 | 作用 |
 |------|------|
 | `APPTASK_EMAIL_API_KEY` | 定时出题邮件（Resend）；为空时邮件 worker 走 dry-run |
-| `PAY_OPS_KEY` | `--profile pay-admin` 必需（compose 强制）；app-pay-admin 调资金写端点用 |
+| `PAY_OPS_KEY` | 可选；app-admin「退款复核」经 APISIX pay-ops consumer 调 app-pay 资金写端点，留空则该页 404 隐藏 |
 | `SANDBOX_ADMIN_TOKEN` | app-admin 的沙箱管理代理令牌（与 app-sandbox `SANDBOX__ADMIN__TOKEN` 同值） |
 | `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 管理后台「分享内容受控预览」（app-admin ↔ app-cloud 同值） |
 | `TAVILY_API_KEY` / `SEARXNG_URL` | `web_search` 的优质搜索源（不配只剩爬虫兜底） |
@@ -209,10 +209,9 @@ docker compose ps
 | 命令 | 实际启动 |
 |------|----------|
 | `docker compose up -d` | **29 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-auth / app-cloud / app-note / app-bili / app-quiz / app-kg / app-settings / app-admin(+api) / app-board(+3 个 MCP) / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
-| `docker compose --profile full up -d` | **37 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-admin + app-pay-test(+MySQL) + redis-commander / mongo-express |
+| `docker compose --profile full up -d` | **36 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
 | `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
 | `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
-| `docker compose --profile pay-admin up -d` | 只有 6 个：app-pay-admin + app-pay-mysql + mysql/mongo/redis + cert-gen（需要 `PAY_OPS_KEY`） |
 
 **结论**：单独传 `--profile X` 会**排除默认全栈**。要在已运行的全栈上追加可选组件，分两步：
 
@@ -230,14 +229,14 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 |------|------|------|
 | 用户端（nginx） | http://localhost ／ https://localhost | 统一入口；443 用开发 CA 自签证书 |
 | 用户端（frontend 容器直连） | http://localhost:3000 | compose `frontend` 服务 |
-| 管理后台 UI | http://127.0.0.1:3001 | app-admin 静态站，同源代理 `/api` 到 8016 |
+| 管理后台 UI | http://127.0.0.1:3001 | app-admin 静态站（分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计），同源代理 `/api` 到 8016 |
 | 管理后台 API | http://127.0.0.1:8016 | 仅回环，不经 APISIX |
 | app-task 控制台 | http://127.0.0.1:8001/ | 默认账户 `admin` / `app-task-admin`，首登改密 |
 | Higress 控制台（`--profile ai`） | http://127.0.0.1:18081 | 配置供应商与 consumer key |
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-auth 8006、app-cloud 8007、app-note 8008、app-bili 8010、app-quiz 8011、app-kg 8013/8014、app-settings 8015、app-sandbox 8017、app-pay 8002 HTTPS、app-pay-admin 8003、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-auth 8006、app-cloud 8007、app-note 8008、app-bili 8010、app-quiz 8011、app-kg 8013/8014、app-settings 8015、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
 
 ---
 
@@ -285,7 +284,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **端口被占用。** 常见冲突：3000（compose `frontend` 与本地 `npm run dev` 二选一，或用 `FRONTEND_PORT` 改容器端口）、8000（compose `app-ts` 与本地 dev，可用 `APP_TS_PORT` 改）、80/443（nginx；根 compose 固定映射，Windows 上常被 IIS/其他服务占用，需先停占用进程或改 `docker-compose.yml`；`docker-compose.client.yml` 支持 `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT`）、3001（compose app-admin UI 与 frontend-admin `pnpm dev`）、8016、3306。先 `docker compose stop <服务>` 再用本地进程。
 
-**`docker compose` 启动直接报 `err_APISIX_CONSUMER_KEY_not_set_in_.env` / `err_PAY_OPS_KEY_not_set_in_.env`。** 这是 compose 的强制校验，按 §2.3 / §2.4 填 `.env`。
+**`docker compose` 启动直接报 `err_APISIX_CONSUMER_KEY_not_set_in_.env`。** 这是 compose 的强制校验，按 §2.3 / §2.4 填 `.env`。`PAY_OPS_KEY` 自 2026-11-03 起为**可选**（仅 app-admin「退款复核」用；留空则该页 404 隐藏，不再触发 compose 校验）。
 
 **服务起来了但服务间调用全 401/403（APISIX key-auth 拒绝、或下游报 API key 无效）。** `.env` 的 `APISIX_CONSUMER_KEY` 与 `apisix/apisix.yaml` 里 `consumers.internal.key` 不一致（standalone 模式 apisix 不读 env）。两边改成同一个值再重启。
 

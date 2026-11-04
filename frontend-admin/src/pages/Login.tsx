@@ -4,6 +4,7 @@ import {
   AuditOutlined,
   CloudServerOutlined,
   LockOutlined,
+  PayCircleOutlined,
   SafetyCertificateOutlined,
   UserOutlined,
 } from "@ant-design/icons";
@@ -53,13 +54,16 @@ export default function Login() {
           <div>
             <div className="login-mark">MB</div>
             <h1>MindBase 管理后台</h1>
-            <p>分享审核 · 沙箱运维 · 审计追溯</p>
+            <p>分享审核 · 支付运营 · 审计追溯</p>
             <ul className="login-features">
               <li>
                 <SafetyCertificateOutlined /> 分享内容审核与放行
               </li>
               <li>
                 <CloudServerOutlined /> 沙箱执行、租约与配额
+              </li>
+              <li>
+                <PayCircleOutlined /> 支付订单 / 补偿开通 / 退款复核
               </li>
               <li>
                 <AuditOutlined /> 管理操作全量审计
@@ -99,6 +103,7 @@ export default function Login() {
           </Form>
           <div className="login-hint">
             首次登录需修改初始密码；账户与角色由管理员在控制台维护。
+            登录会绑定当前设备与网络，清理浏览器存储、更换设备或跨网段后需重新登录。
             若持续返回 502，请确认 app-admin-api 容器状态。
           </div>
         </section>

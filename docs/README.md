@@ -43,8 +43,7 @@
 | [app-board.md](app-board.md) | 思维导图/白板存储服务：API、乐观锁、缓存、TLS、配置 |
 | [app-board-mcp.md](app-board-mcp.md) | 思维导图/白板 MCP server：工具面、认证、限流、TLS、服务模式接入 |
 | [app-pay.md](app-pay.md) | 交易/会员服务：订单状态机、支付渠道、审计、TLS、配置 |
-| [app-pay-admin.md](app-pay-admin.md) | 支付后台管理：查询、补偿开通、鉴权、界面 |
-| [app-admin.md](app-admin.md) | 云盘分享审核后台：封杀/解封/放行、用户只读、审计、部署 |
+| [app-admin.md](app-admin.md) | 统一管理后台：分享审核（封杀/解封/放行）、支付运营（订单/会员/权益事件/SKU/补偿开通/退款复核）、沙箱、统一账户与审计、部署 |
 | [app-cloud.md](app-cloud.md) | 云盘服务：分块上传、配额记账、分享/回收站、向量化管道、多实例扩容 |
 | [app-kg.md](app-kg.md) | 知识图谱：app-kg（gRPC 存储）+ app-ts（AI 编排）、proto 契约、已知取舍 |
 

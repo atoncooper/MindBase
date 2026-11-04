@@ -1,14 +1,22 @@
 import { useState } from "react";
 import { Dropdown, Layout, Menu, Tag } from "antd";
+import type { MenuProps } from "antd";
 import {
   AuditOutlined,
   CloudServerOutlined,
   DownOutlined,
-  LogoutOutlined,
+  GiftOutlined,
+  HistoryOutlined,
   KeyOutlined,
+  LogoutOutlined,
+  PayCircleOutlined,
+  ProfileOutlined,
+  RollbackOutlined,
   ShareAltOutlined,
+  TagsOutlined,
   TeamOutlined,
   UserOutlined,
+  UserSwitchOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { App as AntApp } from "antd";
@@ -18,12 +26,38 @@ import ChangePasswordModal from "./ChangePasswordModal";
 
 const ROLE_LABEL: Record<string, string> = { admin: "管理员", viewer: "只读" };
 
+/** 支付运营子菜单 key（SubMenu 不可导航，仅作为展开分组） */
+const PAY_MENU_KEY = "pay";
+
+/** pathname → 侧栏选中项：先精确匹配，再取最长路径前缀（/pay/orders/:no → /pay/orders）。 */
+function selectedKeyFor(pathname: string): string {
+  const keys = [
+    "/shares",
+    "/users",
+    "/sandbox",
+    "/pay/orders",
+    "/pay/memberships",
+    "/pay/events",
+    "/pay/products",
+    "/pay/grants",
+    "/pay/refunds",
+    "/accounts",
+    "/audit",
+  ];
+  if (keys.includes(pathname)) return pathname;
+  const prefixed = keys.filter((k) => pathname.startsWith(k + "/"));
+  prefixed.sort((a, b) => b.length - a.length);
+  return prefixed[0] ?? pathname;
+}
+
 export default function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { me } = useAuth();
   const { modal } = AntApp.useApp();
   const [pwdOpen, setPwdOpen] = useState(false);
+
+  const isAdmin = me?.role === "admin";
 
   const logout = () => {
     modal.confirm({
@@ -54,6 +88,34 @@ export default function AdminLayout() {
     />
   );
 
+  // viewer 隐藏补偿开通 / 退款复核 / 账户（写操作或账户管理）
+  const payChildren: MenuProps["items"] = [
+    { key: "/pay/orders", icon: <ProfileOutlined />, label: "订单" },
+    { key: "/pay/memberships", icon: <TeamOutlined />, label: "会员" },
+    { key: "/pay/events", icon: <HistoryOutlined />, label: "权益事件" },
+    { key: "/pay/products", icon: <TagsOutlined />, label: "SKU" },
+    ...(isAdmin
+      ? [
+          { key: "/pay/grants", icon: <GiftOutlined />, label: "补偿开通" },
+          { key: "/pay/refunds", icon: <RollbackOutlined />, label: "退款复核" },
+        ]
+      : []),
+  ];
+
+  const items: MenuProps["items"] = [
+    { key: "/shares", icon: <ShareAltOutlined />, label: "分享审核" },
+    { key: "/users", icon: <TeamOutlined />, label: "用户" },
+    { key: "/sandbox", icon: <CloudServerOutlined />, label: "沙箱" },
+    {
+      key: PAY_MENU_KEY,
+      icon: <PayCircleOutlined />,
+      label: "支付运营",
+      children: payChildren,
+    },
+    ...(isAdmin ? [{ key: "/accounts", icon: <UserSwitchOutlined />, label: "账户" }] : []),
+    { key: "/audit", icon: <AuditOutlined />, label: "审计日志" },
+  ];
+
   return (
     <Layout style={{ minHeight: "100vh" }}>
       <Layout.Sider width={208} theme="light" style={{ borderRight: "1px solid #f0f0f0" }}>
@@ -62,14 +124,13 @@ export default function AdminLayout() {
         </div>
         <Menu
           mode="inline"
-          selectedKeys={[location.pathname]}
-          onClick={({ key }) => navigate(key)}
-          items={[
-            { key: "/shares", icon: <ShareAltOutlined />, label: "分享审核" },
-            { key: "/users", icon: <TeamOutlined />, label: "用户" },
-            { key: "/sandbox", icon: <CloudServerOutlined />, label: "沙箱" },
-            { key: "/audit", icon: <AuditOutlined />, label: "审计日志" },
-          ]}
+          selectedKeys={[selectedKeyFor(location.pathname)]}
+          defaultOpenKeys={[PAY_MENU_KEY]}
+          onClick={({ key }) => {
+            if (key === PAY_MENU_KEY) return;
+            navigate(key);
+          }}
+          items={items}
         />
       </Layout.Sider>
       <Layout>

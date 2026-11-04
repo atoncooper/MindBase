@@ -16,6 +16,19 @@ const ACTION_META: Record<string, { label: string; color: string }> = {
   login: { label: "登录", color: "default" },
   logout: { label: "登出", color: "default" },
   change_password: { label: "修改密码", color: "gold" },
+  // 登录安全事件（失败/新设备/新 IP/会话绑定不匹配）
+  login_failed: { label: "登录失败", color: "red" },
+  login_new_device: { label: "新设备登录", color: "orange" },
+  login_new_ip: { label: "新 IP 登录", color: "orange" },
+  session_device_mismatch: { label: "设备不匹配", color: "volcano" },
+  session_ip_mismatch: { label: "IP 不匹配", color: "volcano" },
+  // 支付运营与统一控制台账户管理
+  pay_grant: { label: "补偿开通", color: "volcano" },
+  pay_refund_approve: { label: "退款通过", color: "green" },
+  pay_refund_reject: { label: "退款驳回", color: "red" },
+  account_create: { label: "新建账户", color: "cyan" },
+  account_password_reset: { label: "重置账户密码", color: "gold" },
+  account_delete: { label: "删除账户", color: "red" },
 };
 
 const ACTION_OPTIONS = [
@@ -27,7 +40,27 @@ const ACTION_OPTIONS = [
   { value: "login", label: "登录" },
   { value: "logout", label: "登出" },
   { value: "change_password", label: "修改密码" },
+  { value: "login_failed", label: "登录失败" },
+  { value: "login_new_device", label: "新设备登录" },
+  { value: "login_new_ip", label: "新 IP 登录" },
+  { value: "session_device_mismatch", label: "设备不匹配" },
+  { value: "session_ip_mismatch", label: "IP 不匹配" },
+  { value: "pay_grant", label: "补偿开通" },
+  { value: "pay_refund_approve", label: "退款通过" },
+  { value: "pay_refund_reject", label: "退款驳回" },
+  { value: "account_create", label: "新建账户" },
+  { value: "account_password_reset", label: "重置账户密码" },
+  { value: "account_delete", label: "删除账户" },
 ];
+
+/** 审计目标类型 → 中文标签（未知类型原样展示）。 */
+const TARGET_TYPE_LABEL: Record<string, string> = {
+  share: "分享",
+  membership: "会员",
+  admin_user: "账户",
+  pay_refund: "退款单",
+  session: "会话",
+};
 
 const VIEW_MODE_LABEL: Record<string, string> = {
   text: "文本预览",
@@ -94,6 +127,52 @@ function prettyDetail(item: AuditItem): string {
     }
     case "change_password":
       return "自助修改密码";
+    case "login_failed":
+    case "login_new_device":
+    case "login_new_ip":
+    case "session_device_mismatch":
+    case "session_ip_mismatch": {
+      const ip = raw.match(/ip=(\S+)/)?.[1];
+      const device = raw.match(/device=(\w+)/)?.[1];
+      const parts = [
+        ip ? "IP：" + ip : "",
+        device ? "设备：" + device : "",
+      ].filter(Boolean);
+      if (item.action === "login_failed") return "登录失败" + (parts.length ? " · " + parts.join(" · ") : "");
+      if (item.action === "login_new_device") return "首次在该设备登录" + (parts.length ? " · " + parts.join(" · ") : "");
+      if (item.action === "login_new_ip") return "首次在该 IP 登录" + (parts.length ? " · " + parts.join(" · ") : "");
+      return (item.action === "session_device_mismatch" ? "会话设备不匹配，已强制退出" : "会话 IP 不匹配，已强制退出") +
+        (parts.length ? " · " + parts.join(" · ") : "");
+    }
+    case "pay_grant": {
+      // admin_audit detail = "days=.. tier=.. reason=.."
+      const days = raw.match(/days=(\d+)/)?.[1];
+      const tier = raw.match(/tier=(\w+)/)?.[1];
+      const reason = raw.match(/reason=(.*)$/)?.[1]?.trim();
+      return [
+        days ? "补偿开通 " + days + " 天" : "补偿开通",
+        tier ? "档位 " + tier : "",
+        reason ? "原因：" + reason : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
+    case "pay_refund_approve":
+    case "pay_refund_reject": {
+      const label = item.action === "pay_refund_approve" ? "退款复核通过" : "退款复核驳回";
+      const reason = raw.match(/reason=(.*)$/)?.[1]?.trim();
+      return reason ? label + " · 原因：" + reason : label;
+    }
+    case "account_create": {
+      const username = raw.match(/username=(\S+)/)?.[1];
+      const role = raw.match(/role=(\w+)/)?.[1];
+      if (username) return "新建账户 " + username + (role ? "（" + role + "）" : "");
+      return raw || "新建账户";
+    }
+    case "account_password_reset":
+      return "重置账户密码" + (item.targetId ? " #" + item.targetId : "");
+    case "account_delete":
+      return "删除账户" + (item.targetId ? " #" + item.targetId : "");
     default:
       return raw || "-";
   }
@@ -174,7 +253,41 @@ export default function Audit() {
             `分享 #${r.targetId}`
           );
         }
-        if (r.targetType || r.targetId) return `${r.targetType ?? "-"}#${r.targetId ?? "-"}`;
+        if (r.targetType === "admin_user" && r.targetId) return "账户 #" + r.targetId;
+        if (r.targetType === "pay_refund" && r.targetId) {
+          const orderNo = r.targetId;
+          return (
+            <Tooltip title="打开该订单详情">
+              <Button
+                type="link"
+                size="small"
+                style={{ paddingInline: 0 }}
+                onClick={() => navigate("/pay/orders/" + encodeURIComponent(orderNo))}
+              >
+                退款单 {orderNo}
+              </Button>
+            </Tooltip>
+          );
+        }
+        if (r.targetType === "membership" && r.targetId) {
+          const uid = r.targetId;
+          return (
+            <Tooltip title="查看该用户会员态">
+              <Button
+                type="link"
+                size="small"
+                style={{ paddingInline: 0 }}
+                onClick={() => navigate("/pay/memberships?uid=" + encodeURIComponent(uid))}
+              >
+                会员 #{uid}
+              </Button>
+            </Tooltip>
+          );
+        }
+        if (r.targetType || r.targetId) {
+          const typeLabel = TARGET_TYPE_LABEL[r.targetType ?? ""] ?? r.targetType ?? "-";
+          return typeLabel + "#" + (r.targetId ?? "-");
+        }
         return "-";
       },
     },
@@ -200,7 +313,7 @@ export default function Audit() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="审核操作、内容预览、登录与改密都会记入本日志；点击「分享 #ID」可直接打开对应分享。"
+        message="审核操作、内容预览、支付运营（补偿开通/退款复核）、账户管理、登录与改密都会记入本日志；点击「分享 #ID」「会员 #UID」可直接打开对应详情。"
       />
       <Space wrap style={{ marginBottom: 16 }}>
         <Select
