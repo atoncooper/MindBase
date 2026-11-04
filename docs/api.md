@@ -30,7 +30,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 |------|------|
 | 本地开发 | `frontendv2` dev server :3000，`next.config.ts` rewrites 把 API 转发到 APISIX :9080 |
 | Docker 全栈 | nginx :3000（或 80 / 443），页面与 API 同源 |
-| 管理台 | 回环 `http://127.0.0.1:3001`，UI 的 `/api` 同源代理到 app-admin-api :8016（不经主站 nginx / APISIX） |
+| 管理台 | 统一后台（分享审核 / 支付运营 / 沙箱 / 账户 / 审计）：回环 `http://127.0.0.1:3001`，UI 的 `/api` 同源代理到 app-admin-api :8016（不经主站 nginx / APISIX） |
 | 沙箱管理 | app-admin → app-sandbox `/internal/admin/*`（服务间共享令牌） |
 
 ---
@@ -42,7 +42,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `forward-auth` | 用户端点 | APISIX 调 app-auth `POST /internal/auth/verify` 宽验证会话；有效则**剥离客户端伪造的头**后注入 `X-Uid` / `X-Roles` |
 | `key-auth` | 服务间 / 内部端点 | `apikey` 请求头（`APISIX_CONSUMER_KEY`）；覆盖 `/internal/*`、MCP、app-task 回调、沙箱执行面 |
 | 免登录 | 公开面 | 分享访问页（`/cloud/s/*`、`/notes/shared/*`、quiz 分享）、`/pay/callback/*` 渠道验签 |
-| Session Cookie | 管理台 | app-admin 自建账户体系（`admin_user` / `admin_session`），登录限流 + 首登强制改密 |
+| Session Cookie | 管理台 | app-admin 统一账户体系（`admin_user` / `admin_session`，角色 admin/viewer），登录限流 + 首登强制改密；支付运营与账户管理共用同一会话 |
 | 服务自校验 | app-sandbox | 除 APISIX key-auth 外，服务内再验 `X-API-Key`，直连无法绕过 |
 
 **约定**：下游服务信任网关注入的 `X-Uid` / `X-Roles`，**不自验会话**；身份类参数永远不出现在 LLM 可写参数里（MCP 工具面亦不暴露 uid）。
@@ -70,7 +70,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `/academic/*` | app-ts | 科研项目 / 文献 / 文档章节 / BibTeX 与 Markdown/LaTeX 导出 / 项目事件 |
 | `/internal/*` | 各服务 | 服务间端点（key-auth）；不暴露到 nginx |
 | `/internal/sandbox/*` | app-sandbox | 沙箱执行面（app-ts 调）；管理面仅 app-admin 可调 |
-| `/api/*` | app-admin-api | 管理台 API（分享审核 / 用户只读 / 审计 / 沙箱代理），仅回环 |
+| `/api/*` | app-admin-api | 管理台 API（分享审核 / 用户只读 / 审计 / 沙箱代理 / 支付运营 `/api/pay/*` / 账户管理 `/api/console/users`），仅回环 |
 
 ---
 

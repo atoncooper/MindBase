@@ -20,14 +20,17 @@ type SessionBundle struct {
 	User    model.AdminUser
 }
 
-// CreateSession persists a fresh login session.
-func CreateSession(token string, userID int64, ip, userAgent string, expires time.Time) error {
+// CreateSession persists a fresh login session. deviceHash is the opaque
+// server-side device fingerprint (empty when device binding is off); the raw
+// device id never reaches the database.
+func CreateSession(token string, userID int64, ip, userAgent, deviceHash string, expires time.Time) error {
 	s := &model.AdminSession{
 		SessionToken: token,
 		AdminUserID:  userID,
 		ExpiresAt:    expires,
 		IP:           strPtr(ip),
 		UserAgent:    strPtr(truncate(userAgent, 500)),
+		DeviceHash:   deviceHash,
 	}
 	return db.DB.Create(s).Error
 }

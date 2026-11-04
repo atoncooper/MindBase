@@ -1,7 +1,7 @@
 # VS Code 配置说明（多语言单仓）
 
 本仓同时包含 TS/Node（`frontendv2` / `app-ts` / `frontend-admin`）、Go（`app-go/*`、`mcp/*`、
-`app-board`、`app-pay-admin`）、Java（`app-pay`）与脚本工程。
+`app-board`）、Java（`app-pay`）与脚本工程。
 
 > 桌面端（Tauri 2 + Rust）已拆分为独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop)，
 > 本仓不再包含 Rust 工程，相关 rust-analyzer / cargo 任务配置随源码一并迁出。

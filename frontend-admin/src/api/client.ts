@@ -10,6 +10,7 @@ import type {
   UserItem,
   UserQueryMode,
 } from "./types";
+import { DEVICE_ID_HEADER, getDeviceId } from "../device";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -30,12 +31,16 @@ export function setUnauthorizedHandler(fn: UnauthorizedHandler | null): void {
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let resp: Response;
   try {
+    // 所有管理端请求都携带稳定的设备 ID，供服务端做设备指纹绑定校验。
+    const headers = new Headers(init.headers);
+    headers.set(DEVICE_ID_HEADER, getDeviceId());
+    if (init.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
     resp = await fetch(path, {
       credentials: "include",
       ...init,
-      headers: init.body
-        ? { "Content-Type": "application/json", ...(init.headers ?? {}) }
-        : init.headers,
+      headers,
     });
   } catch {
     throw new ApiError(0, "网络错误：无法连接管理后端");
@@ -46,7 +51,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     throw new ApiError(401, "登录已失效，请重新登录");
   }
   if (!resp.ok) {
-    // 契约 §5：错误体 {"detail": ...}，透传 message
+    // 错误体 {"detail": ...}，透传 message
     let detail = `请求失败（HTTP ${resp.status}）`;
     try {
       const data: unknown = await resp.json();
@@ -85,7 +90,7 @@ export function qs(params: Record<string, string | number | boolean | undefined>
   return s ? `?${s}` : "";
 }
 
-// —— 契约 §5 端点封装（组件禁止直接 fetch） ——
+// —— 端点封装（组件禁止直接 fetch） ——
 
 export const api = {
   login: (username: string, password: string) =>

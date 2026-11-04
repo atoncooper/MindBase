@@ -11,7 +11,7 @@ import { post, qs, request } from "./client";
 /** uid 运行时可能是 number 或 string（见文件头 bigint 说明）。 */
 export type SandboxUid = number | string;
 
-/** 统一分页响应（契约 §三：page 从 1 起、pageSize 1..100，默认 20）。 */
+/** 统一分页响应（page 从 1 起、pageSize 1..100，默认 20）。 */
 export interface SandboxPaged<T> {
   items: T[];
   total: number;
@@ -109,7 +109,7 @@ export interface SandboxAuditItem {
 
 /**
  * 执行详情 = 列表视图 + 产物元数据 + 审计时间线。
- * 契约 §三只说「预览、产物元数据、审计事件」，未固定后两者字段名：这里同时接受
+ * 接口约定只要求「预览、产物元数据、审计事件」，未固定后两者字段名：这里同时接受
  * audit / events 两种上游命名，避免与并行落地的 Go handler 命名不一致时页面空白。
  */
 export interface SandboxExecutionDetail extends SandboxExecutionItem {

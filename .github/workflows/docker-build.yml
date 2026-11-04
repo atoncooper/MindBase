@@ -81,10 +81,6 @@ jobs:
             dockerfile: scripts/minio.Dockerfile
             image: atoncooper/mind-base-minio
             name: minio
-          - context: ./app-pay-admin
-            dockerfile: app-pay-admin/Dockerfile
-            image: atoncooper/mind-base-app-pay-admin
-            name: app-pay-admin
           - context: ./app-go/app-admin
             dockerfile: app-go/app-admin/Dockerfile
             image: atoncooper/mind-base-app-admin

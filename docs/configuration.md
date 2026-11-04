@@ -24,8 +24,7 @@
 | app-board / 三个 MCP | 各自 `default.yaml`（embed） | `APPBOARD__`/`BOARDMCP__`/`NOTEMCP__` 等 | `RDBMS__URL`/`MONGO__URI`/`REDIS__URL` |
 | app-task | 独立仓库 default.yaml（embed；本仓只放密钥） | `APPTASK__` | `APPTASK__RDBMS__URL`/`APPTASK__EMAIL__API_KEY` |
 | app-pay | `application.yaml` + docker/test profile 变体（Flyway 管 schema） | 经 `${VAR:默认}` 占位符 | `PAY_MYSQL_*`/`ALIPAY_*`/`PAY_TLS_*` |
-| app-pay-admin | `default.yaml`（embed）+ `-config` 覆盖层 | `PAYADMIN__` | `PAYADMIN__RDBMS__URL`/`PAYADMIN__WEBUI__TOKEN` |
-| app-admin | `app-go/app-admin/default.yaml`（embed）+ `-config` 覆盖层 | `APPADMIN__` | `APPADMIN__RDBMS__URL`；`APPADMIN__SEED__USERNAME`/`APPADMIN__SEED__PASSWORD`（种子账户）；`APPADMIN__SESSION__TTL_MINUTES` |
+| app-admin | `app-go/app-admin/default.yaml`（embed）+ `-config` 覆盖层 | `APPADMIN__` | `APPADMIN__RDBMS__URL`；`APPADMIN__SEED__USERNAME`/`APPADMIN__SEED__PASSWORD`（种子账户）；`APPADMIN__SESSION__TTL_MINUTES`；支付运营 `APPADMIN__PAY_RDBMS__URL`/`APPADMIN__PAY__OPS__KEY`/`APPADMIN__PAY__AUDIT_FILE` |
 | frontend | 构建期 `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_APISIX_HOST`（compose 插值）；运行时 `SHARE_DOMAIN`/`SHARE_PUBLIC_IP`（分享域名链，见 [sharing.md](sharing.md)） | — | — |
 
 改某个服务的配置 = 改它的 YAML 默认值（committed）或在 `.env` / compose `environment:` 覆盖（敏感值）。**新增配置项必须同步该服务自己的 default.yaml**；仅密钥类才进 `.env.example`。
@@ -35,7 +34,7 @@
 | 基础设施 | 消费方 | 连接来源 |
 |------|------|------|
 | MySQL `mind_base` | app-go 八服务 + app-board | `RDBMS__URL`（或 `APP<域>__RDBMS__URL`） |
-| MySQL `app_task` / `app_pay` | app-task / app-pay | 各自专属连接串 |
+| MySQL `app_task` / `app_pay` | app-task / app-pay；app-admin 经第二连接只读 `app_pay`（+ 补偿开通） | 各自专属连接串（app-admin：`APPADMIN__PAY_RDBMS__URL`） |
 | Mongo `mind_base`（Go 共享）+ `mind_base_ts`（app-ts 自有） | Go 服务 / app-ts | `MONGO__URI`（app-ts 以库区分，跨库只读 `mind_base.asr_documents`） |
 | Redis | app-auth（限流/验证码）、app-quiz（quota/分享缓存）、app-ts（事件桥）、app-board（缓存 db 2） | `REDIS__URL` |
 | Milvus | app-ts（`mind_base_ts`：bilibili_videos/cloud_drive/kg_entities） | app-ts config（`MILVUS__*`） |

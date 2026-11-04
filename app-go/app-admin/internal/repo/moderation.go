@@ -2,7 +2,7 @@
 // moderation columns of cloud_shares (moderation_status / moderation_reason /
 // moderation_time / moderation_by) and append the admin_audit row in the SAME
 // transaction. is_revoked is deliberately NEVER touched here — owner-revoke
-// semantics belong to app-cloud (plan/1.0.16 section 5).
+// semantics belong to app-cloud.
 package repo
 
 import (

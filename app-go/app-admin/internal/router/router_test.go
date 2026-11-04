@@ -1,6 +1,6 @@
 // Router guard tests: the role gate must keep moderation writes admin-only,
 // /health must fail closed when the DB is unreachable, and every failure must
-// speak the {"detail": ...} error contract (plan/1.0.16).
+// speak the {"detail": ...} error contract.
 package router
 
 import (
@@ -16,12 +16,13 @@ import (
 
 func newTestRouter() *gin.Engine {
 	cfg := &config.Config{Security: config.SecurityConfig{}}
-	return New(cfg,
-		service.NewAuthService(0),
-		service.NewUserService(),
-		service.NewShareService(nil),
-		service.NewAuditService(),
-		service.NewSandboxService(nil))
+	return New(cfg, Deps{
+		Auth:    service.NewAuthService(0),
+		Users:   service.NewUserService(),
+		Shares:  service.NewShareService(nil),
+		Audits:  service.NewAuditService(),
+		Sandbox: service.NewSandboxService(nil),
+	})
 }
 
 func hit(e *gin.Engine, path string) (int, string) {
@@ -60,12 +61,13 @@ func TestAPI401WithoutCookie(t *testing.T) {
 func TestIPAllowlistUsesPeerAddressNotForwardedHeader(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.IPAllowlist = []string{"192.0.2.0/24", "2001:db8::1"}
-	e := New(cfg,
-		service.NewAuthService(0),
-		service.NewUserService(),
-		service.NewShareService(nil),
-		service.NewAuditService(),
-		service.NewSandboxService(nil))
+	e := New(cfg, Deps{
+		Auth:    service.NewAuthService(0),
+		Users:   service.NewUserService(),
+		Shares:  service.NewShareService(nil),
+		Audits:  service.NewAuditService(),
+		Sandbox: service.NewSandboxService(nil),
+	})
 
 	request := func(remoteAddr, forwardedFor string) int {
 		rec := httptest.NewRecorder()
@@ -92,12 +94,13 @@ func TestIPAllowlistUsesPeerAddressNotForwardedHeader(t *testing.T) {
 func TestOriginGateAllowsSameOriginAndConfiguredSPAOnly(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.CORS.AllowOrigins = []string{"https://admin-ui.example"}
-	e := New(cfg,
-		service.NewAuthService(0),
-		service.NewUserService(),
-		service.NewShareService(nil),
-		service.NewAuditService(),
-		service.NewSandboxService(nil))
+	e := New(cfg, Deps{
+		Auth:    service.NewAuthService(0),
+		Users:   service.NewUserService(),
+		Shares:  service.NewShareService(nil),
+		Audits:  service.NewAuditService(),
+		Sandbox: service.NewSandboxService(nil),
+	})
 
 	request := func(host, method, origin string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -128,12 +131,13 @@ func TestOriginGateAllowsSameOriginAndConfiguredSPAOnly(t *testing.T) {
 func TestOriginGateValidatesPreflight(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.CORS.AllowOrigins = []string{"https://admin-ui.example"}
-	e := New(cfg,
-		service.NewAuthService(0),
-		service.NewUserService(),
-		service.NewShareService(nil),
-		service.NewAuditService(),
-		service.NewSandboxService(nil))
+	e := New(cfg, Deps{
+		Auth:    service.NewAuthService(0),
+		Users:   service.NewUserService(),
+		Shares:  service.NewShareService(nil),
+		Audits:  service.NewAuditService(),
+		Sandbox: service.NewSandboxService(nil),
+	})
 
 	request := func(method, headers string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -148,7 +152,12 @@ func TestOriginGateValidatesPreflight(t *testing.T) {
 	if rec := request("POST", "content-type"); rec.Code != http.StatusNoContent {
 		t.Fatalf("valid preflight should be accepted, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := request("DELETE", "content-type"); rec.Code != http.StatusForbidden {
+	// DELETE is allowed since the console account-management endpoints
+	// (DELETE /api/console/users/:id) were merged in; PUT stays unsupported.
+	if rec := request("DELETE", "content-type"); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE preflight must be accepted for account management, got %d", rec.Code)
+	}
+	if rec := request("PUT", "content-type"); rec.Code != http.StatusForbidden {
 		t.Fatalf("unsupported preflight method must be rejected, got %d", rec.Code)
 	}
 	if rec := request("POST", "x-evil-header"); rec.Code != http.StatusForbidden {

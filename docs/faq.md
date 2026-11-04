@@ -118,6 +118,10 @@ MySQL 用 `mysqldump`（业务库 `mind_base`、`mind_base_ts` 相关集合在 M
 
 本地回环 `http://127.0.0.1:3001`（Compose `app-admin`），默认 `admin` / `app-admin`，**首次登录强制改密**。生产务必修改默认凭据并限制访问来源。详见 [app-admin.md](app-admin.md)。
 
+**Q：管理台里支付运营页打不开 / 退款复核不见了？**
+
+支付运营依赖 `app-pay` 库：未起 `--profile pay`（或 `app-pay-mysql`）时 `/api/pay/*` 返回 503「支付管理未配置」，其余后台功能不受影响。退款复核还需 `.env` 的 `PAY_OPS_KEY`（注入 app-admin-api 的 `APPADMIN__PAY__OPS__KEY`）；未配置时该页整组 404 隐藏。详见 [app-admin.md](app-admin.md)。
+
 **Q：管理台登录 502 / 页面能开但接口失败？**
 
 UI 的 `/api` 由 Nginx 同源代理到 app-admin-api；若代理地址被静态缓存（容器重建后 IP 变化），会 502。现配置使用 Docker DNS 动态解析（`set $admin_api ...`），重建后仍异常时确认 `app-admin-api` 容器健康并重启 `app-admin`。

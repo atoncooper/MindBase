@@ -1,12 +1,14 @@
-// app-admin entrypoint: load config, init DB (shared bilirag MySQL), run the
+// app-admin entrypoint: load config, init the shared bilirag MySQL, run the
 // owned-table Migrate (admin_user / admin_session / admin_audit ONLY — the
 // guard test in internal/db pins this), seed the default console admin
-// account, serve /health + /api/* on 8016, graceful shutdown.
+// account, optionally open the SECOND app_pay connection (payment console),
+// serve /health + /api/* on 8016, graceful shutdown.
 //
-// Share-moderation admin console (plan/1.0.16): read-only view of users /
-// shares metadata + the four moderation columns on cloud_shares. Runs on
-// 127.0.0.1 loopback only in compose (no APISIX / no nginx), like
-// app-pay-admin.
+// Unified admin console: share moderation + payment operations
+// (orders / memberships / entitlement events / SKU / compensation grant /
+// refund review) + console account management. The former standalone
+// app-pay-admin service is retired into this one. Runs on 127.0.0.1 loopback
+// only in compose (no APISIX / no nginx).
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +30,7 @@ import (
 	"app-admin/internal/config"
 	"app-admin/internal/db"
 	"app-admin/internal/logger"
+	"app-admin/internal/payops"
 	"app-admin/internal/repo"
 	"app-admin/internal/router"
 	"app-admin/internal/sandbox"
@@ -94,6 +98,12 @@ func main() {
 		slog.Warn("[SANDBOX_ADMIN] base_url/token half-configured — sandbox console proxy DISABLED " +
 			"(set both APPADMIN__SANDBOX_ADMIN__BASE_URL and APPADMIN__SANDBOX_ADMIN__TOKEN)")
 	}
+	// Optional refund-review workbench: half-configured = warn + hide the whole
+	// group (404); never block the console over an optional payment feature.
+	if config.NormalizePayOps(cfg) {
+		slog.Warn("[PAY_OPS] base_url/key half-configured — refund review DISABLED " +
+			"(set both APPADMIN__PAY__OPS__BASE_URL and APPADMIN__PAY__OPS__KEY)")
+	}
 
 	// MySQL (GORM): the shared bilirag database. cloud_shares / users / rbac_*
 	// rows are read or the four moderation columns are UPDATEd — db.Migrate
@@ -124,6 +134,40 @@ func main() {
 		slog.Warn("invalid timezone, falling back to UTC", "tz", cfg.Timezone, "err", err)
 	}
 
+	// Payment operations (optional SECOND database: app_pay on app-pay-mysql).
+	// The pay_* schema is Java-owned (Flyway): open the connection, never
+	// migrate it. A failure degrades to "payment console disabled" (503 on
+	// /api/pay/**) instead of taking the whole admin console down.
+	var (
+		payQuery  *service.PayQueryService
+		payGrants *service.PayGrantService
+		payOps    *payops.Client
+		payAudit  *service.PayAudit
+	)
+	if payURL := strings.TrimSpace(cfg.PayRDBMS.URL); payURL != "" {
+		if err := db.PayInit(payURL, cfg.PayRDBMS.MaxOpenConns, cfg.PayRDBMS.MaxIdleConns,
+			cfg.PayRDBMS.ConnMaxLifetime, cfg.App.Debug); err != nil {
+			slog.Error("[PAY] pay database unavailable — payment console DISABLED", "err", err)
+		} else {
+			defer db.PayClose()
+			// Fund-operation JSONL trail (SHA-256 hash chain, 365d retention).
+			payAudit = service.NewPayAudit(cfg.Pay.AuditFile)
+			defer payAudit.Close()
+			payQuery = service.NewPayQueryService()
+			payGrants = service.NewPayGrantService(payAudit, service.GrantCaps{
+				DailyMaxCount: cfg.Pay.Grant.DailyMaxCount,
+				DailyMaxDays:  cfg.Pay.Grant.DailyMaxDays,
+			})
+			payOps = payops.New(cfg.Pay.Ops.BaseURL, cfg.Pay.Ops.Key, cfg.Pay.Ops.TimeoutSeconds)
+			slog.Info("[PAY] payment console enabled",
+				"grant_daily_max_count", cfg.Pay.Grant.DailyMaxCount,
+				"grant_daily_max_days", cfg.Pay.Grant.DailyMaxDays,
+				"refund_review", payOps.Enabled() && cfg.Pay.Ops.RefundReviewEnabled)
+		}
+	} else {
+		slog.Info("[PAY] payment console disabled — APPADMIN__PAY_RDBMS__URL not set")
+	}
+
 	// Services: auth (session + login throttle), read-only queries, moderation,
 	// and the app-cloud review client (nil unless fully wired — preview off).
 	review := cloud.NewClient(cfg.CloudReview.BaseURL, cfg.CloudReview.Token)
@@ -136,13 +180,40 @@ func main() {
 	if !sandboxAdmin.Enabled() {
 		slog.Info("[SANDBOX_ADMIN] console proxy disabled — APPADMIN__SANDBOX_ADMIN__BASE_URL/TOKEN not both set")
 	}
-	auth := service.NewAuthService(cfg.Session.TTLMinutes)
+	// Login budgets: short per-IP window + longer per-account window, both
+	// configured under security.login (zero values fall back to the defaults).
+	slog.Info("[SECURITY] session binding",
+		"device", cfg.Session.DeviceBindingMode(),
+		"ip", cfg.Session.IPBindingMode(),
+		"ipv4_prefix", cfg.Session.IPv4PrefixOr(),
+		"ipv6_prefix", cfg.Session.IPv6PrefixOr(),
+		"trusted_proxies", len(cfg.Security.TrustedProxies))
+	auth := service.NewAuthServiceWithLimits(cfg.Session.TTLMinutes, service.LoginLimits{
+		IPMax:                cfg.Security.Login.MaxFailsPerIP,
+		IPWindowSeconds:      cfg.Security.Login.IPWindowSeconds,
+		AccountMax:           cfg.Security.Login.MaxFailsPerAccount,
+		AccountWindowSeconds: cfg.Security.Login.AccountWindowSeconds,
+	})
 	users := service.NewUserService()
 	shares := service.NewShareService(review)
 	audits := service.NewAuditService()
 	sandboxSvc := service.NewSandboxService(sandboxAdmin)
+	// Console account management (admin_user) is independent of the payment
+	// database and therefore always wired.
+	consoleUsers := service.NewConsoleUserService()
 
-	handler := router.New(cfg, auth, users, shares, audits, sandboxSvc)
+	handler := router.New(cfg, router.Deps{
+		Auth:     auth,
+		Users:    users,
+		Shares:   shares,
+		Audits:   audits,
+		Sandbox:  sandboxSvc,
+		Pay:      payQuery,
+		Grants:   payGrants,
+		Console:  consoleUsers,
+		Ops:      payOps,
+		PayAudit: payAudit,
+	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}
 

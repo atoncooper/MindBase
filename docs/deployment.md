@@ -23,7 +23,7 @@
 | 9080 | APISIX | 无宿主端口 | 仅容器网络；调试 `docker compose exec apisix` |
 | 8000 / 8001-8016 | app-ts、app-go 各服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
 | 3001 / 8016 | app-admin UI / API | 127.0.0.1 | 管理台仅回环，远程用 SSH 隧道 |
-| 8002 / 8003 | app-pay / app-pay-admin | 127.0.0.1 | HTTPS-only；管理台仅回环 |
+| 8002 | app-pay | 127.0.0.1 | HTTPS-only |
 | 3306 / 27017 / 6379 / 19530 / 7474 / 7687 / 9000-9001 | MySQL/Mongo/Redis/Milvus/Neo4j/MinIO | **compose 默认 0.0.0.0** | 生产必须防火墙限制或改回环绑定 |
 | 18080 / 18443 / 18081 | Higress 网关 / 控制台 | 网关回环；控制台 0.0.0.0 | 控制台生产限来源 IP |
 
@@ -64,7 +64,7 @@ chmod 600 secrets/api_key_encryption_key
 | `PAY_MYSQL_ROOT_PASSWORD` / `PAY_MYSQL_USER` / `PAY_MYSQL_PASSWORD` | 启用支付时 | app-pay 独立库 `app_pay` |
 | `PAY_TLS_CERT` / `PAY_TLS_KEY`（`PAY_TLS_ENABLED`） | 生产必填 | 正式证书；默认 `certs/pay.crt` 与 `certs/pay.key`；`false` 仅本机排障 |
 | `PAY_EXECUTOR_TOKEN`、`PAY_READONLY_KEY` / `PAY_OPS_KEY`、`ALIPAY_*` | 按功能 | 委托令牌、内部 key 分离、支付宝凭证 |
-| `PAY_OPS_KEY` | 启用 pay-admin 时硬必填 | compose 对 `PAYADMIN__APP_PAY__OPS_KEY` 做 `:?` 校验 |
+| `PAY_OPS_KEY` | 启用退款复核时可选 | app-admin 退款复核经 APISIX pay-ops consumer 调 app-pay internal 端点；留空 = 复核页 404 隐藏 |
 | `APP_CLOUD_ATTEST_SECRET` | 多副本时必填 | 分享设备证明 HMAC，各副本同值（`openssl rand -hex 32`） |
 | `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 启用审核预览时 | app-admin ↔ app-cloud 共享令牌，两边同值 |
 | `APP_KG_INTERNAL_TOKEN`、`SHARE_DOMAIN`、`OCR__API_KEY`、LangSmith 三项 | 可选 | 内网 token、分享域名、OCR/tracing |
@@ -80,11 +80,10 @@ chmod 600 secrets/api_key_encryption_key
 | `docker compose up -d --build` | 默认全栈（实测 29 个服务）：frontend/nginx/APISIX/app-ts/app-go 各服务/app-board(+MCP)/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
 | `--profile ai` | 追加 Higress AI 网关（追加后用于平台 LLM/embedding 出网） | 单独执行只起 5 个服务（higress+mysql/mongo/redis+cert-gen），**不含**主栈 |
 | `--profile sandbox` | 追加 opensandbox-server / app-sandbox | 单独执行只起 6 个服务；配合 `SANDBOX_ENABLED=true` |
-| `--profile pay-admin` | 追加 app-pay-admin | 单独执行只起 6 个服务；需 `PAY_OPS_KEY` |
 | `--profile pay-test` | 追加 app-pay-test（回环 18002）与测试库（回环 18306） | 仅测试，不用于生产 |
 | `--profile tools` | 追加 redis-commander / mongo-express | 仅内网调试 |
 | `--profile pay` / `--profile admin` | 默认集合已含 app-pay / app-admin；仅单域最小栈时显式指定 | 单独执行会排除默认全栈 |
-| `--profile full` | 一次启动全量（实测 37 个服务）：默认全栈 + higress + sandbox 两件 + pay-admin + pay-test(+库) + tools | 功能最全的一种启动方式 |
+| `--profile full` | 一次启动全量（实测 36 个服务）：默认全栈 + higress + sandbox 两件 + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
 
 > **compose profile 语义（实测 `docker compose config --services`）**：服务带 `profiles: [""]` 属于默认集合；
 > **一旦传入 `--profile X`，默认集合不再自动启动**。因此上表「追加」应分两步：
@@ -121,7 +120,7 @@ chmod 600 secrets/api_key_encryption_key
 | app-board / 三个 MCP | `:8004/8005/8009/8012/health` | app-board 为 HTTPS |
 | app-task | `:8001/health` | |
 | app-pay | `:8002/health`（HTTPS，真实 DB 探测）+ `/actuator/{health,metrics,prometheus}` | |
-| app-pay-admin / app-admin-api | `:8003/health`、`:8016/health` | app-admin DB 不可用返回 503 |
+| app-admin-api | `:8016/health` | 主库不可用 503；支付库配置了但不可用 → 503 `pay database unavailable`；否则 `pay:"ok"\|"disabled"` |
 | app-sandbox | `:8017/health`、`/ready`（MySQL ping）、`/metrics` | |
 | opensandbox-server | `:8080/health` | |
 | 基础设施 | compose healthcheck / 依赖链（mysql、mongo、redis、minio、etcd 等） | `docker compose ps` 看 healthy |
@@ -129,7 +128,7 @@ chmod 600 secrets/api_key_encryption_key
 > 入口 nginx 的 `/health` 会转发到 APISIX，而 APISIX 未声明该路由——**不要把入口 `/health` 当健康判据**；用容器 healthcheck、直连回环端口或 `docker compose exec` 检查。
 
 - 日志：`docker compose logs -f <service>`；app-go/app-pay/app-board/MCP 同时写 `/app/logs`（lumberjack 轮转，命名卷 `*_logs`）；app-ts 仅 stdout；nginx 在容器 stdout/stderr。
-- 审计：`pay-audit.jsonl`（app-pay 卷 `/app/logs`，365 天哈希链）、`pay-admin-audit.jsonl`（pay-admin 卷）、`admin_audit`（MySQL mind_base，app-admin）、`sandbox_audit`（MySQL mind_base，app-sandbox）；学术证据在 Mongo `academic_runs`。
+- 审计：`pay-audit.jsonl`（app-pay 卷 `/app/logs`，365 天哈希链；**app-admin 的资金审计同名同格式，落 `app_admin_logs` 卷**）、`admin_audit`（MySQL mind_base，app-admin 全部后台操作）、`sandbox_audit`（MySQL mind_base，app-sandbox）；学术证据在 Mongo `academic_runs`。
 - 建议外部监控：入口 `GET /` + 各服务回环 health；Prometheus 抓取 app-cloud/app-sandbox/app-pay 指标；日志集中采集容器 stdout。
 
 ## 7. 备份与恢复
@@ -203,7 +202,7 @@ kubectl -n mind-base get pods -w
 ```
 
 - 入口是 nginx `Service type=LoadBalancer`（裸集群配 `metallb.yaml`），**无 Ingress 资源**；域名/证书走 `nginx-tls` Secret。
-- 管理台（app-admin/pay-admin/app-sandbox）在 K8s 中通过 `kubectl port-forward` 访问，不对外暴露。
+- 管理台（app-admin，含支付运营/沙箱/账户/审计）与 app-sandbox 在 K8s 中通过 `kubectl port-forward` 访问，不对外暴露。
 
 ## 11. 升级与回滚
 

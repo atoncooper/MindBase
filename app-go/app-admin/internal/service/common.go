@@ -1,5 +1,5 @@
 // Shared service helpers: pagination window (page from 1, pageSize <= 100,
-// default 20 per plan/1.0.16) and field presentation utilities used while
+// default 20) and field presentation utilities used while
 // assembling the internal/dto response shapes.
 package service
 
@@ -50,6 +50,18 @@ func rfc3339(t *time.Time) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+// rfc3339Time renders a required instant (contract: time output is RFC3339).
+func rfc3339Time(t time.Time) string { return t.Format(time.RFC3339) }
+
+// rfc3339Ptr renders an optional instant; nil stays JSON null on the wire.
+func rfc3339Ptr(t *time.Time) *string {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	s := t.Format(time.RFC3339)
+	return &s
 }
 
 // isActive resolves an rbac binding "in force": NULL is_active counts as

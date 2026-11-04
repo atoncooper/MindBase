@@ -22,14 +22,14 @@
 #   8. networks.driver: bridge      → 必须 overlay（多机互通唯一驱动），本文件已声明
 #   9. ports 短语法 + 127.0.0.1 回环绑定 → ingress 路由网格不支持宿主 IP 绑定，且会把端口
 #                                     发布到【所有节点】的所有网卡 → 除对外入口（nginx 80/443、
-#                                     higress 控制台、app-pay-admin）外一律不发布端口：
+#                                     higress 控制台、app-admin UI）外一律不发布端口：
 #                                     swarm 服务间互访走 overlay DNS，无需发布端口
 #                                     （MySQL/Redis/Mongo/Milvus 调试口临时开放见文件尾注释）
 #
 # 使用前提：
 #   1. docker swarm init（多机：manager 上 init，其余节点 docker swarm join）
 #   2. 本仓库部署到将运行 bind-mount 服务的节点，绝对路径记为 MB_ROOT（默认 /srv/mindbase）；
-#      至少需要：nginx/ apisix/ db/ secrets/ app-board/ mcp/app-board-mcp/ app-pay/ app-pay-admin/ data/
+#      至少需要：nginx/ apisix/ db/ secrets/ app-board/ mcp/app-board-mcp/ app-pay/ data/
 #   3. .env 与单机 compose 用法一致；⚠️ APISIX_CONSUMER_KEY / PAY_OPS_KEY 必填——
 #      stack 插值没有 compose 的 :? 语法兜底，留空 = 服务间 key-auth 鉴权失败
 #
@@ -812,7 +812,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
     volumes:
       - app_task_logs:/app/logs
       # app-pay 开发 CA（cert-gen 产出；缺失时仅 https 委托回调报错、兜底轮询接管）
@@ -834,7 +834,7 @@ services:
       - mind-base-net
 
   # ==============================================================
-  # 支付域（app-pay + app-pay-admin）
+  # 支付域（app-pay；管理能力已并入 app-admin，见下方「管理后台」段）
   # 注：application*.yaml 占位符消费的 ALIPAY_*/PAY_EXECUTOR_TOKEN 等
   #     原来靠 env_file 注入，这里全部显式内联
   # ==============================================================
@@ -876,29 +876,65 @@ services:
     networks:
       - mind-base-net
 
-  # app-pay-admin —— 支付后台管理（不经 APISIX，浏览器直连）
+  # ==============================================================
+  # 管理后台（app-admin；原 app-pay-admin 已并入，2026-11-03）
+  # 统一入口 = UI（Nginx SPA + /api 同源代理）+ API（Go，8016，仅 overlay 内可达）
+  # 页面：分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计
+  # ==============================================================
+  app-admin-api:
+    image: atoncooper/mind-base-app-admin:latest
+    environment:
+      # 共享 bilirag 库（与 app-auth/app-cloud 同库；RDBMS__URL 来自 .env）
+      - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
+      - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}
+      - APPADMIN__SEED__PASSWORD=${APPADMIN__SEED__PASSWORD:-app-admin}
+      - APPADMIN__SECURITY__IP_ALLOWLIST=${APPADMIN__SECURITY__IP_ALLOWLIST:-}
+      # 可信反向代理（overlay 网段）：只有这些 peer 的 X-Forwarded-* 被采信，
+      # 用于登录限流、会话 IP/设备绑定与审计；空 = 永不信任转发头。
+      - APPADMIN__SECURITY__TRUSTED_PROXIES=${APPADMIN__SECURITY__TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12}
+      # 分享内容受控预览（app-cloud 内部端点；两边同值 = 开启）
+      - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-http://app-cloud:8007}
+      - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
+      # 沙箱管理面代理（app-sandbox /internal/admin/*）
+      - APPADMIN__SANDBOX_ADMIN__BASE_URL=${APPADMIN__SANDBOX_ADMIN__BASE_URL:-http://app-sandbox:8017}
+      - APPADMIN__SANDBOX_ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
+      # 支付运营（原 app-pay-admin 能力并入）：第二 GORM 连接直连 app_pay 库。
+      # 留空 = 支付管理未配置（/api/pay/* 503），不影响分享审核/账户/沙箱。
+      - APPADMIN__PAY_RDBMS__URL=${PAY_ADMIN_RDBMS_URL:-mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay}
+      # 退款复核：经 APISIX pay-ops consumer 调 app-pay internal 端点（不直写库）。
+      # 未配置 key 时退款复核整组 404 隐藏；其余支付查询不受影响。
+      - APPADMIN__PAY__OPS__BASE_URL=${APPADMIN__PAY__OPS__BASE_URL:-http://apisix:9080}
+      - APPADMIN__PAY__OPS__KEY=${PAY_OPS_KEY:-}
+      # 资金审计 JSONL（补偿开通/退款确认哈希链，365 天）
+      - APPADMIN__PAY__AUDIT_FILE=/app/logs/pay-audit.jsonl
+      - APPADMIN__LOG__OUTPUT=both
+    volumes:
+      - app_admin_logs:/app/logs
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+        delay: 10s
+        monitor: 30s
+    networks:
+      mind-base-net:
+        # 显式短名 alias：UI 的 Nginx 静态 upstream 写的是 app-admin-api:8016
+        aliases:
+          - app-admin-api
+
+  # app-admin —— 统一管理后台 UI（Nginx SPA + /api 同源代理到 app-admin-api:8016）
   # ⚠️ 单机 compose 绑 127.0.0.1；swarm ingress 会发布到【所有节点 IP】，
   #    务必用防火墙/安全组限源 IP，或改走 SSH 隧道后删除本 ports 段
-  app-pay-admin:
-    image: atoncooper/mind-base-app-pay-admin:latest
-    command: ["-config", "config.docker.yaml"]
-    environment:
-      - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
-      - PAYADMIN__APP_PAY__OPS_KEY=${PAY_OPS_KEY:-}
-      - PAYADMIN__APP_PAY__BASE_URL=http://apisix:9080
-      - PAYADMIN__WEBUI__TOKEN=${PAYADMIN__WEBUI__TOKEN:-}
-    volumes:
-      - app_pay_admin_logs:/app/logs
-      - ${MB_ROOT:-/srv/mindbase}/app-pay-admin/certs:/app/certs
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8003/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+  app-admin:
+    image: atoncooper/mind-base-app-admin-ui:latest
     ports:
-      - target: 8003
-        published: 8003
+      - target: 80
+        published: 3001
         protocol: tcp
         mode: ingress
     deploy:
@@ -1099,7 +1135,7 @@ volumes:
   app_task_logs:
   app_pay_mysql_data:
   app_pay_logs:
-  app_pay_admin_logs:
+  app_admin_logs:
   app_auth_logs:
   app_cloud_logs:
   app_note_logs:

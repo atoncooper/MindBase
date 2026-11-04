@@ -1,9 +1,14 @@
-# app-admin — Go share-moderation admin console (port 8016).
+# app-admin — unified admin console API (port 8016; Go + Gin).
 # Cluster-internal only (mirrors compose loopback binding): access with
 # `kubectl -n mind-base port-forward svc/app-admin 8016:8016`.
 # Direct-connects the shared bilirag MySQL (same as app-auth/app-cloud):
 # read-only users/rbac/cloud metadata + the ONLY write is the four moderation
 # columns on cloud_shares (never is_revoked; never AutoMigrate shared tables).
+# Payment ops (merged from the retired app-pay-admin, 2026-11-03): a SECOND
+# GORM connection reads app_pay (orders/memberships/events/callbacks/SKU) and
+# the only fund write is the membership grant; refund review goes through the
+# app-pay internal endpoints (pay-ops key). Unset pay_rdbms.url => /api/pay/*
+# returns 503 while the rest of the console keeps working.
 apiVersion: v1
 kind: Service
 metadata:
@@ -71,6 +76,21 @@ spec:
                   name: mindbase-env
                   key: SANDBOX_ADMIN_TOKEN
                   optional: true
+            # Payment ops (second GORM connection to app_pay). URL falls back to
+            # the mindbase-defaults value; unset/empty => /api/pay/* 503.
+            - name: APPADMIN__PAY_RDBMS__URL
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APPADMIN__PAY_RDBMS__URL, optional: true }
+            # Refund review calls app-pay internal endpoints through the APISIX
+            # pay-ops consumer; empty key hides the whole refund-review group.
+            - name: APPADMIN__PAY__OPS__BASE_URL
+              value: "http://apisix:9080"
+            - name: APPADMIN__PAY__OPS__KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_OPS_KEY, optional: true }
+            # Fund audit JSONL hash chain (grants / refund confirmations, 365d).
+            - name: APPADMIN__PAY__AUDIT_FILE
+              value: /app/logs/pay-audit.jsonl
             - name: APPADMIN__LOG__OUTPUT
               value: "both"
           ports:

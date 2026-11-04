@@ -189,8 +189,8 @@ services:
   app-pay-mysql:
     image: mysql:8.4
     container_name: mind-base-app-pay-mysql
-    # "pay-admin"：让 `--profile pay-admin up` 能连带拉起其依赖的 MySQL
-    profiles: ["", "pay", "pay-admin", "full"]
+    # 默认集合 + pay：支付后台已并入 app-admin（app-admin-api 经第二连接直连本库）
+    profiles: ["", "pay", "full"]
     environment:
       - MYSQL_ROOT_PASSWORD=${PAY_MYSQL_ROOT_PASSWORD:-root123}
       - MYSQL_DATABASE=app_pay
@@ -789,7 +789,7 @@ services:
       context: ./app-go/app-cloud
       dockerfile: Dockerfile
     # 多实例就绪：无 container_name（--scale app-cloud=N 直接可用）。后台任务
-    # 走 Redis 租约锁、向量化管道走 outbox 认领——扩容不重复执行（§2.14）。
+    # 走 Redis 租约锁、向量化管道走 outbox 认领——扩容不重复执行。
     profiles: ["", "cloud", "full"]
     depends_on:
       mysql:
@@ -938,7 +938,7 @@ services:
       # 宿主机代理示例：APPTASK_HTTP_PROXY=http://host.docker.internal:10808
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -1252,52 +1252,17 @@ services:
     networks:
       - mind-base-net
 
-  # app-pay-admin —— 支付后台管理（Go + Gin）
-  # 全直连 app_pay 库（读查询 + 唯一写操作：会员补偿开通，事务内复刻 app-pay
-  # MembershipService.extend 语义），运行时不依赖 app-pay/APISIX。自带账户体系
-  # （payadmin_user + bcrypt），仅回环暴露，不经 APISIX（同 app-task WebUI 先例）。
-  app-pay-admin:
-    image: atoncooper/mind-base-app-pay-admin:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./app-pay-admin
-      dockerfile: Dockerfile
-    container_name: mind-base-app-pay-admin
-    profiles: ["pay-admin", "full"]
-    depends_on:
-      app-pay-mysql:
-        condition: service_healthy
-    env_file:
-      - .env
-    # 配置分层：default.yaml(嵌入) < config.docker.yaml(-config 指定) < PAYADMIN__ 环境变量
-    # rdbms.url 由下方 environment 注入（复用 .env 的 PAY_MYSQL_*），改口令两边自动对齐
-    command: ["-config", "config.docker.yaml"]
-    environment:
-      - PAYADMIN__RDBMS__URL=mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay
-      # 退款复核工作台：PAY_OPS_KEY 只注入本控制台（运营人的 UI 载体），
-      # 资金写经 app-pay 端点执行（审计/状态机一致）；其余业务容器不下发该密钥。
-      - PAYADMIN__APP_PAY__OPS_KEY=${PAY_OPS_KEY:?err_PAY_OPS_KEY_not_set_in_.env}
-      - PAYADMIN__APP_PAY__BASE_URL=http://apisix:9080
-    ports:
-      # 仅回环：管理后台不对公网暴露，本机浏览器直连 http://127.0.0.1:8003
-      - "127.0.0.1:${APP_PAY_ADMIN_PORT:-8003}:8003"
-    volumes:
-      # 运行日志 + 资金审计 JSONL（pay-admin-audit.jsonl，补偿开通留痕）
-      - app_pay_admin_logs:/app/logs
-      # 启用容器内 HTTPS：.env 设 PAYADMIN__SERVER__TLS__ENABLED=true 即可
-      # （不配 cert/key 时容器启动自动生成自签证书写入 /app/certs；挂卷持久化，
-      #  重建容器不再换证书）。显式指定文件用 PAYADMIN__SERVER__TLS__CERT/KEY。
-      - ./app-pay-admin/certs:/app/certs
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  # app-admin-api —— 分享审核后台 API（Go + Gin；plan/1.0.16）
+  # app-admin-api —— 统一管理后台 API（Go + Gin；分享审核 + 支付运营）
   # 直连共享 bilirag MySQL：只读 users / rbac_* / cloud_* 元数据 + 仅 UPDATE
   # cloud_shares 的 moderation 四列（绝不触碰 is_revoked；绝不 AutoMigrate——
   # 自有 admin_user / admin_session / admin_audit 三表自建，有守护测试）。
   # 直接查询共享 MySQL（不经 app-cloud API）；仅回环调试暴露 8016。前端统一入口
   # 是 app-admin 服务（3001），它依赖本 API 和必要 schema owner。
+  # 支付域（原 app-pay-admin 已并入，2026-11-03）：新增第二 GORM 连接直连
+  # app_pay 库（只读订单/会员/权益事件/回调/SKU + 唯一资金写「会员补偿开通」）；
+  # 退款复核经 APISIX pay-ops consumer 调 app-pay internal 端点执行（不直写）。
+  # 统一账户/会话/角色/审计：admin_user + admin_session + admin_audit；
+  # 支付库未配置时 /api/pay/* 返回 503，分享审核/账户/沙箱不受影响。
   # 种子账户 admin / app-admin（APPADMIN__SEED__
   # 可覆盖，只插缺失），首登强制改密（must_change_password=1）。
   app-admin-api:
@@ -1306,6 +1271,9 @@ services:
     build:
       context: ./app-go/app-admin
       dockerfile: Dockerfile
+      args:
+        # Override with $env:GOPROXY on restricted networks; default keeps goproxy.cn.
+        GOPROXY: "${GOPROXY:-https://goproxy.cn,direct}"
     container_name: mind-base-app-admin-api
     profiles: ["", "admin", "full"]
     depends_on:
@@ -1320,6 +1288,9 @@ services:
       app-sandbox:
         condition: service_started
         required: false             # sandbox 管理是可选面板；未启动时管理页显示未配置
+      app-pay-mysql:
+        condition: service_healthy
+        required: false             # 支付运营是可选面板；未启用支付时 /api/pay/* 返回 503
     env_file:
       - .env
     environment:
@@ -1330,6 +1301,11 @@ services:
       - APPADMIN__SEED__PASSWORD=${APPADMIN__SEED__PASSWORD:-app-admin}
       # Optional service-side peer IP/CIDR allowlist (comma-separated).
       - APPADMIN__SECURITY__IP_ALLOWLIST=${APPADMIN__SECURITY__IP_ALLOWLIST:-}
+      # Trusted reverse-proxy CIDRs: only requests whose peer is in this list may
+      # supply X-Forwarded-For / X-Forwarded-Proto (real client IP for login
+      # throttling, device/IP session binding and audit). Compose UI proxy lives
+      # on the Docker bridge network; empty = never trust forwarded headers.
+      - APPADMIN__SECURITY__TRUSTED_PROXIES=${APPADMIN__SECURITY__TRUSTED_PROXIES:-172.16.0.0/12}
       # Share-content review preview via app-cloud (Issue #154): base URL
       # defaults to the compose-internal app-cloud; token must equal
       # APP_CLOUD_ADMIN_REVIEW_TOKEN. Both empty = preview disabled.
@@ -1340,6 +1316,15 @@ services:
       # SANDBOX_ADMIN_TOKEN. Both empty = sandbox admin disabled (503).
       - APPADMIN__SANDBOX_ADMIN__BASE_URL=${APPADMIN__SANDBOX_ADMIN__BASE_URL:-http://app-sandbox:8017}
       - APPADMIN__SANDBOX_ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
+      # 支付运营（原 app-pay-admin 能力并入）：第二 GORM 连接直连 app_pay 库。
+      # 留空 = 支付管理未配置（/api/pay/* 503），不影响分享审核/账户/沙箱。
+      - APPADMIN__PAY_RDBMS__URL=${PAY_ADMIN_RDBMS_URL:-mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay}
+      # 退款复核：经 APISIX pay-ops consumer 调 app-pay internal 端点（不直写库）。
+      # 未配置 key 时退款复核整组 404 隐藏；其余支付查询不受影响。
+      - APPADMIN__PAY__OPS__BASE_URL=${APPADMIN__PAY__OPS__BASE_URL:-http://apisix:9080}
+      - APPADMIN__PAY__OPS__KEY=${PAY_OPS_KEY:-}
+      # 资金审计 JSONL（补偿开通/退款确认哈希链，365 天），落 app_admin_logs 卷
+      - APPADMIN__PAY__AUDIT_FILE=/app/logs/pay-audit.jsonl
       - APPADMIN__LOG__OUTPUT=both
     ports:
       # 仅回环：管理后台不对公网暴露，本机浏览器直连 http://127.0.0.1:8016
@@ -1350,7 +1335,8 @@ services:
     networks:
       - mind-base-net
 
-  # app-admin —— 管理后台完整入口（Nginx 静态 SPA + /api 同源代理）。
+  # app-admin —— 统一管理后台入口（Nginx 静态 SPA + /api 同源代理）。
+  # 页面：分享审核 / 用户 / 沙箱 / 支付运营（订单·会员·权益事件·SKU·补偿开通·退款复核）/ 账户 / 审计。
   # `docker compose up app-admin` 自动启动 UI、API、MySQL 及 schema 依赖。
   # 浏览器只访问回环 3001；API 调试口 8016 也仅回环，不开放公网。
   app-admin:
@@ -1449,7 +1435,6 @@ volumes:
   app_pay_logs:
   app_pay_test_mysql_data:
   app_pay_test_logs:
-  app_pay_admin_logs:
   app_admin_logs:
   mysql_data:
   redis_data:

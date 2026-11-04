@@ -16,7 +16,7 @@ interface FormValues {
   confirm: string;
 }
 
-/** 首登强制改密（契约 §3.3 must_change_password → POST /api/me/password） */
+/** 首登强制改密（must_change_password → POST /api/me/password） */
 export default function ChangePasswordModal({ mandatory = false, open, onClose }: Props) {
   const { message } = AntApp.useApp();
   const [form] = Form.useForm<FormValues>();

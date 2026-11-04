@@ -16,14 +16,40 @@ rdbms:
   max_open_conns: 10
   max_idle_conns: 5
   conn_max_lifetime: 1800
-# Login session lifetime (DB-backed admin_session, sliding on each request).
+# OPTIONAL second database: app_pay on the dedicated app-pay-mysql instance
+# (host port 3307). When url is empty (or the connection cannot be opened) the
+# payment-operations console answers 503 {"detail":"支付管理未配置"} while every
+# other page keeps working. The pay_* schema is owned by app-pay (Java Flyway):
+# app-admin NEVER migrates it — only reads plus the controlled membership grant.
+# docker-compose injects APPADMIN__PAY_RDBMS__URL from PAY_MYSQL_USER/PASSWORD.
+pay_rdbms:
+  url: "" # env: APPADMIN__PAY_RDBMS__URL
+  max_open_conns: 10
+  max_idle_conns: 5
+  conn_max_lifetime: 1800
+# Login session lifetime (DB-backed admin_session, sliding on each request)
+# plus the binding rules re-checked on every authenticated request:
+#   device_binding: off (ignore) | id (device id only) | strict (id + UA/语言)
+#   ip_binding:     off | subnet (同一网段) | exact (完全一致)
+# Empty binding values mean off. Old sessions without a device hash are
+# invalidated as soon as device binding is enabled.
 session:
   ttl_minutes: 720
+  device_binding: strict
+  ip_binding: subnet
+  ipv4_prefix: 24
+  ipv6_prefix: 64
 security:
   # Optional exact IPs/CIDRs for the admin API. Empty leaves network access
   # control to loopback binding / firewall / VPN / Kubernetes networking.
   # Environment form: APPADMIN__SECURITY__IP_ALLOWLIST=10.0.0.10/32,192.168.1.0/24
   ip_allowlist: []
+  # Reverse proxies (IP or CIDR) whose X-Forwarded-For / X-Forwarded-Proto /
+  # X-Forwarded-Host headers may be believed. Only a TCP peer inside this list
+  # has its forwarded headers parsed; empty = never trust them, so a client
+  # cannot spoof its address or HTTPS state.
+  # Environment form: APPADMIN__SECURITY__TRUSTED_PROXIES=172.16.0.0/12
+  trusted_proxies: []
   cors:
     # Cross-origin whitelist (exact Origin match). The admin SPA is same-origin
     # in production. Unsafe browser methods also require an allowed Origin as a
@@ -31,6 +57,13 @@ security:
     # frontends must be explicitly listed.
     # APPADMIN__SECURITY__CORS__ALLOW_ORIGINS=http://127.0.0.1:3001
     allow_origins: []
+  # 登录失败限流：IP 级短窗口防单机狂刷，账户级长窗口防换 IP 撞库；两个预算
+  # 每次登录都检查，任一超限即拒绝（不消耗另一预算）。
+  login:
+    max_fails_per_ip: 10
+    ip_window_seconds: 60
+    max_fails_per_account: 10
+    account_window_seconds: 900
 # app-cloud internal share-content review preview. BOTH keys required;
 # anything missing disables the preview endpoint (fail closed). Generate a
 # dedicated token (openssl rand -hex 32) and put the SAME value in app-cloud's
@@ -47,6 +80,25 @@ cloud_review:
 sandbox_admin:
   base_url: "" # env: APPADMIN__SANDBOX_ADMIN__BASE_URL  (e.g. http://app-sandbox:8017)
   token: ""    # env: APPADMIN__SANDBOX_ADMIN__TOKEN
+# 支付运营（app-pay 联动）
+pay:
+  # 补偿开通日额度（对齐 app-pay GrantQuotaService）：app-admin 直写
+  # pay_membership_event，必须自己执行同样的熔断，否则绕过执行点。0 = 不限。
+  grant:
+    daily_max_count: 50
+    daily_max_days: 1000
+  # 退款复核工作台：资金写只发生在 app-pay 的 internal 端点（审计/状态机/
+  # 审批表一致性）。base_url + key 同时配置且开关打开才启用；否则整组 404
+  # （隐身，不可探测）。key 走 APISIX key-auth（pay-ops consumer，PAY_OPS_KEY），
+  # 与登录身份（operator）一起下传。
+  ops:
+    base_url: "" # env: APPADMIN__PAY__OPS__BASE_URL（compose 默认 http://apisix:9080）
+    key: ""      # env: APPADMIN__PAY__OPS__KEY
+    timeout_seconds: 5
+    refund_review_enabled: true
+  # 资金操作 JSONL 审计（SHA-256 哈希链，lumberjack 轮转，365 天），与 app-pay
+  # 的 pay-audit.jsonl 同约定：直写 DB 绕过了 Java 侧 PayAuditLogger，这里补留痕。
+  audit_file: "/app/logs/pay-audit.jsonl" # env: APPADMIN__PAY__AUDIT_FILE
 # Seeded default admin account, inserted once (missing username only) with
 # must_change_password=1 so the first login is forced to change it.
 seed:

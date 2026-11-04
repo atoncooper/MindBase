@@ -177,9 +177,9 @@ MindBase 的能力围绕三条主线：
 
 - **app-pay**（Java Spring Boot）：SKU / 订单 / 支付宝当面付 / 会员态 / 退款逆向，全链路 HTTPS + 资金审计；订单状态机条件更新、回调幂等、多实例 job 租约互斥。
 - **档位驱动**：`free / vip / svip` 决定聊天排队权重、各类配额与云盘容量上限；档位不降级（有效期内 SVIP 不被 VIP 覆盖）。
-- **运营后台**：app-pay-admin 只读查询 + 会员补偿开通（`reason` 必填并双留痕）。
+- **运营后台**：统一管理台 app-admin（`http://127.0.0.1:3001`）的「支付运营」：订单/会员/权益事件/SKU 只读查询 + 会员补偿开通（`reason` 必填并三留痕）+ 退款复核（admin only，未配置 ops key 时隐藏）。
 
-详见 [app-pay.md](app-pay.md) / [app-pay-admin.md](app-pay-admin.md)。
+详见 [app-pay.md](app-pay.md) / [app-admin.md](app-admin.md)。
 
 ---
 

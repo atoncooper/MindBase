@@ -139,3 +139,86 @@ func containsUniqueViolation(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "Duplicate entry") || strings.Contains(msg, "UNIQUE constraint failed")
 }
+
+// ── console account management (admin-only /api/console/users) ───────────
+
+// ListAdminUsers returns every console account ordered by username (the
+// /api/console/users contract: username ASC).
+func ListAdminUsers() ([]model.AdminUser, error) {
+	var users []model.AdminUser
+	if err := db.DB.Order("username ASC").Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// CreateAdminUser inserts a new console account. New accounts must change the
+// password on first login, exactly like the seeded admin. Duplicate usernames
+// surface as ErrUserExists (409 at the HTTP boundary).
+func CreateAdminUser(username, password, role string) (*model.AdminUser, error) {
+	hash, err := hashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	u := &model.AdminUser{
+		Username:           username,
+		PasswordHash:       hash,
+		Role:               role,
+		MustChangePassword: true,
+		CreatedAt:          &now,
+		UpdatedAt:          &now,
+	}
+	if err := db.DB.Create(u).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) || containsUniqueViolation(err) {
+			return nil, ErrUserExists
+		}
+		return nil, err
+	}
+	return u, nil
+}
+
+// ResetUserPassword sets a new password AND forces a password change on the
+// next login (admin-initiated reset). Sessions are invalidated by the caller
+// (repo.DeleteUserSessions) so a stolen cookie cannot survive a reset.
+func ResetUserPassword(id int64, password string) error {
+	if len(password) < 8 {
+		return ErrWeakPassword
+	}
+	hash, err := hashPassword(password)
+	if err != nil {
+		return err
+	}
+	res := db.DB.Model(&model.AdminUser{}).Where("id = ?", id).Updates(map[string]any{
+		"password_hash":        hash,
+		"must_change_password": true,
+		"updated_at":           time.Now(),
+	})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// DeleteAdminUser removes one console account (sessions are deleted first by
+// the service so no orphan session can resolve a deleted user).
+func DeleteAdminUser(id int64) error {
+	res := db.DB.Delete(&model.AdminUser{}, id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// CountAdminUsersByRole reports how many accounts carry role (last-admin guard).
+func CountAdminUsersByRole(role string) (int64, error) {
+	var n int64
+	err := db.DB.Model(&model.AdminUser{}).Where("role = ?", role).Count(&n).Error
+	return n, err
+}

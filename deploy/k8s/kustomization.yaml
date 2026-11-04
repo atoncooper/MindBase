@@ -56,8 +56,10 @@ configMapGenerator:
       - APPBILI__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPBOARD__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPADMIN__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      # Pod CIDR of the cluster (UI Nginx -> API): trusted for X-Forwarded-*.
+      - APPADMIN__SECURITY__TRUSTED_PROXIES=10.0.0.0/8
       - APPTASK__RDBMS__URL=mysql+aiomysql://app_task:app-task@app-task-mysql:3306/app_task
-      - PAYADMIN__RDBMS__URL=mysql+aiomysql://app_pay:app-pay@app-pay-mysql:3306/app_pay
+      - APPADMIN__PAY_RDBMS__URL=mysql+aiomysql://app_pay:app-pay@app-pay-mysql:3306/app_pay
       - APPTASK_MYSQL_ROOT_PASSWORD=root123
       - APPTASK_MYSQL_USER=app_task
       - APPTASK_MYSQL_PASSWORD=app-task
@@ -96,7 +98,6 @@ resources:
   - 30-apps/app-quiz-mcp.yaml
   - 30-apps/app-task.yaml
   - 30-apps/app-pay.yaml
-  - 30-apps/app-pay-admin.yaml
   - 30-apps/app-admin.yaml
   - 30-apps/app-sandbox.yaml
   - 30-apps/frontend.yaml

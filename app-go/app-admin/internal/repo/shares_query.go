@@ -2,7 +2,7 @@
 // cloud_folders / user_profile for display metadata (name / size / counts /
 // owner nickname). METADATA ONLY — no object keys, no MinIO. Folder shares
 // aggregate their live subtree via recursive CTE with a hard 2000-item cap
-// (plan/1.0.16 section 5).
+// (app-admin API contract).
 package repo
 
 import (
