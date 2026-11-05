@@ -5,14 +5,16 @@ import (
 	"net/http"
 	"strconv"
 
+	"app-cloud/internal/dto"
+	"app-cloud/internal/middleware"
 	"app-cloud/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
-// registerRefRoutes — the /cloud/refs face (plan/1.0.16 §4-refs). All
-// endpoints are X-Uid authenticated; saving does NOT need attest (it is a
-// logged-in action, unlike the public share access face).
+// registerRefRoutes — the /cloud/refs face. All endpoints are X-Uid
+// authenticated; saving does NOT need attest (it is a logged-in action, unlike
+// the public share access face).
 func registerRefRoutes(cloudGroup *gin.RouterGroup, d Deps) {
 	cloudGroup.POST("/refs", saveRef(d))
 	cloudGroup.GET("/refs", listRefs(d))
@@ -25,15 +27,8 @@ func registerRefRoutes(cloudGroup *gin.RouterGroup, d Deps) {
 // → {saved: number, rootFolderId?: number}
 func saveRef(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var body struct {
-			Token          string `json:"token" binding:"required"`
-			Code           string `json:"code"`
-			TargetFolderID *int64 `json:"targetFolderId"`
-		}
+		uid := middleware.UIDFrom(c)
+		var body dto.SaveRefRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "参数不合法")
 			return
@@ -43,17 +38,17 @@ func saveRef(d Deps) gin.HandlerFunc {
 			mapRefErr(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, dto.SaveRefResponse{
+			Saved:        res.Saved,
+			RootFolderID: res.RootFolderID,
+		})
 	}
 }
 
 // listRefs — GET /cloud/refs?folderId= → {refs, total} (folderId 缺省 = 根).
 func listRefs(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		var folderID *int64
 		if v := c.Query("folderId"); v != "" {
 			id, err := strconv.ParseInt(v, 10, 64)
@@ -68,17 +63,30 @@ func listRefs(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		refs := make([]dto.RefItem, 0, len(res.Refs))
+		for _, r := range res.Refs {
+			refs = append(refs, dto.RefItem{
+				ID:               r.ID,
+				Name:             r.Name,
+				Size:             r.Size,
+				MimeType:         r.MimeType,
+				FolderID:         r.FolderID,
+				Status:           r.Status,
+				ShareID:          r.ShareID,
+				SourceUploadUUID: r.SourceUploadUUID,
+				SourceName:       r.SourceName,
+				CreatedAt:        r.CreatedAt,
+				IsRef:            true,
+			})
+		}
+		c.JSON(http.StatusOK, dto.RefListResponse{Refs: refs, Total: res.Total})
 	}
 }
 
 // deleteRef — DELETE /cloud/refs/{id} (uid-checked soft delete).
 func deleteRef(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, err := strconv.ParseInt(c.Param("ref_id"), 10, 64)
 		if err != nil || id <= 0 {
 			apiErr(c, http.StatusUnprocessableEntity, "ref_id 不合法")
@@ -88,7 +96,7 @@ func deleteRef(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "引用不存在")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"deleted": true})
+		c.JSON(http.StatusOK, dto.RefDeleteResponse{Deleted: true})
 	}
 }
 
@@ -97,26 +105,30 @@ func deleteRef(d Deps) gin.HandlerFunc {
 // read uniformly as 404「引用已失效」 and are flipped dead in the same pass.
 func rawRef(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, err := strconv.ParseInt(c.Param("ref_id"), 10, 64)
 		if err != nil || id <= 0 {
 			apiErr(c, http.StatusUnprocessableEntity, "ref_id 不合法")
 			return
 		}
 		download := c.Query("download") == "1" || c.Query("download") == "true"
-		res, err := d.Ref.RawRef(c.Request.Context(), uid, id, download)
+		grant, err := d.Ref.RawRef(c.Request.Context(), uid, id, download)
 		if err != nil {
 			mapRefErr(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, dto.RefRawResponse{
+			URL:       grant.URL,
+			ViewMode:  grant.ViewMode,
+			MimeType:  grant.MimeType,
+			FileName:  grant.FileName,
+			FileSize:  grant.FileSize,
+			ExpiresIn: grant.ExpiresIn,
+		})
 	}
 }
 
-// mapRefErr — uniform ref error mapping (plan/1.0.16 §4-refs: 失效统一 404).
+// mapRefErr — uniform ref error mapping (失效统一 404).
 func mapRefErr(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrRefDead):

@@ -7,6 +7,9 @@ export interface ChatSource {
   title: string;
   url?: string;
   bvid?: string;
+  // 云盘文件引用（app-cloud upload_uuid）。有值时按站内深链处理：
+  // 点击进入 /cloud-drive/<uuid>，不生成 bilibili 外链。
+  uploadUuid?: string;
 }
 
 // File-style artifact (image / downloadable file) produced by a sub-agent or a

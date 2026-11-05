@@ -20,6 +20,7 @@ import {
 import type { CloudVideoDetailResponse } from "@/lib/api/cloud";
 import { formatBytes } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
+import { FileAiPanel } from "./file-ai-panel";
 import { AsrStatusBadge, VectorStatusBadge } from "./status-badges";
 import { formatDuration, formatRelativeTime } from "./helpers";
 
@@ -27,16 +28,22 @@ interface FileInspectorProps {
     detail: CloudVideoDetailResponse;
     processing: boolean;
     onProcess: (uuid: string) => void;
+    /** done 文件的「重新入库」：走 reprocess（删除旧向量后重跑），不是普通 process */
+    onReprocess?: (uuid: string) => void;
     onDelete: (uuid: string) => void;
     onBack: () => void;
+    /** 相似文件点击：就地打开另一个文件的详情 */
+    onOpenFile?: (uuid: string) => void;
 }
 
 export function FileInspector({
     detail,
     processing,
     onProcess,
+    onReprocess,
     onDelete,
     onBack,
+    onOpenFile,
 }: FileInspectorProps) {
     const isVideo = detail.mimeType.startsWith("video/");
     const isVectorizable = detail.vectorStatus !== "not_supported";
@@ -88,7 +95,7 @@ export function FileInspector({
                     {done ? (
                         <button
                             type="button"
-                            onClick={() => onProcess(detail.uploadUuid)}
+                            onClick={() => (onReprocess ?? onProcess)(detail.uploadUuid)}
                             disabled={inFlight}
                             className="btn-pill btn-ghost h-11 w-full text-[13px] md:h-9"
                         >
@@ -130,7 +137,17 @@ export function FileInspector({
                     >
                         <Eye className="h-4 w-4" />
                         查看
-                    </Link>                </div>
+                    </Link>
+                </div>
+
+                {/* AI 摘要 / 标签 / 关键点 / 待办 / 可回答问题 / 相似文件 */}
+                <div className="mt-6">
+                    <FileAiPanel
+                        uploadUuid={detail.uploadUuid}
+                        onReprocess={onReprocess ?? onProcess}
+                        onSelectFile={onOpenFile}
+                    />
+                </div>
 
                 {/* Status */}
                 <Section title="状态">

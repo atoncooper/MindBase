@@ -15,7 +15,7 @@
 | 能力 | 承载 | 阶段 |
 |---|---|---|
 | 研究项目、六阶段状态机、阶段计划与指导建议 | `academic_project` + `academic_events` | Phase 1 |
-| 文献检索（Crossref / OpenAlex / arXiv）、BibTeX·CSL 导入、DOI 核验、BibTeX 导出 | `academic_literature` + `services/literature-client.ts` | Phase 1 / 1.5 批量导入与分页 |
+| 文献检索（Crossref / OpenAlex / arXiv）、BibTeX·CSL 导入、DOI 核验、BibTeX 导出 | `academic_literature` + `auth/literature-client.ts` | Phase 1 / 1.5 批量导入与分页 |
 | 论文稿件（开题报告 / 研究计划 / 初稿 / 修改稿 / 投稿信）、章节读写、大纲、Markdown·LaTeX 导出 | `academic_manuscript` | Phase 1 |
 | 期刊要求查证、最新信息 | `web_search` / `fetch_webpage`（复用通用工具） | Phase 1 |
 | 多步任务可见化、跨轮偏好 | `plan` / `save_memory`（复用通用工具） | Phase 1 |
@@ -86,7 +86,7 @@
 └──────────────────────────────────────────────────────────────────────┘
                 │ 仅 academic_literature 触发外网
                 ▼
-   src/services/literature-client.ts → Crossref / OpenAlex / arXiv
+   src/auth/literature-client.ts → Crossref / OpenAlex / arXiv
 ```
 
 ### 2.2 代码位置
@@ -96,7 +96,7 @@
 | `src/agent/academic/agent.ts` | academic 子 agent 工厂：只声明身份、工具名单与提示词来源，循环/重试/SSE 由共享 `createReactAgent` 提供 |
 | `src/agent/manifest.ts` | agent 花名册（名称 + 描述）唯一来源；`delegate_to_agent` 的可用列表自动跟随 |
 | `src/tools/academic/{project,literature,manuscript}.ts` | 三组工具工厂；返回中文文本 + 结构化 artifact |
-| `src/services/literature-client.ts` | 学术域唯一出网边界：Crossref/OpenAlex/arXiv 检索 + DOI 核验，含进程内 TTL 缓存（search 5 分钟 / DOI 核验 1 小时） |
+| `src/auth/literature-client.ts` | 学术域唯一出网边界：Crossref/OpenAlex/arXiv 检索 + DOI 核验，含进程内 TTL 缓存（search 5 分钟 / DOI 核验 1 小时） |
 | `src/repository/academic.ts` | 四组仓储契约（项目 / 文献 / 文档 / 事件）+ 纯函数 helper（唯一语义来源） |
 | `src/repository/memory/academic.ts` | 内存实现：测试替身 + Mongo 不可达时的降级 |
 | `src/repository/mongo/academic.ts` | Mongo 适配器：持久化、索引、原子更新 |
@@ -462,7 +462,7 @@ Phase 1 的 import 逐条调用 `add`，每条都要重新判定去重与 citeKe
 
 ### 6.4 文献检索 TTL 缓存
 
-同一会话里反复检索同一个词、或对同一篇文献反复 verify 是常见模式。`services/literature-client.ts` 在不引入依赖的前提下加了有界进程内缓存：
+同一会话里反复检索同一个词、或对同一篇文献反复 verify 是常见模式。`auth/literature-client.ts` 在不引入依赖的前提下加了有界进程内缓存：
 
 | 缓存 | 键 | TTL | 容量 | 说明 |
 |---|---|---|---|---|

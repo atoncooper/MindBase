@@ -9,7 +9,7 @@ import type { RAGService } from "../src/rag/service.js";
 import type { ChatService } from "../src/services/chat.js";
 import type { AgentHarness } from "../src/harness/app.js";
 import type { SessionDocumentRepository } from "../src/repository/session-docs.js";
-import type { AppBiliClient, ScopeFolder } from "../src/services/app-bili-client.js";
+import type { AppBiliClient, ScopeFolder } from "../src/auth/app-bili-client.js";
 
 // ---------- service ----------
 

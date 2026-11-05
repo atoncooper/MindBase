@@ -19,6 +19,11 @@ import { createAskUserTool } from "../tools/interaction/ask-user.js";
 import { createPlanTool } from "../tools/harness/plan.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
+import {
+  createCloudDocSummaryTool,
+  createCloudSemanticSearchTool,
+  createCloudSimilarFilesTool,
+} from "../tools/cloud/index.js";
 import { createFetchPortWithDeepseekPrimary } from "../tools/web/deepseek.js";
 import { HttpWebFetch } from "../tools/web/fetcher.js";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
@@ -34,7 +39,7 @@ import { createAcademicAgent } from "../agent/academic/agent.js";
 import { createAcademicProjectTool } from "../tools/academic/project.js";
 import { createAcademicLiteratureTool } from "../tools/academic/literature.js";
 import { createAcademicManuscriptTool } from "../tools/academic/manuscript.js";
-import { createLiteratureClient } from "../services/literature-client.js";
+import { createLiteratureClient } from "../auth/literature-client.js";
 import { AcademicService } from "../services/academic.js";
 import { createAcademicEvidenceTool } from "../tools/academic/evidence.js";
 import { MemoryAcademicEvidenceStore } from "../repository/memory/academic-evidence.js";
@@ -49,7 +54,7 @@ import { BoardCompletionService } from "../services/board-completion.js";
 import { SessionSummaryService } from "../services/session-summary.js";
 import { QuizGenerationService } from "../services/quiz-generation.js";
 import { QuizGradingService } from "../services/quiz-grading.js";
-import { AppQuizClient } from "../services/app-quiz-client.js";
+import { AppQuizClient } from "../auth/app-quiz-client.js";
 import { QuotaService } from "../services/quota.js";
 import { UsageReconciliationJob } from "../services/usage-reconciliation.js";
 import { RedisQuotaCounter } from "../repository/redis/quota-counter.js";
@@ -96,11 +101,12 @@ import { MongoSessionDocumentStore } from "../repository/mongo/session-docs.js";
 import { MongoAgentContextStore } from "../repository/mongo/agent-context.js";
 import { MemoryVectorTaskStore } from "../repository/memory/vector-tasks.js";
 import { MongoVectorTaskStore } from "../repository/mongo/vector-tasks.js";
-import { AppBiliClient } from "../services/app-bili-client.js";
+import { AppBiliClient } from "../auth/app-bili-client.js";
 import { VideoVectorizerService } from "../services/video-vectorizer.js";
 import { BiliEventBridge } from "../bootstrap/redis-events.js";
-import { AppTaskClient } from "../services/app-task-client.js";
-import { AppAuthClient } from "../services/app-auth-client.js";
+import { AppTaskClient } from "../auth/app-task-client.js";
+import { AppAuthClient } from "../auth/app-auth-client.js";
+import { AppCloudClient } from "../auth/app-cloud-client.js";
 import { MemoryTaskQuizDocStore } from "../repository/memory/task-quiz-docs.js";
 import { MongoTaskQuizDocStore } from "../repository/mongo/task-quiz-docs.js";
 import { TaskQuizGenerationService } from "../services/task-quiz-generation.js";
@@ -299,6 +305,25 @@ export async function bootstrap() {
   const webFetch = createFetchPortWithDeepseekPrimary(new HttpWebFetch());
   registry.register(createFetchWebpageTool(webFetch));
   registry.register(createWebSearchTool());
+  // Cloud-drive document intelligence: summary / semantic search / similar files
+  // are read from app-cloud's existing endpoints (apikey + X-Uid). The tools are
+  // registered unconditionally so a deployment without app-cloud answers with an
+  // explicit "not configured" notice instead of silently losing the capability
+  // from the agent roster.
+  const appCloud = new AppCloudClient();
+  registry.register(createCloudDocSummaryTool(appCloud));
+  registry.register(createCloudSemanticSearchTool(appCloud));
+  registry.register(createCloudSimilarFilesTool(appCloud));
+  if (appCloud.configured) {
+    log.info(
+      `[BOOT] cloud tools registered: cloud_doc_summary / cloud_semantic_search / cloud_similar_files (app-cloud ${config.appCloud.baseUrl})`,
+    );
+  } else {
+    log.warn(
+      "[BOOT] app-cloud not configured (APP_CLOUD_BASE_URL / APISIX_CONSUMER_KEY) — " +
+        "cloud tools will answer with a not-configured notice",
+    );
+  }
 
   // 2.7 KG (knowledge graph): AI (extraction/retrieval/build) here, storage
   //     (Neo4j + video.kg bookkeeping) in the app-kg Go service over gRPC.

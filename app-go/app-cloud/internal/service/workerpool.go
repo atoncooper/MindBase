@@ -81,10 +81,10 @@ func (p *Pipeline) spawnWorker(i int) {
 // pool (never shrinks — StopWorkers tears everything down) toward maxWorkers
 // when pending > 2x workers. Growth-only keeps lifecycle management trivial;
 // an idle extra worker costs one goroutine each.
-// nextWorkerCount — the elastic growth rule (pure, tested): double the pool
-// while pending exceeds twice the current size, capped at maxWorkers, and
-// never shrink below the current count (growth-only).
-func nextWorkerCount(cur, pending, max int) int {
+// NextWorkerCount — the elastic growth rule (pure): double the pool while
+// pending exceeds twice the current size, capped at maxWorkers, and never
+// shrink below the current count (growth-only; teardown is wholesale).
+func NextWorkerCount(cur, pending, max int) int {
 	want := cur
 	if pending > cur*2 {
 		want = cur * 2
@@ -110,7 +110,7 @@ func (p *Pipeline) elasticLoop() {
 			}
 			p.workersMu.Lock()
 			cur := p.curWorkers
-			want := nextWorkerCount(cur, int(pending), p.maxWorkers)
+			want := NextWorkerCount(cur, int(pending), p.maxWorkers)
 			for i := cur; i < want; i++ {
 				p.curWorkers = i + 1
 				p.wg.Add(1)

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,10 +9,11 @@ import (
 	"time"
 
 	"app-cloud/internal/config"
-	"app-cloud/internal/metrics"
 	"app-cloud/internal/infra/minio"
+	"app-cloud/internal/metrics"
 	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
+	"app-cloud/internal/utils"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -75,6 +75,17 @@ func extFromMime(mime string) string {
 	return ".bin"
 }
 
+// ASRStatusForMime — the initial asr_status of a freshly completed upload:
+// only video/audio can be transcribed, everything else starts as
+// not_supported so the UI never shows a pending badge that cannot resolve.
+func ASRStatusForMime(mime string) string {
+	m := strings.ToLower(strings.TrimSpace(mime))
+	if strings.HasPrefix(m, "video/") || strings.HasPrefix(m, "audio/") {
+		return "pending"
+	}
+	return "not_supported"
+}
+
 func mimeAllowed(mime string) bool {
 	for _, p := range allowedMimePrefixes {
 		if strings.HasPrefix(mime, p) {
@@ -82,6 +93,50 @@ func mimeAllowed(mime string) bool {
 		}
 	}
 	return false
+}
+
+// UploadPresignedItem is one chunk's presigned PUT target.
+type UploadPresignedItem struct {
+	ChunkIndex int64
+	ChunkSize  int64
+	URL        string
+}
+
+// UploadInitResult tells the caller how to upload the object in chunks.
+type UploadInitResult struct {
+	UploadUUID    string
+	SessionUUID   string
+	MinioUploadID string
+	ChunkCount    int64
+	ChunkSize     int64
+	PresignedURLs []UploadPresignedItem
+}
+
+// UploadPart is one completed multipart part.
+type UploadPart struct {
+	PartNumber int
+	ETag       string
+}
+
+// UploadCompleteResult acknowledges a finalized multipart upload.
+type UploadCompleteResult struct {
+	UploadUUID string
+	ETag       string
+	Status     string
+}
+
+// UploadResumeChunk is one chunk still to be (re)uploaded.
+type UploadResumeChunk struct {
+	ChunkIndex int64
+	ChunkSize  int64
+	URL        string
+}
+
+// UploadResumeResult re-issues presigned URLs for an interrupted upload.
+type UploadResumeResult struct {
+	UploadUUID    string
+	MinioUploadID string
+	PendingChunks []UploadResumeChunk
 }
 
 // UploadService — multipart upload lifecycle: init → presigned chunk PUTs →
@@ -122,7 +177,7 @@ type uploadMeta struct {
 
 // InitUpload starts a multipart upload and returns presigned per-chunk URLs.
 func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename string,
-	fileSize int64, mimeType string, folderID *int64) (map[string]any, error) {
+	fileSize int64, mimeType string, folderID *int64) (*UploadInitResult, error) {
 	if !mimeAllowed(mimeType) {
 		return nil, fmt.Errorf("Unsupported mime_type=%q", mimeType)
 	}
@@ -132,11 +187,11 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 	if fileSize > maxFileSize {
 		return nil, fmt.Errorf("File too large: %d bytes (max %d)", fileSize, maxFileSize)
 	}
-	uploadUUID, err := uuid7()
+	uploadUUID, err := utils.UUID7()
 	if err != nil {
 		return nil, err
 	}
-	sessionUUID, err := uuid7()
+	sessionUUID, err := utils.UUID7()
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +212,7 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 		return nil, err
 	}
 
-	type presignedItem struct {
-		ChunkIndex int64  `json:"chunkIndex"`
-		ChunkSize  int64  `json:"chunkSize"`
-		URL        string `json:"url"`
-	}
-	presigned := make([]presignedItem, 0, chunkCount)
+	presigned := make([]UploadPresignedItem, 0, chunkCount)
 	for p := int64(1); p <= chunkCount; p++ {
 		u, err := s.minio.PresignUploadPart(ctx, objectKey, minioUploadID, int(p))
 		if err != nil {
@@ -171,7 +221,7 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 			s.pending.Remove(ctx, uid, uploadUUID) // release the reservation
 			return nil, err
 		}
-		presigned = append(presigned, presignedItem{ChunkIndex: p - 1, ChunkSize: chunkSize, URL: u})
+		presigned = append(presigned, UploadPresignedItem{ChunkIndex: p - 1, ChunkSize: chunkSize, URL: u})
 	}
 
 	meta := uploadMeta{
@@ -194,22 +244,19 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 		"filename", filename, "size", fileSize, "chunks", chunkCount,
 		"upload_uuid", uploadUUID)
 
-	return map[string]any{
-		"uploadUuid":    uploadUUID,
-		"sessionUuid":   sessionUUID,
-		"minioUploadId": minioUploadID,
-		"chunkCount":    chunkCount,
-		"chunkSize":     chunkSize,
-		"presignedUrls": presigned,
+	return &UploadInitResult{
+		UploadUUID:    uploadUUID,
+		SessionUUID:   sessionUUID,
+		MinioUploadID: minioUploadID,
+		ChunkCount:    chunkCount,
+		ChunkSize:     chunkSize,
+		PresignedURLs: presigned,
 	}, nil
 }
 
 // CompleteUpload finalises the multipart upload and creates the DB row.
 func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
-	parts []struct {
-		PartNumber int
-		ETag       string
-	}, uid int64) (map[string]any, error) {
+	parts []UploadPart, uid int64) (*UploadCompleteResult, error) {
 	raw, err := s.rdb.Get(ctx, uploadKeyPrefix+uploadUUID).Result()
 	if err != nil {
 		return nil, fmt.Errorf("Upload session expired or not found: %s", uploadUUID)
@@ -255,7 +302,10 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 	}
 
 	uploadStatus := "completed"
-	asrStatus := "pending"
+	// ASR only ever applies to video/audio. Every other file is marked
+	// not_supported up front so the UI does not wait forever on a pending
+	// badge that will never resolve.
+	asrStatus := ASRStatusForMime(meta.MimeType)
 	vectorStatus := "pending"
 	now := time.Now()
 	row := &model.CloudFile{
@@ -290,10 +340,10 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 	// Vectorization is user-triggered (process / reprocess endpoints) — an
 	// upload completion never enqueues pipeline tasks by itself.
 
-	return map[string]any{
-		"uploadUuid": uploadUUID,
-		"etag":       etag,
-		"status":     "completed",
+	return &UploadCompleteResult{
+		UploadUUID: uploadUUID,
+		ETag:       etag,
+		Status:     "completed",
 	}, nil
 }
 
@@ -355,7 +405,7 @@ func (s *UploadService) Heartbeat(ctx context.Context, sessionUUID string, uid i
 }
 
 // ResumeUpload returns fresh presigned URLs for all chunks.
-func (s *UploadService) ResumeUpload(ctx context.Context, uploadUUID string, uid int64) (map[string]any, error) {
+func (s *UploadService) ResumeUpload(ctx context.Context, uploadUUID string, uid int64) (*UploadResumeResult, error) {
 	raw, err := s.rdb.Get(ctx, uploadKeyPrefix+uploadUUID).Result()
 	if err != nil {
 		return nil, fmt.Errorf("Upload session expired or not found: %s", uploadUUID)
@@ -367,49 +417,18 @@ func (s *UploadService) ResumeUpload(ctx context.Context, uploadUUID string, uid
 	if meta.UID != uid {
 		return nil, fmt.Errorf("Upload %s does not belong to user %d", uploadUUID, uid)
 	}
-	type chunkItem struct {
-		ChunkIndex int64  `json:"chunkIndex"`
-		ChunkSize  int64  `json:"chunkSize"`
-		URL        string `json:"url"`
-	}
-	pending := make([]chunkItem, 0, meta.ChunkCount)
+	pending := make([]UploadResumeChunk, 0, meta.ChunkCount)
 	for p := int64(1); p <= meta.ChunkCount; p++ {
 		u, err := s.minio.PresignUploadPart(ctx, meta.ObjectKey, meta.MinioUploadID, int(p))
 		if err != nil {
 			return nil, err
 		}
-		pending = append(pending, chunkItem{ChunkIndex: p - 1, ChunkSize: meta.ChunkSize, URL: u})
+		pending = append(pending, UploadResumeChunk{ChunkIndex: p - 1, ChunkSize: meta.ChunkSize, URL: u})
 	}
 	slog.Info("[CLOUD_UPLOAD] resume_upload", "upload_uuid", uploadUUID, "chunks", len(pending))
-	return map[string]any{
-		"uploadUuid":    uploadUUID,
-		"minioUploadId": meta.MinioUploadID,
-		"pendingChunks": pending,
+	return &UploadResumeResult{
+		UploadUUID:    uploadUUID,
+		MinioUploadID: meta.MinioUploadID,
+		PendingChunks: pending,
 	}, nil
 }
-
-// uuid7 generates a time-ordered UUIDv7 string per RFC 9562: 48-bit
-// unix-ms timestamp + version 7 + 12 random bits (rand_a) + variant 10 +
-// 62 random bits (rand_b). UUIDs are opaque keys here (DB unique key, MinIO
-// object path); nothing parses their internals, so the correct bit layout is
-// freely chosen over any historical formatting quirk.
-func uuid7() (string, error) {
-	const uuid7EpochMS = int64(1577836800000) // 2020-01-01T00:00:00Z
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	r := uint64(0)
-	for _, by := range b {
-		r = r<<8 | uint64(by)
-	}
-	ts := uint64(time.Now().UnixMilli()-uuid7EpochMS) & 0xFFFFFFFFFFFF
-	timeLow := ts & 0xFFFFFFFF
-	timeMid := (ts >> 32) & 0xFFFF
-	timeHi := ((ts >> 48) & 0xFFF) | 0x7000 | uint64((r>>52)&0xFFF)
-	clockSeq := 0x8000 | uint64((r>>48)&0x3FFF)
-	node := r & 0xFFFFFFFFFFFF
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", timeLow, timeMid, timeHi, clockSeq, node), nil
-}
-
-

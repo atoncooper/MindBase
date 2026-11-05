@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"app-cloud/internal/dto"
+	"app-cloud/internal/middleware"
 	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
 
@@ -16,79 +18,27 @@ import (
 
 func registerWorkspaces(e *gin.Engine, d Deps) {
 	g := e.Group("/workspaces")
+	g.Use(middleware.RequireUID())
 	wsRepo := repo.NewWorkspaceRepo()
 
-	// WorkspaceResponse (camelCase) — mirrors app/response/workspace.py.
-	type bindingResponse struct {
-		ID                int64   `json:"id"`
-		BindType          string  `json:"bindType"`
-		FolderID          *int64  `json:"folderId"`
-		FolderName        *string `json:"folderName"` // always null in the current contract
-		UploadUUID        *string `json:"uploadUuid"`
-		FileName          *string `json:"fileName"` // always null in the current contract
-		IncludeSubfolders bool    `json:"includeSubfolders"`
-	}
-	type workspaceResponse struct {
-		ID          int64             `json:"id"`
-		Name        string            `json:"name"`
-		Description *string           `json:"description"`
-		Icon        *string           `json:"icon"`
-		Color       *string           `json:"color"`
-		FileCount   int               `json:"fileCount"`
-		ChunkCount  int               `json:"chunkCount"`
-		Bindings    []bindingResponse `json:"bindings"`
-		CreatedAt   string            `json:"createdAt"`
-		UpdatedAt   string            `json:"updatedAt"`
-	}
-	toResponse := func(ws *model.Workspace, bindings []model.WorkspaceBinding) workspaceResponse {
-		out := make([]bindingResponse, 0, len(bindings))
-		for _, b := range bindings {
-			out = append(out, bindingResponse{
-				ID:                b.ID,
-				BindType:          b.BindType,
-				FolderID:          b.FolderID,
-				FolderName:        nil,
-				UploadUUID:        b.UploadUUID,
-				FileName:          nil,
-				IncludeSubfolders: b.IncludeSubfolders,
-			})
-		}
-		return workspaceResponse{
-			ID: ws.ID, Name: ws.Name, Description: ws.Description, Icon: ws.Icon, Color: ws.Color,
-			FileCount: ws.FileCount, ChunkCount: ws.ChunkCount, Bindings: out,
-			CreatedAt: isoOrEmpty(ws.CreatedAt), UpdatedAt: isoOrEmpty(ws.UpdatedAt),
-		}
-	}
-
 	g.GET("", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		rows, err := wsRepo.ListByUID(c.Request.Context(), d.DB, uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "内部错误")
 			return
 		}
-		out := make([]workspaceResponse, 0, len(rows))
+		out := make([]dto.Workspace, 0, len(rows))
 		for i := range rows {
 			bindings, _ := wsRepo.GetBindings(c.Request.Context(), d.DB, rows[i].ID, uid)
-			out = append(out, toResponse(&rows[i], bindings))
+			out = append(out, toWorkspaceResponse(&rows[i], bindings))
 		}
 		c.JSON(http.StatusOK, out)
 	})
 
 	g.POST("", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var body struct {
-			Name        string  `json:"name"`
-			Description *string `json:"description"`
-			Icon        *string `json:"icon"`
-			Color       *string `json:"color"`
-		}
+		uid := middleware.UIDFrom(c)
+		var body dto.WorkspaceCreateRequest
 		if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			apiErr(c, http.StatusBadRequest, "name 必填")
 			return
@@ -103,14 +53,11 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusInternalServerError, "内部错误")
 			return
 		}
-		c.JSON(http.StatusCreated, toResponse(row, nil))
+		c.JSON(http.StatusCreated, toWorkspaceResponse(row, nil))
 	})
 
 	g.GET("/:workspace_id", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, valid := parseWorkspaceID(c)
 		if !valid {
 			return
@@ -125,24 +72,16 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			return
 		}
 		bindings, _ := wsRepo.GetBindings(c.Request.Context(), d.DB, id, uid)
-		c.JSON(http.StatusOK, toResponse(row, bindings))
+		c.JSON(http.StatusOK, toWorkspaceResponse(row, bindings))
 	})
 
 	g.PATCH("/:workspace_id", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, valid := parseWorkspaceID(c)
 		if !valid {
 			return
 		}
-		var body struct {
-			Name        *string `json:"name"`
-			Description *string `json:"description"`
-			Icon        *string `json:"icon"`
-			Color       *string `json:"color"`
-		}
+		var body dto.WorkspaceUpdateRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
 			apiErr(c, http.StatusBadRequest, "请求体格式错误")
 			return
@@ -157,14 +96,11 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			return
 		}
 		bindings, _ := wsRepo.GetBindings(c.Request.Context(), d.DB, id, uid)
-		c.JSON(http.StatusOK, toResponse(row, bindings))
+		c.JSON(http.StatusOK, toWorkspaceResponse(row, bindings))
 	})
 
 	g.DELETE("/:workspace_id", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, valid := parseWorkspaceID(c)
 		if !valid {
 			return
@@ -178,14 +114,11 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusNotFound, "工作区不存在")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"deleted": true})
+		c.JSON(http.StatusOK, dto.WorkspaceDeleteResponse{Deleted: true})
 	})
 
 	g.POST("/:workspace_id/bindings", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, valid := parseWorkspaceID(c)
 		if !valid {
 			return
@@ -199,12 +132,7 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusNotFound, "工作区不存在")
 			return
 		}
-		var body struct {
-			BindType          string  `json:"bindType"`
-			FolderID          *int64  `json:"folderId"`
-			UploadUUID        *string `json:"uploadUuid"`
-			IncludeSubfolders *bool   `json:"includeSubfolders"`
-		}
+		var body dto.WorkspaceBindingRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
 			apiErr(c, http.StatusBadRequest, "请求体格式错误")
 			return
@@ -258,14 +186,11 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 		}
 		updated, _ := wsRepo.GetByID(c.Request.Context(), d.DB, id, uid)
 		bindings, _ := wsRepo.GetBindings(c.Request.Context(), d.DB, id, uid)
-		c.JSON(http.StatusOK, toResponse(updated, bindings))
+		c.JSON(http.StatusOK, toWorkspaceResponse(updated, bindings))
 	})
 
 	g.DELETE("/:workspace_id/bindings/:binding_id", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, valid := parseWorkspaceID(c)
 		if !valid {
 			return
@@ -288,14 +213,11 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusInternalServerError, "内部错误")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"deleted": true})
+		c.JSON(http.StatusOK, dto.WorkspaceDeleteResponse{Deleted: true})
 	})
 
 	g.GET("/:workspace_id/files", func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, valid := parseWorkspaceID(c)
 		if !valid {
 			return
@@ -314,7 +236,7 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusInternalServerError, "内部错误")
 			return
 		}
-		items := make([]gin.H, 0, len(files))
+		items := make([]dto.WorkspaceFileItem, 0, len(files))
 		for _, f := range files {
 			status := "pending"
 			if f.VectorStatus != nil && *f.VectorStatus != "" {
@@ -324,17 +246,38 @@ func registerWorkspaces(e *gin.Engine, d Deps) {
 			if f.VectorChunkCount != nil {
 				chunks = *f.VectorChunkCount
 			}
-			items = append(items, gin.H{
-				"uploadUuid":       f.UploadUUID,
-				"originalName":     f.OriginalName,
-				"mimeType":         f.MimeType,
-				"vectorizable":     true,
-				"vectorStatus":     status,
-				"vectorChunkCount": chunks,
+			items = append(items, dto.WorkspaceFileItem{
+				UploadUUID:       f.UploadUUID,
+				OriginalName:     f.OriginalName,
+				MimeType:         f.MimeType,
+				Vectorizable:     true,
+				VectorStatus:     status,
+				VectorChunkCount: chunks,
 			})
 		}
 		c.JSON(http.StatusOK, items)
 	})
+}
+
+// toWorkspaceResponse maps a workspace row + bindings onto the wire shape.
+func toWorkspaceResponse(ws *model.Workspace, bindings []model.WorkspaceBinding) dto.Workspace {
+	out := make([]dto.WorkspaceBinding, 0, len(bindings))
+	for _, b := range bindings {
+		out = append(out, dto.WorkspaceBinding{
+			ID:                b.ID,
+			BindType:          b.BindType,
+			FolderID:          b.FolderID,
+			FolderName:        nil,
+			UploadUUID:        b.UploadUUID,
+			FileName:          nil,
+			IncludeSubfolders: b.IncludeSubfolders,
+		})
+	}
+	return dto.Workspace{
+		ID: ws.ID, Name: ws.Name, Description: ws.Description, Icon: ws.Icon, Color: ws.Color,
+		FileCount: ws.FileCount, ChunkCount: ws.ChunkCount, Bindings: out,
+		CreatedAt: isoOrEmpty(ws.CreatedAt), UpdatedAt: isoOrEmpty(ws.UpdatedAt),
+	}
 }
 
 // parseWorkspaceID parses the workspace_id path param (distinct from

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { RAGService } from "../../../rag/service.js";
 import type { VideoVectorizerService } from "../../../services/video-vectorizer.js";
-import type { AppBiliClient } from "../../../services/app-bili-client.js";
+import type { AppBiliClient } from "../../../auth/app-bili-client.js";
 import type { KgService } from "../../../kg/service.js";
 import { getRequestContext } from "../../../context/request-context.js";
 import { createLogger } from "../../../logger.js";

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { ChevronDown, FlaskConical, X } from "lucide-react";
+import { ChevronDown, FileText, FlaskConical, X } from "lucide-react";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
@@ -35,7 +35,16 @@ function toUIMessage(m: ApiChatMessage): ChatMessageData {
     role: m.role === "system" ? "assistant" : m.role,
     content: m.content,
     // Backend may return null; normalize to array.
-    sources: Array.isArray(m.sources) ? m.sources : undefined,
+    // sources 里的云盘引用（upload_uuid / uploadUuid）统一成 ChatSource.uploadUuid，
+    // 保证历史消息里的文件引用也能渲染站内深链。
+    sources: Array.isArray(m.sources)
+      ? m.sources.map((s) => ({
+          title: s.title,
+          url: s.url,
+          bvid: s.bvid,
+          uploadUuid: s.uploadUuid ?? s.upload_uuid,
+        }))
+      : undefined,
     // 用户消息附图：MinIO 预签名 URL（新）或内联 data URL（旧消息）——不映射的话
     // 重新加载历史后图片全部消失（只在发送当轮可见）。
     images: Array.isArray(m.images) ? m.images : undefined,
@@ -86,9 +95,14 @@ interface ChatViewProps {
    * 缺省 = 普通聊天；传入后底部请求体带 academic_project_id，后端把项目注入受控系统提示。
    */
   academicProjectId?: string;
+  /**
+   * 云盘文件级问答（来自 /chat?upload_uuid=<uuid>，由云盘详情「问这份文件」跳入）。
+   * 传入后请求体带 scope.uploadUuids=[uuid]，回答只基于该文件；缺省为普通聊天。
+   */
+  uploadUuid?: string;
 }
 
-export function ChatView({ academicProjectId }: ChatViewProps = {}) {
+export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -390,6 +404,8 @@ export function ChatView({ academicProjectId }: ChatViewProps = {}) {
             ...(images && images.length > 0 ? { images } : {}),
             // 科研项目上下文：仅在 URL 带入项目时附加，普通聊天请求体保持不变。
             ...(academicProjectId ? { academic_project_id: academicProjectId } : {}),
+            // 文件级问答：限定只基于该云盘文件检索/回答；普通聊天不带 scope。
+            ...(uploadUuid ? { scope: { uploadUuids: [uploadUuid] } } : {}),
           },
           controller.signal
         );
@@ -580,7 +596,7 @@ export function ChatView({ academicProjectId }: ChatViewProps = {}) {
         void refreshQuota();
       }
     },
-    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds, academicProjectId]
+    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds, academicProjectId, uploadUuid]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
@@ -1055,6 +1071,24 @@ export function ChatView({ academicProjectId }: ChatViewProps = {}) {
         {/* Input area - bottom padding keeps clear of the iOS home indicator */}
         <div className="shrink-0 px-5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto max-w-[768px]">
+            {/* 文件级问答提示：/chat?upload_uuid= 进入时只基于该文件回答 */}
+            {uploadUuid && (
+              <div className="mb-2 flex items-center gap-2 rounded-xl border border-accent/20 bg-accent-soft px-3 py-2 text-[12px] text-foreground">
+                <FileText className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate">
+                  仅基于该云盘文件回答
+                  <span className="ml-1.5 font-mono text-[11px] text-secondary">
+                    {uploadUuid.slice(0, 8)}…
+                  </span>
+                </span>
+                <Link
+                  href="/chat"
+                  className="shrink-0 text-accent transition-opacity hover:opacity-80 hover:underline"
+                >
+                  普通聊天
+                </Link>
+              </div>
+            )}
             {(() => {
               const chatKind = quotaSummary?.enabled
                 ? quotaSummary.kinds.find((k) => k.kind === "chat")

@@ -14,6 +14,7 @@ import (
 	"app-cloud/internal/model"
 	"app-cloud/internal/pipeline"
 	"app-cloud/internal/repo"
+	"app-cloud/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -344,9 +345,27 @@ func (s *ShareService) SetCode(uid, shareID int64, code string) error {
 	return s.shares.UpdateExtractionCode(s.db, shareID, stored)
 }
 
+// AccessGrant is a presigned read grant for one cloud file.
+type AccessGrant struct {
+	URL       string
+	ViewMode  string
+	MimeType  string
+	FileName  string
+	FileSize  int64
+	ExpiresIn int
+}
+
+// AdminReviewAccess is the review-plane payload: an inline presigned grant for
+// media, or a bounded plain-text rendition for documents.
+type AdminReviewAccess struct {
+	Grant     *AccessGrant
+	Text      string
+	Truncated bool
+}
+
 // BuildAccess renders a presigned URL for the share's target file (preview
 // or download) and bumps the download counter when requested.
-func (s *ShareService) BuildAccess(ctx context.Context, sf *shareFile, download bool) (map[string]any, error) {
+func (s *ShareService) BuildAccess(ctx context.Context, sf *shareFile, download bool) (*AccessGrant, error) {
 	return s.BuildAccessFor(ctx, sf, sf.File, download)
 }
 
@@ -354,7 +373,7 @@ func (s *ShareService) BuildAccess(ctx context.Context, sf *shareFile, download 
 // File shares pass sf.File; folder shares pass the fileId-picked member
 // (validated by FolderShareFile). The disposition/XSS/cap policy is one
 // shared implementation — no fork between the two target types.
-func (s *ShareService) BuildAccessFor(ctx context.Context, sf *shareFile, f *model.CloudFile, download bool) (map[string]any, error) {
+func (s *ShareService) BuildAccessFor(ctx context.Context, sf *shareFile, f *model.CloudFile, download bool) (*AccessGrant, error) {
 	if f == nil {
 		return nil, ErrShareNotFound
 	}
@@ -389,13 +408,13 @@ func (s *ShareService) BuildAccessFor(ctx context.Context, sf *shareFile, f *mod
 			return nil, ErrShareDownloadCap
 		}
 	}
-	return map[string]any{
-		"url":       url,
-		"viewMode":  viewMode,
-		"mimeType":  f.MimeType,
-		"fileName":  f.OriginalName,
-		"fileSize":  f.FileSize,
-		"expiresIn": s.shareExpire,
+	return &AccessGrant{
+		URL:       url,
+		ViewMode:  viewMode,
+		MimeType:  f.MimeType,
+		FileName:  f.OriginalName,
+		FileSize:  f.FileSize,
+		ExpiresIn: s.shareExpire,
 	}, nil
 }
 
@@ -406,26 +425,31 @@ func (s *ShareService) BuildAccessFor(ctx context.Context, sf *shareFile, f *mod
 //     pipeline parsers (docx/xlsx/pptx/markdown/html/text). The console gets
 //     plain text, never a URL and never rendered HTML — an attacker-uploaded
 //     .html must not execute on the app origin (stored XSS).
-func (s *ShareService) BuildAdminReviewAccess(ctx context.Context, share *model.CloudShare, file *model.CloudFile) (map[string]any, error) {
+func (s *ShareService) BuildAdminReviewAccess(ctx context.Context, share *model.CloudShare, file *model.CloudFile) (*AdminReviewAccess, error) {
 	if file == nil {
 		return nil, ErrShareNotFound
 	}
 	switch classifyViewMode(file.MimeType) {
 	case "pdf", "video", "audio", "image":
-		return s.BuildAccessFor(ctx, &shareFile{Share: share, File: file}, file, false)
+		grant, err := s.BuildAccessFor(ctx, &shareFile{Share: share, File: file}, file, false)
+		if err != nil {
+			return nil, err
+		}
+		return &AdminReviewAccess{Grant: grant}, nil
 	}
 	text, truncated, err := s.adminReviewText(ctx, file)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"viewMode":  "text",
-		"mimeType":  file.MimeType,
-		"fileName":  file.OriginalName,
-		"fileSize":  file.FileSize,
-		"expiresIn": 0,
-		"text":      text,
-		"truncated": truncated,
+	return &AdminReviewAccess{
+		Grant: &AccessGrant{
+			ViewMode: "text",
+			MimeType: file.MimeType,
+			FileName: file.OriginalName,
+			FileSize: file.FileSize,
+		},
+		Text:      text,
+		Truncated: truncated,
 	}, nil
 }
 
@@ -520,40 +544,9 @@ func (s *ShareService) folderSubtreePaths(sh *model.CloudShare, subIDs []int64) 
 	}
 	out := make(map[int64]string, len(subIDs))
 	for _, id := range subIDs {
-		out[id] = folderRelativePath(byID, *sh.FolderID, id)
+		out[id] = utils.FolderRelativePath(byID, *sh.FolderID, id)
 	}
 	return out, nil
-}
-
-// folderRelativePath — pure path-label helper (unit-tested): "a/b" for a
-// descendant folder, "" for the shared root itself. Defensive against
-// dangling parents / cycles (bounded hops; a chain that never reaches the
-// root reads as root-level rather than as a partial path).
-func folderRelativePath(byID map[int64]model.CloudFolder, rootID, folderID int64) string {
-	if folderID == rootID {
-		return ""
-	}
-	var parts []string
-	cur, ok := byID[folderID]
-	reachedRoot := false
-	for hops := 0; ok && hops < 64; hops++ {
-		if cur.ID == rootID {
-			reachedRoot = true
-			break
-		}
-		parts = append(parts, cur.Name)
-		if cur.ParentID == nil {
-			break // not a descendant of the root
-		}
-		cur, ok = byID[*cur.ParentID]
-	}
-	if !reachedRoot {
-		return "" // dangling chain / corrupted tree — treat as root-level
-	}
-	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
-		parts[i], parts[j] = parts[j], parts[i]
-	}
-	return strings.Join(parts, "/")
 }
 
 // FolderShareFile — folder share access picker: fileID must be a LIVE file

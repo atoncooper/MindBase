@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"app-cloud/internal/infra/minio"
-	"app-cloud/internal/model"
 	"app-cloud/internal/infra/mongostore"
+	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
 
 	"gorm.io/gorm"
@@ -27,7 +27,7 @@ type PurgeService struct {
 	minio    *minio.Client
 	mongo    *mongostore.MongoStore
 	files    *repo.FileRepo
-	pipeline *Pipeline         // nil-tolerant: Milvus delete skipped when absent
+	pipeline *Pipeline        // nil-tolerant: Milvus delete skipped when absent
 	graph    CloudGraphWriter // nil-tolerant: Neo4j L1 node delete skipped when absent
 }
 

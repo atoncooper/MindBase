@@ -23,7 +23,7 @@ import {
   type AcademicStageState,
   type AcademicStageStatus,
 } from "../repository/academic.js";
-import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "./literature-client.js";
+import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../auth/literature-client.js";
 import { createLogger } from "../logger.js";
 
 const log = createLogger("ACADEMIC");

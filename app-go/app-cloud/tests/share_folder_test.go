@@ -1,13 +1,15 @@
-package service
+package tests
 
 import (
 	"testing"
 
 	"app-cloud/internal/model"
+	"app-cloud/internal/service"
+	"app-cloud/internal/utils"
 )
 
-// folderRelativePath — public folder-share payloads label every file with its
-// path relative to the shared folder root ("a/b"; "" = root level).
+// FolderRelativePath labels every file in a public folder-share payload with
+// its path relative to the shared folder root ("a/b"; "" = root level).
 func TestFolderRelativePath(t *testing.T) {
 	mk := func(id int64, parent *int64, name string) model.CloudFolder {
 		return model.CloudFolder{ID: id, ParentID: parent, Name: name}
@@ -35,8 +37,8 @@ func TestFolderRelativePath(t *testing.T) {
 		{1, 6, ""},        // cycle — bounded hops, defensive root-level
 	}
 	for _, tc := range cases {
-		if got := folderRelativePath(byID, tc.root, tc.folder); got != tc.want {
-			t.Fatalf("folderRelativePath(root=%d, folder=%d) = %q, want %q", tc.root, tc.folder, got, tc.want)
+		if got := utils.FolderRelativePath(byID, tc.root, tc.folder); got != tc.want {
+			t.Fatalf("FolderRelativePath(root=%d, folder=%d) = %q, want %q", tc.root, tc.folder, got, tc.want)
 		}
 	}
 }
@@ -48,36 +50,35 @@ func TestRefFolderNameTruncation(t *testing.T) {
 	for len(long) < 300 {
 		long += "文件夹" // 9 bytes per repetition
 	}
-	got := refFolderName(long, refFolderNameBytes)
-	if len(got) > refFolderNameBytes {
-		t.Fatalf("truncated to %d bytes, want <= %d", len(got), refFolderNameBytes)
+	got := utils.RefFolderName(long, utils.RefFolderNameMaxBytes)
+	if len(got) > utils.RefFolderNameMaxBytes {
+		t.Fatalf("truncated to %d bytes, want <= %d", len(got), utils.RefFolderNameMaxBytes)
 	}
-	// truncate to a rune boundary: appending is safe, splitting is not
-	for _, r := range []string{"文件夹", "a", "b"} {
+	for range []string{"文件夹", "a", "b"} {
+		// truncation must land on a rune boundary: re-encoding is lossless
 		if string([]rune(got)) != got {
-			t.Fatalf("truncation split a multi-byte rune")
+			t.Fatal("truncation split a multi-byte rune")
 		}
-		_ = r
 	}
-	if refFolderName("短名", refFolderNameBytes) != "短名" {
+	if utils.RefFolderName("短名", utils.RefFolderNameMaxBytes) != "短名" {
 		t.Fatal("short passthrough broken")
 	}
-	if refFolderName("", refFolderNameBytes) != "" {
+	if utils.RefFolderName("", utils.RefFolderNameMaxBytes) != "" {
 		t.Fatal("empty passthrough broken")
 	}
 }
 
 // LegalAck is a backend-enforced gate: the sentinel must exist and stay the
-// exact user-facing copy the contract pins (plan/1.0.16 §四: 422 文案).
+// exact user-facing copy.
 func TestLegalAckErrorCopy(t *testing.T) {
-	if ErrLegalAckRequired.Error() != "请先阅读并同意分享规范" {
-		t.Fatalf("legalAck copy drifted: %q", ErrLegalAckRequired.Error())
+	if service.ErrLegalAckRequired.Error() != "请先阅读并同意分享规范" {
+		t.Fatalf("legalAck copy drifted: %q", service.ErrLegalAckRequired.Error())
 	}
 }
 
 // Ref invalidation copy is the uniform wire detail (404「引用已失效」).
 func TestRefDeadErrorCopy(t *testing.T) {
-	if ErrRefDead.Error() != "引用已失效" {
-		t.Fatalf("ref-dead copy drifted: %q", ErrRefDead.Error())
+	if service.ErrRefDead.Error() != "引用已失效" {
+		t.Fatalf("ref-dead copy drifted: %q", service.ErrRefDead.Error())
 	}
 }

@@ -7,15 +7,14 @@ package router
 import (
 	"context"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/dto"
 	"app-cloud/internal/infra/minio"
 	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/logger"
 	"app-cloud/internal/metrics"
+	"app-cloud/internal/middleware"
 	"app-cloud/internal/repo"
 	"app-cloud/internal/service"
 
@@ -39,6 +38,10 @@ type Deps struct {
 	Ref        *service.RefService // 1.0.16 — "save to my drive" references
 	Attestor   *service.DeviceAttestor
 	Reconciler *service.Reconciler
+	// Summary / Search serve the document-intelligence read endpoints; nil
+	// means the corresponding capability is unavailable (503).
+	Summary *service.SummaryService
+	Search  *service.SearchService
 }
 
 // ASRPreview proxies the Mongo store (nil-safe).
@@ -56,87 +59,21 @@ func New(d Deps) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
 	e.SetTrustedProxies(nil)
-	e.Use(logger.GinRecovery(), logger.GinLogger(), securityHeaders(), cors(d.Cfg))
+	e.Use(logger.GinRecovery(), logger.GinLogger(), middleware.SecurityHeaders(), middleware.CORS(d.Cfg))
 
 	e.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "app-cloud"})
+		c.JSON(http.StatusOK, dto.HealthResponse{Status: "ok", Service: "app-cloud"})
 	})
 	// Prometheus exposition — cluster-internal only (nginx routes no /metrics).
 	e.GET("/metrics", gin.WrapH(metrics.Handler()))
-	e.Use(metricsMiddleware())
+	e.Use(middleware.Metrics())
 
 	registerCloud(e, d)
 	registerWorkspaces(e, d)
+	registerInternalCloudAI(e, d)
 	return e
 }
 
-// currentUID reads the gateway-injected X-Uid (nginx auth_request → app-auth
-// verify). Missing/invalid → 401. Client-supplied X-Uid is overwritten by
-// nginx (auth_request_set), never trusted from the wire.
-func currentUID(c *gin.Context) (int64, bool) {
-	raw := strings.TrimSpace(c.Request.Header.Get("X-Uid"))
-	if raw == "" {
-		apiErr(c, http.StatusUnauthorized, "未提供认证 token")
-		return 0, false
-	}
-	uid, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || uid <= 0 {
-		apiErr(c, http.StatusUnauthorized, "token 无效或已过期")
-		return 0, false
-	}
-	return uid, true
-}
-
-func securityHeaders() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "SAMEORIGIN") // SAMEORIGIN: presigned previews render in-app
-		c.Header("Cache-Control", "no-store")
-		c.Next()
-	}
-}
-
-func cors(cfg *config.Config) gin.HandlerFunc {
-	allowed := make(map[string]bool, len(cfg.CORS.AllowOrigins))
-	for _, o := range cfg.CORS.AllowOrigins {
-		allowed[strings.TrimSpace(o)] = true
-	}
-	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		if origin != "" && allowed[origin] {
-			c.Header("Access-Control-Allow-Origin", origin)
-			c.Header("Vary", "Origin")
-			c.Header("Access-Control-Allow-Credentials", "true")
-			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, If-Match, X-Fp, X-Ticket")
-		}
-		if c.Request.Method == http.MethodOptions {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
-	}
-}
-
 func apiErr(c *gin.Context, status int, detail string) {
-	c.JSON(status, gin.H{"detail": detail})
-}
-
-// metricsMiddleware records the HTTP golden signals. The route label is the
-// registered pattern (c.FullPath, e.g. /cloud/video/:upload_uuid) so uuid
-// path params cannot explode label cardinality; unmatched paths collapse to
-// UNMATCHED.
-func metricsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		route := c.FullPath()
-		if route == "" {
-			route = "UNMATCHED"
-		}
-		method := c.Request.Method
-		status := strconv.Itoa(c.Writer.Status())
-		metrics.HTTPRequests.WithLabelValues(method, route, status).Inc()
-		metrics.HTTPDuration.WithLabelValues(method, route).Observe(time.Since(start).Seconds())
-	}
+	c.JSON(status, dto.ErrorResponse{Detail: detail})
 }

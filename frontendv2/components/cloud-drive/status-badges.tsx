@@ -22,6 +22,8 @@ const ASR_META: Record<string, StatusMeta> = {
     processing: { label: "转写中", dotClass: "bg-warning animate-pulse", textClass: "text-warning" },
     done: { label: "已转写", dotClass: "bg-success", textClass: "text-success" },
     failed: { label: "失败", dotClass: "bg-danger", textClass: "text-danger" },
+    // 非音视频文件没有转写阶段（服务端写 not_supported）
+    not_supported: { label: "无需转写", dotClass: "bg-tertiary", textClass: "text-tertiary" },
 };
 
 const VECTOR_META: Record<string, StatusMeta> = {

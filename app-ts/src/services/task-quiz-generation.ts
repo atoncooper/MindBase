@@ -10,8 +10,8 @@ import {
   type TaskQuizDoc,
   type TaskQuizQuestion,
 } from "../repository/task-quiz-docs.js";
-import { AppQuizClient } from "./app-quiz-client.js";
-import { AppTaskClient, bestEffort } from "./app-task-client.js";
+import { AppQuizClient } from "../auth/app-quiz-client.js";
+import { AppTaskClient, bestEffort } from "../auth/app-task-client.js";
 import type { PromptRegistry } from "../agent/prompts/loader.js";
 
 const log = createLogger("TASK_QUIZ_GEN");

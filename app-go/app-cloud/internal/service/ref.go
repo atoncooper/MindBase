@@ -9,6 +9,7 @@ import (
 
 	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
+	"app-cloud/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -45,17 +46,30 @@ var (
 	ErrRefTooMany     = errors.New("该分享包含的文件超过 2000 上限，无法保存引用")
 )
 
-// refFolderNameBytes — cloud_folders.name is varchar(200); keep room for the
-// "-引用(N)" suffix (UTF-8 byte truncation, rune-safe).
-const refFolderNameBytes = 200 - 16
+// SaveRefResult is the outcome of saving a share as references.
+type SaveRefResult struct {
+	Saved        int
+	RootFolderID *int64
+}
 
-// refFolderName rune-safe truncates a mirror name to the folder column limit.
-func refFolderName(name string, maxBytes int) string {
-	for len(name) > maxBytes {
-		runes := []rune(name)
-		name = string(runes[:len(runes)-1])
-	}
-	return name
+// RefItem is one saved reference row.
+type RefItem struct {
+	ID               int64
+	Name             string
+	Size             int64
+	MimeType         string
+	FolderID         *int64
+	Status           string
+	ShareID          int64
+	SourceUploadUUID string
+	SourceName       string
+	CreatedAt        *time.Time
+}
+
+// RefListResult is the reference list page.
+type RefListResult struct {
+	Refs  []RefItem
+	Total int64
 }
 
 // SaveShare — POST /cloud/refs body {token, code?, targetFolderId?}.
@@ -65,7 +79,7 @@ func refFolderName(name string, maxBytes int) string {
 // member file (folder share). Idempotent: an already-alive ref for
 // (uid, share_id, source_file_id) is skipped. NO attest — saving is a
 // logged-in action. Response: {saved, rootFolderId?}.
-func (s *RefService) SaveShare(ctx context.Context, uid int64, token, code string, targetFolderID *int64) (map[string]any, error) {
+func (s *RefService) SaveShare(ctx context.Context, uid int64, token, code string, targetFolderID *int64) (*SaveRefResult, error) {
 	sf, err := s.share.ResolveShare(token, false)
 	if err != nil {
 		return nil, err // uniform 404 at the router
@@ -98,14 +112,14 @@ func (s *RefService) SaveShare(ctx context.Context, uid int64, token, code strin
 	if sf.File != nil {
 		// ── file share → one ref at destParent ──
 		if have[sf.File.ID] {
-			return map[string]any{"saved": 0}, nil
+			return &SaveRefResult{Saved: 0}, nil
 		}
 		if err := s.refs.Create(s.db, newRefRow(uid, sf.Share, sf.File, destParent)); err != nil {
 			return nil, err
 		}
 		slog.Info("[CLOUD_REF] saved file", "uid", uid, "share_id", sf.Share.ID,
 			"source_file_id", sf.File.ID, "saved", 1)
-		return map[string]any{"saved": 1}, nil
+		return &SaveRefResult{Saved: 1}, nil
 	}
 
 	// ── folder share → mirror tree + one ref per member file ──
@@ -131,9 +145,9 @@ func (s *RefService) SaveShare(ctx context.Context, uid int64, token, code strin
 		return nil, err
 	}
 	if len(pending) == 0 {
-		out := map[string]any{"saved": 0}
+		out := &SaveRefResult{Saved: 0}
 		if rootID != 0 {
-			out["rootFolderId"] = rootID
+			out.RootFolderID = &rootID
 		}
 		return out, nil
 	}
@@ -152,7 +166,7 @@ func (s *RefService) SaveShare(ctx context.Context, uid int64, token, code strin
 	}
 	slog.Info("[CLOUD_REF] saved folder", "uid", uid, "share_id", sf.Share.ID,
 		"root_folder_id", rootID, "saved", len(rows), "skipped", len(existing))
-	return map[string]any{"saved": len(rows), "rootFolderId": rootID}, nil
+	return &SaveRefResult{Saved: len(rows), RootFolderID: &rootID}, nil
 }
 
 // ensureMirrorTree — reuse-or-create the mirrored subtree for this share.
@@ -263,7 +277,7 @@ func (s *RefService) ensureMirrorTree(uid int64, sf *shareFile, destParent *int6
 // first free "-引用(N)" suffix (contract 重名追加语义).
 func (s *RefService) mirrorFolder(uid int64, parent *int64, name string, mine map[int64]bool) (*model.CloudFolder, error) {
 	var folders repo.FolderRepo
-	name = refFolderName(name, refFolderNameBytes)
+	name = utils.RefFolderName(name, utils.RefFolderNameMaxBytes)
 	q := s.db.Where("uid = ? AND deleted_at IS NULL", uid)
 	if parent != nil {
 		q = q.Where("parent_id = ?", *parent)
@@ -324,7 +338,7 @@ func newRefRow(uid int64, sh *model.CloudShare, f *model.CloudFile, folderID *in
 // ListRefs — GET /cloud/refs?folderId=. {refs: RefItem[], total}. sourceName
 // resolves the LIVE original name (bounded batch read); a missing source row
 // falls back to the snapshot name.
-func (s *RefService) ListRefs(uid int64, folderID *int64) (map[string]any, error) {
+func (s *RefService) ListRefs(uid int64, folderID *int64) (*RefListResult, error) {
 	const listLimit = 2000
 	rows, err := s.refs.ListByFolder(s.db, uid, folderID, listLimit)
 	if err != nil {
@@ -347,28 +361,27 @@ func (s *RefService) ListRefs(uid int64, folderID *int64) (map[string]any, error
 			}
 		}
 	}
-	items := make([]map[string]any, 0, len(rows))
+	items := make([]RefItem, 0, len(rows))
 	for i := range rows {
 		r := &rows[i]
 		sourceName := r.Name
 		if n, ok := live[r.SourceFileID]; ok {
 			sourceName = n
 		}
-		items = append(items, map[string]any{
-			"id":               r.ID,
-			"name":             r.Name,
-			"size":             r.FileSize,
-			"mimeType":         r.MimeType,
-			"folderId":         r.FolderID,
-			"status":           r.Status,
-			"shareId":          r.ShareID,
-			"sourceUploadUuid": r.SourceUploadUUID,
-			"sourceName":       sourceName,
-			"createdAt":        r.CreatedAt,
-			"isRef":            true,
+		items = append(items, RefItem{
+			ID:               r.ID,
+			Name:             r.Name,
+			Size:             r.FileSize,
+			MimeType:         r.MimeType,
+			FolderID:         r.FolderID,
+			Status:           r.Status,
+			ShareID:          r.ShareID,
+			SourceUploadUUID: r.SourceUploadUUID,
+			SourceName:       sourceName,
+			CreatedAt:        r.CreatedAt,
 		})
 	}
-	return map[string]any{"refs": items, "total": total}, nil
+	return &RefListResult{Refs: items, Total: total}, nil
 }
 
 // DeleteRef — DELETE /cloud/refs/{id} (uid-checked soft delete; the source
@@ -382,7 +395,7 @@ func (s *RefService) DeleteRef(uid, id int64) error {
 // (BuildAccess 政策); no share cap consumption / download increment — a ref
 // read is the ref owner's own access. Any invalidated leg flips the ref
 // dead and reads uniformly as 404「引用已失效」.
-func (s *RefService) RawRef(ctx context.Context, uid, id int64, download bool) (map[string]any, error) {
+func (s *RefService) RawRef(ctx context.Context, uid, id int64, download bool) (*AccessGrant, error) {
 	ref, err := s.refs.GetOwned(s.db, id, uid)
 	if err != nil {
 		return nil, err
@@ -393,7 +406,7 @@ func (s *RefService) RawRef(ctx context.Context, uid, id int64, download bool) (
 	if ref.Status != "alive" {
 		return nil, ErrRefDead
 	}
-	fail := func(err error) (map[string]any, error) {
+	fail := func(err error) (*AccessGrant, error) {
 		_ = s.refs.MarkDead(s.db, ref.ID)
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrShareNotFound) {
 			return nil, ErrRefDead
@@ -436,12 +449,12 @@ func (s *RefService) RawRef(ctx context.Context, uid, id int64, download bool) (
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"url":       url,
-		"viewMode":  viewMode,
-		"mimeType":  f.MimeType,
-		"fileName":  f.OriginalName,
-		"fileSize":  f.FileSize,
-		"expiresIn": s.share.shareExpire,
+	return &AccessGrant{
+		URL:       url,
+		ViewMode:  viewMode,
+		MimeType:  f.MimeType,
+		FileName:  f.OriginalName,
+		FileSize:  f.FileSize,
+		ExpiresIn: s.share.shareExpire,
 	}, nil
 }

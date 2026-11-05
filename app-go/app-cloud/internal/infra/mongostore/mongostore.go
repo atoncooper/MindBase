@@ -159,6 +159,46 @@ func (m *MongoStore) UpsertSummary(ctx context.Context, uploadUUID string, uid i
 	return err
 }
 
+// StoredSummary — the summary sub-document plus its provenance. Summary stays
+// a raw BSON map so this package never imports the service layer's summary
+// type; the reader decodes it.
+type StoredSummary struct {
+	Summary     map[string]any
+	Model       string
+	ContentHash string
+}
+
+// GetSummaryByUUID returns the stored summary of one file for its owner.
+// Documents written before the field existed simply have no summary — the
+// result is (nil, nil). A nil/disabled store yields the same.
+func (m *MongoStore) GetSummaryByUUID(ctx context.Context, uid int64,
+	uploadUUID string) (*StoredSummary, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	var doc struct {
+		Summary     map[string]any `bson:"summary"`
+		Model       string         `bson:"summary_model"`
+		ContentHash string         `bson:"summary_content_hash"`
+	}
+	err := m.db.Collection("cloud_drive_documents").FindOne(ctx,
+		bson.M{"upload_uuid": uploadUUID, "uid": uid, "summary": bson.M{"$exists": true}},
+		options.FindOne().SetProjection(bson.M{
+			"summary": 1, "summary_model": 1, "summary_content_hash": 1, "_id": 0,
+		}),
+	).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if doc.Summary == nil {
+		return nil, nil
+	}
+	return &StoredSummary{Summary: doc.Summary, Model: doc.Model, ContentHash: doc.ContentHash}, nil
+}
+
 // GetSummariesByUUIDs returns summary sub-documents for the given files
 // (projection excludes the full text — the routing judge never needs it).
 func (m *MongoStore) GetSummariesByUUIDs(ctx context.Context, uid int64,

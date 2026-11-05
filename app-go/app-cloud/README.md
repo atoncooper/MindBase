@@ -2,16 +2,18 @@
 
 > 云盘域唯一权威：分块上传（10MB 分片 presigned multipart + 心跳 + 断点续传）、文件夹树、
 > 存储配额、百度式分享（提取码/有效期/下载上限）、回收站、搜索、RAG 工作区，
-> 以及 Go 原生文档解析向量化管线（PDF/Office/md/html/text → 语义分块 → Higress embedding
-> → Milvus cloud_drive + Mongo 全文）。**多实例就绪**（2026-10-15 完成 ①–⑤ 分布式强化）。
+> Go 原生文档解析/OCR 向量化管线（PDF/Office/md/html/text + 图片/截图/扫描 PDF OCR → 语义分块
+> → Higress embedding → Milvus cloud_drive + Mongo 全文），以及 AI 摘要、语义检索、相似文件。
+> **多实例就绪**（2026-10-15 完成 ①–⑤ 分布式强化）。
 
 ## 端口与路由（:8007）
 
 | 路由 | 说明 |
 |------|------|
-| `/cloud/*` | 用户面：上传 init/heartbeat/complete/resume、文件夹、文件详情/预览/处理、配额、搜索、回收站、分享 owner 面（nginx /cloud/ 直连，auth_request 注入 X-Uid） |
+| `/cloud/*` | 用户面：上传 init/heartbeat/complete/resume、文件夹、文件详情/预览/处理、配额、文件名/语义搜索、AI 摘要、相似文件、回收站、分享 owner 面（nginx /cloud/ 直连，auth_request 注入 X-Uid） |
 | `/cloud/s/{token}` | 公开分享页数据面（免登录；attest 设备证明 + access 提取码校验） |
 | `/workspaces/*` | RAG 工作区 CRUD/绑定/文件展开（APISIX 兜底路由） |
+| `/internal/cloud/{summary,similar}` | app-ts M2M（`internal.api_key` = APISIX_CONSUMER_KEY；uid 显式传入） |
 | `/internal/cloud/reconcile?uid=` | 对账（loopback，仅运维） |
 | `/metrics` | Prometheus 指标（HTTP 黄金信号 / 上传完成结果 / 配额预留结果 / 管线队列 / 租约竞争；集群内可达，nginx 不路由） |
 | `/health` | 探活 |

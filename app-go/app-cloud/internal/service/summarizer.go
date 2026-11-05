@@ -27,6 +27,7 @@ type Summary struct {
 	Topics           []string `json:"topics" bson:"topics"`
 	Entities         []string `json:"entities" bson:"entities"`
 	KeyPoints        []string `json:"key_points" bson:"key_points"`
+	Todos            []string `json:"todos" bson:"todos"`
 	AnswersQuestions []string `json:"answers_questions" bson:"answers_questions"`
 	Language         string   `json:"language" bson:"language"`
 	SizeChars        int      `json:"size_chars" bson:"size_chars"`
@@ -38,6 +39,7 @@ const systemPrompt = `你是文档摘要引擎。阅读用户提供的文档，�
   "topics": ["3-8个主题词，名词短语，中文"],
   "entities": ["0-15个具名实体：人物/产品/技术/组织"],
   "key_points": ["3-6条关键论点，每条一句话"],
+  "todos": ["0-8条可执行待办/下一步，没有则空"],
   "answers_questions": ["2-5条这篇文档能回答的问题示例"],
   "language": "zh 或 en"
 }

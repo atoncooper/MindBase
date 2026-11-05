@@ -1,4 +1,4 @@
-package service
+package tests
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/service"
 )
 
 func TestKgClientUpsertSendsTokenPathAndPayload(t *testing.T) {
@@ -26,7 +27,7 @@ func TestKgClientUpsertSendsTokenPathAndPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewKgClient(config.KgConfig{BaseURL: srv.URL, Token: "tok"})
+	c := service.NewKgClient(config.KgConfig{BaseURL: srv.URL, Token: "tok"})
 	err := c.UpsertCloudDocGraph(context.Background(), 42, "uuid-1", "标题", "hash", []string{"主题"}, nil)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -50,7 +51,7 @@ func TestKgClientDeletePath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewKgClient(config.KgConfig{BaseURL: srv.URL})
+	c := service.NewKgClient(config.KgConfig{BaseURL: srv.URL})
 	if err := c.DeleteCloudDocGraph(context.Background(), 7, "uuid-2"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -65,14 +66,14 @@ func TestKgClientSurfacesUpstreamErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewKgClient(config.KgConfig{BaseURL: srv.URL})
+	c := service.NewKgClient(config.KgConfig{BaseURL: srv.URL})
 	if err := c.UpsertCloudDocGraph(context.Background(), 1, "u", "t", "h", nil, nil); err == nil {
 		t.Fatal("500 must surface as an error (caller treats it as non-fatal but visible)")
 	}
 }
 
 func TestKgClientUnconfiguredFailsFast(t *testing.T) {
-	c := NewKgClient(config.KgConfig{})
+	c := service.NewKgClient(config.KgConfig{})
 	if c.Enabled() {
 		t.Fatal("empty base URL must disable the client")
 	}

@@ -30,7 +30,15 @@ export interface ChatMessage {
     role: "user" | "assistant" | "system";
     content: string;
     status: "pending" | "completed" | "failed";
-    sources?: Array<{ bvid: string; title: string; url?: string }>;
+    sources?: Array<{
+        /** 云盘文件引用没有 bvid；两种引用形状共用这个来源结构 */
+        bvid?: string;
+        title: string;
+        url?: string;
+        /** 云盘文件引用（app-cloud upload_uuid；历史字段可能是 snake_case） */
+        upload_uuid?: string;
+        uploadUuid?: string;
+    }>;
     /** attached images: presigned MinIO URLs (durable) or legacy inline data URLs */
     images?: string[];
     // Binary outputs (e.g. run_code images) persisted with the message;
@@ -97,6 +105,9 @@ export interface ChatRequestPayload {
     board_uuid?: string;  // 板聊：请求限定在某块板子上（后端直路由 board agent）
     board_anchor_text?: string;  // 板聊：画布当前选中节点纯文本（作为建议锚点上下文）
     academic_project_id?: string;  // 科研项目上下文：后端解析项目并注入受控项目 section（/research → /chat）
+    // 检索范围：uploadUuids 非空时后端只在这些云盘文件内检索/回答
+    //（/chat?upload_uuid=<uuid> 进入文件级问答）。
+    scope?: { uploadUuids?: string[] };
 }
 
 export const chatApi = {

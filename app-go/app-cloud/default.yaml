@@ -87,6 +87,15 @@ admin_review:
   # env: APPCLOUD__ADMIN_REVIEW__TOKEN
   token: ""
 
+internal:
+  # Shared secret for the machine-to-machine document endpoints
+  # (/internal/cloud/summary, /internal/cloud/similar) consumed by app-ts.
+  # Requests must carry it in the apikey header (Authorization: Bearer is also
+  # accepted). Empty = those endpoints answer 503 (fail closed); the legacy
+  # /internal/cloud/reconcile endpoint is unaffected.
+  # env: APPCLOUD__INTERNAL__API_KEY (compose passes APISIX_CONSUMER_KEY)
+  api_key: ""
+
 quota:
   # tier → storage quota (bytes). Lookup: app-pay /internal/pay/membership/{uid}
   # via APISIX key-auth; fail-closed → free tier when unreachable.
@@ -112,8 +121,8 @@ pipeline:
   max_workers: 16            # elastic ceiling: workers grow toward this when the queue backs up
   autoscale: true            # grow workers (never shrink) while pending depth is high
   admission:
-    # Capacity layer (plan 1.0.15): protect the downstream LLM/embedding
-    # gateways from unbounded trigger bursts. 0 disables the check.
+    # Capacity layer: protect the downstream LLM/embedding gateways from
+    # unbounded trigger bursts. 0 disables the check.
     max_per_uid: 3           # max in-flight vectorize tasks per user
     max_queue_depth: 50000   # global pending+processing hard cap (429 beyond)
   embedding:
@@ -129,15 +138,29 @@ pipeline:
     collection: cloud_drive  # existing collection (schema owned by the pipeline, guarded)
     analyzer: chinese        # BM25 analyzer; must match the existing collection
   summary:
-    # L1 routing payload (plan 1.0.15): a small-model structured summary
+    # L1 routing payload: a small-model structured summary
     # stored with the parsed document (Mongo) for doc-level retrieval.
     # BEST-EFFORT: failures are logged and skipped — vectorization (L2) never
     # blocks on it. Credentials/base URL are shared with embedding (same
     # Higress gateway); the model MUST be routable there.
     enabled: true
-    model: ""                # empty => stage skipped; env APPCLOUD__PIPELINE__SUMMARY__MODEL
+    model: "z-ai/glm-5.3-flash"  # empty => stage skipped; env APPCLOUD__PIPELINE__SUMMARY__MODEL
     max_input_chars: 60000   # full text truncated before the summary call
-    max_output_tokens: 1500
+    max_output_tokens: 3000
+  ocr:
+    # Vision OCR for images / screenshots / image-only (scanned) PDFs. OCR MUST
+    # go through the same OpenAI-compatible Higress gateway as embedding/summary;
+    # there is deliberately no provider base_url/api_key here (one
+    # AI_GATEWAY__* pair wires every AI call). Empty model disables the stage
+    # (images then stay not_supported).
+    # env: APPCLOUD__PIPELINE__OCR__{ENABLED,MODEL,MAX_IMAGE_BYTES,
+    #      MAX_PDF_PAGES,MAX_IMAGES,TIMEOUT_SECONDS}
+    enabled: true
+    model: "z-ai/glm-5.3-flash"
+    max_image_bytes: 10485760  # per image fed to the vision model (10 MiB)
+    max_pdf_pages: 20          # scanned-PDF pages inspected for embedded images
+    max_images: 40             # extracted images OCR'd per scanned PDF
+    timeout_seconds: 90        # per OCR call
 
 kg:
   # app-kg internal cloud-doc routing endpoints (health-mux JSON; L1 graph

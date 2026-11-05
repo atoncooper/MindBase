@@ -4,7 +4,7 @@ import { runWithRequestContext } from "../src/context/request-context.js";
 import { registerAcademicRoutes } from "../src/transport/http/routes/academic.js";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
 import { AcademicService } from "../src/services/academic.js";
-import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/services/literature-client.js";
+import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/auth/literature-client.js";
 
 /**
  * Route-level tests for /academic/* (plan/1.0.17 Phase 2): uid comes from the
