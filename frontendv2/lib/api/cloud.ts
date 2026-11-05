@@ -136,6 +136,11 @@ export interface CloudVideoProcessResponse {
     vectorTaskId?: string | null;
 }
 
+export interface CloudVideoReprocessResponse {
+    uploadUuid: string;
+    taskId?: string;
+}
+
 export interface CloudVideoStatusResponse {
     asrStatus: string;
     asrProgress: number;
@@ -174,6 +179,58 @@ export interface CloudRawFileResponse {
     fileName: string;
     fileSize: number;
     viewMode: CloudViewMode;
+}
+
+// ── AI 摘要 / 语义检索 / 相似文件（app-cloud 智能能力）──
+
+/**
+ * 文件 AI 摘要正文。字段全部为可选语义的展示字段：
+ * topics/entities 是 AI 标签，keyPoints 是关键点，todos 是可执行待办，
+ * answersQuestions 是该文件能够回答的问题。
+ */
+export interface CloudSummary {
+    overview: string;
+    topics: string[];
+    entities: string[];
+    keyPoints: string[];
+    todos: string[];
+    answersQuestions: string[];
+    language: string;
+    sizeChars: number;
+}
+
+/**
+ * 单个文件的摘要可用性。
+ * available=false（summary=null）表示尚未生成或生成失败；
+ * stale=true 表示内容已变化（如重新上传/重新入库后），摘要可能过时。
+ */
+export interface CloudSummaryResponse {
+    uploadUuid: string;
+    available: boolean;
+    stale: boolean;
+    model: string | null;
+    summary: CloudSummary | null;
+}
+
+/** 语义/混合检索的一条命中：文件元数据 + 相似度 + 命中片段。 */
+export interface SemanticHit {
+    uploadUuid: string;
+    originalName: string;
+    title: string | null;
+    mimeType: string;
+    fileSize: number;
+    score: number;
+    snippets: string[];
+}
+
+export interface SemanticSearchResponse {
+    mode: "semantic";
+    results: SemanticHit[];
+    total: number;
+}
+
+export interface SimilarResponse {
+    items: SemanticHit[];
 }
 
 // ── New (app-cloud Go service): quota / search / trash / share ──
@@ -445,6 +502,12 @@ export const cloudApi = {
             headers: getAuthHeaders(),
         }),
 
+    reprocessVideo: (uploadUuid: string) =>
+        request<CloudVideoReprocessResponse>(`/cloud/video/${uploadUuid}/reprocess`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
     getVideoStatus: (uploadUuid: string) =>
         request<CloudVideoStatusResponse>(`/cloud/video/${uploadUuid}/status`, {
             headers: getAuthHeaders(),
@@ -487,6 +550,40 @@ export const cloudApi = {
             { headers: getAuthHeaders() },
         );
         return snakeToCamel<{ results: CloudVideoItem[]; total: number }>(raw);
+    },
+
+    // ── AI 摘要 / 语义检索 / 相似文件 ──
+    /** 单文件 AI 摘要（无摘要时 available=false，不报错）。 */
+    getSummary: async (uploadUuid: string) => {
+        const raw = await request<CloudSummaryResponse>(
+            `/cloud/video/${uploadUuid}/summary`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<CloudSummaryResponse>(raw);
+    },
+
+    /**
+     * 语义/混合检索。folderId 有值时只在该文件夹（含子文件夹）内检索；
+     * 语义后端不可用时返回 503（调用方降级为文件名搜索）。
+     */
+    searchSemantic: async (params: { q: string; folderId?: number | null; limit?: number }) => {
+        const qs = new URLSearchParams({ q: params.q });
+        if (params.folderId != null) qs.set("folderId", String(params.folderId));
+        if (params.limit != null) qs.set("limit", String(params.limit));
+        const raw = await request<SemanticSearchResponse>(
+            `/cloud/search/semantic?${qs.toString()}`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<SemanticSearchResponse>(raw);
+    },
+
+    /** 与指定文件内容相似的其他文件（排除自身）。 */
+    getSimilar: async (uploadUuid: string, limit = 5) => {
+        const raw = await request<SimilarResponse>(
+            `/cloud/video/${uploadUuid}/similar?limit=${limit}`,
+            { headers: getAuthHeaders() },
+        );
+        return snakeToCamel<SimilarResponse>(raw);
     },
 
     listTrash: async () => {

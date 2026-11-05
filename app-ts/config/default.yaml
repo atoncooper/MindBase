@@ -34,6 +34,13 @@ appAuth:
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 5000
 
+appCloud:
+  # 云盘文档智能读取（/internal/cloud/summary，apikey 守卫）；uid 只经 X-Uid
+  # 与查询参数下发，永不出现在 LLM 可写参数里
+  baseUrl: ${APP_CLOUD_BASE_URL:http://app-cloud:8007}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 8000
+
 taskQuiz:
   # 定时出题：agent 对话（/task-quiz/chat）+ 注册（/task-quiz/register）
   # + app-task 执行器回调（/internal/quiz/generate-llm|status）

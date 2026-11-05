@@ -9,6 +9,7 @@ import (
 
 	"app-cloud/internal/config"
 	"app-cloud/internal/model"
+	"app-cloud/internal/utils"
 
 	"github.com/milvus-io/milvus/client/v2/column"
 	"github.com/milvus-io/milvus/client/v2/entity"
@@ -155,12 +156,12 @@ func (s *MilvusStore) InsertChunks(ctx context.Context, uploadUUID string, uid i
 		uids[i] = uid
 		chunkIdx[i] = int64(rows[i].ChunkIndex)
 		chunkIDs[i] = rows[i].ChunkID
-		titles[i] = truncate(rows[i].Title, 512)
-		sources[i] = truncate(rows[i].Source, 32)
-		sourceTypes[i] = truncate(rows[i].SourceType, 16)
-		sectionTitles[i] = truncate(rows[i].SectionTitle, 256)
-		contentTypes[i] = truncate(rows[i].ContentType, 32)
-		texts[i] = truncate(rows[i].Text, 65000)
+		titles[i] = utils.TruncateBytes(rows[i].Title, 512)
+		sources[i] = utils.TruncateBytes(rows[i].Source, 32)
+		sourceTypes[i] = utils.TruncateBytes(rows[i].SourceType, 16)
+		sectionTitles[i] = utils.TruncateBytes(rows[i].SectionTitle, 256)
+		contentTypes[i] = utils.TruncateBytes(rows[i].ContentType, 32)
+		texts[i] = utils.TruncateBytes(rows[i].Text, 65000)
 		vecs[i] = rows[i].Vector
 	}
 	_, err := s.cli.Insert(ctx, milvusclient.NewColumnBasedInsertOption(s.cfg.Collection,
@@ -204,6 +205,57 @@ func (s *MilvusStore) CountByUploadUUID(ctx context.Context, uploadUUID string) 
 	return int(vals), nil
 }
 
+// SearchChunks runs a dense ANN query against the chunk collection and
+// returns the top matches in descending score order. filter is assembled by
+// the caller from trusted fields only (uid / upload_uuid) — never from client
+// input; nothing else is interpolated into the expression here.
+func (s *MilvusStore) SearchChunks(ctx context.Context, vector []float32,
+	filter string, limit int) ([]model.ChunkHit, error) {
+	if len(vector) == 0 {
+		return nil, fmt.Errorf("milvus search: empty query vector")
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	opt := milvusclient.NewSearchOption(s.cfg.Collection, limit,
+		[]entity.Vector{entity.FloatVector(vector)}).
+		WithOutputFields("upload_uuid", "title", "section_title", "text")
+	if strings.TrimSpace(filter) != "" {
+		opt = opt.WithFilter(filter)
+	}
+	sets, err := s.cli.Search(ctx, opt)
+	if err != nil {
+		return nil, fmt.Errorf("milvus search: %w", err)
+	}
+	hits := make([]model.ChunkHit, 0, limit)
+	for _, rs := range sets {
+		uuidCol := rs.GetColumn("upload_uuid")
+		titleCol := rs.GetColumn("title")
+		sectionCol := rs.GetColumn("section_title")
+		textCol := rs.GetColumn("text")
+		for i := 0; i < rs.Len(); i++ {
+			hit := model.ChunkHit{}
+			if i < len(rs.Scores) {
+				hit.Score = float64(rs.Scores[i])
+			}
+			if uuidCol != nil {
+				hit.UploadUUID, _ = uuidCol.GetAsString(i)
+			}
+			if titleCol != nil {
+				hit.Title, _ = titleCol.GetAsString(i)
+			}
+			if sectionCol != nil {
+				hit.SectionTitle, _ = sectionCol.GetAsString(i)
+			}
+			if textCol != nil {
+				hit.Text, _ = textCol.GetAsString(i)
+			}
+			hits = append(hits, hit)
+		}
+	}
+	return hits, nil
+}
+
 // DeleteByUploadUUID removes all vectors for an upload_uuid (idempotent).
 func (s *MilvusStore) DeleteByUploadUUID(ctx context.Context, uploadUUID string) error {
 	_, err := s.cli.Delete(ctx, milvusclient.NewDeleteOption(s.cfg.Collection).
@@ -214,16 +266,3 @@ func (s *MilvusStore) DeleteByUploadUUID(ctx context.Context, uploadUUID string)
 func escapeExpr(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s)
 }
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// avoid splitting a multi-byte rune
-	for !utf8ValidStart(s[n]) && n > 0 {
-		n--
-	}
-	return s[:n]
-}
-
-func utf8ValidStart(b byte) bool { return b&0xC0 != 0x80 }

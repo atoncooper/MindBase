@@ -4,9 +4,9 @@ import { config } from "../../../config/index.js";
 import { resolveTier } from "../../../utils/membership.js";
 import type { QuotaService } from "../../../services/quota.js";
 import { createLogger } from "../../../logger.js";
-import { AppTaskError } from "../../../services/app-task-client.js";
-import { AppAuthError } from "../../../services/app-auth-client.js";
-import { AppQuizError } from "../../../services/app-quiz-client.js";
+import { AppTaskError } from "../../../auth/app-task-client.js";
+import { AppAuthError } from "../../../auth/app-auth-client.js";
+import { AppQuizError } from "../../../auth/app-quiz-client.js";
 import {
   TaskQuizGenerationService,
   type TaskQuizGenerateInput,
@@ -49,8 +49,8 @@ export function registerTaskQuizRoutes(
   app: FastifyInstance,
   deps: {
     generation: TaskQuizGenerationService;
-    appTask: import("../../../services/app-task-client.js").AppTaskClient;
-    appAuth: import("../../../services/app-auth-client.js").AppAuthClient;
+    appTask: import("../../../auth/app-task-client.js").AppTaskClient;
+    appAuth: import("../../../auth/app-auth-client.js").AppAuthClient;
     /** 会员用量配额（定时出题活跃任务数上限）；absent = 不限 */
     quota?: QuotaService;
     /** test-only model override for the chat agent */

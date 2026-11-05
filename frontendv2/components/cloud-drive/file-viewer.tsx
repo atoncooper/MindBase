@@ -23,6 +23,7 @@ import { Markdown } from "@/components/markdown";
 import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-react";
 import { cloudApi, formatBytes, type CloudRawFileResponse } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
+import { FileAiPanel } from "./file-ai-panel";
 
 /**
  * Normalize the presigned MinIO URL to a same-origin path when it goes
@@ -154,6 +155,11 @@ export function FileViewer() {
             {/* Body */}
             <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto max-w-[960px] px-6 py-8 sm:px-10">
+                    {uuid ? (
+                        <div className="mb-8 rounded-2xl border border-border-subtle bg-surface/60 p-4">
+                            <FileAiPanel uploadUuid={uuid} />
+                        </div>
+                    ) : null}
                     <RawContent raw={raw} />
                 </div>
             </div>

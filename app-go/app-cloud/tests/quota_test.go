@@ -1,4 +1,4 @@
-package service
+package tests
 
 import (
 	"context"
@@ -9,11 +9,12 @@ import (
 	"testing"
 
 	"app-cloud/internal/config"
+	"app-cloud/internal/service"
 )
 
 // newTestQuotaService builds a QuotaService against a fake app-pay endpoint
 // (nil db/pending — TierFor touches neither).
-func newTestQuotaService(t *testing.T, handler http.HandlerFunc) (*QuotaService, *int32) {
+func newTestQuotaService(t *testing.T, handler http.HandlerFunc) (*service.QuotaService, *int32) {
 	t.Helper()
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +26,7 @@ func newTestQuotaService(t *testing.T, handler http.HandlerFunc) (*QuotaService,
 	cfg.Quota.MembershipBaseURL = srv.URL
 	cfg.Quota.MembershipAPIKey = "k"
 	cfg.Quota.MembershipCacheTTL = 60
-	return NewQuotaService(cfg, nil, nil), &calls
+	return service.NewQuotaService(cfg, nil, nil), &calls
 }
 
 func membershipBody(tier string, active bool) string {

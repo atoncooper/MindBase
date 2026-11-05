@@ -7,17 +7,20 @@ import (
 	"strings"
 	"time"
 
+	"app-cloud/internal/dto"
+	"app-cloud/internal/middleware"
 	"app-cloud/internal/model"
 	"app-cloud/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
-// registerCloud mounts the user-facing /cloud/* endpoints. Paths and response
-// shapes match the Python backend's app/routers/cloud.py so the frontend's
-// cloudApi keeps working unchanged.
+// registerCloud mounts the user-facing /cloud/* endpoints. Handlers only bind
+// requests, call services and map the results onto the wire DTOs in
+// internal/dto — the JSON contract lives there.
 func registerCloud(e *gin.Engine, d Deps) {
 	g := e.Group("/cloud")
+	g.Use(middleware.RequireUID())
 	registerShareRoutes(e, d, g)
 	registerRefRoutes(g, d) // 1.0.16 — /cloud/refs 引用面
 
@@ -38,8 +41,8 @@ func registerCloud(e *gin.Engine, d Deps) {
 	g.GET("/video/:upload_uuid", getVideoDetail(d))
 	g.PATCH("/video/:upload_uuid", updateVideo(d))
 	g.DELETE("/video/:upload_uuid", deleteVideo(d))
-	g.POST("/video/:upload_uuid/process", triggerProcess(d))
-	g.POST("/video/:upload_uuid/reprocess", reprocess(d))
+	g.POST("/video/:upload_uuid/process", middleware.RequireCapability(d.Process != nil, "处理管线未启用"), triggerProcess(d))
+	g.POST("/video/:upload_uuid/reprocess", middleware.RequireCapability(d.Process != nil, "处理管线未启用"), reprocess(d))
 	g.GET("/video/:upload_uuid/status", getVideoStatus(d))
 	g.GET("/video/:upload_uuid/preview", getDocumentPreview(d))
 	g.GET("/video/:upload_uuid/raw", getVideoRaw(d))
@@ -47,6 +50,9 @@ func registerCloud(e *gin.Engine, d Deps) {
 	// ── quota / search (new) ──
 	g.GET("/quota", getQuota(d))
 	g.GET("/search", searchFiles(d))
+
+	// ── document intelligence: summary / semantic search / similar files ──
+	registerCloudAI(g, d)
 
 	// ── trash (new) ──
 	g.GET("/trash", listTrash(d))
@@ -57,20 +63,10 @@ func registerCloud(e *gin.Engine, d Deps) {
 
 // ── upload ───────────────────────────────────────────────────────────
 
-type uploadInitReq struct {
-	Filename string `json:"filename" binding:"required"`
-	FileSize int64  `json:"fileSize" binding:"required"`
-	MimeType string `json:"mimeType" binding:"required"`
-	FolderID *int64 `json:"folderId"`
-}
-
 func initUpload(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var req uploadInitReq
+		uid := middleware.UIDFrom(c)
+		var req dto.UploadInitRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -85,80 +81,89 @@ func initUpload(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, uploadInitResponse(res))
 	}
 }
 
-type heartbeatReq struct {
-	SessionUUID string `json:"sessionUuid" binding:"required"`
+func uploadInitResponse(res *service.UploadInitResult) dto.UploadInitResponse {
+	presigned := make([]dto.UploadPresignedItem, 0, len(res.PresignedURLs))
+	for _, p := range res.PresignedURLs {
+		presigned = append(presigned, dto.UploadPresignedItem{
+			ChunkIndex: p.ChunkIndex,
+			ChunkSize:  p.ChunkSize,
+			URL:        p.URL,
+		})
+	}
+	return dto.UploadInitResponse{
+		UploadUUID:    res.UploadUUID,
+		SessionUUID:   res.SessionUUID,
+		MinioUploadID: res.MinioUploadID,
+		ChunkCount:    res.ChunkCount,
+		ChunkSize:     res.ChunkSize,
+		PresignedURLs: presigned,
+	}
 }
 
 func heartbeat(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var req heartbeatReq
+		uid := middleware.UIDFrom(c)
+		var req dto.UploadHeartbeatRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusOK, gin.H{"ack": false})
+			c.JSON(http.StatusOK, dto.UploadHeartbeatResponse{Ack: false})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ack": d.Upload.Heartbeat(c.Request.Context(), req.SessionUUID, uid)})
+		c.JSON(http.StatusOK, dto.UploadHeartbeatResponse{
+			Ack: d.Upload.Heartbeat(c.Request.Context(), req.SessionUUID, uid),
+		})
 	}
-}
-
-type uploadPartReq struct {
-	PartNumber int    `json:"PartNumber"`
-	ETag       string `json:"ETag"`
-}
-
-type completeReq struct {
-	Parts []uploadPartReq `json:"parts" binding:"required"`
 }
 
 func completeUpload(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var req completeReq
+		uid := middleware.UIDFrom(c)
+		var req dto.UploadCompleteRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		parts := make([]struct {
-			PartNumber int
-			ETag       string
-		}, 0, len(req.Parts))
+		parts := make([]service.UploadPart, 0, len(req.Parts))
 		for _, p := range req.Parts {
-			parts = append(parts, struct {
-				PartNumber int
-				ETag       string
-			}{p.PartNumber, p.ETag})
+			parts = append(parts, service.UploadPart{PartNumber: p.PartNumber, ETag: p.ETag})
 		}
 		res, err := d.Upload.CompleteUpload(c.Request.Context(), c.Param("upload_uuid"), parts, uid)
 		if err != nil {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, dto.UploadCompleteResponse{
+			UploadUUID: res.UploadUUID,
+			ETag:       res.ETag,
+			Status:     res.Status,
+		})
 	}
 }
 
 func resumeUpload(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		res, err := d.Upload.ResumeUpload(c.Request.Context(), c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		pending := make([]dto.UploadResumeChunk, 0, len(res.PendingChunks))
+		for _, p := range res.PendingChunks {
+			pending = append(pending, dto.UploadResumeChunk{
+				ChunkIndex: p.ChunkIndex,
+				ChunkSize:  p.ChunkSize,
+				URL:        p.URL,
+			})
+		}
+		c.JSON(http.StatusOK, dto.UploadResumeResponse{
+			UploadUUID:    res.UploadUUID,
+			MinioUploadID: res.MinioUploadID,
+			PendingChunks: pending,
+		})
 	}
 }
 
@@ -166,10 +171,7 @@ func resumeUpload(d Deps) gin.HandlerFunc {
 
 func listFolders(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		rows, err := d.Folders.ListByUID(d.DB, uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -187,13 +189,13 @@ func listFolders(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"folders": buildFolderTree(rows, nil)})
+		c.JSON(http.StatusOK, dto.FolderTreeResponse{Folders: buildFolderTree(rows, nil)})
 	}
 }
 
-// buildFolderTree assembles the FolderTreeItem forest from a flat list.
-func buildFolderTree(rows []model.CloudFolder, parent *int64) []gin.H {
-	items := make([]gin.H, 0)
+// buildFolderTree assembles the FolderItem forest from a flat list.
+func buildFolderTree(rows []model.CloudFolder, parent *int64) []dto.FolderItem {
+	items := make([]dto.FolderItem, 0)
 	for i := range rows {
 		row := rows[i]
 		// match parent: both nil (root) or equal ids
@@ -207,30 +209,21 @@ func buildFolderTree(rows []model.CloudFolder, parent *int64) []gin.H {
 		if row.VideoCount != nil {
 			count = *row.VideoCount
 		}
-		item := gin.H{
-			"id":          row.ID,
-			"parent_id":   row.ParentID,
-			"name":        row.Name,
-			"video_count": count,
-			"children":    buildFolderTree(rows, &row.ID),
-		}
-		items = append(items, item)
+		items = append(items, dto.FolderItem{
+			ID:         row.ID,
+			ParentID:   row.ParentID,
+			Name:       row.Name,
+			VideoCount: count,
+			Children:   buildFolderTree(rows, &row.ID),
+		})
 	}
 	return items
 }
 
-type folderCreateReq struct {
-	ParentID *int64 `json:"parentId"`
-	Name     string `json:"name" binding:"required"`
-}
-
 func createFolder(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var req folderCreateReq
+		uid := middleware.UIDFrom(c)
+		var req dto.FolderCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -251,48 +244,38 @@ func createFolder(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		count := 0
-		c.JSON(http.StatusCreated, gin.H{
-			"id": row.ID, "parent_id": row.ParentID, "name": row.Name, "video_count": count,
+		c.JSON(http.StatusCreated, dto.FolderResponse{
+			ID: row.ID, ParentID: row.ParentID, Name: row.Name, VideoCount: 0,
 		})
 	}
 }
 
-type folderUpdateReq struct {
-	Name      *string `json:"name"`
-	ParentID  *int64  `json:"parentId"`
-	SetParent bool    `json:"-"` // presence tracked via raw map below
-}
-
 func updateFolder(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		folderID, ok2 := parseID(c)
 		if !ok2 {
 			return
 		}
-		var body map[string]any
-		if err := c.ShouldBindJSON(&body); err != nil {
+		var req dto.FolderUpdateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		fields := map[string]any{}
-		if v, present := body["name"]; present && v != nil {
-			fields["name"] = v
+		if req.ParentInvalid {
+			apiErr(c, http.StatusUnprocessableEntity, "parentId 不合法")
+			return
 		}
-		if v, present := body["parentId"]; present {
+		fields := map[string]any{}
+		if req.NameSet && req.Name != nil {
+			fields["name"] = *req.Name
+		}
+		if req.ParentSet {
 			// explicit null moves to root; otherwise validate the target
-			if v == nil {
+			if req.ParentID == nil {
 				fields["parent_id"] = nil
 			} else {
-				pid, ok := toInt64(v)
-				if !ok {
-					apiErr(c, http.StatusUnprocessableEntity, "parentId 不合法")
-					return
-				}
+				pid := *req.ParentID
 				if pid == folderID {
 					apiErr(c, http.StatusBadRequest, "不能将文件夹移动到自己")
 					return
@@ -322,18 +305,15 @@ func updateFolder(d Deps) gin.HandlerFunc {
 		if folder.VideoCount != nil {
 			count = *folder.VideoCount
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"id": folder.ID, "parent_id": folder.ParentID, "name": folder.Name, "video_count": count,
+		c.JSON(http.StatusOK, dto.FolderResponse{
+			ID: folder.ID, ParentID: folder.ParentID, Name: folder.Name, VideoCount: count,
 		})
 	}
 }
 
 func deleteFolder(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		folderID, ok := parseID(c)
 		if !ok {
 			return
@@ -355,14 +335,13 @@ func deleteFolder(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		// 1.0.16: a force-deleted subtree's folder shares are dropped
-		// (RevokeAllForFolder — the subtree ids cover shares pointing at any
-		// level). Soft deletes stay restorable and are NOT revoked; their
-		// shares simply resolve uniformly as 404 until restore.
+		// A force-deleted subtree's folder shares are dropped (the subtree ids
+		// cover shares pointing at any level). Soft deletes stay restorable and
+		// are NOT revoked; their shares resolve uniformly as 404 until restore.
 		if force {
 			_ = d.Share.RevokeAllForFolders(ids)
 		}
-		c.JSON(http.StatusOK, gin.H{"deleted": true, "affectedFiles": affected})
+		c.JSON(http.StatusOK, dto.FolderDeleteResponse{Deleted: true, AffectedFiles: affected})
 	}
 }
 
@@ -370,10 +349,7 @@ func deleteFolder(d Deps) gin.HandlerFunc {
 
 func listVideos(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		var folderID *int64
 		if v := c.Query("folderId"); v != "" {
 			id, err := parseInt64(v)
@@ -391,36 +367,22 @@ func listVideos(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		videos := make([]videoItem, 0, len(rows))
+		videos := make([]dto.VideoItem, 0, len(rows))
 		for i := range rows {
 			videos = append(videos, toVideoItem(&rows[i]))
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"videos":   videos,
-			"total":    total,
-			"page":     page,
-			"pageSize": pageSize,
-			"hasMore":  int64(page*pageSize) < total,
+		c.JSON(http.StatusOK, dto.VideoListResponse{
+			Videos:   videos,
+			Total:    total,
+			Page:     page,
+			PageSize: pageSize,
+			HasMore:  int64(page*pageSize) < total,
 		})
 	}
 }
 
-// videoItem — list shape (VideoItem in app/response/cloud.py).
-type videoItem struct {
-	UploadUUID   string     `json:"upload_uuid"`
-	OriginalName string     `json:"original_name"`
-	FileSize     int64      `json:"file_size"`
-	MimeType     string     `json:"mime_type"`
-	Duration     *int       `json:"duration"`
-	AsrStatus    string     `json:"asr_status"`
-	VectorStatus string     `json:"vector_status"`
-	Title        *string    `json:"title"`
-	CoverURL     *string    `json:"cover_url"`
-	CreatedAt    *time.Time `json:"createdAt"`
-}
-
-func toVideoItem(f *model.CloudFile) videoItem {
-	item := videoItem{
+func toVideoItem(f *model.CloudFile) dto.VideoItem {
+	return dto.VideoItem{
 		UploadUUID:   f.UploadUUID,
 		OriginalName: f.OriginalName,
 		FileSize:     f.FileSize,
@@ -432,7 +394,6 @@ func toVideoItem(f *model.CloudFile) videoItem {
 		CoverURL:     f.CoverURL,
 		CreatedAt:    f.CreatedAt,
 	}
-	return item
 }
 
 func statusOrDefault(s *string) string {
@@ -444,10 +405,7 @@ func statusOrDefault(s *string) string {
 
 func getVideoDetail(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -465,79 +423,77 @@ func getVideoDetail(d Deps) gin.HandlerFunc {
 		resp := toVideoDetail(f)
 		if f.FolderID != nil {
 			if folder, err := d.Folders.GetByID(d.DB, *f.FolderID, uid); err == nil && folder != nil {
-				resp["folderName"] = folder.Name
+				resp.FolderName = folder.Name
 			}
 		}
 		if asr := d.ASRPreview(c.Request.Context(), f.UploadUUID); asr != "" {
-			resp["asrPreview"] = asr[:minStr(len(asr), 500)]
+			preview := asr[:minStr(len(asr), 500)]
+			resp.AsrPreview = &preview
 		}
 		c.JSON(http.StatusOK, resp)
 	}
 }
 
-func toVideoDetail(f *model.CloudFile) gin.H {
-	resp := gin.H{
-		"upload_uuid":        f.UploadUUID,
-		"original_name":      f.OriginalName,
-		"file_size":          f.FileSize,
-		"mime_type":          f.MimeType,
-		"duration":           f.Duration,
-		"asr_status":         statusOrDefault(f.AsrStatus),
-		"vector_status":      statusOrDefault(f.VectorStatus),
-		"title":              f.Title,
-		"cover_url":          f.CoverURL,
-		"created_at":         f.CreatedAt,
-		"description":        f.Description,
-		"tags":               f.Tags,
-		"folder_id":          f.FolderID,
-		"folderName":         "",
-		"asrPreview":         nil,
-		"vector_chunk_count": intFromPtr(f.VectorChunkCount),
+func toVideoDetail(f *model.CloudFile) dto.VideoDetailResponse {
+	return dto.VideoDetailResponse{
+		UploadUUID:       f.UploadUUID,
+		OriginalName:     f.OriginalName,
+		FileSize:         f.FileSize,
+		MimeType:         f.MimeType,
+		Duration:         f.Duration,
+		AsrStatus:        statusOrDefault(f.AsrStatus),
+		VectorStatus:     statusOrDefault(f.VectorStatus),
+		Title:            f.Title,
+		CoverURL:         f.CoverURL,
+		CreatedAt:        f.CreatedAt,
+		Description:      f.Description,
+		Tags:             f.Tags,
+		FolderID:         f.FolderID,
+		FolderName:       "",
+		AsrPreview:       nil,
+		VectorChunkCount: intFromPtr(f.VectorChunkCount),
 	}
-	return resp
-}
-
-type videoUpdateReq struct {
-	Title       *string   `json:"title"`
-	Description *string   `json:"description"`
-	Tags        *[]string `json:"tags"`
-	FolderID    **int64   `json:"-"` // handled via raw map
 }
 
 func updateVideo(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		var body map[string]any
-		if err := c.ShouldBindJSON(&body); err != nil {
+		uid := middleware.UIDFrom(c)
+		var req dto.VideoUpdateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
+		if req.TagsInvalid {
+			apiErr(c, http.StatusUnprocessableEntity, "tags 不合法")
+			return
+		}
+		if req.FolderInvalid {
+			apiErr(c, http.StatusUnprocessableEntity, "folderId 不合法")
+			return
+		}
 		fields := map[string]any{}
-		for _, key := range []string{"title", "description"} {
-			if v, present := body[key]; present {
-				fields[key] = v
+		if req.TitleSet {
+			if req.Title == nil {
+				fields["title"] = nil
+			} else {
+				fields["title"] = *req.Title
 			}
 		}
-		if v, present := body["tags"]; present && v != nil {
-			tags, ok := toStringList(v)
-			if !ok {
-				apiErr(c, http.StatusUnprocessableEntity, "tags 不合法")
-				return
+		if req.DescriptionSet {
+			if req.Description == nil {
+				fields["description"] = nil
+			} else {
+				fields["description"] = *req.Description
 			}
-			fields["tags"] = tags
 		}
-		if v, present := body["folderId"]; present {
-			if v == nil {
+		if req.TagsSet {
+			fields["tags"] = req.Tags
+		}
+		if req.FolderSet {
+			if req.FolderID == nil {
 				fields["folder_id"] = nil
 			} else {
-				fid, ok := toInt64(v)
-				if !ok {
-					apiErr(c, http.StatusUnprocessableEntity, "folderId 不合法")
-					return
-				}
+				fid := *req.FolderID
 				folder, err := d.Folders.GetByID(d.DB, fid, uid)
 				if err != nil {
 					apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -562,7 +518,7 @@ func updateVideo(d Deps) gin.HandlerFunc {
 		resp := toVideoDetail(f)
 		if f.FolderID != nil {
 			if folder, err := d.Folders.GetByID(d.DB, *f.FolderID, uid); err == nil && folder != nil {
-				resp["folderName"] = folder.Name
+				resp.FolderName = folder.Name
 			}
 		}
 		c.JSON(http.StatusOK, resp)
@@ -573,10 +529,7 @@ func updateVideo(d Deps) gin.HandlerFunc {
 // until the sweeper purges them (deleted_at + purge_after_days).
 func deleteVideo(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -592,25 +545,24 @@ func deleteVideo(d Deps) gin.HandlerFunc {
 		}
 		// A trashed file must not stay shareable.
 		_ = d.Share.RevokeAllForFile(f.ID)
-		c.JSON(http.StatusOK, gin.H{"deleted": true, "uploadUuid": c.Param("upload_uuid")})
+		c.JSON(http.StatusOK, dto.VideoDeleteResponse{
+			Deleted: true, UploadUUID: c.Param("upload_uuid"),
+		})
 	}
 }
 
-// triggerProcess — marks processing and returns; the pipeline runs in a
+// triggerProcess — marks processing and returns; the pipeline runs in the
 // background goroutine (status updates arrive via the WS bridge).
 func triggerProcess(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		if d.Process == nil {
-			apiErr(c, http.StatusServiceUnavailable, "处理管线未启用")
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		if err := d.Process.Trigger(c.Request.Context(), c.Param("upload_uuid"), uid); err != nil {
 			if errors.Is(err, service.ErrNotFound) {
 				apiErr(c, http.StatusNotFound, "File not found")
+				return
+			}
+			if errors.Is(err, service.ErrAlreadyProcessing) || errors.Is(err, service.ErrAlreadyDone) {
+				apiErr(c, http.StatusConflict, err.Error())
 				return
 			}
 			if errors.Is(err, service.ErrTooManyUserTasks) || errors.Is(err, service.ErrQueueFull) {
@@ -622,40 +574,37 @@ func triggerProcess(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"uploadUuid": c.Param("upload_uuid")})
+		c.JSON(http.StatusOK, dto.VideoProcessResponse{UploadUUID: c.Param("upload_uuid")})
 	}
 }
 
 // reprocess — delete old vectors → re-parse → re-vectorize.
 func reprocess(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		if d.Process == nil {
-			apiErr(c, http.StatusServiceUnavailable, "处理管线未启用")
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		taskID, err := d.Process.Reprocess(c.Request.Context(), c.Param("upload_uuid"), uid)
 		if err != nil {
-			if err == service.ErrNotFound {
+			switch {
+			case errors.Is(err, service.ErrNotFound):
 				apiErr(c, http.StatusNotFound, "File not found")
-				return
+			case errors.Is(err, service.ErrAlreadyProcessing):
+				apiErr(c, http.StatusConflict, err.Error())
+			case errors.Is(err, service.ErrReprocessTooSoon):
+				apiErr(c, http.StatusTooManyRequests, err.Error())
+			default:
+				apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			}
-			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"uploadUuid": c.Param("upload_uuid"), "taskId": taskID})
+		c.JSON(http.StatusOK, dto.VideoReprocessResponse{
+			UploadUUID: c.Param("upload_uuid"), TaskID: taskID,
+		})
 	}
 }
 
 func getVideoStatus(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -686,21 +635,18 @@ func getVideoStatus(d Deps) gin.HandlerFunc {
 				}
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"asr_status":       statusOrDefault(f.AsrStatus),
-			"asrProgress":      0,
-			"vector_status":    statusOrDefault(f.VectorStatus),
-			"vectorChunkCount": count,
+		c.JSON(http.StatusOK, dto.VideoStatusResponse{
+			AsrStatus:        statusOrDefault(f.AsrStatus),
+			AsrProgress:      0,
+			VectorStatus:     statusOrDefault(f.VectorStatus),
+			VectorChunkCount: count,
 		})
 	}
 }
 
 func getDocumentPreview(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -716,22 +662,22 @@ func getDocumentPreview(d Deps) gin.HandlerFunc {
 		preview, total, docMeta := d.DocumentPreview(c.Request.Context(), uid, f.UploadUUID, offset, limit)
 		nextOffset := offset + len(preview)
 		hasMore := nextOffset < total
-		var next any
+		var next *int
 		if hasMore {
-			next = nextOffset
+			next = &nextOffset
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"upload_uuid":  f.UploadUUID,
-			"fileName":     f.OriginalName,
-			"mime_type":    f.MimeType,
-			"vectorizable": f.Vectorizable,
-			"preview":      preview,
-			"docMeta":      docMeta,
-			"offset":       offset,
-			"limit":        limit,
-			"totalChars":   total,
-			"hasMore":      hasMore,
-			"nextOffset":   next,
+		c.JSON(http.StatusOK, dto.DocumentPreviewResponse{
+			UploadUUID:   f.UploadUUID,
+			FileName:     f.OriginalName,
+			MimeType:     f.MimeType,
+			Vectorizable: f.Vectorizable,
+			Preview:      preview,
+			DocMeta:      docMeta,
+			Offset:       offset,
+			Limit:        limit,
+			TotalChars:   total,
+			HasMore:      hasMore,
+			NextOffset:   next,
 		})
 	}
 }
@@ -739,10 +685,7 @@ func getDocumentPreview(d Deps) gin.HandlerFunc {
 // getVideoRaw — presigned GET (+ inline text content for text-like files).
 func getVideoRaw(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -771,13 +714,13 @@ func getVideoRaw(d Deps) gin.HandlerFunc {
 				content = &s
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"url":      url,
-			"content":  content,
-			"mimeType": f.MimeType,
-			"fileName": f.OriginalName,
-			"fileSize": f.FileSize,
-			"viewMode": viewMode,
+		c.JSON(http.StatusOK, dto.RawFileResponse{
+			URL:      url,
+			Content:  content,
+			MimeType: f.MimeType,
+			FileName: f.OriginalName,
+			FileSize: f.FileSize,
+			ViewMode: viewMode,
 		})
 	}
 }
@@ -811,31 +754,24 @@ func classifyViewMode(mime string) string {
 
 func getQuota(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		used, quota, tier, pending, err := d.Quota.Usage(c.Request.Context(), uid)
 		if err != nil {
 			// Still answer with the fail-closed values + error flag.
-			c.JSON(http.StatusOK, gin.H{
-				"used": used, "quota": quota, "tier": tier, "pending": pending,
-				"error": err.Error(),
+			c.JSON(http.StatusOK, dto.QuotaResponse{
+				Used: used, Quota: quota, Tier: tier, Pending: pending, Error: err.Error(),
 			})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"used": used, "quota": quota, "tier": tier, "pending": pending,
+		c.JSON(http.StatusOK, dto.QuotaResponse{
+			Used: used, Quota: quota, Tier: tier, Pending: pending,
 		})
 	}
 }
 
 func searchFiles(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		q := trim(c.Query("q"))
 		if q == "" {
 			apiErr(c, http.StatusUnprocessableEntity, "缺少搜索关键词 q")
@@ -846,11 +782,11 @@ func searchFiles(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		items := make([]videoItem, 0, len(rows))
+		items := make([]dto.VideoItem, 0, len(rows))
 		for i := range rows {
 			items = append(items, toVideoItem(&rows[i]))
 		}
-		c.JSON(http.StatusOK, gin.H{"results": items, "total": len(items)})
+		c.JSON(http.StatusOK, dto.SearchFilesResponse{Results: items, Total: len(items)})
 	}
 }
 
@@ -858,57 +794,50 @@ func searchFiles(d Deps) gin.HandlerFunc {
 
 func listTrash(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		rows, err := d.Files.ListTrash(d.DB, uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		items := make([]gin.H, 0, len(rows))
+		items := make([]dto.TrashItem, 0, len(rows))
 		for i := range rows {
 			f := &rows[i]
-			purgeAt := timeOrNil(nil)
+			var purgeAt *time.Time
 			if f.DeletedAt != nil {
 				purge := f.DeletedAt.Add(time.Duration(d.Cfg.Trash.PurgeAfterDays) * 24 * time.Hour)
 				purgeAt = &purge
 			}
-			items = append(items, gin.H{
-				"upload_uuid":   f.UploadUUID,
-				"original_name": f.OriginalName,
-				"file_size":     f.FileSize,
-				"mime_type":     f.MimeType,
-				"deleted_at":    f.DeletedAt,
-				"purge_at":      purgeAt,
+			items = append(items, dto.TrashItem{
+				UploadUUID:   f.UploadUUID,
+				OriginalName: f.OriginalName,
+				FileSize:     f.FileSize,
+				MimeType:     f.MimeType,
+				DeletedAt:    f.DeletedAt,
+				PurgeAt:      purgeAt,
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+		c.JSON(http.StatusOK, dto.TrashListResponse{Items: items, Total: len(items)})
 	}
 }
 
 func restoreTrash(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		if err := d.Files.Restore(d.DB, c.Param("upload_uuid"), uid); err != nil {
 			apiErr(c, http.StatusNotFound, "文件不在回收站中")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"restored": true, "upload_uuid": c.Param("upload_uuid")})
+		c.JSON(http.StatusOK, dto.TrashRestoreResponse{
+			Restored: true, UploadUUID: c.Param("upload_uuid"),
+		})
 	}
 }
 
 // purgeTrashItem — immediate physical delete (MinIO + pipeline stores).
 func purgeTrashItem(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		if err := d.Purge.PurgeFile(c.Request.Context(), c.Param("upload_uuid"), uid); err != nil {
 			if err == service.ErrNotFound {
 				apiErr(c, http.StatusNotFound, "文件不在回收站中")
@@ -917,22 +846,21 @@ func purgeTrashItem(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"purged": true, "upload_uuid": c.Param("upload_uuid")})
+		c.JSON(http.StatusOK, dto.TrashPurgeResponse{
+			Purged: true, UploadUUID: c.Param("upload_uuid"),
+		})
 	}
 }
 
 func emptyTrash(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		count, err := d.Purge.PurgeAllForUser(c.Request.Context(), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"purged": count})
+		c.JSON(http.StatusOK, dto.EmptyTrashResponse{Purged: count})
 	}
 }
 
@@ -948,45 +876,7 @@ func parseID(c *gin.Context) (int64, bool) {
 }
 
 func parseInt64(s string) (int64, error) {
-	var v int64
-	var err error
-	v, err = strconv.ParseInt(trim(s), 10, 64)
-	return v, err
-}
-
-func toStringList(v any) ([]string, bool) {
-	switch t := v.(type) {
-	case []string:
-		return t, true
-	case []any:
-		out := make([]string, 0, len(t))
-		for _, item := range t {
-			s, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			out = append(out, s)
-		}
-		return out, true
-	default:
-		return nil, false
-	}
-}
-
-func toInt64(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case string:
-		id, err := strconv.ParseInt(n, 10, 64)
-		return id, err == nil
-	case int64:
-		return n, true
-	case int:
-		return int64(n), true
-	default:
-		return 0, false
-	}
+	return strconv.ParseInt(trim(s), 10, 64)
 }
 
 func clampInt(s string, lo, hi int) int {
@@ -1009,8 +899,6 @@ func intFromPtr(p *int) int {
 	}
 	return *p
 }
-
-func timeOrNil(t *time.Time) *time.Time { return t }
 
 func trim(s string) string        { return strings.TrimSpace(s) }
 func lower(s string) string       { return strings.ToLower(s) }

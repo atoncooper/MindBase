@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"app-cloud/internal/infra/minio"
-	"app-cloud/internal/model"
 	"app-cloud/internal/infra/mongostore"
+	"app-cloud/internal/metrics"
+	"app-cloud/internal/model"
 	"app-cloud/internal/repo"
+	"app-cloud/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -44,13 +46,24 @@ type Engine struct {
 	embedder *Embedder
 	files    *repo.FileRepo
 	maxDoc   int64
+	// ocr reads images and image-only PDFs; nil/unconfigured keeps those
+	// files not_supported (the pre-OCR behaviour).
+	ocr *OCRClient
+	// extractPDFImages is the embedded-image extractor for scanned PDFs;
+	// injectable so the OCR assembly is testable without binary fixtures.
+	extractPDFImages pdfImageExtractor
 }
 
 func NewEngine(db *gorm.DB, mc *minio.Client, mongo *mongostore.MongoStore,
 	milvus VectorStore, embedder *Embedder, maxDoc int64) *Engine {
 	return &Engine{db: db, minio: mc, mongo: mongo, milvus: milvus,
-		embedder: embedder, files: repo.NewFileRepo(), maxDoc: maxDoc}
+		embedder: embedder, files: repo.NewFileRepo(), maxDoc: maxDoc,
+		extractPDFImages: extractPDFImagesPDFCPU}
 }
+
+// SetOCR attaches the vision OCR client. A nil or unconfigured client is
+// accepted: image and scanned-PDF files then stay not_supported.
+func (e *Engine) SetOCR(ocr *OCRClient) { e.ocr = ocr }
 
 // VectorizeHooks carries optional service-layer callbacks fired at fixed
 // points of the run. Best-effort by contract: hook errors are ignored by the
@@ -119,7 +132,7 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, hooks Vector
 	// ── Phase 3: embedding ──
 	embedTexts := make([]string, len(chunks))
 	for i, ch := range chunks {
-		embedTexts[i] = EmbeddingText(ch.Text, ch.SectionTitle, displayTitle(f))
+		embedTexts[i] = EmbeddingText(ch.Text, ch.SectionTitle, utils.DisplayTitle(f))
 	}
 	vectors, err := e.embedder.Embed(ctx, embedTexts)
 	if err != nil {
@@ -139,7 +152,7 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, hooks Vector
 		rows[i] = model.ChunkRow{
 			ChunkIndex:   i,
 			ChunkID:      f.UploadUUID + ":" + itoa(i),
-			Title:        displayTitle(f),
+			Title:        utils.DisplayTitle(f),
 			Source:       source,
 			SourceType:   sourceType,
 			SectionTitle: ch.SectionTitle,
@@ -177,16 +190,14 @@ func (e *Engine) Vectorize(ctx context.Context, f *model.CloudFile, hooks Vector
 // auto-ASR path; without it the file ends failed with a clear message).
 func (e *Engine) extractText(ctx context.Context, f *model.CloudFile, data []byte,
 	contentHash, sourceType string) (string, string, []Heading, error) {
-	if strings.HasPrefix(strings.ToLower(f.MimeType), "video/") {
-		asr := e.mongo.ASRPreview(ctx, f.UploadUUID, 100<<20)
-		if strings.TrimSpace(asr) == "" {
-			return "", "", nil, fmt.Errorf("No ASR content for video %s. Run ASR first.", f.UploadUUID)
-		}
-		return asr, "asr", nil, nil
-	}
-	parsed, err := Extract(f.MimeType, f.OriginalName, data)
+	parsed, err := e.parseDocument(ctx, f, data)
 	if err != nil {
 		return "", "", nil, err
+	}
+	if isVideoMime(f.MimeType) {
+		// Video text comes from asr_documents; there is no parsed-document
+		// row to write for it.
+		return parsed.Text, parsed.Source, nil, nil
 	}
 	if err := e.mongo.UpsertParsedDocument(ctx, f.UploadUUID, f.UID,
 		f.OriginalName, sourceType, parsed.Source, parsed.Text, contentHash,
@@ -198,6 +209,109 @@ func (e *Engine) extractText(ctx context.Context, f *model.CloudFile, data []byt
 		return "", "", nil, fmt.Errorf("mongo upsert parsed doc: %w", err)
 	}
 	return parsed.Text, parsed.Source, parsed.Headings, nil
+}
+
+// parseDocument selects the text source for one file: video → existing ASR
+// text, image → vision OCR, other documents → the text parsers. Image-only
+// PDFs fall back to OCR of their embedded page images when it is configured.
+func (e *Engine) parseDocument(ctx context.Context, f *model.CloudFile, data []byte) (*Parsed, error) {
+	if isVideoMime(f.MimeType) {
+		asr := e.mongo.ASRPreview(ctx, f.UploadUUID, 100<<20)
+		if strings.TrimSpace(asr) == "" {
+			return nil, fmt.Errorf("No ASR content for video %s. Run ASR first.", f.UploadUUID)
+		}
+		return &Parsed{Text: asr, Source: "asr"}, nil
+	}
+	if IsImageFile(f.MimeType, f.OriginalName) {
+		return e.ocrImage(ctx, f, data)
+	}
+	parsed, err := Extract(f.MimeType, f.OriginalName, data)
+	if err != nil && errors.Is(err, ErrEmptyPDFText) && isPDFFile(f.MimeType, f.OriginalName) {
+		return e.ocrScannedPDF(ctx, f, data)
+	}
+	return parsed, err
+}
+
+// ParseDocument runs the file-to-text routing without MinIO or Mongo access:
+// video files are rejected (their text comes from the ASR store, which this
+// entry point deliberately does not touch), images go through vision OCR,
+// image-only PDFs through OCR of their embedded page images, and everything
+// else through the text parsers. It exposes the extraction decision for
+// black-box tests and future callers; the vectorize pipeline keeps using the
+// engine directly.
+func ParseDocument(ctx context.Context, ocr *OCRClient, mimeType, filename string, data []byte) (*Parsed, error) {
+	e := &Engine{ocr: ocr, extractPDFImages: extractPDFImagesPDFCPU}
+	return e.parseDocument(ctx, &model.CloudFile{OriginalName: filename, MimeType: mimeType}, data)
+}
+
+// ocrImage runs vision OCR over a single uploaded image.
+func (e *Engine) ocrImage(ctx context.Context, f *model.CloudFile, data []byte) (*Parsed, error) {
+	if !e.ocr.Enabled() {
+		// Same permanent-skip semantics images had before OCR existed.
+		return nil, fmt.Errorf("%w: %s", ErrOCRDisabled, f.OriginalName)
+	}
+	mime := NormalizeImageMime(f.MimeType, data)
+	if mime == "" {
+		metrics.OCRTotal.WithLabelValues("unsupported").Inc()
+		return nil, fmt.Errorf("%w: %q", ErrOCRUnsupportedImage, f.MimeType)
+	}
+	text, err := e.ocr.Recognize(ctx, OCRImage{Data: data, MimeType: mime})
+	if err != nil {
+		metrics.OCRTotal.WithLabelValues(ocrResultLabel(err)).Inc()
+		return nil, fmt.Errorf("ocr image %s: %w", f.UploadUUID, err)
+	}
+	metrics.OCRTotal.WithLabelValues("ok").Inc()
+	return &Parsed{Text: text, Source: "ocr"}, nil
+}
+
+// ocrScannedPDF OCRs the embedded page images of an image-only PDF. Images
+// that individually cannot be read are skipped so the readable pages still
+// land; any transient gateway failure aborts the run as retryable.
+func (e *Engine) ocrScannedPDF(ctx context.Context, f *model.CloudFile, data []byte) (*Parsed, error) {
+	if !e.ocr.Enabled() {
+		// Keep the pre-OCR permanent skip for scanned PDFs.
+		return nil, ErrEmptyPDFText
+	}
+	extract := e.extractPDFImages
+	if extract == nil {
+		extract = extractPDFImagesPDFCPU
+	}
+	images, err := extract(data, e.ocr.MaxPDFPages(), e.ocr.MaxImages(), e.ocr.MaxImageBytes())
+	if err != nil {
+		slog.Warn("[PIPELINE_OCR] scanned PDF image extraction failed — treated as no extractable content",
+			"upload_uuid", f.UploadUUID, "err", err)
+		return nil, fmt.Errorf("%w: %v", ErrEmptyPDFText, err)
+	}
+	if len(images) == 0 {
+		return nil, ErrEmptyPDFText
+	}
+	var b strings.Builder
+	recognized := 0
+	for _, img := range images {
+		text, oerr := e.ocr.Recognize(ctx, OCRImage{Data: img.Data, MimeType: img.MimeType})
+		if oerr != nil {
+			if IsPermanentOCRError(oerr) {
+				// One unusable image must not discard the readable pages.
+				metrics.OCRTotal.WithLabelValues("unsupported").Inc()
+				continue
+			}
+			metrics.OCRTotal.WithLabelValues("error").Inc()
+			return nil, fmt.Errorf("ocr scanned pdf %s (page %d): %w", f.UploadUUID, img.Page, oerr)
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		recognized++
+		b.WriteString(text)
+		b.WriteString("\n\n")
+	}
+	if recognized == 0 {
+		metrics.OCRTotal.WithLabelValues("unsupported").Inc()
+		return nil, ErrOCRNoContent
+	}
+	metrics.OCRTotal.WithLabelValues("ok").Inc()
+	return &Parsed{Text: strings.TrimSpace(b.String()), Source: "ocr"}, nil
 }
 
 // CountChunks / DeleteChunks — the service layer's reconciliation surface.
@@ -212,13 +326,6 @@ func (e *Engine) DeleteChunks(ctx context.Context, uploadUUID string) error {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-func displayTitle(f *model.CloudFile) string {
-	if f.Title != nil && strings.TrimSpace(*f.Title) != "" {
-		return *f.Title
-	}
-	return f.OriginalName
 }
 
 func headingsToAny(hs []Heading) []map[string]any {

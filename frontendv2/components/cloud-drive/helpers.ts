@@ -16,6 +16,13 @@ export function formatDuration(seconds: number | null | undefined): string {
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+/** Format a similarity score as a percentage (cosine scores are 0..1). */
+export function formatSimilarity(score: number): string {
+    if (!Number.isFinite(score)) return "-";
+    const pct = score <= 1 ? score * 100 : score;
+    return `${Math.round(pct)}%`;
+}
+
 /** Format an ISO timestamp as a relative Chinese string. */
 export function formatRelativeTime(iso: string | null | undefined): string {
     if (!iso) return "";

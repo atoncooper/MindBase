@@ -16,6 +16,8 @@ services:
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # acquisition 服务（app-bili）：ASR 委托 + 知识范围读
       - APP_BILI_BASE_URL=http://app-bili:8010
+      # cloud-drive summary M2M (app-cloud /internal/cloud/*)
+      - APP_CLOUD_BASE_URL=http://app-cloud:8007
       # task-quiz 调度 + 鉴权内部查询，经 server1 的 APISIX
       - APP_TASK_BASE_URL=http://apisix:9080
       - APP_AUTH_BASE_URL=http://app-auth:8006

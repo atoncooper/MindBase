@@ -32,6 +32,12 @@ export interface AppConfig {
     apiKey: string;
     timeoutMs: number;
   };
+  appCloud: {
+    /** cloud-drive service internal face (/internal/cloud/*, apikey-guarded) */
+    baseUrl: string;
+    apiKey: string;
+    timeoutMs: number;
+  };
   taskQuiz: {
     /** false = /task-quiz/* + /internal/quiz/generate-llm not served */
     enabled: boolean;

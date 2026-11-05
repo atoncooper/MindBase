@@ -14,7 +14,7 @@ import type {
   LiteratureClient,
   LiteratureHit,
   LiteratureSearchOptions,
-} from "../../services/literature-client.js";
+} from "../../auth/literature-client.js";
 
 /**
  * academic_literature: the project literature library.

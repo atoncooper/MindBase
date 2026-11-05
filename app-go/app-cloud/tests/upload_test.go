@@ -1,13 +1,15 @@
-package service
+package tests
 
 import (
 	"strings"
 	"testing"
+
+	"app-cloud/internal/utils"
 )
 
 // UUIDv7 wire format: 8-4-4-4-12 hex, version nibble 7, RFC-4122 variant.
 func TestUUID7Layout(t *testing.T) {
-	id, err := uuid7()
+	id, err := utils.UUID7()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +30,7 @@ func TestUUID7Layout(t *testing.T) {
 func TestUUID7Unique(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 1000; i++ {
-		id, err := uuid7()
+		id, err := utils.UUID7()
 		if err != nil {
 			t.Fatal(err)
 		}

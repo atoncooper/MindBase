@@ -19,7 +19,13 @@ function buildScopeLine(scope: SearchScope): string {
     parts.push(`限定视频范围：${scope.bvids.length} 个（已自动应用，无需重复检索）`);
   }
   if (scope.uploadUuids && scope.uploadUuids.length > 0) {
-    parts.push(`限定云盘文档范围：${scope.uploadUuids.length} 个`);
+    // Include the UUIDs (bounded) so file-scoped chats can call cloud_doc_summary
+    // directly instead of asking the user for an opaque identifier.
+    const shown = scope.uploadUuids.slice(0, 5).join("、");
+    const suffix = scope.uploadUuids.length > 5 ? " 等" : "";
+    parts.push(
+      `限定云盘文档范围：${scope.uploadUuids.length} 个（upload_uuid：${shown}${suffix}；涉及具体文件时可调用 cloud_doc_summary）`,
+    );
   }
   if (scope.mediaIds && scope.mediaIds.length > 0) {
     parts.push(`限定视频分P范围：${scope.mediaIds.length} 个`);
@@ -58,6 +64,9 @@ export function createMainAgent(
       "plan",
       "fetch_webpage",
       "web_search",
+      "cloud_doc_summary",
+      "cloud_semantic_search",
+      "cloud_similar_files",
       ...(includeKgTool ? ["kg_search"] : []),
     ],
     purpose: "chat",

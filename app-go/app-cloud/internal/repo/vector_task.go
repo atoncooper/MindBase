@@ -1,10 +1,11 @@
 package repo
 
 import (
+	"database/sql"
 	"time"
-	"unicode/utf8"
 
 	"app-cloud/internal/model"
+	"app-cloud/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -101,7 +102,7 @@ type RequeueCandidate struct {
 func (r *VectorTaskRepo) Finish(db *gorm.DB, id int64, status, errMsg string) error {
 	return db.Model(&model.CloudVectorTask{}).Where("id = ?", id).Updates(map[string]any{
 		"status":     status,
-		"last_error": truncateErr(errMsg),
+		"last_error": utils.TruncateBytes(errMsg, 500),
 		"updated_at": time.Now(),
 	}).Error
 }
@@ -112,7 +113,7 @@ func (r *VectorTaskRepo) Finish(db *gorm.DB, id int64, status, errMsg string) er
 func (r *VectorTaskRepo) FinishByUploadUUID(db *gorm.DB, uploadUUID, status, errMsg string) error {
 	return db.Model(&model.CloudVectorTask{}).Where("upload_uuid = ?", uploadUUID).Updates(map[string]any{
 		"status":     status,
-		"last_error": truncateErr(errMsg),
+		"last_error": utils.TruncateBytes(errMsg, 500),
 		"updated_at": time.Now(),
 	}).Error
 }
@@ -187,6 +188,22 @@ func (r *VectorTaskRepo) RequeueOneWithFiles(db *gorm.DB, c RequeueCandidate, st
 	})
 }
 
+// LastUpdatedForUploadUUID returns the last task-row update for a file.
+// Used to rate-limit manual reprocess requests (a completed row's updated_at
+// is its finish time, so a second click inside the cooldown is rejected
+// before any OCR/embedding/summary tokens are spent).
+func (r *VectorTaskRepo) LastUpdatedForUploadUUID(db *gorm.DB, uploadUUID string) (time.Time, bool, error) {
+	var updatedAt time.Time
+	err := db.Raw("SELECT updated_at FROM cloud_vector_tasks WHERE upload_uuid = ? LIMIT 1", uploadUUID).Row().Scan(&updatedAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return updatedAt, true, nil
+}
+
 // CountStates returns (pending, pendingLow, processing) row counts —
 // queue-depth observability for the peak-shaving buffer.
 func (r *VectorTaskRepo) CountStates(db *gorm.DB) (pending int64, pendingLow int64, processing int64, err error) {
@@ -196,8 +213,8 @@ func (r *VectorTaskRepo) CountStates(db *gorm.DB) (pending int64, pendingLow int
 		Processing int64
 	}
 	if err = db.Raw(
-		"SELECT COALESCE(SUM(status = 'pending'), 0) AS pending, "+
-			"COALESCE(SUM(status = 'pending_low'), 0) AS pending_low, "+
+		"SELECT COALESCE(SUM(status = 'pending'), 0) AS pending, " +
+			"COALESCE(SUM(status = 'pending_low'), 0) AS pending_low, " +
 			"COALESCE(SUM(status = 'processing'), 0) AS processing FROM cloud_vector_tasks",
 	).Scan(&out).Error; err != nil {
 		return 0, 0, 0, err
@@ -212,26 +229,4 @@ func (r *VectorTaskRepo) CountInFlightForUID(db *gorm.DB, uid int64) (int64, err
 	err := db.Model(&model.CloudVectorTask{}).Where("uid = ? AND status IN ?", uid,
 		[]string{"pending", "pending_low", "processing"}).Count(&n).Error
 	return n, err
-}
-
-// truncateErr bounds an error string to last_error varchar(500) without
-// splitting a multi-byte rune at the boundary (Chinese error messages are
-// common here).
-func truncateErr(s string) string {
-	const max = 500
-	if len(s) <= max {
-		return s
-	}
-	cut := s[:max]
-	// Strip an incomplete trailing rune: DecodeLastRuneInString reports
-	// RuneError/size 1 for a missing-continuation tail (a lead byte alone is
-	// just as invalid as a bare continuation byte).
-
-	for len(cut) > 0 {
-		if r, size := utf8.DecodeLastRuneInString(cut); !(r == utf8.RuneError && size == 1) {
-			break
-		}
-		cut = cut[:len(cut)-1]
-	}
-	return cut
 }

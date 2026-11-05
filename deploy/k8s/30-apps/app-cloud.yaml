@@ -64,6 +64,10 @@ spec:
             # AI_GATEWAY__* / 凭证类经 envFrom（mindbase-defaults 兜底 + .env 覆盖）
             - name: MILVUS__URI
               value: "http://milvus:19530"
+            # app-ts cloud_doc_summary M2M key (same shared APISIX consumer key)
+            - name: APPCLOUD__INTERNAL__API_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY, optional: true }
             - name: APPCLOUD__LOG__OUTPUT
               value: "both"
             # 提取码静态加密密钥（与 app-auth 同一 Secret；密钥不进数据库）

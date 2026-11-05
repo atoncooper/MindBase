@@ -60,6 +60,22 @@ func (r *FileRepo) Create(db *gorm.DB, f *model.CloudFile) error {
 	})
 }
 
+// ClaimVectorPending atomically moves a file to vector_status=pending unless
+// it is already pending/processing. Returns false when another request owns
+// the in-flight run, which is the cheap idempotency guard against repeated
+// "入库" clicks (each reprocess would otherwise re-run OCR/summary/embedding).
+func (r *FileRepo) ClaimVectorPending(db *gorm.DB, uploadUUID string, uid int64) (bool, error) {
+	now := time.Now()
+	res := db.Model(&model.CloudFile{}).
+		Where("upload_uuid = ? AND uid = ? AND deleted_at IS NULL", uploadUUID, uid).
+		Where("vector_status IS NULL OR vector_status NOT IN ?", []string{"pending", "processing"}).
+		Updates(map[string]any{"vector_status": "pending", "updated_at": now})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // UpdateMeta patches title/description/tags/folder_id (owner-checked).
 // Only non-nil entries are applied; use UpdateMetaExplicit for "set to NULL".
 func (r *FileRepo) UpdateMeta(db *gorm.DB, uploadUUID string, uid int64, fields map[string]any) error {
@@ -176,6 +192,32 @@ func (r *FileRepo) ListTrash(db *gorm.DB, uid int64) ([]model.CloudFile, error) 
 	var rows []model.CloudFile
 	err := db.Where("uid = ? AND deleted_at IS NOT NULL", uid).
 		Order("deleted_at DESC").Find(&rows).Error
+	return rows, err
+}
+
+// ListByUUIDs returns the active files of one user for the given upload_uuids
+// (semantic result hydration: "does this hit still exist for this owner?").
+func (r *FileRepo) ListByUUIDs(db *gorm.DB, uid int64, uploadUUIDs []string) ([]model.CloudFile, error) {
+	if len(uploadUUIDs) == 0 {
+		return nil, nil
+	}
+	var rows []model.CloudFile
+	err := db.Where("uid = ? AND deleted_at IS NULL AND upload_uuid IN ?", uid, uploadUUIDs).
+		Find(&rows).Error
+	return rows, err
+}
+
+// ListActiveByFolderIDs returns the active files inside the given folders.
+// Only the identifying columns are selected — callers use it to build the
+// allowed file set for a folder-scoped semantic search.
+func (r *FileRepo) ListActiveByFolderIDs(db *gorm.DB, uid int64, folderIDs []int64) ([]model.CloudFile, error) {
+	if len(folderIDs) == 0 {
+		return nil, nil
+	}
+	var rows []model.CloudFile
+	err := db.Select("upload_uuid, folder_id, original_name, title, mime_type, file_size").
+		Where("uid = ? AND deleted_at IS NULL AND folder_id IN ?", uid, folderIDs).
+		Find(&rows).Error
 	return rows, err
 }
 

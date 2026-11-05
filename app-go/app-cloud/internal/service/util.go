@@ -14,11 +14,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/metrics"
 	"app-cloud/internal/model"
-	"app-cloud/internal/infra/mongostore"
 	"app-cloud/internal/pipeline"
 	"app-cloud/internal/repo"
+	"app-cloud/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -52,6 +53,9 @@ type CloudGraphWriter interface {
 // HTTP 429. Chinese text here is USER-FACING wire detail, not a comment.
 var ErrTooManyUserTasks = errors.New("该账号排队中的向量化任务已达上限，请等待完成后再试")
 var ErrQueueFull = errors.New("系统排队繁忙，当前任务较多，请稍后再试")
+var ErrAlreadyProcessing = errors.New("该文件正在入库中，请等待完成后再试")
+var ErrAlreadyDone = errors.New("该文件已入库，如需重新生成请使用「重新入库」")
+var ErrReprocessTooSoon = errors.New("距上次入库结束不足 30 秒，请稍后再试")
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 
@@ -94,7 +98,7 @@ type Pipeline struct {
 	mongo   *mongostore.MongoStore
 	rdb     RedisPublisher
 	channel string
-	engine  VectorEngine // nil = pipeline disabled
+	engine  VectorEngine  // nil = pipeline disabled
 	quota   *QuotaService // tier resolution for claim priority (nil → FIFO)
 	summary *Summarizer   // L1 summary generator (nil-safe via Enabled)
 	kg      *KgClient     // L1 routing-graph writer (nil-safe via Enabled)
@@ -131,24 +135,37 @@ func NewPipeline(db *gorm.DB, mongo *mongostore.MongoStore, rdb RedisPublisher, 
 		kg:                 kg,
 		admissionMaxPerUID: admissionMaxPerUID,
 		admissionMaxQueue:  admissionMaxQueue,
-		wake:     make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		workerID: fmt.Sprintf("%s-%d", hostname, os.Getpid()),
+		wake:               make(chan struct{}, 1),
+		stop:               make(chan struct{}),
+		workerID:           fmt.Sprintf("%s-%d", hostname, os.Getpid()),
 	}
 }
 
-// tierStatus maps the membership tier to a claim priority. Unknown/free →
-// pending_low (fail-closed, consistent with the quota stance); paid tiers →
-// pending. Priority is FIFO within a tier.
+// TierStatusForTier maps a membership tier to a queue claim priority: paid
+// tiers stay "pending", while free / empty / unknown tiers and inactive
+// memberships degrade to "pending_low" — fail-closed, consistent with the
+// quota stance. Priority is FIFO within a tier. Pure so the mapping is
+// unit-testable without a quota service or database.
+func TierStatusForTier(tier string, active bool) string {
+	if !active {
+		return "pending_low"
+	}
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "vip", "svip":
+		return "pending"
+	default:
+		return "pending_low"
+	}
+}
+
+// tierStatus maps a user's membership tier to a claim priority via the pure
+// mapping. Without a quota service the legacy FIFO status is used.
 func (p *Pipeline) tierStatus(uid int64) string {
 	if p.quota == nil {
 		return "pending"
 	}
 	tier, _ := p.quota.TierFor(context.Background(), uid)
-	if tier == "free" {
-		return "pending_low"
-	}
-	return "pending"
+	return TierStatusForTier(tier, true)
 }
 
 // SetEngine attaches the vector engine (nil disables the pipeline).
@@ -159,14 +176,9 @@ func (p *Pipeline) SetEngine(e VectorEngine) { p.engine = e }
 // row in "processing" forever.
 const pipelineTimeout = 5 * time.Minute
 
-// docDisplayTitle — the title used for summaries, embedding prefixes and
-// graph nodes (user-set title wins over the original file name).
-func docDisplayTitle(f *model.CloudFile) string {
-	if f.Title != nil && strings.TrimSpace(*f.Title) != "" {
-		return *f.Title
-	}
-	return f.OriginalName
-}
+// reprocessCooldown is the per-file guard against repeated manual re-ingests
+// (each one re-runs OCR, summary and embedding = model tokens).
+const reprocessCooldown = 30 * time.Second
 
 // staleProcessingAfter is how long a row may sit in "processing" before the
 // status endpoint reconciles it to failed (crash / panic / hang guard). Must
@@ -184,6 +196,9 @@ func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) er
 	if f == nil {
 		return ErrNotFound
 	}
+	if f.VectorStatus != nil && *f.VectorStatus == "done" {
+		return ErrAlreadyDone
+	}
 	// Admission control (capacity layer): cap per-user in-flight work and the
 	// global backlog BEFORE accepting the task — a burst sheds load as 429s
 	// instead of starving the LLM/embedding gateways behind the workers.
@@ -198,10 +213,14 @@ func (p *Pipeline) Trigger(ctx context.Context, uploadUUID string, uid int64) er
 			return ErrQueueFull
 		}
 	}
-	// Mark pending; the claiming worker moves it to processing and pushes the
-	// WS status, so states stay truthful while the task waits in the queue.
-	if err := p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{"vector_status": "pending"}); err != nil {
+	// Atomic idempotency gate: repeated "入库" clicks while a run is pending
+	// or processing must not enqueue/re-run OCR + summary + embedding.
+	claimed, err := p.files.ClaimVectorPending(p.db, uploadUUID, uid)
+	if err != nil {
 		return err
+	}
+	if !claimed {
+		return ErrAlreadyProcessing
 	}
 	return p.EnqueueTask(ctx, uploadUUID, uid)
 }
@@ -218,12 +237,24 @@ func (p *Pipeline) Reprocess(ctx context.Context, uploadUUID string, uid int64) 
 	if f == nil {
 		return "", ErrNotFound
 	}
-	taskID := uploadUUID + ":" + time.Now().Format("20060102150405")
-	// reset to pending so RunSync re-runs despite idempotency hash
-	if err := p.files.UpdateMeta(p.db, uploadUUID, uid,
-		map[string]any{"vector_status": "pending"}); err != nil {
+	if f.VectorStatus != nil && (*f.VectorStatus == "pending" || *f.VectorStatus == "processing") {
+		return "", ErrAlreadyProcessing
+	}
+	// A reprocess re-runs OCR/summary/embedding from scratch. Rate-limit it
+	// per file: a finished task row's updated_at is its finish time, so rapid
+	// repeated clicks are rejected before any model tokens are spent.
+	if updatedAt, ok, err := p.tasks.LastUpdatedForUploadUUID(p.db, uploadUUID); err == nil && ok &&
+		time.Since(updatedAt) < reprocessCooldown {
+		return "", ErrReprocessTooSoon
+	}
+	claimed, err := p.files.ClaimVectorPending(p.db, uploadUUID, uid)
+	if err != nil {
 		return "", err
 	}
+	if !claimed {
+		return "", ErrAlreadyProcessing
+	}
+	taskID := uploadUUID + ":" + time.Now().Format("20060102150405")
 	if err := p.EnqueueTask(ctx, uploadUUID, uid); err != nil {
 		return "", err
 	}
@@ -261,7 +292,7 @@ func (p *Pipeline) RunSync(ctx context.Context, f *model.CloudFile) (int, error)
 	hooks := pipeline.VectorizeHooks{}
 	if p.summary.Enabled() {
 		hooks.AfterExtract = func(ctx context.Context, f *model.CloudFile, text, contentHash string) {
-			sum, serr := p.summary.Summarize(ctx, docDisplayTitle(f), text)
+			sum, serr := p.summary.Summarize(ctx, utils.DisplayTitle(f), text)
 			if serr != nil {
 				slog.Warn("[PIPELINE] summary failed — skipping (non-fatal)", "upload_uuid", f.UploadUUID, "err", serr)
 				metrics.SummaryTotal.WithLabelValues("error").Inc()
@@ -275,7 +306,7 @@ func (p *Pipeline) RunSync(ctx context.Context, f *model.CloudFile) (int, error)
 			}
 			metrics.SummaryTotal.WithLabelValues("ok").Inc()
 			if p.kg.Enabled() {
-				if gerr := p.kg.UpsertCloudDocGraph(ctx, f.UID, f.UploadUUID, docDisplayTitle(f), contentHash, sum.Topics, sum.Entities); gerr != nil {
+				if gerr := p.kg.UpsertCloudDocGraph(ctx, f.UID, f.UploadUUID, utils.DisplayTitle(f), contentHash, sum.Topics, sum.Entities); gerr != nil {
 					slog.Warn("[PIPELINE] kg graph write failed — skipping (non-fatal)", "upload_uuid", f.UploadUUID, "err", gerr)
 					metrics.KgWriteTotal.WithLabelValues("error").Inc()
 					return
@@ -297,7 +328,7 @@ func (p *Pipeline) RunSync(ctx context.Context, f *model.CloudFile) (int, error)
 		// hits can never succeed on a retry.
 		if errors.Is(err, pipeline.ErrEncryptedPDF) || errors.Is(err, pipeline.ErrEmptyPDFText) ||
 			errors.Is(err, pipeline.ErrNoParser) || errors.Is(err, pipeline.ErrDocTooLarge) ||
-			errors.Is(err, pipeline.ErrZipEntryTooLarge) {
+			errors.Is(err, pipeline.ErrZipEntryTooLarge) || pipeline.IsPermanentOCRError(err) {
 			_ = p.files.UpdateMeta(p.db, uploadUUID, uid, map[string]any{
 				"vectorizable": false, "vector_status": "not_supported",
 			})

@@ -2,6 +2,16 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] — 2026-11-04
+
+### Added
+
+- **云盘智能化 P0**：图片/截图/扫描 PDF 走 vision OCR 入库（pdfcpu 提取页图，`pipeline.ocr.*` 可配）；文档 L1 摘要新增可执行待办并通过 `GET /cloud/video/{uuid}/summary` 暴露；新增文件夹范围的 `GET /cloud/search/semantic` 与 `GET /cloud/video/{uuid}/similar`；云盘详情页展示 AI 摘要/标签/关键点/待办/可回答问题与相似文件，支持「问这份文件」（`/chat?upload_uuid=`）；聊天来源支持云盘文件深链；app-ts 新增 `cloud_doc_summary` 工具（经 `/internal/cloud/summary`，uid 由会话注入）。摘要模型默认 `z-ai/glm-5.3-flash`，OCR/摘要均复用 Higress embedding 网关连接。
+
+### Changed
+
+- 非音视频云盘文件初始 `asr_status` 改为 `not_supported`（不再永远显示转写中）；OCR/摘要/语义检索失败按可重试与永久不支持分流。
+
 ## [Unreleased] — 2026-11-03
 
 ### Changed

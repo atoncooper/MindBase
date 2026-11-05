@@ -43,6 +43,11 @@ var (
 		Help: "L1 document-summary stage outcomes (best-effort — errors never block vectorization).",
 	}, []string{"result"}) // ok | error | skipped
 
+	OCRTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "appcloud_ocr_total",
+		Help: "Vision OCR outcomes for images and scanned PDFs: ok | error (retryable) | unsupported (permanent skip).",
+	}, []string{"result"})
+
 	KgWriteTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "appcloud_kg_write_total",
 		Help: "L1 routing-graph writes to app-kg by outcome (best-effort — drift self-heals on the next upsert).",

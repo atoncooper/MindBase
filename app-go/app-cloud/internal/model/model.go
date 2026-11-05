@@ -180,6 +180,17 @@ func (CloudRef) TableName() string { return "cloud_refs" }
 // upload_uuid; status mirrors the cloud_files.vector_status transition
 // (pending → processing → done/failed). Workers claim with FOR UPDATE SKIP
 // LOCKED (repo.ClaimNext) and a janitor requeues claims older than
+// ChunkHit — one vector match returned by the semantic index (query-time
+// read model; owned here so the pipeline/service/milvus packages share it
+// without importing each other).
+type ChunkHit struct {
+	UploadUUID   string
+	Title        string
+	SectionTitle string
+	Text         string
+	Score        float64
+}
+
 // ChunkRow — one vectorized chunk handed from the pipeline to the vector
 // store (shared vocabulary: pipeline builds it, milvusstore persists it).
 type ChunkRow struct {

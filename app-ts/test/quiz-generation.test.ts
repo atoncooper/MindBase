@@ -17,7 +17,7 @@ import {
   type QuizQuestionDict,
 } from "../src/services/quiz-generation.js";
 import type { SessionSummaryService } from "../src/services/session-summary.js";
-import type { AppQuizClient } from "../src/services/app-quiz-client.js";
+import type { AppQuizClient } from "../src/auth/app-quiz-client.js";
 import { PromptRegistry } from "../src/agent/prompts/loader.js";
 
 /**

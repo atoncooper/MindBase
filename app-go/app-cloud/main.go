@@ -128,10 +128,29 @@ func main() {
 	// L1 routing: summary generator + graph writer. Both best-effort — the
 	// pipeline tolerates either being absent.
 	docSummary := service.NewSummarizer(cfg.Pipeline.Summary, cfg.Pipeline.Embedding.APIKey, cfg.Pipeline.Embedding.BaseURL)
+	// Vision OCR: images, screenshots and image-only PDFs. The gateway and
+	// credentials are resolved from the OCR config with the embedding
+	// connection as fallback; unconfigured means those files stay
+	// not_supported.
+	ocrClient := pipelinepkg.NewOCRClient(cfg.Pipeline.OCR, cfg.Pipeline.Embedding)
+	if ocrClient.Enabled() {
+		slog.Info("[PIPELINE] vision OCR attached", "model", ocrClient.ModelName(),
+			"max_image_bytes", cfg.Pipeline.OCR.MaxImageBytes,
+			"max_pdf_pages", cfg.Pipeline.OCR.MaxPDFPages,
+			"max_images", cfg.Pipeline.OCR.MaxImages)
+	} else {
+		slog.Info("[PIPELINE] vision OCR not configured — images and scanned PDFs stay not_supported")
+	}
+	// Summary read model (owner + M2M endpoints); Mongo may be disabled, in
+	// which case every file simply reports available=false.
+	summarySvc := service.NewSummaryService(db.DB, mongoStore)
 	kgClient := service.NewKgClient(cfg.Kg)
 	pipe := service.NewPipeline(db.DB, mongoStore, redisPublisher{rdb}, cfg.WSBridge.Channel, quotaSvc,
 		docSummary, kgClient, cfg.Pipeline.Admission.MaxPerUID, cfg.Pipeline.Admission.MaxQueueDepth)
-	// Engine: extractors → chunk → embed (Higress) → Milvus cloud_drive.
+	// Engine: extractors (text + OCR) → chunk → embed (Higress) → Milvus
+	// cloud_drive. The same collection/embedding also serves the read path
+	// (semantic search / similar files) when attached below.
+	var searchSvc *service.SearchService
 
 	if cfg.Pipeline.Enabled && cfg.Pipeline.Milvus.Enabled && strings.TrimSpace(cfg.Pipeline.Milvus.URI) != "" {
 		// Bounded dial: Milvus unreachable (e.g. storage profile not started)
@@ -143,9 +162,13 @@ func main() {
 		milvusCancel()
 		switch {
 		case merr == nil:
+			embedder := pipelinepkg.NewEmbedder(cfg.Pipeline.Embedding)
 			engine := pipelinepkg.NewEngine(db.DB, mc, mongoStore, milvusStore,
-				pipelinepkg.NewEmbedder(cfg.Pipeline.Embedding), cfg.Pipeline.MaxDocSize)
+				embedder, cfg.Pipeline.MaxDocSize)
+			engine.SetOCR(ocrClient)
 			pipe.SetEngine(engine)
+			// Read path over the same vectors: query-time only, uid filtered.
+			searchSvc = service.NewSearchService(db.DB, embedder, milvusStore, summarySvc)
 			slog.Info("[PIPELINE] vector engine attached", "collection", cfg.Pipeline.Milvus.Collection,
 				"model", cfg.Pipeline.Embedding.Model, "dim", cfg.Pipeline.Embedding.Dimension)
 		case strings.HasPrefix(merr.Error(), "MILVUS SCHEMA GUARD"):
@@ -213,6 +236,8 @@ func main() {
 		Share:      shareSvc,
 		Ref:        refSvc,
 		Attestor:   attestor,
+		Summary:    summarySvc,
+		Search:     searchSvc,
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}

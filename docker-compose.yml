@@ -334,6 +334,8 @@ services:
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # acquisition service (Go): ASR delegation + internal knowledge-scope reads
       - APP_BILI_BASE_URL=http://app-bili:8010
+      # cloud-drive intelligence M2M (summary/similar); token = APISIX_CONSUMER_KEY
+      - APP_CLOUD_BASE_URL=http://app-cloud:8007
       # task-quiz flow: scheduler via APISIX + auth internal user lookup
       - APP_TASK_BASE_URL=http://apisix:9080
       - APP_AUTH_BASE_URL=http://app-auth:8006
@@ -812,6 +814,8 @@ services:
       - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
       # Storage quota tier lookup via APISIX key-auth -> app-pay
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      # app-ts cloud_doc_summary tool: /internal/cloud/summary 的共享 key
+      - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       # Vector pipeline (Higress AI gateway; model/dim RED LINE = Milvus rebuild)
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}

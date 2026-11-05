@@ -1,7 +1,7 @@
 # 云盘服务 app-cloud（Go，云盘权威）
 
 > **范围**：B 站收藏知识库的云盘域——分块上传、文件夹、存储配额、百度式分享、
-> 回收站、文档解析向量化管线、RAG 工作区。全部 Go + Gin + GORM 实现，
+> 回收站、文档解析/OCR 向量化管线、AI 摘要、语义检索、RAG 工作区。全部 Go + Gin + GORM 实现，
 > schema 所有权自 Python backend 迁入（2026-09-25 cutover，2026-10-06 Python 删除）。
 > 状态：**✅ 生产运行 + 多实例就绪**（2026-10-15 完成 ①–⑤ 分布式强化，详见
 > `plan/1.0.13-AppCloud-MultiReplica`，本地设计文档，不入 git）。
@@ -74,13 +74,32 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 ```
 入队：上传完成钩子 / POST process / reprocess → upsert 任务行（只重置非 processing 行）
 认领：SELECT … FOR UPDATE SKIP LOCKED（任意副本并发安全）→ processing
-执行：MinIO 下载 → 解析（pdf/Office/md/html/text；扫描/加密件→not_supported）
+执行：MinIO 下载 → 解析（pdf/Office/md/html/text；图片/截图/扫描 PDF 走 vision OCR；
+      加密/确实无文字件→not_supported）
       → 语义分块（600-900 字符 overlap 80-150）→ Higress embedding（text-embedding-v4, 1024 维）
       → Milvus 写入 → count 一致性校验（不符回滚防孤儿向量）→ done/failed
 自愈：janitor 每分钟回收 >10min 的 stale claim（崩溃/被杀自恢复，幂等重跑）
 ```
 
-- 视频语义：可上传/预览/播放，向量化依赖 Mongo 既有 ASR 文本（无自动 ASR 链路）
+- 视频语义：可上传/预览/播放，向量化依赖 Mongo 既有 ASR 文本（**云盘尚无自动 ASR 链路**；后续补齐
+  视频转写后才能进入摘要/检索）。
+- **图片/截图/扫描 PDF**：vision OCR（默认模型 `z-ai/glm-5.3-flash`，复用 embedding 的网关连接）；
+  扫描 PDF 用 pdfcpu 提取页内嵌图片逐张 OCR，限制页数（默认 20）/图片数（40）/单图大小（10MiB）；
+  OCR 成功正文照常写入 Mongo/Milvus，`doc_parser=source=ocr`。
+- **L1 摘要**：每篇文档生成 overview/topics/entities/key_points/todos/answers_questions 并持久化；
+  `GET /cloud/video/{uuid}/summary` 返回 available/stale/model/summary，文档更新后 content_hash
+  不一致会标记 stale。默认模型 `z-ai/glm-5.3-flash`（配置 `pipeline.summary.model`）。
+- **语义检索与相似文件**：`GET /cloud/search/semantic?q=&folderId=&limit=`（文件夹子树范围）、
+  `GET /cloud/video/{uuid}/similar?limit=`；基于 cloud_drive 向量按 upload_uuid 聚合去重；
+  向量/embedding 不可用返回 503，不影响原文件名搜索 `GET /cloud/search`。
+- **M2M（app-ts）**：`GET /internal/cloud/summary`、`/internal/cloud/similar`，用
+  `internal.api_key`（compose 复用 APISIX_CONSUMER_KEY）鉴权；app-ts 的 `cloud_doc_summary`
+  工具经此读取摘要，uid 由服务端会话注入，LLM 不能指定 uid。
+- **文件级 AI**：云盘详情页展示摘要/AI 标签/关键点/待办/可回答问题与相似文件；「问这份文件」进入
+  `/chat?upload_uuid=<uuid>`，聊天只以该文件为检索范围；聊天来源支持 uploadUuid 深链回云盘详情。
+- **配置**：`pipeline.ocr.*`（enabled/model/max_image_bytes/max_pdf_pages/max_images/timeout_seconds；
+  OCR 与摘要/embedding 共用 Higress 网关连接，没有独立的 base_url/api_key）、
+  `pipeline.summary.model`、`internal.api_key`。
 - **红线**：embedding 模型/维度变更 = `cloud_drive` 全量重建（启动 schema 守护会拒绝服务）
 - **启动容错（2026-10）**：Milvus 连接失败不再无限阻塞启动——10s 有界拨号后**降级**（上传标记 not_supported，日志 ERROR 响亮告警）；但 **schema 形状漂移（缺字段/dim 不符）仍然 fail loud 退出**（防检索被污染）。Mongo 不可用依旧优雅降级。
 
@@ -97,7 +116,8 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 
 ## 七、配置与运行
 
-- 配置唯一入口 `default.yaml`（嵌入二进制）+ `APPCLOUD__` env 覆盖；敏感项复用共享 env
+- 配置唯一入口 `default.yaml`（嵌入二进制）+ `APPCLOUD__` env 覆盖；OCR/摘要模型默认
+  `z-ai/glm-5.3-flash`（需在 Higress 可路由）；敏感项复用共享 env
   （`MINIO__*`/`REDIS__URL`/`MONGO__URI`/`AI_GATEWAY__*`/`MILVUS__*`/`APISIX_CONSUMER_KEY`）
 - 本地：`go run ./app-go/app-cloud`（读项目根 .env）；compose profile `["", "cloud", "full"]`
 - 扩容：`docker compose up -d --scale app-cloud=2`（宿主 8007/8008）；详见 [deployment.md](deployment.md)

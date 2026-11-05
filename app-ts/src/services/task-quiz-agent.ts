@@ -2,7 +2,7 @@ import { streamText, stepCountIs, tool, type ModelMessage, type LanguageModel } 
 import { z } from "zod";
 import { createGatewayModel } from "../llm/provider.js";
 import { createLogger } from "../logger.js";
-import { AppTaskClient } from "./app-task-client.js";
+import { AppTaskClient } from "../auth/app-task-client.js";
 import { config } from "../config/index.js";
 
 const log = createLogger("TASK_QUIZ_AGENT");

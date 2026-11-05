@@ -19,11 +19,19 @@ import {
     type CloudVideoItem,
     type CloudVideoDetailResponse,
     type RefItem,
+    type SemanticHit,
 } from "@/lib/api/cloud";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { FolderSidebar } from "./folder-sidebar";
-import { FileToolbar, type ViewMode, type SortField, type SortOrder } from "./file-toolbar";
+import {
+    FileToolbar,
+    type ViewMode,
+    type SortField,
+    type SortOrder,
+    type SearchMode,
+} from "./file-toolbar";
+import { SemanticResults } from "./semantic-results";
 import { FileList } from "./file-list";
 import { FileGrid } from "./file-grid";
 import { FileInspector } from "./file-inspector";
@@ -32,6 +40,7 @@ import { ShareDialog } from "./share-dialog";
 import { formatBytes, type CloudQuotaResponse, type CloudTrashItem } from "@/lib/api/cloud";
 import { UploadDropzone, UploadProgressPill } from "./upload-dropzone";
 import { FileListSkeleton, NoFiles } from "./empty-states";
+import { emitAppToast } from "@/lib/app-toast";
 
 const PAGE_SIZE = 50;
 
@@ -62,8 +71,18 @@ export function CloudDriveView() {
     // ── app-cloud 新能力：配额 / 搜索 / 回收站 / 分享 ──
     const [quota, setQuota] = useState<CloudQuotaResponse | null>(null);
     const [searchQ, setSearchQ] = useState("");
+    const [searchMode, setSearchMode] = useState<SearchMode>("name");
     const [searchResults, setSearchResults] = useState<CloudVideoItem[] | null>(null);
     const [searching, setSearching] = useState(false);
+    // 语义检索：结果与「查询+范围」的 key 绑定，key 不匹配时按加载中处理，
+    // 避免切换文件夹/模式后短暂显示上一组结果。
+    const [semanticResults, setSemanticResults] = useState<SemanticHit[] | null>(null);
+    const [semanticKey, setSemanticKey] = useState<string | null>(null);
+    const [semanticLoading, setSemanticLoading] = useState(false);
+    const [semanticError, setSemanticError] = useState<string | null>(null);
+    const [semanticReloadKey, setSemanticReloadKey] = useState(0);
+    // 语义模式是否限定在当前文件夹（根目录下不生效）
+    const [semanticOnlyFolder, setSemanticOnlyFolder] = useState(true);
     const [trashOpen, setTrashOpen] = useState(false);
     const [trashItems, setTrashItems] = useState<CloudTrashItem[]>([]);
     const [trashCount, setTrashCount] = useState(0);
@@ -92,6 +111,12 @@ export function CloudDriveView() {
 
     // ── Processing poll set ──
     const [processingUuids, setProcessingUuids] = useState<Set<string>>(new Set());
+    // Last known vector status + display name per file. The poll compares
+    // against this so a terminal transition fires exactly one toast, while
+    // list reloads (which also set statuses) never spam the user.
+    const lastVectorStatusRef = useRef<Map<string, string>>(new Map());
+    const fileNameRef = useRef<Map<string, string>>(new Map());
+    const notifiedVectorRef = useRef<Set<string>>(new Set());
 
     // ── Dialogs ──
     const [deleteFolderTarget, setDeleteFolderTarget] = useState<CloudFolderTreeItem | null>(null);
@@ -144,6 +169,22 @@ export function CloudDriveView() {
         },
         [sort, order]
     );
+
+    // Keep the status/name cache in sync with whatever the list/detail show;
+    // the poll uses the previous entry to detect a real terminal transition.
+    useEffect(() => {
+        for (const v of videos) {
+            lastVectorStatusRef.current.set(v.uploadUuid, v.vectorStatus);
+            fileNameRef.current.set(v.uploadUuid, v.title || v.originalName || "文件");
+        }
+        if (detail) {
+            lastVectorStatusRef.current.set(detail.uploadUuid, detail.vectorStatus);
+            fileNameRef.current.set(
+                detail.uploadUuid,
+                detail.title || detail.originalName || "文件"
+            );
+        }
+    }, [videos, detail]);
 
     const refreshDetail = useCallback(async (uuid: string) => {
         setLoadingDetail(true);
@@ -216,6 +257,25 @@ export function CloudDriveView() {
             for (const uuid of ids) {
                 try {
                     const s = await cloudApi.getVideoStatus(uuid);
+                    const previousStatus = lastVectorStatusRef.current.get(uuid);
+                    lastVectorStatusRef.current.set(uuid, s.vectorStatus);
+                    if (
+                        previousStatus !== s.vectorStatus &&
+                        !notifiedVectorRef.current.has(uuid) &&
+                        (s.vectorStatus === "done" ||
+                            s.vectorStatus === "failed" ||
+                            s.vectorStatus === "not_supported")
+                    ) {
+                        notifiedVectorRef.current.add(uuid);
+                        const fileName = fileNameRef.current.get(uuid) || "文件";
+                        if (s.vectorStatus === "done") {
+                            emitAppToast("success", "「" + fileName + "」已入库，可用于 AI 检索");
+                        } else if (s.vectorStatus === "failed") {
+                            emitAppToast("error", "「" + fileName + "」入库失败，请重试");
+                        } else {
+                            emitAppToast("warning", "「" + fileName + "」暂不支持入库（格式或内容无法解析）");
+                        }
+                    }
                     setVideos((prev) =>
                         prev.map((v) =>
                             v.uploadUuid === uuid
@@ -257,6 +317,14 @@ export function CloudDriveView() {
         // (Plain setSelectedUuid(uuid) on the same file would clear detail
         // while the [selectedUuid] effect skips refetch — a blank panel.)
         setSelectedUuid((prev) => (prev === uuid ? null : uuid));
+        setDetail(null);
+        setSelectedRefId(null);
+    }, []);
+
+    // 语义结果 / 相似文件可能不在当前文件夹列表里：详情接口按 uuid 独立加载，
+    // 因此直接打开详情面板即可（不依赖列表项存在）。
+    const handleOpenFileDetail = useCallback((uuid: string) => {
+        setSelectedUuid(uuid);
         setDetail(null);
         setSelectedRefId(null);
     }, []);
@@ -325,8 +393,10 @@ export function CloudDriveView() {
                     setUploadDone(false);
                 }
                 await refreshVideos(selectedFolderId, 1, false);
-            } catch {
-                // TODO: surface a toast once a host exists.
+                const doneName = list.length === 1 ? "「" + list[0].name + "」" : list.length + " 个文件";
+                emitAppToast("success", doneName + "上传完成，点击「入库」后可生成摘要并加入检索");
+            } catch (e) {
+                emitAppToast("error", e instanceof Error ? "上传失败：" + e.message : "上传失败，请重试");
             } finally {
                 setUploading(false);
                 setUploadProgress(0);
@@ -393,6 +463,20 @@ export function CloudDriveView() {
 
     const handleProcess = useCallback(
         async (uuid: string) => {
+            // Local idempotency guard: clicking 入库 repeatedly must not even
+            // hit the API while the file is queued/running. The backend has a
+            // second atomic guard for multi-tab/API races.
+            const knownStatus = lastVectorStatusRef.current.get(uuid);
+            if (
+                processingUuids.has(uuid) ||
+                knownStatus === "pending" ||
+                knownStatus === "processing"
+            ) {
+                emitAppToast("info", "该文件正在入库中，请等待完成");
+                return;
+            }
+            notifiedVectorRef.current.delete(uuid);
+            lastVectorStatusRef.current.set(uuid, "processing");
             setProcessingUuids((prev) => new Set([...prev, uuid]));
             // Optimistically flip the list + detail to processing.
             setVideos((prev) =>
@@ -405,15 +489,63 @@ export function CloudDriveView() {
             );
             try {
                 await cloudApi.triggerProcess(uuid);
-            } catch {
+                const name = fileNameRef.current.get(uuid) || "文件";
+                emitAppToast("info", "已提交入库，正在处理「" + name + "」");
+            } catch (e) {
                 setProcessingUuids((prev) => {
                     const next = new Set(prev);
                     next.delete(uuid);
                     return next;
                 });
+                emitAppToast(
+                    "error",
+                    e instanceof Error ? "提交入库失败：" + e.message : "提交入库失败，请重试"
+                );
             }
         },
-        []
+        [processingUuids]
+    );
+
+    const handleReprocess = useCallback(
+        async (uuid: string) => {
+            const knownStatus = lastVectorStatusRef.current.get(uuid);
+            if (
+                processingUuids.has(uuid) ||
+                knownStatus === "pending" ||
+                knownStatus === "processing"
+            ) {
+                emitAppToast("info", "该文件正在入库中，请等待完成");
+                return;
+            }
+            notifiedVectorRef.current.delete(uuid);
+            lastVectorStatusRef.current.set(uuid, "processing");
+            setProcessingUuids((prev) => new Set([...prev, uuid]));
+            setVideos((prev) =>
+                prev.map((v) =>
+                    v.uploadUuid === uuid ? { ...v, vectorStatus: "processing" } : v
+                )
+            );
+            setDetail((prev) =>
+                prev && prev.uploadUuid === uuid ? { ...prev, vectorStatus: "processing" } : prev
+            );
+            try {
+                await cloudApi.reprocessVideo(uuid);
+                const name = fileNameRef.current.get(uuid) || "文件";
+                emitAppToast("info", "已提交重新入库，正在处理「" + name + "」");
+            } catch (e) {
+                setProcessingUuids((prev) => {
+                    const next = new Set(prev);
+                    next.delete(uuid);
+                    return next;
+                });
+                lastVectorStatusRef.current.set(uuid, knownStatus || "done");
+                emitAppToast(
+                    "error",
+                    e instanceof Error ? "重新入库失败：" + e.message : "重新入库失败，请稍后重试"
+                );
+            }
+        },
+        [processingUuids]
     );
 
     // ── app-cloud handlers ──
@@ -421,21 +553,62 @@ export function CloudDriveView() {
         void cloudApi.getQuota().then(setQuota).catch(() => {});
     }, []);
 
-    // 搜索防抖（清空时由派生值恢复文件夹列表，见 effectiveSearchResults）
+    // 搜索防抖（清空时由派生值恢复文件夹列表，见 effectiveSearchResults / semanticActive）。
+    // 文件名模式沿用 /cloud/search；语义模式调 /cloud/search/semantic，
+    // 语义后端不可用时只在结果区报错，文件名搜索不受影响。
     useEffect(() => {
-        if (!searchQ.trim()) {
-            return;
+        const q = searchQ.trim();
+        if (!q) return;
+        let cancelled = false;
+
+        if (searchMode === "name") {
+            const t = setTimeout(() => {
+                setSearching(true);
+                void cloudApi
+                    .searchFiles(q)
+                    .then((res) => {
+                        if (!cancelled) setSearchResults(res.results);
+                    })
+                    .catch(() => {
+                        if (!cancelled) setSearchResults([]);
+                    })
+                    .finally(() => {
+                        if (!cancelled) setSearching(false);
+                    });
+            }, 350);
+            return () => {
+                cancelled = true;
+                clearTimeout(t);
+            };
         }
+
+        const folderId = semanticOnlyFolder ? selectedFolderId : null;
+        const key = `${q}::${folderId ?? "all"}`;
         const t = setTimeout(() => {
-            setSearching(true);
+            setSemanticLoading(true);
+            setSemanticError(null);
             void cloudApi
-                .searchFiles(searchQ.trim())
-                .then((res) => setSearchResults(res.results))
-                .catch(() => setSearchResults([]))
-                .finally(() => setSearching(false));
-        }, 350);
-        return () => clearTimeout(t);
-    }, [searchQ]);
+                .searchSemantic({ q, folderId, limit: 10 })
+                .then((res) => {
+                    if (cancelled) return;
+                    setSemanticResults(res.results);
+                    setSemanticKey(key);
+                })
+                .catch((e) => {
+                    if (cancelled) return;
+                    setSemanticResults([]);
+                    setSemanticKey(key);
+                    setSemanticError(e instanceof Error ? e.message : "语义检索失败");
+                })
+                .finally(() => {
+                    if (!cancelled) setSemanticLoading(false);
+                });
+        }, 400);
+        return () => {
+            cancelled = true;
+            clearTimeout(t);
+        };
+    }, [searchQ, searchMode, semanticOnlyFolder, selectedFolderId, semanticReloadKey]);
 
     const refreshTrash = useCallback(async () => {
         setTrashLoading(true);
@@ -479,7 +652,17 @@ export function CloudDriveView() {
 
     // ── Derived ──
     // 搜索词非空时显示搜索结果，清空（或纯空白）时回落到文件夹列表
-    const effectiveSearchResults = searchQ.trim() ? searchResults : null;
+    const trimmedSearchQ = searchQ.trim();
+    const searchActive = trimmedSearchQ.length > 0;
+    const semanticActive = searchActive && searchMode === "semantic";
+    const effectiveSearchResults =
+        searchActive && searchMode === "name" ? searchResults : null;
+    // 语义结果的 key = 查询词 + 检索范围；不匹配说明请求还没回来（或环境已变）
+    const semanticScopeKey = `${trimmedSearchQ}::${
+        semanticOnlyFolder && selectedFolderId != null ? selectedFolderId : "all"
+    }`;
+    const semanticPending =
+        semanticActive && (semanticLoading || semanticKey !== semanticScopeKey);
     const totalFiles = folders.reduce((sum, f) => sum + (f.videoCount || 0), 0) + videos.length;
     const currentFolderName =
         selectedFolderId == null
@@ -548,6 +731,18 @@ export function CloudDriveView() {
                         uploading={uploading}
                         searchValue={searchQ}
                         onSearchChange={setSearchQ}
+                        searchMode={searchMode}
+                        onSearchModeChange={(mode) => {
+                            setSearchMode(mode);
+                            if (mode === "semantic") {
+                                // 重新进入语义模式时清掉上一轮的错误/缓存 key，触发重新检索
+                                setSemanticKey(null);
+                                setSemanticError(null);
+                            }
+                        }}
+                        semanticOnlyFolder={semanticOnlyFolder}
+                        onSemanticOnlyFolderChange={setSemanticOnlyFolder}
+                        semanticFolderDisabled={selectedFolderId == null}
                         canShare={selectedUuid != null}
                         onShareClick={() => setShareOpen(true)}
                     />
@@ -590,6 +785,15 @@ export function CloudDriveView() {
                                     ))}
                                 </ul>
                             )
+                        ) : semanticActive ? (
+                            <SemanticResults
+                                hits={semanticResults ?? []}
+                                loading={semanticPending}
+                                error={semanticError}
+                                onlyFolder={semanticOnlyFolder && selectedFolderId != null}
+                                onRetry={() => setSemanticReloadKey((k) => k + 1)}
+                                onOpen={handleOpenFileDetail}
+                            />
                         ) : effectiveSearchResults != null ? (
                             searching ? (
                                 <FileListSkeleton />
@@ -689,8 +893,10 @@ export function CloudDriveView() {
                                 detail={detail}
                                 processing={processingUuids.has(detail.uploadUuid)}
                                 onProcess={(uuid) => void handleProcess(uuid)}
+                                onReprocess={(uuid) => void handleReprocess(uuid)}
                                 onDelete={(uuid) => setDeleteFileUuid(uuid)}
                                 onBack={() => setSelectedUuid(null)}
+                                onOpenFile={handleOpenFileDetail}
                             />
                         ) : loadingDetail ? (
                             <div className="flex h-full w-full items-center justify-center">

@@ -63,7 +63,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `/board/*` | app-board | 板 CRUD（`If-Match` 乐观锁）/ 置顶 |
 | `/quiz/*`、`/tasks/*` | app-quiz + app-ts | 题目存储 / 判题 / 错题 / 分享；生成与批改走 app-ts |
 | `/task-quiz/*` | app-ts + app-task | 对话定义任务；调度与答题入口 |
-| `/cloud/*`、`/workspaces/*` | app-cloud | 分片上传 / 文件夹 / 配额 / 回收站 / 分享 / 处理状态（nginx 直连） |
+| `/cloud/*`、`/workspaces/*` | app-cloud | 分片上传 / 文件夹 / 配额 / 回收站 / 分享 / 处理状态 / AI 摘要 / 语义检索 / 相似文件（nginx 直连） |
 | `/skills/*` | app-ts | 技能安装 / 卸载 / 商店 |
 | `/pay/*` | app-pay | SKU / 订单 / 会员（HTTPS） |
 | `/preferences/*`、`/wallpaper/*` | app-settings | 偏好 KB 与壁纸 |

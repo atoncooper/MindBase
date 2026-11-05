@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Sparkles,
   Pencil,
+  ArrowRight,
 } from "lucide-react";
 import { isTypedArtifact, type ChatArtifact, type ChatInteraction, type ChatPlan, type ChatSource } from "@/lib/chat-stream";
 import type { ReasoningStep } from "./types";
@@ -58,18 +59,26 @@ interface ChatMessageProps {
   onEditCancel?: () => void;
 }
 
-// Extract a readable domain from a source URL for the citation card.
-function domainOf(url?: string): string {
-  if (!url) return "bilibili.com";
+// 云盘文件引用按站内深链处理（同标签页打开）；其余来源是站外链接。
+function isInternalSource(src: { uploadUuid?: string }): boolean {
+  return !!src.uploadUuid;
+}
+
+// Extract a readable domain / label for the citation card.
+function domainOf(src: { url?: string; uploadUuid?: string }): string {
+  if (isInternalSource(src)) return "我的云盘";
+  if (!src.url) return "bilibili.com";
   try {
-    const u = new URL(url);
+    const u = new URL(src.url);
     return u.hostname.replace(/^www\./, "");
   } catch {
-    return url.slice(0, 40);
+    return src.url.slice(0, 40);
   }
 }
 
-function sourceHref(src: { url?: string; bvid?: string }): string {
+function sourceHref(src: { url?: string; bvid?: string; uploadUuid?: string }): string {
+  // 文件引用优先：uploadUuid 存在时进入云盘详情，不生成 bilibili 外链
+  if (src.uploadUuid) return `/cloud-drive/${src.uploadUuid}`;
   return src.url || (src.bvid ? `https://www.bilibili.com/video/${src.bvid}` : "#");
 }
 
@@ -569,11 +578,15 @@ function ChatMessage({
                             <a
                               key={j}
                               href={sourceHref(src)}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                              target={isInternalSource(src) ? undefined : "_blank"}
+                              rel={isInternalSource(src) ? undefined : "noopener noreferrer"}
                               className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:text-foreground"
                             >
-                              <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                              {isInternalSource(src) ? (
+                                <ArrowRight className="h-2.5 w-2.5" aria-hidden="true" />
+                              ) : (
+                                <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                              )}
                               <span className="max-w-[180px] truncate">{src.title}</span>
                             </a>
                           ))}
@@ -660,13 +673,14 @@ function ChatMessage({
             <div className="mb-1.5 text-[12px] font-medium text-secondary">引用来源</div>
             <div className="grid gap-2 sm:grid-cols-2">
               {safeSources.slice(0, 6).map((source, i) => {
-                const domain = domainOf(source.url);
+                const domain = domainOf(source);
+                const internal = isInternalSource(source);
                 return (
                   <a
                     key={i}
                     href={sourceHref(source)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    target={internal ? undefined : "_blank"}
+                    rel={internal ? undefined : "noopener noreferrer"}
                     className="group/src flex items-center gap-2.5 rounded-xl border border-border-subtle bg-surface px-3 py-2 transition-colors hover:border-border hover:bg-border-subtle/40"
                   >
                     <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-accent-soft text-[11px] font-medium text-accent">
@@ -676,7 +690,11 @@ function ChatMessage({
                       <span className="block truncate text-[13px] text-foreground">{source.title}</span>
                       <span className="text-[11px] text-tertiary">{domain}</span>
                     </span>
-                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-tertiary transition-colors group-hover/src:text-secondary" aria-hidden="true" />
+                    {internal ? (
+                      <ArrowRight className="h-3.5 w-3.5 shrink-0 text-tertiary transition-colors group-hover/src:text-secondary" aria-hidden="true" />
+                    ) : (
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-tertiary transition-colors group-hover/src:text-secondary" aria-hidden="true" />
+                    )}
                   </a>
                 );
               })}

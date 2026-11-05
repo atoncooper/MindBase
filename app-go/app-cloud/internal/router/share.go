@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"app-cloud/internal/dto"
+	"app-cloud/internal/middleware"
 	"app-cloud/internal/model"
 	"app-cloud/internal/service"
 
@@ -33,7 +35,7 @@ func registerShareRoutes(e *gin.Engine, d Deps, cloudGroup *gin.RouterGroup) {
 	pub.POST("/:token/access", shareAccess(d))
 
 	// ops endpoint: per-uid ledger vs MinIO drift report (loopback-only port;
-	// unauthenticated by design, see §2.14 deployment notes)
+	// unauthenticated by design).
 	e.GET("/internal/cloud/reconcile", reconcileHandler(d))
 	// app-admin-only preview grant; the separate shared token and share/file
 	// scope checks keep the admin review plane away from arbitrary cloud files.
@@ -58,27 +60,25 @@ func reconcileHandler(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "对账失败: "+err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, rep)
+		c.JSON(http.StatusOK, dto.ReconcileResponse{
+			UID:            rep.UID,
+			DBActiveBytes:  rep.DBActiveBytes,
+			DBActiveCount:  rep.DBActiveCount,
+			DBTrashBytes:   rep.DBTrashBytes,
+			MinioBytes:     rep.MinioBytes,
+			MinioCount:     rep.MinioCount,
+			OrphanObjects:  rep.OrphanObjects,
+			OrphanSample:   rep.OrphanSample,
+			MissingObjects: rep.MissingObjects,
+			DriftBytes:     rep.DriftBytes,
+		})
 	}
-}
-
-// shareCreateBody — file / folder share creation payload (1.0.16): the
-// compliance ack is mandatory — legalAck:false/missing → 422.
-type shareCreateBody struct {
-	Code             string `json:"code"`
-	ExpiresInDays    int    `json:"expiresInDays"`
-	MaxDownloads     *int   `json:"maxDownloads"`
-	LegalAck         bool   `json:"legalAck"`
-	ContentReviewAck bool   `json:"contentReviewAck"`
 }
 
 // createShare — POST /cloud/video/{uuid}/share
 func createShare(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -88,10 +88,10 @@ func createShare(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "File not found")
 			return
 		}
-		var body shareCreateBody
+		var body dto.ShareCreateRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
 			// empty body is fine — defaults apply (but legalAck stays false → 422)
-			body = shareCreateBody{}
+			body = dto.ShareCreateRequest{}
 		}
 		share, err := d.Share.CreateShare(uid, f.ID, body.Code, body.ExpiresInDays, body.MaxDownloads, body.LegalAck, body.ContentReviewAck)
 		if err != nil {
@@ -119,17 +119,14 @@ func createShare(d Deps) gin.HandlerFunc {
 // same body/semantics as the file share, target = the caller's folder.
 func createFolderShare(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		folderID, ok := parseShareFolderID(c)
 		if !ok {
 			return
 		}
-		var body shareCreateBody
+		var body dto.ShareCreateRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
-			body = shareCreateBody{}
+			body = dto.ShareCreateRequest{}
 		}
 		share, err := d.Share.CreateFolderShare(uid, folderID, body.Code, body.ExpiresInDays, body.MaxDownloads, body.LegalAck, body.ContentReviewAck)
 		if err != nil {
@@ -155,10 +152,7 @@ func createFolderShare(d Deps) gin.HandlerFunc {
 // listFolderShares — GET /cloud/folders/{folder_id}/shares (1.0.16).
 func listFolderShares(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		folderID, ok := parseShareFolderID(c)
 		if !ok {
 			return
@@ -175,11 +169,7 @@ func listFolderShares(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		out := make([]gin.H, 0, len(rows))
-		for i := range rows {
-			out = append(out, shareView(&rows[i], true, d.Share.ViewCode(&rows[i])))
-		}
-		c.JSON(http.StatusOK, gin.H{"shares": out, "total": len(out)})
+		c.JSON(http.StatusOK, shareListResponse(rows, d))
 	}
 }
 
@@ -196,10 +186,7 @@ func parseShareFolderID(c *gin.Context) (int64, bool) {
 // listShares — GET /cloud/video/{uuid}/shares
 func listShares(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		f, err := d.Files.GetByUUID(d.DB, c.Param("upload_uuid"), uid)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
@@ -214,24 +201,25 @@ func listShares(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		out := make([]gin.H, 0, len(rows))
-		for i := range rows {
-			// withToken=true：属主列表必须带 share_token/share_url，否则前端
-			// 重开弹窗只看得到统计数字，无法查看/复制之前生成的链接。
-			// extraction_code：属主可见的明文提取码（legacy 哈希行不可逆，为空）。
-			out = append(out, shareView(&rows[i], true, d.Share.ViewCode(&rows[i])))
-		}
-		c.JSON(http.StatusOK, gin.H{"shares": out, "total": len(out)})
+		c.JSON(http.StatusOK, shareListResponse(rows, d))
 	}
+}
+
+// shareListResponse maps owner share rows onto the wire shape. withToken is
+// always true here: the owner list must show share_token/share_url or the
+// dialog cannot reopen an existing link.
+func shareListResponse(rows []model.CloudShare, d Deps) dto.ShareListResponse {
+	out := make([]dto.ShareView, 0, len(rows))
+	for i := range rows {
+		out = append(out, shareView(&rows[i], true, d.Share.ViewCode(&rows[i])))
+	}
+	return dto.ShareListResponse{Shares: out, Total: len(out)}
 }
 
 // revokeShare — DELETE /cloud/shares/{id}
 func revokeShare(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, err := strconv.ParseInt(c.Param("share_id"), 10, 64)
 		if err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "share_id 不合法")
@@ -241,15 +229,14 @@ func revokeShare(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "分享不存在")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"revoked": true})
+		c.JSON(http.StatusOK, dto.ShareRevokeResponse{Revoked: true})
 	}
 }
 
 // shareInfo — GET /cloud/s/{token} (PUBLIC): metadata + whether a code is
-// required. Invalid shares read as 404 (no state enumeration). 1.0.16: the
-// shape gains targetType; folder shares add folderName + files[] (all live
-// members of the subtree, path-labeled, capped at SharedFilesLimit with
-// truncated: true).
+// required. Invalid shares read as 404 (no state enumeration). Folder shares
+// add folderName + files[] (all live members of the subtree, path-labeled,
+// capped at SharedFilesLimit with truncated: true).
 func shareInfo(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sf, err := d.Share.ResolveShare(c.Param("token"), true)
@@ -257,37 +244,42 @@ func shareInfo(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "分享不存在或已失效")
 			return
 		}
-		out := gin.H{
-			"targetType":   shareTargetType(sf.Share),
-			"requiresCode": sf.Share.ExtractionCode != nil,
-			"createdAt":    sf.Share.CreatedAt,
-			"expiresAt":    sf.Share.ExpiresAt,
+		challenge := d.Attestor.Issue(c.Param("token"), time.Now())
+		out := dto.ShareInfoResponse{
+			TargetType:   shareTargetType(sf.Share),
+			RequiresCode: sf.Share.ExtractionCode != nil,
+			CreatedAt:    sf.Share.CreatedAt,
+			ExpiresAt:    sf.Share.ExpiresAt,
 			// 浏览器设备证明挑战（签名 + token 绑定 + 10 分钟时效）
-			"challenge": d.Attestor.Issue(c.Param("token"), time.Now()),
+			Challenge: challenge,
 		}
 		if sf.Folder != nil {
-			out["folderName"] = sf.Folder.Name
+			folderName := sf.Folder.Name
+			out.FolderName = &folderName
 			entries, truncated, ferr := d.Share.SharedFolderFiles(sf.Share, service.SharedFilesLimit)
 			if ferr != nil {
 				apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 				return
 			}
-			files := make([]gin.H, 0, len(entries))
+			files := make([]dto.SharePublicFile, 0, len(entries))
 			for i := range entries {
-				files = append(files, gin.H{
-					"fileId":   entries[i].File.ID,
-					"name":     entries[i].File.OriginalName,
-					"size":     entries[i].File.FileSize,
-					"mimeType": entries[i].File.MimeType,
-					"path":     entries[i].Path,
+				files = append(files, dto.SharePublicFile{
+					FileID:   entries[i].File.ID,
+					Name:     entries[i].File.OriginalName,
+					Size:     entries[i].File.FileSize,
+					MimeType: entries[i].File.MimeType,
+					Path:     entries[i].Path,
 				})
 			}
-			out["files"] = files
-			out["truncated"] = truncated
+			out.Files = &files
+			out.Truncated = &truncated
 		} else if sf.File != nil {
-			out["fileName"] = sf.File.OriginalName
-			out["fileSize"] = sf.File.FileSize
-			out["mimeType"] = sf.File.MimeType
+			name := sf.File.OriginalName
+			size := sf.File.FileSize
+			mime := sf.File.MimeType
+			out.FileName = &name
+			out.FileSize = &size
+			out.MimeType = &mime
 		}
 		c.JSON(http.StatusOK, out)
 	}
@@ -307,10 +299,7 @@ func shareTargetType(sh *model.CloudShare) string {
 // 环境，无法自然通过此流程。
 func shareAttest(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var body struct {
-			Challenge   string `json:"challenge"`
-			Fingerprint string `json:"fingerprint"`
-		}
+		var body dto.ShareAttestRequest
 		if err := c.ShouldBindJSON(&body); err != nil || !service.ValidFingerprint(body.Fingerprint) {
 			apiErr(c, http.StatusUnprocessableEntity, "参数不合法")
 			return
@@ -319,16 +308,16 @@ func shareAttest(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusPreconditionFailed, "设备证明已过期，请刷新页面重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"ticket":    d.Attestor.IssueTicket(c.Param("token"), body.Fingerprint, time.Now()),
-			"expiresIn": service.TicketTTLSecs,
+		c.JSON(http.StatusOK, dto.ShareAttestResponse{
+			Ticket:    d.Attestor.IssueTicket(c.Param("token"), body.Fingerprint, time.Now()),
+			ExpiresIn: service.TicketTTLSecs,
 		})
 	}
 }
 
 // shareAccess — POST /cloud/s/{token} (PUBLIC)
-// body: {code?: string, download?: bool} → presigned URL (15 min) + counters.
-// 设备证明闸门：需要 attest 签发的 (token, 指纹) 绑定票据。
+// body: {code?: string, download?: bool, fileId?: number} → presigned URL
+// (15 min) + counters. 设备证明闸门：需要 attest 签发的 (token, 指纹) 绑定票据。
 func shareAccess(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fp := c.GetHeader("X-Fp")
@@ -337,11 +326,7 @@ func shareAccess(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusPreconditionFailed, "请通过浏览器打开分享页后访问")
 			return
 		}
-		var body struct {
-			Code     string `json:"code"`
-			Download bool   `json:"download"`
-			FileID   *int64 `json:"fileId"` // folder shares: pick one member
-		}
+		var body dto.ShareAccessRequest
 		_ = c.ShouldBindJSON(&body)
 		sf, err := d.Share.ResolveShare(c.Param("token"), false)
 		if err != nil {
@@ -380,7 +365,7 @@ func shareAccess(d Deps) gin.HandlerFunc {
 		} else {
 			target = sf.File // file share ignores fileId
 		}
-		res, err := d.Share.BuildAccessFor(c.Request.Context(), sf, target, body.Download)
+		grant, err := d.Share.BuildAccessFor(c.Request.Context(), sf, target, body.Download)
 		if err != nil {
 			if errors.Is(err, service.ErrShareDownloadCap) || errors.Is(err, service.ErrShareNotFound) {
 				// The cap was exhausted between resolve and access, or the
@@ -392,7 +377,19 @@ func shareAccess(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, shareAccessResponse(grant))
+	}
+}
+
+// shareAccessResponse maps a presigned access grant onto the wire shape.
+func shareAccessResponse(grant *service.AccessGrant) dto.ShareAccessResponse {
+	return dto.ShareAccessResponse{
+		URL:       grant.URL,
+		ViewMode:  grant.ViewMode,
+		MimeType:  grant.MimeType,
+		FileName:  grant.FileName,
+		FileSize:  grant.FileSize,
+		ExpiresIn: grant.ExpiresIn,
 	}
 }
 
@@ -400,32 +397,34 @@ func shareAccess(d Deps) gin.HandlerFunc {
 // 哈希行不可逆）是属主可见的明文提取码 —— 公开端点不经过此函数。
 // 1.0.16 增补：target_type/folder_id/legal_ack + moderation 三元组（属主
 // 可见审核态；公开端点不暴露）。
-func shareView(s *model.CloudShare, withToken bool, code string) gin.H {
-	out := gin.H{
-		"id":                            s.ID,
-		"file_id":                       s.FileID,
-		"has_code":                      s.ExtractionCode != nil,
-		"extraction_code":               code,
-		"expires_at":                    s.ExpiresAt,
-		"max_downloads":                 s.MaxDownloads,
-		"view_count":                    s.ViewCount,
-		"download_count":                s.DownloadCount,
-		"is_revoked":                    s.IsRevoked,
-		"created_at":                    s.CreatedAt,
-		"target_type":                   shareTargetType(s),
-		"folder_id":                     s.FolderID,
-		"legal_ack":                     s.LegalAck,
-		"content_review_ack":            s.ContentReviewAck,
-		"content_review_policy_version": s.ContentReviewPolicyVersion,
-		"content_review_ack_at":         s.ContentReviewAckAt,
-		"moderation_status":             s.ModerationStatus,
-		"moderation_reason":             s.ModerationReason,
-		"moderation_time":               s.ModerationTime,
-		"moderation_by":                 s.ModerationBy,
+func shareView(s *model.CloudShare, withToken bool, code string) dto.ShareView {
+	out := dto.ShareView{
+		ID:                         s.ID,
+		FileID:                     s.FileID,
+		HasCode:                    s.ExtractionCode != nil,
+		ExtractionCode:             code,
+		ExpiresAt:                  s.ExpiresAt,
+		MaxDownloads:               s.MaxDownloads,
+		ViewCount:                  s.ViewCount,
+		DownloadCount:              s.DownloadCount,
+		IsRevoked:                  s.IsRevoked,
+		CreatedAt:                  s.CreatedAt,
+		TargetType:                 shareTargetType(s),
+		FolderID:                   s.FolderID,
+		LegalAck:                   s.LegalAck,
+		ContentReviewAck:           s.ContentReviewAck,
+		ContentReviewPolicyVersion: s.ContentReviewPolicyVersion,
+		ContentReviewAckAt:         s.ContentReviewAckAt,
+		ModerationStatus:           s.ModerationStatus,
+		ModerationReason:           s.ModerationReason,
+		ModerationTime:             s.ModerationTime,
+		ModerationBy:               s.ModerationBy,
 	}
 	if withToken {
-		out["share_token"] = s.ShareToken
-		out["share_url"] = "/cloud/s/" + s.ShareToken
+		token := s.ShareToken
+		url := "/cloud/s/" + s.ShareToken
+		out.ShareToken = &token
+		out.ShareURL = &url
 	}
 	return out
 }
@@ -434,18 +433,13 @@ func shareView(s *model.CloudShare, withToken bool, code string) gin.H {
 // 提取码。链接与 token 不变，仅换码 —— 解决"忘记提取码"而无需重建分享。
 func setShareCode(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
+		uid := middleware.UIDFrom(c)
 		id, err := strconv.ParseInt(c.Param("share_id"), 10, 64)
 		if err != nil || id <= 0 {
 			apiErr(c, http.StatusUnprocessableEntity, "share_id 不合法")
 			return
 		}
-		var body struct {
-			Code string `json:"code" binding:"required"`
-		}
+		var body dto.ShareSetCodeRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "参数不合法")
 			return
@@ -454,7 +448,7 @@ func setShareCode(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"updated": true})
+		c.JSON(http.StatusOK, dto.ShareCodeResponse{Updated: true})
 	}
 }
 
@@ -466,9 +460,7 @@ func setShareCode(d Deps) gin.HandlerFunc {
 // pre-disclosure legacy shares included — because moderation often happens
 // after the owner removed the share. Only the share's own target scope is
 // enforced (file-share target or live member of the shared folder tree), and
-// every grant is audited by app-admin before it is minted. Response = the same
-// short-lived inline preview grant as public sharing — no download URL, the
-// public download counter is untouched.
+// every grant is audited by app-admin before it is minted.
 func adminReviewPreview(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
@@ -500,7 +492,21 @@ func adminReviewPreview(d Deps) gin.HandlerFunc {
 			adminReviewError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		out := dto.AdminReviewAccessResponse{
+			ViewMode:  res.Grant.ViewMode,
+			MimeType:  res.Grant.MimeType,
+			FileName:  res.Grant.FileName,
+			FileSize:  res.Grant.FileSize,
+			ExpiresIn: res.Grant.ExpiresIn,
+		}
+		if res.Text != "" {
+			out.Text = res.Text
+			truncated := res.Truncated
+			out.Truncated = &truncated
+		} else {
+			out.URL = res.Grant.URL
+		}
+		c.JSON(http.StatusOK, out)
 	}
 }
 

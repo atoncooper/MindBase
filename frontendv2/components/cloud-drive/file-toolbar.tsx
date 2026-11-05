@@ -27,6 +27,8 @@ import { cn } from "@/lib/utils";
 export type ViewMode = "list" | "grid";
 export type SortField = "original_name" | "file_size" | "created_at";
 export type SortOrder = "asc" | "desc";
+/** 搜索模式：文件名匹配 / 语义检索 */
+export type SearchMode = "name" | "semantic";
 
 interface FileToolbarProps {
     title: string;
@@ -42,6 +44,14 @@ interface FileToolbarProps {
     /** app-cloud additions */
     searchValue?: string;
     onSearchChange?: (q: string) => void;
+    /** 搜索模式切换（文件名 / 语义）；缺省不渲染切换控件 */
+    searchMode?: SearchMode;
+    onSearchModeChange?: (mode: SearchMode) => void;
+    /** 语义模式下「仅当前文件夹」勾选 */
+    semanticOnlyFolder?: boolean;
+    onSemanticOnlyFolderChange?: (value: boolean) => void;
+    /** 根目录时无法限定文件夹，勾选框置灰 */
+    semanticFolderDisabled?: boolean;
     canShare?: boolean;
     onShareClick?: () => void;
 }
@@ -64,6 +74,11 @@ export function FileToolbar({
     uploading,
     searchValue,
     onSearchChange,
+    searchMode = "name",
+    onSearchModeChange,
+    semanticOnlyFolder,
+    onSemanticOnlyFolderChange,
+    semanticFolderDisabled,
     canShare,
     onShareClick,
 }: FileToolbarProps) {
@@ -96,24 +111,67 @@ export function FileToolbar({
                         <Folder className="h-[18px] w-[18px]" />
                     </button>
                 )}
-                {onSearchChange && (
-                    <div className="relative order-last min-w-0 w-full sm:order-none sm:w-auto">
-                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
-                        <input
-                            value={searchValue ?? ""}
-                            onChange={(e) => onSearchChange(e.target.value)}
-                            placeholder="搜索文件…"
-                            className="h-10 w-full rounded-full border border-border-subtle bg-surface pl-8 pr-7 text-[16px] text-foreground outline-none transition-all placeholder:text-tertiary focus:border-accent sm:h-8 sm:w-40 sm:text-[12px] sm:focus:w-56"
-                        />
-                        {searchValue ? (
-                            <button
-                                type="button"
-                                onClick={() => onSearchChange("")}
-                                className="absolute right-2 top-1/2 -translate-y-1/2 text-tertiary hover:text-foreground"
+                {(onSearchChange || onSearchModeChange) && (
+                    <div className="order-last flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 sm:order-none sm:w-auto sm:flex-nowrap">
+                        {onSearchChange && (
+                            <div className="relative min-w-0 flex-1 sm:w-auto sm:flex-none">
+                                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
+                                <input
+                                    value={searchValue ?? ""}
+                                    onChange={(e) => onSearchChange(e.target.value)}
+                                    placeholder={searchMode === "semantic" ? "描述你要找的内容…" : "搜索文件…"}
+                                    className="h-10 w-full rounded-full border border-border-subtle bg-surface pl-8 pr-7 text-[16px] text-foreground outline-none transition-all placeholder:text-tertiary focus:border-accent sm:h-8 sm:w-40 sm:text-[12px] sm:focus:w-56"
+                                />
+                                {searchValue ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => onSearchChange("")}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-tertiary hover:text-foreground"
+                                        aria-label="清空搜索"
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                ) : null}
+                            </div>
+                        )}
+                        {onSearchModeChange && (
+                            <div className="flex shrink-0 items-center gap-0.5 rounded-[10px] bg-border-subtle/70 p-0.5">
+                                <ModeBtn
+                                    active={searchMode === "name"}
+                                    onClick={() => onSearchModeChange("name")}
+                                    label="文件名"
+                                />
+                                <ModeBtn
+                                    active={searchMode === "semantic"}
+                                    onClick={() => onSearchModeChange("semantic")}
+                                    label="语义"
+                                />
+                            </div>
+                        )}
+                        {searchMode === "semantic" && onSemanticOnlyFolderChange && (
+                            <label
+                                title={
+                                    semanticFolderDisabled
+                                        ? "在根目录下无需限定范围"
+                                        : "只在当前文件夹及其子文件夹内检索"
+                                }
+                                className={cn(
+                                    "flex shrink-0 items-center gap-1.5 text-[11.5px]",
+                                    semanticFolderDisabled
+                                        ? "cursor-not-allowed text-tertiary"
+                                        : "cursor-pointer text-secondary"
+                                )}
                             >
-                                <X className="h-3 w-3" />
-                            </button>
-                        ) : null}
+                                <input
+                                    type="checkbox"
+                                    checked={!!semanticOnlyFolder && !semanticFolderDisabled}
+                                    disabled={semanticFolderDisabled}
+                                    onChange={(e) => onSemanticOnlyFolderChange(e.target.checked)}
+                                    className="h-3.5 w-3.5 rounded border-border-subtle accent-[var(--color-accent)]"
+                                />
+                                仅当前文件夹
+                            </label>
+                        )}
                     </div>
                 )}
                 <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-tight text-foreground">
@@ -250,6 +308,38 @@ export function FileToolbar({
                 </button>
             </div>
         </div>
+    );
+}
+
+/** 搜索模式按钮（与视图切换同款分段样式，各自独立的滑动指示器） */
+function ModeBtn({
+    active,
+    onClick,
+    label,
+}: {
+    active: boolean;
+    onClick: () => void;
+    label: string;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            aria-pressed={active}
+            className={cn(
+                "relative inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors duration-200",
+                active ? "text-foreground" : "text-secondary hover:text-foreground"
+            )}
+        >
+            {active && (
+                <motion.span
+                    layoutId="cloud-search-mode"
+                    className="absolute inset-0 rounded-md bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.10),0_0_0_0.5px_rgba(0,0,0,0.05)]"
+                    transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.6 }}
+                />
+            )}
+            <span className="relative z-10">{label}</span>
+        </button>
     );
 }
 

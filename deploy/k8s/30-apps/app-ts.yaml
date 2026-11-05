@@ -48,6 +48,8 @@ spec:
               value: "0.0.0.0"
             - name: APP_BILI_BASE_URL
               value: "http://app-bili:8010"
+            - name: APP_CLOUD_BASE_URL
+              value: "http://app-cloud:8007"
             - name: APP_TASK_BASE_URL
               value: "http://apisix:9080"
             - name: APP_AUTH_BASE_URL

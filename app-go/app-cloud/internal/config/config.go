@@ -33,6 +33,7 @@ type Config struct {
 	Quota       QuotaConfig       `yaml:"quota"`
 	Trash       TrashConfig       `yaml:"trash"`
 	Pipeline    PipelineConfig    `yaml:"pipeline"`
+	Internal    InternalConfig    `yaml:"internal"`
 	Kg          KgConfig          `yaml:"kg"`
 	WSBridge    WSBridgeConfig    `yaml:"ws_bridge"`
 	CORS        CORSConfig        `yaml:"cors"`
@@ -180,6 +181,7 @@ type PipelineConfig struct {
 	Embedding  EmbeddingConfig `yaml:"embedding"`
 	Milvus     MilvusConfig    `yaml:"milvus"`
 	Summary    SummaryConfig   `yaml:"summary"`
+	OCR        OCRConfig       `yaml:"ocr"`
 }
 
 // AdmissionConfig — queue admission control (capacity layer): without it a
@@ -201,6 +203,38 @@ type SummaryConfig struct {
 	Model         string `yaml:"model"`
 	MaxInputChars int    `yaml:"max_input_chars"`
 	MaxOutputTok  int    `yaml:"max_output_tokens"`
+}
+
+// OCRConfig — vision-model OCR for images and image-only PDFs. OCR MUST go
+// through the same Higress gateway as embedding/summary: this struct deliberately
+// has no provider base_url/api_key, so one AI_GATEWAY__* pair wires every AI call
+// and there is no code path that could point OCR at a vendor API directly.
+// Limits bound one file's OCR work (bytes fed to the model, pages inspected,
+// images extracted) so a huge scan cannot monopolise a pipeline worker.
+type OCRConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Model         string `yaml:"model"`
+	MaxImageBytes int64  `yaml:"max_image_bytes"`
+	MaxPDFPages   int    `yaml:"max_pdf_pages"`
+	MaxImages     int    `yaml:"max_images"`
+	TimeoutSecs   int    `yaml:"timeout_seconds"`
+}
+
+// Default OCR limits, applied when a value is unset or non-positive.
+const (
+	DefaultOCRMaxImageBytes = int64(10 * 1024 * 1024)
+	DefaultOCRMaxPDFPages   = 20
+	DefaultOCRMaxImages     = 40
+	DefaultOCRTimeoutSecs   = 90
+)
+
+// InternalConfig protects the newly added machine-to-machine endpoints only
+// (/internal/cloud/summary and /internal/cloud/similar). The legacy
+// /internal/cloud/reconcile endpoint keeps its loopback-only deployment
+// posture and is deliberately unaffected. Empty key = new endpoints answer
+// 503 (fail closed).
+type InternalConfig struct {
+	APIKey string `yaml:"api_key"`
 }
 
 type WSBridgeConfig struct {
@@ -242,7 +276,27 @@ func Load(yamlBytes []byte) (*Config, error) {
 	if cfg.Joblock.LeaseTTLSecs <= 0 {
 		cfg.Joblock.LeaseTTLSecs = DefaultJoblockLeaseTTLSecs
 	}
+	normalizeOCR(&cfg.Pipeline.OCR)
 	return &cfg, nil
+}
+
+// normalizeOCR fills the documented defaults for unset (zero/negative) OCR
+// limits. Explicit env overrides of 0 are treated as "unset" — an OCR call
+// with a zero byte cap or zero timeout could never succeed.
+func normalizeOCR(cfg *OCRConfig) {
+	if cfg.MaxImageBytes <= 0 {
+		cfg.MaxImageBytes = DefaultOCRMaxImageBytes
+	}
+	if cfg.MaxPDFPages <= 0 {
+		cfg.MaxPDFPages = DefaultOCRMaxPDFPages
+	}
+	if cfg.MaxImages <= 0 {
+		cfg.MaxImages = DefaultOCRMaxImages
+	}
+	if cfg.TimeoutSecs <= 0 {
+		cfg.TimeoutSecs = DefaultOCRTimeoutSecs
+	}
+	cfg.Model = strings.TrimSpace(cfg.Model)
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -343,6 +397,19 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPCLOUD__PIPELINE__SUMMARY__MODEL"); v != "" {
 		cfg.Pipeline.Summary.Model = v
 	}
+	if b, ok := getBool("APPCLOUD__PIPELINE__OCR__ENABLED"); ok {
+		cfg.Pipeline.OCR.Enabled = b
+	}
+	if v := get("APPCLOUD__PIPELINE__OCR__MODEL"); v != "" {
+		cfg.Pipeline.OCR.Model = v
+	}
+	atol("APPCLOUD__PIPELINE__OCR__MAX_IMAGE_BYTES", &cfg.Pipeline.OCR.MaxImageBytes)
+	atoi("APPCLOUD__PIPELINE__OCR__MAX_PDF_PAGES", &cfg.Pipeline.OCR.MaxPDFPages)
+	atoi("APPCLOUD__PIPELINE__OCR__MAX_IMAGES", &cfg.Pipeline.OCR.MaxImages)
+	atoi("APPCLOUD__PIPELINE__OCR__TIMEOUT_SECONDS", &cfg.Pipeline.OCR.TimeoutSecs)
+	if v := get("APPCLOUD__INTERNAL__API_KEY"); v != "" {
+		cfg.Internal.APIKey = v
+	}
 	if v := get("APPCLOUD__KG__BASE_URL"); v != "" {
 		cfg.Kg.BaseURL = v
 	}
@@ -389,6 +456,13 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Pipeline.Enabled && cfg.Pipeline.Embedding.Dimension <= 0 {
 		return fmt.Errorf("pipeline.embedding.dimension must be positive when pipeline enabled")
+	}
+	if cfg.Pipeline.OCR.Enabled && cfg.Pipeline.OCR.Model != "" {
+		if cfg.Pipeline.OCR.MaxImageBytes <= 0 || cfg.Pipeline.OCR.MaxPDFPages <= 0 ||
+			cfg.Pipeline.OCR.MaxImages <= 0 || cfg.Pipeline.OCR.TimeoutSecs <= 0 {
+			return fmt.Errorf("pipeline.ocr limits must be positive when OCR is enabled " +
+				"(MAX_IMAGE_BYTES / MAX_PDF_PAGES / MAX_IMAGES / TIMEOUT_SECONDS)")
+		}
 	}
 	return nil
 }

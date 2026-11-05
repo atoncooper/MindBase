@@ -390,6 +390,7 @@ services:
       - SERVER__HOST=0.0.0.0
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       - APP_BILI_BASE_URL=http://app-bili:8010
+      - APP_CLOUD_BASE_URL=http://app-cloud:8007
       - APP_TASK_BASE_URL=http://apisix:9080
       - APP_AUTH_BASE_URL=http://app-auth:8006
       - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
@@ -536,6 +537,7 @@ services:
       - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
       - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
