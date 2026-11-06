@@ -47,6 +47,8 @@ export interface WireMessage {
   content: string;
   status: "completed" | "failed";
   sources?: Source[];
+  /** structured UI artifacts (plot / diagram / quiz / ...) persisted with the turn */
+  artifacts?: import("../context/types.js").Artifact[];
   /** attached images: presigned MinIO URLs (durable) or legacy inline data URLs */
   images?: string[];
   tokens_used?: number;
@@ -212,6 +214,7 @@ function toWireMessage(m: ChatMessage, sessionId: string): WireMessage {
     created_at: iso(m.createdAt),
   };
   if (m.sources && m.sources.length > 0) wire.sources = m.sources.slice(0, 5);
+  if (m.artifacts && m.artifacts.length > 0) wire.artifacts = m.artifacts;
   if (m.usage?.totalTokens !== undefined) wire.tokens_used = m.usage.totalTokens;
   if (m.error) wire.error = m.error;
   return wire;

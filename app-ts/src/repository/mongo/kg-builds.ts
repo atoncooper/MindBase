@@ -18,8 +18,12 @@ const log = createLogger("KG_BUILDS");
 interface KgBuildDoc {
   _id: string;
   uid: string;
+  /** knowledge origin; absent on records written before cloud-doc support */
+  source?: "bilibili" | "cloud";
   folder_ids: number[];
   bvid_count: number;
+  /** cloud source only: documents selected for this build */
+  doc_count?: number;
   status: "processing" | "done" | "failed";
   progress: number;
   current_step: string;
@@ -34,8 +38,11 @@ function toRecord(doc: KgBuildDoc): KgBuildRecord {
   return {
     taskId: doc._id,
     uid: doc.uid,
+    // legacy records predate the source field → behave as video builds
+    source: doc.source === "cloud" ? "cloud" : "bilibili",
     folderIds: doc.folder_ids,
     bvidCount: doc.bvid_count,
+    ...(typeof doc.doc_count === "number" ? { docCount: doc.doc_count } : {}),
     status: doc.status,
     progress: doc.progress,
     currentStep: doc.current_step,
@@ -83,8 +90,10 @@ export class MongoKgBuildStore implements KgBuildRepository {
     const doc: KgBuildDoc = {
       _id: record.taskId,
       uid: record.uid,
+      source: record.source,
       folder_ids: record.folderIds,
       bvid_count: record.bvidCount,
+      ...(record.docCount !== undefined ? { doc_count: record.docCount } : {}),
       status: record.status,
       progress: record.progress,
       current_step: record.currentStep,

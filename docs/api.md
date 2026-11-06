@@ -80,7 +80,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 
 | 帧 | 语义 |
 |----|------|
-| `route` | 本轮路由到的 agent |
+| `route` | 路由决策（协议保留；前端不再展示路由到的 agent，仅用于清除排队态） |
 | `reasoning` / `reasoning_patch` | 思考过程增量（不计入正文） |
 | `chunk` | 正文增量 |
 | `step` | 工具 / 检索步骤生命周期 |

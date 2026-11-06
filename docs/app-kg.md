@@ -24,47 +24,73 @@ app-ts (Fastify, AI)                                app-kg (Go, gRPC :8013)
   对齐 backend → app-board-mcp 内网先例；宿主回环 127.0.0.1:8013 供 grpcurl 调试。
 - **归一化单一实现**：`name_lower`（小写+空白折叠）与 `eid`（sha1 hex 前 16 位）
   由调用方（app-ts resolver）计算后传入，app-kg 不做归一化
-  ——graph 包守护测试钉死该契约。
+  ——tests 包守护测试钉死该契约。
 - ~~**过渡期双写**~~（已结束）：Python `KgGraphRepository` 曾与 app-kg 写同一
   Neo4j（同 schema、确定性 eid、merge 键 name_lower/bvid → 幂等兼容）；
   2026-10-06 Python 侧删除后 app-kg 成为唯一写者。
 
 ## 二、app-go/app-kg（8013 gRPC + 8014 HTTP /health）
 
-- **RPC 面**（proto/kg/v1/kg.proto，21 个）：记账 ResolveScope /
+- **RPC 面**（proto/kg/v1/kg.proto，24 个）：记账 ResolveScope /
   SelectPendingPages / BeginPage / MarkPageDone / MarkPageFailed /
   CountPendingPages；图写 UpsertEntities / LinkAppearances / UpsertRelations /
-  DeletePageEvidence / DeleteVideo / ClearAll；图读 Neighbors / FetchEvidence
+  DeletePageEvidence / DeleteVideo / ClearAll；云盘知识点 LinkCloudDocAppearances /
+  DeleteCloudDocAppearances / FetchCloudDocEvidence；图读 Neighbors / FetchEvidence
   （带 page_title join）/ RelationsAmong / EntitiesByEids / EntityExposure /
-  EntityAppearances / TopEntities / EdgesAmong / Stats。
+  EntityAppearances / TopEntities / EdgesAmong / Stats（增 cloud_docs/cloud_evidence）。
 - **红线**：
   - ❌ 对 `video` 表只写 `kg_status`/`kg_version` 两列（镜像 app-bili「禁写 kg* 列」）
   - ❌ 对 `collection`/`favorite_folders` 只读；不建任何表、无任何 DDL
   - ❌ 不做任何 LLM/embedding 调用（纯数据面）
   - ❌ 归一化/哈希不落在本服务（调用方传入 name_lower/eid）
+  - ❌ 云盘知识点证据边目标固定 `(:CloudDoc {uid, upload_uuid})`（复用云盘 L1 路由图节点），
+    uid 多租户过滤必须在 Cypher 内（`d.uid = $uid`）
+  - ❌ app-kg 不直连云盘 Mongo/MySQL 业务表；云盘正文由 app-ts 经 app-cloud M2M 接口读取
+- **分层**（`tests/` 独立测试包守护依赖方向）：`infra/{mysql,neo4j}`（数据库初始化/连接配置）→
+  `repo/{mysql,neo4j}`（SQL/Cypher）→ `service`（业务规则）→ `transport/{grpc,http}`（协议映射）；
+  `config` 是 YAML/env 唯一入口，仅嵌入 infra 的连接配置结构。
 - **生成产物提交进仓库**（`internal/kgpb`）：CI 无 protoc 依赖；proto 变更时本地
   `protoc --go_out=app-go/app-kg --go_opt=module=app-kg … proto/kg/v1/kg.proto`
   重新生成。
 - compose `app-kg`（profiles ["", "kg", "full"]，depends_on mysql+neo4j healthy）；
   env：`APPKG__RDBMS__URL` + 共享 `KG__URI`/`KG__PASSWORD`(NEO4J_PASSWORD)。
 
-## 三、app-ts 增量
+## 三、云盘文档 → 知识点（2026-11-05 新增）
+
+- **来源**：app-ts 经 app-cloud M2M 读取云盘解析正文（`GET /internal/cloud/kg/documents`、
+  `/internal/cloud/kg/document`），复用同一套 extractor/resolver 抽取知识点，不需要新模型。
+- **存储**：知识点与视频共用 `Entity`/`RELATES` 空间；证据边
+  `(Entity)-[:APPEARS_IN {quote}]->(:CloudDoc {uid, upload_uuid, title, content_hash})`。
+  CloudDoc 节点复用云盘 L1 路由图（不建第二套文档节点），uid 隔离在 Cypher 内完成。
+- **写入语义**：`LinkCloudDocAppearances` = delete-before-write（重抽取不留旧证据）；
+  `DeleteCloudDocAppearances` 删证据并回收孤儿 Entity；云盘文档被 purge 时走
+  `DeleteCloudDocGraph` 的 DETACH DELETE → 知识点证据级联消失 + 孤儿 Entity 回收。
+- **构建记账**：云盘构建状态在 app-ts 自有 Mongo `mind_base_ts.kg_docs`（upload_uuid +
+  content_hash 幂等），不写 MySQL；`/knowledge/kg/build` body 增
+  `source:"bilibili"|"cloud"` 与 `upload_uuids`（cloud 限定范围）。
+- **检索**：`kg_search` 同时回捞视频与云盘证据（`FetchCloudDocEvidence`），来源面板以
+  `upload_uuid` 引用云盘文件；`Stats` 增 `cloud_docs`/`cloud_evidence`（视频 evidence 计数
+  仍只统计 APPEARS_IN→Video，两类口径分开）。
+
+## 四、app-ts 增量
 
 | 组件 | 位置 | 说明 |
 |---|---|---|
 | resolver | `src/kg/resolver.ts` | 移植 resolver.py：normalizeName/eidForName（sha1 utf-8 与 Python 字节兼容）、类型别名表、quote≥8 防幻觉、自环剔除、上限 30/40、stub 补全 |
-| extractor | `src/kg/extractor.ts` | generateObject + zod，purpose="kg"、temperature=0、maxRetries=2、maxTextChars 截断；prompt 外置 `prompts/kg-extract.md` |
-| gRPC 传输 | `src/grpc/client.ts` | 通用 gRPC 客户端基础设施（对齐 `src/mcp/client.ts` 先例）：运行时 proto 加载、channel、deadline、ServiceError 归一化——协议客户端独立成层，repository 不碰传输 |
-| 图仓储 | `src/repository/kg-graph.ts` + `grpc/` + `memory/` | 接口 + **纯消息↔领域映射**（传输全部委托 src/grpc）+ 测试/降级 stub |
+| extractor | `src/kg/extractor.ts` | generateObject + zod，purpose="kg"、temperature=0、maxRetries=2、maxTextChars 截断；prompt 外置 `prompts/kg/extract.md`（来源无关，视频稿/云盘正文共用，`kind` 仅切提示标签） |
+| gRPC 传输 | `src/transport/grpc.ts` | 通用 gRPC 客户端基础设施（对齐 `src/mcp/client.ts` 先例）：运行时 proto 加载（**keepCase:false → 消息键 camelCase**）、channel、deadline、ServiceError 归一化——协议客户端独立成层，repository 不碰传输 |
+| 图仓储 | `src/repository/kg-graph.ts` + `grpc/` + `memory/` | 接口 + **纯消息↔领域映射**（传输全部委托 src/transport/grpc；2026-11-05 修正 camelCase 消息键，此前 snake_case 请求键被静默丢弃）+ 测试/降级 stub；云盘三方法（Link/Delete/FetchCloudDocEvidence）同契约 |
+| 云盘正文源 | `src/repository/kg-cloud-sources.ts` + `http/` + `memory/` | app-cloud M2M（`/internal/cloud/kg/documents\|document`，apikey + X-Uid）分页列文档 + 读正文；memory 实现供离线单测 |
+| 云盘账本 | `src/repository/kg-docs.ts` + `mongo/kg-docs.ts` + `memory/` | 自有 Mongo `mind_base_ts.kg_docs`，_id=`${uid}:${uploadUuid}`；done + contentHash 相同才跳过（幂等/省 LLM） |
 | 实体向量 | `src/repository/kg-entity-index.ts` | 独立 MilvusClient（同 Python 模式）：mind_base_ts.kg_entities，IVF_FLAT COSINE nlist=128/nprobe=16，dim 探测 + 失配自愈，delete-then-insert upsert |
 | ASR 源 | `src/repository/mongo/kg-sources.ts` | 跨库只读 mind_base.asr_documents（源数据归 bili 域） |
 | 任务态 | `src/repository/mongo/kg-builds.ts` | mind_base_ts.kg_builds（**不写** Python async_tasks 表）；per-uid 单活跃守卫（Python 是进程内全局单任务，语义收严） |
-| 编排 | `src/kg/service.ts` | startBuild/run/processPage 七阶段（幂等检查→正文→delete-before-write→抽取→校验→写图→实体向量 best-effort→done）；单页失败隔离；completion promise 供测试 |
-| 检索 | `src/kg/retriever.ts` + `src/tools/chat/kg-search.ts` | 实体链接(≥0.55, top5)→BFS(maxHops=2)→evidence→实体卡片文案 + sources（与 vector_search 同构，Source 增 pageIndex 字段）；降级文案与 Python 一致 |
-| HTTP | `src/transport/http/routes/kg.ts` | /knowledge/kg/{build,active,status/:id,stats,subgraph} 镜像 Python 契约（前端 kgApi 零改动） |
+| 编排 | `src/kg/service.ts` | 视频路径：startBuild/runVideo/processPage 七阶段；云盘路径：startCloudBuild/runCloud/processCloudDoc（枚举→正文→delete-before-write→抽取→校验→写图→实体向量 best-effort→done，kg_docs 幂等 skip）；单页/单文档失败隔离；completion promise 供测试 |
+| 检索 | `src/kg/retriever.ts` + `src/tools/chat/kg-search.ts` | 实体链接(≥0.55, top5)→BFS(maxHops=2)→视频 evidence + 云盘 evidence（uid 必填，uploadUuids 限定）→实体卡片文案 + sources（视频 {bvid,pageIndex} / 云盘 {uploadUuid,title}）；无 uid 时行为与旧版一致 |
+| HTTP | `src/transport/http/routes/kg.ts` | /knowledge/kg/{build,active,status/:id,stats,subgraph}；build body 增 `source:"bilibili"\|"cloud"`（默认 bilibili）与 `upload_uuids`（cloud 限定，≤200）；quota 仍按次计；其余字段零改动 |
 | 装配 | `src/index.ts` | `kg.enabled && kgGrpc.enabled` 双门控；app-kg 不可达 → Memory 降级但打警告（数据不落盘）；main agent toolNames 按需加 kg_search + prompts/main.md 注入 `KG_SEARCH_SECTION` |
 
-## 四、已知取舍（有意决策，非遗漏）
+## 五、已知取舍（有意决策，非遗漏）
 
 1. **mind_base_ts.kg_entities 与 Python mind_base.kg_entities 互不相通**（用户确认）：
    Python blindspot 的语义归因随旧集合陈旧而降级（其有向量回落路径）；app-ts 切流
@@ -75,7 +101,7 @@ app-ts (Fastify, AI)                                app-kg (Go, gRPC :8013)
    app-ts 切流时该端点需改调 app-kg `DeleteVideo`（或路由级联到 app-ts）。
 4. **per-uid 单活跃任务**（Python 为进程内全局单任务）：多实例部署语义正确性前提。
 
-## 五、联调清单
+## 六、联调清单
 
 1. 起 mysql + neo4j + app-kg（`docker compose --profile kg up -d app-kg`），app-ts
    `kgGrpc.target` 指向 127.0.0.1:8013（本机）或 app-kg:8013（compose）。

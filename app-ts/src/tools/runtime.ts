@@ -166,6 +166,12 @@ export class AgentRuntime {
     // strip the model-controlled budget before anything else (tools never see it)
     const { timeoutMs, ...args } = (rawArgs ?? {}) as Record<string, unknown> & { timeoutMs?: number };
 
+    // 0. cancelled turn (client disconnect / aborted generation): do not run and
+    // never blame the tool's breaker for a cancellation.
+    if (ctx.signal?.aborted) {
+      return { content: `工具 ${def.name} 已取消（本轮已中止）。` };
+    }
+
     // 1. tool-level breaker: consecutive failures/timeouts → short-circuit until cooldown
     const breaker = this.breakerFor(def.name);
     if (breaker.isTripped) {
@@ -209,11 +215,20 @@ export class AgentRuntime {
     const started = Date.now();
     m.calls += 1;
     try {
-      // 4. unified budget enforcement: the manager clamps, aborts and deletes on expiry
-      const outcome = await timeoutManager.run(def.name, timeoutMs, (signal) =>
-        Promise.resolve(def.execute(args, ctx, signal)),
+      // 4. unified budget enforcement: the manager clamps, hard-aborts and deletes
+      // on expiry; the turn-level signal is merged in so a disconnect cancels the tool too.
+      const outcome = await timeoutManager.run(
+        def.name,
+        timeoutMs,
+        (signal) => Promise.resolve(def.execute(args, ctx, signal)),
+        ctx.signal,
       );
       if (!outcome.ok) {
+        if (outcome.aborted) {
+          // cancellation is not a tool failure: no breaker penalty, no timeout metric
+          log.info(`[TOOL] ${def.name} cancelled (turn aborted)`);
+          return { content: `工具 ${def.name} 已取消（本轮已中止）。` };
+        }
         m.timeouts += 1;
         breaker.recordFailure();
         const secs = Math.round(outcome.budgetMs / 1000);

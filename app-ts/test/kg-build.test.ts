@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { KgService, KgServiceError } from "../src/kg/service.js";
 import { MemoryKgGraphRepository } from "../src/repository/memory/kg-graph.js";
 import { MemoryKgSourceStore } from "../src/repository/memory/kg-sources.js";
 import { MemoryKgBuildStore } from "../src/repository/memory/kg-builds.js";
+import { MemoryKgDocStore } from "../src/repository/memory/kg-docs.js";
 import type { KgExtractor } from "../src/kg/extractor.js";
 import type { ExtractionResult } from "../src/kg/types.js";
 
@@ -22,11 +23,14 @@ describe("kg build service", () => {
     builds = new MemoryKgBuildStore();
   });
 
+
   const makeService = (extractor: KgExtractor) =>
     new KgService({
       graph,
       extractor,
       sources,
+      cloudSources: null, // cloud-doc source absent: video builds must not care
+      docs: new MemoryKgDocStore(),
       builds,
       index: null, // entity-vector writes are best-effort; absent index is exercised
       embeddings: {
@@ -56,12 +60,13 @@ describe("kg build service", () => {
         ],
       })),
     );
-    const { taskId, reused, completion } = await svc.startBuild(1, [100]);
+    const { taskId, reused, completion } = await svc.startBuild("1", { folderIds: [100] });
     expect(reused).toBe(false);
     await completion!;
 
-    const record = await builds.get(taskId, 1);
+    const record = await builds.get(taskId, "1");
     expect(record?.status).toBe("done");
+    expect(record?.source).toBe("bilibili");
     expect(record?.result).toMatchObject({ total: 2, ok: 2, failed: 0 });
     // graph got the entities/relations/evidence (same two entities extracted
     // for both pages → 2 pages × 2 entities = 4 evidence edges, delete-before-write per page)
@@ -85,7 +90,7 @@ describe("kg build service", () => {
         return { entities: [{ name: "LSTM", type: "tech", description: "", quote: "LSTM 的门控机制" }], relations: [] };
       }),
     );
-    const { completion } = await svc.startBuild(1, []);
+    const { completion } = await svc.startBuild("1", {});
     await completion!;
 
     expect(graph.pages.get("BV1|11")?.kgStatus).toBe("failed");
@@ -96,15 +101,15 @@ describe("kg build service", () => {
   it("completes with a message when no pages are pending", async () => {
     seedTwoPages();
     const svc = makeService(fakeExtractor(() => ({ entities: [], relations: [] })));
-    const first = await svc.startBuild(1, []);
+    const first = await svc.startBuild("1", {});
     await first.completion!;
-    expect(builds.get(first.taskId, 1).then((r) => r?.result)).resolves.toMatchObject({ ok: 2 });
+    await expect(builds.get(first.taskId, "1").then((r) => r?.result)).resolves.toMatchObject({ ok: 2 });
 
     // everything now up-to-date → second build: total 0
-    const second = await svc.startBuild(1, []);
+    const second = await svc.startBuild("1", {});
     expect(second.reused).toBe(false);
     await second.completion!;
-    await expect(builds.get(second.taskId, 1).then((r) => r?.result)).resolves.toMatchObject({
+    await expect(builds.get(second.taskId, "1").then((r) => r?.result)).resolves.toMatchObject({
       total: 0,
       message: "所有分P已是最新",
     });
@@ -113,7 +118,7 @@ describe("kg build service", () => {
   it("skips pages already done at the current content version (beginPage skip)", async () => {
     seedTwoPages();
     const svc = makeService(fakeExtractor(() => ({ entities: [], relations: [] })));
-    const first = await svc.startBuild(1, []);
+    const first = await svc.startBuild("1", {});
     await first.completion!;
     // re-running with the same expected versions → selectPendingPages already filters them;
     // a direct processPage with expected_version set still skips via BeginPage
@@ -133,13 +138,15 @@ describe("kg build service", () => {
         extract: () => gate.then(() => ({ entities: [], relations: [] })),
       } as unknown as KgExtractor,
       sources,
+      cloudSources: null,
+      docs: new MemoryKgDocStore(),
       builds,
       index: null,
       embeddings: { embedDocuments: async () => [], embedQuery: async () => [], probeDimension: async () => 8 },
     });
-    const first = await svc.startBuild(1, []);
+    const first = await svc.startBuild("1", {});
     expect(first.reused).toBe(false);
-    const second = await svc.startBuild(1, []);
+    const second = await svc.startBuild("1", {});
     expect(second.reused).toBe(true);
     expect(second.taskId).toBe(first.taskId);
     expect(second.completion).toBeUndefined();
@@ -149,15 +156,15 @@ describe("kg build service", () => {
 
   it("404s when the scope resolves to no videos, 503s when the graph is down", async () => {
     const svc = makeService(fakeExtractor(() => ({ entities: [], relations: [] })));
-    await expect(svc.startBuild(1, [])).rejects.toMatchObject({ status: 404 });
+    await expect(svc.startBuild("1", {})).rejects.toMatchObject({ status: 404 });
     graph.available = false;
-    await expect(svc.startBuild(1, [])).rejects.toBeInstanceOf(KgServiceError);
+    await expect(svc.startBuild("1", {})).rejects.toBeInstanceOf(KgServiceError);
   });
 
   it("fails the page when the ASR transcript is missing", async () => {
     graph.seedPage({ bvid: "BV2", cid: 21, pageIndex: 0, pageTitle: "无正文", version: 1 });
     const svc = makeService(fakeExtractor(() => ({ entities: [], relations: [] })));
-    const { completion } = await svc.startBuild(2, []);
+    const { completion } = await svc.startBuild("2", {});
     await completion!;
     expect(graph.pages.get("BV2|21")?.kgStatus).toBe("failed");
   });

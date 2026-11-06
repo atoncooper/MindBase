@@ -145,12 +145,26 @@ export interface EdgeRow {
   relType: string;
 }
 
+/** One cloud-drive document evidence row (app-kg FetchCloudDocEvidence). */
+export interface CloudDocEvidenceRow {
+  eid: string;
+  name: string;
+  type: string;
+  uploadUuid: string;
+  quote: string;
+  /** CloudDoc.title from the graph node; may be empty for legacy nodes */
+  title: string;
+}
+
 export interface GraphStats {
   entities: number;
   relations: number;
   evidence: number;
   videos: number;
   pendingPages: number;
+  /** cloud-drive knowledge points: CloudDoc nodes / APPEARS_IN evidence edges */
+  cloudDocs: number;
+  cloudEvidence: number;
 }
 
 // ── build task record (Mongo mind_base_ts.kg_builds) ─────────────────
@@ -172,8 +186,12 @@ export interface KgBuildResult {
 export interface KgBuildRecord {
   taskId: string;
   uid: string;
+  /** knowledge origin: bilibili favorite videos (default) or cloud-drive documents */
+  source: "bilibili" | "cloud";
   folderIds: number[];
   bvidCount: number;
+  /** cloud source only: documents selected for this build (undefined for video builds) */
+  docCount?: number;
   status: "processing" | "done" | "failed";
   progress: number;
   currentStep: string;
@@ -181,5 +199,27 @@ export interface KgBuildRecord {
   result?: KgBuildResult;
   error?: string;
   createdAt: number;
+  updatedAt: number;
+}
+
+// ── cloud-drive document bookkeeping (Mongo mind_base_ts.kg_docs) ────
+
+export type KgDocStatus = "processing" | "done" | "failed";
+
+/**
+ * Per-cloud-document extraction ledger. Idempotency key = (uid, uploadUuid);
+ * a `done` record whose contentHash matches the current document hash is
+ * skipped by the build pipeline (no LLM call, no graph rewrite).
+ */
+export interface KgDocRecord {
+  uid: string;
+  uploadUuid: string;
+  title: string;
+  /** app-cloud content hash; empty = the source did not report one (never skipped) */
+  contentHash: string;
+  status: KgDocStatus;
+  entityCount?: number;
+  relationCount?: number;
+  error?: string;
   updatedAt: number;
 }

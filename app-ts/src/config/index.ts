@@ -149,6 +149,10 @@ export interface AppConfig {
     /** ASR transcript source — the Python backend's Mongo database (cross-DB read-only by design) */
     sourceDatabase: string;
     sourceCollection: string;
+    /** cloud-doc build: max documents per build (paging stops at this cap) */
+    cloudMaxDocs: number;
+    /** cloud-doc listing page size for GET /internal/cloud/kg/documents (service caps at 100) */
+    cloudListPageSize: number;
   };
   kgGrpc: {
     /** false = KG capability fully disabled (app-kg not deployed) */
@@ -247,6 +251,8 @@ export interface AppConfig {
     turnRetries: number;
     /** same tool + same args rejected on the Nth identical call within one turn */
     toolRepeatLimit: number;
+    /** whole-turn deadline (ms): a stalled LLM stream can never keep a turn alive forever */
+    turnTimeoutMs: number;
   };
   scheduling: {
     /** turn-level weighted admission queue for chat (services/admission.ts) */

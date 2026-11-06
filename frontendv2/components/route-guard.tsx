@@ -19,6 +19,8 @@ const PUBLIC_PREFIXES = [
   "/notes/shared",
   "/cloud/s",
   "/quiz/shared",
+  // Lab prototypes (no user data) — open so they can be demoed before login.
+  "/lab",
 ];
 
 function isPublicPath(pathname: string): boolean {

@@ -1,6 +1,7 @@
 import type {
   AppearanceRow,
   BeginPageResult,
+  CloudDocEvidenceRow,
   EdgeRow,
   EntityDetail,
   EvidenceRow,
@@ -31,6 +32,24 @@ export interface DeleteVideoStats {
   videosRemoved: number;
 }
 
+export interface DeleteCloudDocStats {
+  /** evidence edges removed for this document */
+  deleted: number;
+  /** entities left orphaned by the removal and cleaned up */
+  entitiesRemoved: number;
+}
+
+/** One cloud document's evidence batch (app-kg LinkCloudDocAppearances input). */
+export interface CloudDocAppearanceInput {
+  uid: string;
+  uploadUuid: string;
+  /** non-empty overwrites CloudDoc.title; empty keeps the route-graph value */
+  title: string;
+  /** non-empty overwrites CloudDoc.content_hash */
+  contentHash: string;
+  appearances: AppearanceInput[];
+}
+
 export interface KgGraphRepository {
   /** favorite folders → bvids (dedup, order-stable); empty folderIds = all user folders */
   resolveScope(uid: string, folderIds: number[]): Promise<string[]>;
@@ -47,6 +66,26 @@ export interface KgGraphRepository {
   deletePageEvidence(bvid: string, pageIndex: number): Promise<number>;
   deleteVideo(bvid: string): Promise<DeleteVideoStats>;
   clearAll(): Promise<void>;
+
+  // ── cloud-drive knowledge points (same Entity/RELATES space as videos) ──
+
+  /** Write one cloud doc's knowledge evidence: MERGE (:CloudDoc), delete its
+   * previous APPEARS_IN edges (delete-before-write), then link
+   * (entity)-[:APPEARS_IN {quote}]->(cloudDoc). Always call it — even with an
+   * empty appearance list — so stale evidence is removed after a re-extraction.
+   * Returns the number of linked evidence edges. */
+  linkCloudDocAppearances(input: CloudDocAppearanceInput): Promise<number>;
+  /** Delete one cloud doc's knowledge evidence + orphan Entity cleanup. The
+   * CloudDoc node itself belongs to the cloud route graph and is kept. */
+  deleteCloudDocAppearances(uid: string, uploadUuid: string): Promise<DeleteCloudDocStats>;
+  /** Cloud evidence pull-back. uid is REQUIRED (tenant isolation); empty
+   * uploadUuids = all of the user's cloud documents, else that set. */
+  fetchCloudDocEvidence(
+    eids: string[],
+    uid: string,
+    uploadUuids: string[],
+    limit: number,
+  ): Promise<CloudDocEvidenceRow[]>;
 
   neighbors(eids: string[], excludeEids: string[], limit: number): Promise<NeighborRow[]>;
   fetchEvidence(eids: string[], bvids: string[], limit: number): Promise<EvidenceRow[]>;

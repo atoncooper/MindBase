@@ -30,6 +30,10 @@ export interface ChatMessage {
   role: MessageRole;
   content: string;
   sources?: import("../context/types.js").Source[];
+  /** structured UI artifacts produced this turn (plot / diagram / quiz / academic_*).
+   * Stream-only payloads are persisted here so a history reload keeps the cards;
+   * the client renders known kinds and falls back to a JSON card for unknown ones. */
+  artifacts?: import("../context/types.js").Artifact[];
   /** token usage captured from the LLM finish frame */
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   /** pending placeholder (while the assistant message is streaming) */
@@ -82,6 +86,8 @@ export interface MessageRepository {
     patch: {
       sources?: import("../context/types.js").Source[];
       usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+      /** structured artifacts emitted by the turn; capped by ChatService before persisting */
+      artifacts?: import("../context/types.js").Artifact[];
       status: "done" | "failed";
       /** generation error text when status = failed */
       error?: string;

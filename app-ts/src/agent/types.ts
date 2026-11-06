@@ -15,6 +15,9 @@ export interface AgentInvokeInput {
   images?: string[];
   /** User-selected installed skills forced into the system prompt this turn */
   skillIds?: string[];
+  /** Turn-level cancellation (client disconnect / aborted turn). Forwarded to
+   * streamText (abortSignal) and to every tool via ToolRunContext.signal. */
+  signal ?: AbortSignal;
 }
 
 export interface Agent {

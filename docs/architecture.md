@@ -50,7 +50,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-ts | Node 22 + Fastify（`app-ts/`） | 8000 | 127.0.0.1:8000 | 默认（ts） | AI 域唯一实现：chat/agent/RAG/KG AI/向量化/学术 agent 与科研 REST（沿用退役 Python backend 的端口） |
 | app-auth | Go + Gin（`app-go/app-auth/`） | 8006 | 127.0.0.1:8006 | 默认（auth） | 认证权威；APISIX forward-auth 后端 |
 | app-cloud | Go + Gin（`app-go/app-cloud/`） | 8007 | 127.0.0.1:8007 | 默认（cloud） | 云盘权威 + workspaces |
-| app-note | Go + Gin（`app-go/app-note/`） | 8008 | 127.0.0.1:8008 | 默认（note） | 笔记权威 |
+| app-note | Go + Gin（`app-go/app-note/`） | 8008 | 127.0.0.1:8018 | 默认（note） | 笔记权威（宿主调试口 8018：8008 被 app-cloud 端口池占用） |
 | app-bili | Go + Gin（`app-go/app-bili/`） | 8010 | 127.0.0.1:8010 | 默认（bili） | B站获取权威 + ASR |
 | app-quiz | Go + Gin（`app-go/app-quiz/`） | 8011 | 127.0.0.1:8011 | 默认（quiz） | quiz 存储权威 |
 | app-kg | Go + gRPC（`app-go/app-kg/`） | 8013 gRPC / 8014 health | 127.0.0.1:8013/8014 | 默认（kg） | KG 图存储权威（Neo4j 全部 Cypher） |

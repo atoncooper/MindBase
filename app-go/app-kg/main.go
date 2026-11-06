@@ -1,11 +1,19 @@
-// app-kg entrypoint: load config, init MySQL + Neo4j, ensure constraints,
-// start the gRPC server (kg.v1.KgGraph) + HTTP health probe, graceful
-// shutdown.
+// app-kg entrypoint: load config, initialize the stores through the infra
+// layer, wire repos → services → transports (gRPC + HTTP health), then run
+// until SIGINT/SIGTERM.
 //
-// KG storage service: the complete Neo4j data access for the knowledge
-// graph plus video.kg_status/kg_version bookkeeping and favorite-folder
-// scope resolution. The AI side (extraction / retrieval / build
-// orchestration) lives in app-ts. Run from project root:
+// Layering (pinned by internal/arch/arch_test.go):
+//
+//	main → transport/{grpc,http} → service → repo → infra
+//
+// infra owns database initialization/configuration (MySQL + Neo4j), repo owns
+// every SQL/Cypher statement, service owns the business rules, transport is a
+// thin protocol boundary.
+//
+// KG storage service: the complete Neo4j data access for the knowledge graph
+// plus video.kg_status/kg_version bookkeeping and favorite-folder scope
+// resolution. The AI side (extraction / retrieval / build orchestration)
+// lives in app-ts. Run from project root:
 // go run ./app-go/app-kg
 package main
 
@@ -23,12 +31,15 @@ import (
 	_ "time/tzdata" // embed IANA tz database so Asia/Shanghai works in distroless
 
 	"app-kg/internal/config"
-	"app-kg/internal/db"
-	"app-kg/internal/graph"
+	mysqlinfra "app-kg/internal/infra/mysql"
+	neo4jinfra "app-kg/internal/infra/neo4j"
 	"app-kg/internal/kgpb"
 	"app-kg/internal/logger"
-	"app-kg/internal/neo4jstore"
-	"app-kg/internal/server"
+	mysqlrepo "app-kg/internal/repo/mysql"
+	neo4jrepo "app-kg/internal/repo/neo4j"
+	"app-kg/internal/service"
+	transportgrpc "app-kg/internal/transport/grpc"
+	transporthttp "app-kg/internal/transport/http"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -73,25 +84,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ── infra: database initialization ──────────────────────────────
 	// MySQL — shared bilirag database (read-mostly; writes ONLY the
 	// video.kg_status/kg_version columns).
-	if err := db.Init(cfg.RDBMS.URL, cfg.RDBMS.MaxOpenConns, cfg.RDBMS.MaxIdleConns,
-		cfg.RDBMS.ConnMaxLifetime, cfg.App.Debug); err != nil {
+	mysqlDB, err := mysqlinfra.Open(cfg.RDBMS, cfg.App.Debug)
+	if err != nil {
 		slog.Error("init mysql failed", "err", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer mysqlDB.Close()
 
 	// Neo4j — the graph store this service owns.
 	ctx := context.Background()
-	st, err := neo4jstore.Connect(ctx, cfg.Neo4j.URI, cfg.Neo4j.Username,
-		cfg.Neo4j.Password, cfg.Neo4j.Database)
+	neo4jStore, err := neo4jinfra.Connect(ctx, cfg.Neo4j)
 	if err != nil {
 		slog.Error("connect neo4j failed", "err", err)
 		os.Exit(1)
 	}
-	defer st.Close(ctx)
-	if err := st.EnsureConstraints(ctx); err != nil {
+	defer neo4jStore.Close(ctx)
+	if err := neo4jStore.EnsureConstraints(ctx); err != nil {
 		slog.Warn("[NEO4J] ensure constraints failed (continuing — may already exist)", "err", err)
 	}
 
@@ -102,18 +113,23 @@ func main() {
 		slog.Warn("invalid timezone, falling back to UTC", "tz", cfg.Timezone, "err", lerr)
 	}
 
-	// gRPC server: interceptors + health + reflection (grpcurl debugging).
+	// ── repos → services ────────────────────────────────────────────
+	pages := mysqlrepo.New(mysqlDB.Gorm())
+	graphRepo := neo4jrepo.New(neo4jStore)
+	kgService := service.NewKG(pages, graphRepo)
+	cloudDocService := service.NewCloudDoc(graphRepo)
+
+	// ── gRPC transport (app-ts face) ────────────────────────────────
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.GrpcPort))
 	if err != nil {
 		slog.Error("listen failed", "err", err)
 		os.Exit(1)
 	}
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(server.Interceptor()),
+		grpc.ChainUnaryInterceptor(transportgrpc.Interceptor()),
 	)
-	graphStore := graph.New(st)
-	kgpb.RegisterKgGraphServer(grpcServer, server.New(server.Deps{
-		Graph: graphStore,
+	kgpb.RegisterKgGraphServer(grpcServer, transportgrpc.New(transportgrpc.Deps{
+		KG: kgService,
 	}))
 	healthSrv := health.NewServer()
 	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
@@ -128,10 +144,17 @@ func main() {
 		}
 	}()
 
+	// ── HTTP transport (health probe + cloud-doc routing for app-cloud) ──
 	healthAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.HealthPort)
-	healthHTTP := server.StartHealth(ctx, healthAddr, st, graphStore, cfg.Server.InternalToken)
+	healthHTTP := transporthttp.StartHealth(ctx, healthAddr, transporthttp.Deps{
+		MySQL:         mysqlDB,
+		Neo4j:         neo4jStore,
+		CloudDoc:      cloudDocService,
+		InternalToken: cfg.Server.InternalToken,
+	})
 	slog.Info("app-kg health endpoint", "addr", healthAddr)
 
+	// ── graceful shutdown ───────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

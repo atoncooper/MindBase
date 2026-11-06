@@ -4,7 +4,7 @@ import type { Source } from "../context/types.js";
 import type { KgEntityIndex, EntityHit } from "../repository/kg-entity-index.js";
 import type { EmbeddingsClient } from "../llm/embeddings.js";
 import type { KgGraphRepository } from "../repository/kg-graph.js";
-import type { EvidenceRow, RelationRow } from "./types.js";
+import type { CloudDocEvidenceRow, EvidenceRow, RelationRow } from "./types.js";
 
 const log = createLogger("KG_RETRIEVER");
 
@@ -12,10 +12,13 @@ const log = createLogger("KG_RETRIEVER");
  * KgRetriever — query-time KG retrieval, port of app/services/kg/retriever.py:
  * query → entity linking (Milvus, seedTopN, score ≥ linkScoreThreshold) →
  * BFS subgraph expansion over RELATES edges (≤ maxHops) → APPEARS_IN evidence
- * pull (user bvid scope) → entity-card content + vector_search-isomorphic
- * sources for the SSE protocol.
+ * pull (video bvid scope + cloud-doc scope) → entity-card content +
+ * vector_search-isomorphic sources for the SSE protocol.
  *
- * All dependency failures degrade to an empty result — the tool never throws.
+ * Cloud-doc evidence is fetched only when the caller supplies a uid (tenant
+ * isolation); a graph store that predates the cloud RPC degrades to
+ * video-only results. All dependency failures degrade to an empty result —
+ * the tool never throws.
  */
 
 export interface KgRetrievalResult {
@@ -23,6 +26,16 @@ export interface KgRetrievalResult {
   sources: Source[];
   entityCount: number;
   evidenceCount: number;
+}
+
+/** Retrieval scope: videos (bvids) and/or cloud-drive documents (uid required). */
+export interface KgRetrievalScope {
+  /** bvid scope resolved from favorites; empty = unrestricted */
+  bvids?: string[];
+  /** tenant identity for cloud-doc evidence; absent = video evidence only */
+  uid?: string;
+  /** cloud-doc scope; empty = all of the user's cloud documents */
+  uploadUuids?: string[];
 }
 
 export interface KgRetrieverDeps {
@@ -42,7 +55,7 @@ export class KgRetriever {
     return this.deps.index !== null && this.deps.index.available;
   }
 
-  async retrieve(query: string, bvids: string[] | undefined, k = 8): Promise<KgRetrievalResult> {
+  async retrieve(query: string, scope: KgRetrievalScope | undefined, k = 8): Promise<KgRetrievalResult> {
     const { graph, index, embeddings } = this.deps;
     if (!index || !index.available) return EMPTY;
 
@@ -63,6 +76,9 @@ export class KgRetriever {
 
     const seedScores = new Map(seeds.map((s) => [s.eid, s.score]));
     const seedEids = seeds.map((s) => s.eid);
+    const bvids = scope?.bvids ?? [];
+    const uid = scope?.uid;
+    const uploadUuids = scope?.uploadUuids ?? [];
 
     try {
       // ── 2. BFS subgraph expansion ──
@@ -78,21 +94,33 @@ export class KgRetriever {
       const allEids = [...visited];
 
       // ── 3. evidence + relations + entity details ──
-      const evidence = await graph.fetchEvidence(allEids, bvids ?? [], config.kg.evidenceLimit);
-      const relations = await graph.relationsAmong(allEids);
-      const entities = await graph.entitiesByEids(allEids);
-      if (evidence.length === 0 && relations.length === 0) return EMPTY;
+      // Cloud evidence is best-effort: an old app-kg (or a transient gRPC
+      // failure) must not take the video results down with it.
+      const cloudEvidencePromise: Promise<CloudDocEvidenceRow[]> = uid
+        ? graph.fetchCloudDocEvidence(allEids, uid, uploadUuids, config.kg.evidenceLimit).catch((err) => {
+            log.warn(`[KG_RETRIEVER] cloud evidence unavailable: ${err instanceof Error ? err.message : err}`);
+            return [] as CloudDocEvidenceRow[];
+          })
+        : Promise.resolve([] as CloudDocEvidenceRow[]);
+      const [evidence, cloudEvidence, relations, entities] = await Promise.all([
+        graph.fetchEvidence(allEids, bvids, config.kg.evidenceLimit),
+        cloudEvidencePromise,
+        graph.relationsAmong(allEids),
+        graph.entitiesByEids(allEids),
+      ]);
+      if (evidence.length === 0 && cloudEvidence.length === 0 && relations.length === 0) return EMPTY;
 
       const content = formatContent({
         entities,
         relations,
         evidence,
+        cloudEvidence,
         seedNames: seeds.map((s) => s.name),
         limit: k,
       });
-      const sources = buildSources(evidence, seedScores);
+      const sources = [...buildSources(evidence, seedScores), ...buildCloudSources(cloudEvidence)];
       log.info(
-        `[KG_RETRIEVER] done query='${query.slice(0, 50)}' entities=${entities.length} evidence=${evidence.length} sources=${sources.length}`,
+        `[KG_RETRIEVER] done query='${query.slice(0, 50)}' entities=${entities.length} evidence=${evidence.length} cloudEvidence=${cloudEvidence.length} sources=${sources.length}`,
       );
       return { content, sources, entityCount: entities.length, evidenceCount: evidence.length };
     } catch (err) {
@@ -103,11 +131,13 @@ export class KgRetriever {
 }
 
 /** Entity-card text the LLM reads (Python _format_content parity: entities
- * with evidence first, ≤5 relations and ≤5 quotes each). */
+ * with evidence first, ≤5 relations and ≤5 quotes each; cloud-doc evidence
+ * lines are tagged with the 云盘 · title origin). */
 function formatContent(args: {
   entities: Array<{ eid: string; name: string; type: string; description: string }>;
   relations: RelationRow[];
   evidence: EvidenceRow[];
+  cloudEvidence: CloudDocEvidenceRow[];
   seedNames: string[];
   limit: number;
 }): string {
@@ -119,9 +149,14 @@ function formatContent(args: {
   for (const ev of args.evidence) {
     evByEid.set(ev.eid, [...(evByEid.get(ev.eid) ?? []), ev]);
   }
+  const cloudByEid = new Map<string, CloudDocEvidenceRow[]>();
+  for (const ev of args.cloudEvidence) {
+    cloudByEid.set(ev.eid, [...(cloudByEid.get(ev.eid) ?? []), ev]);
+  }
 
-  const withEvidence = args.entities.filter((e) => evByEid.has(e.eid));
-  const withoutEvidence = args.entities.filter((e) => !evByEid.has(e.eid));
+  const hasEvidence = (eid: string): boolean => evByEid.has(eid) || cloudByEid.has(eid);
+  const withEvidence = args.entities.filter((e) => hasEvidence(e.eid));
+  const withoutEvidence = args.entities.filter((e) => !hasEvidence(e.eid));
   const ordered = [...withEvidence, ...withoutEvidence];
 
   const parts: string[] = [`知识图谱检索结果（核心实体：${args.seedNames.slice(0, 3).join("、")}）`];
@@ -142,12 +177,17 @@ function formatContent(args: {
       const quote = (ev.quote ?? "").trim();
       lines.push(quote ? `出处：【${title}】"${quote}"` : `出处：【${title}】`);
     }
+    for (const ev of (cloudByEid.get(ent.eid) ?? []).slice(0, 5)) {
+      const title = ev.title || ev.uploadUuid;
+      const quote = (ev.quote ?? "").trim();
+      lines.push(quote ? `出处：【云盘 · ${title}】"${quote}"` : `出处：【云盘 · ${title}】`);
+    }
     parts.push(lines.join("\n"));
     shown += 1;
   }
 
-  if (args.evidence.length === 0) {
-    parts.push("\n（注意：以下实体在你的当前范围内暂无视频出处证据）");
+  if (args.evidence.length === 0 && args.cloudEvidence.length === 0) {
+    parts.push("\n（注意：以下实体在你的当前范围内暂无出处证据）");
   }
   return parts.join("\n\n");
 }
@@ -166,6 +206,18 @@ function buildSources(evidence: EvidenceRow[], seedScores: Map<string, number>):
       score: Math.round((seedScores.get(ev.eid) ?? 0) * 10000) / 10000,
       pageIndex: ev.pageIndex,
     });
+  }
+  return sources;
+}
+
+/** Cloud-doc sources deduped by uploadUuid (frontend source panel contract). */
+function buildCloudSources(rows: CloudDocEvidenceRow[]): Source[] {
+  const seen = new Set<string>();
+  const sources: Source[] = [];
+  for (const row of rows) {
+    if (!row.uploadUuid || seen.has(row.uploadUuid)) continue;
+    seen.add(row.uploadUuid);
+    sources.push({ uploadUuid: row.uploadUuid, title: row.title || row.uploadUuid });
   }
   return sources;
 }

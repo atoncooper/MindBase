@@ -21,7 +21,7 @@ export function createDelegateTool(lifecycle: AgentLifecycleManager, delegates: 
       agent: z.string().min(1).describe("目标子 agent 名"),
       message: z.string().min(1).describe("传给子 agent 的完整任务描述/问题"),
     }),
-    async execute(args, ctx) {
+    async execute(args, ctx, signal) {
       if (!lifecycle.has(args.agent)) {
         return `委托失败：子 agent "${args.agent}" 不存在。可用：${delegates.map((d) => d.name).join(", ")}`;
       }
@@ -35,12 +35,16 @@ export function createDelegateTool(lifecycle: AgentLifecycleManager, delegates: 
       if ((failures.get(args.agent) ?? 0) >= 2) {
         return `子 agent "${args.agent}" 本轮已连续失败 2 次，已停止委托。请基于已有信息直接回答，或告知用户该功能暂不可用。`;
       }
+      // cancellation must reach the sub-agent's streamText, otherwise a
+      // disconnected turn keeps burning tokens inside the delegation
+      const cancelSignal = signal ?? ctx.signal;
       const result = await lifecycle.invokeReentrant(args.agent, ctx.chatSessionId ?? "anonymous", {
         query: args.message,
         uid: ctx.uid,
         chatSessionId: ctx.chatSessionId,
         scope: delegateScopeFor(ctx.scope),
         history: [],
+        ...(cancelSignal ? { signal: cancelSignal } : {}),
       });
       if (result.failed) {
         failures.set(args.agent, (failures.get(args.agent) ?? 0) + 1);

@@ -5,6 +5,12 @@
 // video.kg_status/kg_version 记账 + 收藏夹 scope 解析。本服务不感知
 // uid 之外的任何业务语义，不发起任何 LLM/embedding 调用。
 //
+// 知识点来源（source）有两类，统一进同一张 Entity/RELATES 知识图：
+//   - 收藏夹视频分P：(:Video {bvid})，证据边 APPEARS_IN {page_index, quote}
+//   - 云盘文档：(:CloudDoc {uid, upload_uuid, title, content_hash})（节点由
+//     云盘 L1 路由图创建/复用），证据边 APPEARS_IN {quote}
+// 因此云盘文档的知识点与视频共用一个实体/关系空间，可跨来源检索与关联。
+//
 // 过渡期共享存储：Python KgGraphRepository 与本服务双写同一 Neo4j
 // （同 schema、确定性 eid=sha1(name_lower)[:16]，merge 键 name_lower）。
 // name_lower 与 eid 由调用方（app-ts resolver / Python repository）
@@ -14,7 +20,7 @@
 // versions:
 // 	protoc-gen-go v1.36.12
 // 	protoc        v6.31.1
-// source: proto/kg/v1/kg.proto
+// source: kg/v1/kg.proto
 
 package kgpb
 
@@ -43,7 +49,7 @@ type ResolveScopeRequest struct {
 
 func (x *ResolveScopeRequest) Reset() {
 	*x = ResolveScopeRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[0]
+	mi := &file_kg_v1_kg_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -55,7 +61,7 @@ func (x *ResolveScopeRequest) String() string {
 func (*ResolveScopeRequest) ProtoMessage() {}
 
 func (x *ResolveScopeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[0]
+	mi := &file_kg_v1_kg_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -68,7 +74,7 @@ func (x *ResolveScopeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveScopeRequest.ProtoReflect.Descriptor instead.
 func (*ResolveScopeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{0}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ResolveScopeRequest) GetUid() int64 {
@@ -94,7 +100,7 @@ type ResolveScopeResponse struct {
 
 func (x *ResolveScopeResponse) Reset() {
 	*x = ResolveScopeResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[1]
+	mi := &file_kg_v1_kg_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -106,7 +112,7 @@ func (x *ResolveScopeResponse) String() string {
 func (*ResolveScopeResponse) ProtoMessage() {}
 
 func (x *ResolveScopeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[1]
+	mi := &file_kg_v1_kg_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -119,7 +125,7 @@ func (x *ResolveScopeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveScopeResponse.ProtoReflect.Descriptor instead.
 func (*ResolveScopeResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{1}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ResolveScopeResponse) GetBvids() []string {
@@ -139,7 +145,7 @@ type SelectPendingPagesRequest struct {
 
 func (x *SelectPendingPagesRequest) Reset() {
 	*x = SelectPendingPagesRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[2]
+	mi := &file_kg_v1_kg_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -151,7 +157,7 @@ func (x *SelectPendingPagesRequest) String() string {
 func (*SelectPendingPagesRequest) ProtoMessage() {}
 
 func (x *SelectPendingPagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[2]
+	mi := &file_kg_v1_kg_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -164,7 +170,7 @@ func (x *SelectPendingPagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectPendingPagesRequest.ProtoReflect.Descriptor instead.
 func (*SelectPendingPagesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{2}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SelectPendingPagesRequest) GetBvids() []string {
@@ -194,7 +200,7 @@ type PendingPage struct {
 
 func (x *PendingPage) Reset() {
 	*x = PendingPage{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[3]
+	mi := &file_kg_v1_kg_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -206,7 +212,7 @@ func (x *PendingPage) String() string {
 func (*PendingPage) ProtoMessage() {}
 
 func (x *PendingPage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[3]
+	mi := &file_kg_v1_kg_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -219,7 +225,7 @@ func (x *PendingPage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingPage.ProtoReflect.Descriptor instead.
 func (*PendingPage) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{3}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PendingPage) GetBvid() string {
@@ -266,7 +272,7 @@ type SelectPendingPagesResponse struct {
 
 func (x *SelectPendingPagesResponse) Reset() {
 	*x = SelectPendingPagesResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[4]
+	mi := &file_kg_v1_kg_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -278,7 +284,7 @@ func (x *SelectPendingPagesResponse) String() string {
 func (*SelectPendingPagesResponse) ProtoMessage() {}
 
 func (x *SelectPendingPagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[4]
+	mi := &file_kg_v1_kg_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -291,7 +297,7 @@ func (x *SelectPendingPagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectPendingPagesResponse.ProtoReflect.Descriptor instead.
 func (*SelectPendingPagesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{4}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SelectPendingPagesResponse) GetPages() []*PendingPage {
@@ -313,7 +319,7 @@ type BeginPageRequest struct {
 
 func (x *BeginPageRequest) Reset() {
 	*x = BeginPageRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[5]
+	mi := &file_kg_v1_kg_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -325,7 +331,7 @@ func (x *BeginPageRequest) String() string {
 func (*BeginPageRequest) ProtoMessage() {}
 
 func (x *BeginPageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[5]
+	mi := &file_kg_v1_kg_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -338,7 +344,7 @@ func (x *BeginPageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginPageRequest.ProtoReflect.Descriptor instead.
 func (*BeginPageRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{5}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *BeginPageRequest) GetBvid() string {
@@ -377,7 +383,7 @@ type BeginPageResponse struct {
 
 func (x *BeginPageResponse) Reset() {
 	*x = BeginPageResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[6]
+	mi := &file_kg_v1_kg_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -389,7 +395,7 @@ func (x *BeginPageResponse) String() string {
 func (*BeginPageResponse) ProtoMessage() {}
 
 func (x *BeginPageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[6]
+	mi := &file_kg_v1_kg_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -402,7 +408,7 @@ func (x *BeginPageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginPageResponse.ProtoReflect.Descriptor instead.
 func (*BeginPageResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{6}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *BeginPageResponse) GetFound() bool {
@@ -465,7 +471,7 @@ type MarkPageDoneRequest struct {
 
 func (x *MarkPageDoneRequest) Reset() {
 	*x = MarkPageDoneRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[7]
+	mi := &file_kg_v1_kg_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -477,7 +483,7 @@ func (x *MarkPageDoneRequest) String() string {
 func (*MarkPageDoneRequest) ProtoMessage() {}
 
 func (x *MarkPageDoneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[7]
+	mi := &file_kg_v1_kg_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -490,7 +496,7 @@ func (x *MarkPageDoneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkPageDoneRequest.ProtoReflect.Descriptor instead.
 func (*MarkPageDoneRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{7}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *MarkPageDoneRequest) GetBvid() string {
@@ -522,7 +528,7 @@ type MarkPageDoneResponse struct {
 
 func (x *MarkPageDoneResponse) Reset() {
 	*x = MarkPageDoneResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[8]
+	mi := &file_kg_v1_kg_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -534,7 +540,7 @@ func (x *MarkPageDoneResponse) String() string {
 func (*MarkPageDoneResponse) ProtoMessage() {}
 
 func (x *MarkPageDoneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[8]
+	mi := &file_kg_v1_kg_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -547,7 +553,7 @@ func (x *MarkPageDoneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkPageDoneResponse.ProtoReflect.Descriptor instead.
 func (*MarkPageDoneResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{8}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{8}
 }
 
 type MarkPageFailedRequest struct {
@@ -560,7 +566,7 @@ type MarkPageFailedRequest struct {
 
 func (x *MarkPageFailedRequest) Reset() {
 	*x = MarkPageFailedRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[9]
+	mi := &file_kg_v1_kg_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -572,7 +578,7 @@ func (x *MarkPageFailedRequest) String() string {
 func (*MarkPageFailedRequest) ProtoMessage() {}
 
 func (x *MarkPageFailedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[9]
+	mi := &file_kg_v1_kg_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -585,7 +591,7 @@ func (x *MarkPageFailedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkPageFailedRequest.ProtoReflect.Descriptor instead.
 func (*MarkPageFailedRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{9}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MarkPageFailedRequest) GetBvid() string {
@@ -610,7 +616,7 @@ type MarkPageFailedResponse struct {
 
 func (x *MarkPageFailedResponse) Reset() {
 	*x = MarkPageFailedResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[10]
+	mi := &file_kg_v1_kg_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -622,7 +628,7 @@ func (x *MarkPageFailedResponse) String() string {
 func (*MarkPageFailedResponse) ProtoMessage() {}
 
 func (x *MarkPageFailedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[10]
+	mi := &file_kg_v1_kg_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -635,7 +641,7 @@ func (x *MarkPageFailedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MarkPageFailedResponse.ProtoReflect.Descriptor instead.
 func (*MarkPageFailedResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{10}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{10}
 }
 
 type CountPendingPagesRequest struct {
@@ -646,7 +652,7 @@ type CountPendingPagesRequest struct {
 
 func (x *CountPendingPagesRequest) Reset() {
 	*x = CountPendingPagesRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[11]
+	mi := &file_kg_v1_kg_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +664,7 @@ func (x *CountPendingPagesRequest) String() string {
 func (*CountPendingPagesRequest) ProtoMessage() {}
 
 func (x *CountPendingPagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[11]
+	mi := &file_kg_v1_kg_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +677,7 @@ func (x *CountPendingPagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CountPendingPagesRequest.ProtoReflect.Descriptor instead.
 func (*CountPendingPagesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{11}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{11}
 }
 
 type CountPendingPagesResponse struct {
@@ -683,7 +689,7 @@ type CountPendingPagesResponse struct {
 
 func (x *CountPendingPagesResponse) Reset() {
 	*x = CountPendingPagesResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[12]
+	mi := &file_kg_v1_kg_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -695,7 +701,7 @@ func (x *CountPendingPagesResponse) String() string {
 func (*CountPendingPagesResponse) ProtoMessage() {}
 
 func (x *CountPendingPagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[12]
+	mi := &file_kg_v1_kg_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -708,7 +714,7 @@ func (x *CountPendingPagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CountPendingPagesResponse.ProtoReflect.Descriptor instead.
 func (*CountPendingPagesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{12}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CountPendingPagesResponse) GetCount() int64 {
@@ -733,7 +739,7 @@ type EntityUpsert struct {
 
 func (x *EntityUpsert) Reset() {
 	*x = EntityUpsert{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[13]
+	mi := &file_kg_v1_kg_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -745,7 +751,7 @@ func (x *EntityUpsert) String() string {
 func (*EntityUpsert) ProtoMessage() {}
 
 func (x *EntityUpsert) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[13]
+	mi := &file_kg_v1_kg_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -758,7 +764,7 @@ func (x *EntityUpsert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityUpsert.ProtoReflect.Descriptor instead.
 func (*EntityUpsert) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{13}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *EntityUpsert) GetEid() string {
@@ -812,7 +818,7 @@ type UpsertEntitiesRequest struct {
 
 func (x *UpsertEntitiesRequest) Reset() {
 	*x = UpsertEntitiesRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[14]
+	mi := &file_kg_v1_kg_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -824,7 +830,7 @@ func (x *UpsertEntitiesRequest) String() string {
 func (*UpsertEntitiesRequest) ProtoMessage() {}
 
 func (x *UpsertEntitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[14]
+	mi := &file_kg_v1_kg_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -837,7 +843,7 @@ func (x *UpsertEntitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertEntitiesRequest.ProtoReflect.Descriptor instead.
 func (*UpsertEntitiesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{14}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *UpsertEntitiesRequest) GetEntities() []*EntityUpsert {
@@ -856,7 +862,7 @@ type UpsertEntitiesResponse struct {
 
 func (x *UpsertEntitiesResponse) Reset() {
 	*x = UpsertEntitiesResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[15]
+	mi := &file_kg_v1_kg_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -868,7 +874,7 @@ func (x *UpsertEntitiesResponse) String() string {
 func (*UpsertEntitiesResponse) ProtoMessage() {}
 
 func (x *UpsertEntitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[15]
+	mi := &file_kg_v1_kg_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -881,7 +887,7 @@ func (x *UpsertEntitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertEntitiesResponse.ProtoReflect.Descriptor instead.
 func (*UpsertEntitiesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{15}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *UpsertEntitiesResponse) GetEids() []string {
@@ -901,7 +907,7 @@ type Appearance struct {
 
 func (x *Appearance) Reset() {
 	*x = Appearance{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[16]
+	mi := &file_kg_v1_kg_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -913,7 +919,7 @@ func (x *Appearance) String() string {
 func (*Appearance) ProtoMessage() {}
 
 func (x *Appearance) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[16]
+	mi := &file_kg_v1_kg_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -926,7 +932,7 @@ func (x *Appearance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Appearance.ProtoReflect.Descriptor instead.
 func (*Appearance) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{16}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Appearance) GetEid() string {
@@ -954,7 +960,7 @@ type LinkAppearancesRequest struct {
 
 func (x *LinkAppearancesRequest) Reset() {
 	*x = LinkAppearancesRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[17]
+	mi := &file_kg_v1_kg_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -966,7 +972,7 @@ func (x *LinkAppearancesRequest) String() string {
 func (*LinkAppearancesRequest) ProtoMessage() {}
 
 func (x *LinkAppearancesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[17]
+	mi := &file_kg_v1_kg_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -979,7 +985,7 @@ func (x *LinkAppearancesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkAppearancesRequest.ProtoReflect.Descriptor instead.
 func (*LinkAppearancesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{17}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *LinkAppearancesRequest) GetBvid() string {
@@ -1012,7 +1018,7 @@ type LinkAppearancesResponse struct {
 
 func (x *LinkAppearancesResponse) Reset() {
 	*x = LinkAppearancesResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[18]
+	mi := &file_kg_v1_kg_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1030,7 @@ func (x *LinkAppearancesResponse) String() string {
 func (*LinkAppearancesResponse) ProtoMessage() {}
 
 func (x *LinkAppearancesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[18]
+	mi := &file_kg_v1_kg_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1043,7 @@ func (x *LinkAppearancesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkAppearancesResponse.ProtoReflect.Descriptor instead.
 func (*LinkAppearancesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{18}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *LinkAppearancesResponse) GetLinked() int64 {
@@ -1059,7 +1065,7 @@ type RelationUpsert struct {
 
 func (x *RelationUpsert) Reset() {
 	*x = RelationUpsert{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[19]
+	mi := &file_kg_v1_kg_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1071,7 +1077,7 @@ func (x *RelationUpsert) String() string {
 func (*RelationUpsert) ProtoMessage() {}
 
 func (x *RelationUpsert) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[19]
+	mi := &file_kg_v1_kg_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1084,7 +1090,7 @@ func (x *RelationUpsert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelationUpsert.ProtoReflect.Descriptor instead.
 func (*RelationUpsert) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{19}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *RelationUpsert) GetSrcEid() string {
@@ -1124,7 +1130,7 @@ type UpsertRelationsRequest struct {
 
 func (x *UpsertRelationsRequest) Reset() {
 	*x = UpsertRelationsRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[20]
+	mi := &file_kg_v1_kg_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1136,7 +1142,7 @@ func (x *UpsertRelationsRequest) String() string {
 func (*UpsertRelationsRequest) ProtoMessage() {}
 
 func (x *UpsertRelationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[20]
+	mi := &file_kg_v1_kg_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1149,7 +1155,7 @@ func (x *UpsertRelationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertRelationsRequest.ProtoReflect.Descriptor instead.
 func (*UpsertRelationsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{20}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UpsertRelationsRequest) GetRelations() []*RelationUpsert {
@@ -1167,7 +1173,7 @@ type UpsertRelationsResponse struct {
 
 func (x *UpsertRelationsResponse) Reset() {
 	*x = UpsertRelationsResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[21]
+	mi := &file_kg_v1_kg_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1179,7 +1185,7 @@ func (x *UpsertRelationsResponse) String() string {
 func (*UpsertRelationsResponse) ProtoMessage() {}
 
 func (x *UpsertRelationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[21]
+	mi := &file_kg_v1_kg_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1192,7 +1198,7 @@ func (x *UpsertRelationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertRelationsResponse.ProtoReflect.Descriptor instead.
 func (*UpsertRelationsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{21}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{21}
 }
 
 type DeletePageEvidenceRequest struct {
@@ -1205,7 +1211,7 @@ type DeletePageEvidenceRequest struct {
 
 func (x *DeletePageEvidenceRequest) Reset() {
 	*x = DeletePageEvidenceRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[22]
+	mi := &file_kg_v1_kg_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1217,7 +1223,7 @@ func (x *DeletePageEvidenceRequest) String() string {
 func (*DeletePageEvidenceRequest) ProtoMessage() {}
 
 func (x *DeletePageEvidenceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[22]
+	mi := &file_kg_v1_kg_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1230,7 +1236,7 @@ func (x *DeletePageEvidenceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePageEvidenceRequest.ProtoReflect.Descriptor instead.
 func (*DeletePageEvidenceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{22}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeletePageEvidenceRequest) GetBvid() string {
@@ -1256,7 +1262,7 @@ type DeletePageEvidenceResponse struct {
 
 func (x *DeletePageEvidenceResponse) Reset() {
 	*x = DeletePageEvidenceResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[23]
+	mi := &file_kg_v1_kg_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1268,7 +1274,7 @@ func (x *DeletePageEvidenceResponse) String() string {
 func (*DeletePageEvidenceResponse) ProtoMessage() {}
 
 func (x *DeletePageEvidenceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[23]
+	mi := &file_kg_v1_kg_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1281,7 +1287,7 @@ func (x *DeletePageEvidenceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePageEvidenceResponse.ProtoReflect.Descriptor instead.
 func (*DeletePageEvidenceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{23}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DeletePageEvidenceResponse) GetDeleted() int64 {
@@ -1300,7 +1306,7 @@ type DeleteVideoRequest struct {
 
 func (x *DeleteVideoRequest) Reset() {
 	*x = DeleteVideoRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[24]
+	mi := &file_kg_v1_kg_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1312,7 +1318,7 @@ func (x *DeleteVideoRequest) String() string {
 func (*DeleteVideoRequest) ProtoMessage() {}
 
 func (x *DeleteVideoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[24]
+	mi := &file_kg_v1_kg_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1325,7 +1331,7 @@ func (x *DeleteVideoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVideoRequest.ProtoReflect.Descriptor instead.
 func (*DeleteVideoRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{24}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DeleteVideoRequest) GetBvid() string {
@@ -1345,7 +1351,7 @@ type DeleteVideoResponse struct {
 
 func (x *DeleteVideoResponse) Reset() {
 	*x = DeleteVideoResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[25]
+	mi := &file_kg_v1_kg_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1357,7 +1363,7 @@ func (x *DeleteVideoResponse) String() string {
 func (*DeleteVideoResponse) ProtoMessage() {}
 
 func (x *DeleteVideoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[25]
+	mi := &file_kg_v1_kg_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1370,7 +1376,7 @@ func (x *DeleteVideoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVideoResponse.ProtoReflect.Descriptor instead.
 func (*DeleteVideoResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{25}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteVideoResponse) GetEntitiesRemoved() int64 {
@@ -1395,7 +1401,7 @@ type ClearAllRequest struct {
 
 func (x *ClearAllRequest) Reset() {
 	*x = ClearAllRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[26]
+	mi := &file_kg_v1_kg_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1407,7 +1413,7 @@ func (x *ClearAllRequest) String() string {
 func (*ClearAllRequest) ProtoMessage() {}
 
 func (x *ClearAllRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[26]
+	mi := &file_kg_v1_kg_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1420,7 +1426,7 @@ func (x *ClearAllRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearAllRequest.ProtoReflect.Descriptor instead.
 func (*ClearAllRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{26}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{26}
 }
 
 type ClearAllResponse struct {
@@ -1431,7 +1437,7 @@ type ClearAllResponse struct {
 
 func (x *ClearAllResponse) Reset() {
 	*x = ClearAllResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[27]
+	mi := &file_kg_v1_kg_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1443,7 +1449,7 @@ func (x *ClearAllResponse) String() string {
 func (*ClearAllResponse) ProtoMessage() {}
 
 func (x *ClearAllResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[27]
+	mi := &file_kg_v1_kg_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1456,7 +1462,233 @@ func (x *ClearAllResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearAllResponse.ProtoReflect.Descriptor instead.
 func (*ClearAllResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{27}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{27}
+}
+
+type LinkCloudDocAppearancesRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Uid        int64                  `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	UploadUuid string                 `protobuf:"bytes,2,opt,name=upload_uuid,json=uploadUuid,proto3" json:"upload_uuid,omitempty"`
+	// 非空才覆盖 CloudDoc.title；空 = 保留路由图已有值。
+	Title string `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	// 非空才覆盖 CloudDoc.content_hash；空 = 保留路由图已有值。
+	ContentHash   string        `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"`
+	Appearances   []*Appearance `protobuf:"bytes,5,rep,name=appearances,proto3" json:"appearances,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkCloudDocAppearancesRequest) Reset() {
+	*x = LinkCloudDocAppearancesRequest{}
+	mi := &file_kg_v1_kg_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkCloudDocAppearancesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkCloudDocAppearancesRequest) ProtoMessage() {}
+
+func (x *LinkCloudDocAppearancesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkCloudDocAppearancesRequest.ProtoReflect.Descriptor instead.
+func (*LinkCloudDocAppearancesRequest) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *LinkCloudDocAppearancesRequest) GetUid() int64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *LinkCloudDocAppearancesRequest) GetUploadUuid() string {
+	if x != nil {
+		return x.UploadUuid
+	}
+	return ""
+}
+
+func (x *LinkCloudDocAppearancesRequest) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *LinkCloudDocAppearancesRequest) GetContentHash() string {
+	if x != nil {
+		return x.ContentHash
+	}
+	return ""
+}
+
+func (x *LinkCloudDocAppearancesRequest) GetAppearances() []*Appearance {
+	if x != nil {
+		return x.Appearances
+	}
+	return nil
+}
+
+type LinkCloudDocAppearancesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Linked        int64                  `protobuf:"varint,1,opt,name=linked,proto3" json:"linked,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkCloudDocAppearancesResponse) Reset() {
+	*x = LinkCloudDocAppearancesResponse{}
+	mi := &file_kg_v1_kg_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkCloudDocAppearancesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkCloudDocAppearancesResponse) ProtoMessage() {}
+
+func (x *LinkCloudDocAppearancesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkCloudDocAppearancesResponse.ProtoReflect.Descriptor instead.
+func (*LinkCloudDocAppearancesResponse) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *LinkCloudDocAppearancesResponse) GetLinked() int64 {
+	if x != nil {
+		return x.Linked
+	}
+	return 0
+}
+
+type DeleteCloudDocAppearancesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           int64                  `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	UploadUuid    string                 `protobuf:"bytes,2,opt,name=upload_uuid,json=uploadUuid,proto3" json:"upload_uuid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteCloudDocAppearancesRequest) Reset() {
+	*x = DeleteCloudDocAppearancesRequest{}
+	mi := &file_kg_v1_kg_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteCloudDocAppearancesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteCloudDocAppearancesRequest) ProtoMessage() {}
+
+func (x *DeleteCloudDocAppearancesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteCloudDocAppearancesRequest.ProtoReflect.Descriptor instead.
+func (*DeleteCloudDocAppearancesRequest) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *DeleteCloudDocAppearancesRequest) GetUid() int64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *DeleteCloudDocAppearancesRequest) GetUploadUuid() string {
+	if x != nil {
+		return x.UploadUuid
+	}
+	return ""
+}
+
+type DeleteCloudDocAppearancesResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Deleted         int64                  `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	EntitiesRemoved int64                  `protobuf:"varint,2,opt,name=entities_removed,json=entitiesRemoved,proto3" json:"entities_removed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *DeleteCloudDocAppearancesResponse) Reset() {
+	*x = DeleteCloudDocAppearancesResponse{}
+	mi := &file_kg_v1_kg_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteCloudDocAppearancesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteCloudDocAppearancesResponse) ProtoMessage() {}
+
+func (x *DeleteCloudDocAppearancesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteCloudDocAppearancesResponse.ProtoReflect.Descriptor instead.
+func (*DeleteCloudDocAppearancesResponse) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *DeleteCloudDocAppearancesResponse) GetDeleted() int64 {
+	if x != nil {
+		return x.Deleted
+	}
+	return 0
+}
+
+func (x *DeleteCloudDocAppearancesResponse) GetEntitiesRemoved() int64 {
+	if x != nil {
+		return x.EntitiesRemoved
+	}
+	return 0
 }
 
 type NeighborsRequest struct {
@@ -1470,7 +1702,7 @@ type NeighborsRequest struct {
 
 func (x *NeighborsRequest) Reset() {
 	*x = NeighborsRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[28]
+	mi := &file_kg_v1_kg_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1482,7 +1714,7 @@ func (x *NeighborsRequest) String() string {
 func (*NeighborsRequest) ProtoMessage() {}
 
 func (x *NeighborsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[28]
+	mi := &file_kg_v1_kg_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1495,7 +1727,7 @@ func (x *NeighborsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NeighborsRequest.ProtoReflect.Descriptor instead.
 func (*NeighborsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{28}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *NeighborsRequest) GetEids() []string {
@@ -1533,7 +1765,7 @@ type NeighborRow struct {
 
 func (x *NeighborRow) Reset() {
 	*x = NeighborRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[29]
+	mi := &file_kg_v1_kg_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1545,7 +1777,7 @@ func (x *NeighborRow) String() string {
 func (*NeighborRow) ProtoMessage() {}
 
 func (x *NeighborRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[29]
+	mi := &file_kg_v1_kg_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1558,7 +1790,7 @@ func (x *NeighborRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NeighborRow.ProtoReflect.Descriptor instead.
 func (*NeighborRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{29}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *NeighborRow) GetEid() string {
@@ -1612,7 +1844,7 @@ type NeighborsResponse struct {
 
 func (x *NeighborsResponse) Reset() {
 	*x = NeighborsResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[30]
+	mi := &file_kg_v1_kg_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1624,7 +1856,7 @@ func (x *NeighborsResponse) String() string {
 func (*NeighborsResponse) ProtoMessage() {}
 
 func (x *NeighborsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[30]
+	mi := &file_kg_v1_kg_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1637,7 +1869,7 @@ func (x *NeighborsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NeighborsResponse.ProtoReflect.Descriptor instead.
 func (*NeighborsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{30}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *NeighborsResponse) GetRows() []*NeighborRow {
@@ -1658,7 +1890,7 @@ type FetchEvidenceRequest struct {
 
 func (x *FetchEvidenceRequest) Reset() {
 	*x = FetchEvidenceRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[31]
+	mi := &file_kg_v1_kg_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1670,7 +1902,7 @@ func (x *FetchEvidenceRequest) String() string {
 func (*FetchEvidenceRequest) ProtoMessage() {}
 
 func (x *FetchEvidenceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[31]
+	mi := &file_kg_v1_kg_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1683,7 +1915,7 @@ func (x *FetchEvidenceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchEvidenceRequest.ProtoReflect.Descriptor instead.
 func (*FetchEvidenceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{31}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *FetchEvidenceRequest) GetEids() []string {
@@ -1722,7 +1954,7 @@ type EvidenceRow struct {
 
 func (x *EvidenceRow) Reset() {
 	*x = EvidenceRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[32]
+	mi := &file_kg_v1_kg_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1734,7 +1966,7 @@ func (x *EvidenceRow) String() string {
 func (*EvidenceRow) ProtoMessage() {}
 
 func (x *EvidenceRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[32]
+	mi := &file_kg_v1_kg_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1747,7 +1979,7 @@ func (x *EvidenceRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvidenceRow.ProtoReflect.Descriptor instead.
 func (*EvidenceRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{32}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *EvidenceRow) GetEid() string {
@@ -1808,7 +2040,7 @@ type FetchEvidenceResponse struct {
 
 func (x *FetchEvidenceResponse) Reset() {
 	*x = FetchEvidenceResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[33]
+	mi := &file_kg_v1_kg_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1820,7 +2052,7 @@ func (x *FetchEvidenceResponse) String() string {
 func (*FetchEvidenceResponse) ProtoMessage() {}
 
 func (x *FetchEvidenceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[33]
+	mi := &file_kg_v1_kg_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1833,7 +2065,7 @@ func (x *FetchEvidenceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchEvidenceResponse.ProtoReflect.Descriptor instead.
 func (*FetchEvidenceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{33}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *FetchEvidenceResponse) GetRows() []*EvidenceRow {
@@ -1852,7 +2084,7 @@ type RelationsAmongRequest struct {
 
 func (x *RelationsAmongRequest) Reset() {
 	*x = RelationsAmongRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[34]
+	mi := &file_kg_v1_kg_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1864,7 +2096,7 @@ func (x *RelationsAmongRequest) String() string {
 func (*RelationsAmongRequest) ProtoMessage() {}
 
 func (x *RelationsAmongRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[34]
+	mi := &file_kg_v1_kg_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1877,7 +2109,7 @@ func (x *RelationsAmongRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelationsAmongRequest.ProtoReflect.Descriptor instead.
 func (*RelationsAmongRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{34}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RelationsAmongRequest) GetEids() []string {
@@ -1902,7 +2134,7 @@ type RelationRow struct {
 
 func (x *RelationRow) Reset() {
 	*x = RelationRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[35]
+	mi := &file_kg_v1_kg_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1914,7 +2146,7 @@ func (x *RelationRow) String() string {
 func (*RelationRow) ProtoMessage() {}
 
 func (x *RelationRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[35]
+	mi := &file_kg_v1_kg_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1927,7 +2159,7 @@ func (x *RelationRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelationRow.ProtoReflect.Descriptor instead.
 func (*RelationRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{35}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RelationRow) GetSrcEid() string {
@@ -1988,7 +2220,7 @@ type RelationsAmongResponse struct {
 
 func (x *RelationsAmongResponse) Reset() {
 	*x = RelationsAmongResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[36]
+	mi := &file_kg_v1_kg_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2000,7 +2232,7 @@ func (x *RelationsAmongResponse) String() string {
 func (*RelationsAmongResponse) ProtoMessage() {}
 
 func (x *RelationsAmongResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[36]
+	mi := &file_kg_v1_kg_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2013,7 +2245,7 @@ func (x *RelationsAmongResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelationsAmongResponse.ProtoReflect.Descriptor instead.
 func (*RelationsAmongResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{36}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RelationsAmongResponse) GetRows() []*RelationRow {
@@ -2032,7 +2264,7 @@ type EntitiesByEidsRequest struct {
 
 func (x *EntitiesByEidsRequest) Reset() {
 	*x = EntitiesByEidsRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[37]
+	mi := &file_kg_v1_kg_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2044,7 +2276,7 @@ func (x *EntitiesByEidsRequest) String() string {
 func (*EntitiesByEidsRequest) ProtoMessage() {}
 
 func (x *EntitiesByEidsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[37]
+	mi := &file_kg_v1_kg_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2057,7 +2289,7 @@ func (x *EntitiesByEidsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntitiesByEidsRequest.ProtoReflect.Descriptor instead.
 func (*EntitiesByEidsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{37}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *EntitiesByEidsRequest) GetEids() []string {
@@ -2080,7 +2312,7 @@ type EntityDetail struct {
 
 func (x *EntityDetail) Reset() {
 	*x = EntityDetail{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[38]
+	mi := &file_kg_v1_kg_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2092,7 +2324,7 @@ func (x *EntityDetail) String() string {
 func (*EntityDetail) ProtoMessage() {}
 
 func (x *EntityDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[38]
+	mi := &file_kg_v1_kg_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2105,7 +2337,7 @@ func (x *EntityDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityDetail.ProtoReflect.Descriptor instead.
 func (*EntityDetail) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{38}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *EntityDetail) GetEid() string {
@@ -2152,7 +2384,7 @@ type EntitiesByEidsResponse struct {
 
 func (x *EntitiesByEidsResponse) Reset() {
 	*x = EntitiesByEidsResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[39]
+	mi := &file_kg_v1_kg_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2164,7 +2396,7 @@ func (x *EntitiesByEidsResponse) String() string {
 func (*EntitiesByEidsResponse) ProtoMessage() {}
 
 func (x *EntitiesByEidsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[39]
+	mi := &file_kg_v1_kg_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2177,7 +2409,7 @@ func (x *EntitiesByEidsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntitiesByEidsResponse.ProtoReflect.Descriptor instead.
 func (*EntitiesByEidsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{39}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *EntitiesByEidsResponse) GetRows() []*EntityDetail {
@@ -2197,7 +2429,7 @@ type EntityExposureRequest struct {
 
 func (x *EntityExposureRequest) Reset() {
 	*x = EntityExposureRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[40]
+	mi := &file_kg_v1_kg_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2209,7 +2441,7 @@ func (x *EntityExposureRequest) String() string {
 func (*EntityExposureRequest) ProtoMessage() {}
 
 func (x *EntityExposureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[40]
+	mi := &file_kg_v1_kg_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2222,7 +2454,7 @@ func (x *EntityExposureRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityExposureRequest.ProtoReflect.Descriptor instead.
 func (*EntityExposureRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{40}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *EntityExposureRequest) GetBvids() []string {
@@ -2250,7 +2482,7 @@ type ExposureEvidence struct {
 
 func (x *ExposureEvidence) Reset() {
 	*x = ExposureEvidence{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[41]
+	mi := &file_kg_v1_kg_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2262,7 +2494,7 @@ func (x *ExposureEvidence) String() string {
 func (*ExposureEvidence) ProtoMessage() {}
 
 func (x *ExposureEvidence) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[41]
+	mi := &file_kg_v1_kg_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2275,7 +2507,7 @@ func (x *ExposureEvidence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExposureEvidence.ProtoReflect.Descriptor instead.
 func (*ExposureEvidence) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{41}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ExposureEvidence) GetBvid() string {
@@ -2313,7 +2545,7 @@ type ExposureRow struct {
 
 func (x *ExposureRow) Reset() {
 	*x = ExposureRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[42]
+	mi := &file_kg_v1_kg_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2325,7 +2557,7 @@ func (x *ExposureRow) String() string {
 func (*ExposureRow) ProtoMessage() {}
 
 func (x *ExposureRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[42]
+	mi := &file_kg_v1_kg_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2338,7 +2570,7 @@ func (x *ExposureRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExposureRow.ProtoReflect.Descriptor instead.
 func (*ExposureRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{42}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ExposureRow) GetEid() string {
@@ -2392,7 +2624,7 @@ type EntityExposureResponse struct {
 
 func (x *EntityExposureResponse) Reset() {
 	*x = EntityExposureResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[43]
+	mi := &file_kg_v1_kg_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2404,7 +2636,7 @@ func (x *EntityExposureResponse) String() string {
 func (*EntityExposureResponse) ProtoMessage() {}
 
 func (x *EntityExposureResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[43]
+	mi := &file_kg_v1_kg_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2417,7 +2649,7 @@ func (x *EntityExposureResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityExposureResponse.ProtoReflect.Descriptor instead.
 func (*EntityExposureResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{43}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *EntityExposureResponse) GetRows() []*ExposureRow {
@@ -2438,7 +2670,7 @@ type EntityAppearancesRequest struct {
 
 func (x *EntityAppearancesRequest) Reset() {
 	*x = EntityAppearancesRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[44]
+	mi := &file_kg_v1_kg_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2450,7 +2682,7 @@ func (x *EntityAppearancesRequest) String() string {
 func (*EntityAppearancesRequest) ProtoMessage() {}
 
 func (x *EntityAppearancesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[44]
+	mi := &file_kg_v1_kg_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2463,7 +2695,7 @@ func (x *EntityAppearancesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityAppearancesRequest.ProtoReflect.Descriptor instead.
 func (*EntityAppearancesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{44}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *EntityAppearancesRequest) GetEid() string {
@@ -2498,7 +2730,7 @@ type AppearanceRow struct {
 
 func (x *AppearanceRow) Reset() {
 	*x = AppearanceRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[45]
+	mi := &file_kg_v1_kg_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2510,7 +2742,7 @@ func (x *AppearanceRow) String() string {
 func (*AppearanceRow) ProtoMessage() {}
 
 func (x *AppearanceRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[45]
+	mi := &file_kg_v1_kg_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2523,7 +2755,7 @@ func (x *AppearanceRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppearanceRow.ProtoReflect.Descriptor instead.
 func (*AppearanceRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{45}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *AppearanceRow) GetBvid() string {
@@ -2556,7 +2788,7 @@ type EntityAppearancesResponse struct {
 
 func (x *EntityAppearancesResponse) Reset() {
 	*x = EntityAppearancesResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[46]
+	mi := &file_kg_v1_kg_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2568,7 +2800,7 @@ func (x *EntityAppearancesResponse) String() string {
 func (*EntityAppearancesResponse) ProtoMessage() {}
 
 func (x *EntityAppearancesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[46]
+	mi := &file_kg_v1_kg_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2581,7 +2813,7 @@ func (x *EntityAppearancesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityAppearancesResponse.ProtoReflect.Descriptor instead.
 func (*EntityAppearancesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{46}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *EntityAppearancesResponse) GetRows() []*AppearanceRow {
@@ -2600,7 +2832,7 @@ type TopEntitiesRequest struct {
 
 func (x *TopEntitiesRequest) Reset() {
 	*x = TopEntitiesRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[47]
+	mi := &file_kg_v1_kg_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2612,7 +2844,7 @@ func (x *TopEntitiesRequest) String() string {
 func (*TopEntitiesRequest) ProtoMessage() {}
 
 func (x *TopEntitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[47]
+	mi := &file_kg_v1_kg_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2625,7 +2857,7 @@ func (x *TopEntitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopEntitiesRequest.ProtoReflect.Descriptor instead.
 func (*TopEntitiesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{47}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *TopEntitiesRequest) GetLimit() int32 {
@@ -2648,7 +2880,7 @@ type TopEntityRow struct {
 
 func (x *TopEntityRow) Reset() {
 	*x = TopEntityRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[48]
+	mi := &file_kg_v1_kg_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2660,7 +2892,7 @@ func (x *TopEntityRow) String() string {
 func (*TopEntityRow) ProtoMessage() {}
 
 func (x *TopEntityRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[48]
+	mi := &file_kg_v1_kg_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2673,7 +2905,7 @@ func (x *TopEntityRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopEntityRow.ProtoReflect.Descriptor instead.
 func (*TopEntityRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{48}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *TopEntityRow) GetEid() string {
@@ -2720,7 +2952,7 @@ type TopEntitiesResponse struct {
 
 func (x *TopEntitiesResponse) Reset() {
 	*x = TopEntitiesResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[49]
+	mi := &file_kg_v1_kg_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2732,7 +2964,7 @@ func (x *TopEntitiesResponse) String() string {
 func (*TopEntitiesResponse) ProtoMessage() {}
 
 func (x *TopEntitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[49]
+	mi := &file_kg_v1_kg_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2745,7 +2977,7 @@ func (x *TopEntitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopEntitiesResponse.ProtoReflect.Descriptor instead.
 func (*TopEntitiesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{49}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *TopEntitiesResponse) GetRows() []*TopEntityRow {
@@ -2764,7 +2996,7 @@ type EdgesAmongRequest struct {
 
 func (x *EdgesAmongRequest) Reset() {
 	*x = EdgesAmongRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[50]
+	mi := &file_kg_v1_kg_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2776,7 +3008,7 @@ func (x *EdgesAmongRequest) String() string {
 func (*EdgesAmongRequest) ProtoMessage() {}
 
 func (x *EdgesAmongRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[50]
+	mi := &file_kg_v1_kg_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2789,7 +3021,7 @@ func (x *EdgesAmongRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgesAmongRequest.ProtoReflect.Descriptor instead.
 func (*EdgesAmongRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{50}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *EdgesAmongRequest) GetEids() []string {
@@ -2810,7 +3042,7 @@ type EdgeRow struct {
 
 func (x *EdgeRow) Reset() {
 	*x = EdgeRow{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[51]
+	mi := &file_kg_v1_kg_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2822,7 +3054,7 @@ func (x *EdgeRow) String() string {
 func (*EdgeRow) ProtoMessage() {}
 
 func (x *EdgeRow) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[51]
+	mi := &file_kg_v1_kg_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2835,7 +3067,7 @@ func (x *EdgeRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgeRow.ProtoReflect.Descriptor instead.
 func (*EdgeRow) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{51}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *EdgeRow) GetSrcEid() string {
@@ -2868,7 +3100,7 @@ type EdgesAmongResponse struct {
 
 func (x *EdgesAmongResponse) Reset() {
 	*x = EdgesAmongResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[52]
+	mi := &file_kg_v1_kg_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2880,7 +3112,7 @@ func (x *EdgesAmongResponse) String() string {
 func (*EdgesAmongResponse) ProtoMessage() {}
 
 func (x *EdgesAmongResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[52]
+	mi := &file_kg_v1_kg_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2893,10 +3125,208 @@ func (x *EdgesAmongResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgesAmongResponse.ProtoReflect.Descriptor instead.
 func (*EdgesAmongResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{52}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *EdgesAmongResponse) GetRows() []*EdgeRow {
+	if x != nil {
+		return x.Rows
+	}
+	return nil
+}
+
+type FetchCloudDocEvidenceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Eids  []string               `protobuf:"bytes,1,rep,name=eids,proto3" json:"eids,omitempty"`
+	// 必填：多租户隔离按 CloudDoc.uid 过滤。
+	Uid int64 `protobuf:"varint,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	// 空 = 该用户全部云盘文档；否则限定 upload_uuid 集合。
+	UploadUuids   []string `protobuf:"bytes,3,rep,name=upload_uuids,json=uploadUuids,proto3" json:"upload_uuids,omitempty"`
+	Limit         int32    `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchCloudDocEvidenceRequest) Reset() {
+	*x = FetchCloudDocEvidenceRequest{}
+	mi := &file_kg_v1_kg_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchCloudDocEvidenceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchCloudDocEvidenceRequest) ProtoMessage() {}
+
+func (x *FetchCloudDocEvidenceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchCloudDocEvidenceRequest.ProtoReflect.Descriptor instead.
+func (*FetchCloudDocEvidenceRequest) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *FetchCloudDocEvidenceRequest) GetEids() []string {
+	if x != nil {
+		return x.Eids
+	}
+	return nil
+}
+
+func (x *FetchCloudDocEvidenceRequest) GetUid() int64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *FetchCloudDocEvidenceRequest) GetUploadUuids() []string {
+	if x != nil {
+		return x.UploadUuids
+	}
+	return nil
+}
+
+func (x *FetchCloudDocEvidenceRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type CloudDocEvidenceRow struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Eid           string                 `protobuf:"bytes,1,opt,name=eid,proto3" json:"eid,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	UploadUuid    string                 `protobuf:"bytes,4,opt,name=upload_uuid,json=uploadUuid,proto3" json:"upload_uuid,omitempty"`
+	Quote         string                 `protobuf:"bytes,5,opt,name=quote,proto3" json:"quote,omitempty"`
+	Title         string                 `protobuf:"bytes,6,opt,name=title,proto3" json:"title,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloudDocEvidenceRow) Reset() {
+	*x = CloudDocEvidenceRow{}
+	mi := &file_kg_v1_kg_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloudDocEvidenceRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloudDocEvidenceRow) ProtoMessage() {}
+
+func (x *CloudDocEvidenceRow) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloudDocEvidenceRow.ProtoReflect.Descriptor instead.
+func (*CloudDocEvidenceRow) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *CloudDocEvidenceRow) GetEid() string {
+	if x != nil {
+		return x.Eid
+	}
+	return ""
+}
+
+func (x *CloudDocEvidenceRow) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CloudDocEvidenceRow) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *CloudDocEvidenceRow) GetUploadUuid() string {
+	if x != nil {
+		return x.UploadUuid
+	}
+	return ""
+}
+
+func (x *CloudDocEvidenceRow) GetQuote() string {
+	if x != nil {
+		return x.Quote
+	}
+	return ""
+}
+
+func (x *CloudDocEvidenceRow) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+type FetchCloudDocEvidenceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Rows          []*CloudDocEvidenceRow `protobuf:"bytes,1,rep,name=rows,proto3" json:"rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchCloudDocEvidenceResponse) Reset() {
+	*x = FetchCloudDocEvidenceResponse{}
+	mi := &file_kg_v1_kg_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchCloudDocEvidenceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchCloudDocEvidenceResponse) ProtoMessage() {}
+
+func (x *FetchCloudDocEvidenceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kg_v1_kg_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchCloudDocEvidenceResponse.ProtoReflect.Descriptor instead.
+func (*FetchCloudDocEvidenceResponse) Descriptor() ([]byte, []int) {
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *FetchCloudDocEvidenceResponse) GetRows() []*CloudDocEvidenceRow {
 	if x != nil {
 		return x.Rows
 	}
@@ -2911,7 +3341,7 @@ type StatsRequest struct {
 
 func (x *StatsRequest) Reset() {
 	*x = StatsRequest{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[53]
+	mi := &file_kg_v1_kg_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2923,7 +3353,7 @@ func (x *StatsRequest) String() string {
 func (*StatsRequest) ProtoMessage() {}
 
 func (x *StatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[53]
+	mi := &file_kg_v1_kg_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2936,23 +3366,26 @@ func (x *StatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsRequest.ProtoReflect.Descriptor instead.
 func (*StatsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{53}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{60}
 }
 
 type StatsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Entities      int64                  `protobuf:"varint,1,opt,name=entities,proto3" json:"entities,omitempty"`
-	Relations     int64                  `protobuf:"varint,2,opt,name=relations,proto3" json:"relations,omitempty"`
-	Evidence      int64                  `protobuf:"varint,3,opt,name=evidence,proto3" json:"evidence,omitempty"`
-	Videos        int64                  `protobuf:"varint,4,opt,name=videos,proto3" json:"videos,omitempty"`
-	PendingPages  int64                  `protobuf:"varint,5,opt,name=pending_pages,json=pendingPages,proto3" json:"pending_pages,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Entities     int64                  `protobuf:"varint,1,opt,name=entities,proto3" json:"entities,omitempty"`
+	Relations    int64                  `protobuf:"varint,2,opt,name=relations,proto3" json:"relations,omitempty"`
+	Evidence     int64                  `protobuf:"varint,3,opt,name=evidence,proto3" json:"evidence,omitempty"`
+	Videos       int64                  `protobuf:"varint,4,opt,name=videos,proto3" json:"videos,omitempty"`
+	PendingPages int64                  `protobuf:"varint,5,opt,name=pending_pages,json=pendingPages,proto3" json:"pending_pages,omitempty"`
+	// 云盘知识点计数（全局，与 entities/relations 同口径）。
+	CloudDocs     int64 `protobuf:"varint,6,opt,name=cloud_docs,json=cloudDocs,proto3" json:"cloud_docs,omitempty"`
+	CloudEvidence int64 `protobuf:"varint,7,opt,name=cloud_evidence,json=cloudEvidence,proto3" json:"cloud_evidence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StatsResponse) Reset() {
 	*x = StatsResponse{}
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[54]
+	mi := &file_kg_v1_kg_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2964,7 +3397,7 @@ func (x *StatsResponse) String() string {
 func (*StatsResponse) ProtoMessage() {}
 
 func (x *StatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kg_v1_kg_proto_msgTypes[54]
+	mi := &file_kg_v1_kg_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2977,7 +3410,7 @@ func (x *StatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsResponse.ProtoReflect.Descriptor instead.
 func (*StatsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kg_v1_kg_proto_rawDescGZIP(), []int{54}
+	return file_kg_v1_kg_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *StatsResponse) GetEntities() int64 {
@@ -3015,11 +3448,25 @@ func (x *StatsResponse) GetPendingPages() int64 {
 	return 0
 }
 
-var File_proto_kg_v1_kg_proto protoreflect.FileDescriptor
+func (x *StatsResponse) GetCloudDocs() int64 {
+	if x != nil {
+		return x.CloudDocs
+	}
+	return 0
+}
 
-const file_proto_kg_v1_kg_proto_rawDesc = "" +
+func (x *StatsResponse) GetCloudEvidence() int64 {
+	if x != nil {
+		return x.CloudEvidence
+	}
+	return 0
+}
+
+var File_kg_v1_kg_proto protoreflect.FileDescriptor
+
+const file_kg_v1_kg_proto_rawDesc = "" +
 	"\n" +
-	"\x14proto/kg/v1/kg.proto\x12\x05kg.v1\"F\n" +
+	"\x0ekg/v1/kg.proto\x12\x05kg.v1\"F\n" +
 	"\x13ResolveScopeRequest\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\x03R\x03uid\x12\x1d\n" +
 	"\n" +
@@ -3108,7 +3555,23 @@ const file_proto_kg_v1_kg_proto_rawDesc = "" +
 	"\x10entities_removed\x18\x01 \x01(\x03R\x0fentitiesRemoved\x12%\n" +
 	"\x0evideos_removed\x18\x02 \x01(\x03R\rvideosRemoved\"\x11\n" +
 	"\x0fClearAllRequest\"\x12\n" +
-	"\x10ClearAllResponse\"_\n" +
+	"\x10ClearAllResponse\"\xc1\x01\n" +
+	"\x1eLinkCloudDocAppearancesRequest\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x03R\x03uid\x12\x1f\n" +
+	"\vupload_uuid\x18\x02 \x01(\tR\n" +
+	"uploadUuid\x12\x14\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\x12!\n" +
+	"\fcontent_hash\x18\x04 \x01(\tR\vcontentHash\x123\n" +
+	"\vappearances\x18\x05 \x03(\v2\x11.kg.v1.AppearanceR\vappearances\"9\n" +
+	"\x1fLinkCloudDocAppearancesResponse\x12\x16\n" +
+	"\x06linked\x18\x01 \x01(\x03R\x06linked\"U\n" +
+	" DeleteCloudDocAppearancesRequest\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x03R\x03uid\x12\x1f\n" +
+	"\vupload_uuid\x18\x02 \x01(\tR\n" +
+	"uploadUuid\"h\n" +
+	"!DeleteCloudDocAppearancesResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\x03R\adeleted\x12)\n" +
+	"\x10entities_removed\x18\x02 \x01(\x03R\x0fentitiesRemoved\"_\n" +
 	"\x10NeighborsRequest\x12\x12\n" +
 	"\x04eids\x18\x01 \x03(\tR\x04eids\x12!\n" +
 	"\fexclude_eids\x18\x02 \x03(\tR\vexcludeEids\x12\x14\n" +
@@ -3205,14 +3668,32 @@ const file_proto_kg_v1_kg_proto_rawDesc = "" +
 	"\adst_eid\x18\x02 \x01(\tR\x06dstEid\x12\x19\n" +
 	"\brel_type\x18\x03 \x01(\tR\arelType\"8\n" +
 	"\x12EdgesAmongResponse\x12\"\n" +
-	"\x04rows\x18\x01 \x03(\v2\x0e.kg.v1.EdgeRowR\x04rows\"\x0e\n" +
-	"\fStatsRequest\"\xa2\x01\n" +
+	"\x04rows\x18\x01 \x03(\v2\x0e.kg.v1.EdgeRowR\x04rows\"}\n" +
+	"\x1cFetchCloudDocEvidenceRequest\x12\x12\n" +
+	"\x04eids\x18\x01 \x03(\tR\x04eids\x12\x10\n" +
+	"\x03uid\x18\x02 \x01(\x03R\x03uid\x12!\n" +
+	"\fupload_uuids\x18\x03 \x03(\tR\vuploadUuids\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\"\x9c\x01\n" +
+	"\x13CloudDocEvidenceRow\x12\x10\n" +
+	"\x03eid\x18\x01 \x01(\tR\x03eid\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x1f\n" +
+	"\vupload_uuid\x18\x04 \x01(\tR\n" +
+	"uploadUuid\x12\x14\n" +
+	"\x05quote\x18\x05 \x01(\tR\x05quote\x12\x14\n" +
+	"\x05title\x18\x06 \x01(\tR\x05title\"O\n" +
+	"\x1dFetchCloudDocEvidenceResponse\x12.\n" +
+	"\x04rows\x18\x01 \x03(\v2\x1a.kg.v1.CloudDocEvidenceRowR\x04rows\"\x0e\n" +
+	"\fStatsRequest\"\xe8\x01\n" +
 	"\rStatsResponse\x12\x1a\n" +
 	"\bentities\x18\x01 \x01(\x03R\bentities\x12\x1c\n" +
 	"\trelations\x18\x02 \x01(\x03R\trelations\x12\x1a\n" +
 	"\bevidence\x18\x03 \x01(\x03R\bevidence\x12\x16\n" +
 	"\x06videos\x18\x04 \x01(\x03R\x06videos\x12#\n" +
-	"\rpending_pages\x18\x05 \x01(\x03R\fpendingPages2\xbc\f\n" +
+	"\rpending_pages\x18\x05 \x01(\x03R\fpendingPages\x12\x1d\n" +
+	"\n" +
+	"cloud_docs\x18\x06 \x01(\x03R\tcloudDocs\x12%\n" +
+	"\x0ecloud_evidence\x18\a \x01(\x03R\rcloudEvidence2\xfa\x0e\n" +
 	"\aKgGraph\x12G\n" +
 	"\fResolveScope\x12\x1a.kg.v1.ResolveScopeRequest\x1a\x1b.kg.v1.ResolveScopeResponse\x12Y\n" +
 	"\x12SelectPendingPages\x12 .kg.v1.SelectPendingPagesRequest\x1a!.kg.v1.SelectPendingPagesResponse\x12>\n" +
@@ -3225,7 +3706,10 @@ const file_proto_kg_v1_kg_proto_rawDesc = "" +
 	"\x0fUpsertRelations\x12\x1d.kg.v1.UpsertRelationsRequest\x1a\x1e.kg.v1.UpsertRelationsResponse\x12Y\n" +
 	"\x12DeletePageEvidence\x12 .kg.v1.DeletePageEvidenceRequest\x1a!.kg.v1.DeletePageEvidenceResponse\x12D\n" +
 	"\vDeleteVideo\x12\x19.kg.v1.DeleteVideoRequest\x1a\x1a.kg.v1.DeleteVideoResponse\x12;\n" +
-	"\bClearAll\x12\x16.kg.v1.ClearAllRequest\x1a\x17.kg.v1.ClearAllResponse\x12>\n" +
+	"\bClearAll\x12\x16.kg.v1.ClearAllRequest\x1a\x17.kg.v1.ClearAllResponse\x12h\n" +
+	"\x17LinkCloudDocAppearances\x12%.kg.v1.LinkCloudDocAppearancesRequest\x1a&.kg.v1.LinkCloudDocAppearancesResponse\x12n\n" +
+	"\x19DeleteCloudDocAppearances\x12'.kg.v1.DeleteCloudDocAppearancesRequest\x1a(.kg.v1.DeleteCloudDocAppearancesResponse\x12b\n" +
+	"\x15FetchCloudDocEvidence\x12#.kg.v1.FetchCloudDocEvidenceRequest\x1a$.kg.v1.FetchCloudDocEvidenceResponse\x12>\n" +
 	"\tNeighbors\x12\x17.kg.v1.NeighborsRequest\x1a\x18.kg.v1.NeighborsResponse\x12J\n" +
 	"\rFetchEvidence\x12\x1b.kg.v1.FetchEvidenceRequest\x1a\x1c.kg.v1.FetchEvidenceResponse\x12M\n" +
 	"\x0eRelationsAmong\x12\x1c.kg.v1.RelationsAmongRequest\x1a\x1d.kg.v1.RelationsAmongResponse\x12M\n" +
@@ -3238,158 +3722,173 @@ const file_proto_kg_v1_kg_proto_rawDesc = "" +
 	"\x05Stats\x12\x13.kg.v1.StatsRequest\x1a\x14.kg.v1.StatsResponseB\x1bZ\x19app-kg/internal/kgpb;kgpbb\x06proto3"
 
 var (
-	file_proto_kg_v1_kg_proto_rawDescOnce sync.Once
-	file_proto_kg_v1_kg_proto_rawDescData []byte
+	file_kg_v1_kg_proto_rawDescOnce sync.Once
+	file_kg_v1_kg_proto_rawDescData []byte
 )
 
-func file_proto_kg_v1_kg_proto_rawDescGZIP() []byte {
-	file_proto_kg_v1_kg_proto_rawDescOnce.Do(func() {
-		file_proto_kg_v1_kg_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_kg_v1_kg_proto_rawDesc), len(file_proto_kg_v1_kg_proto_rawDesc)))
+func file_kg_v1_kg_proto_rawDescGZIP() []byte {
+	file_kg_v1_kg_proto_rawDescOnce.Do(func() {
+		file_kg_v1_kg_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_kg_v1_kg_proto_rawDesc), len(file_kg_v1_kg_proto_rawDesc)))
 	})
-	return file_proto_kg_v1_kg_proto_rawDescData
+	return file_kg_v1_kg_proto_rawDescData
 }
 
-var file_proto_kg_v1_kg_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
-var file_proto_kg_v1_kg_proto_goTypes = []any{
-	(*ResolveScopeRequest)(nil),        // 0: kg.v1.ResolveScopeRequest
-	(*ResolveScopeResponse)(nil),       // 1: kg.v1.ResolveScopeResponse
-	(*SelectPendingPagesRequest)(nil),  // 2: kg.v1.SelectPendingPagesRequest
-	(*PendingPage)(nil),                // 3: kg.v1.PendingPage
-	(*SelectPendingPagesResponse)(nil), // 4: kg.v1.SelectPendingPagesResponse
-	(*BeginPageRequest)(nil),           // 5: kg.v1.BeginPageRequest
-	(*BeginPageResponse)(nil),          // 6: kg.v1.BeginPageResponse
-	(*MarkPageDoneRequest)(nil),        // 7: kg.v1.MarkPageDoneRequest
-	(*MarkPageDoneResponse)(nil),       // 8: kg.v1.MarkPageDoneResponse
-	(*MarkPageFailedRequest)(nil),      // 9: kg.v1.MarkPageFailedRequest
-	(*MarkPageFailedResponse)(nil),     // 10: kg.v1.MarkPageFailedResponse
-	(*CountPendingPagesRequest)(nil),   // 11: kg.v1.CountPendingPagesRequest
-	(*CountPendingPagesResponse)(nil),  // 12: kg.v1.CountPendingPagesResponse
-	(*EntityUpsert)(nil),               // 13: kg.v1.EntityUpsert
-	(*UpsertEntitiesRequest)(nil),      // 14: kg.v1.UpsertEntitiesRequest
-	(*UpsertEntitiesResponse)(nil),     // 15: kg.v1.UpsertEntitiesResponse
-	(*Appearance)(nil),                 // 16: kg.v1.Appearance
-	(*LinkAppearancesRequest)(nil),     // 17: kg.v1.LinkAppearancesRequest
-	(*LinkAppearancesResponse)(nil),    // 18: kg.v1.LinkAppearancesResponse
-	(*RelationUpsert)(nil),             // 19: kg.v1.RelationUpsert
-	(*UpsertRelationsRequest)(nil),     // 20: kg.v1.UpsertRelationsRequest
-	(*UpsertRelationsResponse)(nil),    // 21: kg.v1.UpsertRelationsResponse
-	(*DeletePageEvidenceRequest)(nil),  // 22: kg.v1.DeletePageEvidenceRequest
-	(*DeletePageEvidenceResponse)(nil), // 23: kg.v1.DeletePageEvidenceResponse
-	(*DeleteVideoRequest)(nil),         // 24: kg.v1.DeleteVideoRequest
-	(*DeleteVideoResponse)(nil),        // 25: kg.v1.DeleteVideoResponse
-	(*ClearAllRequest)(nil),            // 26: kg.v1.ClearAllRequest
-	(*ClearAllResponse)(nil),           // 27: kg.v1.ClearAllResponse
-	(*NeighborsRequest)(nil),           // 28: kg.v1.NeighborsRequest
-	(*NeighborRow)(nil),                // 29: kg.v1.NeighborRow
-	(*NeighborsResponse)(nil),          // 30: kg.v1.NeighborsResponse
-	(*FetchEvidenceRequest)(nil),       // 31: kg.v1.FetchEvidenceRequest
-	(*EvidenceRow)(nil),                // 32: kg.v1.EvidenceRow
-	(*FetchEvidenceResponse)(nil),      // 33: kg.v1.FetchEvidenceResponse
-	(*RelationsAmongRequest)(nil),      // 34: kg.v1.RelationsAmongRequest
-	(*RelationRow)(nil),                // 35: kg.v1.RelationRow
-	(*RelationsAmongResponse)(nil),     // 36: kg.v1.RelationsAmongResponse
-	(*EntitiesByEidsRequest)(nil),      // 37: kg.v1.EntitiesByEidsRequest
-	(*EntityDetail)(nil),               // 38: kg.v1.EntityDetail
-	(*EntitiesByEidsResponse)(nil),     // 39: kg.v1.EntitiesByEidsResponse
-	(*EntityExposureRequest)(nil),      // 40: kg.v1.EntityExposureRequest
-	(*ExposureEvidence)(nil),           // 41: kg.v1.ExposureEvidence
-	(*ExposureRow)(nil),                // 42: kg.v1.ExposureRow
-	(*EntityExposureResponse)(nil),     // 43: kg.v1.EntityExposureResponse
-	(*EntityAppearancesRequest)(nil),   // 44: kg.v1.EntityAppearancesRequest
-	(*AppearanceRow)(nil),              // 45: kg.v1.AppearanceRow
-	(*EntityAppearancesResponse)(nil),  // 46: kg.v1.EntityAppearancesResponse
-	(*TopEntitiesRequest)(nil),         // 47: kg.v1.TopEntitiesRequest
-	(*TopEntityRow)(nil),               // 48: kg.v1.TopEntityRow
-	(*TopEntitiesResponse)(nil),        // 49: kg.v1.TopEntitiesResponse
-	(*EdgesAmongRequest)(nil),          // 50: kg.v1.EdgesAmongRequest
-	(*EdgeRow)(nil),                    // 51: kg.v1.EdgeRow
-	(*EdgesAmongResponse)(nil),         // 52: kg.v1.EdgesAmongResponse
-	(*StatsRequest)(nil),               // 53: kg.v1.StatsRequest
-	(*StatsResponse)(nil),              // 54: kg.v1.StatsResponse
+var file_kg_v1_kg_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
+var file_kg_v1_kg_proto_goTypes = []any{
+	(*ResolveScopeRequest)(nil),               // 0: kg.v1.ResolveScopeRequest
+	(*ResolveScopeResponse)(nil),              // 1: kg.v1.ResolveScopeResponse
+	(*SelectPendingPagesRequest)(nil),         // 2: kg.v1.SelectPendingPagesRequest
+	(*PendingPage)(nil),                       // 3: kg.v1.PendingPage
+	(*SelectPendingPagesResponse)(nil),        // 4: kg.v1.SelectPendingPagesResponse
+	(*BeginPageRequest)(nil),                  // 5: kg.v1.BeginPageRequest
+	(*BeginPageResponse)(nil),                 // 6: kg.v1.BeginPageResponse
+	(*MarkPageDoneRequest)(nil),               // 7: kg.v1.MarkPageDoneRequest
+	(*MarkPageDoneResponse)(nil),              // 8: kg.v1.MarkPageDoneResponse
+	(*MarkPageFailedRequest)(nil),             // 9: kg.v1.MarkPageFailedRequest
+	(*MarkPageFailedResponse)(nil),            // 10: kg.v1.MarkPageFailedResponse
+	(*CountPendingPagesRequest)(nil),          // 11: kg.v1.CountPendingPagesRequest
+	(*CountPendingPagesResponse)(nil),         // 12: kg.v1.CountPendingPagesResponse
+	(*EntityUpsert)(nil),                      // 13: kg.v1.EntityUpsert
+	(*UpsertEntitiesRequest)(nil),             // 14: kg.v1.UpsertEntitiesRequest
+	(*UpsertEntitiesResponse)(nil),            // 15: kg.v1.UpsertEntitiesResponse
+	(*Appearance)(nil),                        // 16: kg.v1.Appearance
+	(*LinkAppearancesRequest)(nil),            // 17: kg.v1.LinkAppearancesRequest
+	(*LinkAppearancesResponse)(nil),           // 18: kg.v1.LinkAppearancesResponse
+	(*RelationUpsert)(nil),                    // 19: kg.v1.RelationUpsert
+	(*UpsertRelationsRequest)(nil),            // 20: kg.v1.UpsertRelationsRequest
+	(*UpsertRelationsResponse)(nil),           // 21: kg.v1.UpsertRelationsResponse
+	(*DeletePageEvidenceRequest)(nil),         // 22: kg.v1.DeletePageEvidenceRequest
+	(*DeletePageEvidenceResponse)(nil),        // 23: kg.v1.DeletePageEvidenceResponse
+	(*DeleteVideoRequest)(nil),                // 24: kg.v1.DeleteVideoRequest
+	(*DeleteVideoResponse)(nil),               // 25: kg.v1.DeleteVideoResponse
+	(*ClearAllRequest)(nil),                   // 26: kg.v1.ClearAllRequest
+	(*ClearAllResponse)(nil),                  // 27: kg.v1.ClearAllResponse
+	(*LinkCloudDocAppearancesRequest)(nil),    // 28: kg.v1.LinkCloudDocAppearancesRequest
+	(*LinkCloudDocAppearancesResponse)(nil),   // 29: kg.v1.LinkCloudDocAppearancesResponse
+	(*DeleteCloudDocAppearancesRequest)(nil),  // 30: kg.v1.DeleteCloudDocAppearancesRequest
+	(*DeleteCloudDocAppearancesResponse)(nil), // 31: kg.v1.DeleteCloudDocAppearancesResponse
+	(*NeighborsRequest)(nil),                  // 32: kg.v1.NeighborsRequest
+	(*NeighborRow)(nil),                       // 33: kg.v1.NeighborRow
+	(*NeighborsResponse)(nil),                 // 34: kg.v1.NeighborsResponse
+	(*FetchEvidenceRequest)(nil),              // 35: kg.v1.FetchEvidenceRequest
+	(*EvidenceRow)(nil),                       // 36: kg.v1.EvidenceRow
+	(*FetchEvidenceResponse)(nil),             // 37: kg.v1.FetchEvidenceResponse
+	(*RelationsAmongRequest)(nil),             // 38: kg.v1.RelationsAmongRequest
+	(*RelationRow)(nil),                       // 39: kg.v1.RelationRow
+	(*RelationsAmongResponse)(nil),            // 40: kg.v1.RelationsAmongResponse
+	(*EntitiesByEidsRequest)(nil),             // 41: kg.v1.EntitiesByEidsRequest
+	(*EntityDetail)(nil),                      // 42: kg.v1.EntityDetail
+	(*EntitiesByEidsResponse)(nil),            // 43: kg.v1.EntitiesByEidsResponse
+	(*EntityExposureRequest)(nil),             // 44: kg.v1.EntityExposureRequest
+	(*ExposureEvidence)(nil),                  // 45: kg.v1.ExposureEvidence
+	(*ExposureRow)(nil),                       // 46: kg.v1.ExposureRow
+	(*EntityExposureResponse)(nil),            // 47: kg.v1.EntityExposureResponse
+	(*EntityAppearancesRequest)(nil),          // 48: kg.v1.EntityAppearancesRequest
+	(*AppearanceRow)(nil),                     // 49: kg.v1.AppearanceRow
+	(*EntityAppearancesResponse)(nil),         // 50: kg.v1.EntityAppearancesResponse
+	(*TopEntitiesRequest)(nil),                // 51: kg.v1.TopEntitiesRequest
+	(*TopEntityRow)(nil),                      // 52: kg.v1.TopEntityRow
+	(*TopEntitiesResponse)(nil),               // 53: kg.v1.TopEntitiesResponse
+	(*EdgesAmongRequest)(nil),                 // 54: kg.v1.EdgesAmongRequest
+	(*EdgeRow)(nil),                           // 55: kg.v1.EdgeRow
+	(*EdgesAmongResponse)(nil),                // 56: kg.v1.EdgesAmongResponse
+	(*FetchCloudDocEvidenceRequest)(nil),      // 57: kg.v1.FetchCloudDocEvidenceRequest
+	(*CloudDocEvidenceRow)(nil),               // 58: kg.v1.CloudDocEvidenceRow
+	(*FetchCloudDocEvidenceResponse)(nil),     // 59: kg.v1.FetchCloudDocEvidenceResponse
+	(*StatsRequest)(nil),                      // 60: kg.v1.StatsRequest
+	(*StatsResponse)(nil),                     // 61: kg.v1.StatsResponse
 }
-var file_proto_kg_v1_kg_proto_depIdxs = []int32{
+var file_kg_v1_kg_proto_depIdxs = []int32{
 	3,  // 0: kg.v1.SelectPendingPagesResponse.pages:type_name -> kg.v1.PendingPage
 	13, // 1: kg.v1.UpsertEntitiesRequest.entities:type_name -> kg.v1.EntityUpsert
 	16, // 2: kg.v1.LinkAppearancesRequest.appearances:type_name -> kg.v1.Appearance
 	19, // 3: kg.v1.UpsertRelationsRequest.relations:type_name -> kg.v1.RelationUpsert
-	29, // 4: kg.v1.NeighborsResponse.rows:type_name -> kg.v1.NeighborRow
-	32, // 5: kg.v1.FetchEvidenceResponse.rows:type_name -> kg.v1.EvidenceRow
-	35, // 6: kg.v1.RelationsAmongResponse.rows:type_name -> kg.v1.RelationRow
-	38, // 7: kg.v1.EntitiesByEidsResponse.rows:type_name -> kg.v1.EntityDetail
-	41, // 8: kg.v1.ExposureRow.evidence_sample:type_name -> kg.v1.ExposureEvidence
-	42, // 9: kg.v1.EntityExposureResponse.rows:type_name -> kg.v1.ExposureRow
-	45, // 10: kg.v1.EntityAppearancesResponse.rows:type_name -> kg.v1.AppearanceRow
-	48, // 11: kg.v1.TopEntitiesResponse.rows:type_name -> kg.v1.TopEntityRow
-	51, // 12: kg.v1.EdgesAmongResponse.rows:type_name -> kg.v1.EdgeRow
-	0,  // 13: kg.v1.KgGraph.ResolveScope:input_type -> kg.v1.ResolveScopeRequest
-	2,  // 14: kg.v1.KgGraph.SelectPendingPages:input_type -> kg.v1.SelectPendingPagesRequest
-	5,  // 15: kg.v1.KgGraph.BeginPage:input_type -> kg.v1.BeginPageRequest
-	7,  // 16: kg.v1.KgGraph.MarkPageDone:input_type -> kg.v1.MarkPageDoneRequest
-	9,  // 17: kg.v1.KgGraph.MarkPageFailed:input_type -> kg.v1.MarkPageFailedRequest
-	11, // 18: kg.v1.KgGraph.CountPendingPages:input_type -> kg.v1.CountPendingPagesRequest
-	14, // 19: kg.v1.KgGraph.UpsertEntities:input_type -> kg.v1.UpsertEntitiesRequest
-	17, // 20: kg.v1.KgGraph.LinkAppearances:input_type -> kg.v1.LinkAppearancesRequest
-	20, // 21: kg.v1.KgGraph.UpsertRelations:input_type -> kg.v1.UpsertRelationsRequest
-	22, // 22: kg.v1.KgGraph.DeletePageEvidence:input_type -> kg.v1.DeletePageEvidenceRequest
-	24, // 23: kg.v1.KgGraph.DeleteVideo:input_type -> kg.v1.DeleteVideoRequest
-	26, // 24: kg.v1.KgGraph.ClearAll:input_type -> kg.v1.ClearAllRequest
-	28, // 25: kg.v1.KgGraph.Neighbors:input_type -> kg.v1.NeighborsRequest
-	31, // 26: kg.v1.KgGraph.FetchEvidence:input_type -> kg.v1.FetchEvidenceRequest
-	34, // 27: kg.v1.KgGraph.RelationsAmong:input_type -> kg.v1.RelationsAmongRequest
-	37, // 28: kg.v1.KgGraph.EntitiesByEids:input_type -> kg.v1.EntitiesByEidsRequest
-	40, // 29: kg.v1.KgGraph.EntityExposure:input_type -> kg.v1.EntityExposureRequest
-	44, // 30: kg.v1.KgGraph.EntityAppearances:input_type -> kg.v1.EntityAppearancesRequest
-	47, // 31: kg.v1.KgGraph.TopEntities:input_type -> kg.v1.TopEntitiesRequest
-	50, // 32: kg.v1.KgGraph.EdgesAmong:input_type -> kg.v1.EdgesAmongRequest
-	53, // 33: kg.v1.KgGraph.Stats:input_type -> kg.v1.StatsRequest
-	1,  // 34: kg.v1.KgGraph.ResolveScope:output_type -> kg.v1.ResolveScopeResponse
-	4,  // 35: kg.v1.KgGraph.SelectPendingPages:output_type -> kg.v1.SelectPendingPagesResponse
-	6,  // 36: kg.v1.KgGraph.BeginPage:output_type -> kg.v1.BeginPageResponse
-	8,  // 37: kg.v1.KgGraph.MarkPageDone:output_type -> kg.v1.MarkPageDoneResponse
-	10, // 38: kg.v1.KgGraph.MarkPageFailed:output_type -> kg.v1.MarkPageFailedResponse
-	12, // 39: kg.v1.KgGraph.CountPendingPages:output_type -> kg.v1.CountPendingPagesResponse
-	15, // 40: kg.v1.KgGraph.UpsertEntities:output_type -> kg.v1.UpsertEntitiesResponse
-	18, // 41: kg.v1.KgGraph.LinkAppearances:output_type -> kg.v1.LinkAppearancesResponse
-	21, // 42: kg.v1.KgGraph.UpsertRelations:output_type -> kg.v1.UpsertRelationsResponse
-	23, // 43: kg.v1.KgGraph.DeletePageEvidence:output_type -> kg.v1.DeletePageEvidenceResponse
-	25, // 44: kg.v1.KgGraph.DeleteVideo:output_type -> kg.v1.DeleteVideoResponse
-	27, // 45: kg.v1.KgGraph.ClearAll:output_type -> kg.v1.ClearAllResponse
-	30, // 46: kg.v1.KgGraph.Neighbors:output_type -> kg.v1.NeighborsResponse
-	33, // 47: kg.v1.KgGraph.FetchEvidence:output_type -> kg.v1.FetchEvidenceResponse
-	36, // 48: kg.v1.KgGraph.RelationsAmong:output_type -> kg.v1.RelationsAmongResponse
-	39, // 49: kg.v1.KgGraph.EntitiesByEids:output_type -> kg.v1.EntitiesByEidsResponse
-	43, // 50: kg.v1.KgGraph.EntityExposure:output_type -> kg.v1.EntityExposureResponse
-	46, // 51: kg.v1.KgGraph.EntityAppearances:output_type -> kg.v1.EntityAppearancesResponse
-	49, // 52: kg.v1.KgGraph.TopEntities:output_type -> kg.v1.TopEntitiesResponse
-	52, // 53: kg.v1.KgGraph.EdgesAmong:output_type -> kg.v1.EdgesAmongResponse
-	54, // 54: kg.v1.KgGraph.Stats:output_type -> kg.v1.StatsResponse
-	34, // [34:55] is the sub-list for method output_type
-	13, // [13:34] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	16, // 4: kg.v1.LinkCloudDocAppearancesRequest.appearances:type_name -> kg.v1.Appearance
+	33, // 5: kg.v1.NeighborsResponse.rows:type_name -> kg.v1.NeighborRow
+	36, // 6: kg.v1.FetchEvidenceResponse.rows:type_name -> kg.v1.EvidenceRow
+	39, // 7: kg.v1.RelationsAmongResponse.rows:type_name -> kg.v1.RelationRow
+	42, // 8: kg.v1.EntitiesByEidsResponse.rows:type_name -> kg.v1.EntityDetail
+	45, // 9: kg.v1.ExposureRow.evidence_sample:type_name -> kg.v1.ExposureEvidence
+	46, // 10: kg.v1.EntityExposureResponse.rows:type_name -> kg.v1.ExposureRow
+	49, // 11: kg.v1.EntityAppearancesResponse.rows:type_name -> kg.v1.AppearanceRow
+	52, // 12: kg.v1.TopEntitiesResponse.rows:type_name -> kg.v1.TopEntityRow
+	55, // 13: kg.v1.EdgesAmongResponse.rows:type_name -> kg.v1.EdgeRow
+	58, // 14: kg.v1.FetchCloudDocEvidenceResponse.rows:type_name -> kg.v1.CloudDocEvidenceRow
+	0,  // 15: kg.v1.KgGraph.ResolveScope:input_type -> kg.v1.ResolveScopeRequest
+	2,  // 16: kg.v1.KgGraph.SelectPendingPages:input_type -> kg.v1.SelectPendingPagesRequest
+	5,  // 17: kg.v1.KgGraph.BeginPage:input_type -> kg.v1.BeginPageRequest
+	7,  // 18: kg.v1.KgGraph.MarkPageDone:input_type -> kg.v1.MarkPageDoneRequest
+	9,  // 19: kg.v1.KgGraph.MarkPageFailed:input_type -> kg.v1.MarkPageFailedRequest
+	11, // 20: kg.v1.KgGraph.CountPendingPages:input_type -> kg.v1.CountPendingPagesRequest
+	14, // 21: kg.v1.KgGraph.UpsertEntities:input_type -> kg.v1.UpsertEntitiesRequest
+	17, // 22: kg.v1.KgGraph.LinkAppearances:input_type -> kg.v1.LinkAppearancesRequest
+	20, // 23: kg.v1.KgGraph.UpsertRelations:input_type -> kg.v1.UpsertRelationsRequest
+	22, // 24: kg.v1.KgGraph.DeletePageEvidence:input_type -> kg.v1.DeletePageEvidenceRequest
+	24, // 25: kg.v1.KgGraph.DeleteVideo:input_type -> kg.v1.DeleteVideoRequest
+	26, // 26: kg.v1.KgGraph.ClearAll:input_type -> kg.v1.ClearAllRequest
+	28, // 27: kg.v1.KgGraph.LinkCloudDocAppearances:input_type -> kg.v1.LinkCloudDocAppearancesRequest
+	30, // 28: kg.v1.KgGraph.DeleteCloudDocAppearances:input_type -> kg.v1.DeleteCloudDocAppearancesRequest
+	57, // 29: kg.v1.KgGraph.FetchCloudDocEvidence:input_type -> kg.v1.FetchCloudDocEvidenceRequest
+	32, // 30: kg.v1.KgGraph.Neighbors:input_type -> kg.v1.NeighborsRequest
+	35, // 31: kg.v1.KgGraph.FetchEvidence:input_type -> kg.v1.FetchEvidenceRequest
+	38, // 32: kg.v1.KgGraph.RelationsAmong:input_type -> kg.v1.RelationsAmongRequest
+	41, // 33: kg.v1.KgGraph.EntitiesByEids:input_type -> kg.v1.EntitiesByEidsRequest
+	44, // 34: kg.v1.KgGraph.EntityExposure:input_type -> kg.v1.EntityExposureRequest
+	48, // 35: kg.v1.KgGraph.EntityAppearances:input_type -> kg.v1.EntityAppearancesRequest
+	51, // 36: kg.v1.KgGraph.TopEntities:input_type -> kg.v1.TopEntitiesRequest
+	54, // 37: kg.v1.KgGraph.EdgesAmong:input_type -> kg.v1.EdgesAmongRequest
+	60, // 38: kg.v1.KgGraph.Stats:input_type -> kg.v1.StatsRequest
+	1,  // 39: kg.v1.KgGraph.ResolveScope:output_type -> kg.v1.ResolveScopeResponse
+	4,  // 40: kg.v1.KgGraph.SelectPendingPages:output_type -> kg.v1.SelectPendingPagesResponse
+	6,  // 41: kg.v1.KgGraph.BeginPage:output_type -> kg.v1.BeginPageResponse
+	8,  // 42: kg.v1.KgGraph.MarkPageDone:output_type -> kg.v1.MarkPageDoneResponse
+	10, // 43: kg.v1.KgGraph.MarkPageFailed:output_type -> kg.v1.MarkPageFailedResponse
+	12, // 44: kg.v1.KgGraph.CountPendingPages:output_type -> kg.v1.CountPendingPagesResponse
+	15, // 45: kg.v1.KgGraph.UpsertEntities:output_type -> kg.v1.UpsertEntitiesResponse
+	18, // 46: kg.v1.KgGraph.LinkAppearances:output_type -> kg.v1.LinkAppearancesResponse
+	21, // 47: kg.v1.KgGraph.UpsertRelations:output_type -> kg.v1.UpsertRelationsResponse
+	23, // 48: kg.v1.KgGraph.DeletePageEvidence:output_type -> kg.v1.DeletePageEvidenceResponse
+	25, // 49: kg.v1.KgGraph.DeleteVideo:output_type -> kg.v1.DeleteVideoResponse
+	27, // 50: kg.v1.KgGraph.ClearAll:output_type -> kg.v1.ClearAllResponse
+	29, // 51: kg.v1.KgGraph.LinkCloudDocAppearances:output_type -> kg.v1.LinkCloudDocAppearancesResponse
+	31, // 52: kg.v1.KgGraph.DeleteCloudDocAppearances:output_type -> kg.v1.DeleteCloudDocAppearancesResponse
+	59, // 53: kg.v1.KgGraph.FetchCloudDocEvidence:output_type -> kg.v1.FetchCloudDocEvidenceResponse
+	34, // 54: kg.v1.KgGraph.Neighbors:output_type -> kg.v1.NeighborsResponse
+	37, // 55: kg.v1.KgGraph.FetchEvidence:output_type -> kg.v1.FetchEvidenceResponse
+	40, // 56: kg.v1.KgGraph.RelationsAmong:output_type -> kg.v1.RelationsAmongResponse
+	43, // 57: kg.v1.KgGraph.EntitiesByEids:output_type -> kg.v1.EntitiesByEidsResponse
+	47, // 58: kg.v1.KgGraph.EntityExposure:output_type -> kg.v1.EntityExposureResponse
+	50, // 59: kg.v1.KgGraph.EntityAppearances:output_type -> kg.v1.EntityAppearancesResponse
+	53, // 60: kg.v1.KgGraph.TopEntities:output_type -> kg.v1.TopEntitiesResponse
+	56, // 61: kg.v1.KgGraph.EdgesAmong:output_type -> kg.v1.EdgesAmongResponse
+	61, // 62: kg.v1.KgGraph.Stats:output_type -> kg.v1.StatsResponse
+	39, // [39:63] is the sub-list for method output_type
+	15, // [15:39] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
-func init() { file_proto_kg_v1_kg_proto_init() }
-func file_proto_kg_v1_kg_proto_init() {
-	if File_proto_kg_v1_kg_proto != nil {
+func init() { file_kg_v1_kg_proto_init() }
+func file_kg_v1_kg_proto_init() {
+	if File_kg_v1_kg_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_kg_v1_kg_proto_rawDesc), len(file_proto_kg_v1_kg_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kg_v1_kg_proto_rawDesc), len(file_kg_v1_kg_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   55,
+			NumMessages:   62,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_kg_v1_kg_proto_goTypes,
-		DependencyIndexes: file_proto_kg_v1_kg_proto_depIdxs,
-		MessageInfos:      file_proto_kg_v1_kg_proto_msgTypes,
+		GoTypes:           file_kg_v1_kg_proto_goTypes,
+		DependencyIndexes: file_kg_v1_kg_proto_depIdxs,
+		MessageInfos:      file_kg_v1_kg_proto_msgTypes,
 	}.Build()
-	File_proto_kg_v1_kg_proto = out.File
-	file_proto_kg_v1_kg_proto_goTypes = nil
-	file_proto_kg_v1_kg_proto_depIdxs = nil
+	File_kg_v1_kg_proto = out.File
+	file_kg_v1_kg_proto_goTypes = nil
+	file_kg_v1_kg_proto_depIdxs = nil
 }

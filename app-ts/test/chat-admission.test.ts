@@ -223,4 +223,74 @@ describe("ChatService weighted admission", () => {
     expect(queue.running).toBe(0);
     expect(queue.waiting).toBe(0);
   });
+
+  it("disconnect mid-stream aborts generation and finalizes the turn (no pending zombie)", async () => {
+    const messages = new MemoryMessageRepository();
+    const finalizeCalls = spyFinalize(messages);
+    const controller = new AbortController();
+    const harness = {
+      dispatchStream: async function* (input: { signal?: AbortSignal }): AsyncGenerator<SseFrame> {
+        yield { type: "route", agent: "main" };
+        yield { type: "chunk", content: "半截回答" };
+        // park until the turn-level signal fires (what streamText does on abort)
+        await new Promise<void>((resolve) => {
+          if (input.signal?.aborted) resolve();
+          else input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        if (input.signal?.aborted) return; // consumer gone: no further frames
+        yield { type: "done" };
+      },
+    } as unknown as AgentHarness;
+    const chat = new ChatService(harness, new MemoryChatSessionRepository(), messages, undefined, undefined, null);
+
+    const gen = chat.askStream({ query: "hi", sessionId: "s11", signal: controller.signal });
+    await withTimeout(gen.next(), 2000, "route");
+    await withTimeout(gen.next(), 2000, "chunk");
+
+    // HTTP layer: response closed → abort, then stop consuming
+    controller.abort();
+    await gen.return(undefined);
+
+    // finalized as failed (partial content kept), not left pending forever
+    expect(finalizeCalls.at(-1)?.status).toBe("failed");
+    const assistant = (await messages.listBySession("s11")).find((m) => m.role === "assistant");
+    expect(assistant?.status).toBe("failed");
+    expect(assistant?.content).toBe("半截回答");
+  });
+});
+
+describe("ChatService turn deadline", () => {
+  const saved = config.agent.turnTimeoutMs;
+  afterEach(() => {
+    config.agent.turnTimeoutMs = saved;
+  });
+
+  it("stalled turn hits the deadline: error frame, failed message, generator completes", async () => {
+    config.agent.turnTimeoutMs = 120;
+    const messages = new MemoryMessageRepository();
+    const finalizeCalls = spyFinalize(messages);
+    const harness = {
+      dispatchStream: async function* (input: { signal?: AbortSignal }): AsyncGenerator<SseFrame> {
+        yield { type: "route", agent: "main" };
+        yield { type: "chunk", content: "处理中" };
+        // stalled upstream: no tokens, no error — only the turn deadline can end this
+        await new Promise<void>((resolve) => {
+          if (input.signal?.aborted) resolve();
+          else input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    } as unknown as AgentHarness;
+    const chat = new ChatService(harness, new MemoryChatSessionRepository(), messages, undefined, undefined, null);
+
+    const frames = await drain(chat.askStream({ query: "hi", sessionId: "s-deadline" }), 4000);
+    const err = frames.find((f) => f.type === "error");
+    expect(err).toBeDefined();
+    if (err?.type === "error") expect(err.message).toContain("超时");
+    expect(frames[frames.length - 1].type).toBe("done");
+    expect(finalizeCalls.at(-1)?.status).toBe("failed");
+
+    const assistant = (await messages.listBySession("s-deadline")).find((m) => m.role === "assistant");
+    expect(assistant?.status).toBe("failed");
+    expect(assistant?.content).toBe("处理中");
+  });
 });

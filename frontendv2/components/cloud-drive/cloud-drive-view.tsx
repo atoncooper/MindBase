@@ -9,7 +9,7 @@
  * to localStorage), chunked upload with progress, processing-status polling,
  * and folder/file delete. All data flows through lib/api/cloud (cloudApi).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Loader2 } from "lucide-react";
@@ -467,6 +467,11 @@ export function CloudDriveView() {
             // hit the API while the file is queued/running. The backend has a
             // second atomic guard for multi-tab/API races.
             const knownStatus = lastVectorStatusRef.current.get(uuid);
+            if (knownStatus === "done") {
+                // 已入库文件不再允许重复入库（界面已隐藏入口，这里兜底多标签页/竞态）。
+                emitAppToast("info", "该文件已入库，无需重复入库");
+                return;
+            }
             if (
                 processingUuids.has(uuid) ||
                 knownStatus === "pending" ||
@@ -500,48 +505,6 @@ export function CloudDriveView() {
                 emitAppToast(
                     "error",
                     e instanceof Error ? "提交入库失败：" + e.message : "提交入库失败，请重试"
-                );
-            }
-        },
-        [processingUuids]
-    );
-
-    const handleReprocess = useCallback(
-        async (uuid: string) => {
-            const knownStatus = lastVectorStatusRef.current.get(uuid);
-            if (
-                processingUuids.has(uuid) ||
-                knownStatus === "pending" ||
-                knownStatus === "processing"
-            ) {
-                emitAppToast("info", "该文件正在入库中，请等待完成");
-                return;
-            }
-            notifiedVectorRef.current.delete(uuid);
-            lastVectorStatusRef.current.set(uuid, "processing");
-            setProcessingUuids((prev) => new Set([...prev, uuid]));
-            setVideos((prev) =>
-                prev.map((v) =>
-                    v.uploadUuid === uuid ? { ...v, vectorStatus: "processing" } : v
-                )
-            );
-            setDetail((prev) =>
-                prev && prev.uploadUuid === uuid ? { ...prev, vectorStatus: "processing" } : prev
-            );
-            try {
-                await cloudApi.reprocessVideo(uuid);
-                const name = fileNameRef.current.get(uuid) || "文件";
-                emitAppToast("info", "已提交重新入库，正在处理「" + name + "」");
-            } catch (e) {
-                setProcessingUuids((prev) => {
-                    const next = new Set(prev);
-                    next.delete(uuid);
-                    return next;
-                });
-                lastVectorStatusRef.current.set(uuid, knownStatus || "done");
-                emitAppToast(
-                    "error",
-                    e instanceof Error ? "重新入库失败：" + e.message : "重新入库失败，请稍后重试"
                 );
             }
         },
@@ -669,8 +632,46 @@ export function CloudDriveView() {
             ? "全部文件"
             : findFolderName(folders, selectedFolderId) ?? "文件夹";
 
+    const closeInspector = useCallback(() => {
+        setSelectedUuid(null);
+        setDetail(null);
+        setSelectedRefId(null);
+    }, []);
+
+    // 点击右侧详情面板以外的空白区域 / 按 Esc 关闭详情面板。
+    // 交互控件（按钮/链接/输入框/侧栏/面板本身）内部的点击不触发关闭，
+    // 因此点文件行仍是正常切换选中项。
+    const handleBackgroundClick = useCallback(
+        (e: MouseEvent<HTMLDivElement>) => {
+            if (selectedUuid == null && selectedRefId == null) return;
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            if (
+                target.closest(
+                    "button, a, input, textarea, select, label, [role='button'], aside"
+                )
+            ) {
+                return;
+            }
+            closeInspector();
+        },
+        [selectedUuid, selectedRefId, closeInspector]
+    );
+
+    useEffect(() => {
+        if (selectedUuid == null && selectedRefId == null) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape") closeInspector();
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [selectedUuid, selectedRefId, closeInspector]);
+
     return (
-        <div className="flex h-[calc(100dvh-3rem-3.75rem-env(safe-area-inset-bottom,0px))] overflow-hidden md:h-[calc(100dvh-3rem)]">
+        <div
+            className="flex h-[calc(100dvh-3rem-3.75rem-env(safe-area-inset-bottom,0px))] overflow-hidden md:h-[calc(100dvh-3rem)]"
+            onClick={handleBackgroundClick}
+        >
             {/* 手机端文件夹抽屉遮罩（md 以上隐藏） */}
             {foldersOpen && (
                 <div
@@ -866,7 +867,7 @@ export function CloudDriveView() {
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.15 }}
-                            className="fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-0 right-0 top-12 z-40 border-border-subtle bg-surface md:bottom-0 lg:static lg:z-auto lg:w-80 lg:border-l"
+                            className="fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-0 right-0 top-12 z-40 border-border-subtle bg-surface md:bottom-0 lg:static lg:z-auto lg:w-[26rem] lg:border-l xl:w-[28rem]"
                         >
                             <RefInspector
                                 refItem={refItem}
@@ -885,7 +886,7 @@ export function CloudDriveView() {
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15 }}
                         className={cn(
-                            "fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-0 right-0 top-12 z-40 border-border-subtle bg-surface md:bottom-0 lg:static lg:z-auto lg:w-80 lg:border-l"
+                            "fixed bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] left-0 right-0 top-12 z-40 border-border-subtle bg-surface md:bottom-0 lg:static lg:z-auto lg:w-[26rem] lg:border-l xl:w-[28rem]"
                         )}
                     >
                         {detail ? (
@@ -893,7 +894,6 @@ export function CloudDriveView() {
                                 detail={detail}
                                 processing={processingUuids.has(detail.uploadUuid)}
                                 onProcess={(uuid) => void handleProcess(uuid)}
-                                onReprocess={(uuid) => void handleReprocess(uuid)}
                                 onDelete={(uuid) => setDeleteFileUuid(uuid)}
                                 onBack={() => setSelectedUuid(null)}
                                 onOpenFile={handleOpenFileDetail}

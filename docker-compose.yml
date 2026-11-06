@@ -869,8 +869,11 @@ services:
       - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - APPNOTE__LOG__OUTPUT=both
+    # 宿主调试口默认 8018（容器内仍是 8008，APISIX 走 app-note:8008）：
+    # app-cloud 的 8007-8009 端口池会抢占 8008，app-sandbox 占 8017，
+    # 沿用 8008 会导致 app-note 重建时 "port already allocated" 起不来
     ports:
-      - "127.0.0.1:${APP_NOTE_PORT:-8008}:8008"
+      - "127.0.0.1:${APP_NOTE_PORT:-8018}:8008"
     volumes:
       - app_note_logs:/app/logs
     restart: unless-stopped

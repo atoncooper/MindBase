@@ -59,9 +59,9 @@ export interface ReactAgentOptions {
    * re-injected on every run and survive across runs (run state done ≠ context gone).
    * main agent omits this — its persistent context is the session message store.
    */
-  context?: AgentContextBinding;
+  context ?: AgentContextBinding;
   /** model override (tests inject a mock; production defaults to the gateway model) */
-  model?: LanguageModel;
+  model ?: LanguageModel;
 }
 
 /** Wiring for a sub-agent's private context + read access to the shared session summary. */
@@ -74,6 +74,8 @@ export interface AgentContextBinding {
 
 interface AttemptOutcome {
   hadError: boolean;
+  /** the turn-level signal fired (client disconnect / cancellation) — not an error */
+  aborted: boolean;
   errorMessage: string;
   retryable: boolean;
   fullText: string;
@@ -118,6 +120,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
       chatSessionId: input.chatSessionId,
       scope: input.scope,
       collector,
+      ...(input.signal ? { signal: input.signal } : {}),
     };
     const tools = opts.runtime.buildSdkTools(ctx, opts.toolNames);
 
@@ -193,10 +196,15 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
         temperature: config.llm.temperature,
         // L1 省流：输出预算封顶（思考 token 计入输出，随之一并截断）
         ...(maxOutputTokensFor(input.uid) > 0 ? { maxOutputTokens: maxOutputTokensFor(input.uid) } : {}),
+        // Turn-level cancellation: client disconnect aborts the upstream request
+        // instead of letting it run (and bill) to completion.
+        ...(input.signal ? { abortSignal: input.signal } : {}),
         ...aiTelemetry(`agent.${opts.name}`),
         // structured interaction ends the turn normally (round-based ask_user)
         stopWhen: [stepCountIs(maxStepsFor(opts.name)), stopOnToolCall("ask_user")],
         onError: ({ error }) => {
+          // a cancellation is expected: don't log it as a stream failure
+          if (input.signal?.aborted) return;
           createLogger("AGENT").error(`[AGENT/${opts.name}] stream error: ${error instanceof Error ? error.message : String(error)}`);
         },
       });
@@ -211,6 +219,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
       /** toolCallId → start timestamp, for the done frame's durationMs */
       const toolStarts = new Map<string, number>();
       let hadError = false;
+      let aborted = false;
       let errorMessage = "";
       let fullText = "";
       let usage: AttemptOutcome["usage"];
@@ -293,18 +302,36 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
             }
             break;
           }
+          case "abort": {
+            // AI SDK emits this when the abortSignal fires (client disconnect /
+            // turn cancellation). It is not an error: no retry, no breaker hit.
+            aborted = true;
+            break;
+          }
           case "error": {
             hadError = true;
             const err = p.error;
             errorMessage =
               err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
+            if (input.signal?.aborted) {
+              // providers may surface a cancellation as an error part
+              aborted = true;
+              hadError = false;
+            }
             break;
           }
           default:
             break;
         }
       }
-      return { hadError, errorMessage, retryable: hadError && isRetryableError(errorMessage), fullText, usage };
+      return {
+        hadError,
+        aborted,
+        errorMessage,
+        retryable: hadError && !aborted && isRetryableError(errorMessage),
+        fullText,
+        usage,
+      };
     }
 
     // Turn-level retry (mirrors Python error_node): retryable failures abort the attempt,
@@ -315,8 +342,18 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
     let contextTrimmed = false;
     while (true) {
       if (attempt > 0) yield { type: "reset" };
-      const outcome = yield* runAttempt(history);
+      let outcome: AttemptOutcome;
+      try {
+        outcome = yield* runAttempt(history);
+      } catch (err) {
+        if (input.signal?.aborted || (err as { name?: string }).name === "AbortError") {
+          last = { hadError: false, aborted: true, errorMessage: "", retryable: false, fullText: "" };
+          break;
+        }
+        throw err;
+      }
       last = outcome;
+      if (outcome.aborted) break; // cancelled: never retry, never emit an error frame
       if (!outcome.hadError) break;
 
       // context-length exhaustion → drop the older half of the history and retry
@@ -337,12 +374,12 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
       }
       break;
     }
-    const { fullText, usage } = last!;
+    const { fullText, usage, aborted } = last!;
 
     // Persist the distilled exchange into this agent's private context (write-side
     // pollution control: only task → final answer, never tool-call noise), then
     // schedule its own compression.
-    if (binding && input.chatSessionId && fullText.trim()) {
+    if (binding && input.chatSessionId && !aborted && fullText.trim()) {
       const now = Date.now();
       try {
         await binding.port.append(input.chatSessionId, opts.name, {
@@ -376,9 +413,9 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
     for (const interaction of collector.interactions) {
       yield { type: "interact", interact: interaction };
     }
-    if (last!.hadError) {
+    if (last!.hadError && !aborted) {
       yield { type: "error", message: last!.errorMessage || "agent 执行失败" };
-    } else if (!fullText.trim() && collector.interactions.length === 0 && collector.artifacts.length === 0) {
+    } else if (!aborted && !fullText.trim() && collector.interactions.length === 0 && collector.artifacts.length === 0) {
       // loop ended without an answer (max steps reached / model produced nothing) —
       // an empty assistant bubble is worse than an explicit failure
       yield { type: "error", message: "模型未返回有效内容（可能已达最大工具步数），请重试或换个问法" };

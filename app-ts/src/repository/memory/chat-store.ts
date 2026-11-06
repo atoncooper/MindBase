@@ -113,6 +113,7 @@ export class MemoryMessageRepository implements MessageRepository {
     patch: {
       sources?: Source[];
       usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+      artifacts?: import("../persistence.js").ChatMessage["artifacts"];
       status: "done" | "failed";
       error?: string;
     },
@@ -120,6 +121,7 @@ export class MemoryMessageRepository implements MessageRepository {
     const m = this.messages.get(assistantMsgId);
     if (!m) return;
     if (patch.sources) m.sources = patch.sources;
+    if (patch.artifacts) m.artifacts = patch.artifacts;
     if (patch.usage) m.usage = patch.usage;
     if (patch.error) m.error = patch.error;
     m.status = patch.status;

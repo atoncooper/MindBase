@@ -62,6 +62,27 @@ export interface CloudSimilarResponse {
   items: CloudSemanticHit[];
 }
 
+/** One cloud-drive document with parsed text — the KG build source (app-cloud M2M face). */
+export interface CloudKgDocumentMeta {
+  upload_uuid: string;
+  title: string;
+  /** app-cloud content hash; "" when the service did not report one */
+  content_hash: string;
+  /** parsed text length in characters (0 when unknown) */
+  size_chars: number;
+}
+
+export interface CloudKgDocument extends CloudKgDocumentMeta {
+  /** parsed plain text; app-cloud truncates very large documents server-side */
+  text: string;
+}
+
+export interface CloudKgDocumentList {
+  items: CloudKgDocumentMeta[];
+  /** upload_uuid of the last row when the page is full; null = no more pages */
+  next_cursor: string | null;
+}
+
 export class AppCloudError extends Error {
   constructor(
     message: string,
@@ -113,6 +134,19 @@ function normalizeHits(raw: unknown): CloudSemanticHit[] {
     if (hit) hits.push(hit);
   }
   return hits;
+}
+
+function normalizeKgMeta(raw: unknown): CloudKgDocumentMeta | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const uploadUuid = optionalText(r.upload_uuid);
+  if (uploadUuid === undefined) return null;
+  return {
+    upload_uuid: uploadUuid,
+    title: optionalText(r.title) ?? "",
+    content_hash: optionalText(r.content_hash) ?? "",
+    size_chars: finiteNumber(r.size_chars, 0),
+  };
 }
 
 function normalizeSummary(raw: unknown): CloudDocumentSummary | null {
@@ -200,6 +234,52 @@ export class AppCloudClient extends InternalServiceClient {
       return { items: normalizeHits(raw.items) };
     } catch (err) {
       throw this.wrapCallFailure("云盘相似文件调用失败", err);
+    }
+  }
+
+  /**
+   * List the user's cloud documents that have parsed text (KG build source),
+   * one cursor page at a time (app-cloud: upload_uuid ASC pagination).
+   */
+  async listKgDocuments(
+    uid: string,
+    opts: { limit?: number; cursor?: string } = {},
+  ): Promise<CloudKgDocumentList> {
+    const params = new URLSearchParams({ uid });
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    try {
+      const res = await this.request("GET", `/internal/cloud/kg/documents?${params.toString()}`, undefined, uid);
+      const raw = await this.json<Record<string, unknown>>(res, "云盘文档列表读取失败");
+      const items: CloudKgDocumentMeta[] = [];
+      if (Array.isArray(raw.items)) {
+        for (const item of raw.items) {
+          const meta = normalizeKgMeta(item);
+          if (meta) items.push(meta);
+        }
+      }
+      return { items, next_cursor: optionalText(raw.next_cursor) ?? null };
+    } catch (err) {
+      throw this.wrapCallFailure("云盘文档列表调用失败", err);
+    }
+  }
+
+  /** Read one document's parsed text for `uid`; undefined on 404 (missing / not parsed). */
+  async getKgDocument(uid: string, uploadUuid: string): Promise<CloudKgDocument | undefined> {
+    const params = new URLSearchParams({ uid, upload_uuid: uploadUuid });
+    try {
+      const res = await this.request("GET", `/internal/cloud/kg/document?${params.toString()}`, undefined, uid);
+      const raw = await this.json<Record<string, unknown>>(res, "云盘文档正文读取失败");
+      return {
+        upload_uuid: optionalText(raw.upload_uuid) ?? uploadUuid,
+        title: optionalText(raw.title) ?? "",
+        content_hash: optionalText(raw.content_hash) ?? "",
+        size_chars: finiteNumber(raw.size_chars, 0),
+        text: typeof raw.text === "string" ? raw.text : "",
+      };
+    } catch (err) {
+      if (err instanceof AppCloudError && err.status === 404) return undefined;
+      throw this.wrapCallFailure("云盘文档正文调用失败", err);
     }
   }
 

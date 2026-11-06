@@ -439,11 +439,13 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
                 }),
               }));
             },
-            onRoute: (agent: string) => {
+            // route frame = admission slot granted; the routed agent name is
+            // intentionally NOT rendered in the UI (all turns go to main).
+            onRoute: () => {
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) =>
-                  m.id === assistantMsgId ? { ...m, agent, queuePosition: undefined } : m
+                  m.id === assistantMsgId ? { ...m, queuePosition: undefined } : m
                 ),
               }));
             },
@@ -1021,7 +1023,6 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
                       artifacts={message.artifacts}
                       reasoningSteps={message.reasoningSteps}
                       reasoning={message.reasoning}
-                      agent={message.agent}
                       queuePosition={message.queuePosition}
                       subAgent={message.subAgent}
                       interaction={message.interaction}

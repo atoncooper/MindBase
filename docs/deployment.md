@@ -115,7 +115,7 @@ chmod 600 secrets/api_key_encryption_key
 | 服务 | 健康/指标端点（容器内） | 备注 |
 |---|---|---|
 | app-ts | `:8000/health`、`:8000/agent/runtime` | health 含 Milvus 可用性；runtime 含队列/超时/breaker |
-| app-go 服务 | 8006/8007/8008/8010/8011/8015 的 `/health` | app-cloud 另有 `/metrics` |
+| app-go 服务 | 8006/8007/8018/8010/8011/8015 的 `/health` | app-cloud 另有 `/metrics`；app-note 容器端口仍 8008 |
 | app-kg | `:8014/health`（gRPC `:8013` 自带 health） | |
 | app-board / 三个 MCP | `:8004/8005/8009/8012/health` | app-board 为 HTTPS |
 | app-task | `:8001/health` | |

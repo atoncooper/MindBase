@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"app-cloud/internal/config"
 
@@ -100,6 +101,127 @@ func (m *MongoStore) DocumentPreview(ctx context.Context, uid int64, uploadUUID 
 	return cleaned[offset:end], total, doc.DocMeta
 }
 
+// ParsedDocumentMeta is one parsed drive document listed for cloud
+// knowledge-graph builds: identity and content version only, never the body.
+type ParsedDocumentMeta struct {
+	UploadUUID  string
+	Title       string
+	ContentHash string
+	// SizeChars is the character count recorded when the text was persisted.
+	// The listing deliberately excludes `content`, so no body text is loaded
+	// (or measured) on the read path; documents written before size_chars
+	// existed report 0. The per-document endpoint serves the exact value.
+	SizeChars int
+}
+
+// ParsedDocument is one parsed drive document including its full text.
+type ParsedDocument struct {
+	UploadUUID  string
+	Title       string
+	ContentHash string
+	SizeChars   int
+	Text        string
+}
+
+// ListParsedDocuments pages one user's parsed documents that have usable body
+// text, ordered by upload_uuid ascending; afterUploadUUID (empty = first page)
+// is the exclusive lower bound, matching the upload_uuid cursor semantics of
+// the KG M2M listing. The projection skips `content`: a 100-document page must
+// not drag megabytes of text over the wire — size_chars is read from the value
+// persisted by UpsertParsedDocument instead.
+func (m *MongoStore) ListParsedDocuments(ctx context.Context, uid int64,
+	afterUploadUUID string, limit int) ([]ParsedDocumentMeta, error) {
+	if m == nil || m.db == nil || limit <= 0 {
+		// Disabled store / no page size: nil-safe empty page, like the other
+		// readers (the HTTP layer clamps limit into 1..100).
+		return nil, nil
+	}
+	filter := bson.M{
+		"uid":          uid,
+		"content":      usableTextFilter(),
+		"content_hash": usableTextFilter(),
+	}
+	if afterUploadUUID != "" {
+		filter["upload_uuid"] = bson.M{"$gt": afterUploadUUID}
+	}
+	cur, err := m.db.Collection("cloud_drive_documents").Find(ctx, filter,
+		options.Find().
+			SetSort(bson.M{"upload_uuid": 1}).
+			SetLimit(int64(limit)).
+			SetProjection(bson.M{
+				"upload_uuid": 1, "title": 1, "content_hash": 1, "size_chars": 1, "_id": 0,
+			}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := make([]ParsedDocumentMeta, 0, limit)
+	for cur.Next(ctx) {
+		var row struct {
+			UploadUUID  string `bson:"upload_uuid"`
+			Title       string `bson:"title"`
+			ContentHash string `bson:"content_hash"`
+			SizeChars   int    `bson:"size_chars"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, err
+		}
+		out = append(out, ParsedDocumentMeta{
+			UploadUUID:  row.UploadUUID,
+			Title:       row.Title,
+			ContentHash: row.ContentHash,
+			SizeChars:   row.SizeChars,
+		})
+	}
+	return out, cur.Err()
+}
+
+// GetParsedDocument returns one user's parsed document with its full text.
+// (nil, nil) means "absent, no body text, or no content hash" — the HTTP layer
+// maps that to 404 without distinguishing the cases (same as the drive detail
+// contract). A nil/disabled store behaves identically.
+func (m *MongoStore) GetParsedDocument(ctx context.Context, uid int64,
+	uploadUUID string) (*ParsedDocument, error) {
+	if m == nil || m.db == nil || uploadUUID == "" {
+		return nil, nil
+	}
+	var row struct {
+		UploadUUID  string `bson:"upload_uuid"`
+		Title       string `bson:"title"`
+		ContentHash string `bson:"content_hash"`
+		Content     string `bson:"content"`
+		SizeChars   int    `bson:"size_chars"`
+	}
+	err := m.db.Collection("cloud_drive_documents").FindOne(ctx,
+		bson.M{"upload_uuid": uploadUUID, "uid": uid,
+			"content": usableTextFilter(), "content_hash": usableTextFilter()},
+		options.FindOne().SetProjection(bson.M{
+			"upload_uuid": 1, "title": 1, "content_hash": 1, "content": 1,
+			"size_chars": 1, "_id": 0,
+		}),
+	).Decode(&row)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &ParsedDocument{
+		UploadUUID:  row.UploadUUID,
+		Title:       row.Title,
+		ContentHash: row.ContentHash,
+		SizeChars:   row.SizeChars,
+		Text:        row.Content,
+	}, nil
+}
+
+// usableTextFilter matches a string field that exists and is neither null nor
+// empty (the "parsed正文可用" gate shared by the KG reads).
+func usableTextFilter() bson.M {
+	return bson.M{"$exists": true, "$nin": []any{nil, ""}}
+}
+
 // UpsertParsedDocument stores the parsed full text (pipeline phase 1).
 func (m *MongoStore) UpsertParsedDocument(ctx context.Context, uploadUUID string, uid int64,
 	title, sourceType, contentSource, content, contentHash string, docMeta map[string]any) error {
@@ -116,8 +238,13 @@ func (m *MongoStore) UpsertParsedDocument(ctx context.Context, uploadUUID string
 			"content_source": contentSource,
 			"content":        content,
 			"content_hash":   contentHash,
-			"doc_meta":       docMeta,
-			"updated_at":     time.Now().UTC(),
+			// size_chars is persisted so the KG listing can report a size
+			// without loading (or even transferring) the body text. Rune count
+			// keeps it consistent with the summary size_chars convention
+			// (one CJK character = 1), unlike len() which counts UTF-8 bytes.
+			"size_chars": utf8.RuneCountInString(content),
+			"doc_meta":   docMeta,
+			"updated_at": time.Now().UTC(),
 		}},
 		options.UpdateOne().SetUpsert(true),
 	)

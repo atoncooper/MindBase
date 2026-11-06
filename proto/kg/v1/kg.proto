@@ -5,6 +5,12 @@
 // video.kg_status/kg_version 记账 + 收藏夹 scope 解析。本服务不感知
 // uid 之外的任何业务语义，不发起任何 LLM/embedding 调用。
 //
+// 知识点来源（source）有两类，统一进同一张 Entity/RELATES 知识图：
+//   - 收藏夹视频分P：(:Video {bvid})，证据边 APPEARS_IN {page_index, quote}
+//   - 云盘文档：(:CloudDoc {uid, upload_uuid, title, content_hash})（节点由
+//     云盘 L1 路由图创建/复用），证据边 APPEARS_IN {quote}
+// 因此云盘文档的知识点与视频共用一个实体/关系空间，可跨来源检索与关联。
+//
 // 过渡期共享存储：Python KgGraphRepository 与本服务双写同一 Neo4j
 // （同 schema、确定性 eid=sha1(name_lower)[:16]，merge 键 name_lower）。
 // name_lower 与 eid 由调用方（app-ts resolver / Python repository）
@@ -48,6 +54,21 @@ service KgGraph {
   rpc DeleteVideo(DeleteVideoRequest) returns (DeleteVideoResponse);
   // 清空图谱（危险操作；Entity/Video 标签之外的数据不动）。
   rpc ClearAll(ClearAllRequest) returns (ClearAllResponse);
+
+  // ── 云盘知识点写（CloudDoc knowledge；与视频共用一个实体/关系空间）──
+
+  // 写一份云盘文档的知识点证据：MERGE (:CloudDoc {uid, upload_uuid})
+  // （复用云盘 L1 路由图节点；title/content_hash 非空才覆盖），删除该文档
+  // 已有 APPEARS_IN 证据边（delete-before-write），再写
+  // (entity)-[:APPEARS_IN {quote}]->(cloudDoc)。同文档同实体去重保留最短
+  // 非空引文（与 LinkAppearances 同语义，无 page_index）。
+  rpc LinkCloudDocAppearances(LinkCloudDocAppearancesRequest) returns (LinkCloudDocAppearancesResponse);
+  // 删除一份云盘文档的全部知识点证据边，并回收因此变成孤儿的 Entity
+  // （文档删除/重抽取前清理；CloudDoc 节点本体归云盘路由图，不在此删除）。
+  rpc DeleteCloudDocAppearances(DeleteCloudDocAppearancesRequest) returns (DeleteCloudDocAppearancesResponse);
+  // 云盘证据回捞：uid 必填（多租户隔离）；upload_uuids 空 = 该用户全部
+  // 云盘文档；否则限定在这些文档内。行内含 CloudDoc.title。
+  rpc FetchCloudDocEvidence(FetchCloudDocEvidenceRequest) returns (FetchCloudDocEvidenceResponse);
 
   // ── 图读（Neo4j；FetchEvidence 额外 join video 表标题）──
 
@@ -208,6 +229,32 @@ message ClearAllRequest {}
 
 message ClearAllResponse {}
 
+// ── 云盘知识点写 ─────────────────────────────────────────────────────
+
+message LinkCloudDocAppearancesRequest {
+  int64 uid = 1;
+  string upload_uuid = 2;
+  // 非空才覆盖 CloudDoc.title；空 = 保留路由图已有值。
+  string title = 3;
+  // 非空才覆盖 CloudDoc.content_hash；空 = 保留路由图已有值。
+  string content_hash = 4;
+  repeated Appearance appearances = 5;
+}
+
+message LinkCloudDocAppearancesResponse {
+  int64 linked = 1;
+}
+
+message DeleteCloudDocAppearancesRequest {
+  int64 uid = 1;
+  string upload_uuid = 2;
+}
+
+message DeleteCloudDocAppearancesResponse {
+  int64 deleted = 1;
+  int64 entities_removed = 2;
+}
+
 // ── 图读 ─────────────────────────────────────────────────────────────
 
 message NeighborsRequest {
@@ -353,6 +400,28 @@ message EdgesAmongResponse {
   repeated EdgeRow rows = 1;
 }
 
+message FetchCloudDocEvidenceRequest {
+  repeated string eids = 1;
+  // 必填：多租户隔离按 CloudDoc.uid 过滤。
+  int64 uid = 2;
+  // 空 = 该用户全部云盘文档；否则限定 upload_uuid 集合。
+  repeated string upload_uuids = 3;
+  int32 limit = 4;
+}
+
+message CloudDocEvidenceRow {
+  string eid = 1;
+  string name = 2;
+  string type = 3;
+  string upload_uuid = 4;
+  string quote = 5;
+  string title = 6;
+}
+
+message FetchCloudDocEvidenceResponse {
+  repeated CloudDocEvidenceRow rows = 1;
+}
+
 message StatsRequest {}
 
 message StatsResponse {
@@ -361,4 +430,7 @@ message StatsResponse {
   int64 evidence = 3;
   int64 videos = 4;
   int64 pending_pages = 5;
+  // 云盘知识点计数（全局，与 entities/relations 同口径）。
+  int64 cloud_docs = 6;
+  int64 cloud_evidence = 7;
 }

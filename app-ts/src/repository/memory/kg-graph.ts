@@ -1,6 +1,7 @@
 import type {
   AppearanceRow,
   BeginPageResult,
+  CloudDocEvidenceRow,
   EdgeRow,
   EntityDetail,
   EvidenceRow,
@@ -13,7 +14,13 @@ import type {
   ResolvedRelation,
   TopEntityRow,
 } from "../../kg/types.js";
-import type { AppearanceInput, DeleteVideoStats, KgGraphRepository } from "../kg-graph.js";
+import type {
+  AppearanceInput,
+  CloudDocAppearanceInput,
+  DeleteCloudDocStats,
+  DeleteVideoStats,
+  KgGraphRepository,
+} from "../kg-graph.js";
 
 /**
  * In-memory KgGraphRepository: doubles as the test stub AND the degraded
@@ -30,6 +37,14 @@ interface RelEdge {
   quotes: string[];
 }
 
+/** CloudDoc node (created/owned by the cloud route graph; merged here). */
+interface CloudDocNode {
+  uid: string;
+  uploadUuid: string;
+  title: string;
+  contentHash: string;
+}
+
 export class MemoryKgGraphRepository implements KgGraphRepository {
   /** eid → entity */
   readonly entities = new Map<string, ResolvedEntity>();
@@ -39,6 +54,10 @@ export class MemoryKgGraphRepository implements KgGraphRepository {
   readonly appearances = new Map<string, { bvid: string; pageIndex: number; eid: string; quote: string }>();
   /** (bvid,cid) → kg bookkeeping */
   readonly pages = new Map<string, { bvid: string; cid: number; pageIndex: number; pageTitle: string; version: number; asrDone: boolean; kgStatus: string | null; kgVersion: number | null }>();
+  /** `${uid}|${uploadUuid}` → CloudDoc node */
+  readonly cloudDocs = new Map<string, CloudDocNode>();
+  /** `${uid}|${uploadUuid}|${eid}` → evidence quote (APPEARS_IN → CloudDoc) */
+  readonly cloudAppearances = new Map<string, { uid: string; uploadUuid: string; eid: string; quote: string }>();
 
   available = true;
 
@@ -193,16 +212,8 @@ export class MemoryKgGraphRepository implements KgGraphRepository {
         videosRemoved += 1;
       }
     }
-    // orphan entity cleanup: no relations and no appearances left
-    let entitiesRemoved = 0;
-    for (const [eid, e] of [...this.entities.entries()]) {
-      const hasRel = [...this.relations.values()].some((r) => r.srcEid === eid || r.dstEid === eid);
-      const hasApp = [...this.appearances.values()].some((a) => a.eid === eid);
-      if (!hasRel && !hasApp) {
-        this.entities.delete(eid);
-        entitiesRemoved += 1;
-      }
-    }
+    // orphan entity cleanup: no RELATES edge and no evidence left (video or cloud)
+    const entitiesRemoved = this.cleanupOrphanEntities();
     return { entitiesRemoved, videosRemoved };
   }
 
@@ -210,6 +221,106 @@ export class MemoryKgGraphRepository implements KgGraphRepository {
     this.entities.clear();
     this.relations.clear();
     this.appearances.clear();
+    // CloudDoc nodes belong to the cloud route graph (other labels untouched);
+    // deleting the entities cascades their evidence edges away.
+    this.cloudAppearances.clear();
+  }
+
+  /** Drop entities that no longer have a RELATES edge or any evidence (video/cloud). */
+  private cleanupOrphanEntities(): number {
+    let removed = 0;
+    for (const [key, entity] of [...this.entities.entries()]) {
+      const hasRel = [...this.relations.values()].some(
+        (r) => r.srcEid === entity.eid || r.dstEid === entity.eid,
+      );
+      const hasVideoEvidence = [...this.appearances.values()].some((a) => a.eid === entity.eid);
+      const hasCloudEvidence = [...this.cloudAppearances.values()].some((a) => a.eid === entity.eid);
+      if (!hasRel && !hasVideoEvidence && !hasCloudEvidence) {
+        this.entities.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  // ── cloud-drive knowledge points (same entity/relation space as videos) ──
+
+  async linkCloudDocAppearances(input: CloudDocAppearanceInput): Promise<number> {
+    if (!this.available) throw new Error("kg unavailable");
+    const nodeKey = `${input.uid}|${input.uploadUuid}`;
+    const node = this.cloudDocs.get(nodeKey) ?? {
+      uid: input.uid,
+      uploadUuid: input.uploadUuid,
+      title: "",
+      contentHash: "",
+    };
+    if (input.title) node.title = input.title;
+    if (input.contentHash) node.contentHash = input.contentHash;
+    this.cloudDocs.set(nodeKey, node);
+    // delete-before-write (app-kg performs the same deletion server-side)
+    for (const [key, a] of [...this.cloudAppearances.entries()]) {
+      if (a.uid === input.uid && a.uploadUuid === input.uploadUuid) this.cloudAppearances.delete(key);
+    }
+    // same-doc same-entity dedup keeps the shortest non-empty quote
+    const quotes = new Map<string, string>();
+    for (const a of input.appearances) {
+      if (!a.eid) continue;
+      const quote = (a.quote ?? "").trim();
+      const prev = quotes.get(a.eid);
+      if (prev === undefined || (quote !== "" && (prev === "" || quote.length < prev.length))) {
+        quotes.set(a.eid, quote);
+      }
+    }
+    for (const [eid, quote] of quotes) {
+      this.cloudAppearances.set(`${input.uid}|${input.uploadUuid}|${eid}`, {
+        uid: input.uid,
+        uploadUuid: input.uploadUuid,
+        eid,
+        quote,
+      });
+    }
+    return quotes.size;
+  }
+
+  async deleteCloudDocAppearances(uid: string, uploadUuid: string): Promise<DeleteCloudDocStats> {
+    if (!this.available) throw new Error("kg unavailable");
+    let deleted = 0;
+    for (const [key, a] of [...this.cloudAppearances.entries()]) {
+      if (a.uid === uid && a.uploadUuid === uploadUuid) {
+        this.cloudAppearances.delete(key);
+        deleted += 1;
+      }
+    }
+    const entitiesRemoved = this.cleanupOrphanEntities();
+    return { deleted, entitiesRemoved };
+  }
+
+  async fetchCloudDocEvidence(
+    eids: string[],
+    uid: string,
+    uploadUuids: string[],
+    limit: number,
+  ): Promise<CloudDocEvidenceRow[]> {
+    if (!this.available) throw new Error("kg unavailable");
+    if (eids.length === 0 || !uid) return [];
+    const out: CloudDocEvidenceRow[] = [];
+    for (const a of this.cloudAppearances.values()) {
+      if (a.uid !== uid) continue;
+      if (!eids.includes(a.eid)) continue;
+      if (uploadUuids.length > 0 && !uploadUuids.includes(a.uploadUuid)) continue;
+      const entity = [...this.entities.values()].find((e) => e.eid === a.eid);
+      const node = this.cloudDocs.get(`${a.uid}|${a.uploadUuid}`);
+      out.push({
+        eid: a.eid,
+        name: entity?.name ?? "",
+        type: entity?.type ?? "other",
+        uploadUuid: a.uploadUuid,
+        quote: a.quote,
+        title: node?.title ?? "",
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
   }
 
   async neighbors(eids: string[], excludeEids: string[], limit: number): Promise<NeighborRow[]> {
@@ -359,6 +470,10 @@ export class MemoryKgGraphRepository implements KgGraphRepository {
       evidence: this.appearances.size,
       videos: new Set([...this.pages.values()].map((p) => p.bvid)).size,
       pendingPages: await this.countPendingPages(),
+      // parity with app-kg: cloud_docs counts documents that HAVE knowledge
+      // evidence (a linked doc with zero entities does not count).
+      cloudDocs: new Set([...this.cloudAppearances.values()].map((a) => `${a.uid}|${a.uploadUuid}`)).size,
+      cloudEvidence: this.cloudAppearances.size,
     };
   }
 

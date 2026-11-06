@@ -1,9 +1,14 @@
 // Package config loads app-kg configuration from embedded default.yaml +
 // APPKG__-prefixed env overrides + project-root .env.
 //
+// The database connection config shapes (rdbms / neo4j) are declared by the
+// infra packages, next to the code that initializes those connections; this
+// package only embeds them and stays the SINGLE YAML/env entry point (no
+// other package reads environment variables).
+//
 // Secret-bearing settings are shared with the other services and read from
-// the SAME env var names (KG__URI, KG__PASSWORD/NEO4J_PASSWORD,
-// RDBMS__URL via compose), so one .env drives the whole stack.
+// the SAME env var names (KG__URI, KG__PASSWORD/NEO4J_PASSWORD, RDBMS__URL via
+// compose), so one .env drives the whole stack.
 package config
 
 import (
@@ -11,6 +16,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	mysqlinfra "app-kg/internal/infra/mysql"
+	neo4jinfra "app-kg/internal/infra/neo4j"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
@@ -21,9 +29,11 @@ type Config struct {
 	Server ServerConfig `yaml:"server"`
 	Log    LogConfig    `yaml:"log"`
 
-	Timezone string      `yaml:"timezone"`
-	RDBMS    RDBMSConfig `yaml:"rdbms"`
-	Neo4j    Neo4jConfig `yaml:"neo4j"`
+	Timezone string `yaml:"timezone"`
+
+	// Database initialization config — owned by the infra packages.
+	RDBMS mysqlinfra.Config `yaml:"rdbms"`
+	Neo4j neo4jinfra.Config `yaml:"neo4j"`
 }
 
 type AppConfig struct {
@@ -39,20 +49,6 @@ type ServerConfig struct {
 	// mux (/internal/kg/cloud-doc/*). Empty = allow (network-internal posture,
 	// same as the probe itself); set to require X-Internal-Token.
 	InternalToken string `yaml:"internal_token"`
-}
-
-type RDBMSConfig struct {
-	URL             string `yaml:"url"`
-	MaxOpenConns    int    `yaml:"max_open_conns"`
-	MaxIdleConns    int    `yaml:"max_idle_conns"`
-	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`
-}
-
-type Neo4jConfig struct {
-	URI      string `yaml:"uri"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
 }
 
 type LogConfig struct {
@@ -155,19 +151,11 @@ func applyEnvOverrides(cfg *Config) {
 
 // Validate fails loud on config that would silently break the service.
 // Neo4j is REQUIRED (this service is useless without the graph store);
-// MySQL is required for page bookkeeping and scope resolution.
+// MySQL is required for page bookkeeping and scope resolution. The per-infra
+// validation rules live with the connection code they protect.
 func Validate(cfg *Config) error {
-	if strings.TrimSpace(cfg.Neo4j.URI) == "" {
-		return fmt.Errorf("neo4j.uri is required (KG__URI)")
+	if err := cfg.Neo4j.Validate(); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.RDBMS.URL) == "" {
-		return fmt.Errorf("rdbms.url is required (APPKG__RDBMS__URL)")
-	}
-	if strings.TrimSpace(cfg.Neo4j.Database) == "" {
-		cfg.Neo4j.Database = "neo4j"
-	}
-	if strings.TrimSpace(cfg.Neo4j.Username) == "" {
-		cfg.Neo4j.Username = "neo4j"
-	}
-	return nil
+	return cfg.RDBMS.Validate()
 }

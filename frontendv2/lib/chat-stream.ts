@@ -50,9 +50,16 @@ export function isTypedArtifact(artifact: ChatArtifact): artifact is ChatTypedAr
 /** Stable identity per artifact, used to de-duplicate within one turn. */
 export function artifactKey(artifact: ChatArtifact): string {
   if (!isTypedArtifact(artifact)) return artifact.url || artifact.name || "";
+  // Newer kinds (plot / diagram / academic_*) carry a stable server-generated
+  // id; prefer it so two large specs sharing a JSON prefix cannot collide.
+  const data = artifact.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const id = (data as Record<string, unknown>).id;
+    if (typeof id === "string" && id.length > 0) return `${artifact.kind}:${id}`;
+  }
   let payload = "";
   try {
-    payload = JSON.stringify(artifact.data) ?? "";
+    payload = JSON.stringify(data) ?? "";
   } catch {
     payload = "";
   }
@@ -192,6 +199,8 @@ export interface StreamCallbacks {
   onError?: (message: string, meta?: { code?: string; detail?: Record<string, unknown> }) => void;
   onComplete?: () => void;
   onStep?: (step: StreamStep) => void;
+  // Routing decided (backend `route` frame). Kept for protocol compatibility
+  // and queue-slot clearing; the routed agent name is NOT shown in the UI.
   onRoute?: (agent: string) => void;
   onReset?: () => void;
   onArtifact?: (artifact: ChatArtifact) => void;

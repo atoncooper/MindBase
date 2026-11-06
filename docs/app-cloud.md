@@ -95,6 +95,12 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 - **M2M（app-ts）**：`GET /internal/cloud/summary`、`/internal/cloud/similar`，用
   `internal.api_key`（compose 复用 APISIX_CONSUMER_KEY）鉴权；app-ts 的 `cloud_doc_summary`
   工具经此读取摘要，uid 由服务端会话注入，LLM 不能指定 uid。
+- **KG 云盘文档读取（M2M，2026-11-05）**：`GET /internal/cloud/kg/documents?uid=&limit=&cursor=`
+  分页列出该用户已解析正文的文档（只回 upload_uuid/title/content_hash/size_chars，按
+  upload_uuid ASC + cursor，limit 1..100 缺省 50）与
+  `GET /internal/cloud/kg/document?uid=&upload_uuid=` 读取正文（按字符截断 200k，size_chars
+  为全文长度）。供 app-ts 构建云盘知识点；同样走 internal.api_key + uid 校验，无能力门
+  （Mongo 未启用时列表为空页、详情 404）。历史文档 size_chars 可能为 0（重新解析后补齐）。
 - **文件级 AI**：云盘详情页展示摘要/AI 标签/关键点/待办/可回答问题与相似文件；「问这份文件」进入
   `/chat?upload_uuid=<uuid>`，聊天只以该文件为检索范围；聊天来源支持 uploadUuid 深链回云盘详情。
 - **配置**：`pipeline.ocr.*`（enabled/model/max_image_bytes/max_pdf_pages/max_images/timeout_seconds；

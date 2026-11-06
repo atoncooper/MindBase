@@ -29,10 +29,29 @@ export function registerKgRoutes(app: FastifyInstance, deps: { kg: KgService; qu
     if (uid === undefined) {
       return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });
     }
-    const body = (req.body ?? {}) as { folder_ids?: unknown };
+    const body = (req.body ?? {}) as { folder_ids?: unknown; source?: unknown; upload_uuids?: unknown };
+    const rawSource = typeof body.source === "string" ? body.source.trim().toLowerCase() : "";
+    if (rawSource !== "" && rawSource !== "bilibili" && rawSource !== "cloud") {
+      return reply.status(400).send({ detail: "source 仅支持 bilibili / cloud" });
+    }
+    const source = rawSource === "cloud" ? "cloud" : "bilibili";
     const folderIds = Array.isArray(body.folder_ids)
       ? body.folder_ids.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0)
       : undefined;
+    // upload_uuids 仅对 source=cloud 生效：去重、去空、上限 200
+    const uploadUuids = source === "cloud" && Array.isArray(body.upload_uuids)
+      ? [
+          ...new Set(
+            body.upload_uuids
+              .filter((v): v is string => typeof v === "string")
+              .map((v) => v.trim())
+              .filter((v) => v !== ""),
+          ),
+        ]
+      : undefined;
+    if (uploadUuids && uploadUuids.length > 200) {
+      return reply.status(400).send({ detail: "upload_uuids 数量超过上限（200）" });
+    }
     // KG 构建配额：peek 在启动前，consume 只在真正新建时（reused 幂等不计数）
     if (deps.quota) {
       const gate = await deps.quota.peekKind(uid, "kg_build");
@@ -51,7 +70,11 @@ export function registerKgRoutes(app: FastifyInstance, deps: { kg: KgService; qu
       }
     }
     try {
-      const { taskId, reused } = await deps.kg.startBuild(uid, folderIds);
+      const { taskId, reused } = await deps.kg.startBuild(uid, {
+        source,
+        folderIds: source === "cloud" ? undefined : folderIds,
+        uploadUuids,
+      });
       if (deps.quota && !reused) await deps.quota.consumeKind(uid, "kg_build");
       return { task_id: taskId, reused };
     } catch (err) {

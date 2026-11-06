@@ -34,7 +34,7 @@ export function formatCloudSummary(summary: CloudDocumentSummary, opts: { title?
   const header = opts.title ? `【云盘文档摘要】${opts.title}` : "【云盘文档摘要】";
   const parts: string[] = [header];
   if (opts.stale) {
-    parts.push("注意：文件内容已更新，当前摘要基于较早版本（可重新入库以刷新）。");
+    parts.push("注意：文件内容已更新，当前摘要基于较早版本（如需刷新，请重新上传该文件或联系管理员）。");
   }
   parts.push(
     `概览：\n${summary.overview || "（无）"}`,
@@ -56,7 +56,7 @@ export function createCloudDocSummaryTool(client: CloudDocSummaryClient) {
     description:
       "读取某个云盘文档已生成的 AI 摘要（概览/主题/实体/关键点/待办/可回答问题）。" +
       "当用户询问云盘文档的内容、要点或待办，且已知文件 uploadUuid 时使用；" +
-      "摘要尚未生成时会返回提示，可告知用户重新入库该文件。",
+      "摘要尚未生成时会返回提示，可告知用户稍后刷新或重新上传该文件。",
     inputSchema: z.object({
       uploadUuid: z.string().min(16).max(128).describe("云盘文件 UUID（16-128 字符），来自云盘文件列表/引用"),
     }),
@@ -83,7 +83,7 @@ export function createCloudDocSummaryTool(client: CloudDocSummaryClient) {
       };
       if (!resp.available || resp.summary === null) {
         return {
-          content: "该云盘文档的摘要尚未生成（可重新入库该文件后再生成摘要）。",
+          content: "该云盘文档的摘要尚未生成（可稍后刷新；如需重新生成，请重新上传该文件或联系管理员）。",
           sources: [source],
         };
       }

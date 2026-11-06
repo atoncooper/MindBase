@@ -221,8 +221,12 @@ export function registerChatRoutes(
       // Note: must listen for close on the response (reply.raw), not on the request —
       // in Node 16+, IncomingMessage's close fires as soon as the request body is fully read, which would cut the stream off prematurely
       let closed = false;
+      // Client gone → abort the whole turn: streamText stops, in-flight tools
+      // receive the signal, and ChatService finalizes the assistant message.
+      const cancel = new AbortController();
       reply.raw.on("close", () => {
         closed = true;
+        cancel.abort();
       });
 
       // frontend contract: folder_ids resolve to a bvid scope via app-kg (MySQL
@@ -252,6 +256,7 @@ export function registerChatRoutes(
           skillIds: Array.isArray(body.skill_ids) ? body.skill_ids.filter((s) => typeof s === 'string') : undefined,
           ...(board ? { board } : {}),
           ...(academic ? { academicProjectId: academic.projectId } : {}),
+          signal: cancel.signal,
         })) {
           if (closed) break;
           reply.raw.write(`data: ${JSON.stringify(frame)}\n\n`);
