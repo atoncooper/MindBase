@@ -769,6 +769,9 @@ services:
       - WECHAT__APP_ID=${WECHAT__APP_ID:-}
       - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
       - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      # Internal M2M face (/internal/auth/user/{uid}) used by app-ts task-quiz:
+      # must equal the shared APISIX consumer key configured on the app-ts side.
+      - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       # Snowflake worker id 2 (1 was the retired Python backend)
       - APPAUTH__WORKER_ID=2
       - APPAUTH__LOG__OUTPUT=both
