@@ -28,8 +28,6 @@ interface FileInspectorProps {
     detail: CloudVideoDetailResponse;
     processing: boolean;
     onProcess: (uuid: string) => void;
-    /** done 文件的「重新入库」：走 reprocess（删除旧向量后重跑），不是普通 process */
-    onReprocess?: (uuid: string) => void;
     onDelete: (uuid: string) => void;
     onBack: () => void;
     /** 相似文件点击：就地打开另一个文件的详情 */
@@ -40,7 +38,6 @@ export function FileInspector({
     detail,
     processing,
     onProcess,
-    onReprocess,
     onDelete,
     onBack,
     onOpenFile,
@@ -93,19 +90,17 @@ export function FileInspector({
                 {/* Action */}
                 <div className="mt-5 space-y-2">
                     {done ? (
-                        <button
-                            type="button"
-                            onClick={() => (onReprocess ?? onProcess)(detail.uploadUuid)}
-                            disabled={inFlight}
-                            className="btn-pill btn-ghost h-11 w-full text-[13px] md:h-9"
+                        // 已入库文件禁止再次发起入库：重复入库只会重建向量/摘要，
+                        // 属于运维动作（需要时由管理员调用 reprocess API），
+                        // 普通用户界面不再提供入口。
+                        <div
+                            title="该文件已入库，无需重复入库"
+                            aria-disabled="true"
+                            className="flex h-11 w-full items-center justify-center gap-1.5 rounded-full bg-border-subtle text-[13px] text-tertiary md:h-9"
                         >
-                            {inFlight ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                                <Sparkles className="h-4 w-4" />
-                            )}
-                            重新入库
-                        </button>
+                            <Sparkles className="h-4 w-4" />
+                            已入库
+                        </div>
                     ) : isVectorizable ? (
                         <button
                             type="button"
@@ -144,7 +139,6 @@ export function FileInspector({
                 <div className="mt-6">
                     <FileAiPanel
                         uploadUuid={detail.uploadUuid}
-                        onReprocess={onReprocess ?? onProcess}
                         onSelectFile={onOpenFile}
                     />
                 </div>

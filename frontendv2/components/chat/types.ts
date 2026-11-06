@@ -35,8 +35,6 @@ export interface ChatMessageData {
   // collapsed block, content loads on expand. Not persisted by the backend,
   // so it disappears on history reload.
   reasoning?: string;
-  // Agent name routed to by AgentOrchestrator (from the `route` SSE frame).
-  agent?: string;
   // Turn is waiting in the backend admission queue (from the `queue` SSE
   // frame, 1-based position). Cleared when the slot is granted (route/chunk
   // frames follow); if the wait times out the turn fails with a queue error.

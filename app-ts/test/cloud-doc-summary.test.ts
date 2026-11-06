@@ -177,7 +177,7 @@ describe("cloud_doc_summary tool", () => {
     const out = await tool.execute({ uploadUuid: UUID }, makeCtx("42"));
     const content = typeof out === "string" ? out : out.content;
     expect(content).toContain("较早版本");
-    expect(content).toContain("重新入库");
+    expect(content).toContain("重新上传");
   });
 
   it("returns a plain notice when no summary has been generated yet", async () => {

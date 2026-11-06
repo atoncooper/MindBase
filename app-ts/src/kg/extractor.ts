@@ -6,25 +6,26 @@ import { createLogger } from "../logger.js";
 import type { ExtractionResult } from "./types.js";
 
 /**
- * KG extractor — LLM structured extraction from one page's ASR transcript,
- * port of app/services/kg/extractor.py. Single-shot generateObject (not the
- * ReAct tool-calling pattern: there is no loop here, one call per page).
+ * KG extractor — LLM structured extraction from one source text (video ASR
+ * transcript or cloud-drive document body), port of
+ * app/services/kg/extractor.py. Single-shot generateObject (not the ReAct
+ * tool-calling pattern: there is no loop here, one call per page/document).
  *
- * Anti-hallucination contract: every relation must quote the transcript —
+ * Anti-hallucination contract: every relation must quote the source text —
  * enforcement lives in the resolver; this layer only shapes the schema and
- * the prompt. LLM failures throw so the caller can mark the page failed
- * (retryable) — never silently swallow.
+ * the prompt. LLM failures throw so the caller can mark the page/document
+ * failed (retryable) — never silently swallow.
  */
 
 const log = createLogger("KG_EXTRACTOR");
 
 export const extractedEntitySchema = z.object({
-  name: z.string().describe("实体名称，尽量使用视频中出现的原文叫法"),
+  name: z.string().describe("实体名称，尽量使用原文中出现的叫法"),
   type: z
     .string()
     .default("other")
     .describe("实体类型: person/org/concept/tech/tool/book/event/method/place/other"),
-  description: z.string().default("").describe("一句话描述该实体在本视频中的含义或角色"),
+  description: z.string().default("").describe("一句话描述该实体在本文中的含义或角色"),
   quote: z.string().default("").describe("原文中明确提到该实体的片段摘抄（20字以内），找不到就留空"),
 });
 
@@ -39,6 +40,11 @@ export const extractionResultSchema = z.object({
   entities: z.array(extractedEntitySchema).default([]),
   relations: z.array(extractedRelationSchema).default([]),
 });
+
+/** Knowledge origin: video ASR transcript vs cloud-drive document body. The
+ * extractor only differs in the user-prompt labels — the schema and the
+ * anti-hallucination contract are source-independent. */
+export type KgExtractKind = "video" | "document";
 
 export interface ExtractorOptions {
   /** injectable for tests; default = gateway model with purpose="kg" */
@@ -55,21 +61,24 @@ export class KgExtractor {
     this.model = opts.model;
   }
 
-  /** Extract entities + relations from one page. Text is truncated to
-   * maxTextChars (cost guard); throws on LLM failure (caller marks failed). */
-  async extract(text: string, title: string): Promise<ExtractionResult> {
+  /** Extract entities + relations from one source text (video transcript or
+   * cloud-document body). Text is truncated to maxTextChars (cost guard);
+   * throws on LLM failure (caller marks the page/document failed). */
+  async extract(text: string, title: string, kind: KgExtractKind = "video"): Promise<ExtractionResult> {
     const maxChars = this.opts.maxTextChars;
     const truncated = text.slice(0, maxChars);
     if (text.length > maxChars) {
       log.info(`[KG_EXTRACTOR] text truncated ${text.length} -> ${maxChars} chars`);
     }
 
-    const userPrompt = `视频标题：${title || "（未知）"}\n\n文字稿：\n${truncated}`;
+    const label = kind === "document"
+      ? `文档标题：${title || "（未知）"}\n\n文档正文：\n${truncated}`
+      : `视频标题：${title || "（未知）"}\n\n文字稿：\n${truncated}`;
     const { object } = await generateObject({
       model: this.model ?? createGatewayModel("kg", { model: this.opts.extractModel, temperature: 0 }),
       schema: extractionResultSchema,
       system: this.opts.systemPrompt,
-      prompt: userPrompt,
+      prompt: label,
       temperature: 0,
       maxRetries: 2,
     });

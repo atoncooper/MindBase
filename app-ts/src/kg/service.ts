@@ -4,6 +4,8 @@ import { createLogger } from "../logger.js";
 import type { KgBuildRecord, KgBuildResult } from "./types.js";
 import type { KgGraphRepository } from "../repository/kg-graph.js";
 import type { KgSourceStore } from "../repository/kg-sources.js";
+import type { CloudDocContent, KgCloudSourceStore } from "../repository/kg-cloud-sources.js";
+import type { KgDocRepository } from "../repository/kg-docs.js";
 import type { KgBuildRepository } from "../repository/kg-builds.js";
 import type { KgExtractor } from "./extractor.js";
 import { resolveExtraction } from "./resolver.js";
@@ -54,6 +56,10 @@ export interface KgServiceDeps {
   graph: KgGraphRepository;
   extractor: KgExtractor;
   sources: KgSourceStore;
+  /** null = app-cloud not configured → cloud builds answer 503 */
+  cloudSources: KgCloudSourceStore | null;
+  /** per-cloud-document extraction ledger (idempotency by content hash) */
+  docs: KgDocRepository;
   builds: KgBuildRepository;
   /** entity index may be absent (Milvus down) — vectors become best-effort */
   index: KgEntityIndex | null;
@@ -68,6 +74,27 @@ export class KgServiceError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+/** Knowledge origin for a build. */
+export type KgBuildSource = "bilibili" | "cloud";
+
+export interface BuildStartOptions {
+  /** knowledge origin; default bilibili (keeps the pre-cloud API contract) */
+  source?: KgBuildSource;
+  /** bilibili scope: favorite folders (empty = all non-deleted folders) */
+  folderIds?: number[];
+  /** cloud scope: specific documents (empty/absent = the whole drive) */
+  uploadUuids?: string[];
+}
+
+/** One cloud document selected for a build: listing metadata, or the already
+ * fetched content on the explicit upload_uuids path (avoids a second fetch). */
+export interface CloudDocBuildTarget {
+  uploadUuid: string;
+  title?: string;
+  contentHash?: string;
+  preloaded?: CloudDocContent;
 }
 
 export interface BuildStartResult {
@@ -91,9 +118,12 @@ export class KgService {
     }
   }
 
-  /** Trigger a build for the user's folders. Reuses the active task when one
-   * is still running. Throws KgServiceError(503/404) on unavailable/empty scope. */
-  async startBuild(uid: string, folderIds: number[] | undefined): Promise<BuildStartResult> {
+  /** Trigger a build for the user's favorite folders (source=bilibili, the
+   * default) or cloud-drive documents (source=cloud). Reuses the active task
+   * when one is still running. Throws KgServiceError(503/404) on
+   * unavailable/empty scope. */
+  async startBuild(uid: string, opts: BuildStartOptions = {}): Promise<BuildStartResult> {
+    const source = opts.source ?? "bilibili";
     if (!(await this.isAvailable())) {
       throw new KgServiceError(503, "知识图谱存储不可用（Neo4j 未连接）");
     }
@@ -101,6 +131,14 @@ export class KgService {
     if (active) {
       return { taskId: active.taskId, reused: true };
     }
+    if (source === "cloud") {
+      return this.startCloudBuild(uid, opts.uploadUuids ?? []);
+    }
+    return this.startVideoBuild(uid, opts.folderIds);
+  }
+
+  /** Video path: resolve favorite scope → record processing → background run. */
+  private async startVideoBuild(uid: string, folderIds: number[] | undefined): Promise<BuildStartResult> {
     const bvids = await this.deps.graph.resolveScope(uid, folderIds ?? []);
     if (bvids.length === 0) {
       throw new KgServiceError(404, "未找到已同步的收藏夹视频，请先执行收藏夹同步");
@@ -110,6 +148,7 @@ export class KgService {
     const record: KgBuildRecord = {
       taskId: randomUUID(),
       uid,
+      source: "bilibili",
       folderIds: folderIds ?? [],
       bvidCount: bvids.length,
       status: "processing",
@@ -120,9 +159,78 @@ export class KgService {
       updatedAt: now,
     };
     await this.deps.builds.save(record);
-    const completion = this.run(record, bvids);
+    const completion = this.runVideo(record, bvids);
     log.info(`[KG] build started task_id=${record.taskId} uid=${uid} bvids=${bvids.length}`);
     return { taskId: record.taskId, reused: false, completion };
+  }
+
+  /** Cloud path: enumerate parsed documents → record processing → background run. */
+  private async startCloudBuild(uid: string, uploadUuids: string[]): Promise<BuildStartResult> {
+    const targets = await this.collectCloudDocs(uid, uploadUuids);
+    if (targets.length === 0) {
+      throw new KgServiceError(404, "云盘中未找到可解析正文的文档，请先上传并等待解析完成");
+    }
+
+    const now = Date.now();
+    const record: KgBuildRecord = {
+      taskId: randomUUID(),
+      uid,
+      source: "cloud",
+      folderIds: [],
+      bvidCount: 0,
+      docCount: targets.length,
+      status: "processing",
+      progress: 0,
+      currentStep: "init",
+      steps: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.deps.builds.save(record);
+    const completion = this.runCloud(record, targets);
+    log.info(`[KG] cloud build started task_id=${record.taskId} uid=${uid} docs=${targets.length}`);
+    return { taskId: record.taskId, reused: false, completion };
+  }
+
+  /** Resolve the cloud-doc target list: explicit upload_uuids are read one by
+   * one (404 → failed item), otherwise page the whole drive up to cloudMaxDocs. */
+  private async collectCloudDocs(uid: string, uploadUuids: string[]): Promise<CloudDocBuildTarget[]> {
+    const cloud = this.deps.cloudSources;
+    if (!cloud) {
+      throw new KgServiceError(503, "云盘文档服务未配置，暂时无法构建云盘知识点");
+    }
+    if (uploadUuids.length > 0) {
+      const targets: CloudDocBuildTarget[] = [];
+      const seen = new Set<string>();
+      for (const uploadUuid of uploadUuids) {
+        if (!uploadUuid || seen.has(uploadUuid)) continue;
+        seen.add(uploadUuid);
+        try {
+          const doc = await cloud.getDocument(uid, uploadUuid);
+          targets.push(doc ? { uploadUuid, preloaded: doc } : { uploadUuid });
+        } catch (err) {
+          log.warn(`[KG] cloud doc lookup failed upload_uuid=${uploadUuid}: ${err instanceof Error ? err.message : err}`);
+          targets.push({ uploadUuid });
+        }
+      }
+      return targets;
+    }
+
+    const pageSize = Math.max(Math.floor(config.kg.cloudListPageSize), 1);
+    const maxDocs = Math.max(Math.floor(config.kg.cloudMaxDocs), 1);
+    const targets: CloudDocBuildTarget[] = [];
+    let cursor: string | undefined;
+    while (targets.length < maxDocs) {
+      const limit = Math.min(pageSize, maxDocs - targets.length);
+      const page = await cloud.listDocuments(uid, { limit, cursor });
+      for (const item of page.items) {
+        if (!item.uploadUuid) continue;
+        targets.push({ uploadUuid: item.uploadUuid, title: item.title, contentHash: item.contentHash });
+      }
+      if (!page.nextCursor || page.items.length === 0) break;
+      cursor = page.nextCursor;
+    }
+    return targets.slice(0, maxDocs);
   }
 
   get(taskId: string, uid: string): Promise<KgBuildRecord | undefined> {
@@ -133,9 +241,9 @@ export class KgService {
     return this.deps.builds.findActive(uid);
   }
 
-  /** Background run: per-page concurrency + failure isolation + progress.
+  /** Background video run: per-page concurrency + failure isolation + progress.
    * Never throws — the completion promise exists so tests can await it. */
-  private async run(record: KgBuildRecord, bvids: string[]): Promise<void> {
+  private async runVideo(record: KgBuildRecord, bvids: string[]): Promise<void> {
     const save = async (patch: Partial<KgBuildRecord>): Promise<void> => {
       await this.deps.builds
         .save({ ...record, ...patch, updatedAt: Date.now() })
@@ -189,6 +297,191 @@ export class KgService {
       record.status = "failed";
       record.error = error;
       await save({ status: "failed", error });
+    }
+  }
+
+  /** Background cloud run: per-document concurrency + failure isolation.
+   * Mirrors runVideo, but the per-item step is processCloudDoc (app-kg owns
+   * the delete-before-write inside LinkCloudDocAppearances). Never throws. */
+  private async runCloud(record: KgBuildRecord, targets: CloudDocBuildTarget[]): Promise<void> {
+    const save = async (patch: Partial<KgBuildRecord>): Promise<void> => {
+      await this.deps.builds
+        .save({ ...record, ...patch, updatedAt: Date.now() })
+        .catch((err) => log.error(`[KG] failed to persist build state: ${err instanceof Error ? err.message : err}`));
+    };
+    try {
+      const total = targets.length;
+      let ok = 0;
+      let failed = 0;
+      let skipped = 0;
+      const sem = new Semaphore(Math.max(config.kg.concurrency, 1));
+
+      await Promise.all(
+        targets.map((target) =>
+          sem.acquire(async () => {
+            const stepName = `extract:cloud:${target.uploadUuid}`;
+            try {
+              const outcome = await this.processCloudDoc(record.uid, target);
+              if (outcome.skipped) skipped += 1;
+              ok += 1;
+            } catch (err) {
+              failed += 1;
+              log.error(
+                `[KG] cloud doc failed upload_uuid=${target.uploadUuid}: ${err instanceof Error ? err.message : err}`,
+              );
+            } finally {
+              const done = ok + failed;
+              const progress = Math.floor((done * 100) / total);
+              record.progress = progress;
+              record.currentStep = stepName;
+              record.steps = [...record.steps, { name: stepName, status: "done", progress, at: Date.now() }];
+              await save({ progress, currentStep: stepName, steps: record.steps });
+            }
+          }),
+        ),
+      );
+
+      record.status = "done";
+      const result: KgBuildResult = {
+        total,
+        ok,
+        failed,
+        ...(skipped > 0 ? { message: `跳过未变更文档 ${skipped} 篇` } : {}),
+      };
+      record.result = result;
+      await save({ status: "done", result });
+      log.info(`[KG] cloud build done task_id=${record.taskId} ok=${ok} failed=${failed} skipped=${skipped}`);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error(`[KG] cloud build failed task_id=${record.taskId}: ${error}`);
+      record.status = "failed";
+      record.error = error;
+      await save({ status: "failed", error });
+    }
+  }
+
+  /** Per-document idempotent pipeline: skip unchanged (content hash) → read
+   * text → extract → entities → link evidence (app-kg delete-before-write) →
+   * relations → entity vectors (best-effort) → done. Throws on failure after
+   * recording `failed`; the batch keeps going. */
+  async processCloudDoc(
+    uid: string,
+    target: CloudDocBuildTarget,
+  ): Promise<{ entities: number; relations: number; droppedRelations: number; skipped: boolean }> {
+    const skippedResult = { entities: 0, relations: 0, droppedRelations: 0, skipped: true };
+    // Listing path: the content hash is already known → skip before fetching text.
+    if (target.contentHash && (await this.isCloudDocFresh(uid, target.uploadUuid, target.contentHash))) {
+      return skippedResult;
+    }
+
+    const cloud = this.deps.cloudSources;
+    if (!cloud) throw new Error("云盘文档服务未配置");
+    const doc = target.preloaded ?? (await cloud.getDocument(uid, target.uploadUuid));
+    const text = doc?.text ?? "";
+    const title = doc?.title || target.title || target.uploadUuid;
+    const contentHash = doc?.contentHash || target.contentHash || "";
+    if (contentHash && (await this.isCloudDocFresh(uid, target.uploadUuid, contentHash))) {
+      return skippedResult;
+    }
+    if (!text) {
+      // No parsed body → failed (retryable: only done+same-hash records skip).
+      const error = `云盘文档无可用正文: upload_uuid=${target.uploadUuid}`;
+      await this.deps.docs
+        .save({ uid, uploadUuid: target.uploadUuid, title, contentHash, status: "failed", error, updatedAt: Date.now() })
+        .catch((saveErr) =>
+          log.error(`[KG] failed to persist cloud doc status: ${saveErr instanceof Error ? saveErr.message : saveErr}`),
+        );
+      throw new Error(error);
+    }
+
+    const now = Date.now();
+    await this.deps.docs.save({
+      uid,
+      uploadUuid: target.uploadUuid,
+      title,
+      contentHash,
+      status: "processing",
+      updatedAt: now,
+    });
+
+    try {
+      const raw = await this.deps.extractor.extract(text, title, "document");
+      const resolved = resolveExtraction(raw);
+      if (resolved.entities.length === 0) {
+        log.info(`[KG] no entities extracted upload_uuid=${target.uploadUuid}`);
+      }
+
+      if (resolved.entities.length > 0) {
+        await this.deps.graph.upsertEntities(resolved.entities);
+      }
+      // Always link (even with an empty list): app-kg deletes this document's
+      // stale evidence first, so a re-extraction that found nothing clears it.
+      await this.deps.graph.linkCloudDocAppearances({
+        uid,
+        uploadUuid: target.uploadUuid,
+        title,
+        contentHash,
+        appearances: resolved.entities.map((ent) => ({ eid: ent.eid, quote: ent.quote })),
+      });
+      if (resolved.relations.length > 0) {
+        await this.deps.graph.upsertRelations(resolved.relations);
+      }
+
+      if (resolved.entities.length > 0 && this.deps.index && this.deps.index.available) {
+        try {
+          await this.deps.index.upsert(resolved.entities, this.deps.embeddings);
+        } catch (err) {
+          log.warn(`[KG] entity index upsert failed: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      await this.deps.docs.save({
+        uid,
+        uploadUuid: target.uploadUuid,
+        title,
+        contentHash,
+        status: "done",
+        entityCount: resolved.entities.length,
+        relationCount: resolved.relations.length,
+        updatedAt: Date.now(),
+      });
+
+      log.info(
+        `[KG] cloud doc done upload_uuid=${target.uploadUuid} entities=${resolved.entities.length} relations=${resolved.relations.length}`,
+      );
+      return {
+        entities: resolved.entities.length,
+        relations: resolved.relations.length,
+        droppedRelations: resolved.droppedRelations,
+        skipped: false,
+      };
+    } catch (err) {
+      await this.deps.docs
+        .save({
+          uid,
+          uploadUuid: target.uploadUuid,
+          title,
+          contentHash,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+          updatedAt: Date.now(),
+        })
+        .catch((saveErr) =>
+          log.error(`[KG] failed to persist cloud doc status: ${saveErr instanceof Error ? saveErr.message : saveErr}`),
+        );
+      throw err;
+    }
+  }
+
+  /** done + same content hash → nothing to redo (no LLM call, no graph write). */
+  private async isCloudDocFresh(uid: string, uploadUuid: string, contentHash: string): Promise<boolean> {
+    if (!contentHash) return false;
+    try {
+      const existing = await this.deps.docs.get(uid, uploadUuid);
+      return existing?.status === "done" && existing.contentHash === contentHash;
+    } catch (err) {
+      log.warn(`[KG] cloud doc ledger lookup failed upload_uuid=${uploadUuid}: ${err instanceof Error ? err.message : err}`);
+      return false;
     }
   }
 
@@ -271,16 +564,32 @@ export class KgService {
     await this.deps.graph.deleteVideo(bvid);
   }
 
-  /** Graph stats: Neo4j counts + entity-vector count + pending pages. */
+  /** Graph stats: Neo4j counts (video + cloud-doc knowledge points) +
+   * entity-vector count + pending pages. */
   async stats(): Promise<{
     available: boolean;
-    graph: { entities: number; relations: number; evidence: number; videos: number };
+    graph: {
+      entities: number;
+      relations: number;
+      evidence: number;
+      videos: number;
+      cloudDocs: number;
+      cloudEvidence: number;
+    };
     entityVectors: number;
     pendingPages: number;
   }> {
+    const emptyGraph = {
+      entities: 0,
+      relations: 0,
+      evidence: 0,
+      videos: 0,
+      cloudDocs: 0,
+      cloudEvidence: 0,
+    };
     const empty = {
       available: false,
-      graph: { entities: 0, relations: 0, evidence: 0, videos: 0 },
+      graph: emptyGraph,
       entityVectors: 0,
       pendingPages: 0,
     };
@@ -293,7 +602,14 @@ export class KgService {
       }
       return {
         available: true,
-        graph: { entities: graph.entities, relations: graph.relations, evidence: graph.evidence, videos: graph.videos },
+        graph: {
+          entities: graph.entities,
+          relations: graph.relations,
+          evidence: graph.evidence,
+          videos: graph.videos,
+          cloudDocs: graph.cloudDocs,
+          cloudEvidence: graph.cloudEvidence,
+        },
         entityVectors,
         pendingPages: graph.pendingPages,
       };

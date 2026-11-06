@@ -188,8 +188,10 @@ export function registerOpenAiCompat(
         });
         const heartbeat = setInterval(() => reply.raw.write(HEARTBEAT), HEARTBEAT_INTERVAL_MS);
         let closed = false;
+        const cancel = new AbortController();
         reply.raw.on("close", () => {
           closed = true;
+          cancel.abort();
         });
 
         const send = (delta: Record<string, unknown>, finishReason: string | null = null, usage?: Record<string, unknown>) => {
@@ -201,7 +203,7 @@ export function registerOpenAiCompat(
         try {
           send({ role: "assistant", content: "" });
           let usage: Record<string, unknown> | undefined;
-          for await (const frame of opts.harness.dispatchStream(input)) {
+          for await (const frame of opts.harness.dispatchStream({ ...input, signal: cancel.signal })) {
             if (closed) break;
             switch (frame.type) {
               case "chunk":
@@ -245,7 +247,11 @@ export function registerOpenAiCompat(
       let content = "";
       let usage: Record<string, unknown> | undefined;
       let failed = false;
-      for await (const frame of opts.harness.dispatchStream(input)) {
+      // A disconnect mid-request should cancel generation too (same semantics
+      // as the streaming branch); the response close fires on socket death.
+      const cancel = new AbortController();
+      reply.raw.on("close", () => cancel.abort());
+      for await (const frame of opts.harness.dispatchStream({ ...input, signal: cancel.signal })) {
         switch (frame.type) {
           case "chunk":
             content += frame.content;

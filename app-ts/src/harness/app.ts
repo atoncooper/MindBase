@@ -33,6 +33,8 @@ export class AgentHarness {
     skillIds?: string[];
     /** turn-level system directive appended to the agent's own prompt (e.g. board chat context) */
     extraSystem?: string;
+    /** abort on client disconnect: cancels streamText + in-flight tools */
+    signal?: AbortSignal;
   }): AsyncGenerator<SseFrame> {
     const agentName = input.agentName ?? (await this.orchestrator.route(input.query));
     yield { type: "route", agent: agentName };
@@ -44,6 +46,7 @@ export class AgentHarness {
       history: input.history,
       skillIds: input.skillIds,
       ...(input.extraSystem ? { extraSystem: input.extraSystem } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   }
 

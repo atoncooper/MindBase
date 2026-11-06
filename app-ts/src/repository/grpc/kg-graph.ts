@@ -3,6 +3,7 @@ import { GrpcClient } from "../../transport/grpc.js";
 import type {
   AppearanceRow,
   BeginPageResult,
+  CloudDocEvidenceRow,
   EdgeRow,
   EntityDetail,
   EvidenceRow,
@@ -15,13 +16,24 @@ import type {
   ResolvedRelation,
   TopEntityRow,
 } from "../../kg/types.js";
-import type { AppearanceInput, DeleteVideoStats, KgGraphRepository } from "../kg-graph.js";
+import type {
+  AppearanceInput,
+  CloudDocAppearanceInput,
+  DeleteCloudDocStats,
+  DeleteVideoStats,
+  KgGraphRepository,
+} from "../kg-graph.js";
 
 /**
  * gRPC implementation of KgGraphRepository against the app-kg Go service.
  * Transport (proto loading / channel / deadline / error normalization) lives
- * in src/grpc/client.ts; this file is ONLY message↔domain mapping — the
+ * in src/transport/grpc.ts; this file is ONLY message↔domain mapping — the
  * repository layer owns "what the data is", never "how the bytes travel".
+ *
+ * IMPORTANT: transport/grpc.ts loads the proto with keepCase:false, so the
+ * runtime message keys are camelCase (uploadUuid / cloudDocs / pageIndex).
+ * Snake_case keys are silently dropped by the protobuf serializer — always
+ * map to the camelCase names below.
  */
 
 /** Service FQN inside proto/kg/v1/kg.proto. */
@@ -48,6 +60,8 @@ function strArr(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+/** int64 fields are strings inside app-ts (precision-safe); protobuf accepts
+ * a decimal string for int64, so uids travel as-is. */
 export class GrpcKgGraphRepository implements KgGraphRepository {
   private constructor(private readonly rpc: GrpcClient) {}
 
@@ -70,7 +84,7 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
   // ── MySQL bookkeeping ────────────────────────────────────────────────
 
   async resolveScope(uid: string, folderIds: number[]): Promise<string[]> {
-    const res = await this.rpc.call("ResolveScope", { uid, folder_ids: folderIds });
+    const res = await this.rpc.call("ResolveScope", { uid, folderIds });
     return strArr(res.bvids);
   }
 
@@ -80,8 +94,8 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     return arr(res.pages).map((p) => ({
       bvid: str(p.bvid),
       cid: num(p.cid),
-      pageIndex: num(p.page_index),
-      pageTitle: str(p.page_title),
+      pageIndex: num(p.pageIndex),
+      pageTitle: str(p.pageTitle),
       version: num(p.version),
     }));
   }
@@ -90,21 +104,21 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     const res = await this.rpc.call<Record<string, unknown>>("BeginPage", {
       bvid,
       cid,
-      expected_version: expectedVersion ?? -1,
+      expectedVersion: expectedVersion ?? -1,
     });
     return {
       found: Boolean(res.found),
-      asrDone: Boolean(res.asr_done),
+      asrDone: Boolean(res.asrDone),
       skip: Boolean(res.skip),
       reason: str(res.reason),
-      contentVersion: num(res.content_version),
-      pageTitle: str(res.page_title),
-      pageIndex: num(res.page_index),
+      contentVersion: num(res.contentVersion),
+      pageTitle: str(res.pageTitle),
+      pageIndex: num(res.pageIndex),
     };
   }
 
   async markPageDone(bvid: string, cid: number, contentVersion: number): Promise<void> {
-    await this.rpc.call("MarkPageDone", { bvid, cid, content_version: contentVersion });
+    await this.rpc.call("MarkPageDone", { bvid, cid, contentVersion });
   }
 
   async markPageFailed(bvid: string, cid: number): Promise<void> {
@@ -124,7 +138,7 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
       entities: entities.map((e) => ({
         eid: e.eid,
         name: e.name,
-        name_lower: e.nameLower,
+        nameLower: e.nameLower,
         type: e.type,
         description: e.description,
         alias: "",
@@ -137,7 +151,7 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     if (appearances.length === 0) return 0;
     const res = await this.rpc.call("LinkAppearances", {
       bvid,
-      page_index: pageIndex,
+      pageIndex,
       appearances: appearances.map((a) => ({ eid: a.eid, quote: a.quote })),
     });
     return num(res.linked);
@@ -147,40 +161,83 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     if (relations.length === 0) return;
     await this.rpc.call("UpsertRelations", {
       relations: relations.map((r) => ({
-        src_eid: r.srcEid,
-        dst_eid: r.dstEid,
-        rel_type: r.relType,
+        srcEid: r.srcEid,
+        dstEid: r.dstEid,
+        relType: r.relType,
         quote: r.quote,
       })),
     });
   }
 
   async deletePageEvidence(bvid: string, pageIndex: number): Promise<number> {
-    const res = await this.rpc.call("DeletePageEvidence", { bvid, page_index: pageIndex });
+    const res = await this.rpc.call("DeletePageEvidence", { bvid, pageIndex });
     return num(res.deleted);
   }
 
   async deleteVideo(bvid: string): Promise<DeleteVideoStats> {
     const res = await this.rpc.call("DeleteVideo", { bvid });
-    return { entitiesRemoved: num(res.entities_removed), videosRemoved: num(res.videos_removed) };
+    return { entitiesRemoved: num(res.entitiesRemoved), videosRemoved: num(res.videosRemoved) };
   }
 
   async clearAll(): Promise<void> {
     await this.rpc.call("ClearAll", {});
   }
 
+  // ── cloud-drive knowledge points (same Entity/RELATES space as videos) ──
+
+  async linkCloudDocAppearances(input: CloudDocAppearanceInput): Promise<number> {
+    // Always call: app-kg merges the CloudDoc node AND performs delete-before-write,
+    // so a re-extraction that yields zero entities still clears stale evidence.
+    const res = await this.rpc.call("LinkCloudDocAppearances", {
+      uid: input.uid,
+      uploadUuid: input.uploadUuid,
+      title: input.title,
+      contentHash: input.contentHash,
+      appearances: input.appearances.map((a) => ({ eid: a.eid, quote: a.quote })),
+    });
+    return num(res.linked);
+  }
+
+  async deleteCloudDocAppearances(uid: string, uploadUuid: string): Promise<DeleteCloudDocStats> {
+    const res = await this.rpc.call("DeleteCloudDocAppearances", { uid, uploadUuid });
+    return { deleted: num(res.deleted), entitiesRemoved: num(res.entitiesRemoved) };
+  }
+
+  async fetchCloudDocEvidence(
+    eids: string[],
+    uid: string,
+    uploadUuids: string[],
+    limit: number,
+  ): Promise<CloudDocEvidenceRow[]> {
+    if (eids.length === 0 || !uid) return [];
+    const res = await this.rpc.call("FetchCloudDocEvidence", {
+      eids,
+      uid,
+      uploadUuids,
+      limit,
+    });
+    return arr(res.rows).map((r) => ({
+      eid: str(r.eid),
+      name: str(r.name),
+      type: str(r.type),
+      uploadUuid: str(r.uploadUuid),
+      quote: str(r.quote),
+      title: str(r.title),
+    }));
+  }
+
   // ── graph reads ──────────────────────────────────────────────────────
 
   async neighbors(eids: string[], excludeEids: string[], limit: number): Promise<NeighborRow[]> {
     if (eids.length === 0) return [];
-    const res = await this.rpc.call("Neighbors", { eids, exclude_eids: excludeEids, limit });
+    const res = await this.rpc.call("Neighbors", { eids, excludeEids, limit });
     return arr(res.rows).map((r) => ({
       eid: str(r.eid),
       name: str(r.name),
       type: str(r.type),
       description: str(r.description),
-      relType: str(r.rel_type),
-      fromEid: str(r.from_eid),
+      relType: str(r.relType),
+      fromEid: str(r.fromEid),
     }));
   }
 
@@ -192,9 +249,9 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
       name: str(r.name),
       type: str(r.type),
       bvid: str(r.bvid),
-      pageIndex: num(r.page_index),
+      pageIndex: num(r.pageIndex),
       quote: str(r.quote),
-      pageTitle: str(r.page_title),
+      pageTitle: str(r.pageTitle),
     }));
   }
 
@@ -202,11 +259,11 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     if (eids.length < 2) return [];
     const res = await this.rpc.call("RelationsAmong", { eids });
     return arr(res.rows).map((r) => ({
-      srcEid: str(r.src_eid),
-      srcName: str(r.src_name),
-      relType: str(r.rel_type),
-      dstEid: str(r.dst_eid),
-      dstName: str(r.dst_name),
+      srcEid: str(r.srcEid),
+      srcName: str(r.srcName),
+      relType: str(r.relType),
+      dstEid: str(r.dstEid),
+      dstName: str(r.dstName),
       weight: num(r.weight),
       quotes: strArr(r.quotes),
     }));
@@ -233,9 +290,9 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
       type: str(r.type),
       description: str(r.description),
       pages: num(r.pages),
-      evidenceSample: arr(r.evidence_sample).map((s) => ({
+      evidenceSample: arr(r.evidenceSample).map((s) => ({
         bvid: str(s.bvid),
-        pageIndex: num(s.page_index),
+        pageIndex: num(s.pageIndex),
         quote: str(s.quote),
       })),
     }));
@@ -245,7 +302,7 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     const res = await this.rpc.call("EntityAppearances", { eid, bvids, limit });
     return arr(res.rows).map((r) => ({
       bvid: str(r.bvid),
-      pageIndex: num(r.page_index),
+      pageIndex: num(r.pageIndex),
       quote: str(r.quote),
     }));
   }
@@ -265,9 +322,9 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
     if (eids.length < 2) return [];
     const res = await this.rpc.call("EdgesAmong", { eids });
     return arr(res.rows).map((r) => ({
-      srcEid: str(r.src_eid),
-      dstEid: str(r.dst_eid),
-      relType: str(r.rel_type),
+      srcEid: str(r.srcEid),
+      dstEid: str(r.dstEid),
+      relType: str(r.relType),
     }));
   }
 
@@ -278,7 +335,9 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
       relations: num(res.relations),
       evidence: num(res.evidence),
       videos: num(res.videos),
-      pendingPages: num(res.pending_pages),
+      pendingPages: num(res.pendingPages),
+      cloudDocs: num(res.cloudDocs),
+      cloudEvidence: num(res.cloudEvidence),
     };
   }
 }

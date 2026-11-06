@@ -17,6 +17,7 @@ import { buildServer } from "../transport/http/server.js";
 import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
 import { createPlanTool } from "../tools/harness/plan.js";
+import { createRenderDiagramTool, createRenderPlotTool } from "../tools/render/index.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import {
@@ -91,6 +92,9 @@ import { MemoryKgSourceStore } from "../repository/memory/kg-sources.js";
 import { MongoKgSourceStore } from "../repository/mongo/kg-sources.js";
 import { MemoryKgBuildStore } from "../repository/memory/kg-builds.js";
 import { MongoKgBuildStore } from "../repository/mongo/kg-builds.js";
+import { HttpKgCloudSourceStore } from "../repository/http/kg-cloud-sources.js";
+import { MemoryKgDocStore } from "../repository/memory/kg-docs.js";
+import { MongoKgDocStore } from "../repository/mongo/kg-docs.js";
 import { KgEntityIndex } from "../repository/kg-entity-index.js";
 import { KgService } from "../kg/service.js";
 import { KgExtractor } from "../kg/extractor.js";
@@ -302,6 +306,10 @@ export async function bootstrap() {
   // Task plan state machine (in-process, keyed by chatSessionId; main agent only via
   // its toolNames list). Snapshots leave as `plan` SSE frames for the live plan panel.
   registry.register(createPlanTool());
+  // Interactive artifacts: declarative plot/diagram specs rendered by the web
+  // client with trusted components (no HTML/JS from the model, no iframe).
+  registry.register(createRenderPlotTool());
+  registry.register(createRenderDiagramTool());
   const webFetch = createFetchPortWithDeepseekPrimary(new HttpWebFetch());
   registry.register(createFetchWebpageTool(webFetch));
   registry.register(createWebSearchTool());
@@ -370,10 +378,24 @@ export async function bootstrap() {
       extractModel: config.kg.extractModel,
       maxTextChars: config.kg.maxTextChars,
     });
+    // Cloud-doc KG source: app-cloud M2M face when configured, else null
+    // (cloud builds answer 503 instead of silently building nothing).
+    const cloudSources = appCloud.configured ? new HttpKgCloudSourceStore(appCloud) : null;
+    if (!cloudSources) {
+      log.warn("[BOOT] app-cloud not configured — cloud-doc KG builds disabled (503)");
+    }
+    // Cloud-doc extraction ledger: idempotency key (uid, upload_uuid) → content hash
+    const docStore =
+      (config.mongo.uri ? await MongoKgDocStore.connect() : null) ?? new MemoryKgDocStore();
+    if (docStore instanceof MemoryKgDocStore) {
+      log.warn("[BOOT] kg doc ledger: memory fallback (cloud-doc idempotency is lost on restart)");
+    }
     kgService = new KgService({
       graph,
       extractor,
       sources: sources ?? new MemoryKgSourceStore(),
+      cloudSources,
+      docs: docStore,
       builds: builds ?? new MemoryKgBuildStore(),
       index,
       embeddings: rag.embeddings,

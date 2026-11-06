@@ -52,3 +52,34 @@ type SemanticSearchResponse struct {
 type SimilarResponse struct {
 	Items []SemanticHit `json:"items"`
 }
+
+// KGDocumentsItem is one parsed cloud document listed for cloud-driven KG
+// builds. The body text is deliberately absent (fetch it per document); the
+// listing must stay small even for users with thousands of documents.
+type KGDocumentsItem struct {
+	UploadUUID  string `json:"upload_uuid"`
+	Title       string `json:"title"`
+	ContentHash string `json:"content_hash"`
+	// SizeChars is the document's character count (0 = recorded size unknown,
+	// i.e. parsed before size_chars was persisted). The per-document endpoint
+	// always reports the exact value.
+	SizeChars int `json:"size_chars"`
+}
+
+// KGDocumentsResponse is one page of the KG document listing. next_cursor is
+// the last upload_uuid of a full page and null on the last page.
+type KGDocumentsResponse struct {
+	Items      []KGDocumentsItem `json:"items"`
+	NextCursor *string           `json:"next_cursor"`
+}
+
+// KGDocumentResponse is one parsed document with its body text (truncated
+// server-side to the KG extraction budget). size_chars counts the full text,
+// not the returned slice, so callers can tell truncated documents apart.
+type KGDocumentResponse struct {
+	UploadUUID  string `json:"upload_uuid"`
+	Title       string `json:"title"`
+	ContentHash string `json:"content_hash"`
+	SizeChars   int    `json:"size_chars"`
+	Text        string `json:"text"`
+}

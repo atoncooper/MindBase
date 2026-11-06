@@ -19,7 +19,7 @@
 | app-note | `app-go/app-note/internal/config/default.yaml` | `APPNOTE__` | `MONGO__URI`/`RDBMS__URL` |
 | app-bili | `app-go/app-bili/internal/config/default.yaml` | `APPBILI__` | `AI_GATEWAY__*`/`MONGO__URI`/`REDIS__URL`；主密钥走 `_FILE` |
 | app-quiz | `app-go/app-quiz/internal/config/default.yaml` | `APPQUIZ__` | `MONGO__URI`/`REDIS__URL`/`RDBMS__URL` |
-| app-kg | `app-go/app-kg/internal/config/default.yaml` | `APPKG__` | `KG__URI`/`KG__PASSWORD`(=`NEO4J_PASSWORD`)/`RDBMS__URL` |
+| app-kg | `app-go/app-kg/default.yaml`（embed 进二进制） | `APPKG__` | `KG__URI`/`KG__PASSWORD`(=`NEO4J_PASSWORD`)/`RDBMS__URL` |
 | app-settings | `app-go/app-settings/internal/config/default.yaml` | `APPSETTINGS__` | `RDBMS__URL`/`MINIO__*` |
 | app-board / 三个 MCP | 各自 `default.yaml`（embed） | `APPBOARD__`/`BOARDMCP__`/`NOTEMCP__` 等 | `RDBMS__URL`/`MONGO__URI`/`REDIS__URL` |
 | app-task | 独立仓库 default.yaml（embed；本仓只放密钥） | `APPTASK__` | `APPTASK__RDBMS__URL`/`APPTASK__EMAIL__API_KEY` |

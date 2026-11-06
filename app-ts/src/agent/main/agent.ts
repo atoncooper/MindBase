@@ -62,6 +62,8 @@ export function createMainAgent(
       "delegate_to_agent",
       "ask_user",
       "plan",
+      "render_plot",
+      "render_diagram",
       "fetch_webpage",
       "web_search",
       "cloud_doc_summary",

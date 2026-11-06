@@ -66,6 +66,17 @@ async function fetchAccount(): Promise<[ProfileData, SecurityOverview]> {
     return Promise.all([userApi.getProfile(), userApi.getSecurity()]);
 }
 
+/** Placeholder used while the slow security overview is still loading. */
+const EMPTY_SECURITY: SecurityOverview = {
+    email: null,
+    email_verified: false,
+    phone: null,
+    phone_verified: false,
+    has_password: false,
+    oauth_bindings: [],
+    bilibili: { bound: false, valid: false, mid: null, nickname: null, avatar: null, message: "" },
+};
+
 export function AccountView() {
     const router = useRouter();
     const [profile, setProfile] = useState<ProfileData | null>(null);
@@ -123,23 +134,34 @@ export function AccountView() {
         }
     }, [loadMembership]);
 
-    // Initial load.
+    // Initial load: profile first (fast) so the page paints immediately.
+    // GET /auth/security performs a **live** B站 API check (observed 2–8s on some
+    // networks) — blocking the whole page on it was why the account page sat on
+    // a spinner. Load it in the background; rows show placeholders until ready.
     useEffect(() => {
         let cancelled = false;
         loadMembership();
         (async () => {
             setLoading(true);
             try {
-                const [p, s] = await fetchAccount();
-                if (!cancelled) {
-                    setProfile(p);
-                    setSecurity(s);
-                    setError(null);
-                }
+                const p = await userApi.getProfile();
+                if (cancelled) return;
+                setProfile(p);
+                setError(null);
+                setLoading(false);
+                userApi
+                    .getSecurity()
+                    .then((s) => {
+                        if (!cancelled) setSecurity(s);
+                    })
+                    .catch(() => {
+                        /* non-fatal: security rows keep their placeholders */
+                    });
             } catch (e) {
-                if (!cancelled) setError(e instanceof Error ? e.message : "加载失败");
-            } finally {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) {
+                    setError(e instanceof Error ? e.message : "加载失败");
+                    setLoading(false);
+                }
             }
         })();
         return () => {
@@ -177,7 +199,9 @@ export function AccountView() {
         );
     }
 
-    if (!profile || !security) return null;
+    if (!profile) return null;
+    // security may still be loading (background B站 check): render placeholders
+    const sec = security ?? EMPTY_SECURITY;
 
     return (
         <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-8">
@@ -286,27 +310,27 @@ export function AccountView() {
                                 icon={<KeyRound className="h-4 w-4" />}
                                 tint="bg-orange-500/10 text-orange-600"
                                 label="密码"
-                                value={security.has_password ? "••••••••" : "未设置"}
+                                value={sec.has_password ? "••••••••" : "未设置"}
                                 onClick={() => setDetail("password")}
                             />
                             <ListRow
                                 icon={<Tv className="h-4 w-4" />}
                                 tint="bg-pink-500/10 text-pink-600"
                                 label="B 站账号"
-                                value={security.bilibili.nickname || "未绑定"}
+                                value={sec.bilibili.nickname || "未绑定"}
                                 tag={
                                     <Tag
                                         tone={
-                                            security.bilibili.valid
+                                            sec.bilibili.valid
                                                 ? "ok"
-                                                : security.bilibili.bound
+                                                : sec.bilibili.bound
                                                   ? "warn"
                                                   : "neutral"
                                         }
                                     >
-                                        {security.bilibili.valid
+                                        {sec.bilibili.valid
                                             ? "可用"
-                                            : security.bilibili.bound
+                                            : sec.bilibili.bound
                                               ? "已失效"
                                               : "未绑定"}
                                     </Tag>
@@ -376,13 +400,13 @@ export function AccountView() {
                         {detail === "password" && (
                             <PasswordCard
                                 profile={profile}
-                                security={security}
+                                security={sec}
                                 onReload={load}
                                 onToast={flash}
                             />
                         )}
                         {detail === "bilibili" && (
-                            <BilibiliDetail security={security} onBind={() => setBindOpen(true)} />
+                            <BilibiliDetail security={sec} onBind={() => setBindOpen(true)} />
                         )}
                     </motion.div>
                 )}
@@ -484,20 +508,20 @@ function DetailHeader({ title, onBack }: { title: string; onBack: () => void }) 
 
 /** B 站账号详情：授权状态行 + 说明 + 绑定按钮（扫码弹窗由父级持有）。 */
 function BilibiliDetail({
-    security,
+    security: sec,
     onBind,
 }: {
     security: SecurityOverview;
     onBind: () => void;
 }) {
-    const tone = security.bilibili.valid
+    const tone = sec.bilibili.valid
         ? "ok"
-        : security.bilibili.bound
+        : sec.bilibili.bound
           ? "warn"
           : "neutral";
-    const status = security.bilibili.valid
+    const status = sec.bilibili.valid
         ? "可用"
-        : security.bilibili.bound
+        : sec.bilibili.bound
           ? "已失效"
           : "未绑定";
     return (
@@ -509,7 +533,7 @@ function BilibiliDetail({
                 <div className="min-w-0 flex-1">
                     <div className="text-[14px] font-medium text-foreground">B 站账号</div>
                     <div className="truncate text-[12px] text-tertiary">
-                        {security.bilibili.nickname || "未绑定"}
+                        {sec.bilibili.nickname || "未绑定"}
                     </div>
                 </div>
                 <Tag tone={tone}>{status}</Tag>
@@ -517,17 +541,17 @@ function BilibiliDetail({
             <div className="px-5 py-4">
                 <p className="text-[12px] leading-relaxed text-secondary">
                     B 站授权用于同步收藏夹内容并构建知识库。
-                    {security.bilibili.bound && !security.bilibili.valid &&
+                    {sec.bilibili.bound && !sec.bilibili.valid &&
                         " 当前授权已失效，同步不可用，请重新绑定。"}
-                    {!security.bilibili.bound && " 尚未绑定 B 站账号，绑定后即可同步收藏夹。"}
+                    {!sec.bilibili.bound && " 尚未绑定 B 站账号，绑定后即可同步收藏夹。"}
                 </p>
-                {!security.bilibili.valid && (
+                {!sec.bilibili.valid && (
                     <button
                         type="button"
                         onClick={onBind}
                         className="btn-pill btn-primary mt-4 h-9 px-5 text-[13px]"
                     >
-                        {security.bilibili.bound ? "重新绑定" : "扫码绑定"}
+                        {sec.bilibili.bound ? "重新绑定" : "扫码绑定"}
                     </button>
                 )}
             </div>

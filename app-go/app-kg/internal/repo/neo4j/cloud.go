@@ -9,7 +9,7 @@
 // filters by it — isolation is enforced here, never by the caller.
 // Normalization red line (same as graph.go): name_lower is computed by the
 // CALLER; this package never lowercases or hashes names.
-package graph
+package neo4j
 
 import (
 	"context"
@@ -55,9 +55,9 @@ func cloudTopicRows(names []string) []map[string]any {
 // stale topic links behind), and recycles nodes left with no incoming edge.
 // Orphan cleanup races a concurrent upsert in theory; the next upsert
 // recreates any node lost that way, so it self-heals.
-func (g *Store) UpsertCloudDocGraph(ctx context.Context, d CloudDocGraph) error {
+func (r *GraphRepo) UpsertCloudDocGraph(ctx context.Context, d CloudDocGraph) error {
 	// 1. doc node + drop stale edges
-	if _, err := g.run(ctx, `
+	if _, err := r.run(ctx, `
 MERGE (d:CloudDoc {uid: $uid, upload_uuid: $upload_uuid})
 ON CREATE SET d.created_at = timestamp()
 SET d.title = $title, d.content_hash = $content_hash, d.updated_at = timestamp()
@@ -72,7 +72,7 @@ DELETE r
 	}
 	// 2. topics + ABOUT edges
 	if rows := cloudTopicRows(d.Topics); len(rows) > 0 {
-		if _, err := g.run(ctx, `
+		if _, err := r.run(ctx, `
 MATCH (d:CloudDoc {uid: $uid, upload_uuid: $upload_uuid})
 UNWIND $rows AS row
 MERGE (t:CloudTopic {uid: $uid, name_lower: row.name_lower})
@@ -87,7 +87,7 @@ MERGE (d)-[:ABOUT]->(t)
 	}
 	// 3. entities + MENTIONS edges
 	if rows := cloudTopicRows(d.Entities); len(rows) > 0 {
-		if _, err := g.run(ctx, `
+		if _, err := r.run(ctx, `
 MATCH (d:CloudDoc {uid: $uid, upload_uuid: $upload_uuid})
 UNWIND $rows AS row
 MERGE (en:CloudEntity {uid: $uid, name_lower: row.name_lower})
@@ -100,32 +100,37 @@ MERGE (d)-[:MENTIONS]->(en)
 			return fmt.Errorf("cloud entities upsert: %w", err)
 		}
 	}
-	g.recycleCloudOrphans(ctx)
+	r.recycleCloudOrphans(ctx)
 	return nil
 }
 
 // DeleteCloudDocGraph detaches and deletes the doc node (purge / reprocess
 // cleanup), then recycles any topic/entity nodes left edge-less.
-func (g *Store) DeleteCloudDocGraph(ctx context.Context, uid int64, uploadUUID string) error {
-	if _, err := g.run(ctx, `
+func (r *GraphRepo) DeleteCloudDocGraph(ctx context.Context, uid int64, uploadUUID string) error {
+	if _, err := r.run(ctx, `
 MATCH (d:CloudDoc {uid: $uid, upload_uuid: $upload_uuid})
 DETACH DELETE d
 `, map[string]any{"uid": uid, "upload_uuid": uploadUUID}); err != nil {
 		return fmt.Errorf("cloud doc delete: %w", err)
 	}
-	g.recycleCloudOrphans(ctx)
+	r.recycleCloudOrphans(ctx)
+	// Knowledge evidence edges die with the node (DETACH DELETE); recycle the
+	// entities left with no relationship at all (cloud_kg.go).
+	if _, err := r.recycleOrphanEntities(ctx); err != nil {
+		// best-effort: leftover orphan entities are harmless garbage
+	}
 	return nil
 }
 
 // recycleCloudOrphans removes topic/entity nodes no document links to
 // anymore. Best-effort: a failure here leaves harmless garbage that the next
 // upsert cycle cleans.
-func (g *Store) recycleCloudOrphans(ctx context.Context) {
+func (r *GraphRepo) recycleCloudOrphans(ctx context.Context) {
 	for _, stmt := range []string{
 		`MATCH (t:CloudTopic) WHERE NOT ( ()-[:ABOUT]->(t) ) DETACH DELETE t`,
 		`MATCH (en:CloudEntity) WHERE NOT ( ()-[:MENTIONS]->(en) ) DETACH DELETE en`,
 	} {
-		if _, err := g.run(ctx, stmt, nil); err != nil {
+		if _, err := r.run(ctx, stmt, nil); err != nil {
 			// logged by the driver layer; nothing actionable here
 			return
 		}
@@ -135,7 +140,7 @@ func (g *Store) recycleCloudOrphans(ctx context.Context) {
 // MatchCloudDocs matches documents by topic/entity name against the given
 // keywords (case-insensitive substring in BOTH directions, so short keywords
 // still hit longer topic names). Returns docs ordered by distinct-hit score.
-func (g *Store) MatchCloudDocs(ctx context.Context, uid int64, keywords []string, limit int) ([]CloudDocMatch, error) {
+func (r *GraphRepo) MatchCloudDocs(ctx context.Context, uid int64, keywords []string, limit int) ([]CloudDocMatch, error) {
 	keys := make([]string, 0, len(keywords))
 	for _, k := range keywords {
 		k = strings.ToLower(strings.TrimSpace(k))
@@ -175,27 +180,27 @@ RETURN d.upload_uuid AS upload_uuid, d.title AS title,
 	merged := map[string]*CloudDocMatch{}
 	var order []string
 	for _, lg := range legs {
-		res, err := g.run(ctx, lg.cypher, map[string]any{"uid": uid, "keys": keys})
+		res, err := r.run(ctx, lg.cypher, map[string]any{"uid": uid, "keys": keys})
 		if err != nil {
 			return nil, fmt.Errorf("cloud match %s: %w", lg.field, err)
 		}
-		for _, r := range res {
-			uu := asString(r["upload_uuid"])
+		for _, row := range res {
+			uu := asString(row["upload_uuid"])
 			if uu == "" {
 				continue
 			}
 			m, ok := merged[uu]
 			if !ok {
-				m = &CloudDocMatch{UploadUUID: uu, Title: asString(r["title"])}
+				m = &CloudDocMatch{UploadUUID: uu, Title: asString(row["title"])}
 				merged[uu] = m
 				order = append(order, uu)
 			}
 			score := 0
-			if v, ok := r["score"].(int64); ok {
+			if v, ok := row["score"].(int64); ok {
 				score = int(v)
 			}
 			m.Score += score
-			if names, ok := r["names"].([]any); ok {
+			if names, ok := row["names"].([]any); ok {
 				for _, n := range names {
 					if s, ok := n.(string); ok && s != "" {
 						if lg.field == "topics" {

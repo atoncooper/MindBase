@@ -22,7 +22,11 @@ export function createKgSearchTool(retriever: KgRetriever) {
       if (!retriever.isAvailable()) {
         return { content: "知识图谱检索暂时不可用。", sources: [] };
       }
-      const result = await retriever.retrieve(args.query, ctx.scope.bvids, args.k ?? 8);
+      const result = await retriever.retrieve(
+        args.query,
+        { bvids: ctx.scope.bvids, uid: ctx.uid, uploadUuids: ctx.scope.uploadUuids },
+        args.k ?? 8,
+      );
       if (!result.sources.length && !result.content) {
         return {
           content: "知识图谱中没有找到相关实体，可以尝试 vector_search 或换个表述。",

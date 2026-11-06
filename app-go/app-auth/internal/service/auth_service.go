@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"app-auth/internal/config"
@@ -103,20 +104,40 @@ type AuthService struct {
 	oauth   *repo.OAuthRepo
 	devices *repo.DeviceRepo
 	rbac    *repo.RBACRepo
+
+	// bilibili binding status is resolved with a live api.bilibili.com call,
+	// which can take seconds on some networks. The account page must not block
+	// on it: cache per uid for a short TTL and hard-cap the upstream call.
+	biliMu    sync.Mutex
+	biliCache map[int64]biliCacheEntry
 }
+
+type biliCacheEntry struct {
+	status BilibiliStatus
+	at     time.Time
+}
+
+const (
+	// short enough that a fresh bind shows up quickly, long enough that repeat
+	// account-page opens do not hammer the B站 API
+	biliStatusTTL = 60 * time.Second
+	// the live check is best-effort: beyond this the page gets a fallback status
+	biliStatusTimeout = 2500 * time.Millisecond
+)
 
 func NewAuthService(db *gorm.DB, cfg *config.Config, cipher *security.Cipher,
 	sf *security.Snowflake, tokens *TokenService, rbac *RBACService) *AuthService {
 	return &AuthService{
-		db:      db,
-		cfg:     cfg,
-		cipher:  cipher,
-		sf:      sf,
-		tokens:  tokens,
-		users:   repo.NewUserRepo(),
-		oauth:   repo.NewOAuthRepo(),
-		devices: repo.NewDeviceRepo(),
-		rbac:    rbac.repoRef(),
+		db:        db,
+		cfg:       cfg,
+		cipher:    cipher,
+		sf:        sf,
+		tokens:    tokens,
+		users:     repo.NewUserRepo(),
+		oauth:     repo.NewOAuthRepo(),
+		devices:   repo.NewDeviceRepo(),
+		rbac:      rbac.repoRef(),
+		biliCache: make(map[int64]biliCacheEntry),
 	}
 }
 
@@ -218,6 +239,8 @@ func (s *AuthService) EnsureUserFromOAuth(provider, providerUID string, data *Pr
 		slog.Info("[USER] created user", "uid", uid, "provider", provider)
 	}
 
+	s.invalidateBiliStatus(uid)
+
 	token, err := s.tokens.Issue(context.Background(), uid, deviceID, ip, userAgent)
 	if err != nil {
 		return 0, "", err
@@ -229,6 +252,7 @@ func (s *AuthService) EnsureUserFromOAuth(provider, providerUID string, data *Pr
 // user. Refuses bindings owned by another user.
 func (s *AuthService) BindOAuthToUser(uid int64, provider, providerUID string,
 	data *ProviderData, profile *ProfilePatch) error {
+	s.invalidateBiliStatus(uid) // a bind/refresh must not serve a stale cached status
 	user, err := s.users.GetByUID(s.db, uid)
 	if err != nil {
 		return err
@@ -788,10 +812,52 @@ func (s *AuthService) GetSecurityInfo(uid int64, passport *BilibiliPassport) (*S
 			"is_primary": primary,
 		})
 		if b.Provider == "bilibili" {
-			out.Bilibili = s.bilibiliStatus(&b, passport)
+			out.Bilibili = s.bilibiliStatusCached(uid, &b, passport)
 		}
 	}
 	return out, nil
+}
+
+// bilibiliStatusCached wraps the live B站 check with a per-uid TTL cache and a
+// hard deadline. GET /auth/security is on the account page's critical path; the
+// upstream call was observed taking 2–8s (api.bilibili.com reachability), which
+// made the whole page wait on it.
+func (s *AuthService) bilibiliStatusCached(uid int64, b *model.UserOAuth, passport *BilibiliPassport) BilibiliStatus {
+	s.biliMu.Lock()
+	if entry, ok := s.biliCache[uid]; ok && time.Since(entry.at) < biliStatusTTL {
+		s.biliMu.Unlock()
+		return entry.status
+	}
+	s.biliMu.Unlock()
+
+	ch := make(chan BilibiliStatus, 1)
+	go func() { ch <- s.bilibiliStatus(b, passport) }()
+
+	select {
+	case st := <-ch:
+		s.biliMu.Lock()
+		if len(s.biliCache) > 5000 {
+			s.biliCache = make(map[int64]biliCacheEntry)
+		}
+		s.biliCache[uid] = biliCacheEntry{status: st, at: time.Now()}
+		s.biliMu.Unlock()
+		return st
+	case <-time.After(biliStatusTimeout):
+		st := BilibiliStatus{Bound: true, Valid: false, Message: "B站状态检查超时，请稍后重试"}
+		if isDigits(b.ProviderUID) {
+			mid := parseInt64(b.ProviderUID)
+			st.Mid = &mid
+		}
+		// not cached: the next open retries the live check
+		return st
+	}
+}
+
+// invalidateBiliStatus drops the cached binding status (called on bind/unbind).
+func (s *AuthService) invalidateBiliStatus(uid int64) {
+	s.biliMu.Lock()
+	delete(s.biliCache, uid)
+	s.biliMu.Unlock()
 }
 
 func (s *AuthService) bilibiliStatus(b *model.UserOAuth, passport *BilibiliPassport) BilibiliStatus {

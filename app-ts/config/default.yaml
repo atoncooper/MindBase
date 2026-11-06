@@ -147,6 +147,10 @@ kg:
   # ASR 正文源 = Python 后端的 Mongo 库（跨库只读——源数据归 bili 域所有）
   sourceDatabase: mind_base
   sourceCollection: asr_documents
+  # 云盘知识点：单次构建最多处理的文档数（分页拉取到该上限即停止）
+  cloudMaxDocs: 200
+  # 云盘文档列表分页大小（app-cloud /internal/cloud/kg/documents 单页上限 100）
+  cloudListPageSize: 50
 
 toolsStub:
   # false = 不注册 list_videos/get_video_summaries（VideoMetaRepository 还是内存假数据；
@@ -282,6 +286,9 @@ agent:
   turnRetries: 1
   # 同一工具+同参数在一轮内第 N 次调用被拒绝（防绕圈烧 token）
   toolRepeatLimit: 3
+  # 整轮硬超时（毫秒）：LLM 流卡死时兜底中止，避免会话锁与请求永久挂起。
+  # 30 分钟：普通问答远用不到，但给长任务（沙箱/长委托）留足余量。
+  turnTimeoutMs: 1800000
 
 scheduling:
   # 问答 turn 级加权排队（与 tools.maxConcurrent 的工具级闸门分层：本段限制

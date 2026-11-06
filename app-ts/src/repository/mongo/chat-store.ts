@@ -37,6 +37,8 @@ interface MessageDoc {
   /** Chunks during streaming (joined into content and cleared at finalize); recoverable after a crash */
   chunks?: string[];
   sources?: Source[];
+  /** structured UI artifacts (plot / diagram / quiz / ...) — re-sent on history reload */
+  artifacts?: import("../../context/types.js").Artifact[];
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   error?: string;
   status: "pending" | "done" | "failed";
@@ -61,6 +63,7 @@ function toMessage(doc: MessageDoc): ChatMessage {
     role: doc.role,
     content: doc.content,
     sources: doc.sources,
+    artifacts: doc.artifacts,
     usage: doc.usage,
     error: doc.error,
     images: doc.images,
@@ -235,6 +238,7 @@ export class MongoChatStore implements ChatSessionRepository, MessageRepository 
     patch: {
       sources?: Source[];
       usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+      artifacts?: import("../persistence.js").ChatMessage["artifacts"];
       status: "done" | "failed";
       error?: string;
     },
@@ -249,6 +253,7 @@ export class MongoChatStore implements ChatSessionRepository, MessageRepository 
           content: fullContent,
           status: patch.status,
           ...(patch.sources ? { sources: patch.sources } : {}),
+          ...(patch.artifacts && patch.artifacts.length > 0 ? { artifacts: patch.artifacts } : {}),
           ...(patch.usage ? { usage: patch.usage } : {}),
           ...(patch.error ? { error: patch.error } : {}),
         },

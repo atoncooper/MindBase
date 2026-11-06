@@ -16,7 +16,6 @@ import {
     Check,
     Loader2,
     MessageSquareText,
-    RefreshCw,
     Sparkles,
 } from "lucide-react";
 import {
@@ -39,13 +38,11 @@ interface AiState {
 
 interface FileAiPanelProps {
     uploadUuid: string;
-    /** 无摘要提示里的「重新入库」动作；缺省只显示文案 */
-    onReprocess?: (uuid: string) => void;
     /** 相似文件点击后就地打开详情；缺省跳转 /cloud-drive/<uuid> */
     onSelectFile?: (uuid: string) => void;
 }
 
-export function FileAiPanel({ uploadUuid, onReprocess, onSelectFile }: FileAiPanelProps) {
+export function FileAiPanel({ uploadUuid, onSelectFile }: FileAiPanelProps) {
     const [state, setState] = useState<AiState | null>(null);
     const [reloadKey, setReloadKey] = useState(0);
 
@@ -109,9 +106,7 @@ export function FileAiPanel({ uploadUuid, onReprocess, onSelectFile }: FileAiPan
                 ) : summary ? (
                     <SummaryBody summary={summary} response={response} />
                 ) : (
-                    <NoSummary
-                        onReprocess={onReprocess ? () => onReprocess(uploadUuid) : undefined}
-                    />
+                    <NoSummary />
                 )}
             </section>
 
@@ -246,20 +241,10 @@ function SummaryBody({
     );
 }
 
-function NoSummary({ onReprocess }: { onReprocess?: () => void }) {
+function NoSummary() {
     return (
         <div className="mt-2 rounded-xl border border-border-subtle bg-surface px-3 py-3">
-            <p className="text-[12px] text-secondary">摘要尚未生成，可重新入库</p>
-            {onReprocess ? (
-                <button
-                    type="button"
-                    onClick={onReprocess}
-                    className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-accent transition-opacity hover:opacity-80"
-                >
-                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
-                    重新入库
-                </button>
-            ) : null}
+            <p className="text-[12px] text-secondary">摘要尚未生成</p>
         </div>
     );
 }

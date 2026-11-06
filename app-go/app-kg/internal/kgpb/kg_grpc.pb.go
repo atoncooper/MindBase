@@ -5,6 +5,12 @@
 // video.kg_status/kg_version 记账 + 收藏夹 scope 解析。本服务不感知
 // uid 之外的任何业务语义，不发起任何 LLM/embedding 调用。
 //
+// 知识点来源（source）有两类，统一进同一张 Entity/RELATES 知识图：
+//   - 收藏夹视频分P：(:Video {bvid})，证据边 APPEARS_IN {page_index, quote}
+//   - 云盘文档：(:CloudDoc {uid, upload_uuid, title, content_hash})（节点由
+//     云盘 L1 路由图创建/复用），证据边 APPEARS_IN {quote}
+// 因此云盘文档的知识点与视频共用一个实体/关系空间，可跨来源检索与关联。
+//
 // 过渡期共享存储：Python KgGraphRepository 与本服务双写同一 Neo4j
 // （同 schema、确定性 eid=sha1(name_lower)[:16]，merge 键 name_lower）。
 // name_lower 与 eid 由调用方（app-ts resolver / Python repository）
@@ -14,7 +20,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.31.1
-// source: proto/kg/v1/kg.proto
+// source: kg/v1/kg.proto
 
 package kgpb
 
@@ -31,27 +37,30 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KgGraph_ResolveScope_FullMethodName       = "/kg.v1.KgGraph/ResolveScope"
-	KgGraph_SelectPendingPages_FullMethodName = "/kg.v1.KgGraph/SelectPendingPages"
-	KgGraph_BeginPage_FullMethodName          = "/kg.v1.KgGraph/BeginPage"
-	KgGraph_MarkPageDone_FullMethodName       = "/kg.v1.KgGraph/MarkPageDone"
-	KgGraph_MarkPageFailed_FullMethodName     = "/kg.v1.KgGraph/MarkPageFailed"
-	KgGraph_CountPendingPages_FullMethodName  = "/kg.v1.KgGraph/CountPendingPages"
-	KgGraph_UpsertEntities_FullMethodName     = "/kg.v1.KgGraph/UpsertEntities"
-	KgGraph_LinkAppearances_FullMethodName    = "/kg.v1.KgGraph/LinkAppearances"
-	KgGraph_UpsertRelations_FullMethodName    = "/kg.v1.KgGraph/UpsertRelations"
-	KgGraph_DeletePageEvidence_FullMethodName = "/kg.v1.KgGraph/DeletePageEvidence"
-	KgGraph_DeleteVideo_FullMethodName        = "/kg.v1.KgGraph/DeleteVideo"
-	KgGraph_ClearAll_FullMethodName           = "/kg.v1.KgGraph/ClearAll"
-	KgGraph_Neighbors_FullMethodName          = "/kg.v1.KgGraph/Neighbors"
-	KgGraph_FetchEvidence_FullMethodName      = "/kg.v1.KgGraph/FetchEvidence"
-	KgGraph_RelationsAmong_FullMethodName     = "/kg.v1.KgGraph/RelationsAmong"
-	KgGraph_EntitiesByEids_FullMethodName     = "/kg.v1.KgGraph/EntitiesByEids"
-	KgGraph_EntityExposure_FullMethodName     = "/kg.v1.KgGraph/EntityExposure"
-	KgGraph_EntityAppearances_FullMethodName  = "/kg.v1.KgGraph/EntityAppearances"
-	KgGraph_TopEntities_FullMethodName        = "/kg.v1.KgGraph/TopEntities"
-	KgGraph_EdgesAmong_FullMethodName         = "/kg.v1.KgGraph/EdgesAmong"
-	KgGraph_Stats_FullMethodName              = "/kg.v1.KgGraph/Stats"
+	KgGraph_ResolveScope_FullMethodName              = "/kg.v1.KgGraph/ResolveScope"
+	KgGraph_SelectPendingPages_FullMethodName        = "/kg.v1.KgGraph/SelectPendingPages"
+	KgGraph_BeginPage_FullMethodName                 = "/kg.v1.KgGraph/BeginPage"
+	KgGraph_MarkPageDone_FullMethodName              = "/kg.v1.KgGraph/MarkPageDone"
+	KgGraph_MarkPageFailed_FullMethodName            = "/kg.v1.KgGraph/MarkPageFailed"
+	KgGraph_CountPendingPages_FullMethodName         = "/kg.v1.KgGraph/CountPendingPages"
+	KgGraph_UpsertEntities_FullMethodName            = "/kg.v1.KgGraph/UpsertEntities"
+	KgGraph_LinkAppearances_FullMethodName           = "/kg.v1.KgGraph/LinkAppearances"
+	KgGraph_UpsertRelations_FullMethodName           = "/kg.v1.KgGraph/UpsertRelations"
+	KgGraph_DeletePageEvidence_FullMethodName        = "/kg.v1.KgGraph/DeletePageEvidence"
+	KgGraph_DeleteVideo_FullMethodName               = "/kg.v1.KgGraph/DeleteVideo"
+	KgGraph_ClearAll_FullMethodName                  = "/kg.v1.KgGraph/ClearAll"
+	KgGraph_LinkCloudDocAppearances_FullMethodName   = "/kg.v1.KgGraph/LinkCloudDocAppearances"
+	KgGraph_DeleteCloudDocAppearances_FullMethodName = "/kg.v1.KgGraph/DeleteCloudDocAppearances"
+	KgGraph_FetchCloudDocEvidence_FullMethodName     = "/kg.v1.KgGraph/FetchCloudDocEvidence"
+	KgGraph_Neighbors_FullMethodName                 = "/kg.v1.KgGraph/Neighbors"
+	KgGraph_FetchEvidence_FullMethodName             = "/kg.v1.KgGraph/FetchEvidence"
+	KgGraph_RelationsAmong_FullMethodName            = "/kg.v1.KgGraph/RelationsAmong"
+	KgGraph_EntitiesByEids_FullMethodName            = "/kg.v1.KgGraph/EntitiesByEids"
+	KgGraph_EntityExposure_FullMethodName            = "/kg.v1.KgGraph/EntityExposure"
+	KgGraph_EntityAppearances_FullMethodName         = "/kg.v1.KgGraph/EntityAppearances"
+	KgGraph_TopEntities_FullMethodName               = "/kg.v1.KgGraph/TopEntities"
+	KgGraph_EdgesAmong_FullMethodName                = "/kg.v1.KgGraph/EdgesAmong"
+	KgGraph_Stats_FullMethodName                     = "/kg.v1.KgGraph/Stats"
 )
 
 // KgGraphClient is the client API for KgGraph service.
@@ -85,6 +94,18 @@ type KgGraphClient interface {
 	DeleteVideo(ctx context.Context, in *DeleteVideoRequest, opts ...grpc.CallOption) (*DeleteVideoResponse, error)
 	// 清空图谱（危险操作；Entity/Video 标签之外的数据不动）。
 	ClearAll(ctx context.Context, in *ClearAllRequest, opts ...grpc.CallOption) (*ClearAllResponse, error)
+	// 写一份云盘文档的知识点证据：MERGE (:CloudDoc {uid, upload_uuid})
+	// （复用云盘 L1 路由图节点；title/content_hash 非空才覆盖），删除该文档
+	// 已有 APPEARS_IN 证据边（delete-before-write），再写
+	// (entity)-[:APPEARS_IN {quote}]->(cloudDoc)。同文档同实体去重保留最短
+	// 非空引文（与 LinkAppearances 同语义，无 page_index）。
+	LinkCloudDocAppearances(ctx context.Context, in *LinkCloudDocAppearancesRequest, opts ...grpc.CallOption) (*LinkCloudDocAppearancesResponse, error)
+	// 删除一份云盘文档的全部知识点证据边，并回收因此变成孤儿的 Entity
+	// （文档删除/重抽取前清理；CloudDoc 节点本体归云盘路由图，不在此删除）。
+	DeleteCloudDocAppearances(ctx context.Context, in *DeleteCloudDocAppearancesRequest, opts ...grpc.CallOption) (*DeleteCloudDocAppearancesResponse, error)
+	// 云盘证据回捞：uid 必填（多租户隔离）；upload_uuids 空 = 该用户全部
+	// 云盘文档；否则限定在这些文档内。行内含 CloudDoc.title。
+	FetchCloudDocEvidence(ctx context.Context, in *FetchCloudDocEvidenceRequest, opts ...grpc.CallOption) (*FetchCloudDocEvidenceResponse, error)
 	// 一跳邻居展开（BFS 单步；多跳循环在调用方）。
 	Neighbors(ctx context.Context, in *NeighborsRequest, opts ...grpc.CallOption) (*NeighborsResponse, error)
 	// 证据回捞（bvids 空 = 不过滤作用域）。每行带 page_title
@@ -234,6 +255,36 @@ func (c *kgGraphClient) ClearAll(ctx context.Context, in *ClearAllRequest, opts 
 	return out, nil
 }
 
+func (c *kgGraphClient) LinkCloudDocAppearances(ctx context.Context, in *LinkCloudDocAppearancesRequest, opts ...grpc.CallOption) (*LinkCloudDocAppearancesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LinkCloudDocAppearancesResponse)
+	err := c.cc.Invoke(ctx, KgGraph_LinkCloudDocAppearances_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kgGraphClient) DeleteCloudDocAppearances(ctx context.Context, in *DeleteCloudDocAppearancesRequest, opts ...grpc.CallOption) (*DeleteCloudDocAppearancesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteCloudDocAppearancesResponse)
+	err := c.cc.Invoke(ctx, KgGraph_DeleteCloudDocAppearances_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kgGraphClient) FetchCloudDocEvidence(ctx context.Context, in *FetchCloudDocEvidenceRequest, opts ...grpc.CallOption) (*FetchCloudDocEvidenceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FetchCloudDocEvidenceResponse)
+	err := c.cc.Invoke(ctx, KgGraph_FetchCloudDocEvidence_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *kgGraphClient) Neighbors(ctx context.Context, in *NeighborsRequest, opts ...grpc.CallOption) (*NeighborsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NeighborsResponse)
@@ -355,6 +406,18 @@ type KgGraphServer interface {
 	DeleteVideo(context.Context, *DeleteVideoRequest) (*DeleteVideoResponse, error)
 	// 清空图谱（危险操作；Entity/Video 标签之外的数据不动）。
 	ClearAll(context.Context, *ClearAllRequest) (*ClearAllResponse, error)
+	// 写一份云盘文档的知识点证据：MERGE (:CloudDoc {uid, upload_uuid})
+	// （复用云盘 L1 路由图节点；title/content_hash 非空才覆盖），删除该文档
+	// 已有 APPEARS_IN 证据边（delete-before-write），再写
+	// (entity)-[:APPEARS_IN {quote}]->(cloudDoc)。同文档同实体去重保留最短
+	// 非空引文（与 LinkAppearances 同语义，无 page_index）。
+	LinkCloudDocAppearances(context.Context, *LinkCloudDocAppearancesRequest) (*LinkCloudDocAppearancesResponse, error)
+	// 删除一份云盘文档的全部知识点证据边，并回收因此变成孤儿的 Entity
+	// （文档删除/重抽取前清理；CloudDoc 节点本体归云盘路由图，不在此删除）。
+	DeleteCloudDocAppearances(context.Context, *DeleteCloudDocAppearancesRequest) (*DeleteCloudDocAppearancesResponse, error)
+	// 云盘证据回捞：uid 必填（多租户隔离）；upload_uuids 空 = 该用户全部
+	// 云盘文档；否则限定在这些文档内。行内含 CloudDoc.title。
+	FetchCloudDocEvidence(context.Context, *FetchCloudDocEvidenceRequest) (*FetchCloudDocEvidenceResponse, error)
 	// 一跳邻居展开（BFS 单步；多跳循环在调用方）。
 	Neighbors(context.Context, *NeighborsRequest) (*NeighborsResponse, error)
 	// 证据回捞（bvids 空 = 不过滤作用域）。每行带 page_title
@@ -419,6 +482,15 @@ func (UnimplementedKgGraphServer) DeleteVideo(context.Context, *DeleteVideoReque
 }
 func (UnimplementedKgGraphServer) ClearAll(context.Context, *ClearAllRequest) (*ClearAllResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ClearAll not implemented")
+}
+func (UnimplementedKgGraphServer) LinkCloudDocAppearances(context.Context, *LinkCloudDocAppearancesRequest) (*LinkCloudDocAppearancesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LinkCloudDocAppearances not implemented")
+}
+func (UnimplementedKgGraphServer) DeleteCloudDocAppearances(context.Context, *DeleteCloudDocAppearancesRequest) (*DeleteCloudDocAppearancesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteCloudDocAppearances not implemented")
+}
+func (UnimplementedKgGraphServer) FetchCloudDocEvidence(context.Context, *FetchCloudDocEvidenceRequest) (*FetchCloudDocEvidenceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FetchCloudDocEvidence not implemented")
 }
 func (UnimplementedKgGraphServer) Neighbors(context.Context, *NeighborsRequest) (*NeighborsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Neighbors not implemented")
@@ -684,6 +756,60 @@ func _KgGraph_ClearAll_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KgGraph_LinkCloudDocAppearances_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LinkCloudDocAppearancesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KgGraphServer).LinkCloudDocAppearances(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KgGraph_LinkCloudDocAppearances_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KgGraphServer).LinkCloudDocAppearances(ctx, req.(*LinkCloudDocAppearancesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KgGraph_DeleteCloudDocAppearances_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteCloudDocAppearancesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KgGraphServer).DeleteCloudDocAppearances(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KgGraph_DeleteCloudDocAppearances_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KgGraphServer).DeleteCloudDocAppearances(ctx, req.(*DeleteCloudDocAppearancesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KgGraph_FetchCloudDocEvidence_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchCloudDocEvidenceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KgGraphServer).FetchCloudDocEvidence(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KgGraph_FetchCloudDocEvidence_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KgGraphServer).FetchCloudDocEvidence(ctx, req.(*FetchCloudDocEvidenceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _KgGraph_Neighbors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(NeighborsRequest)
 	if err := dec(in); err != nil {
@@ -902,6 +1028,18 @@ var KgGraph_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _KgGraph_ClearAll_Handler,
 		},
 		{
+			MethodName: "LinkCloudDocAppearances",
+			Handler:    _KgGraph_LinkCloudDocAppearances_Handler,
+		},
+		{
+			MethodName: "DeleteCloudDocAppearances",
+			Handler:    _KgGraph_DeleteCloudDocAppearances_Handler,
+		},
+		{
+			MethodName: "FetchCloudDocEvidence",
+			Handler:    _KgGraph_FetchCloudDocEvidence_Handler,
+		},
+		{
 			MethodName: "Neighbors",
 			Handler:    _KgGraph_Neighbors_Handler,
 		},
@@ -939,5 +1077,5 @@ var KgGraph_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/kg/v1/kg.proto",
+	Metadata: "kg/v1/kg.proto",
 }

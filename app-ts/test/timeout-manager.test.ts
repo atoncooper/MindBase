@@ -156,3 +156,75 @@ describe("schema injection", () => {
     expect(rejected.success).toBe(false);
   });
 });
+
+describe("P0 hard timeout & cancellation", () => {
+  /** A tool that ignores its AbortSignal and never settles — the worst case. */
+  const neverResolves = () => new Promise<never>(() => undefined);
+
+  it("hard timeout returns even when the tool ignores its signal", async () => {
+    const m = new TimeoutManager();
+    const started = Date.now();
+    const out = await m.run("stuck", 1_000, () => neverResolves());
+    const elapsed = Date.now() - started;
+    expect(out).toMatchObject({ ok: false, timedOut: true, aborted: false });
+    expect(elapsed).toBeLessThan(3_000);
+    expect(m.size).toBe(0);
+  });
+
+  it("external abort (client disconnect) reports aborted, not timedOut", async () => {
+    const m = new TimeoutManager();
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+    const started = Date.now();
+    const out = await m.run("stuck", 5_000, () => neverResolves(), controller.signal);
+    expect(out).toMatchObject({ ok: false, aborted: true, timedOut: false });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("runtime cancels a hanging tool when the turn signal fires", async () => {
+    const stuck = defineTool({
+      name: "stuck",
+      description: "never settles",
+      inputSchema: z.object({}),
+      execute: () => neverResolves(),
+    });
+    const registry = new ToolRegistry();
+    registry.register(stuck);
+    const runtime = new AgentRuntime(() => registry.list());
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+    const started = Date.now();
+    const out = await runtime.execute(
+      { name: "stuck", execute: stuck.execute },
+      {},
+      { ...ctx(), signal: controller.signal },
+    );
+    expect(out.content).toContain("已取消");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // cancellation is never blamed on the tool
+    expect(runtime.monitor().stuck.timeouts).toBe(0);
+    expect(runtime.monitor().stuck.errors).toBe(0);
+    expect(timeoutManager.size).toBe(0);
+  });
+
+  it("runtime refuses to start a tool after the turn was aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const quick = defineTool({
+      name: "quick",
+      description: "quick",
+      inputSchema: z.object({}),
+      execute: async () => "ok",
+    });
+    const registry = new ToolRegistry();
+    registry.register(quick);
+    const runtime = new AgentRuntime(() => registry.list());
+    const out = await runtime.execute(
+      { name: "quick", execute: quick.execute },
+      {},
+      { ...ctx(), signal: controller.signal },
+    );
+    expect(out.content).toContain("已取消");
+  });
+});

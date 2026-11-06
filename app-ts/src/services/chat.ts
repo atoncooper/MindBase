@@ -3,7 +3,8 @@ import type { AgentHarness } from "../harness/app.js";
 import type { ChatSessionRepository, ChatMessage, MessageRepository, StoredChatImage } from "../repository/persistence.js";
 import type { ChatImageStorage } from "../repository/chat-images.js";
 import type { SseFrame } from "../transport/sse.js";
-import type { SearchScope, Source } from "../context/types.js";
+import type { Artifact, SearchScope, Source } from "../context/types.js";
+import { capArtifacts } from "../artifacts/interactive.js";
 import type { ContextCompressionService } from "./context-compression.js";
 import {
   AdmissionTicket,
@@ -54,6 +55,9 @@ export interface AskStreamRequest {
    * rendered into the system prompt as a controlled section.
    */
   academicProjectId?: string;
+  /** Aborted when the SSE client disconnects: cancels generation + in-flight tools
+   * and makes sure the assistant message is finalized instead of left pending. */
+  signal?: AbortSignal;
 }
 
 const log = createLogger("CHAT");
@@ -187,8 +191,31 @@ export class ChatService {
 
     let fullContent = "";
     let finalSources: Source[] = [];
+    // Artifacts are streamed to the client today; collecting them here makes the
+    // cards survive a history reload (bounded per turn by capArtifacts).
+    let finalArtifacts: Artifact[] = [];
     let usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined;
     let hadError = false;
+
+    // Finalization must happen on every path, including client disconnect: when
+    // the SSE consumer goes away the generator's `return` skips the code after
+    // the loop, so the `finally` below still closes the message out.
+    let finalized = false;
+    const finalizeAssistantTurn = async (patch: {
+      sources?: Source[];
+      artifacts?: Artifact[];
+      usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+      status: "done" | "failed";
+      error?: string;
+    }): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      try {
+        await this.messages.finalizeTurn(assistantMsg.id, patch);
+      } catch (err) {
+        log.warn(`[CHAT] finalize failed session=${sessionId}: ${err instanceof Error ? err.message : err}`);
+      }
+    };
 
     // Turn-level context directives (board node / academic project) ride on
     // extraSystem; the agent's own prompt and red lines stay authoritative.
@@ -196,6 +223,23 @@ export class ChatService {
 
     const admission = this.admissionQueue;
     let ticket: AdmissionTicket | null = null;
+
+    // Whole-turn cancellation: the same controller carries client disconnect and
+    // the turn deadline. A stalled LLM stream therefore cannot keep the turn (and
+    // its session lock) alive forever; the two causes are tracked separately so a
+    // deadline surfaces an error frame while a disconnect stays silent.
+    const turnAbort = new AbortController();
+    const onClientAbort = () => turnAbort.abort();
+    if (req.signal) {
+      if (req.signal.aborted) turnAbort.abort();
+      else req.signal.addEventListener("abort", onClientAbort, { once: true });
+    }
+    let deadlineHit = false;
+    const turnTimer = setTimeout(() => {
+      deadlineHit = true;
+      turnAbort.abort();
+    }, config.agent.turnTimeoutMs);
+
     try {
       if (admission) {
         // weighted admission: under the cap this is a no-op; at capacity the
@@ -216,12 +260,16 @@ export class ChatService {
         agentName: req.agentName,
         skillIds: req.skillIds,
         ...(extraSystem ? { extraSystem } : {}),
+        signal: turnAbort.signal,
       })) {
+        if (turnAbort.signal.aborted) break;
         if (frame.type === "chunk") {
           fullContent += frame.content;
           await this.messages.appendChunk(assistantMsg.id, frame.content);
         } else if (frame.type === "sources") {
           finalSources = frame.sources;
+        } else if (frame.type === "artifact") {
+          finalArtifacts = capArtifacts([...finalArtifacts, ...frame.artifacts]);
         } else if (frame.type === "error") {
           hadError = true;
         } else if (frame.type === "reset") {
@@ -235,11 +283,24 @@ export class ChatService {
         }
         yield frame;
       }
-      await this.messages.finalizeTurn(assistantMsg.id, {
+      const aborted = turnAbort.signal.aborted;
+      await finalizeAssistantTurn({
         sources: finalSources,
+        ...(finalArtifacts.length > 0 ? { artifacts: finalArtifacts } : {}),
         usage,
-        status: hadError ? "failed" : "done",
+        status: aborted || hadError ? "failed" : "done",
+        ...(aborted
+          ? { error: deadlineHit ? "本轮处理超时，已中止" : "连接已断开，生成已取消" }
+          : {}),
       });
+      if (aborted) {
+        if (deadlineHit) {
+          yield { type: "error", message: "本轮处理超时，已中止。请重试，或把任务拆小后分步提问。" };
+        }
+        // disconnect: the consumer is gone; deadline: the error frame above is the answer
+        yield { type: "done" };
+        return;
+      }
       if (usage && (usage.totalTokens || usage.outputTokens)) {
         log.info(`[CHAT] turn usage session=${sessionId} in=${usage.inputTokens ?? "?"} out=${usage.outputTokens ?? "?"} total=${usage.totalTokens ?? "?"}`);
       }
@@ -270,7 +331,7 @@ export class ChatService {
         if (!session.title) this.titleGen?.(session.id, req.query);
       }
     } catch (err) {
-      await this.messages.finalizeTurn(assistantMsg.id, { status: "failed" });
+      await finalizeAssistantTurn({ status: "failed" });
       if (err instanceof QueueFullError) {
         // fail fast on an overloaded system — never entered the queue
         log.warn(`[CHAT] admission queue full session=${sessionId} uid=${req.uid ?? "-"}`);
@@ -289,6 +350,17 @@ export class ChatService {
       yield { type: "error", message };
       yield { type: "done" };
     } finally {
+      clearTimeout(turnTimer);
+      if (req.signal) req.signal.removeEventListener("abort", onClientAbort);
+      // Disconnect path: the consumer closed the generator, so the code after
+      // the loop never ran. Close the message (partial content is kept) instead
+      // of leaving it pending forever.
+      if (!finalized) {
+        await finalizeAssistantTurn({
+          status: "failed",
+          error: deadlineHit ? "本轮处理超时，已中止" : "连接已断开，生成已取消",
+        });
+      }
       // `ticket` is non-null only once granted (admitTurn cleans up its own
       // queued ticket on every unwinding path, including disconnect).
       if (admission && ticket) {

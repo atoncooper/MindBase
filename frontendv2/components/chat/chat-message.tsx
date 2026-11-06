@@ -20,6 +20,8 @@ import { isTypedArtifact, type ChatArtifact, type ChatInteraction, type ChatPlan
 import type { ReasoningStep } from "./types";
 import { InteractionCard } from "./interaction-card";
 import { PlanPanel } from "./plan-panel";
+import { InteractiveArtifact } from "./artifacts/interactive-artifact";
+import { isDiagramSpec, isPlotSpec } from "@/lib/artifacts/interactive-spec";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -28,7 +30,6 @@ interface ChatMessageProps {
   artifacts?: ChatArtifact[] | null;
   reasoningSteps?: ReasoningStep[] | null;
   reasoning?: string;
-  agent?: string;
   // Turn waiting in the backend admission queue (`queue` SSE frame); shows a
   // queue-position line in the pending row until the slot is granted.
   queuePosition?: number;
@@ -288,6 +289,15 @@ function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
         : jsonPreview(data, 80);
     return <StructuredArtifactCard badge="批" title="已批改" detail={detail} />;
   }
+  // Interactive artifacts (plot / diagram): declarative specs rendered by
+  // trusted canvas/SVG components. Invalid payloads fall through to the JSON
+  // fallback below instead of breaking the message.
+  if (kind === "plot" && isPlotSpec(data)) {
+    return <InteractiveArtifact kind="plot" data={data} />;
+  }
+  if (kind === "diagram" && isDiagramSpec(data)) {
+    return <InteractiveArtifact kind="diagram" data={data} />;
+  }
   // A structured artifact that also carries a file location (e.g. an exported
   // quiz PDF/image) → render it as an image preview / download link.
   if (artifact.url) {
@@ -317,7 +327,6 @@ function ChatMessage({
   artifacts,
   reasoningSteps,
   reasoning,
-  agent,
   queuePosition,
   subAgent,
   interaction,
@@ -356,8 +365,11 @@ function ChatMessage({
     autoInputs.hasThinking !== hasThinking
   ) {
     setAutoInputs({ content, status, hasThinking });
-    if (userOpen === null && status === "pending") {
-      setAutoOpen(content ? false : hasThinking);
+    if (userOpen === null) {
+      // 运行中的整轮保持展开：工具步骤/思考随产生即可见（此前一旦正文开始
+      // 输出就自动收起，导致"运行步骤看不到"）。轮次结束后收起到胶囊，
+      // 用户仍可一键展开；用户手动点过开关后不再自动干预。
+      setAutoOpen(status === "pending" ? hasThinking : false);
     }
   }
   const thinkingOpen = userOpen ?? autoOpen;
@@ -469,14 +481,6 @@ function ChatMessage({
       </div>
 
       <div className="min-w-0 flex-1">
-        {/* Route badge - which agent handled this turn */}
-        {agent && (
-          <div className="mb-1.5 inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[11px] text-secondary">
-            <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
-            <span>经由 {agent} agent</span>
-          </div>
-        )}
-
         {/* Unified thinking panel - one toggle for the reasoning stream and
             the tool-execution timeline. */}
         {hasThinking && (

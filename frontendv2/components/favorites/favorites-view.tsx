@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { BilibiliBindModal } from "@/components/account/bilibili-bind-modal";
 import { FolderCard } from "./folder-card";
 import { KgPanel } from "./kg-panel";
+import { deriveFolderStatus } from "./status-helpers";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -184,6 +185,21 @@ export function FavoritesView() {
 
     const handleBuild = useCallback(async () => {
         if (selectedIds.size === 0 || build) return;
+        // 已全部入库的收藏夹不允许重复提交构建（后端只会扫到 0 个待处理分P）。
+        const allIndexed = folders
+            .filter((f) => selectedIds.has(f.media_id))
+            .every(
+                (f) =>
+                    deriveFolderStatus(
+                        statusMap[f.media_id]?.indexed_count,
+                        f.media_count,
+                        f.last_sync_at
+                    ).kind === "indexed"
+            );
+        if (allIndexed) {
+            setBuildError("所选收藏夹已全部入库，无需重复构建");
+            return;
+        }
         setBuildError(null);
         const folderIds = Array.from(selectedIds);
         setBuild({
@@ -202,7 +218,7 @@ export function FavoritesView() {
             setBuild(null);
             setBuildError(e instanceof Error ? e.message : "发起构建失败");
         }
-    }, [selectedIds, build, pollBuild]);
+    }, [selectedIds, build, pollBuild, folders, statusMap]);
 
     const cancelBuildPoll = useCallback(() => {
         if (buildTimer.current) {
@@ -317,6 +333,17 @@ export function FavoritesView() {
     // ───────────────────────────────────────────────
     const selectedCount = selectedIds.size;
     const building = build !== null;
+    const selectedFolders = folders.filter((f) => selectedIds.has(f.media_id));
+    const allSelectedIndexed =
+        selectedFolders.length > 0 &&
+        selectedFolders.every(
+            (f) =>
+                deriveFolderStatus(
+                    statusMap[f.media_id]?.indexed_count,
+                    f.media_count,
+                    f.last_sync_at
+                ).kind === "indexed"
+        );
 
     return (
         <FavoritesShell>
@@ -376,7 +403,9 @@ export function FavoritesView() {
                                             已选 {selectedCount} 个收藏夹
                                         </p>
                                         <p className="hidden text-[11px] text-secondary md:block">
-                                            将提取音频转写并写入向量库
+                                            {allSelectedIndexed
+                                                ? "所选收藏夹已全部入库，无需重复构建"
+                                                : "将提取音频转写并写入向量库"}
                                         </p>
                                     </div>
                                     <button
@@ -388,12 +417,17 @@ export function FavoritesView() {
                                     </button>
                                     <button
                                         type="button"
-                                        disabled={building}
+                                        disabled={building || allSelectedIndexed}
+                                        title={
+                                            allSelectedIndexed
+                                                ? "所选收藏夹已全部入库，无需重复构建"
+                                                : undefined
+                                        }
                                         onClick={() => void handleBuild()}
-                                        className="btn-pill btn-primary h-10 px-4 text-[12px] md:h-8"
+                                        className="btn-pill btn-primary h-10 px-4 text-[12px] md:h-8 disabled:opacity-50"
                                     >
                                         <Zap className="h-3.5 w-3.5" />
-                                        构建知识库
+                                        {allSelectedIndexed ? "已全部入库" : "构建知识库"}
                                     </button>
                                 </div>
                             )}

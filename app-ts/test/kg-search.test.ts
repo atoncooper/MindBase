@@ -33,6 +33,14 @@ function seedGraph() {
   return { graph, rnn, lstm };
 }
 
+const VIDEO_SOURCE = {
+  bvid: "BV1",
+  title: "序列模型",
+  url: "https://www.bilibili.com/video/BV1",
+  score: 0.8,
+  pageIndex: 0,
+};
+
 describe("kg retriever", () => {
   it("links seeds, expands the graph and builds vector_search-isomorphic sources", async () => {
     const { graph, rnn, lstm } = seedGraph();
@@ -43,27 +51,81 @@ describe("kg retriever", () => {
     });
     expect(retriever.isAvailable()).toBe(true);
 
-    const result = await retriever.retrieve("RNN 和 LSTM 的关系", ["BV1"], 8);
+    const result = await retriever.retrieve("RNN 和 LSTM 的关系", { bvids: ["BV1"] }, 8);
     expect(result.entityCount).toBe(2);
     expect(result.evidenceCount).toBe(1);
     expect(result.content).toContain("## RNN（tech）");
     expect(result.content).toContain("RNN --改进为--> LSTM");
     expect(result.content).toContain('出处：【序列模型】"讲解 RNN 的梯度问题"');
+    expect(result.sources).toEqual([VIDEO_SOURCE]);
+  });
+
+  it("adds cloud-doc evidence lines and sources when a uid is supplied", async () => {
+    const { graph, rnn, lstm } = seedGraph();
+    await graph.linkCloudDocAppearances({
+      uid: "42",
+      uploadUuid: "u-1",
+      title: "深度学习笔记",
+      contentHash: "h1",
+      appearances: [{ eid: rnn.eid, quote: "RNN 用于序列建模" }],
+    });
+    const retriever = new KgRetriever({ graph, index: fakeIndex([rnn, lstm], 0.9), embeddings });
+
+    const result = await retriever.retrieve("RNN", { uid: "42" }, 8);
+    expect(result.content).toContain('出处：【云盘 · 深度学习笔记】"RNN 用于序列建模"');
+    // video evidence in scope is still returned, cloud evidence appended after it
+    expect(result.content).toContain('出处：【序列模型】"讲解 RNN 的梯度问题"');
     expect(result.sources).toEqual([
-      {
-        bvid: "BV1",
-        title: "序列模型",
-        url: "https://www.bilibili.com/video/BV1",
-        score: 0.8,
-        pageIndex: 0,
-      },
+      expect.objectContaining({ bvid: "BV1" }),
+      expect.objectContaining({ uploadUuid: "u-1", title: "深度学习笔记" }),
     ]);
+  });
+
+  it("restricts cloud evidence to the uploadUuids scope", async () => {
+    const { graph, rnn } = seedGraph();
+    await graph.linkCloudDocAppearances({ uid: "42", uploadUuid: "u-1", title: "文档一", contentHash: "h1", appearances: [{ eid: rnn.eid, quote: "文档一的引文" }] });
+    await graph.linkCloudDocAppearances({ uid: "42", uploadUuid: "u-2", title: "文档二", contentHash: "h2", appearances: [{ eid: rnn.eid, quote: "文档二的引文" }] });
+    const retriever = new KgRetriever({ graph, index: fakeIndex([rnn], 0.9), embeddings });
+
+    const result = await retriever.retrieve("RNN", { uid: "42", uploadUuids: ["u-2"] }, 8);
+    expect(result.content).toContain("文档二的引文");
+    expect(result.content).not.toContain("文档一的引文");
+    expect(result.sources).toEqual([
+      expect.objectContaining({ bvid: "BV1" }),
+      expect.objectContaining({ uploadUuid: "u-2", title: "文档二" }),
+    ]);
+  });
+
+  it("never queries cloud evidence without a uid (video-only behaviour preserved)", async () => {
+    const { graph, rnn } = seedGraph();
+    let cloudCalls = 0;
+    graph.fetchCloudDocEvidence = async () => {
+      cloudCalls += 1;
+      throw new Error("should not be called");
+    };
+    const retriever = new KgRetriever({ graph, index: fakeIndex([rnn], 0.9), embeddings });
+
+    const result = await retriever.retrieve("RNN", { bvids: ["BV1"] }, 8);
+    expect(cloudCalls).toBe(0);
+    expect(result.sources).toEqual([expect.objectContaining({ bvid: "BV1" })]);
+  });
+
+  it("degrades to video-only results when cloud evidence fails (old app-kg)", async () => {
+    const { graph, rnn } = seedGraph();
+    graph.fetchCloudDocEvidence = async () => {
+      throw new Error("unknown grpc method: FetchCloudDocEvidence");
+    };
+    const retriever = new KgRetriever({ graph, index: fakeIndex([rnn], 0.8), embeddings });
+
+    const result = await retriever.retrieve("RNN", { bvids: ["BV1"], uid: "42" }, 8);
+    expect(result.content).toContain('出处：【序列模型】"讲解 RNN 的梯度问题"');
+    expect(result.sources).toEqual([VIDEO_SOURCE]);
   });
 
   it("returns empty when no seed clears the score threshold", async () => {
     const { graph, rnn } = seedGraph();
     const retriever = new KgRetriever({ graph, index: fakeIndex([rnn], 0.3), embeddings });
-    const result = await retriever.retrieve("不相关的查询", ["BV1"], 8);
+    const result = await retriever.retrieve("不相关的查询", { bvids: ["BV1"] }, 8);
     expect(result).toEqual({ content: "", sources: [], entityCount: 0, evidenceCount: 0 });
   });
 
@@ -71,7 +133,7 @@ describe("kg retriever", () => {
     const { graph, rnn } = seedGraph();
     graph.available = false;
     const retriever = new KgRetriever({ graph, index: fakeIndex([rnn], 0.9), embeddings });
-    const result = await retriever.retrieve("RNN", ["BV1"], 8);
+    const result = await retriever.retrieve("RNN", { bvids: ["BV1"] }, 8);
     expect(result.content).toBe("");
   });
 });

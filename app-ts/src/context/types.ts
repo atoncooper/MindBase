@@ -140,4 +140,8 @@ export interface ToolRunContext {
   chatSessionId?: string;
   scope: SearchScope;
   collector: ResultCollector;
+  /** Turn-level cancellation (client disconnect / aborted turn). Tools with
+   * long-running I/O must forward it; the runtime also uses it to abort the
+   * tool's timeout budget and to fail fast on a cancelled turn. */
+  signal?: AbortSignal;
 }
