@@ -6,9 +6,9 @@
 
 | 链路 | 公开页（免登录） | 元数据/内容端点 | 后端 | 内容形态 |
 |------|------|------|------|------|
-| 笔记 | `/notes/shared/[token]` | `GET /notes/shared/{token}`（camelCase） | app-note | Markdown 正文（无答案泄露面） |
+| 笔记 | `/notes/shared/[token]` | `GET /notes/shared/{token}`（camelCase） | app-content（note 面） | Markdown 正文（无答案泄露面） |
 | 云盘文件 | `/cloud/s/[token]` | `GET /cloud/s/{token}`（元数据+挑战）+ `POST /cloud/s/{token}/attest` + `POST /cloud/s/{token}/access`（预签名） | app-cloud | 图片/视频/音频/PDF/文本/Markdown 在线预览；其余"无法展示"+下载 |
-| 测验 | `/quiz/shared/[token]` | `GET /quiz/shared/{token}` | app-quiz（Redis L2 缓存 60s） | 题目（**不含答案/解析**） |
+| 测验 | `/quiz/shared/[token]` | `GET /quiz/shared/{token}` | app-content（quiz 面；Redis L2 缓存 60s） | 题目（**不含答案/解析**） |
 
 共同约定：
 

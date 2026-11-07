@@ -34,11 +34,21 @@ wait_http() { # url [超时秒]
   echo "TIMEOUT(${t}s) —— overlay 内不可达（安全组 4789/udp、7946/tcp+udp、2377/tcp；对端服务是否已起）"; return 0
 }
 
+wait_https() { # url [超时秒] —— 自签 dev-CA 的 HTTPS 服务（-k 与 APISIX https_verify_certificate:false 同姿态）
+  local url="$1" t="${2:-180}"
+  printf '[wait-https] %-45s ' "$url"
+  if docker run --rm --network mind-base-overlay "$CURL_IMAGE" \
+      timeout "$t" sh -c 'until curl -sk -o /dev/null --max-time 4 "$1"; do sleep 3; done' _ "$url" 2>/dev/null; then
+    echo "OK"; return 0
+  fi
+  echo "TIMEOUT(${t}s) —— overlay 内不可达（安全组 4789/udp、7946/tcp+udp、2377/tcp；对端服务是否已起）"; return 0
+}
+
 docker network inspect mind-base-overlay >/dev/null 2>&1 \
   || echo "⚠️  overlay 网络 mind-base-overlay 不存在（server1: docker network create -d overlay --attachable mind-base-overlay）"
 
 for p in ../../.env ../../secrets/api_key_encryption_key ../../app-pay/certs ../../app-board/certs; do
-  [ -e "$p" ] || echo "⚠️  缺少 $p —— 请从 server1 拷贝（app-pay/app-board 缺证书会拒启）"
+  [ -e "$p" ] || echo "⚠️  缺少 $p —— 请从 server1 拷贝（app-pay/app-content board 域缺证书会拒启）"
 done
 
 up() {
@@ -79,7 +89,7 @@ up 23-milvus.yml milvus
 sleep 10   # milvus 无健康检查，给初始化留时间
 
 echo "==> [3/4] Go 服务 + MCP"
-for f in 30-app-user 32-app-note 33-app-quiz 34-app-cloud 35-app-kg 37-app-board 38-app-board-mcp 39-app-note-mcp 40-app-quiz-mcp; do
+for f in 30-app-user 30-app-content 34-app-cloud 35-app-kg 38-app-board-mcp 39-app-note-mcp 40-app-quiz-mcp; do
   up "$f.yml" "${f#*-}"
 done
 wait_ready mind-base-app-user 120
@@ -88,6 +98,12 @@ wait_ready mind-base-app-user 120
 wait_http http://app-user:8006/health 120
 wait_http http://app-user:8010/health 60
 wait_http http://app-user:8015/health 60
+wait_ready mind-base-app-content 120
+# app-content 镜像 distroless（无 shell/curl，不能配 compose healthcheck）→ 在 overlay 内
+# 起一次性 curl 容器按三监听口探活：8008 note / 8011 quiz（HTTP）、8004 board（HTTPS-only）
+wait_http http://app-content:8008/health 120
+wait_http http://app-content:8011/health 60
+wait_https https://app-content:8004/health 120
 wait_ready mind-base-app-board-mcp 60
 
 echo "==> [4/4] 支付 / 任务 / AI 核心"

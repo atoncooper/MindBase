@@ -20,8 +20,8 @@ nginx :80 / :443（TLS 终止 + 静态页 + 缓存）
 APISIX :9080（forward-auth / key-auth / 路由 / 限流）
   │
   ├──► app-ts :8000         AI 域
-  ├──► app-go/* :8006-8016  各域权威服务
-  ├──► app-board :8004      板存储（HTTPS）
+  ├──► app-go/* :8004-8016  各域权威服务（app-content 含 board/note/quiz 三面）
+  ├──► app-content :8004/8008/8011  内容域（board HTTPS / note / quiz）
   ├──► app-pay :8002        交易 / 会员（HTTPS）
   └──► app-sandbox :8017    沙箱控制层（仅内部面）
 ````
@@ -59,9 +59,9 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `/asr/*`、`/vec/*` | app-user（bili 路由）/ app-ts | ASR 任务；向量化与状态 |
 | `/chat/*` | app-ts | 流式问答（SSE）、会话 / 历史 / 总结 / 画板补全 |
 | `/blindspot/*` | app-ts | 盲区图 / 实体详情 / 盲区出题 |
-| `/notes/*` | app-note | 笔记 CRUD / 锚点 / 修订 / 分享 / 云盘转笔记 |
-| `/board/*` | app-board | 板 CRUD（`If-Match` 乐观锁）/ 置顶 |
-| `/quiz/*`、`/tasks/*` | app-quiz + app-ts | 题目存储 / 判题 / 错题 / 分享；生成与批改走 app-ts |
+| `/notes/*` | app-content:8008（note 面） | 笔记 CRUD / 锚点 / 修订 / 分享 / 云盘转笔记 |
+| `/board/*` | app-content:8004（board 面，HTTPS） | 板 CRUD（`If-Match` 乐观锁）/ 置顶 |
+| `/quiz/*`、`/tasks/*` | app-content:8011（quiz 面）+ app-ts | 题目存储 / 判题 / 错题 / 分享；生成与批改走 app-ts |
 | `/task-quiz/*` | app-ts + app-task | 对话定义任务；调度与答题入口 |
 | `/cloud/*`、`/workspaces/*` | app-cloud | 分片上传 / 文件夹 / 配额 / 回收站 / 分享 / 处理状态 / AI 摘要 / 语义检索 / 相似文件（nginx 直连） |
 | `/skills/*` | app-ts | 技能安装 / 卸载 / 商店 |

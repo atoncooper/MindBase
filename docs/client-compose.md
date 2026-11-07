@@ -7,7 +7,7 @@
 
 | 维度 | 服务端（根 compose） | 客户端（本文件） |
 |------|--------------------|----------------|
-| 默认服务数 | ~25（含 pay/task/kg 三套独立栈） | 18（核心常驻，其余 opt-in） |
+| 默认服务数 | ~25（含 pay/task/kg 三套独立栈） | 16（核心常驻，其余 opt-in） |
 | app-pay + app-pay-mysql | 默认启动 | `--profile pay` |
 | app-task + app-task-mysql | 默认启动 | `--profile task` |
 | neo4j + app-kg | 默认启动 | `--profile kg` |
@@ -160,12 +160,12 @@ APP_CLOUD_KG_BASE_URL=http://app-kg:8014
 实测参考（服务端栈同宿主 docker stats 冷态值）：apisix 294MB（服务端 auto-worker）→ 客户端
 1 worker 约 100–150MB；mysql 446MB（默认参数）→ 客户端关 P_S/binlog 后约 250–350MB；
 mongo 260MB、minio 68MB、app-ts 223MB、frontend 80MB、redis ~10MB、nginx ~23MB、
-milvus 空库 152MB（随向量数据增长，上限 1.5GB）；4 个 Go 服务合计 ~100MB、3 个 MCP 合计 ~20MB。
+milvus 空库 152MB（随向量数据增长，上限 1.5GB）；3 个 Go 服务合计 ~100MB、3 个 MCP 合计 ~20MB。
 **客户端核心栈典型合计 ≈ 1.5–2.5GB**。被砍掉不再常驻的实测值：higress 567MB、neo4j 465MB、
 app-pay 321MB、两个附加 MySQL 共 926MB、etcd 59MB（服务端全家桶合计约 4GB+）。
 原估计（已被上表实测取代）：mysql ~350MB、mongo ~300MB、milvus 0.5–1.5GB（含内嵌 etcd）、
 minio ~150MB、apisix ~100MB（1 worker）、app-ts ~400MB、frontend ~250MB、
-4 个 Go 服务 ~250MB、3 个 MCP ~80MB、redis ~130MB、nginx ~15MB。
+3 个 Go 服务 ~250MB、3 个 MCP ~80MB、redis ~130MB、nginx ~15MB。
 
 ## 从服务端迁移数据
 

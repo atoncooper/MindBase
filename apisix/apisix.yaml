@@ -123,10 +123,10 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-note —— 笔记服务（Go；/notes/* 用户路由 + /internal/note/* M2M，
-  # schema 所有权已从 Python backend 迁入本服务）
-  - id: upstream-app-note
-    name: app-note
+  # app-content（note 监听口 8008）—— 笔记面（Go；/notes/* 用户路由 +
+  # /internal/note/* M2M；schema 所有权已从 Python backend 迁入）
+  - id: upstream-app-content-note
+    name: app-content
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -140,7 +140,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-note:8008": 1
+      "app-content:8008": 1
     checks:
       active:
         type: http
@@ -164,10 +164,10 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-quiz —— 测验存储服务（Go；history/错题本/导出/详情/删除/分享，
-  # schema 所有权自 Python backend 迁入本服务；generate/submit 留 Python）
-  - id: upstream-app-quiz
-    name: app-quiz
+  # app-content（quiz 监听口 8011）—— 测验存储面（Go；history/错题本/导出/
+  # 详情/删除/分享；schema 所有权自 Python backend 迁入）
+  - id: upstream-app-content-quiz
+    name: app-content
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -181,7 +181,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-quiz:8011": 1
+      "app-content:8011": 1
     checks:
       active:
         type: http
@@ -439,16 +439,17 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-board Go content store - mind maps & whiteboards (/board/*).
-  # 服务端 HTTPS-only（自动生成 dev-CA + 叶子，自愈+自动续期，见 app-board/internal/tls）。
+  # app-content（board 监听口 8004）—— mind maps & whiteboards (/board/*).
+  # 服务端 HTTPS-only（TLS rotator 自动生成 dev-CA + 叶子，自愈+自动续期，
+  # 见 app-go/app-content/internal/infra/tls/board）。
   # ⚠️ APISIX 3.11 限制：upstream tls.verify 仅支持 kafka upstream（schema_def.lua 注释
   # 明示），普通 https upstream 配 tls 对象会走 mTLS 路径且 client_cert 为 nil 直接 500。
   # 且 ngx_tpl 从不设 proxy_ssl_verify —— 本版本无 http upstream 身份校验旋钮。
   # 因此这里与 app-pay 同姿态：TLS 加密 on、证书校验暂不可用，待 APISIX 升级后收紧。
   # ca-bundle.crt（系统池+dev-CA）保留在 /tmp，供 lua_ssl_trusted_certificate 使用。
-  # 节点名 app-board 即 SNI，命中叶子证书 SAN。健康检查走 https 但不验证书（探活无数据）。
-  - id: upstream-app-board
-    name: app-board
+  # 节点名 app-content 即 SNI，命中叶子证书 SAN。健康检查走 https 但不验证书（探活无数据）。
+  - id: upstream-app-content-board
+    name: app-content
     type: roundrobin
     scheme: https
     pass_host: pass
@@ -462,7 +463,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-board:8004": 1
+      "app-content:8004": 1
     checks:
       active:
         type: https
@@ -526,8 +527,8 @@ routes:
         status_code: 401
 
   # app-task -> main app generate quiz (async, service-to-service, key-auth).
-  # priority 110 > quiz_internal (/internal/quiz/* → app-quiz, 100) so the more
-  # specific generate-llm URI is not shadowed by the app-quiz wildcard.
+  # priority 110 > quiz_internal (/internal/quiz/* → app-content quiz 面, 100) so the
+  # more specific generate-llm URI is not shadowed by the app-content wildcard.
   - id: internal_quiz_generate
     uri: /internal/quiz/generate-llm
     methods: [POST]
@@ -595,14 +596,14 @@ routes:
         key_type: var
         key: remote_addr
 
-  # User -> app-quiz scheduled-quiz business detail (forward-auth, X-Uid injected).
-  # 业务行 quiz_task/quiz_task_answer + Mongo task_quiz_questions 归 app-quiz；
+  # User -> app-content（quiz 面）scheduled-quiz business detail (forward-auth, X-Uid injected).
+  # 业务行 quiz_task/quiz_task_answer + Mongo task_quiz_questions 归 app-content（quiz 面）；
   # app-task 只提供调度视图（/tasks、/tasks/{id}）。
   - id: tasks_detail
     uri: /tasks/*/detail
     methods: [GET]
     priority: 100
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       proxy-rewrite:
         headers:
@@ -660,14 +661,14 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User -> app-quiz submit answer (forward-auth, X-Uid injected).
-  # 判题/入库/状态流转是 quiz 域业务逻辑，归 app-quiz（app-task 只做调度+通知）。
+  # User -> app-content（quiz 面）submit answer (forward-auth, X-Uid injected).
+  # 判题/入库/状态流转是 quiz 域业务逻辑，归 app-content（quiz 面）（app-task 只做调度+通知）。
   # priority 100 so /tasks/{id}/answer is NOT shadowed by /tasks/* (app-task).
   - id: tasks_answer
     uri: /tasks/*/answer
     methods: [POST]
     priority: 100
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       proxy-rewrite:
         headers:
@@ -778,25 +779,25 @@ routes:
       key-auth: {}
 
   # CORS preflight for /board/*: browsers strip Authorization on preflight,
-  # so this route MUST NOT carry forward-auth (it would 401) — app-board's
+  # so this route MUST NOT carry forward-auth (it would 401) — app-content board 面的
   # corsMiddleware answers 204 + CORS headers directly. priority above board_user.
   - id: board_preflight
     uri: /board/*
     methods: [OPTIONS]
     priority: 60
-    upstream_id: upstream-app-board
+    upstream_id: upstream-app-content-board
 
-  # User -> app-board mind-map/whiteboard CRUD (forward-auth verifies
-  # bili_session, injects X-Uid; app-board enforces per-uid ownership).
+  # User -> app-content（board 面）mind-map/whiteboard CRUD (forward-auth verifies
+  # bili_session, injects X-Uid; app-content enforces per-uid ownership).
   # request-id plugin: assigns X-Request-Id (honors client-supplied value,
-  # echoes in response) so gateway + app-board logs share one trace id.
+  # echoes in response) so gateway + app-content logs share one trace id.
   # Rollout note: other routes generate their own ids per-service; extending
   # request-id to all routes is a separate one-line-per-route change.
   - id: board_user
     uri: /board/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 50
-    upstream_id: upstream-app-board
+    upstream_id: upstream-app-content-board
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -809,20 +810,20 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # Internal (M2M) -> app-board: key-auth consumers (app-board-mcp and future
-  # internal services) call /internal/board/* with the shared apikey plus the
-  # acting user's X-Uid; proxy-rewrite strips the /internal prefix so app-board
-  # serves its normal /board/* handlers. Caller-supplied X-Uid is trusted for
+  # Internal (M2M) -> app-content（board 面）: key-auth consumers (app-board-mcp
+  # and future internal services) call /internal/board/* with the shared apikey
+  # plus the acting user's X-Uid; proxy-rewrite strips the /internal prefix so
+  # app-content serves its normal /board/* handlers. Caller-supplied X-Uid is trusted for
   # key-auth holders by design (same trust model as app-task's uid-in-body).
   # priority 100 so /internal/board/* never falls into board_user/catch_all.
   # limit-req: per-caller (remote_addr) 20 rps + burst 10 — the gateway-side
-  # backstop so no key-auth holder can stampede app-board (standalone mode
+  # backstop so no key-auth holder can stampede app-content (standalone mode
   # keeps counters in local shm, no etcd needed).
   - id: board_internal
     uri: /internal/board/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 100
-    upstream_id: upstream-app-board
+    upstream_id: upstream-app-content-board
     plugins:
       request-id: {}
       key-auth: {}
@@ -835,7 +836,7 @@ routes:
       proxy-rewrite:
         regex_uri: ["^/internal/board/(.*)", "/board/$1"]
 
-  # Internal (M2M) -> app-note: Python note agent tools (save_note /
+  # Internal (M2M) -> app-content（note 面）: note agent tools (save_note /
   # list_notes / get_note / update_note) call /internal/note/notes with the
   # shared apikey plus the acting user's X-Uid (same trust model as
   # board_internal / app-pay /internal/*). priority 100 so /internal/note/*
@@ -844,7 +845,7 @@ routes:
     uri: /internal/note/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 100
-    upstream_id: upstream-app-note
+    upstream_id: upstream-app-content-note
     plugins:
       request-id: {}
       key-auth: {}
@@ -855,13 +856,13 @@ routes:
         key_type: var
         key: remote_addr
 
-  # quiz_internal —— app-quiz-mcp → app-quiz 的 M2M 写入路由（quiz agent 落库）。
+  # quiz_internal —— app-quiz-mcp → app-content（quiz 面）的 M2M 写入路由（quiz agent 落库）。
   # priority 100：/internal/quiz/* 不落 quiz_user/catch_all。信任模型同 note_internal。
   - id: quiz_internal
     uri: /internal/quiz/*
     methods: [GET, POST]
     priority: 100
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       request-id: {}
       key-auth: {}
@@ -952,16 +953,16 @@ routes:
         status_code: 401
 
 
-  # /quiz/* -> app-quiz（Go 测验存储服务；切流自主 backend catch_all。宽验证
-  # forward-auth 与 catch_all 语义一致：无凭证放行，公开分享页
+  # /quiz/* -> app-content（quiz 面；Go 测验存储服务；切流自主 backend catch_all。
+  # 宽验证 forward-auth 与 catch_all 语义一致：无凭证放行，公开分享页
   # /quiz/shared/{token} 免登录可达，受保护端点对缺失 X-Uid 自行 401。
   # 过渡期 Python 的 AI 端点（generate/submit）仍直写共享 quiz 表，与
-  # app-quiz 并行读写（对齐 task_quiz_* 共享表先例）。
+  # app-content quiz 面并行读写（对齐 task_quiz_* 共享表先例）。
   # 回滚方式：删除本路由（该 URI 将 404——Python 面已退役，无回落）。
   - id: quiz_user
     uris: [/quiz, /quiz/*]
     priority: 50
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -976,7 +977,7 @@ routes:
 
   # /quiz/styles -> app-ts（考试蓝本目录，65 种，个性化出题选择器数据源；实现在
   # app-ts routes/quiz.ts，纯静态无 LLM。priority 110 压过 quiz_user 通配——缺此
-  # 路由会落 app-quiz 的 /:quiz_uuid 404，前端目录永远「加载中」）。
+  # 路由会落 app-content quiz 面的 /:quiz_uuid 404，前端目录永远「加载中」）。
   - id: quiz_ai_styles
     uri: /quiz/styles
     methods: [GET]
@@ -995,7 +996,7 @@ routes:
         status_code: 401
 
   # /quiz/generate-from-summary -> app-ts（AI 编排；summary → 分块 → LLM 出题 →
-  # app-quiz internal 落库）。priority 110 > quiz_ai (100)，该 uri 已离开 Python。
+  # app-content（quiz 面）internal 落库）。priority 110 > quiz_ai (100)，该 uri 已离开 Python。
   - id: quiz_ai_summary
     uri: /quiz/generate-from-summary
     methods: [POST]
@@ -1051,7 +1052,7 @@ routes:
         timeout: 30000
         status_code: 401
 
-  # /quiz/submit -> app-ts（批改 = app-ts LLM 批改 + app-quiz 落库，2026-10-06 切流；
+  # /quiz/submit -> app-ts（批改 = app-ts LLM 批改 + app-content（quiz 面）落库，2026-10-06 切流；
   # 优先级 100 压过 quiz_user 的通配）。
   - id: quiz_ai
     uris: [/quiz/submit]
@@ -1169,14 +1170,14 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # /notes/* -> app-note（笔记服务；切流自主 backend catch_all。宽验证
+  # /notes/* -> app-content（note 面；笔记服务；切流自主 backend catch_all。宽验证
   # forward-auth 与 catch_all 语义一致：无凭证放行，公开分享页
   # /notes/shared/{token} 免登录可达，受保护端点对缺失 X-Uid 自行 401。
   # 回滚方式：删除本路由（该 URI 将 404——Python 面已退役，无回落）。
   - id: notes_user
     uris: [/notes, /notes/*]
     priority: 50
-    upstream_id: upstream-app-note
+    upstream_id: upstream-app-content-note
     plugins:
       request-id: {}
       proxy-rewrite:

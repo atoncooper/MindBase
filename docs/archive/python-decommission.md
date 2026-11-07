@@ -2,6 +2,8 @@
 
 > ⚠️ **历史文档（只读存档）**：app-auth / app-bili / app-settings 三个 Go 服务已合并为 app-user（8006 auth / 8010 bili / 8015 settings），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
 
+> ⚠️ **历史文档（只读存档）**：app-note / app-quiz / app-board 已合并为 app-content（8004 board / 8008 note / 8011 quiz，单 module / 单镜像 / 单进程），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
+
 > **决策（用户）**：废弃 `app/`，后续能力一律落 app-ts（Node/Fastify）或 app-go（Go）。本文件是这次 decommission 的**唯一待办清单**：每迁完一项就勾掉，全部勾完后才允许改 compose / APISIX 删除 backend。
 >
 > 状态：**✅ 已完成（2026-10-06）**。P0-P6 全部执行完毕：全域切流 + compose/Dockerfile/APISIX 手术完成 + `app/` 代码树删除（schema 迁 `db/system.sql`；完整历史可从 git tag/commit b2edb5d 找回）。APISIX 双 yaml 已无任何 backend upstream/路由/catch_all 兜底——**新端点必须显式加路由**。

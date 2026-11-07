@@ -9,7 +9,8 @@ services:
     volumes:
       - ../../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ../../apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
-      # app-board dev-CA（apisix 信任 server2 上 app-board 的 HTTPS upstream）
+      # app-content board 域 dev-CA（apisix 信任 server2 上 app-content:8004 的 HTTPS upstream；
+      # 证书目录沿用历史 app-board/certs —— 保留 board TLS 证书卷/secret）
       - ../../app-board/certs:/usr/local/apisix/conf/certs/board:ro
     # 清理代理环境变量，防宿主 ~/.docker/config.json 注入劫持内网流量
     entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
@@ -18,8 +19,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]

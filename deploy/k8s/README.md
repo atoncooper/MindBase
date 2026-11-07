@@ -1,8 +1,8 @@
 # MindBase — Kubernetes 部署
 
 本目录将 `docker-compose.yml` 的完整拓扑（3×MySQL、Redis、Mongo、Milvus+etcd、
-MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 六服务
-（user/cloud/note/quiz/kg/admin）、app-board + 三个 MCP、app-task、
+MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 五服务
+（user/content/cloud/kg/admin）、三个 MCP、app-task、
 app-pay、app-admin（统一管理后台：分享审核 + 支付运营 + 沙箱 + 账户 + 审计，:8016 回环）、
 app-sandbox（沙箱控制层））等价移植为 k8s 清单；OpenSandbox 运行时（lifecycle
 server / controller / ingress-gateway / warm pool）见 [40-sandbox](40-sandbox/README.md)。
@@ -44,7 +44,8 @@ kubectl -n mind-base create secret generic app-pay-tls \
   --from-file=pay.key=app-pay/certs/pay.key \
   --from-file=ca.crt=app-pay/certs/ca.crt
 
-# ④ app-board TLS + APISIX 信任锚（dev-ca.crt 进 apisix 的 ca-bundle）
+# ④ app-content board 域 TLS + APISIX 信任锚（dev-ca.crt 进 apisix 的 ca-bundle；
+#    证书目录与 Secret 名沿用历史 app-board* —— board TLS 证书卷/secret 保留不变）
 kubectl -n mind-base create secret generic app-board-certs \
   --from-file=dev-ca.crt=app-board/certs/dev-ca.crt \
   --from-file=server.crt=app-board/certs/server.crt \
@@ -99,7 +100,8 @@ kubectl -n mind-base create configmap nginx-conf \
   （缺失 = 对应功能停用，不影响启动）；
 - 少数服务特定值以显式 `env:` 写死（显式 env 优先于 envFrom），想用 .env 覆盖它们时
   需 `kubectl patch`：app-ts/app-cloud/app-user 的 `AI_GATEWAY__BASE_URL`、
-  app-ts 的 `OCR__MODEL`、app-cloud 的 `MILVUS__URI`；
+  app-ts 的 `OCR__MODEL`、app-cloud 的 `MILVUS__URI`、app-content 的 board TLS
+  证书路径（`APPBOARD__SERVER__TLS__CERT/KEY`，固定指向 Secret 挂载的 `/app/certs`）；
 - compose 的 `${APISIX_CONSUMER_KEY}` 交叉引用在 K8s 用「先取源值再派生」的
   in-list 模式实现：`$(VAR)` 只能引用同容器 env 列表中**先定义**的变量，
   **envFrom 变量不可被 $(VAR) 引用**（K8s 硬限制——原清单 60 处踩坑已全部修复）；
@@ -147,7 +149,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 |----|---------|-----|
 | app-pay-test / 测试 MySQL | `--profile pay-test` | **未移植**（测试实例与生产隔离的诉求在 k8s 下应另起 namespace） |
 | redis-commander / mongo-express | `--profile tools` | **未移植**（用 port-forward + 本地工具替代） |
-| app-board 证书共享 | 宿主目录 `./app-board/certs` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-board，dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
+| app-content(board) 证书共享 | 宿主目录 `./app-board/certs` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-content（board 域），dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
 | app-pay TLS | 宿主目录 `./app-pay/certs` | Secret `app-pay-tls`（ca.crt 同时供 app-task 委托回调校验） |
 | MySQL 建表脚本 | 宿主 `db/system.sql` | ConfigMap `mysql-init-sql`（§1b kubectl 创建，改 SQL 后重建 + restart mysql） |
 | APISIX 路由 | 宿主 `apisix/*.yaml` | ConfigMap `apisix-config`（subPath 挂载；改路由后重建 ConfigMap + `rollout restart deploy/apisix`） |
@@ -159,7 +161,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | 沙箱运行时 | compose `--profile sandbox` + 可选 fake runtime | OpenSandbox Helm（40-sandbox）；`app-sandbox` 强制 `runtime.type=opensandbox` + warm pool `pool-python` |
 | 探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
 redis-cli ping / etcdctl endpoint health / minio health/live / backend /health）；
-无 HTTP 健康端点的 TLS 服务（app-pay/app-board）用 tcpSocket 探活；
+无 HTTP 健康端点的 TLS 服务（app-pay）用 tcpSocket 探活；app-content 的 board 监听口（8004）用 httpGet + `scheme: HTTPS` 探 `/health`（kubelet 探针不校验证书）；
 app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。
 
 ## 5. 日常运维

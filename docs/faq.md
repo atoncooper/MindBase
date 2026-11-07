@@ -100,7 +100,7 @@ MySQL 用 `mysqldump`（业务库 `mind_base`、`mind_base_ts` 相关集合在 M
 
 **Q：思维导图 / 白板数据存哪里？**
 
-元数据在 MySQL `board` 表，正文在 Mongo `board_documents`，由 app-board 服务管理（经 APISIX `/board/*`，`If-Match` 乐观锁）。详见 [app-board.md](app-board.md)。
+元数据在 MySQL `board` 表，正文在 Mongo `board_documents`，由 app-content（board 面）管理（经 APISIX `/board/*`，`If-Match` 乐观锁）。详见 [app-content.md](app-content.md)。
 
 **Q：支付 / 会员是必装的吗？**
 

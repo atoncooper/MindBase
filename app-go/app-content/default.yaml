@@ -1,0 +1,121 @@
+# app-content - single config for board / note / quiz
+# env prefixes stay compatible: APPBOARD__ / APPNOTE__ / APPQUIZ__
+#
+# Logging: the process initializes ONE global logger from the board.log section
+# (file output is shared by all three domains). note.log / quiz.log are kept for
+# config-structure compatibility but do not drive any writer.
+
+board:
+  app:
+    name: app-board
+    debug: false
+  server:
+    host: 0.0.0.0
+    port: 8004
+    read_header_timeout_seconds: 10
+    read_timeout_seconds: 60
+    write_timeout_seconds: 120
+    idle_timeout_seconds: 120
+    max_header_bytes: 1048576
+    tls:
+      enabled: true
+      cert_dir: certs
+      cert: ''
+      key: ''
+  rdbms:
+    url: ''
+    max_open_conns: 10
+    max_idle_conns: 5
+    conn_max_lifetime: 1800
+  mongo:
+    uri: ''
+    db_name: MindBase
+    timeout_seconds: 10
+  redis:
+    url: ''
+    cache_ttl_seconds: 300
+  security:
+    cors:
+      allow_origins:
+      - http://localhost:3000
+      - http://127.0.0.1:3000
+      - https://localhost
+      - https://127.0.0.1
+      - http://localhost
+      - http://127.0.0.1
+  log:
+    level: info
+    format: json
+    output: stdout
+    file:
+      path: /app/logs/app-content.log
+      max_size: 100
+      max_backups: 7
+      max_age: 30
+      compress: true
+note:
+  app:
+    name: app-note
+    debug: false
+  server:
+    host: 0.0.0.0
+    port: 8008
+  timezone: Asia/Shanghai
+  rdbms:
+    url: ''
+    max_open_conns: 10
+    max_idle_conns: 5
+    conn_max_lifetime: 1800
+  mongo:
+    uri: ''
+    database: mind_base
+  cors:
+    allow_origins:
+    - http://localhost:3000
+  log:
+    level: info
+    format: json
+    output: stdout
+    file:
+      path: /app/logs/app-note.log
+      max_size: 100
+      max_backups: 7
+      max_age: 30
+      compress: true
+quiz:
+  app:
+    name: app-quiz
+    debug: false
+  server:
+    host: 0.0.0.0
+    port: 8011
+  timezone: Asia/Shanghai
+  lifecycle:
+    generation_timeout_minutes: 15
+  rdbms:
+    url: ''
+    max_open_conns: 10
+    max_idle_conns: 5
+    conn_max_lifetime: 1800
+  mongo:
+    uri: ''
+    database: mind_base
+  redis:
+    url: ''
+    key_prefix: 'mind-base:'
+  quota:
+    generate: 5
+    grade: 20
+  cors:
+    allow_origins:
+    - http://localhost:3000
+  log:
+    level: info
+    format: json
+    output: stdout
+    file:
+      path: /app/logs/app-quiz.log
+      max_size: 100
+      max_backups: 7
+      max_age: 30
+      compress: true

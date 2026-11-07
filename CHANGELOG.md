@@ -2,6 +2,14 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] — 2026-11-07
+
+### Changed
+
+- **内容域合并：app-note + app-quiz + app-board → app-content**：三个 Go 服务合并为单一模块 `app-go/app-content`（单 Go module / 单镜像 / 单容器 / 单进程），保留三个独立 Gin engine 与三个监听口（8004=board/HTTPS+TLS rotator、8008=note、8011=quiz），对外路径 / wire 契约 / DB schema / MCP 协议全部不变；配置收敛为一个 `default.yaml`（board/note/quiz 三段），env 前缀兼容 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__`；全局单 logger；MySQL/Mongo/Redis 连接按域隔离复用。MCP server（app-note-mcp / app-quiz-mcp / app-board-mcp）保持独立，仅上游服务名改为 app-content。
+- **编排/网关/部署一次性切换**：compose（含 client compose）新增 `app-content`（镜像 `atoncooper/mind-base-app-content`，profiles `["", "content", "note", "quiz", "board", "full"]`，日志卷 `app_content_logs`，board TLS 证书挂载沿用 `./app-board/certs`，depends_on cert-gen+mysql+mongo+redis）、删除 `app-note`/`app-quiz`/`app-board` 服务；APISIX 改为 `upstream-app-content-note/-quiz/-board` 三个 upstream（端口/协议语义不变）；nginx 注释与 CI（新增 `ci-app-content.yml`、docker-build 矩阵 16→14 镜像）同步；`deploy/{docker,k8s,swarm}` 与启动脚本同步；旧 `app-go/app-note|app-quiz`、根 `app-board/` 目录删除。
+- **文档/规范**：AGENTS.md §2.15 重写为 app-content 内容域权威章节（§2.17 改为合并说明），目录树/定位索引同步；docs/{architecture,configuration,getting-started,deployment,client-compose,api,project-structure,README,features,faq,notes,sharing,vscode-setup,service-key-auth,app-board-mcp} 同步为 app-content，新增 docs/app-content.md 替代 docs/app-board.md；archive 文档加历史注记。
+
 ## [Unreleased] — 2026-11-06
 
 ### Changed

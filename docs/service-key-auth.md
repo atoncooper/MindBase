@@ -29,8 +29,8 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
 | internal_task_complete | app-task | app-task（自报完成） |
 | internal_email_send | app-task | app-task |
 | pay_internal | app-pay | backend、app-cloud |
-| board_internal | app-board | app-board-mcp |
-| note_internal | app-note | app-note-mcp |
+| board_internal | app-content（8004 board 面） | app-board-mcp |
+| note_internal | app-content（8008 note 面） | app-note-mcp |
 | /internal/ai-usage | ~~backend~~ ⚠️ 2026-10-06 backend 退役后无承接者（app-ts 未实现，usage-logger fire-and-forget 上报失败不影响主链路；插件配置在 Higress 控制台） | higress usage-logger |
 
 问题：任何持 key 者可调任何 /internal/* 路由（无路由级授权）；日志无法归因
@@ -155,7 +155,7 @@ uid/key_id/service/reason，不记明文）。
 这个端点补上 standalone APISIX 的短板——**静态 key 无法热吊销**：
 APISIX 侧吊销后必须 reload 才拒绝；配合服务侧"启动自检 + 每 5 分钟复验，
 复验 401 即拒绝出站调用"，吊销的实际生效时间 ≤ 5 分钟，且不需要
-每台服务重新部署。v1 只要求 app-note-mcp / app-note 接入自检，其余服务跟进。
+每台服务重新部署。v1 只要求 app-note-mcp / app-content 接入自检，其余服务跟进。
 
 ### 管理面的引导（bootstrap）
 
@@ -189,7 +189,7 @@ consumers:
   - id: note_internal
     uri: /internal/note/*
     priority: 100
-    upstream_id: upstream-app-note
+    upstream_id: upstream-app-content-note
     plugins:
       request-id: {}
       key-auth: {}
@@ -288,7 +288,7 @@ consumers:
 |---|---|---|
 | PR1（app-user） | model/repo/service/router 四件套 + KnownScopes 注册表 + guard/单测（签发格式、hash 唯一、轮换并存、吊销状态机、scope 校验、self-verify） | `go test ./...` + 本地 curl 走通签发→台账→吊销 |
 | PR2（APISIX + 分发） | apisix.yaml.template + render 脚本 + consumers 拆分 + consumer-restriction 矩阵 + .env.example + 各 compose env | 干跑渲染 diff；起栈后逐路由验证白名单 403/200 |
-| PR3（可选，后续） | app-note-mcp / app-note 启动自检 + 5 分钟复验；其余服务跟进；expiring 提醒 | 手动吊销后观察 5 分钟内拒绝 |
+| PR3（可选，后续） | app-note-mcp / app-content 启动自检 + 5 分钟复验；其余服务跟进；expiring 提醒 | 手动吊销后观察 5 分钟内拒绝 |
 
 ## 15. 验收清单
 

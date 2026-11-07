@@ -108,7 +108,7 @@ MindBase 的能力围绕三条主线：
 - Markdown 编辑器、锚点定位、修订历史、软删除。
 - **公开分享**：免登录只读，服务端二次消毒（剥除脚本/危险 URL）。
 - **生成入口**：云盘文档一键转笔记（note agent 整理）、对话整理笔记。
-- **存储**：元数据 MySQL（`notes` / `note_anchors` / `note_shares`），正文与修订 MongoDB；服务权威在 **app-note**。
+- **存储**：元数据 MySQL（`notes` / `note_anchors` / `note_shares`），正文与修订 MongoDB；服务权威在 **app-content（note 面）**。
 
 详见 [notes.md](notes.md)。
 
@@ -120,7 +120,7 @@ MindBase 的能力围绕三条主线：
 
 - **出题**：按收藏夹 / 分 P / 会话总结 / 自定义大纲生成题目（LLM 结构化输出，含解析与来源）；提交批改、历史回看、错题本、训练数据导出（JSONL / CSV / SFT）、分享。
 - **定时出题**：用对话定义「到某时间出一道题」，系统按北京时间在合理时段内随机触发；到点生成题目并邮件发送（可抄送），限时答题，超时未答发送提醒。
-- **实现分工**：出题/批改 AI 在 **app-ts**；题目存储与分享在 **app-quiz**；调度与邮件投递由独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task) 承担。
+- **实现分工**：出题/批改 AI 在 **app-ts**；题目存储与分享在 **app-content（quiz 面）**；调度与邮件投递由独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task) 承担。
 
 ---
 
@@ -130,10 +130,10 @@ MindBase 的能力围绕三条主线：
 
 - Drive 风格板列表 + 完整编辑器（simple-mind-map），800ms 防抖自动保存 + Ctrl+S。
 - 白板（Excalidraw）存储契约就绪。
-- **存储**：MySQL 元数据 + MongoDB 正文，**app-board** 服务权威，`If-Match` 乐观并发锁。
+- **存储**：MySQL 元数据 + MongoDB 正文，**app-content（board 面）** 服务权威，`If-Match` 乐观并发锁。
 - **Agent 操作**：board agent 经 app-board-mcp 创建/查询/更新板子。
 
-详见 [app-board.md](app-board.md) / [app-board-mcp.md](app-board-mcp.md)。
+详见 [app-content.md](app-content.md) / [app-board-mcp.md](app-board-mcp.md)。
 
 ---
 

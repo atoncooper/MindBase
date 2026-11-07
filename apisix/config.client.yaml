@@ -21,10 +21,10 @@ apisix:
     ip: 0.0.0.0
     port: 9090
   # Trust anchors for upstream TLS verification (cosocket ssl.verify).
-  # ca-bundle.crt = system CA pool + app-board dev CA (concatenated by the
-  # compose entrypoint into /tmp at container start). If app-board has not
-  # generated its CA yet (cold start ordering), the entrypoint falls back to
-  # the system pool and `docker compose restart apisix` after first app-board
+  # ca-bundle.crt = system CA pool + app-content（board 面）dev CA (concatenated
+  # by the compose entrypoint into /tmp at container start). If app-content has
+  # not generated its CA yet (cold start ordering), the entrypoint falls back to
+  # the system pool and `docker compose restart apisix` after first app-content
   # boot reloads it. (与服务端 config.yaml 相同的坑位与解法)
   ssl:
     ssl_trusted_certificate: /tmp/ca-bundle.crt

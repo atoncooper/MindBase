@@ -12,8 +12,7 @@
 | `frontendv2/` | 用户端 Web（Next.js 16 App Router），用户可见的全部页面 |
 | `frontend-admin/` | 统一管理后台 SPA（Vite + React 18 + antd），分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计 |
 | `app-ts/` | AI 域服务（Node 22 + Fastify + tsx）：chat / agent / RAG / KG AI / 向量化 / quiz AI / task-quiz / skills / 学术 |
-| `app-go/` | 各领域 Go 微服务：user（auth/bili/settings 三域合一）/ cloud / note / quiz / kg / admin / sandbox |
-| `app-board/` | 思维导图 / 白板存储服务（Go + Gin，HTTPS-only） |
+| `app-go/` | 各领域 Go 微服务：user（auth/bili/settings 三域合一）/ content（note/quiz/board 三域合一）/ cloud / kg / admin / sandbox |
 | `app-pay/` | 交易 / 会员服务（Java 21 + Spring Boot 3 + MyBatis-Plus，HTTPS-only） |
 | `mcp/` | MCP server（board / note / quiz 工具面），把域能力暴露给 agent |
 | `apisix/` | APISIX 声明式配置（路由 / 上游 / forward-auth / key-auth / 限流） |
@@ -73,12 +72,13 @@ app-go/app-<域>/
 └── tests/                   # black-box 测试（不与源码同目录）
 ````
 
+> `app-content` 为合并服务：`cmd/app-content/` + 根目录 `default.yaml` + `internal/{config,app,model,repo,service,router,infra}/{board,note,quiz}/`，详见 [app-content.md](app-content.md)。
+
 | 服务 | 领域 | 端口 |
 |------|------|------|
 | app-user | 认证 / 会话 / RBAC + B 站获取 / ASR / 构建编排 + 偏好 / 壁纸（三域合一） | 8006 / 8010 / 8015 |
 | app-cloud | 云盘 / workspaces / 配额 / 分享 | 8007 |
-| app-note | 笔记 / 锚点 / 修订 / 分享 | 8008 |
-| app-quiz | 题目存储 / 判题 / 分享 / 错题 | 8011 |
+| app-content | 内容域：笔记 / 测验 / 板存储（三域合一） | 8004（board, HTTPS）/ 8008（note）/ 8011（quiz） |
 | app-kg | 知识图谱存储（gRPC + health） | 8013 / 8014 |
 | app-admin | 管理台 API（分享审核 + 沙箱代理） | 8016 |
 | app-sandbox | 沙箱控制平面（租约 / 配额 / 审计 / 产物 / 准入） | 8017 |
@@ -141,7 +141,7 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 | 范围 | 命令 | 说明 |
 |------|------|------|
 | app-ts | `npm run typecheck`、`npm test` | vitest 离线；Mongo / Milvus 用例无实例自动 skip |
-| Go 服务 | `go test ./...` | 各 `app-go/app-*` 与 `app-board` / `mcp/*` |
+| Go 服务 | `go test ./...` | 各 `app-go/app-*` 与 `mcp/*` |
 | app-sandbox | `go test ./...`（`tests/` 目录） | black-box；MySQL 用例需 `SANDBOX__TEST_DSN` |
 | app-pay | `mvn test` | 纯 JUnit，无外部 DB |
 | frontendv2 | `npm run lint`、`npx tsc --noEmit`、`next build` | CI `ci-frontend` |

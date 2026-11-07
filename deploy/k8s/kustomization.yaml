@@ -87,10 +87,8 @@ resources:
   - 30-apps/app-ts.yaml
   - 30-apps/app-user.yaml
   - 30-apps/app-cloud.yaml
-  - 30-apps/app-note.yaml
-  - 30-apps/app-quiz.yaml
+  - 30-apps/app-content.yaml
   - 30-apps/app-kg.yaml
-  - 30-apps/app-board.yaml
   - 30-apps/app-board-mcp.yaml
   - 30-apps/app-note-mcp.yaml
   - 30-apps/app-quiz-mcp.yaml

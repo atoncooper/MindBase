@@ -9,7 +9,8 @@
 #   nginx/certs/fullchain.pem        nginx 443 leaf (RSA-2048) + CA chain
 #   nginx/certs/privkey.pem          nginx leaf key
 #   app-board/certs/dev-ca.crt       shared CA copy (APISIX upstream trust)
-#   app-board/certs/server.crt|key   app-board leaf (ECDSA P-256)
+#   app-board/certs/server.crt|key   app-content board 域 leaf (ECDSA P-256)
+#                                    目录名沿用历史：board TLS 证书卷/secret 保留不变
 #   mcp/app-board-mcp/certs/dev-ca.crt       shared CA copy
 #   mcp/app-board-mcp/certs/server.crt|key   app-board-mcp leaf (ECDSA P-256)
 #   app-pay/certs/ca.crt             shared CA copy (app-task executor trust)
@@ -64,7 +65,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # Windows paths); inside the Linux cert-gen container both forms work.
 cd -- "$SCRIPT_DIR/.." || { printf '[cert-gen] ERROR: cannot cd to repo root\n' >&2; exit 1; }
 NGINX_DIR="${MB_CERT_NGINX_DIR:-nginx/certs}"
-APPBOARD_DIR="${MB_CERT_APPBOARD_DIR:-app-board/certs}"
+APPBOARD_DIR="${MB_CERT_APPBOARD_DIR:-app-board/certs}"   # board 域（现 app-content:8004）证书目录
 MCP_DIR="${MB_CERT_MCP_DIR:-mcp/app-board-mcp/certs}"
 PAY_DIR="${MB_CERT_PAY_DIR:-app-pay/certs}"
 
@@ -370,7 +371,7 @@ ensure_pay_leaf() {
 # verify_and_report — chain verification + trust instructions
 verify_and_report() {
 	_ok=0
-	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-board:$APPBOARD_DIR/server.crt" "app-board-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt"; do
+	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-content(board):$APPBOARD_DIR/server.crt" "app-board-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt"; do
 		_label=${pair%%:*}
 		_file=${pair#*:}
 		[ -s "$_file" ] || continue
@@ -434,7 +435,7 @@ case "$MODE" in
 	all)
 		ensure_ca
 		ensure_nginx_leaf
-		ensure_service_leaf "$APPBOARD_DIR" "app-board"
+		ensure_service_leaf "$APPBOARD_DIR" "app-content"
 		ensure_service_leaf "$MCP_DIR" "app-board-mcp"
 		ensure_pay_leaf
 		verify_and_report
@@ -446,7 +447,7 @@ case "$MODE" in
 		;;
 	services)
 		[ -s "$CA_CERT" ] || die "shared CA not found at $CA_CERT — run 'gen-certs.sh all' first"
-		ensure_service_leaf "$APPBOARD_DIR" "app-board"
+		ensure_service_leaf "$APPBOARD_DIR" "app-content"
 		ensure_service_leaf "$MCP_DIR" "app-board-mcp"
 		ensure_pay_leaf
 		verify_and_report

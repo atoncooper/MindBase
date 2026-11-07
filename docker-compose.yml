@@ -73,7 +73,7 @@ services:
   # Runs scripts/gen-certs.sh on every `docker compose up` BEFORE the
   # TLS-consuming services start, so a fresh clone gets working certs/keys
   # with zero manual steps: nginx 443 (nginx exits without them), app-pay
-  # (startup self-check refuses to boot without them), app-board /
+  # (startup self-check refuses to boot without them), app-content（board 面）/
   # app-board-mcp leaves, and the shared dev CA that APISIX + app-task trust.
   # Idempotent: valid files are reused, expiring ones re-signed.
 
@@ -358,7 +358,7 @@ services:
       - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
       # membership tier (weighted admission) via APISIX key-auth internal route
       - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
-      # app-quiz storage writes for quiz AI orchestration (APISIX key-auth route)
+      # app-content（quiz 面）storage writes for quiz AI orchestration (APISIX key-auth route)
       - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
       # app-sandbox control plane (optional; enabled=false → NoopCodeExecution,
       # run_code honestly reports "sandbox not configured")
@@ -389,7 +389,7 @@ services:
       - LOG__FILEENABLED=false
     ports:
       # 8000 = the port the retired Python backend owned; app-ts inherits it.
-      # (app-note keeps host 8008 — the clash that existed before the move.)
+      # (app-content note 面 keeps host 8018 — avoids the app-cloud 8007-8009 pool.)
       - "127.0.0.1:${APP_TS_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
@@ -765,7 +765,7 @@ services:
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
-      # app-board dev-CA（app-board 自动模式首次启动生成）：只读挂入，
+      # app-content board 面 dev-CA（自动模式首次启动生成）：只读挂入，
       # entrypoint 将其与系统 CA 池拼成 ssl_trusted_certificate 的 ca-bundle.crt
       - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
     # APISIX's lua-http client honors HTTP_PROXY. The host's
@@ -784,8 +784,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
@@ -860,65 +860,66 @@ services:
     networks:
       - mind-base-net
 
-  # app-note —— 笔记服务（Go + Gin；接管 notes/note_anchors/note_shares 的
-  # schema 所有权，共享主 bilirag MySQL + Mongo（note_documents/note_revisions，
-  # 零数据迁移）；APISIX /notes/* 用户路由 + /internal/note/* key-auth M2M
-  # 路由（app-note-mcp 的 M2M 落库走此通道）；nginx /notes 透传 APISIX 无需改动）
-  app-note:
-    image: atoncooper/mind-base-app-note:latest
+  # app-content —— 内容域三合一服务（Go：app-board + app-note + app-quiz）。
+  # 单镜像/单进程，三个 Gin engine 分别监听（对外路径与端口语义不变，
+  # APISIX 三个 upstream 分别指向对应端口）：
+  #   8004 = board（HTTPS；TLS rotator，证书目录 /app/certs，upstream 仍 scheme https）
+  #   8008 = note（/notes/*、/internal/note/*）
+  #   8011 = quiz（/quiz/*、/internal/quiz/*）
+  # 共享主 bilirag MySQL + Mongo + Redis（board 缓存用 /2；quiz 配额键沿用 mind-base: 前缀）。
+  # board/note/quiz 三域的 schema 由服务启动自建/接管。MCP 服务（app-*-mcp）保持独立不改名。
+  app-content:
+    image: atoncooper/mind-base-app-content:latest
     pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
-      context: ./app-go/app-note
+      context: ./app-go/app-content
       dockerfile: Dockerfile
-    container_name: mind-base-app-note
-    profiles: ["", "note", "full"]
+    container_name: mind-base-app-content
+    # profile 并集：保留旧 --profile note/quiz/board 的启动语义，新增 content
+    profiles: ["", "content", "note", "quiz", "board", "full"]
     depends_on:
+      cert-gen:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      # ===== board 域（原 app-board，前缀 APPBOARD__）=====
+      # 读缓存（列表/详情 cache-aside；写路径仍直落 MySQL）：独立 DB index /2，
+      # 主 app 用 /1；Redis 故障自动降级直查，不影响正确性
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      # 共享主 app MySQL（board 表 schema 由服务启动 db.Migrate 自建）
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      # 共享主 app Mongo（正文 collection board_documents）
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      # Logging: one process-wide logger (board.log section) -> stdout + /app/logs
+      # （lumberjack 轮转；镜像已预建 nonroot 属主 /app/logs，卷首次挂载继承属主）
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      # explicit mode: load cert-gen issued leaf as-is（auto 模式会覆盖共享 dev-ca）
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
+      # ===== note 域（原 app-note，前缀 APPNOTE__）=====
       - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPNOTE__LOG__OUTPUT=both
-    # 宿主调试口默认 8018（容器内仍是 8008，APISIX 走 app-note:8008）：
-    # app-cloud 的 8007-8009 端口池会抢占 8008，app-sandbox 占 8017，
-    # 沿用 8008 会导致 app-note 重建时 "port already allocated" 起不来
-    ports:
-      - "127.0.0.1:${APP_NOTE_PORT:-8018}:8008"
-    volumes:
-      - app_note_logs:/app/logs
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  app-quiz:
-    image: atoncooper/mind-base-app-quiz:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./app-go/app-quiz
-      dockerfile: Dockerfile
-    container_name: mind-base-app-quiz
-    profiles: ["", "quiz", "full"]
-    depends_on:
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      # ===== quiz 域（原 app-quiz，前缀 APPQUIZ__）=====
       - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # ===== 共享（note/quiz 读同一 MONGO__URI；去重后只保留一份）=====
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPQUIZ__LOG__OUTPUT=both
     ports:
-      - "127.0.0.1:${APP_QUIZ_PORT:-8011}:8011"
+      # 宿主只暴露 note/quiz 调试口；board（8004 TLS）无宿主映射，仅经 APISIX 访问。
+      # note 宿主口默认 8018（app-cloud 的 8007-8009 端口池会占用 8008）。
+      - "127.0.0.1:${APP_CONTENT_NOTE_PORT:-8018}:8008"
+      - "127.0.0.1:${APP_CONTENT_QUIZ_PORT:-8011}:8011"
     volumes:
-      - app_quiz_logs:/app/logs
+      - app_content_logs:/app/logs
+      # board TLS 证书目录（cert-gen 生成/轮换；apisix 只读挂其中的 dev-ca.crt）
+      - ./app-board/certs:/app/certs
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -960,7 +961,7 @@ services:
       # 宿主机代理示例：APPTASK_HTTP_PROXY=http://host.docker.internal:10808
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -1013,61 +1014,11 @@ services:
     networks:
       - mind-base-net
 
-  # app-board —— 思维导图/白板内容存储（Go 独立服务）
-  # 共享主 app 的 MySQL(mind_base.board,服务自建 schema)与 Mongo(MindBase.board_documents)。
-  # 鉴权:APISIX forward-auth 验 bili_session 注入 X-Uid,服务信任该头。
-  # HTTPS-only:自动生成 dev-CA+叶子证书(自愈+自动续期),dev-ca.crt 只读挂进 apisix
-  # 作为 upstream tls_verify 的信任锚(见 apisix config.yaml ssl_trusted_certificate)。
-  # 注意:首次启动生成证书后若 apisix 先于其启动,需 `docker compose restart apisix` 重载 CA bundle。
-  app-board:
-    image: atoncooper/mind-base-app-board:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./app-board
-      dockerfile: Dockerfile
-    container_name: mind-base-app-board
-    profiles: ["", "board", "full"]
-    depends_on:
-      cert-gen:
-        condition: service_completed_successfully
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      # 读缓存（列表/详情 cache-aside；写路径仍直落 MySQL）：独立 DB index /2，
-      # 主 app 用 /1；Redis 故障自动降级直查，不影响正确性
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
-      # 共享主 app MySQL（board 表 schema 由服务启动 db.Migrate 自建）
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      # 共享主 app Mongo（正文 collection board_documents）
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      # Logging: stdout + /app/logs/app-board.log（lumberjack 轮转）
-      - APPBOARD__LOG__OUTPUT=both
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
-      # explicit mode: load cert-gen issued leaf as-is; auto mode would try to
-      # regenerate + overwrite the shared dev-ca.crt (root-owned bind mount, EACCES)
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-    # 无宿主端口映射：只能经 APISIX 访问（与 app-task 8001 同策略）
-    volumes:
-      - app_board_logs:/app/logs
-      # TLS 证书目录：自动模式首次启动生成 dev-CA+叶子并持久化（apisix 只读挂其中的 dev-ca.crt）
-      - ./app-board/certs:/app/certs
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
   # app-board-mcp —— MCP server（把思维导图/白板以 MCP 工具暴露给 Agent）
   # 双模式鉴权：外部 MCP 宿主走 Bearer token（BOARD_MCP_AUTH_TOKEN，固定 uid）；
   # 主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid，
   # uid 来自后端已认证会话，永不经过 LLM 参数）。上游经 APISIX key-auth 路由
-  # /internal/board/* 到 app-board。回环 8005 + 容器内网互通（app-ts 直连）。
+  # /internal/board/* 到 app-content（board 面）。回环 8005 + 容器内网互通（app-ts 直连）。
   # 默认 profile 启动：board agent 是主栈功能的一部分。
   app-board-mcp:
     image: atoncooper/mind-base-app-board-mcp:latest
@@ -1112,7 +1063,7 @@ services:
   # 双模式鉴权同 app-board-mcp：外部 MCP 宿主走 Bearer（NOTE_MCP_AUTH_TOKEN，
   # 固定 uid）；主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求
   # X-Uid，uid 永不经过 LLM 参数）。上游经 APISIX key-auth 路由 /internal/note/*
-  # 到 app-note。回环 8009 + 容器内网互通（app-ts 直连）；默认 profile 启动。
+  # 到 app-content（note 面）。回环 8009 + 容器内网互通（app-ts 直连）；默认 profile 启动。
   app-note-mcp:
     image: atoncooper/mind-base-app-note-mcp:latest
     pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
@@ -1143,7 +1094,7 @@ services:
   # app-quiz-mcp —— 测验 MCP server（把 quiz 出题/批改落库以 MCP 工具暴露给 Agent）。
   # 鉴权同 app-note-mcp：外部宿主 Bearer（QUIZ_MCP_AUTH_TOKEN，固定 uid）；主 app（app-ts）
   # 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid）。上游经 APISIX key-auth
-  # 路由 /internal/quiz/* 到 app-quiz。回环 8012 + 容器内网互通；默认 profile 启动。
+  # 路由 /internal/quiz/* 到 app-content（quiz 面）。回环 8012 + 容器内网互通；默认 profile 启动。
   app-quiz-mcp:
     image: atoncooper/mind-base-app-quiz-mcp:latest
     pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
@@ -1393,15 +1344,13 @@ volumes:
   app_task_certs:
   app_task_logs:
   app_cloud_logs:
-  app_note_logs:
-  app_quiz_logs:
+  app_content_logs:
   app_kg_logs:
   opensandbox_data:
   app_sandbox_logs:
   app_user_logs:
   app_note_mcp_logs:
   app_quiz_mcp_logs:
-  app_board_logs:
   app_board_mcp_logs:
   app_task_mysql_data:
   app_pay_mysql_data:

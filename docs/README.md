@@ -40,7 +40,7 @@
 | 文档 | 内容 |
 |---|---|
 | [app-task.md](app-task.md) | 定时出题任务：调度模型、数据表、WebUI、executor 对接、配置 |
-| [app-board.md](app-board.md) | 思维导图/白板存储服务：API、乐观锁、缓存、TLS、配置 |
+| [app-content.md](app-content.md) | 内容域服务 app-content（笔记 / 测验 / 板存储三域合一）：端口、API、TLS、配置、域边界 |
 | [app-board-mcp.md](app-board-mcp.md) | 思维导图/白板 MCP server：工具面、认证、限流、TLS、服务模式接入 |
 | [app-pay.md](app-pay.md) | 交易/会员服务：订单状态机、支付渠道、审计、TLS、配置 |
 | [app-admin.md](app-admin.md) | 统一管理后台：分享审核（封杀/解封/放行）、支付运营（订单/会员/权益事件/SKU/补偿开通/退款复核）、沙箱、统一账户与审计、部署 |
@@ -85,7 +85,7 @@
 | 服务间调用为什么要 API Key？怎么防串用？ | [service-key-auth.md](service-key-auth.md) |
 | 学术 Agent / 科研项目 / 文献核验怎么工作？ | [academic-agent.md](academic-agent.md) |
 | 代码执行和产物记录怎么存、怎么回放？ | [code-execution.md](code-execution.md) |
-| 定时出题、白板、支付、云盘、KG 各服务怎么配？ | [app-task.md](app-task.md) / [app-board.md](app-board.md) / [app-pay.md](app-pay.md) / [app-cloud.md](app-cloud.md) / [app-kg.md](app-kg.md) |
+| 定时出题、内容域（笔记/测验/白板）、支付、云盘、KG 各服务怎么配？ | [app-task.md](app-task.md) / [app-content.md](app-content.md) / [app-pay.md](app-pay.md) / [app-cloud.md](app-cloud.md) / [app-kg.md](app-kg.md) |
 | 笔记/分享的存储与防护？ | [notes.md](notes.md) / [sharing.md](sharing.md) |
 | 桌面端怎么跑/怎么打包？ | 独立仓库 [atoncooper/mind-base-desktop](https://github.com/atoncooper/mind-base-desktop) |
 | VS Code 里为什么总在构建 / 没有 Rust 补全？ | [vscode-setup.md](vscode-setup.md) |
@@ -100,8 +100,8 @@
 | [python-decommission.md](archive/python-decommission.md) | Python backend 退役唯一记录：DoD、迁移归宿表、收尾清单、部署冒烟清单 |
 | [app-ts-cutover.md](archive/app-ts-cutover.md) | 聊天域 + settings 切流（settings 现并入 app-user）：拓扑、上线步骤、冒烟、取舍 |
 | [B 站获取域迁移（存档）](archive/) | 反爬、ASR、build 编排、事件桥（获取域现由 app-user 承载） |
-| [app-note-migration.md](archive/app-note-migration.md) | 笔记域迁 app-note：存储零迁移、wire 契约、MCP |
-| [app-quiz-migration.md](archive/app-quiz-migration.md) | quiz 存储域迁 app-quiz：同库接管、分享缓存、internal 面 |
+| [app-note-migration.md](archive/app-note-migration.md) | 笔记域迁 Go（现并入 app-content）：存储零迁移、wire 契约、MCP |
+| [app-quiz-migration.md](archive/app-quiz-migration.md) | quiz 存储域迁 Go（现并入 app-content）：同库接管、分享缓存、internal 面 |
 
 ---
 
