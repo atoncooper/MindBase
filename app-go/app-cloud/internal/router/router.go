@@ -1,6 +1,6 @@
 // Package router assembles the Gin engine: middleware chain, health probe,
 // and the /cloud/* user endpoints. Identity source = the gateway-injected
-// X-Uid header (nginx auth_request against app-auth; parity with the
+// X-Uid header (nginx auth_request against app-user; parity with the
 // Python backend's post-cutover contract).
 package router
 

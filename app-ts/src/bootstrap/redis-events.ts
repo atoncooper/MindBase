@@ -7,7 +7,7 @@ const log = createLogger("BILI_EVENTS");
 
 /**
  * Redis pub/sub bridge — the AI side's successor of the Python
- * bili_event_bridge. app-bili (Go) publishes:
+ * bili_event_bridge. app-user (Go) publishes:
  *   `bili:page_ready` — one ASR'd page → triggers per-page vectorization
  *       (idempotent task; state lives in the vector task repository).
  *   `bili:tasks`      — task progress. The old consumer was the Python WS

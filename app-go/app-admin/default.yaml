@@ -8,7 +8,7 @@ server:
   host: 0.0.0.0
   port: 8016
 timezone: Asia/Shanghai
-# Shared bilirag database (same MySQL as app-auth/app-cloud); the URL is
+# Shared bilirag database (same MySQL as app-user/app-cloud); the URL is
 # injected by docker-compose from RDBMS__URL. Connection only + the three
 # admin_* own tables; cloud_*/users/rbac tables are read-only for moderation.
 rdbms:

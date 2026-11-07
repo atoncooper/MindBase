@@ -1,7 +1,7 @@
 # nginx — SSL termination + routing (same nginx.conf/locations.conf as
 # compose, mounted from ConfigMaps). The entry Service is LoadBalancer —
 # on local clusters (Docker Desktop / kind / k3s) this binds the node port;
-# on cloud providers it provisions a LB. Video/wallpaper caches are
+# on cloud providers it provisions a LB. Video caches are
 # emptyDir (rebuildable); TLS certs come from the nginx-tls Secret.
 apiVersion: v1
 kind: Service
@@ -81,8 +81,6 @@ spec:
               mountPath: /var/www/certbot
             - name: video-cache
               mountPath: /var/cache/nginx/video
-            - name: wallpaper-cache
-              mountPath: /var/cache/nginx/wallpaper
           startupProbe:
             httpGet:
               path: /
@@ -113,8 +111,6 @@ spec:
         - name: certbot-www
           emptyDir: {}
         - name: video-cache
-          emptyDir: {}
-        - name: wallpaper-cache
           emptyDir: {}
 ---
 apiVersion: policy/v1

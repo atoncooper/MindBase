@@ -16,7 +16,7 @@ services:
     env_file:
       - ../../.env
     environment:
-      # 共享 bilirag 库（与 app-auth/app-cloud 同库；RDBMS__URL 来自 .env）
+      # 共享 bilirag 库（与 app-user/app-cloud 同库；RDBMS__URL 来自 .env）
       - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
       - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}

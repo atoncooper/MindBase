@@ -1,5 +1,5 @@
 // Read-only queries over the identity tables (users / user_profile /
-// rbac_user_role / rbac_role — owned by app-auth). Zero writes, zero
+// rbac_user_role / rbac_role — owned by app-user). Zero writes, zero
 // migrations; admin sees only account metadata (uid / email / phone /
 // nickname / status / granted roles).
 package repo
@@ -30,7 +30,7 @@ type UserAccount struct {
 	CreatedAt *time.Time
 }
 
-// ActiveOnlyExpr is the app-auth "binding in force" predicate: is_active
+// ActiveOnlyExpr is the app-user "binding in force" predicate: is_active
 // counts as active when NULL (legacy rows) and the expiry must not have passed.
 const activeBindingSQL = "(ur.is_active IS NULL OR ur.is_active = 1) AND (ur.expires_at IS NULL OR ur.expires_at > NOW())"
 

@@ -36,10 +36,10 @@ import type { SkillManager, SkillStoreClient } from "../../skills/manager.js";
 import type { BlindspotService } from "../../services/blindspot.js";
 import { registerKnowledgeRoutes } from "././routes/knowledge.js";
 import type { VideoVectorizerService } from "../../services/video-vectorizer.js";
-import type { AppBiliClient } from "../../auth/app-bili-client.js";
+import type { AppUserBiliClient } from "../../auth/app-user-bili-client.js";
 import type { TaskQuizGenerationService } from "../../services/task-quiz-generation.js";
 import type { AppTaskClient } from "../../auth/app-task-client.js";
-import type { AppAuthClient } from "../../auth/app-auth-client.js";
+import type { AppUserAuthClient } from "../../auth/app-user-auth-client.js";
 import type { KgService } from "../../kg/service.js";
 import type { BoardCompletionService } from "../../services/board-completion.js";
 import type { SessionSummaryService } from "../../services/session-summary.js";
@@ -92,7 +92,7 @@ export interface BuildServerOptions {
   /** per-page vectorization pipeline; absent = /vec/page/* not registered */
   vectorizer?: VideoVectorizerService;
   /** acquisition-service scope client (knowledge folder status / ownership) */
-  appBili?: AppBiliClient;
+  appBili?: AppUserBiliClient;
   /** blindspot map service; absent = routes not registered */
   blindspot?: BlindspotService;
   /** skills subsystem; absent = routes not registered */
@@ -103,7 +103,7 @@ export interface BuildServerOptions {
   taskQuiz?: {
     generation: TaskQuizGenerationService;
     appTask: AppTaskClient;
-    appAuth: AppAuthClient;
+    appAuth: AppUserAuthClient;
     /** member usage quota (task-quiz active-task cap); absent = unlimited */
     quota?: QuotaService;
     /** test-only model override for the chat agent */

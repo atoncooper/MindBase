@@ -1,5 +1,7 @@
 # app-quiz 迁移（quiz 存储面 → Go）
 
+> ⚠️ **历史文档（只读存档）**：app-auth / app-bili / app-settings 三个 Go 服务已合并为 app-user（8006 auth / 8010 bili / 8015 settings），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
+
 > **范围：quiz 域中不写 AI 的纯存储面。** 生成（`/quiz/generate`、
 > `/quiz/generate-from-summary`）与批改作答（`/quiz/submit`）的 **AI 编排**
 > 2026-10-06 已迁 app-ts（落库仍经本服务 `/internal/quiz/*`）；task-quiz

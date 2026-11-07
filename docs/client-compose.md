@@ -7,7 +7,7 @@
 
 | 维度 | 服务端（根 compose） | 客户端（本文件） |
 |------|--------------------|----------------|
-| 默认服务数 | ~25（含 pay/task/kg 三套独立栈） | 20（核心常驻，其余 opt-in） |
+| 默认服务数 | ~25（含 pay/task/kg 三套独立栈） | 18（核心常驻，其余 opt-in） |
 | app-pay + app-pay-mysql | 默认启动 | `--profile pay` |
 | app-task + app-task-mysql | 默认启动 | `--profile task` |
 | neo4j + app-kg | 默认启动 | `--profile kg` |
@@ -34,11 +34,11 @@
 ## 快速开始
 
 前置：本仓完整 clone、`.env`（可从服务端拷贝后改）、`secrets/api_key_encryption_key`
-（app-auth/app-cloud/app-bili 解密用户 SESSDATA 用；服务端拷贝或 `openssl rand -base64 32` 生成，
+（app-user/app-cloud 解密用户 SESSDATA 用；服务端拷贝或 `openssl rand -base64 32` 生成，
 **一旦存了用户数据不可换**）、Docker Desktop（WSL2 后端）。
 
 ```bash
-# 首次：构建全部 first-party 镜像（frontend/app-ts/8 个 Go 服务/3 个 MCP/minio/certgen）
+# 首次：构建全部 first-party 镜像（frontend/app-ts/Go 服务/3 个 MCP/minio/certgen）
 docker compose -f docker-compose.client.yml build
 
 # 启动核心栈
@@ -67,13 +67,13 @@ docker compose -f docker-compose.client.yml --profile tools up -d # 调试 UI
 # —— DashScope（LLM/embedding 兼容口 + ASR 原生口）——
 AI_GATEWAY__API_KEY=sk-xxxx
 AI_GATEWAY__BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-AI_GATEWAY_NATIVE_BASE_URL=https://dashscope.aliyuncs.com/api/v1   # app-bili ASR 用
+AI_GATEWAY_NATIVE_BASE_URL=https://dashscope.aliyuncs.com/api/v1   # app-user（bili 路由）ASR 用
 # —— 或 OpenRouter（LLM/embedding；ASR 仍需 DashScope 直连口）——
 # AI_GATEWAY__BASE_URL=https://openrouter.ai/api/v1
 ```
 
 - `AI_GATEWAY__BASE_URL`：OpenAI 兼容口，app-ts（LLM/embedding/OCR）与 app-cloud（向量化）使用。
-- `AI_GATEWAY_NATIVE_BASE_URL`：客户端新增的插值变量，仅 app-bili 的 ASR 原生透传使用；
+- `AI_GATEWAY_NATIVE_BASE_URL`：客户端新增的插值变量，仅 app-user（bili 路由）的 ASR 原生透传使用；
   未设置时默认 `http://higress:8080/api/v1`（`--profile ai` 形态）。
 - 改 embedding 模型 = Milvus 全量重建（红线同服务端）。
 - 用回 Higress（`--profile ai`）：删掉 `.env` 里上面几行覆盖，密钥在网关控制台
@@ -104,7 +104,7 @@ APP_CLOUD_KG_BASE_URL=http://app-kg:8014
 | app-pay / app-task / neo4j+app-kg 两套 MySQL | ✂️ 默认不启 | 单人用不到支付/定时任务/KG（`--profile` 按需开） |
 | **APISIX** | ❌ 必须留 | 唯一路由权威：apisix.yaml 1139 行 ~35 条路由，承载 forward-auth（bili_session → X-Uid）+ key-auth（/internal/* M2M）。砍它 = 把全部路由+鉴权语义移植进 nginx（双份维护，登录/聊天必炸），省的 ~100MB 不值 |
 | **nginx** | ❌ 必须留 | RSS 仅 ~15MB，却承载：`/minio-proxy` 预签名媒体代理、`/cloud-stream` 视频流缓存（X-Accel-Redirect internal 跳转，APISIX 无法复制其 internal-only 语义）、`/cloud/` 5GB 直传（绕开网关 body-limit）、页面/XHR 双用途分发、TLS。砍掉后这些流量全部改道 Node/网关，内存不降反升且功能必坏 |
-| **Redis** | ❌ 必须留 | 承载 MinIO 事件 → 向量化管道（云盘自动向量化）、app-auth 验证码/限流、board 读缓存；仅 ~130MB，砍掉 = 改代码 |
+| **Redis** | ❌ 必须留 | 承载 MinIO 事件 → 向量化管道（云盘自动向量化）、app-user（auth 路由）验证码/限流、board 读缓存；仅 ~130MB，砍掉 = 改代码 |
 | **MinIO** | ❌ 必须留 | Milvus 对象存储 + 云盘 + skills + 壁纸的存储本体（功能承载者，非纯中间件） |
 | MySQL / MongoDB | ❌ 必须留 | 数据层，砍掉 = 重写所有服务 |
 
@@ -160,12 +160,12 @@ APP_CLOUD_KG_BASE_URL=http://app-kg:8014
 实测参考（服务端栈同宿主 docker stats 冷态值）：apisix 294MB（服务端 auto-worker）→ 客户端
 1 worker 约 100–150MB；mysql 446MB（默认参数）→ 客户端关 P_S/binlog 后约 250–350MB；
 mongo 260MB、minio 68MB、app-ts 223MB、frontend 80MB、redis ~10MB、nginx ~23MB、
-milvus 空库 152MB（随向量数据增长，上限 1.5GB）；6 个 Go 服务合计 ~100MB、3 个 MCP 合计 ~20MB。
+milvus 空库 152MB（随向量数据增长，上限 1.5GB）；4 个 Go 服务合计 ~100MB、3 个 MCP 合计 ~20MB。
 **客户端核心栈典型合计 ≈ 1.5–2.5GB**。被砍掉不再常驻的实测值：higress 567MB、neo4j 465MB、
 app-pay 321MB、两个附加 MySQL 共 926MB、etcd 59MB（服务端全家桶合计约 4GB+）。
 原估计（已被上表实测取代）：mysql ~350MB、mongo ~300MB、milvus 0.5–1.5GB（含内嵌 etcd）、
 minio ~150MB、apisix ~100MB（1 worker）、app-ts ~400MB、frontend ~250MB、
-6 个 Go 服务 ~250MB、3 个 MCP ~80MB、redis ~130MB、nginx ~15MB。
+4 个 Go 服务 ~250MB、3 个 MCP ~80MB、redis ~130MB、nginx ~15MB。
 
 ## 从服务端迁移数据
 

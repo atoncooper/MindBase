@@ -5,7 +5,7 @@ import { resolveTier } from "../../../utils/membership.js";
 import type { QuotaService } from "../../../services/quota.js";
 import { createLogger } from "../../../logger.js";
 import { AppTaskError } from "../../../auth/app-task-client.js";
-import { AppAuthError } from "../../../auth/app-auth-client.js";
+import { AppUserAuthError } from "../../../auth/app-user-auth-client.js";
 import { AppQuizError } from "../../../auth/app-quiz-client.js";
 import {
   TaskQuizGenerationService,
@@ -50,7 +50,7 @@ export function registerTaskQuizRoutes(
   deps: {
     generation: TaskQuizGenerationService;
     appTask: import("../../../auth/app-task-client.js").AppTaskClient;
-    appAuth: import("../../../auth/app-auth-client.js").AppAuthClient;
+    appAuth: import("../../../auth/app-user-auth-client.js").AppUserAuthClient;
     /** 会员用量配额（定时出题活跃任务数上限）；absent = 不限 */
     quota?: QuotaService;
     /** test-only model override for the chat agent */
@@ -77,7 +77,7 @@ export function registerTaskQuizRoutes(
     try {
       userEmail = await deps.appAuth.getUserEmail(uid);
     } catch (err) {
-      if (err instanceof AppAuthError && err.status === 404) {
+      if (err instanceof AppUserAuthError && err.status === 404) {
         return reply.status(404).send({ detail: "用户不存在" });
       }
       log.warn(`email lookup failed uid=${uid}: ${err instanceof Error ? err.message : err}`);
@@ -132,7 +132,7 @@ export function registerTaskQuizRoutes(
     try {
       userEmail = await deps.appAuth.getUserEmail(uid);
     } catch (err) {
-      if (err instanceof AppAuthError && err.status === 404) {
+      if (err instanceof AppUserAuthError && err.status === 404) {
         return reply.status(404).send({ detail: "用户不存在" });
       }
       throw err;

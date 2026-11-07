@@ -23,7 +23,7 @@
 |---|---|
 | [architecture.md](architecture.md) | 服务拓扑、端口、网关路由、数据归属（本目录入口文档） |
 | [configuration.md](configuration.md) | 分层配置与共享环境变量约定 |
-| [service-key-auth.md](service-key-auth.md) | 服务间 API Key 体系：app-auth 签发 + APISIX 校验、防串用、演进方向 |
+| [service-key-auth.md](service-key-auth.md) | 服务间 API Key 体系：app-user（auth 路由）签发 + APISIX 校验、防串用、演进方向 |
 | [client-compose.md](client-compose.md) | `docker-compose.client.yml` 客户端部署：与服务端 compose 的差异、裁剪与降级行为 |
 | [deployment.md](deployment.md) | 生产部署、HTTPS（Caddy）、监控与备份 |
 
@@ -98,8 +98,8 @@
 | 文档 | 内容 |
 |---|---|
 | [python-decommission.md](archive/python-decommission.md) | Python backend 退役唯一记录：DoD、迁移归宿表、收尾清单、部署冒烟清单 |
-| [app-ts-cutover.md](archive/app-ts-cutover.md) | 聊天域 + settings 切流 app-ts/app-settings：拓扑、上线步骤、冒烟、取舍 |
-| [app-bili-migration.md](archive/app-bili-migration.md) | B 站获取域迁 app-bili：反爬、ASR、build 编排、事件桥 |
+| [app-ts-cutover.md](archive/app-ts-cutover.md) | 聊天域 + settings 切流（settings 现并入 app-user）：拓扑、上线步骤、冒烟、取舍 |
+| [B 站获取域迁移（存档）](archive/) | 反爬、ASR、build 编排、事件桥（获取域现由 app-user 承载） |
 | [app-note-migration.md](archive/app-note-migration.md) | 笔记域迁 app-note：存储零迁移、wire 契约、MCP |
 | [app-quiz-migration.md](archive/app-quiz-migration.md) | quiz 存储域迁 app-quiz：同库接管、分享缓存、internal 面 |
 

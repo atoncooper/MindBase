@@ -17,7 +17,6 @@ services:
       - ../../nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video
-      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
     restart: unless-stopped
     networks:
       - mind-base-overlay
@@ -29,9 +28,6 @@ volumes:
   nginx_video_cache:
     external: true
     name: mindbase_nginx_video_cache
-  nginx_wallpaper_cache:
-    external: true
-    name: mindbase_nginx_wallpaper_cache
 
 networks:
   mind-base-overlay:

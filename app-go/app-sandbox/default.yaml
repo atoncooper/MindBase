@@ -22,7 +22,7 @@ server:
 
 timezone: Asia/Shanghai
 
-# Shared mind_base MySQL (same instance as app-auth/app-note/...).
+# Shared mind_base MySQL (same instance as app-user/app-note/...).
 # Injected with SANDBOX__DATABASE__DSN or the shared RDBMS__URL.
 database:
   dsn: ""

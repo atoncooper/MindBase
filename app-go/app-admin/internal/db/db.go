@@ -1,6 +1,6 @@
 // Package db initializes app-admin's TWO GORM MySQL connections:
 //
-//   - DB    — the SHARED bilirag database (app-auth / app-cloud schema);
+//   - DB    — the SHARED bilirag database (app-user / app-cloud schema);
 //   - PayDB — the app_pay database on app-pay-mysql (Java-owned schema), used
 //     only by the payment-operations console. It is optional: when
 //     pay_rdbms.url is unset or unreachable, main() leaves PayDB nil and every
@@ -8,7 +8,7 @@
 //
 // Migration policy: create the three admin_* OWN tables if they do not exist;
 // never touch anything else. cloud_shares / cloud_files / cloud_folders /
-// users / rbac_* tables are owned by app-cloud / app-auth (live data), and the
+// users / rbac_* tables are owned by app-cloud / app-user (live data), and the
 // pay_* tables are owned by app-pay (Flyway) — this service must NEVER
 // AutoMigrate or ALTER either of them (guard test pins schemaDDL).
 // The only write onto shared tables is the four moderation columns on

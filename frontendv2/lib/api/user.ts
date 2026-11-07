@@ -67,11 +67,16 @@ export interface PasswordSetParams {
 export interface PasswordChangeParams {
     old_password: string;
     new_password: string;
+    /** 二次验证：有已验证邮箱时必填 */
     email_code?: string;
+    /** 二次验证：仅有已验证手机时必填 */
+    sms_code?: string;
 }
 
 export interface EmailBindParams {
     email: string;
+    /** step-up：账号已设置密码时必填（换绑/绑定邮箱前的当前密码校验） */
+    current_password?: string;
 }
 
 export interface EmailSendCodeParams {
@@ -85,6 +90,8 @@ export interface EmailVerifyParams {
     email: string;
     code: string;
     purpose: "bind_email" | "twofa";
+    /** step-up：purpose=bind_email 且账号已设置密码时必填 */
+    current_password?: string;
 }
 
 export interface PasswordResetRequestParams {
@@ -100,6 +107,15 @@ export interface PasswordResetConfirmParams {
 
 export interface PhoneBindParams {
     phone: string;
+    /** step-up：账号已设置密码时必填 */
+    current_password?: string;
+}
+
+export interface PhoneVerifyParams {
+    phone: string;
+    code: string;
+    /** step-up：账号已设置密码时必填 */
+    current_password?: string;
 }
 
 export const userApi = {
@@ -107,7 +123,7 @@ export const userApi = {
         request<ProfileData>("/auth/profile", { headers: getAuthHeaders() }),
 
     /**
-     * 上传头像文件（multipart，≤2MB PNG/JPG/WebP）到 app-settings 对象存储，
+     * 上传头像文件（multipart，≤2MB PNG/JPG/WebP）到 app-user 对象存储，
      * 返回站内公开直读 URL（/avatar/file/...），随后以 updateProfile({avatar})
      * 写入资料。FormData 必须由浏览器自动生成 multipart 边界，因此绕过
      * request() 的 JSON Content-Type，用裸 fetch + Bearer 头。
@@ -145,7 +161,7 @@ export const userApi = {
         }),
 
     changePassword: (data: PasswordChangeParams) =>
-        request<{ message: string }>("/auth/password", {
+        request<{ message: string; other_sessions_revoked?: boolean }>("/auth/password", {
             method: "PATCH",
             headers: getAuthHeaders(),
             body: JSON.stringify(data),
@@ -198,7 +214,7 @@ export const userApi = {
         }),
 
     // 短信验证码验证并绑定手机号（需先 phoneSendCode purpose=bind 发码）
-    verifyPhone: (data: { phone: string; code: string }) =>
+    verifyPhone: (data: PhoneVerifyParams) =>
         request<{ message: string; phone: string }>("/auth/phone/verify", {
             method: "POST",
             headers: getAuthHeaders(),

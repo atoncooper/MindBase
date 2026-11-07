@@ -1,4 +1,4 @@
-﻿-- Schema bootstrap for fresh MySQL volume (docker-entrypoint-initdb.d).
+-- Schema bootstrap for fresh MySQL volume (docker-entrypoint-initdb.d).
 -- Tables are declared in alphabetical order, but foreign keys may reference
 -- tables defined later in this file (e.g. credential_usage -> users). Disable
 -- FK checks during bootstrap so creation order does not matter; all referenced
@@ -23,7 +23,12 @@ create table async_tasks
     completed_at datetime    null,
     uid          bigint      null,
     constraint ix_async_tasks_task_id
-        unique (task_id)
+        unique (task_id),
+    -- bili/asr live-task lookup (task_type + status, newest first) and the
+    -- per-user build guard (uid + task_type + status, newest first).
+    index ix_async_tasks_type_status_id (task_type, status, id),
+    index ix_async_tasks_uid_type_status_id (uid, task_type, status, id),
+    index ix_async_tasks_completed_at (completed_at)
 );
 
 create table chat_sessions
@@ -56,12 +61,14 @@ create table collection
     description text        null,
     created_at datetime     null,
     updated_at datetime     null,
+    -- paginated folder listing: WHERE media_id = ? ORDER BY created_at DESC, id DESC
+    -- (covers the old single-column media_id index as its leftmost prefix).
+    index ix_collection_media_created (media_id, created_at, id),
+    -- bvid reference counting / removals.
+    index ix_collection_bvid (bvid),
     constraint uq_collection_media_bvid
         unique (media_id, bvid)
 );
-
-create index ix_collection_media_id
-    on collection (media_id);
 
 create table credential_usage
 (
@@ -247,7 +254,12 @@ create table rbac_user_role
     constraint rbac_user_role_ibfk_1
         foreign key (uid) references users (uid),
     constraint rbac_user_role_ibfk_2
-        foreign key (role_id) references rbac_role (role_id)
+        foreign key (role_id) references rbac_role (role_id),
+    -- one grant row per (uid, role) — also covers the uid FK index.
+    -- Dedupe existing (uid, role_id) pairs before applying this to a live DB
+    -- (see db/migrations/20261107_user_perf_indexes.sql).
+    constraint uq_rbac_user_role_uid_role
+        unique (uid, role_id)
 );
 
 create index role_id
@@ -340,6 +352,8 @@ create table user_tokens
     last_active_at datetime     null,
     created_at     datetime     null,
     deleted_at     datetime     null,
+    -- session reaper / "active tokens" scans by expiry.
+    index ix_user_tokens_expires_at (expires_at),
     constraint user_tokens_ibfk_1
         foreign key (uid) references users (uid)
 );
@@ -360,12 +374,14 @@ create table verification_codes
     used       tinyint(1)   null,
     attempts   int          default 0 null,
     created_at datetime     null,
+    -- code lookup for a (purpose, code) pair + newest-first target history
+    -- (covers the old single-column target+purpose index as its leftmost prefix).
+    index ix_vc_purpose_code (purpose, code),
+    index ix_vc_target_purpose_created (target, purpose, created_at),
+    index ix_vc_expires_at (expires_at),
     constraint verification_codes_ibfk_1
         foreign key (uid) references users (uid)
 );
-
-create index idx_vc_target_purpose
-    on verification_codes (target, purpose);
 
 create index idx_vc_uid
     on verification_codes (uid);
@@ -391,6 +407,9 @@ create index idx_la_email_created
 
 create index idx_la_uid_created
     on login_attempts (uid, created_at);
+
+create index ix_la_created_at
+    on login_attempts (created_at);
 
 create table video
 (
@@ -735,5 +754,34 @@ create table quiz_task_answer
     constraint uq_quiz_task_answer_task_q unique (task_id, question_index)
 );
 create index ix_quiz_task_answer_task_id on quiz_task_answer (task_id);
+
+create table user_password_history
+(
+    id            bigint auto_increment
+        primary key,
+    uid           bigint       not null,
+    password_hash varchar(255) not null,
+    created_at    datetime     null,
+    constraint user_password_history_ibfk_1
+        foreign key (uid) references users (uid)
+);
+
+create index idx_uph_uid_created
+    on user_password_history (uid, created_at);
+
+create table user_security_events
+(
+    id         bigint auto_increment
+        primary key,
+    uid        bigint       not null,
+    event      varchar(64)  not null,
+    detail     varchar(500) null,
+    created_at datetime     not null,
+    constraint user_security_events_ibfk_1
+        foreign key (uid) references users (uid)
+);
+
+create index idx_use_uid_created
+    on user_security_events (uid, created_at);
 
 SET FOREIGN_KEY_CHECKS=1;

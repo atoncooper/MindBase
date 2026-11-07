@@ -9,7 +9,7 @@
 ## 一、架构与数据面
 
 ```
-浏览器 ── /cloud/*（nginx auth_request → app-auth 验 token 注入 X-Uid）──► app-cloud :8007
+浏览器 ── /cloud/*（nginx auth_request → app-user（auth 路由）验 token 注入 X-Uid）──► app-cloud :8007
    │ 5GB 上传绕 APISIX（避免网关 body-limit + buffering）
    ├─ 分块字节流：presigned URL ──► nginx /minio-proxy ──► MinIO drive-videos（app 层不在字节路径上）
    ├─ 预览/下载流：/cloud-stream（内部重写）→ MinIO，nginx video_cache 24h + Range

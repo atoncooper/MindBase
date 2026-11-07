@@ -25,10 +25,10 @@ jobs:
             dockerfile: frontendv2/Dockerfile
             image: atoncooper/mind-base-frontend
             name: frontend
-          - context: ./app-go/app-auth
-            dockerfile: app-go/app-auth/Dockerfile
-            image: atoncooper/mind-base-app-auth
-            name: app-auth
+          - context: ./app-go/app-user
+            dockerfile: app-go/app-user/Dockerfile
+            image: atoncooper/mind-base-app-user
+            name: app-user
           - context: ./app-go/app-cloud
             dockerfile: app-go/app-cloud/Dockerfile
             image: atoncooper/mind-base-app-cloud
@@ -37,10 +37,6 @@ jobs:
             dockerfile: app-go/app-note/Dockerfile
             image: atoncooper/mind-base-app-note
             name: app-note
-          - context: ./app-go/app-bili
-            dockerfile: app-go/app-bili/Dockerfile
-            image: atoncooper/mind-base-app-bili
-            name: app-bili
           - context: ./app-go/app-quiz
             dockerfile: app-go/app-quiz/Dockerfile
             image: atoncooper/mind-base-app-quiz
@@ -49,10 +45,6 @@ jobs:
             dockerfile: app-go/app-kg/Dockerfile
             image: atoncooper/mind-base-app-kg
             name: app-kg
-          - context: ./app-go/app-settings
-            dockerfile: app-go/app-settings/Dockerfile
-            image: atoncooper/mind-base-app-settings
-            name: app-settings
           - context: .
             dockerfile: app-ts/Dockerfile
             image: atoncooper/mind-base-app-ts

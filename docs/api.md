@@ -39,7 +39,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 
 | 载体 | 适用面 | 机制 |
 |------|--------|------|
-| `forward-auth` | 用户端点 | APISIX 调 app-auth `POST /internal/auth/verify` 宽验证会话；有效则**剥离客户端伪造的头**后注入 `X-Uid` / `X-Roles` |
+| `forward-auth` | 用户端点 | APISIX 调 app-user（auth 路由）`POST /internal/auth/verify` 宽验证会话；有效则**剥离客户端伪造的头**后注入 `X-Uid` / `X-Roles` |
 | `key-auth` | 服务间 / 内部端点 | `apikey` 请求头（`APISIX_CONSUMER_KEY`）；覆盖 `/internal/*`、MCP、app-task 回调、沙箱执行面 |
 | 免登录 | 公开面 | 分享访问页（`/cloud/s/*`、`/notes/shared/*`、quiz 分享）、`/pay/callback/*` 渠道验签 |
 | Session Cookie | 管理台 | app-admin 统一账户体系（`admin_user` / `admin_session`，角色 admin/viewer），登录限流 + 首登强制改密；支付运营与账户管理共用同一会话 |
@@ -53,10 +53,10 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 
 | 前缀 | 上游 | 说明 |
 |------|------|------|
-| `/auth/*` | app-auth | 扫码登录（B 站 / 微信）、密码 / 邮箱 / 手机登录、token 管理、验证码 |
-| `/favorites/v2/*` | app-bili | 收藏夹列表 / 同步 / 视频 / 分 P 元数据 |
-| `/knowledge/*` | app-bili + app-ts | 构建 / 状态 / 清空（获取域）；`/knowledge/kg*` 走 app-ts |
-| `/asr/*`、`/vec/*` | app-bili / app-ts | ASR 任务；向量化与状态 |
+| `/auth/*` | app-user（8006 auth 路由） | 扫码登录（B 站 / 微信）、密码 / 邮箱 / 手机登录、token 管理、验证码 |
+| `/favorites/v2/*` | app-user（8010 bili 路由） | 收藏夹列表 / 同步 / 视频 / 分 P 元数据 |
+| `/knowledge/*` | app-user（bili 路由）+ app-ts | 构建 / 状态 / 清空（获取域）；`/knowledge/kg*` 走 app-ts |
+| `/asr/*`、`/vec/*` | app-user（bili 路由）/ app-ts | ASR 任务；向量化与状态 |
 | `/chat/*` | app-ts | 流式问答（SSE）、会话 / 历史 / 总结 / 画板补全 |
 | `/blindspot/*` | app-ts | 盲区图 / 实体详情 / 盲区出题 |
 | `/notes/*` | app-note | 笔记 CRUD / 锚点 / 修订 / 分享 / 云盘转笔记 |
@@ -66,7 +66,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `/cloud/*`、`/workspaces/*` | app-cloud | 分片上传 / 文件夹 / 配额 / 回收站 / 分享 / 处理状态 / AI 摘要 / 语义检索 / 相似文件（nginx 直连） |
 | `/skills/*` | app-ts | 技能安装 / 卸载 / 商店 |
 | `/pay/*` | app-pay | SKU / 订单 / 会员（HTTPS） |
-| `/preferences/*`、`/wallpaper/*` | app-settings | 偏好 KB 与壁纸 |
+| `/preferences/*`、`/avatar/*` | app-user（8015 settings 路由） | 偏好 KV 与头像 |
 | `/academic/*` | app-ts | 科研项目 / 文献 / 文档章节 / BibTeX 与 Markdown/LaTeX 导出 / 项目事件 |
 | `/internal/*` | 各服务 | 服务间端点（key-auth）；不暴露到 nginx |
 | `/internal/sandbox/*` | app-sandbox | 沙箱执行面（app-ts 调）；管理面仅 app-admin 可调 |

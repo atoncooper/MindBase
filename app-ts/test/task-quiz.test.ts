@@ -15,7 +15,7 @@ import { TaskQuizGenerationService } from "../src/services/task-quiz-generation.
 import { PromptRegistry } from "../src/agent/prompts/loader.js";
 import type { AppQuizClient } from "../src/auth/app-quiz-client.js";
 import type { AppTaskClient } from "../src/auth/app-task-client.js";
-import type { AppAuthClient } from "../src/auth/app-auth-client.js";
+import type { AppUserAuthClient } from "../src/auth/app-user-auth-client.js";
 
 // ---------- fakes ----------
 
@@ -45,7 +45,7 @@ function fakeAppAuth(email: string | null) {
       if (email === null) throw Object.assign(new Error("用户不存在"), { status: 404 });
       return email;
     },
-  } as unknown as AppAuthClient;
+  } as unknown as AppUserAuthClient;
 }
 
 function fakeAppQuiz() {

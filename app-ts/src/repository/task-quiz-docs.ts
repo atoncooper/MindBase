@@ -3,7 +3,7 @@
  * `task_quiz_questions` (database mind_base). app-ts writes the generation
  * lifecycle (generating → ready/failed + questions); app-quiz (Go) reads the
  * same collection for /tasks/{id}/detail. Same sharing pattern as the
- * async_tasks rows between app-bili and the old Python stack.
+ * async_tasks rows between app-user and the old Python stack.
  *
  * Implementations: mongo/task-quiz-docs.ts (Mongo, production) ·
  * memory/task-quiz-docs.ts (in-memory, tests / degraded fallback).

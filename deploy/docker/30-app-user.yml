@@ -1,0 +1,74 @@
+# app-user 用户域服务（Go：auth + bili + settings 三服务合并为单进程）—— server2
+#   对外路径/端口语义不变：
+#     8006 = auth 路由 + APISIX forward-auth verify（/internal/auth/verify）
+#     8010 = bili 路由（收藏夹同步 / ASR / 知识库 build 编排）
+#     8015 = settings 路由（用户偏好 / 壁纸）
+#   原 30-app-auth.yml / 31-app-bili.yml / 36-app-settings.yml 已合并为本文件，
+#   env 为三套旧 env 的并集（APPAUTH__ / APPBILI__ / APPSETTINGS__ + 共享 env）。
+#   docker compose --env-file ../../.env -f 30-app-user.yml up -d
+name: mb-app-user
+
+services:
+  app-user:
+    image: atoncooper/mind-base-app-user:latest
+    pull_policy: missing
+    container_name: mind-base-app-user
+    env_file:
+      - ../../.env
+    environment:
+      # ============ auth（8006） ============
+      # 主库 = 外部 MySQL（.env 的 RDBMS__URL）
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+      # auth 的 M2M 面（/internal/auth/user/{uid}，AI 栈 task-quiz 取邮箱）：
+      # key = 共享 APISIX consumer key（为空 = 内部查询全部 401）
+      - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      # ============ bili（8010） ============
+      - APPBILI__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 Higress 原生透传；.env 里配置了别的网关地址则以 .env 为准
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/api/v1}
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPBILI__LOG__OUTPUT=both
+      # ============ settings（8015） ============
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}   # server1（overlay）
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
+    ports:
+      # 三监听口语义不变；宿主侧仍只绑回环（对外入口只有 nginx / APISIX）
+      - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
+      - "127.0.0.1:${APP_USER_BILI_PORT:-8010}:8010"
+      - "127.0.0.1:${APP_USER_SETTINGS_PORT:-8015}:8015"
+    volumes:
+      - app_user_logs:/app/logs
+      - ../../secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_user_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay

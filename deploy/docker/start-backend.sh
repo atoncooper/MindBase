@@ -79,11 +79,15 @@ up 23-milvus.yml milvus
 sleep 10   # milvus 无健康检查，给初始化留时间
 
 echo "==> [3/4] Go 服务 + MCP"
-for f in 30-app-auth 31-app-bili 32-app-note 33-app-quiz 34-app-cloud 35-app-kg 36-app-settings 37-app-board 38-app-board-mcp 39-app-note-mcp 40-app-quiz-mcp; do
+for f in 30-app-user 32-app-note 33-app-quiz 34-app-cloud 35-app-kg 37-app-board 38-app-board-mcp 39-app-note-mcp 40-app-quiz-mcp; do
   up "$f.yml" "${f#*-}"
 done
-wait_ready mind-base-app-auth 120
-wait_ready mind-base-app-bili 120
+wait_ready mind-base-app-user 120
+# app-user 镜像 distroless（无 shell/curl，不能配 compose healthcheck）→ 在 overlay 内
+# 起一次性 curl 容器按三监听口探活：8006 auth / 8010 bili / 8015 settings
+wait_http http://app-user:8006/health 120
+wait_http http://app-user:8010/health 60
+wait_http http://app-user:8015/health 60
 wait_ready mind-base-app-board-mcp 60
 
 echo "==> [4/4] 支付 / 任务 / AI 核心"

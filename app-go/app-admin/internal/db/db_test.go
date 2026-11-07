@@ -1,6 +1,6 @@
 // Guard test: Migrate must ONLY create admin_user / admin_session /
 // admin_audit. The shared bilirag tables (cloud_*, users, rbac_*) belong to
-// app-cloud / app-auth — if this test ever fails, a shared-table DDL leaked
+// app-cloud / app-user — if this test ever fails, a shared-table DDL leaked
 // into the admin plane and a live schema is at risk of drift (
 // red line).
 package db

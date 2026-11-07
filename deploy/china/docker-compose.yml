@@ -133,7 +133,6 @@ services:
       - ../../nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video
-      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
     depends_on:
       frontend:
         condition: service_started
@@ -403,7 +402,6 @@ volumes:
   minio_data:
   certbot_www:
   nginx_video_cache:
-  nginx_wallpaper_cache:
 
 networks:
   mind-base-net:

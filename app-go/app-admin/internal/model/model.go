@@ -4,7 +4,7 @@
 //
 // RED LINES (the guard test pins the Migrate side):
 //   - cloud_shares / cloud_files / cloud_folders / users / rbac_role /
-//     rbac_user_role / user_profile are owned by app-cloud / app-auth -
+//     rbac_user_role / user_profile are owned by app-cloud / app-user -
 //     plain row mappings here, NEVER migrated, never ALTERed. The only
 //     write into shared tables is the four moderation columns on
 //     cloud_shares via UPDATE.
@@ -65,7 +65,7 @@ func (AdminAudit) TableName() string { return "admin_audit" }
 
 // ` shared bilirag tables: read-only row mappings (never migrated) `
 
-// User maps users (identity authority = app-auth). password_hash is mapped
+// User maps users (identity authority = app-user). password_hash is mapped
 // but always excluded from any JSON payload.
 type User struct {
 	UID          int64      `gorm:"column:uid;primaryKey"`
@@ -89,7 +89,7 @@ type UserProfile struct {
 func (UserProfile) TableName() string { return "user_profile" }
 
 // RbacUserRole maps rbac_user_role. NULL is_active counts as active, matching
-// app-auth semantics (joins here mirror that).
+// app-user semantics (joins here mirror that).
 type RbacUserRole struct {
 	ID        int64      `gorm:"column:id;primaryKey"`
 	UID       int64      `gorm:"column:uid;not null"`

@@ -1,6 +1,6 @@
 // Package router assembles the Gin engine: middleware chain, health probe,
 // and the /quiz/* endpoints (storage face). Identity source = the
-// gateway-injected X-Uid header (APISIX forward-auth against app-auth);
+// gateway-injected X-Uid header (APISIX forward-auth against app-user);
 // /quiz/shared/{token} is public. Parity with the Python backend's
 // pre-cutover contract.
 package router

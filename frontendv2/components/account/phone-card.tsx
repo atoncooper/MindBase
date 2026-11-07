@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Check, Pencil, Smartphone } from "lucide-react";
-import { authApi, userApi, type AuthFeatures, type CaptchaValue, type ProfileData } from "@/lib/api";
+import { authApi, userApi, type AuthFeatures, type CaptchaValue, type ProfileData, type SecurityOverview } from "@/lib/api";
 import { CaptchaField } from "@/components/captcha-field";
 import {
     FormCard,
@@ -14,14 +14,17 @@ import {
 
 interface Props {
     profile: ProfileData;
+    security: SecurityOverview;
     onReload: () => void;
     onToast: (msg: string, type: "success" | "error") => void;
 }
 
-export function PhoneCard({ profile, onReload, onToast }: Props) {
+export function PhoneCard({ profile, security, onReload, onToast }: Props) {
     const [editing, setEditing] = useState(false);
     const [val, setVal] = useState("");
     const [code, setCode] = useState("");
+    // 已设置密码的账号换绑/绑定手机号需要 current_password 二次验证
+    const [currentPassword, setCurrentPassword] = useState("");
     const [sending, setSending] = useState(false);
     const [saving, setSaving] = useState(false);
     const [cooldown, setCooldown] = useState(0);
@@ -41,6 +44,7 @@ export function PhoneCard({ profile, onReload, onToast }: Props) {
     async function enterEdit() {
         setVal(profile.phone ?? "");
         setCode("");
+        setCurrentPassword("");
         setCooldown(0);
         setEditing(true);
         if (features === null) {
@@ -84,14 +88,23 @@ export function PhoneCard({ profile, onReload, onToast }: Props) {
             onToast("请输入短信验证码", "error");
             return;
         }
+        if (security.has_password && !currentPassword.trim()) {
+            onToast("请输入当前密码以完成安全验证", "error");
+            return;
+        }
         setSaving(true);
         try {
+            const stepUp = security.has_password ? currentPassword.trim() : undefined;
             if (smsEnabled) {
-                await userApi.verifyPhone({ phone: val.trim(), code: code.trim() });
+                await userApi.verifyPhone({
+                    phone: val.trim(),
+                    code: code.trim(),
+                    current_password: stepUp,
+                });
                 onToast("手机号已验证并绑定", "success");
             } else {
                 // SMS 未配置：退回直接绑定（标记未验证）
-                await userApi.bindPhone({ phone: val.trim() });
+                await userApi.bindPhone({ phone: val.trim(), current_password: stepUp });
                 onToast("手机号已绑定（短信服务未配置，未验证）", "success");
             }
             setEditing(false);
@@ -152,6 +165,16 @@ export function PhoneCard({ profile, onReload, onToast }: Props) {
                         placeholder="13800138000"
                         maxLength={14}
                     />
+                    {security.has_password && (
+                        <input
+                            className="field"
+                            type="password"
+                            value={currentPassword}
+                            onChange={(e) => setCurrentPassword(e.target.value)}
+                            placeholder="当前密码（换绑需安全验证）"
+                            autoComplete="current-password"
+                        />
+                    )}
                     {smsEnabled ? (
                         <>
                             <div className="flex gap-2">

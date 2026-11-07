@@ -7,7 +7,7 @@
 
 ## 定位与红线
 
-- **数据访问（主库）**：直连共享 bilirag MySQL（`RDBMS__URL` 同 app-auth/app-cloud）。读 `users` / `user_profile` / `rbac_user_role` / `rbac_role` / `cloud_shares` / `cloud_files` / `cloud_folders`；**写** = `cloud_shares` 的 `moderation_status/moderation_reason/moderation_time/moderation_by`（与 `admin_audit` 同事务）。
+- **数据访问（主库）**：直连共享 bilirag MySQL（`RDBMS__URL` 同 app-user/app-cloud）。读 `users` / `user_profile` / `rbac_user_role` / `rbac_role` / `cloud_shares` / `cloud_files` / `cloud_folders`；**写** = `cloud_shares` 的 `moderation_status/moderation_reason/moderation_time/moderation_by`（与 `admin_audit` 同事务）。
 - **数据访问（支付库）**：第二 GORM 连接直连 `app_pay`（`app-pay-mysql` 实例）。只读 `pay_order` / `pay_membership` / `pay_membership_event` / `pay_callback_log` / `pay_product` / `pay_refund_approval`；**唯一资金写** = 会员补偿开通（直写 `pay_membership` + `pay_membership_event`，同事务）；退款复核**不直写**，经 app-pay internal 端点执行。`pay_*` schema 归 Java（app-pay/Flyway）所有，**本服务绝不 AutoMigrate**（守护测试锁定：只建三张自有表，DDL 禁列包含 `pay_*`）。
 - **支付模块关闭条件**（任一）：未配置 `pay_rdbms.url`，或 PayDB 初始化失败 → 所有 `/api/pay/**` 返回 503 `{"detail":"支付管理未配置"}`；分享审核/用户/沙箱/账户/审计不受影响。
 - **受控内容预览（Issue #154，审核员可查看）**：仅 admin 角色；app-admin 校验分享存在 + 文件在分享范围（文件分享 = 目标文件；文件夹分享 = 子树存活成员）并落 `admin_audit`（action=`preview_content`），再调 app-cloud `GET /internal/cloud/admin-review/shares/{id}/files/{fid}/preview`（Bearer 共享令牌 `APP_CLOUD_ADMIN_REVIEW_TOKEN`，两边同值）。**审核员可查看任意已存在的分享**（含 banned / 已撤销 / 已过期 / 历史未确认告知的分享）；app-cloud 只校验分享存在与文件归属范围，不校验公开可访问性。预览返回：pdf / 图片 / 音视频 → 短时效内联 URL（`/minio-proxy/...`，admin UI 内置 Nginx 同源代理到 MinIO，PDF 以 `X-Frame-Options: SAMEORIGIN` 允许同源 iframe 展示）；docx / xlsx / pptx / html / markdown / txt 等 → 后端提取的纯文本（`viewMode:"text"`，不生成对象 URL、不渲染 HTML，防存储型 XSS）；暂不支持类型 / 无文本 / 过大文件返回 422/413 并带原因。viewer 角色一律 403。
@@ -223,11 +223,11 @@ APPADMIN__PAY_RDBMS__URL='mysql+aiomysql://app_pay:app-pay@127.0.0.1:3307/app_pa
 cd frontend-admin && pnpm i && pnpm dev   # http://localhost:3001，/api 代理并改写为上游同源 Origin
 ```
 
-> `app-admin` 是组合入口服务，会依赖启动 `app-admin-api`；API 依赖 MySQL、app-auth（用户/RBAC 表）、app-cloud（审核列 migration）与（可选）app-pay-mysql。支付库/ops key 未配置时支付页显示未配置/503，其余功能正常。首次启动等待 migration 完成后再登录。
+> `app-admin` 是组合入口服务，会依赖启动 `app-admin-api`；API 依赖 MySQL、app-user（用户/RBAC 表，auth 域）、app-cloud（审核列 migration）与（可选）app-pay-mysql。支付库/ops key 未配置时支付页显示未配置/503，其余功能正常。首次启动等待 migration 完成后再登录。
 
 ## 部署（deploy/docker、k8s、swarm）
 
-- 两机 compose：`deploy/docker/96-app-admin.yml`（启动 UI + API；共享数据库与 app-auth/app-cloud 仍由主栈提供）；浏览器经 SSH 隧道 `ssh -L 3001:127.0.0.1:3001 <server2>`。支付运营读 `25-app-pay-mysql.yml` 起的库，退款复核需 `.env` 的 `PAY_OPS_KEY`。原 `95-app-pay-admin.yml` 已删除。
+- 两机 compose：`deploy/docker/96-app-admin.yml`（启动 UI + API；共享数据库与 app-user/app-cloud 仍由主栈提供）；浏览器经 SSH 隧道 `ssh -L 3001:127.0.0.1:3001 <server2>`。支付运营读 `25-app-pay-mysql.yml` 起的库，退款复核需 `.env` 的 `PAY_OPS_KEY`。原 `95-app-pay-admin.yml` 已删除。
 - k8s：`deploy/k8s/30-apps/app-admin.yaml`（ClusterIP，无 Ingress；`kubectl -n mind-base port-forward svc/app-admin 8016:8016`）；支付库地址由 `mindbase-defaults` 的 `APPADMIN__PAY_RDBMS__URL` 注入，ops key 取 `mindbase-env` 的 `PAY_OPS_KEY`（可选）。原 `app-pay-admin.yaml` 已删除。
 - swarm：`deploy/swarm/docker-stack.yml` 的 `app-admin-api` + `app-admin`（UI 发布 3001，需防火墙限源或改 SSH 隧道）；原 `app-pay-admin` 服务已移除。
 - 镜像 `atoncooper/mind-base-app-admin` / `atoncooper/mind-base-app-admin-ui`；CI `.github/workflows/ci-app-admin.yml`（gofmt/vet/test/build）+ docker-build 矩阵。原 `ci-pay-admin.yml` 已删除。

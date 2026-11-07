@@ -55,7 +55,7 @@ New-Item -ItemType Directory -Force secrets | Out-Null
 openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_key
 ```
 
-该文件已被 `.gitignore` 忽略（`secrets/`），不会被提交，**部署后不要更换**（换了已保存的用户凭证将无法解密）。缺它时 `app-auth` / `app-cloud` / `app-bili` 会反复重启（Docker 会把缺失的挂载路径建成目录）。
+该文件已被 `.gitignore` 忽略（`secrets/`），不会被提交，**部署后不要更换**（换了已保存的用户凭证将无法解密）。缺它时 `app-user` / `app-cloud` 会反复重启（Docker 会把缺失的挂载路径建成目录）。
 
 ### 3.2 复制环境变量模板
 
@@ -69,7 +69,7 @@ cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 
 | 变量 | 怎么填 |
 |------|--------|
-| `AI_GATEWAY__API_KEY` | AI 网关的「通行证」。先自己生成一串：`openssl rand -hex 32`，填到等号右边；第 5 步在网关控制台创建消费者 `mindbase-backend` 时填**同一个值**。留空会导致 `app-bili` 起不来、所有 AI 能力不可用。 |
+| `AI_GATEWAY__API_KEY` | AI 网关的「通行证」。先自己生成一串：`openssl rand -hex 32`，填到等号右边；第 5 步在网关控制台创建消费者 `mindbase-backend` 时填**同一个值**。留空会导致 `app-user`（bili 路由）起不来、所有 AI 能力不可用。 |
 | `APISIX_CONSUMER_KEY` | 服务之间互相认证的共享密钥，**必须与 `apisix/apisix.yaml` 里 `consumers.internal.key` 一致**（该文件不读 `.env`）。本地体验：直接填仓库内置开发值 `D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre`；对外部署：换成自己生成的值并同步改该文件里的 `key`。保持模板占位串会到处 401。 |
 | `secrets/api_key_encryption_key` | 3.1 已生成，**不需要**写进 `.env`。 |
 
@@ -99,7 +99,7 @@ docker compose ps
 - 首次会拉取第三方镜像并在本地构建项目镜像，**通常十几分钟**（取决于网络）。
 - 一次性容器 `cert-gen` 会自动生成开发证书（HTTPS 自签），无需手工准备。
 - 默认入口：用户端 `http://localhost`（nginx 80/443）、`http://localhost:3000`、管理台 `http://127.0.0.1:3001`、定时任务控制台 `http://127.0.0.1:8001`。
-- `app-bili` 需要非空 `AI_GATEWAY__API_KEY` 才能启动，所以请先完成 3.3。
+- `app-user`（bili 路由）需要非空 `AI_GATEWAY__API_KEY` 才能启动，所以请先完成 3.3。
 
 ### 4.2 追加可选能力（重要：先 4.1，再追加）
 
@@ -135,7 +135,7 @@ MindBase 不让用户各自填供应商密钥：所有 AI 请求统一经自建 
 7. 若两处 key 不一致：改 `.env` 使其一致，然后重建读取它的三个服务：
 
 ```bash
-docker compose up -d app-ts app-cloud app-bili
+docker compose up -d app-ts app-cloud app-user
 ```
 
 更多细节见 [configuration.md](configuration.md)「AI 网关」与 [faq.md](faq.md)「AI 与密钥」。
@@ -183,7 +183,7 @@ curl -s http://127.0.0.1:8017/health      # 沙箱控制层（需先启 sandbox�
 
 **镜像拉不动 / 构建很慢（国内网络）。** 给 Docker 配镜像加速器：Docker Desktop → Settings → Docker Engine（Linux 改 `/etc/docker/daemon.json`），加 `registry-mirrors` 后重启 Docker；方法见 [deploy/china/README.md](../deploy/china/README.md)「镜像拉取与加速」（**只取加速器配置**；该目录编排文件是旧快照，不要用它启动）。GitHub 慢可用代理或 ZIP 包。
 
-**AI 调用失败（对话报错、转写失败、出题失败）。** 依次检查：①是否执行 `--profile ai`、`higress` 是否 healthy；②控制台供应商 key 是否有效、模型路由是否覆盖默认模型名（`z-ai/glm-5.3-flash`、`text-embedding-v4`、`gte-rerank-v2`）；③`.env` 的 `AI_GATEWAY__API_KEY` 是否与网关消费者 key 完全一致；④改完 `.env` 后执行 `docker compose up -d app-ts app-cloud app-bili` 让服务重新读取。若换过 embedding 模型，检索会为空，需要重建向量库。
+**AI 调用失败（对话报错、转写失败、出题失败）。** 依次检查：①是否执行 `--profile ai`、`higress` 是否 healthy；②控制台供应商 key 是否有效、模型路由是否覆盖默认模型名（`z-ai/glm-5.3-flash`、`text-embedding-v4`、`gte-rerank-v2`）；③`.env` 的 `AI_GATEWAY__API_KEY` 是否与网关消费者 key 完全一致；④改完 `.env` 后执行 `docker compose up -d app-ts app-cloud app-user` 让服务重新读取。若换过 embedding 模型，检索会为空，需要重建向量库。
 
 **沙箱 / `run_code` 不可用。** 确认 `--profile sandbox` 已启动且 `app-sandbox`、`opensandbox-server` 均 healthy；`OPENSANDBOX_API_KEY` 非空且两边一致；`.env` 有 `SANDBOX_ENABLED=true` 并重启过 `app-ts`。只想演示控制层链路时可在 `.env` 设 `SANDBOX_RUNTIME_TYPE=fake`，它不会真实隔离执行代码。
 

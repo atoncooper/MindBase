@@ -68,7 +68,7 @@ export async function resolveTier(uid: string | undefined): Promise<string> {
 /** resolveTier 的带来源版本：配额摘要等展示面用它区分真实免费与降级免费。 */
 export async function resolveTierDetailed(uid: string | undefined): Promise<ResolvedTier> {
   if (uid === undefined || uid === "" || uid === "0") return { tier: TIER_FREE, source: "fallback" };
-  // uid 是 int64（app-pay BigInteger / app-auth snowflake），非纯数字视为非法
+  // uid 是 int64（app-pay BigInteger / app-user snowflake），非纯数字视为非法
   // 输入：不发起网络请求，直接 fail-open free（与 0/空值同语义）。
   if (!/^\d+$/.test(uid)) return { tier: TIER_FREE, source: "fallback" };
 

@@ -105,11 +105,11 @@ import { MongoSessionDocumentStore } from "../repository/mongo/session-docs.js";
 import { MongoAgentContextStore } from "../repository/mongo/agent-context.js";
 import { MemoryVectorTaskStore } from "../repository/memory/vector-tasks.js";
 import { MongoVectorTaskStore } from "../repository/mongo/vector-tasks.js";
-import { AppBiliClient } from "../auth/app-bili-client.js";
+import { AppUserBiliClient } from "../auth/app-user-bili-client.js";
 import { VideoVectorizerService } from "../services/video-vectorizer.js";
 import { BiliEventBridge } from "../bootstrap/redis-events.js";
 import { AppTaskClient } from "../auth/app-task-client.js";
-import { AppAuthClient } from "../auth/app-auth-client.js";
+import { AppUserAuthClient } from "../auth/app-user-auth-client.js";
 import { AppCloudClient } from "../auth/app-cloud-client.js";
 import { MemoryTaskQuizDocStore } from "../repository/memory/task-quiz-docs.js";
 import { MongoTaskQuizDocStore } from "../repository/mongo/task-quiz-docs.js";
@@ -238,7 +238,7 @@ export async function bootstrap() {
     log.warn("[BOOT] usage ledger: memory fallback (MONGO__URI not set)");
   }
   const reconJob = new UsageReconciliationJob(usageLedger);
-  const appBili = new AppBiliClient();
+  const appBili = new AppUserBiliClient();
   // ASR transcript source (cross-DB read of mind_base.asr_documents) — a
   // dedicated connection; the kg block owns its own instance.
   const vecSources = config.mongo.uri ? await MongoKgSourceStore.connect() : null;
@@ -260,7 +260,7 @@ export async function bootstrap() {
   //     (mind_base.task_quiz_questions, read by app-quiz); task rows go through
   //     app-quiz's internal face; email/completion callbacks via app-task.
   const appTask = new AppTaskClient();
-  const appAuth = new AppAuthClient();
+  const appAuth = new AppUserAuthClient();
   const appQuizClient = new AppQuizClient();
   let quizDocs: MongoTaskQuizDocStore | MemoryTaskQuizDocStore = new MemoryTaskQuizDocStore();
   let mongoQuizDocs: MongoTaskQuizDocStore | null = null;
@@ -700,7 +700,7 @@ export async function bootstrap() {
     quota,
   });
   const quizGrade = new QuizGradingService({ appQuiz: appQuizClient, quota });
-  // 2.85 Blindspot map (AI attribution): scope from app-bili, graph via
+  // 2.85 Blindspot map (AI attribution): scope from app-user, graph via
   //      app-kg gRPC, quiz signals via app-quiz; probed names from the
   //      app-ts's own chat history.
   let blindspot: BlindspotService | undefined;

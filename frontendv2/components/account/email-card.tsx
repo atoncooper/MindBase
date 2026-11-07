@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Check, Mail, Pencil } from "lucide-react";
-import { userApi, type CaptchaValue, type ProfileData } from "@/lib/api";
+import { userApi, type CaptchaValue, type ProfileData, type SecurityOverview } from "@/lib/api";
 import { CaptchaField } from "@/components/captcha-field";
 import {
     FormCard,
@@ -14,14 +14,17 @@ import {
 
 interface Props {
     profile: ProfileData;
+    security: SecurityOverview;
     onReload: () => void;
     onToast: (msg: string, type: "success" | "error") => void;
 }
 
-export function EmailCard({ profile, onReload, onToast }: Props) {
+export function EmailCard({ profile, security, onReload, onToast }: Props) {
     const [editing, setEditing] = useState(false);
     const [emailVal, setEmailVal] = useState("");
     const [code, setCode] = useState("");
+    // 已设置密码的账号换绑/绑定邮箱需要 current_password 二次验证
+    const [currentPassword, setCurrentPassword] = useState("");
     const [sending, setSending] = useState(false);
     const [cooldown, setCooldown] = useState(0);
     const [verifying, setVerifying] = useState(false);
@@ -40,6 +43,7 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
     function enterEdit() {
         setEmailVal(profile.email ?? "");
         setCode("");
+        setCurrentPassword("");
         setCooldown(0);
         setEditing(true);
     }
@@ -70,12 +74,17 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
             onToast("请填写邮箱和验证码", "error");
             return;
         }
+        if (security.has_password && !currentPassword.trim()) {
+            onToast("请输入当前密码以完成安全验证", "error");
+            return;
+        }
         setVerifying(true);
         try {
             await userApi.verifyEmail({
                 email: emailVal.trim(),
                 code: code.trim(),
                 purpose: "bind_email",
+                current_password: security.has_password ? currentPassword.trim() : undefined,
             });
             setEditing(false);
             setCode("");
@@ -154,6 +163,16 @@ export function EmailCard({ profile, onReload, onToast }: Props) {
                         </button>
                     </div>
                     <CaptchaField key={captchaKey} onChange={setCaptcha} />
+                    {security.has_password && (
+                        <input
+                            className="field"
+                            type="password"
+                            value={currentPassword}
+                            onChange={(e) => setCurrentPassword(e.target.value)}
+                            placeholder="当前密码（换绑需安全验证）"
+                            autoComplete="current-password"
+                        />
+                    )}
                 </div>
             ) : (
                 <div className="flex items-center gap-3 px-5 py-3.5">

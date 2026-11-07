@@ -1,4 +1,4 @@
-# 服务 API Key 体系：app-auth 签发 + APISIX 校验（防串用）
+# 服务 API Key 体系：app-user（auth 路由）签发 + APISIX 校验（防串用）
 
 > 状态：设计稿（未实施）。目标：把内部服务间调用从"一把共享 key"升级为
 > "按服务签发、按路由授权、可审计、可吊销"的密钥体系。
@@ -8,7 +8,7 @@
 **目标**
 1. 每个内部服务有独立身份的 API Key（区分"是谁在调"）。
 2. 路由级授权强制（区分"它被允许调什么"），拿 A 服务的 key 调 B 服务的路由 → 网关直接 403。
-3. 签发/吊销/轮换/审计收敛到 app-auth（认证权威）。
+3. 签发/吊销/轮换/审计收敛到 app-user（auth 域，认证权威）。
 4. 零代码改动迁移各调用方（只换 env 里的 key 值）。
 
 **非目标**
@@ -39,7 +39,7 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
 ## 3. 总体架构
 
 ```
-┌─────────────── 控制面（app-auth，签发与台账）────────────────┐
+┌─────────────── 控制面（app-user auth 域，签发与台账）────────────────┐
 │ 运维（admin 用户登录态）→ /auth/admin/service-keys           │
 │   生成：32B 随机 → mbk_<service>_<43urlsafe>                 │
 │   存储：sha256(key) 唯一索引 + 服务名/scope/过期/状态元数据    │
@@ -56,7 +56,7 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
 └────────────────────────────────────────────────────────────────┘
 ```
 
-职责边界：**app-auth 负责"生成与台账"（它是谁、scope 声明、吊销状态）；
+职责边界：**app-user（auth 域）负责"生成与台账"（它是谁、scope 声明、吊销状态）；
 APISIX 负责"校验与授权"（key-auth 认别 + consumer-restriction 强制）**。
 APISIX standalone 不支持 env 插值，key 值经部署脚本渲染进 apisix.yaml
 （见 §9），这也意味着 APISIX 始终持有全部 key 明文——与现状一致，不新增暴露面。
@@ -71,7 +71,7 @@ APISIX standalone 不支持 env 插值，key 值经部署脚本渲染进 apisix.
 | 可辨识 | 额外存 `key_last4`（明文尾 4 字符）供控制台比对，形如 `…9f3a` |
 | 前缀语义 | 前缀仅是**人工排障标签**，不是校验依据——校验只认 hash。防伪造靠熵，防串用靠 §6 的路由白名单 |
 
-## 5. 数据模型（app-auth 所有，同库 bilirag）
+## 5. 数据模型（app-user auth 域所有，同库 bilirag）
 
 ```sql
 create table if not exists service_api_keys (
@@ -95,13 +95,13 @@ create table if not exists service_api_keys (
 
 要点：
 - **不加 `unique(service_name)`**：轮换窗口期同一服务允许新旧两把 key 同时 active。
-- DDL 走 app-auth 的 `Migrate`（CREATE-if-not-exists），`service_api_keys` 加入
+- DDL 走 app-user 的 `Migrate`（CREATE-if-not-exists），`service_api_keys` 加入
   `ownedTables` + 守护测试；绝不 ALTER。
 - Mongo 不涉及；Redis 不涉及。
 
 ## 6. Scope 模型（防串用的授权语义）
 
-**scope 值 = APISIX 路由 id**，不另造一套语法。app-auth 内置静态注册表：
+**scope 值 = APISIX 路由 id**，不另造一套语法。app-user（auth 域）内置静态注册表：
 
 ```go
 // internal/service/service_key_service.go
@@ -120,19 +120,19 @@ var KnownScopes = map[string]string{ // scope → 人工可读说明（控制台
 
 **授权判定不在数据面做**——scope 表的运行时消费者是：
 1. **签发时的约束**（运维只能从 KnownScopes 勾选，控制台/接口双重校验）；
-2. **APISIX 白名单的渲染源**（§9 脚本从 app-auth 导出 scope→consumer 映射，渲染
+2. **APISIX 白名单的渲染源**（§9 脚本从 app-user 导出 scope→consumer 映射，渲染
    apisix.yaml 的 consumer-restriction 段，杜绝手抄错位）；
 3. **APISIX 访问日志的归因注释**。
 
-即：授权的**强制点在 APISIX**（`consumer-restriction`），app-auth 的 scope 是
+即：授权的**强制点在 APISIX**（`consumer-restriction`），app-user 的 scope 是
 "声明台账 + 渲染源"，两者经脚本保持一致，漂移在渲染时暴露。
 
-## 7. app-auth 端点设计
+## 7. app-user 端点设计
 
 新增 `internal/router/admin_keys.go` + `internal/service/service_key_service.go`
 + `internal/repo/service_key_repo.go` + `internal/model`。全部挂现有
 `authGuard`（session token → uid）+ **admin 角色校验**（X-Roles 含 `admin`，
-app-auth 自有 rbac，无外部依赖）。
+app-user 自有 rbac，无外部依赖）。
 
 ### 管理面（控制台/运维用）
 
@@ -143,14 +143,14 @@ app-auth 自有 rbac，无外部依赖）。
 | POST | `/auth/admin/service-keys/{key_id}/rotate` | 轮换：签发新 key（同 service/scopes）+ 旧 key 置 30 天后过期，返回新明文 |
 | DELETE | `/auth/admin/service-keys/{key_id}` | 吊销（body 必填 `reason`，落 revoked_reason） |
 
-审计：签发/轮换/吊销写 app-auth 既有审计日志（`[AUTH]` slog 结构化，记操作者
+审计：签发/轮换/吊销写 app-user 既有审计日志（`[AUTH]` slog 结构化，记操作者
 uid/key_id/service/reason，不记明文）。
 
 ### 数据面（服务自检用，可选但建议）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/internal/auth/service-keys/self-verify` | 调用方带自己的 `apikey` 头，app-auth 按 hash 查库：active 且未过期 → `200 {service_name, scopes}`；吊销/过期/未知 → 401。**不经过 APISIX forward-auth，是各服务启动自检/周期复验端点** |
+| GET | `/internal/auth/service-keys/self-verify` | 调用方带自己的 `apikey` 头，app-user 按 hash 查库：active 且未过期 → `200 {service_name, scopes}`；吊销/过期/未知 → 401。**不经过 APISIX forward-auth，是各服务启动自检/周期复验端点** |
 
 这个端点补上 standalone APISIX 的短板——**静态 key 无法热吊销**：
 APISIX 侧吊销后必须 reload 才拒绝；配合服务侧"启动自检 + 每 5 分钟复验，
@@ -160,7 +160,7 @@ APISIX 侧吊销后必须 reload 才拒绝；配合服务侧"启动自检 + 每 
 ### 管理面的引导（bootstrap）
 
 无需额外引导 key：管理端点挂 admin **用户**会话（authGuard + rbac admin），
-运维用管理员账号登录后 curl/控制台操作即可。app-auth 已有 admin 角色与
+运维用管理员账号登录后 curl/控制台操作即可。app-user 已有 admin 角色与
 SeedDefaults，闭环完整。
 
 ## 8. APISIX 改造
@@ -220,12 +220,12 @@ consumers:
 ## 9. 渲染与部署（解决 standalone 不支持 env 插值）
 
 1. `scripts/render-apisix-keys.sh`（新增）：
-   - 调 app-auth 管理端点按 §8 矩阵逐服务签发（或读取 `.env` 已有值幂等跳过）；
+   - 调 app-user 管理端点按 §8 矩阵逐服务签发（或读取 `.env` 已有值幂等跳过）；
    - 以 `apisix/apisix.yaml.template`（新增，含 `__KEY_<SERVICE>__` 占位符）渲染出
      `apisix/apisix.yaml`（gitignore 产物，模板进 git）；
    - 同时把每个服务的 key 写回 `.env` 对应变量（已存在的跳过并提示指纹比对）。
 2. `.env.example` 新增段：`APISIX_KEY_BACKEND=` 等 6 个变量 + 注释
-   （⚠️ 由 app-auth 签发，勿手工造值；`APISIX_CONSUMER_KEY` 标记 deprecated 保留一个周期）。
+   （⚠️ 由 app-user（auth 域）签发，勿手工造值；`APISIX_CONSUMER_KEY` 标记 deprecated 保留一个周期）。
 3. 各服务 compose env 替换：
    - backend：`APISIX_CONSUMER_KEY` → `APISIX_KEY_BACKEND`（消费点：board-mcp
      service key、note-mcp service key、app-pay membership、app-task consumer）；
@@ -242,7 +242,7 @@ consumers:
 
 | 身份 | 载体 | 签发/校验方 | 含义 |
 |---|---|---|---|
-| **服务身份** | `apikey` 头（key-auth → consumer） | app-auth 签发、APISIX 校验 | "哪个服务在调"（授权、审计、限流的主体） |
+| **服务身份** | `apikey` 头（key-auth → consumer） | app-user（auth 域）签发、APISIX 校验 | "哪个服务在调"（授权、审计、限流的主体） |
 | **用户身份** | `X-Uid` 头 | forward-auth（bili_session）→ 调用方注入 | "代表哪个用户操作"（数据属主作用域） |
 
 约定不变：uid 永不出现在 LLM 可写参数；服务 key 永不出现在用户可见面。
@@ -259,21 +259,21 @@ consumers:
   服务自检端点 5 分钟内拒绝（接入了自检的服务）；完成后 reload 即全网关生效。
 - **泄露应急**：立即 DELETE → reload → 按台账核对泄露 key 的 scope 圈定影响
   面（这就是 scope 最小化的价值：泄露 note-mcp 的 key 拿不到 pay 数据）。
-- **审计查询**：app-auth slog 审计（生命周期事件）+ APISIX 访问日志（使用行为，
+- **审计查询**：app-user slog 审计（生命周期事件）+ APISIX 访问日志（使用行为，
   含 consumer 名）。
 
 ## 12. 失败模式
 
 | 故障 | 影响 | 处置 |
 |---|---|---|
-| app-auth 宕机 | **数据面不受影响**（APISIX 静态校验不依赖它）；仅无法签发/吊销/自检 | 无需紧急处置，恢复即可 |
+| app-user 宕机 | **数据面不受影响**（APISIX 静态校验不依赖它）；仅无法签发/吊销/自检 | 无需紧急处置，恢复即可 |
 | APISIX 配置漂移（手改 yaml 漏了白名单） | 该路由退化为"任意合法 key 可调" | 渲染脚本幂等重跑即可收敛；模板进 git 防手改 |
-| key 明文进日志 | 泄露面扩大 | 管理端点响应不落日志（app-auth 日志脱敏已覆盖）；APISIX 侧 key-auth 不打 key |
+| key 明文进日志 | 泄露面扩大 | 管理端点响应不落日志（app-user 日志脱敏已覆盖）；APISIX 侧 key-auth 不打 key |
 | 调用方 env 配错（装了别人的 key） | 启动即 403（consumer-restriction），错误信息含 consumer 名 | 按报错换正确 key |
 
 ## 13. 安全清单（实施自查）
 
-- [ ] key 明文只在签发响应与目标服务 .env 出现；app-auth 库里只有 sha256
+- [ ] key 明文只在签发响应与目标服务 .env 出现；app-user 库里只有 sha256
 - [ ] 管理端点全部 admin 角色 + 会话鉴权；吊销 reason 必填
 - [ ] consumer-restriction 白名单覆盖全部 9 条 key-auth 路由，无遗漏（脚本断言）
 - [ ] 旧共享 consumer `internal` 删除后，全仓库 grep `APISIX_CONSUMER_KEY` 仅剩
@@ -286,7 +286,7 @@ consumers:
 
 | PR | 内容 | 验证 |
 |---|---|---|
-| PR1（app-auth） | model/repo/service/router 四件套 + KnownScopes 注册表 + guard/单测（签发格式、hash 唯一、轮换并存、吊销状态机、scope 校验、self-verify） | `go test ./...` + 本地 curl 走通签发→台账→吊销 |
+| PR1（app-user） | model/repo/service/router 四件套 + KnownScopes 注册表 + guard/单测（签发格式、hash 唯一、轮换并存、吊销状态机、scope 校验、self-verify） | `go test ./...` + 本地 curl 走通签发→台账→吊销 |
 | PR2（APISIX + 分发） | apisix.yaml.template + render 脚本 + consumers 拆分 + consumer-restriction 矩阵 + .env.example + 各 compose env | 干跑渲染 diff；起栈后逐路由验证白名单 403/200 |
 | PR3（可选，后续） | app-note-mcp / app-note 启动自检 + 5 分钟复验；其余服务跟进；expiring 提醒 | 手动吊销后观察 5 分钟内拒绝 |
 

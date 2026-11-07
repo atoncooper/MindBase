@@ -43,7 +43,7 @@ function resolveDisplayName(user: UserInfo): string {
  * Token stays in localStorage (Bearer token, injected by api.ts getAuthHeaders).
  * This provider only mirrors it into React state so guarded routes and the home
  * page can react to login/logout/401 uniformly. Also persists the uid so
- * per-user client caches (e.g. wallpaper) can key off it.
+ * per-user client caches can key off it.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();

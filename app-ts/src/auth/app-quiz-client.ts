@@ -8,7 +8,7 @@ import { InternalServiceClient } from "../transport/internal-client.js";
  * write goes through this M2M face (same pattern as app-pay membership).
  * Identity rides the X-Uid header (gateway-authenticated uid), never a
  * user-visible parameter. Fail-closed: storage errors propagate (quota 429
- * must reach the caller), unlike the app-bili scope fail-open.
+ * must reach the caller), unlike the app-user scope fail-open.
  */
 
 export interface AgentQuestionPayload {

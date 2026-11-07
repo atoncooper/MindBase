@@ -39,7 +39,7 @@ app-ts (Fastify, AI)                                app-kg (Go, gRPC :8013)
   （带 page_title join）/ RelationsAmong / EntitiesByEids / EntityExposure /
   EntityAppearances / TopEntities / EdgesAmong / Stats（增 cloud_docs/cloud_evidence）。
 - **红线**：
-  - ❌ 对 `video` 表只写 `kg_status`/`kg_version` 两列（镜像 app-bili「禁写 kg* 列」）
+  - ❌ 对 `video` 表只写 `kg_status`/`kg_version` 两列（镜像 app-user（bili 域）「禁写 kg* 列」）
   - ❌ 对 `collection`/`favorite_folders` 只读；不建任何表、无任何 DDL
   - ❌ 不做任何 LLM/embedding 调用（纯数据面）
   - ❌ 归一化/哈希不落在本服务（调用方传入 name_lower/eid）
