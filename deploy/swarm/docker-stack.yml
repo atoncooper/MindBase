@@ -29,7 +29,8 @@
 # 使用前提：
 #   1. docker swarm init（多机：manager 上 init，其余节点 docker swarm join）
 #   2. 本仓库部署到将运行 bind-mount 服务的节点，绝对路径记为 MB_ROOT（默认 /srv/mindbase）；
-#      至少需要：nginx/ apisix/ db/ secrets/ app-board/ mcp/app-board-mcp/ app-pay/ data/
+#      至少需要：nginx/ apisix/ db/ secrets/ app-board/（app-content board 域 TLS 证书目录，
+#      目录名沿用历史）/ mcp/app-board-mcp/ app-pay/ data/
 #   3. .env 与单机 compose 用法一致；⚠️ APISIX_CONSUMER_KEY / PAY_OPS_KEY 必填——
 #      stack 插值没有 compose 的 :? 语法兜底，留空 = 服务间 key-auth 鉴权失败
 #
@@ -46,8 +47,9 @@
 #   - 命名卷是节点本地卷：有状态服务（3×MySQL/Mongo/Redis/etcd/MinIO/Milvus/Neo4j）
 #     一旦重新调度到别的节点，数据会"消失" → 用 placement 约束钉住（各服务已留模板：
 #     docker node update --label-add role=data <NODE>）
-#   - 证书 bind mount 有跨节点耦合：cert-gen 产出 nginx/app-board/mcp/pay 证书目录、
-#     app-board 首启生成 dev-CA、apisix 只读挂同一目录、app-pay 启动自检要求 certs 存在
+#   - 证书 bind mount 有跨节点耦合：cert-gen 产出 nginx/app-board（app-content board 域
+#     证书，目录名沿用历史）/mcp/pay 证书目录、apisix 只读挂同一目录、app-pay 启动自检
+#     要求 certs 存在
 #     → 多节点时把这些服务钉到同一节点，或改用 swarm config/secret 分发证书
 #   - 三个 MySQL/Mongo/Milvus 仍是单副本：本文件只提供进程级自愈（崩溃重启），HA 需另行
 #     换集群形态（主从/PSMDB/Milvus cluster），副本数不解决存储共享问题
@@ -84,7 +86,7 @@ services:
 
   # ==============================================================
   # 证书一次性生成（幂等；每次 deploy 都会重跑，有效证书直接复用）
-  # 多节点：与 nginx/app-board/app-pay 钉到同一节点（写它们的 certs 目录）
+  # 多节点：与 nginx/app-content/app-pay 钉到同一节点（certs 目录 bind mount 需同节点）
   # ==============================================================
   cert-gen:
     image: atoncooper/mind-base-certgen:latest
@@ -483,8 +485,8 @@ services:
       - source: apisix_routes
         target: /usr/local/apisix/conf/apisix.yaml
     volumes:
-      # app-board dev-CA：apisix 信任 app-board 的 HTTPS upstream；
-      # ⚠️ 与 app-board 必须同节点（见文件头）
+      # app-content board 域 dev-CA：apisix 信任 app-content:8004 的 HTTPS upstream；
+      # ⚠️ 与 app-content 必须同节点（见文件头；证书目录名沿用历史 app-board/certs）
       - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/usr/local/apisix/conf/certs/board:ro
     # 容器内清掉代理变量，防宿主 ~/.docker/config.json 注入劫持内网流量（同单机 compose）
     entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
@@ -493,8 +495,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
       interval: 15s
@@ -618,38 +620,33 @@ services:
     networks:
       - mind-base-net
 
-  # app-note —— 笔记服务（MySQL 元数据 + Mongo 正文）
-  app-note:
-    image: atoncooper/mind-base-app-note:latest
+  # app-content —— 内容域（note 8008 + quiz 8011 + board 8004 合并为单服务；
+  #   board 为 HTTPS-only，证书走 cert-gen 签发的 app-board/certs（目录名沿用历史））
+  app-content:
+    image: atoncooper/mind-base-app-content:latest
     environment:
+      # ── board（8004，HTTPS-only）──
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__ENABLED=true
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      # explicit 模式：加载 cert-gen 签发的叶子（auto 模式会在只读 bind 里重建 dev CA → EACCES）
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
+      # ── note（8008）──
       - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - APPNOTE__LOG__OUTPUT=both
-    volumes:
-      - app_note_logs:/app/logs
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: start-first
-        parallelism: 1
-        delay: 10s
-        failure_action: rollback
-        monitor: 30s
-    networks:
-      - mind-base-net
-
-  # app-quiz —— 测验存储
-  app-quiz:
-    image: atoncooper/mind-base-app-quiz:latest
-    environment:
+      # ── quiz（8011）──
       - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       - APPQUIZ__LOG__OUTPUT=both
     volumes:
-      - app_quiz_logs:/app/logs
+      - app_content_logs:/app/logs
+      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/app/certs
     deploy:
       replicas: 1
       restart_policy:
@@ -778,7 +775,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
     volumes:
       - app_task_logs:/app/logs
       # app-pay 开发 CA（cert-gen 产出；缺失时仅 https 委托回调报错、兜底轮询接管）
@@ -917,39 +914,8 @@ services:
       - mind-base-net
 
   # ==============================================================
-  # 板域（app-board + 3×MCP server）
+  # 板域（3×MCP server；board 数据面 app-content 见上方「Go 应用服务」段）
   # ==============================================================
-
-  # app-board —— HTTPS-only（首启自生成 dev-CA+叶子并持久化到 certs 目录；
-  # ⚠️ 与 apisix（挂同一目录的 dev-ca.crt）同节点）
-  app-board:
-    image: atoncooper/mind-base-app-board:latest
-    environment:
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      - APPBOARD__LOG__OUTPUT=both
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
-      # explicit 模式：加载 cert-gen 签发的叶子（auto 模式会在只读 bind 里重建 dev CA → EACCES）
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-    volumes:
-      - app_board_logs:/app/logs
-      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/app/certs
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: start-first
-        parallelism: 1
-        delay: 10s
-        monitor: 30s
-    networks:
-      - mind-base-net
-
   # app-board-mcp —— MCP server（外部 MCP 宿主如需远程访问：取消 ports 注释并置
   # BOARD_MCP_TLS_ENABLED=true，证书 cert-gen 统一签发）
   app-board-mcp:
@@ -1103,12 +1069,10 @@ volumes:
   app_admin_logs:
   app_user_logs:
   app_cloud_logs:
-  app_note_logs:
-  app_quiz_logs:
+  app_content_logs:
   app_kg_logs:
   app_note_mcp_logs:
   app_quiz_mcp_logs:
-  app_board_logs:
   app_board_mcp_logs:
 
 networks:

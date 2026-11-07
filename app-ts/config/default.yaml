@@ -45,7 +45,7 @@ taskQuiz:
   # 定时出题：agent 对话（/task-quiz/chat）+ 注册（/task-quiz/register）
   # + app-task 执行器回调（/internal/quiz/generate-llm|status）
   enabled: true
-  sourceDatabase: mind_base          # 共享 Mongo 库（app-quiz 读取同一集合）
+  sourceDatabase: mind_base          # 共享 Mongo 库（app-content quiz 面读取同一集合）
   docCollection: task_quiz_questions
   executorUrl: ${QUIZ_EXECUTOR_URL:http://127.0.0.1:9080/internal/quiz/generate-llm}
   genRetries: 3
@@ -166,7 +166,7 @@ appPay:
   cacheTtlMs: 60000
 
 appQuiz:
-  # app-quiz 存储写面（经 APISIX key-auth 内部路由 /internal/quiz/*）
+  # app-content（quiz 面）存储写面（经 APISIX key-auth 内部路由 /internal/quiz/*）
   baseUrl: ${APP_QUIZ_BASE_URL:http://127.0.0.1:9080/internal/quiz}
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 15000
@@ -329,7 +329,7 @@ rateLimit:
 quota:
   # ── 会员用量限制 ─────────────────────────────────────────────────────
   # Redis 日计数（原子 Lua，键 mind-base:quota:{kind}:{uid}:{YYYYMMDD}，上海自然日）；
-  # generate/grade 沿用 app-quiz 旧键（UTC 日）跨栈共享计数。
+  # generate/grade 沿用 app-content quiz 面旧键（UTC 日）跨栈共享计数。
   # fail 方向：Redis 不可用 → 放行（可用性优先）；app-pay 不可用 → tier=free（防超卖）。
   enabled: true
   # kind → 各档每日次数上限；-1 = 不限；每个 kind 都有对应消费点（见行尾注释）
@@ -337,7 +337,7 @@ quota:
     chat:        { free: 30,  vip: 100, svip: 300 }   # 登录聊天：free 前 15 条 L0 全量，其后 L1 省流（降级接入后生效），30 硬停
     chat_anon:   { free: 5,   vip: 5,   svip: 5 }      # 未登录（按 IP 哈希桶计数）
     chat_images: { free: 20,  vip: 100, svip: 300 }   # 聊天图片附件（张/日）
-    generate:    { free: 3,   vip: 20,  svip: 60 }    # 出题（批/日；quiz-generation peek+consume，计数沿用 app-quiz 共享键）
+    generate:    { free: 3,   vip: 20,  svip: 60 }    # 出题（批/日；quiz-generation peek+consume，计数沿用 app-content quiz 面共享键）
     grade:       { free: 20,  vip: 100, svip: 300 }   # 批改（次/日；quiz-grading 提交扣减）
     kg_build:    { free: 1,   vip: 5,   svip: 20 }    # KG 构建（次/日；/knowledge/kg/build peek+consume）
     vectorize:   { free: 50,  vip: 300, svip: 1000 }  # 视频向量化（分P/日；向量化管线 peek+consume）

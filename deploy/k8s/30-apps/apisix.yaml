@@ -3,7 +3,7 @@
 # 9080 would let clients bypass nginx SSL/cache/rate-limiting.
 # The entrypoint override unsets proxy vars (host proxy injection once broke
 # internal etcd traffic) and builds the ssl_trusted_certificate CA bundle
-# including the app-board dev CA (upstream tls_verify trust anchor).
+# including the app-content board dev CA (upstream tls_verify trust anchor).
 apiVersion: v1
 kind: Service
 metadata:
@@ -66,9 +66,9 @@ spec:
             - name: https_proxy
               value: ""
             - name: NO_PROXY
-              value: etcd,app-ts,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,localhost,127.0.0.1
+              value: etcd,app-ts,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,localhost,127.0.0.1
             - name: no_proxy
-              value: etcd,app-ts,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,localhost,127.0.0.1
+              value: etcd,app-ts,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,localhost,127.0.0.1
           ports:
             - containerPort: 9080
           volumeMounts:

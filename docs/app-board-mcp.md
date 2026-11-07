@@ -1,17 +1,17 @@
 # app-board-mcp — 思维导图 / 白板 MCP server
 
-> 仓库第一个 MCP（Model Context Protocol）server：把 app-board 的板（board）能力以标准 MCP 工具暴露给任意 MCP 宿主（ZCode / Claude 等 Agent），让 Agent 可以列出、读取、创建、更新、删除、置顶思维导图与白板。
+> 仓库第一个 MCP（Model Context Protocol）server：把 app-content 的板（board）能力以标准 MCP 工具暴露给任意 MCP 宿主（ZCode / Claude 等 Agent），让 Agent 可以列出、读取、创建、更新、删除、置顶思维导图与白板。
 
 ## 定位
 
 | 维度 | 说明 |
 |------|------|
-| 角色 | app-board 的 MCP 适配层：6 个工具 + 1 个资源模板（动态列表）+ 3 个 prompts，薄映射，无业务逻辑 |
+| 角色 | app-content（board 面）的 MCP 适配层：6 个工具 + 1 个资源模板（动态列表）+ 3 个 prompts，薄映射，无业务逻辑 |
 | 技术栈 | Go 1.25 + [mcp-go](https://github.com/mark3labs/mcp-go) v1.1.0 + 官方 uuid/godotenv |
 | 传输 | `--transport stdio`（默认，本地 MCP 宿主直拉）或 `--transport http`（streamable-http，容器部署；MCP 端点 `/mcp`，另有 `GET /health`） |
 | 端口 | 容器形态仅回环 `127.0.0.1:8005` |
 | 鉴权 | 出站经 APISIX key-auth 内部路由 `/internal/board/*`（`apikey: APISIX_CONSUMER_KEY`）；身份为配置固定的 `X-Uid` |
-| 上游 | app-board（8004，HTTPS-only，仅 compose 网络内可达） |
+| 上游 | app-content（board 面，8004，HTTPS-only，仅 compose 网络内可达） |
 
 **身份模型（安全边界）**：uid 来自配置 `BOARDMCP__UPSTREAM__UID`，**工具参数不含 uid**——Agent 无论被怎样提示，都只能操作该 uid 名下的板子。这与 app-task「uid 放请求体、调用方可信」的 M2M 惯例一致，key-auth 持有者即受信内部服务。
 
@@ -26,13 +26,13 @@
 | Origin 校验 | 拒绝所有 | 浏览器必带 Origin 头而 MCP 宿主不带——非白名单 Origin 一律 403（MCP 规范的 DNS rebinding 防御）。Web 版 MCP 客户端出现时用 `BOARDMCP__SERVER__ALLOWED_ORIGINS` 开白名单 |
 | 并发上限 | 8 | 超限 503 + Retry-After（`BOARDMCP__SERVER__MAX_INFLIGHT`）；另有 body 上限 10MB（`BOARDMCP__SERVER__MAX_BODY_BYTES`，413） |
 
-**上游（MCP server → APISIX → app-board）**：key-auth（apikey）+ X-Uid 属主过滤之外，`board_internal` 路由加 `limit-req`（每调用方 20 rps + burst 10，超限 429）——网关侧兜底，防止任何 key-auth 持有者打爆 app-board；同时 MCP 工具层每次调用最多放大 10 次（search 扫描上限），两层相乘有界。
+**上游（MCP server → APISIX → app-content）**：key-auth（apikey）+ X-Uid 属主过滤之外，`board_internal` 路由加 `limit-req`（每调用方 20 rps + burst 10，超限 429）——网关侧兜底，防止任何 key-auth 持有者打爆 app-content；同时 MCP 工具层每次调用最多放大 10 次（search 扫描上限），两层相乘有界。
 
 **profiles 收紧**：compose 服务不再随默认 profile 启动（`profiles: ["board", "full"]`）——显式拉起时才需要配 token/uid，避免默认栈里出现一个未配置凭据的可变更存储端点。
 
 ## TLS
 
-默认**关**（回环 http 是本机部署的既定姿态，token + Origin + 限流已覆盖本地威胁面）；跨机 MCP 宿主、放宽回环绑定、或宿主强制 https 时启用。实现移植自 app-board 的 `internal/tls`（现 `internal/certs`），策略一致：
+默认**关**（回环 http 是本机部署的既定姿态，token + Origin + 限流已覆盖本地威胁面）；跨机 MCP 宿主、放宽回环绑定、或宿主强制 https 时启用。实现移植自 app-content 的 `internal/infra/tls/board`（MCP 侧为 `internal/certs`），策略一致：
 
 | 模式 | 触发条件 | 行为 |
 |------|---------|------|
@@ -64,7 +64,7 @@ docker compose --profile board up -d --force-recreate app-board-mcp
 | 凭证 | `apikey: <APISIX_CONSUMER_KEY>`（复用 consumer key，无新密钥）+ 每请求 `X-Uid: <uid>` |
 | 身份 | X-Uid 即本次操作的板子属主（来自后端已认证会话）；**LLM 可写参数中永远不含 uid** |
 | 端点 | backend 经 compose 内网直连 `http://app-board-mcp:8005/mcp`（容器互访不受宿主回环绑定限制）；配置 `BOARDMCP__SERVER__SERVICE_API_KEY` |
-| 链路 | backend → app-board-mcp:8005 → APISIX `/internal/board/*`（key-auth + limit-req）→ app-board |
+| 链路 | backend → app-board-mcp:8005 → APISIX `/internal/board/*`（key-auth + limit-req）→ app-content:8004 |
 
 ## 链路
 
@@ -72,7 +72,7 @@ docker compose --profile board up -d --force-recreate app-board-mcp
 MCP 宿主(ZCode/Claude) --streamable-http--> 127.0.0.1:8005 /mcp (app-board-mcp 容器)
     -- http://apisix:9080/internal/board/*  头: apikey + X-Uid + X-Request-Id -->
 APISIX board_internal(key-auth + proxy-rewrite 去 /internal 前缀)
-    -- https --> app-board:8004 /board/*（按 X-Uid 做属主过滤）
+    -- https --> app-content:8004 /board/*（按 X-Uid 做属主过滤）
 ```
 
 ## MCP 工具
@@ -88,7 +88,7 @@ APISIX board_internal(key-auth + proxy-rewrite 去 /internal 前缀)
 
 **内容格式**（工具描述内嵌同样说明）：
 - mindmap = simple-mind-map 树：`{"root":{"data":{"text":"中心主题"},"children":[{"data":{"text":"分支"},"children":[]}}]}`
-- whiteboard = Excalidraw scene JSON（app-board 存储契约已就绪，编辑器 P3 接入）
+- whiteboard = Excalidraw scene JSON（app-content（board 面）存储契约已就绪，编辑器 P3 接入）
 - 单板正文上限 8MB（超限 413，错误消息已注明）
 
 ## Resources
@@ -97,7 +97,7 @@ APISIX board_internal(key-auth + proxy-rewrite 去 /internal 前缀)
 
 - **内容**：包装 JSON（mimeType `application/json`）`{uuid,title,kind,version,isPinned,createdAt,updatedAt,content:<解析后的文档对象>}`——version 随载荷给出，可直接用于 update_board 乐观锁
 - **动态列表**：`resources/list` 经 `OnAfterListResources` 钩子在**请求时**分页拉取上游（上限 1000 条，截断时末条 description 标注"更多请用 list_boards"）——零轮询、零陈旧快照；每次 list 最多 10 次上游调用，受端点限流约束
-- **能力**：`subscribe=false`（app-board 无变更推送源）、`listChanged=false`（注册集不变，列表靠请求时刷新）——均属红线
+- **能力**：`subscribe=false`（app-content（board 面）无变更推送源）、`listChanged=false`（注册集不变，列表靠请求时刷新）——均属红线
 - 大文档（上限 8MB）整份进入宿主上下文，宿主/用户自行斟酌
 
 ## Prompts
@@ -118,7 +118,7 @@ env（前缀 `BOARDMCP__`，双下划线嵌套；godotenv 自工作目录向上�
 |----|------|------|
 | `BOARDMCP__UPSTREAM__BASE_URL` | `http://127.0.0.1:9080` | APISIX 网关基址（compose 内为 `http://apisix:9080`） |
 | `BOARDMCP__UPSTREAM__API_KEY` | 空 | key-auth consumer key（= `APISIX_CONSUMER_KEY`，密钥走 .env） |
-| `BOARDMCP__UPSTREAM__UID` | 空 | 以该 uid 访问 app-board；**空=未配置，容器照常启动但工具调用报错** |
+| `BOARDMCP__UPSTREAM__UID` | 空 | 以该 uid 访问 app-content；**空=未配置，容器照常启动但工具调用报错** |
 | `BOARDMCP__SERVER__TRANSPORT` | `stdio` | `stdio` \| `http` |
 | `BOARDMCP__SERVER__HTTP_ADDR` | `:8005` | http 传输监听地址 |
 | `BOARDMCP__LOG__LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
@@ -134,12 +134,12 @@ env（前缀 `BOARDMCP__`，双下划线嵌套；godotenv 自工作目录向上�
 
 ## 日志
 
-结构化 slog（JSON），消息带 `[BOARDMCP]` 前缀，与 app-board 的 logger 同一套约定（`internal/logger` 同名包）：
+结构化 slog（JSON），消息带 `[BOARDMCP]` 前缀，与 app-content 的全局 logger 同一套约定（`app-go/app-content/internal/logger`）：
 
 | 维度 | 说明 |
 |------|------|
 | 传输约束 | **stdio 模式默认/强制 stderr**（stdout 是 MCP JSON-RPC 协议通道）；误配 `OUTPUT=stdout/both` 时启动期告警并自动回落 stderr |
-| 请求级 trace | X-Request-Id：http 模式由中间件注入（认入站头，回显响应头，截断 64 字符）；stdio 模式每次工具调用生成；同一 id 贯穿 **access log → 工具调用日志 → 上游 X-Request-Id → app-board 日志**，一次 Agent 动作一条 trace |
+| 请求级 trace | X-Request-Id：http 模式由中间件注入（认入站头，回显响应头，截断 64 字符）；stdio 模式每次工具调用生成；同一 id 贯穿 **access log → 工具调用日志 → 上游 X-Request-Id → app-content 日志**，一次 Agent 动作一条 trace |
 | access log | http 模式每请求一行（method/path/status/size/latency/request_id），status≥500 error、≥400 warn、否则 info |
 | 工具调用日志 | 每次调用一行：tool、board_uuid/kind/分页/置顶等安全参数、`title_len`/`content_bytes`（**只记长度不记内容**——文档正文与标题文本不落日志）、elapsed；成功 info、业务失败 warn、handler 异常 error |
 | 上游调用日志 | 每次网关调用一行：4xx warn（Agent 可自纠）、5xx/网络错误 error、成功 debug（level=info 时静默） |
@@ -173,7 +173,7 @@ ZCode / Claude 等支持远程 MCP 的宿主（streamable-http，带认证头）
 ```json
 {
   "mcpServers": {
-    "app-board": {
+    "app-board-mcp": {
       "url": "http://127.0.0.1:8005/mcp",
       "headers": { "Authorization": "Bearer <BOARD_MCP_AUTH_TOKEN>" }
     }
@@ -186,7 +186,7 @@ stdio 传输的宿主（本地直跑二进制时）：
 ```json
 {
   "mcpServers": {
-    "app-board": {
+    "app-board-mcp": {
       "command": "go",
       "args": ["run", "."],
       "cwd": "mcp/app-board-mcp",
@@ -209,10 +209,10 @@ cd mcp/app-board-mcp
 go vet ./... && go test ./...
 ```
 
-- `internal/upstream`：httptest 伪造 app-board，覆盖头部注入（apikey/X-Uid/X-Request-Id）、If-Match、content 两种形态原样转发、错误信封解析
+- `internal/upstream`：httptest 伪造 app-content，覆盖头部注入（apikey/X-Uid/X-Request-Id）、If-Match、content 两种形态原样转发、错误信封解析
 - `internal/tools`：6 工具 happy path + 校验失败 + 自动锁版本 + 409 冲突提示 + search 跨页扫描截断 + 未配置守卫
 
-冒烟（compose 在跑；APISIX/app-board 无宿主端口，从 backend 容器内验证，apikey 取 .env 的 `APISIX_CONSUMER_KEY`）：
+冒烟（compose 在跑；APISIX/app-content（board 面）无宿主端口，从 backend 容器内验证，apikey 取 .env 的 `APISIX_CONSUMER_KEY`）：
 
 ```bash
 # 1. MCP server 探活（宿主可达，回环映射）
@@ -244,7 +244,7 @@ curl -s -X POST http://127.0.0.1:8005/mcp \
 ## 约束与红线
 
 - ❌ 工具面不得加入 uid 参数（身份只能来自配置，防越权）
-- ❌ 不直连 app-board（必须经 APISIX key-auth 路由，网关负责准入与 trace）
+- ❌ 不直连 app-content（board 面）（必须经 APISIX key-auth 路由，网关负责准入与 trace）
 - ❌ 内部路由不暴露到 nginx（`/internal/*` 只在 compose 网络内可达）
 - ✅ 每次上游调用生成 `X-Request-Id`，错误消息透传服务端 `detail` + `request_id`
 - ✅ 新增工具须同步更新本文档与 AGENTS.md §2.11

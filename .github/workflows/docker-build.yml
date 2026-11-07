@@ -33,14 +33,10 @@ jobs:
             dockerfile: app-go/app-cloud/Dockerfile
             image: atoncooper/mind-base-app-cloud
             name: app-cloud
-          - context: ./app-go/app-note
-            dockerfile: app-go/app-note/Dockerfile
-            image: atoncooper/mind-base-app-note
-            name: app-note
-          - context: ./app-go/app-quiz
-            dockerfile: app-go/app-quiz/Dockerfile
-            image: atoncooper/mind-base-app-quiz
-            name: app-quiz
+          - context: ./app-go/app-content
+            dockerfile: app-go/app-content/Dockerfile
+            image: atoncooper/mind-base-app-content
+            name: app-content
           - context: ./app-go/app-kg
             dockerfile: app-go/app-kg/Dockerfile
             image: atoncooper/mind-base-app-kg
@@ -49,10 +45,6 @@ jobs:
             dockerfile: app-ts/Dockerfile
             image: atoncooper/mind-base-app-ts
             name: app-ts
-          - context: ./app-board
-            dockerfile: app-board/Dockerfile
-            image: atoncooper/mind-base-app-board
-            name: app-board
           - context: ./mcp/app-board-mcp
             dockerfile: mcp/app-board-mcp/Dockerfile
             image: atoncooper/mind-base-app-board-mcp

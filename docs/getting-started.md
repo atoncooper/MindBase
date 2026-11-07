@@ -2,7 +2,7 @@
 
 在本地把 MindBase 跑起来并开始改代码。本文只讲**开发环境**：前置依赖、`.env` 配置、两条启动路径（容器起基础设施 + 本地跑应用 / 全 Docker）、验证链路、测试与常见问题。
 
-> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（app-user〔auth/bili/settings 三域合一〕/ cloud / note / quiz / kg / admin）与 **app-board**（Go，HTTPS-only）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
+> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（app-user〔auth/bili/settings 三域合一〕/ app-content〔note/quiz/board 三域合一〕/ cloud / kg / admin）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
 > 旧 Python backend（`app/`）已于 2026-10-06 彻底退役，任何 `pip install` / `uvicorn app.main:app` / `app/config/default.yaml` 的说法都已失效。
 >
 > 服务清单、端口、网关路由以 [architecture.md](architecture.md) 为权威；配置体系（各服务 YAML / env 前缀 / 密钥清单）见 [configuration.md](configuration.md)；生产部署见 [deployment.md](deployment.md)。
@@ -94,7 +94,7 @@ docker compose stop app-ts frontend
 
 ### 3.2 让宿主能访问 APISIX(:9080) 与 MinIO(:9000)
 
-默认 compose **不把 APISIX 和 MinIO 的 API 端口映射到宿主**（只走容器网络与 nginx）。但本地 app-ts 的出站调用（app-task / app-pay / app-quiz / 沙箱）走 `127.0.0.1:9080`，frontendv2 的 dev 代理也指向 `localhost:9080`，所以本地开发要加一个 override：
+默认 compose **不把 APISIX 和 MinIO 的 API 端口映射到宿主**（只走容器网络与 nginx）。但本地 app-ts 的出站调用（app-task / app-pay / app-content / 沙箱）走 `127.0.0.1:9080`，frontendv2 的 dev 代理也指向 `localhost:9080`，所以本地开发要加一个 override：
 
 ```yaml
 # docker-compose.override.yml —— 本地开发用，不要提交
@@ -164,11 +164,12 @@ NEXT_PUBLIC_APISIX_HOST=127.0.0.1:9080 npm run dev
 **每个 `app-go/*` 都是独立 Go module**（仓库根没有 `go.mod`/`go.work`），必须进入服务目录启动；服务会从工作目录向上读项目根 `.env`：
 
 ```bash
-docker compose stop app-note        # 停容器后再本地起（容器调试口 8018，本地监听 8008）
-cd app-go/app-note
+docker compose stop app-content     # 停容器后再本地起（宿主调试口：note 8018、quiz 8011；board 8004 仅容器网络）
+cd app-go/app-content
 APPNOTE__RDBMS__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base' \
+APPBOARD__RDBMS__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base' \
 MONGO__URI='mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin' \
-go run .
+go run ./cmd/app-content
 ```
 
 各服务的 MySQL 连接串是**带服务前缀**的变量（共享的 `MONGO__URI`/`REDIS__URL`/`MINIO__*`/`AI_GATEWAY__*` 才无前缀）。`Validate` 会在缺必填项时报错，按报错文案补即可：
@@ -177,8 +178,7 @@ go run .
 |------|------|--------------|
 | app-user | 8006（auth）/ 8010（bili）/ 8015（settings） | `APPAUTH__RDBMS__URL` + `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY` + `APPSETTINGS__RDBMS__URL`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
 | app-cloud | 8007 | `APPCLOUD__RDBMS__URL` + `MINIO__ACCESS_KEY`/`MINIO__SECRET_KEY`（缺访问密钥直接拒启；另需 `MINIO__ENDPOINT=http://127.0.0.1:9000`） |
-| app-note | 8008 | `APPNOTE__RDBMS__URL`（+ `MONGO__URI` 存正文） |
-| app-quiz | 8011 | `APPQUIZ__RDBMS__URL`（+ `MONGO__URI`） |
+| app-content | 8004（board, HTTPS）/ 8008（note）/ 8011（quiz） | `APPBOARD__RDBMS__URL` + `APPBOARD__MONGO__URI`；`APPNOTE__RDBMS__URL`；`APPQUIZ__RDBMS__URL`（+ 共享 `MONGO__URI`/`REDIS__URL`） |
 | app-kg | 8013 gRPC / 8014 health | `APPKG__RDBMS__URL` + `KG__URI`（+ `KG__PASSWORD` 或 `NEO4J_PASSWORD`） |
 | app-admin | 8016 | `APPADMIN__RDBMS__URL`（种子账户 `admin` / `app-admin`，首登强制改密） |
 | app-sandbox | 8017 | `SANDBOX__DATABASE__DSN`（或 `RDBMS__URL`）+ `SANDBOX__AUTH__API_KEY`；本机无 OpenSandbox 时用 `SANDBOX__RUNTIME__TYPE=fake` |
@@ -187,7 +187,7 @@ go run .
 
 - **app-pay**（Java）：`cd app-pay && mvn spring-boot:run`，但服务端强制 HTTPS，先跑 `app-pay/scripts/gen-dev-cert.ps1`（或 `.sh`）生成 `app-pay/certs/`；
 - **app-task**：本仓无源码（镜像来自独立仓库），compose 默认拉取；
-- **app-board**（8004）：不映射宿主端口，开发时经 app-board-mcp（8005）访问即可。
+- **app-content 的 board 面**（8004）：不映射宿主端口，开发时经 app-board-mcp（8005）访问即可。
 
 ---
 
@@ -198,7 +198,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-首次会构建 frontend / app-ts / 各 Go 服务 / MCP / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 nginx / app-board / app-board-mcp / app-pay 的开发证书，无需手工准备 TLS。
+首次会构建 frontend / app-ts / 各 Go 服务 / MCP / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 nginx / app-content / app-board-mcp / app-pay 的开发证书，无需手工准备 TLS。
 
 ### 4.1 profile 的真实语义
 
@@ -206,8 +206,8 @@ docker compose ps
 
 | 命令 | 实际启动 |
 |------|----------|
-| `docker compose up -d` | **27 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-note / app-quiz / app-kg / app-admin(+api) / app-board(+3 个 MCP) / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
-| `docker compose --profile full up -d` | **34 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
+| `docker compose up -d` | **25 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / 3 个 MCP / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
+| `docker compose --profile full up -d` | **32 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
 | `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
 | `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
 
@@ -234,7 +234,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-note 8018、app-quiz 8011、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-content 8018（note）/ 8011（quiz）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
 
 ---
 
@@ -269,7 +269,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 | app-ts | `cd app-ts && npm ci && npm run typecheck`（= `npx tsc --noEmit`）；`npm test`（= `npx vitest run`，离线、不依赖 Mongo/Milvus 实例） |
 | frontendv2 | `cd frontendv2 && npm ci && npx tsc --noEmit && npm run lint`；`npm run build`（生产构建） |
 | frontend-admin | `cd frontend-admin && pnpm install --frozen-lockfile && pnpm build`（= `tsc --noEmit && vite build`） |
-| Go 单服务 | `cd app-go/app-note && go vet ./... && go test -count=1 ./...`（CI 同款顺序还包含 `gofmt -l .` 与 `go build`） |
+| Go 单服务 | `cd app-go/app-content && go vet ./... && go test -count=1 ./...`（CI 同款顺序还包含 `gofmt -l .` 与 `go build ./cmd/app-content`） |
 | app-sandbox | `cd app-go/app-sandbox && go test ./tests/`（内存 repo + fake runtime，不需要真实 MySQL） |
 | app-pay | `cd app-pay && mvn test`（纯 JUnit，无外部数据库） |
 
@@ -300,7 +300,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **前端本地 dev 数据全挂 / 图片 404。** dev 代理的目标 `localhost:9080`（APISIX）或 `http://localhost`（nginx）在宿主不可达：确认 apisix / nginx 在跑，且按 §3.2 映射了 9080。
 
-**`go run ./app-go/app-note` 报 `cannot find main module`。** 每个 Go 服务是独立 module，必须 `cd app-go/app-note && go run .`。
+**`go run ./app-go/app-content` 报 `cannot find main module`。** 每个 Go 服务是独立 module，必须 `cd app-go/app-content && go run ./cmd/app-content`。
 
 **`https://localhost` 证书不受信。** 用的是开发 CA（`nginx/certs/dev-ca.crt`），把它导入系统/浏览器信任库即可；也可以先用 `http://localhost`。
 

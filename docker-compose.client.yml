@@ -61,6 +61,7 @@ services:
     container_name: mind-base-cert-gen
     environment:
       MB_CERT_NGINX_DIR: /out/nginx
+      # board 面域名证书目录名沿用 app-board（cert-gen 脚本输出路径，勿改）
       MB_CERT_APPBOARD_DIR: /out/app-board
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
@@ -350,8 +351,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
     mem_limit: 256m
     logging: *default-logging
     healthcheck:
@@ -565,29 +566,54 @@ services:
     networks:
       - mind-base-net
 
-  app-note:
-    image: atoncooper/mind-base-app-note:latest
+  # app-content —— 内容域三合一服务（Go：board + note + quiz）。
+  # 单容器三监听口：8004=board(HTTPS) / 8008=note / 8011=quiz；对外路径与端口语义不变。
+  app-content:
+    image: atoncooper/mind-base-app-content:latest
     pull_policy: never
     build:
-      context: ./app-go/app-note
+      context: ./app-go/app-content
       dockerfile: Dockerfile
-    container_name: mind-base-app-note
+    container_name: mind-base-app-content
     depends_on:
+      cert-gen:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
+      # board 域（APPBOARD__）
+      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
+      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - APPBOARD__MONGO__DB_NAME=MindBase
+      # Logging: one process-wide logger (board.log section) -> stdout + /app/logs
+      # （镜像已预建 nonroot 属主 /app/logs，卷首次挂载继承属主）
+      - APPBOARD__LOG__OUTPUT=both
+      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
+      # note 域（APPNOTE__）
       - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # quiz 域（APPQUIZ__）
+      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # 共享（note/quiz 读同一 MONGO__URI；去重后只保留一份）
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPNOTE__LOG__OUTPUT=both
     ports:
-      - "127.0.0.1:${APP_NOTE_PORT:-8008}:8008"
+      # 客户端仅回环调试口：note 8008（沿用旧 client 口）/ quiz 8011；board 不映射
+      - "127.0.0.1:${APP_CONTENT_NOTE_PORT:-8008}:8008"
+      - "127.0.0.1:${APP_CONTENT_QUIZ_PORT:-8011}:8011"
     volumes:
-      - app_note_logs:/app/logs
-    mem_limit: 128m
+      - app_content_logs:/app/logs
+      # board TLS 证书目录（cert-gen 生成/轮换）
+      - ./app-board/certs:/app/certs
+    # 三域合并后的单进程上限（原 128m + 128m + 128m 三容器），取 384m。
+    mem_limit: 384m
     logging: *default-logging
     restart: unless-stopped
     networks:
@@ -618,34 +644,6 @@ services:
     networks:
       - mind-base-net
 
-  app-quiz:
-    image: atoncooper/mind-base-app-quiz:latest
-    pull_policy: never
-    build:
-      context: ./app-go/app-quiz
-      dockerfile: Dockerfile
-    container_name: mind-base-app-quiz
-    depends_on:
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPQUIZ__LOG__OUTPUT=both
-    ports:
-      - "127.0.0.1:${APP_QUIZ_PORT:-8011}:8011"
-    volumes:
-      - app_quiz_logs:/app/logs
-    mem_limit: 128m
-    logging: *default-logging
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
   app-quiz-mcp:
     image: atoncooper/mind-base-app-quiz-mcp:latest
     pull_policy: never
@@ -666,42 +664,6 @@ services:
     volumes:
       - app_quiz_mcp_logs:/app/logs
     mem_limit: 64m
-    logging: *default-logging
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  app-board:
-    image: atoncooper/mind-base-app-board:latest
-    pull_policy: never
-    build:
-      context: ./app-board
-      dockerfile: Dockerfile
-    container_name: mind-base-app-board
-    depends_on:
-      cert-gen:
-        condition: service_completed_successfully
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      - APPBOARD__LOG__OUTPUT=both
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-    volumes:
-      - app_board_logs:/app/logs
-      - ./app-board/certs:/app/certs
-    mem_limit: 128m
     logging: *default-logging
     restart: unless-stopped
     networks:
@@ -877,7 +839,7 @@ services:
       - mind-base-net
 
   # ---- --profile task：定时出题任务执行器（独立 MySQL + 轮询 scheduler）----
-  # 不开时：定时出题邮件任务不跑；聊天内出题/批改（app-ts + app-quiz）不受影响
+  # 不开时：定时出题邮件任务不跑；聊天内出题/批改（app-ts + app-content quiz 面）不受影响
   app-task-mysql:
     image: mysql:8.4
     container_name: mind-base-app-task-mysql
@@ -934,7 +896,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -1017,12 +979,10 @@ volumes:
   app_task_logs:
   app_user_logs:
   app_cloud_logs:
-  app_note_logs:
-  app_quiz_logs:
+  app_content_logs:
   app_kg_logs:
   app_note_mcp_logs:
   app_quiz_mcp_logs:
-  app_board_logs:
   app_board_mcp_logs:
   app_task_mysql_data:
   app_pay_mysql_data:

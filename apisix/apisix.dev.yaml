@@ -151,9 +151,9 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-note —— 笔记服务（Go；本机 go run ./app-go/app-note）
-  - id: upstream-app-note
-    name: app-note
+  # app-content（note 监听口 8008）—— 笔记面（Go；本机 go run ./app-go/app-content）
+  - id: upstream-app-content-note
+    name: app-content
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -191,9 +191,9 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-quiz —— 测验存储服务（Go；本机 go run ./app-go/app-quiz）
-  - id: upstream-app-quiz
-    name: app-quiz
+  # app-content（quiz 监听口 8011）—— 测验存储面（Go；本机 go run ./app-go/app-content）
+  - id: upstream-app-content-quiz
+    name: app-content
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -440,8 +440,8 @@ routes:
         status_code: 401
 
   # app-task -> main app generate quiz (async, service-to-service, key-auth).
-  # priority 110 > quiz_internal (/internal/quiz/* → app-quiz, 100) so the more
-  # specific generate-llm URI is not shadowed by the app-quiz wildcard.
+  # priority 110 > quiz_internal (/internal/quiz/* → app-content quiz 面, 100) so the
+  # more specific generate-llm URI is not shadowed by the app-content wildcard.
   - id: internal_quiz_generate
     uri: /internal/quiz/generate-llm
     methods: [POST]
@@ -488,14 +488,14 @@ routes:
     plugins:
       key-auth: {}
 
-  # User -> app-quiz scheduled-quiz business detail (forward-auth, X-Uid injected).
-  # 业务行 quiz_task/quiz_task_answer + Mongo task_quiz_questions 归 app-quiz；
+  # User -> app-content（quiz 面）scheduled-quiz business detail (forward-auth, X-Uid injected).
+  # 业务行 quiz_task/quiz_task_answer + Mongo task_quiz_questions 归 app-content（quiz 面）；
   # app-task 只提供调度视图（/tasks、/tasks/{id}）。
   - id: tasks_detail
     uri: /tasks/*/detail
     methods: [GET]
     priority: 100
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       proxy-rewrite:
         headers:
@@ -553,14 +553,14 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # User -> app-quiz submit answer (forward-auth, X-Uid injected).
-  # 判题/入库/状态流转是 quiz 域业务逻辑，归 app-quiz（app-task 只做调度+通知）。
+  # User -> app-content（quiz 面）submit answer (forward-auth, X-Uid injected).
+  # 判题/入库/状态流转是 quiz 域业务逻辑，归 app-content（quiz 面）（app-task 只做调度+通知）。
   # priority 100 so /tasks/{id}/answer is NOT shadowed by /tasks/* (app-task).
   - id: tasks_answer
     uri: /tasks/*/answer
     methods: [POST]
     priority: 100
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       proxy-rewrite:
         headers:
@@ -728,13 +728,13 @@ routes:
         status_code: 401
 
 
-  # /quiz/* -> app-quiz（Go 测验存储服务；宽验证 forward-auth，公开分享页
-  # /quiz/shared/{token} 免登录可达。过渡期 Python 的 AI 端点仍直写共享
-  # quiz 表）
+  # /quiz/* -> app-content（quiz 面；Go 测验存储服务；宽验证 forward-auth，公开
+  # 分享页 /quiz/shared/{token} 免登录可达。过渡期 Python 的 AI 端点仍直写
+  # 共享 quiz 表）
   - id: quiz_user
     uris: [/quiz, /quiz/*]
     priority: 50
-    upstream_id: upstream-app-quiz
+    upstream_id: upstream-app-content-quiz
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -749,7 +749,7 @@ routes:
 
   # /quiz/styles -> app-ts（考试蓝本目录，65 种，个性化出题选择器数据源；实现在
   # app-ts routes/quiz.ts，纯静态无 LLM。priority 110 压过 quiz_user 通配——缺此
-  # 路由会落 app-quiz 的 /:quiz_uuid 404，前端目录永远「加载中」）。
+  # 路由会落 app-content quiz 面的 /:quiz_uuid 404，前端目录永远「加载中」）。
   - id: quiz_ai_styles
     uri: /quiz/styles
     methods: [GET]
@@ -823,7 +823,7 @@ routes:
         timeout: 30000
         status_code: 401
 
-  # /quiz/submit -> app-ts（批改 = app-ts LLM 批改 + app-quiz 落库，2026-10-06 切流）。
+  # /quiz/submit -> app-ts（批改 = app-ts LLM 批改 + app-content（quiz 面）落库，2026-10-06 切流）。
   - id: quiz_ai
     uris: [/quiz/submit]
     priority: 100
@@ -876,11 +876,11 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # /notes/* -> app-note（Go 笔记服务；宽验证 forward-auth，公开分享页免登录）
+  # /notes/* -> app-content（note 面；Go 笔记服务；宽验证 forward-auth，公开分享页免登录）
   - id: notes_user
     uris: [/notes, /notes/*]
     priority: 50
-    upstream_id: upstream-app-note
+    upstream_id: upstream-app-content-note
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -972,7 +972,7 @@ routes:
     uri: /internal/note/*
     methods: [GET, POST, PUT, DELETE, PATCH]
     priority: 100
-    upstream_id: upstream-app-note
+    upstream_id: upstream-app-content-note
     plugins:
       request-id: {}
       key-auth: {}
