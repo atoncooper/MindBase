@@ -1,0 +1,130 @@
+# app-user — user-domain service (auth 8006 / bili 8010 / settings 8015; Go + Gin).
+# Consolidated from the former app-auth / app-bili / app-settings Deployments:
+# one workload, one Service, three listener ports. Port/path semantics are
+# unchanged — 8006 = auth routes + APISIX forward-auth verify (/internal/auth/verify),
+# 8010 = bilibili acquisition routes, 8015 = user preferences/avatar routes.
+# Env parity with docker-compose.yml service 'app-user' (union of the three old
+# services' env); secrets come from the mindbase-env Secret (created once via
+# kubectl create secret from .env).
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-user
+  labels:
+    app: app-user
+spec:
+  selector:
+    app: app-user
+  ports:
+    - name: http-auth
+      port: 8006
+      targetPort: 8006
+    - name: http-bili
+      port: 8010
+      targetPort: 8010
+    - name: http-settings
+      port: 8015
+      targetPort: 8015
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-user
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: app-user
+  template:
+    metadata:
+      labels:
+        app: app-user
+    spec:
+      initContainers:
+        # Union of the three old wait-deps: shared MySQL, Mongo (bili ASR docs),
+        # Redis (auth token cache + bili build events), MinIO (settings avatar).
+        - name: wait-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z mysql 3306 && nc -z mongo 27017 && nc -z redis 6379 && nc -z minio 9000; do echo waiting for mysql/mongo/redis/minio; sleep 3; done"]
+      containers:
+        - name: app-user
+          image: atoncooper/mind-base-app-user:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
+          env:
+            # Master key (SESSDATA decrypt) via the _FILE convention; the .env
+            # *_FILE path is host-relative and invalid in-container, so point at
+            # the mounted Secret path.
+            - name: SECURITY__API_KEY_ENCRYPTION_KEY_FILE
+              value: "/run/secrets/api_key_encryption_key"
+            # ASR native passthrough fixed to /api/v1 (same as compose; the real
+            # vendor key lives in the gateway).
+            - name: AI_GATEWAY__BASE_URL
+              value: "http://higress:8080/api/v1"
+            - name: APPAUTH__WORKER_ID
+              value: "2"
+            - name: APPAUTH__LOG__OUTPUT
+              value: "both"
+            - name: APPBILI__LOG__OUTPUT
+              value: "both"
+            - name: APPSETTINGS__LOG__OUTPUT
+              value: "both"
+            # $(VAR) can only reference variables defined earlier in THIS list
+            # (envFrom values are invisible to $(VAR)) — take the source value
+            # first, then derive the two internal M2M guard keys from it.
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            # auth M2M face: GET /internal/auth/user/{uid} (AI stack task-quiz).
+            - name: APPAUTH__INTERNAL__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            # bili M2M face: GET /internal/bili/* (AI stack knowledge scope).
+            - name: APPBILI__INTERNAL__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+          ports:
+            - name: http-auth
+              containerPort: 8006
+            - name: http-bili
+              containerPort: 8010
+            - name: http-settings
+              containerPort: 8015
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: enc-key
+              mountPath: /run/secrets
+              readOnly: true
+
+          # startupProbe 门控启动期（60s 预算），通过后 readiness/liveness 立即接管。
+          # 探针打 auth 监听口（8006）的 /health——三项监听同进程启动，进程就绪即三口可用；
+          # 具体端口可用性另由 start-backend.sh / APISIX 主动健康检查覆盖。
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: 1000m, memory: 1Gi }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: enc-key
+          secret:
+            secretName: api-key-encryption-key

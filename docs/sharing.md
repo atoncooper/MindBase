@@ -54,11 +54,11 @@
 
 流程：`GET info` 返回签名挑战（token 绑定 + 10 分钟）→ 页面计算**挑战绑定指纹**（UA/语言/时区/屏幕/canvas → SHA-256，每次访问不同 → **非跨站追踪标识**）→ `POST attest` 换 15 分钟票据（绑定 token+指纹）→ access 必须带 `X-Fp` + `X-Ticket`，否则 412。
 
-**诚实边界**：指纹算法在公开前端代码里，这是**成本分层**（裸 curl/默认无头浏览器过不去），不是安全边界；对抗者读源码或用定制 headless 仍可通过，此时服务器健康由带宽帽/限流无条件兜底。自动化环境（`navigator.webdriver`）直接拒绝。登录/注册发码端点（`/auth/register/email/send-code`、`/auth/phone/send-code` 公开路径）使用同一套用途绑定的证明（app-auth `internal/service/attest.go`），与图形验证码（人机层）互补。
+**诚实边界**：指纹算法在公开前端代码里，这是**成本分层**（裸 curl/默认无头浏览器过不去），不是安全边界；对抗者读源码或用定制 headless 仍可通过，此时服务器健康由带宽帽/限流无条件兜底。自动化环境（`navigator.webdriver`）直接拒绝。登录/注册发码端点（`/auth/register/email/send-code`、`/auth/phone/send-code` 公开路径）使用同一套用途绑定的证明（app-user `internal/service/auth/attest.go`），与图形验证码（人机层）互补。
 
 ### 提取码（云盘分享）
 
-- 存储演进：legacy = SHA-256+pepper 单向哈希（不可查看）；v1 = **AES-256-GCM 密文**（`enc:v1:` 前缀），密钥为部署级共享密钥文件（`SECURITY__API_KEY_ENCRYPTION_KEY_FILE`，与 app-auth 同源，**不进数据库**）——DB 泄露依然不暴露可用提取码。
+- 存储演进：legacy = SHA-256+pepper 单向哈希（不可查看）；v1 = **AES-256-GCM 密文**（`enc:v1:` 前缀），密钥为部署级共享密钥文件（`SECURITY__API_KEY_ENCRYPTION_KEY_FILE`，与 app-user（auth 域）同源，**不进数据库**）——DB 泄露依然不暴露可用提取码。
 - 属主可**随时查看明文**（列表接口解密返回）；legacy 哈希行不可逆，前端提供**重设提取码**（`PATCH /cloud/shares/{id}/code`，链接/token 不变只换码）。
 - 可选下载上限 `max_downloads`（弹窗可填），超限后 access 直接 404。
 

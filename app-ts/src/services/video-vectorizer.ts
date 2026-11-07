@@ -17,14 +17,14 @@ const log = createLogger("VEC");
 /**
  * Per-page video vectorization — the AI side's successor of the Python
  * VectorPageService. Pipeline per (bvid, cid):
- *   init guard → ASR delegate (app-bili) when content missing → delete old
+ *   init guard → ASR delegate (app-user) when content missing → delete old
  *   vectors → chunk + embed + insert (RAGService.addVideoContent, idempotent
  *   delete-then-insert) → bookkeeping done/failed.
  * Task state lives in the vector task repository (Mongo preferred); progress
  * is step-level like the Python tracker. Triggered by the Redis
  * `bili:page_ready` subscriber and by POST /vec/page/create|revector.
  *
- * RED LINE: acquisition (download/ffmpeg/DashScope) stays in app-bili — this
+ * RED LINE: acquisition (download/ffmpeg/DashScope) stays in app-user — this
  * service only orchestrates and writes Milvus + its own bookkeeping.
  */
 
@@ -58,7 +58,7 @@ export interface VecTaskStatus {
   error?: string;
 }
 
-/** ASR delegation contract — default implementation calls app-bili over HTTP. */
+/** ASR delegation contract — default implementation calls app-user over HTTP. */
 export interface AsrDelegate {
   ensureAsr(uid: string, bvid: string, cid: number, pageIndex: number, pageTitle: string): Promise<void>;
 }
@@ -308,7 +308,7 @@ export class VideoVectorizerService {
       await this.persistPage({ ...record, status: "processing", error: undefined });
       await this.finishStep(taskId, "init");
 
-      // Phase: ASR (content must exist in Mongo — delegate to app-bili if not)
+      // Phase: ASR (content must exist in Mongo — delegate to app-user if not)
       let transcript = transcript0;
       if (!transcript || transcript.content.trim().length < 50) {
         await this.start(taskId, "asr");
@@ -415,7 +415,7 @@ export class VideoVectorizerService {
   }
 }
 
-// ── ASR delegation (app-bili) — mirrors the Python service's HTTP flow ──
+// ── ASR delegation (app-user) — mirrors the Python service's HTTP flow ──
 
 export class AppBiliAsrDelegate implements AsrDelegate {
   private readonly baseUrl: string;
@@ -438,10 +438,10 @@ export class AppBiliAsrDelegate implements AsrDelegate {
       body: JSON.stringify({ bvid, cid, page_index: pageIndex, page_title: pageTitle }),
       signal: timeout,
     });
-    if (!res.ok) throw new Error(`app-bili /asr/create HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`app-user /asr/create HTTP ${res.status}`);
     const created = (await res.json()) as { task_id?: string; status?: string };
     if (created.status === "done") return;
-    if (!created.task_id) throw new Error("app-bili /asr/create returned no task_id");
+    if (!created.task_id) throw new Error("app-user /asr/create returned no task_id");
 
     const deadline = Date.now() + this.timeoutMs;
     while (Date.now() < deadline) {
@@ -449,7 +449,7 @@ export class AppBiliAsrDelegate implements AsrDelegate {
         headers,
         signal: timeout,
       });
-      if (!st.ok) throw new Error(`app-bili /asr/status HTTP ${st.status}`);
+      if (!st.ok) throw new Error(`app-user /asr/status HTTP ${st.status}`);
       const body = (await st.json()) as { status?: string; message?: string };
       if (body.status === "done") return;
       if (body.status === "failed") throw new Error(`ASR failed: ${body.message ?? "unknown"}`);

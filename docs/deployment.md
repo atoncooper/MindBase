@@ -11,7 +11,7 @@
   ├─ /cloud/（大文件上传，绕过网关，auth_request 注入 X-Uid）→ app-cloud
   ├─ /minio-proxy/（预签名对象同源代理）→ minio
   └─ 其余 API → APISIX:9080（容器内）
-       ├─ forward-auth → app-auth /internal/auth/verify（注入 X-Uid/X-Roles）
+       ├─ forward-auth → app-user（auth 路由）/internal/auth/verify（注入 X-Uid/X-Roles）
        ├─ key-auth     → 服务间 /internal/*、MCP
        └─ → app-ts / app-go 各服务 / app-pay / app-board / app-sandbox
 ```
@@ -21,7 +21,7 @@
 | 80 / 443 | nginx | **公网** | 唯一生产入口；443 需证书（第 5 节） |
 | 3000 | frontend | 0.0.0.0 | 生产可只经 nginx；防火墙限制 |
 | 9080 | APISIX | 无宿主端口 | 仅容器网络；调试 `docker compose exec apisix` |
-| 8000 / 8001-8016 | app-ts、app-go 各服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
+| 8000 / 8001-8016 | app-ts、app-user（8006/8010/8015）、其他 app-go 服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
 | 3001 / 8016 | app-admin UI / API | 127.0.0.1 | 管理台仅回环，远程用 SSH 隧道 |
 | 8002 | app-pay | 127.0.0.1 | HTTPS-only |
 | 3306 / 27017 / 6379 / 19530 / 7474 / 7687 / 9000-9001 | MySQL/Mongo/Redis/Milvus/Neo4j/MinIO | **compose 默认 0.0.0.0** | 生产必须防火墙限制或改回环绑定 |
@@ -77,13 +77,13 @@ chmod 600 secrets/api_key_encryption_key
 
 | 命令 | 启动内容 | 说明 |
 |---|---|---|
-| `docker compose up -d --build` | 默认全栈（实测 29 个服务）：frontend/nginx/APISIX/app-ts/app-go 各服务/app-board(+MCP)/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
+| `docker compose up -d --build` | 默认全栈（实测 27 个服务）：frontend/nginx/APISIX/app-ts/app-go 各服务/app-board(+MCP)/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
 | `--profile ai` | 追加 Higress AI 网关（追加后用于平台 LLM/embedding 出网） | 单独执行只起 5 个服务（higress+mysql/mongo/redis+cert-gen），**不含**主栈 |
 | `--profile sandbox` | 追加 opensandbox-server / app-sandbox | 单独执行只起 6 个服务；配合 `SANDBOX_ENABLED=true` |
 | `--profile pay-test` | 追加 app-pay-test（回环 18002）与测试库（回环 18306） | 仅测试，不用于生产 |
 | `--profile tools` | 追加 redis-commander / mongo-express | 仅内网调试 |
 | `--profile pay` / `--profile admin` | 默认集合已含 app-pay / app-admin；仅单域最小栈时显式指定 | 单独执行会排除默认全栈 |
-| `--profile full` | 一次启动全量（实测 36 个服务）：默认全栈 + higress + sandbox 两件 + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
+| `--profile full` | 一次启动全量（实测 34 个服务）：默认全栈 + higress + sandbox 两件 + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
 
 > **compose profile 语义（实测 `docker compose config --services`）**：服务带 `profiles: [""]` 属于默认集合；
 > **一旦传入 `--profile X`，默认集合不再自动启动**。因此上表「追加」应分两步：
@@ -115,7 +115,7 @@ chmod 600 secrets/api_key_encryption_key
 | 服务 | 健康/指标端点（容器内） | 备注 |
 |---|---|---|
 | app-ts | `:8000/health`、`:8000/agent/runtime` | health 含 Milvus 可用性；runtime 含队列/超时/breaker |
-| app-go 服务 | 8006/8007/8018/8010/8011/8015 的 `/health` | app-cloud 另有 `/metrics`；app-note 容器端口仍 8008 |
+| app-go 服务 | app-user 8006/8010/8015、app-cloud 8007、app-note 8018（容器 8008）、app-quiz 8011 的 `/health` | app-cloud 另有 `/metrics`；app-note 容器端口仍 8008 |
 | app-kg | `:8014/health`（gRPC `:8013` 自带 health） | |
 | app-board / 三个 MCP | `:8004/8005/8009/8012/health` | app-board 为 HTTPS |
 | app-task | `:8001/health` | |
@@ -224,7 +224,7 @@ git checkout <last-good-commit> && docker compose build && docker compose up -d
 | 现象 | 常见原因与处理 |
 |---|---|
 | 502 Bad Gateway | 上游未就绪：`docker compose ps` 看 apisix/frontend/app-ts；`docker compose logs nginx`；APISIX 依赖 etcd，查 `logs apisix etcd` |
-| 401 / 403 | 会话过期（app-auth forward-auth 401）；服务间 `/internal/*` 需 `APISIX_CONSUMER_KEY`（key-auth）；直连应用端口绕过网关也会 401（只信任网关注入的 X-Uid） |
+| 401 / 403 | 会话过期（app-user auth 路由 forward-auth 401）；服务间 `/internal/*` 需 `APISIX_CONSUMER_KEY`（key-auth）；直连应用端口绕过网关也会 401（只信任网关注入的 X-Uid） |
 | app-pay 起不来 | 证书缺失（`PAY_TLS_CERT` 路径错/未生成 → 启动自检拒绝）；Flyway 迁移失败；`app-pay-mysql` 未 healthy |
 | app-ts 功能降级 | Mongo/Milvus/Redis 不可用时启动日志出现 `memory fallback` / `[RAG] ... degraded`；服务仍可用但数据不落/检索受限，修复依赖后重启 |
 | 沙箱不可用 | 未开 `--profile sandbox` 或 `SANDBOX_ENABLED` 非 true；`/ready` 失败（MySQL ping）；`OPENSANDBOX_API_KEY` 两侧不一致；查 `logs app-sandbox opensandbox-server` |

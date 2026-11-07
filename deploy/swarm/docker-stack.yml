@@ -124,7 +124,6 @@ services:
       - ${MB_ROOT:-/srv/mindbase}/nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video
-      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
     # swarm 加载器只认服务级 ports（长语法），不支持 deploy.ports；
     # stack 下长语法端口默认走 ingress 路由网格（任一节点 IP 均可达）
     ports:
@@ -494,8 +493,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
       interval: 15s
@@ -520,10 +519,14 @@ services:
   # Go 应用服务（app-go/*，无状态；可按需 docker service scale 扩容）
   # ==============================================================
 
-  # app-auth —— 身份认证（认证权威；共享主 MySQL + Redis）
-  app-auth:
-    image: atoncooper/mind-base-app-auth:latest
+  # app-user —— 用户域（auth 8006 + bili 8010 + settings 8015 合并为单服务）
+  #   对外路径/端口语义不变：8006 auth（含 APISIX forward-auth verify）、
+  #   8010 bili（收藏夹/ASR/知识库 build）、8015 settings（偏好/壁纸）。
+  #   三端口经 overlay DNS + VIP 可达（swarm 服务间互访，不发布宿主端口）。
+  app-user:
+    image: atoncooper/mind-base-app-user:latest
     environment:
+      # ── auth（8006）──
       - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
@@ -542,8 +545,27 @@ services:
       # Snowflake worker id 2（1 是已退役 Python backend）
       - APPAUTH__WORKER_ID=2
       - APPAUTH__LOG__OUTPUT=both
+      # auth M2M 面（/internal/auth/user/{uid}）：key = 共享 APISIX consumer key
+      - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
+      # ── bili（8010）──
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 Higress 原生透传（/api/v1 → DashScope）
+      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - APPBILI__LOG__OUTPUT=both
+      # ── settings（8015）──
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
     secrets:
       - api_key_encryption_key      # 挂载 /run/secrets/api_key_encryption_key
+    volumes:
+      - app_user_logs:/app/logs
     deploy:
       replicas: 1
       restart_policy:
@@ -666,64 +688,6 @@ services:
     networks:
       - mind-base-net
 
-  # app-settings —— 用户 AI 配置权威
-  app-settings:
-    image: atoncooper/mind-base-app-settings:latest
-    environment:
-      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
-      - APPSETTINGS__LOG__OUTPUT=both
-    volumes:
-      - app_settings_logs:/app/logs
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: start-first
-        parallelism: 1
-        delay: 10s
-        failure_action: rollback
-        monitor: 30s
-    networks:
-      - mind-base-net
-
-  # app-bili —— B 站数据获取（须出公网访问 B 站与 DashScope）
-  app-bili:
-    image: atoncooper/mind-base-app-bili:latest
-    environment:
-      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      # ASR 走 Higress 原生透传（/api/v1 → DashScope）
-      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
-      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
-      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
-      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
-      - APPBILI__LOG__OUTPUT=both
-    secrets:
-      - api_key_encryption_key
-    volumes:
-      - app_bili_logs:/app/logs
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: start-first
-        parallelism: 1
-        delay: 10s
-        failure_action: rollback
-        monitor: 30s
-    networks:
-      - mind-base-net
-
   # ==============================================================
   # AI 域（app-ts，Node/Fastify）
   # 注：env_file 在 stack deploy 下被忽略，.env 中 SDK 直读变量
@@ -734,10 +698,10 @@ services:
     environment:
       - SERVER__HOST=0.0.0.0
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - APP_BILI_BASE_URL=http://app-bili:8010
+      - APP_BILI_BASE_URL=http://app-user:8010
       - APP_CLOUD_BASE_URL=http://app-cloud:8007
       - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - APP_AUTH_BASE_URL=http://app-user:8006
       - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -814,7 +778,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
     volumes:
       - app_task_logs:/app/logs
       # app-pay 开发 CA（cert-gen 产出；缺失时仅 https 委托回调报错、兜底轮询接管）
@@ -886,7 +850,7 @@ services:
   app-admin-api:
     image: atoncooper/mind-base-app-admin:latest
     environment:
-      # 共享 bilirag 库（与 app-auth/app-cloud 同库；RDBMS__URL 来自 .env）
+      # 共享 bilirag 库（与 app-user/app-cloud 同库；RDBMS__URL 来自 .env）
       - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
       - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}
@@ -1131,20 +1095,17 @@ volumes:
   minio_data:
   certbot_www:
   nginx_video_cache:
-  nginx_wallpaper_cache:
   app_task_mysql_data:
   app_task_certs:
   app_task_logs:
   app_pay_mysql_data:
   app_pay_logs:
   app_admin_logs:
-  app_auth_logs:
+  app_user_logs:
   app_cloud_logs:
   app_note_logs:
   app_quiz_logs:
   app_kg_logs:
-  app_settings_logs:
-  app_bili_logs:
   app_note_mcp_logs:
   app_quiz_mcp_logs:
   app_board_logs:

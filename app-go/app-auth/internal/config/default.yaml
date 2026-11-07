@@ -1,6 +1,0 @@
-
-# Internal M2M face (/internal/auth/user/*) — AI stack user lookup.
-# Key = shared APISIX consumer key; compose injects it via
-# APPAUTH__INTERNAL__API_KEY. Empty = every internal request rejected.
-internal:
-  api_key: ""

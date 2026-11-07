@@ -2,7 +2,7 @@
  * Knowledge API - 知识库构建 / 同步 / 统计 / 视频向量管理.
  *
  * 网关路由三分（Python 退役后无 catch_all 兜底）：
- *  - build / build/status / folders/sync → app-bili（bili_user）
+ *  - build / build/status / folders/sync → app-user（bili_user）
  *  - stats / folders/status / pages/vectorized / clear / video/{bvid} → app-ts（vec_knowledge_ts）
  *  - /knowledge/kg/* → app-ts（kg_ts，见 kg.ts）
  */
@@ -64,7 +64,7 @@ export const knowledgeApi = {
     // 获取统计信息
     getStats: () => request<KnowledgeStats>("/knowledge/stats"),
 
-    // 构建知识库（同步+ASR 编排在 app-bili）
+    // 构建知识库（同步+ASR 编排在 app-user）
     build: (data: BuildRequest) =>
         request<{ task_id: string; message: string }>("/knowledge/build", {
             headers: getAuthHeaders(),
@@ -82,7 +82,7 @@ export const knowledgeApi = {
             headers: getAuthHeaders(),
         }),
 
-    // 同步收藏夹到向量库（同步编排在 app-bili；ASR 完成后经 bili:page_ready
+    // 同步收藏夹到向量库（同步编排在 app-user；ASR 完成后经 bili:page_ready
     // 事件由 app-ts 自动向量化）
     // 返回单个后台任务描述 { task_id, message, reused }，前端轮询 /knowledge/build/status/{task_id}
     syncFolders: (data: SyncRequest) =>

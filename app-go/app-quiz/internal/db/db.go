@@ -180,7 +180,7 @@ func schemaDDL() []string {
 		// Scheduled-quiz business rows (app/models.py QuizTask / QuizTaskAnswer),
 		// ownership moved from the Python backend. The users(uid) FK declared by
 		// the Python model is intentionally omitted: the users table belongs to
-		// app-auth and may not exist yet at app-quiz boot (a fresh-create FK
+		// app-user and may not exist yet at app-quiz boot (a fresh-create FK
 		// would abort Migrate). CREATE IF NOT EXISTS is a no-op on live databases.
 		`create table if not exists quiz_task (
 			id                 int auto_increment primary key,

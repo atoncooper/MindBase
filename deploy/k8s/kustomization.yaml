@@ -85,13 +85,11 @@ resources:
   - 20-data/milvus.yaml
   - 20-data/neo4j.yaml
   - 30-apps/app-ts.yaml
-  - 30-apps/app-auth.yaml
+  - 30-apps/app-user.yaml
   - 30-apps/app-cloud.yaml
   - 30-apps/app-note.yaml
-  - 30-apps/app-bili.yaml
   - 30-apps/app-quiz.yaml
   - 30-apps/app-kg.yaml
-  - 30-apps/app-settings.yaml
   - 30-apps/app-board.yaml
   - 30-apps/app-board-mcp.yaml
   - 30-apps/app-note-mcp.yaml

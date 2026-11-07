@@ -1,8 +1,8 @@
 # MindBase — Kubernetes 部署
 
 本目录将 `docker-compose.yml` 的完整拓扑（3×MySQL、Redis、Mongo、Milvus+etcd、
-MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 八服务
-（auth/cloud/note/bili/quiz/kg/settings/admin）、app-board + 三个 MCP、app-task、
+MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 六服务
+（user/cloud/note/quiz/kg/admin）、app-board + 三个 MCP、app-task、
 app-pay、app-admin（统一管理后台：分享审核 + 支付运营 + 沙箱 + 账户 + 审计，:8016 回环）、
 app-sandbox（沙箱控制层））等价移植为 k8s 清单；OpenSandbox 运行时（lifecycle
 server / controller / ingress-gateway / warm pool）见 [40-sandbox](40-sandbox/README.md)。
@@ -50,7 +50,7 @@ kubectl -n mind-base create secret generic app-board-certs \
   --from-file=server.crt=app-board/certs/server.crt \
   --from-file=server.key=app-board/certs/server.key
 
-# ⑤ 主加密密钥（SESSDATA 解密;app-auth/app-bili 经 _FILE 约定读
+# ⑤ 主加密密钥（SESSDATA 解密;app-user 经 _FILE 约定读
 #    /run/secrets/api_key_encryption_key——.env 里的 *_FILE 宿主相对路径
 #    在容器内无效,清单中的 env 覆盖会指向此挂载路径）
 kubectl -n mind-base create secret generic api-key-encryption-key \
@@ -98,7 +98,7 @@ kubectl -n mind-base create configmap nginx-conf \
 - `BOARD/NOTE/QUIZ_MCP_UID`、`*_MCP_AUTH_TOKEN`、`PAY_OPS_KEY` 为 optional 引用
   （缺失 = 对应功能停用，不影响启动）；
 - 少数服务特定值以显式 `env:` 写死（显式 env 优先于 envFrom），想用 .env 覆盖它们时
-  需 `kubectl patch`：app-ts/app-cloud/app-bili 的 `AI_GATEWAY__BASE_URL`、
+  需 `kubectl patch`：app-ts/app-cloud/app-user 的 `AI_GATEWAY__BASE_URL`、
   app-ts 的 `OCR__MODEL`、app-cloud 的 `MILVUS__URI`；
 - compose 的 `${APISIX_CONSUMER_KEY}` 交叉引用在 K8s 用「先取源值再派生」的
   in-list 模式实现：`$(VAR)` 只能引用同容器 env 列表中**先定义**的变量，
@@ -136,7 +136,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | 事项 | 操作 |
 |------|------|
 | Higress 控制台 | `kubectl -n mind-base port-forward svc/higress 18081:8001` → http://127.0.0.1:18081 初始化 admin、配 Provider（供应商真实 key 只在这里）/ Consumer `mindbase-backend`(BEARER) / 路由 `/v1`、`/api/v1`、`/api-ws`；**modelMapping 保持空透传** |
-| 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart deploy/app-ts deploy/app-cloud deploy/app-bili |
+| 网关 consumer key 回填 | 控制台生成的 key 填入 `.env` 的 `AI_GATEWAY__API_KEY` → 重建 mindbase-env Secret → rollout restart deploy/app-ts deploy/app-cloud deploy/app-user |
 | app-admin | `kubectl -n mind-base port-forward svc/app-admin 8016:8016` → http://127.0.0.1:8016（统一后台：分享审核 + 支付运营 + 沙箱 + 账户 + 审计，种子账户 admin / app-admin，首登强制改密）；前端 frontend-admin 本地 `pnpm dev`（/api 代理 8016）。支付运营读 app-pay-mysql，退款复核需 `.env` 的 `PAY_OPS_KEY` |
 | app-sandbox | `kubectl -n mind-base port-forward svc/app-sandbox 8017:8017` → `/health`、`/ready`；运行时依赖 40-sandbox 的 OpenSandbox |
 | 入口地址 | nginx Service 是 LoadBalancer：本地集群直接用分配的地址；云上绑域名 + 正式证书（更新 nginx-tls Secret 后 restart nginx） |

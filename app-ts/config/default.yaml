@@ -71,7 +71,7 @@ vectorize:
   # 视频分P向量化管线（bili:page_ready 消费 + /vec/page/*）
   enabled: true
   concurrency: 2          # 同时跑管线任务的分P数
-  asrTimeoutMs: 720000    # 委派 app-bili ASR 的总超时（转写 + 轮询余量）
+  asrTimeoutMs: 720000    # 委派 app-user ASR 的总超时（转写 + 轮询余量）
   pollIntervalMs: 3000
 
 aiGateway:

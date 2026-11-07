@@ -23,7 +23,7 @@ export class InternalServiceClient {
 
   constructor(
     opts: InternalClientOptions,
-    /** service label for logs/error context, e.g. "app-bili" */
+    /** service label for logs/error context, e.g. "app-user" */
     private readonly service: string,
   ) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, "");

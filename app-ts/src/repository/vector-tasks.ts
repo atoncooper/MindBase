@@ -5,7 +5,7 @@
  * With the Python backend retired, the MySQL `video.is_vectorized*` columns
  * it maintained go stale by design; this store becomes the source of truth
  * for vectorization state (Milvus itself only holds content). User scoping
- * of pages goes through the app-bili knowledge scope (collection ownership),
+ * of pages goes through the app-user knowledge scope (collection ownership),
  * not through a uid column here.
  */
 

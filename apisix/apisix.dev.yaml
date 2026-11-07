@@ -263,11 +263,11 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-auth —— 身份认证服务（Go；本机 go run ./app-go/app-auth）。
+  # app-user（auth 监听口 8006）—— 身份认证面（Go；本机 go run ./app-go/app-user）。
   # forward-auth verify 权威 + /auth/* 用户端点归属地（宽验证：无凭证放行，
   # 受保护服务对缺 X-Uid 自行 401）。
-  - id: upstream-app-auth
-    name: app-auth
+  - id: upstream-app-user-auth
+    name: app-user
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -297,9 +297,9 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-settings —— 设置服务（Go；本机 go run ./app-go/app-settings）
-  - id: upstream-app-settings
-    name: app-settings
+  # app-user（settings 监听口 8015）—— 设置面（Go；本机 go run ./app-go/app-user）
+  - id: upstream-app-user-settings
+    name: app-user
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -329,7 +329,6 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-bili —— B 站数据获取服务（Go；本机 go run ./app-go/app-bili）
   # app-sandbox —— 沙箱控制层（Go；租约/配额/审计/产物/准入/回收）
   - id: upstream-app-sandbox
     name: app-sandbox
@@ -362,8 +361,9 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  - id: upstream-app-bili
-    name: app-bili
+  # app-user（bili 监听口 8010）—— B 站数据获取面（Go；本机 go run ./app-go/app-user）
+  - id: upstream-app-user-bili
+    name: app-user
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -412,6 +412,9 @@ routes:
     priority: 50
     upstream_id: upstream-app-ts
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -426,6 +429,9 @@ routes:
     priority: 50
     upstream_id: upstream-app-ts
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -491,6 +497,9 @@ routes:
     priority: 100
     upstream_id: upstream-app-quiz
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -515,7 +524,7 @@ routes:
     plugins:
       proxy-rewrite:
         headers:
-          remove: [X-Uid]
+          remove: [X-Uid, X-Roles]
           set:
             X-API-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       forward-auth:
@@ -534,7 +543,7 @@ routes:
     plugins:
       proxy-rewrite:
         headers:
-          remove: [X-Uid]
+          remove: [X-Uid, X-Roles]
           set:
             X-API-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       forward-auth:
@@ -553,6 +562,9 @@ routes:
     priority: 100
     upstream_id: upstream-app-quiz
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -568,6 +580,9 @@ routes:
     priority: 50
     upstream_id: upstream-app-pay
     plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
       forward-auth:
         uri: "http://192.168.138.1:8006/internal/auth/verify"
         request_headers: [Authorization]
@@ -655,12 +670,12 @@ routes:
       key-auth: {}
 
 
-  # 用户端认证端点 (/auth, /auth/*) -> app-auth（全栈认证权威；app-auth 自校验
-  # Bearer token，无需 forward-auth；仍剥离伪造身份头）。
+  # 用户端认证端点 (/auth, /auth/*) -> app-user（auth 监听口 8006；全栈认证权威；
+  # app-user 自校验 Bearer token，无需 forward-auth；仍剥离伪造身份头）。
   - id: auth_user
     uris: [/auth, /auth/*]
     priority: 50
-    upstream_id: upstream-app-auth
+    upstream_id: upstream-app-user-auth
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -825,12 +840,12 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # /preferences + /wallpaper -> app-settings（用户 KV 偏好 + 壁纸上传/服务，
-  # 2026-10-06 迁自 Python；wallpaper/file 无鉴权如头像语义）。
-  - id: prefs_wallpaper_user
-    uris: [/preferences, /preferences/*, /wallpaper, /wallpaper/*]
+  # /preferences + /avatar -> app-user（settings 监听口 8015；用户 KV 偏好 +
+  # 头像上传/服务，2026-10-06 迁自 Python；avatar/file 无鉴权语义）。
+  - id: prefs_avatar_user
+    uris: [/preferences, /preferences/*, /avatar, /avatar/*]
     priority: 50
-    upstream_id: upstream-app-settings
+    upstream_id: upstream-app-user-settings
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -878,11 +893,11 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # /favorites/* /asr/* /knowledge(build|folders) -> app-bili（B 站数据获取）
+  # /favorites/* /asr/* /knowledge(build|folders) -> app-user（bili 监听口 8010）
   - id: bili_user
     uris: [/favorites, /favorites/*, /asr, /asr/*, /knowledge/build, /knowledge/build/*, /knowledge/folders/sync]
     priority: 50
-    upstream_id: upstream-app-bili
+    upstream_id: upstream-app-user-bili
     plugins:
       request-id: {}
       proxy-rewrite:

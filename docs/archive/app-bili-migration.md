@@ -1,5 +1,7 @@
 # app-bili 数据获取域迁移（app/ → app-go/app-bili）
 
+> ⚠️ **历史文档（只读存档）**：app-auth / app-bili / app-settings 三个 Go 服务已合并为 app-user（8006 auth / 8010 bili / 8015 settings），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
+
 > 2026-10-04。规范见 `AGENTS.md` §2.16（本地开发规范，不入 git）；本文是实施记录 + 切流/回滚手册。
 
 ## 1. 迁移了什么

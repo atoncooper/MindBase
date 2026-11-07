@@ -41,8 +41,11 @@
 # Upstreams
 # ============================================================
 upstreams:
-  - id: upstream-app-auth
-    name: app-auth
+  # app-user（auth 监听口 8006）—— 身份认证服务（Go + Gin；接管 users /
+  # user_tokens / user_oauth 等 auth 表的 schema 所有权，共享主 bilirag MySQL；
+  # APISIX forward-auth 指向 /internal/auth/verify，/auth/* 用户端点也由它提供）
+  - id: upstream-app-user-auth
+    name: app-user
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -56,7 +59,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-auth:8006": 1
+      "app-user:8006": 1
     checks:
       active:
         type: http
@@ -237,9 +240,9 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-settings —— 设置服务（Go；用户 embedding/ASR 配置 CRUD+test）
-  - id: upstream-app-settings
-    name: app-settings
+  # app-user（settings 监听口 8015）—— 设置服务（Go；用户 embedding/ASR 配置 CRUD+test）
+  - id: upstream-app-user-settings
+    name: app-user
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -253,7 +256,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-settings:8015": 1
+      "app-user:8015": 1
     checks:
       active:
         type: http
@@ -301,10 +304,10 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-bili —— B 站数据获取服务（Go；收藏夹/ASR/知识库 build 编排；
-  # schema 所有权自 Python backend 迁入本服务）
-  - id: upstream-app-bili
-    name: app-bili
+  # app-user（bili 监听口 8010）—— B 站数据获取面（Go；收藏夹/ASR/知识库
+  # build 编排；schema 所有权自 Python backend 迁入）
+  - id: upstream-app-user-bili
+    name: app-user
     type: roundrobin
     scheme: http
     pass_host: pass
@@ -318,7 +321,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-bili:8010": 1
+      "app-user:8010": 1
     checks:
       active:
         type: http
@@ -499,7 +502,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -516,7 +519,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -605,7 +608,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -632,7 +635,7 @@ routes:
           set:
             X-API-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -651,7 +654,7 @@ routes:
           set:
             X-API-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -670,7 +673,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -688,7 +691,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -800,7 +803,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -869,12 +872,12 @@ routes:
         key_type: var
         key: remote_addr
 
-  # 用户端认证端点 (/auth/*) -> app-auth。app-auth 自己校验 Bearer token
-  # （authGuard），无需 forward-auth；仍剥离伪造身份头以防伪造 X-Uid。
+  # 用户端认证端点 (/auth/*) -> app-user（auth 监听口 8006）。app-user 自己
+  # 校验 Bearer token（authGuard），无需 forward-auth；仍剥离伪造身份头以防伪造 X-Uid。
   - id: auth_user
     uris: [/auth, /auth/*]
     priority: 50
-    upstream_id: upstream-app-auth
+    upstream_id: upstream-app-user-auth
     plugins:
       request-id: {}
       proxy-rewrite:
@@ -901,7 +904,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -923,7 +926,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -942,7 +945,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -965,7 +968,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -985,7 +988,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1004,7 +1007,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1023,7 +1026,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1042,7 +1045,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 30000
@@ -1060,13 +1063,13 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
-  # /favorites/* /asr/* /knowledge(build|folders) -> app-bili（B 站数据获取服务；
+  # /favorites/* /asr/* /knowledge(build|folders) -> app-user（bili 监听口 8010；
   # 切流自主 backend catch_all。宽验证 forward-auth 与 catch_all 语义一致。
   # 注意 uri 列表是显式的：/knowledge/stats、/knowledge/video/*、/vec/* 等
   # AI 域端点已切 vec_knowledge_ts -> app-ts（2026-10-06），与 bili_user 不相交。
@@ -1074,14 +1077,14 @@ routes:
   - id: bili_user
     uris: [/favorites, /favorites/*, /asr, /asr/*, /knowledge/build, /knowledge/build/*, /knowledge/folders/sync]
     priority: 50
-    upstream_id: upstream-app-bili
+    upstream_id: upstream-app-user-bili
     plugins:
       request-id: {}
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1091,8 +1094,8 @@ routes:
   # /vec/page/* + /knowledge(stats|folders/status|pages/vectorized|clear|video/*)
   # + /chat/search -> app-ts（视频分P向量化管线 + 知识库管理面，迁移自 Python
   # VectorPageService/knowledge router。向量真账本 = app-ts Mongo vec_pages/vec_tasks；
-  # 收藏夹 scope 经 app-bili internal 只读端点。/knowledge/build* 与
-  # /knowledge/folders/sync 仍归 app-bili（bili_user），uri 列表显式不相交。
+  # 收藏夹 scope 经 app-user（bili 面）internal 只读端点。/knowledge/build* 与
+  # /knowledge/folders/sync 仍归 app-user（bili_user），uri 列表显式不相交。
   # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
   - id: vec_knowledge_ts
     uris: [/vec, /vec/*, /knowledge/stats, /knowledge/folders/status, /knowledge/pages/vectorized, /knowledge/clear, /knowledge/video, /knowledge/video/*, /chat/search, /blindspot, /blindspot/*, /skills, /skills/*]
@@ -1104,15 +1107,12 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
-  # /preferences + /wallpaper + /avatar -> app-settings（用户 KV 偏好 + 壁纸/
-  # 头像上传与服务，2026-10-06 迁自 Python；wallpaper/file、avatar/file 无鉴权
-  # —— <img> 直读语义，lenient verify 无凭证时放行）。
   # /academic/* -> app-ts（网页端科研工作台 REST，plan/1.0.17 Phase 2；uid 由
   # forward-auth 注入 X-Uid，数据在 app-ts 自有库 mind_base_ts.academic_*）。
   # 回滚 = 删除本路由（该 URI 将 404——Python 面已退役，无回落）。
@@ -1126,23 +1126,26 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
-  - id: prefs_wallpaper_user
-    uris: [/preferences, /preferences/*, /wallpaper, /wallpaper/*, /avatar, /avatar/*]
+  # /preferences + /avatar -> app-user（settings 监听口 8015；用户
+  # KV 偏好 + 头像上传与服务，2026-10-06 迁自 Python；avatar/file
+  # 无鉴权 —— <img> 直读语义，lenient verify 无凭证时放行）。
+  - id: prefs_avatar_user
+    uris: [/preferences, /preferences/*, /avatar, /avatar/*]
     priority: 50
-    upstream_id: upstream-app-settings
+    upstream_id: upstream-app-user-settings
     plugins:
       request-id: {}
       proxy-rewrite:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1160,7 +1163,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1180,7 +1183,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-auth:8006/internal/auth/verify"
+        uri: "http://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000

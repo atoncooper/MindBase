@@ -2,7 +2,7 @@
 
 在本地把 MindBase 跑起来并开始改代码。本文只讲**开发环境**：前置依赖、`.env` 配置、两条启动路径（容器起基础设施 + 本地跑应用 / 全 Docker）、验证链路、测试与常见问题。
 
-> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（auth / cloud / note / bili / quiz / kg / settings / admin）与 **app-board**（Go，HTTPS-only）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
+> **技术栈现状**：AI 域在 **app-ts**（Node + Fastify + tsx，端口 8000）；业务 CRUD 在 **app-go/** 下的 Go 微服务（app-user〔auth/bili/settings 三域合一〕/ cloud / note / quiz / kg / admin）与 **app-board**（Go，HTTPS-only）、**app-pay**（Java 21 / Spring Boot，HTTPS-only）、**app-task**（独立仓库镜像）；沙箱控制层是 **app-go/app-sandbox**；前端是 **frontendv2/**（Next.js 16）与 **frontend-admin/**（Vite + React + antd）。
 > 旧 Python backend（`app/`）已于 2026-10-06 彻底退役，任何 `pip install` / `uvicorn app.main:app` / `app/config/default.yaml` 的说法都已失效。
 >
 > 服务清单、端口、网关路由以 [architecture.md](architecture.md) 为权威；配置体系（各服务 YAML / env 前缀 / 密钥清单）见 [configuration.md](configuration.md)；生产部署见 [deployment.md](deployment.md)。
@@ -20,7 +20,7 @@
 | Go | **1.25+**（`app-go/*/go.mod`；`app-sandbox` 为 1.24） | app-go 各服务与 `mcp/` 下的 MCP server |
 | Java + Maven | **JDK 21** + Maven 3.9+ | 仅 app-pay（`pom.xml` `java.version=21`） |
 | Docker + Compose | Docker Engine/Desktop，**Compose v2**（`docker compose version`） | 基础设施与全栈启动 |
-| ffmpeg / ffprobe | 任意近期版本 | **仅本地直跑 app-bili 做 ASR 时需要**；容器镜像已内置静态 ffmpeg |
+| ffmpeg / ffprobe | 任意近期版本 | **仅本地直跑 app-user（bili 路由）做 ASR 时需要**；容器镜像已内置静态 ffmpeg |
 | openssl | 任意近期版本 | 生成主密钥文件（本地跑 app-pay 时也用它生成 HTTPS 证书） |
 
 > 你不需要在本机装 MySQL / Mongo / Redis / Milvus / MinIO / Neo4j / APISIX：它们都跑在容器里。
@@ -59,9 +59,9 @@ openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_ke
 
 | 项 | 说明 |
 |----|------|
-| `secrets/api_key_encryption_key` | app-auth / app-cloud / app-bili 共用的用户凭证加密主密钥（一行 base64）。**不是**环境变量文件内容，而是独立密钥文件；compose 把它挂到 `/run/secrets/`。文件缺失时容器会反复重启（Docker 会把缺失的绑定源建成目录），日志报读取失败。**部署后不可更换**，否则已加密数据无法解密。 |
+| `secrets/api_key_encryption_key` | app-user（auth/bili 域）/ app-cloud 共用的用户凭证加密主密钥（一行 base64）。**不是**环境变量文件内容，而是独立密钥文件；compose 把它挂到 `/run/secrets/`。文件缺失时容器会反复重启（Docker 会把缺失的绑定源建成目录），日志报读取失败。**部署后不可更换**，否则已加密数据无法解密。 |
 | `APISIX_CONSUMER_KEY` | 服务间 key-auth 共享密钥。compose 强制要求（未设置直接报错 `err_APISIX_CONSUMER_KEY_not_set_in_.env`）。**必须与 `apisix/apisix.yaml` 里 `consumers.internal.key` 一致**（standalone 模式不做 env 插值）——仓库内置的开发值是 `D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre`；改成自己的值时两边都要改。 |
-| `AI_GATEWAY__API_KEY` | 平台 AI 出网凭证（LLM / embedding / OCR）。用 `--profile ai` 的 Higress 时填 Higress consumer `mindbase-backend` 的 key（在网关控制台 `http://127.0.0.1:18081` 配置，详见 configuration.md）；不用 Higress 时可直接填供应商 key，并把 `AI_GATEWAY__BASE_URL` 指向供应商的 OpenAI 兼容口。**留空时 app-bili 会启动失败**（`asr.api_key` 必填），app-ts 的 AI 调用也会在调用时报错。 |
+| `AI_GATEWAY__API_KEY` | 平台 AI 出网凭证（LLM / embedding / OCR）。用 `--profile ai` 的 Higress 时填 Higress consumer `mindbase-backend` 的 key（在网关控制台 `http://127.0.0.1:18081` 配置，详见 configuration.md）；不用 Higress 时可直接填供应商 key，并把 `AI_GATEWAY__BASE_URL` 指向供应商的 OpenAI 兼容口。**留空时 app-user（bili 路由）会启动失败**（`asr.api_key` 必填），app-ts 的 AI 调用也会在调用时报错。 |
 
 ### 2.4 按需开启的可选项
 
@@ -175,13 +175,11 @@ go run .
 
 | 服务 | 端口 | 本地启动必填 |
 |------|------|--------------|
-| app-auth | 8006 | `APPAUTH__RDBMS__URL` |
+| app-user | 8006（auth）/ 8010（bili）/ 8015（settings） | `APPAUTH__RDBMS__URL` + `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY` + `APPSETTINGS__RDBMS__URL`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
 | app-cloud | 8007 | `APPCLOUD__RDBMS__URL` + `MINIO__ACCESS_KEY`/`MINIO__SECRET_KEY`（缺访问密钥直接拒启；另需 `MINIO__ENDPOINT=http://127.0.0.1:9000`） |
 | app-note | 8008 | `APPNOTE__RDBMS__URL`（+ `MONGO__URI` 存正文） |
-| app-bili | 8010 | `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
 | app-quiz | 8011 | `APPQUIZ__RDBMS__URL`（+ `MONGO__URI`） |
 | app-kg | 8013 gRPC / 8014 health | `APPKG__RDBMS__URL` + `KG__URI`（+ `KG__PASSWORD` 或 `NEO4J_PASSWORD`） |
-| app-settings | 8015 | `APPSETTINGS__RDBMS__URL` |
 | app-admin | 8016 | `APPADMIN__RDBMS__URL`（种子账户 `admin` / `app-admin`，首登强制改密） |
 | app-sandbox | 8017 | `SANDBOX__DATABASE__DSN`（或 `RDBMS__URL`）+ `SANDBOX__AUTH__API_KEY`；本机无 OpenSandbox 时用 `SANDBOX__RUNTIME__TYPE=fake` |
 
@@ -208,8 +206,8 @@ docker compose ps
 
 | 命令 | 实际启动 |
 |------|----------|
-| `docker compose up -d` | **29 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-auth / app-cloud / app-note / app-bili / app-quiz / app-kg / app-settings / app-admin(+api) / app-board(+3 个 MCP) / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
-| `docker compose --profile full up -d` | **36 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
+| `docker compose up -d` | **27 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-note / app-quiz / app-kg / app-admin(+api) / app-board(+3 个 MCP) / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
+| `docker compose --profile full up -d` | **34 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
 | `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
 | `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
 
@@ -236,7 +234,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-auth 8006、app-cloud 8007、app-note 8018、app-bili 8010、app-quiz 8011、app-kg 8013/8014、app-settings 8015、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-note 8018、app-quiz 8011、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
 
 ---
 
@@ -258,9 +256,9 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 ### 5.2 最小端到端
 
-打开 http://localhost（或本地 dev 的 http://localhost:3000）→ B 站 App 扫码登录（app-auth + MySQL + Redis 正常即可）→ 进「收藏夹」同步一个收藏夹触发知识库构建（ASR + 向量化，需要几分钟）→ 构建完成后在聊天里就收藏内容提问，应看到流式回答与来源。
+打开 http://localhost（或本地 dev 的 http://localhost:3000）→ B 站 App 扫码登录（app-user auth 路由 + MySQL + Redis 正常即可）→ 进「收藏夹」同步一个收藏夹触发知识库构建（ASR + 向量化，需要几分钟）→ 构建完成后在聊天里就收藏内容提问，应看到流式回答与来源。
 
-前提：AI 网关 / 供应商 key 可用（否则聊天报错）、Milvus 就绪（`milvus.available=true`）、app-bili 能出公网访问 B 站与语音识别服务。
+前提：AI 网关 / 供应商 key 可用（否则聊天报错）、Milvus 就绪（`milvus.available=true`）、app-user（bili 路由）能出公网访问 B 站与语音识别服务。
 
 ---
 
@@ -288,7 +286,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **服务起来了但服务间调用全 401/403（APISIX key-auth 拒绝、或下游报 API key 无效）。** `.env` 的 `APISIX_CONSUMER_KEY` 与 `apisix/apisix.yaml` 里 `consumers.internal.key` 不一致（standalone 模式 apisix 不读 env）。两边改成同一个值再重启。
 
-**app-auth / app-cloud / app-bili 反复重启。** 多半是 `secrets/api_key_encryption_key` 没建：compose 会把缺失的绑定源建成**目录**，服务读取失败退出。补上文件后 `docker compose up -d app-auth app-cloud app-bili`。
+**app-user / app-cloud 反复重启。** 多半是 `secrets/api_key_encryption_key` 没建：compose 会把缺失的绑定源建成**目录**，服务读取失败退出。补上文件后 `docker compose up -d app-user app-cloud`。
 
 **改了 `.env` 不生效。** 各服务只在启动时读取：容器要 `docker compose up -d <服务>` 重建；本地 app-ts 要重启 `npm run dev`（且注意它**不会**自动加载 `.env`，见 §3.3）。
 

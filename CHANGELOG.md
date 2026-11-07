@@ -2,6 +2,14 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] — 2026-11-06
+
+### Changed
+
+- **用户域合并：app-auth + app-bili + app-settings → app-user**：三个 Go 服务合并为单一模块 `app-go/app-user`（单 Go module / 单镜像 / 单容器 / 单进程），保留三个独立 Gin engine 与三个监听口（8006=auth/forward-auth、8010=bili/ASR、8015=settings），对外路径/鉴权语义/事件契约/DB schema 全部不变；域间禁止互相 import，唯一跨域契约为 `internal/contracts.BiliCredentialProvider`（bili 不再直接读 `user_oauth`、不再持有 AES 解密）；共享单 MySQL 连接（loc=UTC）、单 logger、单日志卷 `app_user_logs`；全部 Go 测试迁入 `app-go/app-user/tests/` 独立 `tests` 包（arch/ownership/routes golden/config/HTTP smoke + AES/bcrypt/token/雪花/WBI/DDL guard）。顺带修复 app-auth `APPAUTH__INTERNAL__API_KEY` 未注入导致 `/internal/auth/user/{uid}` 恒 401（app-ts task-quiz 邮箱查询失效）。
+- **编排/网关/部署一次性切换**：compose（含 client compose）、app-admin `depends_on`、APISIX（3 个 upstream + 23 处 forward-auth）、nginx `auth_request`、app-ts 两个 BASE_URL、`deploy/{docker,k8s,swarm}`、启动脚本全部改指 `app-user`（三端口语义不变）；删除 `app-go/app-auth|app-bili|app-settings` 目录、`ci-app-bili.yml`/`ci-app-settings.yml` 与三个旧镜像矩阵项（新增 `ci-app-user.yml`、镜像 `atoncooper/mind-base-app-user`）。
+- **文档/规范**：AGENTS.md §2.13 重写为 app-user 用户域权威章节（§2.16/§2.19 改为合并说明），目录树/定位索引同步；docs/{architecture,configuration,getting-started,deployment,client-compose,api,project-structure,README,app-admin,app-cloud,app-kg,features,setup-guide,sharing,academic-agent,service-key-auth}.md 同步为 app-user；archive 文档加历史注记。
+
 ## [Unreleased] — 2026-11-04
 
 ### Added

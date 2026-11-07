@@ -392,10 +392,20 @@ export function AccountView() {
                             <ProfileCard profile={profile} onUpdated={setProfile} onToast={flash} />
                         )}
                         {detail === "email" && (
-                            <EmailCard profile={profile} onReload={load} onToast={flash} />
+                            <EmailCard
+                                profile={profile}
+                                security={sec}
+                                onReload={load}
+                                onToast={flash}
+                            />
                         )}
                         {detail === "phone" && (
-                            <PhoneCard profile={profile} onReload={load} onToast={flash} />
+                            <PhoneCard
+                                profile={profile}
+                                security={sec}
+                                onReload={load}
+                                onToast={flash}
+                            />
                         )}
                         {detail === "password" && (
                             <PasswordCard

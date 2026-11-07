@@ -1,5 +1,7 @@
 # 聊天域切流 app-ts + settings 迁 Go（app-settings）——上线与联调
 
+> ⚠️ **历史文档（只读存档）**：app-auth / app-bili / app-settings 三个 Go 服务已合并为 app-user（8006 auth / 8010 bili / 8015 settings），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
+
 > 2026-10-05。聊天域全有或全无（SSE 流与会话写同一存储链），本轮**全切 /chat 的
 > 聊天面**到 app-ts；settings（embedding/ASR 配置族）迁 Go **app-settings**。
 > Python `app/` 冻结不改动（用户决策）；旧会话历史**不导入**（留在 Python 存储，

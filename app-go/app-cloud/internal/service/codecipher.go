@@ -6,7 +6,7 @@ package service
 //   legacy: 64-char hex（SHA-256+pepper 单向哈希——不可查看，只能校验/重设）
 //   v1:     "enc:v1:" + base64url(12-byte nonce || AES-256-GCM ciphertext)
 //
-// 密钥 = 部署级共享密钥文件（与 app-auth 的 user_oauth 字段加密同一来源，
+// 密钥 = 部署级共享密钥文件（与 app-user 的 user_oauth 字段加密同一来源，
 // SECURITY__API_KEY_ENCRYPTION_KEY[_FILE]）。密钥不进数据库 —— DB 泄露
 // 仍然不暴露可用提取码（沿用 hashExtractionCode 时代的设计不变量）。
 // 未配置密钥时优雅降级为 legacy 哈希（行为与历史版本一致，不可查看）。

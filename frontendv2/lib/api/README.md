@@ -9,13 +9,13 @@
 
 | 模块 | 路径前缀 | 后端服务（APISIX 路由） |
 |---|---|---|
-| `auth.ts` / `user.ts` | `/auth/*` | app-auth（认证权威） |
+| `auth.ts` / `user.ts` | `/auth/*` | app-user（认证权威） |
 | `chat.ts` | `/chat/ask/agent/stream`、`/chat/sessions*`、`/chat/history*` | app-ts（`chat_ts`） |
 | `session-summary.ts` | `/chat/sessions/{id}/summary` | app-ts（`chat_ts` 覆盖） |
 | `boards.ts` | `/board/*` | app-board；AI 补全 `/chat/board/complete` → app-ts |
-| `favorites.ts` | `/favorites*` | app-bili（获取权威） |
-| `asr.ts` | `/asr/*` | app-bili |
-| `knowledge.ts` | `/knowledge/*`（**三分**） | build/status/folders-sync → app-bili；stats/folders-status/pages-vectorized/clear/video → app-ts（`vec_knowledge_ts`） |
+| `favorites.ts` | `/favorites*` | app-user（获取权威） |
+| `asr.ts` | `/asr/*` | app-user |
+| `knowledge.ts` | `/knowledge/*`（**三分**） | build/status/folders-sync → app-user；stats/folders-status/pages-vectorized/clear/video → app-ts（`vec_knowledge_ts`） |
 | `kg.ts` | `/knowledge/kg/*` | app-ts（AI 编排）+ app-kg（gRPC 存储） |
 | `vec-page.ts` | `/vec/page/*` | app-ts（向量账本 = Mongo `mind_base_ts.vec_pages`） |
 | `blindspot.ts` | `/blindspot/*` | app-ts |
@@ -26,7 +26,7 @@
 | `cloud.ts` | `/cloud/*` | app-cloud（云盘权威；5GB 上传走 nginx 直连） |
 | `workspace.ts` | `/workspaces*` | app-cloud（检索工作区，camelCase wire） |
 | `pay.ts` | `/pay/*` | app-pay（会员/订单，金额一律 long 分） |
-| `preferences.ts` | `/preferences`、`/wallpaper/*` | app-settings（app-settings 仅剩这一域，见下方退役说明） |
+| `preferences.ts` | `/preferences` | app-user（偏好 KV；头像走 `/avatar/*`） |
 
 已删除的死面（后端无对应路由，勿复活）：`code-executions.ts`
 （`/chat/messages/*` 无实现）、`settings.ts`（legacy `/settings/credentials*`）、

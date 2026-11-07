@@ -9,7 +9,7 @@ import type { RAGService } from "../src/rag/service.js";
 import type { ChatService } from "../src/services/chat.js";
 import type { AgentHarness } from "../src/harness/app.js";
 import type { SessionDocumentRepository } from "../src/repository/session-docs.js";
-import type { AppBiliClient, ScopeFolder } from "../src/auth/app-bili-client.js";
+import type { AppUserBiliClient, ScopeFolder } from "../src/auth/app-user-bili-client.js";
 
 // ---------- service ----------
 
@@ -162,7 +162,7 @@ describe("VideoVectorizerService", () => {
 
 // ---------- routes ----------
 
-function fakeAppBili(folders: ScopeFolder[], error = false): AppBiliClient {
+function fakeAppBili(folders: ScopeFolder[], error = false): AppUserBiliClient {
   return {
     scope: async () => {
       if (error) throw new Error("bili down");
@@ -170,7 +170,7 @@ function fakeAppBili(folders: ScopeFolder[], error = false): AppBiliClient {
     },
     owns: async (_uid: number, bvid: string) => folders.some((f) => f.videos.some((v) => v.bvid === bvid)),
     invalidateScope: () => {},
-  } as unknown as AppBiliClient;
+  } as unknown as AppUserBiliClient;
 }
 
 describe("vector/knowledge routes", () => {

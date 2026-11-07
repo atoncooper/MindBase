@@ -70,7 +70,7 @@ spec:
                 secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY, optional: true }
             - name: APPCLOUD__LOG__OUTPUT
               value: "both"
-            # 提取码静态加密密钥（与 app-auth 同一 Secret；密钥不进数据库）
+            # 提取码静态加密密钥（与 app-user 同一 Secret；密钥不进数据库）
             - name: SECURITY__API_KEY_ENCRYPTION_KEY_FILE
               value: "/run/secrets/api_key_encryption_key"
           ports:

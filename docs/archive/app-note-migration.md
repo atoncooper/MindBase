@@ -1,5 +1,7 @@
 # app-note 笔记服务迁移（app/ → app-go/app-note）
 
+> ⚠️ **历史文档（只读存档）**：app-auth / app-bili / app-settings 三个 Go 服务已合并为 app-user（8006 auth / 8010 bili / 8015 settings），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
+
 > 2026-10-04。规范见 `AGENTS.md` §2.15（本地开发规范，不入 git）；本文是实施记录 + 切流/回滚手册。
 >
 > **状态：已切流 + Python 侧已下线**（APISIX `notes_user` 指向 app-note；`main.py` 已注销 notes 路由；旧 Python 笔记代码已删除，见 §5）。

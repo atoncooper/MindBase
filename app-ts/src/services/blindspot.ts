@@ -3,7 +3,7 @@ import { createLogger } from "../logger.js";
 import type { KgGraphRepository } from "../repository/kg-graph.js";
 import type { KgEntityIndex } from "../repository/kg-entity-index.js";
 import type { EmbeddingsClient } from "../llm/embeddings.js";
-import type { AppBiliClient } from "../auth/app-bili-client.js";
+import type { AppUserBiliClient } from "../auth/app-user-bili-client.js";
 import type { AppQuizClient } from "../auth/app-quiz-client.js";
 import type { QuizGenerationService } from "./quiz-generation.js";
 import { normalizeName } from "../kg/resolver.js";
@@ -14,7 +14,7 @@ const log = createLogger("BLINDSPOT");
 /**
  * Knowledge blind-spot map — port of the Python BlindspotService
  * (scoring/attribution). Data sources:
- *   - scope bvids: the app-bili knowledge scope (folder → video tree)
+ *   - scope bvids: the app-user knowledge scope (folder → video tree)
  *   - entity exposure + appearances: Neo4j via app-kg gRPC
  *   - quiz signals: app-quiz internal face (submissions/answers + Mongo
  *     attributions), vector-attribution fallback via the kg entity index
@@ -89,7 +89,7 @@ export interface BlindspotDeps {
   graph: KgGraphRepository;
   index?: KgEntityIndex | null;
   embeddings: EmbeddingsClient;
-  appBili: AppBiliClient;
+  appBili: AppUserBiliClient;
   appQuiz: AppQuizClient;
   quizGen: QuizGenerationService;
   /** recent user chat texts (probed-name signal); memory fallback = empty */

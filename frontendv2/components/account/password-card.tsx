@@ -23,6 +23,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     const [editing, setEditing] = useState(false);
     const [oldPw, setOldPw] = useState("");
     const [newPw, setNewPw] = useState("");
+    const [confirmPw, setConfirmPw] = useState("");
     const [code, setCode] = useState("");
     const [show, setShow] = useState(false);
     const [sending, setSending] = useState(false);
@@ -43,7 +44,8 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     const hasVerifiedEmail = !!profile.email_verified && !!profile.email;
     const hasVerifiedPhone = !!profile.phone_verified && !!profile.phone;
     const needsEmailCode = hasVerifiedEmail;
-    const needsSmsCode = !isChange && !hasVerifiedEmail && hasVerifiedPhone;
+    // 修改密码同样支持短信二次验证：仅有已验证手机时不能再退化成只验旧密码。
+    const needsSmsCode = !hasVerifiedEmail && hasVerifiedPhone;
     const needsCode = needsEmailCode || needsSmsCode;
     const noVerifiedContact = !isChange && !hasVerifiedEmail && !hasVerifiedPhone;
 
@@ -56,6 +58,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     function reset() {
         setOldPw("");
         setNewPw("");
+        setConfirmPw("");
         setCode("");
         setCooldown(0);
         setError(null);
@@ -66,6 +69,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     function enterEdit() {
         setOldPw("");
         setNewPw("");
+        setConfirmPw("");
         setCode("");
         setCooldown(0);
         setError(null);
@@ -107,6 +111,18 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
 
     async function save() {
         setError(null);
+        if (newPw.length < 8) {
+            setError("新密码至少 8 位");
+            return;
+        }
+        if (newPw.length > 72) {
+            setError("新密码不能超过 72 个字符");
+            return;
+        }
+        if (newPw !== confirmPw) {
+            setError("两次输入的新密码不一致");
+            return;
+        }
         if (security.has_password) {
             if (!oldPw || !newPw) {
                 setError("请填写当前密码和新密码");
@@ -114,6 +130,10 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
             }
             if (needsEmailCode && !code.trim()) {
                 setError("请输入邮箱验证码");
+                return;
+            }
+            if (needsSmsCode && !code.trim()) {
+                setError("请输入短信验证码");
                 return;
             }
         } else if (!newPw) {
@@ -131,11 +151,20 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
         setSaving(true);
         try {
             if (security.has_password) {
-                await userApi.changePassword({
+                const res = await userApi.changePassword({
                     old_password: oldPw,
                     new_password: newPw,
                     email_code: needsEmailCode ? code.trim() : undefined,
+                    sms_code: needsSmsCode ? code.trim() : undefined,
                 });
+                reset();
+                onReload();
+                if (res.other_sessions_revoked === false) {
+                    onToast("密码已修改，但其他设备退出失败，请手动退出所有设备", "error");
+                } else {
+                    onToast("密码已修改，其他设备已退出登录", "success");
+                }
+                return;
             } else {
                 await userApi.setPassword({
                     password: newPw,
@@ -144,7 +173,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                 });
             }
             reset();
-            onToast(security.has_password ? "密码已修改" : "密码已设置", "success");
+            onToast("密码已设置", "success");
             onReload();
         } catch (e) {
             setError(e instanceof Error ? e.message : "操作失败");
@@ -156,7 +185,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
     return (
         <FormCard
             title="密码"
-            description="用于账号登录。修改需通过已验证邮箱或短信二次验证。"
+            description="用于账号登录。修改需验证当前密码，并通过已验证邮箱或短信二次验证。"
             action={
                 editing ? undefined : (
                     <EditButton
@@ -203,6 +232,7 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                                 setError(null);
                             }}
                             placeholder="当前密码"
+                            autoComplete="current-password"
                         />
                     )}
                     <input
@@ -213,7 +243,19 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                             setNewPw(e.target.value);
                             setError(null);
                         }}
-                        placeholder="新密码（8 位以上，含字母和数字）"
+                        placeholder="新密码（8–72 位，含字母和数字）"
+                        autoComplete="new-password"
+                    />
+                    <input
+                        className="field"
+                        type={show ? "text" : "password"}
+                        value={confirmPw}
+                        onChange={(e) => {
+                            setConfirmPw(e.target.value);
+                            setError(null);
+                        }}
+                        placeholder="再次输入新密码"
+                        autoComplete="new-password"
                     />
                     {needsCode && (
                         <>
@@ -226,6 +268,8 @@ export function PasswordCard({ profile, security, onReload, onToast }: Props) {
                                         setError(null);
                                     }}
                                     placeholder={needsEmailCode ? "邮箱验证码（二次验证）" : "短信验证码（二次验证）"}
+                                    autoComplete="one-time-code"
+                                    inputMode="numeric"
                                 />
                                 <button
                                     type="button"

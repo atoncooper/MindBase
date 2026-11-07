@@ -8,7 +8,7 @@
 #
 # app-kg owns NO tables — the kg columns already exist on the
 # `video` table; this service is their ONLY writer (mirror of the
-# app-bili red line "app-bili 禁止写 kg* 列"). No DDL is ever run.
+# app-user red line "app-user 禁止写 kg* 列"). No DDL is ever run.
 #
 # The AI side (LLM extraction / entity linking / build
 # orchestration) lives in app-ts and talks to this service over

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { RAGService } from "../../../rag/service.js";
 import type { VideoVectorizerService } from "../../../services/video-vectorizer.js";
-import type { AppBiliClient } from "../../../auth/app-bili-client.js";
+import type { AppUserBiliClient } from "../../../auth/app-user-bili-client.js";
 import type { KgService } from "../../../kg/service.js";
 import { getRequestContext } from "../../../context/request-context.js";
 import { createLogger } from "../../../logger.js";
@@ -12,12 +12,12 @@ const log = createLogger("HTTP");
  * /knowledge/* (non-kg) — video knowledge-base management surface, contract
  * mirror of the Python router (snake_case wire): stats / folder status /
  * vectorized pages / clear (admin) / per-video delete. Folder scoping comes
- * from the app-bili knowledge scope; vector state from the vector task
+ * from the app-user knowledge scope; vector state from the vector task
  * repository; content from Milvus via RAGService.
  */
 export function registerKnowledgeRoutes(
   app: FastifyInstance,
-  deps: { rag: RAGService; vectorizer: VideoVectorizerService; appBili: AppBiliClient; kg?: KgService },
+  deps: { rag: RAGService; vectorizer: VideoVectorizerService; appBili: AppUserBiliClient; kg?: KgService },
 ): void {
   const requireUid = (req: FastifyRequest): string | undefined => {
     // uid 在 onRequest 钩子里已按字符串承载（int64 精度安全）

@@ -91,7 +91,6 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video
-      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper
     depends_on:
       cert-gen:
         condition: service_completed_successfully
@@ -389,10 +388,10 @@ services:
     environment:
       - SERVER__HOST=0.0.0.0
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - APP_BILI_BASE_URL=http://app-bili:8010
+      - APP_BILI_BASE_URL=http://app-user:8010
       - APP_CLOUD_BASE_URL=http://app-cloud:8007
       - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - APP_AUTH_BASE_URL=http://app-user:8006
       - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -438,54 +437,32 @@ services:
     networks:
       - mind-base-net
 
-  app-settings:
-    image: atoncooper/mind-base-app-settings:latest
+  # app-user —— 身份认证 + B 站数据获取 + 用户设置三合一（Go + Gin）。
+  # 由原三个独立 Go 服务（认证 / B 站数据获取 / 用户设置）合并而来，一个容器三监听口：
+  #   8006 = auth 路由 + APISIX forward-auth verify
+  #   8010 = bili 路由（收藏夹同步/整理、ASR 转写、知识库 build 编排）
+  #   8015 = settings 路由（用户偏好 / preferences / avatar）
+  app-user:
+    image: atoncooper/mind-base-app-user:latest
     pull_policy: never
     build:
-      context: ./app-go/app-settings
+      context: ./app-go/app-user
       dockerfile: Dockerfile
-    container_name: mind-base-app-settings
+    container_name: mind-base-app-user
     depends_on:
       mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       minio:
         condition: service_healthy
     env_file:
       - .env
     environment:
-      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
-      - APPSETTINGS__LOG__OUTPUT=both
-    ports:
-      - "127.0.0.1:${APP_SETTINGS_PORT:-8015}:8015"
-    volumes:
-      - app_settings_logs:/app/logs
-    mem_limit: 128m
-    logging: *default-logging
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  app-auth:
-    image: atoncooper/mind-base-app-auth:latest
-    pull_policy: never
-    build:
-      context: ./app-go/app-auth
-      dockerfile: Dockerfile
-    container_name: mind-base-app-auth
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
+      # ===== auth 域（原认证服务，前缀 APPAUTH__）=====
       - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
       - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
@@ -502,12 +479,40 @@ services:
       - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       - APPAUTH__WORKER_ID=2
       - APPAUTH__LOG__OUTPUT=both
+      # ===== bili 域（原 B 站获取服务，前缀 APPBILI__）=====
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 DashScope 原生透传。默认仍指向 Higress（--profile ai 时可用）；
+      # 客户端直连模式在 .env 设 AI_GATEWAY_NATIVE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+      # （直连 DashScope 必须 sk- 密钥，网关消费者 key 会被判 InvalidApiKey）
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY_NATIVE_BASE_URL:-http://higress:8080/api/v1}
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPBILI__LOG__OUTPUT=both
+      # ===== settings 域（原设置服务，前缀 APPSETTINGS__）=====
+      - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - APPSETTINGS__LOG__OUTPUT=both
+      # ===== 共享（三域共用，去重后仅保留一份）=====
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      # 可选 TLS：留空 = HTTP（默认）；设置后三个监听口切换为 HTTPS
+      - TLS__CERT_FILE=${APP_USER_TLS_CERT_FILE:-}
+      - TLS__KEY_FILE=${APP_USER_TLS_KEY_FILE:-}
+    # 三监听口语义不变：8006=auth / 8010=bili / 8015=settings（仅回环调试用）
     ports:
-      - "127.0.0.1:${APP_AUTH_PORT:-8006}:8006"
+      - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
+      - "127.0.0.1:${APP_USER_BILI_PORT:-8010}:8010"
+      - "127.0.0.1:${APP_USER_SETTINGS_PORT:-8015}:8015"
     volumes:
-      - app_auth_logs:/app/logs
+      - app_user_logs:/app/logs
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
-    mem_limit: 128m
+      # 可选 TLS 证书目录（启用时把 APP_USER_TLS_* 指向 /certs/...）
+      - ./nginx/certs:/certs:ro
+    # 三域合并后的单进程上限（原 128m + 384m + 128m 三容器），取 512m。
+    mem_limit: 512m
     logging: *default-logging
     restart: unless-stopped
     networks:
@@ -735,45 +740,6 @@ services:
     networks:
       - mind-base-net
 
-  app-bili:
-    image: atoncooper/mind-base-app-bili:latest
-    pull_policy: never
-    build:
-      context: ./app-go/app-bili
-      dockerfile: Dockerfile
-    container_name: mind-base-app-bili
-    depends_on:
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      # ASR 走 DashScope 原生透传。默认仍指向 Higress（--profile ai 时可用）；
-      # 客户端直连模式在 .env 设 AI_GATEWAY_NATIVE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
-      # （直连 DashScope 必须 sk- 密钥，网关消费者 key 会被判 InvalidApiKey）
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY_NATIVE_BASE_URL:-http://higress:8080/api/v1}
-      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
-      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
-      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - APPBILI__LOG__OUTPUT=both
-    # 上限放宽：容器内含 ffmpeg 转码子进程（音频抽取峰值计入 cgroup）
-    ports:
-      - "127.0.0.1:${APP_BILI_PORT:-8010}:8010"
-    volumes:
-      - app_bili_logs:/app/logs
-      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
-    mem_limit: 384m
-    logging: *default-logging
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
   # ==============================================================
   # Optional profiles（opt-in；核心服务无 profiles 键，加 --profile 不影响核心）
   # ==============================================================
@@ -968,7 +934,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -1049,13 +1015,11 @@ services:
 volumes:
   app_task_certs:
   app_task_logs:
-  app_auth_logs:
+  app_user_logs:
   app_cloud_logs:
   app_note_logs:
   app_quiz_logs:
   app_kg_logs:
-  app_settings_logs:
-  app_bili_logs:
   app_note_mcp_logs:
   app_quiz_mcp_logs:
   app_board_logs:
@@ -1072,7 +1036,6 @@ volumes:
   minio_data:
   certbot_www:
   nginx_video_cache:
-  nginx_wallpaper_cache:
 
 networks:
   mind-base-net:

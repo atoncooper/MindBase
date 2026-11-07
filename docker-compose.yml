@@ -116,7 +116,6 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video   # Plan 0021
-      - nginx_wallpaper_cache:/var/cache/nginx/wallpaper   # wallpaper image cache
     depends_on:
       cert-gen:
         condition: service_completed_successfully
@@ -333,12 +332,12 @@ services:
       # Redis event bridge (bili:page_ready -> per-page vectorization)
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # acquisition service (Go): ASR delegation + internal knowledge-scope reads
-      - APP_BILI_BASE_URL=http://app-bili:8010
+      - APP_BILI_BASE_URL=http://app-user:8010
       # cloud-drive intelligence M2M (summary/similar); token = APISIX_CONSUMER_KEY
       - APP_CLOUD_BASE_URL=http://app-cloud:8007
       # task-quiz flow: scheduler via APISIX + auth internal user lookup
       - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-auth:8006
+      - APP_AUTH_BASE_URL=http://app-user:8006
       - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       # skills zip storage (shared bucket; empty endpoint = skills disabled)
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
@@ -402,33 +401,98 @@ services:
     networks:
       - mind-base-net
 
-  app-settings:
-    image: atoncooper/mind-base-app-settings:latest
+  # app-user —— 身份认证 + B 站数据获取 + 用户设置三合一服务（Go + Gin）。
+  # 由原三个独立 Go 服务（认证 / B 站数据获取 / 用户设置）合并而来，一个容器同时监听三个端口，
+  # 对外路径与端口语义与合并前完全一致（APISIX 三个 upstream 分别指向对应端口）：
+  #   8006 = auth 路由 + APISIX forward-auth verify
+  #   8010 = bili 路由（收藏夹同步/整理、ASR 转写、知识库 build 编排）
+  #   8015 = settings 路由（用户偏好 / preferences / avatar）
+  # schema 所有权：users/user_tokens/user_oauth 等 auth 表 +
+  # collection/favorite_folders/video/video_versions/async_tasks。
+  # 共享主 bilirag MySQL + Mongo + Redis + MinIO；日志卷 app_user_logs。
+  # 镜像含静态 ffmpeg；须出公网访问 B 站与 DashScope（经 Higress 网关）。
+  app-user:
+    image: atoncooper/mind-base-app-user:latest
     pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
-      context: ./app-go/app-settings
+      context: ./app-go/app-user
       dockerfile: Dockerfile
-    container_name: mind-base-app-settings
-    profiles: ["", "settings", "full"]
+    container_name: mind-base-app-user
+    profiles: ["", "user", "full"]
     depends_on:
       mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       minio:
         condition: service_healthy
     env_file:
       - .env
     environment:
+      # ===== auth 域（原认证服务，前缀 APPAUTH__）=====
+      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
+      - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      # Shared secrets (same env names as the retired Python backend — one .env drives all)
+      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
+      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
+      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
+      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
+      - SMS__ENABLED=${SMS__ENABLED:-false}
+      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
+      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
+      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
+      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
+      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
+      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
+      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
+      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
+      # Internal M2M face (/internal/auth/user/{uid}) used by app-ts task-quiz:
+      # must equal the shared APISIX consumer key configured on the app-ts side.
+      - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
+      # Snowflake worker id 2 (1 was the retired Python backend)
+      - APPAUTH__WORKER_ID=2
+      - APPAUTH__LOG__OUTPUT=both
+      # ===== bili 域（原 B 站获取服务，前缀 APPBILI__）=====
+      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
+      # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
+      # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
+      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
+      # internal M2M guard (/internal/bili/* knowledge-scope reads by app-ts)
+      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - APPBILI__LOG__OUTPUT=both
+      # ===== settings 域（原设置服务，前缀 APPSETTINGS__）=====
       - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # wallpaper storage (shared bucket; empty endpoint = wallpaper 503)
+      # avatar storage (shared bucket; empty endpoint = avatar 503)
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
       - APPSETTINGS__LOG__OUTPUT=both
+      # ===== 共享（三域共用，去重后仅保留一份）=====
+      # Redis: captcha store / login throttle / rate limits / wechat state
+      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      # 可选 TLS：留空 = HTTP（默认）；设置后三个监听口切换为 HTTPS
+      - TLS__CERT_FILE=${APP_USER_TLS_CERT_FILE:-}
+      - TLS__KEY_FILE=${APP_USER_TLS_KEY_FILE:-}
     ports:
-      - "127.0.0.1:${APP_SETTINGS_PORT:-8015}:8015"
+      # 三监听口语义不变：8006=auth / 8010=bili / 8015=settings（仅回环调试用）
+      - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
+      - "127.0.0.1:${APP_USER_BILI_PORT:-8010}:8010"
+      - "127.0.0.1:${APP_USER_SETTINGS_PORT:-8015}:8015"
     volumes:
-      - app_settings_logs:/app/logs
+      - app_user_logs:/app/logs
+      # 主密钥：auth 解密 user_oauth（B 站 SESSDATA）用；保持只读挂载
+      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+      # 可选 TLS 证书目录（启用时把 APP_USER_TLS_* 指向 /certs/...）
+      - ./nginx/certs:/certs:ro
+    # 三域合并后的单进程上限：auth 128m + bili 384m（含 ffmpeg 子进程）
+    # + settings 128m 原为独立容器；合并后共用堆与页缓存，取 512m。
+    mem_limit: 512m
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -732,58 +796,6 @@ services:
     networks:
       - mind-base-net
 
-  # app-auth —— 身份认证服务（Go + Gin；接管 users/user_tokens/user_oauth 等
-  # auth 表的 schema 所有权，共享主 bilirag MySQL；APISIX forward-auth 指向
-  # /internal/auth/verify，/auth/* 用户端点也由它提供）
-  app-auth:
-    image: atoncooper/mind-base-app-auth:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./app-go/app-auth
-      dockerfile: Dockerfile
-    container_name: mind-base-app-auth
-    profiles: ["", "auth", "full"]
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      # Shared bilirag database (schema owner; CREATE-TABLE-IF-NOT-EXISTS only)
-      - APPAUTH__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # Redis: captcha store / login throttle / rate limits / wechat state
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      # Shared secrets (same env names as the retired Python backend — one .env drives all)
-      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
-      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
-      - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
-      - EMAIL__API_KEY=${EMAIL__API_KEY:-}
-      - SMS__ENABLED=${SMS__ENABLED:-false}
-      - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
-      - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
-      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
-      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
-      - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
-      - WECHAT__APP_ID=${WECHAT__APP_ID:-}
-      - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}
-      - WECHAT__REDIRECT_URI=${WECHAT__REDIRECT_URI:-}
-      # Internal M2M face (/internal/auth/user/{uid}) used by app-ts task-quiz:
-      # must equal the shared APISIX consumer key configured on the app-ts side.
-      - APPAUTH__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
-      # Snowflake worker id 2 (1 was the retired Python backend)
-      - APPAUTH__WORKER_ID=2
-      - APPAUTH__LOG__OUTPUT=both
-    ports:
-      - "127.0.0.1:${APP_AUTH_PORT:-8006}:8006"
-    volumes:
-      - app_auth_logs:/app/logs
-      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
   # app-cloud —— 云盘服务（Go + Gin；接管 cloud_files/cloud_folders/cloud_shares
   # 的 schema 所有权，共享主 bilirag MySQL + MinIO bucket + Mongo；分块上传/配额/
   # 分享/回收站/解析向量化管线；nginx /cloud/ 直连本服务，身份经 auth_request 注入）
@@ -824,7 +836,7 @@ services:
       - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
-      # 提取码静态加密密钥（与 app-auth 共用同一 secrets 文件；密钥不进数据库）
+      # 提取码静态加密密钥（与 app-user 共用同一 secrets 文件；密钥不进数据库）
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
       # Public-share device-attestation HMAC key — MUST be identical across all
       # app-cloud replicas (challenges/tickets are stateless; nginx round-robins
@@ -948,7 +960,7 @@ services:
       # 宿主机代理示例：APPTASK_HTTP_PROXY=http://host.docker.internal:10808
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-auth,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -963,53 +975,6 @@ services:
     restart: unless-stopped
     networks:
       - mind-base-net
-
-  # app-bili —— B 站数据获取服务（Go + Gin；收藏夹同步/整理、视频与播放器信息、
-  # 音频/字幕获取、DashScope ASR 转写落库、知识库 build 编排（同步+ASR）。
-  # 只获取不向量化：AI 域（RAG/Milvus/向量化账本）在 app-ts，经 Redis
-  # bili:page_ready 事件触发（消费方 = app-ts BiliEventBridge；分P 向量账本在
-  # app-ts 的 Mongo vec_pages/vec_tasks）。schema 所有者：
-  # collection/favorite_folders/video/video_versions/async_tasks。
-  # 镜像含静态 ffmpeg；须出公网访问 B 站与 DashScope（经 Higress 网关）。
-  app-bili:
-    image: atoncooper/mind-base-app-bili:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./app-go/app-bili
-      dockerfile: Dockerfile
-    container_name: mind-base-app-bili
-    profiles: ["", "bili", "full"]
-    depends_on:
-      mysql:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
-      - SECURITY__API_KEY_ENCRYPTION_KEY=${SECURITY__API_KEY_ENCRYPTION_KEY:-}
-      - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
-      # internal M2M guard (/internal/bili/* knowledge-scope reads by app-ts)
-      - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
-      # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
-      # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
-      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
-      - APPBILI__LOG__OUTPUT=both
-    ports:
-      - "127.0.0.1:${APP_BILI_PORT:-8010}:8010"
-    volumes:
-      - app_bili_logs:/app/logs
-      - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
 
   # app-pay —— 交易/会员服务（Spring Boot 3;模式对齐 app-task）
   app-pay:
@@ -1292,9 +1257,9 @@ services:
       app-cloud:
         condition: service_started  # app-cloud 先跑 Migrate（moderation 列归属 cloud-back）
         required: false             # app-cloud 属默认 profile；显式 --profile admin 时不应因缺它而拒绝解析
-      app-auth:
-        condition: service_started  # users / RBAC 表由 app-auth 建立，admin 只读
-        required: false             # 独立部署时 app-auth 可在另一套 compose 中运行
+      app-user:
+        condition: service_started  # users / RBAC 表由 app-user 建立，admin 只读
+        required: false             # 独立部署时 app-user 可在另一套 compose 中运行
       app-sandbox:
         condition: service_started
         required: false             # sandbox 管理是可选面板；未启动时管理页显示未配置
@@ -1304,7 +1269,7 @@ services:
     env_file:
       - .env
     environment:
-      # Shared bilirag database（与 app-auth/app-cloud 同库；走 .env 的 RDBMS__URL）
+      # Shared bilirag database（与 app-user/app-cloud 同库；走 .env 的 RDBMS__URL）
       - APPADMIN__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       # 种子账户（只插缺失；首登强制改密）。生产务必覆盖默认口令。
       - APPADMIN__SEED__USERNAME=${APPADMIN__SEED__USERNAME:-admin}
@@ -1427,15 +1392,13 @@ services:
 volumes:
   app_task_certs:
   app_task_logs:
-  app_auth_logs:
   app_cloud_logs:
   app_note_logs:
   app_quiz_logs:
   app_kg_logs:
   opensandbox_data:
   app_sandbox_logs:
-  app_settings_logs:
-  app_bili_logs:
+  app_user_logs:
   app_note_mcp_logs:
   app_quiz_mcp_logs:
   app_board_logs:
@@ -1456,7 +1419,6 @@ volumes:
   minio_data:
   certbot_www:
   nginx_video_cache:
-  nginx_wallpaper_cache:
 
 networks:
   mind-base-net:

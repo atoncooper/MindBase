@@ -1,7 +1,7 @@
 // Package router assembles the Gin engine: middleware chain, health probe,
 // the /notes/* user endpoints, and the /internal/note/* M2M endpoints.
 // Identity source = the gateway-injected X-Uid header (APISIX forward-auth
-// against app-auth for user routes; key-auth + explicit X-Uid for the M2M
+// against app-user for user routes; key-auth + explicit X-Uid for the M2M
 // routes called by the Python note agent). Parity with the Python backend's
 // post-cutover contract.
 package router

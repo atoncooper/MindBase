@@ -10,7 +10,7 @@
 | 机器 | 文件 | 说明 |
 |---|---|---|
 | **server1**（manager，边缘层） | 00-certs / 10-frontend / 11-etcd / 12-minio / 13-apisix / 14-nginx | TLS 入口、网关、前端、对象存储 |
-| **server2**（worker，数据+后端） | 20-redis / 21-mongo / 22-neo4j / 23-milvus / 24-app-task-mysql / 25-app-pay-mysql / 30~37(app-go) / 38~40(MCP) / 41-app-task / 42-app-pay / 43-app-ts | 数据层 + 全部业务后端 |
+| **server2**（worker，数据+后端） | 20-redis / 21-mongo / 22-neo4j / 23-milvus / 24-app-task-mysql / 25-app-pay-mysql / 30-app-user（auth+bili+settings 合一）/ 32~37(app-go) / 38~40(MCP) / 41-app-task / 42-app-pay / 43-app-ts | 数据层 + 全部业务后端 |
 | 可选 | 90-higress / 96-app-admin | .env 已指向外部 AI 网关就不用起 higress；统一管理后台（分享审核 + 支付运营 + 账户 + 审计）用 SSH 隧道访问 3001 |
 
 > 主库 mind_base 用外部 MySQL（.env 的 RDBMS__URL），两份文件里都不含主 mysql；
@@ -75,9 +75,9 @@ bash start-backend.sh
 
 ```bash
 cd <repo>/deploy/docker
-docker compose --env-file ../../.env -f 31-app-bili.yml up -d app-bili     # 启动
-docker compose --env-file ../../.env -f 31-app-bili.yml down               # 停止并删除容器
-docker compose --env-file ../../.env -f 31-app-bili.yml logs -f app-bili   # 日志
+docker compose --env-file ../../.env -f 30-app-user.yml up -d app-user     # 启动（8006 auth / 8010 bili / 8015 settings）
+docker compose --env-file ../../.env -f 30-app-user.yml down               # 停止并删除容器
+docker compose --env-file ../../.env -f 30-app-user.yml logs -f app-user   # 日志
 docker compose --env-file ../../.env -f 13-apisix.yml up -d --force-recreate apisix  # 改配置后重建
 ```
 
@@ -157,9 +157,11 @@ project、分属两台主机），所以**没有任何一份文件能声明跨�
 # server2 → server1 按名解析
 docker run --rm --network mind-base-overlay busybox ping -c2 minio
 # server1 → server2
-docker exec mind-base-apisix getent hosts app-auth
+docker exec mind-base-apisix getent hosts app-user
 # 健康面
 docker exec mind-base-app-ts wget -qO- http://127.0.0.1:8000/health
+# app-user 三监听口健康面（8006 auth / 8010 bili / 8015 settings）
+for p in 8006 8010 8015; do docker run --rm --network mind-base-overlay curlimages/curl:8.11.1 -s "http://app-user:$p/health"; echo; done
 # 端到端：浏览器 https://<MB_CERT_HOST> 登录 + 聊天；docker logs -f mind-base-apisix
 ```
 

@@ -18,8 +18,8 @@ services:
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-auth,app-bili,app-note,app-quiz,app-cloud,app-kg,app-settings,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-board,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-note,app-quiz,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
