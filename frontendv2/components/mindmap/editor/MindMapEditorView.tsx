@@ -8,6 +8,26 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  Check,
+  Clock,
+  Download,
+  EllipsisVertical,
+  Keyboard,
+  ListPlus,
+  ListTree,
+  Map,
+  Maximize2,
+  Plus,
+  Redo2,
+  Search,
+  Shapes,
+  SlidersHorizontal,
+  Sparkles,
+  Trash,
+  Undo2,
+} from "lucide-react";
 import { confirm } from "./web-shims";
 import type MindMap from "simple-mind-map";
 import type { MindMapNodeInstance } from "simple-mind-map";
@@ -206,6 +226,27 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
   /** 回滚后递增：强制重载文档并重挂载画布。 */
   const [reloadToken, setReloadToken] = useState(0);
   const toast = useToast();
+  /** 顶栏下拉菜单（视图/导出/更多）：null = 关闭。 */
+  const [menu, setMenu] = useState<null | "view" | "export" | "more">(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (menu === null) return undefined;
+    const onPointerDown = (event: MouseEvent): void => {
+      const target = event.target;
+      if (menuRef.current !== null && target instanceof Node && menuRef.current.contains(target)) return;
+      setMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menu]);
 
   const instanceRef = useRef<MindMap | null>(null);
   const dirtyRef = useRef(false);
@@ -1688,11 +1729,22 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
     return <WhiteboardEditorView mapId={mapId} />;
   }
 
+  /** 视图菜单按钮的激活态：任一画布辅助面板/偏好打开即高亮。 */
+  const viewMenuActive = outlineOpen || minimapOpen || shapesOpen || historyOpen || shortcutOpen || rainbowOpen;
+  /** 仅剩根节点时显示画布空状态引导（Google Docs 画布式起步提示）。 */
+  const isEmptyMap = doc !== null && doc.root.children.length === 0;
+
   return (
     <div className="mm-frame">
       <div className="mm-topbar">
-        <button type="button" className="mm-btn" onClick={() => void goBack()}>
-          ← 返回
+        <button
+          type="button"
+          className="mm-btn mm-btn--icon"
+          title="返回列表"
+          aria-label="返回列表"
+          onClick={() => void goBack()}
+        >
+          <ArrowLeft size={17} aria-hidden="true" />
         </button>
         <input
           type="text"
@@ -1709,45 +1761,72 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
         <span className="mm-save-state" data-state={saveState} aria-live="polite">
           {saveState === "saving" ? "保存中…" : saveState === "pending" ? "修改未保存" : "已保存"}
         </span>
-        <span className="mm-topbar__spacer" aria-hidden="true" />
-        <button type="button" className="mm-btn" disabled={!canUndo} onClick={() => exec("BACK")}>
-          撤销
-        </button>
-        <button type="button" className="mm-btn" disabled={!canRedo} onClick={() => exec("FORWARD")}>
-          重做
+
+        <span className="mm-topbar__divider" aria-hidden="true" />
+
+        <button
+          type="button"
+          className="mm-btn mm-btn--icon"
+          title="撤销（Ctrl+Z）"
+          aria-label="撤销"
+          disabled={!canUndo}
+          onClick={() => exec("BACK")}
+        >
+          <Undo2 size={16} aria-hidden="true" />
         </button>
         <button
           type="button"
-          className={searchOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={() => setSearchOpen((value) => !value)}
+          className="mm-btn mm-btn--icon"
+          title="重做（Ctrl+Shift+Z）"
+          aria-label="重做"
+          disabled={!canRedo}
+          onClick={() => exec("FORWARD")}
         >
-          搜索
+          <Redo2 size={16} aria-hidden="true" />
         </button>
+
         <span className="mm-topbar__divider" aria-hidden="true" />
-        <button type="button" className="mm-btn" onClick={() => exec("INSERT_CHILD_NODE")}>
-          子级
+
+        <button
+          type="button"
+          className="mm-btn"
+          title="插入子节点（Tab）"
+          aria-label="插入子节点"
+          onClick={() => exec("INSERT_CHILD_NODE")}
+        >
+          <ListPlus size={16} aria-hidden="true" />
+          <span className="mm-btn__label">子级</span>
         </button>
         <button
           type="button"
           className="mm-btn"
+          title="插入同级节点（Enter）"
+          aria-label="插入同级节点"
           disabled={activeCount === 0}
           onClick={() => exec("INSERT_NODE")}
         >
-          同级
+          <Plus size={16} aria-hidden="true" />
+          <span className="mm-btn__label">同级</span>
         </button>
         <button
           type="button"
           className="mm-btn"
+          title="删除选中节点（Del）"
+          aria-label="删除选中节点"
           disabled={activeCount === 0}
           onClick={() => exec("REMOVE_NODE")}
         >
-          删除
+          <Trash size={15} aria-hidden="true" />
+          <span className="mm-btn__label">删除</span>
         </button>
+
         <span className="mm-topbar__divider" aria-hidden="true" />
+
         <select
           className="mm-select"
           value={doc?.layout ?? "logicalStructure"}
           aria-label="布局"
+          title="布局"
           onChange={(event) => changeLayout(event.target.value)}
         >
           {LAYOUTS.map((layout) => (
@@ -1757,9 +1836,10 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
           ))}
         </select>
         <select
-          className="mm-select"
+          className="mm-select mm-select--accent"
           value={accentId}
           aria-label="连线颜色"
+          title="连线配色"
           onChange={(event) => applyAccent(event.target.value)}
         >
           {LINE_PRESETS.map((preset) => (
@@ -1768,107 +1848,160 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
             </option>
           ))}
         </select>
+
         <span className="mm-topbar__spacer" aria-hidden="true" />
-        <button type="button" className="mm-btn" onClick={() => instanceRef.current?.view.fit()}>
-          适应
-        </button>
+
         <button
           type="button"
-          className={outlineOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={() => setOutlineOpen((value) => !value)}
+          className={searchOpen ? "mm-btn mm-btn--icon mm-btn--active" : "mm-btn mm-btn--icon"}
+          title="搜索节点（Ctrl+F）"
+          aria-label="搜索节点"
+          aria-pressed={searchOpen}
+          onClick={() => setSearchOpen((value) => !value)}
         >
-          大纲
+          <Search size={17} aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          className={rainbowOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={toggleRainbow}
-        >
-          彩虹连线
-        </button>
-        <button
-          type="button"
-          className={shapesOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={() => setShapesOpen((value) => !value)}
-        >
-          图形库
-        </button>
-        <button
-          type="button"
-          className={minimapOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={() => setMinimapOpen((value) => !value)}
-        >
-          小地图
-        </button>
-        <button
-          type="button"
-          className={historyOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={toggleHistory}
-        >
-          历史
-        </button>
-        <button
-          type="button"
-          className={shortcutOpen ? "mm-btn mm-btn--active" : "mm-btn"}
-          onClick={() => setShortcutOpen((value) => !value)}
-        >
-          快捷键
-        </button>
-        <span className="mm-topbar__divider" aria-hidden="true" />
-        <button type="button" className="mm-btn" onClick={() => setTemplatePromptOpen(true)}>
-          存为模板
-        </button>
-        <button type="button" className="mm-btn" disabled={converting} onClick={() => void convertToWhiteboard()}>
-          {converting ? "转换中…" : "转白板"}
-        </button>
-        <button
-          type="button"
-          className="mm-btn"
-          disabled={exporting !== null}
-          onClick={() => void exportMap("png")}
-        >
-          {exporting === "png" ? "导出中…" : "PNG"}
-        </button>
-        <button
-          type="button"
-          className="mm-btn"
-          disabled={exporting !== null}
-          onClick={() => void exportMap("svg")}
-        >
-          SVG
-        </button>
-        <button
-          type="button"
-          className="mm-btn"
-          disabled={exporting !== null}
-          onClick={() => void exportMap("pdf")}
-        >
-          PDF
-        </button>
-        <button
-          type="button"
-          className="mm-btn"
-          disabled={exporting !== null}
-          onClick={() => void exportMap("md")}
-        >
-          MD
-        </button>
-        <button
-          type="button"
-          className="mm-btn"
-          disabled={exporting !== null}
-          onClick={() => void exportXmind()}
-        >
-          {exporting === "xmind" ? "导出中…" : "XMind"}
-        </button>
-        <button
-          type="button"
-          className="mm-btn"
-          disabled={exporting !== null}
-          onClick={() => void exportHtml()}
-        >
-          HTML
-        </button>
+
+        <div className="mm-menu-anchor" ref={menuRef}>
+          <button
+            type="button"
+            className={viewMenuActive ? "mm-btn mm-btn--active" : "mm-btn"}
+            title="视图"
+            aria-label="视图菜单"
+            aria-haspopup="menu"
+            aria-expanded={menu === "view"}
+            onClick={() => setMenu(menu === "view" ? null : "view")}
+          >
+            <SlidersHorizontal size={16} aria-hidden="true" />
+            <span className="mm-btn__label">视图</span>
+          </button>
+          {menu === "view" && (
+            <div className="mm-menu" role="menu" aria-label="视图">
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={outlineOpen}
+                className="mm-menu__item"
+                onClick={() => setOutlineOpen((value) => !value)}
+              >
+                <Check size={14} className={outlineOpen ? "mm-menu__check" : "mm-menu__check mm-menu__check--off"} aria-hidden="true" />
+                大纲
+                <ListTree size={14} className="mm-menu__icon" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={minimapOpen}
+                className="mm-menu__item"
+                onClick={() => setMinimapOpen((value) => !value)}
+              >
+                <Check size={14} className={minimapOpen ? "mm-menu__check" : "mm-menu__check mm-menu__check--off"} aria-hidden="true" />
+                小地图
+                <Map size={14} className="mm-menu__icon" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={shapesOpen}
+                className="mm-menu__item"
+                onClick={() => setShapesOpen((value) => !value)}
+              >
+                <Check size={14} className={shapesOpen ? "mm-menu__check" : "mm-menu__check mm-menu__check--off"} aria-hidden="true" />
+                图形库
+                <Shapes size={14} className="mm-menu__icon" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={historyOpen}
+                className="mm-menu__item"
+                onClick={() => setHistoryOpen((value) => !value)}
+              >
+                <Check size={14} className={historyOpen ? "mm-menu__check" : "mm-menu__check mm-menu__check--off"} aria-hidden="true" />
+                版本历史
+                <Clock size={14} className="mm-menu__icon" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={shortcutOpen}
+                className="mm-menu__item"
+                onClick={() => setShortcutOpen((value) => !value)}
+              >
+                <Check size={14} className={shortcutOpen ? "mm-menu__check" : "mm-menu__check mm-menu__check--off"} aria-hidden="true" />
+                快捷键
+                <Keyboard size={14} className="mm-menu__icon" aria-hidden="true" />
+              </button>
+              <span className="mm-menu__divider" aria-hidden="true" />
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={rainbowOpen}
+                className="mm-menu__item"
+                onClick={() => toggleRainbow()}
+              >
+                <Check size={14} className={rainbowOpen ? "mm-menu__check" : "mm-menu__check mm-menu__check--off"} aria-hidden="true" />
+                彩虹连线
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="mm-menu__item"
+                onClick={() => {
+                  instanceRef.current?.view.fit();
+                  setMenu(null);
+                }}
+              >
+                <Maximize2 size={14} className="mm-menu__lead" aria-hidden="true" />
+                适应画布
+                <span className="mm-menu__hint">Ctrl+0</span>
+              </button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className={menu === "export" ? "mm-btn mm-btn--active" : "mm-btn"}
+            title="导出"
+            aria-label="导出菜单"
+            aria-haspopup="menu"
+            aria-expanded={menu === "export"}
+            onClick={() => setMenu(menu === "export" ? null : "export")}
+          >
+            <Download size={16} aria-hidden="true" />
+            <span className="mm-btn__label">导出</span>
+          </button>
+          {menu === "export" && (
+            <div className="mm-menu" role="menu" aria-label="导出">
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={exporting !== null} onClick={() => { setMenu(null); void exportMap("png"); }}>PNG 图片</button>
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={exporting !== null} onClick={() => { setMenu(null); void exportMap("svg"); }}>SVG 矢量图</button>
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={exporting !== null} onClick={() => { setMenu(null); void exportMap("pdf"); }}>PDF 文档</button>
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={exporting !== null} onClick={() => { setMenu(null); void exportMap("md"); }}>Markdown</button>
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={exporting !== null} onClick={() => { setMenu(null); void exportXmind(); }}>XMind</button>
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={exporting !== null} onClick={() => { setMenu(null); void exportHtml(); }}>交互式 HTML</button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className={menu === "more" ? "mm-btn mm-btn--icon mm-btn--active" : "mm-btn mm-btn--icon"}
+            title="更多操作"
+            aria-label="更多操作"
+            aria-haspopup="menu"
+            aria-expanded={menu === "more"}
+            onClick={() => setMenu(menu === "more" ? null : "more")}
+          >
+            <EllipsisVertical size={17} aria-hidden="true" />
+          </button>
+          {menu === "more" && (
+            <div className="mm-menu" role="menu" aria-label="更多操作">
+              <button type="button" role="menuitem" className="mm-menu__item" onClick={() => { setMenu(null); setTemplatePromptOpen(true); }}>存为我的模板</button>
+              <button type="button" role="menuitem" className="mm-menu__item" disabled={converting} onClick={() => { setMenu(null); void convertToWhiteboard(); }}>
+                {converting ? "转换中…" : "转换为白板"}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {phase === "ready" && doc !== null ? (
         <MindMapCanvas
@@ -1965,6 +2098,22 @@ function MindMapEditorView({ mapId, onExit, onOpenBoard }: {
               <span className="ingest__spinner" /> 正在加载导图…
             </p>
           )}
+        </div>
+      )}
+      {phase === "ready" && isEmptyMap && (
+        <div className="mm-empty-hint" role="note">
+          <span className="mm-empty-hint__icon" aria-hidden="true">
+            <Sparkles size={18} />
+          </span>
+          <p className="mm-empty-hint__title">从一个中心主题开始</p>
+          <p className="mm-empty-hint__desc">双击画布空白处新建节点，或按 Tab 添加子节点</p>
+          <button
+            type="button"
+            className="mm-empty-hint__action"
+            onClick={() => exec("INSERT_CHILD_NODE", true)}
+          >
+            添加子节点
+          </button>
         </div>
       )}
       <input

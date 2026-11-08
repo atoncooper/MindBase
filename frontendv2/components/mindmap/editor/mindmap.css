@@ -2684,3 +2684,448 @@
   padding: 5px 12px;
   box-shadow: var(--shadow-lift);
 }
+
+/* ── 画布 UI 优化（Google Docs / Material 风格） ─────────────────────
+ * 目标：把“开发者工具条”收敛成 Google 产品的干净画布：
+ *   1) 白色 app bar + 分组图标按钮 + 溢出菜单（视图/导出/更多）
+ *   2) 点阵画布底纹，平移时淡出（静态网格与移动内容不同步会打架）
+ *   3) 胶囊缩放控件（-/百分比/+/适应），圆形按钮、柔和阴影
+ *   4) 空画布引导卡（只突出一个下一步动作）
+ * 只追加覆盖，不改动既有节点/富文本/导出样式。 */
+
+.mm-frame {
+  --accent-soft: rgba(0, 113, 227, 0.1);
+}
+
+/* 1) App bar -------------------------------------------------------- */
+
+.mm-topbar {
+  gap: 4px;
+  min-height: 52px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+}
+
+.mm-title-input {
+  flex: 0 1 300px;
+  padding: 6px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  border-radius: 8px;
+}
+
+.mm-title-input:hover {
+  background: var(--wash);
+  border-color: transparent;
+}
+
+.mm-title-input:focus {
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mm-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 4px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.mm-save-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.mm-save-state[data-state="saved"]::before { background: #34c759; }
+.mm-save-state[data-state="saving"]::before {
+  background: var(--accent);
+  animation: mm-save-pulse 1s ease-in-out infinite;
+}
+.mm-save-state[data-state="pending"]::before { background: var(--danger); }
+
+@keyframes mm-save-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.mm-topbar__divider {
+  height: 20px;
+  margin: 0 4px;
+  align-self: center;
+}
+
+.mm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.mm-btn:hover:not(:disabled) {
+  background: var(--wash);
+}
+
+.mm-btn--icon {
+  width: 32px;
+  padding: 0;
+}
+
+.mm-btn--active,
+.mm-btn--active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.mm-btn:disabled {
+  opacity: 0.38;
+}
+
+.mm-select {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  background: var(--wash);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.mm-select:hover {
+  background: color-mix(in srgb, var(--wash) 60%, var(--line));
+}
+
+.mm-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mm-select--accent {
+  max-width: 132px;
+}
+
+/* 2) Menus ---------------------------------------------------------- */
+
+.mm-menu-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mm-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 70;
+  min-width: 212px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 1px 2px rgba(0, 0, 0, 0.06);
+  animation: mm-menu-in 0.12s ease;
+}
+
+@keyframes mm-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.mm-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.mm-menu__item:hover:not(:disabled) {
+  background: var(--wash);
+}
+
+.mm-menu__item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mm-menu__item[aria-checked="true"] {
+  color: var(--accent);
+}
+
+.mm-menu__check {
+  flex: none;
+  width: 16px;
+  color: var(--accent);
+}
+
+.mm-menu__check--off {
+  opacity: 0;
+}
+
+.mm-menu__lead {
+  flex: none;
+  color: var(--ink-2);
+}
+
+.mm-menu__icon {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-2);
+}
+
+.mm-menu__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.mm-menu__divider {
+  display: block;
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--line);
+}
+
+/* 3) 点阵画布底纹 ---------------------------------------------------- */
+
+.mm-canvas-wrap {
+  background-color: var(--paper);
+  isolation: isolate;
+}
+
+.mm-canvas-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle at 1px 1px, rgba(29, 29, 31, 0.13) 1.1px, transparent 1.5px);
+  background-size: 24px 24px;
+  background-position: center;
+  opacity: 0.55;
+  transition: opacity 0.18s ease;
+}
+
+.mm-canvas-wrap--panning::before {
+  opacity: 0;
+}
+
+.mm-canvas {
+  z-index: 1;
+}
+
+/* 4) 胶囊缩放控件 ---------------------------------------------------- */
+
+.mm-zoom {
+  right: 16px;
+  bottom: 16px;
+  height: 38px;
+  padding: 4px;
+  gap: 1px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.mm-zoom__btn,
+.mm-zoom__pct {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  color: var(--ink);
+  border-radius: 999px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.mm-zoom__btn {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+}
+
+.mm-zoom__btn:hover,
+.mm-zoom__pct:hover {
+  background: var(--wash);
+}
+
+.mm-zoom__btn:active,
+.mm-zoom__pct:active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.mm-zoom__pct {
+  min-width: 52px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.mm-zoom__divider {
+  height: 18px;
+  margin: 0 3px;
+}
+
+/* 5) 空画布引导卡 ---------------------------------------------------- */
+
+.mm-empty-hint {
+  position: absolute;
+  left: 50%;
+  top: 72px; /* 顶栏下方居中：不遮住位于画布中心的根节点 */
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 20px 24px;
+  text-align: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(8px);
+  transform: translateX(-50%);
+  animation: mm-hint-in 0.24s ease;
+}
+
+@keyframes mm-hint-in {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.mm-empty-hint__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 2px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 50%;
+}
+
+.mm-empty-hint__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mm-empty-hint__desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.mm-empty-hint__action {
+  height: 32px;
+  margin-top: 6px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #fff;
+  pointer-events: auto;
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.12s ease;
+}
+
+.mm-empty-hint__action:hover {
+  background: var(--color-accent-hover, #0077ed);
+}
+
+.mm-empty-hint__action:active {
+  transform: scale(0.98);
+}
+
+/* 6) 窄屏：图标化，隐藏次要标签 ------------------------------------- */
+
+@media (max-width: 1080px) {
+  .mm-btn__label {
+    display: none;
+  }
+  .mm-btn:not(.mm-btn--icon) {
+    padding: 0 8px;
+  }
+  .mm-select--accent {
+    display: none;
+  }
+  .mm-title-input {
+    flex-basis: 180px;
+  }
+}
+
+/* 顶栏可换行而不是横向滚动：下拉菜单是顶栏的子节点，overflow:auto 会把
+ * absolute 菜单裁掉（菜单只在 “视图/导出/更多” 按钮下弹出）。 */
+.mm-topbar {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+/* 小地图移到左下（Google Maps 式布局）：右下留给缩放胶囊，两者不打架。 */
+.mm-minimap-panel {
+  right: auto;
+  left: 16px;
+  bottom: 16px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+.mm-minimap-stage {
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.mm-minimap-viewport {
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+}
