@@ -4,6 +4,7 @@
 package router
 
 import (
+	quizdto "app-content/internal/dto/quiz"
 	"net/http"
 	"strings"
 
@@ -12,10 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type quotaReq struct {
-	UID  FlexInt64 `json:"uid"`
-	Kind string    `json:"kind"`
-}
+type quotaReq = quizdto.QuotaRequest
 
 func validQuotaKind(kind string) bool {
 	return kind == "generate" || kind == "grade"
@@ -45,7 +43,7 @@ func quotaPeekHandler(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, apiError.Status, apiError.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "kind": kind})
+		c.JSON(http.StatusOK, quizdto.QuotaStatus{OK: true, Kind: kind})
 	}
 }
 
@@ -73,6 +71,6 @@ func quotaConsumeHandler(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, apiError.Status, apiError.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "kind": kind})
+		c.JSON(http.StatusOK, quizdto.QuotaStatus{OK: true, Kind: kind})
 	}
 }

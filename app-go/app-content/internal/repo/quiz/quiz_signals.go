@@ -7,9 +7,7 @@ import (
 	"context"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
-	"gorm.io/gorm"
 )
 
 // QuizSignal is one answered question: correctness + entity attribution.
@@ -22,7 +20,7 @@ type QuizSignal struct {
 }
 
 // ListQuizSignalSubmissions returns the user's recent submission→quiz pairs.
-func ListQuizSignalSubmissions(ctx context.Context, db *gorm.DB, uid int64, limit int) ([]struct {
+func (r *Repo) ListQuizSignalSubmissions(ctx context.Context, uid int64, limit int) ([]struct {
 	SubmissionUUID string
 	QuizUUID       string
 }, error) {
@@ -34,7 +32,7 @@ func ListQuizSignalSubmissions(ctx context.Context, db *gorm.DB, uid int64, limi
 		QuizUUID       string `gorm:"column:quiz_uuid"`
 	}
 	var rows []row
-	err := db.WithContext(ctx).Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT submission_uuid, quiz_uuid FROM quiz_submissions WHERE uid = ? ORDER BY id DESC LIMIT ?",
 		uid, limit,
 	).Scan(&rows).Error
@@ -56,7 +54,7 @@ func ListQuizSignalSubmissions(ctx context.Context, db *gorm.DB, uid int64, limi
 
 // ListQuizSignalAnswers returns (submission_uuid, question_uuid, is_correct)
 // for the given submissions.
-func ListQuizSignalAnswers(ctx context.Context, db *gorm.DB, submissionUUIDs []string) ([]struct {
+func (r *Repo) ListQuizSignalAnswers(ctx context.Context, submissionUUIDs []string) ([]struct {
 	SubmissionUUID string
 	QuestionUUID   string
 	IsCorrect      bool
@@ -70,7 +68,7 @@ func ListQuizSignalAnswers(ctx context.Context, db *gorm.DB, submissionUUIDs []s
 		IsCorrect      bool   `gorm:"column:is_correct"`
 	}
 	var rows []row
-	err := db.WithContext(ctx).Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT submission_uuid, question_uuid, is_correct FROM quiz_answers WHERE submission_uuid IN (?)",
 		submissionUUIDs,
 	).Scan(&rows).Error
@@ -94,7 +92,7 @@ func ListQuizSignalAnswers(ctx context.Context, db *gorm.DB, submissionUUIDs []s
 
 // GetQuestionAttributions batch-reads entity attributions from Mongo
 // (port of mongo_quiz_repository.get_question_attributions).
-func GetQuestionAttributions(ctx context.Context, db *mongo.Database, quizUUIDs []string) (map[string]struct {
+func (r *Repo) GetQuestionAttributions(ctx context.Context, quizUUIDs []string) (map[string]struct {
 	RelatedEntities []string
 	QuestionText    string
 }, error) {
@@ -102,10 +100,10 @@ func GetQuestionAttributions(ctx context.Context, db *mongo.Database, quizUUIDs 
 		RelatedEntities []string
 		QuestionText    string
 	})
-	if db == nil || len(quizUUIDs) == 0 {
+	if r.Mongo == nil || len(quizUUIDs) == 0 {
 		return out, nil
 	}
-	cursor, err := db.Collection(quizQuestionsCollection).Find(ctx, bson.M{
+	cursor, err := r.Mongo.Collection(quizQuestionsCollection).Find(ctx, bson.M{
 		"quiz_uuid": bson.M{"$in": quizUUIDs},
 		"is_valid":  true,
 	}, options.Find().SetProjection(bson.D{

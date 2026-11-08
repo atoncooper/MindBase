@@ -5,6 +5,7 @@
 package router
 
 import (
+	quizdto "app-content/internal/dto/quiz"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"app-content/internal/middleware"
 	"app-content/internal/service/quiz"
 	"app-content/internal/service/quiz/exampaper"
 
@@ -40,9 +42,7 @@ func registerQuiz(e *gin.Engine, svc *service.Store) {
 		c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
 	})
 	g.POST("/shared/:share_token", func(c *gin.Context) {
-		var body struct {
-			Password string `json:"password"`
-		}
+		var body quizdto.SharePasswordRequest
 		_ = c.ShouldBindJSON(&body)
 		payload, err := svc.GetSharedQuiz(c.Request.Context(), c.Param("share_token"), body.Password)
 		if err != nil {
@@ -86,7 +86,7 @@ func history(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "查询失败，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.History](c, resp)
 	}
 }
 
@@ -100,12 +100,12 @@ func wrongAnswers(svc *service.Store) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		resp, err := svc.WrongAnswers(uid, fids)
+		resp, err := svc.WrongAnswers(c.Request.Context(), uid, fids)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "查询失败，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.WrongAnswers](c, resp)
 	}
 }
 
@@ -138,7 +138,7 @@ func export(svc *service.Store) gin.HandlerFunc {
 
 		w := c.Writer
 		flusher, _ := w.(http.Flusher)
-		err := svc.ExportSubmissions(svc.DB, uid, fids, format, func(b []byte) error {
+		err := svc.ExportSubmissions(c.Request.Context(), uid, fids, format, func(b []byte) error {
 			if _, err := w.Write(b); err != nil {
 				return err
 			}
@@ -204,10 +204,7 @@ func sanitizeFilename(title string) string {
 	return string(runes)
 }
 
-type createShareBody struct {
-	ExpiresInDays *json.Number `json:"expires_in_days"`
-	Password      string       `json:"password"`
-}
+type createShareBody = quizdto.CreateShareRequest
 
 func createShare(svc *service.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -227,34 +224,22 @@ func createShare(svc *service.Store) gin.HandlerFunc {
 				return
 			}
 		}
-		if pw := strings.TrimSpace(body.Password); pw != "" {
-			if n := len([]rune(pw)); n < 4 || n > 32 {
-				apiErr(c, http.StatusBadRequest, "访问密码须为 4-32 位")
-				return
-			}
-			body.Password = pw
-		}
-		var expiresAt *time.Time
+		var days *int
 		if body.ExpiresInDays != nil {
-			days, err := strconv.Atoi(body.ExpiresInDays.String())
+			n, err := strconv.Atoi(body.ExpiresInDays.String())
 			if err != nil {
 				apiErr(c, http.StatusBadRequest, "expires_in_days 必须是整数或 null")
 				return
 			}
-			if days < 1 || days > 365 {
-				apiErr(c, http.StatusBadRequest, "有效期必须在 1~365 天之间")
-				return
-			}
-			t := time.Now().UTC().AddDate(0, 0, days)
-			expiresAt = &t
+			days = &n
 		}
 
-		resp, err := svc.CreateShare(c.Request.Context(), quizUUID, uid, expiresAt, body.Password)
+		resp, err := svc.CreateShare(c.Request.Context(), quizUUID, uid, days, body.Password)
 		if err != nil {
 			respondAPIError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.ShareState](c, resp)
 	}
 }
 
@@ -264,12 +249,12 @@ func shareStatus(svc *service.Store) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		resp, err := svc.ShareStatus(c.Param("quiz_uuid"), uid)
+		resp, err := svc.ShareStatus(c.Request.Context(), c.Param("quiz_uuid"), uid)
 		if err != nil {
 			respondAPIError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.ShareState](c, resp)
 	}
 }
 
@@ -284,7 +269,7 @@ func revokeShare(svc *service.Store) gin.HandlerFunc {
 			respondAPIError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.ShareState](c, resp)
 	}
 }
 
@@ -294,19 +279,17 @@ func renameQuiz(svc *service.Store) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		var body struct {
-			Title string `json:"title"`
-		}
+		var body quizdto.RenameRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
 			apiErr(c, http.StatusBadRequest, "请求体需为 JSON：{title}")
 			return
 		}
-		resp, err := svc.RenameQuiz(uid, c.Param("quiz_uuid"), body.Title)
+		resp, err := svc.RenameQuiz(c.Request.Context(), uid, c.Param("quiz_uuid"), body.Title)
 		if err != nil {
 			respondAPIError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.RenameResult](c, resp)
 	}
 }
 
@@ -321,7 +304,7 @@ func deleteQuiz(svc *service.Store) gin.HandlerFunc {
 			respondAPIError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.DeleteResult](c, resp)
 	}
 }
 
@@ -337,21 +320,16 @@ func getQuiz(svc *service.Store) gin.HandlerFunc {
 			respondAPIError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, resp)
+		renderTyped[quizdto.QuizDetail](c, resp)
 	}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-// respondAPIError maps service.APIError to its HTTP status, everything else
-// to 500.
+// respondAPIError renders the shared apperr model (service errors are
+// *apperr.Error aliases).
 func respondAPIError(c *gin.Context, err error) {
-	var statusErr *service.APIError
-	if errors.As(err, &statusErr) {
-		apiErr(c, statusErr.Status, statusErr.Detail)
-		return
-	}
-	apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
+	middleware.RespondError(c, err)
 }
 
 // parseFolderIDs validates the comma-separated folder_ids query parameter

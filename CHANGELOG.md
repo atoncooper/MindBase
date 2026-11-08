@@ -6,9 +6,34 @@
 
 ### Changed
 
-- **内容域合并：app-note + app-quiz + app-board → app-content**：三个 Go 服务合并为单一模块 `app-go/app-content`（单 Go module / 单镜像 / 单容器 / 单进程），保留三个独立 Gin engine 与三个监听口（8004=board/HTTPS+TLS rotator、8008=note、8011=quiz），对外路径 / wire 契约 / DB schema / MCP 协议全部不变；配置收敛为一个 `default.yaml`（board/note/quiz 三段），env 前缀兼容 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__`；全局单 logger；MySQL/Mongo/Redis 连接按域隔离复用。MCP server（app-note-mcp / app-quiz-mcp / app-board-mcp）保持独立，仅上游服务名改为 app-content。
+- **内容域合并：app-note + app-quiz + app-board → app-content**：三个 Go 服务合并为单一模块 `app-go/app-content`（单 Go module / 单镜像 / 单容器 / 单进程），三域挂在同一个 Gin 引擎、**单进程 / 单端口 8004（HTTPS+TLS rotator）**上（一个 `*http.Server`；路径 /board、/notes、/quiz、/tasks、/internal/* 共用），对外路径 / wire 契约 / DB schema / MCP 协议不变；配置收敛为一个 `default.yaml`（board/note/quiz 三段），env 前缀兼容 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__`；全局单 logger；MySQL/Mongo/Redis 连接按域隔离复用。MCP server（app-note-mcp / app-quiz-mcp / app-board-mcp）保持独立，仅上游服务名改为 app-content。
 - **编排/网关/部署一次性切换**：compose（含 client compose）新增 `app-content`（镜像 `atoncooper/mind-base-app-content`，profiles `["", "content", "note", "quiz", "board", "full"]`，日志卷 `app_content_logs`，board TLS 证书挂载沿用 `./app-board/certs`，depends_on cert-gen+mysql+mongo+redis）、删除 `app-note`/`app-quiz`/`app-board` 服务；APISIX 改为 `upstream-app-content-note/-quiz/-board` 三个 upstream（端口/协议语义不变）；nginx 注释与 CI（新增 `ci-app-content.yml`、docker-build 矩阵 16→14 镜像）同步；`deploy/{docker,k8s,swarm}` 与启动脚本同步；旧 `app-go/app-note|app-quiz`、根 `app-board/` 目录删除。
 - **文档/规范**：AGENTS.md §2.15 重写为 app-content 内容域权威章节（§2.17 改为合并说明），目录树/定位索引同步；docs/{architecture,configuration,getting-started,deployment,client-compose,api,project-structure,README,features,faq,notes,sharing,vscode-setup,service-key-auth,app-board-mcp} 同步为 app-content，新增 docs/app-content.md 替代 docs/app-board.md；archive 文档加历史注记。
+
+### UI
+
+- **思维导图画布 UI（参考 Google Docs/Material）**：顶栏收敛为白色 app bar + 分组图标按钮，视图/导出/更多改为下拉菜单（大纲、小地图、图形库、版本历史、快捷键、彩虹连线、适应画布；PNG/SVG/PDF/MD/XMind/HTML；存模板/转白板）；画布增加点阵底纹（平移时淡出）；右下缩放改为胶囊形图标控件；空画布增加轻量引导卡；小地图移至左下并统一圆角/阴影/强调色。
+
+### Security / Fixed
+
+- **配置体系升级（企业级高级配置）**：`default.yaml` 重写为进程级 `app/server/security/log/observability` + 域级 `board/note/quiz` 两层；新增 TLS 1.2/1.3 与 client_auth、HTTP/2、trusted_proxies、优雅关停、分级超时、可配置安全头/HSTS、CORS methods/headers/expose/max-age、令牌桶限流（rps/burst/key/排除路径）、三域 body limits、日志 add_source/轮转、Prometheus `/metrics` 与可选 pprof；`CONTENT__SECTION__KEY` env 覆盖 + 旧 `APPBOARD__` 兼容。
+
+- **DTO 分层 + 企业级安全校验**：新增 `internal/dto/{board,note,quiz}`（请求 DTO 带 `binding` 校验 + 响应 DTO/mapper），router 只做绑定/映射；新增 `internal/middleware` 统一 request-id、安全头（含 HSTS）、CORS、body limit、X-Uid 校验；`/internal/*` 增加 `X-Internal-Key` 服务令牌二次校验（fail-closed，APISIX 注入），未配置返回 503。
+- **HTTPS 强制**：单 listener 默认 TLS，启动校验拒绝明文（仅 `CONTENT__ALLOW_INSECURE_HTTP=true` 本地调试可用）；APISIX 三 upstream / k8s 探针 / compose 全链路 HTTPS。
+
+- **安全防护基线补齐（review 修复）**：note/quiz 增加请求体上限（2 MiB / 4 MiB）与完整 HTTP server 超时（原为无超时 slowloris 面）；board 增加安全响应头与 `/health` MySQL 探测（503 拉出 APISIX 节点）；三面认证失败统一 401（board 原 400）；note 面 500 不再返回驱动/Mongo 错误原文，统一「内部错误」/503；`X-Request-Id` 截断 64 字符并注入日志上下文；`*__CORS__ALLOW_ORIGINS` 改为替换语义（可收窄），启动校验拒绝 `*`（credentials 模式下不安全）；gin 的进程级 mode 收敛到组合根设置一次。
+- **架构可读性**：`internal/app/{board,note,quiz}` 更名 `internal/bootstrap/{board,note,quiz}`（明确是进程内组装函数，唯一 main 在 `cmd/app-content`）；域间仅允许 service 接口跨域，新增 `tests/architecture_test.go` 守护（单一 main + 禁止跨域 repo/router/model/infra import）。
+- **单端口 / 单进程返工**：`internal/bootstrap` 收敛为一个组合根（唯一 `*http.Server` / 唯一 `ListenAndServe`），移除三套 per-domain listener；APISIX 三个 upstream 节点统一指向 `app-content:8004`（scheme https），compose/k8s/swarm/启动脚本/文档同步为单端口；`tests/architecture_test.go` 新增「唯一 listener」守护。
+- **单 Gin 实例收口**：组合根创建唯一 `gin.New()` 并统一 `middleware.Apply` 一次，board/note/quiz 改为 `Register(e, deps)` 在同一 engine 上注册路由（删除每域自建 engine + `http.ServeMux` 前缀挂载）；`/health`、`/metrics`、pprof、404/405 兜底也挂同一 engine；三域不同请求体上限改为 middleware 按路径前缀选取；`tests/architecture_test.go` 新增「唯一 `gin.New()` / 无 `ServeMux`」守护。
+- **数据源收口（一个进程 = 一组连接）**：新增进程级 `database` 配置（MySQL 池 / Mongo client / Redis client 各一个）与 `internal/infra/{mysql,mongo,redis}`，board/note/quiz 全部改为接收共享 handle（删除三个包级 `var DB` 单例、三个 MySQL 池、三个 Mongo client、两个 Redis client）；`default.yaml` 删除 board/note 段（仅保留唯一 `database` + quiz 配额/超时）；旧 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__` 数据源 env 仍兼容但**取值冲突会拒绝启动**（防止一个进程连到多个库）；`.env` 只在组合根加载一次；board 历史 Mongo 库 `MindBase` 与共享 `mind_base` 显式分开（`database.mongo.board_database`，迁移后可置空统一）。
+- **board internal 鉴权补齐**：board 新增真实 `/internal/board/*` 路由组（`InternalAuth` + `RequireUID`），APISIX `board_internal` 只注入 `X-Internal-Key` 不再 rewrite 路径，与 note/quiz 的纵深防御一致。
+- **分层收口（第二批）**：错误模型统一为 `internal/apperr` + `middleware.RespondError`（board 哨兵/note typed/quiz APIError 三套收敛）；DTO 包不再依赖 service/repo/model（映射下沉到 controller，`tests/layering_test.go` 新增 dto 依赖守护），quiz 公开响应改为 typed DTO（History/WrongAnswers/QuizDetail/Share/Delete/Rename，router `renderTyped` 转换）；quiz repo/service 全部补 `context.Context`（Rw/统计/分享/状态机查询），消除 `context.Background()`；board 迁移由 `AutoMigrate` 改为 CREATE-ONLY DDL，与 note/quiz 一致并新增 DDL 守护测试。
+- **分层收口（第三批）**：repo 统一为「struct 持有连接句柄 + ctx-first 方法」——note `NoteRepo{DB}`、quiz 新增 `Repo{DB, Mongo}` 全量方法化（board 已同构），service 不再持有 `*gorm.DB`/`*mongo.Database`（quiz `Store.Repo`、note `NewNoteService(repo, content)`）；quiz 全部内部/公开响应补 typed DTO（`GradingPayload`/`TaskQuizDetail`/`TaskQuizSubmitResult`/`AgentWriteResult`/`SignalsResponse`/`WrongAnswers`），router 统一 `renderTyped`，HTTP 边界不再直出 `map[string]interface{}`；quiz repo/service 全部 query 走 `WithContext`，移除残留 `context.Background()`。
+- **数据层正确性修复**：MySQL DSN 统一 `loc=UTC`（board 原 `loc=Local`，容器 TZ 非 UTC 时与 note/quiz 差 8 小时）；board 创建改为「正文先写 + 元数据失败补偿」，不再出现 201 但正文丢失；note 删除改为单事务（软删 + 撤销分享），不再出现已删笔记仍有有效分享链接；health 聚合 MySQL + Mongo + Redis（Mongo/Redis 故障不再 200）；`tests/architecture_test.go` 新增「唯一 MySQL/Mongo/Redis client、无包级 DB 全局」守护。
+- **测试目录统一**：全部 Go 测试从各 `internal/**` 包迁入 `app-go/app-content/tests` 独立 `tests` 包（20 个测试文件，含分层/架构守护）；`internal/**` 下不再有任何 `_test.go`；CI 改为 `go test -race -coverpkg=./... ./tests/`（当前总覆盖率约 35%，门槛 25%）。
+- **单元测试补齐**：新增 board/quiz router 安全契约测试（401/403、安全头、CORS、请求体上限、未知路由 JSON）、logger（request-id 上下文 + 文件 sink + 级别）、bootstrap 配置 fail-fast、config 默认值/CORS env/通配符拒绝、架构守护；CI 增加 `-race` 与 25% 覆盖率门槛（当前 26.9%）。
+- **k8s 加固**：pod `runAsNonRoot/runAsUser/runAsGroup/fsGroup=65532`（emptyDir `/app/logs` 可写）、容器 `allowPrivilegeEscalation: false` + `capabilities.drop=[ALL]`；删除无效的 `APPNOTE__/APPQUIZ__LOG__OUTPUT`（单 logger 由 board 段驱动）。
+- 文档：`docs/app-content.md` 新增「安全边界与防护」章节（信任模型、已实施基线、剩余风险），并明确单二进制/单进程语义。
 
 ## [Unreleased] — 2026-11-06
 

@@ -92,7 +92,7 @@ var typeTitles = map[string]string{
 }
 
 // chineseNumerals renders 1..20 as 一..二十 (section ordinals).
-func chineseNumeral(n int) string {
+func ChineseNumeral(n int) string {
 	if n <= 0 || n > 20 {
 		return fmt.Sprintf("%d", n)
 	}
@@ -291,7 +291,7 @@ func BuildPaper(title, style string, totalScore int, durationMin int, includeAns
 // 一、单项选择题（本题共 5 小题，每小题 4 分，共 20 分）
 func (s *PaperSection) Header() string {
 	var b strings.Builder
-	b.WriteString(chineseNumeral(s.Index) + "、" + s.Title)
+	b.WriteString(ChineseNumeral(s.Index) + "、" + s.Title)
 	if len(s.Questions) > 0 {
 		fmt.Fprintf(&b, "（本题共 %d 小题，", len(s.Questions))
 		if s.Uniform > 0 {
@@ -304,5 +304,5 @@ func (s *PaperSection) Header() string {
 
 // SectionTitleOnly is the short heading used on the answer pages.
 func (s *PaperSection) TitleOnly() string {
-	return chineseNumeral(s.Index) + "、" + s.Title
+	return ChineseNumeral(s.Index) + "、" + s.Title
 }

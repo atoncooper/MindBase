@@ -1,7 +1,7 @@
-# app-content — consolidated content-domain service (board 8004 / note 8008 / quiz 8011; Go + Gin).
-# Consolidated from the former app-board / app-note / app-quiz Deployments: one
-# workload, one Service, three listener ports. Path/port semantics are unchanged —
-# 8004 = board (HTTPS-only, mind maps & whiteboards), 8008 = notes, 8011 = quiz.
+# app-content — consolidated content-domain service (Go + Gin).
+# Consolidated from the former app-board / app-note / app-quiz Deployments: ONE
+# workload, ONE Service, ONE HTTPS listener (8004). All domains share the port:
+# /board, /notes, /quiz, /tasks and /internal/*; external path semantics unchanged.
 # Board TLS certs come from the app-board-certs Secret (generated once by
 # scripts/gen-certs.sh locally; the directory/secret keep their historical
 # "app-board" name — the cert volume/secret is preserved across the cutover);
@@ -22,12 +22,6 @@ spec:
     - name: https
       port: 8004
       targetPort: 8004
-    - name: http-note
-      port: 8008
-      targetPort: 8008
-    - name: http-quiz
-      port: 8011
-      targetPort: 8011
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -44,6 +38,16 @@ spec:
       labels:
         app: app-content
     spec:
+      # Run as the image's nonroot UID and make the emptyDir log volume group-
+      # writable for it (k8s emptyDir does NOT inherit image directory ownership
+      # the way a docker named volume does — without fsGroup lumberjack file
+      # logging would fail silently here).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       initContainers:
         # Union of the three old wait-deps: shared MySQL (board/note/quiz),
         # Mongo (board docs / note content / quiz questions), Redis
@@ -61,32 +65,29 @@ spec:
             - secretRef:
                 name: mindbase-env
           env:
-            # 连接串来自 mindbase-defaults（APPBOARD__REDIS__URL=/2 读缓存、
-            # APPBOARD__RDBMS__URL、APPBOARD__MONGO__URI、APPNOTE__/APPQUIZ__RDBMS__URL）；
-            # .env 同名键可覆盖。
-            - name: APPBOARD__MONGO__DB_NAME
-              value: MindBase
-            - name: APPBOARD__LOG__OUTPUT
+            # 统一数据源来自 mindbase-defaults（CONTENT__DATABASE__*：一个 MySQL
+            # 池 / 一个 Mongo client / 一个 Redis client）；.env 同名键可覆盖。
+            # /internal/* M2M 二次校验（与 APISIX consumer key 同值，fail-closed）
+            - name: CONTENT__INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: CONTENT__LOG__OUTPUT
               value: "both"
             # Explicit cert files from the Secret (no in-pod auto-generation,
             # so the apisix trust anchor is deterministic)
-            - name: APPBOARD__SERVER__TLS__ENABLED
+            - name: CONTENT__SERVER__TLS__ENABLED
               value: "true"
-            - name: APPBOARD__SERVER__TLS__CERT
+            - name: CONTENT__SERVER__TLS__CERT
               value: /app/certs/server.crt
-            - name: APPBOARD__SERVER__TLS__KEY
+            - name: CONTENT__SERVER__TLS__KEY
               value: /app/certs/server.key
-            - name: APPNOTE__LOG__OUTPUT
-              value: "both"
-            - name: APPQUIZ__LOG__OUTPUT
-              value: "both"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: https
               containerPort: 8004
-            - name: http-note
-              containerPort: 8008
-            - name: http-quiz
-              containerPort: 8011
           volumeMounts:
             - name: logs
               mountPath: /app/logs
@@ -94,10 +95,9 @@ spec:
               mountPath: /app/certs
               readOnly: true
 
-          # startupProbe 门控启动期（60s 预算）：打 board 的 HTTPS 监听口，验证
-          # TLS 证书已加载（kubelet 探针不校验证书；与 APISIX https_verify_certificate:false
-          # 同姿态）。通过后 readiness/liveness 接管——打 note 的 /health（MySQL
-          # 不可达 → 503 拉出 Endpoints；Mongo 降级不摘节点，语义同旧 app-note）。
+          # 单端口/单探针：startup 验证 HTTPS listener + TLS 证书已加载；
+          # readiness/liveness 打同一个 /health（任一域 MySQL 不可达 → 503
+          # 拉出 Endpoints；Mongo/Redis 降级不摘节点）。
           startupProbe:
             httpGet:
               path: /health
@@ -108,12 +108,14 @@ spec:
           readinessProbe:
             httpGet:
               path: /health
-              port: 8008
+              port: 8004
+              scheme: HTTPS
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8008
+              port: 8004
+              scheme: HTTPS
             periodSeconds: 30
           # 旧三服务 limits 之和（board 250m + note 500m + quiz 500m / 3×512Mi）
           resources:

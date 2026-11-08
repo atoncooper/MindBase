@@ -21,7 +21,7 @@
 | 80 / 443 | nginx | **公网** | 唯一生产入口；443 需证书（第 5 节） |
 | 3000 | frontend | 0.0.0.0 | 生产可只经 nginx；防火墙限制 |
 | 9080 | APISIX | 无宿主端口 | 仅容器网络；调试 `docker compose exec apisix` |
-| 8000 / 8001-8016 | app-ts、app-user（8006/8010/8015）、app-content（8004/8008/8011）、其他 app-go 服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
+| 8000 / 8001-8016 | app-ts、app-user（8006/8010/8015）、app-content（8004 单端口）、其他 app-go 服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
 | 3001 / 8016 | app-admin UI / API | 127.0.0.1 | 管理台仅回环，远程用 SSH 隧道 |
 | 8002 | app-pay | 127.0.0.1 | HTTPS-only |
 | 3306 / 27017 / 6379 / 19530 / 7474 / 7687 / 9000-9001 | MySQL/Mongo/Redis/Milvus/Neo4j/MinIO | **compose 默认 0.0.0.0** | 生产必须防火墙限制或改回环绑定 |
@@ -108,7 +108,7 @@ chmod 600 secrets/api_key_encryption_key
 - `nginx/nginx.conf` 的 443 server 默认启用（证书路径 `/etc/nginx/certs/fullchain.pem` 与 `privkey.pem`）；80 保留 ACME challenge；两者共用 `locations.conf`。
 - 反向代理注意：`/chat` 等 SSE 必须关 buffering；`/cloud/` 上传上限 5g 且绕过 APISIX；`/minio-proxy/` 由 nginx 直连 MinIO。改路由只改 `nginx/locations.conf`。
 - **app-pay**：`server.ssl` 默认启用，证书默认 `certs/pay.crt` 与 `certs/pay.key`，生产用 `PAY_TLS_CERT`/`PAY_TLS_KEY` 覆盖；证书缺失启动自检拒绝启动；APISIX 的 `upstream-app-pay` 走 HTTPS（当前仅加密不校验证书）。
-- **app-content（board 面）**：默认 HTTPS-only；显式证书用 `APPBOARD__SERVER__TLS__CERT`/`...__KEY`；APISIX 只读挂其 `dev-ca.crt`，首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
+- **app-content（board 面）**：默认 HTTPS-only；显式证书用 `CONTENT__SERVER__TLS__CERT`/`...__KEY`；APISIX 只读挂其 `dev-ca.crt`，首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
 - MCP：默认回环 HTTP；跨机设 `BOARD_MCP_TLS_ENABLED=true` 并让客户端信任 dev CA。
 
 ## 6. 监控与日志
@@ -116,7 +116,7 @@ chmod 600 secrets/api_key_encryption_key
 | 服务 | 健康/指标端点（容器内） | 备注 |
 |---|---|---|
 | app-ts | `:8000/health`、`:8000/agent/runtime` | health 含 Milvus 可用性；runtime 含队列/超时/breaker |
-| app-go 服务 | app-user 8006/8010/8015、app-content 8004（HTTPS，board）/8008（note）/8011（quiz；宿主调试口 8018/8011）、app-cloud 8007 的 `/health` | app-cloud 另有 `/metrics`；app-content board 面为 HTTPS |
+| app-go 服务 | app-user 8006/8010/8015、app-content 8004（HTTPS，三面共用；宿主调试口 `APP_CONTENT_PORT`）、app-cloud 8007 的 `/health` | app-cloud 另有 `/metrics`；app-content board 面为 HTTPS |
 | app-kg | `:8014/health`（gRPC `:8013` 自带 health） | |
 | 三个 MCP | `:8005/8009/8012/health` | 板/笔记/测验 MCP server（app-board-mcp / app-note-mcp / app-quiz-mcp） |
 | app-task | `:8001/health` | |

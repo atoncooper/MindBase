@@ -78,7 +78,7 @@ cd <repo>/deploy/docker
 docker compose --env-file ../../.env -f 30-app-user.yml up -d app-user     # 启动（8006 auth / 8010 bili / 8015 settings）
 docker compose --env-file ../../.env -f 30-app-user.yml down               # 停止并删除容器
 docker compose --env-file ../../.env -f 30-app-user.yml logs -f app-user   # 日志
-docker compose --env-file ../../.env -f 30-app-content.yml up -d app-content  # 启动（8004 board HTTPS / 8008 note / 8011 quiz）
+docker compose --env-file ../../.env -f 30-app-content.yml up -d app-content  # 启动（单端口 8004 HTTPS：/board /notes /quiz /tasks）
 docker compose --env-file ../../.env -f 13-apisix.yml up -d --force-recreate apisix  # 改配置后重建
 ```
 
@@ -163,8 +163,8 @@ docker exec mind-base-apisix getent hosts app-user
 docker exec mind-base-app-ts wget -qO- http://127.0.0.1:8000/health
 # app-user 三监听口健康面（8006 auth / 8010 bili / 8015 settings）
 for p in 8006 8010 8015; do docker run --rm --network mind-base-overlay curlimages/curl:8.11.1 -s "http://app-user:$p/health"; echo; done
-# app-content 三监听口健康面（8004 board HTTPS / 8008 note / 8011 quiz）
-for p in 8008 8011; do docker run --rm --network mind-base-overlay curlimages/curl:8.11.1 -s "http://app-content:$p/health"; echo; done
+# app-content 单端口健康面（8004 HTTPS）
+docker run --rm --network mind-base-overlay curlimages/curl:8.11.1 -sk https://app-content:8004/health; echo
 docker run --rm --network mind-base-overlay curlimages/curl:8.11.1 -sk https://app-content:8004/health; echo
 # 端到端：浏览器 https://<MB_CERT_HOST> 登录 + 聊天；docker logs -f mind-base-apisix
 ```

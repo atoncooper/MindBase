@@ -32,10 +32,13 @@ configMapGenerator:
       - MONGO_USER=admin
       - MONGO_PASSWORD=mind-base
       - MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
-      - APPBOARD__MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
+      - CONTENT__DATABASE__MONGO__URI=mongodb://admin:mind-base@mongo:27017/?authSource=admin
+      - CONTENT__DATABASE__MONGO__DATABASE=mind_base
+      - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
       - REDIS_PASSWORD=mind-base
       - REDIS__URL=redis://:mind-base@redis:6379/1
-      - APPBOARD__REDIS__URL=redis://:mind-base@redis:6379/2
+      - CONTENT__DATABASE__REDIS__URL=redis://:mind-base@redis:6379/1
+      - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
       - NEO4J_PASSWORD=mind-base
       - KG__PASSWORD=mind-base
       - MINIO_ACCESS_KEY=minioadmin
@@ -49,12 +52,10 @@ configMapGenerator:
       - RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPAUTH__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPCLOUD__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPNOTE__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPQUIZ__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPKG__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPSETTINGS__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPBILI__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
+      - CONTENT__DATABASE__MYSQL__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       - APPADMIN__RDBMS__URL=mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base
       # Pod CIDR of the cluster (UI Nginx -> API): trusted for X-Forwarded-*.
       - APPADMIN__SECURITY__TRUSTED_PROXIES=10.0.0.0/8

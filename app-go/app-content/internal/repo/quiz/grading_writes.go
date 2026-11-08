@@ -63,10 +63,10 @@ func jsonPayload(v interface{}) interface{} {
 
 // CreateGradedSubmission inserts the final quiz_submissions row and its
 // quiz_answers rows in one transaction; returns submission_uuid.
-func CreateGradedSubmission(ctx context.Context, db *gorm.DB, in GradedSubmissionInput) (string, error) {
+func (r *Repo) CreateGradedSubmission(ctx context.Context, in GradedSubmissionInput) (string, error) {
 	submissionUUID := uuid.NewString()
 	now := time.Now().UTC()
-	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(
 			"INSERT INTO quiz_submissions "+
 				"(submission_uuid, quiz_uuid, uid, total_score, auto_score, passing_score, "+

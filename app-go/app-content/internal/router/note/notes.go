@@ -11,165 +11,142 @@ import (
 	"strings"
 	"time"
 
-	"app-content/internal/repo/note"
+	notedto "app-content/internal/dto/note"
+	"app-content/internal/middleware"
 	"app-content/internal/service/note"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
-func registerNotes(e *gin.Engine, svc *service.NoteService, db *gorm.DB) {
+func registerNotes(e *gin.Engine, svc *service.NoteService, internalAPIKey string) {
 	g := e.Group("/notes")
 
 	// Public sharing — declared before /:note_uuid so the static segment
 	// wins (Gin prioritises static over param at the same level).
 	g.GET("/shared/:share_token", func(c *gin.Context) {
-		view, err := svc.GetSharedView(c.Request.Context(), db, c.Param("share_token"))
+		view, err := svc.GetSharedView(c.Request.Context(), c.Param("share_token"))
 		if err != nil {
 			if errors.Is(err, service.ErrNotFound) {
 				apiErr(c, http.StatusNotFound, "分享不存在或已失效")
 				return
 			}
-			apiErr(c, http.StatusInternalServerError, err.Error())
+			if errors.Is(err, service.ErrStorageUnavailable) {
+				slog.Error("[NOTES] shared view storage unavailable", "err", err,
+					"path", c.Request.URL.Path, "request_id", c.GetString("request_id"))
+				apiErr(c, http.StatusServiceUnavailable, "存储暂不可用，请稍后重试")
+				return
+			}
+			// Never leak driver/Mongo error text on a public endpoint.
+			slog.Error("[NOTES] shared view internal error", "err", err,
+				"path", c.Request.URL.Path, "request_id", c.GetString("request_id"))
+			apiErr(c, http.StatusInternalServerError, "内部错误")
 			return
 		}
-		c.JSON(http.StatusOK, view)
+		c.JSON(http.StatusOK, toNoteShared(view))
 	})
 
-	g.GET("", listNotes(svc, db))
-	g.POST("", createNote(svc, db))
-	g.GET("/:note_uuid", getNote(svc, db))
-	g.PATCH("/:note_uuid", updateNote(svc, db))
-	g.DELETE("/:note_uuid", deleteNote(svc, db))
-	g.POST("/:note_uuid/anchors", addAnchor(svc, db))
-	g.DELETE("/:note_uuid/anchors/:anchor_id", deleteAnchor(svc, db))
-	g.GET("/:note_uuid/revisions", listRevisions(svc, db))
-	g.POST("/:note_uuid/revisions/restore/:revision_id", restoreRevision(svc, db))
-	g.POST("/:note_uuid/share", createShare(svc, db))
-	g.DELETE("/:note_uuid/share", revokeShare(svc, db))
+	g.GET("", listNotes(svc))
+	g.POST("", createNote(svc))
+	g.GET("/:note_uuid", getNote(svc))
+	g.PATCH("/:note_uuid", updateNote(svc))
+	g.DELETE("/:note_uuid", deleteNote(svc))
+	g.POST("/:note_uuid/anchors", addAnchor(svc))
+	g.DELETE("/:note_uuid/anchors/:anchor_id", deleteAnchor(svc))
+	g.GET("/:note_uuid/revisions", listRevisions(svc))
+	g.POST("/:note_uuid/revisions/restore/:revision_id", restoreRevision(svc))
+	g.POST("/:note_uuid/share", createShare(svc))
+	g.DELETE("/:note_uuid/share", revokeShare(svc))
 
 	// M2M — consumed by the Python note agent tools (save_note etc.) via
 	// APISIX key-auth; the caller forwards the authenticated uid explicitly.
-	ig := e.Group("/internal/note")
-	ig.GET("/notes", listNotes(svc, db))
-	ig.POST("/notes", createNote(svc, db))
-	ig.GET("/notes/:note_uuid", getNote(svc, db))
-	ig.PATCH("/notes/:note_uuid", updateNote(svc, db))
+	ig := e.Group("/internal/note", middleware.InternalAuth(internalAPIKey))
+	ig.GET("/notes", listNotes(svc))
+	ig.POST("/notes", createNote(svc))
+	ig.GET("/notes/:note_uuid", getNote(svc))
+	ig.PATCH("/notes/:note_uuid", updateNote(svc))
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-type createReq struct {
-	Title      string `json:"title"`
-	TargetType string `json:"target_type"`
-	TargetID   string `json:"target_id"`
-	ContentMD  string `json:"content_md"`
-}
-
-func createNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func createNote(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		var req createReq
-		if err := c.ShouldBindJSON(&req); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+		var req notedto.CreateRequest
+		if !middleware.BindJSON(c, &req) {
 			return
 		}
-		if req.TargetType == "" || req.TargetID == "" {
-			apiErr(c, http.StatusBadRequest, "target_type and target_id are required")
-			return
-		}
-		if len(req.TargetID) > 100 {
-			apiErr(c, http.StatusBadRequest, "target_id must be at most 100 characters")
-			return
-		}
-		if len(req.Title) > 500 {
-			apiErr(c, http.StatusBadRequest, "title must be at most 500 characters")
-			return
-		}
-		if len(req.ContentMD) > 512*1024 {
-			apiErr(c, http.StatusBadRequest, "content_md exceeds 512 KB")
-			return
-		}
-		detail, err := svc.CreateNote(c.Request.Context(), db, uid,
+		detail, err := svc.CreateNote(c.Request.Context(), uid,
 			req.Title, req.TargetType, req.TargetID, req.ContentMD)
 		if respondNoteErr(c, err) {
 			return
 		}
-		c.JSON(http.StatusCreated, detail)
+		c.JSON(http.StatusCreated, toNoteDetail(detail))
 	}
 }
 
-func listNotes(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func listNotes(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		targetType := c.Query("target_type")
-		if targetType != "" && targetType != "video" && targetType != "cloud_file" {
-			apiErr(c, http.StatusBadRequest, "invalid target_type")
+		page, pageSize := 1, 20
+		if v := strings.TrimSpace(c.Query("page")); v != "" {
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil || n < 1 || n > 1000000 {
+				apiErr(c, http.StatusBadRequest, "page must be 1-1000000")
+				return
+			}
+			page = int(n)
+		}
+		if v := strings.TrimSpace(c.Query("page_size")); v != "" {
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil || n < 1 || n > 100 {
+				apiErr(c, http.StatusBadRequest, "page_size must be 1-100")
+				return
+			}
+			pageSize = int(n)
+		}
+		q := notedto.ListQuery{TargetType: strings.TrimSpace(c.Query("target_type")), TargetID: c.Query("target_id"), Page: page, PageSize: pageSize}
+		if !q.Normalize() {
+			apiErr(c, http.StatusBadRequest, "invalid target_type/target_id/page/page_size")
 			return
 		}
-		targetID := c.Query("target_id")
-		if len(targetID) > 100 {
-			apiErr(c, http.StatusBadRequest, "target_id must be at most 100 characters")
-			return
-		}
-		page, pageSize, ok := pagination(c)
-		if !ok {
-			return
-		}
-		notes, total, err := svc.ListNotes(c.Request.Context(), db, uid, targetType, targetID, page, pageSize)
-		if err != nil {
-			apiErr(c, http.StatusInternalServerError, err.Error())
-			return
-		}
-		out := make([]service.MetaView, 0, len(notes))
-		for _, n := range notes {
-			out = append(out, service.MetaView{
-				UUID: n.UUID, Title: n.Title, TargetType: n.TargetType, TargetID: n.TargetID,
-				ContentLength: n.ContentLength, IsPinned: n.IsPinned, RevisionCount: n.RevisionCount,
-				CreatedAt: service.NaiveUTC{Time: n.CreatedAt}, UpdatedAt: service.NaiveUTC{Time: n.UpdatedAt},
-			})
-		}
-		c.Header("X-Total-Count", itoa(total))
-		c.Header("Access-Control-Expose-Headers", "X-Total-Count")
-		c.JSON(http.StatusOK, out)
-	}
-}
-
-func getNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
-		if !ok {
-			return
-		}
-		detail, err := svc.GetNote(c.Request.Context(), db, c.Param("note_uuid"), uid)
+		notes, total, err := svc.ListNotes(c.Request.Context(), uid, q.TargetType, q.TargetID, q.Page, q.PageSize)
 		if respondNoteErr(c, err) {
 			return
 		}
-		c.JSON(http.StatusOK, detail)
+		c.Header("X-Total-Count", itoa(total))
+		c.Header("Access-Control-Expose-Headers", "X-Total-Count")
+		c.JSON(http.StatusOK, toNoteMetas(notes))
 	}
 }
 
-type updateReq struct {
-	Title     *string `json:"title"`
-	ContentMD *string `json:"content_md"`
-	IsPinned  *bool   `json:"is_pinned"`
-}
-
-func updateNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func getNote(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		var req updateReq
-		if err := c.ShouldBindJSON(&req); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+		detail, err := svc.GetNote(c.Request.Context(), c.Param("note_uuid"), uid)
+		if respondNoteErr(c, err) {
+			return
+		}
+		c.JSON(http.StatusOK, toNoteDetail(detail))
+	}
+}
+
+func updateNote(svc *service.NoteService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid, ok := middleware.CurrentUID(c)
+		if !ok {
+			return
+		}
+		var req notedto.UpdateRequest
+		if !middleware.BindJSON(c, &req) {
 			return
 		}
 		ifMatch, err := parseIfMatch(c.GetHeader("If-Match"))
@@ -177,15 +154,7 @@ func updateNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, "If-Match must be ISO-8601 datetime")
 			return
 		}
-		if req.Title != nil && len(*req.Title) > 500 {
-			apiErr(c, http.StatusBadRequest, "title must be at most 500 characters")
-			return
-		}
-		if req.ContentMD != nil && len(*req.ContentMD) > 512*1024 {
-			apiErr(c, http.StatusBadRequest, "content_md exceeds 512 KB")
-			return
-		}
-		detail, err := svc.UpdateNote(c.Request.Context(), db, c.Param("note_uuid"), uid,
+		detail, err := svc.UpdateNote(c.Request.Context(), c.Param("note_uuid"), uid,
 			req.Title, req.ContentMD, req.IsPinned, ifMatch)
 		if respondNoteErr(c, err) {
 			return
@@ -194,13 +163,13 @@ func updateNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-func deleteNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func deleteNote(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		err := svc.DeleteNote(c.Request.Context(), db, c.Param("note_uuid"), uid)
+		err := svc.DeleteNote(c.Request.Context(), c.Param("note_uuid"), uid)
 		if respondNoteErr(c, err) {
 			return
 		}
@@ -208,47 +177,28 @@ func deleteNote(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-type anchorReq struct {
-	BlockID  string  `json:"block_id"`
-	Position *int    `json:"position"`
-	Label    *string `json:"label"`
-}
-
-func addAnchor(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func addAnchor(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		var req anchorReq
-		if err := c.ShouldBindJSON(&req); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+		var req notedto.AnchorRequest
+		if !middleware.BindJSON(c, &req) {
 			return
 		}
-		if req.BlockID == "" || len(req.BlockID) > 50 {
-			apiErr(c, http.StatusBadRequest, "block_id must be 1-50 characters")
-			return
-		}
-		if req.Position == nil || *req.Position < 0 {
-			apiErr(c, http.StatusBadRequest, "position must be >= 0")
-			return
-		}
-		if req.Label != nil && len(*req.Label) > 200 {
-			apiErr(c, http.StatusBadRequest, "label must be at most 200 characters")
-			return
-		}
-		view, err := svc.AddAnchor(c.Request.Context(), db, c.Param("note_uuid"), uid,
+		view, err := svc.AddAnchor(c.Request.Context(), c.Param("note_uuid"), uid,
 			req.BlockID, *req.Position, req.Label)
 		if respondNoteErr(c, err) {
 			return
 		}
-		c.JSON(http.StatusCreated, view)
+		c.JSON(http.StatusCreated, toNoteAnchor(*view))
 	}
 }
 
-func deleteAnchor(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func deleteAnchor(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
@@ -257,7 +207,7 @@ func deleteAnchor(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "锚点不存在")
 			return
 		}
-		err = svc.DeleteAnchor(c.Request.Context(), db, c.Param("note_uuid"), int(anchorID), uid)
+		err = svc.DeleteAnchor(c.Request.Context(), c.Param("note_uuid"), int(anchorID), uid)
 		if respondNoteErr(c, err) {
 			return
 		}
@@ -265,32 +215,32 @@ func deleteAnchor(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-func listRevisions(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func listRevisions(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		revisions, err := svc.ListRevisions(c.Request.Context(), db, c.Param("note_uuid"), uid)
+		revisions, err := svc.ListRevisions(c.Request.Context(), c.Param("note_uuid"), uid)
 		if respondNoteErr(c, err) {
 			return
 		}
-		c.JSON(http.StatusOK, revisions)
+		c.JSON(http.StatusOK, toNoteRevisions(revisions))
 	}
 }
 
-func restoreRevision(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func restoreRevision(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		_, err := svc.RestoreRevision(c.Request.Context(), db,
+		_, err := svc.RestoreRevision(c.Request.Context(),
 			c.Param("note_uuid"), c.Param("revision_id"), uid)
 		if respondNoteErr(c, err) {
 			return
 		}
-		detail, err := svc.GetNote(c.Request.Context(), db, c.Param("note_uuid"), uid)
+		detail, err := svc.GetNote(c.Request.Context(), c.Param("note_uuid"), uid)
 		if respondNoteErr(c, err) {
 			return
 		}
@@ -298,42 +248,33 @@ func restoreRevision(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-type shareReq struct {
-	ExpiresInDays *int `json:"expires_in_days"`
-}
-
-func createShare(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func createShare(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		var req shareReq
+		var req notedto.ShareRequest
 		if c.Request.Body != nil && c.Request.ContentLength != 0 {
-			if err := c.ShouldBindJSON(&req); err != nil {
-				apiErr(c, http.StatusBadRequest, err.Error())
+			if !middleware.BindJSON(c, &req) {
 				return
 			}
 		}
-		if req.ExpiresInDays != nil && (*req.ExpiresInDays < 1 || *req.ExpiresInDays > 365) {
-			apiErr(c, http.StatusBadRequest, "expires_in_days must be 1-365")
-			return
-		}
-		view, err := svc.CreateShare(c.Request.Context(), db, c.Param("note_uuid"), uid, req.ExpiresInDays)
+		view, err := svc.CreateShare(c.Request.Context(), c.Param("note_uuid"), uid, req.ExpiresInDays)
 		if respondNoteErr(c, err) {
 			return
 		}
-		c.JSON(http.StatusOK, view)
+		c.JSON(http.StatusOK, toNoteShare(view))
 	}
 }
 
-func revokeShare(svc *service.NoteService, db *gorm.DB) gin.HandlerFunc {
+func revokeShare(svc *service.NoteService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		uid, ok := currentUID(c)
+		uid, ok := middleware.CurrentUID(c)
 		if !ok {
 			return
 		}
-		err := svc.RevokeShare(c.Request.Context(), db, c.Param("note_uuid"), uid)
+		err := svc.RevokeShare(c.Request.Context(), c.Param("note_uuid"), uid)
 		if respondNoteErr(c, err) {
 			return
 		}
@@ -350,30 +291,16 @@ func respondNoteErr(c *gin.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	var conflict *service.ConflictError
-	var validation *service.ValidationError
-	log := slog.Error
-	switch {
-	case errors.As(err, &conflict):
-		c.JSON(http.StatusConflict, gin.H{"detail": gin.H{
-			"error":             "conflict",
-			"note_uuid":         conflict.NoteUUID,
-			"server_updated_at": service.FormatNaiveUTC(conflict.ServerUpdateAt),
-		}})
-	case errors.As(err, &validation):
-		apiErr(c, http.StatusBadRequest, validation.Msg)
-	case errors.Is(err, service.ErrNotFound):
-		apiErr(c, http.StatusNotFound, "笔记不存在")
-	case errors.Is(err, repo.ErrStorageUnavailable):
-		log("[NOTES] storage unavailable", "err", err, "path", c.Request.URL.Path,
+	// Storage unavailability keeps its dedicated 503/logging path (Mongo/MySQL
+	// driver errors must never reach the client).
+	if errors.Is(err, service.ErrStorageUnavailable) {
+		slog.Error("[NOTES] storage unavailable", "err", err, "path", c.Request.URL.Path,
 			"request_id", c.GetString("request_id"))
 		apiErr(c, http.StatusServiceUnavailable, "存储暂不可用，请稍后重试")
-	default:
-		log("[NOTES] internal error", "err", err, "path", c.Request.URL.Path,
-			"request_id", c.GetString("request_id"))
-		apiErr(c, http.StatusInternalServerError, "内部错误")
+		return true
 	}
-	return true
+	// Everything else is an *apperr.Error (validation/conflict/not-found/...).
+	return middleware.RespondError(c, err)
 }
 
 // parseIfMatch parses the If-Match header (ISO-8601, tolerant of a trailing
@@ -393,8 +320,10 @@ func pagination(c *gin.Context) (int, int, bool) {
 	page, pageSize := 1, 20
 	if v := c.Query("page"); v != "" {
 		n, err := strconv64(v)
-		if err != nil || n < 1 {
-			apiErr(c, http.StatusBadRequest, "page must be >= 1")
+		// Upper bound: an unbounded page would overflow the OFFSET computation
+		// and turn a client mistake into a driver error.
+		if err != nil || n < 1 || n > 1_000_000 {
+			apiErr(c, http.StatusBadRequest, "page must be 1-1000000")
 			return 0, 0, false
 		}
 		page = int(n)
@@ -416,4 +345,76 @@ func strconv64(s string) (int64, error) {
 
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
+}
+
+// ── wire mappers (router -> dto; DTO has no service dependency) ───────
+
+func toNoteMeta(m service.MetaView) notedto.Meta {
+	return notedto.Meta{
+		UUID:          m.UUID,
+		Title:         m.Title,
+		TargetType:    m.TargetType,
+		TargetID:      m.TargetID,
+		ContentLength: m.ContentLength,
+		IsPinned:      m.IsPinned,
+		RevisionCount: m.RevisionCount,
+		CreatedAt:     service.FormatNaiveUTC(m.CreatedAt.Time),
+		UpdatedAt:     service.FormatNaiveUTC(m.UpdatedAt.Time),
+	}
+}
+
+func toNoteMetas(items []service.MetaView) []notedto.Meta {
+	out := make([]notedto.Meta, 0, len(items))
+	for _, m := range items {
+		out = append(out, toNoteMeta(m))
+	}
+	return out
+}
+
+func toNoteDetail(d *service.NoteDetail) notedto.Detail {
+	out := notedto.Detail{Meta: toNoteMeta(d.MetaView), ContentMD: d.ContentMD, Anchors: make([]notedto.Anchor, 0, len(d.Anchors))}
+	for _, a := range d.Anchors {
+		out.Anchors = append(out.Anchors, toNoteAnchor(a))
+	}
+	out.ShareToken = d.ShareToken
+	if d.ShareExpiresAt != nil {
+		v := service.FormatNaiveUTC(d.ShareExpiresAt.Time)
+		out.ShareExpiresAt = &v
+	}
+	return out
+}
+
+func toNoteAnchor(a service.AnchorView) notedto.Anchor {
+	return notedto.Anchor{
+		ID: a.ID, BlockID: a.BlockID, Position: a.Position, Label: a.Label,
+		CreatedAt: service.FormatNaiveUTC(a.CreatedAt.Time),
+	}
+}
+
+func toNoteShare(s *service.ShareView) notedto.Share {
+	out := notedto.Share{ShareToken: s.ShareToken, ShareURL: s.ShareURL}
+	if s.ExpiresAt != nil {
+		v := service.FormatNaiveUTC(s.ExpiresAt.Time)
+		out.ExpiresAt = &v
+	}
+	return out
+}
+
+func toNoteRevisions(items []service.RevisionView) []notedto.Revision {
+	out := make([]notedto.Revision, 0, len(items))
+	for _, r := range items {
+		out = append(out, notedto.Revision{
+			RevisionID: r.RevisionID, RevisionNote: r.RevisionNote,
+			CreatedAt: service.FormatNaiveUTC(r.CreatedAt.Time),
+		})
+	}
+	return out
+}
+
+func toNoteShared(v *service.SharedView) notedto.Shared {
+	return notedto.Shared{
+		Title: v.Title, ContentMD: v.ContentMD, TargetType: v.TargetType,
+		TargetID: v.TargetID, SharedAt: service.FormatNaiveUTC(v.SharedAt.Time),
+		ViewCount: v.ViewCount,
+	}
 }

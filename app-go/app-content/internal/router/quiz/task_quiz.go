@@ -5,6 +5,7 @@
 package router
 
 import (
+	quizdto "app-content/internal/dto/quiz"
 	"net/http"
 	"strings"
 
@@ -13,16 +14,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type taskQuizAnswerItem struct {
-	QuestionIndex int    `json:"question_index"`
-	Answer        string `json:"answer"`
-}
+type taskQuizAnswerItem = quizdto.TaskAnswerItem
 
-// taskQuizAnswerBody accepts the multi-answer form and the legacy single answer.
-type taskQuizAnswerBody struct {
-	Answers []taskQuizAnswerItem `json:"answers"`
-	Answer  *string              `json:"answer"`
-}
+type taskQuizAnswerBody = quizdto.TaskAnswerRequest
 
 func registerTaskQuiz(e *gin.Engine, svc *service.Store) {
 	g := e.Group("/tasks")
@@ -46,7 +40,7 @@ func taskQuizDetailHandler(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, apiError.Status, apiError.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, out)
+		renderTyped[quizdto.TaskQuizDetail](c, out)
 	}
 }
 
@@ -86,6 +80,6 @@ func taskQuizAnswerHandler(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, apiError.Status, apiError.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, out)
+		renderTyped[quizdto.TaskQuizSubmitResult](c, out)
 	}
 }

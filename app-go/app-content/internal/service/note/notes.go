@@ -6,14 +6,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
+	"app-content/internal/apperr"
 	"app-content/internal/model/note"
 	"app-content/internal/repo/note"
-
-	"gorm.io/gorm"
 )
 
 // Revision policy thresholds (parity with the Python backend).
@@ -25,20 +24,26 @@ const (
 
 // ErrNotFound maps to 404 (also used for cross-user access so note
 // existence is never leaked).
-var ErrNotFound = errors.New("note not found")
+var ErrNotFound = apperr.New(http.StatusNotFound, "note_not_found", "笔记不存在")
 
-// ErrValidation maps to 400.
-type ValidationError struct{ Msg string }
+// ErrStorageUnavailable re-exports the data-access sentinel so HTTP handlers
+// map storage failures to 503 without importing the repo package.
+var ErrStorageUnavailable = repo.ErrStorageUnavailable
 
-func (e *ValidationError) Error() string { return e.Msg }
-
-// ErrConflict maps to 409 with a structured JSON detail.
-type ConflictError struct {
-	NoteUUID       string
-	ServerUpdateAt time.Time
+// validationErr builds a 400 with the user-facing message.
+func validationErr(msg string) *apperr.Error {
+	return apperr.New(http.StatusBadRequest, "note_invalid_input", msg)
 }
 
-func (e *ConflictError) Error() string { return "optimistic-lock conflict" }
+// conflictErr builds a 409 with the structured detail the frontend expects
+// (rendered as {"detail": {"error":"conflict", ...}}).
+func conflictErr(noteUUID string, serverUpdateAt time.Time) *apperr.Error {
+	return apperr.New(http.StatusConflict, "note_conflict", "optimistic-lock conflict").WithMeta(map[string]any{
+		"error":             "conflict",
+		"note_uuid":         noteUUID,
+		"server_updated_at": FormatNaiveUTC(serverUpdateAt),
+	})
+}
 
 // ContentStore abstracts the Mongo-backed content/revisions store
 // (implemented by repo.MongoContentRepo; faked in tests).
@@ -58,6 +63,8 @@ type NoteService struct {
 	now   func() time.Time // injectable clock for tests
 }
 
+// NewNoteService wires the MySQL repo (owns the *gorm.DB), Mongo content store
+// and injectable clock. Controllers never see the DB handle.
 func NewNoteService(r *repo.NoteRepo, m ContentStore) *NoteService {
 	// Nil content store → disabled-mode Mongo repo (reads degrade, writes
 	// 503) instead of a nil-interface panic on first use.
@@ -82,13 +89,13 @@ func (s *NoteService) SetClock(f func() time.Time) { s.now = f }
 
 // CreateNote writes Mongo content first, then MySQL metadata; on MySQL
 // failure the Mongo doc is removed (orphan cleanup) and the error propagates.
-func (s *NoteService) CreateNote(ctx context.Context, db *gorm.DB, uid int64,
+func (s *NoteService) CreateNote(ctx context.Context, uid int64,
 	title, targetType, targetID, contentMD string) (*NoteDetail, error) {
 	if targetType != "video" && targetType != "cloud_file" {
-		return nil, &ValidationError{Msg: fmt.Sprintf("invalid target_type: %s", targetType)}
+		return nil, validationErr(fmt.Sprintf("invalid target_type: %s", targetType))
 	}
 	if len(contentMD) > MaxContentBytes {
-		return nil, &ValidationError{Msg: "content_md exceeds 256 KB cap"}
+		return nil, validationErr("content_md exceeds 256 KB cap")
 	}
 
 	cleanMD := SanitizeMarkdown(contentMD)
@@ -112,41 +119,41 @@ func (s *NoteService) CreateNote(ctx context.Context, db *gorm.DB, uid int64,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	if err := s.repo.Create(ctx, db, note); err != nil {
+	if err := s.repo.Create(ctx, note); err != nil {
 		// Orphan Mongo doc — remove it, then fail.
 		_, _ = s.mongo.DeleteContent(ctx, noteUUID)
 		return nil, err
 	}
-	return s.buildDetail(ctx, db, note)
+	return s.buildDetail(ctx, note)
 }
 
 // ── Read ─────────────────────────────────────────────────────────────
 
 // GetNote fetches metadata + content + anchors + active share.
 // Cross-user access returns ErrNotFound (no existence leak).
-func (s *NoteService) GetNote(ctx context.Context, db *gorm.DB, noteUUID string, uid int64) (*NoteDetail, error) {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+func (s *NoteService) GetNote(ctx context.Context, noteUUID string, uid int64) (*NoteDetail, error) {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return nil, err
 	}
 	if note == nil || note.UID != uid {
 		return nil, ErrNotFound
 	}
-	return s.buildDetail(ctx, db, note)
+	return s.buildDetail(ctx, note)
 }
 
-func (s *NoteService) buildDetail(ctx context.Context, db *gorm.DB, note *model.Note) (*NoteDetail, error) {
+func (s *NoteService) buildDetail(ctx context.Context, note *model.Note) (*NoteDetail, error) {
 	content := ""
 	if doc, err := s.mongo.GetContent(ctx, note.UUID); err != nil {
 		return nil, err
 	} else if doc != nil {
 		content = doc.ContentMD
 	}
-	anchors, err := s.repo.ListAnchors(ctx, db, note.ID)
+	anchors, err := s.repo.ListAnchors(ctx, note.ID)
 	if err != nil {
 		return nil, err
 	}
-	share, err := s.repo.GetActiveShareForNote(ctx, db, note.UUID)
+	share, err := s.repo.GetActiveShareForNote(ctx, note.UUID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,10 +172,19 @@ func (s *NoteService) buildDetail(ctx context.Context, db *gorm.DB, note *model.
 	return d, nil
 }
 
-// ListNotes returns (meta list, total) — no content.
-func (s *NoteService) ListNotes(ctx context.Context, db *gorm.DB, uid int64,
-	targetType, targetID string, page, pageSize int) ([]model.Note, int64, error) {
-	return s.repo.ListByUser(ctx, db, uid, targetType, targetID, page, pageSize)
+// ListNotes returns (meta view list, total) — no content, no persistence model
+// leaking to the HTTP layer.
+func (s *NoteService) ListNotes(ctx context.Context, uid int64,
+	targetType, targetID string, page, pageSize int) ([]MetaView, int64, error) {
+	rows, total, err := s.repo.ListByUser(ctx, uid, targetType, targetID, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]MetaView, 0, len(rows))
+	for _, n := range rows {
+		out = append(out, metaView(n))
+	}
+	return out, total, nil
 }
 
 // ── Update ───────────────────────────────────────────────────────────
@@ -176,9 +192,9 @@ func (s *NoteService) ListNotes(ctx context.Context, db *gorm.DB, uid int64,
 // UpdateNote applies field changes with sha256 short-circuit and the
 // revision snapshot policy. All field changes commit in one update_meta so
 // updated_at advances by exactly one tick per request.
-func (s *NoteService) UpdateNote(ctx context.Context, db *gorm.DB, noteUUID string, uid int64,
+func (s *NoteService) UpdateNote(ctx context.Context, noteUUID string, uid int64,
 	title *string, contentMD *string, isPinned *bool, ifMatch *time.Time) (*NoteDetail, error) {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -187,13 +203,13 @@ func (s *NoteService) UpdateNote(ctx context.Context, db *gorm.DB, noteUUID stri
 	}
 
 	if ifMatch != nil && !ifMatch.Equal(note.UpdatedAt) {
-		return nil, &ConflictError{NoteUUID: noteUUID, ServerUpdateAt: note.UpdatedAt}
+		return nil, conflictErr(noteUUID, note.UpdatedAt)
 	}
 
 	// Reject no-op updates so silent field-mapping regressions surface as
 	// 400 instead of a misleading 200.
 	if title == nil && contentMD == nil && isPinned == nil {
-		return nil, &ValidationError{Msg: "empty update: at least one field required"}
+		return nil, validationErr("empty update: at least one field required")
 	}
 
 	upd := repo.MetaUpdate{UpdatedAt: s.now()}
@@ -201,7 +217,7 @@ func (s *NoteService) UpdateNote(ctx context.Context, db *gorm.DB, noteUUID stri
 
 	if contentMD != nil {
 		if len(*contentMD) > MaxContentBytes {
-			return nil, &ValidationError{Msg: "content_md exceeds 256 KB cap"}
+			return nil, validationErr("content_md exceeds 256 KB cap")
 		}
 		cleanMD := SanitizeMarkdown(*contentMD)
 		computedHash := ContentHash(cleanMD)
@@ -242,7 +258,7 @@ func (s *NoteService) UpdateNote(ctx context.Context, db *gorm.DB, noteUUID stri
 	hasChange := title != nil || isPinned != nil || upd.ContentLength != nil ||
 		upd.ContentHash != nil || bumpRevision
 	if hasChange {
-		if err := s.repo.UpdateMeta(ctx, db, note, upd); err != nil {
+		if err := s.repo.UpdateMeta(ctx, note, upd); err != nil {
 			return nil, err
 		}
 	}
@@ -250,7 +266,7 @@ func (s *NoteService) UpdateNote(ctx context.Context, db *gorm.DB, noteUUID stri
 	// Full detail (meta + content_md + anchors + share) so the frontend
 	// auto-save loop gets a fresh serverUpdatedAtRef — returning meta only
 	// would break it (same reason as the Python implementation).
-	return s.buildDetail(ctx, db, note)
+	return s.buildDetail(ctx, note)
 }
 
 // shouldSnapshot decides whether to write a revision snapshot:
@@ -282,29 +298,31 @@ func (s *NoteService) shouldSnapshot(ctx context.Context, noteUUID, oldContent, 
 
 // DeleteNote soft-deletes the MySQL row, revokes all shares, and
 // hard-deletes the Mongo content doc. Revisions are preserved.
-func (s *NoteService) DeleteNote(ctx context.Context, db *gorm.DB, noteUUID string, uid int64) error {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, true)
+func (s *NoteService) DeleteNote(ctx context.Context, noteUUID string, uid int64) error {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, true)
 	if err != nil {
 		return err
 	}
 	if note == nil || note.UID != uid {
 		return ErrNotFound
 	}
-	if err := s.repo.SoftDelete(ctx, db, note, s.now()); err != nil {
+	if err := s.repo.DeleteNoteTx(ctx, note, s.now()); err != nil {
 		return err
 	}
-	if err := s.repo.RevokeShares(ctx, db, noteUUID); err != nil {
+	// Mongo content cleanup is idempotent; the metadata transaction above is
+	// already committed, so a failure here leaves an orphan doc, never a live
+	// share for a deleted note.
+	if _, err := s.mongo.DeleteContent(ctx, noteUUID); err != nil {
 		return err
 	}
-	_, err = s.mongo.DeleteContent(ctx, noteUUID)
-	return err
+	return nil
 }
 
 // ── Anchors ──────────────────────────────────────────────────────────
 
-func (s *NoteService) AddAnchor(ctx context.Context, db *gorm.DB, noteUUID string, uid int64,
+func (s *NoteService) AddAnchor(ctx context.Context, noteUUID string, uid int64,
 	blockID string, position int, label *string) (*AnchorView, error) {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -318,22 +336,22 @@ func (s *NoteService) AddAnchor(ctx context.Context, db *gorm.DB, noteUUID strin
 		Label:     label,
 		CreatedAt: s.now(),
 	}
-	if err := s.repo.AddAnchor(ctx, db, anchor); err != nil {
+	if err := s.repo.AddAnchor(ctx, anchor); err != nil {
 		return nil, err
 	}
 	v := anchorView(*anchor)
 	return &v, nil
 }
 
-func (s *NoteService) DeleteAnchor(ctx context.Context, db *gorm.DB, noteUUID string, anchorID int, uid int64) error {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+func (s *NoteService) DeleteAnchor(ctx context.Context, noteUUID string, anchorID int, uid int64) error {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return err
 	}
 	if note == nil || note.UID != uid {
 		return ErrNotFound
 	}
-	deleted, err := s.repo.DeleteAnchor(ctx, db, note.ID, anchorID)
+	deleted, err := s.repo.DeleteAnchor(ctx, note.ID, anchorID)
 	if err != nil {
 		return err
 	}
@@ -347,15 +365,15 @@ func (s *NoteService) DeleteAnchor(ctx context.Context, db *gorm.DB, noteUUID st
 
 // CreateShare revokes prior shares (one active at a time) and creates a new
 // token (43-char url-safe, parity with Python token_urlsafe(32)).
-func (s *NoteService) CreateShare(ctx context.Context, db *gorm.DB, noteUUID string, uid int64, expires_in_days *int) (*ShareView, error) {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+func (s *NoteService) CreateShare(ctx context.Context, noteUUID string, uid int64, expires_in_days *int) (*ShareView, error) {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return nil, err
 	}
 	if note == nil || note.UID != uid {
 		return nil, ErrNotFound
 	}
-	if err := s.repo.RevokeShares(ctx, db, noteUUID); err != nil {
+	if err := s.repo.RevokeShares(ctx, noteUUID); err != nil {
 		return nil, err
 	}
 	var expiresAt *time.Time
@@ -370,7 +388,7 @@ func (s *NoteService) CreateShare(ctx context.Context, db *gorm.DB, noteUUID str
 		ExpiresAt:    expiresAt,
 		CreatedAt:    s.now(),
 	}
-	if err := s.repo.CreateShare(ctx, db, share); err != nil {
+	if err := s.repo.CreateShare(ctx, share); err != nil {
 		return nil, err
 	}
 	return &ShareView{
@@ -380,28 +398,28 @@ func (s *NoteService) CreateShare(ctx context.Context, db *gorm.DB, noteUUID str
 	}, nil
 }
 
-func (s *NoteService) RevokeShare(ctx context.Context, db *gorm.DB, noteUUID string, uid int64) error {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+func (s *NoteService) RevokeShare(ctx context.Context, noteUUID string, uid int64) error {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return err
 	}
 	if note == nil || note.UID != uid {
 		return ErrNotFound
 	}
-	return s.repo.RevokeShares(ctx, db, noteUUID)
+	return s.repo.RevokeShares(ctx, noteUUID)
 }
 
 // GetSharedView — public read-only access, no auth required. Invalid /
 // expired / revoked → ErrNotFound. Bumps view_count.
-func (s *NoteService) GetSharedView(ctx context.Context, db *gorm.DB, shareToken string) (*SharedView, error) {
-	share, err := s.repo.GetActiveShareByToken(ctx, db, shareToken)
+func (s *NoteService) GetSharedView(ctx context.Context, shareToken string) (*SharedView, error) {
+	share, err := s.repo.GetActiveShareByToken(ctx, shareToken)
 	if err != nil {
 		return nil, err
 	}
 	if share == nil {
 		return nil, ErrNotFound
 	}
-	note, err := s.repo.GetByUUID(ctx, db, share.NoteUUID, false)
+	note, err := s.repo.GetByUUID(ctx, share.NoteUUID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +432,7 @@ func (s *NoteService) GetSharedView(ctx context.Context, db *gorm.DB, shareToken
 	} else if doc != nil {
 		contentMD = doc.ContentMD
 	}
-	if err := s.repo.IncrementViewCount(ctx, db, share); err != nil {
+	if err := s.repo.IncrementViewCount(ctx, share); err != nil {
 		return nil, err
 	}
 	return &SharedView{
@@ -429,8 +447,8 @@ func (s *NoteService) GetSharedView(ctx context.Context, db *gorm.DB, shareToken
 
 // ── Revisions ────────────────────────────────────────────────────────
 
-func (s *NoteService) ListRevisions(ctx context.Context, db *gorm.DB, noteUUID string, uid int64) ([]RevisionView, error) {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+func (s *NoteService) ListRevisions(ctx context.Context, noteUUID string, uid int64) ([]RevisionView, error) {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -450,8 +468,8 @@ func (s *NoteService) ListRevisions(ctx context.Context, db *gorm.DB, noteUUID s
 
 // RestoreRevision replaces the live content with the snapshot body,
 // bumps revision_count, and inserts a "restored from {id}" snapshot.
-func (s *NoteService) RestoreRevision(ctx context.Context, db *gorm.DB, noteUUID, revisionID string, uid int64) (*NoteDetail, error) {
-	note, err := s.repo.GetByUUID(ctx, db, noteUUID, false)
+func (s *NoteService) RestoreRevision(ctx context.Context, noteUUID, revisionID string, uid int64) (*NoteDetail, error) {
+	note, err := s.repo.GetByUUID(ctx, noteUUID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +493,7 @@ func (s *NoteService) RestoreRevision(ctx context.Context, db *gorm.DB, noteUUID
 	if _, err := s.mongo.InsertRevision(ctx, noteUUID, cleanMD, &note_); err != nil {
 		return nil, err
 	}
-	if err := s.repo.UpdateMeta(ctx, db, note, repo.MetaUpdate{
+	if err := s.repo.UpdateMeta(ctx, note, repo.MetaUpdate{
 		ContentLength: &newLen,
 		ContentHash:   &newHash,
 		BumpRevision:  true,
@@ -483,5 +501,5 @@ func (s *NoteService) RestoreRevision(ctx context.Context, db *gorm.DB, noteUUID
 	}); err != nil {
 		return nil, err
 	}
-	return s.buildDetail(ctx, db, note)
+	return s.buildDetail(ctx, note)
 }

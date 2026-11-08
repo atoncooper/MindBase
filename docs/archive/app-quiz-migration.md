@@ -2,7 +2,7 @@
 
 > ⚠️ **历史文档（只读存档）**：app-auth / app-bili / app-settings 三个 Go 服务已合并为 app-user（8006 auth / 8010 bili / 8015 settings），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
 
-> ⚠️ **历史文档（只读存档）**：app-note / app-quiz / app-board 已合并为 app-content（8004 board / 8008 note / 8011 quiz，单 module / 单镜像 / 单进程），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
+> ⚠️ **历史文档（只读存档）**：app-note / app-quiz / app-board 已合并为 app-content（单 module / 单镜像 / 单进程 / 单端口 8004 HTTPS，三面共用），现行服务清单见 AGENTS.md；本文保留当时事实，不再随实现更新。
 
 > **范围：quiz 域中不写 AI 的纯存储面。** 生成（`/quiz/generate`、
 > `/quiz/generate-from-summary`）与批改作答（`/quiz/submit`）的 **AI 编排**

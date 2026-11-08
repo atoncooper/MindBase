@@ -27,11 +27,12 @@ type MetaUpdate struct {
 // NoteRepo bundles the note-table queries (gorm.DB is safe for concurrent use).
 // Now is the clock used for expiry checks — overridable in tests.
 type NoteRepo struct {
+	DB  *gorm.DB
 	Now func() time.Time
 }
 
-func NewNoteRepo() *NoteRepo {
-	return &NoteRepo{Now: func() time.Time { return time.Now().UTC() }}
+func NewNoteRepo(db *gorm.DB) *NoteRepo {
+	return &NoteRepo{DB: db, Now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (r *NoteRepo) now() time.Time {
@@ -43,12 +44,12 @@ func (r *NoteRepo) now() time.Time {
 
 // ── Notes ────────────────────────────────────────────────────────────
 
-func (r *NoteRepo) Create(ctx context.Context, db *gorm.DB, note *model.Note) error {
-	return db.WithContext(ctx).Create(note).Error
+func (r *NoteRepo) Create(ctx context.Context, note *model.Note) error {
+	return r.DB.WithContext(ctx).Create(note).Error
 }
 
-func (r *NoteRepo) GetByUUID(ctx context.Context, db *gorm.DB, uuid string, includeDeleted bool) (*model.Note, error) {
-	q := db.WithContext(ctx).Where("uuid = ?", uuid)
+func (r *NoteRepo) GetByUUID(ctx context.Context, uuid string, includeDeleted bool) (*model.Note, error) {
+	q := r.DB.WithContext(ctx).Where("uuid = ?", uuid)
 	if !includeDeleted {
 		q = q.Where("is_deleted = ?", false)
 	}
@@ -64,9 +65,9 @@ func (r *NoteRepo) GetByUUID(ctx context.Context, db *gorm.DB, uuid string, incl
 
 // ListByUser returns (notes, total) for a paginated, filtered list of
 // non-deleted notes. Order: is_pinned desc, updated_at desc.
-func (r *NoteRepo) ListByUser(ctx context.Context, db *gorm.DB, uid int64,
+func (r *NoteRepo) ListByUser(ctx context.Context, uid int64,
 	targetType, targetID string, page, pageSize int) ([]model.Note, int64, error) {
-	q := db.WithContext(ctx).Model(&model.Note{}).
+	q := r.DB.WithContext(ctx).Model(&model.Note{}).
 		Where("uid = ? AND is_deleted = ?", uid, false)
 	if targetType != "" {
 		q = q.Where("target_type = ?", targetType)
@@ -87,7 +88,7 @@ func (r *NoteRepo) ListByUser(ctx context.Context, db *gorm.DB, uid int64,
 
 // UpdateMeta applies the non-nil field changes plus bump_revision and the
 // single updated_at tick in one commit (single-commit semantics port).
-func (r *NoteRepo) UpdateMeta(ctx context.Context, db *gorm.DB, note *model.Note, upd MetaUpdate) error {
+func (r *NoteRepo) UpdateMeta(ctx context.Context, note *model.Note, upd MetaUpdate) error {
 	values := map[string]any{"updated_at": upd.UpdatedAt}
 	if upd.Title != nil {
 		values["title"] = *upd.Title
@@ -106,7 +107,7 @@ func (r *NoteRepo) UpdateMeta(ctx context.Context, db *gorm.DB, note *model.Note
 		// + note agent via M2M, which skips If-Match) must not lose a count.
 		values["revision_count"] = gorm.Expr("revision_count + 1")
 	}
-	if err := db.WithContext(ctx).Model(&model.Note{}).
+	if err := r.DB.WithContext(ctx).Model(&model.Note{}).
 		Where("id = ?", note.ID).Updates(values).Error; err != nil {
 		return err
 	}
@@ -130,21 +131,37 @@ func (r *NoteRepo) UpdateMeta(ctx context.Context, db *gorm.DB, note *model.Note
 	return nil
 }
 
-func (r *NoteRepo) SoftDelete(ctx context.Context, db *gorm.DB, note *model.Note, now time.Time) error {
-	return db.WithContext(ctx).Model(&model.Note{}).
+func (r *NoteRepo) SoftDelete(ctx context.Context, note *model.Note, now time.Time) error {
+	return r.DB.WithContext(ctx).Model(&model.Note{}).
 		Where("id = ?", note.ID).
 		Updates(map[string]any{"is_deleted": true, "updated_at": now}).Error
 }
 
-// ── Anchors ──────────────────────────────────────────────────────────
-
-func (r *NoteRepo) AddAnchor(ctx context.Context, db *gorm.DB, anchor *model.NoteAnchor) error {
-	return db.WithContext(ctx).Create(anchor).Error
+// DeleteNoteTx soft-deletes the note and revokes all of its shares in ONE
+// transaction: a failure can no longer leave a deleted note with live share
+// links. Mongo content cleanup stays outside (best-effort, idempotent).
+func (r *NoteRepo) DeleteNoteTx(ctx context.Context, note *model.Note, now time.Time) error {
+	return r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Note{}).
+			Where("id = ?", note.ID).
+			Updates(map[string]any{"is_deleted": true, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.NoteShare{}).
+			Where("note_uuid = ?", note.UUID).
+			Updates(map[string]any{"is_revoked": true}).Error
+	})
 }
 
-func (r *NoteRepo) ListAnchors(ctx context.Context, db *gorm.DB, noteID int) ([]model.NoteAnchor, error) {
+// ── Anchors ──────────────────────────────────────────────────────────
+
+func (r *NoteRepo) AddAnchor(ctx context.Context, anchor *model.NoteAnchor) error {
+	return r.DB.WithContext(ctx).Create(anchor).Error
+}
+
+func (r *NoteRepo) ListAnchors(ctx context.Context, noteID int) ([]model.NoteAnchor, error) {
 	var anchors []model.NoteAnchor
-	err := db.WithContext(ctx).
+	err := r.DB.WithContext(ctx).
 		Where("note_id = ?", noteID).
 		Order("position ASC").
 		Find(&anchors).Error
@@ -153,8 +170,8 @@ func (r *NoteRepo) ListAnchors(ctx context.Context, db *gorm.DB, noteID int) ([]
 
 // DeleteAnchor removes one anchor scoped to the note; returns whether a row
 // was deleted.
-func (r *NoteRepo) DeleteAnchor(ctx context.Context, db *gorm.DB, noteID, anchorID int) (bool, error) {
-	res := db.WithContext(ctx).
+func (r *NoteRepo) DeleteAnchor(ctx context.Context, noteID, anchorID int) (bool, error) {
+	res := r.DB.WithContext(ctx).
 		Where("id = ? AND note_id = ?", anchorID, noteID).
 		Delete(&model.NoteAnchor{})
 	return res.RowsAffected > 0, res.Error
@@ -162,14 +179,14 @@ func (r *NoteRepo) DeleteAnchor(ctx context.Context, db *gorm.DB, noteID, anchor
 
 // ── Shares ───────────────────────────────────────────────────────────
 
-func (r *NoteRepo) CreateShare(ctx context.Context, db *gorm.DB, share *model.NoteShare) error {
-	return db.WithContext(ctx).Create(share).Error
+func (r *NoteRepo) CreateShare(ctx context.Context, share *model.NoteShare) error {
+	return r.DB.WithContext(ctx).Create(share).Error
 }
 
 // GetActiveShareByToken fetches a non-revoked, non-expired share by token.
-func (r *NoteRepo) GetActiveShareByToken(ctx context.Context, db *gorm.DB, token string) (*model.NoteShare, error) {
+func (r *NoteRepo) GetActiveShareByToken(ctx context.Context, token string) (*model.NoteShare, error) {
 	var share model.NoteShare
-	err := db.WithContext(ctx).
+	err := r.DB.WithContext(ctx).
 		Where("share_token = ? AND is_revoked = ?", token, false).
 		First(&share).Error
 	if err == gorm.ErrRecordNotFound {
@@ -185,9 +202,9 @@ func (r *NoteRepo) GetActiveShareByToken(ctx context.Context, db *gorm.DB, token
 }
 
 // GetActiveShareForNote returns the most recent active share (owner display).
-func (r *NoteRepo) GetActiveShareForNote(ctx context.Context, db *gorm.DB, noteUUID string) (*model.NoteShare, error) {
+func (r *NoteRepo) GetActiveShareForNote(ctx context.Context, noteUUID string) (*model.NoteShare, error) {
 	var shares []model.NoteShare
-	err := db.WithContext(ctx).
+	err := r.DB.WithContext(ctx).
 		Where("note_uuid = ? AND is_revoked = ?", noteUUID, false).
 		Order("created_at DESC").
 		Find(&shares).Error
@@ -204,15 +221,15 @@ func (r *NoteRepo) GetActiveShareForNote(ctx context.Context, db *gorm.DB, noteU
 }
 
 // RevokeShares revokes every active share of the note (single-active policy).
-func (r *NoteRepo) RevokeShares(ctx context.Context, db *gorm.DB, noteUUID string) error {
-	return db.WithContext(ctx).Model(&model.NoteShare{}).
+func (r *NoteRepo) RevokeShares(ctx context.Context, noteUUID string) error {
+	return r.DB.WithContext(ctx).Model(&model.NoteShare{}).
 		Where("note_uuid = ? AND is_revoked = ?", noteUUID, false).
 		Update("is_revoked", true).Error
 }
 
-func (r *NoteRepo) IncrementViewCount(ctx context.Context, db *gorm.DB, share *model.NoteShare) error {
+func (r *NoteRepo) IncrementViewCount(ctx context.Context, share *model.NoteShare) error {
 	// Atomic increment — concurrent share-page hits must not lose counts.
-	return db.WithContext(ctx).Model(&model.NoteShare{}).
+	return r.DB.WithContext(ctx).Model(&model.NoteShare{}).
 		Where("id = ?", share.ID).
 		Update("view_count", gorm.Expr("view_count + 1")).Error
 }

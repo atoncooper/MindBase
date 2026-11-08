@@ -151,11 +151,11 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-content（note 监听口 8008）—— 笔记面（Go；本机 go run ./app-go/app-content）
+  # app-content（note 面 · 统一端口 8004（HTTPS））—— 笔记面（Go；本机 go run ./app-go/app-content）
   - id: upstream-app-content-note
     name: app-content
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -167,11 +167,12 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "192.168.138.1:8008": 1
+      "192.168.138.1:8004": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -183,7 +184,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -191,11 +192,11 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-content（quiz 监听口 8011）—— 测验存储面（Go；本机 go run ./app-go/app-content）
+  # app-content（quiz 面 · 统一端口 8004（HTTPS））—— 测验存储面（Go；本机 go run ./app-go/app-content）
   - id: upstream-app-content-quiz
     name: app-content
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -207,11 +208,12 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "192.168.138.1:8011": 1
+      "192.168.138.1:8004": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -223,7 +225,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -976,6 +978,10 @@ routes:
     plugins:
       request-id: {}
       key-auth: {}
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
 
 # ============================================================
 # Consumers

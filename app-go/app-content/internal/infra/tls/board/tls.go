@@ -48,6 +48,12 @@ const (
 // and returns them together with the CA cert path (empty in explicit mode —
 // the operator supplies their own trust chain).
 func Ensure(certPath, keyPath, dir string) (cert, key, caPath string, err error) {
+	return ensureWithWindow(certPath, keyPath, dir, rotateWithin)
+}
+
+// ensureWithWindow is Ensure with a configurable renewal window (the rotator
+// passes server.tls.rotate_within_days instead of the built-in 30 days).
+func ensureWithWindow(certPath, keyPath, dir string, window time.Duration) (cert, key, caPath string, err error) {
 	switch {
 	case certPath != "" && keyPath != "":
 		if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
@@ -72,7 +78,7 @@ func Ensure(certPath, keyPath, dir string) (cert, key, caPath string, err error)
 	if err != nil {
 		return "", "", "", err
 	}
-	if err := ensureLeaf(leafPath, leafKeyPath, ca); err != nil {
+	if err := ensureLeaf(leafPath, leafKeyPath, ca, window); err != nil {
 		return "", "", "", err
 	}
 	return leafPath, leafKeyPath, caPath, nil
@@ -145,10 +151,13 @@ func loadCAPrivate(caPath, caKeyPath string, pair *tls.Certificate) (*caKeyPair,
 	return &caKeyPair{cert: pair.Leaf, key: key}, nil
 }
 
-// ensureLeaf (re)creates the leaf iff missing or expiring within rotateWithin.
-func ensureLeaf(leafPath, leafKeyPath string, ca *caKeyPair) error {
+// ensureLeaf (re)creates the leaf iff missing or expiring within window.
+func ensureLeaf(leafPath, leafKeyPath string, ca *caKeyPair, window time.Duration) error {
+	if window <= 0 {
+		window = rotateWithin
+	}
 	if pair, err := tls.LoadX509KeyPair(leafPath, leafKeyPath); err == nil && pair.Leaf != nil {
-		if time.Until(pair.Leaf.NotAfter) > rotateWithin {
+		if time.Until(pair.Leaf.NotAfter) > window {
 			return nil
 		}
 		slog.Info("[TLS] leaf nearing expiry, re-signing", "cert", leafPath)
@@ -226,18 +235,24 @@ type Rotator struct {
 	keyPath  string
 	caPath   string
 	auto     bool
+	window   time.Duration
 
 	current atomic.Pointer[tls.Certificate]
 }
 
 // NewRotator completes the startup resolution and loads the initial cert.
-func NewRotator(certPath, keyPath, dir string) (*Rotator, error) {
+// rotateWithinDays overrides the built-in 30-day renewal window.
+func NewRotator(certPath, keyPath, dir string, rotateWithinDays ...int) (*Rotator, error) {
+	window := rotateWithin
+	if len(rotateWithinDays) > 0 && rotateWithinDays[0] > 0 {
+		window = time.Duration(rotateWithinDays[0]) * 24 * time.Hour
+	}
 	auto := certPath == "" && keyPath == ""
-	certPath, keyPath, caPath, err := Ensure(certPath, keyPath, dir)
+	certPath, keyPath, caPath, err := ensureWithWindow(certPath, keyPath, dir, window)
 	if err != nil {
 		return nil, err
 	}
-	r := &Rotator{certPath: certPath, keyPath: keyPath, caPath: caPath, auto: auto}
+	r := &Rotator{certPath: certPath, keyPath: keyPath, caPath: caPath, auto: auto, window: window}
 	if err := r.reloadOnce(); err != nil {
 		return nil, fmt.Errorf("load initial tls certificate: %w", err)
 	}
@@ -247,6 +262,19 @@ func NewRotator(certPath, keyPath, dir string) (*Rotator, error) {
 // CACertPath returns the dev CA cert path (auto mode) — mounted into APISIX
 // as the trust anchor for tls_verify. Empty in explicit mode.
 func (r *Rotator) CACertPath() string { return r.caPath }
+
+// CertPath returns the serving certificate path.
+func (r *Rotator) CertPath() string { return r.certPath }
+
+// KeyPath returns the serving key path.
+func (r *Rotator) KeyPath() string { return r.keyPath }
+
+// Current returns the currently loaded certificate (nil before first load).
+func (r *Rotator) Current() *tls.Certificate { return r.current.Load() }
+
+// CheckNow runs one rotation check immediately (the background goroutine calls
+// it daily); ops/tests can trigger it after a manual renewal.
+func (r *Rotator) CheckNow() error { return r.reloadOnce() }
 
 // Summary logs the resolved TLS posture at startup (paths only, no secrets).
 func (r *Rotator) Summary() {
@@ -286,7 +314,7 @@ func (r *Rotator) Start(stop <-chan struct{}) {
 // Any failure keeps the currently loaded certificate (log, never crash).
 func (r *Rotator) reloadOnce() error {
 	pair, err := tls.LoadX509KeyPair(r.certPath, r.keyPath)
-	if err == nil && pair.Leaf != nil && time.Until(pair.Leaf.NotAfter) >= rotateWithin {
+	if err == nil && pair.Leaf != nil && time.Until(pair.Leaf.NotAfter) >= r.window {
 		r.current.Store(&pair)
 		return nil
 	}

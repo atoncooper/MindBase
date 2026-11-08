@@ -15,7 +15,6 @@ import (
 	"log/slog"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
@@ -32,8 +31,8 @@ type QuestionDoc map[string]interface{}
 
 // GetQuestions returns questions WITHOUT answers (quiz display /
 // public share view). Port of mongo_quiz_repository.get_questions.
-func GetQuestions(ctx context.Context, db *mongo.Database, quizUUID string) []QuestionDoc {
-	if db == nil {
+func (r *Repo) GetQuestions(ctx context.Context, quizUUID string) []QuestionDoc {
+	if r.Mongo == nil {
 		slog.Warn("[MONGO_QUIZ] disabled, cannot read questions", "quiz_uuid", quizUUID)
 		return nil
 	}
@@ -45,21 +44,21 @@ func GetQuestions(ctx context.Context, db *mongo.Database, quizUUID string) []Qu
 		{Key: "options", Value: 1},
 		{Key: "_id", Value: 0},
 	}
-	return findQuestions(ctx, db, quizUUID, projection)
+	return r.findQuestions(ctx, quizUUID, projection)
 }
 
 // GetQuestionsFull returns questions WITH answers (review / include_answers).
 // Port of mongo_quiz_repository.get_questions_full.
-func GetQuestionsFull(ctx context.Context, db *mongo.Database, quizUUID string) []QuestionDoc {
-	if db == nil {
+func (r *Repo) GetQuestionsFull(ctx context.Context, quizUUID string) []QuestionDoc {
+	if r.Mongo == nil {
 		slog.Warn("[MONGO_QUIZ] disabled, cannot read full questions", "quiz_uuid", quizUUID)
 		return nil
 	}
-	return findQuestions(ctx, db, quizUUID, bson.D{{Key: "_id", Value: 0}})
+	return r.findQuestions(ctx, quizUUID, bson.D{{Key: "_id", Value: 0}})
 }
 
-func findQuestions(ctx context.Context, db *mongo.Database, quizUUID string, projection bson.D) []QuestionDoc {
-	cursor, err := db.Collection(quizQuestionsCollection).Find(ctx,
+func (r *Repo) findQuestions(ctx context.Context, quizUUID string, projection bson.D) []QuestionDoc {
+	cursor, err := r.Mongo.Collection(quizQuestionsCollection).Find(ctx,
 		bson.M{"quiz_uuid": quizUUID, "is_valid": true},
 		options.Find().SetProjection(projection).SetLimit(200),
 	)
@@ -78,11 +77,11 @@ func findQuestions(ctx context.Context, db *mongo.Database, quizUUID string, pro
 // CountQuestions counts valid questions for a quiz. Returns -1 when Mongo is
 // disabled (unknown — callers skip stale checks), mirroring the Python
 // repository.
-func CountQuestions(ctx context.Context, db *mongo.Database, quizUUID string) int {
-	if db == nil {
+func (r *Repo) CountQuestions(ctx context.Context, quizUUID string) int {
+	if r.Mongo == nil {
 		return -1
 	}
-	n, err := db.Collection(quizQuestionsCollection).CountDocuments(ctx,
+	n, err := r.Mongo.Collection(quizQuestionsCollection).CountDocuments(ctx,
 		bson.M{"quiz_uuid": quizUUID, "is_valid": true})
 	if err != nil {
 		slog.Error("[MONGO_QUIZ] count failed", "quiz_uuid", quizUUID, "err", err)
@@ -94,14 +93,14 @@ func CountQuestions(ctx context.Context, db *mongo.Database, quizUUID string) in
 // DeleteByQuiz deletes all question docs for a quiz (uid-scoped). Returns
 // ErrContentDisabled when Mongo is not connected and requireEnabled is set —
 // the delete flow must never proceed half-done.
-func DeleteByQuiz(ctx context.Context, db *mongo.Database, quizUUID string, uid int64, requireEnabled bool) (int64, error) {
-	if db == nil {
+func (r *Repo) DeleteByQuiz(ctx context.Context, quizUUID string, uid int64, requireEnabled bool) (int64, error) {
+	if r.Mongo == nil {
 		if requireEnabled {
 			return 0, ErrContentDisabled
 		}
 		return 0, nil
 	}
-	res, err := db.Collection(quizQuestionsCollection).
+	res, err := r.Mongo.Collection(quizQuestionsCollection).
 		DeleteMany(ctx, bson.M{"quiz_uuid": quizUUID, "uid": uid})
 	if err != nil {
 		return 0, err

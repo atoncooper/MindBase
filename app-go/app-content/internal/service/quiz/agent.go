@@ -76,19 +76,19 @@ func (s *Store) CreateAgentQuizSet(ctx context.Context, uid int64, title string,
 	if len(questions) == 0 || len(questions) > 20 {
 		return nil, fmt.Errorf("%w: questions 数量须在 1-20 之间", ErrInvalidInput)
 	}
-	if err := validateQuestions(questions); err != nil {
+	if err := ValidateQuestions(questions); err != nil {
 		return nil, err
 	}
 
 	total, passing := 100, 60
-	quizUUID, err := repo.CreateQuizSet(ctx, s.DB, s.Mongo, repo.QuizSetInput{
+	quizUUID, err := s.Repo.CreateQuizSet(ctx, repo.QuizSetInput{
 		UID:          uid,
 		Title:        title,
 		Status:       "done",
 		SourceType:   "agent",
 		TotalScore:   &total,
 		PassingScore: &passing,
-		Questions:    toRepoQuestions(questions),
+		Questions:    ToRepoQuestions(questions),
 	})
 	if err != nil {
 		return nil, err
@@ -113,7 +113,7 @@ func (s *Store) CreateQuizSet(ctx context.Context, uid int64, draft QuizSetDraft
 	if status == "" {
 		status = "generating"
 	}
-	quizUUID, err := repo.CreateQuizSet(ctx, s.DB, s.Mongo, repo.QuizSetInput{
+	quizUUID, err := s.Repo.CreateQuizSet(ctx, repo.QuizSetInput{
 		UID:              uid,
 		QuizUUID:         strings.TrimSpace(draft.QuizUUID),
 		Title:            title,
@@ -158,10 +158,10 @@ func (s *Store) FinalizeQuizSet(ctx context.Context, uid int64, quizUUID, status
 	if len(questions) > 200 {
 		return nil, fmt.Errorf("%w: questions 数量须在 1-200 之间", ErrInvalidInput)
 	}
-	if err := validateQuestions(questions); err != nil {
+	if err := ValidateQuestions(questions); err != nil {
 		return nil, err
 	}
-	if err := repo.FinalizeQuizSet(ctx, s.DB, s.Mongo, quizUUID, uid, status, toRepoQuestions(questions), qualityMetrics, bvidCount); err != nil {
+	if err := s.Repo.FinalizeQuizSet(ctx, quizUUID, uid, status, ToRepoQuestions(questions), qualityMetrics, bvidCount); err != nil {
 		if errors.Is(err, repo.ErrQuizSetNotFound) {
 			return nil, ErrInvalidInput
 		}
@@ -188,10 +188,10 @@ func (s *Store) AppendQuestions(ctx context.Context, uid int64, quizUUID string,
 	if len(questions) > 50 {
 		return nil, fmt.Errorf("%w: 单次 checkpoint questions 数量须在 1-50 之间", ErrInvalidInput)
 	}
-	if err := validateQuestions(questions); err != nil {
+	if err := ValidateQuestions(questions); err != nil {
 		return nil, err
 	}
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (s *Store) AppendQuestions(ctx context.Context, uid int64, quizUUID string,
 	if deref(qs.Status) != "generating" {
 		return nil, apiErr(409, "题卷不在生成中，无法 checkpoint")
 	}
-	if err := repo.CheckpointQuestions(ctx, s.DB, s.Mongo, quizUUID, uid, toRepoQuestions(questions)); err != nil {
+	if err := s.Repo.CheckpointQuestions(ctx, quizUUID, uid, ToRepoQuestions(questions)); err != nil {
 		return nil, err
 	}
 	return map[string]interface{}{"stored": len(questions)}, nil
@@ -222,7 +222,7 @@ func (s *Store) FailQuizSet(ctx context.Context, uid int64, quizUUID, message st
 	if len(msg) == 0 {
 		msg = []rune("生成失败")
 	}
-	if err := repo.FailQuizSet(ctx, s.DB, quizUUID, uid, string(msg)); err != nil {
+	if err := s.Repo.FailQuizSet(ctx, quizUUID, uid, string(msg)); err != nil {
 		if errors.Is(err, repo.ErrQuizSetNotFound) {
 			return nil, ErrInvalidInput
 		}
@@ -259,7 +259,7 @@ func (s *Store) SaveAgentGrading(ctx context.Context, uid int64, quizUUID string
 	for i, v := range perQuestion {
 		verdicts[i] = repo.AgentVerdict{Index: v.Index, Verdict: v.Verdict, Feedback: v.Feedback}
 	}
-	submissionUUID, err := repo.CreateAgentGrading(s.DB, uid, trimmed, score, total, verdicts)
+	submissionUUID, err := s.Repo.CreateAgentGrading(ctx, uid, trimmed, score, total, verdicts)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ func (s *Store) SaveAgentGrading(ctx context.Context, uid int64, quizUUID string
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-func validateQuestions(questions []AgentQuestion) error {
+func ValidateQuestions(questions []AgentQuestion) error {
 	for i, q := range questions {
 		if strings.TrimSpace(q.Question) == "" {
 			return fmt.Errorf("%w: 第 %d 题题干为空", ErrInvalidInput, i+1)
@@ -283,7 +283,7 @@ func validateQuestions(questions []AgentQuestion) error {
 	return nil
 }
 
-func toRepoQuestions(questions []AgentQuestion) []repo.AgentQuestion {
+func ToRepoQuestions(questions []AgentQuestion) []repo.AgentQuestion {
 	out := make([]repo.AgentQuestion, len(questions))
 	for i, q := range questions {
 		out[i] = repo.AgentQuestion{
@@ -305,4 +305,43 @@ func toRepoQuestions(questions []AgentQuestion) []repo.AgentQuestion {
 		}
 	}
 	return out
+}
+
+// CreateSetOptions is the normalized create-quiz payload from the HTTP layer.
+type CreateSetOptions struct {
+	QuizUUID         string
+	Title            string
+	Difficulty       string
+	QuestionCount    *int
+	TypeDistribution map[string]int
+	FolderIDs        []int64
+	SourceType       string
+	SourcePages      []map[string]interface{}
+	ChatSessionID    *string
+	Status           string
+	TotalScore       *int
+	PassingScore     *int
+	Questions        []AgentQuestion
+}
+
+// CreateSet owns the branch between the agent (questions supplied) and the
+// rich draft create paths; controllers only map DTOs into this struct.
+func (s *Store) CreateSet(ctx context.Context, uid int64, opts CreateSetOptions) (map[string]interface{}, error) {
+	if len(opts.Questions) > 0 {
+		return s.CreateAgentQuizSet(ctx, uid, opts.Title, opts.Questions)
+	}
+	return s.CreateQuizSet(ctx, uid, QuizSetDraft{
+		QuizUUID:         opts.QuizUUID,
+		Title:            opts.Title,
+		Difficulty:       opts.Difficulty,
+		QuestionCount:    opts.QuestionCount,
+		TypeDistribution: opts.TypeDistribution,
+		FolderIDs:        opts.FolderIDs,
+		SourceType:       opts.SourceType,
+		SourcePages:      opts.SourcePages,
+		ChatSessionID:    opts.ChatSessionID,
+		Status:           opts.Status,
+		TotalScore:       opts.TotalScore,
+		PassingScore:     opts.PassingScore,
+	})
 }

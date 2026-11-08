@@ -23,7 +23,7 @@ type PaperOptions struct {
 // BuildPaper loads the owned quiz (with answers when requested) and renders a
 // printable exam paper. Expected failures come back as *APIError.
 func (s *Store) BuildPaper(ctx context.Context, uid int64, quizUUID string, opts PaperOptions) ([]byte, string, error) {
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, "", err
 	}
@@ -36,9 +36,9 @@ func (s *Store) BuildPaper(ctx context.Context, uid int64, quizUUID string, opts
 
 	var questions []repo.QuestionDoc
 	if opts.IncludeAnswers {
-		questions = repo.GetQuestionsFull(ctx, s.Mongo, quizUUID)
+		questions = s.Repo.GetQuestionsFull(ctx, quizUUID)
 	} else {
-		questions = repo.GetQuestions(ctx, s.Mongo, quizUUID)
+		questions = s.Repo.GetQuestions(ctx, quizUUID)
 	}
 	if len(questions) == 0 {
 		return nil, "", apiErr(410, "题目数据已丢失，请重新生成")

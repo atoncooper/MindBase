@@ -27,10 +27,11 @@ import (
 
 // Options configures the default slog logger.
 type Options struct {
-	Level  string      // debug|info|warn|error (default info)
-	Format string      // text|json (default text)
-	Output string      // stdout|file|both (default stdout)
-	File   FileOptions // used when Output is file or both
+	Level     string      // debug|info|warn|error (default info)
+	Format    string      // text|json (default text)
+	Output    string      // stdout|file|both (default stdout)
+	AddSource bool        // include source file:line in every record
+	File      FileOptions // used when Output is file or both
 }
 
 // FileOptions configures lumberjack-based file rotation.
@@ -46,6 +47,7 @@ type FileOptions struct {
 // before db.Init so NewGORMLogger picks up the configured handler via
 // slog.Default().
 func Init(opts Options) {
+	_ = Close() // replace any previous file sink (tests / re-init)
 	var lvl slog.Level
 	switch strings.ToLower(strings.TrimSpace(opts.Level)) {
 	case "debug":
@@ -58,7 +60,7 @@ func Init(opts Options) {
 		lvl = slog.LevelInfo
 	}
 	w := newWriter(opts)
-	hOpts := &slog.HandlerOptions{Level: lvl}
+	hOpts := &slog.HandlerOptions{Level: lvl, AddSource: opts.AddSource}
 	var h slog.Handler
 	if strings.ToLower(strings.TrimSpace(opts.Format)) == "json" {
 		h = slog.NewJSONHandler(w, hOpts)
@@ -75,18 +77,37 @@ func Init(opts Options) {
 func newWriter(opts Options) io.Writer {
 	switch strings.ToLower(strings.TrimSpace(opts.Output)) {
 	case "file":
-		return newFileWriter(opts.File)
+		fw := newFileWriter(opts.File)
+		fileSink = fw
+		return fw
 	case "both":
-		return io.MultiWriter(os.Stdout, newFileWriter(opts.File))
+		fw := newFileWriter(opts.File)
+		fileSink = fw
+		return io.MultiWriter(os.Stdout, fw)
 	default: // stdout
 		return os.Stdout
 	}
 }
 
+// fileSink tracks the rotating file writer so Close can flush/release it.
+var fileSink *lumberjack.Logger
+
+// Close releases the file sink (no-op for stdout logging). Call on shutdown;
+// tests must call it before removing a temp log directory (Windows keeps an
+// open handle otherwise).
+func Close() error {
+	if fileSink == nil {
+		return nil
+	}
+	err := fileSink.Close()
+	fileSink = nil
+	return err
+}
+
 // newFileWriter builds a lumberjack rotating writer, applying sane defaults
 // for any zero field. The directory must exist and be writable (mount a volume
 // at Path in docker).
-func newFileWriter(f FileOptions) io.Writer {
+func newFileWriter(f FileOptions) *lumberjack.Logger {
 	if f.Path == "" {
 		f.Path = "/app/logs/app-content.log"
 	}

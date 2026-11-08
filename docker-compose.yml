@@ -861,12 +861,11 @@ services:
       - mind-base-net
 
   # app-content —— 内容域三合一服务（Go：app-board + app-note + app-quiz）。
-  # 单镜像/单进程，三个 Gin engine 分别监听（对外路径与端口语义不变，
-  # APISIX 三个 upstream 分别指向对应端口）：
-  #   8004 = board（HTTPS；TLS rotator，证书目录 /app/certs，upstream 仍 scheme https）
-  #   8008 = note（/notes/*、/internal/note/*）
-  #   8011 = quiz（/quiz/*、/internal/quiz/*）
+  # 单镜像/单进程/单端口：三个域挂在同一个 Gin 引擎上，共用一个 HTTPS listener
+  # （TLS rotator，证书目录 /app/certs）。路径 /board、/notes、/quiz、/tasks、/internal/*
+  # 全部经 8004；APISIX 三个 upstream 节点都指向 app-content:8004（scheme https）。
   # 共享主 bilirag MySQL + Mongo + Redis（board 缓存用 /2；quiz 配额键沿用 mind-base: 前缀）。
+  # board/note/quiz 三域的 schema 由服务启动自建/接管。MCP 服务（app-*-mcp）保持独立不改名。
   # board/note/quiz 三域的 schema 由服务启动自建/接管。MCP 服务（app-*-mcp）保持独立不改名。
   app-content:
     image: atoncooper/mind-base-app-content:latest
@@ -889,33 +888,29 @@ services:
     env_file:
       - .env
     environment:
-      # ===== board 域（原 app-board，前缀 APPBOARD__）=====
-      # 读缓存（列表/详情 cache-aside；写路径仍直落 MySQL）：独立 DB index /2，
-      # 主 app 用 /1；Redis 故障自动降级直查，不影响正确性
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
-      # 共享主 app MySQL（board 表 schema 由服务启动 db.Migrate 自建）
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      # 共享主 app Mongo（正文 collection board_documents）
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      # Logging: one process-wide logger (board.log section) -> stdout + /app/logs
-      # （lumberjack 轮转；镜像已预建 nonroot 属主 /app/logs，卷首次挂载继承属主）
-      - APPBOARD__LOG__OUTPUT=both
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      # ===== 统一数据源：一个进程 = 一个 MySQL 连接池 / 一个 Mongo 客户端 / 一个 Redis 客户端 =====
+      # 三域不再各自持有 DSN/URI；legacy APPBOARD__/APPNOTE__/APPQUIZ__ 仍兼容，但
+      # 取值冲突会启动失败（防止 board 与 note/quiz 静默连到不同库）。
+      - CONTENT__DATABASE__MYSQL__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - CONTENT__DATABASE__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      # 共享内容库（笔记/测验）；board 历史库 MindBase 单独保留（迁移见 docs/app-content.md）
+      - CONTENT__DATABASE__MONGO__DATABASE=mind_base
+      - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
+      # note/quiz 与其它 Go 服务共用 Redis；board 读缓存键前缀 board: 不冲突
+      - CONTENT__DATABASE__REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
+      # Logging: one process-wide logger -> stdout + /app/logs（lumberjack 轮转；
+      # 镜像已预建 nonroot 属主 /app/logs，卷首次挂载继承属主）
+      - CONTENT__LOG__OUTPUT=both
+      - CONTENT__SERVER__TLS__CERT_DIR=/app/certs
       # explicit mode: load cert-gen issued leaf as-is（auto 模式会覆盖共享 dev-ca）
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-      # ===== note 域（原 app-note，前缀 APPNOTE__）=====
-      - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # ===== quiz 域（原 app-quiz，前缀 APPQUIZ__）=====
-      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # ===== 共享（note/quiz 读同一 MONGO__URI；去重后只保留一份）=====
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - CONTENT__SERVER__TLS__CERT=/app/certs/server.crt
+      - CONTENT__SERVER__TLS__KEY=/app/certs/server.key
+      # 服务间 M2M 共享密钥（/internal/* 二次校验；与 APISIX consumer key 同值）
+      - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:-}
     ports:
-      # 宿主只暴露 note/quiz 调试口；board（8004 TLS）无宿主映射，仅经 APISIX 访问。
-      # note 宿主口默认 8018（app-cloud 的 8007-8009 端口池会占用 8008）。
-      - "127.0.0.1:${APP_CONTENT_NOTE_PORT:-8018}:8008"
-      - "127.0.0.1:${APP_CONTENT_QUIZ_PORT:-8011}:8011"
+      # 单端口（TLS）仅回环调试；业务流量一律经 APISIX/nginx，不直连本服务。
+      - "127.0.0.1:${APP_CONTENT_PORT:-8004}:8004"
     volumes:
       - app_content_logs:/app/logs
       # board TLS 证书目录（cert-gen 生成/轮换；apisix 只读挂其中的 dev-ca.crt）

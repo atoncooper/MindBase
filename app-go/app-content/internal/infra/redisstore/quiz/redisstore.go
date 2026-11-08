@@ -1,11 +1,11 @@
-// Package redisstore — shared Redis access for the quiz share L2 cache.
+// Package redisstore — quiz share L2 cache + daily quota counters on the
+// process-wide Redis client.
 //
 // The Python backend caches the public shared-quiz payload under
-// “mind-base:quiz_share:{token}“ (60s TTL) and app-quiz reads/writes/evicts
-// the SAME keys, so both stacks stay coherent during and after the cutover.
+// mind-base:quiz_share:{token} (60s TTL) and app-quiz reads/writes/evicts the
+// SAME keys, so both stacks stay coherent during and after the cutover.
 // Every operation is fail-open: when Redis is unavailable the callers fall
-// through to MySQL + MongoDB and the endpoint still works (the Python side
-// has identical semantics).
+// through to MySQL + MongoDB and the endpoint still works.
 package redisstore
 
 import (
@@ -14,42 +14,22 @@ import (
 	"strings"
 	"time"
 
-	"app-content/internal/config/quiz"
-
 	"github.com/redis/go-redis/v9"
 )
 
-// Store wraps the go-redis client with the shared key prefix. Nil-safe when
-// disabled.
+// Store wraps the shared go-redis client with the shared key prefix.
+// Nil client = disabled (fail-open).
 type Store struct {
 	client *redis.Client
 	prefix string
 }
 
-// New connects. Empty URL → disabled store (no error).
-func New(ctx context.Context, cfg *config.Config) (*Store, error) {
-	if strings.TrimSpace(cfg.Redis.URL) == "" {
-		return &Store{prefix: cfg.Redis.KeyPrefix}, nil
+// New wraps an already-connected client. Nil client disables the store.
+func New(client *redis.Client, prefix string) *Store {
+	if strings.TrimSpace(prefix) == "" {
+		prefix = "mind-base:"
 	}
-	opts, err := redis.ParseURL(cfg.Redis.URL)
-	if err != nil {
-		return nil, err
-	}
-	client := redis.NewClient(opts)
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		return nil, err
-	}
-	return &Store{client: client, prefix: cfg.Redis.KeyPrefix}, nil
-}
-
-// Close closes the client (nil-safe when disabled).
-func (s *Store) Close() error {
-	if s == nil || s.client == nil {
-		return nil
-	}
-	return s.client.Close()
+	return &Store{client: client, prefix: prefix}
 }
 
 // Enabled reports whether a Redis connection is configured.

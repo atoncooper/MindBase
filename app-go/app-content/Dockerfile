@@ -1,5 +1,5 @@
 # ====== app-content: board + note + quiz content store (Go) ======
-# Single module / image / process; three Gin engines on 8004 (TLS), 8008, 8011.
+# Single module / image / process; all three domains mounted on ONE port (8004, TLS).
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -33,7 +33,7 @@ COPY --from=builder --chown=nonroot:nonroot /out/logs /app/logs
 # TLS certs (board auto mode generates dev-CA + leaf here; compose mounts a volume)
 VOLUME /app/certs
 
-EXPOSE 8004 8008 8011
+EXPOSE 8004
 USER nonroot:nonroot
 
 ENTRYPOINT ["/app-content"]

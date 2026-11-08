@@ -164,11 +164,11 @@ NEXT_PUBLIC_APISIX_HOST=127.0.0.1:9080 npm run dev
 **每个 `app-go/*` 都是独立 Go module**（仓库根没有 `go.mod`/`go.work`），必须进入服务目录启动；服务会从工作目录向上读项目根 `.env`：
 
 ```bash
-docker compose stop app-content     # 停容器后再本地起（宿主调试口：note 8018、quiz 8011；board 8004 仅容器网络）
+docker compose stop app-content     # 停容器后再本地起（单端口 8004 HTTPS，宿主调试口 APP_CONTENT_PORT）
 cd app-go/app-content
-APPNOTE__RDBMS__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base' \
-APPBOARD__RDBMS__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base' \
-MONGO__URI='mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin' \
+CONTENT__DATABASE__MYSQL__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_base' \
+CONTENT__DATABASE__MONGO__URI='mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin' \
+CONTENT__DATABASE__REDIS__URL='redis://:mind-base@127.0.0.1:6379/1' \
 go run ./cmd/app-content
 ```
 
@@ -178,7 +178,7 @@ go run ./cmd/app-content
 |------|------|--------------|
 | app-user | 8006（auth）/ 8010（bili）/ 8015（settings） | `APPAUTH__RDBMS__URL` + `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY` + `APPSETTINGS__RDBMS__URL`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
 | app-cloud | 8007 | `APPCLOUD__RDBMS__URL` + `MINIO__ACCESS_KEY`/`MINIO__SECRET_KEY`（缺访问密钥直接拒启；另需 `MINIO__ENDPOINT=http://127.0.0.1:9000`） |
-| app-content | 8004（board, HTTPS）/ 8008（note）/ 8011（quiz） | `APPBOARD__RDBMS__URL` + `APPBOARD__MONGO__URI`；`APPNOTE__RDBMS__URL`；`APPQUIZ__RDBMS__URL`（+ 共享 `MONGO__URI`/`REDIS__URL`） |
+| app-content | 8004（HTTPS，单端口承载 board/note/quiz） | `CONTENT__DATABASE__MYSQL__URL` + `CONTENT__DATABASE__MONGO__URI`（Redis 可选；旧 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__` 数据源变量兼容但必须一致） |
 | app-kg | 8013 gRPC / 8014 health | `APPKG__RDBMS__URL` + `KG__URI`（+ `KG__PASSWORD` 或 `NEO4J_PASSWORD`） |
 | app-admin | 8016 | `APPADMIN__RDBMS__URL`（种子账户 `admin` / `app-admin`，首登强制改密） |
 | app-sandbox | 8017 | `SANDBOX__DATABASE__DSN`（或 `RDBMS__URL`）+ `SANDBOX__AUTH__API_KEY`；本机无 OpenSandbox 时用 `SANDBOX__RUNTIME__TYPE=fake` |
@@ -187,7 +187,7 @@ go run ./cmd/app-content
 
 - **app-pay**（Java）：`cd app-pay && mvn spring-boot:run`，但服务端强制 HTTPS，先跑 `app-pay/scripts/gen-dev-cert.ps1`（或 `.sh`）生成 `app-pay/certs/`；
 - **app-task**：本仓无源码（镜像来自独立仓库），compose 默认拉取；
-- **app-content 的 board 面**（8004）：不映射宿主端口，开发时经 app-board-mcp（8005）访问即可。
+- **app-content**（8004，单端口 HTTPS）：宿主调试口 `APP_CONTENT_PORT`；board 面也可经 app-board-mcp（8005）访问。
 
 ---
 
@@ -234,7 +234,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-content 8018（note）/ 8011（quiz）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
 
 ---
 
@@ -244,7 +244,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 
 ```bash
 curl -s http://127.0.0.1:8000/health     # app-ts：{"status":"ok","milvus":{...}}
-for p in 8006 8007 8018 8010 8011 8015 8016; do
+for p in 8006 8007 8004 8010 8015 8016; do
   printf '%s ' "$p"; curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$p/health"
 done
 curl -s  http://127.0.0.1:8014/health    # app-kg：MySQL/Neo4j 不可用 → 503

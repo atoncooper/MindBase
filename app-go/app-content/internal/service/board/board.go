@@ -14,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
+	"app-content/internal/apperr"
 	"app-content/internal/infra/cache/board"
 	"app-content/internal/model/board"
 	"app-content/internal/repo/board"
@@ -25,15 +27,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// Sentinel errors mapped to HTTP status codes by the router layer.
+// Typed application errors (rendered by middleware.RespondError). Wrapping
+// with fmt.Errorf("%w: ...", ...) keeps errors.Is/As working.
 var (
-	ErrNotFound      = errors.New("board not found")   // -> 404 (also covers "not yours")
-	ErrConflict      = errors.New("version conflict")  // -> 409
-	ErrPrecondition  = errors.New("if-match required") // -> 428
-	ErrInvalidInput  = errors.New("invalid input")     // -> 400
-	ErrDuplicateName = errors.New("同名看板已存在")           // -> 400 (user-facing copy)
-	ErrStorage       = errors.New("storage error")     // -> 500
-	ErrContentTooBig = errors.New("content too large") // -> 413
+	ErrNotFound      = apperr.New(http.StatusNotFound, "board_not_found", "board not found")
+	ErrConflict      = apperr.New(http.StatusConflict, "board_conflict", "version conflict: board was modified concurrently, reload and retry")
+	ErrPrecondition  = apperr.New(http.StatusPreconditionRequired, "board_if_match_required", "If-Match header with the board's current version is required (optimistic locking)")
+	ErrInvalidInput  = apperr.New(http.StatusBadRequest, "board_invalid_input", "invalid input")
+	ErrDuplicateName = apperr.New(http.StatusBadRequest, "board_duplicate_name", "同名看板已存在")
+	ErrStorage       = apperr.New(http.StatusInternalServerError, "board_storage_error", "internal storage error")
+	ErrContentTooBig = apperr.New(http.StatusRequestEntityTooLarge, "board_content_too_large", "content exceeds the 8MB limit")
 )
 
 const (
@@ -193,19 +196,22 @@ func (s *BoardService) Create(ctx context.Context, uid int64, title, kind, conte
 		Kind:    kind,
 		Version: 1,
 	}
+	// Body first, metadata second (same order as note): if the body write
+	// fails the request fails loudly instead of returning 201 with lost
+	// content; if the metadata insert fails the body is compensated.
+	if content != "" {
+		if err := s.docs.ConditionalWrite(ctx, b.UUID, 0, content); err != nil {
+			return nil, fmt.Errorf("%w: write board body: %v", ErrStorage, err)
+		}
+	}
 	if err := s.meta.Create(ctx, b); err != nil {
+		if content != "" {
+			s.rollbackDoc(ctx, b.UUID, 1, nil)
+		}
 		return nil, fmt.Errorf("%w: create board meta: %v", ErrStorage, err)
 	}
 	// A new board changes every list page of the user; no detail exists yet.
 	s.cache.DelByPrefix(ctx, s.listPrefix(uid))
-	if content != "" {
-		// Create path: expected 0 (no document) -> stored 1, mirroring the
-		// metadata version. A failure here leaves a content-less board —
-		// GET serves null content and the next PUT (If-Match: 1) heals it.
-		if err := s.docs.ConditionalWrite(ctx, b.UUID, 0, content); err != nil {
-			slog.ErrorContext(ctx, "[BOARD] create body write failed", "uuid", b.UUID, "err", err)
-		}
-	}
 	meta := toMeta(b)
 	return &meta, nil
 }

@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"app-content/internal/apperr"
 	"app-content/internal/repo/quiz"
 
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -32,17 +32,12 @@ import (
 // APPQUIZ__LIFECYCLE__GENERATION_TIMEOUT_MINUTES 配置（config Validate 默认 15）。
 const GenerationTimeoutBaseMinutes = 15
 
-// Service errors carry an HTTP status + detail (parity with the Python
-// HTTPException contract).
-type APIError struct {
-	Status int
-	Detail string
-}
-
-func (e *APIError) Error() string { return e.Detail }
+// Service errors use the shared application error model (status + code +
+// detail); router rendering goes through middleware.RespondError.
+type APIError = apperr.Error
 
 func apiErr(status int, detail string) *APIError {
-	return &APIError{Status: status, Detail: detail}
+	return apperr.New(status, apperr.CodeFor(status), detail)
 }
 
 var (
@@ -53,8 +48,7 @@ var (
 
 // Store wires the data sources into the quiz service.
 type Store struct {
-	DB     *gorm.DB
-	Mongo  *mongo.Database
+	Repo   *repo.Repo
 	Shares ShareCache
 	Clock  func() time.Time // UTC clock, overridable in tests
 
@@ -77,10 +71,9 @@ type ShareCache interface {
 }
 
 // New builds the service.
-func New(db *gorm.DB, mdb *mongo.Database, shares ShareCache) *Store {
+func New(r *repo.Repo, shares ShareCache) *Store {
 	return &Store{
-		DB:             db,
-		Mongo:          mdb,
+		Repo:           r,
 		Shares:         shares,
 		Clock:          func() time.Time { return time.Now().UTC() },
 		GenTimeoutBase: GenerationTimeoutBaseMinutes * time.Minute,
@@ -148,7 +141,7 @@ func parseJSONField(raw json.RawMessage) interface{} {
 // unavailability skips the empty-check (parity with quiz_lifecycle).
 func (s *Store) refreshStaleQuizStates(ctx context.Context, uid int64) {
 	floor := s.Clock().Add(-s.genTimeoutBase())
-	stuck, err := repo.ListGeneratingStuck(s.DB, uid, floor)
+	stuck, err := s.Repo.ListGeneratingStuck(ctx, uid, floor)
 	if err != nil {
 		slog.Warn("[QUIZ_LIFECYCLE] timeout sweep failed", "uid", uid, "err", err)
 		return
@@ -159,20 +152,20 @@ func (s *Store) refreshStaleQuizStates(ctx context.Context, uid int64) {
 			continue // 按题量缩放后仍在允许窗口内
 		}
 		// checkpoint 生效：已存题数 > 0 → partial（题目可练），否则 failed
-		status, message := statusForTimedGeneration(repo.CountQuestions(ctx, s.Mongo, row.QuizUUID))
-		if err := repo.MarkQuizTimedOutStatus(s.DB, row.QuizUUID, uid, s.Clock().Add(-allowed), status, message); err != nil {
+		status, message := StatusForTimedGeneration(s.Repo.CountQuestions(ctx, row.QuizUUID))
+		if err := s.Repo.MarkQuizTimedOutStatus(ctx, row.QuizUUID, uid, s.Clock().Add(-allowed), status, message); err != nil {
 			slog.Warn("[QUIZ_LIFECYCLE] timeout mark failed", "quiz_uuid", row.QuizUUID, "err", err)
 		}
 	}
-	uuids, err := repo.ListDoneQuizUUIDs(s.DB, uid)
+	uuids, err := s.Repo.ListDoneQuizUUIDs(ctx, uid)
 	if err != nil {
 		slog.Warn("[QUIZ_LIFECYCLE] done-list failed", "uid", uid, "err", err)
 		return
 	}
 	for _, qid := range uuids {
-		if n := repo.CountQuestions(ctx, s.Mongo, qid); n == 0 {
+		if n := s.Repo.CountQuestions(ctx, qid); n == 0 {
 			// Mongo disabled returns -1 (skip); a true zero means data lost.
-			if err := repo.MarkQuizLost(s.DB, qid); err != nil {
+			if err := s.Repo.MarkQuizLost(ctx, qid); err != nil {
 				slog.Warn("[QUIZ_LIFECYCLE] mark lost failed", "quiz_uuid", qid, "err", err)
 			}
 		}
@@ -182,8 +175,8 @@ func (s *Store) refreshStaleQuizStates(ctx context.Context, uid int64) {
 // refreshOnRead flips a single generating quiz past the timeout to its
 // terminal state (parity with quiz_lifecycle.refresh_on_read; checkpoint-aware
 // —— 已有增量落库题目时判 partial 而非 failed)。UPDATE 对未超时行是 no-op。
-func (s *Store) refreshOnRead(quizUUID string, uid int64) {
-	row, err := repo.GetQuizSetLite(s.DB, quizUUID, uid)
+func (s *Store) refreshOnRead(ctx context.Context, quizUUID string, uid int64) {
+	row, err := s.Repo.GetQuizSetLite(ctx, quizUUID, uid)
 	if err != nil {
 		slog.Warn("[QUIZ_LIFECYCLE] read-row failed", "quiz_uuid", quizUUID, "err", err)
 		return
@@ -192,9 +185,9 @@ func (s *Store) refreshOnRead(quizUUID string, uid int64) {
 		return // 行不存在（gorm Scan 空结果不报错）
 	}
 	cutoff := s.Clock().Add(-s.allowedFor(row.QuestionCount))
-	count := repo.CountQuestions(context.Background(), s.Mongo, quizUUID)
-	status, message := statusForTimedGeneration(count)
-	if err := repo.MarkQuizTimedOutStatus(s.DB, quizUUID, uid, cutoff, status, message); err != nil {
+	count := s.Repo.CountQuestions(ctx, quizUUID)
+	status, message := StatusForTimedGeneration(count)
+	if err := s.Repo.MarkQuizTimedOutStatus(ctx, quizUUID, uid, cutoff, status, message); err != nil {
 		slog.Warn("[QUIZ_LIFECYCLE] single-quiz timeout failed", "quiz_uuid", quizUUID, "err", err)
 	}
 }
@@ -202,7 +195,7 @@ func (s *Store) refreshOnRead(quizUUID string, uid int64) {
 // statusForTimedGeneration decides the terminal state of a stuck generating
 // quiz by its checkpointed question count: > 0 → partial（已生成题目可练），
 // else failed。count < 0 = Mongo 不可用（未知）→ failed（安全默认）。
-func statusForTimedGeneration(count int) (status, message string) {
+func StatusForTimedGeneration(count int) (status, message string) {
 	if count > 0 {
 		return "partial", "生成超时中断，已保留已生成的部分题目"
 	}
@@ -218,7 +211,7 @@ func (s *Store) ReopenForResume(ctx context.Context, uid int64, quizUUID string)
 	if uid <= 0 {
 		return nil, apiErr(401, "缺少用户身份")
 	}
-	set, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	set, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, apiErr(500, "查询失败，请稍后重试")
 	}
@@ -235,7 +228,7 @@ func (s *Store) ReopenForResume(ctx context.Context, uid int64, quizUUID string)
 	default: // failed / deleting / lost
 		return nil, apiErr(404, "题目集不存在")
 	}
-	reopened, err := repo.ReopenQuizSet(s.DB, quizUUID, uid)
+	reopened, err := s.Repo.ReopenQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, apiErr(500, "续跑失败，请稍后重试")
 	}
@@ -260,11 +253,11 @@ func (s *Store) ReopenForResume(ctx context.Context, uid int64, quizUUID string)
 func (s *Store) History(ctx context.Context, uid int64, page, pageSize int) (map[string]interface{}, error) {
 	s.refreshStaleQuizStates(ctx, uid)
 
-	total, err := repo.CountHistory(s.DB, uid)
+	total, err := s.Repo.CountHistory(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := repo.ListHistory(s.DB, uid, page, pageSize)
+	rows, err := s.Repo.ListHistory(ctx, uid, page, pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -301,8 +294,8 @@ func (s *Store) History(ctx context.Context, uid int64, page, pageSize int) (map
 // ── wrong-answer notebook ────────────────────────────────────────────
 
 // WrongAnswers returns the user's wrong-answer notebook entries.
-func (s *Store) WrongAnswers(uid int64, folderIDs []int) (map[string]interface{}, error) {
-	rows, err := repo.ListWrongAnswers(s.DB, uid, folderIDs)
+func (s *Store) WrongAnswers(ctx context.Context, uid int64, folderIDs []int) (map[string]interface{}, error) {
+	rows, err := s.Repo.ListWrongAnswers(ctx, uid, folderIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -330,9 +323,9 @@ func (s *Store) WrongAnswers(uid int64, folderIDs []int) (map[string]interface{}
 // GetQuiz returns the quiz set (with or without answers). 404 when missing,
 // not owned or deleting; 410 after the data-lost mark.
 func (s *Store) GetQuiz(ctx context.Context, uid int64, quizUUID string, includeAnswers bool) (map[string]interface{}, error) {
-	s.refreshOnRead(quizUUID, uid)
+	s.refreshOnRead(ctx, quizUUID, uid)
 
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -342,9 +335,9 @@ func (s *Store) GetQuiz(ctx context.Context, uid int64, quizUUID string, include
 
 	var questions []repo.QuestionDoc
 	if includeAnswers {
-		questions = repo.GetQuestionsFull(ctx, s.Mongo, quizUUID)
+		questions = s.Repo.GetQuestionsFull(ctx, quizUUID)
 	} else {
-		questions = repo.GetQuestions(ctx, s.Mongo, quizUUID)
+		questions = s.Repo.GetQuestions(ctx, quizUUID)
 	}
 
 	// Only flag as lost when the quiz is done but MongoDB is empty —
@@ -354,7 +347,7 @@ func (s *Store) GetQuiz(ctx context.Context, uid int64, quizUUID string, include
 		slog.Warn("[QUIZ] data lost — marking quiz failed",
 			"quiz_uuid", quizUUID, "status", deref(qs.Status),
 			"question_count", derefInt(qs.QuestionCount))
-		if err := repo.MarkQuizLost(s.DB, quizUUID); err != nil {
+		if err := s.Repo.MarkQuizLost(ctx, quizUUID); err != nil {
 			slog.Warn("[QUIZ] mark lost failed", "quiz_uuid", quizUUID, "err", err)
 		}
 		return nil, apiErr(410, "题目数据已丢失，请重新生成")
@@ -401,7 +394,7 @@ func (s *Store) GetQuiz(ctx context.Context, uid int64, quizUUID string, include
 	}
 	// 生成中的执行步骤（app-ts 管线上报）：仅 generating 期返回，终态不再暴露
 	if status == "generating" {
-		if p := repo.GetGenerationProgress(ctx, s.Mongo, quizUUID); p != nil {
+		if p := s.Repo.GetGenerationProgress(ctx, quizUUID); p != nil {
 			resp["generation_progress"] = p
 		}
 	}
@@ -414,7 +407,7 @@ func (s *Store) GetQuiz(ctx context.Context, uid int64, quizUUID string, include
 // quiz_delete.QuizDeleteService.delete_quiz including the two-phase status
 // guards and failure recovery.
 func (s *Store) DeleteQuiz(ctx context.Context, uid int64, quizUUID string) (map[string]interface{}, error) {
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -426,26 +419,26 @@ func (s *Store) DeleteQuiz(ctx context.Context, uid int64, quizUUID string) (map
 	}
 
 	previousStatus := deref(qs.Status)
-	if err := repo.SetStatus(s.DB, quizUUID, uid, "deleting"); err != nil {
+	if err := s.Repo.SetStatus(ctx, quizUUID, uid, "deleting"); err != nil {
 		return nil, err
 	}
 
-	deletedQuestions, err := repo.DeleteByQuiz(ctx, s.Mongo, quizUUID, uid, true)
-	repo.DeleteGenerationProgress(ctx, s.Mongo, quizUUID)
-	repo.DeleteShareSecretByQuiz(ctx, s.Mongo, quizUUID)
+	deletedQuestions, err := s.Repo.DeleteByQuiz(ctx, quizUUID, uid, true)
+	s.Repo.DeleteGenerationProgress(ctx, quizUUID)
+	s.Repo.DeleteShareSecretByQuiz(ctx, quizUUID)
 	if err != nil {
-		if rerr := repo.SetStatus(s.DB, quizUUID, uid, previousStatus); rerr != nil {
+		if rerr := s.Repo.SetStatus(ctx, quizUUID, uid, previousStatus); rerr != nil {
 			slog.Error("[QUIZ] failed to restore status", "quiz_uuid", quizUUID, "err", rerr)
 		}
 		slog.Error("[QUIZ] failed to delete Mongo questions", "quiz_uuid", quizUUID, "uid", uid, "err", err)
 		return nil, apiErr(503, "题目数据删除失败，请稍后重试")
 	}
 
-	deletedAnswers, deletedSubmissions, err := repo.DeleteQuizRecords(s.DB, quizUUID, uid)
+	deletedAnswers, deletedSubmissions, err := s.Repo.DeleteQuizRecords(ctx, quizUUID, uid)
 	if err != nil {
 		// The transaction rolled back; surface the half-deleted state on the
 		// row so the user can retry (parity with _mark_delete_failed).
-		if rerr := repo.SetStatusWithError(s.DB, quizUUID, uid, "删除未完成，请重试删除"); rerr != nil {
+		if rerr := s.Repo.SetStatusWithError(ctx, quizUUID, uid, "删除未完成，请重试删除"); rerr != nil {
 			slog.Error("[QUIZ] failed to mark delete-failed", "quiz_uuid", quizUUID, "err", rerr)
 		}
 		slog.Error("[QUIZ] failed to delete SQL rows", "quiz_uuid", quizUUID, "uid", uid, "err", err)
@@ -465,7 +458,7 @@ func (s *Store) DeleteQuiz(ctx context.Context, uid int64, quizUUID string) (map
 
 // RenameQuiz updates the user-facing title of one owned quiz. 标题在同账号内
 // 唯一（MySQL collation 大小写不敏感）；空/超长 400，重名 409，非本人/不存在 404。
-func (s *Store) RenameQuiz(uid int64, quizUUID string, title string) (map[string]interface{}, error) {
+func (s *Store) RenameQuiz(ctx context.Context, uid int64, quizUUID string, title string) (map[string]interface{}, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil, apiErr(400, "标题不能为空")
@@ -473,7 +466,7 @@ func (s *Store) RenameQuiz(uid int64, quizUUID string, title string) (map[string
 	if len([]rune(title)) > 60 {
 		return nil, apiErr(400, "标题最长 60 字")
 	}
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -483,14 +476,14 @@ func (s *Store) RenameQuiz(uid int64, quizUUID string, title string) (map[string
 	if deref(qs.Status) == "deleting" {
 		return nil, apiErr(409, "题目正在删除中，暂不能重命名")
 	}
-	exists, err := repo.QuizTitleExists(s.DB, uid, title, quizUUID)
+	exists, err := s.Repo.QuizTitleExists(ctx, uid, title, quizUUID)
 	if err != nil {
 		return nil, err
 	}
 	if exists {
 		return nil, apiErr(409, "标题已存在，请换一个名字")
 	}
-	if err := repo.RenameQuizSet(s.DB, quizUUID, uid, title); err != nil {
+	if err := s.Repo.RenameQuizSet(ctx, quizUUID, uid, title); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, apiErr(404, "题目集不存在")
 		}
@@ -506,7 +499,7 @@ func (s *Store) UpdateGenerationProgress(ctx context.Context, uid int64, quizUUI
 	if strings.TrimSpace(stage) == "" {
 		return apiErr(400, "stage 必填")
 	}
-	repo.SaveGenerationProgress(ctx, s.Mongo, repo.GenerationProgress{
+	s.Repo.SaveGenerationProgress(ctx, repo.GenerationProgress{
 		QuizUUID:  quizUUID,
 		UID:       uid,
 		Stage:     stage,
@@ -535,8 +528,23 @@ func isShareExpired(expiresAt *time.Time, now time.Time) bool {
 }
 
 // CreateShare issues or rotates the share token for an owned quiz.
-func (s *Store) CreateShare(ctx context.Context, quizUUID string, uid int64, expiresAt *time.Time, password string) (map[string]interface{}, error) {
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+func (s *Store) CreateShare(ctx context.Context, quizUUID string, uid int64, expiresInDays *int, password string) (map[string]interface{}, error) {
+	pw := strings.TrimSpace(password)
+	if pw != "" {
+		if n := len([]rune(pw)); n < 4 || n > 32 {
+			return nil, apiErr(400, "访问密码须为 4-32 位")
+		}
+	}
+	var expiresAt *time.Time
+	if expiresInDays != nil {
+		if *expiresInDays < 1 || *expiresInDays > 365 {
+			return nil, apiErr(400, "有效期必须在 1~365 天之间")
+		}
+		t := s.Clock().AddDate(0, 0, *expiresInDays)
+		expiresAt = &t
+	}
+
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +560,7 @@ func (s *Store) CreateShare(ctx context.Context, quizUUID string, uid int64, exp
 		return nil, err
 	}
 	now := s.Clock()
-	ok, previous, err := repo.SetShareToken(s.DB, quizUUID, uid, token, expiresAt)
+	ok, previous, err := s.Repo.SetShareToken(ctx, quizUUID, uid, token, expiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -561,14 +569,14 @@ func (s *Store) CreateShare(ctx context.Context, quizUUID string, uid int64, exp
 	}
 
 	// 访问口令（可选）：bcrypt 哈希存 Mongo（quiz_sets 不 ALTER）；留空 = 清除旧口令。
-	if pw := strings.TrimSpace(password); pw != "" {
+	if pw != "" {
 		hash, herr := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.MinCost)
 		if herr != nil {
 			return nil, apiErr(500, "密码处理失败")
 		}
-		repo.SaveShareSecret(ctx, s.Mongo, token, quizUUID, uid, string(hash))
+		s.Repo.SaveShareSecret(ctx, token, quizUUID, uid, string(hash))
 	} else {
-		repo.DeleteShareSecretByToken(ctx, s.Mongo, token)
+		s.Repo.DeleteShareSecretByToken(ctx, token)
 	}
 
 	// The old link stops serving immediately at the L2 layer (nginx/browser
@@ -587,22 +595,22 @@ func (s *Store) CreateShare(ctx context.Context, quizUUID string, uid int64, exp
 
 // RevokeShare revokes sharing for an owned quiz. Idempotent.
 func (s *Store) RevokeShare(ctx context.Context, quizUUID string, uid int64) (map[string]interface{}, error) {
-	ok, previous, err := repo.ClearShareToken(s.DB, quizUUID, uid)
+	ok, previous, err := s.Repo.ClearShareToken(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, apiErr(404, "题目集不存在")
 	}
-	repo.DeleteShareSecretByToken(ctx, s.Mongo, deref(previous))
+	s.Repo.DeleteShareSecretByToken(ctx, deref(previous))
 	s.Shares.EvictShare(ctx, deref(previous))
 	slog.Info("[QUIZ_SHARE] revoked", "quiz_uuid", quizUUID, "uid", uid)
 	return map[string]interface{}{"quiz_uuid": quizUUID, "shared": false}, nil
 }
 
 // ShareStatus is the owner-side share-state query.
-func (s *Store) ShareStatus(quizUUID string, uid int64) (map[string]interface{}, error) {
-	qs, err := repo.GetOwnedQuizSet(s.DB, quizUUID, uid)
+func (s *Store) ShareStatus(ctx context.Context, quizUUID string, uid int64) (map[string]interface{}, error) {
+	qs, err := s.Repo.GetOwnedQuizSet(ctx, quizUUID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -619,14 +627,14 @@ func (s *Store) ShareStatus(quizUUID string, uid int64) (map[string]interface{},
 		"shared_at":        pyISO(qs.SharedAt),
 		"share_expires_at": pyISO(qs.ShareExpiresAt),
 		"expired":          isShareExpired(qs.ShareExpiresAt, s.Clock()),
-		"has_password":     repo.GetShareSecretHash(context.Background(), s.Mongo, deref(qs.ShareToken)) != "",
+		"has_password":     s.Repo.GetShareSecretHash(ctx, deref(qs.ShareToken)) != "",
 	}, nil
 }
 
 // GetSharedQuiz is the public read: shared quiz WITHOUT answers, backed by
 // the Redis L2 cache (60s TTL, fail-open). 带口令的分享先验证密码（先于缓存）。
 func (s *Store) GetSharedQuiz(ctx context.Context, shareToken string, password string) (json.RawMessage, error) {
-	if hash := repo.GetShareSecretHash(ctx, s.Mongo, shareToken); hash != "" {
+	if hash := s.Repo.GetShareSecretHash(ctx, shareToken); hash != "" {
 		if strings.TrimSpace(password) == "" {
 			return nil, apiErr(401, "此分享已设置密码，请输入密码访问")
 		}
@@ -650,7 +658,7 @@ func (s *Store) GetSharedQuiz(ctx context.Context, shareToken string, password s
 func (s *Store) buildSharedQuizPayload(ctx context.Context, shareToken string) (json.RawMessage, error) {
 	notFound := apiErr(404, "分享链接无效或已失效")
 
-	qs, err := repo.GetQuizSetByShareToken(s.DB, shareToken)
+	qs, err := s.Repo.GetQuizSetByShareToken(ctx, shareToken)
 	if err != nil {
 		return nil, err
 	}
@@ -659,7 +667,7 @@ func (s *Store) buildSharedQuizPayload(ctx context.Context, shareToken string) (
 	}
 
 	// Questions only — no answers/explanations/keywords on the public path.
-	questions := repo.GetQuestions(ctx, s.Mongo, qs.QuizUUID)
+	questions := s.Repo.GetQuestions(ctx, qs.QuizUUID)
 	if len(questions) == 0 {
 		slog.Warn("[QUIZ_SHARE] share_token has no questions in MongoDB", "quiz_uuid", qs.QuizUUID)
 		return nil, notFound

@@ -149,7 +149,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 |----|---------|-----|
 | app-pay-test / 测试 MySQL | `--profile pay-test` | **未移植**（测试实例与生产隔离的诉求在 k8s 下应另起 namespace） |
 | redis-commander / mongo-express | `--profile tools` | **未移植**（用 port-forward + 本地工具替代） |
-| app-content(board) 证书共享 | 宿主目录 `./app-board/certs` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-content（board 域），dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
+| app-content 证书共享 | 宿主目录 `./app-board/certs` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-content（board 域），dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
 | app-pay TLS | 宿主目录 `./app-pay/certs` | Secret `app-pay-tls`（ca.crt 同时供 app-task 委托回调校验） |
 | MySQL 建表脚本 | 宿主 `db/system.sql` | ConfigMap `mysql-init-sql`（§1b kubectl 创建，改 SQL 后重建 + restart mysql） |
 | APISIX 路由 | 宿主 `apisix/*.yaml` | ConfigMap `apisix-config`（subPath 挂载；改路由后重建 ConfigMap + `rollout restart deploy/apisix`） |
@@ -161,7 +161,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 | 沙箱运行时 | compose `--profile sandbox` + 可选 fake runtime | OpenSandbox Helm（40-sandbox）；`app-sandbox` 强制 `runtime.type=opensandbox` + warm pool `pool-python` |
 | 探针语义与 compose healthcheck 一致（mysqladmin ping / mongosh ping /
 redis-cli ping / etcdctl endpoint health / minio health/live / backend /health）；
-无 HTTP 健康端点的 TLS 服务（app-pay）用 tcpSocket 探活；app-content 的 board 监听口（8004）用 httpGet + `scheme: HTTPS` 探 `/health`（kubelet 探针不校验证书）；
+无 HTTP 健康端点的 TLS 服务（app-pay）用 tcpSocket 探活；app-content 单端口 8004（HTTPS）的 startup/readiness/liveness 都用 httpGet + `scheme: HTTPS` 探同一个 `/health`（kubelet 探针不校验证书）；
 app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。
 
 ## 5. 日常运维

@@ -1,8 +1,6 @@
 # app-content 内容域服务（Go：app-note + app-quiz + app-board 三服务合并为单进程）—— server2
-#   对外路径/端口语义不变：
-#     8004 = board（思维导图/白板，HTTPS-only，证书用 server1 拷来的同一套 dev-CA）
-#     8008 = note（笔记 CRUD / 锚点 / 修订 / 分享）
-#     8011 = quiz（测验存储 / 错题本 / 导出 / 分享 / task-quiz 明细）
+#   单进程/单端口 8004（HTTPS）：/board、/notes、/quiz、/tasks 与 /internal/*
+#   全部挂同一个 listener（证书用 server1 拷来的同一套 dev-CA），业务流量经 APISIX/nginx。
 #   原 32-app-note.yml / 33-app-quiz.yml / 37-app-board.yml 已合并为本文件，
 #   env 为三套旧 env 的并集（APPBOARD__ / APPNOTE__ / APPQUIZ__ + 共享 env）。
 #   docker compose --env-file ../../.env -f 30-app-content.yml up -d
@@ -16,32 +14,25 @@ services:
     env_file:
       - ../../.env
     environment:
-      # ============ board（8004，HTTPS-only） ============
-      # 读缓存：独立 DB index /2，主 app 用 /1；Redis 故障自动降级直查
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
+      # ============ 统一数据源（8004，HTTPS-only） ============
       # ⚠️ 原版写死 @mysql:3306，两机部署必须指向外部主库
-      - APPBOARD__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      - APPBOARD__LOG__OUTPUT=both
+      - CONTENT__DATABASE__MYSQL__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - CONTENT__DATABASE__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - CONTENT__DATABASE__MONGO__DATABASE=mind_base
+      - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
+      - CONTENT__DATABASE__REDIS__URL=${REDIS__URL:?err_REDIS__URL_not_set_in_.env}
+      - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
+      - CONTENT__LOG__OUTPUT=both
       # 证书用 server1 拷来的同一套 dev-CA（cert-gen 产物），/app/certs 只读挂载
-      - APPBOARD__SERVER__TLS__ENABLED=true
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-      # ============ note（8008） ============
-      - APPNOTE__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      # ============ quiz（8011） ============
-      - APPQUIZ__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
+      - CONTENT__SERVER__TLS__ENABLED=true
+      - CONTENT__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENT__SERVER__TLS__CERT=/app/certs/server.crt
+      - CONTENT__SERVER__TLS__KEY=/app/certs/server.key
+      # 服务间 M2M 共享密钥（/internal/* 二次校验；与 server1 APISIX consumer key 同值）
+      - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
     ports:
-      # 三监听口语义不变；宿主侧只绑回环（对外入口只有 nginx / APISIX）。
-      # 宿主口变量与根 compose 同名（APP_CONTENT_*_PORT）；本机无 app-cloud 端口冲突，
-      # note 默认 8008（根 compose/server1 为 8018）。
-      # board 8004 原为纯内网（经 APISIX HTTPS upstream 访问），此处同样只绑 127.0.0.1。
-      - "127.0.0.1:${APP_CONTENT_BOARD_PORT:-8004}:8004"
-      - "127.0.0.1:${APP_CONTENT_NOTE_PORT:-8008}:8008"
-      - "127.0.0.1:${APP_CONTENT_QUIZ_PORT:-8011}:8011"
+      # 单端口（TLS）仅绑回环；对外入口只有 nginx / APISIX。
+      - "127.0.0.1:${APP_CONTENT_PORT:-8004}:8004"
     volumes:
       - app_content_logs:/app/logs
       # board TLS 证书目录（cert-gen 产物，与 server1 apisix 信任的是同一套证书；

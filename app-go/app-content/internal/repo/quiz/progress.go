@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
@@ -36,8 +35,8 @@ type GenerationProgress struct {
 
 // SaveGenerationProgress upserts the doc and appends the step to a capped log
 // (last 12 entries — enough for the UI, bounded growth).
-func SaveGenerationProgress(ctx context.Context, db *mongo.Database, p GenerationProgress) {
-	if db == nil {
+func (r *Repo) SaveGenerationProgress(ctx context.Context, p GenerationProgress) {
+	if r.Mongo == nil {
 		return
 	}
 	entry := GenerationProgressEntry{Stage: p.Stage, Detail: p.Detail, At: p.UpdatedAt.UTC().Format(time.RFC3339)}
@@ -53,7 +52,7 @@ func SaveGenerationProgress(ctx context.Context, db *mongo.Database, p Generatio
 		},
 		"$push": bson.M{"log": bson.M{"$each": []GenerationProgressEntry{entry}, "$slice": -12}},
 	}
-	if _, err := db.Collection(quizProgressCollection).UpdateOne(
+	if _, err := r.Mongo.Collection(quizProgressCollection).UpdateOne(
 		ctx, bson.M{"quiz_uuid": p.QuizUUID}, update, options.UpdateOne().SetUpsert(true),
 	); err != nil {
 		// 进度上报失败不影响生成（前端只是看不到步骤）
@@ -62,12 +61,12 @@ func SaveGenerationProgress(ctx context.Context, db *mongo.Database, p Generatio
 }
 
 // GetGenerationProgress returns the doc for one quiz (nil when absent / Mongo off).
-func GetGenerationProgress(ctx context.Context, db *mongo.Database, quizUUID string) *GenerationProgress {
-	if db == nil {
+func (r *Repo) GetGenerationProgress(ctx context.Context, quizUUID string) *GenerationProgress {
+	if r.Mongo == nil {
 		return nil
 	}
 	var p GenerationProgress
-	err := db.Collection(quizProgressCollection).FindOne(ctx, bson.M{"quiz_uuid": quizUUID},
+	err := r.Mongo.Collection(quizProgressCollection).FindOne(ctx, bson.M{"quiz_uuid": quizUUID},
 		options.FindOne().SetProjection(bson.D{{Key: "_id", Value: 0}})).Decode(&p)
 	if err != nil {
 		return nil
@@ -76,9 +75,9 @@ func GetGenerationProgress(ctx context.Context, db *mongo.Database, quizUUID str
 }
 
 // DeleteGenerationProgress removes the doc (quiz hard-delete cleanup).
-func DeleteGenerationProgress(ctx context.Context, db *mongo.Database, quizUUID string) {
-	if db == nil {
+func (r *Repo) DeleteGenerationProgress(ctx context.Context, quizUUID string) {
+	if r.Mongo == nil {
 		return
 	}
-	_, _ = db.Collection(quizProgressCollection).DeleteOne(ctx, bson.M{"quiz_uuid": quizUUID})
+	_, _ = r.Mongo.Collection(quizProgressCollection).DeleteOne(ctx, bson.M{"quiz_uuid": quizUUID})
 }
