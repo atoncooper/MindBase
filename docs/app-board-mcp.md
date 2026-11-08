@@ -11,7 +11,7 @@
 | 传输 | `--transport stdio`（默认，本地 MCP 宿主直拉）或 `--transport http`（streamable-http，容器部署；MCP 端点 `/mcp`，另有 `GET /health`） |
 | 端口 | 容器形态仅回环 `127.0.0.1:8005` |
 | 鉴权 | 出站经 APISIX key-auth 内部路由 `/internal/board/*`（`apikey: APISIX_CONSUMER_KEY`）；身份为配置固定的 `X-Uid` |
-| 上游 | app-content（board 面，8004，HTTPS-only，仅 compose 网络内可达） |
+| 上游 | app-content（8004 单端口 HTTPS，board 面，仅 compose 网络内可达） |
 
 **身份模型（安全边界）**：uid 来自配置 `BOARDMCP__UPSTREAM__UID`，**工具参数不含 uid**——Agent 无论被怎样提示，都只能操作该 uid 名下的板子。这与 app-task「uid 放请求体、调用方可信」的 M2M 惯例一致，key-auth 持有者即受信内部服务。
 
@@ -64,15 +64,15 @@ docker compose --profile board up -d --force-recreate app-board-mcp
 | 凭证 | `apikey: <APISIX_CONSUMER_KEY>`（复用 consumer key，无新密钥）+ 每请求 `X-Uid: <uid>` |
 | 身份 | X-Uid 即本次操作的板子属主（来自后端已认证会话）；**LLM 可写参数中永远不含 uid** |
 | 端点 | backend 经 compose 内网直连 `http://app-board-mcp:8005/mcp`（容器互访不受宿主回环绑定限制）；配置 `BOARDMCP__SERVER__SERVICE_API_KEY` |
-| 链路 | backend → app-board-mcp:8005 → APISIX `/internal/board/*`（key-auth + limit-req）→ app-content:8004 |
+| 链路 | backend → app-board-mcp:8005 → APISIX `/internal/board/*`（key-auth + limit-req）→ app-content:8004（单端口） |
 
 ## 链路
 
 ```
 MCP 宿主(ZCode/Claude) --streamable-http--> 127.0.0.1:8005 /mcp (app-board-mcp 容器)
     -- http://apisix:9080/internal/board/*  头: apikey + X-Uid + X-Request-Id -->
-APISIX board_internal(key-auth + proxy-rewrite 去 /internal 前缀)
-    -- https --> app-content:8004 /board/*（按 X-Uid 做属主过滤）
+APISIX board_internal(key-auth + 注入 X-Internal-Key)
+    -- https --> app-content:8004 /internal/board/*（单端口，InternalAuth + X-Uid 属主过滤）
 ```
 
 ## MCP 工具

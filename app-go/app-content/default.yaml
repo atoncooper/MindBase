@@ -1,121 +1,144 @@
-# app-content - single config for board / note / quiz
-# env prefixes stay compatible: APPBOARD__ / APPNOTE__ / APPQUIZ__
+# app-content — single YAML for the whole service (board + note + quiz in one process).
 #
-# Logging: the process initializes ONE global logger from the board.log section
-# (file output is shared by all three domains). note.log / quiz.log are kept for
-# config-structure compatibility but do not drive any writer.
+# Layout:
+#   app/server/security/log/observability  → process-wide settings (one listener)
+#   database                               → ONE MySQL pool + ONE Mongo client + ONE Redis client
+#   quiz                                   → quiz-domain tuning only
+# Env overrides use double underscores (e.g. CONTENT__SERVER__PORT=8004,
+# CONTENT__DATABASE__MYSQL__URL=..., CONTENT__SECURITY__RATE_LIMIT__RPS=200).
+# Legacy APPBOARD__ / APPNOTE__ / APPQUIZ__ variables are still accepted for
+# data stores, but conflicting values fail startup on purpose.
 
-board:
-  app:
-    name: app-board
-    debug: false
-  server:
-    host: 0.0.0.0
-    port: 8004
-    read_header_timeout_seconds: 10
-    read_timeout_seconds: 60
-    write_timeout_seconds: 120
-    idle_timeout_seconds: 120
-    max_header_bytes: 1048576
-    tls:
-      enabled: true
-      cert_dir: certs
-      cert: ''
-      key: ''
-  rdbms:
-    url: ''
-    max_open_conns: 10
-    max_idle_conns: 5
-    conn_max_lifetime: 1800
-  mongo:
-    uri: ''
-    db_name: MindBase
-    timeout_seconds: 10
-  redis:
-    url: ''
-    cache_ttl_seconds: 300
-  security:
-    cors:
-      allow_origins:
+app:
+  name: app-content
+  # dev|staging|production: production forbids the plaintext escape hatch.
+  env: production
+  debug: false
+
+server:
+  host: 0.0.0.0
+  port: 8004
+  # The service is HTTPS-only; startup refuses plaintext unless
+  # CONTENT__ALLOW_INSECURE_HTTP=true (local debugging only).
+  http2: true
+  max_header_bytes: 1048576
+  graceful_shutdown_seconds: 15
+  # CIDRs allowed to supply X-Forwarded-*; empty = trust no proxy (use peer IP).
+  trusted_proxies: []
+  timeouts:
+    read_header_seconds: 10
+    read_seconds: 60
+    write_seconds: 120
+    idle_seconds: 120
+  tls:
+    enabled: true
+    cert_dir: certs
+    cert: ''
+    key: ''
+    # 1.2 | 1.3
+    min_version: '1.2'
+    # none | request | require (require = mutual TLS)
+    client_auth: none
+    # Required when client_auth is request/require: PEM bundle of trusted CAs.
+    client_ca_file: ''
+    # auto mode leaf renewal window (days) / rotator daily check interval
+    rotate_within_days: 30
+
+security:
+  # Shared service token for /internal/* M2M routes (APISIX injects
+  # X-Internal-Key). Empty = fail-closed (503) on internal routes.
+  internal_api_key: ''
+  request_id:
+    header: X-Request-Id
+    max_length: 64
+  headers:
+    hsts_enabled: true
+    hsts_max_age_seconds: 31536000
+    frame_options: DENY
+    content_type_options: nosniff
+    referrer_policy: no-referrer
+    permissions_policy: 'camera=(), microphone=(), geolocation=()'
+  cors:
+    allow_origins:
       - http://localhost:3000
       - http://127.0.0.1:3000
       - https://localhost
       - https://127.0.0.1
       - http://localhost
       - http://127.0.0.1
-  log:
-    level: info
-    format: json
-    output: stdout
-    file:
-      path: /app/logs/app-content.log
-      max_size: 100
-      max_backups: 7
-      max_age: 30
-      compress: true
-note:
-  app:
-    name: app-note
-    debug: false
-  server:
-    host: 0.0.0.0
-    port: 8008
-  timezone: Asia/Shanghai
-  rdbms:
+    allow_methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+    allow_headers: [Authorization, Content-Type, X-Requested-With, X-Request-Id, If-Match, X-Api-Key, apikey]
+    expose_headers: [X-Total-Count, X-Request-Id]
+    allow_credentials: true
+    max_age_seconds: 600
+  rate_limit:
+    # In-process limiter is opt-in: behind APISIX all requests share the gateway
+    # IP (set server.trusted_proxies to use X-Forwarded-For, or keep gateway rate
+    # limits as the primary guard).
+    enabled: false
+    # Requests per second per key, token-bucket burst.
+    rps: 100
+    burst: 200
+    # ip | ip_uid (uid requires a gateway-authenticated X-Uid, else falls back to ip)
+    key: ip
+    exclude_paths: [/health, /metrics]
+    cleanup_interval_seconds: 300
+  # Max request bodies per domain (transport-level guard).
+  body_limits:
+    board_bytes: 9437184
+    note_bytes: 2097152
+    quiz_bytes: 4194304
+
+log:
+  level: info              # debug|info|warn|error
+  format: json             # text|json
+  output: stdout           # stdout|file|both
+  add_source: false
+  file:
+    path: /app/logs/app-content.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true
+
+observability:
+  health:
+    timeout_seconds: 2
+  metrics:
+    enabled: true
+    path: /metrics
+  pprof:
+    # NEVER enable in public deployments: exposes runtime profiles.
+    enabled: false
+
+# ONE set of data stores for the whole process. All three domains share these
+# handles; there is no per-domain DSN/URI (a conflict would split the service
+# across databases).
+database:
+  mysql:
+    # mysql+aiomysql://user:pass@host:3306/mind_base (injected via env)
     url: ''
-    max_open_conns: 10
-    max_idle_conns: 5
+    max_open_conns: 20
+    max_idle_conns: 10
     conn_max_lifetime: 1800
   mongo:
+    # mongodb://user:pass@host:27017/?authSource=admin (injected via env)
     uri: ''
+    # shared content database (notes + quiz questions)
     database: mind_base
-  cors:
-    allow_origins:
-    - http://localhost:3000
-  log:
-    level: info
-    format: json
-    output: stdout
-    file:
-      path: /app/logs/app-note.log
-      max_size: 100
-      max_backups: 7
-      max_age: 30
-      compress: true
-quiz:
-  app:
-    name: app-quiz
-    debug: false
-  server:
-    host: 0.0.0.0
-    port: 8011
-  timezone: Asia/Shanghai
-  lifecycle:
-    generation_timeout_minutes: 15
-  rdbms:
-    url: ''
-    max_open_conns: 10
-    max_idle_conns: 5
-    conn_max_lifetime: 1800
-  mongo:
-    uri: ''
-    database: mind_base
+    # board documents live in the historical MindBase database; migrate them to
+    # "database" to unify. Empty = same as database.
+    board_database: MindBase
+    timeout_seconds: 10
   redis:
+    # redis://:pass@host:6379/1 (injected via env); empty = cache/quota disabled
     url: ''
     key_prefix: 'mind-base:'
+    board_cache_ttl_seconds: 300
+
+quiz:
+  lifecycle:
+    generation_timeout_minutes: 15
   quota:
     generate: 5
     grade: 20
-  cors:
-    allow_origins:
-    - http://localhost:3000
-  log:
-    level: info
-    format: json
-    output: stdout
-    file:
-      path: /app/logs/app-quiz.log
-      max_size: 100
-      max_backups: 7
-      max_age: 30
-      compress: true

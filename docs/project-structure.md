@@ -78,7 +78,7 @@ app-go/app-<域>/
 |------|------|------|
 | app-user | 认证 / 会话 / RBAC + B 站获取 / ASR / 构建编排 + 偏好 / 壁纸（三域合一） | 8006 / 8010 / 8015 |
 | app-cloud | 云盘 / workspaces / 配额 / 分享 | 8007 |
-| app-content | 内容域：笔记 / 测验 / 板存储（三域合一） | 8004（board, HTTPS）/ 8008（note）/ 8011（quiz） |
+| app-content | 内容域：笔记 / 测验 / 板存储（三域合一，单进程） | 8004（HTTPS，单端口） |
 | app-kg | 知识图谱存储（gRPC + health） | 8013 / 8014 |
 | app-admin | 管理台 API（分享审核 + 沙箱代理） | 8016 |
 | app-sandbox | 沙箱控制平面（租约 / 配额 / 审计 / 产物 / 准入） | 8017 |

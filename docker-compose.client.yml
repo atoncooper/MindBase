@@ -567,7 +567,7 @@ services:
       - mind-base-net
 
   # app-content —— 内容域三合一服务（Go：board + note + quiz）。
-  # 单容器三监听口：8004=board(HTTPS) / 8008=note / 8011=quiz；对外路径与端口语义不变。
+  # 单容器/单端口：8004(HTTPS) 承载 /board、/notes、/quiz、/tasks、/internal/*。
   app-content:
     image: atoncooper/mind-base-app-content:latest
     pull_policy: never
@@ -587,27 +587,24 @@ services:
     env_file:
       - .env
     environment:
-      # board 域（APPBOARD__）
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      # Logging: one process-wide logger (board.log section) -> stdout + /app/logs
+      # 统一数据源（一个进程 = 一个 MySQL 池 / 一个 Mongo client / 一个 Redis client）
+      - CONTENT__DATABASE__MYSQL__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - CONTENT__DATABASE__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - CONTENT__DATABASE__MONGO__DATABASE=mind_base
+      - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
+      - CONTENT__DATABASE__REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
+      # Logging: one process-wide logger -> stdout + /app/logs
       # （镜像已预建 nonroot 属主 /app/logs，卷首次挂载继承属主）
-      - APPBOARD__LOG__OUTPUT=both
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-      # note 域（APPNOTE__）
-      - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # quiz 域（APPQUIZ__）
-      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # 共享（note/quiz 读同一 MONGO__URI；去重后只保留一份）
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - CONTENT__LOG__OUTPUT=both
+      - CONTENT__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENT__SERVER__TLS__CERT=/app/certs/server.crt
+      - CONTENT__SERVER__TLS__KEY=/app/certs/server.key
+      # /internal/* M2M 二次校验（与 APISIX consumer key 同值）
+      - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:-}
     ports:
-      # 客户端仅回环调试口：note 8008（沿用旧 client 口）/ quiz 8011；board 不映射
-      - "127.0.0.1:${APP_CONTENT_NOTE_PORT:-8008}:8008"
-      - "127.0.0.1:${APP_CONTENT_QUIZ_PORT:-8011}:8011"
+      # 单端口（TLS）仅回环调试；业务流量经 APISIX/nginx。
+      - "127.0.0.1:${APP_CONTENT_PORT:-8004}:8004"
     volumes:
       - app_content_logs:/app/logs
       # board TLS 证书目录（cert-gen 生成/轮换）

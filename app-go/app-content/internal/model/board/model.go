@@ -1,7 +1,7 @@
 // Package model defines the GORM models for app-board's schema.
 //
-// app-board owns the `board` table (created via db.Migrate at startup) inside
-// the main app's MySQL database. The board BODY (simple-mind-map JSON or
+// app-board owns the `board` table (created via db.Migrate at startup,
+// CREATE TABLE IF NOT EXISTS only) inside the main app's MySQL database. The board BODY (simple-mind-map JSON or
 // Excalidraw scene JSON) lives in MongoDB `board_documents` — MySQL keeps
 // metadata only, mirroring the notes split-storage design.
 package model

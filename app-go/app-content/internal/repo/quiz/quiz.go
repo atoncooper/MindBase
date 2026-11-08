@@ -5,6 +5,7 @@
 package repo
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -88,9 +89,9 @@ type ExportRow struct {
 }
 
 // CountHistory counts quiz_sets with terminal status for the user.
-func CountHistory(db *gorm.DB, uid int64) (int, error) {
+func (r *Repo) CountHistory(ctx context.Context, uid int64) (int, error) {
 	var n int64
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT COUNT(*) FROM quiz_sets WHERE uid = ? AND status IN ('done', 'failed')",
 		uid,
 	).Scan(&n).Error
@@ -99,10 +100,10 @@ func CountHistory(db *gorm.DB, uid int64) (int, error) {
 
 // ListHistory returns one paginated history row per quiz_set; submission
 // columns are NULL when the user has not submitted yet.
-func ListHistory(db *gorm.DB, uid int64, page, pageSize int) ([]HistoryRow, error) {
+func (r *Repo) ListHistory(ctx context.Context, uid int64, page, pageSize int) ([]HistoryRow, error) {
 	offset := (page - 1) * pageSize
 	var rows []HistoryRow
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		`SELECT qs.quiz_uuid, qs.title, qs.question_count,
 		        qs.difficulty, qs.status, qs.source_type,
 		        qs.error_message, qs.created_at,
@@ -125,7 +126,7 @@ func ListHistory(db *gorm.DB, uid int64, page, pageSize int) ([]HistoryRow, erro
 // ListWrongAnswers returns the wrong-answer notebook, optionally filtered by
 // folder_ids via parameterised LIKE clauses (placeholders are appended from
 // validated integers — no injection surface).
-func ListWrongAnswers(db *gorm.DB, uid int64, folderIDs []int) ([]WrongAnswerRow, error) {
+func (r *Repo) ListWrongAnswers(ctx context.Context, uid int64, folderIDs []int) ([]WrongAnswerRow, error) {
 	sql := `SELECT qq.question_uuid, qq.quiz_uuid, qq.question_type, qq.difficulty,
 		       qq.question_text, qq.options,
 		       ANY_VALUE(qa.user_answer) as user_answer,
@@ -151,15 +152,15 @@ func ListWrongAnswers(db *gorm.DB, uid int64, folderIDs []int) ([]WrongAnswerRow
 	sql += " ORDER BY last_attempt_at DESC"
 
 	var rows []WrongAnswerRow
-	err := db.Raw(sql, args...).Scan(&rows).Error
+	err := r.DB.WithContext(ctx).Raw(sql, args...).Scan(&rows).Error
 	return rows, err
 }
 
 // ListExportRecords returns every exportable answer record for a user,
 // newest submission first.
-func ListExportRecords(db *gorm.DB, uid int64) ([]ExportRow, error) {
+func (r *Repo) ListExportRecords(ctx context.Context, uid int64) ([]ExportRow, error) {
 	var rows []ExportRow
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		`SELECT
 		    qs.quiz_uuid, qs.folder_ids,
 		    qq.question_uuid, qq.question_type, qq.difficulty,
@@ -181,9 +182,9 @@ func ListExportRecords(db *gorm.DB, uid int64) ([]ExportRow, error) {
 
 // GetOwnedQuizSet fetches a quiz_set owned by uid (nil when not found or not
 // owned — callers treat both as 404 to avoid leaking existence).
-func GetOwnedQuizSet(db *gorm.DB, quizUUID string, uid int64) (*QuizSetRow, error) {
+func (r *Repo) GetOwnedQuizSet(ctx context.Context, quizUUID string, uid int64) (*QuizSetRow, error) {
 	var row QuizSetRow
-	err := db.Raw(quizSetColumns+" FROM quiz_sets WHERE quiz_uuid = ? AND uid = ?",
+	err := r.DB.WithContext(ctx).Raw(quizSetColumns+" FROM quiz_sets WHERE quiz_uuid = ? AND uid = ?",
 		quizUUID, uid,
 	).Scan(&row).Error
 	if err != nil {
@@ -197,9 +198,9 @@ func GetOwnedQuizSet(db *gorm.DB, quizUUID string, uid int64) (*QuizSetRow, erro
 
 // GetQuizSetByShareToken fetches a quiz_set by share_token (public read path,
 // no uid scoping).
-func GetQuizSetByShareToken(db *gorm.DB, shareToken string) (*QuizSetRow, error) {
+func (r *Repo) GetQuizSetByShareToken(ctx context.Context, shareToken string) (*QuizSetRow, error) {
 	var row QuizSetRow
-	err := db.Raw(quizSetColumns+" FROM quiz_sets WHERE share_token = ?",
+	err := r.DB.WithContext(ctx).Raw(quizSetColumns+" FROM quiz_sets WHERE share_token = ?",
 		shareToken,
 	).Scan(&row).Error
 	if err != nil {
@@ -218,16 +219,16 @@ const quizSetColumns = "SELECT quiz_uuid, uid, title, question_count, type_distr
 // SetShareToken rotates the share token on an owned quiz and returns the
 // previous token (so the caller can evict its cache entry). ok=false when
 // the quiz is not found / not owned.
-func SetShareToken(db *gorm.DB, quizUUID string, uid int64, token string, expiresAt *time.Time) (bool, *string, error) {
+func (r *Repo) SetShareToken(ctx context.Context, quizUUID string, uid int64, token string, expiresAt *time.Time) (bool, *string, error) {
 	var prevRow struct{ ShareToken *string }
-	if err := db.Raw(
+	if err := r.DB.WithContext(ctx).Raw(
 		"SELECT share_token FROM quiz_sets WHERE quiz_uuid = ? AND uid = ?",
 		quizUUID, uid,
 	).Scan(&prevRow).Error; err != nil {
 		return false, nil, err
 	}
 	prev := prevRow.ShareToken
-	res := db.Exec(
+	res := r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET share_token = ?, shared_at = ?, share_expires_at = ? "+
 			"WHERE quiz_uuid = ? AND uid = ?",
 		token, time.Now().UTC(), expiresAt, quizUUID, uid,
@@ -243,16 +244,16 @@ func SetShareToken(db *gorm.DB, quizUUID string, uid int64, token string, expire
 
 // ClearShareToken revokes sharing on an owned quiz (idempotent) and returns
 // the previous token for cache eviction.
-func ClearShareToken(db *gorm.DB, quizUUID string, uid int64) (bool, *string, error) {
+func (r *Repo) ClearShareToken(ctx context.Context, quizUUID string, uid int64) (bool, *string, error) {
 	var prevRow struct{ ShareToken *string }
-	if err := db.Raw(
+	if err := r.DB.WithContext(ctx).Raw(
 		"SELECT share_token FROM quiz_sets WHERE quiz_uuid = ? AND uid = ?",
 		quizUUID, uid,
 	).Scan(&prevRow).Error; err != nil {
 		return false, nil, err
 	}
 	prev := prevRow.ShareToken
-	res := db.Exec(
+	res := r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET share_token = NULL, shared_at = NULL, share_expires_at = NULL "+
 			"WHERE quiz_uuid = ? AND uid = ?",
 		quizUUID, uid,
@@ -282,9 +283,9 @@ type StuckGeneratingRow struct {
 // that keeps checkpointing is never swept, while a truly stuck one (no
 // successful append within the window) is. Rows younger than the base can
 // never be timed out — the per-row allowed duration is always >= base.
-func ListGeneratingStuck(db *gorm.DB, uid int64, floor time.Time) ([]StuckGeneratingRow, error) {
+func (r *Repo) ListGeneratingStuck(ctx context.Context, uid int64, floor time.Time) ([]StuckGeneratingRow, error) {
 	var rows []StuckGeneratingRow
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT quiz_uuid, question_count, created_at FROM quiz_sets "+
 			"WHERE uid = ? AND status = 'generating' AND updated_at < ?",
 		uid, floor,
@@ -299,9 +300,9 @@ type QuizSetLiteRow struct {
 }
 
 // GetQuizSetLite fetches question_count + created_at for one quiz (uid-guarded).
-func GetQuizSetLite(db *gorm.DB, quizUUID string, uid int64) (*QuizSetLiteRow, error) {
+func (r *Repo) GetQuizSetLite(ctx context.Context, quizUUID string, uid int64) (*QuizSetLiteRow, error) {
 	var row QuizSetLiteRow
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT question_count, created_at FROM quiz_sets WHERE quiz_uuid = ? AND uid = ?",
 		quizUUID, uid,
 	).Scan(&row).Error
@@ -319,8 +320,8 @@ func GetQuizSetLite(db *gorm.DB, quizUUID string, uid int64) (*QuizSetLiteRow, e
 // mid-run regardless of when it was created (this is what made resumed /
 // long-running large papers viable — the old created_at basis killed any
 // generation that simply took longer than the window).
-func MarkQuizTimedOutStatus(db *gorm.DB, quizUUID string, uid int64, cutoff time.Time, status, message string) error {
-	return db.Exec(
+func (r *Repo) MarkQuizTimedOutStatus(ctx context.Context, quizUUID string, uid int64, cutoff time.Time, status, message string) error {
+	return r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET status = ?, error_message = ?, updated_at = ? "+
 			"WHERE quiz_uuid = ? AND uid = ? AND status = 'generating' AND updated_at < ?",
 		status, message, time.Now().UTC(), quizUUID, uid, cutoff,
@@ -332,8 +333,8 @@ func MarkQuizTimedOutStatus(db *gorm.DB, quizUUID string, uid int64, cutoff time
 // finalize. Conditional on status='partial': done/failed/deleting sets are
 // never reopened. Clears the stale sweep message; updated_at bumps forward,
 // which also restarts the activity-based sweep window.
-func ReopenQuizSet(db *gorm.DB, quizUUID string, uid int64) (bool, error) {
-	res := db.Exec(
+func (r *Repo) ReopenQuizSet(ctx context.Context, quizUUID string, uid int64) (bool, error) {
+	res := r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET status = 'generating', error_message = NULL, updated_at = ? "+
 			"WHERE quiz_uuid = ? AND uid = ? AND status = 'partial'",
 		time.Now().UTC(), quizUUID, uid,
@@ -346,9 +347,9 @@ func ReopenQuizSet(db *gorm.DB, quizUUID string, uid int64) (bool, error) {
 
 // QuizTitleExists reports whether the user already has ANOTHER quiz with the
 // same title. Uniqueness is per-uid; MySQL collation makes it case-insensitive.
-func QuizTitleExists(db *gorm.DB, uid int64, title string, excludeUUID string) (bool, error) {
+func (r *Repo) QuizTitleExists(ctx context.Context, uid int64, title string, excludeUUID string) (bool, error) {
 	var n int64
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT COUNT(*) FROM quiz_sets WHERE uid = ? AND title = ? AND quiz_uuid <> ?",
 		uid, title, excludeUUID,
 	).Scan(&n).Error
@@ -357,8 +358,8 @@ func QuizTitleExists(db *gorm.DB, uid int64, title string, excludeUUID string) (
 
 // RenameQuizSet updates the title of an owned quiz (any status except
 // deleting). RowsAffected == 0 → gorm.ErrRecordNotFound (caller maps to 404).
-func RenameQuizSet(db *gorm.DB, quizUUID string, uid int64, title string) error {
-	res := db.Exec(
+func (r *Repo) RenameQuizSet(ctx context.Context, quizUUID string, uid int64, title string) error {
+	res := r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET title = ?, updated_at = ? "+
 			"WHERE quiz_uuid = ? AND uid = ? AND (status IS NULL OR status <> 'deleting')",
 		title, time.Now().UTC(), quizUUID, uid,
@@ -374,17 +375,17 @@ func RenameQuizSet(db *gorm.DB, quizUUID string, uid int64, title string) error 
 
 // ListDoneQuizUUIDs returns the user's 'done' quiz uuids for the
 // done-but-MongoDB-empty stale sweep.
-func ListDoneQuizUUIDs(db *gorm.DB, uid int64) ([]string, error) {
+func (r *Repo) ListDoneQuizUUIDs(ctx context.Context, uid int64) ([]string, error) {
 	var uuids []string
-	err := db.Raw(
+	err := r.DB.WithContext(ctx).Raw(
 		"SELECT quiz_uuid FROM quiz_sets WHERE uid = ? AND status = 'done'", uid,
 	).Scan(&uuids).Error
 	return uuids, err
 }
 
 // MarkQuizLost flips a quiz_set to failed with a data-lost message.
-func MarkQuizLost(db *gorm.DB, quizUUID string) error {
-	return db.Exec(
+func (r *Repo) MarkQuizLost(ctx context.Context, quizUUID string) error {
+	return r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET status = 'failed', "+
 			"error_message = 'MongoDB data lost — questions not found' "+
 			"WHERE quiz_uuid = ?",
@@ -396,8 +397,8 @@ func MarkQuizLost(db *gorm.DB, quizUUID string) error {
 // quiz's submissions), submissions, then the quiz_set row. Runs in one
 // transaction; the caller owns the pre-marked 'deleting' status and any
 // failure recovery.
-func DeleteQuizRecords(db *gorm.DB, quizUUID string, uid int64) (answers, submissions int64, err error) {
-	err = db.Transaction(func(tx *gorm.DB) error {
+func (r *Repo) DeleteQuizRecords(ctx context.Context, quizUUID string, uid int64) (answers, submissions int64, err error) {
+	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		var subUUIDs []string
 		if err := tx.Raw(
 			"SELECT submission_uuid FROM quiz_submissions WHERE quiz_uuid = ?",
@@ -428,8 +429,8 @@ func DeleteQuizRecords(db *gorm.DB, quizUUID string, uid int64) (answers, submis
 }
 
 // SetStatus moves a quiz_set to an arbitrary status.
-func SetStatus(db *gorm.DB, quizUUID string, uid int64, status string) error {
-	return db.Exec(
+func (r *Repo) SetStatus(ctx context.Context, quizUUID string, uid int64, status string) error {
+	return r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET status = ? WHERE quiz_uuid = ? AND uid = ?",
 		status, quizUUID, uid,
 	).Error
@@ -437,8 +438,8 @@ func SetStatus(db *gorm.DB, quizUUID string, uid int64, status string) error {
 
 // SetStatusWithError moves a quiz_set to failed with a message (used by the
 // delete-failure recovery path).
-func SetStatusWithError(db *gorm.DB, quizUUID string, uid int64, message string) error {
-	return db.Exec(
+func (r *Repo) SetStatusWithError(ctx context.Context, quizUUID string, uid int64, message string) error {
+	return r.DB.WithContext(ctx).Exec(
 		"UPDATE quiz_sets SET status = 'failed', error_message = ? "+
 			"WHERE quiz_uuid = ? AND uid = ?",
 		message, quizUUID, uid,

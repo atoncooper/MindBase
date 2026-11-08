@@ -100,9 +100,7 @@ wait_http http://app-user:8010/health 60
 wait_http http://app-user:8015/health 60
 wait_ready mind-base-app-content 120
 # app-content 镜像 distroless（无 shell/curl，不能配 compose healthcheck）→ 在 overlay 内
-# 起一次性 curl 容器按三监听口探活：8008 note / 8011 quiz（HTTP）、8004 board（HTTPS-only）
-wait_http http://app-content:8008/health 120
-wait_http http://app-content:8011/health 60
+# 起一次性 curl 容器按单端口探活：8004 HTTPS（三域共用）
 wait_https https://app-content:8004/health 120
 wait_ready mind-base-app-board-mcp 60
 

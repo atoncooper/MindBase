@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { Maximize2, Minus, Plus } from "lucide-react";
 import MindMap from "simple-mind-map";
 import Drag from "simple-mind-map/src/plugins/Drag.js";
 import Export from "simple-mind-map/src/plugins/Export.js";
@@ -373,12 +374,16 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
     if (instance === null) return;
     let lastX = event.clientX;
     let lastY = event.clientY;
+    // 平移时淡出点阵底纹（静态网格与移动内容不同步会“打架”，Google
+    // Docs/Miro 类画布都让底纹在拖拽时隐去，松手再淡入）。
+    wrapRef.current?.classList.add("mm-canvas-wrap--panning");
     const onMove = (moveEvent: MouseEvent): void => {
       instance.view.translateXY(moveEvent.clientX - lastX, moveEvent.clientY - lastY);
       lastX = moveEvent.clientX;
       lastY = moveEvent.clientY;
     };
     const onUp = (): void => {
+      wrapRef.current?.classList.remove("mm-canvas-wrap--panning");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
@@ -478,19 +483,21 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
       }}
     >
       <div className="mm-canvas" ref={containerRef} />
-      <div className="mm-zoom" role="group" aria-label="缩放控制">
+      <div className="mm-zoom" role="toolbar" aria-label="画布缩放">
         <button
           type="button"
           className="mm-zoom__btn"
           title="缩小（Ctrl+-）"
+          aria-label="缩小"
           onClick={() => instanceRef.current?.view.narrow()}
         >
-          −
+          <Minus size={16} strokeWidth={2.2} aria-hidden="true" />
         </button>
         <button
           type="button"
           className="mm-zoom__pct"
           title="点击恢复 100%"
+          aria-label={`当前缩放 ${scalePct}%，点击恢复 100%`}
           onClick={() => instanceRef.current?.view.setScale(1)}
         >
           {scalePct}%
@@ -499,18 +506,20 @@ function MindMapCanvas(props: MindMapCanvasProps): React.JSX.Element {
           type="button"
           className="mm-zoom__btn"
           title="放大（Ctrl+=）"
+          aria-label="放大"
           onClick={() => instanceRef.current?.view.enlarge()}
         >
-          ＋
+          <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
         </button>
         <span className="mm-zoom__divider" aria-hidden="true" />
         <button
           type="button"
           className="mm-zoom__btn"
           title="适应画布（Ctrl+0）"
+          aria-label="适应画布"
           onClick={() => instanceRef.current?.view.fit()}
         >
-          ⛶
+          <Maximize2 size={15} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
       {resizeBox !== null && (

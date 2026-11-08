@@ -31,8 +31,13 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
-      - name: Go test
-        run: go test -count=1 ./...
+      - name: Go test (race + coverage gate)
+        run: |
+          go test -race -count=1 -coverpkg=./... -coverprofile=coverage.out ./tests/
+          go tool cover -func=coverage.out | tail -1
+          total=$(go tool cover -func=coverage.out | tail -1 | sed -E 's/.*[[:space:]]([0-9.]+)%$/\1/')
+          echo "total coverage: ${total}%"
+          awk -v c="$total" 'BEGIN { if (c+0 < 25) { printf "coverage %.1f%% below 25%% gate\n", c; exit 1 } }'
 
       - name: Build
         run: go build -trimpath -ldflags="-s -w" -o /tmp/app-content ./cmd/app-content

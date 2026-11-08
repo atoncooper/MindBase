@@ -29,8 +29,8 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
 | internal_task_complete | app-task | app-task（自报完成） |
 | internal_email_send | app-task | app-task |
 | pay_internal | app-pay | backend、app-cloud |
-| board_internal | app-content（8004 board 面） | app-board-mcp |
-| note_internal | app-content（8008 note 面） | app-note-mcp |
+| board_internal | app-content（8004，board 面） | app-board-mcp |
+| note_internal | app-content（8004，note 面） | app-note-mcp |
 | /internal/ai-usage | ~~backend~~ ⚠️ 2026-10-06 backend 退役后无承接者（app-ts 未实现，usage-logger fire-and-forget 上报失败不影响主链路；插件配置在 Higress 控制台） | higress usage-logger |
 
 问题：任何持 key 者可调任何 /internal/* 路由（无路由级授权）；日志无法归因

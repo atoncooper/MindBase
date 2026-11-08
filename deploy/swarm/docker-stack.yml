@@ -524,7 +524,7 @@ services:
   # app-user —— 用户域（auth 8006 + bili 8010 + settings 8015 合并为单服务）
   #   对外路径/端口语义不变：8006 auth（含 APISIX forward-auth verify）、
   #   8010 bili（收藏夹/ASR/知识库 build）、8015 settings（偏好/壁纸）。
-  #   三端口经 overlay DNS + VIP 可达（swarm 服务间互访，不发布宿主端口）。
+  #   单端口 8004 经 overlay DNS + VIP 可达（swarm 服务间互访，不发布宿主端口）。
   app-user:
     image: atoncooper/mind-base-app-user:latest
     environment:
@@ -625,25 +625,21 @@ services:
   app-content:
     image: atoncooper/mind-base-app-content:latest
     environment:
-      # ── board（8004，HTTPS-only）──
-      - APPBOARD__REDIS__URL=redis://:${REDIS_PASSWORD:-mind-base}@redis:6379/2
-      - APPBOARD__RDBMS__URL=mysql+aiomysql://${MYSQL_USER:-mind_base}:${MYSQL_PASSWORD:-mind-base}@mysql:3306/mind_base
-      - APPBOARD__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPBOARD__MONGO__DB_NAME=MindBase
-      - APPBOARD__LOG__OUTPUT=both
-      - APPBOARD__SERVER__TLS__ENABLED=true
-      - APPBOARD__SERVER__TLS__CERT_DIR=/app/certs
+      # ── 统一数据源（8004，HTTPS-only：一个 MySQL 池 / 一个 Mongo client / 一个 Redis client）──
+      - CONTENT__DATABASE__MYSQL__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
+      - CONTENT__DATABASE__MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
+      - CONTENT__DATABASE__MONGO__DATABASE=mind_base
+      - CONTENT__DATABASE__MONGO__BOARD_DATABASE=MindBase
+      - CONTENT__DATABASE__REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
+      - "CONTENT__DATABASE__REDIS__KEY_PREFIX=mind-base:"
+      - CONTENT__LOG__OUTPUT=both
+      - CONTENT__SERVER__TLS__ENABLED=true
+      - CONTENT__SERVER__TLS__CERT_DIR=/app/certs
       # explicit 模式：加载 cert-gen 签发的叶子（auto 模式会在只读 bind 里重建 dev CA → EACCES）
-      - APPBOARD__SERVER__TLS__CERT=/app/certs/server.crt
-      - APPBOARD__SERVER__TLS__KEY=/app/certs/server.key
-      # ── note（8008）──
-      - APPNOTE__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - APPNOTE__LOG__OUTPUT=both
-      # ── quiz（8011）──
-      - APPQUIZ__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - APPQUIZ__LOG__OUTPUT=both
+      - CONTENT__SERVER__TLS__CERT=/app/certs/server.crt
+      - CONTENT__SERVER__TLS__KEY=/app/certs/server.key
+      # 服务间 M2M 共享密钥（/internal/* 二次校验）
+      - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:-}
     volumes:
       - app_content_logs:/app/logs
       - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/app/certs

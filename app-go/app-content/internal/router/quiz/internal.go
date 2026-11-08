@@ -7,7 +7,6 @@
 package router
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -15,33 +14,43 @@ import (
 	"strings"
 	"time"
 
-	"app-content/internal/repo/quiz"
+	quizdto "app-content/internal/dto/quiz"
+	"app-content/internal/middleware"
 	"app-content/internal/service/quiz"
 
 	"github.com/gin-gonic/gin"
 )
 
-// FlexInt64 accepts a JSON number OR a numeric string for int64 uid fields.
-// app-ts now carries uid as a string (int64 precision safety in JS), so M2M
-// bodies may hold either shape; the X-Uid header stays authoritative.
-type FlexInt64 int64
-
-func (f *FlexInt64) UnmarshalJSON(b []byte) error {
-	s := strings.Trim(string(b), `"`)
-	if s == "" || s == "null" {
-		*f = 0
-		return nil
+// toServiceQuestions maps the wire DTO to the service input at the boundary
+// (the DTO package has no service dependency).
+func toServiceQuestions(items []quizdto.AgentQuestion) []service.AgentQuestion {
+	out := make([]service.AgentQuestion, 0, len(items))
+	for _, q := range items {
+		out = append(out, service.AgentQuestion{
+			Question: q.Question, QuestionType: q.QuestionType, Difficulty: q.Difficulty,
+			Score: q.Score, Options: q.Options, Answer: q.Answer,
+			CorrectAnswer: q.CorrectAnswer, Explanation: q.Explanation, Keywords: q.Keywords,
+			BVID: q.BVID, ChunkID: q.ChunkID, SourceSegment: q.SourceSegment,
+			AnswerTemplate: q.AnswerTemplate, ScoringRubric: q.ScoringRubric, ModelAnswer: q.ModelAnswer,
+		})
 	}
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return err
-	}
-	*f = FlexInt64(v)
-	return nil
+	return out
 }
 
-func registerInternalQuiz(e *gin.Engine, svc *service.Store) {
-	ig := e.Group("/internal/quiz")
+// toServiceVerdicts maps wire verdicts to the service input.
+func toServiceVerdicts(items []quizdto.AgentVerdict) []service.AgentVerdict {
+	out := make([]service.AgentVerdict, 0, len(items))
+	for _, v := range items {
+		out = append(out, service.AgentVerdict{Index: v.Index, Verdict: v.Verdict, Feedback: v.Feedback})
+	}
+	return out
+}
+
+// FlexInt64 is the DTO dual number/string int64 shape.
+type FlexInt64 = quizdto.FlexInt64
+
+func registerInternalQuiz(e *gin.Engine, svc *service.Store, apiKey string) {
+	ig := e.Group("/internal/quiz", middleware.InternalAuth(apiKey))
 	ig.POST("/sets", createQuizSet(svc))
 	ig.POST("/sets/:quiz_uuid/questions", finalizeQuizSet(svc))
 	ig.POST("/sets/:quiz_uuid/questions/append", appendQuizQuestions(svc))
@@ -69,16 +78,7 @@ func createTaskQuizRow(svc *service.Store) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		var req struct {
-			UID               FlexInt64 `json:"uid"`
-			TaskID            string    `json:"task_id"`
-			Prompt            string    `json:"prompt"`
-			Difficulty        string    `json:"difficulty"`
-			QuestionCount     int       `json:"question_count"`
-			UserEmail         string    `json:"user_email"`
-			CCEmails          []string  `json:"cc_emails"`
-			IncompleteMessage *string   `json:"incomplete_message"`
-		}
+		var req quizdto.CreateTaskRowRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusBadRequest, "请求体格式错误")
 			return
@@ -91,7 +91,7 @@ func createTaskQuizRow(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, serr.Status, serr.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		c.JSON(http.StatusOK, quizdto.OK{OK: true})
 	}
 }
 
@@ -103,9 +103,7 @@ func markTaskQuizGenerated(svc *service.Store) gin.HandlerFunc {
 			return
 		}
 		taskID := c.Param("task_id")
-		var req struct {
-			DeadlineSeconds int `json:"deadline_seconds"`
-		}
+		var req quizdto.MarkGeneratedRequest
 		_ = c.ShouldBindJSON(&req)
 		seconds := req.DeadlineSeconds
 		if seconds <= 0 {
@@ -116,29 +114,14 @@ func markTaskQuizGenerated(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, serr.Status, serr.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		c.JSON(http.StatusOK, quizdto.OK{OK: true})
 	}
 }
 
 // agentQuizSetReq is the superset of the simple agent payload and the rich
 // async-generation payload. With questions it behaves as before (status done);
 // without questions it creates a generating row.
-type agentQuizSetReq struct {
-	UID              FlexInt64                `json:"uid"`
-	QuizUUID         string                   `json:"quiz_uuid,omitempty"`
-	Title            string                   `json:"title"`
-	Difficulty       string                   `json:"difficulty,omitempty"`
-	QuestionCount    *int                     `json:"question_count,omitempty"`
-	TypeDistribution map[string]int           `json:"type_distribution,omitempty"`
-	FolderIDs        []int64                  `json:"folder_ids,omitempty"`
-	SourceType       string                   `json:"source_type,omitempty"`
-	SourcePages      []map[string]interface{} `json:"source_pages,omitempty"`
-	ChatSessionID    *string                  `json:"chat_session_id,omitempty"`
-	Status           string                   `json:"status,omitempty"`
-	TotalScore       *int                     `json:"total_score,omitempty"`
-	PassingScore     *int                     `json:"passing_score,omitempty"`
-	Questions        []service.AgentQuestion  `json:"questions"`
-}
+type agentQuizSetReq = quizdto.AgentQuizSetRequest
 
 func createQuizSet(svc *service.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -155,16 +138,7 @@ func createQuizSet(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
 			return
 		}
-		if len(req.Questions) > 0 {
-			result, err := svc.CreateAgentQuizSet(c.Request.Context(), uid, req.Title, req.Questions)
-			if err != nil {
-				respondAgentError(c, err)
-				return
-			}
-			c.JSON(http.StatusOK, result)
-			return
-		}
-		result, err := svc.CreateQuizSet(c.Request.Context(), uid, service.QuizSetDraft{
+		result, err := svc.CreateSet(c.Request.Context(), uid, service.CreateSetOptions{
 			QuizUUID:         req.QuizUUID,
 			Title:            req.Title,
 			Difficulty:       req.Difficulty,
@@ -177,22 +151,17 @@ func createQuizSet(svc *service.Store) gin.HandlerFunc {
 			Status:           req.Status,
 			TotalScore:       req.TotalScore,
 			PassingScore:     req.PassingScore,
+			Questions:        toServiceQuestions(req.Questions),
 		})
 		if err != nil {
 			respondAgentError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		renderTyped[quizdto.AgentWriteResult](c, result)
 	}
 }
 
-type agentQuizQuestionsReq struct {
-	UID            FlexInt64               `json:"uid"`
-	Status         string                  `json:"status"`
-	Questions      []service.AgentQuestion `json:"questions"`
-	QualityMetrics json.RawMessage         `json:"quality_metrics,omitempty"`
-	BVIDCount      int                     `json:"bvid_count,omitempty"`
-}
+type agentQuizQuestionsReq = quizdto.AgentQuizQuestionsRequest
 
 func finalizeQuizSet(svc *service.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -210,12 +179,12 @@ func finalizeQuizSet(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
 			return
 		}
-		result, err := svc.FinalizeQuizSet(c.Request.Context(), uid, quizUUID, req.Status, req.Questions, req.QualityMetrics, req.BVIDCount)
+		result, err := svc.FinalizeQuizSet(c.Request.Context(), uid, quizUUID, req.Status, toServiceQuestions(req.Questions), req.QualityMetrics, req.BVIDCount)
 		if err != nil {
 			respondAgentError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		renderTyped[quizdto.AgentWriteResult](c, result)
 	}
 }
 
@@ -236,22 +205,16 @@ func appendQuizQuestions(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
 			return
 		}
-		result, err := svc.AppendQuestions(c.Request.Context(), uid, quizUUID, req.Questions)
+		result, err := svc.AppendQuestions(c.Request.Context(), uid, quizUUID, toServiceQuestions(req.Questions))
 		if err != nil {
 			respondAgentError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		renderTyped[quizdto.AgentWriteResult](c, result)
 	}
 }
 
-type agentQuizProgressReq struct {
-	UID    FlexInt64 `json:"uid"`
-	Stage  string    `json:"stage"`
-	Detail string    `json:"detail"`
-	Stored int       `json:"stored"`
-	Total  int       `json:"total"`
-}
+type agentQuizProgressReq = quizdto.AgentQuizProgressRequest
 
 func updateQuizProgress(svc *service.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -273,14 +236,11 @@ func updateQuizProgress(svc *service.Store) gin.HandlerFunc {
 			respondAgentError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		c.JSON(http.StatusOK, quizdto.OK{OK: true})
 	}
 }
 
-type agentQuizFailReq struct {
-	UID          FlexInt64 `json:"uid"`
-	ErrorMessage string    `json:"error_message"`
-}
+type agentQuizFailReq = quizdto.AgentQuizFailRequest
 
 func failQuizSet(svc *service.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -303,7 +263,7 @@ func failQuizSet(svc *service.Store) gin.HandlerFunc {
 			respondAgentError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		renderTyped[quizdto.AgentWriteResult](c, result)
 	}
 }
 
@@ -316,9 +276,7 @@ func reopenQuizSet(svc *service.Store) gin.HandlerFunc {
 			return
 		}
 		quizUUID := strings.TrimSpace(c.Param("quiz_uuid"))
-		var req struct {
-			UID FlexInt64 `json:"uid"`
-		}
+		var req quizdto.ReopenRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusBadRequest, "请求体格式错误")
 			return
@@ -332,17 +290,11 @@ func reopenQuizSet(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, aerr.Status, aerr.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		renderTyped[quizdto.AgentWriteResult](c, result)
 	}
 }
 
-type agentGradingReq struct {
-	UID         FlexInt64              `json:"uid"`
-	QuizUUID    string                 `json:"quiz_uuid"`
-	Score       int                    `json:"score"`
-	Total       int                    `json:"total"`
-	PerQuestion []service.AgentVerdict `json:"per_question"`
-}
+type agentGradingReq = quizdto.AgentGradingRequest
 
 func saveAgentGrading(svc *service.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -359,12 +311,12 @@ func saveAgentGrading(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, http.StatusForbidden, "uid 与身份不一致")
 			return
 		}
-		result, err := svc.SaveAgentGrading(c.Request.Context(), uid, req.QuizUUID, req.Score, req.Total, req.PerQuestion)
+		result, err := svc.SaveAgentGrading(c.Request.Context(), uid, req.QuizUUID, req.Score, req.Total, toServiceVerdicts(req.PerQuestion))
 		if err != nil {
 			respondAgentError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		renderTyped[quizdto.AgentWriteResult](c, result)
 	}
 }
 
@@ -372,14 +324,14 @@ func saveAgentGrading(svc *service.Store) gin.HandlerFunc {
 // down) to 503, everything else to 500 — the MCP/HTTP layer renders the detail.
 func respondAgentError(c *gin.Context, err error) {
 	// 底层错误必须落日志:对外只渲染通用 detail,没有这行就永远查不到原因
-	if !errors.Is(err, service.ErrInvalidInput) && !errors.Is(err, repo.ErrContentDisabled) {
+	if !errors.Is(err, service.ErrInvalidInput) && !errors.Is(err, service.ErrContentDisabled) {
 		slog.Error("[QUIZ] agent write failed", "err", err)
 	}
 	if errors.Is(err, service.ErrInvalidInput) {
 		apiErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if errors.Is(err, repo.ErrContentDisabled) {
+	if errors.Is(err, service.ErrContentDisabled) {
 		apiErr(c, http.StatusServiceUnavailable, "MongoDB 未连接，无法保存题目内容")
 		return
 	}
@@ -398,7 +350,7 @@ func quizSignalsHandler(svc *service.Store) gin.HandlerFunc {
 			apiErr(c, serr.Status, serr.Detail)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"signals": signals})
+		renderTyped[quizdto.SignalsResponse](c, map[string]interface{}{"signals": signals})
 	}
 }
 
@@ -419,7 +371,7 @@ func internalWrongAnswers(svc *service.Store) gin.HandlerFunc {
 		if limit > 100 {
 			limit = 100
 		}
-		resp, err := svc.WrongAnswers(uid, nil)
+		resp, err := svc.WrongAnswers(c.Request.Context(), uid, nil)
 		if err != nil {
 			apiErr(c, http.StatusInternalServerError, "读取错题记录失败")
 			return
@@ -428,6 +380,6 @@ func internalWrongAnswers(svc *service.Store) gin.HandlerFunc {
 		if len(items) > limit {
 			items = items[:limit]
 		}
-		c.JSON(http.StatusOK, gin.H{"wrong_answers": items, "total": len(items)})
+		renderTyped[quizdto.WrongAnswers](c, map[string]interface{}{"wrong_answers": items, "total": len(items)})
 	}
 }

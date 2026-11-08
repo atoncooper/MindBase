@@ -1,5 +1,5 @@
-// Package db initializes the GORM MySQL connection against the SHARED bilirag
-// database and applies app-note's schema ownership.
+// Package db owns the app-note schema (CREATE TABLE IF NOT EXISTS only). The
+// process-wide MySQL pool lives in internal/infra/mysql.
 //
 // Migration policy: CREATE TABLE IF NOT EXISTS only — never ALTER. The note
 // tables already exist with live data (created by the Python backend via
@@ -11,50 +11,9 @@ package db
 
 import (
 	"fmt"
-	"strings"
-	"time"
 
-	"app-content/internal/logger"
-
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
-
-var DB *gorm.DB
-
-// Init opens MySQL. dsn may be SQLAlchemy-style (mysql+aiomysql://...).
-//
-// loc=UTC (unlike app-cloud's loc=Local): the Python notes stack wrote naive
-// UTC datetimes into these DATETIME columns (datetime.now(timezone.utc)), so
-// parsed values must be interpreted as UTC for If-Match comparisons and
-// wire-format compatibility to hold.
-func Init(dsn string, maxOpen, maxIdle, maxLife int, debug bool) error {
-	gormDSN := toGormDSN(dsn)
-	d, err := gorm.Open(mysql.Open(gormDSN), &gorm.Config{Logger: logger.NewGORMLogger(debug)})
-	if err != nil {
-		return fmt.Errorf("open mysql: %w", err)
-	}
-	sqlDB, err := d.DB()
-	if err != nil {
-		return fmt.Errorf("get *sql.DB: %w", err)
-	}
-	sqlDB.SetMaxOpenConns(maxOpen)
-	sqlDB.SetMaxIdleConns(maxIdle)
-	sqlDB.SetConnMaxLifetime(time.Duration(maxLife) * time.Second)
-	DB = d
-	return nil
-}
-
-func Close() error {
-	if DB == nil {
-		return nil
-	}
-	sqlDB, err := DB.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.Close()
-}
 
 // ownedTables is the full set of tables app-note may touch with DDL. The
 // guard test pins Migrate to exactly this list.
@@ -65,9 +24,9 @@ var ownedTables = []string{
 }
 
 // Migrate creates the note schema if (and only if) it does not exist yet.
-func Migrate() error {
+func Migrate(db *gorm.DB) error {
 	for _, ddl := range schemaDDL() {
-		if err := DB.Exec(ddl).Error; err != nil {
+		if err := db.Exec(ddl).Error; err != nil {
 			return fmt.Errorf("exec ddl: %w", err)
 		}
 	}
@@ -124,27 +83,9 @@ func schemaDDL() []string {
 	}
 }
 
-// toGormDSN converts mysql+aiomysql://user:pass@host:port/db
-// to user:pass@tcp(host:port)/db?charset=utf8mb4&parseTime=True&loc=UTC.
-func toGormDSN(sqlalchemyURL string) string {
-	s := sqlalchemyURL
-	for _, p := range []string{"mysql+aiomysql://", "mysql+pymysql://", "mysql://"} {
-		s = strings.TrimPrefix(s, p)
-	}
-	atIdx := strings.LastIndex(s, "@")
-	if atIdx < 0 {
-		return s + "?charset=utf8mb4&parseTime=True&loc=UTC"
-	}
-	userPass := s[:atIdx]
-	hostDB := s[atIdx+1:]
-	slashIdx := strings.Index(hostDB, "/")
-	if slashIdx < 0 {
-		return userPass + "@tcp(" + hostDB + ")/?charset=utf8mb4&parseTime=True&loc=UTC"
-	}
-	hostPort := hostDB[:slashIdx]
-	rest := hostDB[slashIdx+1:]
-	if qIdx := strings.Index(rest, "?"); qIdx >= 0 {
-		rest = rest[:qIdx]
-	}
-	return userPass + "@tcp(" + hostPort + ")/" + rest + "?charset=utf8mb4&parseTime=True&loc=UTC"
-}
+// SchemaDDL returns a copy of the CREATE-only statements Migrate executes.
+// Exposed for schema guard tests and operational introspection.
+func SchemaDDL() []string { return append([]string(nil), schemaDDL()...) }
+
+// OwnedTables returns a copy of the tables this package owns (app-note).
+func OwnedTables() []string { return append([]string(nil), ownedTables...) }

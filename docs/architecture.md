@@ -23,7 +23,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
   ├──► app-ts :8000        AI 域（chat/agent/RAG/向量化/KG AI/quiz AI/task-quiz/blindspot/skills）
   ├──► app-user :8006/8010/8015  auth/bili/settings 三域合一（认证权威 + B站获取/ASR + 用户偏好/壁纸）
   ├──► app-cloud :8007     云盘权威（配额/分享/回收站/workspaces/解析向量化）
-  ├──► app-content :8004/8008/8011  note/quiz/board 三域合一（笔记 + quiz 存储 + 板存储 HTTPS）
+  ├──► app-content :8004（单端口 HTTPS）  note/quiz/board 三域合一
   ├──► app-task :8001      定时任务执行器（独立仓库镜像）
   ├──► app-pay :8002       Java 交易/会员（HTTPS-only，回环暴露）
   └──► app-sandbox :8017   沙箱控制层（租约/配额/审计/产物；内部面 key-auth）
@@ -111,10 +111,10 @@ profile 汇总：
 | `/chat/search` `/vec` `/vec/*` `/knowledge/{stats,folders/status,pages/vectorized,clear,video*}` `/blindspot*` `/skills*` | app-ts（`vec_knowledge_ts`，priority 55） | forward-auth |
 | `/knowledge/kg*` | app-ts（`kg_ts`） | forward-auth |
 | `/knowledge/build*` `/knowledge/folders/sync` `/favorites*` `/asr*` | app-user:8010（bili 路由） | forward-auth |
-| `/notes*` | app-content:8008（note 面） | forward-auth（`/notes/shared/{token}` 宽验证免登录） |
-| `/quiz/*`（history/错题/导出/分享/详情） | app-content:8011（quiz 面，priority 50） | forward-auth |
+| `/notes*` | app-content:8004（note 面） | forward-auth（`/notes/shared/{token}` 宽验证免登录） |
+| `/quiz/*`（history/错题/导出/分享/详情） | app-content:8004（quiz 面，priority 50） | forward-auth |
 | `/quiz/generate` `/quiz/generate-from-summary` `/quiz/submit` | app-ts（priority 100/110 压过 quiz_user） | forward-auth |
-| `/tasks/{id}/detail` `/tasks/{id}/answer` | app-content:8011（quiz 面，priority 100） | forward-auth |
+| `/tasks/{id}/detail` `/tasks/{id}/answer` | app-content:8004（quiz 面，priority 100） | forward-auth |
 | `/task-quiz/chat` `/task-quiz/register` `/internal/quiz/generate-llm` `/internal/quiz/status/*` | app-ts | 前两者 forward-auth；后两者 key-auth（app-task 执行器回调） |
 | `/tasks` `/tasks/*` `/tasks/register` `/scripts*` `/internal/task/*` `/internal/email/send` | app-task | 用户面 forward-auth；服务面 key-auth |
 | `/cloud` `/cloud/*` | app-cloud | forward-auth |
@@ -162,7 +162,7 @@ forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify`
 |------|---------|---------|------|
 | app-ts | `app-ts/src/config/`（`default.yaml` + 环境变量） | 无前缀 env + 共享 `MONGO__URI`/`REDIS__URL`/`AI_GATEWAY__*` | [app-ts/AGENTS.md](../app-ts/AGENTS.md) |
 | app-user | `app-go/app-user/default.yaml`（服务根目录，embed） | `APPAUTH__` / `APPBILI__` / `APPSETTINGS__` | AGENTS.md §2.13 |
-| app-content | `app-go/app-content/default.yaml`（服务根目录，embed；含 board/note/quiz 三段） | `APPBOARD__` / `APPNOTE__` / `APPQUIZ__` | AGENTS.md §2.15 |
+| app-content | `app-go/app-content/default.yaml`（服务根目录，embed；进程级 + 唯一 database 段 + quiz 参数） | `CONTENT__*`（数据源 `CONTENT__DATABASE__*`；旧 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__` 兼容） | AGENTS.md §2.15 |
 | 其余 app-go 服务 | `internal/config/default.yaml`（embed）← env 覆盖 | `APPCLOUD__`/`APPKG__`/`APPADMIN__`/`SANDBOX__` | AGENTS.md §2.14-2.21 |
 | app-task | 独立仓库 `default.yaml`（嵌入镜像） | `APPTASK__` | [app-task.md](app-task.md) |
 | app-pay | `application.yaml` + docker/test profile（Flyway 管 schema） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |

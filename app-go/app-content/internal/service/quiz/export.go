@@ -4,13 +4,12 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
 
 	"app-content/internal/repo/quiz"
-
-	"gorm.io/gorm"
 )
 
 // marshalNoHTMLEscape marshals without HTML escaping, matching Python's
@@ -43,8 +42,8 @@ func ExportFormat(format string) (string, bool) {
 // ExportSubmissions streams the user's answer records through write for the
 // requested format. The folderIDs filter (nil = all) is applied in-process,
 // mirroring the Python service.
-func (s *Store) ExportSubmissions(db *gorm.DB, uid int64, folderIDs []int, format string, write func([]byte) error) error {
-	rows, err := repo.ListExportRecords(db, uid)
+func (s *Store) ExportSubmissions(ctx context.Context, uid int64, folderIDs []int, format string, write func([]byte) error) error {
+	rows, err := s.Repo.ListExportRecords(ctx, uid)
 	if err != nil {
 		return err
 	}

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
@@ -24,8 +23,8 @@ type ShareSecretDoc struct {
 }
 
 // SaveShareSecret upserts the password hash for a share token（重建分享时覆盖）。
-func SaveShareSecret(ctx context.Context, db *mongo.Database, shareToken, quizUUID string, uid int64, passwordHash string) {
-	if db == nil {
+func (r *Repo) SaveShareSecret(ctx context.Context, shareToken, quizUUID string, uid int64, passwordHash string) {
+	if r.Mongo == nil {
 		return
 	}
 	filter := bson.M{"share_token": shareToken}
@@ -36,18 +35,18 @@ func SaveShareSecret(ctx context.Context, db *mongo.Database, shareToken, quizUU
 		"password_hash": passwordHash,
 		"created_at":    time.Now().UTC(),
 	}}
-	if _, err := db.Collection(quizShareSecretsCollection).UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
+	if _, err := r.Mongo.Collection(quizShareSecretsCollection).UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
 		slog.Warn("[QUIZ_SHARE] save secret failed", "err", err)
 	}
 }
 
 // GetShareSecretHash returns the bcrypt hash for a share token ("" = no password).
-func GetShareSecretHash(ctx context.Context, db *mongo.Database, shareToken string) string {
-	if db == nil {
+func (r *Repo) GetShareSecretHash(ctx context.Context, shareToken string) string {
+	if r.Mongo == nil {
 		return ""
 	}
 	var doc ShareSecretDoc
-	err := db.Collection(quizShareSecretsCollection).FindOne(ctx, bson.M{"share_token": shareToken}).Decode(&doc)
+	err := r.Mongo.Collection(quizShareSecretsCollection).FindOne(ctx, bson.M{"share_token": shareToken}).Decode(&doc)
 	if err != nil {
 		return ""
 	}
@@ -55,17 +54,17 @@ func GetShareSecretHash(ctx context.Context, db *mongo.Database, shareToken stri
 }
 
 // DeleteShareSecretByToken removes the secret (revoke / re-share without password).
-func DeleteShareSecretByToken(ctx context.Context, db *mongo.Database, shareToken string) {
-	if db == nil || shareToken == "" {
+func (r *Repo) DeleteShareSecretByToken(ctx context.Context, shareToken string) {
+	if r.Mongo == nil || shareToken == "" {
 		return
 	}
-	_, _ = db.Collection(quizShareSecretsCollection).DeleteOne(ctx, bson.M{"share_token": shareToken})
+	_, _ = r.Mongo.Collection(quizShareSecretsCollection).DeleteOne(ctx, bson.M{"share_token": shareToken})
 }
 
 // DeleteShareSecretByQuiz removes all secrets of one quiz (hard-delete cleanup).
-func DeleteShareSecretByQuiz(ctx context.Context, db *mongo.Database, quizUUID string) {
-	if db == nil || quizUUID == "" {
+func (r *Repo) DeleteShareSecretByQuiz(ctx context.Context, quizUUID string) {
+	if r.Mongo == nil || quizUUID == "" {
 		return
 	}
-	_, _ = db.Collection(quizShareSecretsCollection).DeleteMany(ctx, bson.M{"quiz_uuid": quizUUID})
+	_, _ = r.Mongo.Collection(quizShareSecretsCollection).DeleteMany(ctx, bson.M{"quiz_uuid": quizUUID})
 }

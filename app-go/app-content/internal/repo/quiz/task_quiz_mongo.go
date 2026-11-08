@@ -29,13 +29,13 @@ type taskQuizDoc struct {
 
 // GetTaskQuizQuestions loads the normalized question list for one task.
 // Mongo disabled / no document → nil (Python returns an empty list).
-func GetTaskQuizQuestions(ctx context.Context, db *mongo.Database, taskID string) []map[string]interface{} {
-	if db == nil {
+func (r *Repo) GetTaskQuizQuestions(ctx context.Context, taskID string) []map[string]interface{} {
+	if r.Mongo == nil {
 		slog.Warn("[MONGO_TASK_QUIZ] disabled, cannot read questions", "task_id", taskID)
 		return nil
 	}
 	var doc taskQuizDoc
-	err := db.Collection(taskQuizQuestionsCollection).FindOne(ctx, bson.M{"task_id": taskID}).Decode(&doc)
+	err := r.Mongo.Collection(taskQuizQuestionsCollection).FindOne(ctx, bson.M{"task_id": taskID}).Decode(&doc)
 	if err != nil {
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			slog.Error("[MONGO_TASK_QUIZ] find failed", "task_id", taskID, "err", err)

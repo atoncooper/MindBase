@@ -123,12 +123,12 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-content（note 监听口 8008）—— 笔记面（Go；/notes/* 用户路由 +
+  # app-content（note 面 · 统一端口 8004（HTTPS））—— 笔记面（Go；/notes/* 用户路由 +
   # /internal/note/* M2M；schema 所有权已从 Python backend 迁入）
   - id: upstream-app-content-note
     name: app-content
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -140,11 +140,12 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-content:8008": 1
+      "app-content:8004": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -156,7 +157,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -164,12 +165,12 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-content（quiz 监听口 8011）—— 测验存储面（Go；history/错题本/导出/
+  # app-content（quiz 面 · 统一端口 8004（HTTPS））—— 测验存储面（Go；history/错题本/导出/
   # 详情/删除/分享；schema 所有权自 Python backend 迁入）
   - id: upstream-app-content-quiz
     name: app-content
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -181,11 +182,12 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-content:8011": 1
+      "app-content:8004": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -197,7 +199,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -227,8 +229,9 @@ upstreams:
       "app-ts:8000": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -259,8 +262,9 @@ upstreams:
       "app-user:8015": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -291,8 +295,9 @@ upstreams:
       "app-sandbox:8017": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -324,8 +329,9 @@ upstreams:
       "app-user:8010": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -337,7 +343,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -367,8 +373,9 @@ upstreams:
       "app-task:8001": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -380,7 +387,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -420,6 +427,7 @@ upstreams:
         type: https
         https_verify_certificate: false
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -431,7 +439,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
       passive:
-        type: http
+        type: https
         healthy:
           http_statuses: [200]
           successes: 2
@@ -439,7 +447,7 @@ upstreams:
           http_statuses: [500, 502, 503, 504]
           http_failures: 3
 
-  # app-content（board 监听口 8004）—— mind maps & whiteboards (/board/*).
+  # app-content（board 面 · 统一端口 8004（HTTPS））—— mind maps & whiteboards (/board/*).
   # 服务端 HTTPS-only（TLS rotator 自动生成 dev-CA + 叶子，自愈+自动续期，
   # 见 app-go/app-content/internal/infra/tls/board）。
   # ⚠️ APISIX 3.11 限制：upstream tls.verify 仅支持 kafka upstream（schema_def.lua 注释
@@ -834,7 +842,9 @@ routes:
         key_type: var
         key: remote_addr
       proxy-rewrite:
-        regex_uri: ["^/internal/board/(.*)", "/board/$1"]
+        headers:
+          set:
+            X-Internal-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
 
   # Internal (M2M) -> app-content（note 面）: note agent tools (save_note /
   # list_notes / get_note / update_note) call /internal/note/notes with the
@@ -849,6 +859,10 @@ routes:
     plugins:
       request-id: {}
       key-auth: {}
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       limit-req:
         rate: 20
         burst: 10
@@ -866,6 +880,10 @@ routes:
     plugins:
       request-id: {}
       key-auth: {}
+      proxy-rewrite:
+        headers:
+          set:
+            X-Internal-Key: "D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre"
       limit-req:
         rate: 20
         burst: 10

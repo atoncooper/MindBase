@@ -30,18 +30,18 @@ type TaskQuizAnswerInput struct {
 
 // TaskQuizDetail assembles the business detail (task row + questions + answers).
 func (s *Store) TaskQuizDetail(ctx context.Context, uid int64, taskID string) (map[string]interface{}, *APIError) {
-	row, err := repo.GetTaskQuizByUID(ctx, s.DB, taskID, uid)
+	row, err := s.Repo.GetTaskQuizByUID(ctx, taskID, uid)
 	if err != nil {
 		if errors.Is(err, repo.ErrTaskQuizNotFound) {
 			return nil, apiErr(404, "task not found")
 		}
 		return nil, apiErr(500, "查询失败，请稍后重试")
 	}
-	questions := repo.GetTaskQuizQuestions(ctx, s.Mongo, taskID)
+	questions := s.Repo.GetTaskQuizQuestions(ctx, taskID)
 	if questions == nil {
 		questions = []map[string]interface{}{}
 	}
-	answers, err := repo.ListTaskQuizAnswers(ctx, s.DB, taskID)
+	answers, err := s.Repo.ListTaskQuizAnswers(ctx, taskID)
 	if err != nil {
 		return nil, apiErr(500, "查询失败，请稍后重试")
 	}
@@ -60,7 +60,7 @@ func (s *Store) TaskQuizDetail(ctx context.Context, uid int64, taskID string) (m
 		"difficulty": row.Difficulty,
 		"status":     row.Status,
 		"deadline":   pyISO(row.Deadline),
-		"cc_emails":  parseCCEmails(row.CCEmails),
+		"cc_emails":  ParseCCEmails(row.CCEmails),
 		"quiz":       map[string]interface{}{"questions": questions},
 		"answers":    answerView,
 	}, nil
@@ -69,7 +69,7 @@ func (s *Store) TaskQuizDetail(ctx context.Context, uid int64, taskID string) (m
 // SubmitTaskQuizAnswer judges every answer, persists the results and moves the
 // business row to completed. Ownership is enforced (not-owned == 404).
 func (s *Store) SubmitTaskQuizAnswer(ctx context.Context, uid int64, taskID string, answers []TaskQuizAnswerInput) (map[string]interface{}, *APIError) {
-	questions := repo.GetTaskQuizQuestions(ctx, s.Mongo, taskID)
+	questions := s.Repo.GetTaskQuizQuestions(ctx, taskID)
 
 	results := make([]repo.TaskQuizJudgeResult, 0, len(answers))
 	allCorrect := len(answers) > 0
@@ -79,7 +79,7 @@ func (s *Store) SubmitTaskQuizAnswer(ctx context.Context, uid int64, taskID stri
 			q = questions[a.QuestionIndex]
 		}
 		given := strings.TrimSpace(a.Answer)
-		correct := judgeTaskQuizAnswer(q, given)
+		correct := JudgeTaskQuizAnswer(q, given)
 		if !correct {
 			allCorrect = false
 		}
@@ -90,13 +90,13 @@ func (s *Store) SubmitTaskQuizAnswer(ctx context.Context, uid int64, taskID stri
 		})
 	}
 
-	if _, err := repo.GetTaskQuizByUID(ctx, s.DB, taskID, uid); err != nil {
+	if _, err := s.Repo.GetTaskQuizByUID(ctx, taskID, uid); err != nil {
 		if errors.Is(err, repo.ErrTaskQuizNotFound) {
 			return nil, apiErr(404, "task not found")
 		}
 		return nil, apiErr(500, "查询失败，请稍后重试")
 	}
-	if err := repo.SaveTaskQuizAnswers(ctx, s.DB, taskID, uid, results); err != nil {
+	if err := s.Repo.SaveTaskQuizAnswers(ctx, taskID, uid, results); err != nil {
 		return nil, apiErr(500, "保存失败，请稍后重试")
 	}
 
@@ -118,7 +118,7 @@ func (s *Store) SubmitTaskQuizAnswer(ctx context.Context, uid int64, taskID stri
 // ── judging (pure; unit-tested) ──────────────────────────────────────
 
 // judgeTaskQuizAnswer answers whether one submitted answer is correct.
-func judgeTaskQuizAnswer(quiz map[string]interface{}, userAnswer string) bool {
+func JudgeTaskQuizAnswer(quiz map[string]interface{}, userAnswer string) bool {
 	if quiz == nil {
 		return false
 	}
@@ -132,8 +132,8 @@ func judgeTaskQuizAnswer(quiz map[string]interface{}, userAnswer string) bool {
 	}
 	options := stringSlice(quiz["options"])
 	if len(options) > 0 {
-		cLetter := choiceLetter(options, correct)
-		gLetter := choiceLetter(options, given)
+		cLetter := ChoiceLetter(options, correct)
+		gLetter := ChoiceLetter(options, given)
 		if cLetter != "" && gLetter != "" {
 			return cLetter == gLetter
 		}
@@ -145,7 +145,7 @@ func judgeTaskQuizAnswer(quiz map[string]interface{}, userAnswer string) bool {
 // choiceLetter resolves an answer to its option letter A/B/C…; empty when it
 // cannot be resolved. Handles a bare letter ("B"), the full option text
 // ("B. 收敛") and the label-less text ("收敛").
-func choiceLetter(options []string, answer string) string {
+func ChoiceLetter(options []string, answer string) string {
 	a := strings.TrimSpace(answer)
 	if a == "" {
 		return ""
@@ -155,7 +155,7 @@ func choiceLetter(options []string, answer string) string {
 	}
 	for i, opt := range options {
 		t := strings.TrimSpace(opt)
-		if t == a || stripOptionLabel(t) == a {
+		if t == a || StripOptionLabel(t) == a {
 			return string(rune('A' + i))
 		}
 	}
@@ -164,7 +164,7 @@ func choiceLetter(options []string, answer string) string {
 
 // stripOptionLabel removes a leading letter label ("A. ", "B、", "C) ", "D ")
 // from an option; returns the input unchanged when there is no label.
-func stripOptionLabel(s string) string {
+func StripOptionLabel(s string) string {
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return s
@@ -207,7 +207,7 @@ func stringSlice(v interface{}) []string {
 }
 
 // parseCCEmails decodes the JSON column; Python's json.loads(row.cc_emails or "[]").
-func parseCCEmails(raw *string) []string {
+func ParseCCEmails(raw *string) []string {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return []string{}
 	}
@@ -234,7 +234,7 @@ func (s *Store) CreateTaskQuizRow(ctx context.Context, taskID string, uid int64,
 	if strings.TrimSpace(difficulty) == "" {
 		difficulty = "medium"
 	}
-	err := repo.CreateTaskQuizRow(ctx, s.DB, taskID, uid, prompt, difficulty, questionCount, userEmail, ccEmails, incompleteMessage)
+	err := s.Repo.CreateTaskQuizRow(ctx, taskID, uid, prompt, difficulty, questionCount, userEmail, ccEmails, incompleteMessage)
 	if err != nil {
 		if isDuplicateKey(err) {
 			return nil
@@ -246,7 +246,7 @@ func (s *Store) CreateTaskQuizRow(ctx context.Context, taskID string, uid int64,
 
 // MarkTaskQuizGenerated flips the row to awaiting_answer with the deadline.
 func (s *Store) MarkTaskQuizGenerated(ctx context.Context, taskID string, deadline time.Time, questionCount int) *APIError {
-	if err := repo.MarkTaskQuizGenerated(ctx, s.DB, taskID, deadline, questionCount); err != nil {
+	if err := s.Repo.MarkTaskQuizGenerated(ctx, taskID, deadline, questionCount); err != nil {
 		return &APIError{Status: 500, Detail: "内部错误"}
 	}
 	return nil
@@ -278,7 +278,7 @@ func maxInt(a, b int) int {
 // QuizSignals assembles the user's answered-question entity signals for the
 // blindspot attribution (recent submissions → answers → Mongo attributions).
 func (s *Store) QuizSignals(ctx context.Context, uid int64, limit int) ([]map[string]interface{}, *APIError) {
-	subs, err := repo.ListQuizSignalSubmissions(ctx, s.DB, uid, limit)
+	subs, err := s.Repo.ListQuizSignalSubmissions(ctx, uid, limit)
 	if err != nil {
 		return nil, &APIError{Status: 500, Detail: "内部错误"}
 	}
@@ -288,7 +288,7 @@ func (s *Store) QuizSignals(ctx context.Context, uid int64, limit int) ([]map[st
 		subUUIDs = append(subUUIDs, sub.SubmissionUUID)
 		quizBySub[sub.SubmissionUUID] = sub.QuizUUID
 	}
-	answers, err := repo.ListQuizSignalAnswers(ctx, s.DB, subUUIDs)
+	answers, err := s.Repo.ListQuizSignalAnswers(ctx, subUUIDs)
 	if err != nil {
 		return nil, &APIError{Status: 500, Detail: "内部错误"}
 	}
@@ -300,7 +300,7 @@ func (s *Store) QuizSignals(ctx context.Context, uid int64, limit int) ([]map[st
 			quizUUIDs = append(quizUUIDs, q)
 		}
 	}
-	attributions, err := repo.GetQuestionAttributions(ctx, s.Mongo, quizUUIDs)
+	attributions, err := s.Repo.GetQuestionAttributions(ctx, quizUUIDs)
 	if err != nil {
 		return nil, &APIError{Status: 500, Detail: "内部错误"}
 	}

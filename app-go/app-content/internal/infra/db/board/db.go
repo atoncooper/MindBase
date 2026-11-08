@@ -1,90 +1,51 @@
-// Package db initializes the GORM MySQL connection. DSN may be SQLAlchemy-style
-// (mysql+aiomysql://...) — converted to Go mysql driver DSN.
+// Package db owns the app-board schema (CREATE TABLE IF NOT EXISTS only). The
+// process-wide MySQL pool lives in internal/infra/mysql.
+//
+// Migration policy: matches note/quiz — CREATE-ONLY, never ALTER. The board
+// table is owned by this service, but the shared mind_base database may hold
+// live data, so a fresh deployment only creates what is missing.
 package db
 
 import (
 	"fmt"
-	"strings"
-	"time"
 
-	"app-content/internal/logger"
-	"app-content/internal/model/board"
-
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
-var DB *gorm.DB
+// ownedTables is the full set of tables app-board may touch with DDL.
+var ownedTables = []string{"board"}
 
-// Init opens MySQL. dsn may be mysql+aiomysql://user:pass@host:port/db.
-// app-board shares the main app's MySQL instance/database (mind_base): the
-// MYSQL_USER grant covers its own database, so CREATE TABLE works.
-func Init(dsn string, maxOpen, maxIdle, maxLife int, debug bool) error {
-	gormDSN := toGormDSN(dsn)
-	d, err := gorm.Open(mysql.Open(gormDSN), &gorm.Config{Logger: logger.NewGORMLogger(debug)})
-	if err != nil {
-		return fmt.Errorf("open mysql: %w", err)
-	}
-	sqlDB, err := d.DB()
-	if err != nil {
-		return fmt.Errorf("get *sql.DB: %w", err)
-	}
-	sqlDB.SetMaxOpenConns(maxOpen)
-	sqlDB.SetMaxIdleConns(maxIdle)
-	sqlDB.SetConnMaxLifetime(time.Duration(maxLife) * time.Second)
-	DB = d
-	return nil
-}
+// OwnedTables exposes the pinned table list for the schema guard test.
+func OwnedTables() []string { return append([]string(nil), ownedTables...) }
 
-func Close() error {
-	if DB == nil {
-		return nil
-	}
-	sqlDB, err := DB.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.Close()
-}
+// SchemaDDL exposes the CREATE TABLE statements for the schema guard test.
+func SchemaDDL() []string { return append([]string(nil), schemaDDL()...) }
 
-// Migrate creates the app-board owned schema (board table + composite
-// indexes). Indexes are declared via GORM struct tags on the models, so
-// AutoMigrate creates them — do NOT hand-write "CREATE INDEX IF NOT EXISTS"
-// here: that is SQLite syntax and MySQL 8 rejects it.
-func Migrate() error {
-	if err := DB.AutoMigrate(
-		&model.Board{},
-	); err != nil {
-		return fmt.Errorf("auto migrate: %w", err)
+// Migrate creates the board schema if (and only if) it does not exist yet.
+func Migrate(db *gorm.DB) error {
+	for _, ddl := range schemaDDL() {
+		if err := db.Exec(ddl).Error; err != nil {
+			return fmt.Errorf("exec board ddl: %w", err)
+		}
 	}
 	return nil
 }
 
-// toGormDSN converts mysql+aiomysql://user:pass@host:port/db
-// to user:pass@tcp(host:port)/db?charset=utf8mb4&parseTime=True&loc=Local.
-func toGormDSN(sqlalchemyURL string) string {
-	s := sqlalchemyURL
-	for _, p := range []string{"mysql+aiomysql://", "mysql+pymysql://", "mysql://"} {
-		s = strings.TrimPrefix(s, p)
+func schemaDDL() []string {
+	return []string{
+		`create table if not exists board (
+			uuid       varchar(36) not null,
+			uid        bigint      not null,
+			title      varchar(255) not null default '',
+			kind       varchar(16) not null,
+			version    bigint      not null default 1,
+			is_pinned  tinyint(1)  not null default 0,
+			deleted    tinyint(1)  not null default 0,
+			created_at datetime(3) null,
+			updated_at datetime(3) null,
+			primary key (uuid),
+			index idx_board_uid_updated (uid, is_pinned, deleted),
+			index idx_board_uid_kind (uid, kind)
+		)`,
 	}
-	// s = user:pass@host:port/db[?params]
-	atIdx := strings.LastIndex(s, "@")
-	if atIdx < 0 {
-		return s + "?charset=utf8mb4&parseTime=True&loc=Local"
-	}
-	userPass := s[:atIdx]
-	hostDB := s[atIdx+1:]
-	// split "host:port" and "/db[?params]"
-	slashIdx := strings.Index(hostDB, "/")
-	if slashIdx < 0 {
-		// no db specified
-		return userPass + "@tcp(" + hostDB + ")/?charset=utf8mb4&parseTime=True&loc=Local"
-	}
-	hostPort := hostDB[:slashIdx]
-	rest := hostDB[slashIdx+1:] // db[?params]
-	// drop any existing query string (we add our own)
-	if qIdx := strings.Index(rest, "?"); qIdx >= 0 {
-		rest = rest[:qIdx]
-	}
-	return userPass + "@tcp(" + hostPort + ")/" + rest + "?charset=utf8mb4&parseTime=True&loc=Local"
 }
