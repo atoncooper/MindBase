@@ -27,6 +27,7 @@ import {
     ShieldCheck,
     Smartphone,
     Sparkles,
+    Terminal,
     Tv,
     User,
 } from "lucide-react";
@@ -46,11 +47,12 @@ import { EmailCard } from "./email-card";
 import { PhoneCard } from "./phone-card";
 import { PasswordCard } from "./password-card";
 import { BilibiliBindModal } from "./bilibili-bind-modal";
+import { CodingPlanCard } from "./coding-plan-card";
 import { Tag } from "./form-card";
 
 type Toast = { message: string; type: "success" | "error" };
 /** 详情页键：profile=个人资料；email/phone/password/bilibili=登录与安全 */
-type DetailKey = "profile" | "email" | "phone" | "password" | "bilibili";
+type DetailKey = "profile" | "email" | "phone" | "password" | "bilibili" | "coding-plan";
 
 const EASE: [number, number, number, number] = [0.28, 0.11, 0.32, 1];
 
@@ -60,6 +62,7 @@ const DETAIL_TITLES: Record<DetailKey, string> = {
     phone: "手机号",
     password: "密码",
     bilibili: "B 站账号",
+    "coding-plan": "Coding Plan",
 };
 
 async function fetchAccount(): Promise<[ProfileData, SecurityOverview]> {
@@ -202,9 +205,16 @@ export function AccountView() {
     if (!profile) return null;
     // security may still be loading (background B站 check): render placeholders
     const sec = security ?? EMPTY_SECURITY;
+    const tierName = (membership?.tier ?? "").toUpperCase();
+    const isVip = Boolean(membership?.active) && (tierName === "VIP" || tierName === "SVIP");
 
     return (
-        <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-8">
+        <div
+                className={cn(
+                    "mx-auto w-full px-6 py-10 sm:px-8",
+                    detail === "coding-plan" ? "max-w-[900px]" : "max-w-[620px]",
+                )}
+            >
             {toast && (
                 <div
                     className={cn(
@@ -347,7 +357,7 @@ export function AccountView() {
                                 label="用量与额度"
                                 value={
                                     quotaSummary?.enabled
-                                        ? `AI 问答 ${quotaSummary.kinds.find((k) => k.kind === "chat")?.used ?? 0}/${quotaSummary.kinds.find((k) => k.kind === "chat")?.limit ?? 0}`
+                                        ? `AI 用量 ${quotaSummary.kinds.find((k) => k.kind === "chat")?.usedPercent ?? 0}%`
                                         : "每日用量"
                                 }
                                 tag={
@@ -363,6 +373,13 @@ export function AccountView() {
                                 label="会员中心"
                                 value="等级 · 开通 · 续费"
                                 onClick={() => router.push("/membership")}
+                            />
+                            <ListRow
+                                icon={<Terminal className="h-4 w-4" />}
+                                tint="bg-indigo-500/10 text-indigo-600"
+                                label="Coding Plan"
+                                value={isVip ? "第三方编程套餐" : "VIP/SVIP 专属"}
+                                onClick={() => setDetail("coding-plan")}
                             />
                             <ListRow
                                 icon={<Sparkles className="h-4 w-4" />}
@@ -417,6 +434,9 @@ export function AccountView() {
                         )}
                         {detail === "bilibili" && (
                             <BilibiliDetail security={sec} onBind={() => setBindOpen(true)} />
+                        )}
+                        {detail === "coding-plan" && (
+                            <CodingPlanCard membership={membership} onToast={flash} />
                         )}
                     </motion.div>
                 )}

@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Local/system font stacks (no next/font Google fetch: keeps Docker builds
+   offline-safe; Apple devices use SF Pro / PingFang SC first anyway). */
+:root {
+  --font-inter: "Inter";
+  --font-noto-sans-sc: "Noto Sans SC";
+}
+
 /*
  * MindBase frontendv2 - Apple-inspired design system.
  * Classic black & white with Apple blue (#0071e3) accent.

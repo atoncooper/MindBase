@@ -25,6 +25,7 @@ export * from "./asr";
 export * from "./quiz";
 export * from "./task-quiz";
 export * from "./pay";
+export * from "./coding-plan";
 export * from "./user";
 export * from "./cloud";
 export * from "./workspace";

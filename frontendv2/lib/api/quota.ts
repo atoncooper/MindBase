@@ -17,6 +17,10 @@ export interface QuotaKindSummary {
   limit: number;
   /** 重置时间（epoch ms，上海自然日 0 点） */
   resetAt: number;
+  /** 已用百分比 0-100；limit<=0（不限量）时为 null */
+  usedPercent: number | null;
+  /** 剩余百分比 0-100；limit<=0 时为 null */
+  remainingPercent: number | null;
 }
 
 export interface QuotaCostSummary {
