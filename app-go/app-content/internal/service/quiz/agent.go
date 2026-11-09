@@ -1,4 +1,4 @@
-// Agent / AI-facing quiz writes (app-quiz-mcp → /internal/quiz/*, and the
+// Agent / AI-facing quiz writes (app-content-mcp → /internal/quiz/*, and the
 // app-ts AI generation flows). Validation and orchestration on top of
 // repo/agent_writes.go; the caller's uid comes from the gateway-stripped
 // X-Uid (the MCP server / app-ts forward the acting identity).

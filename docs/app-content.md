@@ -1,7 +1,7 @@
 # app-content — 内容域服务（笔记 + 测验 + 思维导图/白板）
 
 > 由原 **app-note** + **app-quiz** + **app-board** 三个 Go 服务合并（2026-11-07）。单 Go module / 单镜像 / 单容器 / **单进程、单端口、HTTPS-only**（`app-go/app-content`，镜像 `atoncooper/mind-base-app-content`）：三个域挂在同一个 Gin 引擎上，只有一个 HTTPS listener（**8004**），路径 `/board/*`、`/notes/*`、`/quiz/*`、`/tasks/*`、`/internal/*` 全部共用该端口；对外路径、wire 契约、DB schema、MCP 协议不变。
-> MCP server（`app-note-mcp` / `app-quiz-mcp` / `app-board-mcp`）保持独立，仅上游服务名改为 app-content。
+> MCP server 侧：2026-11-08（plan/1.0.20）原 `app-note-mcp` / `app-quiz-mcp` / `app-board-mcp` 三个 MCP server 已合并为**一个** `app-go/app-content-mcp`（单 module / 镜像 / 容器 / 端口 8019 / `/mcp` 端点，12 工具），上游仍经 APISIX 三条 internal 路由指向本服务；见 [app-content-mcp.md](app-content-mcp.md)。
 
 ## 一、定位
 
@@ -52,10 +52,10 @@ docker compose up -d app-content         # 容器形态
 - 锚点 `POST /notes/{uuid}/anchors`、`DELETE .../anchors/{anchor_id}`；
 - 修订 `GET /notes/{uuid}/revisions`（不含 content_md）、`POST .../revisions/restore/{revision_id}`；
 - 分享 `POST /notes/{uuid}/share`、`DELETE /notes/{uuid}/share`；公开 `GET /notes/shared/{token}` 免登录；
-- M2M：`/internal/note/*`（key-auth），供 app-note-mcp / 后端使用；
+- M2M：`/internal/note/*`（key-auth），供 app-content-mcp（note 工具面）使用；
 - 列表带 `X-Total-Count`；datetime 为 naive-UTC 格式；markdown 服务端二次消毒；仅保留单 active share。
 
-AI 操作笔记一律经独立 MCP server `app-note-mcp`（8009，服务模式 apikey + X-Uid），不直连 note 面或存储。
+AI 操作笔记一律经 MCP server `app-content-mcp`（8019 单端点，note 工具面；服务模式 apikey + X-Uid），不直连 note 面或存储。
 
 ## 四、quiz 面（单端口 8004，路径 `/quiz/*`、`/tasks/*`）
 
@@ -66,7 +66,7 @@ AI 操作笔记一律经独立 MCP server `app-note-mcp`（8009，服务模式 a
 - M2M：`/internal/quiz/*`（富 schema 生命周期）与 `/internal/quiz/quota/{peek,consume}`（共享 Redis 每日配额，Redis 不可用 fail-open）；
 - wire 契约逐条复刻：`{"detail": ...}` 错误体；datetime 双格式；导出 CSV 行结尾 CRLF；分享响应体不含 correct_answer/explanation/keywords。
 
-AI 出题/批改编排在 app-ts；AI 落库经 `app-quiz-mcp`（8012）或 app-ts 调 `/internal/quiz/*`。
+AI 出题/批改编排在 app-ts；AI 落库经 `app-content-mcp`（8019 单端点，quiz 工具面）或 app-ts 调 `/internal/quiz/*`。
 
 ## 五、board 面（单端口 8004，HTTPS-only，路径 `/board/*`）
 
@@ -178,7 +178,7 @@ env 覆盖统一用 `CONTENT__SECTION__KEY`（如 `CONTENT__SECURITY__RATE_LIMIT
 
 > 三个 upstream 的节点都是 `app-content:8004`（scheme https, `tls.verify: false`，健康检查 https 且不验证书）——upstream id 保留只是为了路由/回滚粒度。
 
-MCP server 保持独立，仅上游指向 app-content：`app-note-mcp`（8009）→ `/internal/note/*`；`app-quiz-mcp`（8012）→ `/internal/quiz/*`；`app-board-mcp`（8005）→ `/internal/board/*`。详见 [notes.md](notes.md)、[sharing.md](sharing.md)、[app-board-mcp.md](app-board-mcp.md)。
+MCP server = **`app-content-mcp`**（8019 单端口单端点，12 工具合并；2026-11-08 plan/1.0.20）：note → `/internal/note/*`、quiz → `/internal/quiz/*`、board → `/internal/board/*`，三条 internal 路由与 consumer 零改动。详见 [app-content-mcp.md](app-content-mcp.md)、[notes.md](notes.md)、[sharing.md](sharing.md)。
 
 ## 八、迁移与回滚
 
@@ -190,7 +190,7 @@ MCP server 保持独立，仅上游指向 app-content：`app-note-mcp`（8009）
 
 - ❌ 三域 repo/router/model/infra 按域隔离、禁止互相 import；确需跨域能力只能依赖对方 **service 接口**（或中立契约包），不得进程内 HTTP 回环调用自己；由 `tests/architecture_test.go` 守护
 - ❌ 各域 Migrate 禁止 ALTER/DROP（改 schema 由所属域发起）
-- ❌ AI/agent 禁止直连 app-content 或其存储：笔记/测验/板操作一律经对应 MCP server（uid 永不出现在 LLM 可写参数）
+- ❌ AI/agent 禁止直连 app-content 或其存储：笔记/测验/板操作一律经 `app-content-mcp`（uid 永不出现在 LLM 可写参数）
 - ❌ 唯一 listener 必须 HTTPS-only（启动强制 TLS；TLS rotator 作用于该 listener）；`board` 表归 board 面所有，其它服务勿动
 - ❌ 公开分享响应不得含答案/解析；Redis 分享缓存键前缀与 TTL 不得单侧改动；datetime wire 格式不得改为 RFC3339/Z
 
@@ -220,4 +220,4 @@ MCP server 保持独立，仅上游指向 app-content：`app-note-mcp`（8009）
 3. note `PATCH` 的 `If-Match` 是“先读后写”（读-检查-按主键更新），并发写存在 TOCTOU 丢更新窗口；建议改条件更新 `WHERE updated_at = ?` 或行锁。
 4. note 更新是 Mongo 正文先写、MySQL 元数据后写，无事务补偿；极端失败下正文与 content_hash/updated_at 短暂不一致；建议加补偿或在读路径以正文为准重建。
 5. 用户写端点缺少 per-uid 配额（笔记/测验创建无限额，依赖 nginx 每 IP 限流）；如需运营级防滥用可在 service 层加每日配额。
-6. `apisix.yaml` 内置 consumer key（与 `.env` 同步）是仓库级既有问题；生产应以 Secret 注入/定期轮换。
+6. ~~`apisix.yaml` 内置 consumer key~~ → 已改为模板渲染（`apisix/apisix.yaml.template` + `render-config.sh`，容器启动时从 env 注入；仓库不再存真实 key）。旧 key 已进 git 历史，生产应轮换一次。

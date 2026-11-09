@@ -131,9 +131,9 @@ MindBase 的能力围绕三条主线：
 - Drive 风格板列表 + 完整编辑器（simple-mind-map），800ms 防抖自动保存 + Ctrl+S。
 - 白板（Excalidraw）存储契约就绪。
 - **存储**：MySQL 元数据 + MongoDB 正文，**app-content（board 面）** 服务权威，`If-Match` 乐观并发锁。
-- **Agent 操作**：board agent 经 app-board-mcp 创建/查询/更新板子。
+- **Agent 操作**：board agent 经 `app-content-mcp`（内容域 MCP）创建/查询/更新板子。
 
-详见 [app-content.md](app-content.md) / [app-board-mcp.md](app-board-mcp.md)。
+详见 [app-content.md](app-content.md) / [app-content-mcp.md](app-content-mcp.md)。
 
 ---
 

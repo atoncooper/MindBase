@@ -69,7 +69,7 @@ services:
     volumes:
       - ./nginx/certs:/out/nginx
       - ./app-board/certs:/out/app-board
-      - ./mcp/app-board-mcp/certs:/out/mcp
+      - ./app-go/app-content-mcp/certs:/out/mcp
       - ./app-pay/certs:/out/pay
     mem_limit: 128m
     logging: *default-logging
@@ -343,9 +343,10 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./apisix/config.client.yaml:/usr/local/apisix/conf/config.yaml:ro
-      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+      - ./apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
+      - ./apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
       - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
-    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
@@ -353,6 +354,9 @@ services:
       - https_proxy=
       - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
       - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
+      - PAY_OPS_KEY=${PAY_OPS_KEY:-}
     mem_limit: 256m
     logging: *default-logging
     healthcheck:
@@ -414,12 +418,12 @@ services:
       - KG_GRPC__ENABLED=${KG_GRPC__ENABLED:-false}
       - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
-      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
-      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
-      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
-      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      # MCP 桥（board/note/quiz 三域已合并为 app-content-mcp 单服务）：
+      # default.yaml 的 URL 指向 127.0.0.1，容器内必须显式指向服务名；凭证走
+      # 服务模式 X-Api-Key（= app-content-mcp 的 CONTENTMCP__SERVER__SERVICE_API_KEY，
+      # 即 APISIX_CONSUMER_KEY）
+      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
+      - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
       - MILVUS__ADDRESS=milvus:19530
       - LOG__FILEENABLED=false
       # 单用户 agent/向量化堆上限；大批量构建 OOM 时调大 APP_TS_NODE_HEAP
@@ -616,84 +620,44 @@ services:
     networks:
       - mind-base-net
 
-  app-note-mcp:
-    image: atoncooper/mind-base-app-note-mcp:latest
+  # app-content-mcp —— 单一 MCP server（board + note + quiz 三域合并，12 个工具）。
+  # 双模式鉴权：外部 MCP 宿主走 Bearer token（CONTENT_MCP_AUTH_TOKEN，固定 uid）；
+  # 主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid，
+  # uid 来自后端已认证会话，永不经过 LLM 参数）。上游仍经 APISIX key-auth 三条
+  # internal 路由（/internal/board|note|quiz/*）到 app-content。客户端单机部署：
+  # 仅回环 8019 + 容器内网互通（app-ts 直连）。
+  app-content-mcp:
+    image: atoncooper/mind-base-app-content-mcp:latest
     pull_policy: never
     build:
-      context: ./mcp/app-note-mcp
+      context: ./app-go/app-content-mcp
       dockerfile: Dockerfile
-    container_name: mind-base-app-note-mcp
-    environment:
-      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
-      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
-      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - NOTEMCP__LOG__OUTPUT=both
-      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
-    ports:
-      - "127.0.0.1:8009:8009"
-    volumes:
-      - app_note_mcp_logs:/app/logs
-    mem_limit: 64m
-    logging: *default-logging
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  app-quiz-mcp:
-    image: atoncooper/mind-base-app-quiz-mcp:latest
-    pull_policy: never
-    build:
-      context: ./mcp/app-quiz-mcp
-      dockerfile: Dockerfile
-    container_name: mind-base-app-quiz-mcp
-    environment:
-      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
-      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
-      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - QUIZMCP__LOG__OUTPUT=both
-      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
-    ports:
-      - "127.0.0.1:8012:8012"
-    volumes:
-      - app_quiz_mcp_logs:/app/logs
-    mem_limit: 64m
-    logging: *default-logging
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  app-board-mcp:
-    image: atoncooper/mind-base-app-board-mcp:latest
-    pull_policy: never
-    build:
-      context: ./mcp/app-board-mcp
-      dockerfile: Dockerfile
-    container_name: mind-base-app-board-mcp
+    container_name: mind-base-app-content-mcp
     depends_on:
       cert-gen:
         condition: service_completed_successfully
     environment:
-      - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
-      - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
-      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
-      - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
-      - BOARDMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
-      - BOARDMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
-      - BOARDMCP__LOG__OUTPUT=both
-      - BOARDMCP__LOG__FILE=/app/logs/app-board-mcp.log
+      - CONTENTMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - CONTENTMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__UPSTREAM__UID=${CONTENT_MCP_UID:-}
+      - CONTENTMCP__SERVER__AUTH_TOKEN=${CONTENT_MCP_AUTH_TOKEN:-}
+      # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
+      - CONTENTMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__SERVER__TLS__ENABLED=${CONTENT_MCP_TLS_ENABLED:-false}
+      # 外部 Bearer 宿主的工具白名单（逗号分隔；空=全部 12 个工具；服务模式不受限）
+      - CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS=${CONTENT_MCP_BEARER_ALLOWED_TOOLS:-}
+      - CONTENTMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENTMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - CONTENTMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - CONTENTMCP__LOG__OUTPUT=both
+      - CONTENTMCP__LOG__FILE=/app/logs/app-content-mcp.log
     ports:
-      - "127.0.0.1:8005:8005"
+      - "127.0.0.1:${APP_CONTENT_MCP_PORT:-8019}:8019"
     volumes:
-      - app_board_mcp_logs:/app/logs
-      - ./mcp/app-board-mcp/certs:/app/certs
-    mem_limit: 64m
+      - app_content_mcp_logs:/app/logs
+      - ./app-go/app-content-mcp/certs:/app/certs
+    # 三域合并后的单进程上限（原 board/note/quiz 各 64m）。
+    mem_limit: 128m
     logging: *default-logging
     restart: unless-stopped
     networks:
@@ -893,7 +857,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-content-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -978,9 +942,7 @@ volumes:
   app_cloud_logs:
   app_content_logs:
   app_kg_logs:
-  app_note_mcp_logs:
-  app_quiz_mcp_logs:
-  app_board_mcp_logs:
+  app_content_mcp_logs:
   app_task_mysql_data:
   app_pay_mysql_data:
   app_pay_logs:

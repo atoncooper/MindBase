@@ -1,5 +1,5 @@
 // Agent / AI-facing quiz writes: quiz sets, question content and gradings.
-// The simple agent path (app-quiz-mcp save_quiz/save_grading) and the async AI
+// The simple agent path (app-content-mcp save_quiz/save_grading) and the async AI
 // generation flows (create generating → finalize questions, or fail) share
 // these primitives. Insert shapes mirror the Python generation slice
 // (quiz_from_summary.py / quiz_grader.py) so history / detail / wrong-answer

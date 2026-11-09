@@ -14,6 +14,11 @@
 #     --from-file=dev-ca.crt=app-board/certs/dev-ca.crt \
 #     --from-file=server.crt=app-board/certs/server.crt \
 #     --from-file=server.key=app-board/certs/server.key
+#   # Optional (TLS for app-content-mcp; the pod mounts it as an OPTIONAL Secret):
+#   kubectl -n mind-base create secret generic app-content-mcp-certs \
+#     --from-file=dev-ca.crt=app-go/app-content-mcp/certs/dev-ca.crt \
+#     --from-file=server.crt=app-go/app-content-mcp/certs/server.crt \
+#     --from-file=server.key=app-go/app-content-mcp/certs/server.key
 # See README.md for the full manual.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -90,9 +95,7 @@ resources:
   - 30-apps/app-cloud.yaml
   - 30-apps/app-content.yaml
   - 30-apps/app-kg.yaml
-  - 30-apps/app-board-mcp.yaml
-  - 30-apps/app-note-mcp.yaml
-  - 30-apps/app-quiz-mcp.yaml
+  - 30-apps/app-content-mcp.yaml
   - 30-apps/app-task.yaml
   - 30-apps/app-pay.yaml
   - 30-apps/app-admin.yaml

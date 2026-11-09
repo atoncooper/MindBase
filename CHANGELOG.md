@@ -2,6 +2,24 @@
 
 本文件记录 MindBase 各版本的显著变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] — 2026-11-08
+
+### Changed
+
+- **内容域 MCP 合并：app-board-mcp + app-note-mcp + app-quiz-mcp → app-content-mcp**：三个 Go MCP server 合并为单一模块 `app-go/app-content-mcp`（单 Go module / 单镜像 `atoncooper/mind-base-app-content-mcp` / 单容器 `mind-base-app-content-mcp` / **单端口 8019** / 单 `/mcp` 端点，streamable-http）。**工具面与协议零改动**：board 6 + note 4 + quiz 2 共 12 个工具的名称/参数/返回文案不变，board 的 3 个 resources（`board://{uuid}`）与 3 个 prompts 一并保留；app-ts 的 prompt 契约、前端、SSE 协议、APISIX 路由全部零改动。上游仍经 APISIX key-auth 三条 internal 路由（`board_internal`/`note_internal`/`quiz_internal`，零改动）到 app-content:8004。端口取 8019（避开 app-kg health 的 8014）；双模式鉴权（外部宿主 Bearer + 固定 uid / app-ts 服务模式 apikey + 每请求 X-Uid）与「uid 永不出现在 LLM 可写参数」红线不变。
+- **工程形态**：**按 MCP 原语组织**——`internal/mcp/tools`（12 工具）、`internal/mcp/resources`（board 模板 + 动态 list）、`internal/mcp/prompts`（3 prompts）、`internal/mcp/kit`（原语无关的 wrap/结果/未配置守卫）；上游按域 `internal/upstream/{board,note,quiz}` 隔离，唯一组合根 `main.go`；共用 `internal/{identity,logger,serve,certs,config}`；env 前缀 `BOARDMCP__`/`NOTEMCP__`/`QUIZMCP__` → **`CONTENTMCP__`**（三域共用一份配置）；日志卷 `app_content_mcp_logs` / 日志前缀 `[CONTENTMCP]`；证书目录 `app-go/app-content-mcp/certs`；compose profiles `["", "content-mcp", "full"]`（默认栈启动）。
+- **测试布局**：`app-go/app-content-mcp` 全部测试迁入 `tests/` 独立 `package tests`（黑盒；经官方 in-process MCP client 调 tools/resources/prompts），`internal/**` 下不再保留 `_test.go`。
+- **安全加固二（2026-11-09）**：① APISIX 密钥模板化——新增 `apisix/apisix.yaml.template` + `apisix/render-config.sh`，容器启动时从 env 渲染（compose/swarm entrypoint、k8s initContainer），仓库不再保存 consumer/internal key 明文，产物 gitignore；`apisix.dev.yaml` 同步改为模板。② app-ts 风险工具收口：`delete_board` 不再桥接给 AI（board agent 仅 5 工具），删除只保留给界面/外部宿主白名单。③ MCP 增加鉴权后 per-uid 限流（`CONTENTMCP__SERVER__RATE_LIMIT_PER_UID_RPS/_BURST`，0=关闭）：全局桶防打爆、按 uid 桶防单租户吃满。
+- **MCP 工具 schema 修正**：`create_board`/`update_board` 的 `content` 改为 `anyOf: [object, string]`，与工具描述/实现一致；开启 `WithInputSchemaValidation` 后 JSON 字符串 content 不再被误拒（协议级测试覆盖 string 通过、number 拒绝）。
+- **MCP 安全加固**：① 外部 Bearer token 支持工具白名单 `CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS`（空=全部 12 个；服务模式不受限），把合并后「单 token 触达 12 工具」的面收窄到最小权限；② 开启 mcp-go `WithInputSchemaValidation`，工具参数类型/必填不符直接以 tool error 返回（模型可自纠，不进 handler）；③ 工具调用日志增加 `auth_mode`/`uid` 审计字段（仍不记录正文/标题）。
+- **部署/CI 一次性切换**：compose（含 client compose）删除 3 个 MCP 服务与 3 个日志卷、新增 `app-content-mcp`；`deploy/{docker,k8s,swarm}` 三份 manifest → 一份（`38-app-content-mcp.yml` / `app-content-mcp.yaml` / stack 单服务）、cert-gen 证书路径与 leaf 名同步；`.github/workflows/docker-build.yml` 矩阵 14 → 12 镜像；`scripts/gen-certs.sh` 默认 `MCP_DIR=app-go/app-content-mcp/certs`；`.env.example` 的 `BOARD_MCP_UID/AUTH_TOKEN`、`NOTE_MCP_*`、`QUIZ_MCP_*` → `CONTENT_MCP_UID` / `CONTENT_MCP_AUTH_TOKEN`，新增宿主调试口 `APP_CONTENT_MCP_PORT`（默认 8019）；NO_PROXY 服务名同步。APISIX 三条 internal 路由与 consumer 零改动（只同步注释里的服务名）。
+- **app-ts 接入**：`config/default.yaml` 的 `noteMcp`/`quizMcp`/`boardMcp` 三段 → 一段 `contentMcp`（`url=http://127.0.0.1:8019/mcp`、`apiKey`/`bearerToken`/`completionModel`），`src/config/index.ts` 类型与 `test/config-loader.test.ts` 同步；`src/bootstrap/container.ts` 只建**一个** `McpClient`：note/quiz 手写 wrapper 复用，board 经 `registerMcpTools` 动态桥接**仅 5 个工具**（`includeToolNames` 过滤；`delete_board` 不桥接给 AI，删除只留给界面/外部宿主白名单），`BoardCompletionService` 复用同一 client；`enabled=false` 时三域工具全部不注册（降级语义不变）。
+
+### Documentation
+
+- **规范**：AGENTS.md 目录树（`mcp/` 三条 → `app-go/app-content-mcp`）、§2.6 问题定位索引、§2.11 重写为 `app-content-mcp`（三域 12 工具 + resources/prompts、8019 端点、双模式鉴权、APISIX 三路由、TLS、部署与 profile、红线）、§2.12 board agent MCP 客户端/工具路径、§2.15/§2.17 的 MCP 行、§2.18 内网先例措辞；`app-ts/AGENTS.md` 的 `src/mcp` 说明改为 contentMcp 单端点。
+- **服务文档**：`docs/app-board-mcp.md` → **`docs/app-content-mcp.md`**（合并动机/拓扑、12 工具表、resources/prompts、双模式鉴权与 uid 红线、上游三条 internal 路由、`CONTENTMCP__` 配置、TLS、部署、从旧三服务的迁移与回滚、测试冒烟、红线）；删除旧文件名并更新索引与全部引用链接。`docs/{architecture,configuration,deployment,getting-started,features,setup-guide,project-structure,client-compose,vscode-setup,service-key-auth,README,app-content,app-kg}.md` 同步新服务名/端口/env。`plan/1.0.19-Content-Domain` 追加状态注记（MCP 收口已在 1.0.20 执行）。
+
 ## [Unreleased] — 2026-11-07
 
 ### Changed

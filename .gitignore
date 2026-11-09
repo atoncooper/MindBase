@@ -137,3 +137,7 @@ NVIDIA Corporation/
 tmp-gotest/
 # gh CLI 本地配置（hosts.yml 可能含 OAuth token）
 .config/
+
+# APISIX rendered config (contains secrets; generated at container start)
+apisix/apisix.yaml
+apisix/apisix.dev.rendered.yaml

@@ -9,7 +9,7 @@ import { createLogger } from "../logger.js";
  * Board completion (AI 补全) — port of app/services/board/completion.py.
  *
  * Single structured LLM call per request (latency-sensitive, no agent loop):
- * read the board through app-board-mcp (service mode), locate the anchor node,
+ * read the board through app-content-mcp (service mode), locate the anchor node,
  * ask the model for child / sibling node suggestions, return them for the
  * editor's ghost chips. The user confirms with Tab/click; the editor applies
  * them through the normal optimistic-lock save path.
@@ -122,7 +122,7 @@ export interface BoardCompletionOptions {
   client: BoardMcpCaller;
   /** injectable for tests; default = gateway model with purpose="board_complete" */
   model?: LanguageModel;
-  /** optional model override (config boardMcp.completionModel); empty = config.llm.model */
+  /** optional model override (config contentMcp.completionModel); empty = config.llm.model */
   completionModel?: string;
   /** injectable for tests; default = generateObject */
   generate?: BoardCompletionGenerator;

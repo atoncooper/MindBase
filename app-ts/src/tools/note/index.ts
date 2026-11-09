@@ -4,7 +4,7 @@ import type { McpToolsClient } from "../../mcp/index.js";
 
 /**
  * save_note: saves a markdown note (uid from ToolRunContext). 红线（§2.15）：
- * 笔记落库一律经 app-note-mcp（save_note），本层绝不直连 note 表或任何仓储。
+ * 笔记落库一律经 app-content-mcp（save_note），本层绝不直连 note 表或任何仓储。
  * 会话笔记语义：target_type="conversation"、target_id=当前会话 id（AGENTS.md
  * 枚举的 conversation 类型）。tags 不再支持——Go app-note 模型无该字段。
  */

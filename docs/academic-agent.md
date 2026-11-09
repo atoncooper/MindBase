@@ -705,7 +705,7 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 
 **分页与上限**：文献 1-100、检索 1-10、事件 1-50；正文单章节上限 200k 字符；标题 200 字符。越界参数按钳制处理，非法枚举/格式返回 400 并给出可选值。
 
-**网关**：`apisix/apisix.yaml` 与 `apisix.dev.yaml` 新增 `academic_ts`（`/academic`, `/academic/*`，priority 55，upstream app-ts，forward-auth → app-user（auth 路由），剥离客户端伪造的 X-Uid/X-Roles）。回滚 = 删除该路由（URI 将 404；Python 面已退役，无回落）。
+**网关**：`apisix/apisix.yaml.template` 与 `apisix.dev.yaml.template` 新增 `academic_ts`（`/academic`, `/academic/*`，priority 55，upstream app-ts，forward-auth → app-user（auth 路由），剥离客户端伪造的 X-Uid/X-Roles）。回滚 = 删除该路由（URI 将 404；Python 面已退役，无回落）。
 
 **测试**：`test/academic-service.test.ts`（服务编排/校验/核验语义/导出）+ `test/academic-routes.test.ts`（uid 401、CRUD、错误映射、端到端工作流），均为离线用例。
 

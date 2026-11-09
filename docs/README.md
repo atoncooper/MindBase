@@ -41,7 +41,7 @@
 |---|---|
 | [app-task.md](app-task.md) | 定时出题任务：调度模型、数据表、WebUI、executor 对接、配置 |
 | [app-content.md](app-content.md) | 内容域服务 app-content（笔记 / 测验 / 板存储三域合一）：端口、API、TLS、配置、域边界 |
-| [app-board-mcp.md](app-board-mcp.md) | 思维导图/白板 MCP server：工具面、认证、限流、TLS、服务模式接入 |
+| [app-content-mcp.md](app-content-mcp.md) | 内容域 MCP server（board/note/quiz 12 工具合并）：工具面、resources/prompts、双模式鉴权、TLS、部署与迁移 |
 | [app-pay.md](app-pay.md) | 交易/会员服务：订单状态机、支付渠道、审计、TLS、配置 |
 | [app-admin.md](app-admin.md) | 统一管理后台：分享审核（封杀/解封/放行）、支付运营（订单/会员/权益事件/SKU/补偿开通/退款复核）、沙箱、统一账户与审计、部署 |
 | [app-cloud.md](app-cloud.md) | 云盘服务：分块上传、配额记账、分享/回收站、向量化管道、多实例扩容 |

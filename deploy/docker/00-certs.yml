@@ -33,6 +33,6 @@ services:
     volumes:
       - ../../nginx/certs:/out/nginx
       - ../../app-board/certs:/out/app-board   # app-content board 域证书（目录名沿用历史）
-      - ../../mcp/app-board-mcp/certs:/out/mcp
+      - ../../app-go/app-content-mcp/certs:/out/mcp
       - ../../app-pay/certs:/out/pay
     restart: "no"

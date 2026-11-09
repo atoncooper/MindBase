@@ -70,7 +70,7 @@ cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 | 变量 | 怎么填 |
 |------|--------|
 | `AI_GATEWAY__API_KEY` | AI 网关的「通行证」。先自己生成一串：`openssl rand -hex 32`，填到等号右边；第 5 步在网关控制台创建消费者 `mindbase-backend` 时填**同一个值**。留空会导致 `app-user`（bili 路由）起不来、所有 AI 能力不可用。 |
-| `APISIX_CONSUMER_KEY` | 服务之间互相认证的共享密钥，**必须与 `apisix/apisix.yaml` 里 `consumers.internal.key` 一致**（该文件不读 `.env`）。本地体验：直接填仓库内置开发值 `D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre`；对外部署：换成自己生成的值并同步改该文件里的 `key`。保持模板占位串会到处 401。 |
+| `APISIX_CONSUMER_KEY` | 服务之间互相认证的共享密钥，**只需填 `.env` 一处**：APISIX 启动时由 `apisix/render-config.sh` 从 env 渲染进 `apisix.yaml`（仓库里的模板只含占位符，不含真实 key）。生成：`openssl rand -base64 36 | tr -d '\n=+/'`；轮换 = 改 `.env` 后重建 apisix。 |
 | `secrets/api_key_encryption_key` | 3.1 已生成，**不需要**写进 `.env`。 |
 
 ### 3.4 可选项（用到再填，留空即可）
@@ -83,7 +83,7 @@ cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 | `APPTASK_EMAIL_API_KEY` | 定时出题邮件（Resend 的 `re_` 开头 key）；不填时邮件只记 dry_run，不会真的发送。 |
 | `PAY_MYSQL_*` / `PAY_OPS_KEY` | 会员 / 支付：`PAY_MYSQL_*` 用本地默认值即可；`PAY_OPS_KEY` 可选（管理台「退款复核」用，留空则该页隐藏）。 |
 | `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 管理台「分享内容受控预览」。 |
-| `TAVILY_API_KEY` / `SEARXNG_URL`、`LANGSMITH_*`、`BOARD_MCP_*` | 可选增强：联网搜索质量、调用链追踪、外部 MCP 宿主接入。 |
+| `TAVILY_API_KEY` / `SEARXNG_URL`、`LANGSMITH_*`、`CONTENT_MCP_*` | 可选增强：联网搜索质量、调用链追踪、外部 MCP 宿主接入。 |
 
 逐项说明见 `.env.example` 注释，配置体系见 [configuration.md](configuration.md)。
 
@@ -179,7 +179,7 @@ curl -s http://127.0.0.1:8017/health      # 沙箱控制层（需先启 sandbox�
 
 **3000 / 80 端口打不开。** 容器还在构建或启动：`docker compose ps` 看状态，`docker compose logs -f nginx frontend` 看日志。80/443 被别的程序占用时先停掉占用进程；也可在 `.env` 设 `FRONTEND_PORT=3001` 改前端端口。只想跑轻量核心栈可用 [client-compose.md](client-compose.md)。
 
-**有容器 unhealthy / Exited。** 先 `docker compose ps` 找出异常服务，再 `docker compose logs -f <服务名>`。最常见原因：缺 `secrets/api_key_encryption_key`（3.1）、`APISIX_CONSUMER_KEY` 与 `apisix/apisix.yaml` 不一致（3.3）、`AI_GATEWAY__API_KEY` 留空。
+**有容器 unhealthy / Exited。** 先 `docker compose ps` 找出异常服务，再 `docker compose logs -f <服务名>`。最常见原因：缺 `secrets/api_key_encryption_key`（3.1）、`APISIX_CONSUMER_KEY` 为空导致 apisix 渲染失败（3.3，看 apisix 日志 `[apisix-config]`）、`AI_GATEWAY__API_KEY` 留空。
 
 **镜像拉不动 / 构建很慢（国内网络）。** 给 Docker 配镜像加速器：Docker Desktop → Settings → Docker Engine（Linux 改 `/etc/docker/daemon.json`），加 `registry-mirrors` 后重启 Docker；方法见 [deploy/china/README.md](../deploy/china/README.md)「镜像拉取与加速」（**只取加速器配置**；该目录编排文件是旧快照，不要用它启动）。GitHub 慢可用代理或 ZIP 包。
 

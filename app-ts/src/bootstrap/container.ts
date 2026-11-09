@@ -132,6 +132,21 @@ import { createLogger, closeLogger } from "../logger.js";
 const log = createLogger("BOOT");
 
 /**
+ * Board tools bridged dynamically from the merged content MCP server
+ * (app-content-mcp). Only these 6 are bridged: save_note / save_quiz /
+ * save_grading live on the SAME server but have handwritten wrappers, so
+ * bridging every discovered tool would collide on names and double-register
+ * their schemas.
+ */
+const CONTENT_MCP_BOARD_TOOL_NAMES = [
+  "list_boards",
+  "get_board",
+  "create_board",
+  "update_board",
+  "pin_board",
+] as const;
+
+/**
  * Composition root: wiring DI → Harness → Fastify (the process entry is a thin
  * launcher in index.ts).
  * Any unavailable dependency (Milvus/gateway offline) degrades startup instead of crashing.
@@ -405,21 +420,33 @@ export async function bootstrap() {
   } else {
     log.info("[BOOT] kg disabled — kg_search tool and /knowledge/kg/* routes not registered");
   }
-  // Note saving: goes through app-note-mcp (save_note) — never the note tables directly.
-  if (config.noteMcp.enabled) {
-    const noteMcpHeaders: Record<string, string> = {};
-    if (config.noteMcp.bearerToken) noteMcpHeaders["Authorization"] = `Bearer ${config.noteMcp.bearerToken}`;
-    // MCP server 服务模式认 APISIX 惯例的 `apikey` 头（serve.go: Header.Get("apikey")），
-    // 不是 X-Api-Key——头名错位会被服务端当作未带凭证而 401
-    if (config.noteMcp.apiKey) noteMcpHeaders["apikey"] = config.noteMcp.apiKey;
-    const noteMcp = new McpClient({
-      name: "note",
-      url: config.noteMcp.url,
-      timeoutMs: config.noteMcp.timeoutMs,
-      defaultHeaders: noteMcpHeaders,
-    });
-    registry.register(createSaveNoteTool(noteMcp));
-    log.info(`[BOOT] note MCP tool registered (${config.noteMcp.url})`);
+  // Content-domain MCP (plan/1.0.20): ONE merged server app-content-mcp exposes
+  // board (6) + note (1) + quiz (2) tools on a single /mcp endpoint. A single
+  // client (name="content") backs the hand-written note/quiz wrappers, the board
+  // dynamic bridge and BoardCompletionService — auth headers are injected once
+  // here; uid travels per-call as X-Uid.
+  const contentMcpHeaders: Record<string, string> = {};
+  if (config.contentMcp.bearerToken) contentMcpHeaders["Authorization"] = `Bearer ${config.contentMcp.bearerToken}`;
+  // MCP server 服务模式认 APISIX 惯例的 `apikey` 头（serve.go: Header.Get("apikey")），
+  // 不是 X-Api-Key——头名错位会被服务端当作未带凭证而 401
+  if (config.contentMcp.apiKey) contentMcpHeaders["apikey"] = config.contentMcp.apiKey;
+  const contentMcp = config.contentMcp.enabled
+    ? new McpClient({
+        name: "content",
+        url: config.contentMcp.url,
+        timeoutMs: config.contentMcp.timeoutMs,
+        defaultHeaders: contentMcpHeaders,
+      })
+    : null;
+  if (contentMcp) {
+    log.info(`[BOOT] content MCP client ready (${config.contentMcp.url})`);
+  } else {
+    log.info("[BOOT] content MCP disabled — note/quiz/board tools not registered");
+  }
+  // Note saving: goes through app-content-mcp (save_note) — never the note tables directly.
+  if (contentMcp) {
+    registry.register(createSaveNoteTool(contentMcp));
+    log.info("[BOOT] note MCP tool registered (save_note; content MCP)");
   } else {
     log.info("[BOOT] note MCP disabled — save_note not registered");
   }
@@ -437,20 +464,11 @@ export async function bootstrap() {
   registry.register(createRunCodeTool(codeExec));
   log.info(`[BOOT] run_code tool registered (store=${config.sandbox.enabled ? "remote" : "stub"})`);
   // Quiz generation: the quiz agent authors questions; persistence goes through
-  // app-quiz-mcp (save_quiz / save_grading) — never the quiz tables directly.
-  if (config.quizMcp.enabled) {
-    const quizMcpHeaders: Record<string, string> = {};
-    if (config.quizMcp.bearerToken) quizMcpHeaders["Authorization"] = `Bearer ${config.quizMcp.bearerToken}`;
-    if (config.quizMcp.apiKey) quizMcpHeaders["apikey"] = config.quizMcp.apiKey;
-    const quizMcp = new McpClient({
-      name: "quiz",
-      url: config.quizMcp.url,
-      timeoutMs: config.quizMcp.timeoutMs,
-      defaultHeaders: quizMcpHeaders,
-    });
-    registry.register(createEmitQuizTool(quizMcp));
-    registry.register(createEmitGradingTool(quizMcp));
-    log.info(`[BOOT] quiz MCP tools registered (${config.quizMcp.url})`);
+  // app-content-mcp (save_quiz / save_grading) — never the quiz tables directly.
+  if (contentMcp) {
+    registry.register(createEmitQuizTool(contentMcp));
+    registry.register(createEmitGradingTool(contentMcp));
+    log.info("[BOOT] quiz MCP tools registered (emit_quiz/emit_grading; content MCP)");
   } else {
     log.info("[BOOT] quiz MCP disabled — quiz tools not registered");
   }
@@ -525,30 +543,26 @@ export async function bootstrap() {
     // either and delegate_to_agent reports it as unavailable.
     log.info("[BOOT] academic disabled — academic tools/agent not registered");
   }
-  // MCP dynamic tool bridge (src/mcp/): the app-board-mcp server OWNS its tools —
-  // they are discovered via tools/list and registered verbatim; auth headers are
-  // injected here (boardMcp config), uid travels per-call as X-Uid.
+  // MCP dynamic tool bridge (src/mcp/): the app-content-mcp server OWNS its
+  // board tools — discovered via tools/list and registered verbatim. Only the
+  // board 6 are bridged (includeToolNames): note/quiz wrappers above talk to the
+  // same server, so bridging all 12 tools would collide on names.
   let boardCompletion: BoardCompletionService | undefined;
-  if (config.boardMcp.enabled) {
-    const boardMcpHeaders: Record<string, string> = {};
-    if (config.boardMcp.bearerToken) boardMcpHeaders["Authorization"] = `Bearer ${config.boardMcp.bearerToken}`;
-    if (config.boardMcp.apiKey) boardMcpHeaders["apikey"] = config.boardMcp.apiKey;
-    const boardMcp = new McpClient({
-      name: "board",
-      url: config.boardMcp.url,
-      timeoutMs: config.boardMcp.timeoutMs,
-      defaultHeaders: boardMcpHeaders,
-    });
+  if (contentMcp) {
     // discoveryUid="1"：service-mode 网关要求正整数 X-Uid（uid<=0 拒绝），boot
     // 发现无用户会话；tools/list 只返回工具元数据不触达上游，真实调用仍按会话
     // uid 走 X-Uid
-    const registered = await registerMcpTools(registry, boardMcp, { maxContentChars: config.boardMcp.maxContentChars, discoveryUid: "1" });
-    log.info(`[BOOT] board MCP tools registered: ${registered} (${config.boardMcp.url})`);
+    const registered = await registerMcpTools(registry, contentMcp, {
+      maxContentChars: config.contentMcp.maxContentChars,
+      discoveryUid: "1",
+      includeToolNames: CONTENT_MCP_BOARD_TOOL_NAMES,
+    });
+    log.info(`[BOOT] board MCP tools registered: ${registered}/${CONTENT_MCP_BOARD_TOOL_NAMES.length} (content MCP)`);
     // /chat/board/complete reuses the same service-mode client (GET board + one
     // structured LLM call); route is registered only when this block ran.
     boardCompletion = new BoardCompletionService({
-      client: boardMcp,
-      completionModel: config.boardMcp.completionModel,
+      client: contentMcp,
+      completionModel: config.contentMcp.completionModel,
     });
   } else {
     log.info("[BOOT] board MCP disabled — board tools not registered");

@@ -75,7 +75,7 @@ describe("real config/default.yaml", () => {
     const { value } = loadConfigFiles();
     for (const section of [
       "server", "aiGateway", "llm", "embedding", "rerank", "milvus", "mongo",
-      "boardMcp", "search", "agent", "chunk", "log", "rateLimit", "prompts",
+      "contentMcp", "search", "agent", "chunk", "log", "rateLimit", "prompts",
       "context", "timezone", "openrouter", "ocr",
     ]) {
       expect(value[section], `missing section: ${section}`).toBeTruthy();

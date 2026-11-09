@@ -38,7 +38,7 @@
 **一旦存了用户数据不可换**）、Docker Desktop（WSL2 后端）。
 
 ```bash
-# 首次：构建全部 first-party 镜像（frontend/app-ts/Go 服务/3 个 MCP/minio/certgen）
+# 首次：构建全部 first-party 镜像（frontend/app-ts/Go 服务/app-content-mcp/minio/certgen）
 docker compose -f docker-compose.client.yml build
 
 # 启动核心栈
@@ -160,12 +160,12 @@ APP_CLOUD_KG_BASE_URL=http://app-kg:8014
 实测参考（服务端栈同宿主 docker stats 冷态值）：apisix 294MB（服务端 auto-worker）→ 客户端
 1 worker 约 100–150MB；mysql 446MB（默认参数）→ 客户端关 P_S/binlog 后约 250–350MB；
 mongo 260MB、minio 68MB、app-ts 223MB、frontend 80MB、redis ~10MB、nginx ~23MB、
-milvus 空库 152MB（随向量数据增长，上限 1.5GB）；3 个 Go 服务合计 ~100MB、3 个 MCP 合计 ~20MB。
+milvus 空库 152MB（随向量数据增长，上限 1.5GB）；3 个 Go 服务合计 ~100MB、app-content-mcp ~10MB。
 **客户端核心栈典型合计 ≈ 1.5–2.5GB**。被砍掉不再常驻的实测值：higress 567MB、neo4j 465MB、
 app-pay 321MB、两个附加 MySQL 共 926MB、etcd 59MB（服务端全家桶合计约 4GB+）。
 原估计（已被上表实测取代）：mysql ~350MB、mongo ~300MB、milvus 0.5–1.5GB（含内嵌 etcd）、
 minio ~150MB、apisix ~100MB（1 worker）、app-ts ~400MB、frontend ~250MB、
-3 个 Go 服务 ~250MB、3 个 MCP ~80MB、redis ~130MB、nginx ~15MB。
+3 个 Go 服务 ~250MB、app-content-mcp ~30MB、redis ~130MB、nginx ~15MB。
 
 ## 从服务端迁移数据
 
@@ -191,6 +191,6 @@ Redis 不建议迁移（captcha/事件桥，短暂态）。
 - WSL2 全局内存上限可在 `%UserProfile%\.wslconfig` 里限：`[wsl2]` `memory=6GB`，
   配合本文件的 per-container 上限形成双保险。
 - 宿主 80/443 若被 IIS 等占用，改 `NGINX_HTTP_PORT`/`NGINX_HTTPS_PORT`。
-- 本文件与根 compose 的 **APISIX 路由面（apisix/apisix.yaml）完全共用**；config 用
+- 本文件与根 compose 的 **APISIX 路由面（apisix/apisix.yaml.template，启动时渲染）完全共用**；config 用
   客户端变体 `apisix/config.client.yaml`（与服务端 config.yaml 唯一差异是 worker 数），
   改路由只需维护一份。

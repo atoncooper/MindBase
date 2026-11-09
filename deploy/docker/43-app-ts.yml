@@ -1,7 +1,7 @@
 # app-ts —— AI 域核心（agent/RAG/向量化/KG/quiz AI，Node/Fastify）—— server2
 #   docker compose --env-file ../../.env -f 43-app-ts.yml up -d
 # 依赖（均经 overlay 按名解析）：mongo/redis(本机)、minio/etcd(server1)、
-#   app-user(本机，8006 auth / 8010 bili / 8015 settings)/app-kg/MCP×3(本机)、apisix(server1)、higress(见 90)
+#   app-user(本机，8006 auth / 8010 bili / 8015 settings)/app-kg/content-mcp(本机 8019)、apisix(server1)、higress(见 90)
 name: mb-app-ts
 
 services:
@@ -36,12 +36,8 @@ services:
       - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
       - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
-      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
-      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
-      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
-      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
+      - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
       - MILVUS__ADDRESS=milvus:19530
       # 镜像 /app/logs 属主未修复前文件日志会因 EACCES 崩进程，先走 stdout
       - LOG__FILEENABLED=false

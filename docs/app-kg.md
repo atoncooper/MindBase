@@ -21,7 +21,7 @@ app-ts (Fastify, AI)                                app-kg (Go, gRPC :8013)
 ```
 
 - **gRPC 不进 APISIX**：app-ts → app-kg 内网直连（compose `mind-base-net`），
-  对齐 backend → app-board-mcp 内网先例；宿主回环 127.0.0.1:8013 供 grpcurl 调试。
+  对齐 app-ts → app-content-mcp 的 MCP 内网直连先例；宿主回环 127.0.0.1:8013 供 grpcurl 调试。
 - **归一化单一实现**：`name_lower`（小写+空白折叠）与 `eid`（sha1 hex 前 16 位）
   由调用方（app-ts resolver）计算后传入，app-kg 不做归一化
   ——tests 包守护测试钉死该契约。

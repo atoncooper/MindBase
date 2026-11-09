@@ -337,8 +337,9 @@ services:
         condition: service_healthy
     volumes:
       - ../../apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
-      - ../../apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
-    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; exec /docker-entrypoint.sh docker-start"]
+      - ../../apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
+      - ../../apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
+    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; exec /docker-entrypoint.sh docker-start"]
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
@@ -346,6 +347,9 @@ services:
       - https_proxy=
       - NO_PROXY=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
       - no_proxy=etcd,backend,app-task,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
+      - PAY_OPS_KEY=${PAY_OPS_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]

@@ -74,7 +74,7 @@ services:
   # TLS-consuming services start, so a fresh clone gets working certs/keys
   # with zero manual steps: nginx 443 (nginx exits without them), app-pay
   # (startup self-check refuses to boot without them), app-content（board 面）/
-  # app-board-mcp leaves, and the shared dev CA that APISIX + app-task trust.
+  # app-content-mcp leaves, and the shared dev CA that APISIX + app-task trust.
   # Idempotent: valid files are reused, expiring ones re-signed.
 
   cert-gen:
@@ -95,7 +95,7 @@ services:
     volumes:
       - ./nginx/certs:/out/nginx
       - ./app-board/certs:/out/app-board
-      - ./mcp/app-board-mcp/certs:/out/mcp
+      - ./app-go/app-content-mcp/certs:/out/mcp
       - ./app-pay/certs:/out/pay
     restart: "no"
 
@@ -370,15 +370,12 @@ services:
       # 被静默忽略 → gRPC 回落 127.0.0.1 → KG 图存储 memory 降级、数据不持久化）
       - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
-      # MCP 桥（note/quiz/board）：default.yaml 的 URL 指向 127.0.0.1，容器内必须
-      # 显式指向服务名；凭证走服务模式 X-Api-Key（= 各 MCP server 的
-      # *_SERVER__SERVICE_API_KEY，即 APISIX_CONSUMER_KEY）
-      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
-      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
-      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
-      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      # MCP 桥（board/note/quiz 三域已合并为 app-content-mcp 单服务）：
+      # default.yaml 的 URL 指向 127.0.0.1，容器内必须显式指向服务名；凭证走
+      # 服务模式 X-Api-Key（= app-content-mcp 的 CONTENTMCP__SERVER__SERVICE_API_KEY，
+      # 即 APISIX_CONSUMER_KEY）
+      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
+      - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
       # milvus.address 的 env 名是 MILVUS__ADDRESS（MILVUS__URI 不是本服务
       # 的配置键,会被静默忽略回落 127.0.0.1——容器内即自身）;host:port
       # 不带 scheme（milvus-js SDK 约定）
@@ -764,7 +761,8 @@ services:
     # `docker compose exec apisix ...` or temporarily re-add `ports: ["9080:9080"]`.
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
-      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+      - ./apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
+      - ./apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
       # app-content board 面 dev-CA（自动模式首次启动生成）：只读挂入，
       # entrypoint 将其与系统 CA 池拼成 ssl_trusted_certificate 的 ca-bundle.crt
       - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
@@ -776,7 +774,9 @@ services:
     # config.json's default wins). Override the entrypoint to unset proxy vars
     # before exec'ing the original entrypoint - guarantees the APISIX process
     # env has no proxy regardless of config.json, making the fix self-contained.
-    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+    # Entrypoint renders the route/consumer template from env first (APISIX's
+    # yaml provider cannot read env), then keeps the original proxy/CA logic.
+    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
       # Belt-and-suspenders: also clear via environment (documents intent;
       # may not override config.json runtime injection on its own).
@@ -786,6 +786,9 @@ services:
       - https_proxy=
       - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
       - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,localhost,127.0.0.1
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
+      - PAY_OPS_KEY=${PAY_OPS_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
@@ -865,8 +868,8 @@ services:
   # （TLS rotator，证书目录 /app/certs）。路径 /board、/notes、/quiz、/tasks、/internal/*
   # 全部经 8004；APISIX 三个 upstream 节点都指向 app-content:8004（scheme https）。
   # 共享主 bilirag MySQL + Mongo + Redis（board 缓存用 /2；quiz 配额键沿用 mind-base: 前缀）。
-  # board/note/quiz 三域的 schema 由服务启动自建/接管。MCP 服务（app-*-mcp）保持独立不改名。
-  # board/note/quiz 三域的 schema 由服务启动自建/接管。MCP 服务（app-*-mcp）保持独立不改名。
+  # board/note/quiz 三域的 schema 由服务启动自建/接管。MCP 桥保持独立服务：
+  # 三个旧 MCP server 已合并为 app-content-mcp（单容器/单端口 8019，见下方）。
   app-content:
     image: atoncooper/mind-base-app-content:latest
     pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
@@ -956,7 +959,7 @@ services:
       # 宿主机代理示例：APPTASK_HTTP_PROXY=http://host.docker.internal:10808
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-content-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
       - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
     volumes:
@@ -1009,110 +1012,49 @@ services:
     networks:
       - mind-base-net
 
-  # app-board-mcp —— MCP server（把思维导图/白板以 MCP 工具暴露给 Agent）
-  # 双模式鉴权：外部 MCP 宿主走 Bearer token（BOARD_MCP_AUTH_TOKEN，固定 uid）；
+  # app-content-mcp —— 单一 MCP server（board + note + quiz 三域合并，12 个工具）。
+  # 双模式鉴权：外部 MCP 宿主走 Bearer token（CONTENT_MCP_AUTH_TOKEN，固定 uid）；
   # 主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid，
-  # uid 来自后端已认证会话，永不经过 LLM 参数）。上游经 APISIX key-auth 路由
-  # /internal/board/* 到 app-content（board 面）。回环 8005 + 容器内网互通（app-ts 直连）。
-  # 默认 profile 启动：board agent 是主栈功能的一部分。
-  app-board-mcp:
-    image: atoncooper/mind-base-app-board-mcp:latest
+  # uid 来自后端已认证会话，永不经过 LLM 参数）。上游仍经 APISIX key-auth 三条
+  # internal 路由（/internal/board|note|quiz/*）到 app-content。回环 8019 +
+  # 容器内网互通（app-ts 直连）。默认 profile 启动：board 是主栈功能的一部分。
+  app-content-mcp:
+    image: atoncooper/mind-base-app-content-mcp:latest
     pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
     build:
-      context: ./mcp/app-board-mcp
+      context: ./app-go/app-content-mcp
       dockerfile: Dockerfile
-    container_name: mind-base-app-board-mcp
-    profiles: ["", "board", "full"]
+    container_name: mind-base-app-content-mcp
+    profiles: ["", "content-mcp", "full"]
     depends_on:
       cert-gen:
         condition: service_completed_successfully
     environment:
-      - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
-      - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
+      - CONTENTMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - CONTENTMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__UPSTREAM__UID=${CONTENT_MCP_UID:-}
+      - CONTENTMCP__SERVER__AUTH_TOKEN=${CONTENT_MCP_AUTH_TOKEN:-}
       # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
-      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true。证书由 cert-gen
       # 统一签发（shared dev CA 叶子），此处 explicit 模式直接加载；
       # auto 模式会试图在 root 属主的 bind mount 里重建 dev CA（EACCES 崩溃）
-      - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
-      - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
-      - BOARDMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
-      - BOARDMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
-      # Logging: stdout + /app/logs/app-board-mcp.log（lumberjack 轮转；
+      - CONTENTMCP__SERVER__TLS__ENABLED=${CONTENT_MCP_TLS_ENABLED:-false}
+      # 外部 Bearer 宿主的工具白名单（逗号分隔；空=全部 12 个工具；服务模式不受限）
+      - CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS=${CONTENT_MCP_BEARER_ALLOWED_TOOLS:-}
+      - CONTENTMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENTMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - CONTENTMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      # Logging: stdout + /app/logs/app-content-mcp.log（lumberjack 轮转；
       # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
-      - BOARDMCP__LOG__OUTPUT=both
-      - BOARDMCP__LOG__FILE=/app/logs/app-board-mcp.log
+      - CONTENTMCP__LOG__OUTPUT=both
+      - CONTENTMCP__LOG__FILE=/app/logs/app-content-mcp.log
     ports:
-      - "127.0.0.1:8005:8005"
+      - "127.0.0.1:${APP_CONTENT_MCP_PORT:-8019}:8019"
     volumes:
-      - app_board_mcp_logs:/app/logs
+      - app_content_mcp_logs:/app/logs
       # TLS 证书目录：cert-gen 统一签发叶子（explicit 模式加载，不自动生成）
-      - ./mcp/app-board-mcp/certs:/app/certs
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  # app-note-mcp —— 笔记 MCP server（把笔记以 MCP 工具暴露给 Agent）
-  # 双模式鉴权同 app-board-mcp：外部 MCP 宿主走 Bearer（NOTE_MCP_AUTH_TOKEN，
-  # 固定 uid）；主 app（app-ts） 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求
-  # X-Uid，uid 永不经过 LLM 参数）。上游经 APISIX key-auth 路由 /internal/note/*
-  # 到 app-content（note 面）。回环 8009 + 容器内网互通（app-ts 直连）；默认 profile 启动。
-  app-note-mcp:
-    image: atoncooper/mind-base-app-note-mcp:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./mcp/app-note-mcp
-      dockerfile: Dockerfile
-    container_name: mind-base-app-note-mcp
-    profiles: ["", "note", "full"]
-    environment:
-      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
-      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
-      # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
-      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      # Logging: stdout + /app/logs/app-note-mcp.log（lumberjack 轮转；
-      # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
-      - NOTEMCP__LOG__OUTPUT=both
-      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
-    ports:
-      - "127.0.0.1:8009:8009"
-    volumes:
-      - app_note_mcp_logs:/app/logs
-    restart: unless-stopped
-    networks:
-      - mind-base-net
-
-  # app-quiz-mcp —— 测验 MCP server（把 quiz 出题/批改落库以 MCP 工具暴露给 Agent）。
-  # 鉴权同 app-note-mcp：外部宿主 Bearer（QUIZ_MCP_AUTH_TOKEN，固定 uid）；主 app（app-ts）
-  # 走服务模式（apikey=APISIX_CONSUMER_KEY + 每请求 X-Uid）。上游经 APISIX key-auth
-  # 路由 /internal/quiz/* 到 app-content（quiz 面）。回环 8012 + 容器内网互通；默认 profile 启动。
-  app-quiz-mcp:
-    image: atoncooper/mind-base-app-quiz-mcp:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./mcp/app-quiz-mcp
-      dockerfile: Dockerfile
-    container_name: mind-base-app-quiz-mcp
-    profiles: ["", "quiz", "full"]
-    environment:
-      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
-      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
-      # 服务模式：主 app（app-ts） 以 apikey + 每请求 X-Uid 访问（复用 consumer key）
-      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
-      # Logging: stdout + /app/logs/app-quiz-mcp.log（lumberjack 轮转；
-      # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
-      - QUIZMCP__LOG__OUTPUT=both
-      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
-    ports:
-      - "127.0.0.1:8012:8012"
-    volumes:
-      - app_quiz_mcp_logs:/app/logs
+      - ./app-go/app-content-mcp/certs:/app/certs
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -1344,9 +1286,7 @@ volumes:
   opensandbox_data:
   app_sandbox_logs:
   app_user_logs:
-  app_note_mcp_logs:
-  app_quiz_mcp_logs:
-  app_board_mcp_logs:
+  app_content_mcp_logs:
   app_task_mysql_data:
   app_pay_mysql_data:
   app_pay_logs:

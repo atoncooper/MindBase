@@ -45,18 +45,10 @@ jobs:
             dockerfile: app-ts/Dockerfile
             image: atoncooper/mind-base-app-ts
             name: app-ts
-          - context: ./mcp/app-board-mcp
-            dockerfile: mcp/app-board-mcp/Dockerfile
-            image: atoncooper/mind-base-app-board-mcp
-            name: app-board-mcp
-          - context: ./mcp/app-note-mcp
-            dockerfile: mcp/app-note-mcp/Dockerfile
-            image: atoncooper/mind-base-app-note-mcp
-            name: app-note-mcp
-          - context: ./mcp/app-quiz-mcp
-            dockerfile: mcp/app-quiz-mcp/Dockerfile
-            image: atoncooper/mind-base-app-quiz-mcp
-            name: app-quiz-mcp
+          - context: ./app-go/app-content-mcp
+            dockerfile: app-go/app-content-mcp/Dockerfile
+            image: atoncooper/mind-base-app-content-mcp
+            name: app-content-mcp
           - context: ./scripts
             dockerfile: scripts/certgen.Dockerfile
             image: atoncooper/mind-base-certgen

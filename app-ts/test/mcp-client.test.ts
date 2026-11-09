@@ -53,7 +53,7 @@ function standardServer(overrides?: (call: FakeCall) => Response | undefined) {
           {
             protocolVersion: call.body.params?.protocolVersion ?? "2025-06-18",
             capabilities: { tools: {} },
-            serverInfo: { name: "app-board-mcp", version: "1.0.0" },
+            serverInfo: { name: "app-content-mcp", version: "1.0.0" },
           },
           { "mcp-session-id": "sess-abc" },
         );
@@ -251,7 +251,7 @@ describe("McpClient error mapping (never throws)", () => {
 
   it("network-level failure (fetch rejects) → prefixed transport error", async () => {
     const { impl } = makeFetch(() => {
-      throw new Error("ECONNREFUSED 127.0.0.1:8005");
+      throw new Error("ECONNREFUSED 127.0.0.1:8019");
     });
     const client = new McpClient({ url: "http://mcp.test/mcp", fetchImpl: impl });
     const res = await client.callTool("get_board", {}, {});

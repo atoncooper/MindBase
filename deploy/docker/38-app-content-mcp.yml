@@ -1,0 +1,39 @@
+# app-content-mcp（单一 MCP server：board + note + quiz 三域合并，12 个工具）—— server2
+#   docker compose --env-file ../../.env -f 38-app-content-mcp.yml up -d
+name: mb-app-content-mcp
+
+services:
+  app-content-mcp:
+    image: atoncooper/mind-base-app-content-mcp:latest
+    pull_policy: missing
+    container_name: mind-base-app-content-mcp
+    environment:
+      - CONTENTMCP__UPSTREAM__BASE_URL=http://apisix:9080     # server1（overlay）
+      - CONTENTMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__UPSTREAM__UID=${CONTENT_MCP_UID:-}
+      - CONTENTMCP__SERVER__AUTH_TOKEN=${CONTENT_MCP_AUTH_TOKEN:-}
+      - CONTENTMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - CONTENTMCP__SERVER__TLS__ENABLED=${CONTENT_MCP_TLS_ENABLED:-false}
+      # 外部 Bearer 宿主的工具白名单（逗号分隔；空=全部 12 个工具；服务模式不受限）
+      - CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS=${CONTENT_MCP_BEARER_ALLOWED_TOOLS:-}
+      - CONTENTMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENTMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - CONTENTMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - CONTENTMCP__LOG__OUTPUT=both
+      - CONTENTMCP__LOG__FILE=/app/logs/app-content-mcp.log
+    ports:
+      - "127.0.0.1:${APP_CONTENT_MCP_PORT:-8019}:8019"
+    volumes:
+      - app_content_mcp_logs:/app/logs
+      - ../../app-go/app-content-mcp/certs:/app/certs
+    restart: unless-stopped
+    networks:
+      - mind-base-overlay
+
+volumes:
+  app_content_mcp_logs: {}
+
+networks:
+  mind-base-overlay:
+    external: true
+    name: mind-base-overlay

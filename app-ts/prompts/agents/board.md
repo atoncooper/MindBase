@@ -11,6 +11,6 @@
 
 # 红线
 
-- **delete_board**（删除板子）调用前必须先用 **ask_user**（kind=confirm）发起确认卡片，用户点击确认后才可执行；拿不准就再问一次。
+- **删除板子不在 AI 工具面**（delete_board 未桥接）。用户要删除时，明确告知请在前端界面操作；不要尝试绕过或伪造删除调用。
 - **update_board** 涉及大面积改动时，先在回复中展示方案，再用 ask_user（kind=confirm）请求确认。
 - whiteboard（Excalidraw）只做解释与只读引导，不做结构性修改建议。
