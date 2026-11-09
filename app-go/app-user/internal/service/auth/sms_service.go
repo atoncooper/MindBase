@@ -7,43 +7,115 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"app-user/internal/config"
 )
 
-// SMSService — Aliyun dysmsapi SendSms over direct HTTP with the ACS3
-// (HMAC-SHA256) request signature. Implemented inline rather than via the
-// official SDK to keep the binary lean; the canonical request follows the
-// Alibaba Cloud "ACS3-HMAC-SHA256" signature spec (headers participate in
-// the canonical form, empty-body GET for the RPC style).
+// SMS endpoints. dysmsapi is the legacy 短信服务 (custom sign/template);
+// dypnsapi is 号码认证服务 短信认证, which supports system-granted sign/template
+// and free code verification via CheckSmsVerifyCode.
+const (
+	dysmsEndpoint = "https://dysmsapi.aliyuncs.com"
+	dypnsEndpoint = "https://dypnsapi.aliyuncs.com"
+)
+
+// SMSService sends verification codes through Aliyun. Provider is selected by
+// sms.provider: "dysmsapi" (default, backward compatible) or "dypnsapi".
 type SMSService struct {
 	cfg *config.AuthConfig
+	// endpoint overrides the provider default (tests only).
+	endpoint string
 }
 
 func NewSMSService(cfg *config.AuthConfig) *SMSService { return &SMSService{cfg: cfg} }
 
-const smsEndpoint = "https://dysmsapi.aliyuncs.com"
+// NewSMSServiceWithEndpoint is a test seam: the same service talking to a
+// local httptest server instead of the real Aliyun endpoint.
+func NewSMSServiceWithEndpoint(cfg *config.AuthConfig, endpoint string) *SMSService {
+	return &SMSService{cfg: cfg, endpoint: endpoint}
+}
+
+func (s *SMSService) provider() string {
+	if strings.EqualFold(s.cfg.SMS.Provider, "dypnsapi") {
+		return "dypnsapi"
+	}
+	return "dysmsapi"
+}
+
+// UsesAliyunGeneratedCode reports whether Dypnsapi generates AND verifies the
+// code (TemplateParam "##code##" + CheckSmsVerifyCode). In this mode the code
+// is never stored in our DB.
+func (s *SMSService) UsesAliyunGeneratedCode() bool {
+	return s.provider() == "dypnsapi" && strings.EqualFold(s.cfg.SMS.CodeSource, "aliyun")
+}
+
+func (s *SMSService) endpointFor(provider string) string {
+	if s.endpoint != "" {
+		return s.endpoint
+	}
+	if provider == "dypnsapi" {
+		return dypnsEndpoint
+	}
+	return dysmsEndpoint
+}
+
+// aliyunAPIError carries the Aliyun Code so callers can make narrow decisions
+// (e.g. template-parameter mismatch retry) without parsing message text.
+type aliyunAPIError struct {
+	Code    string
+	Message string
+}
+
+func (e *aliyunAPIError) Error() string {
+	if msg := smsErrMessages[e.Code]; msg != "" {
+		return msg
+	}
+	return "短信发送失败，请稍后重试"
+}
 
 var smsErrMessages = map[string]string{
+	// dysmsapi
 	"isv.BUSINESS_LIMIT_CONTROL": "短信发送过于频繁，请稍后重试",
 	"isv.SMS_SIGNATURE_ILLEGAL":  "短信签名未通过审核",
 	"isv.SMS_TEMPLATE_ILLEGAL":   "短信模板未通过审核",
 	"isv.AMOUNT_NOT_ENOUGH":      "短信余额不足",
 	"isv.PHONE_NUMBER_ILLEGAL":   "手机号格式不正确",
 	"isv.MOBILE_NUMBER_ILLEGAL":  "手机号格式不正确",
+	// dypnsapi
+	"MOBILE_NUMBER_ILLEGAL":  "手机号格式不正确",
+	"BUSINESS_LIMIT_CONTROL": "短信发送过于频繁，请稍后重试",
+	"FREQUENCY_FAIL":         "短信发送过于频繁，请稍后重试",
+	"INVALID_PARAMETERS":     "短信参数不合法",
+	"FUNCTION_NOT_OPENED":    "短信认证服务未开通",
+}
+
+// smsAPIResponse is the shared RPC response shape for SendSms and
+// SendSmsVerifyCode / CheckSmsVerifyCode.
+type smsAPIResponse struct {
+	Code    string `json:"Code"`
+	Message string `json:"Message"`
+	Success bool   `json:"Success"`
+	Model   struct {
+		VerifyCode   string `json:"VerifyCode"`
+		VerifyResult string `json:"VerifyResult"`
+		BizId        string `json:"BizId"`
+		OutId        string `json:"OutId"`
+	} `json:"Model"`
 }
 
 // SendSms sends a verification-code SMS. Disabled/unconfigured → error
 // ("短信服务未启用"), which callers surface and /auth/features hides.
-func (s *SMSService) SendSms(ctx context.Context, phone, code string) error {
+func (s *SMSService) SendSms(ctx context.Context, phone, code, purpose string) error {
 	c := s.cfg.SMS
 	if !c.Enabled {
 		return fmt.Errorf("短信服务未启用")
@@ -51,51 +123,173 @@ func (s *SMSService) SendSms(ctx context.Context, phone, code string) error {
 	if c.AccessKeyID == "" || c.AccessKeySecret == "" || c.SignName == "" || c.TemplateCode == "" {
 		return fmt.Errorf("短信服务未配置")
 	}
-	tplParam, _ := json.Marshal(map[string]string{"code": code})
+	if s.provider() == "dypnsapi" {
+		return s.sendDypnsVerifyCode(ctx, phone, code, purpose)
+	}
+	return s.sendDysmsCode(ctx, phone, code, purpose)
+}
 
+// templateFor returns the template configured for a business purpose, falling
+// back to the single template_code when no per-purpose override exists.
+func (s *SMSService) templateFor(purpose string) string {
+	if tc := strings.TrimSpace(s.cfg.SMS.TemplateCodes[purpose]); tc != "" {
+		return tc
+	}
+	return s.cfg.SMS.TemplateCode
+}
+
+// templateParamJSON merges configured extra template variables with the
+// service-injected ${code}; templates with additional variables (e.g. ${min})
+// must configure them via the YAML sms.template_params map.
+func (s *SMSService) templateParamJSON(code string) string {
+	return s.templateParamJSONWithExtras(code, true)
+}
+
+// templateParamJSONWithExtras optionally omits configured extra variables; the
+// fallback path uses it when a template turns out not to contain them.
+func (s *SMSService) templateParamJSONWithExtras(code string, extras bool) string {
+	tpl := make(map[string]string, len(s.cfg.SMS.TemplateParams)+1)
+	if extras {
+		for k, v := range s.cfg.SMS.TemplateParams {
+			tpl[k] = v
+		}
+	}
+	tpl["code"] = code
+	raw, _ := json.Marshal(tpl)
+	return string(raw)
+}
+
+// sendDysmsCode is the legacy 短信服务 path: custom sign/template plus an
+// explicit code that we generated and store locally.
+func (s *SMSService) sendDysmsCode(ctx context.Context, phone, code, purpose string) error {
+	c := s.cfg.SMS
 	params := url.Values{
 		"PhoneNumbers":  {phone},
 		"SignName":      {c.SignName},
-		"TemplateCode":  {c.TemplateCode},
-		"TemplateParam": {string(tplParam)},
+		"TemplateCode":  {s.templateFor(purpose)},
+		"TemplateParam": {s.templateParamJSON(code)},
 	}
-	req, err := signedACS3Get(ctx, smsEndpoint, params, "SendSms", "2017-05-25",
-		c.AccessKeyID, c.AccessKeySecret)
+	resp, err := s.callAliyun(ctx, s.endpointFor("dysmsapi"), "SendSms", params)
 	if err != nil {
+		return err
+	}
+	// Legacy SendSms returns Code=OK without the Success flag.
+	if !resp.Success && resp.Code != "OK" {
+		slog.Warn("[SMS] dysmsapi rejected", "phone", maskPhone(phone), "purpose", purpose,
+			"template", s.templateFor(purpose), "code", resp.Code, "message", resp.Message)
 		return fmt.Errorf("短信发送失败，请稍后重试")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	slog.Info("[SMS] sent", "provider", "dysmsapi", "phone", maskPhone(phone))
+	return nil
+}
+
+// sendDypnsVerifyCode uses 号码认证服务 短信认证 (赠送签名/模板 friendly).
+// CodeSource=local sends our explicit code; CodeSource=aliyun sends
+// "##code##" and lets Aliyun generate + verify it.
+func (s *SMSService) sendDypnsVerifyCode(ctx context.Context, phone, code, purpose string) error {
+	c := s.cfg.SMS
+	codeValue := code
+	if s.UsesAliyunGeneratedCode() {
+		codeValue = "##code##"
+	}
+	validSeconds := s.cfg.Email.CodeTTLSeconds
+	if validSeconds <= 0 {
+		validSeconds = 300
+	}
+	codeLength := s.cfg.Email.CodeLength
+	if codeLength < 4 || codeLength > 8 {
+		codeLength = 6
+	}
+	params := url.Values{
+		"PhoneNumber":      {phone},
+		"SignName":         {c.SignName},
+		"TemplateCode":     {s.templateFor(purpose)},
+		"TemplateParam":    {s.templateParamJSON(codeValue)},
+		"CountryCode":      {c.CountryCode},
+		"CodeLength":       {strconv.Itoa(codeLength)},
+		"ValidTime":        {strconv.Itoa(validSeconds)},
+		"Interval":         {strconv.Itoa(c.IntervalSeconds)},
+		"DuplicatePolicy":  {strconv.Itoa(c.DuplicatePolicy)},
+		"AutoRetry":        {strconv.Itoa(c.AutoRetry)},
+		"CodeType":         {"1"},
+		"ReturnVerifyCode": {"false"}, // never expose the code in the API response/log
+	}
+	if c.SchemeName != "" {
+		params.Set("SchemeName", c.SchemeName)
+	}
+	resp, err := s.callAliyun(ctx, s.endpointFor("dypnsapi"), "SendSmsVerifyCode", params)
+	// Some donated templates only contain ${code}; others also require ${min}.
+	// On a parameter-mismatch error, retry once without our extra variables.
+	var apiErr *aliyunAPIError
+	if err != nil && errors.As(err, &apiErr) && apiErr.Code == "isv.INVALID_PARAMETERS" && len(c.TemplateParams) > 0 {
+		slog.Warn("[SMS] retry without extra template params", "phone", maskPhone(phone), "purpose", purpose)
+		params.Set("TemplateParam", s.templateParamJSONWithExtras(codeValue, false))
+		resp, err = s.callAliyun(ctx, s.endpointFor("dypnsapi"), "SendSmsVerifyCode", params)
+	}
+	if err != nil {
+		return err
+	}
+	if !resp.Success && resp.Code != "OK" {
+		slog.Warn("[SMS] dypnsapi rejected", "phone", maskPhone(phone), "purpose", purpose,
+			"template", s.templateFor(purpose), "code", resp.Code, "message", resp.Message)
+		return fmt.Errorf("短信发送失败，请稍后重试")
+	}
+	slog.Info("[SMS] sent", "provider", "dypnsapi", "phone", maskPhone(phone),
+		"generated", s.UsesAliyunGeneratedCode(), "biz_id", resp.Model.BizId)
+	return nil
+}
+
+// CheckCode verifies a code with Dypnsapi CheckSmsVerifyCode. It is only used
+// when CodeSource=aliyun (the code was generated by Aliyun); returns
+// (false, nil) for a mismatch and an error only for transport/service failures.
+func (s *SMSService) CheckCode(ctx context.Context, phone, code string) (bool, error) {
+	c := s.cfg.SMS
+	params := url.Values{
+		"PhoneNumber": {phone},
+		"VerifyCode":  {code},
+		"CountryCode": {c.CountryCode},
+	}
+	if c.SchemeName != "" {
+		params.Set("SchemeName", c.SchemeName)
+	}
+	resp, err := s.callAliyun(ctx, s.endpointFor("dypnsapi"), "CheckSmsVerifyCode", params)
+	if err != nil {
+		return false, err
+	}
+	return resp.Model.VerifyResult == "PASS", nil
+}
+
+// callAliyun signs and executes one RPC-style Aliyun SMS request.
+func (s *SMSService) callAliyun(ctx context.Context, endpoint, action string, params url.Values) (*smsAPIResponse, error) {
+	req, err := signedACS3Get(ctx, endpoint, params, action, "2017-05-25",
+		s.cfg.SMS.AccessKeyID, s.cfg.SMS.AccessKeySecret)
+	if err != nil {
+		return nil, fmt.Errorf("短信发送失败，请稍后重试")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req = req.WithContext(ctx)
+	req = req.WithContext(reqCtx)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment}}
 	resp, err := client.Do(req)
 	if err != nil {
-		slog.Error("[SMS] transport error", "phone", maskPhone(phone), "err", err)
-		return fmt.Errorf("短信发送失败，请稍后重试")
+		slog.Error("[SMS] transport error", "action", action, "err", err)
+		return nil, fmt.Errorf("短信发送失败，请稍后重试")
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if err != nil {
-		return fmt.Errorf("短信发送失败，请稍后重试")
+		return nil, fmt.Errorf("短信发送失败，请稍后重试")
 	}
-	var out struct {
-		Code    string `json:"Code"`
-		Message string `json:"Message"`
-	}
+	var out smsAPIResponse
 	if err := json.Unmarshal(body, &out); err != nil {
-		slog.Error("[SMS] invalid response", "phone", maskPhone(phone), "status", resp.StatusCode)
-		return fmt.Errorf("短信发送失败，请稍后重试")
+		slog.Error("[SMS] invalid response", "action", action, "status", resp.StatusCode)
+		return nil, fmt.Errorf("短信发送失败，请稍后重试")
 	}
 	if out.Code != "" && out.Code != "OK" {
-		msg := smsErrMessages[out.Code]
-		if msg == "" {
-			msg = "短信发送失败，请稍后重试"
-		}
-		slog.Warn("[SMS] rejected", "phone", maskPhone(phone), "code", out.Code, "message", out.Message)
-		return fmt.Errorf("%s", msg)
+		slog.Warn("[SMS] rejected", "action", action, "code", out.Code, "message", out.Message)
+		return nil, &aliyunAPIError{Code: out.Code, Message: out.Message}
 	}
-	slog.Info("[SMS] sent", "phone", maskPhone(phone))
-	return nil
+	return &out, nil
 }
 
 func maskPhone(phone string) string {

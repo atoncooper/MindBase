@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/service/auth"
 
 	"github.com/gin-gonic/gin"
@@ -24,12 +25,7 @@ func getCaptcha(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "验证码生成失败，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"captcha_id":   res.CaptchaID,
-			"image_base64": res.ImageBase64,
-			"expires_in":   res.ExpiresIn,
-			"required":     res.Required,
-		})
+		c.JSON(http.StatusOK, res)
 	}
 }
 
@@ -55,11 +51,7 @@ func generateQRCode(d Deps) gin.HandlerFunc {
 			return
 		}
 		qrcodePool.put(res.QRCodeKey, passport)
-		c.JSON(http.StatusOK, gin.H{
-			"qrcode_key":          res.QRCodeKey,
-			"qrcode_url":          res.QRCodeURL,
-			"qrcode_image_base64": res.QRCodeImageB64,
-		})
+		c.JSON(http.StatusOK, res)
 	}
 }
 
@@ -96,7 +88,7 @@ func pollQRCode(d Deps) gin.HandlerFunc {
 			return
 		}
 
-		resp := gin.H{"status": result.Status, "message": result.Message}
+		resp := authdto.QRCodePoll{Status: result.Status, Message: result.Message}
 		if result.Status == "confirmed" {
 			biliMid := int64(0)
 			if midStr := result.Cookies["DedeUserID"]; midStr != "" {
@@ -155,12 +147,12 @@ func pollQRCode(d Deps) gin.HandlerFunc {
 					return
 				}
 				roles, _ := d.Auth.Authorize(c.Request.Context(), currentUID)
-				resp["user_info"] = gin.H{
-					"uid":   currentUID,
-					"mid":   biliMid,
-					"uname": nilIfEmpty(nickname),
-					"face":  nilIfEmpty(avatar),
-					"roles": rolesOrFree(roles),
+				resp.UserInfo = &authdto.QRCodeUser{
+					UID:   currentUID,
+					Mid:   biliMid,
+					Uname: nilIfEmpty(nickname),
+					Face:  nilIfEmpty(avatar),
+					Roles: rolesOrFree(roles),
 				}
 			} else {
 				ip, deviceID, ua, meta := requestContext(c)
@@ -175,14 +167,14 @@ func pollQRCode(d Deps) gin.HandlerFunc {
 				}
 				d.Auth.RecordDevice(uid, deviceID, meta)
 				roles, _ := d.Auth.Authorize(c.Request.Context(), uid)
-				resp["session_id"] = sessionToken
-				resp["user_info"] = gin.H{
-					"uid":           uid,
-					"mid":           biliMid,
-					"uname":         nilIfEmpty(nickname),
-					"face":          nilIfEmpty(avatar),
-					"roles":         rolesOrFree(roles),
-					"session_token": sessionToken,
+				resp.SessionID = sessionToken
+				resp.UserInfo = &authdto.QRCodeUser{
+					UID:          uid,
+					Mid:          biliMid,
+					Uname:        nilIfEmpty(nickname),
+					Face:         nilIfEmpty(avatar),
+					Roles:        rolesOrFree(roles),
+					SessionToken: sessionToken,
 				}
 			}
 		}
@@ -198,11 +190,11 @@ func pollQRCode(d Deps) gin.HandlerFunc {
 	}
 }
 
-func nilIfEmpty(s string) any {
+func nilIfEmpty(s string) *string {
 	if s == "" {
 		return nil
 	}
-	return s
+	return &s
 }
 
 func rolesOrFree(roles []string) []string {

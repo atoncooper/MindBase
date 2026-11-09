@@ -50,7 +50,7 @@ var phoneRe = regexp.MustCompile(`^1[3-9]\d{9}$`)
 
 var (
 	emailPurposes = map[string]bool{"bind_email": true, "reset_password": true, "twofa": true, "register": true}
-	smsPurposes   = map[string]bool{"login": true, "bind_phone": true, "twofa_sms": true}
+	smsPurposes   = map[string]bool{"login": true, "bind_phone": true, "twofa_sms": true, "unbind_phone": true}
 )
 
 var errInvalidPurpose = errors.New("无效的验证用途")
@@ -82,9 +82,17 @@ func (v *Verification) SendCode(ctx context.Context, uid int64, target, purpose 
 	if err := v.enforceRateLimits(db, uid, target); err != nil {
 		return err
 	}
-	code, err := numericCode(v.cfg.Email.CodeLength)
-	if err != nil {
-		return err
+	code := ""
+	if v.sms.UsesAliyunGeneratedCode() {
+		// Aliyun generates and verifies the code: our DB only needs a sentinel
+		// row for rate limits / attempts / invalidation, never the real code.
+		code = "##aliyun##"
+	} else {
+		var err error
+		code, err = numericCode(v.cfg.Email.CodeLength)
+		if err != nil {
+			return err
+		}
 	}
 	now := time.Now()
 	var uidPtr *int64
@@ -115,7 +123,7 @@ func (v *Verification) SendCode(ctx context.Context, uid int64, target, purpose 
 	// Delivery outside the tx — a sent message with a persisted code is
 	// recoverable; the rate limit gates retries (parity with Python).
 	if channel == "sms" {
-		if err := v.sms.SendSms(ctx, target, code); err != nil {
+		if err := v.sms.SendSms(ctx, target, code, purpose); err != nil {
 			slog.Warn("[VERIFY] sms send failed", "uid", uid, "purpose", purpose, "err", err)
 			return err
 		}
@@ -204,6 +212,21 @@ func (v *Verification) VerifyCode(target, purpose, code string, uid int64) (int6
 		_ = v.repo.MarkUsed(db, vc.ID)
 		slog.Warn("[VERIFY] brute-force cap reached", "target", target, "purpose", purpose)
 		return 0, errors.New("验证码错误次数过多，请重新获取")
+	}
+	if v.sms.UsesAliyunGeneratedCode() {
+		vctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ok, err := v.sms.CheckCode(vctx, target, code)
+		if err != nil {
+			slog.Warn("[VERIFY] aliyun check failed", "purpose", purpose, "err", err)
+			return 0, errors.New("验证码校验失败，请稍后重试")
+		}
+		if !ok {
+			newAttempts, _ := v.repo.BumpAttempts(db, target, purpose, vc.Code)
+			slog.Info("[VERIFY] wrong code", "purpose", purpose, "attempts", newAttempts)
+			return 0, errors.New("验证码不正确")
+		}
+		return vc.ID, nil
 	}
 	if subtle.ConstantTimeCompare([]byte(vc.Code), []byte(code)) != 1 {
 		newAttempts, _ := v.repo.BumpAttempts(db, target, purpose, vc.Code)

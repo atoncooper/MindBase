@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	authdto "app-user/internal/dto/auth"
+
 	"github.com/skip2/go-qrcode"
 )
 
@@ -114,15 +116,8 @@ func netEndpointLabel(endpoint string) string {
 	return endpoint
 }
 
-// QRGenerateResult is the GET /auth/qrcode payload.
-type QRGenerateResult struct {
-	QRCodeKey      string
-	QRCodeURL      string
-	QRCodeImageB64 string // data URL
-}
-
 // GenerateQRCode creates a login QR code and renders it as a PNG data URL.
-func (p *BilibiliPassport) GenerateQRCode(ctx context.Context) (*QRGenerateResult, error) {
+func (p *BilibiliPassport) GenerateQRCode(ctx context.Context) (*authdto.QRCode, error) {
 	var payload struct {
 		Code int    `json:"code"`
 		Msg  string `json:"message"`
@@ -141,25 +136,17 @@ func (p *BilibiliPassport) GenerateQRCode(ctx context.Context) (*QRGenerateResul
 	if err != nil {
 		return nil, fmt.Errorf("render qrcode: %w", err)
 	}
-	return &QRGenerateResult{
-		QRCodeKey:      payload.Data.QRCodeKey,
-		QRCodeURL:      payload.Data.URL,
-		QRCodeImageB64: "data:image/png;base64," + b64Encode(png),
+	return &authdto.QRCode{
+		QRCodeKey:         payload.Data.QRCodeKey,
+		QRCodeURL:         payload.Data.URL,
+		QRCodeImageBase64: "data:image/png;base64," + b64Encode(png),
 	}, nil
-}
-
-// QRPollResult is the outcome of one poll call.
-type QRPollResult struct {
-	Status       string // waiting | scanned | confirmed | expired | unknown
-	Message      string
-	Cookies      map[string]string
-	RefreshToken string
 }
 
 // PollQRCodeStatus checks the QR login state. On confirmed it collects the
 // session cookies from (a) the client cookie jar and (b) the redirect URL
 // query — parity with the Python implementation's three-source merge.
-func (p *BilibiliPassport) PollQRCodeStatus(ctx context.Context, qrKey string) (*QRPollResult, error) {
+func (p *BilibiliPassport) PollQRCodeStatus(ctx context.Context, qrKey string) (*authdto.QRPollResult, error) {
 	var payload struct {
 		Code int    `json:"code"`
 		Msg  string `json:"message"`
@@ -188,7 +175,7 @@ func (p *BilibiliPassport) PollQRCodeStatus(ctx context.Context, qrKey string) (
 	if m, ok := statusMap[payload.Data.Code]; ok {
 		status, msg = m[0], m[1]
 	}
-	result := &QRPollResult{Status: status, Message: msg, Cookies: map[string]string{}}
+	result := &authdto.QRPollResult{Status: status, Message: msg, Cookies: map[string]string{}}
 
 	if status == "confirmed" {
 		// (a) cookies accumulated in the jar across generate+poll calls

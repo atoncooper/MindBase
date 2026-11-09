@@ -37,6 +37,39 @@ func TestLegacyEnvPrefixes(t *testing.T) {
 	}
 }
 
+// TestCodingPlanAppPayConfig pins the Coding Plan membership client config:
+// the APISIX origin default, the APPAUTH__ overrides, and the shared
+// APISIX_CONSUMER_KEY fallback (one .env drives every service).
+func TestCodingPlanAppPayConfig(t *testing.T) {
+	t.Setenv("APPAUTH__APP_PAY__BASE_URL", "")
+	t.Setenv("APPAUTH__APP_PAY__KEY", "")
+	t.Setenv("APISIX_CONSUMER_KEY", "shared-consumer-key")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Auth.AppPay.BaseURL != "http://apisix:9080" {
+		t.Errorf("app_pay base_url = %q, want http://apisix:9080", cfg.Auth.AppPay.BaseURL)
+	}
+	if cfg.Auth.AppPay.Key != "shared-consumer-key" {
+		t.Errorf("app_pay key fallback = %q", cfg.Auth.AppPay.Key)
+	}
+
+	t.Setenv("APPAUTH__APP_PAY__BASE_URL", "http://pay-gateway:9080")
+	t.Setenv("APPAUTH__APP_PAY__KEY", "explicit-key")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Auth.AppPay.BaseURL != "http://pay-gateway:9080" {
+		t.Errorf("app_pay base_url override = %q", cfg.Auth.AppPay.BaseURL)
+	}
+	if cfg.Auth.AppPay.Key != "explicit-key" {
+		t.Errorf("app_pay key override = %q", cfg.Auth.AppPay.Key)
+	}
+}
+
 // TestTLSConfigOptional pins the optional TLS switch: both files or neither.
 func TestTLSConfigOptional(t *testing.T) {
 	t.Setenv("TLS__CERT_FILE", "/certs/fullchain.pem")

@@ -10,7 +10,9 @@ import (
 	"strconv"
 
 	"app-user/internal/bili/bili"
-	"app-user/internal/service/bili"
+	bilidto "app-user/internal/dto/bili"
+	bilimodel "app-user/internal/model/bili"
+	"app-user/internal/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -31,7 +33,7 @@ func registerFavorites(e *gin.Engine, d Deps) {
 		if serviceErr(c, err) {
 			return
 		}
-		writeJSON(c, http.StatusOK, service.FoldersToJSON(folders))
+		writeJSON(c, http.StatusOK, favoriteFoldersToDTO(folders))
 	})
 
 	g.POST("/sync", func(c *gin.Context) {
@@ -47,7 +49,7 @@ func registerFavorites(e *gin.Engine, d Deps) {
 		if serviceErr(c, err) {
 			return
 		}
-		writeJSON(c, http.StatusOK, gin.H{"folders": service.FoldersToJSON(folders), "total": len(folders)})
+		writeJSON(c, http.StatusOK, bilidto.FolderSync{Folders: favoriteFoldersToDTO(folders), Total: len(folders)})
 	})
 
 	g.PATCH("/:folder_id/selected", func(c *gin.Context) {
@@ -69,7 +71,7 @@ func registerFavorites(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusNotFound, "Folder not found")
 			return
 		}
-		writeJSON(c, http.StatusOK, gin.H{"folder_id": folderID, "is_selected": selected})
+		writeJSON(c, http.StatusOK, bilidto.FolderSelected{FolderID: folderID, IsSelected: selected})
 	})
 
 	g.DELETE("/:folder_id", func(c *gin.Context) {
@@ -90,7 +92,7 @@ func registerFavorites(e *gin.Engine, d Deps) {
 			apiErr(c, http.StatusNotFound, "Folder not found or already deleted")
 			return
 		}
-		writeJSON(c, http.StatusOK, gin.H{"message": "Deleted", "folder_id": folderID})
+		writeJSON(c, http.StatusOK, bilidto.FolderDeleted{Message: "Deleted", FolderID: folderID})
 	})
 
 	// 分P 列表（bvid → cids + ASR/向量化状态）—— Python favorites_v2 第五端点，
@@ -166,9 +168,7 @@ func registerOrganize(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		var req struct {
-			FolderIDs []int64 `json:"folder_ids"`
-		}
+		var req bilidto.FolderIDsRequest
 		_ = c.ShouldBindJSON(&req)
 		client, _, err := d.Resolver.Resolve(c.Request.Context(), uid)
 		if respondCredErr(c, err) {
@@ -185,9 +185,7 @@ func registerOrganize(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		var req struct {
-			FolderID int64 `json:"folder_id"`
-		}
+		var req bilidto.CleanInvalidRequest
 		if err := c.ShouldBindJSON(&req); err != nil || req.FolderID <= 0 {
 			apiErr(c, http.StatusBadRequest, "folder_id is required")
 			return
@@ -212,9 +210,7 @@ func registerKnowledge(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		var req struct {
-			FolderIDs []int64 `json:"folder_ids"`
-		}
+		var req bilidto.FolderIDsRequest
 		_ = c.ShouldBindJSON(&req)
 		task, err := d.Build.TryStartBuild(c.Request.Context(), uid, req.FolderIDs)
 		if serviceErr(c, err) {
@@ -228,10 +224,7 @@ func registerKnowledge(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		var req struct {
-			FolderIDs    []int64  `json:"folder_ids"`
-			ExcludeBvids []string `json:"exclude_bvids"`
-		}
+		var req bilidto.BuildRequest
 		_ = c.ShouldBindJSON(&req)
 		task, err := d.Build.TryStartBuild(c.Request.Context(), uid, req.FolderIDs)
 		if serviceErr(c, err) {
@@ -288,12 +281,7 @@ func registerASR(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		var req struct {
-			BvID      string `json:"bvid"`
-			CID       int64  `json:"cid"`
-			PageIndex int    `json:"page_index"`
-			PageTitle string `json:"page_title"`
-		}
+		var req bilidto.ASRCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil || req.BvID == "" || req.CID == 0 {
 			apiErr(c, http.StatusBadRequest, "bvid and cid are required")
 			return
@@ -309,12 +297,7 @@ func registerASR(e *gin.Engine, d Deps) {
 		if _, ok := currentUID(c); !ok {
 			return
 		}
-		var req struct {
-			BvID      string `json:"bvid"`
-			CID       int64  `json:"cid"`
-			PageIndex int    `json:"page_index"`
-			Content   string `json:"content"`
-		}
+		var req bilidto.ASRUpdateRequest
 		if err := c.ShouldBindJSON(&req); err != nil || req.BvID == "" {
 			apiErr(c, http.StatusBadRequest, "bvid and content are required")
 			return
@@ -323,7 +306,7 @@ func registerASR(e *gin.Engine, d Deps) {
 			serviceErr(c, err)
 			return
 		}
-		writeJSON(c, http.StatusOK, gin.H{"success": true, "message": "更新成功"})
+		writeJSON(c, http.StatusOK, bilidto.ASRUpdateResult{Success: true, Message: "更新成功"})
 	})
 
 	g.POST("/reasr", func(c *gin.Context) {
@@ -331,11 +314,7 @@ func registerASR(e *gin.Engine, d Deps) {
 		if !ok {
 			return
 		}
-		var req struct {
-			BvID      string `json:"bvid"`
-			CID       int64  `json:"cid"`
-			PageIndex int    `json:"page_index"`
-		}
+		var req bilidto.ASRReASRRequest
 		if err := c.ShouldBindJSON(&req); err != nil || req.BvID == "" {
 			apiErr(c, http.StatusBadRequest, "bvid is required")
 			return
@@ -371,6 +350,31 @@ func registerASR(e *gin.Engine, d Deps) {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+// favoriteFoldersToDTO maps folder rows onto the wire contract. This is the
+// router's mapping responsibility; the service only owns business rules.
+func favoriteFoldersToDTO(folders []bilimodel.FavoriteFolder) []bilidto.FavoriteFolder {
+	out := make([]bilidto.FavoriteFolder, 0, len(folders))
+	for _, f := range folders {
+		item := bilidto.FavoriteFolder{
+			ID:         f.ID,
+			MediaID:    f.MediaID,
+			Title:      f.Title,
+			MediaCount: utils.DerefInt(f.MediaCount),
+			IsDefault:  utils.DerefBool(f.IsDefault),
+			IsSelected: true,
+		}
+		if f.IsSelected != nil {
+			item.IsSelected = *f.IsSelected
+		}
+		if f.LastSyncAt != nil {
+			synced := utils.NaiveUTC(*f.LastSyncAt)
+			item.LastSyncAt = &synced
+		}
+		out = append(out, item)
+	}
+	return out
+}
 
 func pagination(c *gin.Context, defPage, defSize int) (int, int) {
 	page, pageSize := defPage, defSize

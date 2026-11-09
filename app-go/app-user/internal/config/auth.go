@@ -33,6 +33,16 @@ type AuthConfig struct {
 	SecurityCORS SecurityCORSConfig `yaml:"security_cors"`
 	Log          LogConfig          `yaml:"log"`
 	Internal     InternalConfig     `yaml:"internal"`
+	AppPay       AppPayConfig       `yaml:"app_pay"`
+}
+
+// AppPayConfig points at the app-pay membership face used to gate Coding Plan
+// management (VIP/SVIP only). BaseURL is the APISIX origin; the client appends
+// /internal/pay/membership/{uid}. Key = shared APISIX consumer key; when the
+// YAML/env value is empty the client falls back to APISIX_CONSUMER_KEY.
+type AppPayConfig struct {
+	BaseURL string `yaml:"base_url"`
+	Key     string `yaml:"key"`
 }
 
 // InternalConfig guards the /internal/auth M2M user-lookup face (AI stack);
@@ -130,11 +140,53 @@ type EmailConfig struct {
 }
 
 type SMSConfig struct {
-	Enabled         bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// Provider selects the Aliyun product: "dysmsapi" (smsservice, default,
+	// custom sign/template) or "dypnsapi" (号码认证服务 短信认证, supports
+	// system-granted sign/template and free code verification via
+	// CheckSmsVerifyCode).
+	Provider        string `yaml:"provider"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
 	SignName        string `yaml:"sign_name"`
 	TemplateCode    string `yaml:"template_code"`
+	// SchemeName is the Dypnsapi verification scheme (optional; default scheme
+	// when empty). Must match between SendSmsVerifyCode and CheckSmsVerifyCode.
+	SchemeName string `yaml:"scheme_name"`
+	// CountryCode is the phone country code (default 86; Dypnsapi currently
+	// only supports mainland China numbers).
+	CountryCode string `yaml:"country_code"`
+	// CodeSource selects who generates the verification code for Dypnsapi:
+	// "local" (default; we generate/store/verify it, sent as an explicit value)
+	// or "aliyun" (TemplateParam "##code##"; Aliyun generates and verifies it via
+	// CheckSmsVerifyCode — the code never reaches our DB).
+	CodeSource string `yaml:"code_source"`
+	// IntervalSeconds is the Dypnsapi per-number send interval (default 60s).
+	IntervalSeconds int `yaml:"interval_seconds"`
+	// DuplicatePolicy: 1=overwrite old code (default), 2=keep both.
+	DuplicatePolicy int `yaml:"duplicate_policy"`
+	// AutoRetry: 1=allow Aliyun to retry/change signature internally (default).
+	AutoRetry int `yaml:"auto_retry"`
+	// TemplateCodes optionally selects a different approved/granted template
+	// per business purpose (login / bind_phone / twofa_sms), e.g.
+	// {login: "100001", bind_phone: "100004", twofa_sms: "100005"}.
+	// Missing purpose falls back to TemplateCode.
+	TemplateCodes map[string]string `yaml:"template_codes"`
+	// TemplateParams are extra template variables (e.g. {"min":"5"}); "code"
+	// is always injected by the service. Required when the approved/granted
+	// template contains variables beyond ${code}. This is NOT a template list.
+	TemplateParams map[string]string `yaml:"template_params"`
+}
+
+// Configured reports whether SMS can actually send: enabled AND the full
+// credential/template set is present. /auth/features uses this so the frontend
+// never shows a phone-login entry that would fail at send time.
+func (c SMSConfig) Configured() bool {
+	return c.Enabled &&
+		c.AccessKeyID != "" &&
+		c.AccessKeySecret != "" &&
+		c.SignName != "" &&
+		c.TemplateCode != ""
 }
 
 type WeChatConfig struct {
@@ -178,11 +230,39 @@ func loadAuth(yamlBytes []byte) (*AuthConfig, error) {
 	if err := applyAuthEnv(&cfg); err != nil {
 		return nil, err
 	}
+	normalizeSMS(&cfg.SMS)
 	if cfg.Security.RateLimit == nil {
 		cfg.Security.RateLimit = map[string]RateLimitRule{}
 	}
 	mergeRateLimitDefaults(cfg.Security.RateLimit)
 	return &cfg, nil
+}
+
+// normalizeSMS applies safe defaults and clamps explicit values: the provider
+// defaults to the legacy dysmsapi path; dypnsapi-only knobs fall back when not
+// applicable so existing deployments keep working unchanged.
+func normalizeSMS(c *SMSConfig) {
+	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
+	if c.Provider != "dypnsapi" {
+		c.Provider = "dysmsapi"
+		c.CodeSource = "local"
+	}
+	c.CodeSource = strings.ToLower(strings.TrimSpace(c.CodeSource))
+	if c.Provider == "dypnsapi" && c.CodeSource != "aliyun" {
+		c.CodeSource = "local"
+	}
+	if c.CountryCode == "" {
+		c.CountryCode = "86"
+	}
+	if c.IntervalSeconds <= 0 {
+		c.IntervalSeconds = 60
+	}
+	if c.DuplicatePolicy != 2 {
+		c.DuplicatePolicy = 1
+	}
+	if c.AutoRetry != 0 {
+		c.AutoRetry = 1
+	}
 }
 
 // mergeRateLimitDefaults fills in the Python-parity defaults for any rule
@@ -247,15 +327,9 @@ func applyAuthEnv(cfg *AuthConfig) error {
 	if v := get("SMS__ACCESS_KEY_SECRET"); v != "" {
 		cfg.SMS.AccessKeySecret = v
 	}
-	if v := get("SMS__SIGN_NAME"); v != "" {
-		cfg.SMS.SignName = v
-	}
-	if v := get("SMS__TEMPLATE_CODE"); v != "" {
-		cfg.SMS.TemplateCode = v
-	}
-	if b, ok := getBool("SMS__ENABLED"); ok {
-		cfg.SMS.Enabled = b
-	}
+	// SMS 的非敏感配置（enabled/provider/sign_name/template_code/
+	// template_codes/template_params/...）一律以 default.yaml 的 sms 段为准；
+	// .env 只允许放 AccessKey 密钥对，避免“compose 默认值覆盖 YAML”的坑。
 	if v := get("WECHAT__APP_ID"); v != "" {
 		cfg.WeChat.AppID = v
 	}
@@ -273,6 +347,18 @@ func applyAuthEnv(cfg *AuthConfig) error {
 	// consumer key under the APPAUTH__-prefixed name.
 	if v := get("APPAUTH__INTERNAL__API_KEY"); v != "" {
 		cfg.Internal.APIKey = v
+	}
+	// app-pay membership lookup (Coding Plan VIP/SVIP gate). The key defaults to
+	// the shared APISIX consumer key so one .env drives every service; an
+	// explicit APPAUTH__APP_PAY__KEY wins.
+	if v := get("APPAUTH__APP_PAY__BASE_URL"); v != "" {
+		cfg.AppPay.BaseURL = v
+	}
+	if v := get("APPAUTH__APP_PAY__KEY"); v != "" {
+		cfg.AppPay.Key = v
+	}
+	if v := get("APISIX_CONSUMER_KEY"); v != "" && cfg.AppPay.Key == "" {
+		cfg.AppPay.Key = v
 	}
 	if b, ok := getBool("APPAUTH__SECURITY__ALLOW_PLAINTEXT_FALLBACK"); ok {
 		cfg.Security.AllowPlaintextFallback = b

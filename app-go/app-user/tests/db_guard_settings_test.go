@@ -22,8 +22,19 @@ func TestMigrateCreateOnly(t *testing.T) {
 	}
 }
 
+// Guard: the Coding Plan table is user configuration and belongs to the
+// settings domain (moved out of auth).
+func TestSettingsOwnsCodingPlans(t *testing.T) {
+	for _, name := range settingsdb.OwnedTables() {
+		if name == "coding_plans" {
+			return
+		}
+	}
+	t.Fatal("coding_plans is missing from settingsdb.OwnedTables()")
+}
+
 // Guard: the owned-tables list stays in sync with the DDL. After the BYOK
-// retirement the only owned table is user_preferences.
+// retirement the settings domain owns user_preferences + coding_plans.
 func TestOwnedTablesCovered(t *testing.T) {
 	seen := map[string]bool{}
 	for _, ddl := range settingsdb.SchemaDDL() {

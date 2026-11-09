@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/router/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,9 @@ func registerInternalUser(e *gin.Engine, d Deps) {
 			c.JSON(http.StatusNotFound, gin.H{"detail": "用户不存在"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"uid": uid, "email": email, "status": status})
+		c.JSON(http.StatusOK, authdto.InternalUser{UID: uid, Email: email, Status: status})
 	})
+
+	// Coding Plan M2M lookup moved to the settings listener:
+	// GET /internal/settings/coding-plan/{uid} (internal/router/settings).
 }

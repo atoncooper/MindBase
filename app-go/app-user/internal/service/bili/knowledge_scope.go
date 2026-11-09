@@ -7,37 +7,11 @@ import (
 	"context"
 	"time"
 
+	bilidto "app-user/internal/dto/bili"
 	"app-user/internal/repo/bili"
 
 	"gorm.io/gorm"
 )
-
-// ScopePage mirrors one video page row (ASR state included — the AI side
-// needs is_processed/version to decide whether ASR must run before embedding).
-type ScopePage struct {
-	CID         int64  `json:"cid"`
-	PageIndex   int    `json:"page_index"`
-	PageTitle   string `json:"page_title"`
-	IsProcessed bool   `json:"is_processed"`
-	Version     int    `json:"version"`
-}
-
-type ScopeVideo struct {
-	BvID  string      `json:"bvid"`
-	Title string      `json:"title"`
-	Pages []ScopePage `json:"pages"`
-}
-
-type ScopeFolder struct {
-	MediaID    int64        `json:"media_id"`
-	MediaCount *int         `json:"media_count"`
-	LastSyncAt string       `json:"last_sync_at"`
-	Videos     []ScopeVideo `json:"videos"`
-}
-
-type ScopeResult struct {
-	Folders []ScopeFolder `json:"folders"`
-}
 
 func formatTimePtr(t *time.Time) string {
 	if t == nil {
@@ -57,13 +31,13 @@ func NewKnowledgeScopeService(db *gorm.DB) *KnowledgeScopeService {
 	return &KnowledgeScopeService{db: db, repo: repo.NewKnowledgeScopeRepo()}
 }
 
-func (s *KnowledgeScopeService) Scope(ctx context.Context, uid int64) (*ScopeResult, error) {
+func (s *KnowledgeScopeService) Scope(ctx context.Context, uid int64) (*bilidto.ScopeResult, error) {
 	folders, err := s.repo.ListAliveFolders(ctx, s.db, uid)
 	if err != nil {
 		return nil, err
 	}
 	if len(folders) == 0 {
-		return &ScopeResult{Folders: []ScopeFolder{}}, nil
+		return &bilidto.ScopeResult{Folders: []bilidto.ScopeFolder{}}, nil
 	}
 
 	mediaIDs := make([]int64, 0, len(folders))
@@ -89,7 +63,7 @@ func (s *KnowledgeScopeService) Scope(ctx context.Context, uid int64) (*ScopeRes
 	if err != nil {
 		return nil, err
 	}
-	pagesByBvid := make(map[string][]ScopePage, len(videos))
+	pagesByBvid := make(map[string][]bilidto.ScopePage, len(videos))
 	for _, v := range videos {
 		title := ""
 		if v.PageTitle != nil {
@@ -100,7 +74,7 @@ func (s *KnowledgeScopeService) Scope(ctx context.Context, uid int64) (*ScopeRes
 		if v.Version != nil {
 			version = *v.Version
 		}
-		pagesByBvid[v.BvID] = append(pagesByBvid[v.BvID], ScopePage{
+		pagesByBvid[v.BvID] = append(pagesByBvid[v.BvID], bilidto.ScopePage{
 			CID:         v.CID,
 			PageIndex:   v.PageIndex,
 			PageTitle:   title,
@@ -117,9 +91,9 @@ func (s *KnowledgeScopeService) Scope(ctx context.Context, uid int64) (*ScopeRes
 		}
 	}
 
-	out := make([]ScopeFolder, 0, len(folders))
+	out := make([]bilidto.ScopeFolder, 0, len(folders))
 	for _, f := range folders {
-		folderVideos := make([]ScopeVideo, 0)
+		folderVideos := make([]bilidto.ScopeVideo, 0)
 		seen := make(map[string]struct{})
 		for _, c := range collections {
 			if c.MediaID != f.MediaID {
@@ -131,18 +105,18 @@ func (s *KnowledgeScopeService) Scope(ctx context.Context, uid int64) (*ScopeRes
 			seen[c.BvID] = struct{}{}
 			pages := pagesByBvid[c.BvID]
 			if pages == nil {
-				pages = []ScopePage{}
+				pages = []bilidto.ScopePage{}
 			}
-			folderVideos = append(folderVideos, ScopeVideo{BvID: c.BvID, Title: videoTitle[c.BvID], Pages: pages})
+			folderVideos = append(folderVideos, bilidto.ScopeVideo{BvID: c.BvID, Title: videoTitle[c.BvID], Pages: pages})
 		}
-		out = append(out, ScopeFolder{
+		out = append(out, bilidto.ScopeFolder{
 			MediaID:    f.MediaID,
 			MediaCount: f.MediaCount,
 			LastSyncAt: formatTimePtr(f.LastSyncAt),
 			Videos:     folderVideos,
 		})
 	}
-	return &ScopeResult{Folders: out}, nil
+	return &bilidto.ScopeResult{Folders: out}, nil
 }
 
 // BvidBelongsToUser is the ownership check for knowledge-base deletion.

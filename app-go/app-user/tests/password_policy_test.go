@@ -1,9 +1,11 @@
-package service
+package tests
 
 import (
 	"errors"
 	"strings"
 	"testing"
+
+	service "app-user/internal/service/auth"
 )
 
 func TestValidatePasswordForUser(t *testing.T) {
@@ -18,13 +20,13 @@ func TestValidatePasswordForUser(t *testing.T) {
 		{"valid", "Str0ngPass!", nil},
 		{"too short", "a1", nil}, // generic strength error
 		{"no digit", "PasswordOnly", nil},
-		{"common", "password1", ErrWeakPassword},
-		{"email local part", "abc12345", ErrWeakPassword},
+		{"common", "password1", service.ErrWeakPassword},
+		{"email local part", "abc12345", service.ErrWeakPassword},
 		{"too long for bcrypt", strings.Repeat("a", 73) + "1", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validatePasswordForUser(tc.pw, &email, &phone)
+			err := service.ValidatePasswordForUser(tc.pw, &email, &phone)
 			if tc.want != nil {
 				if !errors.Is(err, tc.want) {
 					t.Fatalf("want %v, got %v", tc.want, err)

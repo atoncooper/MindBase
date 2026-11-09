@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"app-user/internal/config"
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/infra/cache"
 	"app-user/internal/infra/security"
 	"app-user/internal/model/auth"
@@ -140,7 +141,7 @@ type AuthService struct {
 }
 
 type biliCacheEntry struct {
-	status BilibiliStatus
+	status authdto.BilibiliStatus
 	at     time.Time
 }
 
@@ -365,7 +366,7 @@ func (s *AuthService) BindOAuthToUser(uid int64, provider, providerUID string,
 // RegisterWithEmail creates a password account with a pre-verified email
 // (caller consumed the register-purpose code) and issues a session token.
 func (s *AuthService) RegisterWithEmail(email, password string, deviceID, ip, userAgent *string) (int64, string, error) {
-	if err := validatePasswordForUser(password, &email, nil); err != nil {
+	if err := ValidatePasswordForUser(password, &email, nil); err != nil {
 		return 0, "", err
 	}
 	existing, err := s.users.GetByEmail(s.db, email)
@@ -474,16 +475,6 @@ func (s *AuthService) LoginWithPassword(identifier, password string, deviceID, i
 	return user.UID, token, nil
 }
 
-// UserInfo is the GET /auth/me shape (plus token fields for login flows).
-type UserInfo struct {
-	UID       int64      `json:"uid"`
-	Nickname  *string    `json:"nickname"`
-	Avatar    *string    `json:"avatar"`
-	Status    string     `json:"status"`
-	Roles     []string   `json:"roles"`
-	CreatedAt *time.Time `json:"created_at"`
-}
-
 func (s *AuthService) invalidateBiliCreds(uid int64) {
 	if s.invalidateCreds != nil {
 		s.invalidateCreds(uid)
@@ -492,7 +483,10 @@ func (s *AuthService) invalidateBiliCreds(uid int64) {
 
 // grantDefaultRole grants the free role and invalidates the role cache.
 func (s *AuthService) grantDefaultRole(uid int64) error {
-	if err := s.grantDefaultRole(uid); err != nil {
+	// Regression fix: this used to recurse into itself forever (stack overflow on
+	// first registration/phone login/OAuth signup). Grant the default "free"
+	// role via the repo, then drop the cached roles.
+	if err := s.rbac.GrantRole(s.db, uid, "free", 0); err != nil {
 		return err
 	}
 	if s.authz != nil {
@@ -502,7 +496,7 @@ func (s *AuthService) grantDefaultRole(uid int64) error {
 }
 
 // GetUserByUID assembles user info (users + profile + roles) in ONE query.
-func (s *AuthService) GetUserByUID(uid int64) (*UserInfo, error) {
+func (s *AuthService) GetUserByUID(uid int64) (*authdto.UserInfo, error) {
 	row, err := s.users.GetUserInfo(s.db, uid)
 	if err != nil {
 		return nil, err
@@ -510,7 +504,7 @@ func (s *AuthService) GetUserByUID(uid int64) (*UserInfo, error) {
 	if row == nil {
 		return nil, nil
 	}
-	info := &UserInfo{UID: row.UID, Roles: splitRoles(row.Roles), CreatedAt: row.CreatedAt}
+	info := &authdto.UserInfo{UID: row.UID, Roles: splitRoles(row.Roles)}
 	if row.Status != nil {
 		info.Status = *row.Status
 	} else {
@@ -608,25 +602,6 @@ func (s *AuthService) RequireStepUp(uid int64, currentPassword string) error {
 	return nil
 }
 
-// FullProfile is the GET/PATCH /auth/profile shape.
-type FullProfile struct {
-	UID           int64      `json:"uid"`
-	Email         *string    `json:"email"`
-	EmailVerified bool       `json:"email_verified"`
-	Phone         *string    `json:"phone"`
-	PhoneVerified bool       `json:"phone_verified"`
-	Nickname      *string    `json:"nickname"`
-	Avatar        *string    `json:"avatar"`
-	Bio           *string    `json:"bio"`
-	Birthday      *string    `json:"birthday"`
-	Gender        *string    `json:"gender"`
-	Location      *string    `json:"location"`
-	Timezone      *string    `json:"timezone"`
-	Language      *string    `json:"language"`
-	Status        string     `json:"status"`
-	CreatedAt     *time.Time `json:"created_at"`
-}
-
 // InternalUserContact returns email/status for /internal/auth/user/{uid} (M2M).
 func (s *AuthService) InternalUserContact(uid int64) (email, status string, ok bool, err error) {
 	u, err := s.users.InternalContact(s.db, uid)
@@ -642,7 +617,7 @@ func (s *AuthService) InternalUserContact(uid int64) (email, status string, ok b
 	return email, status, true, nil
 }
 
-func (s *AuthService) GetFullProfile(uid int64) (*FullProfile, error) {
+func (s *AuthService) GetFullProfile(uid int64) (*authdto.Profile, error) {
 	user, err := s.users.GetByUID(s.db, uid)
 	if err != nil {
 		return nil, err
@@ -654,7 +629,7 @@ func (s *AuthService) GetFullProfile(uid int64) (*FullProfile, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &FullProfile{UID: user.UID}
+	p := &authdto.Profile{UID: user.UID}
 	if user.Email != nil {
 		p.Email = user.Email
 	}
@@ -687,7 +662,7 @@ func (s *AuthService) GetFullProfile(uid int64) (*FullProfile, error) {
 
 // UpdateProfile patches the profile columns present in fields, then returns
 // the refreshed profile.
-func (s *AuthService) UpdateProfile(uid int64, fields map[string]any) (*FullProfile, error) {
+func (s *AuthService) UpdateProfile(uid int64, fields map[string]any) (*authdto.Profile, error) {
 	user, err := s.users.GetByUID(s.db, uid)
 	if err != nil {
 		return nil, err
@@ -774,7 +749,7 @@ func (s *AuthService) SetPassword(uid int64, password string) error {
 	if user.PasswordHash != nil {
 		return ErrPasswordExists
 	}
-	if err := validatePasswordForUser(password, user.Email, user.Phone); err != nil {
+	if err := ValidatePasswordForUser(password, user.Email, user.Phone); err != nil {
 		return err
 	}
 	hash, err := security.HashPassword(password)
@@ -800,7 +775,7 @@ func (s *AuthService) ChangePassword(uid int64, oldPassword, newPassword string)
 	if user.PasswordHash == nil {
 		return ErrNoPassword
 	}
-	if err := validatePasswordForUser(newPassword, user.Email, user.Phone); err != nil {
+	if err := ValidatePasswordForUser(newPassword, user.Email, user.Phone); err != nil {
 		return err
 	}
 	if oldPassword == newPassword {
@@ -834,7 +809,7 @@ func (s *AuthService) ResetPassword(uid int64, newPassword string) error {
 	if user == nil {
 		return ErrUserNotFound
 	}
-	if err := validatePasswordForUser(newPassword, user.Email, user.Phone); err != nil {
+	if err := ValidatePasswordForUser(newPassword, user.Email, user.Phone); err != nil {
 		return err
 	}
 	if err := s.ensurePasswordNotReused(user, newPassword); err != nil {
@@ -1003,28 +978,7 @@ func (s *AuthService) ListDevices(uid int64) ([]model.UserDevice, error) {
 
 // ── Security overview ────────────────────────────────────────────────
 
-// BilibiliStatus is the bilibili block of GET /auth/security.
-type BilibiliStatus struct {
-	Bound    bool    `json:"bound"`
-	Valid    bool    `json:"valid"`
-	Mid      *int64  `json:"mid"`
-	Nickname *string `json:"nickname"`
-	Avatar   *string `json:"avatar"`
-	Message  string  `json:"message"`
-}
-
-// SecurityOverview is the GET /auth/security shape.
-type SecurityOverview struct {
-	Email         *string          `json:"email"`
-	EmailVerified bool             `json:"email_verified"`
-	Phone         *string          `json:"phone"`
-	PhoneVerified bool             `json:"phone_verified"`
-	HasPassword   bool             `json:"has_password"`
-	OAuthBindings []map[string]any `json:"oauth_bindings"`
-	Bilibili      BilibiliStatus   `json:"bilibili"`
-}
-
-func (s *AuthService) GetSecurityInfo(uid int64, passport *BilibiliPassport) (*SecurityOverview, error) {
+func (s *AuthService) GetSecurityInfo(uid int64, passport *BilibiliPassport) (*authdto.Security, error) {
 	user, err := s.users.GetByUID(s.db, uid)
 	if err != nil {
 		return nil, err
@@ -1036,14 +990,14 @@ func (s *AuthService) GetSecurityInfo(uid int64, passport *BilibiliPassport) (*S
 	if err != nil {
 		return nil, err
 	}
-	out := &SecurityOverview{
+	out := &authdto.Security{
 		Email:         user.Email,
 		EmailVerified: user.EmailVerified != nil && *user.EmailVerified,
 		Phone:         user.Phone,
 		PhoneVerified: user.PhoneVerified != nil && *user.PhoneVerified,
 		HasPassword:   user.PasswordHash != nil,
 		OAuthBindings: []map[string]any{},
-		Bilibili: BilibiliStatus{
+		Bilibili: authdto.BilibiliStatus{
 			Message: "未绑定B站账号",
 		},
 	}
@@ -1065,7 +1019,7 @@ func (s *AuthService) GetSecurityInfo(uid int64, passport *BilibiliPassport) (*S
 // hard deadline. GET /auth/security is on the account page's critical path; the
 // upstream call was observed taking 2–8s (api.bilibili.com reachability), which
 // made the whole page wait on it.
-func (s *AuthService) bilibiliStatusCached(uid int64, b *model.UserOAuth, passport *BilibiliPassport) BilibiliStatus {
+func (s *AuthService) bilibiliStatusCached(uid int64, b *model.UserOAuth, passport *BilibiliPassport) authdto.BilibiliStatus {
 	s.biliMu.Lock()
 	if entry, ok := s.biliCache[uid]; ok && time.Since(entry.at) < biliStatusTTL {
 		s.biliMu.Unlock()
@@ -1073,7 +1027,7 @@ func (s *AuthService) bilibiliStatusCached(uid int64, b *model.UserOAuth, passpo
 	}
 	s.biliMu.Unlock()
 
-	ch := make(chan BilibiliStatus, 1)
+	ch := make(chan authdto.BilibiliStatus, 1)
 	go func() { ch <- s.bilibiliStatus(b, passport) }()
 
 	select {
@@ -1086,7 +1040,7 @@ func (s *AuthService) bilibiliStatusCached(uid int64, b *model.UserOAuth, passpo
 		s.biliMu.Unlock()
 		return st
 	case <-time.After(biliStatusTimeout):
-		st := BilibiliStatus{Bound: true, Valid: false, Message: "B站状态检查超时，请稍后重试"}
+		st := authdto.BilibiliStatus{Bound: true, Valid: false, Message: "B站状态检查超时，请稍后重试"}
 		if isDigits(b.ProviderUID) {
 			mid := parseInt64(b.ProviderUID)
 			st.Mid = &mid
@@ -1103,8 +1057,8 @@ func (s *AuthService) invalidateBiliStatus(uid int64) {
 	s.biliMu.Unlock()
 }
 
-func (s *AuthService) bilibiliStatus(b *model.UserOAuth, passport *BilibiliPassport) BilibiliStatus {
-	status := BilibiliStatus{Bound: true, Message: "B站登录已失效，请重新扫码"}
+func (s *AuthService) bilibiliStatus(b *model.UserOAuth, passport *BilibiliPassport) authdto.BilibiliStatus {
+	status := authdto.BilibiliStatus{Bound: true, Message: "B站登录已失效，请重新扫码"}
 	if isDigits(b.ProviderUID) {
 		mid := parseInt64(b.ProviderUID)
 		status.Mid = &mid

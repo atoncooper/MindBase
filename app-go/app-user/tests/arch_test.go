@@ -106,6 +106,27 @@ func TestRouterLayerHasNoSQL(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 }
+
+// TestInternalHasNoTestFiles pins the test layout: every Go test lives in
+// tests/ (package tests). internal/ is production code only, so white-box
+// helpers must be exposed through small seams (or moved to a shared package).
+func TestInternalHasNoTestFiles(t *testing.T) {
+	root := moduleRoot(t)
+	internal := filepath.Join(root, "internal")
+
+	err := filepath.Walk(internal, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		t.Errorf("%s: Go tests must live in tests/ (package tests)", filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
+
 func domainOfPath(p string) string {
 	for _, seg := range strings.Split(p, "/") {
 		switch seg {

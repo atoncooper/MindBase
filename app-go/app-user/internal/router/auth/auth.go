@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/service/auth"
 
 	"github.com/gin-gonic/gin"
@@ -71,6 +72,9 @@ func registerAuth(e *gin.Engine, d Deps) {
 	authed.GET("/devices", listDevices(d))
 	authed.GET("/security", getSecurity(d))
 	authed.POST("/wechat/bind", wechatBind(d))
+
+	// Coding Plan moved to the settings domain (user configuration, not
+	// identity): /settings/coding-plans on the settings listener (8015).
 }
 
 // ── shared helpers ───────────────────────────────────────────────────
@@ -78,9 +82,9 @@ func registerAuth(e *gin.Engine, d Deps) {
 // featuresHandler reports enabled login channels (frontend show/hide).
 func featuresHandler(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"email_register_enabled": d.Cfg.Email.Enabled,
-			"sms_enabled":            d.Cfg.SMS.Enabled,
+		c.JSON(http.StatusOK, authdto.Features{
+			EmailRegisterEnabled: d.Cfg.Email.Enabled,
+			SMSEnabled:           d.Cfg.SMS.Configured(),
 		})
 	}
 }
@@ -243,13 +247,21 @@ func normalizeKey(key string) string {
 }
 
 // userPayload builds the TokenResponse.user_info object.
-func (d Deps) userPayload(c *gin.Context, uid int64) (nickname, avatar *string, status string, roles []string) {
+func (d Deps) userPayload(uid int64) authdto.UserInfo {
 	info, err := d.Auth.GetUserByUID(uid)
 	if err != nil || info == nil {
-		return nil, nil, "active", []string{"free"}
+		// Degraded lookup: still echo the authenticated uid so the login
+		// envelope keeps its shape (the account row exists, roles default free).
+		return authdto.UserInfo{UID: uid, Status: "active", Roles: []string{"free"}}
 	}
 	if len(info.Roles) == 0 {
 		info.Roles = []string{"free"}
 	}
-	return info.Nickname, info.Avatar, info.Status, info.Roles
+	return authdto.UserInfo{
+		UID:      info.UID,
+		Nickname: info.Nickname,
+		Avatar:   info.Avatar,
+		Status:   info.Status,
+		Roles:    info.Roles,
+	}
 }

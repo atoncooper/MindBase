@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/service/auth"
 
 	"github.com/gin-gonic/gin"
@@ -15,7 +16,7 @@ import (
 // state (frontend hides the WeChat tab).
 func wechatQROptions(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		empty := gin.H{"enabled": false, "app_id": "", "redirect_uri": "", "state": ""}
+		empty := authdto.WeChatOptions{}
 		if !d.Cfg.WeChat.Enabled {
 			c.JSON(http.StatusOK, empty)
 			return
@@ -39,11 +40,11 @@ func wechatQROptions(d Deps) gin.HandlerFunc {
 			c.JSON(http.StatusOK, empty)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"enabled":      true,
-			"app_id":       d.Cfg.WeChat.AppID,
-			"redirect_uri": d.Cfg.WeChat.RedirectURI,
-			"state":        state,
+		c.JSON(http.StatusOK, authdto.WeChatOptions{
+			Enabled:     true,
+			AppID:       d.Cfg.WeChat.AppID,
+			RedirectURI: d.Cfg.WeChat.RedirectURI,
+			State:       state,
 		})
 	}
 }
@@ -97,12 +98,8 @@ func wechatProviderData(tok *service.WeChatToken) *service.ProviderData {
 
 // wechatLogin — POST /auth/wechat/login (register on first use).
 func wechatLogin(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Code  string `json:"code" binding:"required"`
-		State string `json:"state" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.WeChatRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -129,12 +126,8 @@ func wechatLogin(d Deps) gin.HandlerFunc {
 
 // wechatBind — POST /auth/wechat/bind (authenticated; settings page).
 func wechatBind(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Code  string `json:"code" binding:"required"`
-		State string `json:"state" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.WeChatRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -153,6 +146,6 @@ func wechatBind(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "绑定失败，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "微信账号绑定成功"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "微信账号绑定成功"})
 	}
 }

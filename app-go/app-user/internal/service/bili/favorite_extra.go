@@ -151,25 +151,3 @@ func (s *FavoriteService) OrganizeExecute(ctx context.Context, uid int64, client
 func (s *FavoriteService) CleanInvalid(ctx context.Context, client *bili.Client, mediaID int64) (map[string]any, error) {
 	return client.CleanFavorite(ctx, mediaID)
 }
-
-// foldersToJSON renders the FavoriteFolderResponse wire shape.
-// FoldersToJSON renders the FavoriteFolderResponse wire shape.
-func FoldersToJSON(folders []model.FavoriteFolder) []map[string]any {
-	out := make([]map[string]any, 0, len(folders))
-	for _, f := range folders {
-		item := map[string]any{
-			"id": f.ID, "media_id": f.MediaID, "title": f.Title,
-			"media_count": utils.DerefInt(f.MediaCount),
-			"is_default":  utils.DerefBool(f.IsDefault),
-			"is_selected": true,
-		}
-		if f.IsSelected != nil {
-			item["is_selected"] = *f.IsSelected
-		}
-		if f.LastSyncAt != nil {
-			item["last_sync_at"] = utils.NaiveUTC(*f.LastSyncAt)
-		}
-		out = append(out, item)
-	}
-	return out
-}

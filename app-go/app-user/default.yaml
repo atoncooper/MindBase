@@ -74,6 +74,15 @@ auth:
       pw_change_uid:     { max: 3,  window: 3600 }  # per-uid password changes
       pw_set_uid:        { max: 3,  window: 3600 }  # per-uid first-time password sets
 
+  # app-pay membership lookup used by the Coding Plan VIP/SVIP gate.
+  # The client calls {base_url}/internal/pay/membership/{uid} through APISIX
+  # key-auth; base_url is the gateway origin (default http://apisix:9080).
+  # key falls back to the shared APISIX_CONSUMER_KEY env when empty; an empty
+  # key makes every membership check fail closed (Coding Plan unavailable).
+  app_pay:
+    base_url: "http://apisix:9080"
+    key: ""
+
   email:
     enabled: false             # inject via EMAIL__ENABLED (shared with Python backend)
     api_key: ""                # inject via EMAIL__API_KEY (Resend)
@@ -87,16 +96,41 @@ auth:
     max_verify_attempts: 5
 
   sms:
-    # 阿里云短信(手机验证码登录/绑定)。密钥对走 .env 的 SMS__ACCESS_KEY_ID /
-    # SMS__ACCESS_KEY_SECRET;开通步骤:①阿里云短信服务申请通过签名+模板
-    # (模板须含 ${code} 参数)②此处填 enabled/sign_name/template_code
-    # ③.env 填密钥对 ④docker compose up -d --force-recreate app-user
-    # 未配置时 /auth/features 返回 sms_enabled=false,前端隐藏手机登录入口
-    enabled: false
-    sign_name: ""              # 已审核通过的短信签名,如 "MindBase"
-    template_code: ""          # 已审核通过的模板 CODE,如 "SMS_123456789",须含 ${code}
+    # 阿里云短信验证码(手机登录/绑定/二次验证)。provider 二选一:
+    #   dysmsapi（默认，短信服务）：自定义签名+模板，验证码由本服务生成并本地核验
+    #   dypnsapi（号码认证服务-短信认证）：推荐个人开发者使用控制台赠送的
+    #     签名/模板（该产品不支持自定义签名，SignName 必须从赠送签名配置页选）；
+    #     code_source=aliyun 时由阿里云生成并核验验证码
+    #     （CheckSmsVerifyCode 免费，本服务不存明文码）
+    # 模板必须包含 ${code} 变量；dypnsapi 的赠送模板通常已含该变量。
+    # 密钥对走 .env 的 SMS__ACCESS_KEY_ID / SMS__ACCESS_KEY_SECRET；
+    # 改完执行 docker compose up -d --force-recreate app-user。
+    # 未配置时 /auth/features 返回 sms_enabled=false,前端隐藏手机登录入口。
+    enabled: true
+    provider: dypnsapi         # dysmsapi | dypnsapi
+    # 必须与 dypns 控制台「赠送签名配置」页的签名名称完全一致；
+    # 若这里用的是短信服务的自定义签名，provider 必须改回 dysmsapi。
+    sign_name: "恒创联众科技"
+    # 默认模板（未在 template_codes 中匹配到 purpose 时使用）
+    template_code: "100001"    # 必须是 dypns「赠送模板配置」页的模板 CODE
+    # 按业务 purpose 选择不同模板（code 登录/注册 / 绑定手机 / 二次验证）
+    template_codes:
+      login: "100001"          # 登录/注册模板
+      bind_phone: "100004"     # 绑定新手机号模板
+      twofa_sms: "100005"      # 验证绑定手机号模板（改密/设密二次验证）
+      # 备用：修改绑定手机号 100002 / 重置密码 100003（当前无 SMS 重置流程）
+    scheme_name: ""            # dypnsapi 方案名(可空=默认方案);发送/核验必须一致
+    country_code: "86"         # dypnsapi 号码国家码(当前仅支持中国大陆)
+    code_source: aliyun        # 赠送模板推荐 aliyun：阿里云生成+核验(CheckSmsVerifyCode 免费)
+    interval_seconds: 60       # dypnsapi 单号码发送间隔
+    duplicate_policy: 1        # 1=新码覆盖旧码
+    auto_retry: 1              # 1=允许阿里云内部重试
+    # 模板额外变量（不是模板列表！）。阿里云赠送验证码模板通常含
+    # ${code} 与 ${min}（有效期分钟数）；若模板没有 ${min} 就删掉此行。
+    template_params:
+      min: "5"
     access_key_id: ""          # inject via SMS__ACCESS_KEY_ID (.env)
-    access_key_secret: ""      # inject via SMS__ACCESS_KEY_SECRET (.env)""
+    access_key_secret: ""      # inject via SMS__ACCESS_KEY_SECRET (.env)
 
   wechat:
     enabled: false             # inject via WECHAT__ENABLED

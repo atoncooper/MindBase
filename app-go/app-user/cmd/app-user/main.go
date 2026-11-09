@@ -235,7 +235,7 @@ func main() {
 		Resolver: resolver,
 	})
 
-	// ── settings domain (preferences / avatar). ──
+	// ── settings domain (preferences / avatar / Coding Plan). ──
 	minioStore, err := settingsminio.New(cfgSettings.MinIO.Endpoint, cfgSettings.MinIO.AccessKey,
 		cfgSettings.MinIO.SecretKey, cfgSettings.MinIO.Bucket, cfgSettings.MinIO.Secure)
 	if err != nil {
@@ -244,7 +244,16 @@ func main() {
 	}
 	settingsrouter.SetMinioStore(minioStore)
 	settingsSvc := settingsservice.New(gdb)
-	settingsEngine := settingsrouter.New(settingsrouter.Deps{Cfg: cfgSettings, Svc: settingsSvc})
+	// Coding Plan (user configuration, settings domain): the app_pay membership
+	// config is still defined in the auth config section and the AES cipher is
+	// the shared one injected here.
+	codingPlans := settingsservice.NewCodingPlanService(gdb, cfgAuth.AppPay, cipher)
+	settingsEngine := settingsrouter.New(settingsrouter.Deps{
+		Cfg:            cfgSettings,
+		Svc:            settingsSvc,
+		CodingPlans:    codingPlans,
+		InternalAPIKey: cfgAuth.Internal.APIKey,
+	})
 
 	// Business timezone (after DB init: DSN loc is pinned to UTC above).
 	if loc, lerr := time.LoadLocation(cfgAuth.Timezone); lerr == nil {

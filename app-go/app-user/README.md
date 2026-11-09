@@ -10,7 +10,7 @@
 |------|------|----------|
 | 8006 | auth | `/auth/*`、`/internal/auth/verify`（APISIX forward-auth）、`/internal/auth/user/{uid}`（apikey）、`/health` |
 | 8010 | bili | `/favorites/v2/*`、`/knowledge/*`、`/asr/*`、`/internal/bili/{scope,owns}`（apikey）、`/health` |
-| 8015 | settings | `/preferences`、`/avatar/*`、`/health` |
+| 8015 | settings | `/preferences`、`/avatar/*`、`/settings/coding-plans*`（X-Uid）、`/internal/settings/coding-plan/{uid}`（apikey）、`/health` |
 
 ## 代码结构
 
@@ -93,7 +93,7 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 >（auth ≈27、bili ≈30 处），下一步按同一规则迁移到 `internal/repo`（不影响对外行为）。
 ## 边界
 
-- 数据所有权：auth 11 表（users/user_oauth/user_password_history/user_security_events/...）；bili 5 表（collection/favorite_folders/video/video_versions/async_tasks）+ Mongo `asr_documents`；settings 1 表（user_preferences）。
+- 数据所有权：auth 11 表（users/user_oauth/user_password_history/user_security_events/...）；bili 5 表（collection/favorite_folders/video/video_versions/async_tasks）+ Mongo `asr_documents`；settings 2 表（user_preferences + coding_plans）。
 - 唯一跨域契约：`internal/contracts.BiliCredentialProvider`（auth 实现，bili 消费）——bili 不再直接读 `user_oauth`、不再持有 AES 解密。
 - 依赖方向：`platform`/`contracts` 不 import 任何域；域之间禁止互相 import；`tests/arch_test.go` 钉死。
 - 事件：bili 发布 `bili:page_ready` / `bili:tasks`（与合并前一致）。
@@ -101,7 +101,9 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 ## 配置
 
 - 每域保留原有 env 前缀：`APPAUTH__*` / `APPBILI__*` / `APPSETTINGS__*`（compose 三套合并传入）。
-- 共享 env：`RDBMS__URL`（经三套前缀映射）、`MONGO__URI`、`REDIS__URL`、`MINIO__*`、`SECURITY__API_KEY_ENCRYPTION_KEY(_FILE)`、`EMAIL__*`/`SMS__*`/`WECHAT__*`、`AI_GATEWAY__*`、`APISIX_CONSUMER_KEY`。
+- DTO：`internal/dto/{auth,bili,settings}` 存放 HTTP wire 请求/响应（json+binding 标签），router 只做绑定/校验/响应映射；业务编排在 `internal/service/auth`（含 `account_flow.go` 的手机号/密码/绑定流程），不把 step-up/验证码编排塞回 router。
+- 共享 env：`RDBMS__URL`（经三套前缀映射）、`MONGO__URI`、`REDIS__URL`、`MINIO__*`、`SECURITY__API_KEY_ENCRYPTION_KEY(_FILE)`、`EMAIL__*`/`WECHAT__*`、`SMS__ACCESS_KEY_ID`/`SMS__ACCESS_KEY_SECRET`、`AI_GATEWAY__*`、`APISIX_CONSUMER_KEY`。
+- 短信验证码：`sms.provider=dysmsapi`（默认，自定义签名/模板）或 `dypnsapi`（号码认证服务-短信认证，个人开发者可用赠送签名/模板）；`sms.code_source: aliyun` 时由阿里云生成并核验验证码（`CheckSmsVerifyCode` 免费，明文码不落库），默认 `local` 保持本地生成/核验。
 - MySQL DSN 固定 `loc=UTC`（与 bili/settings 原语义一致）；`time.Local` 在 DB 初始化后设置。
 
 ## 运行

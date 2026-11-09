@@ -177,3 +177,7 @@ type SecurityEvent struct {
 }
 
 func (SecurityEvent) TableName() string { return "user_security_events" }
+
+// Coding Plan moved to the settings domain (user configuration, not identity):
+// model lives in internal/model/settings, table/DDL ownership in
+// internal/infra/db/settings, HTTP surface under /settings/coding-plans.
