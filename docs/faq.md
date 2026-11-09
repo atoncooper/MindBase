@@ -144,7 +144,7 @@ app-admin 不直连 `sandbox_*` 表，数据全部经 app-sandbox `/internal/adm
 
 **Q：新增端点要改哪些地方？**
 
-app-ts 内：`transport/http/routes/<域>.ts` + `server.ts` 注册；网关：`apisix/apisix.yaml` 与 `apisix.dev.yaml` **必须显式加路由**（APISIX 无 catch_all）；如涉及页面 / 大文件再改 `nginx/`；前端只经 `lib/api/`。详见 [project-structure.md](project-structure.md)「新增代码落位」。
+app-ts 内：`transport/http/routes/<域>.ts` + `server.ts` 注册；网关：`apisix/apisix.yaml.template` 与 `apisix.dev.yaml.template` **必须显式加路由**（APISIX 无 catch_all；启动时渲染）；如涉及页面 / 大文件再改 `nginx/`；前端只经 `lib/api/`。详见 [project-structure.md](project-structure.md)「新增代码落位」。
 
 **Q：为什么 README 里没有目录树和接口表？**
 

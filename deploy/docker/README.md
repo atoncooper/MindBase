@@ -10,7 +10,7 @@
 | 机器 | 文件 | 说明 |
 |---|---|---|
 | **server1**（manager，边缘层） | 00-certs / 10-frontend / 11-etcd / 12-minio / 13-apisix / 14-nginx | TLS 入口、网关、前端、对象存储 |
-| **server2**（worker，数据+后端） | 20-redis / 21-mongo / 22-neo4j / 23-milvus / 24-app-task-mysql / 25-app-pay-mysql / 30-app-user（auth+bili+settings 合一）/ 30-app-content（note+quiz+board 合一）/ 34~35(app-go) / 38~40(MCP) / 41-app-task / 42-app-pay / 43-app-ts | 数据层 + 全部业务后端 |
+| **server2**（worker，数据+后端） | 20-redis / 21-mongo / 22-neo4j / 23-milvus / 24-app-task-mysql / 25-app-pay-mysql / 30-app-user（auth+bili+settings 合一）/ 30-app-content（note+quiz+board 合一）/ 34~35(app-go) / 38(app-content-mcp) / 41-app-task / 42-app-pay / 43-app-ts | 数据层 + 全部业务后端 |
 | 可选 | 90-higress / 96-app-admin | .env 已指向外部 AI 网关就不用起 higress；统一管理后台（分享审核 + 支付运营 + 账户 + 审计）用 SSH 隧道访问 3001 |
 
 > 主库 mind_base 用外部 MySQL（.env 的 RDBMS__URL），两份文件里都不含主 mysql；
@@ -58,11 +58,11 @@ scp -r manager:/MindBase/.env                    <repo>/
 scp -r manager:/MindBase/secrets                 <repo>/
 scp -r manager:/MindBase/app-pay/certs           <repo>/app-pay/
 scp -r manager:/MindBase/app-board/certs         <repo>/app-board/   # app-content board 域 TLS（目录名沿用历史）
-scp -r manager:/MindBase/mcp/app-board-mcp/certs <repo>/mcp/app-board-mcp/   # 可选
+scp -r manager:/MindBase/app-go/app-content-mcp/certs <repo>/app-go/app-content-mcp/   # 可选
 scp -r manager:/MindBase/data/higress            <repo>/data/                 # 本机 higress 时
 ```
 
-.env 必须包含：RDBMS__URL（外部主库）、APISIX_CONSUMER_KEY（与 server1 apisix.yaml 一致）、
+.env 必须包含：RDBMS__URL（外部主库）、APISIX_CONSUMER_KEY（server1 的 apisix 容器启动时渲染进模板；只填 .env 一处）、
 AI_GATEWAY__API_KEY / AI_GATEWAY__BASE_URL、REDIS_PASSWORD / MONGO_* / MINIO_* /
 NEO4J_PASSWORD（与 server1 同值）、PAY_MYSQL_* / APPTASK_MYSQL_*。
 

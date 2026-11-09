@@ -163,33 +163,25 @@ export interface AppConfig {
     protoPath: string;
     timeoutMs: number;
   };
-  noteMcp: {
-    /** false = save_note tool not registered (note saving unavailable) */
+  contentMcp: {
+    /**
+     * Content-domain MCP (plan/1.0.20): one merged server (app-content-mcp) exposes
+     * the 12 board+note+quiz tools behind a single /mcp endpoint.
+     * false = NO tool of any of the three domains is registered (graceful
+     * degradation when app-content-mcp is not deployed).
+     */
     enabled: boolean;
+    /** app-content-mcp streamable-http endpoint */
     url: string;
+    /** service-mode apikey (uid rides the per-call X-Uid header, never LLM args) */
     apiKey: string;
+    /** external-host Bearer token (alternative to apiKey) */
     bearerToken: string;
     timeoutMs: number;
-  };
-  quizMcp: {
-    /** false = quiz tools not registered (quiz generation unavailable) */
-    enabled: boolean;
-    url: string;
-    apiKey: string;
-    bearerToken: string;
-    timeoutMs: number;
-  };
-  boardMcp: {
-    /** false = board tools not registered at boot (graceful degradation when app-board-mcp is not deployed) */
-    enabled: boolean;
-    url: string;
-    apiKey: string;
-    bearerToken: string;
-    timeoutMs: number;
-    /** optional model override for /chat/board/complete; empty = llm.model */
-    completionModel: string;
     /** per-tool LLM context budget for bridged MCP tool output (truncation ceiling) */
     maxContentChars: number;
+    /** optional model override for /chat/board/complete; empty = llm.model */
+    completionModel: string;
   };
   sandbox: {
     /**

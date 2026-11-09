@@ -1,4 +1,4 @@
-// Internal M2M endpoints for quiz storage writes — consumed by app-quiz-mcp
+// Internal M2M endpoints for quiz storage writes — consumed by app-content-mcp
 // (save_quiz / save_grading) and by app-ts's AI generation flows (create a
 // generating set, finalize with questions, or fail) via the APISIX key-auth
 // route /internal/quiz/*. Identity model mirrors every other internal surface:

@@ -16,7 +16,7 @@ const DIRECTIONS: BoardDirection[] = ["children", "siblings", "both"];
  * wildcard route). Port of app/routers/board_ai.py.
  *
  * Parameter validation + HTTP mapping only: the structured LLM call and the
- * board read via app-board-mcp live in services/board-completion.ts.
+ * board read via app-content-mcp live in services/board-completion.ts.
  */
 export function registerBoardRoutes(
   app: FastifyInstance,

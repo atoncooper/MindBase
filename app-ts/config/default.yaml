@@ -180,39 +180,24 @@ kgGrpc:
   protoPath: ../proto/kg/v1/kg.proto
   timeoutMs: 15000
 
-noteMcp:
-  # false = 不注册 save_note 工具（app-note-mcp 未部署时笔记保存不可用）
+contentMcp:
+  # 内容域 MCP 合并服务 app-content-mcp（plan/1.0.20）：board 6 + note 4 + quiz 2
+  # 共 12 个工具走同一个 /mcp 端点（单 module / 单镜像 / 单容器 / 单端口 8019）。
+  # false = 三域工具全部不注册（app-content-mcp 未部署时优雅降级：笔记保存、
+  # quiz 落库、board 工具均不可用；无直连回落）。
   enabled: true
-  # app-note-mcp streamable-http 端点
-  url: http://127.0.0.1:8009/mcp
-  apiKey: ${NOTE_MCP__API_KEY}
-  bearerToken: ${NOTE_MCP_AUTH_TOKEN}
-  timeoutMs: 30000
-
-quizMcp:
-  # false = 启动时不注册 quiz 出题/批改工具（quiz 落库必须经 MCP，无直连回落）
-  enabled: true
-  # app-quiz-mcp streamable-http 端点
-  url: http://127.0.0.1:8012/mcp
-  # 服务模式 apikey / 外部宿主 Bearer（与 boardMcp 同模型）
-  apiKey: ${QUIZ_MCP__API_KEY}
-  bearerToken: ${QUIZ_MCP__BEARER_TOKEN}
-  timeoutMs: 30000
-
-boardMcp:
-  # false = 启动时不注册 board 工具（app-board-mcp 未部署时优雅降级）
-  enabled: true
-  # app-board-mcp streamable-http 端点
-  url: http://127.0.0.1:8005/mcp
+  # app-content-mcp streamable-http 端点（容器内由 CONTENT_MCP__URL 覆盖为
+  # http://app-content-mcp:8019/mcp）
+  url: http://127.0.0.1:8019/mcp
   # 服务模式 apikey（uid 走请求头 X-Uid，永不进 LLM 参数）
-  apiKey: ${BOARD_MCP__API_KEY}
+  apiKey: ${CONTENT_MCP__API_KEY}
   # 外部宿主模式（与 apiKey 二选一）
-  bearerToken: ${BOARD_MCP__BEARER_TOKEN}
+  bearerToken: ${CONTENT_MCP__BEARER_TOKEN}
   timeoutMs: 30000
-  # 桥接工具输出送入 LLM 上下文的截断上限
+  # 桥接工具输出送入 LLM 上下文的截断上限（board 文档体量大）
   maxContentChars: 8000
   # /chat/board/complete 的模型覆盖（留空 = llm.model）
-  completionModel: ${BOARD_MCP__COMPLETION_MODEL:}
+  completionModel: ${CONTENT_MCP__COMPLETION_MODEL:}
 
 sandbox:
   # 代码执行沙箱控制层（app-sandbox，plan/1.0.18 §十）。false = run_code 使用

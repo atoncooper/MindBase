@@ -2,7 +2,7 @@
 
 本目录将 `docker-compose.yml` 的完整拓扑（3×MySQL、Redis、Mongo、Milvus+etcd、
 MinIO、Neo4j、frontend、APISIX、Higress、nginx、app-ts（AI 域）、app-go 五服务
-（user/content/cloud/kg/admin）、三个 MCP、app-task、
+（user/content/cloud/kg/admin）、app-content-mcp（board+note+quiz 合并的单一 MCP）、app-task、
 app-pay、app-admin（统一管理后台：分享审核 + 支付运营 + 沙箱 + 账户 + 审计，:8016 回环）、
 app-sandbox（沙箱控制层））等价移植为 k8s 清单；OpenSandbox 运行时（lifecycle
 server / controller / ingress-gateway / warm pool）见 [40-sandbox](40-sandbox/README.md)。
@@ -69,7 +69,8 @@ kubectl -n mind-base create configmap mysql-init-sql \
   --from-file=system.sql=db/system.sql
 kubectl -n mind-base create configmap apisix-config \
   --from-file=config.yaml=apisix/config.yaml \
-  --from-file=apisix.yaml=apisix/apisix.yaml
+  --from-file=apisix.yaml.template=apisix/apisix.yaml.template \
+  --from-file=render-config.sh=apisix/render-config.sh
 kubectl -n mind-base create configmap nginx-conf \
   --from-file=nginx.conf=nginx/nginx.conf \
   --from-file=locations.conf=nginx/locations.conf
@@ -96,8 +97,9 @@ kubectl -n mind-base create configmap nginx-conf \
 - 沙箱（可选）：`SANDBOX_ENABLED=true`、`SANDBOX_BASE_URL=http://apisix:9080/internal/sandbox`、
   `SANDBOX_API_KEY=$APISIX_CONSUMER_KEY`、`SANDBOX_ADMIN_TOKEN`（app-sandbox 与 app-admin 同值）、
   `OPENSANDBOX_API_KEY`（与 [40-sandbox](40-sandbox/README.md) 安装时的值一致）；
-- `BOARD/NOTE/QUIZ_MCP_UID`、`*_MCP_AUTH_TOKEN`、`PAY_OPS_KEY` 为 optional 引用
-  （缺失 = 对应功能停用，不影响启动）；
+- `CONTENT_MCP_UID`、`CONTENT_MCP_AUTH_TOKEN`、`PAY_OPS_KEY` 为 optional 引用
+  （缺失 = 对应功能停用，不影响启动）；app-content-mcp 的 TLS 证书 Secret
+  （`app-content-mcp-certs`）同样是 optional volume：只在开启 MCP TLS 时需要；
 - 少数服务特定值以显式 `env:` 写死（显式 env 优先于 envFrom），想用 .env 覆盖它们时
   需 `kubectl patch`：app-ts/app-cloud/app-user 的 `AI_GATEWAY__BASE_URL`、
   app-ts 的 `OCR__MODEL`、app-cloud 的 `MILVUS__URI`、app-content 的 board TLS
@@ -171,8 +173,9 @@ app-kg 的健康端点在独立端口 8014（gRPC 数据面 8013）。
 kubectl -n mind-base get pods,svc,pvc
 # 日志
 kubectl -n mind-base logs deploy/app-ts -f
-# 改 APISIX 路由：编辑 apisix/apisix.yaml 后
-kubectl apply -k deploy/k8s && kubectl -n mind-base rollout restart deploy/apisix
+# 改 APISIX 路由：编辑 apisix/apisix.yaml.template 后，重建 configmap 再滚动重启
+kubectl -n mind-base create configmap apisix-config --from-file=config.yaml=apisix/config.yaml --from-file=apisix.yaml.template=apisix/apisix.yaml.template --from-file=render-config.sh=apisix/render-config.sh --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n mind-base rollout restart deploy/apisix
 # 扩容 app-ts（无状态，可扩；注意 Milvus/DB 连接数与任务账本并发）
 kubectl -n mind-base scale deploy/app-ts --replicas=2
 ```

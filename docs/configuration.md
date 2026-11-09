@@ -18,7 +18,7 @@
 | app-cloud | `app-go/app-cloud/internal/config/default.yaml` | `APPCLOUD__` | `MINIO__*`/`AI_GATEWAY__*`/`MILVUS__*`/`MONGO__URI`/`REDIS__URL`；提取码加密密钥走 `_FILE`（同 app-user 主密钥） |
 | app-content | `app-go/app-content/default.yaml`（服务根目录，embed；进程级 + 唯一 database 段 + quiz 参数） | `CONTENT__`（数据源 `CONTENT__DATABASE__*`；旧 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__` 兼容但须一致） | `RDBMS__URL`/`MONGO__URI`/`REDIS__URL` 仍可作为共享来源；TLS 走 `CONTENT__SERVER__TLS__*` |
 | app-kg | `app-go/app-kg/default.yaml`（embed 进二进制） | `APPKG__` | `KG__URI`/`KG__PASSWORD`(=`NEO4J_PASSWORD`)/`RDBMS__URL` |
-| 三个 MCP（board / note / quiz） | 各自 `default.yaml`（embed） | `BOARDMCP__`/`NOTEMCP__`/`QUIZMCP__` 等 | `RDBMS__URL`/`MONGO__URI`/`REDIS__URL` |
+| app-content-mcp（内容域 MCP：board/note/quiz 12 工具） | 代码内默认值（少量 env，无 embed YAML） | `CONTENTMCP__`（三域共用一份） | `APISIX_CONSUMER_KEY`（经 compose 注入 `CONTENTMCP__UPSTREAM__API_KEY` / `...__SERVICE_API_KEY`） |
 | app-task | 独立仓库 default.yaml（embed；本仓只放密钥） | `APPTASK__` | `APPTASK__RDBMS__URL`/`APPTASK__EMAIL__API_KEY` |
 | app-pay | `application.yaml` + docker/test profile 变体（Flyway 管 schema） | 经 `${VAR:默认}` 占位符 | `PAY_MYSQL_*`/`ALIPAY_*`/`PAY_TLS_*` |
 | app-admin | `app-go/app-admin/default.yaml`（embed）+ `-config` 覆盖层 | `APPADMIN__` | `APPADMIN__RDBMS__URL`；`APPADMIN__SEED__USERNAME`/`APPADMIN__SEED__PASSWORD`（种子账户）；`APPADMIN__SESSION__TTL_MINUTES`；支付运营 `APPADMIN__PAY_RDBMS__URL`/`APPADMIN__PAY__OPS__KEY`/`APPADMIN__PAY__AUDIT_FILE` |

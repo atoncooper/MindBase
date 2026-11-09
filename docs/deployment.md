@@ -77,13 +77,13 @@ chmod 600 secrets/api_key_encryption_key
 
 | 命令 | 启动内容 | 说明 |
 |---|---|---|
-| `docker compose up -d --build` | 默认全栈（实测 25 个服务）：frontend/nginx/APISIX/app-ts/app-go 各服务/app-content(+3 个 MCP)/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
+| `docker compose up -d --build` | 默认全栈（实测 23 个服务）：frontend/nginx/APISIX/app-ts/app-go 各服务/app-content/app-content-mcp/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
 | `--profile ai` | 追加 Higress AI 网关（追加后用于平台 LLM/embedding 出网） | 单独执行只起 5 个服务（higress+mysql/mongo/redis+cert-gen），**不含**主栈 |
 | `--profile sandbox` | 追加 opensandbox-server / app-sandbox | 单独执行只起 6 个服务；配合 `SANDBOX_ENABLED=true` |
 | `--profile pay-test` | 追加 app-pay-test（回环 18002）与测试库（回环 18306） | 仅测试，不用于生产 |
 | `--profile tools` | 追加 redis-commander / mongo-express | 仅内网调试 |
 | `--profile pay` / `--profile admin` | 默认集合已含 app-pay / app-admin；仅单域最小栈时显式指定 | 单独执行会排除默认全栈 |
-| `--profile full` | 一次启动全量（实测 32 个服务）：默认全栈 + higress + sandbox 两件 + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
+| `--profile full` | 一次启动全量（实测 30 个服务）：默认全栈 + higress + sandbox 两件 + pay-test(+库) + tools | 功能最全的一种启动方式（管理台默认已含支付运营） |
 | `--profile note` / `quiz` / `board` / `content` | 内容域 `app-content`（+ 对应 `*-mcp`） | 单域最小栈；app-content profiles 是并集，旧 note/quiz/board 语义保留 |
 
 > **compose profile 语义（实测 `docker compose config --services`）**：服务带 `profiles: [""]` 属于默认集合；
@@ -109,7 +109,7 @@ chmod 600 secrets/api_key_encryption_key
 - 反向代理注意：`/chat` 等 SSE 必须关 buffering；`/cloud/` 上传上限 5g 且绕过 APISIX；`/minio-proxy/` 由 nginx 直连 MinIO。改路由只改 `nginx/locations.conf`。
 - **app-pay**：`server.ssl` 默认启用，证书默认 `certs/pay.crt` 与 `certs/pay.key`，生产用 `PAY_TLS_CERT`/`PAY_TLS_KEY` 覆盖；证书缺失启动自检拒绝启动；APISIX 的 `upstream-app-pay` 走 HTTPS（当前仅加密不校验证书）。
 - **app-content（board 面）**：默认 HTTPS-only；显式证书用 `CONTENT__SERVER__TLS__CERT`/`...__KEY`；APISIX 只读挂其 `dev-ca.crt`，首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
-- MCP：默认回环 HTTP；跨机设 `BOARD_MCP_TLS_ENABLED=true` 并让客户端信任 dev CA。
+- **MCP（app-content-mcp）**：默认回环 HTTP（8019）；跨机设 `CONTENT_MCP_TLS_ENABLED=true` 并让客户端信任 dev CA（`app-go/app-content-mcp/certs/dev-ca.crt`）。
 
 ## 6. 监控与日志
 
@@ -118,7 +118,7 @@ chmod 600 secrets/api_key_encryption_key
 | app-ts | `:8000/health`、`:8000/agent/runtime` | health 含 Milvus 可用性；runtime 含队列/超时/breaker |
 | app-go 服务 | app-user 8006/8010/8015、app-content 8004（HTTPS，三面共用；宿主调试口 `APP_CONTENT_PORT`）、app-cloud 8007 的 `/health` | app-cloud 另有 `/metrics`；app-content board 面为 HTTPS |
 | app-kg | `:8014/health`（gRPC `:8013` 自带 health） | |
-| 三个 MCP | `:8005/8009/8012/health` | 板/笔记/测验 MCP server（app-board-mcp / app-note-mcp / app-quiz-mcp） |
+| app-content-mcp | `:8019/health` | 内容域 MCP server（board+note+quiz 12 工具，单端点 `/mcp`） |
 | app-task | `:8001/health` | |
 | app-pay | `:8002/health`（HTTPS，真实 DB 探测）+ `/actuator/{health,metrics,prometheus}` | |
 | app-admin-api | `:8016/health` | 主库不可用 503；支付库配置了但不可用 → 503 `pay database unavailable`；否则 `pay:"ok"\|"disabled"` |
@@ -148,7 +148,7 @@ docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" m
 
 - **MongoDB**：官方 `mongo:7` 镜像不保证自带 `mongodump`，推荐**停写后备份数据卷**：`docker compose stop mongo` → 确认卷 `docker volume ls -q | grep -E '(^|_)mongo_data$'` → `docker run --rm -v <volume>:/data -v "$PWD/backup":/backup alpine tar czf /backup/mongo_data.tgz -C /data .` → `docker compose start mongo`；恢复=停 mongo、解包回卷、启动。若环境已有 `mongodump`，也可对 `mind_base` 与 `mind_base_ts` 分别 `--archive --gzip`。
 - **MinIO / Milvus / Neo4j（命名卷）**：同理先停写再拷卷。MinIO 用 `minio_data`；Milvus 依赖 `milvus_data`+`etcd_data`+`minio_data` 需一并停/备份（或先在 Milvus 侧 flush 再停）；Neo4j 用 `neo4j_data`。恢复统一为：`docker compose stop <svc>` → `docker run --rm -v <volume>:/data -v "$PWD/backup":/backup alpine sh -c 'cd /data && tar xzf /backup/<file>.tgz'` → `docker compose start <svc>`。
-- **证书与密钥**：`.env`、`secrets/api_key_encryption_key`、`nginx/certs`、`app-pay/certs`、board TLS 证书目录（宿主沿用 `app-board/certs`）、`mcp/app-board-mcp/certs` 必须随备份保存（丢主密钥=用户凭证不可恢复）。
+- **证书与密钥**：`.env`、`secrets/api_key_encryption_key`、`nginx/certs`、`app-pay/certs`、app-content board TLS 证书目录（宿主沿用 `app-board/certs`）、`app-go/app-content-mcp/certs` 必须随备份保存（丢主密钥=用户凭证不可恢复）。
 - **顺序**：升级/迁移前先备份 MySQL+Mongo；app-pay 由 Flyway 前向迁移（不可逆），回滚代码前先恢复对应库备份。
 - `docker compose down` 保留卷；`docker compose down -v` 删除全部数据卷（生产严禁）。
 
@@ -193,7 +193,7 @@ kubectl -n mind-base create secret generic mindbase-env --from-env-file=.env
 kubectl -n mind-base create secret generic nginx-tls --from-file=fullchain.pem=nginx/certs/fullchain.pem --from-file=privkey.pem=nginx/certs/privkey.pem
 kubectl -n mind-base create secret generic api-key-encryption-key --from-file=api_key_encryption_key=secrets/api_key_encryption_key
 kubectl -n mind-base create configmap mysql-init-sql --from-file=system.sql=db/system.sql
-kubectl -n mind-base create configmap apisix-config --from-file=config.yaml=apisix/config.yaml --from-file=apisix.yaml=apisix/apisix.yaml
+kubectl -n mind-base create configmap apisix-config --from-file=config.yaml=apisix/config.yaml --from-file=apisix.yaml.template=apisix/apisix.yaml.template --from-file=render-config.sh=apisix/render-config.sh
 kubectl -n mind-base create configmap nginx-conf --from-file=nginx.conf=nginx/nginx.conf --from-file=locations.conf=nginx/locations.conf
 
 # ② 沙箱（可选，先于主栈）；③ 主栈（namespace: mind-base）

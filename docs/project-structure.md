@@ -12,9 +12,9 @@
 | `frontendv2/` | 用户端 Web（Next.js 16 App Router），用户可见的全部页面 |
 | `frontend-admin/` | 统一管理后台 SPA（Vite + React 18 + antd），分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计 |
 | `app-ts/` | AI 域服务（Node 22 + Fastify + tsx）：chat / agent / RAG / KG AI / 向量化 / quiz AI / task-quiz / skills / 学术 |
-| `app-go/` | 各领域 Go 微服务：user（auth/bili/settings 三域合一）/ content（note/quiz/board 三域合一）/ cloud / kg / admin / sandbox |
+| `app-go/` | 各领域 Go 微服务：user（auth/bili/settings 三域合一）/ content（note/quiz/board 三域合一）/ content-mcp（内容域 MCP server，12 工具）/ cloud / kg / admin / sandbox |
 | `app-pay/` | 交易 / 会员服务（Java 21 + Spring Boot 3 + MyBatis-Plus，HTTPS-only） |
-| `mcp/` | MCP server（board / note / quiz 工具面），把域能力暴露给 agent |
+| `app-go/app-content-mcp/` | 内容域 MCP server（board / note / quiz 12 工具面），把 app-content 能力暴露给 agent；旧 `mcp/` 三服务已合并至此 |
 | `apisix/` | APISIX 声明式配置（路由 / 上游 / forward-auth / key-auth / 限流） |
 | `nginx/` | 统一入口（TLS、静态页、页面与接口分发、缓存） |
 | `db/` | MySQL 初始化 schema（`system.sql`） |
@@ -116,7 +116,7 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 | app-ts 数据层 | Mongo / gRPC 客户端只在 `repository/mongo/`、`repository/grpc/` 实现与组合根出现，禁止 import 进 services / routes / agent |
 | Go 服务 | `router → service → repo`；router 只做参数解析 + 鉴权 + 调用 |
 | 管理台 | app-admin 只读用户 / 分享元数据 + 写审核列 + 代理沙箱管理；不下载、不导出文件内容 |
-| 网关 | APISIX 无 catch_all：新增端点必须显式加路由（`apisix/apisix.yaml` 与 `apisix.dev.yaml`） |
+| 网关 | APISIX 无 catch_all：新增端点必须显式加路由（模板 `apisix/apisix.yaml.template`；dev 用 `apisix.dev.yaml.template`；渲染脚本 `apisix/render-config.sh`，产物 gitignore） |
 | 数据归属 | 每个域唯一写者；跨服务只读须在注释中标明（见 [architecture.md](architecture.md)） |
 
 ---
@@ -141,7 +141,7 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 | 范围 | 命令 | 说明 |
 |------|------|------|
 | app-ts | `npm run typecheck`、`npm test` | vitest 离线；Mongo / Milvus 用例无实例自动 skip |
-| Go 服务 | `go test ./...` | 各 `app-go/app-*` 与 `mcp/*` |
+| Go 服务 | `go test ./...` | 各 `app-go/app-*`（含 `app-content-mcp`） |
 | app-sandbox | `go test ./...`（`tests/` 目录） | black-box；MySQL 用例需 `SANDBOX__TEST_DSN` |
 | app-pay | `mvn test` | 纯 JUnit，无外部 DB |
 | frontendv2 | `npm run lint`、`npx tsc --noEmit`、`next build` | CI `ci-frontend` |

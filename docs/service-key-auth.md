@@ -2,6 +2,9 @@
 
 > 状态：设计稿（未实施）。目标：把内部服务间调用从"一把共享 key"升级为
 > "按服务签发、按路由授权、可审计、可吊销"的密钥体系。
+>
+> 2026-11-08 更新：原 `app-board-mcp` / `app-note-mcp` / `app-quiz-mcp` 三个 MCP server 已合并为
+> **`app-content-mcp`**（8019，12 工具），本文涉及 MCP 的示例统一改为该单一服务（可声明三条 internal 路由的 scope）。
 
 ## 1. 目标与非目标
 
@@ -29,8 +32,7 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
 | internal_task_complete | app-task | app-task（自报完成） |
 | internal_email_send | app-task | app-task |
 | pay_internal | app-pay | backend、app-cloud |
-| board_internal | app-content（8004，board 面） | app-board-mcp |
-| note_internal | app-content（8004，note 面） | app-note-mcp |
+| board_internal / note_internal / quiz_internal | app-content（8004，board/note/quiz 面） | app-content-mcp（合并后的内容域 MCP server） |
 | /internal/ai-usage | ~~backend~~ ⚠️ 2026-10-06 backend 退役后无承接者（app-ts 未实现，usage-logger fire-and-forget 上报失败不影响主链路；插件配置在 Higress 控制台） | higress usage-logger |
 
 问题：任何持 key 者可调任何 /internal/* 路由（无路由级授权）；日志无法归因
@@ -48,7 +50,7 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
                │ 运维把明文 key 分发到对应服务的 .env（一次性）
 ┌──────────────▼──────────── 数据面（APISIX，校验与授权）────────┐
 │ consumers：backend / app-task / app-cloud /                   │
-│            app-board-mcp / app-note-mcp / higress-usage       │
+│            app-content-mcp / higress-usage                    │
 │ 每条 /internal/* 路由：                                        │
 │   key-auth（验 key 归属哪个 consumer = 服务身份）               │
 │ + consumer-restriction whitelist（该路由允许的 consumer 名单）  │
@@ -58,14 +60,14 @@ APISIX `consumers` 只有 1 个共享身份 `internal`，9 条 key-auth 路由�
 
 职责边界：**app-user（auth 域）负责"生成与台账"（它是谁、scope 声明、吊销状态）；
 APISIX 负责"校验与授权"（key-auth 认别 + consumer-restriction 强制）**。
-APISIX standalone 不支持 env 插值，key 值经部署脚本渲染进 apisix.yaml
+APISIX standalone 不支持 env 插值，key 值由 `apisix/render-config.sh` 在容器启动时从 env 渲染进 apisix.yaml
 （见 §9），这也意味着 APISIX 始终持有全部 key 明文——与现状一致，不新增暴露面。
 
 ## 4. Key 规范
 
 | 项 | 约定 |
 |---|---|
-| 格式 | `mbk_<service>_<token>`；`<service>` 为小写 slug（`backend`、`app-note-mcp` → `app_note_mcp`）；`<token>` = 32 字节随机数 base64url（43 字符，同 bili_session 熵级） |
+| 格式 | `mbk_<service>_<token>`；`<service>` 为小写 slug（`backend`、`app-content-mcp` → `app_content_mcp`）；`<token>` = 32 字节随机数 base64url（43 字符，同 bili_session 熵级） |
 | 总长 | ≤ 80 字符；全串仅 `[A-Za-z0-9_-]` |
 | 存储 | **sha256 hex(key)** 唯一索引。不用 bcrypt：校验路径需要按 hash 等值查询（索引点查），256-bit 熵下 sha256 无暴力破解空间；bcrypt 慢哈希用于低熵人类密码，此处反而是浪费 |
 | 可辨识 | 额外存 `key_last4`（明文尾 4 字符）供控制台比对，形如 `…9f3a` |
@@ -77,7 +79,7 @@ APISIX standalone 不支持 env 插值，key 值经部署脚本渲染进 apisix.
 create table if not exists service_api_keys (
     id             int auto_increment primary key,
     key_id         varchar(16)  not null,              -- 公开短 id（控制台引用/吊销用）
-    service_name   varchar(64)  not null,              -- 归属服务（backend / app-note-mcp / ...）
+    service_name   varchar(64)  not null,              -- 归属服务（backend / app-content-mcp / ...）
     key_hash       varchar(64)  not null,              -- sha256 hex(key)
     key_last4      varchar(4)   not null,
     scopes         json         not null,              -- ["note_internal", ...]，"*" = 全部内部路由
@@ -113,8 +115,9 @@ var KnownScopes = map[string]string{ // scope → 人工可读说明（控制台
     "internal_task_complete":  "app-task → 任务完成回执",
     "internal_email_send":     "app-task → 邮件投递",
     "pay_internal":            "会员态查询/补偿开通",
-    "board_internal":          "板子 MCP 上游",
-    "note_internal":           "笔记 M2M",
+    "board_internal":          "内容域 MCP（board 面）上游",
+    "note_internal":           "内容域 MCP（note 面）上游",
+    "quiz_internal":           "内容域 MCP（quiz 面）上游",
 }
 ```
 
@@ -155,7 +158,7 @@ uid/key_id/service/reason，不记明文）。
 这个端点补上 standalone APISIX 的短板——**静态 key 无法热吊销**：
 APISIX 侧吊销后必须 reload 才拒绝；配合服务侧"启动自检 + 每 5 分钟复验，
 复验 401 即拒绝出站调用"，吊销的实际生效时间 ≤ 5 分钟，且不需要
-每台服务重新部署。v1 只要求 app-note-mcp / app-content 接入自检，其余服务跟进。
+每台服务重新部署。v1 只要求 app-content-mcp / app-content 接入自检，其余服务跟进。
 
 ### 管理面的引导（bootstrap）
 
@@ -175,10 +178,8 @@ consumers:
     plugins: { key-auth: { key: "<APISIX_KEY_APP_TASK>" } }
   - username: app-cloud
     plugins: { key-auth: { key: "<APISIX_KEY_APP_CLOUD>" } }
-  - username: app-board-mcp
-    plugins: { key-auth: { key: "<APISIX_KEY_BOARD_MCP>" } }
-  - username: app-note-mcp
-    plugins: { key-auth: { key: "<APISIX_KEY_NOTE_MCP>" } }
+  - username: app-content-mcp
+    plugins: { key-auth: { key: "<APISIX_KEY_CONTENT_MCP>" } }
   - username: higress-usage            # usage-logger Wasm 插件上报 /internal/ai-usage
     plugins: { key-auth: { key: "<APISIX_KEY_HIGRESS>" } }
 ```
@@ -195,7 +196,7 @@ consumers:
       key-auth: {}
       consumer-restriction:
         type: consumer_name
-        whitelist: [app-note-mcp]          # 只有笔记 MCP 的 key 能进
+        whitelist: [app-content-mcp]      # 只有内容域 MCP 的 key 能进
       limit-req: { ... }                   # 原样保留
 ```
 
@@ -207,11 +208,10 @@ consumers:
 | scripts_upload / tasks_register | [backend] |
 | internal_task_complete / internal_email_send | [app-task] |
 | pay_internal | [backend, app-cloud] |
-| board_internal | [app-board-mcp] |
-| note_internal | [app-note-mcp] |
+| board_internal / note_internal / quiz_internal | [app-content-mcp] |
 | /internal/ai-usage | [higress-usage] |
 
-**效果**：拿 app-note-mcp 的 key 调 pay_internal → key-auth 通过（key 合法）
+**效果**：拿 app-content-mcp 的 key 调 pay_internal → key-auth 通过（key 合法）
 但 consumer-restriction 403（`The consumer is forbidden`）——串用被网关强制
 拦截，且 APISIX 错误日志里直接可见 consumer 名与路由 id，归因零成本。
 
@@ -219,7 +219,7 @@ consumers:
 
 ## 9. 渲染与部署（解决 standalone 不支持 env 插值）
 
-1. `scripts/render-apisix-keys.sh`（新增）：
+1. `scripts/render-apisix-keys.sh`（按 §8 矩阵签发多服务 key；**单 key 阶段已先落地** `apisix/render-config.sh` + `apisix/apisix.yaml.template`）：
    - 调 app-user 管理端点按 §8 矩阵逐服务签发（或读取 `.env` 已有值幂等跳过）；
    - 以 `apisix/apisix.yaml.template`（新增，含 `__KEY_<SERVICE>__` 占位符）渲染出
      `apisix/apisix.yaml`（gitignore 产物，模板进 git）；
@@ -227,11 +227,11 @@ consumers:
 2. `.env.example` 新增段：`APISIX_KEY_BACKEND=` 等 6 个变量 + 注释
    （⚠️ 由 app-user（auth 域）签发，勿手工造值；`APISIX_CONSUMER_KEY` 标记 deprecated 保留一个周期）。
 3. 各服务 compose env 替换：
-   - backend：`APISIX_CONSUMER_KEY` → `APISIX_KEY_BACKEND`（消费点：board-mcp
-     service key、note-mcp service key、app-pay membership、app-task consumer）；
-   - app-note-mcp：`NOTEMCP__UPSTREAM__API_KEY` / `NOTEMCP__SERVER__SERVICE_API_KEY`
-     ← `APISIX_KEY_APP_NOTE_MCP`；
-   - app-board-mcp 同理；app-task / app-cloud 各自替换。
+   - backend：`APISIX_CONSUMER_KEY` → `APISIX_KEY_BACKEND`（消费点：app-content-mcp
+     service key、app-pay membership、app-task consumer）；
+   - app-content-mcp：`CONTENTMCP__UPSTREAM__API_KEY` / `CONTENTMCP__SERVER__SERVICE_API_KEY`
+     ← `APISIX_KEY_CONTENT_MCP`（一个 key 覆盖 board/note/quiz 三条 internal 路由 scope）；
+   - app-task / app-cloud 各自替换。
 4. 上线顺序：签发 → 渲染 APISIX 并 reload（此时新旧 key 并存：旧 consumer
    `internal` 保留）→ 逐服务滚动替换 env 并重启 → 全部完成后删 `internal`
    consumer 再 reload。回滚 = 恢复旧 apisix.yaml + 旧 env（key 未变过，无缝）。
@@ -258,7 +258,7 @@ consumers:
 - **吊销**：`DELETE`（reason 必填）→ APISIX reload 前旧 key 仍过网关，但目标
   服务自检端点 5 分钟内拒绝（接入了自检的服务）；完成后 reload 即全网关生效。
 - **泄露应急**：立即 DELETE → reload → 按台账核对泄露 key 的 scope 圈定影响
-  面（这就是 scope 最小化的价值：泄露 note-mcp 的 key 拿不到 pay 数据）。
+  面（这就是 scope 最小化的价值：泄露 content-mcp 的 key 拿不到 pay 数据）。
 - **审计查询**：app-user slog 审计（生命周期事件）+ APISIX 访问日志（使用行为，
   含 consumer 名）。
 
@@ -288,12 +288,12 @@ consumers:
 |---|---|---|
 | PR1（app-user） | model/repo/service/router 四件套 + KnownScopes 注册表 + guard/单测（签发格式、hash 唯一、轮换并存、吊销状态机、scope 校验、self-verify） | `go test ./...` + 本地 curl 走通签发→台账→吊销 |
 | PR2（APISIX + 分发） | apisix.yaml.template + render 脚本 + consumers 拆分 + consumer-restriction 矩阵 + .env.example + 各 compose env | 干跑渲染 diff；起栈后逐路由验证白名单 403/200 |
-| PR3（可选，后续） | app-note-mcp / app-content 启动自检 + 5 分钟复验；其余服务跟进；expiring 提醒 | 手动吊销后观察 5 分钟内拒绝 |
+| PR3（可选，后续） | app-content-mcp / app-content 启动自检 + 5 分钟复验；其余服务跟进；expiring 提醒 | 手动吊销后观察 5 分钟内拒绝 |
 
 ## 15. 验收清单
 
 - [ ] 每个服务持有独立 key；APISIX 日志可归因 consumer
-- [ ] 交叉调用（note-mcp key → pay_internal）得到 403，报错含 consumer 名
+- [ ] 交叉调用（content-mcp key → pay_internal）得到 403，报错含 consumer 名
 - [ ] 吊销某 key 后：self-verify 401；reload 后网关 401
 - [ ] 轮换期间新旧 key 并存可用
 - [ ] 用户侧全部功能（聊天/笔记/云盘/支付）回归通过，鉴权链路无感知

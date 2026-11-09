@@ -46,11 +46,9 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-ts | Node 22 + Fastify（`app-ts/`） | 8000 | 127.0.0.1:8000 | 默认（ts） | AI 域唯一实现：chat/agent/RAG/KG AI/向量化/学术 agent 与科研 REST（沿用退役 Python backend 的端口） |
 | app-user | Go + Gin（`app-go/app-user/`；原 auth/bili/settings 三服务合并） | 8006 auth / 8010 bili / 8015 settings | 127.0.0.1:8006/8010/8015 | 默认（user） | 三域合一：认证权威（APISIX forward-auth 后端）+ B站获取/ASR + 用户偏好/壁纸（BYOK 已于 2026-10-07 退役） |
 | app-cloud | Go + Gin（`app-go/app-cloud/`） | 8007 | 127.0.0.1:8007 | 默认（cloud） | 云盘权威 + workspaces |
-| app-content | Go + Gin（`app-go/app-content/`；原 note/quiz/board 三服务合并） | 8004 board（HTTPS）/ 8008 note / 8011 quiz | 127.0.0.1:8018（note）/ 127.0.0.1:8011（quiz）；board 无宿主端口 | 默认（content；兼容 note/quiz/board） | 三域合一：笔记权威 + quiz 存储权威 + 板存储（HTTPS-only）；MCP（note/quiz/board）仍独立 |
+| app-content | Go + Gin（`app-go/app-content/`；原 note/quiz/board 三服务合并） | 8004（单端口 HTTPS，三面共用） | 127.0.0.1:${APP_CONTENT_PORT:-8004} | 默认（content；兼容 note/quiz/board） | 三域合一：笔记权威 + quiz 存储权威 + 板存储（HTTPS-only）；MCP 已合并为 app-content-mcp |
 | app-kg | Go + gRPC（`app-go/app-kg/`） | 8013 gRPC / 8014 health | 127.0.0.1:8013/8014 | 默认（kg） | KG 图存储权威（Neo4j 全部 Cypher） |
-| app-board-mcp | Go + mcp-go（`mcp/app-board-mcp/`） | 8005 | 127.0.0.1:8005 | 默认（board） | 板能力 MCP server（agent 用） |
-| app-note-mcp | Go + mcp-go（`mcp/app-note-mcp/`） | 8009 | 127.0.0.1:8009 | 默认（note） | 笔记 MCP server（agent 用） |
-| app-quiz-mcp | Go + mcp-go（`mcp/app-quiz-mcp/`） | 8012 | 127.0.0.1:8012 | 默认（quiz） | quiz MCP server（agent 用） |
+| app-content-mcp | Go + mcp-go（`app-go/app-content-mcp/`；原 board/note/quiz 三个 MCP server 合并） | 8019 | 127.0.0.1:${APP_CONTENT_MCP_PORT:-8019} | 默认（content-mcp/full） | 内容域 MCP server：board 6 + note 4 + quiz 2 共 12 工具 + board resources/prompts（agent 用） |
 | app-task | Go + Gin（独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)，镜像 `atoncooper/app-task`） | 8001 | `${APP_TASK_PORT:-8001}` | 默认（task） | 定时任务执行器 + 邮件投递 + WebUI |
 | app-pay | Java 21 / Spring Boot 3（`app-pay/`） | 8002 | 127.0.0.1:8002 | pay | 交易/会员（HTTPS-only） |
 | app-pay-test | 同 app-pay 镜像 | 8002 | 127.0.0.1:18002 | pay-test | 测试实例（强制 MOCK 渠道，整库隔离） |
@@ -78,7 +76,7 @@ profile 汇总：
 
 | 命令 | 启动范围 |
 |------|---------|
-| `docker compose up -d` | 全栈（frontend/nginx/apisix/全部存储/app-ts/app-user/app-cloud/app-content/app-kg/app-admin(+api)/3 个 MCP/app-task(+独立 MySQL)/app-pay(+独立 MySQL)） |
+| `docker compose up -d` | 全栈（frontend/nginx/apisix/全部存储/app-ts/app-user/app-cloud/app-content/app-kg/app-admin(+api)/app-content-mcp/app-task(+独立 MySQL)/app-pay(+独立 MySQL)） |
 | `--profile ai` | + higress（AI 出网网关；平台 AI 流量强依赖，生产必开） |
 | `--profile pay` | + app-pay |
 | `--profile pay-test` | + app-pay-test（测试实例） |
@@ -102,7 +100,7 @@ profile 汇总：
 - **API 转发（→ apisix）**：`/auth` `/chat`（SSE 关缓冲）`/knowledge` `/asr` `/vec` `/notes` `/quiz` `/board/` `/task-quiz/` `/tasks` `/skills` `/blindspot` `/preferences` `/avatar` `/workspaces` 等。
 - **直连（绕 APISIX）**：`/cloud/` → app-cloud（5GB 上传；身份经 auth_request 子请求向 app-user（auth 路由）验证并注入 X-Uid/X-Roles；`/cloud/s/` 公开分享免鉴权）；`/minio-proxy/` → minio。
 
-### APISIX（`apisix/apisix.yaml`，declarative standalone，无 catch_all）
+### APISIX（`apisix/apisix.yaml.template` 启动时渲染为 apisix.yaml，declarative standalone，无 catch_all）
 
 | 路由（前缀） | 上游 | 鉴权 |
 |--------------|------|------|
@@ -168,7 +166,7 @@ forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify`
 | app-pay | `application.yaml` + docker/test profile（Flyway 管 schema） | `PAY_*` / `ALIPAY_*` | [app-pay.md](app-pay.md) |
 | app-admin | `default.yaml`（嵌入）+ config 覆盖层 | `APPADMIN__`（含 `APPADMIN__PAY_*` / `APPADMIN__PAY__*`） | [app-admin.md](app-admin.md) |
 | app-sandbox | `default.yaml`（嵌入）+ config 覆盖层 | `SANDBOX__`（DB 走共享 `RDBMS__URL` 或 `SANDBOX__DATABASE__DSN`） | [features.md](features.md) §5 / [academic-agent.md](academic-agent.md) §沙箱 |
-| 三个 MCP（board / note / quiz） | 各自 `default.yaml`（embed） | `BOARDMCP__`/`NOTEMCP__`/`QUIZMCP__` 等 | [app-board-mcp.md](app-board-mcp.md) |
+| app-content-mcp（内容域 MCP） | 代码内默认值（无 embed YAML，少量 env） | `CONTENTMCP__`（三域共用一份配置） | [app-content-mcp.md](app-content-mcp.md) |
 
 AI 出网统一走 Higress 网关（`AI_GATEWAY__*`，见 AGENTS.md §2.10）；供应商 key 只在网关与 `.env`，不进代码与日志。
 
@@ -198,4 +196,4 @@ src/
 | ci-app-pay | `app-pay/**` | mvn test（纯 JUnit，无外部 DB） |
 | ci-app-admin | app-go/app-admin | gofmt / vet / test / build |
 | ci-frontend-admin | frontend-admin | tsc --noEmit + vite build |
-| docker-build | push main / tag | 构建并发布 14 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-user/app-content/app-cloud/app-kg/app-ts/app-board-mcp/app-note-mcp/app-quiz-mcp/certgen/minio/app-admin/app-admin-ui/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`；app-sandbox 尚未纳入） |
+| docker-build | push main / tag | 构建并发布 12 个镜像到 Docker Hub（`atoncooper/mind-base-*`：frontend/app-user/app-content/app-cloud/app-kg/app-ts/app-content-mcp/certgen/minio/app-admin/app-admin-ui/app-pay；需仓库 secrets `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`；app-sandbox 尚未纳入） |

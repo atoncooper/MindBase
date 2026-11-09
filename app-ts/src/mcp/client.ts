@@ -10,7 +10,7 @@ import { createLogger } from "../logger.js";
  *
  *   - short-session mode: every operation opens a fresh Client+transport
  *     (SDK handshake) and tears it down after (terminateSession DELETE → close),
- *     matching app-board-mcp's per-session state model;
+ *     matching app-content-mcp's per-session state model;
  *   - never-throw facade with mapped error messages (tool layers render them
  *     straight back to the LLM); `errorKind` separates transport failures
  *     (throwable → feeds the runtime circuit breaker) from server-side tool

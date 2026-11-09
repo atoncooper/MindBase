@@ -15,7 +15,7 @@ const content = (out: unknown) => (typeof out === "string" ? out : (out as { con
 
 function fakeQuizClient(calls: Array<{ tool: string; args: Record<string, unknown>; uid?: number }>): McpToolsClient {
   return {
-    name: "quiz",
+    name: "content",
     listTools: async () => ({ ok: true, tools: [] }),
     callTool: async (name, args, opts) => {
       calls.push({ tool: name, args, uid: opts?.uid });
@@ -27,7 +27,7 @@ function fakeQuizClient(calls: Array<{ tool: string; args: Record<string, unknow
   };
 }
 
-describe("quiz 工具（经 app-quiz-mcp）", () => {
+describe("quiz 工具（经 app-content-mcp）", () => {
   it("emit_quiz 落库走 MCP + artifact 下发 + uid 透传", async () => {
     const calls: Array<{ tool: string; args: Record<string, unknown>; uid?: number }> = [];
     const tool = createEmitQuizTool(fakeQuizClient(calls));
@@ -70,7 +70,7 @@ describe("quiz 工具（经 app-quiz-mcp）", () => {
 
   it("MCP 失败收敛为错误文本（不抛出、不进熔断）", async () => {
     const client: McpToolsClient = {
-      name: "quiz",
+      name: "content",
       listTools: async () => ({ ok: false, tools: [], error: "连接被拒" }),
       callTool: async (): Promise<McpCallResult> => ({ ok: false, content: "", error: "MCP 调用失败: HTTP 500", errorKind: "transport" }),
     };
@@ -98,7 +98,7 @@ describe("MCP 动态工具桥接（createMcpTools）", () => {
 
   function fakeClient(captured: Captured[], callResult?: (name: string) => import("../src/mcp/index.js").McpCallResult): McpToolsClient {
     return {
-      name: "board",
+      name: "content",
       listTools: async () => ({
         ok: true,
         tools: [
@@ -128,6 +128,13 @@ describe("MCP 动态工具桥接（createMcpTools）", () => {
     expect(tools.map((t) => t.name)).toEqual(["list_boards", "get_board"]);
     expect(tools[0].description).toBe("列出板子");
     expect(tools[0].inputSchema).toEqual({ type: "object", properties: { search: { type: "string" } } });
+  });
+
+  it("includeToolNames 只桥接白名单工具（合并 server 多域共存时不重名）", async () => {
+    const captured: Captured[] = [];
+    const tools = await createMcpTools(fakeClient(captured), { includeToolNames: ["get_board", "pin_board"] });
+    // pin_board 未在 tools/list 出现 → 只桥接存在的 get_board（缺失只告警，不报错）
+    expect(tools.map((t) => t.name)).toEqual(["get_board"]);
   });
 
   it("execute 透传 args + uid + signal（身份只进请求头）", async () => {

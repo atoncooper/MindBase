@@ -11,10 +11,10 @@ function makeCtx(uid?: number) {
 
 const content = (out: unknown) => (typeof out === "string" ? out : (out as { content: string }).content);
 
-/** Fake MCP client capturing save_note calls (note persistence goes through app-note-mcp). */
+/** Fake MCP client capturing save_note calls (note persistence goes through app-content-mcp). */
 function fakeNoteClient(captured: Array<{ args: Record<string, unknown>; uid?: number }>): McpToolsClient {
   return {
-    name: "note",
+    name: "content",
     listTools: async () => ({ ok: true, tools: [] }),
     callTool: async (name, args, opts) => {
       captured.push({ args, uid: opts?.uid });
@@ -23,7 +23,7 @@ function fakeNoteClient(captured: Array<{ args: Record<string, unknown>; uid?: n
   };
 }
 
-describe("save_note tool（经 app-note-mcp）", () => {
+describe("save_note tool（经 app-content-mcp）", () => {
   it("需要 uid", async () => {
     const tool = createSaveNoteTool(fakeNoteClient([]));
     const out = await tool.execute({ title: "t", content: "c" }, makeCtx(undefined));
@@ -47,7 +47,7 @@ describe("save_note tool（经 app-note-mcp）", () => {
 
   it("MCP 失败收敛为错误文本", async () => {
     const client: McpToolsClient = {
-      name: "note",
+      name: "content",
       listTools: async () => ({ ok: false, tools: [], error: "连接被拒" }),
       callTool: async () => ({ ok: false, content: "", error: "保存失败：笔记服务暂不可用，请稍后重试", errorKind: "transport" }),
     };

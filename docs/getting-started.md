@@ -17,7 +17,7 @@
 | Node.js | **≥ 22.17**（`app-ts/package.json` 的 `engines`；CI 用 Node 22） | app-ts、frontendv2、frontend-admin |
 | npm | 随 Node 提供 | app-ts / frontendv2 依赖安装 |
 | pnpm | 任意近期版本（`corepack enable` 即可） | 仅 frontend-admin（有 `pnpm-lock.yaml`） |
-| Go | **1.25+**（`app-go/*/go.mod`；`app-sandbox` 为 1.24） | app-go 各服务与 `mcp/` 下的 MCP server |
+| Go | **1.25+**（`app-go/*/go.mod`；`app-sandbox` 为 1.24） | app-go 各服务（含内容域 MCP server `app-content-mcp`） |
 | Java + Maven | **JDK 21** + Maven 3.9+ | 仅 app-pay（`pom.xml` `java.version=21`） |
 | Docker + Compose | Docker Engine/Desktop，**Compose v2**（`docker compose version`） | 基础设施与全栈启动 |
 | ffmpeg / ffprobe | 任意近期版本 | **仅本地直跑 app-user（bili 路由）做 ASR 时需要**；容器镜像已内置静态 ffmpeg |
@@ -60,7 +60,7 @@ openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_ke
 | 项 | 说明 |
 |----|------|
 | `secrets/api_key_encryption_key` | app-user（auth/bili 域）/ app-cloud 共用的用户凭证加密主密钥（一行 base64）。**不是**环境变量文件内容，而是独立密钥文件；compose 把它挂到 `/run/secrets/`。文件缺失时容器会反复重启（Docker 会把缺失的绑定源建成目录），日志报读取失败。**部署后不可更换**，否则已加密数据无法解密。 |
-| `APISIX_CONSUMER_KEY` | 服务间 key-auth 共享密钥。compose 强制要求（未设置直接报错 `err_APISIX_CONSUMER_KEY_not_set_in_.env`）。**必须与 `apisix/apisix.yaml` 里 `consumers.internal.key` 一致**（standalone 模式不做 env 插值）——仓库内置的开发值是 `D4ldTC-nOpCp0YEokVKrEMN2mvjc_LDsOjaBY2oRPbooWLre`；改成自己的值时两边都要改。 |
+| `APISIX_CONSUMER_KEY` | 服务间 key-auth 共享密钥。compose 强制要求（未设置直接报错 `err_APISIX_CONSUMER_KEY_not_set_in_.env`）。**唯一来源是 `.env`**：APISIX 容器启动时由 `apisix/render-config.sh` 把它渲染进 `apisix.yaml`（模板 `apisix/apisix.yaml.template` 只含占位符，standalone 模式不读 env 由渲染补齐）。轮换 = 改 `.env` 后重启 apisix。 |
 | `AI_GATEWAY__API_KEY` | 平台 AI 出网凭证（LLM / embedding / OCR）。用 `--profile ai` 的 Higress 时填 Higress consumer `mindbase-backend` 的 key（在网关控制台 `http://127.0.0.1:18081` 配置，详见 configuration.md）；不用 Higress 时可直接填供应商 key，并把 `AI_GATEWAY__BASE_URL` 指向供应商的 OpenAI 兼容口。**留空时 app-user（bili 路由）会启动失败**（`asr.api_key` 必填），app-ts 的 AI 调用也会在调用时报错。 |
 
 ### 2.4 按需开启的可选项
@@ -74,7 +74,7 @@ openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_ke
 | `TAVILY_API_KEY` / `SEARXNG_URL` | `web_search` 的优质搜索源（不配只剩爬虫兜底） |
 | `DEEPSEEK_API_KEY` | DeepSeek 官方网页搜索/抓取 |
 | `LANGSMITH_API_KEY` 等 | LLM 链路追踪（SDK 直接读 env，全组设置才生效） |
-| `BOARD_MCP_UID` / `BOARD_MCP_AUTH_TOKEN` | 外部 MCP 宿主连接 board-mcp 用（服务模式不需要） |
+| `CONTENT_MCP_UID` / `CONTENT_MCP_AUTH_TOKEN` | 外部 MCP 宿主连接 app-content-mcp（8019）用（app-ts 服务模式不需要） |
 
 ---
 
@@ -130,7 +130,7 @@ export MINIO__ENDPOINT='http://127.0.0.1:9000'
 export MINIO__ACCESS_KEY=minioadmin
 export MINIO__SECRET_KEY=minioadmin
 export MINIO__BUCKET=drive-videos
-export APISIX_CONSUMER_KEY='<与 apisix.yaml 一致的 key>'
+export APISIX_CONSUMER_KEY='<与 .env 同一 key；APISIX 启动时渲染进 apisix.yaml>'
 export AI_GATEWAY__BASE_URL='http://127.0.0.1:18080/v1'   # 用 --profile ai 起的 Higress；或供应商兼容口
 export AI_GATEWAY__API_KEY='<key>'
 
@@ -141,7 +141,7 @@ PowerShell 里把 `export KEY='value'` 换成 `$env:KEY='value'`（逐条执行�
 
 - `MILVUS__ADDRESS` 默认就是 `127.0.0.1:19530`（`app-ts/config/default.yaml`），正好命中容器映射，通常不用设。
 - `KG_GRPC__TARGET` 默认 `127.0.0.1:8013`，app-kg 容器也映射了 8013，本地 app-ts 可直接用 KG。
-- 各 MCP server 的默认地址是 `127.0.0.1:8005/8009/8012`，容器已映射，无需改。
+- 内容域 MCP server（`app-content-mcp`）的默认地址是 `127.0.0.1:8019/mcp`，容器已映射，无需改。本地 app-ts 若要用 note/quiz/board 工具，对应 `CONTENT_MCP__URL=http://127.0.0.1:8019/mcp`（默认值已如此）。
 - 缺少 `MONGO__URI` / `REDIS__URL` / `MINIO__ENDPOINT` 时对应能力**显式降级**（会话落内存、不订阅事件、skills 关闭），启动不会崩；需要持久化就按上面导出。
 - 个人非敏感覆盖可写 `app-ts/config/local.yaml`（gitignored），优先级高于 `default.yaml`。
 
@@ -187,7 +187,7 @@ go run ./cmd/app-content
 
 - **app-pay**（Java）：`cd app-pay && mvn spring-boot:run`，但服务端强制 HTTPS，先跑 `app-pay/scripts/gen-dev-cert.ps1`（或 `.sh`）生成 `app-pay/certs/`；
 - **app-task**：本仓无源码（镜像来自独立仓库），compose 默认拉取；
-- **app-content**（8004，单端口 HTTPS）：宿主调试口 `APP_CONTENT_PORT`；board 面也可经 app-board-mcp（8005）访问。
+- **app-content**（8004，单端口 HTTPS）：宿主调试口 `APP_CONTENT_PORT`；三域 AI 操作经 app-content-mcp（8019 单端点）访问。
 
 ---
 
@@ -198,7 +198,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-首次会构建 frontend / app-ts / 各 Go 服务 / MCP / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 nginx / app-content / app-board-mcp / app-pay 的开发证书，无需手工准备 TLS。
+首次会构建 frontend / app-ts / 各 Go 服务 / app-content-mcp / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 nginx / app-content / app-content-mcp / app-pay 的开发证书，无需手工准备 TLS。
 
 ### 4.1 profile 的真实语义
 
@@ -206,8 +206,8 @@ docker compose ps
 
 | 命令 | 实际启动 |
 |------|----------|
-| `docker compose up -d` | **25 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / 3 个 MCP / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
-| `docker compose --profile full up -d` | **32 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
+| `docker compose up -d` | **23 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / app-content-mcp / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
+| `docker compose --profile full up -d` | **30 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
 | `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
 | `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
 
@@ -234,7 +234,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、MCP 8005/8009/8012）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、app-content-mcp 8019）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
 
 ---
 
@@ -284,7 +284,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **`docker compose` 启动直接报 `err_APISIX_CONSUMER_KEY_not_set_in_.env`。** 这是 compose 的强制校验，按 §2.3 / §2.4 填 `.env`。`PAY_OPS_KEY` 自 2026-11-03 起为**可选**（仅 app-admin「退款复核」用；留空则该页 404 隐藏，不再触发 compose 校验）。
 
-**服务起来了但服务间调用全 401/403（APISIX key-auth 拒绝、或下游报 API key 无效）。** `.env` 的 `APISIX_CONSUMER_KEY` 与 `apisix/apisix.yaml` 里 `consumers.internal.key` 不一致（standalone 模式 apisix 不读 env）。两边改成同一个值再重启。
+**服务起来了但服务间调用全 401/403（APISIX key-auth 拒绝、或下游报 API key 无效）。** 先确认 `.env` 的 `APISIX_CONSUMER_KEY` 非空，再看 apisix 日志里 `[apisix-config] rendered ...` 是否出现（渲染失败容器会直接退出）；改 `.env` 后必须 `docker compose up -d apisix` 重建，渲染只发生在启动时。
 
 **app-user / app-cloud 反复重启。** 多半是 `secrets/api_key_encryption_key` 没建：compose 会把缺失的绑定源建成**目录**，服务读取失败退出。补上文件后 `docker compose up -d app-user app-cloud`。
 

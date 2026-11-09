@@ -1,0 +1,136 @@
+# app-content-mcp — single MCP server (board + note + quiz domains; 12 tools) (port 8019).
+# Env parity with docker-compose.yml service 'app-content-mcp'; secrets come from the
+# mindbase-env Secret (created once via kubectl create secret from .env).
+# TLS is OFF by default (in-cluster plain HTTP). The cert volume is an OPTIONAL
+# Secret (scripts/gen-certs.sh output for the app-content-mcp leaf); create it and
+# flip CONTENTMCP__SERVER__TLS__ENABLED=true for cross-host MCP clients.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-content-mcp
+  labels:
+    app: app-content-mcp
+spec:
+  selector:
+    app: app-content-mcp
+  ports:
+    - name: http
+      port: 8019
+      targetPort: 8019
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-content-mcp
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: app-content-mcp
+  template:
+    metadata:
+      labels:
+        app: app-content-mcp
+    spec:
+      # Run as the image's nonroot UID and make the emptyDir log volume group-
+      # writable for it (k8s emptyDir does NOT inherit image directory ownership
+      # the way a docker named volume does — without fsGroup lumberjack file
+      # logging would fail silently here).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: wait-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z apisix 9080; do echo waiting for apisix; sleep 3; done"]
+      containers:
+        - name: app-content-mcp
+          image: atoncooper/mind-base-app-content-mcp:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: mindbase-defaults
+            - secretRef:
+                name: mindbase-env
+          env:
+            # $(VAR) 只能引用 env 列表内变量（envFrom 不可见）——先取源值再派生；
+            # ⚠️ optional secretKeyRef 的键在 Secret 缺失时变量整体省略，下游 $(VAR) 会
+            # 原样保留成字面量（历史事故：BOARDMCP__UPSTREAM__UID="$(BOARD_MCP_UID)"）。
+            # 可选键一律直接 valueFrom 到目标名；只有必选键（APISIX_CONSUMER_KEY）允许 $(VAR) 派生
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: CONTENTMCP__UPSTREAM__BASE_URL
+              value: "http://apisix:9080"
+            - name: CONTENTMCP__UPSTREAM__API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            - name: CONTENTMCP__UPSTREAM__UID
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: CONTENT_MCP_UID, optional: true }
+            - name: CONTENTMCP__SERVER__AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: CONTENT_MCP_AUTH_TOKEN, optional: true }
+            - name: CONTENTMCP__SERVER__SERVICE_API_KEY
+              value: "$(APISIX_CONSUMER_KEY)"
+            # 证书卷 = app-content-mcp-certs Secret（Optional；缺失时 Pod 照常启动，
+            # TLS 默认关）。显式文件路径避免 distroless 内 auto 模式重建 dev CA。
+            - name: CONTENTMCP__SERVER__TLS__ENABLED
+              value: "false"
+            - name: CONTENTMCP__SERVER__TLS__CERT_DIR
+              value: "/app/certs"
+            - name: CONTENTMCP__SERVER__TLS__CERT_FILE
+              value: "/app/certs/server.crt"
+            - name: CONTENTMCP__SERVER__TLS__KEY_FILE
+              value: "/app/certs/server.key"
+            # 外部 Bearer 宿主的工具白名单（空 = 全部 12 个工具；服务模式不受限）。
+            # 需要最小权限时改成逗号分隔的工具名，例如 "list_boards,get_board"。
+            - name: CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS
+              value: ""
+            - name: CONTENTMCP__LOG__OUTPUT
+              value: "both"
+            - name: CONTENTMCP__LOG__FILE
+              value: "/app/logs/app-content-mcp.log"
+          ports:
+            - containerPort: 8019
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: tls
+              mountPath: /app/certs
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+          # startupProbe 门控启动期（60s 预算），通过后 readiness/liveness 立即接管
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8019
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8019
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8019
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tls
+          secret:
+            secretName: app-content-mcp-certs
+            optional: true

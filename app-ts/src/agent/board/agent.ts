@@ -10,7 +10,11 @@ export function createBoardAgent(runtime: AgentRuntime, prompts: PromptRegistry,
     name: "board",
     description: agentEntry("board").description,
     runtime,
-    toolNames: ["list_boards", "get_board", "create_board", "update_board", "delete_board", "ask_user"],
+    // delete_board is intentionally NOT exposed to the agent: the model can
+    // create/update boards but destructive deletion stays a user action (UI /
+    // external MCP host with an explicit bearer allowlist). See the board
+    // prompt's destructive-action policy.
+    toolNames: ["list_boards", "get_board", "create_board", "update_board", "ask_user"],
     purpose: "board",
     context,
     buildSystemPrompt: () => Promise.resolve(prompts.render("agents/board", {})),

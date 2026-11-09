@@ -34,6 +34,14 @@ export interface McpToolsClient {
 export interface McpToolsOptions {
   maxContentChars?: number;
   /**
+   * Optional allowlist of server tool names to bridge (discovered via
+   * tools/list, then filtered). Merged MCP servers expose several domains on
+   * one /mcp endpoint; only the board tools are bridged dynamically because
+   * note/quiz already have handwritten wrappers — bridging them too would
+   * collide on names. Omitted = bridge every discovered tool (legacy behaviour).
+   */
+  includeToolNames?: readonly string[];
+  /**
    * 服务模式网关要求每个请求带正整数 X-Uid（MCP server serve.go 校验，
    * uid<=0 拒绝）；boot 时 tools/list 无用户会话，用该占位 uid 过闸
    * （发现只返回工具元数据，不触达上游、不涉及用户数据）。
@@ -50,7 +58,17 @@ export async function createMcpTools(client: McpToolsClient, opts: McpToolsOptio
     log.warn(`[MCP] ${client.name} tools/list failed: ${listing.error ?? "unknown"} — no MCP tools registered`);
     return [];
   }
-  return listing.tools.map((t) => bridgeMcpTool(client, t, max));
+  const allow = opts.includeToolNames ? new Set(opts.includeToolNames) : null;
+  if (allow) {
+    const missing = [...allow].filter((name) => !listing.tools.some((t) => t.name === name));
+    if (missing.length > 0) {
+      // Partial discovery is not fatal: bridge what showed up, but surface the
+      // contract drift (a renamed/removed server tool would otherwise silently
+      // vanish from the agent's toolset).
+      log.warn(`[MCP] ${client.name} tools/list missing allowlisted tool(s): ${missing.join(", ")}`);
+    }
+  }
+  return listing.tools.filter((t) => allow === null || allow.has(t.name)).map((t) => bridgeMcpTool(client, t, max));
 }
 
 /** createMcpTools + registration (duplicates are skipped with a warning, not fatal). */

@@ -77,21 +77,14 @@ spec:
             # stdout-only：镜像 /app/logs 属主未修复前文件日志 EACCES 会崩进程
             - name: LOG__FILEENABLED
               value: "false"
-            # MCP 桥（note/quiz/board）：凭证走服务模式 X-Api-Key（= APISIX_CONSUMER_KEY）
+            # MCP 桥（board/note/quiz 三域已合并为 app-content-mcp 单服务，单端口 8019）：
+            # 凭证走服务模式 X-Api-Key（= APISIX_CONSUMER_KEY）
             - name: APISIX_CONSUMER_KEY
               valueFrom:
                 secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
-            - name: NOTE_MCP__URL
-              value: "http://app-note-mcp:8009/mcp"
-            - name: NOTE_MCP__API_KEY
-              value: "$(APISIX_CONSUMER_KEY)"
-            - name: QUIZ_MCP__URL
-              value: "http://app-quiz-mcp:8012/mcp"
-            - name: QUIZ_MCP__API_KEY
-              value: "$(APISIX_CONSUMER_KEY)"
-            - name: BOARD_MCP__URL
-              value: "http://app-board-mcp:8005/mcp"
-            - name: BOARD_MCP__API_KEY
+            - name: CONTENT_MCP__URL
+              value: "http://app-content-mcp:8019/mcp"
+            - name: CONTENT_MCP__API_KEY
               value: "$(APISIX_CONSUMER_KEY)"
           ports:
             - containerPort: 8000

@@ -4,6 +4,11 @@
 # The entrypoint override unsets proxy vars (host proxy injection once broke
 # internal etcd traffic) and builds the ssl_trusted_certificate CA bundle
 # including the app-content board dev CA (upstream tls_verify trust anchor).
+#
+# APISIX's yaml provider cannot read env, so routes/consumers come from the
+# apisix-config ConfigMap TEMPLATE (apisix.yaml.template + render-config.sh)
+# and a one-shot initContainer renders the real apisix.yaml (with secrets from
+# the mindbase-env Secret) into a shared emptyDir before apisix starts.
 apiVersion: v1
 kind: Service
 metadata:
@@ -42,6 +47,29 @@ spec:
             matchLabels:
               app: apisix
       # standalone data_plane：不依赖 etcd（config.yaml role=data_plane 跳过 init_etcd）
+      initContainers:
+        - name: render-apisix-config
+          image: apache/apisix:3.11.0-debian
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - sh /config/render-config.sh /config/apisix.yaml.template /rendered/apisix.yaml
+          env:
+            - name: APISIX_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: APISIX_CONSUMER_KEY }
+            - name: PAY_READONLY_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_READONLY_KEY, optional: true }
+            - name: PAY_OPS_KEY
+              valueFrom:
+                secretKeyRef: { name: mindbase-env, key: PAY_OPS_KEY, optional: true }
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: rendered
+              mountPath: /rendered
       containers:
         - name: apisix
           image: apache/apisix:3.11.0-debian
@@ -76,7 +104,7 @@ spec:
               mountPath: /usr/local/apisix/conf/config.yaml
               subPath: config.yaml
               readOnly: true
-            - name: config
+            - name: rendered
               mountPath: /usr/local/apisix/conf/apisix.yaml
               subPath: apisix.yaml
               readOnly: true
@@ -104,6 +132,10 @@ spec:
         - name: config
           configMap:
             name: apisix-config
+        # initContainer renders the secret-substituted routes here; the main
+        # container mounts only the generated file (never the template).
+        - name: rendered
+          emptyDir: {}
         - name: board-ca
           secret:
             secretName: app-board-certs

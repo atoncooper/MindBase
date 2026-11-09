@@ -30,7 +30,7 @@
 #   1. docker swarm init（多机：manager 上 init，其余节点 docker swarm join）
 #   2. 本仓库部署到将运行 bind-mount 服务的节点，绝对路径记为 MB_ROOT（默认 /srv/mindbase）；
 #      至少需要：nginx/ apisix/ db/ secrets/ app-board/（app-content board 域 TLS 证书目录，
-#      目录名沿用历史）/ mcp/app-board-mcp/ app-pay/ data/
+#      目录名沿用历史）/ app-go/app-content-mcp/ app-pay/ data/
 #   3. .env 与单机 compose 用法一致；⚠️ APISIX_CONSUMER_KEY / PAY_OPS_KEY 必填——
 #      stack 插值没有 compose 的 :? 语法兜底，留空 = 服务间 key-auth 鉴权失败
 #
@@ -48,7 +48,7 @@
 #     一旦重新调度到别的节点，数据会"消失" → 用 placement 约束钉住（各服务已留模板：
 #     docker node update --label-add role=data <NODE>）
 #   - 证书 bind mount 有跨节点耦合：cert-gen 产出 nginx/app-board（app-content board 域
-#     证书，目录名沿用历史）/mcp/pay 证书目录、apisix 只读挂同一目录、app-pay 启动自检
+#     证书，目录名沿用历史）/app-go/app-content-mcp/pay 证书目录、apisix 只读挂同一目录、app-pay 启动自检
 #     要求 certs 存在
 #     → 多节点时把这些服务钉到同一节点，或改用 swarm config/secret 分发证书
 #   - 三个 MySQL/Mongo/Milvus 仍是单副本：本文件只提供进程级自愈（崩溃重启），HA 需另行
@@ -70,7 +70,9 @@ configs:
   apisix_config:
     file: ${MB_ROOT:-/srv/mindbase}/apisix/config.yaml
   apisix_routes:
-    file: ${MB_ROOT:-/srv/mindbase}/apisix/apisix.yaml
+    file: ${MB_ROOT:-/srv/mindbase}/apisix/apisix.yaml.template
+  apisix_render:
+    file: ${MB_ROOT:-/srv/mindbase}/apisix/render-config.sh
   mysql_init_sql:
     file: ${MB_ROOT:-/srv/mindbase}/db/system.sql
 
@@ -99,7 +101,7 @@ services:
     volumes:
       - ${MB_ROOT:-/srv/mindbase}/nginx/certs:/out/nginx
       - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/out/app-board
-      - ${MB_ROOT:-/srv/mindbase}/mcp/app-board-mcp/certs:/out/mcp
+      - ${MB_ROOT:-/srv/mindbase}/app-go/app-content-mcp/certs:/out/mcp
       - ${MB_ROOT:-/srv/mindbase}/app-pay/certs:/out/pay
     deploy:
       replicas: 1
@@ -483,20 +485,25 @@ services:
       - source: apisix_config
         target: /usr/local/apisix/conf/config.yaml
       - source: apisix_routes
-        target: /usr/local/apisix/conf/apisix.yaml
+        target: /usr/local/apisix/conf/apisix.yaml.template
+      - source: apisix_render
+        target: /usr/local/apisix/conf/render-config.sh
     volumes:
       # app-content board 域 dev-CA：apisix 信任 app-content:8004 的 HTTPS upstream；
       # ⚠️ 与 app-content 必须同节点（见文件头；证书目录名沿用历史 app-board/certs）
       - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/usr/local/apisix/conf/certs/board:ro
     # 容器内清掉代理变量，防宿主 ~/.docker/config.json 注入劫持内网流量（同单机 compose）
-    entrypoint: ["/bin/sh", "-c", "unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
+    entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
       - HTTP_PROXY=
       - HTTPS_PROXY=
       - http_proxy=
       - https_proxy=
-      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
-      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-board-mcp,app-note-mcp,app-quiz-mcp,localhost,127.0.0.1
+      - NO_PROXY=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-content-mcp,localhost,127.0.0.1
+      - no_proxy=etcd,app-task,app-content,minio,mysql,mongo,redis,apisix,frontend,nginx,higress,app-user,app-cloud,app-kg,app-ts,app-pay,app-content-mcp,localhost,127.0.0.1
+      - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
+      - PAY_READONLY_KEY=${PAY_READONLY_KEY:-}
+      - PAY_OPS_KEY=${PAY_OPS_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "grep -q ':2382 .* 0A ' /proc/net/tcp || exit 1"]
       interval: 15s
@@ -712,12 +719,8 @@ services:
       - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
       - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
-      - NOTE_MCP__URL=http://app-note-mcp:8009/mcp
-      - NOTE_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - QUIZ_MCP__URL=http://app-quiz-mcp:8012/mcp
-      - QUIZ_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - BOARD_MCP__URL=http://app-board-mcp:8005/mcp
-      - BOARD_MCP__API_KEY=${APISIX_CONSUMER_KEY}
+      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
+      - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
       - MILVUS__ADDRESS=milvus:19530
       # stdout-only：镜像 /app/logs 属主未修复前文件日志 EACCES 会崩进程
       - LOG__FILEENABLED=false
@@ -771,7 +774,7 @@ services:
       - APPTASK__LOG__OUTPUT=both
       - HTTP_PROXY=${APPTASK_HTTP_PROXY:-}
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
-      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
+      - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,apisix,app-user,app-pay,app-cloud,app-content,app-content-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,.local,.svc,.internal}
     volumes:
       - app_task_logs:/app/logs
       # app-pay 开发 CA（cert-gen 产出；缺失时仅 https 委托回调报错、兜底轮询接管）
@@ -910,27 +913,31 @@ services:
       - mind-base-net
 
   # ==============================================================
-  # 板域（3×MCP server；board 数据面 app-content 见上方「Go 应用服务」段）
   # ==============================================================
-  # app-board-mcp —— MCP server（外部 MCP 宿主如需远程访问：取消 ports 注释并置
-  # BOARD_MCP_TLS_ENABLED=true，证书 cert-gen 统一签发）
-  app-board-mcp:
-    image: atoncooper/mind-base-app-board-mcp:latest
+  # MCP 桥（board + note + quiz 三域合并为单一 app-content-mcp，12 个工具；
+  # board 数据面 app-content 见上方「Go 应用服务」段）
+  # ==============================================================
+  # app-content-mcp —— 单一 MCP server（外部 MCP 宿主如需远程访问：取消 ports
+  # 注释并置 CONTENT_MCP_TLS_ENABLED=true，证书 cert-gen 统一签发）
+  app-content-mcp:
+    image: atoncooper/mind-base-app-content-mcp:latest
     environment:
-      - BOARDMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - BOARDMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
-      - BOARDMCP__UPSTREAM__UID=${BOARD_MCP_UID:-}
-      - BOARDMCP__SERVER__AUTH_TOKEN=${BOARD_MCP_AUTH_TOKEN:-}
-      - BOARDMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
-      - BOARDMCP__SERVER__TLS__ENABLED=${BOARD_MCP_TLS_ENABLED:-false}
-      - BOARDMCP__SERVER__TLS__CERT_DIR=/app/certs
-      - BOARDMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
-      - BOARDMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
-      - BOARDMCP__LOG__OUTPUT=both
-      - BOARDMCP__LOG__FILE=/app/logs/app-board-mcp.log
+      - CONTENTMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - CONTENTMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
+      - CONTENTMCP__UPSTREAM__UID=${CONTENT_MCP_UID:-}
+      - CONTENTMCP__SERVER__AUTH_TOKEN=${CONTENT_MCP_AUTH_TOKEN:-}
+      - CONTENTMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - CONTENTMCP__SERVER__TLS__ENABLED=${CONTENT_MCP_TLS_ENABLED:-false}
+      # 外部 Bearer 宿主的工具白名单（逗号分隔；空=全部 12 个工具；服务模式不受限）
+      - CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS=${CONTENT_MCP_BEARER_ALLOWED_TOOLS:-}
+      - CONTENTMCP__SERVER__TLS__CERT_DIR=/app/certs
+      - CONTENTMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
+      - CONTENTMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - CONTENTMCP__LOG__OUTPUT=both
+      - CONTENTMCP__LOG__FILE=/app/logs/app-content-mcp.log
     volumes:
-      - app_board_mcp_logs:/app/logs
-      - ${MB_ROOT:-/srv/mindbase}/mcp/app-board-mcp/certs:/app/certs
+      - app_content_mcp_logs:/app/logs
+      - ${MB_ROOT:-/srv/mindbase}/app-go/app-content-mcp/certs:/app/certs
     deploy:
       replicas: 1
       restart_policy:
@@ -942,66 +949,13 @@ services:
         delay: 10s
         monitor: 30s
       # ports:                      # 外部 MCP 宿主直连时再开放（ingress 全节点）
-      #   - target: 8005
-      #     published: 8005
+      #   - target: 8019
+      #     published: 8019
       #     protocol: tcp
       #     mode: ingress
     networks:
       - mind-base-net
 
-  # app-note-mcp
-  app-note-mcp:
-    image: atoncooper/mind-base-app-note-mcp:latest
-    environment:
-      - NOTEMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - NOTEMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
-      - NOTEMCP__UPSTREAM__UID=${NOTE_MCP_UID:-}
-      - NOTEMCP__SERVER__AUTH_TOKEN=${NOTE_MCP_AUTH_TOKEN:-}
-      - NOTEMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
-      - NOTEMCP__LOG__OUTPUT=both
-      - NOTEMCP__LOG__FILE=/app/logs/app-note-mcp.log
-    volumes:
-      - app_note_mcp_logs:/app/logs
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: start-first
-        parallelism: 1
-        delay: 10s
-        monitor: 30s
-    networks:
-      - mind-base-net
-
-  # app-quiz-mcp
-  app-quiz-mcp:
-    image: atoncooper/mind-base-app-quiz-mcp:latest
-    environment:
-      - QUIZMCP__UPSTREAM__BASE_URL=http://apisix:9080
-      - QUIZMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:-}
-      - QUIZMCP__UPSTREAM__UID=${QUIZ_MCP_UID:-}
-      - QUIZMCP__SERVER__AUTH_TOKEN=${QUIZ_MCP_AUTH_TOKEN:-}
-      - QUIZMCP__SERVER__SERVICE_API_KEY=${APISIX_CONSUMER_KEY:-}
-      - QUIZMCP__LOG__OUTPUT=both
-      - QUIZMCP__LOG__FILE=/app/logs/app-quiz-mcp.log
-    volumes:
-      - app_quiz_mcp_logs:/app/logs
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-        delay: 5s
-      update_config:
-        order: start-first
-        parallelism: 1
-        delay: 10s
-        monitor: 30s
-    networks:
-      - mind-base-net
-
-  # ==============================================================
   # Higress AI 网关 —— AI 流量统一出网（LLM/embedding/rerank/ASR）
   # 供应商密钥在控制台配置并持久化于 ${MB_ROOT}/data/higress（须预建目录）
   # 控制台 18081 有意对外开放：公网部署务必防火墙限源 IP
@@ -1067,9 +1021,7 @@ volumes:
   app_cloud_logs:
   app_content_logs:
   app_kg_logs:
-  app_note_mcp_logs:
-  app_quiz_mcp_logs:
-  app_board_mcp_logs:
+  app_content_mcp_logs:
 
 networks:
   mind-base-net:

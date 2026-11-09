@@ -44,7 +44,7 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 | 层 | 机制 | 位置 |
 |----|------|------|
 | 边缘（nginx） | `/auth` 限流 1r/s burst3 + 每 IP 并发 5；通用/接口 10-20r/s；`auth_request` 校验并注入 X-Uid/X-Roles | `nginx/nginx.conf` + `nginx/locations.conf` |
-| 网关（APISIX） | `auth_user` 限流 10r/s burst20；23 处 forward-auth；proxy-rewrite **剥离客户端伪造的 X-Uid/X-Roles**；consumer key-auth 保护 internal 面 | `apisix/apisix.yaml` |
+| 网关（APISIX） | `auth_user` 限流 10r/s burst20；23 处 forward-auth；proxy-rewrite **剥离客户端伪造的 X-Uid/X-Roles**；consumer key-auth 保护 internal 面 | `apisix/apisix.yaml.template`（启动渲染） |
 | app-user HTTP | 共享 `middleware`：Recovery / RequestID / AccessLog / SecurityHeaders(`nosniff`,`DENY`,`no-store`) / CORS 白名单 / **constant-time apikey guard**；`/auth` 全局限流 5r/s/IP；16 条 per-endpoint 限流（per-IP/per-identifier/per-uid） | `internal/router/middleware` + `service/auth/rate_limits.go` |
 | 业务（auth） | 登录节流（按 identifier+IP 计 1h 内 5 次失败锁 15min，避免被用来锁死他人账号）、图形验证码、设备证明 attest、密码 bcrypt（不存在账号也走一次 dummy bcrypt）、token 可撤销/设备绑定、AES-256-GCM 存储、雪花 ID | `internal/service/auth/*` |
 

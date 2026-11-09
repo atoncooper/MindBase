@@ -15,7 +15,7 @@ import (
 //
 // Two surfaces share the handlers: /board/* trusts the gateway-injected X-Uid
 // (user traffic), while /internal/board/* additionally requires the service
-// token injected by APISIX (M2M callers such as app-board-mcp) — defence in
+// token injected by APISIX (M2M callers such as app-content-mcp) — defence in
 // depth so a key-auth caller cannot reach the user surface directly.
 func Register(e *gin.Engine, svc *boardsvc.BoardService, internalAPIKey string) {
 	r := &Router{svc: svc}

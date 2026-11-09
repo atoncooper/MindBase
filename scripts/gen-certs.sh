@@ -11,8 +11,8 @@
 #   app-board/certs/dev-ca.crt       shared CA copy (APISIX upstream trust)
 #   app-board/certs/server.crt|key   app-content board 域 leaf (ECDSA P-256)
 #                                    目录名沿用历史：board TLS 证书卷/secret 保留不变
-#   mcp/app-board-mcp/certs/dev-ca.crt       shared CA copy
-#   mcp/app-board-mcp/certs/server.crt|key   app-board-mcp leaf (ECDSA P-256)
+#   app-go/app-content-mcp/certs/dev-ca.crt       shared CA copy
+#   app-go/app-content-mcp/certs/server.crt|key   app-content-mcp leaf (ECDSA P-256)
 #   app-pay/certs/ca.crt             shared CA copy (app-task executor trust)
 #   app-pay/certs/pay.crt|key        app-pay leaf (RSA-2048, PKCS#8 key)
 #
@@ -66,7 +66,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd -- "$SCRIPT_DIR/.." || { printf '[cert-gen] ERROR: cannot cd to repo root\n' >&2; exit 1; }
 NGINX_DIR="${MB_CERT_NGINX_DIR:-nginx/certs}"
 APPBOARD_DIR="${MB_CERT_APPBOARD_DIR:-app-board/certs}"   # board 域（现 app-content:8004）证书目录
-MCP_DIR="${MB_CERT_MCP_DIR:-mcp/app-board-mcp/certs}"
+MCP_DIR="${MB_CERT_MCP_DIR:-app-go/app-content-mcp/certs}"
 PAY_DIR="${MB_CERT_PAY_DIR:-app-pay/certs}"
 
 # Single standard subject for everything MindBase signs. The CN is a product
@@ -371,7 +371,7 @@ ensure_pay_leaf() {
 # verify_and_report — chain verification + trust instructions
 verify_and_report() {
 	_ok=0
-	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-content(board):$APPBOARD_DIR/server.crt" "app-board-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt"; do
+	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-content(board):$APPBOARD_DIR/server.crt" "app-content-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt"; do
 		_label=${pair%%:*}
 		_file=${pair#*:}
 		[ -s "$_file" ] || continue
@@ -436,7 +436,7 @@ case "$MODE" in
 		ensure_ca
 		ensure_nginx_leaf
 		ensure_service_leaf "$APPBOARD_DIR" "app-content"
-		ensure_service_leaf "$MCP_DIR" "app-board-mcp"
+		ensure_service_leaf "$MCP_DIR" "app-content-mcp"
 		ensure_pay_leaf
 		verify_and_report
 		;;
@@ -448,7 +448,7 @@ case "$MODE" in
 	services)
 		[ -s "$CA_CERT" ] || die "shared CA not found at $CA_CERT — run 'gen-certs.sh all' first"
 		ensure_service_leaf "$APPBOARD_DIR" "app-content"
-		ensure_service_leaf "$MCP_DIR" "app-board-mcp"
+		ensure_service_leaf "$MCP_DIR" "app-content-mcp"
 		ensure_pay_leaf
 		verify_and_report
 		;;

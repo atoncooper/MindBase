@@ -7,7 +7,7 @@ import type { McpToolsClient } from "../../mcp/index.js";
  * Quiz tools: structured output handled by AI SDK tool-calling + zod schema
  * (mirrors Python with_structured_output; retries are naturally handled by the ReAct loop).
  *
- * 红线（对齐 note/board）：quiz 落库一律经 app-quiz-mcp（save_quiz / save_grading），
+ * 红线（对齐 note/board）：quiz 落库一律经 app-content-mcp（save_quiz / save_grading），
  * 本层绝不直连 quiz 表或任何仓储实现。Artifacts 仍在客户端组装（ctx.collector →
  * SSE artifact 帧）——data 形状是前端契约，保持与旧直连实现一致。
  */
