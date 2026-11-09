@@ -34,6 +34,7 @@ import { SUB_AGENTS } from "../agent/manifest.js";
 import { createMainAgent } from "../agent/main/agent.js";
 import { createNoteAgent } from "../agent/note/agent.js";
 import { createCodeAgent } from "../agent/code/agent.js";
+import { createCodingPlanResolver } from "../agent/code/coding-plan-resolver.js";
 import { createQuizAgent } from "../agent/quiz/agent.js";
 import { createBoardAgent } from "../agent/board/agent.js";
 import { createAcademicAgent } from "../agent/academic/agent.js";
@@ -275,7 +276,16 @@ export async function bootstrap() {
   //     (mind_base.task_quiz_questions, read by app-quiz); task rows go through
   //     app-quiz's internal face; email/completion callbacks via app-task.
   const appTask = new AppTaskClient();
-  const appAuth = new AppUserAuthClient();
+  // app-user exposes two M2M faces on two listeners: auth (8006, email lookup)
+  // and settings (8015, Coding Plan — user configuration, not identity).
+  const appAuth = new AppUserAuthClient({
+    baseUrl: config.appAuth.baseUrl,
+    apiKey: config.appAuth.apiKey,
+    timeoutMs: config.appAuth.timeoutMs,
+    settingsBaseUrl: config.appUserSettings.baseUrl,
+    settingsApiKey: config.appUserSettings.apiKey,
+    settingsTimeoutMs: config.appUserSettings.timeoutMs,
+  });
   const appQuizClient = new AppQuizClient();
   let quizDocs: MongoTaskQuizDocStore | MemoryTaskQuizDocStore = new MemoryTaskQuizDocStore();
   let mongoQuizDocs: MongoTaskQuizDocStore | null = null;
@@ -617,7 +627,12 @@ export async function bootstrap() {
       : undefined,
   );
   const noteAgent = createNoteAgent(runtime, prompts, contextBinding);
-  const codeAgent = createCodeAgent(runtime, prompts, contextBinding);
+  // Code agent only: route to the user's own Coding Plan when app-user has one
+  // (VIP/SVIP, enabled) and the daily coding_plan quota allows it. Every
+  // unavailable path (no plan / non-VIP / 404 / 403 / 503 / quota exhausted)
+  // resolves undefined → the platform gateway model (fail-open).
+  const codingPlanResolver = createCodingPlanResolver({ plans: appAuth, quota });
+  const codeAgent = createCodeAgent(runtime, prompts, contextBinding, codingPlanResolver);
   const quizAgent = createQuizAgent(runtime, prompts, contextBinding);
   const boardAgent = createBoardAgent(runtime, prompts, contextBinding);
   // academic is a delegate-only sub-agent (manifest roster); its tools were

@@ -62,6 +62,12 @@ export interface ReactAgentOptions {
   context ?: AgentContextBinding;
   /** model override (tests inject a mock; production defaults to the gateway model) */
   model ?: LanguageModel;
+  /**
+   * Per-run model resolver (e.g. the code agent's Coding Plan). Awaited once at
+   * run start; undefined / a thrown error falls back to the gateway model.
+   * An explicit `model` (test injection) wins and skips the resolver entirely.
+   */
+  resolveModel ?: (input: AgentInvokeInput) => Promise<LanguageModel | undefined>;
 }
 
 /** Wiring for a sub-agent's private context + read access to the shared session summary. */
@@ -115,6 +121,19 @@ function compactArgs(args: Record<string, unknown>): string {
 export function createReactAgent(opts: ReactAgentOptions): Agent {
   async function* run(input: AgentInvokeInput): AsyncGenerator<SseFrame> {
     const collector = new ResultCollector();
+    // Resolve the model exactly once per run (not per retry attempt): a user
+    // Coding Plan is a turn-level choice. Explicit test injection wins.
+    let resolved = opts.model;
+    if (!resolved && opts.resolveModel) {
+      try {
+        resolved = await opts.resolveModel(input);
+      } catch (err) {
+        createLogger("AGENT").warn(
+          `[AGENT/${opts.name}] resolveModel failed: ${err instanceof Error ? err.message : err} — fallback gateway`,
+        );
+      }
+    }
+    const model: LanguageModel = resolved ?? createGatewayModel(opts.purpose, { uid: input.uid });
     const ctx = {
       uid: input.uid,
       chatSessionId: input.chatSessionId,
@@ -189,7 +208,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
         { role: "user", content: userContent } as ModelMessage,
       ];
       const result = streamText({
-        model: opts.model ?? createGatewayModel(opts.purpose, { uid: input.uid }),
+        model,
         system,
         messages,
         tools,

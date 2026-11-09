@@ -32,6 +32,12 @@ export interface AppConfig {
     apiKey: string;
     timeoutMs: number;
   };
+  appUserSettings: {
+    /** settings listener of app-user: Coding Plan M2M face (/internal/settings/coding-plan/{uid}) */
+    baseUrl: string;
+    apiKey: string;
+    timeoutMs: number;
+  };
   appCloud: {
     /** cloud-drive service internal face (/internal/cloud/*, apikey-guarded) */
     baseUrl: string;

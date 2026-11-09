@@ -34,6 +34,13 @@ appAuth:
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 5000
 
+appUserSettings:
+  # app-user settings 监听口（8015）：Coding Plan 内部 M2M
+  # GET /internal/settings/coding-plan/{uid}（apikey 守卫；Coding Plan 属设置域）
+  baseUrl: ${APP_USER_SETTINGS_BASE_URL:http://app-user:8015}
+  apiKey: ${APISIX_CONSUMER_KEY}
+  timeoutMs: 5000
+
 appCloud:
   # 云盘文档智能读取（/internal/cloud/summary，apikey 守卫）；uid 只经 X-Uid
   # 与查询参数下发，永不出现在 LLM 可写参数里
@@ -328,6 +335,7 @@ quota:
     vectorize:   { free: 50,  vip: 300, svip: 1000 }  # 视频向量化（分P/日；向量化管线 peek+consume）
     ocr:         { free: 10,  vip: 50,  svip: 200 }   # 错题图片/文件出题 OCR（次/日；quiz-generation 图片流）
     board:       { free: 20,  vip: 100, svip: 300 }   # Board AI 补全（次/日；/chat/board/complete peek+consume）
+    coding_plan: { free: 0,   vip: 100, svip: 300 }   # 站内 code agent 走用户自带 Coding Plan（次/日；free 无 plan，超限回退网关）
     task_quiz_active: { free: 2, vip: 10, svip: 30 }  # 定时出题活跃任务数（存量口径，注册时校验，非日计数）
   # Free 聊天阶梯：前 l0Turns 条全量（L0），其后 L1 省流，硬停于 limits.chat.free
   freeLadder: { l0Turns: 15 }
