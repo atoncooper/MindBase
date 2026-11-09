@@ -229,3 +229,22 @@ describe("costMicroYuan", () => {
     expect(costMicroYuan(1000, 1000, undefined)).toBe(0);
   });
 });
+
+describe("QuotaService percentage summary", () => {
+  it("reports usedPercent/remainingPercent and null for unlimited kinds", async () => {
+    config.quota.enabled = true;
+    config.quota.limits.chat = { free: 4, vip: 100, svip: 300 };
+    const now = new Date("2026-11-09T04:00:00.000Z");
+    const { svc, counter } = makeService({ tier: "free", now });
+    await counter.add(svc.keyFor("chat", "u1", now), 1, 3600);
+    const summary = await svc.summary("u1");
+    const chat = summary.kinds.find((k) => k.kind === "chat");
+    expect(chat?.used).toBe(1);
+    expect(chat?.usedPercent).toBe(25);
+    expect(chat?.remainingPercent).toBe(75);
+    config.quota.limits.ocr = { free: -1, vip: -1, svip: -1 };
+    const unlimited = (await svc.summary("u1")).kinds.find((k) => k.kind === "ocr");
+    expect(unlimited?.usedPercent).toBeNull();
+    expect(unlimited?.remainingPercent).toBeNull();
+  });
+});

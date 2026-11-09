@@ -495,6 +495,12 @@
 }
 
 .mm-topbar {
+  /* backdrop-filter below creates a stacking context; without an explicit
+   * z-index the canvas sibling (position: relative + isolation) paints after
+   * the topbar, covering its dropdown menus (视图/导出/更多). Keep the app bar
+   * above the canvas but below dialogs (z-index 70/80). */
+  position: relative;
+  z-index: 40;
   flex: none;
   display: flex;
   align-items: center;

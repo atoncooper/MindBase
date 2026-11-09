@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/model/auth"
 	"app-user/internal/service/auth"
 
@@ -15,18 +16,11 @@ import (
 
 // tokenResponse builds the login-success envelope (TokenResponse shape).
 func tokenResponse(d Deps, c *gin.Context, uid int64, sessionToken string, expiresAt *time.Time) {
-	nickname, avatar, status, roles := d.userPayload(c, uid)
-	c.JSON(http.StatusOK, gin.H{
-		"session_token": sessionToken,
-		"token_type":    "access",
-		"expires_at":    expiresAt,
-		"user_info": gin.H{
-			"uid":      uid,
-			"nickname": nickname,
-			"avatar":   avatar,
-			"status":   status,
-			"roles":    roles,
-		},
+	c.JSON(http.StatusOK, authdto.Token{
+		SessionToken: sessionToken,
+		TokenType:    "access",
+		ExpiresAt:    expiresAt,
+		UserInfo:     d.userPayload(uid),
 	})
 }
 
@@ -34,16 +28,8 @@ func tokenResponse(d Deps, c *gin.Context, uid int64, sessionToken string, expir
 // Brute-force defense layers: /auth per-IP guard, per-identifier Redis
 // throttle, single-use captcha, DB cooldown + audit (login_attempts).
 func passwordLogin(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string           `json:"captcha_id"`
-		CaptchaCode *string           `json:"captcha_code"`
-		Email       *string           `json:"email"`
-		Phone       *string           `json:"phone"`
-		Password    string            `json:"password" binding:"required"`
-		Device      *utils.DeviceMeta `json:"device"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -171,9 +157,9 @@ func attestChallenge(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusUnprocessableEntity, "purpose 不合法")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"challenge":  d.Attestor.Issue(purpose, time.Now()),
-			"expires_in": int(service.AttestChallengeTTL.Seconds()),
+		c.JSON(http.StatusOK, authdto.AttestChallenge{
+			Challenge: d.Attestor.Issue(purpose, time.Now()),
+			ExpiresIn: int(service.AttestChallengeTTL.Seconds()),
 		})
 	}
 }
@@ -183,10 +169,7 @@ func attestChallenge(d Deps) gin.HandlerFunc {
 // 前端代码里，此层挡裸脚本与默认无头浏览器；captcha + 限流是人机第二层。
 func attestDevice(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var body struct {
-			Challenge   string `json:"challenge"`
-			Fingerprint string `json:"fingerprint"`
-		}
+		var body authdto.AttestRequest
 		if err := c.ShouldBindJSON(&body); err != nil || !service.ValidAttestFingerprint(body.Fingerprint) {
 			apiErr(c, http.StatusUnprocessableEntity, "参数不合法")
 			return
@@ -196,22 +179,17 @@ func attestDevice(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusPreconditionFailed, "设备证明已过期，请刷新页面重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"ticket":     d.Attestor.IssueTicket(purpose, body.Fingerprint, time.Now()),
-			"expires_in": service.AttestTicketTTLSecs,
+		c.JSON(http.StatusOK, authdto.AttestTicket{
+			Ticket:    d.Attestor.IssueTicket(purpose, body.Fingerprint, time.Now()),
+			ExpiresIn: service.AttestTicketTTLSecs,
 		})
 	}
 }
 
 // registerSendCode — POST /auth/register/email/send-code (public).
 func registerSendCode(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string `json:"captcha_id"`
-		CaptchaCode *string `json:"captcha_code"`
-		Email       string  `json:"email" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.RegisterSendCodeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -257,21 +235,14 @@ func registerSendCode(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "注册验证码已发送，请查收邮件"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "注册验证码已发送，请查收邮件"})
 	}
 }
 
 // registerEmail — POST /auth/register/email (public, register = login).
 func registerEmail(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string `json:"captcha_id"`
-		CaptchaCode *string `json:"captcha_code"`
-		Email       string  `json:"email" binding:"required"`
-		Password    string  `json:"password" binding:"required"`
-		Code        string  `json:"code" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.RegisterEmailRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -315,35 +286,35 @@ func registerEmail(d Deps) gin.HandlerFunc {
 	}
 }
 
-// phoneSendCode — POST /auth/phone/send-code (login public; bind/twofa authed).
+// phoneSendCode — POST /auth/phone/send-code (login public; bind/twofa/unbind authed).
+// The purpose→internal-purpose mapping and the target phone resolution (for
+// unbind always the currently bound+verified number, never a caller-supplied
+// one) live in Verification; this handler binds, gates and renders.
 func phoneSendCode(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string `json:"captcha_id"`
-		CaptchaCode *string `json:"captcha_code"`
-		Phone       string  `json:"phone" binding:"required"`
-		Purpose     string  `json:"purpose"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.PhoneSendCodeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		phone, err := utils.NormalizePhone(req.Phone)
+		uid, err := d.Auth.ResolvePhoneSendCaller(c.Request.Context(), extractToken(c), req.Purpose)
 		if err != nil {
-			apiErr(c, http.StatusUnprocessableEntity, err.Error())
+			apiFlowErr(c, err)
 			return
 		}
-		// 设备证明闸门：仅公开 login 路径（bind/twofa 有登录态，不在此列）
-		if req.Purpose != "bind" && req.Purpose != "twofa" {
+		// 设备证明闸门：仅公开 login 路径（bind/twofa/unbind 有登录态）。
+		if uid == 0 {
 			if fp, tk := c.GetHeader("X-Fp"), c.GetHeader("X-Ticket"); !service.ValidAttestFingerprint(fp) ||
 				!d.Attestor.VerifyTicket("phone_send", fp, tk, time.Now()) {
 				apiErr(c, http.StatusPreconditionFailed, "请通过浏览器页面发送验证码")
 				return
 			}
 		}
-		ip, _, _, _ := requestContext(c)
-		_ = ip
+		plan, err := d.Verification.PlanPhoneSendCode(uid, req.Phone, req.Purpose)
+		if err != nil {
+			apiFlowErr(c, err)
+			return
+		}
 		captchaID, captchaCode := "", ""
 		if req.CaptchaID != nil {
 			captchaID = *req.CaptchaID
@@ -358,47 +329,21 @@ func phoneSendCode(d Deps) gin.HandlerFunc {
 		if !rlIP(d, c, "phone_send_ip") {
 			return
 		}
-		if !rlKey(d, c, "phone_send_tgt", "tgt:"+phone) {
+		if !rlKey(d, c, "phone_send_tgt", "tgt:"+plan.Target) {
 			return
 		}
-
-		uid := int64(0)
-		purpose := "login"
-		if req.Purpose == "bind" || req.Purpose == "twofa" {
-			tokenStr := extractToken(c)
-			uid = d.Tokens.Validate(c.Request.Context(), tokenStr)
-			if uid == 0 {
-				apiErr(c, http.StatusUnauthorized, "该操作需要登录")
-				return
-			}
-			if err := d.Auth.CheckActive(c.Request.Context(), uid); err != nil {
-				apiErr(c, http.StatusUnauthorized, "账号不可用")
-				return
-			}
-			if req.Purpose == "bind" {
-				purpose = "bind_phone"
-			} else {
-				purpose = "twofa_sms"
-			}
-		}
-		if err := d.Verification.SendCode(c.Request.Context(), uid, phone, purpose); err != nil {
+		if err := d.Verification.SendCode(c.Request.Context(), plan.UID, plan.Target, plan.Purpose); err != nil {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "短信验证码已发送"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "短信验证码已发送"})
 	}
 }
 
 // phoneLogin — POST /auth/phone/login (public, register-on-first-use).
 func phoneLogin(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string `json:"captcha_id"`
-		CaptchaCode *string `json:"captcha_code"`
-		Phone       string  `json:"phone" binding:"required"`
-		Code        string  `json:"code" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.PhoneLoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -448,13 +393,8 @@ func phoneLogin(d Deps) gin.HandlerFunc {
 // passwordResetRequest — POST /auth/password/reset-request. Always returns
 // a success-shaped message (no account enumeration).
 func passwordResetRequest(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string `json:"captcha_id"`
-		CaptchaCode *string `json:"captcha_code"`
-		Email       string  `json:"email" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.PasswordResetRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -487,18 +427,14 @@ func passwordResetRequest(d Deps) gin.HandlerFunc {
 			// throttling is enforced by the Redis two-window rules above.
 			slog.Info("[AUTH] password reset request suppressed", "reason", err.Error())
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "如果该邮箱已注册，您将收到重置邮件"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "如果该邮箱已注册，您将收到重置邮件"})
 	}
 }
 
 // passwordReset — POST /auth/password/reset (public, reset token).
 func passwordReset(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		ResetToken  string `json:"reset_token" binding:"required,min=10"`
-		NewPassword string `json:"new_password" binding:"required"`
-	}
 	return func(c *gin.Context) {
-		var req reqBody
+		var req authdto.PasswordResetConfirmRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -515,6 +451,6 @@ func passwordReset(d Deps) gin.HandlerFunc {
 		if err := d.Tokens.RevokeAllForUser(c.Request.Context(), uid); err != nil {
 			slog.Error("[AUTH] revoke sessions after reset failed", "uid", uid, "err", err)
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "密码已重置，请使用新密码登录"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "密码已重置，请使用新密码登录"})
 	}
 }

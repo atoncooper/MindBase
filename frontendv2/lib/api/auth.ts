@@ -158,9 +158,9 @@ export const authApi = {
             body: JSON.stringify(data),
         }),
 
-    // 发送短信验证码（login 公开需设备证明 / bind、twofa 需登录态，图形验证码门禁）
+    // 发送短信验证码（login 公开需设备证明 / bind、twofa、unbind 需登录态，图形验证码门禁）
     phoneSendCode: (
-        data: { phone: string; purpose: "login" | "bind" | "twofa" } & CaptchaValue,
+        data: { phone: string; purpose: "login" | "bind" | "twofa" | "unbind" } & CaptchaValue,
         attest?: DeviceAttestation,
     ) =>
         request<{ message: string }>("/auth/phone/send-code", {

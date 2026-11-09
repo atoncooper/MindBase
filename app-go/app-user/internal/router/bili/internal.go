@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	bilidto "app-user/internal/dto/bili"
 	"app-user/internal/router/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,6 @@ func registerInternal(e *gin.Engine, d Deps) {
 			_ = serviceErr(c, err)
 			return
 		}
-		writeJSON(c, http.StatusOK, gin.H{"bvid": bvid, "belongs": ok})
+		writeJSON(c, http.StatusOK, bilidto.Ownership{Bvid: bvid, Belongs: ok})
 	})
 }

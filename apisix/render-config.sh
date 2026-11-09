@@ -10,8 +10,8 @@
 #   APISIX_CONSUMER_KEY   shared internal consumer key (also used for
 #                         X-Internal-Key / X-API-Key injection)
 # Optional env (random per render when unset):
-#   PAY_READONLY_KEY      pay-readonly consumer (membership reads)
-#   PAY_OPS_KEY           pay-ops consumer (grant / refund); app-admin uses it
+#   PAY_READONLY_KEY      pay_readonly consumer (membership reads)
+#   PAY_OPS_KEY           pay_ops consumer (grant / refund); app-admin uses it
 #
 # Usage: render-config.sh <template> <output>
 set -eu

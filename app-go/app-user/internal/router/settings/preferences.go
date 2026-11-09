@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	settingsdto "app-user/internal/dto/settings"
 	"app-user/internal/infra/minio"
 
 	"github.com/gin-gonic/gin"
@@ -47,7 +48,7 @@ func registerPreferences(e *gin.Engine) {
 			}
 			prefs[k] = decoded
 		}
-		c.JSON(http.StatusOK, gin.H{"preferences": prefs})
+		c.JSON(http.StatusOK, settingsdto.Preferences{Preferences: prefs})
 	})
 
 	g.PATCH("", func(c *gin.Context) {
@@ -55,9 +56,7 @@ func registerPreferences(e *gin.Engine) {
 		if !ok {
 			return
 		}
-		var body struct {
-			Preferences map[string]interface{} `json:"preferences"`
-		}
+		var body settingsdto.PreferencesPatchRequest
 		if err := c.ShouldBindJSON(&body); err != nil || body.Preferences == nil {
 			apiErr(c, http.StatusBadRequest, "请求体格式错误")
 			return
@@ -88,7 +87,7 @@ func registerPreferences(e *gin.Engine) {
 			}
 			prefs[k] = decoded
 		}
-		c.JSON(http.StatusOK, gin.H{"preferences": prefs})
+		c.JSON(http.StatusOK, settingsdto.Preferences{Preferences: prefs})
 	})
 }
 
@@ -150,7 +149,7 @@ func registerAvatar(e *gin.Engine) {
 		}
 		// URL 为站内相对路径：由 nginx /avatar/ → APISIX → 本服务公开直读，
 		// <img src> 无需鉴权头；存入 users.avatar（app-user）。
-		c.JSON(http.StatusOK, gin.H{"url": "/avatar/file/" + objectKey})
+		c.JSON(http.StatusOK, settingsdto.AvatarUpload{URL: "/avatar/file/" + objectKey})
 	})
 
 	g.GET("/file/*object_key", func(c *gin.Context) {

@@ -1098,7 +1098,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
               const ratio = chatKind.limit > 0 ? chatKind.used / chatKind.limit : 0;
               return (
                 <div className="mb-1 flex justify-end px-1 text-xs text-secondary">
-                  今日 AI 问答 {chatKind.used}/{chatKind.limit}
+                  今日 AI 用量 {chatKind.usedPercent ?? 0}%
                   {ratio >= 0.8 ? " · 额度即将用完" : ""}
                 </div>
               );

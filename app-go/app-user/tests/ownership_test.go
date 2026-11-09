@@ -20,7 +20,7 @@ func TestDataOwnership(t *testing.T) {
 		{
 			domain:    "auth",
 			dirs:      []string{"internal/model/auth", "internal/repo/auth", "internal/service/auth", "internal/router/auth"},
-			forbidden: []string{"collection", "favorite_folders", "video_versions", "async_tasks", "asr_documents", "user_preferences"},
+			forbidden: []string{"collection", "favorite_folders", "video_versions", "async_tasks", "asr_documents", "user_preferences", "coding_plans"},
 		},
 		{
 			domain:    "bili",
@@ -29,7 +29,7 @@ func TestDataOwnership(t *testing.T) {
 		},
 		{
 			domain:    "settings",
-			dirs:      []string{"internal/repo/settings", "internal/router/settings"},
+			dirs:      []string{"internal/model/settings", "internal/dto/settings", "internal/repo/settings", "internal/service/settings", "internal/router/settings"},
 			forbidden: []string{"user_oauth", "user_tokens", "user_profile", "user_device", "verification_codes", "login_attempts", "rbac_role", "rbac_user_role", "collection", "favorite_folders", "video_versions", "async_tasks"},
 		},
 	}

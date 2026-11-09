@@ -1,7 +1,8 @@
-// Package router — settings-domain HTTP surface: /preferences + /avatar/*.
+// Package router — settings-domain HTTP surface: /preferences + /avatar/* and
+// the Coding Plan user/M2M faces (/settings/coding-plans,
+// /internal/settings/coding-plan/{uid}).
 // Per-user API key configuration (BYOK credentials, embedding/asr configs)
-// was retired: all AI traffic runs on the platform gateway, so the service no
-// longer serves /settings/* or /credentials (404 via NoRoute).
+// was retired: all AI traffic runs on the platform gateway.
 // Identity = gateway-injected X-Uid; error body = {"detail": ...}.
 package router
 
@@ -24,6 +25,11 @@ import (
 type Deps struct {
 	Cfg *config.SettingsConfig
 	Svc *settingsservice.Service
+	// CodingPlans owns Coding Plan CRUD + the VIP/SVIP gate (settings domain).
+	CodingPlans *settingsservice.CodingPlanService
+	// InternalAPIKey guards the M2M face (/internal/settings/coding-plan/{uid}).
+	// Main passes the shared APISIX consumer key from the auth config.
+	InternalAPIKey string
 }
 
 // settingsSvc is the package-level settings service (nil in offline tests).
@@ -54,6 +60,7 @@ func New(d Deps) *gin.Engine {
 
 	registerPreferences(e)
 	registerAvatar(e)
+	registerCodingPlans(e, d)
 
 	e.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "接口不存在"})

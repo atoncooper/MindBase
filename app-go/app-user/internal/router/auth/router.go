@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"app-user/internal/config"
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/router/middleware"
 	"app-user/internal/service/auth"
 
@@ -104,7 +105,7 @@ func registerInternalAuth(e *gin.Engine, d Deps) {
 	e.GET("/internal/auth/verify", func(c *gin.Context) {
 		token := extractToken(c)
 		if token == "" {
-			c.JSON(http.StatusOK, gin.H{"ok": false})
+			c.JSON(http.StatusOK, authdto.InternalVerify{OK: false})
 			return
 		}
 		uid := d.Tokens.Validate(c.Request.Context(), token)
@@ -131,7 +132,7 @@ func registerInternalAuth(e *gin.Engine, d Deps) {
 		if len(roles) > 0 {
 			c.Header("X-Roles", strings.Join(roles, ","))
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "uid": uid})
+		c.JSON(http.StatusOK, authdto.InternalVerify{OK: true, UID: uid})
 	})
 }
 
@@ -167,4 +168,33 @@ func apiErr(c *gin.Context, status int, detail string, retryAfter ...int) {
 		c.Header("Retry-After", strconv.Itoa(retryAfter[0]))
 	}
 	c.JSON(status, gin.H{"detail": detail})
+}
+
+// flowStatusHTTP maps a service-level flow classification to its status code.
+func flowStatusHTTP(status service.FlowStatus) int {
+	switch status {
+	case service.FlowUnprocessable:
+		return http.StatusUnprocessableEntity
+	case service.FlowUnauthorized:
+		return http.StatusUnauthorized
+	case service.FlowForbidden:
+		return http.StatusForbidden
+	case service.FlowNotFound:
+		return http.StatusNotFound
+	case service.FlowConflict:
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+// apiFlowErr renders a service account-flow error with its boundary status.
+// Errors without a classification are business rejections (400).
+func apiFlowErr(c *gin.Context, err error) {
+	var fe *service.FlowError
+	if errors.As(err, &fe) {
+		apiErr(c, flowStatusHTTP(fe.Status), err.Error())
+		return
+	}
+	apiErr(c, http.StatusBadRequest, err.Error())
 }

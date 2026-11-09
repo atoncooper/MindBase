@@ -94,6 +94,13 @@ func TestRouteParity(t *testing.T) {
 			"PATCH /preferences",
 			"POST /avatar/upload",
 			"GET /avatar/file/*object_key",
+			// Coding Plan moved here from the auth listener (settings domain).
+			"GET /settings/coding-plans",
+			"POST /settings/coding-plans",
+			"PATCH /settings/coding-plans/:id",
+			"DELETE /settings/coding-plans/:id",
+			"POST /settings/coding-plans/:id/test",
+			"GET /internal/settings/coding-plan/:uid",
 		}},
 	}
 	for _, tc := range cases {

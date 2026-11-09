@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"app-user/internal/config"
+	authdto "app-user/internal/dto/auth"
 
 	"github.com/mojocn/base64Captcha"
 	"github.com/redis/go-redis/v9"
@@ -37,18 +38,10 @@ func (s *CaptchaService) digest(code string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// CaptchaResult is the GET /auth/captcha payload.
-type CaptchaResult struct {
-	CaptchaID   string
-	ImageBase64 string // data URL
-	ExpiresIn   int
-	Required    bool
-}
-
 // Generate creates a fresh captcha. required=false signals degradation.
-func (s *CaptchaService) Generate(ctx context.Context) (*CaptchaResult, error) {
+func (s *CaptchaService) Generate(ctx context.Context) (*authdto.Captcha, error) {
 	if !s.cfg.Security.Captcha.Enabled || s.rdb == nil {
-		return &CaptchaResult{Required: false}, nil
+		return &authdto.Captcha{Required: false}, nil
 	}
 	driver := base64Captcha.NewDriverString(
 		s.cfg.Security.Captcha.ImageHeight,
@@ -63,15 +56,15 @@ func (s *CaptchaService) Generate(ctx context.Context) (*CaptchaResult, error) {
 	item, err := driver.DrawCaptcha(content)
 	if err != nil {
 		slog.Warn("[CAPTCHA] draw failed, serving degraded response", "err", err)
-		return &CaptchaResult{Required: false}, nil
+		return &authdto.Captcha{Required: false}, nil
 	}
 
 	ttl := s.cfg.Security.Captcha.TTLSeconds
 	if err := s.rdb.Set(ctx, s.key(id), s.digest(content), time.Duration(ttl)*time.Second).Err(); err != nil {
 		slog.Warn("[CAPTCHA] redis write failed, serving degraded response", "err", err)
-		return &CaptchaResult{Required: false}, nil
+		return &authdto.Captcha{Required: false}, nil
 	}
-	return &CaptchaResult{
+	return &authdto.Captcha{
 		CaptchaID:   id,
 		ImageBase64: item.EncodeB64string(),
 		ExpiresIn:   ttl,

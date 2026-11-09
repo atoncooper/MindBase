@@ -1,26 +1,17 @@
 package router
 
 import (
-	"app-user/internal/utils"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 
+	authdto "app-user/internal/dto/auth"
 	"app-user/internal/service/auth"
 
 	"github.com/gin-gonic/gin"
 )
-
-// notifyContactChange alerts the verified mailbox captured before a contact
-// mutation. Best-effort; a missing/unverified email yields no notification.
-func notifyContactChange(d Deps, before *service.FullProfile, change string) {
-	if before == nil || !before.EmailVerified || before.Email == nil || *before.Email == "" {
-		return
-	}
-	d.Verification.NotifyContactChange(*before.Email, change)
-}
 
 // getMe — GET /auth/me.
 func getMe(d Deps) gin.HandlerFunc {
@@ -39,12 +30,12 @@ func getMe(d Deps) gin.HandlerFunc {
 		if len(roles) == 0 {
 			roles = []string{"free"}
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"uid":      info.UID,
-			"nickname": info.Nickname,
-			"avatar":   info.Avatar,
-			"status":   info.Status,
-			"roles":    roles,
+		c.JSON(http.StatusOK, authdto.UserInfo{
+			UID:      info.UID,
+			Nickname: info.Nickname,
+			Avatar:   info.Avatar,
+			Status:   info.Status,
+			Roles:    roles,
 		})
 	}
 }
@@ -62,7 +53,7 @@ func logoutCurrent(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "已退出登录"})
 	}
 }
 
@@ -75,7 +66,7 @@ func logoutAll(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "已退出所有设备"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "已退出所有设备"})
 	}
 }
 
@@ -89,20 +80,20 @@ func listSessions(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		sessions := make([]gin.H, 0, len(rows))
+		sessions := make([]authdto.Session, 0, len(rows))
 		for _, t := range rows {
-			sessions = append(sessions, gin.H{
-				"session_id":     service.SessionID(t.SessionToken),
-				"device_id":      t.DeviceID,
-				"ip":             t.IP,
-				"user_agent":     t.UserAgent,
-				"created_at":     t.CreatedAt,
-				"last_active_at": t.LastActiveAt,
-				"expires_at":     t.ExpiresAt,
-				"is_current":     t.SessionToken == token,
+			sessions = append(sessions, authdto.Session{
+				SessionID:    service.SessionID(t.SessionToken),
+				DeviceID:     t.DeviceID,
+				IP:           t.IP,
+				UserAgent:    t.UserAgent,
+				CreatedAt:    t.CreatedAt,
+				LastActiveAt: t.LastActiveAt,
+				ExpiresAt:    t.ExpiresAt,
+				IsCurrent:    t.SessionToken == token,
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+		c.JSON(http.StatusOK, authdto.Sessions{Sessions: sessions})
 	}
 }
 
@@ -120,7 +111,7 @@ func revokeSession(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusNotFound, "会话不存在或已失效")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "已退出该设备"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "已退出该设备"})
 	}
 }
 
@@ -165,17 +156,12 @@ func updateProfile(d Deps) gin.HandlerFunc {
 
 // setPassword — POST /auth/password/set (first-time, mandatory 2nd factor).
 func setPassword(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Password  string  `json:"password" binding:"required"`
-		EmailCode *string `json:"email_code"`
-		SMSCode   *string `json:"sms_code"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
 		if !rlKey(d, c, "pw_set_uid", "uid:"+strconv.FormatInt(uid, 10)) {
 			return
 		}
-		var req reqBody
+		var req authdto.SetPasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -196,24 +182,20 @@ func setPassword(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "密码设置成功"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "密码设置成功"})
 	}
 }
 
 // changePassword — PATCH /auth/password (old password + optional email 2FA).
+// The mandatory second-factor workflow lives in Verification; this handler
+// keeps only the per-uid guard and the post-change session rotation.
 func changePassword(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		OldPassword string  `json:"old_password" binding:"required"`
-		NewPassword string  `json:"new_password" binding:"required"`
-		EmailCode   *string `json:"email_code"`
-		SMSCode     *string `json:"sms_code"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
 		if !rlKey(d, c, "pw_change_uid", "uid:"+strconv.FormatInt(uid, 10)) {
 			return
 		}
-		var req reqBody
+		var req authdto.ChangePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
@@ -240,44 +222,28 @@ func changePassword(d Deps) gin.HandlerFunc {
 			otherSessionsRevoked = false
 			slog.Error("[AUTH] revoke other sessions failed", "uid", uid, "err", err)
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"message":                "密码修改成功",
-			"other_sessions_revoked": otherSessionsRevoked,
+		c.JSON(http.StatusOK, authdto.ChangePassword{
+			Message:              "密码修改成功",
+			OtherSessionsRevoked: otherSessionsRevoked,
 		})
 	}
 }
 
 // bindEmail — PUT /auth/email (direct bind, unverified).
 func bindEmail(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Email           string `json:"email" binding:"required"`
-		CurrentPassword string `json:"current_password"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		var req reqBody
+		var req authdto.BindEmailRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		email, err := utils.NormalizeEmail(req.Email)
+		email, err := d.Verification.BindEmailDirect(uid, req.Email, req.CurrentPassword)
 		if err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+			apiFlowErr(c, err)
 			return
 		}
-		before, _ := d.Auth.GetFullProfile(uid)
-		if err := d.Auth.RequireStepUp(uid, req.CurrentPassword); err != nil {
-			apiErr(c, http.StatusForbidden, err.Error())
-			return
-		}
-		if err := d.Auth.BindEmail(uid, email); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		if before == nil || before.Email == nil || *before.Email != email {
-			notifyContactChange(d, before, "邮箱已更换为 "+email)
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "邮箱绑定成功", "email": email})
+		c.JSON(http.StatusOK, authdto.BindEmail{Message: "邮箱绑定成功", Email: email})
 	}
 }
 
@@ -285,42 +251,26 @@ func bindEmail(d Deps) gin.HandlerFunc {
 func unbindEmail(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		before, _ := d.Auth.GetFullProfile(uid)
-		if err := d.Auth.UnbindEmail(uid); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+		if err := d.Verification.UnbindEmailAccount(uid); err != nil {
+			apiFlowErr(c, err)
 			return
 		}
-		notifyContactChange(d, before, "邮箱已解绑")
-		c.JSON(http.StatusOK, gin.H{"message": "邮箱已解绑"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "邮箱已解绑"})
 	}
 }
 
 // emailSendCode — POST /auth/email/send-code (bind_email | twofa).
 func emailSendCode(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		CaptchaID   *string `json:"captcha_id"`
-		CaptchaCode *string `json:"captcha_code"`
-		Email       string  `json:"email" binding:"required"`
-		Purpose     string  `json:"purpose"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		var req reqBody
+		var req authdto.EmailSendCodeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		email, err := utils.NormalizeEmail(req.Email)
+		plan, err := d.Verification.PlanEmailSendCode(uid, req.Email, req.Purpose)
 		if err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		purpose := req.Purpose
-		if purpose == "" {
-			purpose = "bind_email"
-		}
-		if purpose != "bind_email" && purpose != "twofa" {
-			apiErr(c, http.StatusUnprocessableEntity, "purpose 必须为 bind_email 或 twofa")
+			apiFlowErr(c, err)
 			return
 		}
 		captchaID, captchaCode := "", ""
@@ -339,139 +289,93 @@ func emailSendCode(d Deps) gin.HandlerFunc {
 		if !rlKey(d, c, "email_send_uid", "uid:"+strconv.FormatInt(uid, 10)) {
 			return
 		}
-		if err := d.Verification.SendCode(c.Request.Context(), uid, email, purpose); err != nil {
+		if err := d.Verification.SendCode(c.Request.Context(), plan.UID, plan.Target, plan.Purpose); err != nil {
 			apiErr(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "验证码已发送"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "验证码已发送"})
 	}
 }
 
 // emailVerify — POST /auth/email/verify (bind on bind_email; check-only on twofa).
 func emailVerify(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Email           string `json:"email" binding:"required"`
-		Code            string `json:"code" binding:"required"`
-		Purpose         string `json:"purpose"`
-		CurrentPassword string `json:"current_password"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		var req reqBody
+		var req authdto.EmailVerifyRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		email, err := utils.NormalizeEmail(req.Email)
+		email, purpose, err := d.Verification.BindEmailVerified(uid, req.Email, req.Code, req.Purpose, req.CurrentPassword)
 		if err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+			apiFlowErr(c, err)
 			return
 		}
-		purpose := req.Purpose
-		if purpose == "" {
-			purpose = "bind_email"
-		}
-		if purpose != "bind_email" && purpose != "twofa" {
-			apiErr(c, http.StatusUnprocessableEntity, "purpose 必须为 bind_email 或 twofa")
-			return
-		}
-		// Attaching a new recovery address is a security-sensitive change:
-		// require the current password (or force a password to be set first).
-		var before *service.FullProfile
-		if purpose == "bind_email" {
-			before, _ = d.Auth.GetFullProfile(uid)
-			if err := d.Auth.RequireStepUp(uid, req.CurrentPassword); err != nil {
-				apiErr(c, http.StatusForbidden, err.Error())
-				return
-			}
-		}
-		if err := d.Verification.VerifyAndBindEmail(uid, email, strings.TrimSpace(req.Code), purpose); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		if purpose == "bind_email" && (before == nil || before.Email == nil || *before.Email != email) {
-			notifyContactChange(d, before, "邮箱已更换为 "+email)
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "验证成功", "email": email, "purpose": purpose})
+		c.JSON(http.StatusOK, authdto.VerifyEmail{Message: "验证成功", Email: email, Purpose: purpose})
 	}
 }
 
-// bindPhone — PUT /auth/phone (direct bind, unverified).
+// bindPhone — PUT /auth/phone (direct bind, unverified). Allowed only when
+// SMS is not configured; otherwise callers must use /auth/phone/verify.
 func bindPhone(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Phone           string `json:"phone" binding:"required"`
-		CurrentPassword string `json:"current_password"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		var req reqBody
+		// When SMS is configured, binding MUST be verified by code; the direct
+		// path would otherwise let a caller store an unverified number.
+		if d.Cfg.SMS.Configured() {
+			apiErr(c, http.StatusForbidden, service.ErrSMSBindingRequiresCode.Error())
+			return
+		}
+		var req authdto.BindPhoneRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		phone, err := utils.NormalizePhone(req.Phone)
+		phone, err := d.Verification.BindPhoneDirect(uid, req.Phone, req.CurrentPassword)
 		if err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+			apiFlowErr(c, err)
 			return
 		}
-		before, _ := d.Auth.GetFullProfile(uid)
-		if err := d.Auth.RequireStepUp(uid, req.CurrentPassword); err != nil {
-			apiErr(c, http.StatusForbidden, err.Error())
-			return
-		}
-		if err := d.Auth.BindPhone(uid, phone); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		notifyContactChange(d, before, "手机号已绑定为 "+phone)
-		c.JSON(http.StatusOK, gin.H{"message": "手机号绑定成功", "phone": phone})
+		c.JSON(http.StatusOK, authdto.BindPhone{Message: "手机号绑定成功", Phone: phone})
 	}
 }
 
-// unbindPhone — DELETE /auth/phone.
+// unbindPhone — DELETE /auth/phone. Security-sensitive: requires either a
+// valid SMS code sent to the currently bound phone (purpose=unbind) or the
+// account password (step-up). A bare DELETE with nothing is rejected.
 func unbindPhone(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		before, _ := d.Auth.GetFullProfile(uid)
-		if err := d.Auth.UnbindPhone(uid); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+		var req authdto.UnbindPhoneRequest
+		if c.Request.Body != nil {
+			if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+				apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
+				return
+			}
+		}
+		if err := d.Verification.UnbindPhoneAccount(uid, req.Code, req.CurrentPassword); err != nil {
+			apiFlowErr(c, err)
 			return
 		}
-		notifyContactChange(d, before, "手机号已解绑")
-		c.JSON(http.StatusOK, gin.H{"message": "手机号已解绑"})
+		c.JSON(http.StatusOK, authdto.Message{Message: "手机号已解绑"})
 	}
 }
 
 // phoneVerify — POST /auth/phone/verify (verify SMS code and bind).
 func phoneVerify(d Deps) gin.HandlerFunc {
-	type reqBody struct {
-		Phone           string `json:"phone" binding:"required"`
-		Code            string `json:"code" binding:"required"`
-		CurrentPassword string `json:"current_password"`
-	}
 	return func(c *gin.Context) {
 		uid := currentUID(c)
-		var req reqBody
+		var req authdto.PhoneVerifyRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			apiErr(c, http.StatusUnprocessableEntity, "请求参数不合法")
 			return
 		}
-		phone, err := utils.NormalizePhone(req.Phone)
+		phone, err := d.Verification.BindPhoneVerified(uid, req.Phone, req.Code, req.CurrentPassword)
 		if err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
+			apiFlowErr(c, err)
 			return
 		}
-		before, _ := d.Auth.GetFullProfile(uid)
-		if err := d.Auth.RequireStepUp(uid, req.CurrentPassword); err != nil {
-			apiErr(c, http.StatusForbidden, err.Error())
-			return
-		}
-		if err := d.Verification.VerifyAndBindPhone(uid, phone, strings.TrimSpace(req.Code)); err != nil {
-			apiErr(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		notifyContactChange(d, before, "手机号已绑定为 "+phone)
-		c.JSON(http.StatusOK, gin.H{"message": "手机号验证成功", "phone": phone})
+		c.JSON(http.StatusOK, authdto.BindPhone{Message: "手机号验证成功", Phone: phone})
 	}
 }
 
@@ -484,23 +388,23 @@ func listDevices(d Deps) gin.HandlerFunc {
 			apiErr(c, http.StatusInternalServerError, "服务异常，请稍后重试")
 			return
 		}
-		devices := make([]gin.H, 0, len(rows))
+		devices := make([]authdto.Device, 0, len(rows))
 		for _, dv := range rows {
-			devices = append(devices, gin.H{
-				"device_id":       dv.DeviceID,
-				"device_type":     dv.DeviceType,
-				"device_name":     dv.DeviceName,
-				"os":              dv.OS,
-				"os_version":      dv.OSVersion,
-				"browser":         dv.Browser,
-				"browser_version": dv.BrowserVersion,
-				"trust_level":     dv.TrustLevel,
-				"last_active_at":  dv.LastActiveAt,
-				"created_at":      dv.CreatedAt,
-				"is_current":      false,
+			devices = append(devices, authdto.Device{
+				DeviceID:       dv.DeviceID,
+				DeviceType:     dv.DeviceType,
+				DeviceName:     dv.DeviceName,
+				OS:             dv.OS,
+				OSVersion:      dv.OSVersion,
+				Browser:        dv.Browser,
+				BrowserVersion: dv.BrowserVersion,
+				TrustLevel:     dv.TrustLevel,
+				LastActiveAt:   dv.LastActiveAt,
+				CreatedAt:      dv.CreatedAt,
+				IsCurrent:      false,
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"devices": devices})
+		c.JSON(http.StatusOK, authdto.Devices{Devices: devices})
 	}
 }
 

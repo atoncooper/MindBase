@@ -221,10 +221,12 @@ export const userApi = {
             body: JSON.stringify(data),
         }),
 
-    unbindPhone: () =>
+    // 解绑手机号：需短信验证码（purpose=unbind）或当前密码
+    unbindPhone: (data?: { code?: string; current_password?: string }) =>
         request<{ message: string }>("/auth/phone", {
             method: "DELETE",
             headers: getAuthHeaders(),
+            body: JSON.stringify(data ?? {}),
         }),
 
     getSecurity: () =>

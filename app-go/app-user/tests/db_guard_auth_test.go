@@ -38,6 +38,22 @@ func TestAuthSchemaDDLOnlyTouchesOwnedTables(t *testing.T) {
 	}
 }
 
+// Guard: coding_plans moved to the settings domain (user configuration, not
+// identity). The auth DDL must not re-acquire the table — the settings guard
+// test (db_guard_settings_test.go) pins the new owner.
+func TestAuthDoesNotOwnCodingPlans(t *testing.T) {
+	for _, name := range authdb.OwnedTables() {
+		if name == "coding_plans" {
+			t.Fatal("coding_plans must be owned by the settings domain, not authdb")
+		}
+	}
+	for _, ddl := range authdb.SchemaDDL() {
+		if strings.Contains(strings.ToLower(ddl), "coding_plans") {
+			t.Fatal("auth DDL still creates coding_plans; it belongs to settingsdb")
+		}
+	}
+}
+
 // Guard: no statement may contain ALTER / DROP / MODIFY / CHANGE — this
 // service owns schema creation only, never mutation of existing tables.
 func TestAuthSchemaDDLHasNoMutatingStatements(t *testing.T) {

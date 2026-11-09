@@ -21,6 +21,7 @@ interface Props {
 
 export function PhoneCard({ profile, security, onReload, onToast }: Props) {
     const [editing, setEditing] = useState(false);
+    const [unbinding, setUnbinding] = useState(false);
     const [val, setVal] = useState("");
     const [code, setCode] = useState("");
     // 已设置密码的账号换绑/绑定手机号需要 current_password 二次验证
@@ -42,6 +43,7 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
     }, [cooldown]);
 
     async function enterEdit() {
+        setUnbinding(false);
         setVal(profile.phone ?? "");
         setCode("");
         setCurrentPassword("");
@@ -57,6 +59,8 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
     }
 
     const smsEnabled = features?.sms_enabled === true;
+    // 未验证的手机号不能作为解绑验证因子；此时退回密码 step-up。
+    const canUseSmsUnbind = smsEnabled && profile.phone_verified;
 
     async function sendCode() {
         if (!val.trim() || cooldown > 0) return;
@@ -64,7 +68,7 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
         try {
             await authApi.phoneSendCode({
                 phone: val.trim(),
-                purpose: "bind",
+                purpose: unbinding ? "unbind" : "bind",
                 captcha_id: captcha.captcha_id,
                 captcha_code: captcha.captcha_code,
             });
@@ -116,13 +120,46 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
         }
     }
 
-    async function unbind() {
+    async function enterUnbind() {
+        setUnbinding(true);
+        setEditing(true);
+        setVal(profile.phone ?? "");
+        setCode("");
+        setCurrentPassword("");
+        setCooldown(0);
+        if (features === null) {
+            try {
+                setFeatures(await authApi.getFeatures());
+            } catch {
+                setFeatures({ email_register_enabled: false, sms_enabled: false });
+            }
+        }
+    }
+
+    async function confirmUnbind() {
+        if (canUseSmsUnbind && !code.trim()) {
+            onToast("请输入短信验证码", "error");
+            return;
+        }
+        if (!canUseSmsUnbind && security.has_password && !currentPassword.trim()) {
+            onToast("请输入当前密码", "error");
+            return;
+        }
+        setSaving(true);
         try {
-            await userApi.unbindPhone();
+            if (canUseSmsUnbind) {
+                await userApi.unbindPhone({ code: code.trim() });
+            } else {
+                await userApi.unbindPhone({ current_password: currentPassword.trim() });
+            }
             onToast("手机号已解绑", "success");
+            setEditing(false);
+            setUnbinding(false);
             onReload();
         } catch (e) {
             onToast(e instanceof Error ? e.message : "解绑失败", "error");
+        } finally {
+            setSaving(false);
         }
     }
 
@@ -142,15 +179,15 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
             footer={
                 editing ? (
                     <>
-                        <CancelButton onClick={() => setEditing(false)} disabled={saving}>
+                        <CancelButton onClick={() => { setEditing(false); setUnbinding(false); }} disabled={saving}>
                             取消
                         </CancelButton>
                         <PrimaryButton
                             icon={<Check className="mr-1.5 h-3.5 w-3.5" />}
                             loading={saving}
-                            onClick={save}
+                            onClick={unbinding ? confirmUnbind : save}
                         >
-                            {smsEnabled ? "验证并绑定" : "保存"}
+                            {unbinding ? "验证并解绑" : smsEnabled ? "验证并绑定" : "保存"}
                         </PrimaryButton>
                     </>
                 ) : undefined
@@ -164,8 +201,9 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
                         onChange={(e) => setVal(e.target.value.replace(/[^\d+]/g, ""))}
                         placeholder="13800138000"
                         maxLength={14}
+                        disabled={unbinding}
                     />
-                    {security.has_password && (
+                    {security.has_password && (!unbinding || !canUseSmsUnbind) && (
                         <input
                             className="field"
                             type="password"
@@ -175,7 +213,7 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
                             autoComplete="current-password"
                         />
                     )}
-                    {smsEnabled ? (
+                    {canUseSmsUnbind ? (
                         <>
                             <div className="flex gap-2">
                                 <input
@@ -198,7 +236,9 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
                         </>
                     ) : (
                         <p className="text-[12px] text-tertiary">
-                            短信服务未配置，当前仅支持直接绑定（标记为未验证）。
+                            {unbinding
+                                ? "当前手机号未验证，解绑需输入当前密码（未设置密码请先在「密码」卡设置）。"
+                                : "短信服务未配置，当前仅支持直接绑定（标记为未验证）。"}
                         </p>
                     )}
                 </div>
@@ -219,7 +259,7 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
                             </Tag>
                             <button
                                 type="button"
-                                onClick={unbind}
+                                onClick={enterUnbind}
                                 className="rounded px-1 py-0.5 text-[12px] text-danger transition-colors hover:bg-danger/10"
                             >
                                 解绑

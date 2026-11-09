@@ -20,6 +20,7 @@ export type QuotaKind =
   | "vectorize"   // per-page vectorization (per page)
   | "ocr"         // cloud OCR parsing
   | "board"       // board AI completions
+  | "coding_plan" // code agent turns routed to the user's own Coding Plan (VIP/SVIP only; free = 0)
   | "task_quiz_active"; // scheduled-quiz active-task cap (stock, not a daily counter)
 
 export type QuotaVerdict = "allow" | "quota_exceeded" | "cost_guard";
@@ -53,6 +54,10 @@ export interface QuotaKindSummary {
   /** -1 = unlimited */
   limit: number;
   resetAt: number;
+  /** 已用百分比 0-100（limit<=0 时为 null）；Codex 风格主展示口径 */
+  usedPercent: number | null;
+  /** 剩余百分比 0-100（limit<=0 时为 null） */
+  remainingPercent: number | null;
 }
 
 export interface QuotaSummary {
@@ -73,6 +78,12 @@ export interface QuotaSummary {
     level: DegradeLevel;
     resetAt: number;
   };
+}
+
+/** 0-100 integer percentage; null means unlimited (limit<=0). */
+export function quotaPercent(used: number, limit: number): number | null {
+  if (limit <= 0) return null;
+  return Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
 }
 
 /** TTL for day-scoped keys: well past midnight; the key carries the day, so expiry is just hygiene. */
@@ -317,7 +328,16 @@ export class QuotaService {
       if (identity.kind === "chat_anon" ? kind !== "chat_anon" : kind === "chat_anon") continue;
       const used = (await this.counter.count(this.keyFor(kind, identity.id, now))) ?? 0;
       if (kind === "chat") chatUsed = used;
-      kinds.push({ kind, used, limit: this.limitFor(kind, tier), resetAt });
+      const limit = this.limitFor(kind, tier);
+      const usedPercent = quotaPercent(used, limit);
+      kinds.push({
+        kind,
+        used,
+        limit,
+        resetAt,
+        usedPercent,
+        remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
+      });
     }
     const costVal = (await this.counter.count(this.costKey(identity.id, now))) ?? 0;
     return {

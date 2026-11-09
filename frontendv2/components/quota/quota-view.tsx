@@ -91,15 +91,16 @@ function CardTitle({ icon, title, right }: { icon: React.ReactNode; title: strin
 function KindRow({ kind, first }: { kind: QuotaKindSummary; first: boolean }) {
     const label = KIND_LABELS[kind.kind] ?? kind.kind;
     const unlimited = kind.limit < 0;
-    const ratio = unlimited ? 0 : kind.limit > 0 ? kind.used / kind.limit : 1;
+    const percent = kind.usedPercent ?? (unlimited ? 0 : kind.used >= kind.limit ? 100 : 0);
+    const ratio = percent / 100;
     const barColor = ratio >= 1 ? C.red : ratio >= 0.8 ? C.amber : C.blue;
-    const width = `${Math.min(100, Math.round(ratio * 100))}%`;
+    const width = `${percent}%`;
     return (
         <div className={cn("py-3", !first && "border-t")} style={{ borderColor: C.line }}>
             <div className="flex items-baseline justify-between">
                 <span className="text-sm font-medium" style={{ color: C.text }}>{label}</span>
                 <span className="text-xs tabular-nums" style={{ color: ratio >= 1 ? C.red : C.text2 }}>
-                    {unlimited ? "不限量" : `${kind.used} / ${kind.limit}`}
+                    {unlimited ? "不限量" : `${percent}% · ${kind.used}/${kind.limit}`}
                 </span>
             </div>
             {!unlimited && (
@@ -146,8 +147,8 @@ export function QuotaView() {
     const chatKind =
       summary?.kinds.find((k) => k.kind === "chat") ?? summary?.kinds.find((k) => k.kind === "chat_anon");
     const chatLabel = chatKind ? KIND_LABELS[chatKind.kind] ?? "AI 问答" : "AI 问答";
-    const chatRatio = chatKind && chatKind.limit > 0 ? Math.min(100, Math.round((chatKind.used / chatKind.limit) * 100)) : 0;
-    const chatBar = chatRatio >= 100 ? C.red : chatRatio >= 80 ? C.amber : C.blue;
+    const chatPercent = chatKind?.usedPercent ?? 0;
+    const chatBar = chatPercent >= 100 ? C.red : chatPercent >= 80 ? C.amber : C.blue;
 
     return (
         <div
@@ -217,21 +218,21 @@ export function QuotaView() {
                         <Card>
                             <CardTitle icon={<Gauge className="h-5 w-5" />} title="今日概览" />
                             <div className="mt-4 flex items-baseline gap-2">
-                                <span className="text-4xl font-normal tabular-nums" style={{ color: C.blue }}>
-                                    {chatKind?.used ?? 0}
+                                <span className="text-4xl font-normal tabular-nums" style={{ color: chatBar }}>
+                                    {chatPercent}%
                                 </span>
                                 <span className="text-sm" style={{ color: C.text2 }}>
-                                    / {chatKind?.limit ?? "-"} 条 {chatLabel}
+                                    已用 · {chatLabel}
                                 </span>
                             </div>
                             <div className="mt-3 h-1 w-full overflow-hidden rounded-full" style={{ background: C.line }}>
                                 <div
                                     className="h-full rounded-full transition-all duration-300"
-                                    style={{ background: chatBar, width: `${chatRatio}%` }}
+                                    style={{ background: chatBar, width: `${chatPercent}%` }}
                                 />
                             </div>
                             <p className="mt-3 text-xs" style={{ color: C.text2 }}>
-                                {formatCountdown(summary.cost.resetAt)} · 剩余 {Math.max(0, (chatKind?.limit ?? 0) - (chatKind?.used ?? 0))} 条
+                                {formatCountdown(summary.cost.resetAt)} · 剩余 {chatKind?.remainingPercent ?? 0}%
                             </p>
                         </Card>
 
@@ -313,7 +314,7 @@ export function QuotaView() {
                     {/* 页脚说明（Google 式小字注脚） */}
                     <p className="mt-4 text-xs" style={{ color: C.text2 }}>
                         <TrendingUp className="mr-1 inline h-3 w-3" />
-                        配额为滚动自然日口径（0 点重置）；「成功才计数」——失败与重试不消耗额度。成本按写入时价格快照折算，仅供参考。
+                        配额为滚动自然日口径（0 点重置），按「已用百分比」展示（Codex 风格）；「成功才计数」——失败与重试不消耗额度。成本按写入时价格快照折算，仅供参考。
                     </p>
                 </>
             )}

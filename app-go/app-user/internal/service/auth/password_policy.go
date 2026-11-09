@@ -30,9 +30,10 @@ var commonPasswords = map[string]struct{}{
 	"qq123456": {}, "wx123456": {}, "bilibili1": {}, "mindbase1": {},
 }
 
-// validatePasswordForUser applies the generic strength policy, the common
-// password blacklist and "password equals your own email/phone" checks.
-func validatePasswordForUser(password string, email, phone *string) error {
+// ValidatePasswordForUser applies the generic strength policy, the common
+// password blacklist and "password equals your own email/phone" checks. It is
+// exported so the black-box tests in tests/ can exercise the policy.
+func ValidatePasswordForUser(password string, email, phone *string) error {
 	if err := validatePasswordStrength(password); err != nil {
 		return err
 	}
