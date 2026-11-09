@@ -542,11 +542,10 @@ services:
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
       - EMAIL__ENABLED=${EMAIL__ENABLED:-false}
       - EMAIL__API_KEY=${EMAIL__API_KEY:-}
-      - SMS__ENABLED=${SMS__ENABLED:-false}
+      # 仅密钥对放 .env；enabled/provider/sign_name/template_code 等
+      # 一律以 app-go/app-user/default.yaml 的 sms 段为准。
       - SMS__ACCESS_KEY_ID=${SMS__ACCESS_KEY_ID:-}
       - SMS__ACCESS_KEY_SECRET=${SMS__ACCESS_KEY_SECRET:-}
-      - SMS__SIGN_NAME=${SMS__SIGN_NAME:-}
-      - SMS__TEMPLATE_CODE=${SMS__TEMPLATE_CODE:-}
       - WECHAT__ENABLED=${WECHAT__ENABLED:-false}
       - WECHAT__APP_ID=${WECHAT__APP_ID:-}
       - WECHAT__APP_SECRET=${WECHAT__APP_SECRET:-}

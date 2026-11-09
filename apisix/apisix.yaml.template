@@ -727,9 +727,9 @@ routes:
         key: remote_addr
 
   # main app / ops -> app-pay internal。P1 密钥分权（最小权限）：
-  #   - membership 读（app-cloud / app-ts 会员查询）: 共享 internal 或 pay-readonly
-  #   - grant / orders 下的退款操作（资金写）: 仅 pay-ops 专用密钥 —— 持有共享 key 的其他服务
-  #     无法开通会员/退款；pay-ops 密钥只保存在 .env（PAY_OPS_KEY），不下发到任何业务容器。
+  #   - membership 读（app-cloud / app-ts 会员查询）: 共享 internal 或 pay_readonly
+  #   - grant / orders 下的退款操作（资金写）: 仅 pay_ops 专用密钥 —— 持有共享 key 的其他服务
+  #     无法开通会员/退款；pay_ops 密钥只保存在 .env（PAY_OPS_KEY），不下发到任何业务容器。
   # 注意：APISIX 仅支持尾缀通配，/orders/{orderNo}/refund 用 /orders/* 前缀路由覆盖；
   # priority 100 先于 pay_internal(50) 命中，timeout/execute 仍走 pay_internal（共享 key）。
   - id: pay_internal_membership
@@ -743,7 +743,7 @@ routes:
         type: consumer_name
         whitelist:
           - internal
-          - pay-readonly
+          - pay_readonly
 
   - id: pay_internal_grant
     uri: /internal/pay/grant
@@ -755,7 +755,7 @@ routes:
       consumer-restriction:
         type: consumer_name
         whitelist:
-          - pay-ops
+          - pay_ops
 
   - id: pay_internal_orders
     uri: /internal/pay/orders/*
@@ -767,7 +767,7 @@ routes:
       consumer-restriction:
         type: consumer_name
         whitelist:
-          - pay-ops
+          - pay_ops
 
   - id: pay_internal_refund_requests
     uri: /internal/pay/refund-requests
@@ -779,7 +779,7 @@ routes:
       consumer-restriction:
         type: consumer_name
         whitelist:
-          - pay-ops
+          - pay_ops
 
   # 兜底：/internal/pay/* 其余路径（timeout/execute 等）仍走共享 key-auth
   - id: pay_internal
@@ -1174,6 +1174,40 @@ routes:
         timeout: 5000
         status_code: 401
 
+  # Coding Plan（VIP/SVIP 第三方编程套餐，settings 域；2026-11-09 从 auth 域迁入）。
+  # 用户端点 -> app-user（settings 监听口 8015），forward-auth 注入 X-Uid；
+  # 服务端自校验会员闸门（403 non-VIP / 404 不存在 / 503 会员服务不可用）。
+  - id: coding_plans_user
+    uris: [/settings/coding-plans, /settings/coding-plans/*]
+    priority: 60
+    upstream_id: upstream-app-user-settings
+    plugins:
+      request-id: {}
+      proxy-rewrite:
+        headers:
+          remove: [X-Uid, X-Roles]
+      forward-auth:
+        uri: "http://app-user:8006/internal/auth/verify"
+        request_headers: [Authorization]
+        upstream_headers: [X-Uid, X-Roles]
+        timeout: 5000
+        status_code: 401
+
+  # Coding Plan 内部 M2M（app-ts code agent 取用户套餐）：key-auth 内部 consumer。
+  # 返回明文 api_key（仅此面），app-ts 每轮缓存 30s；不经 nginx 暴露。
+  - id: coding_plan_internal
+    uri: /internal/settings/coding-plan/*
+    methods: [GET]
+    priority: 100
+    upstream_id: upstream-app-user-settings
+    plugins:
+      request-id: {}
+      key-auth: {}
+      consumer-restriction:
+        type: consumer_name
+        whitelist:
+          - internal
+
   # /workspaces/* -> app-cloud（RAG 工作区 CRUD/绑定/文件展开，2026-10-06 迁自
   # Python workspace router；camelCase wire。回滚 = 删除本路由即回落 catch_all。）
   - id: workspaces_user
@@ -1221,12 +1255,12 @@ consumers:
     plugins:
       key-auth:
         key: __APISIX_CONSUMER_KEY__  # rendered from env APISIX_CONSUMER_KEY
-  - username: pay-readonly
+  - username: pay_readonly
     # P1 密钥分权：会员查询只读密钥（/internal/pay/membership/*）
     plugins:
       key-auth:
         key: __PAY_READONLY_KEY__
-  - username: pay-ops
+  - username: pay_ops
     # P1 密钥分权：资金写操作专用密钥（grant / orders 退款），只存 .env PAY_OPS_KEY，不下发业务容器
     plugins:
       key-auth:

@@ -37,6 +37,43 @@ app-content 为**单进程 / 单端口**：唯一 HTTPS listener 由根 `server`
 
 改某个服务的配置 = 改它的 YAML 默认值（committed）或在 `.env` / compose `environment:` 覆盖（敏感值）。**新增配置项必须同步该服务自己的 default.yaml**；仅密钥类才进 `.env.example`。
 
+### 短信验证码（app-user，阿里云双产品）
+
+**非敏感配置全部在 `app-go/app-user/default.yaml` 的 `sms` 段（YAML 是唯一事实来源），`.env` 只放 AccessKey 密钥对。** 不再支持用 `SMS__PROVIDER` 等 env 覆盖这些字段。
+
+```yaml
+sms:
+  enabled: true
+  provider: dypnsapi        # dysmsapi | dypnsapi
+  sign_name: "赠送签名"
+  template_code: "100001"
+  template_codes:           # 按业务 purpose 选模板；未匹配回退 template_code
+    login: "100001"
+    bind_phone: "100004"
+    twofa_sms: "100005"
+  scheme_name: ""           # dypnsapi 方案名；发送/核验必须一致，空=默认方案
+  country_code: "86"        # dypnsapi 当前仅支持中国大陆
+  code_source: aliyun       # local=本服务生成+本地核验；aliyun=阿里云生成+核验
+  interval_seconds: 60
+  duplicate_policy: 1
+  auto_retry: 1
+  template_params: {}       # 仅模板额外变量（如 {min: "5"}），不是模板列表
+```
+
+| provider | 产品 | 适用 | 验证码归属 |
+|---|---|---|---|
+| `dysmsapi`（默认） | 短信服务 | 自定义签名+模板 | 本服务生成，存 `verification_codes`，本地常量时间比对 |
+| `dypnsapi` | 号码认证服务-短信认证 | 个人开发者可用控制台**赠送签名/模板** | `code_source: local` 同左；`aliyun` 时由阿里云生成并通过 `CheckSmsVerifyCode` 核验（核验免费，明文码不落库） |
+
+- `.env` 仅需：`SMS__ACCESS_KEY_ID` / `SMS__ACCESS_KEY_SECRET`（RAM 最小权限：`dysms:SendSms` 或 `dypns:SendSmsVerifyCode` / `dypns:CheckSmsVerifyCode`）。
+- dypnsapi **只支持控制台赠送的签名/模板**（该产品不支持自定义签名）：`sign_name` 从「赠送签名配置」页选，`template_code`/`template_codes` 从「赠送模板配置」页选且必须与签名配套。
+- 模板必须含 `${code}`；`code_source: aliyun` 会发送 `TemplateParam={"code":"##code##"}`，其余场景发送真实 code。
+- 发送入口 `POST /auth/phone/send-code`，前端按 `/auth/features` 的 `sms_enabled` 显隐；日志只记脱敏手机号，不记验证码。
+- SMS 配置齐全时，绑定手机必须走 `POST /auth/phone/verify`（验证码）；`PUT /auth/phone`（未验证直接绑定）会被服务端 403 拒绝，避免绕过验证。
+- 解绑手机号（`DELETE /auth/phone`）也必须验证：要么带 `code`（先 `POST /auth/phone/send-code`，`purpose=unbind`，验证码只发到当前已绑定手机），要么带 `current_password`（已设密码的账号）；两者都没有返回 403。
+
+- Coding Plan（VIP/SVIP 第三方编程套餐）：app-user 的 `app_pay.base_url`（默认 `http://apisix:9080`）与 `app_pay.key`（默认回落 `APISIX_CONSUMER_KEY`）用于会员档位校验；app-ts `quota.limits.coding_plan` 控制每日可用次数。详见 [coding-plan.md](coding-plan.md)。
+
 ## 共享基础设施连接
 
 | 基础设施 | 消费方 | 连接来源 |
