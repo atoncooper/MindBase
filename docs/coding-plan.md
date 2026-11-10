@@ -20,7 +20,7 @@
 | protocol | `openai` / `anthropic` |
 | label | 用户可读名称（≤64） |
 | base_url | API 根地址（http/https） |
-| model | 模型 ID |
+| model | 可选默认模型；具体模型在聊天对话框选择 |
 | api_key_enc | AES-GCM 密文 |
 | enabled | 是否启用 |
 | created_at / updated_at | 时间 |
@@ -44,6 +44,11 @@ POST   /settings/coding-plans/{id}/test
 ```
 GET /internal/settings/coding-plan/{uid}
   -> 200 {plan:{id,provider,protocol,label,base_url,model,api_key}}
+
+GET /settings/coding-plans/{id}/models（VIP/SVIP；聊天对话框按需探测）
+-> 200 {plan_id,provider,protocol,models:[...]}
+-> 502 服务商模型列表不可用
+-> 403 非 VIP / 404 不存在
   -> 404 没有可用 plan
   -> 403 非 VIP/SVIP
 ```
@@ -57,7 +62,9 @@ GET /internal/settings/coding-plan/{uid}
 ## 5. app-ts 使用
 
 - `AppUserAuthClient.getCodingPlan(uid)` 30s 缓存；
-- `code` agent 每轮开始时解析 plan：有则用第三方 model，无/失败/超额则回退平台网关，不阻断聊天；
+- 配置只保存凭据（model 可选），**不在保存时探测模型**；聊天对话框打开模型选择器时按需调用 `/settings/coding-plans/{id}/models`；
+- 选中的模型作用于本轮**所有 agent**（main + note/code/quiz/board/academic + DAG 自定义 agent），每轮只解析/扣一次 `coding_plan` 额度；
+- 无 plan / 非 VIP / 会员服务不可用 / 额度耗尽 / 解析失败时回退平台网关，不阻断聊天；
 - 协议：OpenAI 兼容（`@ai-sdk/openai-compatible`）、Anthropic Messages（`@ai-sdk/anthropic`）；
 - 审计：每次使用打 `[CODING_PLAN]` 结构化日志；`coding_plan` quota 按次消耗。
 
@@ -67,7 +74,7 @@ GET /internal/settings/coding-plan/{uid}
 
 - free：展示「VIP/SVIP 可用」+ 升级按钮；
 - VIP/SVIP：列表（掩码 key）、添加/编辑/删除/测试连接/启用开关；
-- provider 预置 opencode / kimi / custom，protocol openai / anthropic；base_url/model 手填（以各家官方文档为准）。
+- provider 预置 OpenCode Zen/Go、Kimi、GLM、MiniMax、Qwen、DeepSeek、custom，protocol openai / anthropic；base_url 手填（以各家官方文档为准）；模型在聊天框选择。
 
 ## 7. 部署与配置
 

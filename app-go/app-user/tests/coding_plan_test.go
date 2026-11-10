@@ -58,8 +58,8 @@ func TestCodingPlanValidation(t *testing.T) {
 			t.Errorf("base url %q must be rejected", bad)
 		}
 	}
-	if _, err := settingsservice.NormalizeCodingPlanModel("  "); err == nil {
-		t.Error("empty model must be rejected")
+	if got, err := settingsservice.NormalizeCodingPlanModel("  "); err != nil || got != "" {
+		t.Errorf("empty model is optional (chat picks it): %q %v", got, err)
 	}
 	if _, err := settingsservice.NormalizeCodingPlanAPIKey(" ", true); err == nil {
 		t.Error("create requires an api key")

@@ -44,6 +44,7 @@ export function createDelegateTool(lifecycle: AgentLifecycleManager, delegates: 
         chatSessionId: ctx.chatSessionId,
         scope: delegateScopeFor(ctx.scope),
         history: [],
+        ...(ctx.model ? { model: ctx.model } : {}),
         ...(cancelSignal ? { signal: cancelSignal } : {}),
       });
       if (result.failed) {

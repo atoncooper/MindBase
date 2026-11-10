@@ -18,6 +18,13 @@ import (
 type TLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+	// MinVersion: "1.2" (default) or "1.3"; applied to the listener TLSConfig.
+	MinVersion string `yaml:"min_version"`
+	// CipherSuites: TLS 1.2 cipher names (empty = Go safe defaults).
+	CipherSuites []string `yaml:"cipher_suites"`
+	// ClientCAFile + ClientAuth enable mutual TLS on the listener.
+	ClientCAFile string `yaml:"client_ca_file"`
+	ClientAuth   string `yaml:"client_auth"` // none|request|require|verify_if_given|require_and_verify
 }
 
 // Config is the whole app-user configuration, one section per domain.

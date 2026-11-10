@@ -21,7 +21,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
   │ key-auth:     服务间端点（/internal/*、/tasks/register 等）
   │
   ├──► app-ts :8000        AI 域（chat/agent/RAG/向量化/KG AI/quiz AI/task-quiz/blindspot/skills）
-  ├──► app-user :8006/8010/8015  auth/bili/settings 三域合一（认证权威 + B站获取/ASR + 用户偏好/壁纸）
+  ├──► app-user :8006  auth/bili/settings 三域合一（认证权威 + B站获取/ASR + 用户偏好/壁纸）
   ├──► app-cloud :8007     云盘权威（配额/分享/回收站/workspaces/解析向量化）
   ├──► app-content :8004（单端口 HTTPS）  note/quiz/board 三域合一
   ├──► app-task :8001      定时任务执行器（独立仓库镜像）
@@ -44,7 +44,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | 服务 | 实现 | 容器端口 | 宿主端口（回环调试口） | Profile | 说明 |
 |------|------|---------|---------|---------|------|
 | app-ts | Node 22 + Fastify（`app-ts/`） | 8000 | 127.0.0.1:8000 | 默认（ts） | AI 域唯一实现：chat/agent/RAG/KG AI/向量化/学术 agent 与科研 REST（沿用退役 Python backend 的端口） |
-| app-user | Go + Gin（`app-go/app-user/`；原 auth/bili/settings 三服务合并） | 8006 auth / 8010 bili / 8015 settings | 127.0.0.1:8006/8010/8015 | 默认（user） | 三域合一：认证权威（APISIX forward-auth 后端）+ B站获取/ASR + 用户偏好/壁纸（BYOK 已于 2026-10-07 退役） |
+| app-user | Go + Gin（`app-go/app-user/`；原 auth/bili/settings 三服务合并） | 8006（auth/bili/settings 单 listener） | 127.0.0.1:8006 | 默认（user） | 三域合一：认证权威（APISIX forward-auth 后端）+ B站获取/ASR + 用户偏好/壁纸（BYOK 已于 2026-10-07 退役） |
 | app-cloud | Go + Gin（`app-go/app-cloud/`） | 8007 | 127.0.0.1:8007 | 默认（cloud） | 云盘权威 + workspaces |
 | app-content | Go + Gin（`app-go/app-content/`；原 note/quiz/board 三服务合并） | 8004（单端口 HTTPS，三面共用） | 127.0.0.1:${APP_CONTENT_PORT:-8004} | 默认（content；兼容 note/quiz/board） | 三域合一：笔记权威 + quiz 存储权威 + 板存储（HTTPS-only）；MCP 已合并为 app-content-mcp |
 | app-kg | Go + gRPC（`app-go/app-kg/`） | 8013 gRPC / 8014 health | 127.0.0.1:8013/8014 | 默认（kg） | KG 图存储权威（Neo4j 全部 Cypher） |
@@ -108,7 +108,7 @@ profile 汇总：
 | `/chat/ask/agent/stream` `/chat/ask/stream` `/chat/sessions*` `/chat/history*` `/chat/board/complete` `/chat/documents` | app-ts | forward-auth → `X-Uid`/`X-Roles` |
 | `/chat/search` `/vec` `/vec/*` `/knowledge/{stats,folders/status,pages/vectorized,clear,video*}` `/blindspot*` `/skills*` | app-ts（`vec_knowledge_ts`，priority 55） | forward-auth |
 | `/knowledge/kg*` | app-ts（`kg_ts`） | forward-auth |
-| `/knowledge/build*` `/knowledge/folders/sync` `/favorites*` `/asr*` | app-user:8010（bili 路由） | forward-auth |
+| `/knowledge/build*` `/knowledge/folders/sync` `/favorites*` `/asr*` | app-user:8006（bili 路由） | forward-auth |
 | `/notes*` | app-content:8004（note 面） | forward-auth（`/notes/shared/{token}` 宽验证免登录） |
 | `/quiz/*`（history/错题/导出/分享/详情） | app-content:8004（quiz 面，priority 50） | forward-auth |
 | `/quiz/generate` `/quiz/generate-from-summary` `/quiz/submit` | app-ts（priority 100/110 压过 quiz_user） | forward-auth |
@@ -118,7 +118,7 @@ profile 汇总：
 | `/cloud` `/cloud/*` | app-cloud | forward-auth |
 | `/workspaces*` | app-cloud（`workspaces_user`） | forward-auth |
 | `/notes*` 之外的 `/internal/note/*` `/internal/board/*` `/internal/quiz/*` | app-content（note/board/quiz 三面） | key-auth（MCP/服务间） |
-| `/preferences*` `/avatar/*` | app-user:8015（settings 路由；`prefs_avatar_user`） | forward-auth |
+| `/preferences*` `/avatar/*` | app-user:8006（settings 路由；`prefs_avatar_user`） | forward-auth |
 | `/pay/*` | app-pay（https） | forward-auth（`/pay/callback/*` 免登录渠道验签） |
 | `/internal/pay/*` | app-pay（https） | key-auth |
 | `/board/*` | app-content:8004（board 面，https） | forward-auth（OPTIONS 预检免鉴权） |

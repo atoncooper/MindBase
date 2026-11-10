@@ -1,17 +1,18 @@
-// app-user entrypoint: the consolidated user-domain service. It hosts three
-// independent Gin engines on the legacy ports, so external contracts are
-// unchanged: 8006 = auth (+ forward-auth verify), 8010 = bili acquisition,
-// 8015 = settings. The domains share one process, one MySQL connection, one
-// logger and one image; they never import each other (see internal/contracts).
+// app-user entrypoint: one process, one HTTP listener (8006). Auth, bili and
+// settings are in-process Gin engines mounted behind a path dispatcher; there
+// are no cross-domain HTTP calls and no separate listener ports.
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"app-user/internal/bili/bili"
 	"app-user/internal/bili/events"
 	bilidb "app-user/internal/infra/db/bili"
+	"app-user/internal/infra/httpserver"
 	"app-user/internal/infra/mongo"
 	"app-user/internal/repo/bili"
 	bilirouter "app-user/internal/router/bili"
@@ -35,8 +37,8 @@ import (
 	settingsservice "app-user/internal/service/settings"
 
 	"app-user/internal/contracts"
+	avatarcloud "app-user/internal/infra/cloud"
 	settingsdb "app-user/internal/infra/db/settings"
-	settingsminio "app-user/internal/infra/minio"
 	appmysql "app-user/internal/infra/mysql"
 	infraredis "app-user/internal/infra/redis"
 	applogger "app-user/internal/logger"
@@ -70,17 +72,33 @@ func main() {
 		Format: cfgAuth.Log.Format,
 		Output: cfgAuth.Log.Output,
 		File: applogger.FileOptions{
-			Path:       cfgAuth.Log.File.Path,
-			MaxSize:    cfgAuth.Log.File.MaxSize,
-			MaxBackups: cfgAuth.Log.File.MaxBackups,
-			MaxAge:     cfgAuth.Log.File.MaxAge,
-			Compress:   cfgAuth.Log.File.Compress,
+			Path:              cfgAuth.Log.File.Path,
+			MaxSize:           cfgAuth.Log.File.MaxSize,
+			MaxBackups:        cfgAuth.Log.File.MaxBackups,
+			MaxAge:            cfgAuth.Log.File.MaxAge,
+			Compress:          cfgAuth.Log.File.Compress,
+			CompressAlgorithm: cfgAuth.Log.File.CompressAlgorithm,
+			CompressLevel:     cfgAuth.Log.File.CompressLevel,
+			CompressQueue:     cfgAuth.Log.File.CompressQueue,
+			MaxTotalSize:      cfgAuth.Log.File.MaxTotalSize,
+		},
+		AddSource:  cfgAuth.Log.AddSource,
+		RedactKeys: cfgAuth.Log.RedactKeys,
+		Sampling: applogger.SamplingOptions{
+			Enabled:    cfgAuth.Log.Sampling.Enabled,
+			Initial:    cfgAuth.Log.Sampling.Initial,
+			Thereafter: cfgAuth.Log.Sampling.Thereafter,
+		},
+		Async: applogger.AsyncOptions{
+			Enabled:      cfgAuth.Log.Async.Enabled,
+			Buffer:       cfgAuth.Log.Async.Buffer,
+			DropWhenFull: cfgAuth.Log.Async.DropWhenFull,
 		},
 	})
+	defer applogger.Close()
+	applogger.ConfigureAccessLog(cfgAuth.Server.AccessLogEnabled, cfgAuth.Server.AccessLogSampleRate, cfgAuth.Server.AccessLogFormat)
 	slog.Info("app-user starting",
-		"auth_port", cfgAuth.Server.Port,
-		"bili_port", cfgBili.Server.Port,
-		"settings_port", cfgSettings.Server.Port,
+		"port", cfgAuth.Server.Port,
 		"tz", cfgAuth.Timezone)
 
 	// ── MySQL: auth and bili keep separate pools on the same DSN (loc=UTC)
@@ -89,7 +107,7 @@ func main() {
 	defer bgCancel()
 	gdb, err := appmysql.Init(cfgAuth.RDBMS.URL,
 		cfgAuth.RDBMS.MaxOpenConns, cfgAuth.RDBMS.MaxIdleConns,
-		cfgAuth.RDBMS.ConnMaxLifetime, cfgAuth.App.Debug)
+		cfgAuth.RDBMS.ConnMaxLifetime, cfgAuth.RDBMS.ConnMaxIdleTime, cfgAuth.App.Debug)
 	if err != nil {
 		fatal("init auth mysql", err)
 	}
@@ -101,7 +119,7 @@ func main() {
 	}
 	biliGDB, err := appmysql.Init(biliDBURL,
 		cfgBili.RDBMS.MaxOpenConns, cfgBili.RDBMS.MaxIdleConns,
-		cfgBili.RDBMS.ConnMaxLifetime, cfgBili.App.Debug)
+		cfgBili.RDBMS.ConnMaxLifetime, cfgBili.RDBMS.ConnMaxIdleTime, cfgBili.App.Debug)
 	if err != nil {
 		fatal("init bili mysql", err)
 	}
@@ -124,11 +142,11 @@ func main() {
 	startCleanup(bgCtx, gdb, biliGDB)
 
 	// ── one shared Redis client for auth cache/limiters and bili events. ──
-	sharedRedisURL := cfgAuth.Redis.URL
-	if sharedRedisURL == "" {
-		sharedRedisURL = cfgBili.Redis.URL
+	redisCfg := cfgAuth.Redis
+	if redisCfg.URL == "" {
+		redisCfg.URL = cfgBili.Redis.URL
 	}
-	sharedRedis := infraredis.New(sharedRedisURL)
+	sharedRedis := infraredis.New(redisCfg)
 	if sharedRedis != nil {
 		defer func() { _ = sharedRedis.Close() }()
 	}
@@ -236,13 +254,17 @@ func main() {
 	})
 
 	// ── settings domain (preferences / avatar / Coding Plan). ──
-	minioStore, err := settingsminio.New(cfgSettings.MinIO.Endpoint, cfgSettings.MinIO.AccessKey,
-		cfgSettings.MinIO.SecretKey, cfgSettings.MinIO.Bucket, cfgSettings.MinIO.Secure)
-	if err != nil {
-		slog.Warn("[MINIO] init failed, avatar upload disabled", "err", err)
-		minioStore = nil
+	// Avatar objects live in app-cloud (MinIO owner); app-user only gets the
+	// internal M2M client, so no MinIO credentials/dependency here.
+	avatarClient := avatarcloud.NewAvatarClient(
+		cfgSettings.AppCloud.BaseURL,
+		cfgSettings.AppCloud.APIKey,
+		time.Duration(cfgSettings.AppCloud.TimeoutMs)*time.Millisecond,
+	)
+	if !avatarClient.Enabled() {
+		slog.Warn("[AVATAR] app-cloud avatar client disabled (base_url/api_key missing)")
 	}
-	settingsrouter.SetMinioStore(minioStore)
+	settingsrouter.SetAvatarClient(avatarClient)
 	settingsSvc := settingsservice.New(gdb)
 	// Coding Plan (user configuration, settings domain): the app_pay membership
 	// config is still defined in the auth config section and the AES cipher is
@@ -262,42 +284,64 @@ func main() {
 		slog.Warn("invalid timezone, falling back to UTC", "tz", cfgAuth.Timezone, "err", lerr)
 	}
 
-	// ── three engines, three listeners: external paths/ports unchanged. ──
-	servers := []*http.Server{
-		{Addr: fmt.Sprintf("%s:%d", cfgAuth.Server.Host, cfgAuth.Server.Port), Handler: authEngine},
-		{Addr: fmt.Sprintf("%s:%d", cfgBili.Server.Host, cfgBili.Server.Port), Handler: biliEngine},
-		{Addr: fmt.Sprintf("%s:%d", cfgSettings.Server.Host, cfgSettings.Server.Port), Handler: settingsEngine},
+	// ── one listener: all three engines share the auth port. ──
+	srvCfg := cfgAuth.Server
+	readHeader := secondsOrDefault(srvCfg.ReadHeaderTimeoutSeconds, 5)
+	readTimeout := secondsOrDefault(srvCfg.ReadTimeoutSeconds, 15)
+	writeTimeout := secondsOrDefault(srvCfg.WriteTimeoutSeconds, 30)
+	idleTimeout := secondsOrDefault(srvCfg.IdleTimeoutSeconds, 60)
+	shutdownTimeout := secondsOrDefault(srvCfg.ShutdownTimeoutSeconds, 10)
+	maxHeader := srvCfg.MaxHeaderBytes
+	if maxHeader <= 0 {
+		maxHeader = 1 << 20
+	}
+	handler := httpserver.Wrap(combinedHandler(authEngine, biliEngine, settingsEngine), httpserver.Config{
+		MaxConnections:       srvCfg.MaxConnections,
+		MaxConcurrent:        srvCfg.MaxConcurrent,
+		MaxConcurrentPerIP:   srvCfg.MaxConcurrentPerIP,
+		Compression:          srvCfg.Compression,
+		KeepAliveMaxRequests: srvCfg.KeepAliveMaxRequests,
+	})
+	server := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", srvCfg.Host, srvCfg.Port),
+		Handler:           handler,
+		ConnContext:       httpserver.ConnContext,
+		ReadHeaderTimeout: readHeader,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeader,
 	}
 	scheme := "http"
 	if cfg.TLS.CertFile != "" {
 		scheme = "https"
+		server.TLSConfig = buildTLSConfig(cfg.TLS)
+		if !srvCfg.HTTP2Enabled {
+			server.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){}
+			server.TLSConfig.NextProtos = []string{"http/1.1"}
+		}
 	}
-	for _, srv := range servers {
-		s := srv
-		go func() {
-			slog.Info("app-user listening", "addr", s.Addr, "scheme", scheme)
-			var err error
-			if scheme == "https" {
-				err = s.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
-			} else {
-				err = s.ListenAndServe()
-			}
-			if err != nil && err != http.ErrServerClosed {
-				fatal("http server stopped", err)
-			}
-		}()
-	}
+	go func() {
+		slog.Info("app-user listening", "addr", server.Addr, "scheme", scheme)
+		var err error
+		if scheme == "https" {
+			err = server.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
+			fatal("http server stopped", err)
+		}
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	slog.Info("shutting down app-user")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	for _, srv := range servers {
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown error", "addr", srv.Addr, "err", err)
-		}
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("shutdown error", "addr", server.Addr, "err", err)
 	}
 	slog.Info("app-user stopped")
 }
@@ -305,4 +349,86 @@ func main() {
 func fatal(msg string, err error) {
 	fmt.Fprintf(os.Stderr, "app-user: %s: %v\n", msg, err)
 	os.Exit(1)
+}
+
+// combinedHandler dispatches the legacy domain prefixes to their Gin engines
+// behind one listener. The engines keep their own middleware/routes unchanged.
+func combinedHandler(auth, bili, settings http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case p == "/health" || p == "/metrics" || p == "/debug/latency" ||
+			strings.HasPrefix(p, "/auth/") || strings.HasPrefix(p, "/internal/auth/"):
+			auth.ServeHTTP(w, r)
+		case strings.HasPrefix(p, "/favorites") || strings.HasPrefix(p, "/knowledge") ||
+			strings.HasPrefix(p, "/asr") || strings.HasPrefix(p, "/internal/bili"):
+			bili.ServeHTTP(w, r)
+		case p == "/preferences" || strings.HasPrefix(p, "/preferences/") ||
+			p == "/avatar" || strings.HasPrefix(p, "/avatar/") ||
+			strings.HasPrefix(p, "/settings/") || strings.HasPrefix(p, "/internal/settings/"):
+			settings.ServeHTTP(w, r)
+		default:
+			auth.ServeHTTP(w, r)
+		}
+	})
+}
+
+func secondsOrDefault(seconds, fallback int) time.Duration {
+	if seconds <= 0 {
+		seconds = fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func tlsMinVersion(raw string) uint16 {
+	if strings.TrimSpace(raw) == "1.3" {
+		return tls.VersionTLS13
+	}
+	return tls.VersionTLS12
+}
+
+func buildTLSConfig(cfg config.TLSConfig) *tls.Config {
+	out := &tls.Config{MinVersion: tlsMinVersion(cfg.MinVersion)}
+	if suites := cipherSuites(cfg.CipherSuites); len(suites) > 0 {
+		out.CipherSuites = suites
+	}
+	if cfg.ClientCAFile != "" {
+		if pem, err := os.ReadFile(cfg.ClientCAFile); err == nil {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(pem) {
+				out.ClientCAs = pool
+			}
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ClientAuth)) {
+	case "request":
+		out.ClientAuth = tls.RequestClientCert
+	case "require":
+		out.ClientAuth = tls.RequireAnyClientCert
+	case "verify_if_given":
+		out.ClientAuth = tls.VerifyClientCertIfGiven
+	case "require_and_verify":
+		out.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return out
+}
+
+func cipherSuites(names []string) []uint16 {
+	if len(names) == 0 {
+		return nil
+	}
+	known := map[string]uint16{
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256":       tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384":       tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256":     tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384":     tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		"TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256": tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+	}
+	out := make([]uint16, 0, len(names))
+	for _, name := range names {
+		if id, ok := known[strings.TrimSpace(name)]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }

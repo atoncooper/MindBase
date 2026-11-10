@@ -14,16 +14,16 @@ import (
 	"time"
 
 	settingsdto "app-user/internal/dto/settings"
-	"app-user/internal/infra/minio"
+	avatarcloud "app-user/internal/infra/cloud"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
-// SetMinioStore wires the storage handle from main (nil = avatar upload 503).
-var minioStore *minio.Store
+// SetAvatarClient wires the app-cloud object-storage client from main.
+// nil/disabled = avatar upload returns 503; auth/bili keep working.
+var avatarClient *avatarcloud.AvatarClient
 
-func SetMinioStore(s *minio.Store) { minioStore = s }
+func SetAvatarClient(c *avatarcloud.AvatarClient) { avatarClient = c }
 
 // ── preferences ──────────────────────────────────────────────────────
 
@@ -111,7 +111,7 @@ func registerAvatar(e *gin.Engine) {
 		if !ok {
 			return
 		}
-		if minioStore == nil {
+		if avatarClient == nil || !avatarClient.Enabled() {
 			apiErr(c, http.StatusServiceUnavailable, "对象存储不可用")
 			return
 		}
@@ -125,7 +125,7 @@ func registerAvatar(e *gin.Engine) {
 		allowed := map[string]string{
 			"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
 		}
-		ext, supported := allowed[contentType]
+		_, supported := allowed[contentType]
 		if !supported {
 			apiErr(c, http.StatusBadRequest, "仅支持 PNG / JPG / WebP 图片")
 			return
@@ -139,10 +139,10 @@ func registerAvatar(e *gin.Engine) {
 			apiErr(c, http.StatusBadRequest, "头像大小超过 2MB 限制")
 			return
 		}
-		objectKey := "avatars/" + itoa64(uid) + "/" + uuid.NewString()[:7] + "." + ext
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
-		if err := minioStore.Put(ctx, objectKey, data, contentType); err != nil {
+		objectKey, err := avatarClient.Upload(ctx, uid, data, contentType)
+		if err != nil {
 			slog.Error("[AVATAR] upload failed", "err", err)
 			apiErr(c, http.StatusServiceUnavailable, "对象存储不可用")
 			return
@@ -154,13 +154,23 @@ func registerAvatar(e *gin.Engine) {
 
 	g.GET("/file/*object_key", func(c *gin.Context) {
 		objectKey := strings.TrimPrefix(c.Param("object_key"), "/")
-		if !strings.HasPrefix(objectKey, "avatars/") || minioStore == nil {
+		if !strings.HasPrefix(objectKey, "avatars/") || avatarClient == nil || !avatarClient.Enabled() {
+			apiErr(c, http.StatusNotFound, "头像不存在")
+			return
+		}
+		parts := strings.Split(objectKey, "/")
+		if len(parts) < 3 {
+			apiErr(c, http.StatusNotFound, "头像不存在")
+			return
+		}
+		uid, uidErr := strconv.ParseInt(parts[1], 10, 64)
+		if uidErr != nil || uid <= 0 {
 			apiErr(c, http.StatusNotFound, "头像不存在")
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
-		contentType, data, err := minioStore.Get(ctx, objectKey)
+		contentType, data, err := avatarClient.Get(ctx, uid, objectKey)
 		if err != nil || len(data) == 0 {
 			apiErr(c, http.StatusNotFound, "头像不存在")
 			return

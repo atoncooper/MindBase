@@ -73,8 +73,21 @@ export interface PlanStepView {
  * the frontend keeps it in memory for the turn only (never persisted, no resume
  * protocol, refresh loses it — same nature as the reasoning stream).
  */
+export interface PlanNodeView {
+  id: string;
+  title: string;
+  agent: string;
+  deps: string[];
+  status: PlanStepStatus;
+  note?: string;
+}
+
 export interface PlanSnapshot {
   version: number;
+  /** DAG goal (optional: the legacy linear plan tool omits it) */
+  goal?: string;
+  /** DAG nodes (optional: legacy plans use steps) */
+  nodes?: PlanNodeView[];
   steps: PlanStepView[];
   done: number;
   total: number;
@@ -138,6 +151,8 @@ export class ResultCollector {
 export interface ToolRunContext {
   uid?: string;
   chatSessionId?: string;
+  /** Resolved model for this turn (main + delegated agents); absent = gateway. */
+  model?: import("ai").LanguageModel;
   scope: SearchScope;
   collector: ResultCollector;
   /** Turn-level cancellation (client disconnect / aborted turn). Tools with

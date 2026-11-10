@@ -169,6 +169,8 @@ export function registerChatRoutes(
         folder_ids?: number[];
         images?: string[];
         skill_ids?: string[];
+        /** chat-dialog Coding Plan model picker selection (code agent only) */
+        coding_plan_model?: string;
         /** board (mindmap/whiteboard) chat context — user input, sanitized below */
         board_uuid?: string;
         board_anchor_text?: string;
@@ -221,6 +223,14 @@ export function registerChatRoutes(
       // Note: must listen for close on the response (reply.raw), not on the request —
       // in Node 16+, IncomingMessage's close fires as soon as the request body is fully read, which would cut the stream off prematurely
       let closed = false;
+      // Long-running tools (plan_and_run) can emit live SSE frames through the
+      // request context; the normal agent stream keeps using the for-await loop.
+      const requestCtx = getRequestContext();
+      if (requestCtx) {
+        requestCtx.emit = (frame) => {
+          if (!closed) reply.raw.write("data: " + JSON.stringify(frame) + "\n\n");
+        };
+      }
       // Client gone → abort the whole turn: streamText stops, in-flight tools
       // receive the signal, and ChatService finalizes the assistant message.
       const cancel = new AbortController();
@@ -254,6 +264,9 @@ export function registerChatRoutes(
           scope,
           images: images.length > 0 ? images : undefined,
           skillIds: Array.isArray(body.skill_ids) ? body.skill_ids.filter((s) => typeof s === 'string') : undefined,
+          model: typeof body.coding_plan_model === "string" && body.coding_plan_model.trim()
+            ? body.coding_plan_model.trim().slice(0, 200)
+            : undefined,
           ...(board ? { board } : {}),
           ...(academic ? { academicProjectId: academic.projectId } : {}),
           signal: cancel.signal,

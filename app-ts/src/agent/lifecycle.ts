@@ -243,6 +243,57 @@ export class AgentLifecycleManager {
     return { content, sources, failed, ...(usage ? { usage } : {}), artifacts, ...(plan ? { plan } : {}), interactions };
   }
 
+  /**
+   * Ephemeral agent run for PlanRunner: same frame/usage collection as
+   * invokeReentrant, but the factory is supplied by the caller and the agent is
+   * never registered in the shared roster. It still shares per-agent stats under
+   * a synthetic stat name ("custom-...") for observability.
+   */
+  async invokeEphemeral(
+    factory: AgentFactory,
+    statName: string,
+    input: AgentInvokeInput,
+  ): Promise<{
+    content: string;
+    sources: Source[];
+    failed: boolean;
+    usage?: TokenUsage;
+    artifacts: Artifact[];
+    interactions: InteractionPayload[];
+  }> {
+    const agent: Agent = factory();
+    const startedAt = Date.now();
+    this.recordStart(statName);
+    let content = "";
+    const sources: Source[] = [];
+    const artifacts: Artifact[] = [];
+    const interactions: InteractionPayload[] = [];
+    let usage: TokenUsage | undefined;
+    let failed = false;
+    let lastError: string | undefined;
+    try {
+      for await (const frame of agent.run(input)) {
+        if (frame.type === "chunk") content += frame.content;
+        else if (frame.type === "sources") sources.push(...frame.sources);
+        else if (frame.type === "artifact") artifacts.push(...frame.artifacts);
+        else if (frame.type === "interact") interactions.push(frame.interact);
+        else if (frame.type === "usage") usage = frame.usage;
+        else if (frame.type === "error") {
+          failed = true;
+          lastError = frame.message;
+          content = content || frame.message;
+        }
+      }
+      this.recordEnd(statName, startedAt, failed ? "failed" : "ok", 0, lastError);
+    } catch (err) {
+      failed = true;
+      const message = err instanceof Error ? err.message : String(err);
+      this.recordEnd(statName, startedAt, "failed", 0, message);
+      content = "自定义 agent 执行失败: " + message;
+    }
+    return { content, sources, failed, ...(usage ? { usage } : {}), artifacts, interactions };
+  }
+
   /** Promise-chain lock: serializes turns for the same session.
    * The returned promise resolves after the previous lock holder calls release(); the caller awaits before entering the critical section,
    * and calls the returned release() when done. The map entry self-cleans when

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import type { SseFrame } from "../transport/sse.js";
 
 /**
  * Request context: requestId / uid injected by HTTP middleware, propagated via AsyncLocalStorage
@@ -10,6 +11,8 @@ export interface RequestContext {
   requestId: string;
   uid?: string;
   startedAt: number;
+  /** Optional direct SSE sink (chat route) so long-running tools can emit live frames. */
+  emit?: (frame: SseFrame) => void;
 }
 
 const als = new AsyncLocalStorage<RequestContext>();

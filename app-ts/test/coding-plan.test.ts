@@ -203,6 +203,15 @@ describe("Coding Plan resolver", () => {
     expect(log.warns.join("\n")).toContain("quota exhausted");
   });
 
+  it("uses the chat-dialog selected model instead of the plan default", async () => {
+    config.quota.enabled = true;
+    config.quota.limits.coding_plan = { free: 0, vip: 100, svip: 300 };
+    const quota = new QuotaService({ counter: new MemoryQuotaCounter(), resolveTier: async () => "vip" });
+    const resolver = createCodingPlanResolver({ plans: { getCodingPlan: async () => basePlan }, quota, logger: silentLog() });
+    const resolved = await resolver({ uid: "42", model: "claude-sonnet-4-5" });
+    expect((resolved as { modelId?: string })?.modelId).toBe("claude-sonnet-4-5");
+  });
+
   it("real QuotaService: free tier cannot use coding_plan (limit 0)", async () => {
     config.quota.enabled = true;
     config.quota.limits.coding_plan = { free: 0, vip: 100, svip: 300 };

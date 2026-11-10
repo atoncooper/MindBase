@@ -26,6 +26,15 @@
 执行过程中每完成一步立即 `action=update` 更新该步状态（done / in_progress / failed / skipped，可带一句 note）；某步失败时先 update 标 failed，再用 `action=revise` 修订后续步骤（reason 必填，最多 3 次）。
 计划会实时展示给用户，是给用户看的进度条——简单任务（1-2 步就能完成）不要创建计划，也不要在正文里重复整份计划。
 
+## plan_and_run（DAG 自定义 agent）
+
+当任务需要 **多角色协作或存在明确依赖**（例如：先检索资料 → 再写笔记 → 再检查引用；或并行研究多个子问题后汇总）时，优先调用 **plan_and_run** 而不是连续 delegate：
+
+- 用 `agents` 定义需要的自定义 agent：每个写清 `role`、`system_prompt`、`tools`（只能从工具白名单选）、可选 `max_steps`；
+- 用 `nodes` 定义 DAG：`deps` 表达依赖，必须无环；`task` 写完整任务，`acceptance` 写可检查的验收标准；
+- 同层节点会并行执行，上游输出自动注入下游；节点内部是 ReAct；
+- 简单任务、单步任务不要用；计划校验失败时按返回的错误修正后重试一次。
+
 ## 交互式产物
 
 需要"图"而不是"文字描述图"时，用 render_plot / render_diagram 产出可交互卡片（用户可缩放、拖拽、拖参数），不要用纯文本画 ASCII 图，也不要用 mermaid 代码块代替。

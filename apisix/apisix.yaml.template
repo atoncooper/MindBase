@@ -247,7 +247,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-user（settings 监听口 8015）—— 设置服务（Go；用户 embedding/ASR 配置 CRUD+test）
+  # app-user（统一 8006 监听口；settings 路由）—— 设置服务（Go；用户 embedding/ASR 配置 CRUD+test）
   - id: upstream-app-user-settings
     name: app-user
     type: roundrobin
@@ -263,7 +263,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-user:8015": 1
+      "app-user:8006": 1
     checks:
       active:
         type: https
@@ -313,7 +313,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-user（bili 监听口 8010）—— B 站数据获取面（Go；收藏夹/ASR/知识库
+  # app-user（统一 8006 监听口；bili 路由）—— B 站数据获取面（Go；收藏夹/ASR/知识库
   # build 编排；schema 所有权自 Python backend 迁入）
   - id: upstream-app-user-bili
     name: app-user
@@ -330,7 +330,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-user:8010": 1
+      "app-user:8006": 1
     checks:
       active:
         type: https

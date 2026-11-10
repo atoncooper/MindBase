@@ -36,6 +36,13 @@ type BiliConfig struct {
 type MongoConfig struct {
 	URI      string `yaml:"uri"`
 	Database string `yaml:"database"`
+
+	// Connection pool / timeout knobs (mongo-driver v2). Zero = driver default.
+	MaxPoolSize                int `yaml:"max_pool_size"`
+	MinPoolSize                int `yaml:"min_pool_size"`
+	MaxConnIdleTimeSeconds     int `yaml:"max_conn_idle_time_seconds"`
+	ConnectTimeoutSeconds      int `yaml:"connect_timeout_seconds"`
+	ServerSelectionTimeoutSecs int `yaml:"server_selection_timeout_seconds"`
 }
 
 type ASRConfig struct {

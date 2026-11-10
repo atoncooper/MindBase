@@ -604,8 +604,9 @@ function ChatMessage({
           </div>
         )}
 
-        {/* Task plan (plan tool): live checklist above the answer body */}
-        {plan && plan.steps.length > 0 && (
+        {/* Task plan (plan tool): live checklist above the answer body. DAG
+            frames may carry nodes without legacy steps, so either shape renders. */}
+        {plan && (plan.steps.length > 0 || (plan.nodes?.length ?? 0) > 0) && (
           <div className="mb-3">
             <PlanPanel plan={plan} />
           </div>

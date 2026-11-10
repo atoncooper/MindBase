@@ -31,7 +31,23 @@ func NewMongoStore(ctx context.Context, cfg *config.BiliConfig) (*MongoStore, er
 	if strings.TrimSpace(cfg.Mongo.URI) == "" {
 		return &MongoStore{}, nil
 	}
-	client, err := mongo.Connect(options.Client().ApplyURI(cfg.Mongo.URI))
+	opts := options.Client().ApplyURI(cfg.Mongo.URI)
+	if cfg.Mongo.MaxPoolSize > 0 {
+		opts.SetMaxPoolSize(uint64(cfg.Mongo.MaxPoolSize))
+	}
+	if cfg.Mongo.MinPoolSize > 0 {
+		opts.SetMinPoolSize(uint64(cfg.Mongo.MinPoolSize))
+	}
+	if cfg.Mongo.MaxConnIdleTimeSeconds > 0 {
+		opts.SetMaxConnIdleTime(time.Duration(cfg.Mongo.MaxConnIdleTimeSeconds) * time.Second)
+	}
+	if cfg.Mongo.ConnectTimeoutSeconds > 0 {
+		opts.SetConnectTimeout(time.Duration(cfg.Mongo.ConnectTimeoutSeconds) * time.Second)
+	}
+	if cfg.Mongo.ServerSelectionTimeoutSecs > 0 {
+		opts.SetServerSelectionTimeout(time.Duration(cfg.Mongo.ServerSelectionTimeoutSecs) * time.Second)
+	}
+	client, err := mongo.Connect(opts)
 	if err != nil {
 		return nil, err
 	}

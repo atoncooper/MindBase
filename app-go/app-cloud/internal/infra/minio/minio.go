@@ -4,6 +4,7 @@
 package minio
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -160,6 +161,32 @@ func (c *Client) PresignGet(ctx context.Context, objectKey, responseContentType,
 		return "", err
 	}
 	return c.publicURL(u.String()), nil
+}
+
+// PutObject stores a small object with an explicit content type (avatar upload).
+func (c *Client) PutObject(ctx context.Context, objectKey string, data []byte, contentType string) error {
+	_, err := c.sdk.PutObject(ctx, c.cfg.Bucket, objectKey,
+		bytes.NewReader(data), int64(len(data)),
+		minio.PutObjectOptions{ContentType: contentType})
+	return err
+}
+
+// GetObjectWithType downloads a small object and returns its stored content type.
+func (c *Client) GetObjectWithType(ctx context.Context, objectKey string) (string, []byte, error) {
+	obj, err := c.sdk.GetObject(ctx, c.cfg.Bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return "", nil, err
+	}
+	defer obj.Close()
+	stat, err := obj.Stat()
+	if err != nil {
+		return "", nil, err
+	}
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		return "", nil, err
+	}
+	return stat.ContentType, data, nil
 }
 
 // GetObject downloads the whole object into memory (pipeline + inline text

@@ -303,7 +303,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-user（settings 监听口 8015）—— 设置面（Go；本机 go run ./app-go/app-user）
+  # app-user（统一 8006 监听口；settings 路由）—— 设置面（Go；本机 go run ./app-go/app-user）
   - id: upstream-app-user-settings
     name: app-user
     type: roundrobin
@@ -319,7 +319,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "192.168.138.1:8015": 1
+      "192.168.138.1:8006": 1
     checks:
       active:
         type: http
@@ -367,7 +367,7 @@ upstreams:
           http_failures: 3
           http_statuses: [404, 500, 502, 503, 504]
 
-  # app-user（bili 监听口 8010）—— B 站数据获取面（Go；本机 go run ./app-go/app-user）
+  # app-user（统一 8006 监听口；bili 路由）—— B 站数据获取面（Go；本机 go run ./app-go/app-user）
   - id: upstream-app-user-bili
     name: app-user
     type: roundrobin
@@ -383,7 +383,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "192.168.138.1:8010": 1
+      "192.168.138.1:8006": 1
     checks:
       active:
         type: http
@@ -846,7 +846,7 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # /preferences + /avatar -> app-user（settings 监听口 8015；用户 KV 偏好 +
+  # /preferences + /avatar -> app-user（统一 8006 监听口；用户 KV 偏好 +
   # 头像上传/服务，2026-10-06 迁自 Python；avatar/file 无鉴权语义）。
   - id: prefs_avatar_user
     uris: [/preferences, /preferences/*, /avatar, /avatar/*]
@@ -931,7 +931,7 @@ routes:
         timeout: 5000
         status_code: 401
 
-  # /favorites/* /asr/* /knowledge(build|folders) -> app-user（bili 监听口 8010）
+  # /favorites/* /asr/* /knowledge(build|folders) -> app-user（统一 8006 监听口）
   - id: bili_user
     uris: [/favorites, /favorites/*, /asr, /asr/*, /knowledge/build, /knowledge/build/*, /knowledge/folders/sync]
     priority: 50

@@ -21,7 +21,7 @@
 | 80 / 443 | nginx | **公网** | 唯一生产入口；443 需证书（第 5 节） |
 | 3000 | frontend | 0.0.0.0 | 生产可只经 nginx；防火墙限制 |
 | 9080 | APISIX | 无宿主端口 | 仅容器网络；调试 `docker compose exec apisix` |
-| 8000 / 8001-8016 | app-ts、app-user（8006/8010/8015）、app-content（8004 单端口）、其他 app-go 服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
+| 8000 / 8001-8016 | app-ts、app-user（8006）、app-content（8004 单端口）、其他 app-go 服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
 | 3001 / 8016 | app-admin UI / API | 127.0.0.1 | 管理台仅回环，远程用 SSH 隧道 |
 | 8002 | app-pay | 127.0.0.1 | HTTPS-only |
 | 3306 / 27017 / 6379 / 19530 / 7474 / 7687 / 9000-9001 | MySQL/Mongo/Redis/Milvus/Neo4j/MinIO | **compose 默认 0.0.0.0** | 生产必须防火墙限制或改回环绑定 |
@@ -116,7 +116,7 @@ chmod 600 secrets/api_key_encryption_key
 | 服务 | 健康/指标端点（容器内） | 备注 |
 |---|---|---|
 | app-ts | `:8000/health`、`:8000/agent/runtime` | health 含 Milvus 可用性；runtime 含队列/超时/breaker |
-| app-go 服务 | app-user 8006/8010/8015、app-content 8004（HTTPS，三面共用；宿主调试口 `APP_CONTENT_PORT`）、app-cloud 8007 的 `/health` | app-cloud 另有 `/metrics`；app-content board 面为 HTTPS |
+| app-go 服务 | app-user 8006、app-content 8004（HTTPS，三面共用；宿主调试口 `APP_CONTENT_PORT`）、app-cloud 8007 的 `/health` | app-cloud 另有 `/metrics`；app-content board 面为 HTTPS |
 | app-kg | `:8014/health`（gRPC `:8013` 自带 health） | |
 | app-content-mcp | `:8019/health` | 内容域 MCP server（board+note+quiz 12 工具，单端点 `/mcp`） |
 | app-task | `:8001/health` | |

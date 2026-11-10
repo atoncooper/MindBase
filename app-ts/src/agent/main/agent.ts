@@ -10,6 +10,7 @@ import type { SessionDocumentRepository } from "../../repository/session-docs.js
 import type { ConversationSummary } from "../../repository/persistence.js";
 import type { SearchScope } from "../../context/types.js";
 import type { AgentInvokeInput } from "../types.js";
+import { config } from "../../config/index.js";
 import { today } from "../../utils/datetime.js";
 
 /** Scope description for the prompt's "current state" section. */
@@ -60,6 +61,7 @@ export function createMainAgent(
       "get_video_summaries",
       "save_memory",
       "delegate_to_agent",
+      ...(config.agent.plan.enabled ? ["plan_and_run"] : []),
       "ask_user",
       "plan",
       "render_plot",

@@ -13,22 +13,20 @@ import (
 )
 
 type SettingsConfig struct {
-	App      AppConfig    `yaml:"app"`
-	Server   ServerConfig `yaml:"server"`
-	Log      LogConfig    `yaml:"log"`
-	Timezone string       `yaml:"timezone"`
-	RDBMS    RDBMSConfig  `yaml:"rdbms"`
-	MinIO    MinIOConfig  `yaml:"minio"`
+	App      AppConfig      `yaml:"app"`
+	Server   ServerConfig   `yaml:"server"`
+	Log      LogConfig      `yaml:"log"`
+	Timezone string         `yaml:"timezone"`
+	RDBMS    RDBMSConfig    `yaml:"rdbms"`
+	AppCloud AppCloudConfig `yaml:"app_cloud"`
 }
 
-// MinIOConfig — object storage for user avatar uploads (shared bucket,
-// same env names as the other services). Empty endpoint = avatar upload 503.
-type MinIOConfig struct {
-	Endpoint  string `yaml:"endpoint"`
-	AccessKey string `yaml:"access_key"`
-	SecretKey string `yaml:"secret_key"`
-	Bucket    string `yaml:"bucket"`
-	Secure    bool   `yaml:"secure"`
+// AppCloudConfig — app-cloud M2M face that owns object storage. app-user only
+// calls its /internal/cloud/avatar endpoints; MinIO credentials stay in app-cloud.
+type AppCloudConfig struct {
+	BaseURL   string `yaml:"base_url"`
+	APIKey    string `yaml:"api_key"`
+	TimeoutMs int    `yaml:"timeout_ms"`
 }
 
 // Load parses embedded default.yaml and applies env overrides. Best-effort
@@ -63,22 +61,23 @@ func applySettingsEnv(cfg *SettingsConfig) {
 		}
 	}
 
-	// ── MinIO (avatar storage) — shared env names, one .env drives all services ──
-	if v := get("MINIO__ENDPOINT"); v != "" {
-		cfg.MinIO.Endpoint = v
+	// ── app-cloud avatar storage (M2M) ─────────────────────────────────
+	if v := get("APPSETTINGS__APP_CLOUD__BASE_URL"); v != "" {
+		cfg.AppCloud.BaseURL = v
 	}
-	if v := get("MINIO__ACCESS_KEY"); v != "" {
-		cfg.MinIO.AccessKey = v
+	if v := get("APP_CLOUD_BASE_URL"); v != "" {
+		cfg.AppCloud.BaseURL = v
 	}
-	if v := get("MINIO__SECRET_KEY"); v != "" {
-		cfg.MinIO.SecretKey = v
+	if v := get("APPSETTINGS__APP_CLOUD__API_KEY"); v != "" {
+		cfg.AppCloud.APIKey = v
 	}
-	if v := get("MINIO__BUCKET"); v != "" {
-		cfg.MinIO.Bucket = v
+	if v := get("APP_CLOUD_API_KEY"); v != "" {
+		cfg.AppCloud.APIKey = v
 	}
-	if v := get("MINIO__SECURE"); v == "true" || v == "1" {
-		cfg.MinIO.Secure = true
+	if v := get("APISIX_CONSUMER_KEY"); v != "" && cfg.AppCloud.APIKey == "" {
+		cfg.AppCloud.APIKey = v
 	}
+	atoi("APPSETTINGS__APP_CLOUD__TIMEOUT_MS", &cfg.AppCloud.TimeoutMs)
 	// ── APPSETTINGS__-prefixed overrides (highest priority) ──
 	if v := get("APPSETTINGS__RDBMS__URL"); v != "" {
 		cfg.RDBMS.URL = v

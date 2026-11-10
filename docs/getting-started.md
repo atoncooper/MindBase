@@ -176,7 +176,7 @@ go run ./cmd/app-content
 
 | 服务 | 端口 | 本地启动必填 |
 |------|------|--------------|
-| app-user | 8006（auth）/ 8010（bili）/ 8015（settings） | `APPAUTH__RDBMS__URL` + `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY` + `APPSETTINGS__RDBMS__URL`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
+| app-user | 8006（auth）/ 8006（auth/bili/settings 单 listener） | `APPAUTH__RDBMS__URL` + `APPBILI__RDBMS__URL` + `AI_GATEWAY__API_KEY` + `APPSETTINGS__RDBMS__URL`；本地 ASR 需 `ffmpeg`/`ffprobe` 在 PATH |
 | app-cloud | 8007 | `APPCLOUD__RDBMS__URL` + `MINIO__ACCESS_KEY`/`MINIO__SECRET_KEY`（缺访问密钥直接拒启；另需 `MINIO__ENDPOINT=http://127.0.0.1:9000`） |
 | app-content | 8004（HTTPS，单端口承载 board/note/quiz） | `CONTENT__DATABASE__MYSQL__URL` + `CONTENT__DATABASE__MONGO__URI`（Redis 可选；旧 `APPBOARD__`/`APPNOTE__`/`APPQUIZ__` 数据源变量兼容但必须一致） |
 | app-kg | 8013 gRPC / 8014 health | `APPKG__RDBMS__URL` + `KG__URI`（+ `KG__PASSWORD` 或 `NEO4J_PASSWORD`） |
@@ -234,7 +234,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006/8010/8015、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、app-content-mcp 8019）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、app-content-mcp 8019）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
 
 ---
 

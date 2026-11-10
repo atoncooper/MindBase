@@ -42,6 +42,13 @@ export type CodingPlanPatch = Partial<Omit<CodingPlanInput, "api_key">> & {
     api_key?: string;
 };
 
+export interface CodingPlanModels {
+    plan_id: number;
+    provider: string;
+    protocol: CodingPlanProtocol;
+    models: string[];
+}
+
 export interface CodingPlanTestResult {
     ok: boolean;
     message: string;
@@ -84,6 +91,13 @@ export const codingPlanApi = {
     async remove(id: number): Promise<{ message: string }> {
         return request<{ message: string }>(planPath(id), {
             method: "DELETE",
+            headers: getAuthHeaders(),
+        });
+    },
+
+    /** 聊天对话框按需拉取该套餐可用的模型（不在配置保存时探测）。 */
+    async models(id: number): Promise<CodingPlanModels> {
+        return request<CodingPlanModels>(`${planPath(id)}/models`, {
             headers: getAuthHeaders(),
         });
     },

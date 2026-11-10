@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"app-user/internal/config"
+
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -19,7 +21,8 @@ import (
 // was still starting (or briefly down at boot) recovers without restarting
 // app-user. Callers treat command errors as cache misses / fail-open, and the
 // readiness probe reports the degraded state.
-func New(url string) goredis.UniversalClient {
+func New(cfg config.RedisConfig) goredis.UniversalClient {
+	url := cfg.URL
 	if strings.TrimSpace(url) == "" {
 		return nil
 	}
@@ -28,6 +31,25 @@ func New(url string) goredis.UniversalClient {
 		slog.Warn("[REDIS] invalid url - running without Redis", "err", err)
 		return nil
 	}
+	if cfg.PoolSize > 0 {
+		opts.PoolSize = cfg.PoolSize
+	}
+	if cfg.MinIdleConns > 0 {
+		opts.MinIdleConns = cfg.MinIdleConns
+	}
+	if cfg.PoolTimeoutSeconds > 0 {
+		opts.PoolTimeout = time.Duration(cfg.PoolTimeoutSeconds) * time.Second
+	}
+	if cfg.DialTimeoutSeconds > 0 {
+		opts.DialTimeout = time.Duration(cfg.DialTimeoutSeconds) * time.Second
+	}
+	if cfg.ReadTimeoutSeconds > 0 {
+		opts.ReadTimeout = time.Duration(cfg.ReadTimeoutSeconds) * time.Second
+	}
+	if cfg.WriteTimeoutSeconds > 0 {
+		opts.WriteTimeout = time.Duration(cfg.WriteTimeoutSeconds) * time.Second
+	}
+	opts.MaxRetries = cfg.MaxRetries
 	client := goredis.NewClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

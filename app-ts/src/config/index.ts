@@ -251,6 +251,19 @@ export interface AppConfig {
     toolRepeatLimit: number;
     /** whole-turn deadline (ms): a stalled LLM stream can never keep a turn alive forever */
     turnTimeoutMs: number;
+    /** planner/supervisor DAG execution (custom ReAct agents + topological scheduling) */
+    plan: {
+      enabled: boolean;
+      maxAgents: number;
+      maxNodes: number;
+      maxConcurrency: number;
+      customAgentMaxSteps: number;
+      nodeTimeoutMs: number;
+      reflectAttempts: number;
+      reflectTimeoutMs: number;
+      maxDepth: number;
+      allowedTools: string[];
+    };
   };
   scheduling: {
     /** turn-level weighted admission queue for chat (services/admission.ts) */

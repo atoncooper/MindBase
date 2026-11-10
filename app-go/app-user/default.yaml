@@ -25,6 +25,23 @@ auth:
   server:
     host: 0.0.0.0
     port: 8006
+    read_header_timeout_seconds: 5
+    read_timeout_seconds: 15
+    write_timeout_seconds: 30
+    idle_timeout_seconds: 60
+    shutdown_timeout_seconds: 10
+    max_header_bytes: 1048576
+    max_body_bytes: 1048576
+    trusted_proxies: ["127.0.0.1", "::1", "172.16.0.0/12"]
+    max_connections: 1024
+    max_concurrent: 64
+    max_concurrent_per_ip: 16
+    http2_enabled: true
+    compression: "both"
+    keepalive_max_requests: 1000
+    access_log_enabled: true
+    access_log_sample_rate: 100
+    access_log_format: "slog"
 
   timezone: Asia/Shanghai
 
@@ -33,9 +50,17 @@ auth:
     max_open_conns: 30         # auth/settings pool — forward-auth hot path
     max_idle_conns: 10
     conn_max_lifetime: 1800    # seconds
+    conn_max_idle_time_seconds: 300
 
   redis:
     url: ""                    # inject via APPAUTH__REDIS__URL or shared REDIS__URL; empty = in-memory cache only
+    pool_size: 50
+    min_idle_conns: 5
+    pool_timeout_seconds: 5
+    dial_timeout_seconds: 5
+    read_timeout_seconds: 3
+    write_timeout_seconds: 3
+    max_retries: 2
 
   auth:
     token_ttl_days: 30         # session token lifetime (must match Python DEFAULT_TOKEN_TTL_DAYS)
@@ -84,7 +109,7 @@ auth:
     key: ""
 
   email:
-    enabled: false             # inject via EMAIL__ENABLED (shared with Python backend)
+    enabled: true             # inject via EMAIL__ENABLED (shared with Python backend)
     api_key: ""                # inject via EMAIL__API_KEY (Resend)
     from_email: "MindBase <onboarding@resend.dev>"
     frontend_url: "http://localhost:3000"
@@ -159,6 +184,16 @@ auth:
     level: info       # debug|info|warn|error (APPAUTH__LOG__LEVEL)
     format: json      # text|json (APPAUTH__LOG__FORMAT)
     output: stdout    # stdout|file|both (APPAUTH__LOG__OUTPUT)
+    add_source: true
+    redact_keys: ["password", "token", "secret", "api_key", "apikey", "authorization", "cookie", "access_key", "access_key_secret", "sms_code", "refresh_token"]
+    sampling:
+      enabled: true
+      initial: 5
+      thereafter: 100
+    async:
+      enabled: true
+      buffer: 4096
+      drop_when_full: true
     file:
       path: /app/logs/app-user.log
       max_size: 100
@@ -193,7 +228,9 @@ bili:
 
   server:
     host: 0.0.0.0
-    port: 8010
+    port: 8006
+    max_body_bytes: 1048576
+    trusted_proxies: ["127.0.0.1", "::1", "172.16.0.0/12"]
 
   timezone: Asia/Shanghai
 
@@ -202,10 +239,16 @@ bili:
     max_open_conns: 15         # acquisition/ASR pool — separate from auth
     max_idle_conns: 8
     conn_max_lifetime: 1800
+    conn_max_idle_time_seconds: 300
 
   mongo:
     uri: ""                    # inject via MONGO__URI (shared); asr_documents
     database: mind_base
+    max_pool_size: 50
+    min_pool_size: 5
+    max_conn_idle_time_seconds: 300
+    connect_timeout_seconds: 5
+    server_selection_timeout_seconds: 5
 
   redis:
     url: ""                    # inject via APPBILI__REDIS__URL or shared REDIS__URL
@@ -214,7 +257,7 @@ bili:
   # passthrough (same env names as the Python backend — one .env).
   asr:
     api_key: ""                # inject via AI_GATEWAY__API_KEY
-    base_url: ""               # inject via AI_GATEWAY__BASE_URL (OpenAI style base; native base derived)
+    base_url: "http://higress:8080/api/v1"  # OpenAI-style base; native base derived
     transcribe_model: paraformer-v2          # offline async (REST)
     transcribe_timeout_seconds: 600
     poll_interval_ms: 1500
@@ -259,7 +302,7 @@ settings:
   # app-settings (Go) - default configuration
   # ============================================================
   # User preferences (/preferences KV) + avatar (/avatar/upload,
-  # /avatar/file via MinIO) on the SHARED bilirag MySQL.
+  # /avatar/file via app-cloud object storage) on the SHARED bilirag MySQL.
   # Owns user_preferences only (CREATE-only) — the per-user API key
   # config tables (user_credentials / user_embedding_configs /
   # user_asr_configs) were retired with BYOK: nothing reads them.
@@ -267,7 +310,7 @@ settings:
   # Merge order (later overrides earlier):
   #   1. default.yaml               <- this file (embedded in binary)
   #   2. Environment variables      <- prefix APPSETTINGS__, double-underscore nesting
-  #   Shared env vars: MINIO__* (avatar storage), RDBMS__URL
+  #   Shared env vars: RDBMS__URL; avatar storage is app-cloud M2M
   # Secrets MUST be injected via env, never committed in YAML.
   # ============================================================
 
@@ -277,7 +320,9 @@ settings:
 
   server:
     host: 0.0.0.0
-    port: 8015
+    port: 8006
+    max_body_bytes: 4194304
+    trusted_proxies: ["127.0.0.1", "::1", "172.16.0.0/12"]
 
   timezone: Asia/Shanghai
 
@@ -298,14 +343,12 @@ settings:
       max_age: 30
       compress: true
 
-  # MinIO (avatar uploads) — shared bucket drive-videos, keys avatars/{uid}/.
-  # Endpoint/keys injected via shared MINIO__* env; empty endpoint = avatar 503.
-  minio:
-    endpoint: ""
-    access_key: ""
-    secret_key: ""
-    bucket: drive-videos
-    secure: false
+  # 头像对象存储归 app-cloud（MinIO 凭据只留在 app-cloud）。
+  # app-user 只调用 /internal/cloud/avatar；base_url 指向 app-cloud 服务。
+  app_cloud:
+    base_url: "http://app-cloud:8007"
+    api_key: ""
+    timeout_ms: 30000
 
 # 可选：三个监听口启用 TLS（空 = 明文 HTTP，默认）。部署时可用
 # TLS__CERT_FILE / TLS__KEY_FILE 覆盖；生产建议用挂载的正式证书。

@@ -18,14 +18,12 @@ import Link from "next/link";
 import {
     AlertCircle,
     Boxes,
-    CheckCircle2,
     Globe2,
     KeyRound,
     Loader2,
     Lock,
     Pencil,
     Plus,
-    RefreshCw,
     Sparkles,
     Trash2,
     type LucideIcon,
@@ -34,13 +32,11 @@ import { cn } from "@/lib/utils";
 import { Select } from "@/components/ui/select";
 import {
     codingPlanApi,
-    requestErrorStatus,
     type CodingPlan,
     type CodingPlanInput,
     type CodingPlanPatch,
     type CodingPlanProvider,
     type CodingPlanProtocol,
-    type CodingPlanTestResult,
     type PayMembership,
 } from "@/lib/api";
 
@@ -127,8 +123,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
         { mode: "new" } | { mode: "edit"; plan: CodingPlan } | null
     >(null);
     const [saving, setSaving] = useState(false);
-    const [testingId, setTestingId] = useState<number | null>(null);
-    const [testResults, setTestResults] = useState<Record<number, CodingPlanTestResult>>({});
     const [deletingId, setDeletingId] = useState<number | null>(null);
 
     const load = useCallback(async () => {
@@ -160,11 +154,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                 if (!patch.api_key) delete patch.api_key; // 空 = 不覆盖已存密钥
                 const updated = await codingPlanApi.update(editor.plan.id, patch);
                 setPlans((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-                setTestResults((prev) => {
-                    const next = { ...prev };
-                    delete next[updated.id];
-                    return next;
-                });
                 onToast("Coding Plan 已更新", "success");
             } else {
                 const created = await codingPlanApi.create(input);
@@ -188,25 +177,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
         }
     }
 
-    /** 连接测试只做内联反馈：成功 / 失败都写进该行，不弹 toast。 */
-    async function test(plan: CodingPlan) {
-        setTestingId(plan.id);
-        try {
-            const result = await codingPlanApi.test(plan.id);
-            setTestResults((prev) => ({ ...prev, [plan.id]: result }));
-        } catch (e) {
-            const message =
-                requestErrorStatus(e) === 403
-                    ? "Coding Plan 仅 VIP/SVIP 可用"
-                    : e instanceof Error
-                      ? e.message
-                      : "测试失败";
-            setTestResults((prev) => ({ ...prev, [plan.id]: { ok: false, message } }));
-        } finally {
-            setTestingId(null);
-        }
-    }
-
     async function remove(plan: CodingPlan) {
         const name = plan.label || providerMeta(plan.provider).label;
         if (typeof window !== "undefined" && !window.confirm(`确定删除「${name}」？`)) {
@@ -216,11 +186,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
         try {
             await codingPlanApi.remove(plan.id);
             setPlans((prev) => prev.filter((p) => p.id !== plan.id));
-            setTestResults((prev) => {
-                const next = { ...prev };
-                delete next[plan.id];
-                return next;
-            });
             if (editor?.mode === "edit" && editor.plan.id === plan.id) setEditor(null);
             onToast("Coding Plan 已删除", "success");
         } catch (e) {
@@ -356,9 +321,8 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                     )}
 
                     {plans.map((plan) => {
-                        const result = testResults[plan.id];
                         const meta = providerMeta(plan.provider);
-                        const busy = testingId === plan.id || deletingId === plan.id;
+                        const busy = deletingId === plan.id;
                         return (
                             <div
                                 key={plan.id}
@@ -404,10 +368,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                                             className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px]"
                                             style={{ color: C.text2 }}
                                         >
-                                            <span style={{ color: C.text }}>{plan.model}</span>
-                                            <span aria-hidden style={{ color: C.border }}>
-                                                ·
-                                            </span>
                                             <span
                                                 className="max-w-[220px] truncate"
                                                 title={plan.base_url}
@@ -426,32 +386,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                                             </span>
                                         </div>
 
-                                        {result && (
-                                            <div
-                                                className="mt-2 flex items-start gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed"
-                                                style={{
-                                                    background: result.ok ? C.greenBg : C.redBg,
-                                                    color: result.ok ? C.green : C.red,
-                                                }}
-                                            >
-                                                {result.ok ? (
-                                                    <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
-                                                ) : (
-                                                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
-                                                )}
-                                                <span className="min-w-0 break-words">
-                                                    {result.message}
-                                                    {result.models && result.models.length > 0 && (
-                                                        <span style={{ color: C.text2 }}>
-                                                            （
-                                                            {result.models.slice(0, 5).join(", ")}
-                                                            {result.models.length > 5 ? "…" : ""}
-                                                            ）
-                                                        </span>
-                                                    )}
-                                                </span>
-                                            </div>
-                                        )}
                                     </div>
 
                                     <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -469,17 +403,6 @@ export function CodingPlanCard({ membership, onToast }: Props) {
                                             />
                                         </div>
                                         <div className="flex items-center gap-0.5">
-                                            <TextAction
-                                                onClick={() => void test(plan)}
-                                                disabled={busy}
-                                            >
-                                                {testingId === plan.id ? (
-                                                    <Loader2 className="h-3 w-3 animate-spin" />
-                                                ) : (
-                                                    <RefreshCw className="h-3 w-3" />
-                                                )}
-                                                测试
-                                            </TextAction>
                                             <TextAction
                                                 onClick={() =>
                                                     setEditor({ mode: "edit", plan })
@@ -736,7 +659,6 @@ function PlanEditor({
     const [protocol, setProtocol] = useState<CodingPlanProtocol>(initial?.protocol ?? "openai");
     const [label, setLabel] = useState(initial?.label ?? "");
     const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
-    const [model, setModel] = useState(initial?.model ?? "");
     const [apiKey, setApiKey] = useState("");
     const [enabled, setEnabled] = useState(initial?.enabled ?? true);
     const [error, setError] = useState<string | null>(null);
@@ -746,10 +668,9 @@ function PlanEditor({
         const url = baseUrl.trim();
         if (!url) { setError("请填写 Base URL"); return; }
         if (!/^https?:\/\//i.test(url)) { setError("Base URL 必须以 http:// 或 https:// 开头"); return; }
-        if (!model.trim()) { setError("请填写模型 ID"); return; }
         if (!initial && !apiKey.trim()) { setError("请填写 API Key"); return; }
         setError(null);
-        onSave({ provider, protocol, label: label.trim(), base_url: url, model: model.trim(), api_key: apiKey.trim(), enabled });
+        onSave({ provider, protocol, label: label.trim(), base_url: url, model: initial?.model ?? "", api_key: apiKey.trim(), enabled });
     }
 
     return (
@@ -763,9 +684,6 @@ function PlanEditor({
                 </Field>
                 <Field label="名称（可选）">
                     <input className="field" aria-label="Coding Plan 名称" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="例如 OpenCode Zen" />
-                </Field>
-                <Field label="模型 ID">
-                    <input className="field" aria-label="Coding Plan 模型" value={model} onChange={(e) => setModel(e.target.value)} placeholder={hints.model} autoComplete="off" />
                 </Field>
                 <Field label="Base URL" hint="OpenAI 兼容通常以 /v1 结尾；Anthropic 兼容填到 /v1；以官方文档为准" className="sm:col-span-2">
                     <input className="field" aria-label="Coding Plan Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={hints.baseUrl} autoComplete="off" />

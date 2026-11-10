@@ -14,7 +14,7 @@ import (
 // Init opens the single shared MySQL connection for the whole user domain.
 // dsn may be SQLAlchemy-style (mysql+aiomysql://...). loc=UTC mirrors the
 // Python-era naive-UTC storage contract shared by auth/settings/bili.
-func Init(dsn string, maxOpen, maxIdle, maxLife int, debug bool) (*gorm.DB, error) {
+func Init(dsn string, maxOpen, maxIdle, maxLife, maxIdleTime int, debug bool) (*gorm.DB, error) {
 	d, err := gorm.Open(mysql.Open(toGormDSN(dsn)), &gorm.Config{Logger: logger.NewGORMLogger(debug)})
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
@@ -26,6 +26,9 @@ func Init(dsn string, maxOpen, maxIdle, maxLife int, debug bool) (*gorm.DB, erro
 	sqlDB.SetMaxOpenConns(maxOpen)
 	sqlDB.SetMaxIdleConns(maxIdle)
 	sqlDB.SetConnMaxLifetime(time.Duration(maxLife) * time.Second)
+	if maxIdleTime > 0 {
+		sqlDB.SetConnMaxIdleTime(time.Duration(maxIdleTime) * time.Second)
+	}
 	return d, nil
 }
 

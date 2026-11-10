@@ -42,21 +42,24 @@ services:
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # ASR 走 Higress 原生透传；.env 里配置了别的网关地址则以 .env 为准
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/api/v1}
       - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - APPBILI__LOG__OUTPUT=both
       # ============ settings（8015） ============
       - APPSETTINGS__RDBMS__URL=${RDBMS__URL:?err_RDBMS__URL_not_set_in_.env}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}   # server1（overlay）
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      # 头像对象存储归 app-cloud；app-user 只调内部 M2M，不再持有 MinIO 凭据。
+      - MINIO__ENDPOINT=
+      - MINIO__ACCESS_KEY=
+      - MINIO__SECRET_KEY=
+      - MINIO__BUCKET=
+      - MINIO__PUBLIC_ENDPOINT=
+      - MINIO__PUBLIC_HOST=
+      - MINIO_ACCESS_KEY=
+      - MINIO_SECRET_KEY=
+      - APP_CLOUD_API_KEY=${APISIX_CONSUMER_KEY:-}
       - APPSETTINGS__LOG__OUTPUT=both
     ports:
       # 三监听口语义不变；宿主侧仍只绑回环（对外入口只有 nginx / APISIX）
       - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
-      - "127.0.0.1:${APP_USER_BILI_PORT:-8010}:8010"
-      - "127.0.0.1:${APP_USER_SETTINGS_PORT:-8015}:8015"
     volumes:
       - app_user_logs:/app/logs
       - ../../secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro

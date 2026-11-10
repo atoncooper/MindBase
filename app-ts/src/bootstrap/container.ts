@@ -17,6 +17,9 @@ import { buildServer } from "../transport/http/server.js";
 import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
 import { createPlanTool } from "../tools/harness/plan.js";
+import { createPlanAndRunTool } from "../tools/harness/plan-graph.js";
+import { PlanRunner } from "../agent/dag/runner.js";
+import { ReflectService } from "../agent/dag/reflect.js";
 import { createRenderDiagramTool, createRenderPlotTool } from "../tools/render/index.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
@@ -606,6 +609,19 @@ export async function bootstrap() {
   // with each agent factory's self-description (no duplicated descriptions here)
   registry.register(createDelegateTool(lifecycle, SUB_AGENTS.map(({ name, description }) => ({ name, description }))));
 
+  // Planner/supervisor DAG: main agent can define custom ReAct agents and a
+  // topological plan graph; each node executes through the same lifecycle.
+  const planRunner = new PlanRunner({
+    lifecycle,
+    runtime,
+    prompts,
+    reflect: new ReflectService(prompts),
+  });
+  const planAllowedTools = config.agent.plan.allowedTools.filter(
+    (name) => runtime.listToolDefs([name]).length > 0,
+  );
+  registry.register(createPlanAndRunTool(planRunner, SUB_AGENTS.map((a) => a.name), planAllowedTools));
+
   const hasKnowledgeData = async () => {
     const stats = await rag.getCollectionStats();
     return stats.available && stats.totalChunks > 0;
@@ -632,7 +648,7 @@ export async function bootstrap() {
   // unavailable path (no plan / non-VIP / 404 / 403 / 503 / quota exhausted)
   // resolves undefined → the platform gateway model (fail-open).
   const codingPlanResolver = createCodingPlanResolver({ plans: appAuth, quota });
-  const codeAgent = createCodeAgent(runtime, prompts, contextBinding, codingPlanResolver);
+  const codeAgent = createCodeAgent(runtime, prompts, contextBinding);
   const quizAgent = createQuizAgent(runtime, prompts, contextBinding);
   const boardAgent = createBoardAgent(runtime, prompts, contextBinding);
   // academic is a delegate-only sub-agent (manifest roster); its tools were
@@ -694,7 +710,9 @@ export async function bootstrap() {
     : undefined;
   const chat = new ChatService(harness, sessions, messages, compression, (id, q) => {
     void generateTitle(sessions, prompts, id, q);
-  }, admission, chatImages, quota, usageLedger, prompts, academicContextSection);
+  }, admission, chatImages, quota, usageLedger, prompts, academicContextSection, (input) =>
+    codingPlanResolver({ uid: input.uid, model: input.model }),
+  );
   const resolveFolderScope = kgRepository
     ? (uid: string, folderIds: number[]) => kgRepository!.resolveScope(uid, folderIds)
     : undefined;
