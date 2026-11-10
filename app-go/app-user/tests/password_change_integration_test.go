@@ -29,7 +29,7 @@ func TestPasswordChangeIntegration(t *testing.T) {
 	if dsn == "" {
 		t.Skip("APPUSER_TEST_MYSQL_DSN not set; skipping MySQL integration test")
 	}
-	db, err := appmysql.Init(dsn, 5, 2, 60, false)
+	db, err := appmysql.Init(dsn, 5, 2, 60, 0, false)
 	if err != nil {
 		t.Fatalf("connect mysql: %v", err)
 	}

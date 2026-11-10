@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { ArrowUp, Square, X, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
+import { CodingPlanModelPicker } from "./coding-plan-model-picker";
 import { skillsApi, type InstalledSkill } from "@/lib/api";
 
 export interface SelectedSkill {
@@ -23,6 +24,9 @@ interface ChatInputProps {
   onOpenQuizWizard?: () => void;
   // 会话文档上传（pdf/docx/pptx/txt/md/html）— 由视图上传到 /chat/documents
   onAttachDocuments?: (files: File[]) => void;
+  // Coding Plan 模型（聊天对话框按需选择，随本轮请求发送）
+  codingPlanModel?: string;
+  onCodingPlanModelChange?: (model: string | undefined) => void;
 }
 
 // Apple-style chat input - a single rounded card that grows with content up to
@@ -94,6 +98,8 @@ export function ChatInput({
   onToggleSkill,
   onOpenQuizWizard,
   onAttachDocuments,
+  codingPlanModel,
+  onCodingPlanModelChange,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]);
@@ -393,6 +399,13 @@ export function ChatInput({
           aria-label="聊天消息输入"
           aria-disabled={disabled}
         />
+
+        {onCodingPlanModelChange && (
+          <CodingPlanModelPicker
+            value={codingPlanModel}
+            onChange={onCodingPlanModelChange}
+          />
+        )}
 
         {isStreaming ? (
           <button

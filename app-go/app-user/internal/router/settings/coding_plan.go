@@ -165,6 +165,29 @@ func registerCodingPlans(e *gin.Engine, d Deps) {
 		c.JSON(http.StatusOK, settingsdto.Message{Message: "Coding Plan 已删除"})
 	})
 
+	// GET /settings/coding-plans/{id}/models — provider model catalog for the
+	// chat picker; probes only when the chat dialog asks, never on save.
+	g.GET("/:id/models", func(c *gin.Context) {
+		if d.CodingPlans == nil {
+			codingPlanUnavailable(c)
+			return
+		}
+		uid, ok := currentUID(c)
+		if !ok {
+			return
+		}
+		id, ok := codingPlanID(c)
+		if !ok {
+			return
+		}
+		models, err := d.CodingPlans.ListModels(c.Request.Context(), uid, id)
+		if err != nil {
+			codingPlanErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, models)
+	})
+
 	// POST /settings/coding-plans/{id}/test (probe only, no writes).
 	g.POST("/:id/test", func(c *gin.Context) {
 		if d.CodingPlans == nil {

@@ -42,8 +42,8 @@ type Deps struct {
 func New(d Deps) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
-	e.SetTrustedProxies(nil)
-	e.Use(middleware.Recovery(), middleware.RequestID(), middleware.Metrics("bili"), middleware.AccessLog(), middleware.SecurityHeaders(), middleware.BodyLimit(1<<20), middleware.CORS(d.Cfg.CORS.AllowOrigins))
+	e.SetTrustedProxies(d.Cfg.Server.TrustedProxies)
+	e.Use(middleware.Recovery(), middleware.RequestID(), middleware.Metrics("bili"), middleware.AccessLog(), middleware.SecurityHeaders(), middleware.BodyLimit(maxBodyBytes(d.Cfg.Server.MaxBodyBytes, 1<<20)), middleware.CORS(d.Cfg.CORS.AllowOrigins))
 
 	e.GET("/health", func(c *gin.Context) {
 		body := gin.H{"status": "ok", "service": "app-user"}
@@ -141,4 +141,11 @@ func isHTTPError(err error, target **utils.HTTPError) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func maxBodyBytes(configured, fallback int) int64 {
+	if configured > 0 {
+		return int64(configured)
+	}
+	return int64(fallback)
 }

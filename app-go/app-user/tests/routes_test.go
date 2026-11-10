@@ -99,6 +99,7 @@ func TestRouteParity(t *testing.T) {
 			"POST /settings/coding-plans",
 			"PATCH /settings/coding-plans/:id",
 			"DELETE /settings/coding-plans/:id",
+			"GET /settings/coding-plans/:id/models",
 			"POST /settings/coding-plans/:id/test",
 			"GET /internal/settings/coding-plan/:uid",
 		}},

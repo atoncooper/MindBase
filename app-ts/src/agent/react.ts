@@ -62,6 +62,8 @@ export interface ReactAgentOptions {
   context ?: AgentContextBinding;
   /** model override (tests inject a mock; production defaults to the gateway model) */
   model ?: LanguageModel;
+  /** optional ReAct step override (custom plan agents); defaults to the per-agent config */
+  maxSteps ?: number;
   /**
    * Per-run model resolver (e.g. the code agent's Coding Plan). Awaited once at
    * run start; undefined / a thrown error falls back to the gateway model.
@@ -123,7 +125,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
     const collector = new ResultCollector();
     // Resolve the model exactly once per run (not per retry attempt): a user
     // Coding Plan is a turn-level choice. Explicit test injection wins.
-    let resolved = opts.model;
+    let resolved = input.model ?? opts.model;
     if (!resolved && opts.resolveModel) {
       try {
         resolved = await opts.resolveModel(input);
@@ -137,6 +139,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
     const ctx = {
       uid: input.uid,
       chatSessionId: input.chatSessionId,
+      ...(input.model ? { model: input.model } : {}),
       scope: input.scope,
       collector,
       ...(input.signal ? { signal: input.signal } : {}),
@@ -220,7 +223,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
         ...(input.signal ? { abortSignal: input.signal } : {}),
         ...aiTelemetry(`agent.${opts.name}`),
         // structured interaction ends the turn normally (round-based ask_user)
-        stopWhen: [stepCountIs(maxStepsFor(opts.name)), stopOnToolCall("ask_user")],
+        stopWhen: [stepCountIs(opts.maxSteps ?? maxStepsFor(opts.name)), stopOnToolCall("ask_user")],
         onError: ({ error }) => {
           // a cancellation is expected: don't log it as a stream failure
           if (input.signal?.aborted) return;

@@ -45,6 +45,7 @@ func registerInternalCloudAI(e *gin.Engine, d Deps) {
 	// 404 exactly like the other nil-safe Mongo readers.
 	internal.GET("/kg/documents", KGDocumentsHandler(d.Mongo))
 	internal.GET("/kg/document", KGDocumentHandler(d.Mongo))
+	registerInternalAvatar(internal, d)
 }
 
 // ── owner-facing ─────────────────────────────────────────────────────

@@ -36,7 +36,7 @@ export interface CodingPlanResolverDeps {
 }
 
 /** Resolver signature consumed by ReactAgentOptions.resolveModel. */
-export type CodingPlanResolver = (input: { uid?: string }) => Promise<LanguageModel | undefined>;
+export type CodingPlanResolver = (input: { uid?: string; model?: string }) => Promise<LanguageModel | undefined>;
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -66,11 +66,13 @@ export function createCodingPlanResolver(deps: CodingPlanResolverDeps): CodingPl
 
     const planId = String(plan.id ?? "");
     const provider = String(plan.provider ?? "");
-    const modelId = String(plan.model ?? "");
+    // Chat dialog wins: the user may pick any model exposed by the plan.
+    const selectedModel = String(input.model ?? "").trim();
+    const modelId = selectedModel || String(plan.model ?? "");
 
     let model: LanguageModel;
     try {
-      model = createCodingPlanModel(plan);
+      model = createCodingPlanModel(selectedModel ? { ...plan, model: selectedModel } : plan);
     } catch (err) {
       // Invalid/misconfigured plan: don't consume quota, don't break the turn.
       log.warn(`[CODING_PLAN] invalid plan uid=${uid} plan_id=${planId}: ${errText(err)} — fallback gateway`);

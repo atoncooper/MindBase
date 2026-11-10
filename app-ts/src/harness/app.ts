@@ -31,6 +31,8 @@ export class AgentHarness {
     agentName?: string;
     /** user-selected installed skills forced into the system prompt */
     skillIds?: string[];
+    /** resolved per-turn model (Coding Plan or caller-supplied); absent = gateway */
+    model?: import("ai").LanguageModel;
     /** turn-level system directive appended to the agent's own prompt (e.g. board chat context) */
     extraSystem?: string;
     /** abort on client disconnect: cancels streamText + in-flight tools */
@@ -45,6 +47,7 @@ export class AgentHarness {
       scope: input.scope,
       history: input.history,
       skillIds: input.skillIds,
+      ...(input.model ? { model: input.model } : {}),
       ...(input.extraSystem ? { extraSystem: input.extraSystem } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });

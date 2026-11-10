@@ -15,30 +15,19 @@ services:
       - SERVER__HOST=0.0.0.0
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # acquisition 服务（app-user:8010）：ASR 委托 + 知识范围读
-      - APP_BILI_BASE_URL=http://app-user:8010
       # cloud-drive summary M2M (app-cloud /internal/cloud/*)
-      - APP_CLOUD_BASE_URL=http://app-cloud:8007
       # task-quiz 调度 + 鉴权内部查询，经 server1 的 APISIX
-      - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-user:8006
-      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       # AI 网关：.env 配置了则以 .env 为准
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
       - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
-      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
-      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
-      - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
-      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
       - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - MILVUS__ADDRESS=milvus:19530
       # 镜像 /app/logs 属主未修复前文件日志会因 EACCES 崩进程，先走 stdout
       - LOG__FILEENABLED=false
     ports:

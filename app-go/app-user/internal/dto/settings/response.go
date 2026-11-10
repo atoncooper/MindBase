@@ -51,6 +51,15 @@ type CodingPlanTestResponse struct {
 	Models  []string `json:"models,omitempty"`
 }
 
+// CodingPlanModels is GET /settings/coding-plans/{id}/models — the provider
+// model catalog used by the chat dialog (probed on demand, not at save time).
+type CodingPlanModels struct {
+	PlanID   int64    `json:"plan_id"`
+	Provider string   `json:"provider"`
+	Protocol string   `json:"protocol"`
+	Models   []string `json:"models"`
+}
+
 // InternalCodingPlan is GET /internal/settings/coding-plan/{uid} — the ONLY
 // face that carries the decrypted api_key (M2M key-auth guarded).
 type InternalCodingPlan struct {

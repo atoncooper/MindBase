@@ -22,6 +22,7 @@ import { today } from "../utils/datetime.js";
 import { historyLimitFor, noteTurnLevel } from "../utils/degrade.js";
 import type { PromptRegistry } from "../agent/prompts/loader.js";
 import { buildBoardSystemSection, type BoardContextParams } from "./board-context.js";
+import type { LanguageModel } from "ai";
 
 /**
  * Endpoint-level orchestration (mirrors Python services/chat/orchestrator.py):
@@ -43,6 +44,8 @@ export interface AskStreamRequest {
   clientKey?: string;
   /** user-selected installed skills forced into the system prompt */
   skillIds?: string[];
+  /** chat-dialog selected model id (Coding Plan catalog); resolved once per turn. */
+  model?: string;
   /**
    * Board (mindmap/whiteboard) chat context parsed at the HTTP layer: the user
    * asked from inside a board node. Rendered into the agent's system prompt as a
@@ -129,6 +132,8 @@ export class ChatService {
       uid: string | undefined,
       projectId: string,
     ) => Promise<string | undefined>,
+    /** resolve the chat-dialog selected model (Coding Plan) once per turn; all agents share it */
+    private readonly resolveModel?: (input: { uid?: string; model?: string }) => Promise<LanguageModel | undefined>,
   ) {}
 
   private get admissionQueue(): WeightedAdmissionQueue | null {
@@ -247,6 +252,15 @@ export class ChatService {
         ticket = yield* this.admitTurn(admission, sessionId, req.uid);
       }
 
+      let resolvedModel: LanguageModel | undefined;
+      if (req.model && this.resolveModel) {
+        try {
+          resolvedModel = await this.resolveModel({ uid: req.uid, model: req.model });
+        } catch (err) {
+          log.warn("[CHAT] resolve selected model failed, fallback gateway: " + (err instanceof Error ? err.message : String(err)));
+        }
+      }
+
       for await (const frame of this.harness.dispatchStream({
         sessionId: session.id,
         query: req.query,
@@ -259,6 +273,8 @@ export class ChatService {
         })),
         agentName: req.agentName,
         skillIds: req.skillIds,
+        ...(resolvedModel ? { model: resolvedModel } : {}),
+        ...(req.model ? { model: req.model } : {}),
         ...(extraSystem ? { extraSystem } : {}),
         signal: turnAbort.signal,
       })) {

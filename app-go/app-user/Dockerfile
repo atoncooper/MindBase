@@ -1,5 +1,5 @@
 # ====== app-user: consolidated user domain (auth + settings + bili) ======
-# One Go module / one image / one container; three HTTP listeners (8006/8010/8015).
+# One Go module / one image / one container / one HTTP listener (8006).
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -12,7 +12,8 @@ RUN go mod download || true
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/app-user ./cmd/app-user
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/app-user ./cmd/app-user \
+    && mkdir -p /out/logs
 
 # ffmpeg/ffprobe: static builds (ASR audio transcode/chunking; distroless cannot install packages)
 FROM mwader/static-ffmpeg:7.1 AS ffmpeg
@@ -23,11 +24,12 @@ FROM gcr.io/distroless/static-debian12:nonroot
 LABEL app="mind-base-app-user"
 
 WORKDIR /app
-COPY --from=builder /out/app-user /app/app-user
+COPY --from=builder --chown=nonroot:nonroot /out/app-user /app/app-user
+COPY --from=builder --chown=nonroot:nonroot /out/logs /app/logs
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
 
-EXPOSE 8006 8010 8015
+EXPOSE 8006
 USER nonroot:nonroot
 
 ENTRYPOINT ["/app/app-user"]

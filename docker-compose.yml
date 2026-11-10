@@ -328,62 +328,40 @@ services:
     env_file:
       - .env
     environment:
-      - SERVER__HOST=0.0.0.0
       # Redis event bridge (bili:page_ready -> per-page vectorization)
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # acquisition service (Go): ASR delegation + internal knowledge-scope reads
-      - APP_BILI_BASE_URL=http://app-user:8010
       # cloud-drive intelligence M2M (summary/similar); token = APISIX_CONSUMER_KEY
-      - APP_CLOUD_BASE_URL=http://app-cloud:8007
       # task-quiz flow: scheduler via APISIX + auth internal user lookup
-      - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-user:8006
-      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       # skills zip storage (shared bucket; empty endpoint = skills disabled)
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
       # OCR (image documents) — vision model via the Higress gateway; the model
       # name must be routed in the Higress console (GLM-5.3-flash, vision-capable)
-      - OCR__ENABLED=${OCR__ENABLED:-true}
-      - OCR__MODEL=${OCR__MODEL:-z-ai/glm-5.3-flash}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # LLM 统一 GLM-5.3-flash（2026-10-12 qwen3-max 被上游 OpenRouter 下线 404，
       # 出题全批次失败「有效题目数量为 0」）。镜像内 baked default.yaml 仍是旧值，
       # 先用 env 覆盖；镜像重建包含新 default.yaml 后可移除这两行。
-      - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
-      - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
       # membership tier (weighted admission) via APISIX key-auth internal route
-      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
       # app-content（quiz 面）storage writes for quiz AI orchestration (APISIX key-auth route)
-      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
       # app-sandbox control plane (optional; enabled=false → NoopCodeExecution,
       # run_code honestly reports "sandbox not configured")
-      - SANDBOX__ENABLED=${SANDBOX_ENABLED:-false}
-      - SANDBOX__BASE_URL=${SANDBOX_BASE_URL:-http://apisix:9080/internal/sandbox}
       - SANDBOX__API_KEY=${APISIX_CONSUMER_KEY:-}
       # gRPC data faces (kg graph + chat folder scope; same app-kg service).
       # env 名必须是 KG_GRPC__（loader 按 kgGrpc → KG_GRPC 推导；旧写法 KGGRPC__
       # 被静默忽略 → gRPC 回落 127.0.0.1 → KG 图存储 memory 降级、数据不持久化）
-      - KG_GRPC__TARGET=app-kg:8013
-      - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
       # MCP 桥（board/note/quiz 三域已合并为 app-content-mcp 单服务）：
       # default.yaml 的 URL 指向 127.0.0.1，容器内必须显式指向服务名；凭证走
       # 服务模式 X-Api-Key（= app-content-mcp 的 CONTENTMCP__SERVER__SERVICE_API_KEY，
       # 即 APISIX_CONSUMER_KEY）
-      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
       - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
       # milvus.address 的 env 名是 MILVUS__ADDRESS（MILVUS__URI 不是本服务
       # 的配置键,会被静默忽略回落 127.0.0.1——容器内即自身）;host:port
       # 不带 scheme（milvus-js SDK 约定）
-      - MILVUS__ADDRESS=milvus:19530
       # stdout-only logging: the image's /app/logs is not pre-created with
       # node ownership (Dockerfile chown fix pending rebuild), and pino
       # aborts the process on EACCES when the file sink is enabled
-      - LOG__FILEENABLED=false
     ports:
       # 8000 = the port the retired Python backend owned; app-ts inherits it.
       # (app-content note 面 keeps host 8018 — avoids the app-cloud 8007-8009 pool.)
@@ -423,8 +401,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -457,17 +433,23 @@ services:
       # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
       # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
       # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
-      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
       # internal M2M guard (/internal/bili/* knowledge-scope reads by app-ts)
       - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - APPBILI__LOG__OUTPUT=both
       # ===== settings 域（原设置服务，前缀 APPSETTINGS__）=====
       - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      # avatar storage (shared bucket; empty endpoint = avatar 503)
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      # Avatar object storage is owned by app-cloud; app-user only calls its
+      # internal M2M face (no MinIO credentials here).
+      # app-cloud owns MinIO; scrub shared .env MinIO values from this container
+      - MINIO__ENDPOINT=
+      - MINIO__ACCESS_KEY=
+      - MINIO__SECRET_KEY=
+      - MINIO__BUCKET=
+      - MINIO__PUBLIC_ENDPOINT=
+      - MINIO__PUBLIC_HOST=
+      - MINIO_ACCESS_KEY=
+      - MINIO_SECRET_KEY=
+      - APP_CLOUD_API_KEY=${APISIX_CONSUMER_KEY:-}
       - APPSETTINGS__LOG__OUTPUT=both
       # ===== 共享（三域共用，去重后仅保留一份）=====
       # Redis: captcha store / login throttle / rate limits / wechat state
@@ -478,8 +460,6 @@ services:
     ports:
       # 三监听口语义不变：8006=auth / 8010=bili / 8015=settings（仅回环调试用）
       - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
-      - "127.0.0.1:${APP_USER_BILI_PORT:-8010}:8010"
-      - "127.0.0.1:${APP_USER_SETTINGS_PORT:-8015}:8015"
     volumes:
       - app_user_logs:/app/logs
       # 主密钥：auth 解密 user_oauth（B 站 SESSDATA）用；保持只读挂载
@@ -561,7 +541,6 @@ services:
       - SANDBOX__AUTH__API_KEY=${APISIX_CONSUMER_KEY:-}
       # 配额档位解析必须走 app-pay；缺这个 URL 时 TierFor 直接按 free 处理
       # （所有 SVIP/VIP 都会被降为普通用户额度）。
-      - APP_PAY_BASE_URL=${APP_PAY_BASE_URL:-http://apisix:9080/internal/pay}
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
       # 默认走真实 OpenSandbox；仅本地演示可显式设 SANDBOX_RUNTIME_TYPE=fake。
       - SANDBOX__RUNTIME__TYPE=${SANDBOX_RUNTIME_TYPE:-opensandbox}
@@ -827,15 +806,12 @@ services:
       # MinIO (same bucket/keys as the previous Python implementation)
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__PUBLIC_ENDPOINT=${MINIO__PUBLIC_ENDPOINT:-}
-      - MINIO__PUBLIC_HOST=${MINIO_PUBLIC_HOST:-}
       # Storage quota tier lookup via APISIX key-auth -> app-pay
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # app-ts cloud_doc_summary tool: /internal/cloud/summary 的共享 key
       - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       # Vector pipeline (Higress AI gateway; model/dim RED LINE = Milvus rebuild)
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
       # 提取码静态加密密钥（与 app-user 共用同一 secrets 文件；密钥不进数据库）
@@ -847,7 +823,6 @@ services:
       - APPCLOUD__ATTEST__SECRET=${APP_CLOUD_ATTEST_SECRET:-}
       # L1 doc-routing graph writes (app-kg health-mux internal endpoints;
       # empty base URL disables graph writes — L1 degrades to Mongo matching)
-      - APPCLOUD__KG__BASE_URL=${APP_CLOUD_KG_BASE_URL:-http://app-kg:8014}
       - APPCLOUD__KG__TOKEN=${APP_KG_INTERNAL_TOKEN:-}
       # app-admin-only share-content review preview (Issue #154). Generate:
       # openssl rand -hex 32; empty = review preview disabled (fail closed)

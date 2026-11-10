@@ -24,6 +24,8 @@ export interface ToolDefinition<TInput = unknown> {
    * Both get the model-controlled `timeoutMs` budget field injected at build time.
    */
   inputSchema: z.ZodType<TInput> | Record<string, unknown>;
+  /** Per-tool default budget when the model omits timeoutMs (e.g. long plan runs). */
+  defaultTimeoutMs?: number;
   /**
    * signal: per-call cancellation from the TimeoutManager — signal-aware tools
    * (fetch/MCP/sandbox) should forward it; optional extra param, existing 2-arg

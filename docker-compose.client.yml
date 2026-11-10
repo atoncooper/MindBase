@@ -393,11 +393,6 @@ services:
     environment:
       - SERVER__HOST=0.0.0.0
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - APP_BILI_BASE_URL=http://app-user:8010
-      - APP_CLOUD_BASE_URL=http://app-cloud:8007
-      - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-user:8006
-      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -406,25 +401,19 @@ services:
       - OCR__MODEL=${OCR__MODEL:-z-ai/glm-5.3-flash}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       # 默认直连供应商（客户端无 Higress）；--profile ai 时删掉 .env 里的覆盖即可回网关
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
       - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
-      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
-      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
       # 客户端默认不部署 app-kg/neo4j：清洁禁用 KG（不注册 kg_search 工具，
       # 无 gRPC 重试噪音）。--profile kg 时在 .env 置 KG__ENABLED=true + KG_GRPC__ENABLED=true
       - KG__ENABLED=${KG__ENABLED:-false}
       - KG_GRPC__ENABLED=${KG_GRPC__ENABLED:-false}
-      - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
       # MCP 桥（board/note/quiz 三域已合并为 app-content-mcp 单服务）：
       # default.yaml 的 URL 指向 127.0.0.1，容器内必须显式指向服务名；凭证走
       # 服务模式 X-Api-Key（= app-content-mcp 的 CONTENTMCP__SERVER__SERVICE_API_KEY，
       # 即 APISIX_CONSUMER_KEY）
-      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
       - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - MILVUS__ADDRESS=milvus:19530
       - LOG__FILEENABLED=false
       # 单用户 agent/向量化堆上限；大批量构建 OOM 时调大 APP_TS_NODE_HEAP
       - NODE_OPTIONS=--max-old-space-size=${APP_TS_NODE_HEAP:-512}
@@ -461,8 +450,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -490,15 +477,19 @@ services:
       # ASR 走 DashScope 原生透传。默认仍指向 Higress（--profile ai 时可用）；
       # 客户端直连模式在 .env 设 AI_GATEWAY_NATIVE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
       # （直连 DashScope 必须 sk- 密钥，网关消费者 key 会被判 InvalidApiKey）
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY_NATIVE_BASE_URL:-http://higress:8080/api/v1}
       - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - APPBILI__LOG__OUTPUT=both
       # ===== settings 域（原设置服务，前缀 APPSETTINGS__）=====
       - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - MINIO__ENDPOINT=
+      - MINIO__ACCESS_KEY=
+      - MINIO__SECRET_KEY=
+      - MINIO__BUCKET=
+      - MINIO__PUBLIC_ENDPOINT=
+      - MINIO__PUBLIC_HOST=
+      - MINIO_ACCESS_KEY=
+      - MINIO_SECRET_KEY=
+      - APP_CLOUD_API_KEY=${APISIX_CONSUMER_KEY:-}
       - APPSETTINGS__LOG__OUTPUT=both
       # ===== 共享（三域共用，去重后仅保留一份）=====
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
@@ -508,8 +499,6 @@ services:
     # 三监听口语义不变：8006=auth / 8010=bili / 8015=settings（仅回环调试用）
     ports:
       - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
-      - "127.0.0.1:${APP_USER_BILI_PORT:-8010}:8010"
-      - "127.0.0.1:${APP_USER_SETTINGS_PORT:-8015}:8015"
     volumes:
       - app_user_logs:/app/logs
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
@@ -549,7 +538,6 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key

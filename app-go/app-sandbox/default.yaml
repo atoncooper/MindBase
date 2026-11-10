@@ -77,7 +77,7 @@ admission:
 quota:
   enabled: true
   appPay:
-    baseUrl: ""              # fallback APP_PAY_BASE_URL, e.g. http://apisix:9080/internal/pay
+    baseUrl: "http://apisix:9080/internal/pay"
     apiKey: ""               # fallback APISIX_CONSUMER_KEY
     timeoutMs: 2000
     cacheTtlMs: 60000

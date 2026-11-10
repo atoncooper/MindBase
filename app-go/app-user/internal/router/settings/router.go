@@ -40,8 +40,8 @@ func New(d Deps) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	settingsSvc = d.Svc
 	e := gin.New()
-	e.SetTrustedProxies(nil)
-	e.Use(middleware.Recovery(), middleware.RequestID(), middleware.Metrics("settings"), middleware.AccessLog(), middleware.SecurityHeaders(), middleware.BodyLimit(4<<20), middleware.CORS(nil))
+	e.SetTrustedProxies(d.Cfg.Server.TrustedProxies)
+	e.Use(middleware.Recovery(), middleware.RequestID(), middleware.Metrics("settings"), middleware.AccessLog(), middleware.SecurityHeaders(), middleware.BodyLimit(maxBodyBytes(d.Cfg.Server.MaxBodyBytes, 4<<20)), middleware.CORS(nil))
 
 	e.GET("/health", func(c *gin.Context) {
 		body := gin.H{"status": "ok", "service": "app-settings"}
@@ -91,4 +91,11 @@ func currentUID(c *gin.Context) (int64, bool) {
 
 func apiErr(c *gin.Context, status int, detail string) {
 	c.JSON(status, gin.H{"detail": detail})
+}
+
+func maxBodyBytes(configured, fallback int) int64 {
+	if configured > 0 {
+		return int64(configured)
+	}
+	return int64(fallback)
 }

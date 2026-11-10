@@ -1,7 +1,7 @@
 # app-user — 用户域服务（Go）
 
 > 合并自 app-auth（身份）+ app-settings（偏好）+ app-bili（B 站获取）。
-> 单 Go module / 单镜像 / 单进程；三个 Gin engine 分别监听 8006 / 8010 / 8015，
+> 单 Go module / 单镜像 / 单进程 / 单 HTTP listener（8006）；auth、bili、settings 是同一进程内的三个 Gin engine，由路径分发器挂载。
 > 对外路径与端口语义保持不变（APISIX / nginx / app-ts 无需感知内部结构）。
 
 ## 端口
@@ -75,11 +75,11 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 `db/migrations/20261107_user_perf_indexes.sql` 是给**已存在的共享库**补索引的一次性脚本（全新库已由 `db/system.sql` 建好）：低峰执行，逐组提交；`rbac_user_role` 加唯一索引前先按 (uid, role_id) 去重（脚本内有探查/去重 SQL）。
 ### 可选 TLS（内网加密）
 
-默认三监听口是 **明文 HTTP**（TLS 由 nginx 终止）。如需 nginx/APISIX → app-user 这一段也加密：
+默认单监听口是 **明文 HTTP**（TLS 由 nginx 终止）。如需 nginx/APISIX → app-user 这一段也加密：
 
 1. 生成/挂载覆盖 `app-user` 主机名的证书（dev 可用 `scripts/gen-certs.sh` + `MB_CERT_EXTRA_SAN=app-user`）；
 2. 设置 `APP_USER_TLS_CERT_FILE=/certs/fullchain.pem`、`APP_USER_TLS_KEY_FILE=/certs/privkey.pem`（compose 已挂载 `./nginx/certs` → `/certs`）；
-3. 同步调用方：APISIX 三个 upstream 改 `scheme: https`（自签阶段 `tls.verify: false`，正式 CA 后开启校验 + 健康检查 `type: https`）；nginx `$appauth_upstream` 改 `https://app-user:8006` 并配置 `proxy_ssl_verify`；app-ts `APP_AUTH_BASE_URL`/`APP_BILI_BASE_URL` 改 https 并挂 CA（`NODE_EXTRA_CA_CERTS`）。
+3. 同步调用方：APISIX upstream 改 `scheme: https`（自签阶段 `tls.verify: false`，正式 CA 后开启校验 + 健康检查 `type: https`）；nginx `$appauth_upstream` 改 `https://app-user:8006` 并配置 `proxy_ssl_verify`；app-ts `appAuth.baseUrl`/`appBili.baseUrl` 改 https 并挂 CA（`NODE_EXTRA_CA_CERTS`）。
 
 未设置时行为完全不变（HTTP）；设置后 `main` 对三个 `http.Server` 调 `ListenAndServeTLS`。
 ## 分层规则（router 层已用 tests/arch_test.go 钉死）
@@ -102,19 +102,19 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 
 - 每域保留原有 env 前缀：`APPAUTH__*` / `APPBILI__*` / `APPSETTINGS__*`（compose 三套合并传入）。
 - DTO：`internal/dto/{auth,bili,settings}` 存放 HTTP wire 请求/响应（json+binding 标签），router 只做绑定/校验/响应映射；业务编排在 `internal/service/auth`（含 `account_flow.go` 的手机号/密码/绑定流程），不把 step-up/验证码编排塞回 router。
-- 共享 env：`RDBMS__URL`（经三套前缀映射）、`MONGO__URI`、`REDIS__URL`、`MINIO__*`、`SECURITY__API_KEY_ENCRYPTION_KEY(_FILE)`、`EMAIL__*`/`WECHAT__*`、`SMS__ACCESS_KEY_ID`/`SMS__ACCESS_KEY_SECRET`、`AI_GATEWAY__*`、`APISIX_CONSUMER_KEY`。
+- 共享 env：`RDBMS__URL`（经三套前缀映射）、`MONGO__URI`、`REDIS__URL`、`SECURITY__API_KEY_ENCRYPTION_KEY(_FILE)`、`EMAIL__*`/`WECHAT__*`、`SMS__ACCESS_KEY_ID`/`SMS__ACCESS_KEY_SECRET`、`AI_GATEWAY__*`、`APISIX_CONSUMER_KEY`。
 - 短信验证码：`sms.provider=dysmsapi`（默认，自定义签名/模板）或 `dypnsapi`（号码认证服务-短信认证，个人开发者可用赠送签名/模板）；`sms.code_source: aliyun` 时由阿里云生成并核验验证码（`CheckSmsVerifyCode` 免费，明文码不落库），默认 `local` 保持本地生成/核验。
 - MySQL DSN 固定 `loc=UTC`（与 bili/settings 原语义一致）；`time.Local` 在 DB 初始化后设置。
 
 ## 运行
 
 ```bash
-cd app-go/app-user && go run ./cmd/app-user   # 需要 MySQL/Mongo/Redis/MinIO 可达
+cd app-go/app-user && go run ./cmd/app-user   # 需要 MySQL/Mongo/Redis 可达；头像对象存储经 app-cloud
 go test ./...                       # tests/ 黑盒测试（无需真实依赖）
 docker compose up -d app-user
 
 # 从旧三服务（app-auth/app-bili/app-settings）升级时：旧容器仍会占用
-# 8006/8010/8015，必须先移除，否则新 app-user 会报 port already allocated：
+# 仅保留 8006；旧的 8010/8015 端口映射必须先移除，否则会报 port already allocated：
 docker compose up -d --remove-orphans app-user
 # 已存在索引的共享库补索引（全新库无需执行）：
 #   docker exec -i mind-base-mysql mysql -umind_base -p*** mind_base \

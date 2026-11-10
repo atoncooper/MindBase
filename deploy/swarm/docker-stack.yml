@@ -560,15 +560,19 @@ services:
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # ASR 走 Higress 原生透传（/api/v1 → DashScope）
-      - AI_GATEWAY__BASE_URL=http://higress:8080/api/v1
       - APPBILI__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       - APPBILI__LOG__OUTPUT=both
       # ── settings（8015）──
       - APPSETTINGS__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
-      - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO__BUCKET=${MINIO_BUCKET:-drive-videos}
+      - MINIO__ENDPOINT=
+      - MINIO__ACCESS_KEY=
+      - MINIO__SECRET_KEY=
+      - MINIO__BUCKET=
+      - MINIO__PUBLIC_ENDPOINT=
+      - MINIO__PUBLIC_HOST=
+      - MINIO_ACCESS_KEY=
+      - MINIO_SECRET_KEY=
+      - APP_CLOUD_API_KEY=${APISIX_CONSUMER_KEY:-}
       - APPSETTINGS__LOG__OUTPUT=both
     secrets:
       - api_key_encryption_key      # 挂载 /run/secrets/api_key_encryption_key
@@ -604,7 +608,6 @@ services:
       - APISIX_CONSUMER_KEY=${APISIX_CONSUMER_KEY:-}
       - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
@@ -697,11 +700,6 @@ services:
     environment:
       - SERVER__HOST=0.0.0.0
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
-      - APP_BILI_BASE_URL=http://app-user:8010
-      - APP_CLOUD_BASE_URL=http://app-cloud:8007
-      - APP_TASK_BASE_URL=http://apisix:9080
-      - APP_AUTH_BASE_URL=http://app-user:8006
-      - QUIZ_EXECUTOR_URL=http://apisix:9080/internal/quiz/generate-llm
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -709,18 +707,12 @@ services:
       - OCR__ENABLED=${OCR__ENABLED:-true}
       - OCR__MODEL=${OCR__MODEL:-z-ai/glm-5.3-flash}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # LLM 统一 GLM-5.3-flash（镜像重建含新 default.yaml 后可删）
       - LLM__QUIZ_MODEL=z-ai/glm-5.3-flash
       - KG__EXTRACT_MODEL=z-ai/glm-5.3-flash
-      - APP_PAY_BASE_URL=http://apisix:9080/internal/pay
-      - APP_QUIZ_BASE_URL=http://apisix:9080/internal/quiz
-      - KG_GRPC__TARGET=app-kg:8013
       - KG_GRPC__PROTO_PATH=/app/proto/kg/v1/kg.proto
-      - CONTENT_MCP__URL=http://app-content-mcp:8019/mcp
       - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - MILVUS__ADDRESS=milvus:19530
       # stdout-only：镜像 /app/logs 属主未修复前文件日志 EACCES 会崩进程
       - LOG__FILEENABLED=false
       # —— .env 透传（stack 无 env_file；SDK 只认环境变量）——

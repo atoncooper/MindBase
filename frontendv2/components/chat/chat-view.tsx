@@ -127,6 +127,8 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [quizDialogOpen, setQuizDialogOpen] = useState(false);
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
+  // Chat-dialog selection from the user's Coding Plan model catalog (code agent).
+  const [codingPlanModel, setCodingPlanModel] = useState<string | undefined>();
   // Which user message is currently being edited inline (at most one).
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -401,6 +403,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
             question,
             chat_session_id: activeSessionId,
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
+            ...(codingPlanModel ? { coding_plan_model: codingPlanModel } : {}),
             ...(images && images.length > 0 ? { images } : {}),
             // 科研项目上下文：仅在 URL 带入项目时附加，普通聊天请求体保持不变。
             ...(academicProjectId ? { academic_project_id: academicProjectId } : {}),
@@ -598,7 +601,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
         void refreshQuota();
       }
     },
-    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds, academicProjectId, uploadUuid]
+    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds, academicProjectId, uploadUuid, codingPlanModel]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----

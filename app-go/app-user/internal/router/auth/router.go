@@ -46,8 +46,8 @@ type Deps struct {
 func New(d Deps) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
-	e.SetTrustedProxies(nil) // X-Forwarded-For comes only from our own gateway
-	e.Use(middleware.Recovery(), middleware.RequestID(), middleware.Metrics("auth"), middleware.AccessLog(), middleware.SecurityHeaders(), middleware.CORS(d.Cfg.SecurityCORS.AllowOrigins), middleware.BodyLimit(1<<20))
+	e.SetTrustedProxies(d.Cfg.Server.TrustedProxies) // X-Forwarded-For comes only from our own gateway
+	e.Use(middleware.Recovery(), middleware.RequestID(), middleware.Metrics("auth"), middleware.AccessLog(), middleware.SecurityHeaders(), middleware.CORS(d.Cfg.SecurityCORS.AllowOrigins), middleware.BodyLimit(maxBodyBytes(d.Cfg.Server.MaxBodyBytes, 1<<20)))
 
 	e.GET("/health", func(c *gin.Context) {
 		body := gin.H{"status": "ok", "service": "app-user"}
@@ -197,4 +197,11 @@ func apiFlowErr(c *gin.Context, err error) {
 		return
 	}
 	apiErr(c, http.StatusBadRequest, err.Error())
+}
+
+func maxBodyBytes(configured, fallback int) int64 {
+	if configured > 0 {
+		return int64(configured)
+	}
+	return int64(fallback)
 }

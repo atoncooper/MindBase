@@ -9,6 +9,13 @@
 3. **优先级**（多数服务一致，以各自 config loader 为准）：YAML 默认值 < `.env`（godotenv）< 真实环境变量（compose `env_file` / `environment:` 注入）。
 4. **共享 env**：一个 `.env` 驱动全部服务——各服务按需读取同名共享变量（`RDBMS__URL`/`MONGO__URI`/`REDIS__URL`/`MINIO__*`/`AI_GATEWAY__*`/`NEO4J_PASSWORD`），避免同一密钥抄多份。**例外——主加密密钥不进 .env**：独立密钥文件 `secrets/api_key_encryption_key`（gitignored，一行 base64），服务经 `SECURITY__API_KEY_ENCRYPTION_KEY_FILE` 约定读取（FILE > env，直读 env 仅应急回退；compose 挂载到 `/run/secrets/`）。
 
+## endpoint / 连接组件与密钥边界
+
+- **endpoint、服务名、端口、模型名、开关、超时、并发** → 写各服务 YAML（app-ts `config/default.yaml`、app-user/app-cloud 等 `default.yaml`）；
+- **密钥、含密码的连接串**（API key、AccessKey、RDBMS/Mongo/Redis DSN）→ 只放 `.env` 或 Docker secret / `_FILE`；
+- Docker compose 不再重复设置 `APP_*_BASE_URL`、`AI_GATEWAY__BASE_URL`、`MILVUS__ADDRESS`、`CONTENT_MCP__URL` 等 endpoint；
+- 本地非 Docker 开发需要 127.0.0.1 时，用各服务支持的 `config/local.yaml`（gitignored）覆盖，不要往 `.env` 塞 endpoint。
+
 ## 各服务配置入口
 
 | 服务 | 配置入口 | env 前缀 | 敏感值占位符 |
@@ -24,7 +31,7 @@
 | app-admin | `app-go/app-admin/default.yaml`（embed）+ `-config` 覆盖层 | `APPADMIN__` | `APPADMIN__RDBMS__URL`；`APPADMIN__SEED__USERNAME`/`APPADMIN__SEED__PASSWORD`（种子账户）；`APPADMIN__SESSION__TTL_MINUTES`；支付运营 `APPADMIN__PAY_RDBMS__URL`/`APPADMIN__PAY__OPS__KEY`/`APPADMIN__PAY__AUDIT_FILE` |
 | frontend | 构建期 `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_APISIX_HOST`（compose 插值）；运行时 `SHARE_DOMAIN`/`SHARE_PUBLIC_IP`（分享域名链，见 [sharing.md](sharing.md)） | — | — |
 
-app-user 单进程监听三个口：8006（auth 路由）/ 8010（bili 路由）/ 8015（settings 路由），语义与原三服务一致；服务内端口可用 `APPAUTH__SERVER__PORT` / `APPBILI__SERVER__PORT` / `APPSETTINGS__SERVER__PORT` 覆盖（默认即 8006/8010/8015），compose 宿主回环映射用 `APP_USER_AUTH_PORT` / `APP_USER_BILI_PORT` / `APP_USER_SETTINGS_PORT` 覆盖。
+app-user 单进程监听三个口：8006（auth 路由）/ 8010（bili 路由）/ 8015（settings 路由），语义与原三服务一致；服务内端口可用 `APPAUTH__SERVER__PORT` / `APPBILI__SERVER__PORT` / `APPSETTINGS__SERVER__PORT` 覆盖（默认即 8006），compose 宿主回环映射用 `APP_USER_AUTH_PORT` / `APP_USER_BILI_PORT` / `APP_USER_SETTINGS_PORT` 覆盖。
 
 app-content 为**单进程 / 单端口**：唯一 HTTPS listener 由根 `server`（default.yaml）配置，env 用 `CONTENT__SERVER__*`（旧 `APPBOARD__SERVER__*` 仍兼容）；compose 宿主回环映射统一 `APP_CONTENT_PORT`（默认 8004）。
 
@@ -36,6 +43,131 @@ app-content 为**单进程 / 单端口**：唯一 HTTPS listener 由根 `server`
 对应 env 前缀 `CONTENT__`（双下划线嵌套，如 `CONTENT__SECURITY__RATE_LIMIT__RPS=200`）；完整默认值见 `app-go/app-content/default.yaml`。
 
 改某个服务的配置 = 改它的 YAML 默认值（committed）或在 `.env` / compose `environment:` 覆盖（敏感值）。**新增配置项必须同步该服务自己的 default.yaml**；仅密钥类才进 `.env.example`。
+
+### app-user 日志硬化
+
+`auth.log` 支持：
+
+```yaml
+log:
+  level: info
+  format: json
+  output: stdout       # stdout|file|both
+  add_source: true     # 输出 caller file:line
+  redact_keys: ["password", "token", "secret", "api_key", "authorization", "cookie", "access_key"]
+  sampling:
+    enabled: true
+    initial: 5         # 同 message 前 5 条必打
+    thereafter: 100    # 之后每 100 条打一条
+  async:
+    enabled: true
+    buffer: 4096
+    drop_when_full: true
+  file:
+    path: /app/logs/app-user.log
+    max_size: 100
+    max_backups: 7
+    max_age: 30
+    compress: true
+    compress_algorithm: "gzip"  # gzip | zstd
+    compress_level: 6           # gzip 1-9 / zstd 1-19
+    compress_queue: 8
+    max_total_size: 2048        # MB，0=不限
+```
+
+- 活动文件保持明文（可 tail）；轮转后的归档按 `compress_algorithm` 压缩为 `.gz` 或 `.zst`；
+- 压缩在独立 worker 队列执行，不阻塞请求；失败保留原文件并打印错误；
+- 归档按 `max_backups` / `max_age` / `max_total_size` 清理；
+- 默认脱敏 key（password/token/secret/api_key/authorization/cookie/access_key/sms_code 等）在 handler 层统一打码，业务日志不需要逐处处理；
+- 采样按 level+message 去重，避免高频错误刷盘；
+- async 使用有界 channel + 丢弃策略，避免日志阻塞请求；
+- 轮转由 lumberjack 负责（大小/份数/天数/压缩）；
+- 访问日志开关/采样/格式在 `server.access_log_*`（独立于业务日志）。
+
+### app-user HTTP 入口硬化
+
+`auth.server` 是单 listener（8006）的完整配置：
+
+```yaml
+server:
+  host: 0.0.0.0
+  port: 8006
+  read_header_timeout_seconds: 5
+  read_timeout_seconds: 15
+  write_timeout_seconds: 30
+  idle_timeout_seconds: 60
+  shutdown_timeout_seconds: 10
+  max_header_bytes: 1048576
+  max_body_bytes: 1048576
+  trusted_proxies: ["127.0.0.1", "::1", "172.16.0.0/12"]
+  max_connections: 1024
+  max_concurrent: 64
+  max_concurrent_per_ip: 16
+  http2_enabled: true
+  compression: "both"          # none | gzip | br | both
+  keepalive_max_requests: 1000
+  access_log_enabled: true
+  access_log_sample_rate: 100
+  access_log_format: "slog"    # slog | text
+tls:
+  min_version: "1.2"
+  cipher_suites: []
+  client_ca_file: ""
+  client_auth: "none"
+```
+
+- `max_body_bytes` 按域配置：auth/bili 1MB、settings 4MB；
+- 连接/并发/每 IP 并发由 `internal/infra/httpserver` 在 engine 前统一执行；
+- gzip/br 根据 `Accept-Encoding` 协商；
+- keep-alive 请求数上限通过 `Connection: close` 生效；
+- 访问日志支持关闭、采样率、slog/text 格式；
+- TLS 支持最低版本、cipher suites、mTLS 客户端 CA/校验模式；
+- `http2_enabled: false` 时强制 HTTP/1.1（TLS 下默认启用 h2）。
+
+### app-user 连接池
+
+app-user 的 MySQL / Redis / Mongo 池参数在 `app-go/app-user/default.yaml`：
+
+```yaml
+rdbms:
+  max_open_conns: 30
+  max_idle_conns: 10
+  conn_max_lifetime: 1800
+  conn_max_idle_time_seconds: 300
+redis:
+  pool_size: 50
+  min_idle_conns: 5
+  pool_timeout_seconds: 5
+  dial_timeout_seconds: 5
+  read_timeout_seconds: 3
+  write_timeout_seconds: 3
+  max_retries: 2
+mongo:
+  max_pool_size: 50
+  min_pool_size: 5
+  max_conn_idle_time_seconds: 300
+  connect_timeout_seconds: 5
+  server_selection_timeout_seconds: 5
+```
+
+auth 与 settings 共用一个 MySQL pool（`auth.rdbms`）；bili 使用独立 pool（`bili.rdbms`），避免采集/ASR 查询打满 forward-auth 热路径。auth/bili 共用同一个 Redis client 池；Mongo 池归 bili 域。
+
+### 联网搜索（app-ts：DeepSeek / Tavily / SearXNG）
+
+非敏感开关在 `app-ts/config/default.yaml` 的 `web` 段；**只有 API key 进 `.env`**：
+
+```yaml
+web:
+  deepseekApiKey: ${DEEPSEEK_API_KEY:}   # 为空 = DeepSeek 引擎禁用
+  deepseekApiBaseUrl: https://api.deepseek.com
+  deepseekFetchPrimary: true
+  searchTavilyApiKey: ${TAVILY_API_KEY:}
+  searchSearxngUrl: ${SEARXNG_URL:}
+```
+
+- `DEEPSEEK_API_KEY`：DeepSeek 官方网页搜索/抓取（`web_search` 首选引擎；`fetch_webpage` 官方代抓优先，失败回退本地抓取）；
+- 未配置 DeepSeek 时依次回退 Tavily → SearXNG → 百度/Bing 抓取；
+- 只配 key 即可，不要把 key 写进 YAML；`.env.example` 已给出占位说明。
 
 ### 短信验证码（app-user，阿里云双产品）
 

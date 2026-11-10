@@ -136,29 +136,109 @@ export interface ChatInteraction {
   context?: string;
 }
 
-// Agent task plan: one step of the plan tool snapshot. Known statuses are
-// pending | in_progress | done | failed | skipped; unknown values render as "·"
-// so an older/newer backend never breaks the panel.
+// Agent task plan: one step of the legacy linear plan snapshot. Known statuses
+// are pending | in_progress | done | failed | skipped; unknown values render as
+// "·" so an older/newer backend never breaks the panel.
 export interface ChatPlanStep {
   desc: string;
   status: string;
   note: string;
 }
 
+/** Node statuses defined by the DAG plan contract ("running" = in_progress). */
+export type ChatPlanNodeStatus = "pending" | "in_progress" | "done" | "failed" | "skipped";
+
+// One node of the DAG plan (new `plan` frame shape). `deps` lists the ids of the
+// nodes that must finish first; the panel lays the graph out topologically and
+// degrades to a flat list when it is cyclic or references missing nodes.
+export interface ChatPlanNode {
+  id: string;
+  title: string;
+  /** owning sub-agent name; "" when the backend omits it */
+  agent: string;
+  deps: string[];
+  status: ChatPlanNodeStatus;
+  note?: string;
+}
+
 // Read-only task plan carried by the `plan` SSE frame (plan tool). The version
 // bumps on every mutation, so the same version is never appended twice. The plan
 // is display-only: the chat view keeps it in memory on the streaming assistant
 // message and a history reload loses it (same nature as the reasoning stream).
+//
+// Both payload shapes are supported: the legacy linear `steps` and the DAG
+// `nodes` (+ optional `goal`). The backend may keep sending `steps` while the
+// DAG rolls out; when present, `nodes` is authoritative for rendering.
 export interface ChatPlan {
   version: number;
+  /** high-level goal of the plan (new DAG payloads) */
+  goal?: string;
+  /** DAG nodes (new payloads); absent on legacy linear frames */
+  nodes?: ChatPlanNode[];
   steps: ChatPlanStep[];
-  /** done + skipped steps */
+  /** done + skipped steps (or nodes when only nodes are present) */
   done: number;
   total: number;
 }
 
-// Normalize a `plan` frame payload; drops malformed steps so the panel never
-// renders a half-parsed plan. Returns null when the frame carries no usable plan.
+const PLAN_NODE_STATUSES: readonly string[] = [
+  "pending",
+  "in_progress",
+  "done",
+  "failed",
+  "skipped",
+];
+
+// Validate one raw DAG node. Returns null when it has no usable id; other
+// fields are normalized defensively so a partial/older node cannot crash the
+// panel (missing title falls back to the id, unknown status to "pending").
+function normalizePlanNode(entry: unknown): ChatPlanNode | null {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const node = entry as Record<string, unknown>;
+  const id = typeof node.id === "string" ? node.id.trim() : "";
+  if (!id) return null;
+  const title = typeof node.title === "string" ? node.title.trim() : "";
+  const status =
+    typeof node.status === "string" && PLAN_NODE_STATUSES.includes(node.status)
+      ? (node.status as ChatPlanNodeStatus)
+      : "pending";
+  const deps: string[] = [];
+  if (Array.isArray(node.deps)) {
+    for (const dep of node.deps) {
+      if (typeof dep !== "string") continue;
+      const value = dep.trim();
+      if (value && !deps.includes(value)) deps.push(value);
+    }
+  }
+  const note = typeof node.note === "string" ? node.note.trim() : "";
+  return {
+    id,
+    title: title || id,
+    agent: typeof node.agent === "string" ? node.agent.trim() : "",
+    deps,
+    status,
+    ...(note ? { note } : {}),
+  };
+}
+
+function planNodesFromFrame(raw: unknown): ChatPlanNode[] {
+  if (!Array.isArray(raw)) return [];
+  const nodes: ChatPlanNode[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const node = normalizePlanNode(entry);
+    // Duplicate ids make the DAG ambiguous; keep the first occurrence.
+    if (!node || seen.has(node.id)) continue;
+    seen.add(node.id);
+    nodes.push(node);
+  }
+  return nodes;
+}
+
+// Normalize a `plan` frame payload; drops malformed steps/nodes so the panel
+// never renders a half-parsed plan. A legacy frame needs `steps`; a DAG frame
+// with only `nodes` is valid too (done/total are derived from node statuses).
+// Returns null when the frame carries neither shape.
 function planFromFrame(data: Record<string, unknown>): ChatPlan | null {
   const raw = data.plan;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -174,15 +254,29 @@ function planFromFrame(data: Record<string, unknown>): ChatPlan | null {
       note: typeof step.note === "string" ? step.note : "",
     }))
     .filter((step) => step.desc.trim().length > 0);
-  if (steps.length === 0) return null;
-  const rawTotal = typeof payload.total === "number" ? payload.total : steps.length;
-  const total = rawTotal > 0 ? rawTotal : steps.length;
+  const nodes = planNodesFromFrame(payload.nodes);
+  if (steps.length === 0 && nodes.length === 0) return null;
+
+  const isDone = (status: string) => status === "done" || status === "skipped";
+  // When both shapes arrive, nodes describe the same plan at finer grain.
+  const computedDone =
+    nodes.length > 0
+      ? nodes.filter((node) => isDone(node.status)).length
+      : steps.filter((step) => isDone(step.status)).length;
+  const fallbackTotal = nodes.length > 0 ? nodes.length : steps.length;
+  const rawTotal =
+    typeof payload.total === "number" && Number.isFinite(payload.total)
+      ? payload.total
+      : fallbackTotal;
+  const total = rawTotal > 0 ? rawTotal : fallbackTotal;
   const rawDone =
-    typeof payload.done === "number"
-      ? payload.done
-      : steps.filter((step) => step.status === "done" || step.status === "skipped").length;
+    typeof payload.done === "number" && Number.isFinite(payload.done) ? payload.done : computedDone;
+  const goal = typeof payload.goal === "string" ? payload.goal.trim() : "";
+
   return {
     version: typeof payload.version === "number" ? payload.version : 0,
+    ...(goal ? { goal } : {}),
+    ...(nodes.length > 0 ? { nodes } : {}),
     steps,
     done: Math.min(Math.max(rawDone, 0), total),
     total,

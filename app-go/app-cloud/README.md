@@ -66,3 +66,10 @@ docker compose up -d app-cloud
 - 多实例设计：[plan/1.0.13-AppCloud-MultiReplica](../../plan/1.0.13-AppCloud-MultiReplica/1.0.13-AppCloud-MultiReplica.md)
 - 分布式演进：[plan/1.0.14-AppCloud-Distributed](../../plan/1.0.14-AppCloud-Distributed/1.0.14-AppCloud-Distributed.md)（存储层 HA 路线 / 一致性矩阵 / 触发条件）
 - 规范：AGENTS.md §2.14
+
+
+## 头像对象存储（app-user M2M）
+
+- `POST /internal/cloud/avatar?uid=`：app-user 上传头像原始字节（`Content-Type: image/png|jpeg|webp`，≤2MB），MinIO key = `avatars/{uid}/{random}.{ext}`；
+- `GET /internal/cloud/avatar?uid=&key=`：app-user 公开 `/avatar/file/*` 代理读取；
+- 两者均走 `/internal/cloud` 的 apikey + `?uid=` 守卫；MinIO 凭据只存在于 app-cloud。

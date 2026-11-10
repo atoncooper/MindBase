@@ -59,6 +59,30 @@ type AppConfig struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+
+	// Hardening / lifecycle knobs for the single HTTP listener. Zero values
+	// fall back to safe defaults in cmd/app-user (never unbounded timeouts).
+	ReadHeaderTimeoutSeconds int `yaml:"read_header_timeout_seconds"`
+	ReadTimeoutSeconds       int `yaml:"read_timeout_seconds"`
+	WriteTimeoutSeconds      int `yaml:"write_timeout_seconds"`
+	IdleTimeoutSeconds       int `yaml:"idle_timeout_seconds"`
+	ShutdownTimeoutSeconds   int `yaml:"shutdown_timeout_seconds"`
+	MaxHeaderBytes           int `yaml:"max_header_bytes"`
+
+	// Request/connection limits and edge behaviour.
+	MaxBodyBytes         int      `yaml:"max_body_bytes"`
+	TrustedProxies       []string `yaml:"trusted_proxies"`
+	MaxConnections       int      `yaml:"max_connections"`
+	MaxConcurrent        int      `yaml:"max_concurrent"`
+	MaxConcurrentPerIP   int      `yaml:"max_concurrent_per_ip"`
+	HTTP2Enabled         bool     `yaml:"http2_enabled"`
+	Compression          string   `yaml:"compression"` // none|gzip|br|both
+	KeepAliveMaxRequests int      `yaml:"keepalive_max_requests"`
+
+	// Access log sampling/format (access_log.enabled=false disables it).
+	AccessLogEnabled    bool   `yaml:"access_log_enabled"`
+	AccessLogSampleRate int    `yaml:"access_log_sample_rate"` // 0-100 percent
+	AccessLogFormat     string `yaml:"access_log_format"`      // slog|text
 }
 
 type RDBMSConfig struct {
@@ -66,10 +90,21 @@ type RDBMSConfig struct {
 	MaxOpenConns    int    `yaml:"max_open_conns"`
 	MaxIdleConns    int    `yaml:"max_idle_conns"`
 	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time_seconds"`
 }
 
 type RedisConfig struct {
 	URL string `yaml:"url"`
+
+	// Connection pool / timeout knobs (go-redis). Zero values keep go-redis
+	// defaults; YAML defaults are set explicitly for predictability.
+	PoolSize            int `yaml:"pool_size"`
+	MinIdleConns        int `yaml:"min_idle_conns"`
+	PoolTimeoutSeconds  int `yaml:"pool_timeout_seconds"`
+	DialTimeoutSeconds  int `yaml:"dial_timeout_seconds"`
+	ReadTimeoutSeconds  int `yaml:"read_timeout_seconds"`
+	WriteTimeoutSeconds int `yaml:"write_timeout_seconds"`
+	MaxRetries          int `yaml:"max_retries"`
 }
 
 type AuthTokenConfig struct {
@@ -205,6 +240,24 @@ type LogConfig struct {
 	Format string        `yaml:"format"`
 	Output string        `yaml:"output"`
 	File   LogFileConfig `yaml:"file"`
+
+	AddSource bool `yaml:"add_source"`
+	// RedactKeys masks matching attribute keys (default list if empty).
+	RedactKeys []string          `yaml:"redact_keys"`
+	Sampling   LogSamplingConfig `yaml:"sampling"`
+	Async      LogAsyncConfig    `yaml:"async"`
+}
+
+type LogSamplingConfig struct {
+	Enabled    bool `yaml:"enabled"`
+	Initial    int  `yaml:"initial"`
+	Thereafter int  `yaml:"thereafter"`
+}
+
+type LogAsyncConfig struct {
+	Enabled      bool `yaml:"enabled"`
+	Buffer       int  `yaml:"buffer"`
+	DropWhenFull bool `yaml:"drop_when_full"`
 }
 
 type LogFileConfig struct {
@@ -213,6 +266,11 @@ type LogFileConfig struct {
 	MaxBackups int    `yaml:"max_backups"`
 	MaxAge     int    `yaml:"max_age"`
 	Compress   bool   `yaml:"compress"`
+
+	CompressAlgorithm string `yaml:"compress_algorithm"`
+	CompressLevel     int    `yaml:"compress_level"`
+	CompressQueue     int    `yaml:"compress_queue"`
+	MaxTotalSize      int    `yaml:"max_total_size"`
 }
 
 // Load parses embedded default.yaml and applies env overrides. Best-effort

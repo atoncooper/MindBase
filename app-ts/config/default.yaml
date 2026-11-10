@@ -7,7 +7,7 @@
 # =============================================================================
 
 server:
-  host: 127.0.0.1
+  host: 0.0.0.0
   # 8000 = the port the retired Python backend owned; app-ts inherits it
   port: 8000
 
@@ -17,34 +17,34 @@ redis:
 
 appBili:
   # 获取域服务（Go）：ASR 委派 + 用户收藏夹 scope 只读（internal M2M）
-  baseUrl: ${APP_BILI_BASE_URL:http://127.0.0.1:8010}
+  baseUrl: http://app-user:8006
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 30000
   cacheTtlMs: 30000
 
 appTask:
   # app-task 调度服务（任务注册 /internal/task 回调 /internal/email/send；经 APISIX key-auth）
-  baseUrl: ${APP_TASK_BASE_URL:http://127.0.0.1:9080}
+  baseUrl: http://apisix:9080
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 15000
 
 appAuth:
   # 认证服务内部用户查询（/internal/auth/user/{uid}，apikey 守卫）
-  baseUrl: ${APP_AUTH_BASE_URL:http://127.0.0.1:8006}
+  baseUrl: http://app-user:8006
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 5000
 
 appUserSettings:
   # app-user settings 监听口（8015）：Coding Plan 内部 M2M
   # GET /internal/settings/coding-plan/{uid}（apikey 守卫；Coding Plan 属设置域）
-  baseUrl: ${APP_USER_SETTINGS_BASE_URL:http://app-user:8015}
+  baseUrl: http://app-user:8006
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 5000
 
 appCloud:
   # 云盘文档智能读取（/internal/cloud/summary，apikey 守卫）；uid 只经 X-Uid
   # 与查询参数下发，永不出现在 LLM 可写参数里
-  baseUrl: ${APP_CLOUD_BASE_URL:http://app-cloud:8007}
+  baseUrl: http://app-cloud:8007
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 8000
 
@@ -54,15 +54,15 @@ taskQuiz:
   enabled: true
   sourceDatabase: mind_base          # 共享 Mongo 库（app-content quiz 面读取同一集合）
   docCollection: task_quiz_questions
-  executorUrl: ${QUIZ_EXECUTOR_URL:http://127.0.0.1:9080/internal/quiz/generate-llm}
+  executorUrl: http://apisix:9080/internal/quiz/generate-llm
   genRetries: 3
 
 minio:
   # 技能 zip 存储（skills/{uid}/{skill_id}.zip；空 endpoint = skills 关闭）
-  endpoint: ${MINIO__ENDPOINT:}
+  endpoint: http://minio:9000
   # 聊天图片展示 URL 的前缀 base（/minio-proxy/ 由 nginx 代理到 minio:9000 并
   # 回写 Host，签名按内网 endpoint 计算）；空 = 同源相对路径（生产 nginx 即同源）
-  publicEndpoint: ${MINIO__PUBLIC_ENDPOINT:}
+  publicEndpoint: ""
   accessKey: ${MINIO__ACCESS_KEY:}
   secretKey: ${MINIO__SECRET_KEY:}
   bucket: ${MINIO__BUCKET:drive-videos}
@@ -83,7 +83,7 @@ vectorize:
 
 aiGateway:
   # OpenAI 兼容面（LLM / embedding）；nativeBaseURL 由 baseUrl 派生（去尾 /v1 加 /api/v1）
-  baseUrl: ${AI_GATEWAY__BASE_URL:http://127.0.0.1:18080/v1}
+  baseUrl: http://higress:8080/v1
   apiKey: ${AI_GATEWAY__API_KEY}
 
 llm:
@@ -109,7 +109,7 @@ rerank:
   minRelevanceScore: 0
 
 milvus:
-  address: 127.0.0.1:19530
+  address: milvus:19530
   token: ${MILVUS__TOKEN}
   # app-ts 独立新库，与 Python/Go 后端数据隔离
   database: mind_base_ts
@@ -167,14 +167,14 @@ toolsStub:
 appPay:
   # 会员档位查询（app-pay 经 APISIX key-auth 内部路由 /internal/pay/*；
   # 对齐 app-cloud quota.go 的消费模式：TTL 缓存 + fail-open free）
-  baseUrl: ${APP_PAY_BASE_URL:http://127.0.0.1:9080/internal/pay}
+  baseUrl: http://apisix:9080/internal/pay
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 2000
   cacheTtlMs: 60000
 
 appQuiz:
   # app-content（quiz 面）存储写面（经 APISIX key-auth 内部路由 /internal/quiz/*）
-  baseUrl: ${APP_QUIZ_BASE_URL:http://127.0.0.1:9080/internal/quiz}
+  baseUrl: http://apisix:9080/internal/quiz
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 15000
 
@@ -182,9 +182,9 @@ kgGrpc:
   # false = KG 能力整体关闭（app-kg 未部署时不注册工具与路由）
   enabled: true
   # app-kg（Go）gRPC 数据面
-  target: 127.0.0.1:8013
+  target: app-kg:8013
   # 共享 proto 契约（运行时加载，无代码生成）
-  protoPath: ../proto/kg/v1/kg.proto
+  protoPath: proto/kg/v1/kg.proto
   timeoutMs: 15000
 
 contentMcp:
@@ -195,7 +195,7 @@ contentMcp:
   enabled: true
   # app-content-mcp streamable-http 端点（容器内由 CONTENT_MCP__URL 覆盖为
   # http://app-content-mcp:8019/mcp）
-  url: http://127.0.0.1:8019/mcp
+  url: http://app-content-mcp:8019/mcp
   # 服务模式 apikey（uid 走请求头 X-Uid，永不进 LLM 参数）
   apiKey: ${CONTENT_MCP__API_KEY}
   # 外部宿主模式（与 apiKey 二选一）
@@ -214,7 +214,7 @@ sandbox:
   enabled: false
   # app-sandbox 控制层基址：经 APISIX key-auth 内部路由 /internal/sandbox/*（网关重写
   # 为 /* 后到达 app-sandbox:8017，见 plan §四）
-  baseUrl: http://127.0.0.1:9080/internal/sandbox
+  baseUrl: http://apisix:9080/internal/sandbox
   # M2M 共享 key：apikey 供 APISIX key-auth、X-API-Key 供 app-sandbox 自校验
   apiKey: ${APISIX_CONSUMER_KEY}
   # 本地总预算（创建 + 轮询）；单次执行预算由 run_code 的 timeoutMs 传给沙箱
@@ -281,6 +281,31 @@ agent:
   # 整轮硬超时（毫秒）：LLM 流卡死时兜底中止，避免会话锁与请求永久挂起。
   # 30 分钟：普通问答远用不到，但给长任务（沙箱/长委托）留足余量。
   turnTimeoutMs: 1800000
+  # Planner/Supervisor DAG（主 agent 产计划 → 拓扑执行 → 自定义 ReAct agent 节点）。
+  plan:
+    enabled: true
+    maxAgents: 6
+    maxNodes: 12
+    maxConcurrency: 3
+    customAgentMaxSteps: 6
+    nodeTimeoutMs: 600000
+    # 节点验收失败后带 critique 重跑一次；0 = 不反思
+    reflectAttempts: 1
+    reflectTimeoutMs: 15000
+    # 自定义 agent 只能派发一层，禁止递归生成 agent
+    maxDepth: 1
+    allowedTools:
+      - vector_search
+      - list_videos
+      - get_video_summaries
+      - web_search
+      - fetch_webpage
+      - cloud_doc_summary
+      - cloud_semantic_search
+      - save_note
+      - list_notes
+      - get_note
+      - kg_search
 
 scheduling:
   # 问答 turn 级加权排队（与 tools.maxConcurrent 的工具级闸门分层：本段限制

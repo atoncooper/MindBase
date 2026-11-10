@@ -15,6 +15,11 @@ export interface AgentInvokeInput {
   images?: string[];
   /** User-selected installed skills forced into the system prompt this turn */
   skillIds?: string[];
+  /**
+   * Resolved model for this turn (Coding Plan or caller-supplied). When present,
+   * every agent in the turn (main + delegated) uses it; absent = gateway model.
+   */
+  model?: import("ai").LanguageModel;
   /** Turn-level cancellation (client disconnect / aborted turn). Forwarded to
    * streamText (abortSignal) and to every tool via ToolRunContext.signal. */
   signal ?: AbortSignal;

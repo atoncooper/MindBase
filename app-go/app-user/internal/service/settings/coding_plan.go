@@ -46,6 +46,7 @@ var (
 	ErrCodingPlanNotFound      = errors.New("Coding Plan 不存在")
 	ErrCodingPlanLimit         = errors.New("最多添加 5 个 Coding Plan")
 	ErrCodingPlanDecryptFailed = errors.New("Coding Plan 凭据解密失败")
+	ErrCodingPlanModelsFailed  = errors.New("无法获取该 Coding Plan 的模型列表")
 )
 
 // CodingPlanValidationError marks caller-fixable input errors (HTTP 400).
@@ -319,6 +320,36 @@ func (s *CodingPlanService) DeletePlan(ctx context.Context, uid, id int64) error
 	return nil
 }
 
+// ListModels returns the provider's model catalog for the chat model picker.
+// It probes on demand (not during configuration) and never persists anything.
+func (s *CodingPlanService) ListModels(ctx context.Context, uid, id int64) (*settingsdto.CodingPlanModels, error) {
+	if err := s.RequireVIP(ctx, uid); err != nil {
+		return nil, err
+	}
+	row, err := s.plans.GetByID(s.db, uid, id)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, ErrCodingPlanNotFound
+	}
+	apiKey, err := s.cipher.Decrypt(row.APIKeyEnc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCodingPlanDecryptFailed, err)
+	}
+	_, models, detail, modelsErr := s.probeModels(ctx, row.Protocol, row.BaseURL, apiKey)
+	if modelsErr != nil {
+		return nil, fmt.Errorf("%w: %s", ErrCodingPlanModelsFailed, detail)
+	}
+	slog.Info("[CODING_PLAN] models listed", "uid", uid, "plan_id", row.ID, "provider", row.Provider, "count", len(models))
+	return &settingsdto.CodingPlanModels{
+		PlanID:   row.ID,
+		Provider: row.Provider,
+		Protocol: row.Protocol,
+		Models:   models,
+	}, nil
+}
+
 // Test probes the configured endpoint (models list, then a minimal chat call).
 // It never persists anything and never echoes the API key.
 func (s *CodingPlanService) Test(ctx context.Context, uid, id int64) (*settingsdto.CodingPlanTestResponse, error) {
@@ -462,11 +493,11 @@ func NormalizeCodingPlanBaseURL(raw string) (string, error) {
 	return strings.TrimRight(value, "/"), nil
 }
 
+// NormalizeCodingPlanModel accepts an empty value: the concrete model is
+// chosen from the chat dialog (GET .../{id}/models) and sent per turn, so the
+// stored value is only an optional preferred/default model.
 func NormalizeCodingPlanModel(raw string) (string, error) {
 	model := strings.TrimSpace(raw)
-	if model == "" {
-		return "", codingPlanInvalid("请填写 model")
-	}
 	if len([]rune(model)) > maxCodingPlanModel {
 		return "", codingPlanInvalid("model 过长")
 	}
