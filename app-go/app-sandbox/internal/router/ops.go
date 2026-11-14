@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"app-sandbox/internal/dto"
 	"app-sandbox/internal/model"
 
 	"github.com/gin-gonic/gin"
@@ -16,14 +17,14 @@ import (
 
 func registerOps(e *gin.Engine, d Deps) {
 	e.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "app-sandbox", "runtime": d.RuntimeName})
+		c.JSON(http.StatusOK, dto.HealthResponse{Status: "ok", Service: "app-sandbox", Runtime: d.RuntimeName})
 	})
 	e.GET("/ready", func(c *gin.Context) {
 		if d.PingDB != nil {
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 			defer cancel()
 			if err := d.PingDB(ctx); err != nil {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "degraded", "mysql": "down"})
+				c.JSON(http.StatusServiceUnavailable, dto.DegradedMySQLResponse{Status: "degraded", MySQL: "down"})
 				return
 			}
 		}
@@ -31,11 +32,11 @@ func registerOps(e *gin.Engine, d Deps) {
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 			defer cancel()
 			if err := d.RuntimeProbe(ctx); err != nil {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "degraded", "runtime": "down"})
+				c.JSON(http.StatusServiceUnavailable, dto.DegradedRuntimeResponse{Status: "degraded", Runtime: "down"})
 				return
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ready", "runtime": d.RuntimeName})
+		c.JSON(http.StatusOK, dto.ReadyResponse{Status: "ready", Runtime: d.RuntimeName})
 	})
 	e.GET("/metrics", func(c *gin.Context) {
 		if d.Metrics == nil {
@@ -69,7 +70,7 @@ func listLeases(c *gin.Context, d Deps) {
 			respondError(c, lerr)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"leases": leasePayloads(leases)})
+		c.JSON(http.StatusOK, dto.NewLeaseListResponse(leases))
 		return
 	}
 	if len(states) == 0 {
@@ -80,7 +81,7 @@ func listLeases(c *gin.Context, d Deps) {
 		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"leases": leasePayloads(leases)})
+	c.JSON(http.StatusOK, dto.NewLeaseListResponse(leases))
 }
 
 func releaseLease(c *gin.Context, d Deps) {
@@ -89,26 +90,6 @@ func releaseLease(c *gin.Context, d Deps) {
 		return
 	}
 	c.Status(http.StatusNoContent)
-}
-
-func leasePayloads(leases []model.SandboxLease) []gin.H {
-	out := make([]gin.H, 0, len(leases))
-	for _, l := range leases {
-		out = append(out, gin.H{
-			"id":         l.ID,
-			"uid":        strconv.FormatInt(l.UID, 10),
-			"projectId":  l.ProjectID,
-			"purpose":    l.Purpose,
-			"runtime":    l.Runtime,
-			"runtimeId":  l.RuntimeID,
-			"specHash":   l.SpecHash,
-			"state":      l.State,
-			"expiresAt":  l.ExpiresAt,
-			"lastUsedAt": l.LastUsedAt,
-			"createdAt":  l.CreatedAt,
-		})
-	}
-	return out
 }
 
 func parseLimit(raw string) int {

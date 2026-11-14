@@ -218,6 +218,9 @@ func (o *OpenSandbox) Exec(ctx context.Context, req ExecRequest) (*ExecResult, e
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
 		defer cancel()
 	}
+	if isShellLanguage(req.Language) {
+		return o.execShell(ctx, ep, req)
+	}
 	runID := strconv.FormatInt(time.Now().UnixNano(), 36)
 	codePath, err := o.uploadCode(ctx, ep, req, runID)
 	if err != nil {
@@ -267,6 +270,57 @@ func (o *OpenSandbox) uploadCode(ctx context.Context, ep cachedEndpoint, req Exe
 		return "", fmt.Errorf("opensandbox upload: %w", err)
 	}
 	return codePath, nil
+}
+
+func isShellLanguage(language string) bool {
+	switch strings.ToLower(language) {
+	case "bash", "sh", "pwsh":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellExecCommand(language, command string) (string, error) {
+	quoted := shellQuote(command)
+	switch strings.ToLower(language) {
+	case "bash":
+		return "if command -v bash >/dev/null 2>&1; then bash -lc " + quoted + "; else sh -lc " + quoted + "; fi", nil
+	case "sh":
+		return "sh -lc " + quoted, nil
+	case "pwsh":
+		return "pwsh -NoProfile -NonInteractive -Command " + quoted, nil
+	default:
+		return "", fmt.Errorf("opensandbox: unsupported shell %q", language)
+	}
+}
+
+// execShell runs an AI-authored shell command in the leased sandbox. The lease
+// (uid+project+purpose) is reused across calls, so /workspace persists until the
+// sandbox TTL expires — grep/find/git/pytest see previous files.
+func (o *OpenSandbox) execShell(ctx context.Context, ep cachedEndpoint, req ExecRequest) (*ExecResult, error) {
+	command, err := shellExecCommand(req.Language, req.Code)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{
+		"command": "mkdir -p /workspace && cd /workspace && " + command,
+		"cwd":     "/tmp",
+		"timeout": req.Timeout.Milliseconds(),
+		"envs":    map[string]string{"PYTHONUNBUFFERED": "1"},
+	}
+	if req.Timeout <= 0 {
+		delete(payload, "timeout")
+	}
+	result, sessionID, err := o.runCommand(ctx, ep, payload)
+	if err != nil {
+		if isTimeout(err) {
+			o.interrupt(ep, sessionID)
+			return nil, ErrTimeout
+		}
+		return nil, fmt.Errorf("opensandbox shell: %w", err)
+	}
+	return result, nil
 }
 
 func interpreterCommand(language, codePath string) (string, error) {

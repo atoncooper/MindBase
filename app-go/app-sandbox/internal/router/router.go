@@ -1,5 +1,6 @@
 // Package router is the app-sandbox HTTP surface (Gin):
 //
+//	GET    /v1/executions            list the caller's executions (?limit=, default 20, max 50)
 //	POST   /v1/executions            create an execution (202)
 //	GET    /v1/executions/:id        poll status/result
 //	GET    /v1/executions/:id/events SSE stream
@@ -10,7 +11,8 @@
 //
 // Auth: /v1 and /internal require the shared gateway consumer key (X-API-Key or
 // apikey); /v1 additionally requires the gateway-injected X-Uid. Identity never
-// comes from the request body. Errors use the repo-wide {"detail": ...} shape.
+// comes from the request body. Errors use the repo-wide {"detail": ...} shape
+// and every JSON response is defined by internal/dto.
 package router
 
 import (
@@ -23,6 +25,7 @@ import (
 	"strings"
 
 	"app-sandbox/internal/config"
+	"app-sandbox/internal/dto"
 	"app-sandbox/internal/logger"
 	"app-sandbox/internal/metrics"
 	"app-sandbox/internal/service"
@@ -157,13 +160,13 @@ func currentRequestID(c *gin.Context) string { return c.GetString("request_id") 
 // ── error mapping ────────────────────────────────────────────────────
 
 func apiErr(c *gin.Context, status int, detail string) {
-	c.JSON(status, gin.H{"detail": detail})
+	c.JSON(status, dto.ErrorResponse{Detail: detail})
 }
 
 // respondError maps domain errors onto the HTTP contract:
 //   - validation            -> 400
 //   - not found / foreign   -> 404 (never leak another tenant's ids)
-//   - quota                 -> 429 {detail, kind, resetAt, tier, upgradeSku}
+//   - quota                 -> 429 {detail, kind, limit, used, resetAt, tier, upgradeSku}
 //   - admission queue full  -> 503
 //   - admission queue timed out -> 429
 //   - anything else         -> 500
@@ -171,23 +174,15 @@ func respondError(c *gin.Context, err error) {
 	var quotaErr *service.QuotaExceededError
 	switch {
 	case errors.As(err, &quotaErr):
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"detail":     quotaErr.Error(),
-			"kind":       quotaErr.Kind,
-			"limit":      quotaErr.Limit,
-			"used":       quotaErr.Used,
-			"resetAt":    quotaErr.ResetAt,
-			"tier":       quotaErr.Tier,
-			"upgradeSku": quotaErr.UpgradeSKU(),
-		})
+		c.JSON(http.StatusTooManyRequests, dto.NewQuotaErrorResponse(quotaErr))
 	case errors.Is(err, service.ErrValidation):
 		apiErr(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrNotFound), errors.Is(err, service.ErrForbidden):
 		apiErr(c, http.StatusNotFound, "执行记录或租约不存在")
 	case errors.Is(err, service.ErrQueueFull):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "沙箱执行队列已满，请稍后重试", "kind": "sandbox_queue"})
+		c.JSON(http.StatusServiceUnavailable, dto.QueueErrorResponse{Detail: "沙箱执行队列已满，请稍后重试", Kind: "sandbox_queue"})
 	case errors.Is(err, service.ErrQueueTimeout):
-		c.JSON(http.StatusTooManyRequests, gin.H{"detail": "沙箱执行排队超时，请稍后重试", "kind": "sandbox_queue"})
+		c.JSON(http.StatusTooManyRequests, dto.QueueErrorResponse{Detail: "沙箱执行排队超时，请稍后重试", Kind: "sandbox_queue"})
 	case errors.Is(err, context.Canceled):
 		apiErr(c, http.StatusRequestTimeout, "请求已取消")
 	case errors.Is(err, context.DeadlineExceeded):
