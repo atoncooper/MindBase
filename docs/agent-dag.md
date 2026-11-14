@@ -92,4 +92,41 @@ agent:
 
 - `app-ts/test/plan-graph.test.ts`：校验、环、拓扑层；
 - `app-ts/test/plan-runner.test.ts`：依赖顺序、上游注入、失败跳过；
-- 前端 `plan-panel`：DAG 分层渲染，数据不完整/有环时降级为线性列表。
+- 前端 `plan-panel`：DAG 分层渲染，数据不完整/有环时降级为扁平列表。
+
+
+## 学术研究复用
+
+学术能力不再作为独立子 agent：main agent 直接使用 academic 工具，复杂科研任务由 plan_and_run DAG 编排；空间/课题目录树见 [research-workspace.md](research-workspace.md)。
+
+## 计划持久化与恢复（Phase 1）
+
+- `PlanRunEngine` + `PlanRunRepository`（Mongo `mind_base_ts.plan_runs`，Mongo 不可达时 memory fallback）持久化计划运行；
+- 每个节点状态迁移、节点 output 在 `PlanRunner` 内落库，`PlanSnapshot.runId` 进入 SSE plan 帧；
+- `GET /chat/plans/:runId` 重新读取计划快照；刷新页面后可恢复计划面板；
+- `POST /chat/plans/:runId/resume` 恢复未完成运行：`done/skipped` 节点复用 output，`in_progress/failed` 回到 pending 后继续；
+- 线性 `plan` 工具已移除：复杂任务统一走 DAG `plan_and_run`，没有第二套计划状态；
+- 前端从 plan 帧保存 `runId`，刷新后通过 `GET /chat/plans/:runId` 恢复计划面板。
+
+
+## 可观测性
+
+- `/agent/runtime` 新增 `plans` 段：runs/completed/failed/partial/active/nodes/nodeFailed/totalMs；
+- 每次 run/node 输出结构化日志：
+  `[PLAN] run finished run_id=... ok=... duration_ms=...`
+  `[PLAN] node finished run_id=... node=... status=... duration_ms=...`
+- OTel span：
+  - `plan.run`（session_id / goal / run_id / ok / duration）
+  - `plan.node`（run_id / node_id / agent / status / duration）
+  开启 LangSmith/OTel 时自动导出，未开启时零开销。
+
+## Eval
+
+新增 `test/plan-eval.test.ts`（确定性 golden eval，不调用 LLM）：
+
+- 依赖链拓扑顺序
+- 失败节点隔离 + 独立分支继续
+- 多 ready 节点并行调度
+- 恢复时只执行未完成节点、复用已完成 output
+
+`test/plan-persistence.test.ts` 覆盖 PlanRun 持久化、resume、runId 与 plan 指标。

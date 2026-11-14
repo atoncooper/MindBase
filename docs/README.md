@@ -23,6 +23,7 @@
 |---|---|
 | [architecture.md](architecture.md) | 服务拓扑、端口、网关路由、数据归属（本目录入口文档） |
 | [configuration.md](configuration.md) | 分层配置与共享环境变量约定 |
+| [logging.md](logging.md) | app-ts 日志规范：结构化字段、请求关联、脱敏、轮转/压缩/保留、访问日志与排障命令 |
 | [service-key-auth.md](service-key-auth.md) | 服务间 API Key 体系：app-user（auth 路由）签发 + APISIX 校验、防串用、演进方向 |
 | [client-compose.md](client-compose.md) | `docker-compose.client.yml` 客户端部署：与服务端 compose 的差异、裁剪与降级行为 |
 | [deployment.md](deployment.md) | 生产部署、HTTPS（Caddy）、监控与备份 |
@@ -33,6 +34,7 @@
 |---|---|
 | [academic-agent.md](academic-agent.md) | 网页端学术 Agent：项目/文献/稿件/证据工具、REST、数据模型、性能与运维、故障排查 |
 | [code-execution.md](code-execution.md) | 代码执行（run_code）：沙箱边界、控制层调用链、结果与持久化、失败降级 |
+| [temp-files.md](temp-files.md) | agent 解析临时文件：下载→本地→解析→整轮结束程序删除、uid/轮次隔离、预算与 fd 上限、崩溃 sweep、配置与运维 |
 | [mikro-orm.md](mikro-orm.md) | app-ts MongoDB 的 MikroORM 采用说明与分阶段迁移计划 |
 
 ### 2.3 业务服务（app-*）
@@ -81,6 +83,7 @@
 | 我克隆了仓库，怎么在本地跑起来？ | [getting-started.md](getting-started.md) |
 | 我不会开发，只想用 Docker 跑起来 | [setup-guide.md](setup-guide.md) |
 | 需要配哪些环境变量 / 怎么换模型或网关？ | [configuration.md](configuration.md) |
+| 日志字段/轮转压缩/脱敏规则与排查命令？ | [logging.md](logging.md) |
 | 怎么部署到生产、怎么配 HTTPS？ | [deployment.md](deployment.md) |
 | 服务间调用为什么要 API Key？怎么防串用？ | [service-key-auth.md](service-key-auth.md) |
 | 学术 Agent / 科研项目 / 文献核验怎么工作？ | [academic-agent.md](academic-agent.md) |

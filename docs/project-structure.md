@@ -113,7 +113,7 @@ frontend-admin/             # 独立 SPA，不复用 frontendv2 代码
 |-----------|------|
 | 前端 | 组件 → `lib/api/` → HTTP；不回传 / 不透传 cookie |
 | app-ts | `transport/http/routes` → `services` → `harness` → `agent/tools` → `repository` 契约 |
-| app-ts 数据层 | Mongo / gRPC 客户端只在 `repository/mongo/`、`repository/grpc/` 实现与组合根出现，禁止 import 进 services / routes / agent |
+| app-ts 数据层 | Mongo / gRPC 客户端只在 `repository/mongo/`、`repository/app-kg/` 等「按后端服务归位」的实现目录与组合根出现，禁止 import 进 services / routes / agent |
 | Go 服务 | `router → service → repo`；router 只做参数解析 + 鉴权 + 调用 |
 | 管理台 | app-admin 只读用户 / 分享元数据 + 写审核列 + 代理沙箱管理；不下载、不导出文件内容 |
 | 网关 | APISIX 无 catch_all：新增端点必须显式加路由（模板 `apisix/apisix.yaml.template`；dev 用 `apisix.dev.yaml.template`；渲染脚本 `apisix/render-config.sh`，产物 gitignore） |

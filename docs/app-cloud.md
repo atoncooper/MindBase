@@ -4,7 +4,7 @@
 > 回收站、文档解析/OCR 向量化管线、AI 摘要、语义检索、RAG 工作区。全部 Go + Gin + GORM 实现，
 > schema 所有权自 Python backend 迁入（2026-09-25 cutover，2026-10-06 Python 删除）。
 > 状态：**✅ 生产运行 + 多实例就绪**（2026-10-15 完成 ①–⑤ 分布式强化，详见
-> `plan/1.0.13-AppCloud-MultiReplica`，本地设计文档，不入 git）。
+> `plan/1.0.13-AppCloud-MultiReplica/1.0.13-AppCloud-MultiReplica.md`，本地设计文档，不入 git）。
 
 ## 一、架构与数据面
 
