@@ -1,5 +1,5 @@
 // Demo payloads for the lab page — what the model would emit as artifact.data.
-import type { DiagramSpec, PlotSpec } from "@/lib/artifacts/interactive-spec";
+import type { ChartSpec, ComparisonSpec, DiagramSpec, PlotSpec } from "@/lib/artifacts/interactive-spec";
 
 export const DEMO_PLOT: PlotSpec = {
   title: "y = a·sin(b·x + c) + d",
@@ -40,4 +40,64 @@ export const DEMO_DIAGRAM: DiagramSpec = {
     { from: "tool", to: "llm" },
     { from: "llm", to: "ui" },
   ],
+};
+
+export const DEMO_CHART: ChartSpec = {
+  version: 1,
+  id: "chart_7f3a91c2",
+  title: "MindBase 近半年问答与检索调用量",
+  subtitle: "2026 年 6-11 月；统计口径为网关侧成功调用次数",
+  chartType: "bar",
+  categories: ["6 月", "7 月", "8 月", "9 月", "10 月", "11 月"],
+  series: [
+    { name: "问答次数", values: [12400, 15100, 18600, 24300, 31800, 38500] },
+    { name: "检索次数", values: [8200, 10400, 13900, 19200, 26700, 33100] },
+  ],
+  unit: "次",
+  xLabel: "月份",
+  yLabel: "调用次数",
+};
+
+export const DEMO_COMPARISON: ComparisonSpec = {
+  version: 1,
+  id: "comparison_3d8b6e14",
+  title: "向量检索方案选型：Milvus vs pgvector vs Elasticsearch",
+  subtitle: "按当前约 120 万条 chunk 的规模与团队运维能力评估",
+  items: [
+    {
+      name: "Milvus",
+      summary: "专用向量数据库，当前生产环境已在用",
+      pros: ["十亿级向量检索性能稳定", "原生支持 IVF / HNSW 多索引", "已有现成的运维与备份流程"],
+      cons: ["独立组件，部署与监控成本较高", "小众查询需自行封装"],
+      attrs: [
+        { label: "部署复杂度", value: "中" },
+        { label: "召回延迟", value: "约 35ms" },
+        { label: "运维成本", value: "中" },
+      ],
+    },
+    {
+      name: "pgvector",
+      summary: "复用现有 MySQL 迁移到 PostgreSQL 的运维经验",
+      pros: ["与业务表同库，事务一致性好", "接入成本最低", "备份恢复沿用数据库方案"],
+      cons: ["千万级以上需精细调参", "混合检索能力弱于专用库"],
+      attrs: [
+        { label: "部署复杂度", value: "低" },
+        { label: "召回延迟", value: "约 80ms" },
+        { label: "运维成本", value: "低" },
+      ],
+    },
+    {
+      name: "Elasticsearch",
+      summary: "全文检索强项，可叠加 kNN 做混合检索",
+      pros: ["BM25 + kNN 混合排序成熟", "分词与高亮开箱即用", "团队已有 ES 使用经验"],
+      cons: ["向量召回精度依赖 HNSW 参数", "集群资源占用较高"],
+      attrs: [
+        { label: "部署复杂度", value: "中高" },
+        { label: "召回延迟", value: "约 60ms" },
+        { label: "运维成本", value: "高" },
+      ],
+    },
+  ],
+  recommendation:
+    "短期内继续使用 Milvus（迁移风险最低）；若后续需要强事务一致或降低运维面，可先在非核心检索试点 pgvector，再评估整体迁移。",
 };

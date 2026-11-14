@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode, type ReactElement } from "react";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { escapeCodeText, highlightCode } from "@/lib/prism";
+import { MermaidDiagram } from "./mermaid-diagram";
 
 // Code blocks above this many lines render collapsed by default; the full
 // body is one click away via the header toggle.
@@ -47,10 +48,17 @@ function extractCode(children: ReactNode): { text: string; language: string } {
 // with a language label + copy button. Used by the shared <Markdown> renderer
 // so every code block across the app gets the same treatment. Long blocks
 // (> COLLAPSE_THRESHOLD lines) start collapsed with an expand toggle.
+// ```mermaid fences are handed to <MermaidDiagram> instead.
 export function CodeBlock({ children }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const { text, language } = useMemo(() => extractCode(children), [children]);
-  const html = useMemo(() => highlightCode(text, language), [text, language]);
+  // ```mermaid fences render as diagrams instead of Prism-highlighted text.
+  // Keep every hook above the early return so the hook order stays stable.
+  const isMermaid = language.toLowerCase() === "mermaid";
+  const html = useMemo(
+    () => (isMermaid ? null : highlightCode(text, language)),
+    [isMermaid, text, language],
+  );
   const lineCount = useMemo(() => text.split("\n").length, [text]);
   const collapsible = lineCount > COLLAPSE_THRESHOLD;
   const [expanded, setExpanded] = useState(false);
@@ -65,6 +73,10 @@ export function CodeBlock({ children }: CodeBlockProps) {
       /* clipboard may be unavailable; ignore */
     }
   };
+
+  if (isMermaid) {
+    return <MermaidDiagram code={text} />;
+  }
 
   return (
     <div className="md-code my-3 overflow-hidden rounded-xl border border-border bg-[#f5f5f7]">

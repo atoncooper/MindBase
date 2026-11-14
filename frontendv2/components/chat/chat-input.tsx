@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { ArrowUp, Square, X, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
 import { CodingPlanModelPicker } from "./coding-plan-model-picker";
+import { StreamElapsed } from "./streaming-elapsed";
 import { skillsApi, type InstalledSkill } from "@/lib/api";
 
 export interface SelectedSkill {
@@ -15,6 +16,9 @@ interface ChatInputProps {
   onSend: (message: string, skillIds?: string[], images?: string[]) => void;
   disabled?: boolean;
   isStreaming?: boolean;
+  // Wall-clock start of the live turn (Date.now() at send) for the small
+  // "生成中 · Ns" hint beside the stop button; ignored when not streaming.
+  streamStartedAt?: number;
   onStop?: () => void;
   placeholder?: string;
   hideDisclaimer?: boolean;
@@ -27,6 +31,8 @@ interface ChatInputProps {
   // Coding Plan 模型（聊天对话框按需选择，随本轮请求发送）
   codingPlanModel?: string;
   onCodingPlanModelChange?: (model: string | undefined) => void;
+  // 生成中已排队、等待本轮结束后自动发送的消息数量（仅用于提示文案）
+  queuedCount?: number;
 }
 
 // Apple-style chat input - a single rounded card that grows with content up to
@@ -91,6 +97,7 @@ export function ChatInput({
   onSend,
   disabled = false,
   isStreaming = false,
+  streamStartedAt,
   onStop,
   placeholder = "问我任何关于你收藏的视频…",
   hideDisclaimer = false,
@@ -100,6 +107,7 @@ export function ChatInput({
   onAttachDocuments,
   codingPlanModel,
   onCodingPlanModelChange,
+  queuedCount = 0,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]);
@@ -407,15 +415,40 @@ export function ChatInput({
           />
         )}
 
-        {isStreaming ? (
-          <button
-            type="button"
-            onClick={onStop}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80"
-            aria-label="停止生成"
+        {/* 流式中的轻量计时提示：stop 按钮旁，窄屏隐藏以免输入行溢出 */}
+        {isStreaming && (
+          <span
+            className="hidden shrink-0 items-center pb-2 text-[11px] leading-none text-tertiary sm:inline-flex"
+            aria-hidden="true"
           >
-            <Square className="h-3 w-3 fill-current" aria-hidden="true" />
-          </button>
+            生成中
+            <StreamElapsed key={streamStartedAt ?? "live"} startedAt={streamStartedAt} />
+          </span>
+        )}
+
+        {isStreaming ? (
+          <span className="flex shrink-0 items-center gap-1">
+            {/* 生成中按 Enter（或点这个按钮）→ 排队，本轮结束后自动发送 */}
+            {canSend && (
+              <button
+                type="button"
+                onClick={handleSend}
+                className="grid h-8 w-8 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover"
+                aria-label="排队发送（本轮结束后自动发送）"
+                title="排队发送：本轮生成结束后自动发送"
+              >
+                <ArrowUp className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onStop}
+              className="grid h-8 w-8 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80"
+              aria-label="停止生成"
+            >
+              <Square className="h-3 w-3 fill-current" aria-hidden="true" />
+            </button>
+          </span>
         ) : (
           <button
             type="button"
@@ -429,6 +462,13 @@ export function ChatInput({
         )}
       </div>
 
+      {isStreaming && (
+        <div className="mt-1.5 text-center text-[11px] text-tertiary" aria-live="polite">
+          生成中 · <kbd className="font-sans">⏎</kbd> 将排队发送
+          {queuedCount > 0 ? `（已排队 ${queuedCount} 条）` : ""}
+          ，本轮结束后自动发送
+        </div>
+      )}
       {!hideDisclaimer && (
         <div className="mt-1.5 flex items-center justify-center gap-3 text-[11px] text-tertiary" aria-live="polite">
           <span>

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 科研工作台视图：左侧项目列表 + 右侧项目详情（阶段步骤条 + 四个 Tab）。
+ * 科研工作台视图：左侧项目列表 + 右侧项目详情（阶段步骤条 + 十一个 Tab）。
  *
  * 数据流：项目列表 / 详情分别来自 GET /academic/projects 与
  * GET /academic/projects/:id；所有写操作由各 Tab 直接调用 academicApi，成功后
@@ -12,15 +12,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
     Activity,
+    Beaker,
+    ShieldCheck,
     BookOpen,
     CalendarDays,
+    ClipboardCheck,
+    Database,
     FlaskConical,
+    FolderTree,
     ListChecks,
     Loader2,
     MessageCircle,
     PenLine,
     RefreshCw,
+    Table2,
     Tag,
+    Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -33,7 +40,14 @@ import { StageStepper } from "./stage-stepper";
 import { OverviewTab } from "./overview-tab";
 import { LiteratureTab } from "./literature-tab";
 import { WritingTab } from "./writing-tab";
+import { ExperimentsTab } from "./experiments-tab";
+import { EvidenceTab } from "./evidence-tab";
+import { ValidationTab } from "./validation-tab";
+import { AnalysisTab } from "./analysis-tab";
+import { WorkspaceTab } from "./workspace-tab";
+import { PlansTab } from "./plans-tab";
 import { EventsTab } from "./events-tab";
+import { ApprovalTab } from "./approval-tab";
 import { NewProjectDialog } from "./new-project-dialog";
 import {
     EmptyState,
@@ -43,12 +57,30 @@ import {
     formatDate,
 } from "./research-ui";
 
-type Tab = "overview" | "literature" | "writing" | "events";
+type Tab =
+    | "overview"
+    | "literature"
+    | "writing"
+    | "experiments"
+    | "evidence"
+    | "validation"
+    | "analysis"
+    | "workspace"
+    | "plans"
+    | "approvals"
+    | "events";
 
 const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
     { id: "overview", label: "概览", icon: ListChecks },
     { id: "literature", label: "文献库", icon: BookOpen },
     { id: "writing", label: "写作", icon: PenLine },
+    { id: "experiments", label: "实验", icon: Beaker },
+    { id: "evidence", label: "证据", icon: Database },
+    { id: "validation", label: "校验", icon: ClipboardCheck },
+    { id: "analysis", label: "分析", icon: Table2 },
+    { id: "workspace", label: "空间", icon: FolderTree },
+    { id: "plans", label: "计划", icon: Workflow },
+    { id: "approvals", label: "审批", icon: ShieldCheck },
     { id: "events", label: "动态", icon: Activity },
 ];
 
@@ -215,13 +247,13 @@ export function ResearchView() {
                                         </div>
                                     </div>
                                     <div className="flex shrink-0 items-center gap-1.5">
-                                        {/* 把当前项目作为聊天上下文：/chat 读取 ?academic_project= 并注入受控项目提示 */}
+                                        {/* 新建一个绑定当前项目的会话：/chat 读取 ?academic_project= 并在建会话时持久化绑定 */}
                                         <button
                                             type="button"
                                             onClick={() => {
                                                 if (!project) return;
                                                 router.push(
-                                                    `/chat?academic_project=${encodeURIComponent(project.id)}`,
+                                                    `/chat?academic_project=${encodeURIComponent(project.id)}&new=1`,
                                                 );
                                             }}
                                             disabled={!project}
@@ -253,7 +285,7 @@ export function ResearchView() {
                             </div>
 
                             {/* Tab 切换 */}
-                            <div className="flex items-center gap-0.5 rounded-[10px] bg-border-subtle/70 p-0.5">
+                            <div className="flex flex-wrap items-center gap-0.5 rounded-[10px] bg-border-subtle/70 p-0.5">
                                 {TABS.map((item) => {
                                     const Icon = item.icon;
                                     const active = tab === item.id;
@@ -287,7 +319,21 @@ export function ResearchView() {
                             ) : tab === "literature" ? (
                                 <LiteratureTab projectId={detail.project.id} onChanged={onChanged} />
                             ) : tab === "writing" ? (
-                                <WritingTab projectId={detail.project.id} onChanged={onChanged} />
+                                <WritingTab projectId={detail.project.id} />
+                            ) : tab === "experiments" ? (
+                                <ExperimentsTab projectId={detail.project.id} onChanged={() => void onChanged()} />
+                            ) : tab === "evidence" ? (
+                                <EvidenceTab projectId={detail.project.id} />
+                            ) : tab === "validation" ? (
+                                <ValidationTab projectId={detail.project.id} />
+                            ) : tab === "analysis" ? (
+                                <AnalysisTab projectId={detail.project.id} />
+                            ) : tab === "workspace" ? (
+                                <WorkspaceTab projectId={detail.project.id} onChanged={() => void onChanged()} />
+                            ) : tab === "plans" ? (
+                                <PlansTab projectId={detail.project.id} />
+                            ) : tab === "approvals" ? (
+                                <ApprovalTab projectId={detail.project.id} onChanged={() => void onChanged()} />
                             ) : (
                                 <EventsTab projectId={detail.project.id} />
                             )}

@@ -10,6 +10,8 @@ interface ChatHeaderProps {
   onToggleSidebar: () => void;
   onClearChat: () => void;
   onSummarize?: () => void;
+  // Live turn in progress: show a light pulsing dot next to the title.
+  isStreaming?: boolean;
 }
 
 export function ChatHeader({
@@ -19,6 +21,7 @@ export function ChatHeader({
   onToggleSidebar,
   onClearChat,
   onSummarize,
+  isStreaming = false,
 }: ChatHeaderProps) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-3">
@@ -45,6 +48,16 @@ export function ChatHeader({
         </button>
 
         <h1 className="ml-1 truncate text-[14px] font-medium text-foreground">{title}</h1>
+        {isStreaming && (
+          <span
+            className="ml-1.5 inline-flex shrink-0 items-center gap-1 text-[11px] text-tertiary"
+            role="status"
+            aria-label="正在生成回复"
+          >
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" aria-hidden="true" />
+            <span className="hidden sm:inline">生成中</span>
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-0.5">

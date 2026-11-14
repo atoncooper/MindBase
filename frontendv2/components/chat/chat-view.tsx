@@ -2,19 +2,24 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ChevronDown, FileText, FlaskConical, X } from "lucide-react";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
 import { ChatInput, type SelectedSkill } from "./chat-input";
 import { ChatSessionFiles } from "./chat-session-files";
+import { QueuedMessages, type QueuedMessage } from "./queued-messages";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
 import { academicApi, chatApi, quotaApi, type AcademicProjectSummary, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
 import { STAGE_LABELS } from "@/components/research/research-ui";
+
 import { streamChat, artifactKey, type ChatSource, type ChatArtifact, type ChatPlan, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
+
+const PLAN_RUN_STORAGE_PREFIX = "chat_plan_run:";
 
 // Stable empty array so `messages` doesn't change identity on every render
 // (which would re-trigger the auto-scroll effect needlessly).
@@ -25,6 +30,8 @@ interface UISession {
   id: string; // chat_session_id from backend
   title: string;
   lastMessageAt: string;
+  /** 会话绑定的科研项目（新建会话时可选）；缺省 = 普通对话 */
+  academicProjectId?: string;
   messages: ChatMessageData[];
   historyLoaded: boolean;
 }
@@ -62,6 +69,7 @@ function toUISession(s: ChatSession): UISession {
     id: s.chat_session_id,
     title: s.title || "新对话",
     lastMessageAt: s.last_message_at || s.updated_at || s.created_at,
+    ...(s.academic_project_id ? { academicProjectId: s.academic_project_id } : {}),
     messages: [],
     historyLoaded: false,
   };
@@ -92,7 +100,8 @@ interface QuotaBlockInfo {
 interface ChatViewProps {
   /**
    * 科研项目上下文（来自 /chat?academic_project=<id>，由 /research 详情页跳转带入）。
-   * 缺省 = 普通聊天；传入后底部请求体带 academic_project_id，后端把项目注入受控系统提示。
+   * 新建会话时会把该项目绑定到会话上（会话级持久化）；已绑定会话优先使用自身绑定，
+   * 本参数只作为没有绑定时的入口兜底。缺省 = 普通聊天。
    */
   academicProjectId?: string;
   /**
@@ -100,13 +109,23 @@ interface ChatViewProps {
    * 传入后请求体带 scope.uploadUuids=[uuid]，回答只基于该文件；缺省为普通聊天。
    */
   uploadUuid?: string;
+  /**
+   * 来自科研工作台「在对话中继续」（/chat?academic_project=<id>&new=1）：
+   * 进入即进入草稿态（不落到最近历史会话，也不立即落库）；new=1 随后从 URL 移除。
+   */
+  startNew?: boolean;
 }
 
-export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) {
+export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewProps = {}) {
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sessions, setSessions] = useState<UISession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Wall-clock start of the live turn (Date.now() at send). Drives the elapsed
+  // time in the pending running row and the "生成中 · Ns" hint by the stop
+  // button. Cleared as soon as the turn completes / fails / is stopped.
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
   const [quotaBlock, setQuotaBlock] = useState<QuotaBlockInfo | null>(null);
   // 今日用量角标（/quota/summary）：挂载时与每轮结束后刷新
   const [quotaSummary, setQuotaSummary] = useState<QuotaSummary | null>(null);
@@ -134,6 +153,30 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const messages = activeSession?.messages ?? EMPTY_MESSAGES;
+  // 草稿态（还没创建会话）选中的科研项目：第一条消息创建会话时写入绑定。
+  const [draftAcademicProjectId, setDraftAcademicProjectId] = useState<string | undefined>(academicProjectId);
+  // 已选会话以自身绑定为准；草稿态用选择器/入口参数。
+  const effectiveAcademicProjectId = activeSession
+    ? activeSession.academicProjectId
+    : (draftAcademicProjectId ?? academicProjectId);
+
+  // 新建会话时可绑定科研项目：这里只取「用户自己的项目」用于侧栏选择器；
+  // 失败静默（学术功能未启用时选择器隐藏，聊天不受影响）。
+  const [researchProjects, setResearchProjects] = useState<Array<{ id: string; title: string }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await academicApi.listProjects();
+        if (!cancelled) setResearchProjects(res.projects.map((p) => ({ id: p.id, title: p.title })));
+      } catch {
+        if (!cancelled) setResearchProjects([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track which sessions have had their history fetched, so the load effect can
   // depend only on activeSessionId (not the whole sessions array, which changes
@@ -150,12 +193,12 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
     project: AcademicProjectSummary;
   } | null>(null);
   useEffect(() => {
-    if (!academicProjectId) return;
+    if (!effectiveAcademicProjectId) return;
     let cancelled = false;
     (async () => {
       try {
-        const detail = await academicApi.getProject(academicProjectId);
-        if (!cancelled) setLoadedAcademicProject({ id: academicProjectId, project: detail.project });
+        const detail = await academicApi.getProject(effectiveAcademicProjectId);
+        if (!cancelled) setLoadedAcademicProject({ id: effectiveAcademicProjectId, project: detail.project });
       } catch {
         // 项目不存在/无权访问/网络失败：横幅不显示，聊天照常（后端同样会忽略无效 id）
         if (!cancelled) setLoadedAcademicProject(null);
@@ -164,17 +207,24 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
     return () => {
       cancelled = true;
     };
-  }, [academicProjectId]);
+  }, [effectiveAcademicProjectId]);
   const academicProject =
-    loadedAcademicProject && loadedAcademicProject.id === academicProjectId
+    loadedAcademicProject && loadedAcademicProject.id === effectiveAcademicProjectId
       ? loadedAcademicProject.project
       : null;
 
-  const updateActiveSession = useCallback((updater: (s: UISession) => UISession) => {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === activeSessionId ? updater(s) : s))
-    );
-  }, [activeSessionId]);
+  /** Patch one session by id (流式更新必须按 id 定向：草稿态第一条消息会先惰性建会话). */
+  const updateSession = useCallback((sessionId: string, updater: (s: UISession) => UISession) => {
+    setSessions((prev) => prev.map((s) => (s.id === sessionId ? updater(s) : s)));
+  }, []);
+
+  const updateActiveSession = useCallback(
+    (updater: (s: UISession) => UISession) => {
+      if (!activeSessionId) return;
+      updateSession(activeSessionId, updater);
+    },
+    [activeSessionId, updateSession]
+  );
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -204,21 +254,18 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
         if (cancelled) return;
         const mapped = res.sessions.map(toUISession);
         setSessions(mapped);
-        if (mapped.length > 0) {
+        if (startNew) {
+          // 科研工作台「在对话中继续」：进入**草稿态**（还没发消息 = 还没创建），
+          // 项目 id 由入口参数带入草稿，第一条消息创建会话时才写入绑定。
+          setActiveSessionId(null);
+          router.replace(
+            academicProjectId ? `/chat?academic_project=${encodeURIComponent(academicProjectId)}` : "/chat",
+          );
+        } else if (mapped.length > 0) {
           setActiveSessionId(mapped[0].id);
         } else {
-          // No sessions exist - create the first one.
-          try {
-            const created = await chatApi.createSession();
-            if (cancelled) return;
-            const ui = toUISession(created);
-            ui.historyLoaded = true; // empty, no need to fetch history
-            loadedRef.current.add(ui.id);
-            setSessions([ui]);
-            setActiveSessionId(ui.id);
-          } catch (e) {
-            setLoadError(e instanceof Error ? e.message : "创建会话失败");
-          }
+          // 没有任何会话：保持草稿态，不在服务端落空会话（第一条消息才创建）。
+          setActiveSessionId(null);
         }
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : "加载会话列表失败");
@@ -325,18 +372,19 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
   // with server history (same order) and record each message's real id as
   // `serverId`, which per-turn regenerate needs to truncate server history.
   // Best-effort: on any mismatch (desync) or fetch error, keep local state.
-  const backfillMessageIds = useCallback(async () => {
-    if (!activeSessionId) return;
+  const backfillMessageIds = useCallback(async (targetSessionId?: string) => {
+    const sessionId = targetSessionId ?? activeSessionId;
+    if (!sessionId) return;
     try {
-      let res = await chatApi.getHistory(activeSessionId, 1, 100);
+      let res = await chatApi.getHistory(sessionId, 1, 100);
       if (res.total > res.messages.length && res.messages.length === 100) {
         // Long session: the fresh turns sit on the last page.
-        res = await chatApi.getHistory(activeSessionId, Math.ceil(res.total / 100), 100);
+        res = await chatApi.getHistory(sessionId, Math.ceil(res.total / 100), 100);
       }
       const server = res.messages;
       setSessions((prev) =>
         prev.map((s) => {
-          if (s.id !== activeSessionId || server.length !== s.messages.length) return s;
+          if (s.id !== sessionId || server.length !== s.messages.length) return s;
           let aligned = true;
           const next = s.messages.map((m, i) => {
             const sm = server[i];
@@ -355,10 +403,20 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
     }
   }, [activeSessionId]);
 
-  // ---- Core: stream a question into the active session ----
+  // ---- Core: stream a question into one session ----
+  // sessionId is explicit: the first message of a draft creates the session lazily,
+  // so the state-backed activeSessionId is stale during that turn.
   const streamQuestion = useCallback(
-    async (question: string, assistantMsgId: string, skillIds?: string[], images?: string[]) => {
-      if (!activeSessionId) return;
+    async (
+      sessionId: string,
+      question: string,
+      assistantMsgId: string,
+      skillIds?: string[],
+      images?: string[],
+    ) => {
+      // All optimistic/stream updates below target this turn's session by id.
+      const updateActiveSession = (updater: (s: UISession) => UISession) =>
+        updateSession(sessionId, updater);
       setIsStreaming(true);
       setQuotaBlock(null); // 新一轮开始：清掉上一轮的额度横幅
       const controller = new AbortController();
@@ -401,12 +459,14 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
         const stream = await chatApi.askStream(
           {
             question,
-            chat_session_id: activeSessionId,
+            chat_session_id: sessionId,
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
             ...(codingPlanModel ? { coding_plan_model: codingPlanModel } : {}),
             ...(images && images.length > 0 ? { images } : {}),
-            // 科研项目上下文：仅在 URL 带入项目时附加，普通聊天请求体保持不变。
-            ...(academicProjectId ? { academic_project_id: academicProjectId } : {}),
+            // 科研项目上下文：会话绑定优先（新建会话时选定），URL 入口参数兜底。
+            ...(effectiveAcademicProjectId
+              ? { academic_project_id: effectiveAcademicProjectId }
+              : {}),
             // 文件级问答：限定只基于该云盘文件检索/回答；普通聊天不带 scope。
             ...(uploadUuid ? { scope: { uploadUuids: [uploadUuid] } } : {}),
           },
@@ -516,14 +576,19 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
                   const existing = m.reasoningSteps ?? [];
                   const idx = existing.findIndex((r) => r.step === step.step);
                   if (idx >= 0) {
+                    // Same step number: merge the start frame with its done frame.
+                    // `done` always wins for status; the result preview and the
+                    // duration only arrive on the done frame.
                     const next = [...existing];
                     next[idx] = {
                       ...next[idx],
                       action: step.action || next[idx].action,
+                      status: step.status ?? next[idx].status,
                       query: step.query || next[idx].query,
                       reasoning: step.reasoning || next[idx].reasoning,
                       sources: step.sources?.length ? step.sources : next[idx].sources,
                       args: step.args || next[idx].args,
+                      resultPreview: step.resultPreview ?? next[idx].resultPreview,
                       durationMs: step.durationMs ?? next[idx].durationMs,
                     };
                     return { ...m, reasoningSteps: next };
@@ -535,10 +600,13 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
                       {
                         step: step.step,
                         action: step.action,
+                        status: step.status,
                         query: step.query,
                         reasoning: step.reasoning,
                         sources: step.sources ?? [],
                         args: step.args,
+                        resultPreview: step.resultPreview,
+                        durationMs: step.durationMs,
                       },
                     ],
                   };
@@ -596,24 +664,46 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
         }));
       } finally {
         setIsStreaming(false);
+        setStreamStartedAt(null);
         abortRef.current = null;
-        void backfillMessageIds();
+        void backfillMessageIds(sessionId);
         void refreshQuota();
       }
     },
-    [activeSessionId, updateActiveSession, refreshSessions, backfillMessageIds, academicProjectId, uploadUuid, codingPlanModel]
+    [updateSession, refreshSessions, backfillMessageIds, effectiveAcademicProjectId, uploadUuid, codingPlanModel]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
+  // “没发消息就不算创建”：草稿态的第一条消息才在服务端创建会话（并写入草稿选中的
+  // 科研项目绑定），之后所有更新都按 sessionId 定向。
+  const creatingSessionRef = useRef(false);
   const handleSend = useCallback(
-    (userMessage: string, skillIds?: string[], images?: string[]) => {
-      if (!activeSessionId) return;
+    async (userMessage: string, skillIds?: string[], images?: string[]) => {
+      let sessionId = activeSessionId;
+      if (!sessionId) {
+        if (creatingSessionRef.current) return;
+        creatingSessionRef.current = true;
+        try {
+          const created = await chatApi.createSession(undefined, effectiveAcademicProjectId);
+          const ui = toUISession(created);
+          ui.historyLoaded = true; // empty, no need to fetch history
+          loadedRef.current.add(ui.id);
+          setSessions((prev) => [ui, ...prev]);
+          setActiveSessionId(ui.id);
+          sessionId = ui.id;
+        } catch (e) {
+          setLoadError(e instanceof Error ? e.message : "创建会话失败");
+          return;
+        } finally {
+          creatingSessionRef.current = false;
+        }
+      }
 
       const userMsgId = `user-${Date.now()}`;
       const assistantMsgId = `assistant-${Date.now() + 1}`;
       const timestamp = new Date().toISOString();
 
-      updateActiveSession((s) => ({
+      updateSession(sessionId, (s) => ({
         ...s,
         lastMessageAt: timestamp,
         messages: [
@@ -630,12 +720,68 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
         ],
       }));
 
-      void streamQuestion(userMessage, assistantMsgId, skillIds, images);
+      setStreamStartedAt(Date.now());
+      void streamQuestion(sessionId, userMessage, assistantMsgId, skillIds, images);
       // Skills are per-turn (Claude-Code-style): consumed by this message.
       if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
-    [activeSessionId, updateActiveSession, streamQuestion]
+    [activeSessionId, updateSession, streamQuestion, effectiveAcademicProjectId]
   );
+
+  // ---- 生成中排队发送：Enter 不打断当前轮，加入 FIFO 队列，轮次结束后自动发送 ----
+  const queuedRef = useRef<QueuedMessage[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const flushingRef = useRef(false);
+  const updateQueue = useCallback((next: QueuedMessage[]) => {
+    queuedRef.current = next;
+    setQueuedMessages(next);
+  }, []);
+  const clearQueue = useCallback(() => updateQueue([]), [updateQueue]);
+  const enqueueMessage = useCallback(
+    (text: string, skillIds?: string[], images?: string[]) => {
+      const entry: QueuedMessage = {
+        id: `queued-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        text,
+        ...(skillIds && skillIds.length > 0 ? { skillIds } : {}),
+        ...(images && images.length > 0 ? { images } : {}),
+      };
+      // FIFO, bounded: at most 5 pending turns.
+      updateQueue([...queuedRef.current, entry].slice(-5));
+    },
+    [updateQueue]
+  );
+  const cancelQueued = useCallback(
+    (id: string) => updateQueue(queuedRef.current.filter((item) => item.id !== id)),
+    [updateQueue]
+  );
+  const handleSubmit = useCallback(
+    (text: string, skillIds?: string[], images?: string[]) => {
+      if (isStreaming) {
+        enqueueMessage(text, skillIds, images);
+        // Skills belong to the queued turn; consume them from the composer.
+        if (skillIds && skillIds.length > 0) setSelectedSkills([]);
+        return;
+      }
+      void handleSend(text, skillIds, images);
+    },
+    [isStreaming, enqueueMessage, handleSend]
+  );
+  // Send exactly one queued turn each time the active turn settles (done /
+  // error / stop all flip isStreaming to false). The ref guard covers the
+  // async session-creation window before isStreaming becomes true again.
+  useEffect(() => {
+    if (isStreaming || flushingRef.current || queuedRef.current.length === 0) return;
+    const timer = setTimeout(() => {
+      const [next, ...rest] = queuedRef.current;
+      if (!next) return;
+      flushingRef.current = true;
+      updateQueue(rest);
+      void handleSend(next.text, next.skillIds, next.images).finally(() => {
+        flushingRef.current = false;
+      });
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [isStreaming, queuedMessages.length, handleSend, updateQueue]);
 
   // ---- Answer an AI interaction card (ask_user) ----
   // Backend is round-based: the normalized answer (chip value / form fields)
@@ -709,7 +855,8 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
           },
         ],
       }));
-      void streamQuestion(prevUser.content, newAssistantId);
+      setStreamStartedAt(Date.now());
+      void streamQuestion(activeSessionId, prevUser.content, newAssistantId);
     },
     [activeSessionId, isStreaming, sessions, updateActiveSession, streamQuestion]
   );
@@ -761,7 +908,8 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
           },
         ],
       }));
-      void streamQuestion(content, assistantMsgId);
+      setStreamStartedAt(Date.now());
+      void streamQuestion(activeSessionId, content, assistantMsgId);
     },
     [activeSessionId, isStreaming, sessions, updateActiveSession, streamQuestion]
   );
@@ -769,6 +917,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     setIsStreaming(false);
+    setStreamStartedAt(null);
     updateActiveSession((s) => ({
       ...s,
       messages: s.messages.map((m) => {
@@ -815,7 +964,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
       let sessionId = activeSessionId;
       if (!sessionId) {
         try {
-          const res = await chatApi.createSession();
+          const res = await chatApi.createSession(undefined, effectiveAcademicProjectId);
           const ui = toUISession(res);
           ui.historyLoaded = true;
           loadedRef.current.add(ui.id);
@@ -840,7 +989,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
       }
       void refreshSessionFiles(sessionId);
     },
-    [activeSessionId, refreshSessionFiles]
+    [activeSessionId, refreshSessionFiles, effectiveAcademicProjectId]
   );
 
   const handleDeleteSessionFile = useCallback(
@@ -856,22 +1005,47 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
     [activeSessionId]
   );
 
-  // ---- New chat: create backend session ----
-  const handleNewChat = useCallback(async () => {
-    try {
-      const res = await chatApi.createSession();
-      const ui = toUISession(res);
-      ui.historyLoaded = true;
-      loadedRef.current.add(ui.id);
-      setSessions((prev) => [ui, ...prev]);
-      setActiveSessionId(res.chat_session_id);
+  // ---- New chat: 草稿态（没发消息就不算创建）+ 清掉当前空会话 ----
+  const handleNewChat = useCallback(
+    async (projectId?: string) => {
+      // 第一条消息正在惰性建会话：此时切草稿会让刚建出的会话变成"空会话"竞态。
+      if (creatingSessionRef.current) return;
+      // 当前会话一条消息都没有 = 等同于还没创建：直接删除，避免侧栏堆空对话。
+      // 有上传文件的空会话保留：文件是真实内容，删会话会连带删文件和附件对象。
+      if (activeSessionId) {
+        const current = sessions.find((s) => s.id === activeSessionId);
+        // historyLoaded 是必要条件：历史还没拉回来时 messages=[] 不代表真的空会话。
+        if (current && current.historyLoaded && current.messages.length === 0) {
+          const fileCount = await chatApi
+            .listDocuments(activeSessionId)
+            .then((res) => res.documents?.length ?? 0)
+            .catch(() => -1); // 查询失败 → 保守保留，不误删
+          if (fileCount === 0) {
+            await chatApi.deleteSession(activeSessionId).catch(() => undefined);
+            loadedRef.current.delete(activeSessionId);
+            setSessions((prev) => prev.filter((s) => s.id !== activeSessionId));
+          }
+        }
+      }
+      // 切到新对话时丢弃尚未发送的排队消息（避免发到另一个会话）。
+      clearQueue();
+      // 进入草稿：不创建服务端会话；项目选择留到第一条消息创建时写入绑定。
+      setDraftAcademicProjectId(projectId);
+      setActiveSessionId(null);
       setEditingMessageId(null);
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "创建会话失败");
-    }
-  }, []);
+      // URL 上的 academic_project 只是入口提示；本次选择已记入草稿，清掉参数。
+      if (academicProjectId) {
+        router.replace(
+          uploadUuid ? `/chat?upload_uuid=${encodeURIComponent(uploadUuid)}` : "/chat"
+        );
+      }
+    },
+    [activeSessionId, sessions, academicProjectId, uploadUuid, router, clearQueue]
+  );
 
   const handleSessionSelect = useCallback((sessionId: string) => {
+    // 切换会话时丢弃队列，避免把排队消息发到另一个会话。
+    clearQueue();
     setActiveSessionId(sessionId);
     // Fresh session view starts pinned to the bottom.
     stickToBottomRef.current = true;
@@ -885,12 +1059,13 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
     ) {
       setSidebarOpen(false);
     }
-  }, []);
+  }, [clearQueue]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
       try {
         await chatApi.deleteSession(sessionId);
+        if (activeSessionId === sessionId) clearQueue();
         loadedRef.current.delete(sessionId);
         setSessions((prev) => {
           const next = prev.filter((s) => s.id !== sessionId);
@@ -899,20 +1074,13 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
           }
           return next;
         });
-        // If we deleted the last session, create a fresh one.
-        if (sessions.length <= 1) {
-          const created = await chatApi.createSession();
-          const ui = toUISession(created);
-          ui.historyLoaded = true;
-          loadedRef.current.add(ui.id);
-          setSessions([ui]);
-          setActiveSessionId(created.chat_session_id);
-        }
+        // Deleting the last session falls back to the draft state — a session
+        // without messages does not need to exist on the server.
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : "删除会话失败");
       }
     },
-    [activeSessionId, sessions.length]
+    [activeSessionId, sessions.length, clearQueue]
   );
 
   const handleRenameSession = useCallback(
@@ -948,7 +1116,12 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
 
   const sidebarSessions: ChatSessionSummary[] = isLoadingSessions
     ? []
-    : sessions.map((s) => ({ id: s.id, title: s.title, lastMessageAt: s.lastMessageAt }));
+    : sessions.map((s) => ({
+        id: s.id,
+        title: s.title,
+        lastMessageAt: s.lastMessageAt,
+        ...(s.academicProjectId ? { academicProjectId: s.academicProjectId } : {}),
+      }));
 
   return (
     <div className="relative flex h-[100dvh] w-full overflow-hidden">
@@ -957,6 +1130,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
         activeSessionId={activeSessionId ?? undefined}
         onSessionSelect={handleSessionSelect}
         onNewChat={handleNewChat}
+        researchProjects={researchProjects}
         onDeleteSession={handleDeleteSession}
         onRenameSession={handleRenameSession}
         isOpen={sidebarOpen}
@@ -971,6 +1145,7 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onClearChat={handleClearChat}
           onSummarize={() => setSummaryOpen(true)}
+          isStreaming={isStreaming}
         />
 
         {loadError && (
@@ -979,14 +1154,16 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
           </div>
         )}
 
-        {/* 科研项目上下文横幅：仅当 URL 带入项目且成功拉取时显示 */}
-        {academicProject && (
+        {/* 科研项目上下文横幅：URL 带入项目即显示（标题/阶段拉取失败时用占位文案，不静默消失） */}
+        {effectiveAcademicProjectId && (
           <div className="flex items-center gap-2 border-b border-accent/10 bg-accent-soft px-4 py-2 text-[12px] text-foreground">
             <FlaskConical className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">
               正在科研项目：
-              <span className="font-medium">{academicProject.title}</span>
-              <span className="text-secondary">（阶段 {STAGE_LABELS[academicProject.stage]}）</span>
+              <span className="font-medium">{academicProject?.title ?? "已关联科研项目（信息加载中…）"}</span>
+              {academicProject && (
+                <span className="text-secondary">（阶段 {STAGE_LABELS[academicProject.stage]}）</span>
+              )}
             </span>
             <Link
               href="/research"
@@ -1039,6 +1216,9 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
                       status={message.status}
                       error={message.error}
                       timestamp={message.timestamp}
+                      streamStartedAt={
+                        message.status === "pending" ? streamStartedAt ?? undefined : undefined
+                      }
                       onRegenerate={
                         canRegenerate
                           ? () => void handleRegenerate(message.id)
@@ -1129,10 +1309,13 @@ export function ChatView({ academicProjectId, uploadUuid }: ChatViewProps = {}) 
               </div>
             )}
             <ChatSessionFiles files={sessionFiles} onDelete={handleDeleteSessionFile} />
+            <QueuedMessages items={queuedMessages} onCancel={cancelQueued} />
             <ChatInput
-              onSend={handleSend}
-              disabled={isStreaming || !activeSessionId}
+              onSend={handleSubmit}
+              disabled={false}
+              queuedCount={queuedMessages.length}
               isStreaming={isStreaming}
+              streamStartedAt={streamStartedAt ?? undefined}
               onStop={handleStop}
               selectedSkills={selectedSkills}
               onToggleSkill={handleToggleSkill}

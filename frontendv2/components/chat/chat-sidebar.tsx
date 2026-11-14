@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Pencil, Trash2, MessageSquare, Search, X } from "lucide-react";
+import { Plus, Pencil, Trash2, MessageSquare, Search, X, ChevronDown, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatSessionSummary } from "./types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -11,7 +11,10 @@ interface ChatSidebarProps {
   sessions: ChatSessionSummary[];
   activeSessionId?: string;
   onSessionSelect: (sessionId: string) => void;
-  onNewChat: () => void;
+  /** New chat; an optional academic project id binds the new session to it. */
+  onNewChat: (academicProjectId?: string) => void;
+  /** Research projects offered in the new-chat picker (empty = picker hidden). */
+  researchProjects?: Array<{ id: string; title: string }>;
   onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, newTitle: string) => void;
   isOpen: boolean;
@@ -96,6 +99,7 @@ export function ChatSidebar({
   activeSessionId,
   onSessionSelect,
   onNewChat,
+  researchProjects = [],
   onDeleteSession,
   onRenameSession,
   isOpen,
@@ -106,6 +110,19 @@ export function ChatSidebar({
   const [editTitle, setEditTitle] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ChatSessionSummary | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  // New-chat picker: plain chat vs. binding a research project (会话级持久化).
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const newChatRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!newChatOpen) return;
+    const onDocPointerDown = (event: MouseEvent) => {
+      if (newChatRef.current && !newChatRef.current.contains(event.target as Node)) {
+        setNewChatOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocPointerDown);
+    return () => document.removeEventListener("mousedown", onDocPointerDown);
+  }, [newChatOpen]);
 
   // Filter sessions based on search query
   const filteredSessions = useMemo(() => {
@@ -161,19 +178,87 @@ export function ChatSidebar({
         aria-hidden={!isOpen || undefined}
       >
         <div className="flex h-full w-72 shrink-0 flex-col">
-          {/* New chat CTA */}
+          {/* New chat CTA: 直接开普通对话；右侧箭头可选择绑定一个科研项目 */}
           <div className="p-3">
-            <button
-              type="button"
-              onClick={onNewChat}
-              className="flex w-full items-center gap-2 rounded-full border border-border-subtle bg-surface px-3.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:border-border hover:bg-border-subtle/40"
-            >
-              <Plus className="h-4 w-4 text-accent" aria-hidden="true" />
-              <span>开启新对话</span>
-              <kbd className="ml-auto rounded bg-border-subtle px-1.5 py-0.5 font-sans text-[10px] text-tertiary">
-                ⌘N
-              </kbd>
-            </button>
+            <div ref={newChatRef} className="relative">
+              <div className="flex items-stretch overflow-hidden rounded-full border border-border-subtle bg-surface">
+                <button
+                  type="button"
+                  onClick={() => onNewChat()}
+                  className="flex flex-1 items-center gap-2 px-3.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-border-subtle/40"
+                >
+                  <Plus className="h-4 w-4 text-accent" aria-hidden="true" />
+                  <span>开启新对话</span>
+                  <kbd className="ml-auto rounded bg-border-subtle px-1.5 py-0.5 font-sans text-[10px] text-tertiary">
+                    ⌘N
+                  </kbd>
+                </button>
+                {researchProjects.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setNewChatOpen((open) => !open)}
+                    aria-haspopup="menu"
+                    aria-expanded={newChatOpen}
+                    aria-label="选择科研项目并开启新对话"
+                    className="grid w-9 place-items-center border-l border-border-subtle text-tertiary transition-colors hover:bg-border-subtle/40 hover:text-foreground"
+                  >
+                    <ChevronDown
+                      className={cn("h-3.5 w-3.5 transition-transform", newChatOpen && "rotate-180")}
+                      aria-hidden="true"
+                    />
+                  </button>
+                )}
+              </div>
+
+              <AnimatePresence>
+                {newChatOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.15 }}
+                    role="menu"
+                    aria-label="新建对话选项"
+                    className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-lg"
+                  >
+                    <div className="px-3 py-2 text-[11px] font-medium text-tertiary">选择对话类型</div>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      autoFocus
+                      onClick={() => {
+                        setNewChatOpen(false);
+                        onNewChat();
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-foreground transition-colors hover:bg-border-subtle/60"
+                    >
+                      <MessageSquare className="h-4 w-4 text-tertiary" aria-hidden="true" />
+                      普通对话
+                    </button>
+                    <div className="border-t border-border-subtle px-3 pb-1 pt-2 text-[11px] font-medium text-tertiary">
+                      绑定科研项目
+                    </div>
+                    <div className="max-h-60 overflow-y-auto pb-1">
+                      {researchProjects.map((project) => (
+                        <button
+                          key={project.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setNewChatOpen(false);
+                            onNewChat(project.id);
+                          }}
+                          className="flex w-full items-start gap-2 px-3 py-2 text-left text-[13px] text-foreground/90 transition-colors hover:bg-border-subtle/60"
+                        >
+                          <FlaskConical className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+                          <span className="min-w-0 truncate">{project.title}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
 
           {/* Search box - Google style */}
@@ -266,11 +351,19 @@ export function ChatSidebar({
                               <div className="min-w-0 flex-1">
                                 <div
                                   className={cn(
-                                    "truncate text-[13px] leading-snug",
+                                    "flex min-w-0 items-center gap-1 text-[13px] leading-snug",
                                     isActive ? "font-medium text-accent" : "text-foreground/90"
                                   )}
                                 >
-                                  <HighlightText text={session.title} query={searchQuery} />
+                                  {session.academicProjectId && (
+                                    <FlaskConical
+                                      className="h-3 w-3 shrink-0 text-accent"
+                                      aria-label="已绑定科研项目"
+                                    />
+                                  )}
+                                  <span className="truncate">
+                                    <HighlightText text={session.title} query={searchQuery} />
+                                  </span>
                                 </div>
                                 <div className="mt-0.5 text-[11px] text-tertiary">
                                   {formatRelative(session.lastMessageAt)}
