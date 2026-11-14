@@ -5,6 +5,8 @@ import type { ChatArtifact, ChatInteraction, ChatPlan, ChatSource } from "@/lib/
 export interface ReasoningStep {
   step: number;
   action: string;
+  /** step lifecycle: "start" while the tool runs, "done" once it returns */
+  status?: "start" | "done";
   query?: string;
   reasoning?: string;
   verdict?: string;
@@ -14,6 +16,11 @@ export interface ReasoningStep {
   args?: string;
   /** tool execution duration in ms (step done frames) */
   durationMs?: number;
+  /**
+   * Truncated tool-result text summary (<= 400 chars) carried by the done
+   * frame; optional because older backends do not emit it.
+   */
+  resultPreview?: string;
 }
 
 export type MessageStatus = "pending" | "completed" | "failed";
@@ -66,4 +73,6 @@ export interface ChatSessionSummary {
   id: string;
   title: string;
   lastMessageAt: string;
+  /** 会话绑定的科研项目（新建会话时可选）；缺省 = 普通对话 */
+  academicProjectId?: string;
 }

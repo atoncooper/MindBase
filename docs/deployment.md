@@ -55,6 +55,7 @@ chmod 600 secrets/api_key_encryption_key
 | `secrets/api_key_encryption_key`（文件） | 必填 | 用户凭证加密主密钥；`openssl rand -base64 32`。**部署后不可更换**（更换=已存数据无法解密） |
 | `APISIX_CONSUMER_KEY` | 硬必填 | 服务间 key-auth；compose 多处 `:?` 校验，缺失直接起不来。`python3 -c "import secrets; print(secrets.token_urlsafe(36))"` |
 | `AI_GATEWAY__API_KEY` | 必填 | Higress 消费者（BEARER）key；供应商真实 key 只在网关控制台配置，不进 `.env` |
+| `DEEPSEEK_API_KEY` | AI 联网时必填 | DeepSeek 官方网页搜索/抓取（`web_search` 首选引擎、`fetch_webpage` 官方代抓）。**AI 相关只需 `AI_GATEWAY__API_KEY` 与 `DEEPSEEK_API_KEY` 两个 key**；Tavily/SearXNG/OCR/LangSmith 均为可选项 |
 | `MYSQL_ROOT_PASSWORD` / `MYSQL_USER` / `MYSQL_PASSWORD` | 生产必填 | 主库 `mind_base`；不填则用 compose 开发默认值 |
 | `MONGO_USER` / `MONGO_PASSWORD`；`REDIS_PASSWORD`；`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | 生产必填 | Mongo / 缓存 / 对象存储 |
 | `NEO4J_PASSWORD` | 启用 KG 时必填 | app-kg 与 neo4j 共用（默认 `mind-base`，生产必须改） |
@@ -98,7 +99,19 @@ chmod 600 secrets/api_key_encryption_key
 > 或一次到底：`docker compose --profile full up -d`。单独 `--profile ai` 只会起 5 个服务，**不会**拉起主栈。
 
 - 只起部分服务：`docker compose up -d --build app-ts nginx apisix`（依赖按 `depends_on` 自动拉起）。
-- **镜像策略**：第一方镜像（`atoncooper/mind-base-*`）大多 `pull_policy: never`（app-ts 为 `missing`）——`never` 的必须本地构建（`docker compose build` / `up --build`）或 `docker load` 预导入；`docker compose pull` 只对基础设施镜像与 `missing` 策略的服务有效。
+- **依赖按域划分**：`depends_on` 只声明真实启动依赖。**app-ts 只依赖自己的数据面 Mongo + Redis**（app-ts 不使用 MySQL；MySQL 属于 app-user/app-content/app-cloud 等 Go 服务，Milvus 按需可选）；**MinIO 属于 app-cloud 云盘域**，不是 app-ts / nginx 的启动依赖——`docker compose up -d --build app-ts frontend` 不会再构建或启动 minio。minio 缺失时 app-ts 按能力降级（聊天图片内存兜底、会话文档原件不落对象存储、技能 zip 不可写），核心 chat/RAG 不受影响；需要对象存储时显式 `docker compose up -d minio` 或随 cloud 栈启动。
+- 若 Mongo/Redis/网关等已由外部提供：`docker compose up -d --no-deps app-ts frontend` 只启动这两个容器（需自行保证 endpoint/网络可达）。
+- **镜像策略**：第一方镜像（`atoncooper/mind-base-*`）大多 `pull_policy: never`（app-ts / minio 为 `missing`）——`never` 的必须本地构建（`docker compose build` / `up --build`）或 `docker load` 预导入；`docker compose pull` 只对基础设施镜像与 `missing` 策略的服务有效。
+- **`--build` 的语义**：`docker compose up -d --build` 会重建**所有**带 `build:` 的第一方镜像（cert-gen / app-ts / frontend / Go 服务…），**不会**因为容器已在运行而跳过；重建镜像也不等于重建容器（数据卷不受影响）。只想更新代码/配置时：`docker compose build <变更的服务>` 后 `docker compose up -d --no-build`，或直接 `up -d --no-build`（完全不构建，镜像缺失会报错）。
+- **MinIO 镜像（默认不构建）**：minio 服务默认只有 `image`，**不参与** `up --build` 的构建图——CI 已发布 `atoncooper/mind-base-minio`，首次 `up` 会正常 pull（或提前 `docker pull` / `docker load`）。这样避免每次更新都触发 GitHub 下载 120MB 二进制（受限网络常见 `curl: (35) TLS connect error … unexpected eof`，会直接让整个 `up` 失败）。确需本地构建/离线环境时用一次性 `docker build`（**不写进 compose**：compose 的 `--build` 是全局开关，写了 build 块就会让每次 `up --build` 都重建 minio）：
+  ```bash
+  docker build -t atoncooper/mind-base-minio:latest -f scripts/minio.Dockerfile scripts
+  # 受限网络：注入代理或镜像源（MINIO_BINARY_MIRROR 默认 ghfast 前缀；置空可关闭 fallback）
+  docker build -t atoncooper/mind-base-minio:latest -f scripts/minio.Dockerfile scripts \
+    --build-arg HTTPS_PROXY=http://host.docker.internal:10808 \
+    --build-arg MINIO_BINARY_MIRROR=https://ghfast.top/https://github.com/minio/minio/releases/download
+  ```
+  构建层带 BuildKit cache mount（`/var/cache/minio`），同一 builder 只下载一次。
 - 生产建议：先 `docker compose up -d --build`，再 `docker compose --profile ai up -d`（需要沙箱再 `docker compose --profile sandbox up -d`，并保持 `SANDBOX_ENABLED=true`）。
 
 ## 5. HTTPS / TLS
@@ -128,7 +141,8 @@ chmod 600 secrets/api_key_encryption_key
 
 > 入口 nginx 的 `/health` 会转发到 APISIX，而 APISIX 未声明该路由——**不要把入口 `/health` 当健康判据**；用容器 healthcheck、直连回环端口或 `docker compose exec` 检查。
 
-- 日志：`docker compose logs -f <service>`；app-go/app-pay/MCP 同时写 `/app/logs`（lumberjack 轮转，命名卷 `*_logs`；app-content 用 `app_content_logs`）；app-ts 仅 stdout；nginx 在容器 stdout/stderr。
+- 日志：`docker compose logs -f <service>`；app-go/app-pay/MCP 同时写 `/app/logs`（lumberjack 轮转，命名卷 `*_logs`；app-content 用 `app_content_logs`）；**app-ts 同时写 `/app/logs`（rotating-file-stream 按大小/时间轮转 + gzip，保留 14 个，命名卷 `app_ts_logs`，字段/脱敏/运维命令见 [logging.md](logging.md)）**；nginx 在容器 stdout/stderr。
+- **app-ts 本地临时文件（文档解析）**：解析时把原件下载到容器内 `os.tmpdir()`（默认 `/tmp/mindbase-agent`，目录含 uid 哈希 + 轮次 id，回合结束由程序删除），**容器 `/tmp` 必须可写**（`read_only: true` 时给 `/tmp` 挂 tmpfs 或用 `TEMP_FILES__DIR` 指到可写卷）；建议宿主机/容器 `ulimit -n ≥ 8192`（全局临时文件上限 32、并发写 8，见 [temp-files.md](temp-files.md)）。
 - 审计：`pay-audit.jsonl`（app-pay 卷 `/app/logs`，365 天哈希链；**app-admin 的资金审计同名同格式，落 `app_admin_logs` 卷**）、`admin_audit`（MySQL mind_base，app-admin 全部后台操作）、`sandbox_audit`（MySQL mind_base，app-sandbox）；学术证据在 Mongo `academic_runs`。
 - 建议外部监控：入口 `GET /` + 各服务回环 health；Prometheus 抓取 app-cloud/app-sandbox/app-pay 指标；日志集中采集容器 stdout。
 
@@ -209,8 +223,12 @@ kubectl -n mind-base get pods -w
 
 ```bash
 cd /opt/mind-base && git pull
-docker compose build              # 第一方镜像必须重建
+docker compose build              # 重建带 build 的第一方镜像（minio 默认不在其中，走发布镜像）
 docker compose up -d
+# 只重建改动服务（更快、不碰其他镜像）：
+# docker compose build app-ts frontend && docker compose up -d --no-build app-ts frontend
+# minio 镜像缺失/需要改 Dockerfile 时才显式构建：
+# docker build -t atoncooper/mind-base-minio:latest -f scripts/minio.Dockerfile scripts
 # 回滚：切回上一个可用 commit 后重建
 git checkout <last-good-commit> && docker compose build && docker compose up -d
 ```

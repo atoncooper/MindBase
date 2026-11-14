@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
 import { BlindspotError, type BlindspotService } from "../../../services/blindspot.js";
 import { QuizGenerationError } from "../../../services/quiz-generation.js";
-import { AppQuizError } from "../../../auth/app-quiz-client.js";
+import { AppQuizError } from "../../../clients/app-quiz-client.js";
 
 /**
  * /blindspot/* — knowledge blind-spot map (contract mirror of the Python

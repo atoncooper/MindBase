@@ -8,9 +8,13 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Braces, Maximize2, Minimize2 } from "lucide-react";
 
-const KIND_META: Record<string, { badge: string; label: string }> = {
+export type InteractiveArtifactKind = "plot" | "diagram" | "chart" | "comparison";
+
+const KIND_META: Record<InteractiveArtifactKind, { badge: string; label: string }> = {
   plot: { badge: "ƒ", label: "交互函数图像" },
   diagram: { badge: "◇", label: "交互流程图" },
+  chart: { badge: "▥", label: "数据图表" },
+  comparison: { badge: "⇄", label: "方案对比" },
 };
 
 export function InteractiveArtifactFrame({
@@ -22,7 +26,7 @@ export function InteractiveArtifactFrame({
   expandedChildren,
   actions,
 }: {
-  kind: "plot" | "diagram";
+  kind: InteractiveArtifactKind;
   title: string;
   subtitle?: string;
   spec: unknown;

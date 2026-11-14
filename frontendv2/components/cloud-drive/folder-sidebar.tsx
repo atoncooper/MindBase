@@ -8,8 +8,9 @@
  *    guide lines, animated chevrons (rotate instead of swap), open/closed
  *    folder icons, count pills, hover action group (new subfolder / rename /
  *    delete).
- *  - "回收站" entry below the tree (badge = item count) — the single entry
- *    point for trash view.
+ *  - Bottom system entries below the tree: "科研项目文件" (read-only research
+ *    project files dialog, shown only when onOpenResearchFiles is passed) and
+ *    "回收站" (badge = item count) — the single entry point for trash view.
  *  - "存储空间" card pinned at the bottom: usage bar + tier badge.
  *
  * State ownership:
@@ -20,6 +21,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
     Cloud,
+    FlaskConical,
     Folder,
     FolderPlus,
     ChevronRight,
@@ -51,6 +53,8 @@ interface FolderSidebarProps {
     trashCount?: number;
     trashOpen?: boolean;
     onToggleTrash?: () => void;
+    /** 云盘「科研项目文件」只读入口；未传则不渲染该行。 */
+    onOpenResearchFiles?: () => void;
 }
 
 function readCollapsed(): Set<number> {
@@ -95,6 +99,7 @@ export function FolderSidebar({
     trashCount = 0,
     trashOpen = false,
     onToggleTrash,
+    onOpenResearchFiles,
 }: FolderSidebarProps) {
     const [collapsed, setCollapsed] = useState<Set<number>>(() => readCollapsed());
     // null = none; { parentId: null } = root-level create.
@@ -265,27 +270,48 @@ export function FolderSidebar({
                     ))}
             </nav>
 
-            {/* Trash entry — Finder puts it at the bottom of the sidebar */}
-            {onToggleTrash && (
+            {/* 系统入口：科研项目文件（只读）+ 回收站，放在侧栏底部 */}
+            {(onOpenResearchFiles || onToggleTrash) && (
                 <div className="border-t border-border-subtle px-2 pb-1 pt-1.5">
-                    <button
-                        type="button"
-                        onClick={onToggleTrash}
-                        className={cn(
-                            "flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-[13px] transition-colors",
-                            trashOpen
-                                ? "bg-accent-soft font-medium text-accent"
-                                : "text-foreground hover:bg-border-subtle/70"
-                        )}
-                    >
-                        <Trash2 className="h-4 w-4 shrink-0" />
-                        <span className="truncate">回收站</span>
-                        {trashCount > 0 && (
-                            <span className="ml-auto rounded-full bg-border-subtle/80 px-1.5 py-0.5 text-[10px] tabular-nums text-secondary">
-                                {trashCount}
+                    {onOpenResearchFiles && (
+                        <button
+                            type="button"
+                            onClick={onOpenResearchFiles}
+                            title="只读 · 科研工作台管理"
+                            className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left transition-colors hover:bg-border-subtle/70"
+                        >
+                            <FlaskConical className="h-4 w-4 shrink-0 text-secondary" />
+                            <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[13px] text-foreground">
+                                    科研项目文件
+                                </span>
+                                <span className="block truncate text-[10px] leading-tight text-tertiary">
+                                    只读 · 科研工作台管理
+                                </span>
                             </span>
-                        )}
-                    </button>
+                            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-tertiary" />
+                        </button>
+                    )}
+                    {onToggleTrash && (
+                        <button
+                            type="button"
+                            onClick={onToggleTrash}
+                            className={cn(
+                                "flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-[13px] transition-colors",
+                                trashOpen
+                                    ? "bg-accent-soft font-medium text-accent"
+                                    : "text-foreground hover:bg-border-subtle/70"
+                            )}
+                        >
+                            <Trash2 className="h-4 w-4 shrink-0" />
+                            <span className="truncate">回收站</span>
+                            {trashCount > 0 && (
+                                <span className="ml-auto rounded-full bg-border-subtle/80 px-1.5 py-0.5 text-[10px] tabular-nums text-secondary">
+                                    {trashCount}
+                                </span>
+                            )}
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -426,7 +452,8 @@ function FolderNode({
             <div
                 data-folder-id={folder.id}
                 className={cn(
-                    "group flex items-center gap-1 rounded-[10px] pr-1 transition-colors",
+                    // relative + 右侧预留操作区（见名称按钮 pr-[88px]）：操作按钮绝对定位，不挤压名称
+                    "group relative flex items-center gap-1 rounded-[10px] pr-1 transition-colors",
                     active ? "bg-accent-soft" : "hover:bg-border-subtle/70"
                 )}
                 style={{ paddingLeft: depth * 14 + 4 }}
@@ -464,8 +491,10 @@ function FolderNode({
                         <button
                             type="button"
                             onClick={() => onSelect(folder.id)}
+                            title={folder.name}
                             className={cn(
-                                "flex min-w-0 flex-1 items-center gap-2 py-1.5 text-[13px]",
+                                // min-w-0 + 右侧预留操作区宽度：窄侧栏下名称显示省略号，不被按钮挤压成首字符
+                                "flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-[88px] text-left text-[13px]",
                                 active ? "font-medium text-accent" : "text-foreground"
                             )}
                         >
@@ -498,13 +527,13 @@ function FolderNode({
                                 </span>
                             )}
                         </button>
-                        {/* Hover action group: create subfolder / rename / delete */}
+                        {/* Hover/focus action group: share / create subfolder / rename / delete.
+                            绝对定位在行右侧（不占布局宽度），背景兜底避免压住名称；
+                            选中态不再常显，仅 hover / focus-within（触屏端常显以免无法操作）。 */}
                         <div
                             className={cn(
-                                "flex shrink-0 items-center",
-                                active
-                                    ? "opacity-100"
-                                    : "opacity-100 md:opacity-0 md:group-hover:opacity-100"
+                                "absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center rounded-full bg-surface/95 px-0.5 shadow-[0_1px_3px_rgba(0,0,0,0.10)] ring-1 ring-border-subtle",
+                                "opacity-100 md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:group-focus-within:pointer-events-auto md:group-focus-within:opacity-100"
                             )}
                         >
                             {onShareFolder && (
@@ -516,9 +545,9 @@ function FolderNode({
                                     }}
                                     title="分享文件夹"
                                     aria-label={`分享文件夹 ${folder.name}`}
-                                    className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-accent-soft hover:text-accent"
+                                    className="relative grid h-5 w-5 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1 after:rounded-full after:content-[''] hover:bg-accent-soft hover:text-accent"
                                 >
-                                    <Share2 className="h-3.5 w-3.5" />
+                                    <Share2 className="h-3 w-3" />
                                 </button>
                             )}
                             <button
@@ -530,9 +559,9 @@ function FolderNode({
                                 }}
                                 title="新建子文件夹"
                                 aria-label={`在 ${folder.name} 中新建文件夹`}
-                                className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-accent-soft hover:text-accent"
+                                className="relative grid h-5 w-5 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1 after:rounded-full after:content-[''] hover:bg-accent-soft hover:text-accent"
                             >
-                                <FolderPlus className="h-3.5 w-3.5" />
+                                <FolderPlus className="h-3 w-3" />
                             </button>
                             <button
                                 type="button"
@@ -543,9 +572,9 @@ function FolderNode({
                                 }}
                                 title="重命名"
                                 aria-label={`重命名 ${folder.name}`}
-                                className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-border-subtle hover:text-foreground"
+                                className="relative grid h-5 w-5 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1 after:rounded-full after:content-[''] hover:bg-border-subtle hover:text-foreground"
                             >
-                                <Pencil className="h-3.5 w-3.5" />
+                                <Pencil className="h-3 w-3" />
                             </button>
                             <button
                                 type="button"
@@ -555,9 +584,9 @@ function FolderNode({
                                 }}
                                 title="删除文件夹"
                                 aria-label={`删除 ${folder.name}`}
-                                className="relative grid h-6 w-6 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1.5 after:rounded-full after:content-[''] hover:bg-danger/10 hover:text-danger"
+                                className="relative grid h-5 w-5 place-items-center rounded-full text-tertiary transition-colors after:absolute after:-inset-1 after:rounded-full after:content-[''] hover:bg-danger/10 hover:text-danger"
                             >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <Trash2 className="h-3 w-3" />
                             </button>
                         </div>
                     </>

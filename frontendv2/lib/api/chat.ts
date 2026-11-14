@@ -2,7 +2,7 @@
  * Chat API - 问答 / 流式 / 会话管理 / 历史消息.
  */
 import { request, getAuthHeaders, API_BASE_URL } from "./client";
-import type { ChatArtifact } from "@/lib/chat-stream";
+import type { ChatArtifact, ChatPlan } from "@/lib/chat-stream";
 
 // 工作区页面（用户选中的已向量化分P）
 export interface WorkspacePage {
@@ -21,6 +21,8 @@ export interface ChatSession {
     created_at: string;
     updated_at: string;
     last_message_at?: string;
+    /** 绑定的科研项目 id（新建会话时可选绑定）；null = 普通对话 */
+    academic_project_id?: string | null;
 }
 
 // 聊天消息 (v2: MongoDB-backed, msg_id is str)
@@ -162,11 +164,18 @@ export const chatApi = {
     },
 
     // === 会话管理 ===
-    createSession: (title?: string) =>
+    /**
+     * 新建会话。academicProjectId 可选：绑定一个科研项目，会话会记住该绑定
+     * （重开历史会话仍带项目上下文）；不传 = 普通对话。
+     */
+    createSession: (title?: string, academicProjectId?: string) =>
         request<ChatSession>("/chat/sessions", {
             method: "POST",
             headers: getAuthHeaders(),
-            body: JSON.stringify({ title }),
+            body: JSON.stringify({
+                ...(title ? { title } : {}),
+                ...(academicProjectId ? { academic_project_id: academicProjectId } : {}),
+            }),
         }),
 
     listSessions: () =>

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
-import { AppQuizError } from "../../../auth/app-quiz-client.js";
+import { AppQuizError } from "../../../clients/app-quiz-client.js";
 import {
   QuizGenerationError,
   QUIZ_STYLES,

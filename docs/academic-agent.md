@@ -15,7 +15,7 @@
 | 能力 | 承载 | 阶段 |
 |---|---|---|
 | 研究项目、六阶段状态机、阶段计划与指导建议 | `academic_project` + `academic_events` | Phase 1 |
-| 文献检索（Crossref / OpenAlex / arXiv）、BibTeX·CSL 导入、DOI 核验、BibTeX 导出 | `academic_literature` + `auth/literature-client.ts` | Phase 1 / 1.5 批量导入与分页 |
+| 文献检索（Crossref / OpenAlex / arXiv）、BibTeX·CSL 导入、DOI 核验、BibTeX 导出 | `academic_literature` + `clients/literature-client.ts` | Phase 1 / 1.5 批量导入与分页 |
 | 论文稿件（开题报告 / 研究计划 / 初稿 / 修改稿 / 投稿信）、章节读写、大纲、Markdown·LaTeX 导出 | `academic_manuscript` | Phase 1 |
 | 期刊要求查证、最新信息 | `web_search` / `fetch_webpage`（复用通用工具） | Phase 1 |
 | 多步任务可见化、跨轮偏好 | `plan` / `save_memory`（复用通用工具） | Phase 1 |
@@ -86,7 +86,7 @@
 └──────────────────────────────────────────────────────────────────────┘
                 │ 仅 academic_literature 触发外网
                 ▼
-   src/auth/literature-client.ts → Crossref / OpenAlex / arXiv
+   src/clients/literature-client.ts → Crossref / OpenAlex / arXiv
 ```
 
 ### 2.2 代码位置
@@ -96,7 +96,7 @@
 | `src/agent/academic/agent.ts` | academic 子 agent 工厂：只声明身份、工具名单与提示词来源，循环/重试/SSE 由共享 `createReactAgent` 提供 |
 | `src/agent/manifest.ts` | agent 花名册（名称 + 描述）唯一来源；`delegate_to_agent` 的可用列表自动跟随 |
 | `src/tools/academic/{project,literature,manuscript}.ts` | 三组工具工厂；返回中文文本 + 结构化 artifact |
-| `src/auth/literature-client.ts` | 学术域唯一出网边界：Crossref/OpenAlex/arXiv 检索 + DOI 核验，含进程内 TTL 缓存（search 5 分钟 / DOI 核验 1 小时） |
+| `src/clients/literature-client.ts` | 学术域唯一出网边界：Crossref/OpenAlex/arXiv 检索 + DOI 核验，含进程内 TTL 缓存（search 5 分钟 / DOI 核验 1 小时） |
 | `src/repository/academic.ts` | 四组仓储契约（项目 / 文献 / 文档 / 事件）+ 纯函数 helper（唯一语义来源） |
 | `src/repository/memory/academic.ts` | 内存实现：测试替身 + Mongo 不可达时的降级 |
 | `src/repository/mongo/academic.ts` | Mongo 适配器：持久化、索引、原子更新 |
@@ -462,7 +462,7 @@ Phase 1 的 import 逐条调用 `add`，每条都要重新判定去重与 citeKe
 
 ### 6.4 文献检索 TTL 缓存
 
-同一会话里反复检索同一个词、或对同一篇文献反复 verify 是常见模式。`auth/literature-client.ts` 在不引入依赖的前提下加了有界进程内缓存：
+同一会话里反复检索同一个词、或对同一篇文献反复 verify 是常见模式。`clients/literature-client.ts` 在不引入依赖的前提下加了有界进程内缓存：
 
 | 缓存 | 键 | TTL | 容量 | 说明 |
 |---|---|---|---|---|
@@ -719,15 +719,25 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 
 - 左侧 280px 项目列表：本地搜索（标题/领域/期刊）、新建项目弹窗、每项展示阶段状态徽标与文献/稿件计数；
 - 右侧项目详情头：标题、类型/领域/目标期刊/截止日期 + 六阶段步骤条（当前阶段高亮，五种状态不同配色）；
-- 四个 Tab：
+- 十一个 Tab（Tab 条 flex-wrap）：
   - **概览**：阶段状态卡（推进下一阶段 / 切换五种状态，均二次确认后才 PATCH）、执行计划勾选（PATCH plans）、阶段建议编辑保存（advice）、文献/稿件计数；
   - **文献库**：在线检索（q + source，命中为未核验候选）→「加入」、手动添加、分页（20/页 + 总数）、DOI 核验、删除确认、BibTeX 导出（复制/下载 .bib）；
-  - **写作**：文档列表/新建（类型+标题，后端默认六章）、章节选择与正文编辑保存（按 key upsert）、删除章节、Markdown/LaTeX 导出（复制/下载）；
+  - **写作**（2026-11-12 改为文件中心）：只展示「写作文件」列表（项目云盘 `05_论文` + 写作文档来源/回存），点击文件在**新标签页**打开 `/research/file?uploadUuid=…` 查看（PDF 内嵌、图片直显、Word/Office/文本用 app-cloud 抽取文本预览；浏览器无法显示 docx 原版式，提供下载）；支持「导入 Word」（.docx ≤20MB，解析章节并存 `05_论文`）；章节/Markdown 编辑器与导出文本弹窗已从界面移除（agent 仍可用 `academic_manuscript` 工具维护章节、导出/回存 Word）；
+  - **实验**（2026-11-12）：项目后台实验列表（状态/退出码/耗时），展开 stdout/stderr/error/code，queued/running 可取消；
+  - **证据**（2026-11-12）：数据集台账 + run 记录（scriptSha256、executionId、artifacts、输出预览）；
+  - **校验**（2026-11-12）：一键运行引用/实验引用/可复现校验，展示 pass、缺失/未核验引用、不可复现 run、结果章节缺 `[[run:<id>]]`；
+  - **分析**（2026-11-12）：生成结果表（写入 `04_结果/results_summary.md`，可写入稿件「结果」章节），页面展示 Markdown；
+  - **空间**（2026-11-12）：项目文件中心——聚合学术空间 7 个目录（00_课题与计划 … 06_投稿）与写作文档来源/回存文件，按目录分组；点击文件可预览（docx/md/pdf 提取文本、图片、PDF）并下载；无空间时一键创建；
+  - **计划**（2026-11-12）：**本项目**最近的 DAG 计划（`GET /chat/plans?project_id=`；计划运行由对话回合的 `academic_project_id` 自动打标），展示 goal/status/节点进度，展开看节点状态与输出；历史旧计划（无 projectId）不在项目视图显示；
+  - **审批**：实验执行 / 论文提交的 pending 请求列表（待审批/已批准/已拒绝），用户批准/拒绝后写回 REST（AI 只能创建 pending，不能自批）；
   - **动态**：事件流（时间倒序，中文事件标签 + actor + payload 摘要）。
 
 **与聊天的联动（P0 修复）**
 
-- 详情头「在对话中继续」→ `/chat?academic_project=<id>`；聊天页把 id 透传为请求体 `academic_project_id`，后端校验归属后把受控项目段落注入系统提示，聊天顶部显示「正在科研项目：<title>（阶段）」横幅与返回链接。
+- 详情头「在对话中继续」→ `/chat?academic_project=<id>&new=1`：聊天页读取查询参数后**直接新建一个对话**（不落到最近历史会话），并把项目 **绑定在该会话上**（`POST /chat/sessions` 带 `academic_project_id`，Mongo 会话行持久化）；后端每轮优先取显式请求体、否则回落到会话绑定，校验归属后把受控项目段落注入系统提示，聊天顶部立即显示「正在科研项目：<title>（阶段）」横幅与返回链接（标题/阶段加载失败时显示占位文案，不再静默消失）。
+- 侧栏「开启新对话」右侧箭头：可选择「普通对话」或绑定某个科研项目新建会话；已绑定项目的历史会话在侧栏带项目图标，重开后仍保留项目上下文。
+- 新建对话是**草稿态**：没发第一条消息前不创建服务端会话（切走/再点新建只会清掉当前空会话）；草稿里选的项目在第一条消息创建会话时写入绑定。仅有上传文档、尚无消息的会话不算空会话，不会被清理。
+- ⚠️ 实现约束：`/chat` 是静态预渲染路由，页面 `searchParams` prop 拿不到实际查询串（曾导致点击后项目不绑定、不显示、不新建会话）；聊天页必须用 `useSearchParams()`（包在 Suspense 内）读取参数。
 - 未带参数 / 项目被删 / 无权访问：静默降级为普通聊天（不阻断对话）；URL 参数即上下文绑定，去掉即恢复普通聊天。
 
 **约定**
@@ -737,11 +747,19 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 - 阶段推进只改目标阶段（不自动把旧阶段置 approved），与 agent 工具语义一致；人工门禁由确认弹窗承担。
 - 错误统一展示 `{ detail }`；加载/空态/错误重试全覆盖；无新增第三方依赖。
 
+**与 agent 能力的覆盖（2026-11-12 已补齐）**
+
+- 实验 / 证据 / 校验 / 分析 / 空间 / 计划 六个 Tab 与本轮 REST 契约见 [research-ui-api.md](research-ui-api.md)；
+- app-ts 新增：`GET/POST /academic/projects/:id/{experiments,evidence,validation,analysis/results,workspace,workspace/files}`、`POST /academic/experiments/:id/cancel`、`GET /chat/plans`（DAG 历史，uid 维度）；
+- 沙箱面板：app-sandbox 新增 `GET /v1/executions`（uid 维度），app-ts 暴露 `/chat/sandbox/executions*` 代理；前端独立页 `/sandbox`（导航「更多 → 沙箱」），列表/状态/输出/取消 + 运行中 5s 轮询；
+- APISIX `chat_ts` 增补 `/chat/plans`、`/chat/plans/*`、`/chat/sandbox/executions`、`/chat/sandbox/executions/*` 路由；
+- 已知缺陷修复（2026-11-11）：`research-view.tsx` 的 TABS 已含 approvals，但 Tab 渲染分支缺省进入 EventsTab（`ApprovalTab` 只 import 未渲染），导致「审批」Tab 显示动态内容、用户无法批准/拒绝 → 实验提交的审批门禁无法通过；已补渲染分支。
+
 **已验证 / 未验证**
 
-- `frontendv2` `npx tsc --noEmit` → exit 0；后端 18 个端点由 `test/academic-routes.test.ts` 覆盖。
-- 未启动浏览器 dev server / 未做真实网关联调：页面与后端契约通过类型 + 逐字段核对保证，联调需在完整 compose 栈（nginx → APISIX → app-ts）上做一次点击走查。
-- 未提供项目删除入口（API 已就绪）、未做移动端专门适配（沿用现有响应式布局）。
+- `frontendv2` `npx tsc --noEmit` → exit 0；app-ts `npm run typecheck` → exit 0，新增 `test/research-routes.test.ts`（9）+`test/sandbox-routes.test.ts`（7）通过；app-sandbox `go build ./... && go test ./...` 通过（含 `tests/executions_list_test.go`）。
+- 2026-11-12 完成完整 compose 栈冒烟：`/research`、`/sandbox` 页面 200；`/chat/plans`、`/chat/sandbox/executions` 经 nginx→APISIX 命中（未登录 401 而非 404）；app-ts 直连冒烟：plans/experiments/evidence/validation/workspace/files 均按契约返回（真实项目 404/200 语义正确）；沙箱代理返回 `enabled:true` 且列表可读。
+- 未提供项目删除入口（API 已就绪）、未做移动端专门适配（沿用现有响应式布局）；聊天上下文仍是「URL 参数 + 每轮注入」，未做会话级绑定。
 
 ---
 
@@ -776,8 +794,9 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 ### 14.3 科研项目上下文注入
 
 - 聊天请求新增可选 `academic_project_id`（用户输入，按 `[A-Za-z0-9_-]` 过滤、64 字符上限）；
+- 会话级绑定：`POST /chat/sessions` 也接受可选 `academic_project_id`，写入会话行（`ChatSession.academicProjectId`，Mongo/Memory 双实现），列表/详情返回 `academic_project_id`；每轮的显式 `academic_project_id` 优先，缺省时 ChatService 回落到会话绑定，因此重开历史会话仍保留项目上下文；
 - ChatService 通过组合根注入的 resolver 解析项目（归属校验），渲染 `prompts/chat/academic-context.md` 受控段落到 extraSystem；项目不存在/无权限/存储降级 → 静默忽略，不影响回合；
-- 前端：科研工作台详情头「在对话中继续」→ `/chat?academic_project=<id>`，聊天页把 id 透传到请求并显示「正在科研项目」横幅。
+- 前端：科研工作台详情头「在对话中继续」→ `/chat?academic_project=<id>&new=1` 新建**绑定该项目的会话**；侧栏「开启新对话」箭头可选择普通对话或绑定项目；聊天页把有效项目 id（会话绑定优先）透传到请求并显示「正在科研项目」横幅。
 
 ### 14.4 按 agent 的步数预算
 

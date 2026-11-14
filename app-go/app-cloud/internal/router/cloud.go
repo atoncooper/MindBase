@@ -666,6 +666,19 @@ func getDocumentPreview(d Deps) gin.HandlerFunc {
 		if hasMore {
 			next = &nextOffset
 		}
+		// On-demand fallback: files that never ran through the pipeline (e.g. an
+		// AI-generated docx) have no Mongo parsed document, so the preview above is
+		// empty. Extract the raw object instead; every failure keeps the empty 200
+		// answer (size/parse guards live in preview_extract.go).
+		if preview == "" && total == 0 {
+			var fetch objectFetcher
+			if d.Minio != nil {
+				fetch = d.Minio.GetObject
+			}
+			if text, ok := extractPreviewFromObject(c.Request.Context(), f, fetch); ok {
+				preview, total, hasMore, next = previewPage(text, offset, limit)
+			}
+		}
 		c.JSON(http.StatusOK, dto.DocumentPreviewResponse{
 			UploadUUID:   f.UploadUUID,
 			FileName:     f.OriginalName,

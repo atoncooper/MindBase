@@ -84,10 +84,14 @@ function makeHarness() {
   return { harness, captured };
 }
 
-function makeChat(harness: AgentHarness, section?: (uid: string | undefined, projectId: string) => Promise<string | undefined>) {
+function makeChat(
+  harness: AgentHarness,
+  section?: (uid: string | undefined, projectId: string) => Promise<string | undefined>,
+  sessions = new MemoryChatSessionRepository(),
+) {
   return new ChatService(
     harness,
-    new MemoryChatSessionRepository(),
+    sessions,
     new MemoryMessageRepository(),
     undefined,
     undefined,
@@ -114,6 +118,8 @@ describe("ChatService academic context injection", () => {
     const extraSystem = String(captured[0]?.extraSystem ?? "");
     expect(extraSystem).toContain("当前科研项目上下文");
     expect(extraSystem).toContain("p-9");
+    // the same id rides on the dispatch input so tools (plan_and_run) can tag durable records
+    expect(captured[0]?.academicProjectId).toBe("p-9");
   });
 
   it("ignores a failed/foreign project lookup instead of failing the turn", async () => {
@@ -131,6 +137,33 @@ describe("ChatService academic context injection", () => {
     const chat = makeChat(harness);
     await drain(chat.askStream({ query: "普通提问", sessionId: "ac-s3", uid: "42" }));
     expect(captured[0]?.extraSystem).toBeUndefined();
+    expect(captured[0]?.academicProjectId).toBeUndefined();
+  });
+
+  // Session-level binding (new-session project picker): reopening a bound session
+  // from history keeps its research context even when the turn carries no id.
+  it("falls back to the project bound to the session", async () => {
+    const { harness, captured } = makeHarness();
+    const sessions = new MemoryChatSessionRepository();
+    const chat = makeChat(harness, async () => "## 当前科研项目上下文\n- 项目 id：p-7", sessions);
+    await sessions.getOrCreate("ac-s4", "42");
+    await sessions.setAcademicProject("ac-s4", "p-7");
+
+    await drain(chat.askStream({ query: "继续写方法", sessionId: "ac-s4", uid: "42" }));
+    expect(String(captured[0]?.extraSystem ?? "")).toContain("p-7");
+    expect(captured[0]?.academicProjectId).toBe("p-7");
+  });
+
+  it("prefers the explicit per-turn project over the session binding", async () => {
+    const { harness, captured } = makeHarness();
+    const sessions = new MemoryChatSessionRepository();
+    const chat = makeChat(harness, async (_uid, projectId) => "## 当前科研项目上下文\n- 项目 id：" + projectId, sessions);
+    await sessions.getOrCreate("ac-s5", "42");
+    await sessions.setAcademicProject("ac-s5", "p-old");
+
+    await drain(chat.askStream({ query: "换个项目提问", sessionId: "ac-s5", uid: "42", academicProjectId: "p-new" }));
+    expect(captured[0]?.academicProjectId).toBe("p-new");
+    expect(String(captured[0]?.extraSystem ?? "")).toContain("p-new");
   });
 });
 

@@ -1,10 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, memo } from "react";
+import { useState, useEffect, useRef, useCallback, memo, useMemo } from "react";
 import { Markdown } from "@/components/markdown";
 import {
-  Brain,
-  ChevronDown,
   ExternalLink,
   Copy,
   Check,
@@ -20,8 +18,13 @@ import { isTypedArtifact, type ChatArtifact, type ChatInteraction, type ChatPlan
 import type { ReasoningStep } from "./types";
 import { InteractionCard } from "./interaction-card";
 import { PlanPanel } from "./plan-panel";
+import { ThinkingPanel } from "./thinking-panel";
+import { domainOf, isInternalSource, sourceHref } from "./tool-step-card";
 import { InteractiveArtifact } from "./artifacts/interactive-artifact";
-import { isDiagramSpec, isPlotSpec } from "@/lib/artifacts/interactive-spec";
+import { FileArtifactCard } from "./artifacts/file-artifact-card";
+import { isChartSpec, isComparisonSpec, isDiagramSpec, isPlotSpec } from "@/lib/artifacts/interactive-spec";
+import { isFileArtifactData, legacyFileArtifactData } from "@/lib/artifacts/file-spec";
+import { useElapsedSeconds } from "./streaming-elapsed";
 
 interface ChatMessageProps {
   role: "user" | "assistant";
@@ -51,6 +54,10 @@ interface ChatMessageProps {
   status?: "pending" | "completed" | "failed";
   error?: string;
   timestamp?: string;
+  // Wall-clock start of this turn's stream (Date.now() recorded by chat-view at
+  // send). Falls back to the ISO `timestamp` (message createdAt), then to the
+  // moment the message mounts when the timestamp is unparseable.
+  streamStartedAt?: number;
   onRegenerate?: () => void;
   // User-message editing (ChatGPT-style): onEdit opens the inline editor,
   // submit truncates the turn server-side and re-asks with the new content.
@@ -60,27 +67,45 @@ interface ChatMessageProps {
   onEditCancel?: () => void;
 }
 
-// 云盘文件引用按站内深链处理（同标签页打开）；其余来源是站外链接。
-function isInternalSource(src: { uploadUuid?: string }): boolean {
-  return !!src.uploadUuid;
+// Progress of a plan snapshot. Mirrors PlanPanel's normalization so the running
+// row never shows a done/total that disagrees with the panel above it.
+function planProgress(plan: ChatPlan): { done: number; total: number } {
+  const nodes = plan.nodes ?? [];
+  const fallbackTotal = nodes.length > 0 ? nodes.length : plan.steps.length;
+  const total = plan.total > 0 ? plan.total : fallbackTotal;
+  return { done: Math.min(Math.max(plan.done, 0), total), total };
 }
 
-// Extract a readable domain / label for the citation card.
-function domainOf(src: { url?: string; uploadUuid?: string }): string {
-  if (isInternalSource(src)) return "我的云盘";
-  if (!src.url) return "bilibili.com";
-  try {
-    const u = new URL(src.url);
-    return u.hostname.replace(/^www\./, "");
-  } catch {
-    return src.url.slice(0, 40);
+// Live running-row wording; highest-signal state first:
+// queue > plan node > plan (no active node) > delegation > tool call > text.
+function runningStatusLabel({
+  queuePosition,
+  plan,
+  subAgent,
+  lastStepAction,
+  hasContent,
+}: {
+  queuePosition?: number;
+  plan?: ChatPlan | null;
+  subAgent?: { agent: string; count: number };
+  lastStepAction?: string;
+  hasContent: boolean;
+}): string {
+  if (queuePosition != null) return `排队中 · 第 ${queuePosition} 位…`;
+  if (plan) {
+    const nodes = plan.nodes ?? [];
+    const { done, total } = planProgress(plan);
+    const activeNode = nodes.find((node) => node.status === "in_progress");
+    if (activeNode) return `正在执行计划：${activeNode.title}（${done}/${total}）`;
+    // Legacy linear payload: the same frame may carry only `steps`.
+    const activeStep = plan.steps.find((step) => step.status === "in_progress");
+    if (activeStep) return `正在执行计划：${activeStep.desc}（${done}/${total}）`;
+    if (nodes.length > 0 || plan.steps.length > 0) return `计划执行中（${done}/${total}）`;
   }
-}
-
-function sourceHref(src: { url?: string; bvid?: string; uploadUuid?: string }): string {
-  // 文件引用优先：uploadUuid 存在时进入云盘详情，不生成 bilibili 外链
-  if (src.uploadUuid) return `/cloud-drive/${src.uploadUuid}`;
-  return src.url || (src.bvid ? `https://www.bilibili.com/video/${src.bvid}` : "#");
+  if (subAgent) return `子任务执行中：${subAgent.agent}（${subAgent.count} 个）`;
+  if (lastStepAction) return `正在调用工具：${lastStepAction}`;
+  if (hasContent) return "生成中…";
+  return "思考中…";
 }
 
 // Inline editor for a user message. Mounted only while editing, so the draft
@@ -219,56 +244,33 @@ function StructuredArtifactCard({
   );
 }
 
-// File-style artifact card: image preview, download link, or a bare name chip.
-function FileArtifactCard({
-  name,
-  url,
-  contentType,
-}: {
-  name: string;
-  url?: string;
-  contentType?: string;
-}) {
-  const isImage = !!contentType?.startsWith("image/");
-  if (isImage && url) {
-    return (
-      <div className="overflow-hidden rounded-xl border border-border-subtle">
-        <a href={url} target="_blank" rel="noopener noreferrer" title={name}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt={name} className="max-h-48 object-cover" loading="lazy" />
-        </a>
-      </div>
-    );
-  }
-  if (url) {
-    return (
-      <div className="overflow-hidden rounded-xl border border-border-subtle">
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex max-w-full items-center gap-1.5 px-3 py-2 text-[13px] text-accent hover:underline"
-        >
-          <span className="truncate">{name}</span>
-          <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
-        </a>
-      </div>
-    );
-  }
-  return (
-    <div className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-border-subtle px-3 py-2 text-[13px] text-secondary">
-      <span className="truncate">{name}</span>
-    </div>
-  );
+/** Internal structured payloads that ArtifactCard deliberately hides from the transcript. */
+function isHiddenArtifact(artifact: ChatArtifact): boolean {
+  return isTypedArtifact(artifact) && typeof artifact.kind === "string" && artifact.kind.startsWith("academic_");
 }
 
 function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
   if (!isTypedArtifact(artifact)) {
-    // Legacy file-style artifact (image / downloadable file).
-    return <FileArtifactCard name={artifact.name} url={artifact.url} contentType={artifact.content_type} />;
+    // Legacy file-style artifact (image / downloadable file). Map it onto the
+    // new kind:"file" data contract so old history rows get the same card.
+    const legacy = legacyFileArtifactData(
+      artifact.name,
+      artifact.url,
+      artifact.content_type,
+      artifact.size
+    );
+    return legacy ? <FileArtifactCard data={legacy} /> : null;
   }
 
   const { kind, data } = artifact;
+  // Internal academic tool payloads are large structured blobs; the
+  // user-facing file cards ride on their own kind:"file" artifact, so hide the
+  // raw academic_* shape instead of adding JSON-fold noise to the transcript.
+  if (kind.startsWith("academic_")) return null;
+  if (kind === "file") {
+    if (isFileArtifactData(data)) return <FileArtifactCard data={data} />;
+    // Malformed payload: fall through to the file-ish / JSON fallbacks below.
+  }
   if (kind === "quiz") {
     const count = arrayLen(data, "questions");
     const topic = strField(data, "topic");
@@ -289,25 +291,31 @@ function ArtifactCard({ artifact }: { artifact: ChatArtifact }) {
         : jsonPreview(data, 80);
     return <StructuredArtifactCard badge="批" title="已批改" detail={detail} />;
   }
-  // Interactive artifacts (plot / diagram): declarative specs rendered by
-  // trusted canvas/SVG components. Invalid payloads fall through to the JSON
-  // fallback below instead of breaking the message.
+  // Interactive artifacts (plot / diagram / chart / comparison): declarative
+  // specs rendered by trusted canvas/SVG/React components. Invalid payloads
+  // fall through to the JSON fallback below instead of breaking the message.
   if (kind === "plot" && isPlotSpec(data)) {
     return <InteractiveArtifact kind="plot" data={data} />;
   }
   if (kind === "diagram" && isDiagramSpec(data)) {
     return <InteractiveArtifact kind="diagram" data={data} />;
   }
+  if (kind === "chart" && isChartSpec(data)) {
+    return <InteractiveArtifact kind="chart" data={data} />;
+  }
+  if (kind === "comparison" && isComparisonSpec(data)) {
+    return <InteractiveArtifact kind="comparison" data={data} />;
+  }
   // A structured artifact that also carries a file location (e.g. an exported
-  // quiz PDF/image) → render it as an image preview / download link.
+  // quiz PDF/image) → render it as a file card with a download link.
   if (artifact.url) {
-    return (
-      <FileArtifactCard
-        name={artifact.name ?? kind}
-        url={artifact.url}
-        contentType={artifact.content_type}
-      />
+    const legacy = legacyFileArtifactData(
+      artifact.name ?? kind,
+      artifact.url,
+      artifact.content_type,
+      artifact.size
     );
+    if (legacy) return <FileArtifactCard data={legacy} />;
   }
   // Unknown structured kind → collapsed JSON detail (no raw HTML rendering).
   return (
@@ -337,6 +345,8 @@ function ChatMessage({
   onImageOpen,
   status = "completed",
   error,
+  timestamp,
+  streamStartedAt,
   onRegenerate,
   onEdit,
   isEditing = false,
@@ -344,43 +354,23 @@ function ChatMessage({
   onEditCancel,
 }: ChatMessageProps) {
   // Normalize null/undefined -> [] so .length and .map are always safe.
-  const safeSources = Array.isArray(sources) ? sources : [];
-  const safeArtifacts = Array.isArray(artifacts) ? artifacts : [];
-  const safeReasoningSteps = Array.isArray(reasoningSteps) ? reasoningSteps : [];
-  const hasThinking = !!reasoning || safeReasoningSteps.length > 0;
-
-  // Unified thinking panel (model reasoning stream + tool steps) - collapsed
-  // by default; content only rendered while open ("load on open").
-  //
-  // While streaming the open state is derived from progress (React's
-  // "adjust state during render" pattern): expand when thinking arrives,
-  // collapse as soon as the answer starts. The first manual toggle (userOpen
-  // becoming non-null) takes over control permanently for this message.
-  const [autoOpen, setAutoOpen] = useState(false);
-  const [autoInputs, setAutoInputs] = useState({ content, status, hasThinking });
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  if (
-    autoInputs.content !== content ||
-    autoInputs.status !== status ||
-    autoInputs.hasThinking !== hasThinking
-  ) {
-    setAutoInputs({ content, status, hasThinking });
-    if (userOpen === null) {
-      // 运行中的整轮保持展开：工具步骤/思考随产生即可见（此前一旦正文开始
-      // 输出就自动收起，导致"运行步骤看不到"）。轮次结束后收起到胶囊，
-      // 用户仍可一键展开；用户手动点过开关后不再自动干预。
-      setAutoOpen(status === "pending" ? hasThinking : false);
-    }
-  }
-  const thinkingOpen = userOpen ?? autoOpen;
-  const reasoningScrollRef = useRef<HTMLDivElement>(null);
-
-  // Keep the reasoning stream pinned to the bottom while it grows.
-  useEffect(() => {
-    if (!thinkingOpen || status !== "pending") return;
-    const el = reasoningScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [reasoning, thinkingOpen, status]);
+  const safeSources = useMemo(() => (Array.isArray(sources) ? sources : []), [sources]);
+  const safeArtifacts = useMemo(() => (Array.isArray(artifacts) ? artifacts : []), [artifacts]);
+  // The artifact SSE frame may carry internal tool payloads (academic_* blobs)
+  // that ArtifactCard intentionally renders as null. Header/count must follow
+  // what is actually visible, otherwise an empty "生成产物" block is shown.
+  const visibleArtifacts = useMemo(
+    () => safeArtifacts.filter((artifact) => !isHiddenArtifact(artifact)),
+    [safeArtifacts]
+  );
+  const safeReasoningSteps = useMemo(
+    () => (Array.isArray(reasoningSteps) ? reasoningSteps : []),
+    [reasoningSteps]
+  );
+  const lastStep = useMemo(
+    () => safeReasoningSteps[safeReasoningSteps.length - 1],
+    [safeReasoningSteps]
+  );
 
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
@@ -400,19 +390,19 @@ function ChatMessage({
   const isFailed = status === "failed";
   const showActions = !isUser && status === "completed" && !!content;
 
-  // Panel header label: live wording while streaming, summary once settled.
-  const thinkingActive = isPending && !content;
-  const thinkingLabel = (() => {
-    if (thinkingActive) {
-      return reasoning ? "深度思考中…" : "执行中…";
-    }
-    if (reasoning) {
-      return safeReasoningSteps.length > 0
-        ? `已深度思考 · ${safeReasoningSteps.length} 步`
-        : "已深度思考";
-    }
-    return `执行过程 · ${safeReasoningSteps.length} 步`;
-  })();
+  // Turn clock: prefer the wall-clock start handed down by the view, otherwise
+  // parse the message createdAt; an unparseable timestamp counts from mount.
+  const parsedTimestamp = timestamp ? Date.parse(timestamp) : NaN;
+  const streamStartMs =
+    streamStartedAt ?? (Number.isFinite(parsedTimestamp) ? parsedTimestamp : undefined);
+  const elapsedSeconds = useElapsedSeconds(streamStartMs, isPending);
+  const runningLabel = runningStatusLabel({
+    queuePosition,
+    plan,
+    subAgent,
+    lastStepAction: lastStep?.action,
+    hasContent: !!content,
+  });
 
   // ---- User message: right-aligned compact bubble (light blue, iMessage-ish) ----
   if (isUser) {
@@ -481,128 +471,14 @@ function ChatMessage({
       </div>
 
       <div className="min-w-0 flex-1">
-        {/* Unified thinking panel - one toggle for the reasoning stream and
-            the tool-execution timeline. */}
-        {hasThinking && (
-          <div className="mb-3">
-            <button
-              type="button"
-              onClick={() => setUserOpen((v) => !(v ?? autoOpen))}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle px-2.5 py-1 text-[12px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
-              aria-expanded={thinkingOpen}
-              aria-controls="thinking-panel"
-            >
-              <Brain
-                className={`h-3.5 w-3.5 ${thinkingActive ? "animate-pulse text-accent" : ""}`}
-                aria-hidden="true"
-              />
-              <span>{thinkingLabel}</span>
-              <ChevronDown
-                className={`h-3 w-3 transition-transform ${thinkingOpen ? "rotate-180" : ""}`}
-                aria-hidden="true"
-              />
-            </button>
-
-            {thinkingOpen && (
-              <div
-                id="thinking-panel"
-                className="mt-2 rounded-xl border border-border-subtle bg-border-subtle/40 px-3.5 py-3 text-[13px] text-secondary"
-                role="region"
-                aria-label="思考过程"
-              >
-                {/* Model reasoning stream - pinned to the bottom while growing */}
-                {reasoning && (
-                  <div
-                    ref={reasoningScrollRef}
-                    className="max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed"
-                    aria-label="深度思考内容"
-                  >
-                    {reasoning}
-                  </div>
-                )}
-
-                {/* Divider between the two sections when both are present */}
-                {reasoning && safeReasoningSteps.length > 0 && (
-                  <div className="my-3 flex items-center gap-2 text-[11px] text-tertiary">
-                    <span className="h-px flex-1 bg-border" />
-                    <span>执行步骤</span>
-                    <span className="h-px flex-1 bg-border" />
-                  </div>
-                )}
-
-                {safeReasoningSteps.map((step, i) => {
-                  const stepSources = Array.isArray(step.sources) ? step.sources : [];
-                  return (
-                    <div key={i} className="border-l-2 border-border pl-3 [&:not(:first-child)]:mt-3">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] text-tertiary">
-                          {String(step.step).padStart(2, "0")}
-                        </span>
-                        <span className="font-medium text-foreground">{step.action}</span>
-                        {step.durationMs != null && (
-                          <span className="text-[11px] text-tertiary">
-                            {(step.durationMs / 1000).toFixed(1)}s
-                          </span>
-                        )}
-                      </div>
-                      {step.args && !step.query && (
-                        <div className="mt-1 flex gap-1.5">
-                          <span className="text-[11px] text-tertiary">参数</span>
-                          <code className="max-w-[320px] truncate rounded bg-surface px-1.5 py-0.5 text-[12px] text-foreground">
-                            {step.args}
-                          </code>
-                        </div>
-                      )}
-                      {step.query && (
-                        <div className="mt-1 flex gap-1.5">
-                          <span className="text-[11px] text-tertiary">检索</span>
-                          <code className="rounded bg-surface px-1.5 py-0.5 text-[12px] text-foreground">
-                            {step.query}
-                          </code>
-                        </div>
-                      )}
-                      {step.reasoning && <div className="mt-1 leading-relaxed">{step.reasoning}</div>}
-                      {step.verdict && (
-                        <div className="mt-1.5 text-[12px]">
-                          <span
-                            className={
-                              step.verdict === "sufficient" ? "text-success" : "text-warning"
-                            }
-                          >
-                            结论：{step.verdict}
-                          </span>
-                          {step.recall_score != null && (
-                            <span className="ml-2 text-tertiary">召回 {step.recall_score.toFixed(3)}</span>
-                          )}
-                        </div>
-                      )}
-                      {stepSources.length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {stepSources.map((src, j) => (
-                            <a
-                              key={j}
-                              href={sourceHref(src)}
-                              target={isInternalSource(src) ? undefined : "_blank"}
-                              rel={isInternalSource(src) ? undefined : "noopener noreferrer"}
-                              className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:text-foreground"
-                            >
-                              {isInternalSource(src) ? (
-                                <ArrowRight className="h-2.5 w-2.5" aria-hidden="true" />
-                              ) : (
-                                <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
-                              )}
-                              <span className="max-w-[180px] truncate">{src.title}</span>
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
+        {/* Unified thinking panel: model reasoning stream + tool-execution
+            timeline behind one collapsible pill (see thinking-panel.tsx). */}
+        <ThinkingPanel
+          reasoning={reasoning}
+          steps={safeReasoningSteps}
+          status={status}
+          active={isPending && !content}
+        />
 
         {/* Task plan (plan tool): live checklist above the answer body. DAG
             frames may carry nodes without legacy steps, so either shape renders. */}
@@ -614,31 +490,45 @@ function ChatMessage({
 
         {/* Content / loading / error */}
         <div className={isFailed ? "rounded-xl border border-danger/20 bg-danger/5 p-3" : ""}>
-          {isPending && !content && !reasoning ? (
-            <div
-              className="flex h-7 items-center gap-2.5 text-[13px] text-tertiary"
-              role="status"
-              aria-label={queuePosition != null ? "排队等待中" : "助手思考中"}
-            >
-              <span className="flex items-center gap-1" aria-hidden="true">
-                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "0ms" }} />
-                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "160ms" }} />
-                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "320ms" }} />
-              </span>
-              <span className="chat-shimmer font-medium">
-                {queuePosition != null
-                  ? `排队中 · 第 ${queuePosition} 位…`
-                  : subAgent != null
-                    ? `子任务执行中：${subAgent.agent}（${subAgent.count} 个）`
-                    : "思考中…"}
-              </span>
-            </div>
-          ) : (
+          {content && (
             // Markdown renders during streaming too - flushes are throttled
             // upstream (~80ms) so re-parsing stays cheap, and the switch from
             // streaming to the final render no longer jumps/reflows the text.
             <div className="md-body text-[15px] leading-relaxed text-foreground">
-              <Markdown>{content || ""}</Markdown>
+              <Markdown>{content}</Markdown>
+              {/* Blinking caret at the tail of the streamed answer; removed as
+                  soon as the turn settles (completed / failed). */}
+              {isPending && (
+                <span
+                  className="ml-0.5 inline-block h-[1em] w-[2px] animate-pulse rounded-full bg-accent align-text-bottom"
+                  aria-hidden="true"
+                />
+              )}
+            </div>
+          )}
+
+          {/* Live running row. ALWAYS rendered while the turn is pending - even
+              when text/reasoning is already on screen - so a long tool call,
+              plan step or delegation never looks like a silently dead stream.
+              Sits under the answer body, above interaction/sources. */}
+          {isPending && (
+            <div
+              className={`${content ? "mt-1.5 " : ""}flex h-7 items-center gap-2.5 text-[12px] text-tertiary`}
+              role="status"
+              aria-label="助手正在执行"
+            >
+              <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
+                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "0ms" }} />
+                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "160ms" }} />
+                <span className="chat-dot h-1.5 w-1.5 rounded-full bg-tertiary" style={{ animationDelay: "320ms" }} />
+              </span>
+              <span className="min-w-0 truncate">
+                <span className="chat-shimmer font-medium">{runningLabel}</span>
+                <span className="tabular-nums" aria-hidden="true">
+                  {" · "}
+                  {elapsedSeconds}s
+                </span>
+              </span>
             </div>
           )}
 
@@ -710,12 +600,14 @@ function ChatMessage({
           </div>
         )}
 
-        {/* Artifacts - structured (quiz / quiz_grading) summary cards + images/files */}
-        {safeArtifacts.length > 0 && (
+        {/* Artifacts - only render when at least one card is actually visible;
+            internal academic_* payloads (hidden by ArtifactCard) must not leave an
+            empty "生成产物" block behind. */}
+        {visibleArtifacts.length > 0 && (
           <div className="mt-3">
             <div className="mb-1.5 text-[12px] font-medium text-secondary">生成产物</div>
             <div className="grid gap-2 sm:grid-cols-2">
-              {safeArtifacts.map((art, i) => (
+              {visibleArtifacts.map((art, i) => (
                 <ArtifactCard key={i} artifact={art} />
               ))}
             </div>

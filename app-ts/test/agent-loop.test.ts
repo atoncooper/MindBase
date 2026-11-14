@@ -195,11 +195,76 @@ describe("agent loop: step frame observability", () => {
       expect(start.step.args).toBeDefined();
       expect(start.step.args!.length).toBeLessThanOrEqual(121); // truncated + ellipsis
       expect(start.step.args).toContain('"query"');
+      // preview only lands on the done frame
+      expect(start.step.resultPreview).toBeUndefined();
     }
     const done = frames.find((f) => f.type === "step" && f.step.status === "done");
     expect(done).toBeDefined();
     if (done?.type === "step" && done.step.status === "done") {
       expect(done.step.durationMs).toBeGreaterThanOrEqual(25);
+      // done frame carries a trimmed text preview of the tool output (contract: <=400 chars)
+      expect(done.step.resultPreview).toBe("回声");
+    }
+  });
+
+  it("done frame previews tool output text, capped at 400 chars", async () => {
+    const longText = "结果：" + "x".repeat(500);
+    const longTool = defineTool({
+      name: "echo_tool",
+      description: "echo",
+      inputSchema: z.object({ query: z.string() }),
+      // ToolOutput-shaped objects must also flatten to text (not JSON.stringify)
+      execute: async () => ({ content: longText }),
+    });
+    const model = new MockLanguageModelV2({
+      doStream: (() => {
+        let call = 0;
+        return async () => {
+          const current = call++;
+          const chunks: LanguageModelV2StreamPart[] =
+            current === 0
+              ? [
+                  { type: "stream-start", warnings: [] },
+                  { type: "response-metadata", ...base },
+                  { type: "tool-call", toolCallId: "c2", toolName: "echo_tool", input: JSON.stringify({ query: "长结果" }) },
+                  { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+                ]
+              : [
+                  { type: "stream-start", warnings: [] },
+                  { type: "response-metadata", ...base },
+                  { type: "text-start", id: "t0" },
+                  { type: "text-delta", id: "t0", delta: "收到长结果" },
+                  { type: "text-end", id: "t0" },
+                  { type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+                ];
+          return { stream: simulateReadableStream({ initialDelayInMs: 10, chunks }) };
+        };
+      })(),
+    });
+    const runtime = {
+      buildSdkTools: () => ({ echo_tool: longTool }),
+    } as unknown as AgentRuntime;
+    const agent = createReactAgent({
+      name: "main",
+      description: "main",
+      runtime,
+      toolNames: ["echo_tool"],
+      purpose: "chat",
+      buildSystemPrompt: async () => "sys",
+      model,
+    });
+    const frames: SseFrame[] = [];
+    for await (const frame of agent.run({ query: "问", scope: {}, history: [] })) {
+      frames.push(frame);
+    }
+
+    const done = frames.find((f) => f.type === "step" && f.step.status === "done");
+    expect(done).toBeDefined();
+    if (done?.type === "step" && done.step.status === "done") {
+      expect(done.step.resultPreview).toBeDefined();
+      expect(done.step.resultPreview!.startsWith("结果：")).toBe(true);
+      expect(done.step.resultPreview!.endsWith("…")).toBe(true);
+      expect(done.step.resultPreview!.length).toBeLessThanOrEqual(400);
     }
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
 import { AcademicService } from "../src/services/academic.js";
-import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/auth/literature-client.js";
+import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/clients/literature-client.js";
 
 /**
  * Service-level tests for the /academic/* REST surface (plan/1.0.17 Phase 2):

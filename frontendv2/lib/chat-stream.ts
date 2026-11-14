@@ -84,6 +84,8 @@ function artifactsFromFrame(data: Record<string, unknown>): ChatArtifact[] {
 export interface StreamStep {
   step: number;
   action: string;
+  /** step lifecycle: "start" while the tool runs, "done" once it returns */
+  status?: "start" | "done";
   query?: string;
   reasoning?: string;
   sources?: ChatSource[];
@@ -92,6 +94,11 @@ export interface StreamStep {
   args?: string;
   /** tool execution duration in ms (done frames only) */
   durationMs?: number;
+  /**
+   * Truncated tool-result text summary (<= 400 chars) carried by the done
+   * frame; optional because older backends do not emit it.
+   */
+  resultPreview?: string;
 }
 
 // Turn is waiting in the backend admission queue (load at the concurrency cap).

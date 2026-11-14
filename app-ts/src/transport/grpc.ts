@@ -15,7 +15,7 @@ const log = createLogger("GRPC");
  * - promisified unary calls with a per-call deadline
  * - ServiceError → Error normalization (method + code + details)
  *
- * Message↔domain mapping belongs to the caller (repository/grpc/* adapters);
+ * Message↔domain mapping belongs to the caller (repository/app-kg/* adapters);
  * the HTTP M2M counterpart is ./internal-client.ts.
  */
 

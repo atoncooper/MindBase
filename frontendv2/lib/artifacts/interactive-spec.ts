@@ -12,6 +12,11 @@ export const MAX_CURVES = 4;
 export const MAX_PARAMS = 8;
 export const MAX_NODES = 60;
 export const MAX_EDGES = 120;
+// Interactive artifact limits (chart / comparison) — must stay in sync with
+// app-ts/src/artifacts/interactive.ts.
+export const MAX_CHART_CATEGORIES = 24;
+export const MAX_CHART_SERIES = 6;
+export const MAX_COMPARISON_ITEMS = 4;
 
 export interface PlotParamSpec {
   name: string;
@@ -70,7 +75,49 @@ export interface DiagramSpec {
   edges: DiagramEdgeSpec[];
 }
 
-export type InteractiveSpec = PlotSpec | DiagramSpec;
+export type ChartType = "bar" | "line" | "pie";
+
+export interface ChartSeriesSpec {
+  name: string;
+  values: number[];
+}
+
+export interface ChartSpec {
+  version?: number;
+  id?: string;
+  title: string;
+  subtitle?: string;
+  chartType: ChartType;
+  categories: string[];
+  series: ChartSeriesSpec[];
+  unit?: string;
+  xLabel?: string;
+  yLabel?: string;
+}
+
+export interface ComparisonAttrSpec {
+  label: string;
+  value: string;
+}
+
+export interface ComparisonItemSpec {
+  name: string;
+  summary?: string;
+  pros?: string[];
+  cons?: string[];
+  attrs?: ComparisonAttrSpec[];
+}
+
+export interface ComparisonSpec {
+  version?: number;
+  id?: string;
+  title: string;
+  subtitle?: string;
+  items: ComparisonItemSpec[];
+  recommendation?: string;
+}
+
+export type InteractiveSpec = PlotSpec | DiagramSpec | ChartSpec | ComparisonSpec;
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -124,6 +171,69 @@ export function isDiagramSpec(value: unknown): value is DiagramSpec {
     s.edges.length <= MAX_EDGES &&
     s.edges.every((e) => record(e) && typeof e.from === "string" && typeof e.to === "string")
   );
+}
+
+const CHART_TYPES: readonly ChartType[] = ["bar", "line", "pie"];
+
+function optionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** Structural guard: enough to render safely; the server has already enforced the tight limits. */
+export function isChartSpec(value: unknown): value is ChartSpec {
+  if (!record(value)) return false;
+  const s = value as unknown as ChartSpec;
+  if (typeof s.title !== "string" || s.title.length === 0) return false;
+  if (!CHART_TYPES.includes(s.chartType)) return false;
+  if (!optionalString(s.subtitle) || !optionalString(s.unit) || !optionalString(s.xLabel) || !optionalString(s.yLabel)) {
+    return false;
+  }
+  if (!Array.isArray(s.categories) || s.categories.length === 0 || s.categories.length > MAX_CHART_CATEGORIES) {
+    return false;
+  }
+  if (!s.categories.every((category) => typeof category === "string" && category.length > 0)) return false;
+  if (!Array.isArray(s.series) || s.series.length === 0 || s.series.length > MAX_CHART_SERIES) return false;
+  if (s.chartType === "pie" && s.series.length !== 1) return false;
+  const categoryCount = s.categories.length;
+  return s.series.every(
+    (series) =>
+      record(series) &&
+      typeof series.name === "string" &&
+      series.name.length > 0 &&
+      Array.isArray(series.values) &&
+      series.values.length === categoryCount &&
+      series.values.every((v) => finite(v) && Math.abs(v) <= 1e12),
+  );
+}
+
+export function isComparisonSpec(value: unknown): value is ComparisonSpec {
+  if (!record(value)) return false;
+  const s = value as unknown as ComparisonSpec;
+  if (typeof s.title !== "string" || s.title.length === 0) return false;
+  if (!optionalString(s.subtitle) || !optionalString(s.recommendation)) return false;
+  if (!Array.isArray(s.items) || s.items.length < 2 || s.items.length > MAX_COMPARISON_ITEMS) return false;
+  const names = new Set<string>();
+  for (const item of s.items) {
+    if (!record(item)) return false;
+    if (typeof item.name !== "string" || item.name.length === 0) return false;
+    if (names.has(item.name)) return false;
+    names.add(item.name);
+    if (!optionalString(item.summary)) return false;
+    if (item.pros !== undefined && !stringArray(item.pros)) return false;
+    if (item.cons !== undefined && !stringArray(item.cons)) return false;
+    if (
+      item.attrs !== undefined &&
+      (!Array.isArray(item.attrs) ||
+        !item.attrs.every((attr) => record(attr) && typeof attr.label === "string" && typeof attr.value === "string"))
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function specByteSize(value: unknown): number {

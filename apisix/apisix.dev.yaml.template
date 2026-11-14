@@ -699,7 +699,7 @@ routes:
   # /chat/messages、/chat/search 等不在此列，仍落 chat_sse/catch_all → Python
   # （AI 域）。回滚：删除本路由对应 uri 即回落 Python。
   - id: chat_ts
-    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /quota/summary]
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
     priority: 60
     upstream_id: upstream-app-ts
     plugins:

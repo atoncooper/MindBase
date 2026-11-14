@@ -24,6 +24,8 @@ interface SessionDoc {
   createdAt: number;
   updatedAt: number;
   lastMessageAt?: number;
+  /** 科研项目绑定（会话级；undef = 普通对话） */
+  academicProjectId?: string;
 }
 
 interface MessageDoc {
@@ -53,6 +55,7 @@ function toSession(doc: SessionDoc): ChatSession {
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
     lastMessageAt: doc.lastMessageAt,
+    academicProjectId: doc.academicProjectId,
   };
 }
 
@@ -144,6 +147,15 @@ export class MongoChatStore implements ChatSessionRepository, MessageRepository 
 
   async rename(sessionId: string, title: string): Promise<void> {
     await this.sessions.updateOne({ _id: sessionId }, { $set: { title, updatedAt: Date.now() } });
+  }
+
+  async setAcademicProject(sessionId: string, projectId: string | undefined): Promise<void> {
+    const now = Date.now();
+    if (projectId === undefined) {
+      await this.sessions.updateOne({ _id: sessionId }, { $unset: { academicProjectId: "" }, $set: { updatedAt: now } });
+      return;
+    }
+    await this.sessions.updateOne({ _id: sessionId }, { $set: { academicProjectId: projectId, updatedAt: now } });
   }
 
   /** Recent user message texts across the user's sessions (blindspot probed-name signal). */

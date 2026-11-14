@@ -42,5 +42,12 @@ export function createMemoryChatImageStorage(): ChatImageStorage {
     async getDataUrl(key: string): Promise<string | undefined> {
       return objects.get(key)?.dataUrl;
     },
+
+    async getBytes(key: string): Promise<Uint8Array | undefined> {
+      const entry = objects.get(key);
+      if (!entry) return undefined;
+      const match = /^data:[^;]*;base64,(.*)$/.exec(entry.dataUrl);
+      return match ? Buffer.from(match[1], "base64") : undefined;
+    },
   };
 }

@@ -3,6 +3,7 @@ import type { ChatSessionRepository, MessageRepository } from "../../../reposito
 import type { ChatImageStorage } from "../../../repository/chat-images.js";
 import type { SessionDocumentRepository } from "../../../repository/session-docs.js";
 import { ChatSessionsService, ChatSessionsError } from "../../../services/chat-sessions.js";
+import { parseAcademicContext } from "../../../services/academic-context.js";
 import { getRequestContext } from "../../../context/request-context.js";
 
 /**
@@ -39,9 +40,12 @@ export function registerChatSessionRoutes(
   app.post("/chat/sessions", async (req: FastifyRequest, reply: FastifyReply) => {
     const uid = requireUid(req);
     if (uid === undefined) return reply.status(401).send({ detail: "缺少用户身份（X-Uid）" });
-    const body = (req.body ?? {}) as { title?: string };
+    // academic_project_id 可选：新建会话时绑定科研项目（会话级持久化）；
+    // 与 /chat/ask 共用同一套清洗规则，非法 id 退化为普通对话。
+    const body = (req.body ?? {}) as { title?: string; academic_project_id?: unknown };
+    const academic = parseAcademicContext(body);
     try {
-      return await svc.create(uid, body.title);
+      return await svc.create(uid, body.title, academic?.projectId);
     } catch (err) {
       return respond(reply, err);
     }

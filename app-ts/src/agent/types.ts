@@ -6,6 +6,8 @@ export interface AgentInvokeInput {
   query: string;
   uid?: string;
   chatSessionId?: string;
+  /** Academic project context for this turn (research workbench); propagated to tools (plan_and_run tags its run). */
+  academicProjectId?: string;
   scope: SearchScope;
   /** Recent conversation history (excluding the current query) */
   history: Array<{ role: "user" | "assistant"; content: string; images?: string[] }>;

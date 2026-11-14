@@ -120,6 +120,39 @@ function compactArgs(args: Record<string, unknown>): string {
   return json.length > 120 ? `${json.slice(0, 120)}…` : json;
 }
 
+/** Max chars of the tool-result preview on the step done frame (frontend renders ~3 lines). */
+const RESULT_PREVIEW_MAX = 400;
+
+/**
+ * Flatten a tool result into display text. Local tools return ToolOutput.content
+ * (buildSdkTools hands the SDK that string), while MCP-bridged / future tools may
+ * return objects — accept the common shapes and fall back to JSON. Large payloads
+ * (e.g. base64 blobs) are handled by the caller's length cap, not special-cased.
+ */
+function resultText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (typeof output === "number" || typeof output === "boolean") return String(output);
+  if (output && typeof output === "object") {
+    const obj = output as Record<string, unknown>;
+    for (const key of ["content", "text", "value"] as const) {
+      const value = obj[key];
+      if (typeof value === "string") return value;
+    }
+  }
+  try {
+    return JSON.stringify(output) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Trimmed + capped tool-result preview for the step done frame; undefined when empty. */
+function compactResult(output: unknown): string | undefined {
+  const text = resultText(output).trim();
+  if (!text) return undefined;
+  return text.length <= RESULT_PREVIEW_MAX ? text : `${text.slice(0, RESULT_PREVIEW_MAX - 1)}…`;
+}
+
 export function createReactAgent(opts: ReactAgentOptions): Agent {
   async function* run(input: AgentInvokeInput): AsyncGenerator<SseFrame> {
     const collector = new ResultCollector();
@@ -139,6 +172,7 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
     const ctx = {
       uid: input.uid,
       chatSessionId: input.chatSessionId,
+      ...(input.academicProjectId ? { academicProjectId: input.academicProjectId } : {}),
       ...(input.model ? { model: input.model } : {}),
       scope: input.scope,
       collector,
@@ -295,6 +329,8 @@ export function createReactAgent(opts: ReactAgentOptions): Agent {
                 action: String(p.toolName ?? ""),
                 status: "done",
                 durationMs: startedAt ? Date.now() - startedAt : undefined,
+                // ai v5 stream part field is `output` (string for local tools)
+                resultPreview: compactResult(p.output),
               },
             };
             // plan tool (registered on the main agent only): the snapshot was set on

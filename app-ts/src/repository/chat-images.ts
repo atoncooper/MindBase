@@ -17,5 +17,9 @@ export interface ChatImageStorage {
   presignGet(key: string, ttlSeconds?: number): Promise<string>;
   /** Read back as a data URL for model context. */
   getDataUrl(key: string): Promise<string | undefined>;
+  /** Read the ORIGINAL stored object as raw bytes (session-document attachments:
+   * a conversation-uploaded .docx can be reused as a manuscript template without
+   * asking the user to upload it again). undefined when the object is gone. */
+  getBytes(key: string): Promise<Uint8Array | undefined>;
   remove(key: string): Promise<void>;
 }

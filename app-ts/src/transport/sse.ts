@@ -56,6 +56,12 @@ export type SseFrame =
         args?: string;
         /** tool execution duration on the done frame */
         durationMs?: number;
+        /**
+         * Short, trimmed preview of the tool result on the done frame (≤400 chars,
+         * ellipsis when truncated). Display-only: the frontend renders it in the
+         * step card so the user sees what the tool returned without expanding logs.
+         */
+        resultPreview?: string;
       };
     }
   | { type: "sources"; sources: Source[] }

@@ -32,5 +32,6 @@ export * from "./workspace";
 export * from "./notes";
 export * from "./boards";
 export * from "./skills";
+export * from "./sandbox";
 export * from "./preferences";
 export * from "./quota";

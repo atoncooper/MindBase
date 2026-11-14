@@ -9,7 +9,7 @@
  * to localStorage), chunked upload with progress, processing-status polling,
  * and folder/file delete. All data flows through lib/api/cloud (cloudApi).
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Loader2 } from "lucide-react";
@@ -36,6 +36,7 @@ import { FileList } from "./file-list";
 import { FileGrid } from "./file-grid";
 import { FileInspector } from "./file-inspector";
 import { RefInspector } from "./ref-inspector";
+import { ResearchFilesDialog } from "./research-files-dialog";
 import { ShareDialog } from "./share-dialog";
 import { formatBytes, type CloudQuotaResponse, type CloudTrashItem } from "@/lib/api/cloud";
 import { UploadDropzone, UploadProgressPill } from "./upload-dropzone";
@@ -124,6 +125,8 @@ export function CloudDriveView() {
     const [busyAction, setBusyAction] = useState(false);
     // 手机端文件夹抽屉（md 以上为常驻侧栏，此状态不生效）
     const [foldersOpen, setFoldersOpen] = useState(false);
+    // 云盘「科研项目文件」只读弹层（入口在侧栏；只读，不改科研目录结构）
+    const [researchFilesOpen, setResearchFilesOpen] = useState(false);
 
     // Persist preferences.
     useEffect(() => { writePref("cloud-drive:view", view); }, [view]);
@@ -145,6 +148,10 @@ export function CloudDriveView() {
             setFoldersLoading(false);
         }
     }, []);
+
+    // 侧栏展示用树：隐藏科研工作台自动创建的内部目录（学术研究/<项目>/00_课题与计划…06_投稿），
+    // 这些目录由科研工作台管理，请到科研「空间」里查看；原始 folders 仍用于 API 操作/名称查找。
+    const visibleFolders = useMemo(() => filterResearchFolders(folders), [folders]);
 
     const refreshVideos = useCallback(
         async (folderId: number | null, nextPage: number, append: boolean) => {
@@ -232,11 +239,12 @@ export function CloudDriveView() {
     // another tab) so we don't sit on a stale id with an empty file list.
     useEffect(() => {
         if (selectedFolderId == null || foldersLoading || folders.length === 0) return;
-        if (findFolderName(folders, selectedFolderId) == null) {
+        // 用「侧栏可见树」判断：若上次打开的目录已被隐藏（科研内部目录），回到根目录。
+        if (findFolderName(visibleFolders, selectedFolderId) == null) {
             // eslint-disable-next-line react-hooks/set-state-in-effect
             setSelectedFolderId(null);
         }
-    }, [selectedFolderId, folders, foldersLoading]);
+    }, [selectedFolderId, visibleFolders, folders.length, foldersLoading]);
 
     // Fetch detail on selection.
     useEffect(() => {
@@ -688,7 +696,7 @@ export function CloudDriveView() {
                 )}
             >
                 <FolderSidebar
-                    folders={folders}
+                    folders={visibleFolders}
                     loading={foldersLoading}
                     selectedFolderId={selectedFolderId}
                     totalCount={videosLoading ? 0 : totalFiles}
@@ -710,6 +718,11 @@ export function CloudDriveView() {
                     onToggleTrash={() => {
                         handleToggleTrash();
                         setFoldersOpen(false);
+                    }}
+                    onOpenResearchFiles={() => {
+                        // 手机端：先收起文件夹抽屉，再打开只读弹层。
+                        setFoldersOpen(false);
+                        setResearchFilesOpen(true);
                     }}
                 />
             </aside>
@@ -980,6 +993,12 @@ export function CloudDriveView() {
                     setFolderShareTarget(null);
                 }}
             />
+
+            {/* 科研项目文件（只读）：复用 ProjectFilesPanel(readOnly)，关闭即卸载 */}
+            <ResearchFilesDialog
+                open={researchFilesOpen}
+                onClose={() => setResearchFilesOpen(false)}
+            />
         </div>
     );
 }
@@ -994,6 +1013,40 @@ function readPref(key: string, fallback: string): string {
 function writePref(key: string, value: string): void {
     if (typeof window === "undefined") return;
     localStorage.setItem(key, value);
+}
+
+// ── 科研工作台内部目录过滤 ──
+// 科研工作台会在云盘里自动创建「学术研究/<项目>/00_课题与计划…06_投稿」这类内部目录。
+// 这些目录属于科研归档结构，由科研工作台管理，请到科研「空间」里查看；云盘侧栏不展示。
+const RESEARCH_ROOT_FOLDER_NAME = "学术研究";
+const RESEARCH_SUBFOLDER_PATTERN = /^0[0-6]_/;
+
+function isResearchSubfolderName(name: string): boolean {
+    return RESEARCH_SUBFOLDER_PATTERN.test(name);
+}
+
+/**
+ * 返回侧栏可见的文件夹树（新对象，不修改原树）：
+ * - 名称 === "学术研究" → 整棵子树隐藏；
+ * - 名称匹配 /^0[0-6]_/（00_课题与计划 … 06_投稿）→ 整棵子树隐藏；
+ * - 名称不匹配、但全部子目录都是上述科研目录 → 视为科研项目根目录，整棵子树隐藏
+ *   （避免「学术研究」被手动改名/移到别处后仍暴露项目目录）。
+ * 正常用户文件夹保持原样，仅递归过滤其子节点。
+ */
+function filterResearchFolders(folders: CloudFolderTreeItem[]): CloudFolderTreeItem[] {
+    const visible: CloudFolderTreeItem[] = [];
+    for (const folder of folders) {
+        if (folder.name === RESEARCH_ROOT_FOLDER_NAME) continue;
+        if (isResearchSubfolderName(folder.name)) continue;
+        if (
+            folder.children.length > 0 &&
+            folder.children.every((child) => isResearchSubfolderName(child.name))
+        ) {
+            continue;
+        }
+        visible.push({ ...folder, children: filterResearchFolders(folder.children) });
+    }
+    return visible;
 }
 
 function findFolderName(

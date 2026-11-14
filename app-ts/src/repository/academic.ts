@@ -315,9 +315,40 @@ export interface AcademicSectionInput {
 }
 
 /**
+ * Origin of a document that was imported from a user-supplied Word file
+ * (docs/manuscript-docx.md §1). The upload lives in the project cloud drive
+ * (05_论文); it is also the template every later export reuses, which is what
+ * preserves the user's styles/theme/headers/page setup.
+ */
+export interface AcademicDocumentSource {
+  /** cloud-drive upload_uuid of the original .docx */
+  uploadUuid: string;
+  fileName: string;
+  mimeType: string;
+  /** 05_论文 folder id when the cloud drive reported it */
+  folderId?: number;
+}
+
+/**
+ * Record of the latest "save back to the cloud drive" of a generated Word file
+ * (docs/manuscript-docx.md §1/§2.3). Written by the manuscript Word export;
+ * informational for the UI (download link + "最近回存" line).
+ */
+export interface AcademicDocumentExport {
+  /** cloud-drive upload_uuid of the generated .docx */
+  uploadUuid: string;
+  fileName: string;
+  folderId?: number;
+  createdAt: number;
+}
+
+/**
  * A manuscript document: an ordered list of sections plus bookkeeping stamps.
  * Sections are re-sorted by (order, key) on every write so all readers observe
- * the same order regardless of insertion history.
+ * the same order regardless of insertion history. Documents imported from an
+ * existing Word file additionally carry the original upload (`source`) and,
+ * once saved back, the latest export record (`lastExport`) — both optional so
+ * every pre-existing row keeps its shape.
  */
 export interface AcademicDocument {
   id: string;
@@ -326,28 +357,43 @@ export interface AcademicDocument {
   kind: AcademicDocumentKind;
   title: string;
   sections: AcademicSection[];
+  /** original user-uploaded Word file (import path); absent for documents authored in-app */
+  source?: AcademicDocumentSource;
+  /** latest generated Word file saved back into the project cloud drive */
+  lastExport?: AcademicDocumentExport;
   createdAt: number;
   updatedAt: number;
 }
 
 /**
  * Manuscript document contract. Documents are scoped by uid (project ownership
- * is checked by callers, not re-validated here). `updateDocument` only patches
- * the title; content changes always go through upsertSection / deleteSection,
- * which are keyed by the derived section key so a retried save hits the same
- * section instead of creating a duplicate.
+ * is checked by callers, not re-validated here). `updateDocument` patches the
+ * title plus the two optional Word bookkeeping records (source/lastExport);
+ * content changes always go through upsertSection / deleteSection, which are
+ * keyed by the derived section key so a retried save hits the same section
+ * instead of creating a duplicate.
  */
 export interface AcademicDocumentRepository {
   createDocument(
     uid: string,
     projectId: string,
-    input: { kind: AcademicDocumentKind; title: string; sections?: AcademicSectionInput[] },
+    input: {
+      kind: AcademicDocumentKind;
+      title: string;
+      sections?: AcademicSectionInput[];
+      /** set only by the Word import path (docs/manuscript-docx.md §2.1) */
+      source?: AcademicDocumentSource;
+    },
   ): Promise<AcademicDocument>;
   listDocuments(uid: string, projectId: string): Promise<AcademicDocument[]>;
   /** Number of documents in the project — cheap projection for project briefs. */
   countDocuments(uid: string, projectId: string): Promise<number>;
   getDocument(uid: string, documentId: string): Promise<AcademicDocument | null>;
-  updateDocument(uid: string, documentId: string, patch: { title?: string }): Promise<AcademicDocument | null>;
+  updateDocument(
+    uid: string,
+    documentId: string,
+    patch: { title?: string; source?: AcademicDocumentSource; lastExport?: AcademicDocumentExport },
+  ): Promise<AcademicDocument | null>;
   /** upsert by section key (existing key keeps its order unless order is provided) */
   upsertSection(uid: string, documentId: string, input: AcademicSectionInput): Promise<AcademicDocument | null>;
   deleteSection(uid: string, documentId: string, sectionKey: string): Promise<AcademicDocument | null>;

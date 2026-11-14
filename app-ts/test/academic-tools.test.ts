@@ -26,7 +26,7 @@ import {
   type AcademicSectionInput,
   type AcademicStage,
 } from "../src/repository/academic.js";
-import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/auth/literature-client.js";
+import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/clients/literature-client.js";
 import { createAcademicProjectTool } from "../src/tools/academic/project.js";
 import { createAcademicLiteratureTool } from "../src/tools/academic/literature.js";
 import { createAcademicManuscriptTool } from "../src/tools/academic/manuscript.js";

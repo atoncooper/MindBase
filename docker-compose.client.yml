@@ -99,8 +99,8 @@ services:
         condition: service_started
       apisix:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      # MinIO belongs to the app-cloud domain: not a startup dependency (nginx
+      # resolves /minio-proxy/ at request time). Start it explicitly when needed.
     mem_limit: 64m
     logging: *default-logging
     restart: unless-stopped
@@ -267,10 +267,10 @@ services:
 
   minio:
     image: atoncooper/mind-base-minio:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    build:
-      context: ./scripts
-      dockerfile: minio.Dockerfile
+    # Pulled/preloaded by default. Local build is a one-off docker build command
+    # (a build: block here would make every `up --build` trigger the GitHub download):
+    #   docker build -t atoncooper/mind-base-minio:latest -f scripts/minio.Dockerfile scripts
+    pull_policy: missing
     container_name: mind-base-minio
     # 控制台关闭（省一个常驻进程）；nginx 代理 9000 出去，浏览器无需直连
     ports: []
@@ -382,11 +382,11 @@ services:
       dockerfile: app-ts/Dockerfile
     container_name: mind-base-app-ts
     depends_on:
+      # Own data stores only; MinIO is app-cloud's object store (optional here —
+      # chat images/session originals/skills degrade when it is not running).
       mongo:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     env_file:
       - .env
@@ -414,11 +414,19 @@ services:
       # 服务模式 X-Api-Key（= app-content-mcp 的 CONTENTMCP__SERVER__SERVICE_API_KEY，
       # 即 APISIX_CONSUMER_KEY）
       - CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}
-      - LOG__FILEENABLED=false
+      # 日志：stdout JSON + /app/logs 下按大小/时间轮转并 gzip（卷 app_ts_logs）
+      - LOG__DIR=/app/logs
       # 单用户 agent/向量化堆上限；大批量构建 OOM 时调大 APP_TS_NODE_HEAP
       - NODE_OPTIONS=--max-old-space-size=${APP_TS_NODE_HEAP:-512}
     ports:
       - "127.0.0.1:${APP_TS_PORT:-8000}:8000"
+    # FD budget: long-lived SSE + pools + bounded agent temp files (docs/temp-files.md)
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    volumes:
+      - app_ts_logs:/app/logs
     mem_limit: ${APP_TS_MEM_LIMIT:-640m}
     logging: *default-logging
     healthcheck:
@@ -925,6 +933,7 @@ services:
 volumes:
   app_task_certs:
   app_task_logs:
+  app_ts_logs:
   app_user_logs:
   app_cloud_logs:
   app_content_logs:

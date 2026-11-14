@@ -173,6 +173,60 @@ function renderPlan(stage: AcademicStage, tasks: AcademicPlanTask[] | undefined)
 }
 
 /**
+ * Merge the task titles of one stage into its previous plan. Same-title tasks
+ * keep their id / done / note; new titles get the first free positional id
+ * ("t1", "t2", ...) so reordering or inserting never yields duplicate ids
+ * inside a stage. Shared by the single-stage and the batch plan_set paths.
+ */
+function mergePlanTasks(previous: AcademicPlanTask[], titles: string[]): AcademicPlanTask[] {
+  const byTitle = new Map(previous.map((task) => [task.title.trim(), task] as const));
+  const used = new Set<string>();
+  const tasks: AcademicPlanTask[] = [];
+  const pending: AcademicPlanTask[] = [];
+  for (const title of titles) {
+    const prior = byTitle.get(title);
+    if (prior) {
+      used.add(prior.id);
+      tasks.push(prior);
+    } else {
+      const task: AcademicPlanTask = { id: "", title, done: false };
+      pending.push(task);
+      tasks.push(task);
+    }
+  }
+  let next = 1;
+  for (const task of pending) {
+    while (used.has("t" + next)) next += 1;
+    task.id = "t" + next;
+    used.add(task.id);
+    next += 1;
+  }
+  return tasks;
+}
+
+/**
+ * Compact all-stage overview for plan_get without a stage: one line per stage
+ * that already has a plan, so the model can see the whole project plan without
+ * paging every task. Falls back to plan_set guidance when nothing is planned.
+ */
+function renderPlanOverview(project: AcademicProject): string {
+  const lines = ["项目「" + project.title + "」的执行计划："];
+  let hasPlan = false;
+  for (const stage of ACADEMIC_STAGES) {
+    const tasks = project.plans[stage];
+    if (!tasks || tasks.length === 0) continue;
+    hasPlan = true;
+    const done = tasks.filter((task) => task.done).length;
+    lines.push("- " + ACADEMIC_STAGE_LABELS[stage] + "：" + done + "/" + tasks.length + " 完成");
+  }
+  if (!hasPlan) {
+    return "项目「" + project.title + "」还没有执行计划。可用 action=plan_set 的 stages 一次生成多个阶段的科研计划。";
+  }
+  lines.push("", "用 action=plan_get + stage 查看某阶段的任务明细。");
+  return lines.join("\n");
+}
+
+/**
  * Emit the typed project snapshot as a tool artifact. The web client renders
  * these cards; text output alone would force it to re-parse Chinese prose.
  */
@@ -250,7 +304,7 @@ const projectInputSchema = z.object({
   action: z
     .enum(["list", "create", "brief", "stage_update", "save_advice", "plan_get", "plan_set"])
     .describe(
-      "list=列出研究项目；create=新建项目；brief=项目简报；stage_update=推进/回退阶段；save_advice=保存阶段建议；plan_get=读取阶段计划；plan_set=写入阶段计划",
+      "list=列出研究项目；create=新建项目；brief=项目简报；stage_update=推进/回退阶段；save_advice=保存阶段建议；plan_get=读取执行计划（不传 stage 返回全部阶段摘要）；plan_set=写入执行计划（单阶段 stage+tasks，多阶段 stages 批量）",
     ),
   projectId: z.string().min(1).optional().describe("项目 id（create/list 之外必填，来自 action=list 或 create 的输出）"),
   title: z.string().min(1).max(120).optional().describe("项目标题（create 必填）"),
@@ -265,7 +319,7 @@ const projectInputSchema = z.object({
   stage: z
     .enum(ACADEMIC_STAGES)
     .optional()
-    .describe("阶段：topic 选题 / design 研究设计 / advise 指导 / experiment 实验 / writing 写作 / submission 投稿（stage_update/save_advice/plan_get/plan_set 必填）"),
+    .describe("阶段：topic 选题 / design 研究设计 / advise 指导 / experiment 实验 / writing 写作 / submission 投稿（stage_update/save_advice 必填；plan_get 可选，不传返回全部阶段；plan_set 用 stage+tasks 时必填，与 stages 二选一）"),
   status: z
     .enum(["locked", "active", "submitted", "approved", "frozen"])
     .optional()
@@ -277,7 +331,20 @@ const projectInputSchema = z.object({
     .min(1)
     .max(12)
     .optional()
-    .describe("阶段执行计划的任务描述列表（plan_set 必填，1-12 条；同名任务保留原完成状态）"),
+    .describe("单阶段执行计划的任务描述列表（plan_set 用 stage+tasks 时必填，1-12 条；同名任务保留完成状态与备注）"),
+  stages: z
+    .array(
+      z.object({
+        stage: z.enum(ACADEMIC_STAGES),
+        tasks: z.array(z.string().max(200)).min(1).max(12),
+      }),
+    )
+    .min(1)
+    .max(6)
+    .optional()
+    .describe(
+      "批量写入多个阶段的执行计划（plan_set 用 stages 时与 stage+tasks 二选一，1-6 个阶段、每阶段 1-12 条任务；用于一次生成完整科研计划）",
+    ),
 });
 
 /**
@@ -302,7 +369,8 @@ export function createAcademicProjectTool(deps: AcademicProjectToolDeps) {
       "action=brief：项目简报（阶段状态、执行计划、已存建议、最近事件、文献/稿件数量）；" +
       "action=stage_update：推进或回退项目阶段（回退必须给 reason；阶段推进需用户确认后才能调用）；" +
       "action=save_advice：保存某阶段的指导建议；" +
-      "action=plan_get / plan_set：读取/写入某阶段的执行计划。" +
+      "action=plan_get：读取执行计划（不传 stage 返回全部已有阶段的摘要）；" +
+      "action=plan_set：写入执行计划（单阶段用 stage+tasks；多阶段用 stages 一次批量写入，用于「生成科研计划/研究计划/开题计划」；同名任务保留完成状态与备注）。" +
       "阶段顺序：topic 选题 → design 研究设计 → advise 指导 → experiment 实验 → writing 写作 → submission 投稿。" +
       "除 list/create 外的 action 都需要 projectId。文献与稿件请配合 academic_literature / academic_manuscript；不要编造项目内容。",
     inputSchema: projectInputSchema,
@@ -501,49 +569,93 @@ export function createAcademicProjectTool(deps: AcademicProjectToolDeps) {
 
         case "plan_get": {
           if (!projectId) return MISSING_PROJECT_TEXT;
-          const stage = args.stage;
-          if (!stage) return "plan_get 需要 stage：指明读取哪个阶段的计划。";
           const project = await deps.projects.get(uid, projectId);
           if (!project) return NO_PROJECT_TEXT;
-          return renderPlan(stage, project.plans[stage]);
+          const stage = args.stage;
+          // No stage: summarize every stage that has a plan; a stage: full task list.
+          return stage ? renderPlan(stage, project.plans[stage]) : renderPlanOverview(project);
         }
 
         case "plan_set": {
           if (!projectId) return MISSING_PROJECT_TEXT;
-          const stage = args.stage;
-          if (!stage) return "plan_set 需要 stage：指明写入哪个阶段的计划。";
-          const titles = (args.tasks ?? []).map((task) => task.trim()).filter((task) => task.length > 0);
-          if (titles.length === 0) return "plan_set 需要 tasks：给出该阶段要执行的 1-12 个任务描述。";
+          const batchForm = args.stages !== undefined;
+          const singleForm = args.stage !== undefined || args.tasks !== undefined;
+          // Two mutually exclusive shapes: one stage (stage+tasks) or a batch (stages).
+          if (batchForm && singleForm) {
+            return "plan_set 的 stage+tasks 与 stages 只能二选一：单阶段用 stage+tasks，多阶段用 stages 批量写入。";
+          }
+          if (!batchForm && !singleForm) {
+            return "plan_set 需要 stages（批量写入多个阶段）或 stage+tasks（单阶段）：给出阶段与每阶段 1-12 个任务。";
+          }
           const project = await deps.projects.get(uid, projectId);
           if (!project) return NO_PROJECT_TEXT;
 
-          // Merge by title instead of replacing the list wholesale, so re-saving keeps completion state and ids of tasks the user already finished.
-          const previous = project.plans[stage] ?? [];
-          const byTitle = new Map(previous.map((task) => [task.title.trim(), task] as const));
-          // New tasks get deterministic positional ids; an existing task keeps its prior id and note.
-          const tasks: AcademicPlanTask[] = titles.map((title, index) => {
-            const prior = byTitle.get(title);
-            const task: AcademicPlanTask = {
-              id: prior?.id ?? "t" + (index + 1),
-              title,
-              done: prior?.done ?? false,
-            };
-            if (prior?.note) task.note = prior.note;
-            return task;
-          });
+          // Normalize every requested stage to a non-empty title list before writing,
+          // so a malformed batch never half-applies.
+          const requested: Array<{ stage: AcademicStage; titles: string[] }> = [];
+          if (batchForm) {
+            const seen = new Set<AcademicStage>();
+            for (const entry of args.stages ?? []) {
+              if (seen.has(entry.stage)) {
+                return "stages 中同一阶段只能出现一次：「" + ACADEMIC_STAGE_LABELS[entry.stage] + "」重复了。";
+              }
+              seen.add(entry.stage);
+              const titles = entry.tasks.map((task) => task.trim()).filter((task) => task.length > 0);
+              if (titles.length === 0) {
+                return "「" + ACADEMIC_STAGE_LABELS[entry.stage] + "」阶段的 tasks 为空：每个阶段需要 1-12 个任务描述。";
+              }
+              requested.push({ stage: entry.stage, titles });
+            }
+          } else {
+            const stage = args.stage;
+            const rawTasks = args.tasks;
+            if (!stage || !rawTasks) {
+              return "单阶段写入需要同时提供 stage 和 tasks；要一次写多个阶段请改用 stages。";
+            }
+            const titles = rawTasks.map((task) => task.trim()).filter((task) => task.length > 0);
+            if (titles.length === 0) return "plan_set 需要 tasks：给出该阶段要执行的 1-12 个任务描述。";
+            requested.push({ stage, titles });
+          }
+
+          // Merge each stage against its own previous plan, then persist the whole
+          // batch with a single projects.update and a single plan.updated event.
           const plansPatch: Partial<Record<AcademicStage, AcademicPlanTask[]>> = {};
-          plansPatch[stage] = tasks;
+          const summaries: Array<{ stage: AcademicStage; taskCount: number }> = [];
+          for (const entry of requested) {
+            const previous = project.plans[entry.stage] ?? [];
+            const tasks = mergePlanTasks(previous, entry.titles);
+            plansPatch[entry.stage] = tasks;
+            summaries.push({ stage: entry.stage, taskCount: tasks.length });
+          }
+          const replaced = requested.some((entry) => (project.plans[entry.stage]?.length ?? 0) > 0);
           const updated = await deps.projects.update(uid, projectId, { plans: plansPatch });
           if (!updated) return NO_PROJECT_TEXT;
+
+          if (!batchForm) {
+            // Single-stage event payload stays exactly as before (backward compatible).
+            const only = requested[0];
+            await deps.events.append(
+              uid,
+              projectId,
+              "plan.updated",
+              { stage: only.stage, taskCount: summaries[0].taskCount, replaced },
+              "agent",
+            );
+            pushProjectArtifact(ctx, "plan_set", updated);
+            return "已写入计划。\n\n" + renderPlan(only.stage, plansPatch[only.stage]);
+          }
+
+          // Batch event: stages summary keeps the per-stage counts; taskCount is the total.
           await deps.events.append(
             uid,
             projectId,
             "plan.updated",
-            { stage, taskCount: tasks.length, replaced: previous.length > 0 },
+            { stages: summaries, taskCount: summaries.reduce((sum, entry) => sum + entry.taskCount, 0), replaced },
             "agent",
           );
           pushProjectArtifact(ctx, "plan_set", updated);
-          return "已写入计划。\n\n" + renderPlan(stage, tasks);
+          const chunks = requested.map((entry) => renderPlan(entry.stage, plansPatch[entry.stage]));
+          return "已写入 " + requested.length + " 个阶段的执行计划。\n\n" + chunks.join("\n\n");
         }
 
         // Unreachable through zod validation, but older/unknown clients still get guidance instead of a throw.

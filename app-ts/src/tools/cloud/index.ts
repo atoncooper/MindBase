@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineTool, type ToolOutput } from "../base.js";
 import { createLogger } from "../../logger.js";
-import type { CloudDocumentSummary, CloudSummaryResponse } from "../../auth/app-cloud-client.js";
+import type { CloudDocumentSummary, CloudSummaryResponse } from "../../clients/app-cloud-client.js";
 import type { Source } from "../../context/types.js";
 
 /**

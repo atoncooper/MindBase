@@ -204,6 +204,31 @@ export interface AppConfig {
     /** execution-status poll interval (ms) */
     pollIntervalMs: number;
   };
+  tempFiles: {
+    /**
+     * Local scratch files for agent-side document parsing (download → local file
+     * → parse → deleted by the program when the whole turn ends). Tools can only
+     * CREATE files; no delete API is exposed to the agent.
+     * false = parsing stays in memory (no local temp files at all).
+     */
+    enabled: boolean;
+    /** Root directory; empty = os.tmpdir()/mindbase-agent. */
+    dir: string;
+    /** Scratch files allowed in one turn (default 4). */
+    maxFilesPerTurn: number;
+    /** Bytes allowed in one turn (default 64MB). */
+    maxBytesPerTurn: number;
+    /** Bytes allowed for one scratch file (default 20MB). */
+    maxFileBytes: number;
+    /** Scratch files alive across all turns (default 32) — fd-exhaustion guard. */
+    maxGlobalFiles: number;
+    /** Concurrent scratch-file writes (default 8). */
+    maxConcurrentWrites: number;
+    /** Crash residue older than this is removed by the sweep (default 6h). */
+    staleTtlMs: number;
+    /** Periodic sweep interval in ms (default 10min; 0 = no timer). */
+    sweepIntervalMs: number;
+  };
   search: { defaultK: number };
   web: {
     maxBytes: number;
@@ -283,7 +308,33 @@ export interface AppConfig {
     queueFrameIntervalMs: number;
   };
   chunk: { targetSize: number; minSize: number; maxSize: number; overlap: number };
-  log: { level: string; fileEnabled: boolean; dir: string; fileName: string };
+  log: {
+    /** logical service name emitted as `service` on every record */
+    service: string;
+    level: string;
+    /** false = stdout only (JSON lines) */
+    fileEnabled: boolean;
+    dir: string;
+    fileName: string;
+    /** rotating file sink (only used when fileEnabled) */
+    rotation: {
+      enabled: boolean;
+      /** rotate when the live file reaches this size (e.g. 20M) */
+      size: string;
+      /** rotate on an interval (e.g. 1d) */
+      interval: string;
+      /** rotated files kept; older ones deleted */
+      maxFiles: number;
+      /** "gzip"/true compresses rotated files; "none"/false disables */
+      compress: string | boolean;
+    };
+    /** structured access log (server onResponse hook) */
+    accessLog: {
+      enabled: boolean;
+      /** requests slower than this also emit slow_request=true */
+      slowRequestMs: number;
+    };
+  };
   rateLimit: { windowMs: number; max: number };
   quota: {
     /** false = 配额门整体跳过（放行）；计数与账本照常 */
@@ -330,6 +381,10 @@ export interface AppConfig {
      * so delegate_to_agent reports it as unavailable (graceful degradation).
      */
     enabled: boolean;
+    /** Temporary folder retention (data/code/results); papers/literature are permanent. */
+    retentionTempDays: number;
+    /** Retention sweeper interval (ms). */
+    retentionSweepMs: number;
     literature: {
       /** Crossref REST base URL — primary search source, and the only authority used for DOI verification. */
       crossrefBaseUrl: string;
@@ -355,6 +410,28 @@ export interface AppConfig {
   };
 }
 
+/**
+ * tempFiles env alias: ops/docs use TEMPFILES__<KEY> while the generic loader
+ * derives TEMP_FILES__<KEY> from the camelCase key. Both forms work; the alias is
+ * applied after the loader so TEMPFILES__* wins when both are set.
+ */
+function applyTempFilesEnvAlias(tempFiles: AppConfig["tempFiles"]): void {
+  const values = tempFiles as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(values)) {
+    const snake = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
+    const alias = process.env["TEMPFILES__" + snake];
+    if (alias === undefined) continue;
+    if (typeof value === "number") {
+      const parsed = Number(alias);
+      if (!Number.isNaN(parsed)) values[key] = parsed;
+    } else if (typeof value === "boolean") {
+      values[key] = alias === "1" || alias.toLowerCase() === "true";
+    } else {
+      values[key] = alias;
+    }
+  }
+}
+
 const loaded = loadConfigFiles();
 
 export const configSources: string[] = loaded.sources;
@@ -365,5 +442,6 @@ export const config: AppConfig = (() => {
   raw.aiGateway.nativeBaseUrl =
     process.env.AI_GATEWAY__NATIVE_BASE_URL ??
     raw.aiGateway.baseUrl.replace(/\/v1\/?$/, "") + "/api/v1";
+  applyTempFilesEnvAlias(raw.tempFiles);
   return raw;
 })();

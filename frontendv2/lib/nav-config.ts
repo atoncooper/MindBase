@@ -13,6 +13,7 @@ import {
   Sparkles,
   Target,
   Waypoints,
+  SquareTerminal,
   type LucideIcon,
 } from "lucide-react";
 
@@ -49,6 +50,8 @@ export const navItems: NavItem[] = [
   { id: "graph", label: "知识图谱", href: "/graph", icon: Waypoints, placement: "more" },
   { id: "blindspot", label: "知识盲区", href: "/blindspot", icon: Target, placement: "more" },
   { id: "skills", label: "技能商店", href: "/skills", icon: Sparkles, placement: "more" },
+  // Sandbox execution panel (agent run_code history: status / output / artifacts).
+  { id: "sandbox", label: "沙箱", href: "/sandbox", icon: SquareTerminal, placement: "more" },
   { id: "membership", label: "会员中心", href: "/membership", icon: Crown, placement: "more" },
   // Right-side account area
   { id: "settings", label: "设置", href: "/settings", icon: Settings, placement: "account" },

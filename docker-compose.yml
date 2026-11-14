@@ -122,12 +122,13 @@ services:
       frontend:
         condition: service_started
       # nginx proxies apisix + minio (direct proxy_pass in locations.conf).
-      # Upstream hostnames resolve at request time now (resolver + variable
-      # proxy_pass, see nginx.conf), so a missing container no longer crashes
-      # startup — waiting here just avoids initial 502s until they are ready.
+      # Upstream hostnames resolve at request time (resolver + variable
+      # proxy_pass), so nginx starts even when minio is not up yet.
+      # MinIO belongs to the app-cloud (drive) domain: it is NOT a startup
+      # dependency here — start/bring it up with the cloud stack, or explicitly
+      # with `docker compose up -d minio`. Only the /minio-proxy/ location
+      # needs it at request time.
       apisix:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -319,12 +320,17 @@ services:
     container_name: mind-base-app-ts
     profiles: ["", "ts", "full"]
     depends_on:
+      # app-ts owns its Mongo (mind_base_ts) and Redis usage; both must be up.
       mongo:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      # MinIO is the app-cloud (drive) domain's object store, NOT an app-ts
+      # startup dependency. app-ts uses it opportunistically for chat image
+      # attachments / session-document originals / skill zips; when absent those
+      # degrade (memory fallback / original not retained / skills write fails)
+      # instead of blocking the AI service. Bring it up with the cloud stack or
+      # explicitly: `docker compose up -d minio`.
     env_file:
       - .env
     environment:
@@ -340,6 +346,9 @@ services:
       # name must be routed in the Higress console (GLM-5.3-flash, vision-capable)
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # AI 网关基址：默认本地 Higress；本地 data/higress 未配置 Provider 时，
+      # .env 可指向共享远端 Higress（本地覆盖，勿提交）。
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       # LLM 统一 GLM-5.3-flash（2026-10-12 qwen3-max 被上游 OpenRouter 下线 404，
       # 出题全批次失败「有效题目数量为 0」）。镜像内 baked default.yaml 仍是旧值，
       # 先用 env 覆盖；镜像重建包含新 default.yaml 后可移除这两行。
@@ -347,6 +356,7 @@ services:
       # app-content（quiz 面）storage writes for quiz AI orchestration (APISIX key-auth route)
       # app-sandbox control plane (optional; enabled=false → NoopCodeExecution,
       # run_code honestly reports "sandbox not configured")
+      - SANDBOX__ENABLED=${SANDBOX_ENABLED:-false}
       - SANDBOX__API_KEY=${APISIX_CONSUMER_KEY:-}
       # gRPC data faces (kg graph + chat folder scope; same app-kg service).
       # env 名必须是 KG_GRPC__（loader 按 kgGrpc → KG_GRPC 推导；旧写法 KGGRPC__
@@ -359,9 +369,19 @@ services:
       # milvus.address 的 env 名是 MILVUS__ADDRESS（MILVUS__URI 不是本服务
       # 的配置键,会被静默忽略回落 127.0.0.1——容器内即自身）;host:port
       # 不带 scheme（milvus-js SDK 约定）
-      # stdout-only logging: the image's /app/logs is not pre-created with
-      # node ownership (Dockerfile chown fix pending rebuild), and pino
-      # aborts the process on EACCES when the file sink is enabled
+      # Logging: stdout JSON lines + rotating gzip files under /app/logs
+      # (named volume app_ts_logs; size/interval/retention in default.yaml log.*,
+      # docs/logging.md). The image pre-creates /app/logs owned by node.
+      - LOG__DIR=/app/logs
+    # FD budget: SSE streams + gRPC + Mongo/Redis/Milvus pools + bounded agent
+    # temp files (docs/temp-files.md keeps at most 32 files / 8 concurrent writes).
+    # Docker's default nofile (1024) is tight for a long-lived SSE service.
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    volumes:
+      - app_ts_logs:/app/logs
     ports:
       # 8000 = the port the retired Python backend owned; app-ts inherits it.
       # (app-content note 面 keeps host 8018 — avoids the app-cloud 8007-8009 pool.)
@@ -430,6 +450,8 @@ services:
       - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # ASR 原生透传基址（/api/v1）：默认本地 Higress，可被 .env 指向远端。
+      - APPBILI__ASR__BASE_URL=${APPBILI__ASR__BASE_URL:-http://higress:8080/api/v1}
       # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
       # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
       # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
@@ -644,14 +666,16 @@ services:
 
   minio:
     image: atoncooper/mind-base-minio:latest
-    pull_policy: never  # 本地构建产物;绝不拉 Hub——镜像缺失时先 docker compose build <服务>
-    # Upstream removed community MinIO from every distribution channel
-    # (Docker Hub repo deleted, dl.min.io 410, GitHub repo archived as
-    # source-only). We vendor the last upstream release that still published
-    # prebuilt binaries — see scripts/minio.Dockerfile.
-    build:
-      context: ./scripts
-      dockerfile: minio.Dockerfile
+    # The image is published by CI (Docker Hub) and usually already present on
+    # upgraded hosts, so minio is intentionally NOT in the default build graph:
+    # `docker compose up -d --build` must not trigger the 120MB GitHub binary
+    # download (a blocked/TLS-reset GitHub link otherwise fails the whole stack).
+    # Fresh hosts: `docker compose pull minio` or `docker load` a saved image.
+    # Local build (offline/development) is a one-off command on purpose — putting
+    # a build: block here would make every `up -d --build` rebuild minio:
+    #   docker build -t atoncooper/mind-base-minio:latest -f scripts/minio.Dockerfile scripts
+    # See scripts/minio.Dockerfile and docs/deployment.md §4.
+    pull_policy: missing
     container_name: mind-base-minio
     # nginx (proxy_pass) and Milvus both depend on minio; add standalone so
     # nginx's standalone profile doesn't break the dependency graph.
@@ -812,6 +836,8 @@ services:
       - APPCLOUD__INTERNAL__API_KEY=${APISIX_CONSUMER_KEY:-}
       # Vector pipeline (Higress AI gateway; model/dim RED LINE = Milvus rebuild)
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
+      # AI 网关基址（OpenAI 兼容 /v1）：默认本地 Higress，可被 .env 指向远端。
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
       # 提取码静态加密密钥（与 app-user 共用同一 secrets 文件；密钥不进数据库）
@@ -1254,6 +1280,7 @@ services:
 volumes:
   app_task_certs:
   app_task_logs:
+  app_ts_logs:
   app_cloud_logs:
   app_content_logs:
   app_kg_logs:

@@ -9,7 +9,7 @@ import {
 import { createCodingPlanResolver, type CodingPlanResolverDeps } from "../src/agent/code/coding-plan-resolver.js";
 import { createReactAgent } from "../src/agent/react.js";
 import type { AgentRuntime } from "../src/tools/runtime.js";
-import { AppUserAuthClient, AppUserAuthError } from "../src/auth/app-user-auth-client.js";
+import { AppUserAuthClient, AppUserAuthError } from "../src/clients/app-user-auth-client.js";
 import { QuotaService } from "../src/services/quota.js";
 import { MemoryQuotaCounter } from "../src/repository/memory/quota-counter.js";
 import { config } from "../src/config/index.js";

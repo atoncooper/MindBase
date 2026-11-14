@@ -940,7 +940,7 @@ routes:
   # （Python 面已退役）
   # （AI 域）。回滚：删除本路由对应 uri 即回落 Python。
   - id: chat_ts
-    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /quota/summary]
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
     priority: 60
     upstream_id: upstream-app-ts
     plugins:
