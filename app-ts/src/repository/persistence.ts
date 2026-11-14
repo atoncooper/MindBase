@@ -11,6 +11,11 @@ export interface ChatSession {
   updatedAt: number;
   /** bumped whenever a message lands in the session (Python last_message_at) */
   lastMessageAt?: number;
+  /**
+   * 科研项目绑定（新建会话时可选）：会话级持久化，使「在对话中继续 / 回到历史会话」
+   * 仍保留科研项目上下文；缺省 = 普通对话。每轮请求仍可用 academic_project_id 覆盖。
+   */
+  academicProjectId?: string;
 }
 
 export type MessageRole = "user" | "assistant";
@@ -62,6 +67,8 @@ export interface ChatSessionRepository {
   get(sessionId: string, uid?: string): Promise<ChatSession | undefined>;
   touch(sessionId: string): Promise<void>;
   rename(sessionId: string, title: string): Promise<void>;
+  /** Bind/unbind the session's research project (undefined = 普通对话). */
+  setAcademicProject(sessionId: string, projectId: string | undefined): Promise<void>;
   list(uid?: string): Promise<ChatSession[]>;
   /** hard-delete the session row (messages are deleted separately) */
   delete(sessionId: string, uid?: string): Promise<boolean>;

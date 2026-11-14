@@ -1,14 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildChartArtifact,
+  buildComparisonArtifact,
   buildDiagramArtifact,
   buildPlotArtifact,
   capArtifacts,
+  chartArgsSchema,
+  comparisonArgsSchema,
   diagramArgsSchema,
   MAX_ARTIFACTS_PER_TURN,
   plotArgsSchema,
   validateExpression,
 } from "../src/artifacts/interactive.js";
-import { createRenderDiagramTool, createRenderPlotTool } from "../src/tools/render/index.js";
+import type { ChartArgs, ComparisonArgs } from "../src/artifacts/interactive.js";
+import {
+  createRenderChartTool,
+  createRenderComparisonTool,
+  createRenderDiagramTool,
+  createRenderPlotTool,
+} from "../src/tools/render/index.js";
 
 const plotArgs = {
   title: "y = a·sin(bx + c) + d",
@@ -37,6 +47,40 @@ const diagramArgs = {
     { from: "user", to: "router" },
     { from: "router", to: "llm", label: "检索完成" },
   ],
+};
+
+const chartArgs: ChartArgs = {
+  title: "各月检索次数",
+  subtitle: "2026 年知识库问答",
+  chartType: "bar",
+  categories: ["1 月", "2 月", "3 月"],
+  series: [
+    { name: "向量检索", values: [120, 180, 150] },
+    { name: "KG 检索", values: [40, 55, 70] },
+  ],
+  unit: "次",
+  yLabel: "次数",
+};
+
+const comparisonArgs: ComparisonArgs = {
+  title: "PostgreSQL vs MySQL",
+  subtitle: "面向知识库元数据存储",
+  items: [
+    {
+      name: "PostgreSQL",
+      summary: "功能更全的对象关系数据库",
+      pros: ["JSONB 与检索能力强", "扩展生态成熟"],
+      cons: ["运维成本略高"],
+      attrs: [{ label: "学习成本", value: "中" }],
+    },
+    {
+      name: "MySQL",
+      summary: "部署与运维最省心的选择",
+      pros: ["生态与托管服务普及", "上手快"],
+      cons: ["复杂查询能力偏弱"],
+    },
+  ],
+  recommendation: "元数据关系较简单时选 MySQL；需要 JSONB 检索时选 PostgreSQL。",
 };
 
 describe("interactive artifact specs", () => {
@@ -109,6 +153,115 @@ describe("interactive artifact specs", () => {
     const many = Array.from({ length: MAX_ARTIFACTS_PER_TURN + 3 }, () => one);
     expect(capArtifacts(many)).toHaveLength(MAX_ARTIFACTS_PER_TURN);
     expect(capArtifacts([])).toHaveLength(0);
+  });
+});
+
+describe("chart artifact specs", () => {
+  it("builds a bar chart artifact with stable shape", () => {
+    const result = buildChartArtifact(chartArgs);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifact.kind).toBe("chart");
+    const data = result.artifact.data as Record<string, unknown>;
+    expect(data.version).toBe(1);
+    expect(String(data.id)).toMatch(/^chart_[0-9a-f]{8}$/);
+    expect(data.categories).toEqual(chartArgs.categories);
+    expect(data.chartType).toBe("bar");
+  });
+
+  it("rejects pie charts with more than one series", () => {
+    const result = buildChartArtifact({ ...chartArgs, chartType: "pie" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("饼图");
+  });
+
+  it("rejects values whose length does not match categories", () => {
+    const result = buildChartArtifact({
+      ...chartArgs,
+      series: [{ name: "向量检索", values: [1, 2] }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("等长");
+  });
+
+  it("rejects non-finite values", () => {
+    const result = buildChartArtifact({
+      ...chartArgs,
+      series: [{ name: "坏数据", values: [1, Number.NaN, 3] }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("非有限");
+  });
+
+  it("chart schema accepts the documented field set", () => {
+    expect(chartArgsSchema.safeParse(chartArgs).success).toBe(true);
+    expect(chartArgsSchema.safeParse({ ...chartArgs, chartType: "scatter" }).success).toBe(false);
+    expect(chartArgsSchema.safeParse({ ...chartArgs, categories: [] }).success).toBe(false);
+  });
+});
+
+describe("comparison artifact specs", () => {
+  it("builds a comparison artifact with stable shape", () => {
+    const result = buildComparisonArtifact(comparisonArgs);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifact.kind).toBe("comparison");
+    const data = result.artifact.data as Record<string, unknown>;
+    expect(data.version).toBe(1);
+    expect(String(data.id)).toMatch(/^comparison_[0-9a-f]{8}$/);
+    expect((data.items as unknown[]).length).toBe(2);
+  });
+
+  it("rejects fewer than two items", () => {
+    const result = buildComparisonArtifact({ ...comparisonArgs, items: comparisonArgs.items.slice(0, 1) });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("至少需要 2 个");
+  });
+
+  it("rejects duplicate item names", () => {
+    const first = comparisonArgs.items[0]!;
+    const result = buildComparisonArtifact({
+      ...comparisonArgs,
+      items: [first, { ...comparisonArgs.items[1]!, name: first.name }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("不能重复");
+  });
+
+  it("comparison schema accepts the documented field set", () => {
+    expect(comparisonArgsSchema.safeParse(comparisonArgs).success).toBe(true);
+    expect(comparisonArgsSchema.safeParse({ ...comparisonArgs, items: comparisonArgs.items.slice(0, 1) }).success).toBe(false);
+  });
+});
+
+describe("render chart / comparison tools", () => {
+  it("render_chart returns text + chart artifact and reports invalid specs", async () => {
+    const tool = createRenderChartTool();
+    const ok = await tool.execute(chartArgs as never, {} as never);
+    expect(typeof ok).not.toBe("string");
+    if (typeof ok !== "string") {
+      expect(ok.content).toContain("已生成柱状图");
+      expect(ok.content).toContain("3 个类别");
+      expect(ok.artifacts?.[0]?.kind).toBe("chart");
+    }
+
+    const bad = await tool.execute({ ...chartArgs, chartType: "pie" } as never, {} as never);
+    expect(typeof bad).toBe("string");
+    expect(String(bad)).toContain("无法渲染");
+  });
+
+  it("render_comparison returns a comparison artifact and reports invalid specs", async () => {
+    const tool = createRenderComparisonTool();
+    const out = await tool.execute(comparisonArgs as never, {} as never);
+    expect(typeof out).not.toBe("string");
+    if (typeof out !== "string") {
+      expect(out.artifacts?.[0]?.kind).toBe("comparison");
+      expect(out.content).toContain("2 个对比项");
+    }
+
+    const bad = await tool.execute({ ...comparisonArgs, items: comparisonArgs.items.slice(0, 1) } as never, {} as never);
+    expect(typeof bad).toBe("string");
+    expect(String(bad)).toContain("无法渲染");
   });
 });
 

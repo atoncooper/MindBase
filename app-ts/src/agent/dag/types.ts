@@ -52,6 +52,7 @@ export interface PlanRunNodeView {
 }
 
 export interface PlanRunResult {
+  runId?: string;
   ok: boolean;
   outputs: Record<string, string>;
   failed: string[];

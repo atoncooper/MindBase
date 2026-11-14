@@ -13,7 +13,7 @@ import type { ChatImageStorage } from "../../../repository/chat-images.js";
 import type { StoredChatImage } from "../../../repository/persistence.js";
 import { toErrorPayload } from "../errors.js";
 import { rateLimitHook, type SlidingWindowLimiter } from "../middleware/rate-limit.js";
-import { createLogger } from "../../../logger.js";
+import { createLogger, sanitizeUrl } from "../../../logger.js";
 import { MAX_UPLOAD_BYTES, MAX_IMAGES_PER_TURN, MAX_IMAGE_DATA_URL_CHARS, DATA_URL_PATTERN } from "././shared.js";
 import { isVisionBlocked, type ModelCapabilityRegistry } from "../../../llm/model-capabilities.js";
 import { config } from "../../../config/index.js";
@@ -276,12 +276,10 @@ export function registerChatRoutes(
         }
       } catch (err) {
         const requestId = (req as unknown as { requestId?: string }).requestId ?? "-";
-        log.error(
-          `[HTTP] stream failed url=%s request_id=%s: %s`,
-          req.url,
-          requestId,
-          err instanceof Error ? err.stack || err.message : String(err),
-        );
+        // Structured error record: the serializer keeps type/message/stack under
+        // `err`; the URL is sanitized so share tokens / presigned queries never
+        // reach the log file, and request_id comes from the request-context mixin.
+        log.error({ err }, `[HTTP] stream failed url=${sanitizeUrl(req.url)}`);
         if (!closed) {
           // same sanitization as the JSON error handler: unknown errors → generic detail
           const { body } = toErrorPayload(err, requestId);

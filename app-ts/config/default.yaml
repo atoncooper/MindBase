@@ -222,6 +222,25 @@ sandbox:
   # 执行状态轮询间隔
   pollIntervalMs: 500
 
+tempFiles:
+  # AI 解析文档的本地临时文件（下载 → 本地临时文件 → 解析 → 整个 agent 回合结束
+  # 由程序删除；工具/模型没有任何删除接口）。目录结构：
+  #   <dir>/u-<sha256(uid|anon)[:16]>/turn-<requestId>/<uuid>.<ext>
+  # 原始文件名只作展示，绝不拼进路径；目录 0700、文件 0600。
+  # 预算与 fd 上限：单轮文件数/字节、单文件大小、全局文件数、并发写入数；
+  # 启动 + 定期 sweep 清理崩溃残留（仅程序生命周期可删）。
+  # 环境变量覆盖：TEMP_FILES__*（loader 自动派生）或 TEMPFILES__*（别名，二者都支持）。
+  enabled: true
+  # 空 = os.tmpdir()/mindbase-agent；容器内 /tmp 必须可写（tmpfs/noexec 均可）。
+  dir: ""
+  maxFilesPerTurn: 4                 # 单轮最多 4 个临时文件
+  maxBytesPerTurn: 67108864          # 单轮最多 64MB
+  maxFileBytes: 20971520             # 单文件最多 20MB（与文档解析上限一致）
+  maxGlobalFiles: 32                 # 全进程同时存在的临时文件数上限（防 fd 耗尽）
+  maxConcurrentWrites: 8             # 全进程同时写入的临时文件数上限
+  staleTtlMs: 21600000               # 残留目录过期时间 6h（远大于单轮时长）
+  sweepIntervalMs: 600000            # 定期 sweep 间隔 10min（0 = 关闭定时器）
+
 search:
   defaultK: 8
 
@@ -333,10 +352,27 @@ chunk:
   overlap: 100
 
 log:
+  # 逻辑服务名（每条日志的 service 字段；容器内可用 LOG__SERVICE 覆盖）
+  service: app-ts
   level: info
+  # stdout 始终输出 JSON 行（容器日志采集）；fileEnabled=true 时再写文件
   fileEnabled: true
+  # 文件 sink 目录/文件名（容器内由 compose 注入 LOG__DIR=/app/logs）
   dir: logs
   fileName: app-ts.log
+  # rotating-file-stream：按大小/时间轮转 + gzip 压缩 + 保留上限
+  # （env：LOG__ROTATION__{ENABLED,SIZE,INTERVAL,MAX_FILES,COMPRESS}）
+  rotation:
+    enabled: true
+    size: 20M
+    interval: 1d
+    maxFiles: 14
+    compress: gzip
+  # 访问日志（onResponse 结构化记录）与慢请求阈值
+  # （env：LOG__ACCESS_LOG__{ENABLED,SLOW_REQUEST_MS}）
+  accessLog:
+    enabled: true
+    slowRequestMs: 3000
 
 rateLimit:
   # /chat/ask/stream 每 IP 滑动窗口限流（LLM 端点昂贵）
@@ -386,6 +422,9 @@ academic:
   # 学术/科研能力（plan/1.0.17）：academic 子 agent + 项目/文献/稿件工具。
   # false = 工具与 agent 均不注册（graceful degradation）
   enabled: true
+  # 临时实验数据/代码/结果保留天数；论文/文献永久保留
+  retentionTempDays: 180
+  retentionSweepMs: 21600000
   literature:
     # 文献检索外部源；Crossref 优先、OpenAlex 兜底、arXiv 供预印本检索
     crossrefBaseUrl: https://api.crossref.org

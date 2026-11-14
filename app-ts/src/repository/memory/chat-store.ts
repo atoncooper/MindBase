@@ -42,6 +42,13 @@ export class MemoryChatSessionRepository implements ChatSessionRepository {
     if (s) s.title = title;
   }
 
+  async setAcademicProject(sessionId: string, projectId: string | undefined): Promise<void> {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    if (projectId === undefined) delete s.academicProjectId;
+    else s.academicProjectId = projectId;
+  }
+
   async list(uid?: string): Promise<ChatSession[]> {
     return [...this.sessions.values()]
       .filter((s) => uid === undefined || s.uid === uid)

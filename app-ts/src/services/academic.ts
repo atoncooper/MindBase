@@ -6,8 +6,10 @@ import {
   normalizeDoi,
   wordCount,
   type AcademicDocument,
+  type AcademicDocumentExport,
   type AcademicDocumentKind,
   type AcademicDocumentRepository,
+  type AcademicDocumentSource,
   type AcademicEvent,
   type AcademicEventRepository,
   type AcademicLiteratureEntry,
@@ -23,7 +25,7 @@ import {
   type AcademicStageState,
   type AcademicStageStatus,
 } from "../repository/academic.js";
-import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../auth/literature-client.js";
+import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../clients/literature-client.js";
 import { createLogger } from "../logger.js";
 
 const log = createLogger("ACADEMIC");
@@ -86,6 +88,10 @@ export interface AcademicDocumentSummary {
   title: string;
   sectionCount: number;
   wordCount: number;
+  /** original user-uploaded Word file (Word import path only; docs/manuscript-docx.md §1) */
+  source?: AcademicDocumentSource;
+  /** latest generated Word saved back into the cloud drive (§2.3) */
+  lastExport?: AcademicDocumentExport;
   updatedAt: number;
 }
 
@@ -385,6 +391,10 @@ export class AcademicService {
         title: doc.title,
         sectionCount: doc.sections.length,
         wordCount: doc.sections.reduce((sum, section) => sum + wordCount(section.content), 0),
+        // Optional Word bookkeeping: the writing tab shows "来自: <source>" and
+        // "最近回存: <lastExport>" straight from the list payload.
+        ...(doc.source !== undefined ? { source: doc.source } : {}),
+        ...(doc.lastExport !== undefined ? { lastExport: doc.lastExport } : {}),
         updatedAt: doc.updatedAt,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);

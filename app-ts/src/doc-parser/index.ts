@@ -2,6 +2,7 @@
 import JSZip from "jszip";
 import { isImageDocument, imageMimeFor, OcrError, type OcrClient } from "./ocr.js";
 import { htmlToStructuredText } from "./html-text.js";
+import { DOCX_MIME, parseDocxText } from "./docx.js";
 
 export interface ParsedDocument {
   text: string;
@@ -50,7 +51,7 @@ export async function parseDocument(
     case "pdf":
       return { text: await parsePdf(buffer), mime: "application/pdf" };
     case "docx":
-      return { text: await parseDocx(buffer), mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+      return { text: await parseDocxText(buffer), mime: DOCX_MIME };
     case "pptx":
       return { text: await parsePptx(buffer), mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
     default:
@@ -73,13 +74,6 @@ async function parsePdf(buffer: Buffer): Promise<string> {
     throw new UnsupportedDocumentError("PDF", "未提取到文本层（可能是扫描件/图片型 PDF，暂不支持）");
   }
   return text;
-}
-
-/** docx via mammoth's HTML conversion (headings/lists/tables) → structured text. */
-async function parseDocx(buffer: Buffer): Promise<string> {
-  const mammoth = await import("mammoth");
-  const res = await mammoth.convertToHtml({ buffer });
-  return htmlToStructuredText(res.value);
 }
 
 /**

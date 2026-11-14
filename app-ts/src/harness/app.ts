@@ -35,6 +35,8 @@ export class AgentHarness {
     model?: import("ai").LanguageModel;
     /** turn-level system directive appended to the agent's own prompt (e.g. board chat context) */
     extraSystem?: string;
+    /** Academic project the turn was asked from (research workbench); tools see it via ToolRunContext. */
+    academicProjectId?: string;
     /** abort on client disconnect: cancels streamText + in-flight tools */
     signal?: AbortSignal;
   }): AsyncGenerator<SseFrame> {
@@ -49,6 +51,7 @@ export class AgentHarness {
       skillIds: input.skillIds,
       ...(input.model ? { model: input.model } : {}),
       ...(input.extraSystem ? { extraSystem: input.extraSystem } : {}),
+      ...(input.academicProjectId ? { academicProjectId: input.academicProjectId } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   }

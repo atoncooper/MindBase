@@ -13,9 +13,9 @@ import type { SessionDocumentRepository } from "../src/repository/session-docs.j
 import { MemoryTaskQuizDocStore } from "../src/repository/memory/task-quiz-docs.js";
 import { TaskQuizGenerationService } from "../src/services/task-quiz-generation.js";
 import { PromptRegistry } from "../src/agent/prompts/loader.js";
-import type { AppQuizClient } from "../src/auth/app-quiz-client.js";
-import type { AppTaskClient } from "../src/auth/app-task-client.js";
-import type { AppUserAuthClient } from "../src/auth/app-user-auth-client.js";
+import type { AppQuizClient } from "../src/clients/app-quiz-client.js";
+import type { AppTaskClient } from "../src/clients/app-task-client.js";
+import type { AppUserAuthClient } from "../src/clients/app-user-auth-client.js";
 
 // ---------- fakes ----------
 

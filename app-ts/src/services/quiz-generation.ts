@@ -7,7 +7,7 @@ import { aiTelemetry } from "../llm/tracing.js";
 import { createLogger } from "../logger.js";
 import type { PromptRegistry } from "../agent/prompts/loader.js";
 import type { SessionSummaryService } from "./session-summary.js";
-import type { AgentQuestionPayload, AppQuizClient, WrongAnswerEntry } from "../auth/app-quiz-client.js";
+import type { AgentQuestionPayload, AppQuizClient, WrongAnswerEntry } from "../clients/app-quiz-client.js";
 import type { RAGService } from "../rag/service.js";
 import type { Document } from "../rag/types.js";
 import { parseDocument } from "../doc-parser/index.js";

@@ -9,6 +9,7 @@ import { config } from "../../../config/index.js";
 import type { QuotaService } from "../../../services/quota.js";
 import type { UsageReconciliationJob } from "../../../services/usage-reconciliation.js";
 import { trackedTurns } from "../../../utils/degrade.js";
+import type { PlanRuntimeStats } from "../../../agent/dag/runner.js";
 
 /**
  * System/ops routes: health, agent runtime status, model capabilities.
@@ -22,6 +23,7 @@ export function registerSystemRoutes(
     capabilities: ModelCapabilityRegistry;
     quota?: QuotaService;
     recon?: UsageReconciliationJob | null;
+    plan?: () => PlanRuntimeStats;
   },
 ): void {
   app.get("/health", async () => {
@@ -40,6 +42,7 @@ export function registerSystemRoutes(
   app.get("/agent/runtime", async () => ({
     uptime_s: Math.floor(process.uptime()),
     ...deps.harness.runtimeStatus(),
+    plans: deps.plan?.(),
     timeouts: { active: timeoutManager.list(), running: timeoutManager.size },
     admission: admissionStatus(),
     mcp: mcpClientStats(),

@@ -22,7 +22,12 @@ const log = createLogger("CHAT_SESSIONS");
  *   after it (regenerate flow); anchor missing → 404 消息不存在
  */
 
-/** Sessions without any message older than this are hidden from the list. */
+/**
+ * Sessions without any message older than this are hidden from the list and
+ * self-cleaned. The app no longer creates sessions before the first message, so
+ * this is a backstop for legacy/foreign clients (a session whose only content is
+ * uploaded documents is never treated as empty).
+ */
 const EMPTY_SESSION_GRACE_MS = 5 * 60 * 1000;
 
 export class ChatSessionsError extends Error {
@@ -38,6 +43,8 @@ export interface WireSession {
   created_at: string | null;
   updated_at: string | null;
   last_message_at: string | null;
+  /** 绑定的科研项目 id（新建会话时可选绑定）；null = 普通对话 */
+  academic_project_id: string | null;
 }
 
 export interface WireMessage {
@@ -80,11 +87,22 @@ export class ChatSessionsService {
     this.sessionDocs = opts.sessionDocs;
   }
 
-  async create(uid: string, title?: string): Promise<WireSession> {
+  /**
+   * Creates a session, optionally bound to a research project. The binding is
+   * persisted on the session row so reopening it later (sidebar history, "在对话
+   * 中继续") keeps the project context; the id is sanitized at the HTTP layer
+   * and project ownership is still enforced per turn by the academic resolver.
+   */
+  async create(uid: string, title?: string, academicProjectId?: string): Promise<WireSession> {
     const sessionId = randomUUID();
     const session = await this.sessions.getOrCreate(sessionId, uid);
     if (title) await this.sessions.rename(sessionId, title);
-    return toWireSession({ ...session, title });
+    if (academicProjectId) await this.sessions.setAcademicProject(sessionId, academicProjectId);
+    return toWireSession({
+      ...session,
+      ...(title ? { title } : {}),
+      ...(academicProjectId ? { academicProjectId } : {}),
+    });
   }
 
   /** List + hide empty sessions past the grace window (Python list_sessions
@@ -95,8 +113,13 @@ export class ChatSessionsService {
     for (const s of rows) {
       const hasMessages = (await this.messages.countBySession(s.id)) > 0;
       if (!hasMessages && Date.now() - s.createdAt > this.emptyGraceMs) {
-        await this.sessions.delete(s.id, uid);
-        continue;
+        // Uploaded session documents are real content: a session whose only
+        // payload is uploaded files must not be swept away as "empty".
+        const docs = this.sessionDocs ? await this.sessionDocs.list(s.id).catch(() => []) : [];
+        if (docs.length === 0) {
+          await this.sessions.delete(s.id, uid);
+          continue;
+        }
       }
       out.push(toWireSession(s));
     }
@@ -201,6 +224,7 @@ function toWireSession(s: ChatSession): WireSession {
     created_at: iso(s.createdAt),
     updated_at: iso(s.updatedAt),
     last_message_at: iso(s.lastMessageAt),
+    academic_project_id: s.academicProjectId ?? null,
   };
 }
 

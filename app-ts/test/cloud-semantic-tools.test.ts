@@ -5,7 +5,7 @@ import {
   type CloudSemanticHit,
   type CloudSemanticSearchResponse,
   type CloudSimilarResponse,
-} from "../src/auth/app-cloud-client.js";
+} from "../src/clients/app-cloud-client.js";
 import {
   createCloudSemanticSearchTool,
   createCloudSimilarFilesTool,

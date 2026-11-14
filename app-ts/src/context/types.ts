@@ -83,6 +83,8 @@ export interface PlanNodeView {
 }
 
 export interface PlanSnapshot {
+  /** Durable plan-run id (absent on legacy in-memory plans). */
+  runId?: string;
   version: number;
   /** DAG goal (optional: the legacy linear plan tool omits it) */
   goal?: string;
@@ -151,6 +153,13 @@ export class ResultCollector {
 export interface ToolRunContext {
   uid?: string;
   chatSessionId?: string;
+  /**
+   * Academic research project the turn was asked from (research workbench chat
+   * context; same value the chat route parses from academic_project_id). Tools
+   * such as plan_and_run use it to tag durable records; it never comes from the
+   * model and is never exposed in tool schemas.
+   */
+  academicProjectId?: string;
   /** Resolved model for this turn (main + delegated agents); absent = gateway. */
   model?: import("ai").LanguageModel;
   scope: SearchScope;

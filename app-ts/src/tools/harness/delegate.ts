@@ -42,6 +42,7 @@ export function createDelegateTool(lifecycle: AgentLifecycleManager, delegates: 
         query: args.message,
         uid: ctx.uid,
         chatSessionId: ctx.chatSessionId,
+        ...(ctx.academicProjectId ? { academicProjectId: ctx.academicProjectId } : {}),
         scope: delegateScopeFor(ctx.scope),
         history: [],
         ...(ctx.model ? { model: ctx.model } : {}),

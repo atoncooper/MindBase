@@ -86,6 +86,19 @@ export function createMinioChatImageStorage(): ChatImageStorage | null {
       return `${proxyBase}/minio-proxy/${bucket}/${key}${query}`;
     },
 
+    async getBytes(key: string): Promise<Uint8Array | undefined> {
+      try {
+        const stream = await io.getObject(bucket, key);
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+        }
+        return Buffer.concat(chunks);
+      } catch {
+        return undefined;
+      }
+    },
+
     async getDataUrl(key: string): Promise<string | undefined> {
       const ext = key.split(".").pop() ?? "png";
       const contentType = MIME_BY_EXT[ext] ?? "image/png";

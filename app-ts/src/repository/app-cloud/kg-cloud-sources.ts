@@ -1,4 +1,4 @@
-import type { AppCloudClient } from "../../auth/app-cloud-client.js";
+import type { AppCloudClient } from "../../clients/app-cloud-client.js";
 import type {
   CloudDocContent,
   CloudDocListPage,
@@ -11,7 +11,7 @@ import type {
  *
  * Only message↔domain mapping lives here: apikey / X-Uid transport, baseUrl
  * trimming, timeouts and the {"detail"} error convention stay in
- * auth/app-cloud-client.ts (same split as repository/grpc vs transport/grpc).
+ * clients/app-cloud-client.ts (same split as repository/app-kg vs transport/grpc).
  */
 export class HttpKgCloudSourceStore implements KgCloudSourceStore {
   constructor(private readonly client: AppCloudClient) {}

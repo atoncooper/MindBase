@@ -5,7 +5,7 @@ import type {
   CloudSemanticHit,
   CloudSemanticSearchResponse,
   CloudSimilarResponse,
-} from "../../auth/app-cloud-client.js";
+} from "../../clients/app-cloud-client.js";
 import type { Source } from "../../context/types.js";
 
 /**

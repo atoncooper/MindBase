@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createLiteratureClient } from "../src/auth/literature-client.js";
+import { createLiteratureClient } from "../src/clients/literature-client.js";
 import { config } from "../src/config/index.js";
 
 type Call = { url: string; init?: RequestInit };

@@ -32,7 +32,9 @@ import {
   slugKey,
   type AcademicActor,
   type AcademicDocument,
+  type AcademicDocumentExport,
   type AcademicDocumentRepository,
+  type AcademicDocumentSource,
   type AcademicEvent,
   type AcademicEventRepository,
   type AcademicLiteratureAddResult,
@@ -538,12 +540,18 @@ export class MemoryAcademicStore
   /**
    * Creates a document and derives/sorts its initial sections. Section keys are
    * deduplicated inside this batch, so two sections with the same title become
-   * "slug" and "slug-2" instead of colliding.
+   * "slug" and "slug-2" instead of colliding. A Word import also records the
+   * original upload (`source`), cloned like every other caller-owned value.
    */
   async createDocument(
     uid: string,
     projectId: string,
-    input: { kind: AcademicDocument["kind"]; title: string; sections?: AcademicSectionInput[] },
+    input: {
+      kind: AcademicDocument["kind"];
+      title: string;
+      sections?: AcademicSectionInput[];
+      source?: AcademicDocumentSource;
+    },
   ): Promise<AcademicDocument> {
     const at = Date.now();
     const taken = new Set<string>();
@@ -557,6 +565,7 @@ export class MemoryAcademicStore
       kind: input.kind,
       title: input.title,
       sections: sortSections(sections),
+      ...(input.source !== undefined ? { source: copy(input.source) } : {}),
       createdAt: at,
       updatedAt: at,
     };
@@ -612,18 +621,22 @@ export class MemoryAcademicStore
   }
 
   /**
-   * Title-only update: bumps updatedAt while keeping createdAt and the sections
-   * untouched. Returns null for unknown or foreign documents.
+   * Metadata update: title plus the optional Word source/lastExport records;
+   * createdAt and the sections are untouched. Patch values are cloned on write,
+   * so a later caller mutation cannot rewrite stored state. Returns null for
+   * unknown or foreign documents.
    */
   async updateDocument(
     uid: string,
     documentId: string,
-    patch: { title?: string },
+    patch: { title?: string; source?: AcademicDocumentSource; lastExport?: AcademicDocumentExport },
   ): Promise<AcademicDocument | null> {
     const document = this.documents.get(documentId);
     if (!document || document.uid !== uid) return null;
     const next = copy(document);
     if (patch.title !== undefined) next.title = patch.title;
+    if (patch.source !== undefined) next.source = copy(patch.source);
+    if (patch.lastExport !== undefined) next.lastExport = copy(patch.lastExport);
     next.updatedAt = Date.now();
     this.documents.set(documentId, next);
     return copy(next);

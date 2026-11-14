@@ -37,8 +37,10 @@ import {
   slugKey,
   type AcademicActor,
   type AcademicDocument,
+  type AcademicDocumentExport,
   type AcademicDocumentKind,
   type AcademicDocumentRepository,
+  type AcademicDocumentSource,
   type AcademicEvent,
   type AcademicEventRepository,
   type AcademicLiteratureAddResult,
@@ -125,6 +127,10 @@ interface DocumentDoc extends MongoDoc {
   kind: AcademicDocumentKind;
   title: string;
   sections: AcademicSection[];
+  /** original user-uploaded Word file (Word import path only) */
+  source?: AcademicDocumentSource;
+  /** latest generated Word file saved back into the cloud drive */
+  lastExport?: AcademicDocumentExport;
   createdAt: number;
   updatedAt: number;
 }
@@ -231,7 +237,7 @@ function toLiterature(doc: LiteratureDoc): AcademicLiteratureEntry {
   };
 }
 
-/** Maps a manuscript document to its stored form (sections embedded as-is, order already canonical). */
+/** Maps a manuscript document to its stored form (sections embedded as-is, order already canonical; optional Word records only when present). */
 function toDocumentDoc(document: AcademicDocument): DocumentDoc {
   return {
     _id: document.id,
@@ -240,12 +246,18 @@ function toDocumentDoc(document: AcademicDocument): DocumentDoc {
     kind: document.kind,
     title: document.title,
     sections: document.sections,
+    ...(document.source !== undefined ? { source: document.source } : {}),
+    ...(document.lastExport !== undefined ? { lastExport: document.lastExport } : {}),
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
   };
 }
 
-/** Maps a stored manuscript document back to the entity, defaulting a missing sections array to []. */
+/**
+ * Maps a stored manuscript document back to the entity, defaulting a missing
+ * sections array to [] (rows written before the Word import/export fields
+ * existed simply have no source/lastExport).
+ */
 function toDocument(doc: DocumentDoc): AcademicDocument {
   return {
     id: doc._id,
@@ -254,6 +266,8 @@ function toDocument(doc: DocumentDoc): AcademicDocument {
     kind: doc.kind,
     title: doc.title,
     sections: doc.sections ?? [],
+    ...(doc.source !== undefined ? { source: doc.source } : {}),
+    ...(doc.lastExport !== undefined ? { lastExport: doc.lastExport } : {}),
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
   };
@@ -778,7 +792,12 @@ export class MongoAcademicStore
   async createDocument(
     uid: string,
     projectId: string,
-    input: { kind: AcademicDocumentKind; title: string; sections?: AcademicSectionInput[] },
+    input: {
+      kind: AcademicDocumentKind;
+      title: string;
+      sections?: AcademicSectionInput[];
+      source?: AcademicDocumentSource;
+    },
   ): Promise<AcademicDocument> {
     const at = Date.now();
     const taken = new Set<string>();
@@ -792,6 +811,7 @@ export class MongoAcademicStore
       kind: input.kind,
       title: input.title,
       sections: sortSections(sections),
+      ...(input.source !== undefined ? { source: structuredClone(input.source) } : {}),
       createdAt: at,
       updatedAt: at,
     };
@@ -827,13 +847,14 @@ export class MongoAcademicStore
   }
 
   /**
-   * Title-only update: read, then replaceOne with the uid-scoped filter. Returns
-   * null when the document vanished in between (matchedCount 0).
+   * Metadata update (title + optional Word source/lastExport): read, then
+   * replaceOne with the uid-scoped filter. Returns null when the document
+   * vanished in between (matchedCount 0).
    */
   async updateDocument(
     uid: string,
     documentId: string,
-    patch: { title?: string },
+    patch: { title?: string; source?: AcademicDocumentSource; lastExport?: AcademicDocumentExport },
   ): Promise<AcademicDocument | null> {
     const doc = await this.documents.findOne({ _id: documentId, uid });
     if (!doc) return null;
@@ -841,6 +862,8 @@ export class MongoAcademicStore
     const next: AcademicDocument = {
       ...current,
       title: patch.title !== undefined ? patch.title : current.title,
+      ...(patch.source !== undefined ? { source: structuredClone(patch.source) } : {}),
+      ...(patch.lastExport !== undefined ? { lastExport: structuredClone(patch.lastExport) } : {}),
       updatedAt: Date.now(),
     };
     const result = await this.documents.replaceOne({ _id: documentId, uid }, toDocumentDoc(next));

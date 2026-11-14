@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AppCloudClient, AppCloudError, type CloudSummaryResponse } from "../src/auth/app-cloud-client.js";
+import { AppCloudClient, AppCloudError, type CloudSummaryResponse } from "../src/clients/app-cloud-client.js";
 import { createCloudDocSummaryTool, formatCloudSummary } from "../src/tools/cloud/index.js";
 import { ResultCollector } from "../src/context/types.js";
 import type { ToolRunContext } from "../src/context/types.js";

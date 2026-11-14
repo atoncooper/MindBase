@@ -22,6 +22,8 @@ import { today } from "../utils/datetime.js";
 import { historyLimitFor, noteTurnLevel } from "../utils/degrade.js";
 import type { PromptRegistry } from "../agent/prompts/loader.js";
 import { buildBoardSystemSection, type BoardContextParams } from "./board-context.js";
+import type { TempWorkspaceManager } from "../context/temp-workspace.js";
+import { getRequestContext } from "../context/request-context.js";
 import type { LanguageModel } from "ai";
 
 /**
@@ -134,6 +136,12 @@ export class ChatService {
     ) => Promise<string | undefined>,
     /** resolve the chat-dialog selected model (Coding Plan) once per turn; all agents share it */
     private readonly resolveModel?: (input: { uid?: string; model?: string }) => Promise<LanguageModel | undefined>,
+    /**
+     * Turn-scoped scratch files (docs/temp-files.md). Only disposeRequest is
+     * needed here: the program deletes the turn's directory when the whole
+     * harness turn ends — tools/models have no delete path at all.
+     */
+    private readonly tempWorkspaces?: Pick<TempWorkspaceManager, "disposeRequest">,
   ) {}
 
   private get admissionQueue(): WeightedAdmissionQueue | null {
@@ -141,6 +149,10 @@ export class ChatService {
   }
 
   async *askStream(req: AskStreamRequest): AsyncGenerator<SseFrame> {
+    // Captured at the turn boundary: scratch files created by tools during this
+    // turn are removed in the finally below, once the whole harness turn is over
+    // (normal done / error / client disconnect / deadline all unwind through it).
+    const tempRequestId = getRequestContext()?.requestId;
     // ---- quota gate: first in line — no persistence, no
     // admission slot, no harness dispatch. gate=null → quota disabled or the
     // request is unattributable (no uid && no clientKey).
@@ -222,9 +234,17 @@ export class ChatService {
       }
     };
 
+    // Academic project: an explicit per-turn id wins (research workbench entry),
+    // otherwise fall back to the project the session was created with — that is
+    // what keeps "在对话中继续" working after the session is reopened from history.
+    const academicProjectId = req.academicProjectId ?? session.academicProjectId;
+    if (!req.academicProjectId && academicProjectId) {
+      log.info(`[CHAT] academic project inherited from session session=${sessionId} project=${academicProjectId}`);
+    }
+
     // Turn-level context directives (board node / academic project) ride on
     // extraSystem; the agent's own prompt and red lines stay authoritative.
-    const extraSystem = await this.buildExtraSystem(req.board, req.uid, req.academicProjectId);
+    const extraSystem = await this.buildExtraSystem(req.board, req.uid, academicProjectId);
 
     const admission = this.admissionQueue;
     let ticket: AdmissionTicket | null = null;
@@ -276,6 +296,7 @@ export class ChatService {
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(req.model ? { model: req.model } : {}),
         ...(extraSystem ? { extraSystem } : {}),
+        ...(academicProjectId ? { academicProjectId } : {}),
         signal: turnAbort.signal,
       })) {
         if (turnAbort.signal.aborted) break;
@@ -382,6 +403,18 @@ export class ChatService {
       if (admission && ticket) {
         if (ticket.acquired) admission.release(ticket);
         else admission.cancel(ticket); // defensive; unreachable today
+      }
+      // Whole-turn scratch-file cleanup: ONLY the program lifecycle does this
+      // (the agent never sees this method). A failure is a warning — the SSE
+      // response must not fail because cleanup did.
+      if (tempRequestId && this.tempWorkspaces) {
+        try {
+          await this.tempWorkspaces.disposeRequest(tempRequestId);
+        } catch (err) {
+          log.warn(
+            `[CHAT] temp workspace dispose failed request=${tempRequestId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
   }

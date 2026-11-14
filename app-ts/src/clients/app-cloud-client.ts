@@ -186,6 +186,118 @@ export class AppCloudClient extends InternalServiceClient {
     return new AppCloudError(message, status);
   }
 
+  /** Create a cloud-drive folder for a research workspace tree (M2M). */
+  async createFolder(uid: string, name: string, parentId?: number): Promise<{ id: number; name: string; parent_id?: number }> {
+    try {
+      const res = await this.request(
+        "POST",
+        `/internal/cloud/folders?uid=${encodeURIComponent(uid)}`,
+        { name, ...(parentId !== undefined ? { parentId } : {}) },
+        uid,
+      );
+      const raw = await this.json<Record<string, unknown>>(res, "云盘文件夹创建失败");
+      const id = Number(raw.ID ?? raw.id);
+      if (!Number.isFinite(id) || id <= 0) throw new Error("云盘文件夹创建失败：响应缺少 id");
+      return {
+        id,
+        name: typeof raw.Name === "string" ? raw.Name : name,
+        ...(Number.isFinite(Number(raw.ParentID ?? raw.parentId))
+          ? { parent_id: Number(raw.ParentID ?? raw.parentId) }
+          : {}),
+      };
+    } catch (err) {
+      if (err instanceof AppCloudError) throw err;
+      throw new AppCloudError(`云盘文件夹创建失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Upload raw bytes into a research workspace folder (M2M; app-cloud owns MinIO). */
+  async uploadFile(
+    uid: string,
+    folderId: number,
+    name: string,
+    data: Uint8Array,
+    mimeType = "application/octet-stream",
+  ): Promise<{ upload_uuid: string; name: string; size: number; sha256?: string }> {
+    const params = new URLSearchParams({
+      uid,
+      folder_id: String(folderId),
+      name,
+      mime_type: mimeType,
+    });
+    const res = await fetch(`${this.baseUrl}/internal/cloud/files?${params.toString()}`, {
+      method: "POST",
+      headers: this.headers(uid, { "Content-Type": mimeType }),
+      body: data,
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const raw = await this.json<Record<string, unknown>>(res, "云盘文件上传失败");
+    const uploadUuid = typeof raw.upload_uuid === "string" ? raw.upload_uuid : "";
+    if (!uploadUuid) throw new AppCloudError("云盘文件上传失败：响应缺少 upload_uuid");
+    return {
+      upload_uuid: uploadUuid,
+      name: typeof raw.name === "string" ? raw.name : name,
+      size: Number(raw.size ?? data.byteLength),
+      ...(typeof raw.sha256 === "string" ? { sha256: raw.sha256 } : {}),
+    };
+  }
+
+  /** Download a research workspace file (M2M). */
+  async downloadFile(uid: string, uploadUuid: string): Promise<{ contentType: string; data: Uint8Array }> {
+    const params = new URLSearchParams({ uid });
+    const res = await fetch(
+      `${this.baseUrl}/internal/cloud/files/${encodeURIComponent(uploadUuid)}?${params.toString()}`,
+      { headers: this.headers(uid), signal: AbortSignal.timeout(this.timeoutMs) },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new AppCloudError(`云盘文件下载失败：${text || res.status}`, res.status);
+    }
+    return {
+      contentType: res.headers.get("content-type") ?? "application/octet-stream",
+      data: new Uint8Array(await res.arrayBuffer()),
+    };
+  }
+
+  /** Delete one research workspace file (M2M soft delete). */
+  async deleteFile(uid: string, uploadUuid: string): Promise<void> {
+    const params = new URLSearchParams({ uid });
+    const res = await this.request(
+      "DELETE",
+      `/internal/cloud/files/${encodeURIComponent(uploadUuid)}?${params.toString()}`,
+      undefined,
+      uid,
+    );
+    if (!res.ok) throw new AppCloudError(`云盘文件删除失败：HTTP ${res.status}`, res.status);
+  }
+
+  /** List files in one research workspace folder (M2M). */
+  async listFiles(
+    uid: string,
+    folderId?: number,
+  ): Promise<Array<{ upload_uuid: string; name: string; size: number; mime_type: string; folder_id?: number; sha256?: string; createdAt?: number }>> {
+    const params = new URLSearchParams({ uid });
+    if (folderId !== undefined) params.set("folder_id", String(folderId));
+    const res = await this.request("GET", `/internal/cloud/files?${params.toString()}`, undefined, uid);
+    const raw = await this.json<{ items?: unknown }>(res, "云盘文件列表读取失败");
+    const items: Array<{ upload_uuid: string; name: string; size: number; mime_type: string; folder_id?: number; sha256?: string; createdAt?: number }> = [];
+    for (const item of Array.isArray(raw.items) ? raw.items : []) {
+      if (!item || typeof item !== "object") continue;
+      const r = item as Record<string, unknown>;
+      if (typeof r.upload_uuid !== "string") continue;
+      items.push({
+        upload_uuid: r.upload_uuid,
+        name: typeof r.name === "string" ? r.name : "",
+        size: Number(r.size ?? 0),
+        mime_type: typeof r.mime_type === "string" ? r.mime_type : "",
+        ...(typeof r.folder_id === "number" ? { folder_id: r.folder_id } : {}),
+        ...(typeof r.sha256 === "string" ? { sha256: r.sha256 } : {}),
+        ...(typeof r.created_at === "number" ? { createdAt: r.created_at } : {}),
+      });
+    }
+    return items;
+  }
+
   /** Read one document's summary for `uid`; the uid is sent both as X-Uid and as the query identity. */
   async getSummary(uid: string, uploadUuid: string): Promise<CloudSummaryResponse> {
     const query = new URLSearchParams({ uid, upload_uuid: uploadUuid });

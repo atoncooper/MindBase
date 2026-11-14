@@ -3,13 +3,14 @@ import { z } from "zod";
 import type { Artifact } from "../context/types.js";
 
 /**
- * Interactive artifact specs (plot / diagram).
+ * Interactive artifact specs (plot / diagram / chart / comparison).
  *
  * The model emits a small, fully declarative JSON spec — never HTML or JS —
- * and the web client renders it with trusted components (canvas / SVG).
+ * and the web client renders it with trusted components (canvas / SVG / DOM).
  * This module is the server-side contract: zod schemas shown to the model,
  * plus cross-field checks that zod alone cannot express (unique node ids,
- * edge endpoints, expression identifiers, payload size).
+ * edge endpoints, expression identifiers, chart category/series alignment,
+ * comparison item uniqueness, payload size).
  *
  * Keep the limits in sync with frontendv2/lib/artifacts/interactive-spec.ts.
  */
@@ -21,6 +22,11 @@ export const MAX_PARAMS = 8;
 export const MAX_EXPR_CHARS = 300;
 export const MAX_NODES = 60;
 export const MAX_EDGES = 120;
+export const MAX_CHART_CATEGORIES = 24;
+export const MAX_CHART_SERIES = 6;
+export const MAX_COMPARISON_ITEMS = 4;
+export const MAX_COMPARISON_LISTS = 6;
+export const MAX_COMPARISON_ATTRS = 8;
 export const MAX_ARTIFACTS_PER_TURN = 4;
 export const MAX_ARTIFACT_BYTES_PER_TURN = 64 * 1024;
 
@@ -84,11 +90,65 @@ export const diagramArgsSchema = z.object({
   edges: z.array(edgeSchema).max(MAX_EDGES).describe("连线列表，务必引用已存在的节点 id"),
 });
 
+const chartTypeSchema = z.enum(["bar", "line", "pie"]);
+
+export const chartSeriesSchema = z.object({
+  name: z.string().min(1).max(40).describe("系列名（图例），如「2024 年」「本周」"),
+  values: z
+    .array(z.number().finite().min(-1e12).max(1e12))
+    .min(1)
+    .max(MAX_CHART_CATEGORIES)
+    .describe("与 categories 一一对应的数值，必须等长；只能是有限数"),
+});
+
+export const chartArgsSchema = z.object({
+  title: z.string().min(1).max(120).describe("图标题，如「各月检索次数」"),
+  subtitle: z.string().max(160).optional().describe("一句话说明数据口径或结论"),
+  chartType: chartTypeSchema.describe("图表类型：bar（柱状，类别对比）/ line（折线，时间趋势）/ pie（饼图，占比；只能 1 组 series）"),
+  categories: z
+    .array(z.string().min(1).max(40))
+    .min(1)
+    .max(MAX_CHART_CATEGORIES)
+    .describe("类别轴 / 扇区标签（1..24 个，每个 1..40 字）"),
+  series: z
+    .array(chartSeriesSchema)
+    .min(1)
+    .max(MAX_CHART_SERIES)
+    .describe("数据系列（1..6 组）；每组 values 必须与 categories 等长；pie 只能 1 组"),
+  unit: z.string().max(20).optional().describe("数值单位，如「次」「%」「元」"),
+  xLabel: z.string().max(40).optional().describe("x 轴名称"),
+  yLabel: z.string().max(40).optional().describe("y 轴名称（饼图可省略）"),
+});
+
+export const comparisonAttrSchema = z.object({
+  label: z.string().max(40).describe("属性名，如「学习成本」"),
+  value: z.string().max(80).describe("属性值，如「低」"),
+});
+
+export const comparisonItemSchema = z.object({
+  name: z.string().min(1).max(60).describe("对比项名称（必须唯一），如「方案 A」"),
+  summary: z.string().max(160).optional().describe("一句话定位/摘要"),
+  pros: z.array(z.string().max(120)).max(MAX_COMPARISON_LISTS).optional().describe("优点（≤6 条，每条 ≤120 字）"),
+  cons: z.array(z.string().max(120)).max(MAX_COMPARISON_LISTS).optional().describe("缺点（≤6 条，每条 ≤120 字）"),
+  attrs: z.array(comparisonAttrSchema).max(MAX_COMPARISON_ATTRS).optional().describe("补充属性（≤8 组 label/value）"),
+});
+
+export const comparisonArgsSchema = z.object({
+  title: z.string().min(1).max(120).describe("对比标题，如「PostgreSQL vs MySQL」"),
+  subtitle: z.string().max(160).optional().describe("一句话说明对比口径 / 使用场景"),
+  items: z.array(comparisonItemSchema).min(2).max(MAX_COMPARISON_ITEMS).describe("对比项（2..4 项），name 必须唯一"),
+  recommendation: z.string().max(200).optional().describe("结论 / 推荐（≤200 字；没有把握就省略，不要编造）"),
+});
+
 export type PlotArgs = z.infer<typeof plotArgsSchema>;
 export type DiagramArgs = z.infer<typeof diagramArgsSchema>;
+export type ChartArgs = z.infer<typeof chartArgsSchema>;
+export type ComparisonArgs = z.infer<typeof comparisonArgsSchema>;
 
 export type PlotArtifactData = PlotArgs & { version: number; id: string };
 export type DiagramArtifactData = DiagramArgs & { version: number; id: string };
+export type ChartArtifactData = ChartArgs & { version: number; id: string };
+export type ComparisonArtifactData = ComparisonArgs & { version: number; id: string };
 
 /** Reject identifiers that are neither x, a declared param, a whitelisted function nor a constant. */
 export function validateExpression(expr: string, params: readonly string[]): string | null {
@@ -138,6 +198,46 @@ export function buildDiagramArtifact(args: DiagramArgs): { ok: true; artifact: A
   const sizeError = oversized(data);
   if (sizeError) return { ok: false, error: sizeError };
   return { ok: true, artifact: { kind: "diagram", data } };
+}
+
+export function buildChartArtifact(args: ChartArgs): { ok: true; artifact: Artifact } | { ok: false; error: string } {
+  if (args.categories.length === 0) return { ok: false, error: "categories 不能为空" };
+  if (args.series.length === 0) return { ok: false, error: "至少需要 1 组 series" };
+  if (args.series.length > MAX_CHART_SERIES) return { ok: false, error: `series 最多 ${MAX_CHART_SERIES} 组` };
+  if (args.chartType === "pie" && args.series.length !== 1) {
+    return { ok: false, error: "饼图（pie）只能有 1 组 series；多组数据请改用 bar / line" };
+  }
+  for (const series of args.series) {
+    if (series.values.length !== args.categories.length) {
+      return {
+        ok: false,
+        error: `series「${series.name}」有 ${series.values.length} 个值，但 categories 有 ${args.categories.length} 个，两者必须等长`,
+      };
+    }
+    for (const value of series.values) {
+      if (!Number.isFinite(value)) return { ok: false, error: `series「${series.name}」含有非有限数值（NaN / Infinity）` };
+      if (Math.abs(value) > 1e12) return { ok: false, error: `series「${series.name}」的数值超出 ±1e12` };
+    }
+  }
+  const data: ChartArtifactData = { ...args, version: SPEC_VERSION, id: `chart_${randomUUID().slice(0, 8)}` };
+  const sizeError = oversized(data);
+  if (sizeError) return { ok: false, error: sizeError };
+  return { ok: true, artifact: { kind: "chart", data } };
+}
+
+export function buildComparisonArtifact(
+  args: ComparisonArgs,
+): { ok: true; artifact: Artifact } | { ok: false; error: string } {
+  if (args.items.length < 2) return { ok: false, error: "对比至少需要 2 个对比项" };
+  if (args.items.length > MAX_COMPARISON_ITEMS) {
+    return { ok: false, error: `对比项最多 ${MAX_COMPARISON_ITEMS} 个（当前 ${args.items.length} 个）` };
+  }
+  const names = args.items.map((item) => item.name);
+  if (new Set(names).size !== names.length) return { ok: false, error: "对比项 name 不能重复" };
+  const data: ComparisonArtifactData = { ...args, version: SPEC_VERSION, id: `comparison_${randomUUID().slice(0, 8)}` };
+  const sizeError = oversized(data);
+  if (sizeError) return { ok: false, error: sizeError };
+  return { ok: true, artifact: { kind: "comparison", data } };
 }
 
 /** Keep a turn's persisted artifacts bounded (per-turn byte/count caps). */

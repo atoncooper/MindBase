@@ -16,11 +16,19 @@ import { McpClient, registerMcpTools } from "../mcp/index.js";
 import { buildServer } from "../transport/http/server.js";
 import { createDelegateTool } from "../tools/harness/delegate.js";
 import { createAskUserTool } from "../tools/interaction/ask-user.js";
-import { createPlanTool } from "../tools/harness/plan.js";
 import { createPlanAndRunTool } from "../tools/harness/plan-graph.js";
 import { PlanRunner } from "../agent/dag/runner.js";
+import { PlanRunEngine } from "../agent/dag/state.js";
+import { MemoryPlanRunRepository } from "../repository/memory/plan-runs.js";
+import { MongoPlanRunRepository } from "../repository/mongo/plan-runs.js";
+import type { PlanRunRepository } from "../repository/plan-runs.js";
 import { ReflectService } from "../agent/dag/reflect.js";
-import { createRenderDiagramTool, createRenderPlotTool } from "../tools/render/index.js";
+import {
+  createRenderChartTool,
+  createRenderComparisonTool,
+  createRenderDiagramTool,
+  createRenderPlotTool,
+} from "../tools/render/index.js";
 import { createFetchWebpageTool } from "../tools/web/fetch-page.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import {
@@ -40,15 +48,35 @@ import { createCodeAgent } from "../agent/code/agent.js";
 import { createCodingPlanResolver } from "../agent/code/coding-plan-resolver.js";
 import { createQuizAgent } from "../agent/quiz/agent.js";
 import { createBoardAgent } from "../agent/board/agent.js";
-import { createAcademicAgent } from "../agent/academic/agent.js";
 import { createAcademicProjectTool } from "../tools/academic/project.js";
 import { createAcademicLiteratureTool } from "../tools/academic/literature.js";
 import { createAcademicManuscriptTool } from "../tools/academic/manuscript.js";
-import { createLiteratureClient } from "../auth/literature-client.js";
+import { createLiteratureClient } from "../clients/literature-client.js";
 import { AcademicService } from "../services/academic.js";
+import { ResearchWorkspaceService } from "../services/research-workspace.js";
+import { ManuscriptDocxService } from "../services/manuscript-docx.js";
+import { MemoryResearchWorkspaceRepository } from "../repository/memory/research-workspaces.js";
+import { MongoResearchWorkspaceRepository } from "../repository/mongo/research-workspaces.js";
+import type { ResearchWorkspaceRepository } from "../repository/research-workspaces.js";
+import { createResearchWorkspaceTool } from "../tools/academic/workspace.js";
+import { ResearchExperimentRunner } from "../services/research-experiment.js";
+import { MemoryResearchExperimentRepository } from "../repository/memory/research-experiments.js";
+import { MongoResearchExperimentRepository } from "../repository/mongo/research-experiments.js";
+import type { ResearchExperimentRepository } from "../repository/research-experiments.js";
+import { createAcademicExperimentTool } from "../tools/academic/experiment.js";
+import { ResearchValidationService } from "../services/research-validation.js";
+import { createAcademicValidationTool } from "../tools/academic/validation.js";
+import { ResearchAnalysisService } from "../services/research-analysis.js";
+import { createAcademicAnalysisTool } from "../tools/academic/analysis.js";
+import { ResearchApprovalService } from "../services/research-approval.js";
+import { MemoryResearchApprovalRepository } from "../repository/memory/research-approvals.js";
+import { MongoResearchApprovalRepository } from "../repository/mongo/research-approvals.js";
+import type { ResearchApprovalRepository } from "../repository/research-approvals.js";
+import { createResearchApprovalTool } from "../tools/academic/approval.js";
 import { createAcademicEvidenceTool } from "../tools/academic/evidence.js";
 import { MemoryAcademicEvidenceStore } from "../repository/memory/academic-evidence.js";
 import { MongoAcademicEvidenceStore } from "../repository/mongo/academic-evidence.js";
+import type { AcademicEvidenceRepository } from "../repository/academic-evidence.js";
 import { MikroAcademicEvidenceStore } from "../repository/mongo/mikro/academic-evidence.js";
 import { MemoryAcademicStore } from "../repository/memory/academic.js";
 import { MongoAcademicStore } from "../repository/mongo/academic.js";
@@ -59,7 +87,7 @@ import { BoardCompletionService } from "../services/board-completion.js";
 import { SessionSummaryService } from "../services/session-summary.js";
 import { QuizGenerationService } from "../services/quiz-generation.js";
 import { QuizGradingService } from "../services/quiz-grading.js";
-import { AppQuizClient } from "../auth/app-quiz-client.js";
+import { AppQuizClient } from "../clients/app-quiz-client.js";
 import { QuotaService } from "../services/quota.js";
 import { UsageReconciliationJob } from "../services/usage-reconciliation.js";
 import { RedisQuotaCounter } from "../repository/redis/quota-counter.js";
@@ -89,14 +117,15 @@ import { MongoMemoryStore } from "../repository/mongo/memory-store.js";
 import type { MemoryRepository } from "../repository/memory-store.js";
 import { NoopCodeExecution } from "../tools/code/code-execution.js";
 import { HttpCodeExecution } from "../tools/code/http-execution.js";
+import { createSandboxBashTool, createSandboxGrepTool, createSandboxPwshTool } from "../tools/code/shell.js";
 import { MemorySessionDocumentStore } from "../repository/memory/session-docs.js";
-import { GrpcKgGraphRepository } from "../repository/grpc/kg-graph.js";
+import { GrpcKgGraphRepository } from "../repository/app-kg/kg-graph.js";
 import { MemoryKgGraphRepository } from "../repository/memory/kg-graph.js";
 import { MemoryKgSourceStore } from "../repository/memory/kg-sources.js";
 import { MongoKgSourceStore } from "../repository/mongo/kg-sources.js";
 import { MemoryKgBuildStore } from "../repository/memory/kg-builds.js";
 import { MongoKgBuildStore } from "../repository/mongo/kg-builds.js";
-import { HttpKgCloudSourceStore } from "../repository/http/kg-cloud-sources.js";
+import { HttpKgCloudSourceStore } from "../repository/app-cloud/kg-cloud-sources.js";
 import { MemoryKgDocStore } from "../repository/memory/kg-docs.js";
 import { MongoKgDocStore } from "../repository/mongo/kg-docs.js";
 import { KgEntityIndex } from "../repository/kg-entity-index.js";
@@ -109,12 +138,15 @@ import { MongoSessionDocumentStore } from "../repository/mongo/session-docs.js";
 import { MongoAgentContextStore } from "../repository/mongo/agent-context.js";
 import { MemoryVectorTaskStore } from "../repository/memory/vector-tasks.js";
 import { MongoVectorTaskStore } from "../repository/mongo/vector-tasks.js";
-import { AppUserBiliClient } from "../auth/app-user-bili-client.js";
+import { AppUserBiliClient } from "../clients/app-user-bili-client.js";
 import { VideoVectorizerService } from "../services/video-vectorizer.js";
 import { BiliEventBridge } from "../bootstrap/redis-events.js";
-import { AppTaskClient } from "../auth/app-task-client.js";
-import { AppUserAuthClient } from "../auth/app-user-auth-client.js";
-import { AppCloudClient } from "../auth/app-cloud-client.js";
+import { AppTaskClient } from "../clients/app-task-client.js";
+import { AppUserAuthClient } from "../clients/app-user-auth-client.js";
+import { AppCloudClient } from "../clients/app-cloud-client.js";
+import { DocxInspectService } from "../services/docx-inspect.js";
+import { TempWorkspaceManager } from "../context/temp-workspace.js";
+import { createDocxInspectTool } from "../tools/docx/inspect.js";
 import { MemoryTaskQuizDocStore } from "../repository/memory/task-quiz-docs.js";
 import { MongoTaskQuizDocStore } from "../repository/mongo/task-quiz-docs.js";
 import { TaskQuizGenerationService } from "../services/task-quiz-generation.js";
@@ -331,13 +363,13 @@ export async function bootstrap() {
   }
   registry.register(createSaveMemoryTool(memoryStore));
   registry.register(createAskUserTool);
-  // Task plan state machine (in-process, keyed by chatSessionId; main agent only via
-  // its toolNames list). Snapshots leave as `plan` SSE frames for the live plan panel.
-  registry.register(createPlanTool());
-  // Interactive artifacts: declarative plot/diagram specs rendered by the web
-  // client with trusted components (no HTML/JS from the model, no iframe).
+  // Interactive artifacts: declarative plot/diagram/chart/comparison specs
+  // rendered by the web client with trusted components (no HTML/JS from the
+  // model, no iframe).
   registry.register(createRenderPlotTool());
   registry.register(createRenderDiagramTool());
+  registry.register(createRenderChartTool());
+  registry.register(createRenderComparisonTool());
   const webFetch = createFetchPortWithDeepseekPrimary(new HttpWebFetch());
   registry.register(createFetchWebpageTool(webFetch));
   registry.register(createWebSearchTool());
@@ -360,6 +392,38 @@ export async function bootstrap() {
         "cloud tools will answer with a not-configured notice",
     );
   }
+
+  // Local temp files for agent-side parsing (docs/temp-files.md): documents are
+  // downloaded into a per-(uid, turn) directory, parsed from disk, and deleted by
+  // ChatService when the whole turn ends. Tools can create files but never delete
+  // them; a startup sweep cleans crash residue.
+  const tempWorkspaces = new TempWorkspaceManager({
+    enabled: config.tempFiles.enabled,
+    baseDir: config.tempFiles.dir,
+    maxFilesPerTurn: config.tempFiles.maxFilesPerTurn,
+    maxBytesPerTurn: config.tempFiles.maxBytesPerTurn,
+    maxFileBytes: config.tempFiles.maxFileBytes,
+    maxGlobalFiles: config.tempFiles.maxGlobalFiles,
+    maxConcurrentWrites: config.tempFiles.maxConcurrentWrites,
+    staleTtlMs: config.tempFiles.staleTtlMs,
+    sweepIntervalMs: config.tempFiles.sweepIntervalMs,
+  });
+  await tempWorkspaces.start();
+
+  // Word (docx) detail inspection (docx_inspect): level-1 section extraction stays
+  // server-side (manuscript import), this second-level tool lets the agent read
+  // page setup / styles / table merges / headers from the ORIGINAL package. It
+  // reuses the same conversation-upload + cloud-drive ports as the manuscript
+  // tool, so both sources resolve through one path; tempFiles only sees the
+  // create-only capability (materialize) and never the disposal API.
+  const docxInspect = new DocxInspectService({
+    sessionDocs,
+    sessionFiles: chatImages,
+    cloud: appCloud,
+    tempFiles: tempWorkspaces,
+  });
+  registry.register(createDocxInspectTool(docxInspect));
+  log.info("[BOOT] docx_inspect tool registered (docx detail inspection)");
 
   // 2.7 KG (knowledge graph): AI (extraction/retrieval/build) here, storage
   //     (Neo4j + video.kg bookkeeping) in the app-kg Go service over gRPC.
@@ -475,6 +539,9 @@ export async function bootstrap() {
       })
     : new NoopCodeExecution();
   registry.register(createRunCodeTool(codeExec));
+  registry.register(createSandboxBashTool(codeExec));
+  registry.register(createSandboxPwshTool(codeExec));
+  registry.register(createSandboxGrepTool(codeExec));
   log.info(`[BOOT] run_code tool registered (store=${config.sandbox.enabled ? "remote" : "stub"})`);
   // Quiz generation: the quiz agent authors questions; persistence goes through
   // app-content-mcp (save_quiz / save_grading) — never the quiz tables directly.
@@ -497,6 +564,15 @@ export async function bootstrap() {
   let mongoAcademic: MongoAcademicStore | null = null;
   let mongoAcademicEvidence: MongoAcademicEvidenceStore | MikroAcademicEvidenceStore | null = null;
   let academicService: AcademicService | undefined;
+  let academicEvidence: AcademicEvidenceRepository | undefined;
+  let researchWorkspaceService: ResearchWorkspaceService | undefined;
+  let manuscriptDocxService: ManuscriptDocxService | undefined;
+  let researchApprovals: ResearchApprovalService | undefined;
+  let experimentRunner: ResearchExperimentRunner | undefined;
+  // validation/analysis are also consumed by the HTTP research surface below;
+  // declared here (outside the branch) so buildServer can receive them.
+  let researchValidation: ResearchValidationService | undefined;
+  let researchAnalysis: ResearchAnalysisService | undefined;
   if (config.academic.enabled) {
     mongoAcademic = config.mongo.uri ? await MongoAcademicStore.connect() : null;
     if (!mongoAcademic) {
@@ -523,7 +599,6 @@ export async function bootstrap() {
       }),
     );
     registry.register(createAcademicLiteratureTool({ literature: academic, projects: academic, events: academic, client: literatureClient }));
-    registry.register(createAcademicManuscriptTool({ documents: academic, projects: academic, events: academic }));
     // Evidence layer (datasets + analysis runs): durable in its own Mongo
     // collection (academic_runs); a failed connect degrades to the in-process store
     // with an explicit warning, same policy as the project store above.
@@ -540,7 +615,106 @@ export async function bootstrap() {
       log.warn("[BOOT] academic evidence store: memory fallback (mongodb unreachable/unconfigured) — run records are lost on restart");
     }
     const evidence = mongoAcademicEvidence ?? new MemoryAcademicEvidenceStore();
+    academicEvidence = evidence;
     registry.register(createAcademicEvidenceTool({ runs: evidence, projects: academic, events: academic }));
+    researchValidation = new ResearchValidationService(academic, academic, academic, evidence);
+    registry.register(createAcademicValidationTool(researchValidation));
+    let approvalRepo: ResearchApprovalRepository = new MemoryResearchApprovalRepository();
+    if (config.mongo.uri) {
+      const mongoApprovals = await MongoResearchApprovalRepository.connect();
+      if (mongoApprovals) approvalRepo = mongoApprovals;
+      else log.warn("[BOOT] research approvals: memory fallback (mongodb unreachable)");
+    }
+    const approvalsService = new ResearchApprovalService(approvalRepo);
+    researchApprovals = approvalsService;
+    registry.register(createResearchApprovalTool(approvalsService));
+    let workspaceRepo: ResearchWorkspaceRepository = new MemoryResearchWorkspaceRepository();
+    if (config.mongo.uri) {
+      const mongoWorkspaces = await MongoResearchWorkspaceRepository.connect();
+      if (mongoWorkspaces) workspaceRepo = mongoWorkspaces;
+      else log.warn("[BOOT] research workspaces: memory fallback (mongodb unreachable)");
+    }
+    const researchWorkspaces = new ResearchWorkspaceService(workspaceRepo, appCloud);
+    researchWorkspaceService = researchWorkspaces;
+    registry.register(createResearchWorkspaceTool(researchWorkspaces));
+    // Word import/export (docs/manuscript-docx.md): renders .docx and round-trips
+    // it through the project cloud drive (05_论文). Built here because it needs
+    // both the cloud M2M client and the workspace folder mapping; the agent tool
+    // and the /academic/* Word routes share this one instance.
+    manuscriptDocxService = new ManuscriptDocxService({
+      documents: academic,
+      projects: academic,
+      workspace: researchWorkspaces,
+      cloud: appCloud,
+    });
+    registry.register(
+      createAcademicManuscriptTool({
+        documents: academic,
+        projects: academic,
+        events: academic,
+        docx: manuscriptDocxService,
+        // Conversation uploads → manuscript template: the Word a user uploaded
+        // in chat keeps its original binary in attachment storage, so import_docx
+        // can reuse it without asking for a second upload.
+        sessionDocs,
+        sessionFiles: chatImages,
+      }),
+    );
+    const retentionTimer = setInterval(() => {
+      void researchWorkspaces
+        .cleanupTemporary(config.academic.retentionTempDays)
+        .then((r) => {
+          if (r.deleted > 0) log.info("[RETENTION] temporary research files deleted=" + r.deleted + " scanned=" + r.scanned);
+        })
+        .catch((err) => log.warn("[RETENTION] sweep failed: " + (err instanceof Error ? err.message : err)));
+    }, Math.max(60_000, config.academic.retentionSweepMs));
+    retentionTimer.unref();
+    researchAnalysis = new ResearchAnalysisService(academic, evidence, academic, researchWorkspaces);
+    registry.register(createAcademicAnalysisTool(researchAnalysis));
+    let experimentRepo: ResearchExperimentRepository = new MemoryResearchExperimentRepository();
+    if (config.mongo.uri) {
+      const mongoExperiments = await MongoResearchExperimentRepository.connect();
+      if (mongoExperiments) experimentRepo = mongoExperiments;
+      else log.warn("[BOOT] research experiments: memory fallback (mongodb unreachable)");
+    }
+    experimentRunner = new ResearchExperimentRunner(experimentRepo, codeExec);
+    experimentRunner.setArtifactSink(async (exp) => {
+      if (!researchWorkspaceService || !academicEvidence) return;
+      const files: Array<{ name: string; sizeBytes?: number; sha256?: string }> = [];
+      const upload = async (name: string, content: string, mime = "text/plain; charset=utf-8") => {
+        const result = await researchWorkspaceService!.uploadFile(
+          exp.uid,
+          exp.projectId,
+          "results",
+          name,
+          new TextEncoder().encode(content),
+          mime,
+        );
+        files.push({ name: result.name, sizeBytes: result.size, ...(result.sha256 ? { sha256: result.sha256 } : {}) });
+      };
+      // Date + experiment id prefix: temporary data is archived per experiment
+      // batch, and multiple experiments never overwrite each other's logs.
+      const batch = new Date(exp.createdAt).toISOString().slice(0, 10);
+      const prefix = batch + "__" + exp.id + "__";
+      await upload(prefix + "stdout.log", exp.stdoutPreview ?? "");
+      await upload(prefix + "stderr.log", exp.stderrPreview ?? "");
+      await upload(prefix + "experiment.json", JSON.stringify(exp, null, 2), "application/json");
+      await academicEvidence!.recordRun(exp.uid, exp.projectId, {
+        name: exp.title ?? ("experiment " + exp.id),
+        language: exp.language,
+        script: exp.code,
+        ...(exp.status === "succeeded" || exp.status === "failed" || exp.status === "interrupted"
+          ? { status: exp.status === "succeeded" ? "succeeded" : exp.status === "interrupted" ? "timed_out" : "failed" }
+          : {}),
+        ...(exp.exitCode !== undefined ? { exitCode: exp.exitCode } : {}),
+        ...(exp.stdoutPreview ? { stdoutPreview: exp.stdoutPreview } : {}),
+        ...(exp.stderrPreview ? { stderrPreview: exp.stderrPreview } : {}),
+        artifacts: files,
+        ...(exp.startedAt !== undefined ? { startedAt: exp.startedAt } : {}),
+        ...(exp.endedAt !== undefined ? { finishedAt: exp.endedAt } : {}),
+      });
+    });
+    registry.register(createAcademicExperimentTool(experimentRunner, academic, approvalsService));
     // One repository instance backs both the agent tools and the /academic/* REST
     // surface, so chat edits and the workbench UI observe the same state.
     academicService = new AcademicService({
@@ -611,11 +785,25 @@ export async function bootstrap() {
 
   // Planner/supervisor DAG: main agent can define custom ReAct agents and a
   // topological plan graph; each node executes through the same lifecycle.
+  let planRuns: PlanRunRepository = new MemoryPlanRunRepository();
+  if (config.mongo.uri) {
+    const mongoPlanRuns = await MongoPlanRunRepository.connect();
+    if (mongoPlanRuns) {
+      planRuns = mongoPlanRuns;
+      log.info("[BOOT] plan runs: mongodb");
+    } else {
+      log.warn("[BOOT] plan runs: memory fallback (mongodb unreachable)");
+    }
+  } else {
+    log.warn("[BOOT] plan runs: memory fallback (MONGO__URI not set)");
+  }
+  const planEngine = new PlanRunEngine(planRuns);
   const planRunner = new PlanRunner({
     lifecycle,
     runtime,
     prompts,
     reflect: new ReflectService(prompts),
+    engine: planEngine,
   });
   const planAllowedTools = config.agent.plan.allowedTools.filter(
     (name) => runtime.listToolDefs([name]).length > 0,
@@ -651,25 +839,11 @@ export async function bootstrap() {
   const codeAgent = createCodeAgent(runtime, prompts, contextBinding);
   const quizAgent = createQuizAgent(runtime, prompts, contextBinding);
   const boardAgent = createBoardAgent(runtime, prompts, contextBinding);
-  // academic is a delegate-only sub-agent (manifest roster); its tools were
-  // registered in section 3.9 above. Created only when the domain is enabled:
-  // without its tools the agent could do nothing, and leaving it out of the
-  // lifecycle makes delegate_to_agent answer "unknown agent" instead of starting a
-  // useless sub-agent run (the roster comes from the manifest and is not
-  // env-dependent, so the two views can legitimately differ here).
-  const academicAgent = config.academic.enabled
-    ? createAcademicAgent(runtime, prompts, {
-        context: contextBinding,
-        memoryStore,
-        skillsSection: skillManager ? (uid: string) => skillManager!.indexSection(uid) : undefined,
-      })
-    : undefined;
   lifecycle.register(mainAgent.name, () => mainAgent);
   lifecycle.register(noteAgent.name, () => noteAgent);
   lifecycle.register(codeAgent.name, () => codeAgent);
   lifecycle.register(quizAgent.name, () => quizAgent);
   lifecycle.register(boardAgent.name, () => boardAgent);
-  if (academicAgent) lifecycle.register(academicAgent.name, () => academicAgent);
   orchestrator.register(mainAgent, true);
 
   const harness = new AgentHarness(registry, runtime, orchestrator, lifecycle);
@@ -712,7 +886,30 @@ export async function bootstrap() {
     void generateTitle(sessions, prompts, id, q);
   }, admission, chatImages, quota, usageLedger, prompts, academicContextSection, (input) =>
     codingPlanResolver({ uid: input.uid, model: input.model }),
+  tempWorkspaces,
   );
+  // Experiment completion callback: continue the same chat session with a
+  // synthetic AI turn instead of making the model poll the sandbox.
+  experimentRunner?.setCallback(async (exp) => {
+    if (!exp.chatSessionId) return;
+    const prompt =
+      "【实验回调】后台实验 " + exp.id + " 已 " + exp.status +
+      "。" + (exp.stdoutPreview ? "\nstdout 预览：\n" + exp.stdoutPreview.slice(0, 4000) : "") +
+      (exp.stderrPreview ? "\nstderr 预览：\n" + exp.stderrPreview.slice(0, 2000) : "") +
+      (exp.error ? "\n错误：" + exp.error : "") +
+      "\n请读取该实验的 evidence，分析结果并继续当前科研任务；不要轮询实验状态。";
+    const stream = chat.askStream({
+      query: prompt,
+      uid: exp.uid,
+      sessionId: exp.chatSessionId,
+      agentName: "main",
+    });
+    for await (const _frame of stream) {
+      // Drain frames: the chat service persists the assistant message; no SSE
+      // client is attached to this background turn.
+    }
+  });
+  await experimentRunner?.reconcileInterrupted();
   const resolveFolderScope = kgRepository
     ? (uid: string, folderIds: number[]) => kgRepository!.resolveScope(uid, folderIds)
     : undefined;
@@ -785,6 +982,33 @@ export async function bootstrap() {
     blindspot,
     skills: skillManager && skillStore ? { manager: skillManager, store: skillStore } : undefined,
     academic: academicService,
+    approvals: researchApprovals,
+    manuscriptDocx: manuscriptDocxService,
+    // research workbench REST (experiments/evidence/validation/analysis/workspace):
+    // registered only when every service was actually assembled (academic on).
+    research:
+      academicService &&
+      experimentRunner &&
+      academicEvidence &&
+      researchValidation &&
+      researchAnalysis &&
+      researchWorkspaceService
+        ? {
+            experiments: experimentRunner,
+            evidence: academicEvidence,
+            validation: researchValidation,
+            analysis: researchAnalysis,
+            workspace: researchWorkspaceService,
+          }
+        : undefined,
+    // sandbox panel proxy: always wired (disabled still answers { enabled:false }).
+    sandbox: {
+      enabled: config.sandbox.enabled,
+      baseUrl: config.sandbox.baseUrl,
+      apiKey: config.sandbox.apiKey,
+    },
+    plans: { engine: planEngine, runner: planRunner },
+    planMetrics: () => planRunner.stats(),
   });
 
   // 7. Redis event bridge: bili:page_ready → vectorization (no-op without REDIS__URL)
@@ -802,6 +1026,9 @@ export async function bootstrap() {
   const shutdown = async (signal: string) => {
     log.info(`[BOOT] received ${signal}, shutting down`);
     await app.close();
+    // Whole-program cleanup of scratch files (any turn still unwinding loses its
+    // directory deliberately: the process is stopping).
+    await tempWorkspaces.close();
     await rag.store.close();
     if (sessions instanceof MongoChatStore) {
       await sessions.close();

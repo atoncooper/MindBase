@@ -3,6 +3,7 @@ import { defineTool } from "../base.js";
 import type { PlanRunner } from "../../agent/dag/runner.js";
 import type { PlanGraph } from "../../agent/dag/types.js";
 import { validatePlan } from "../../agent/dag/graph.js";
+import { buildResearchPaperGraph } from "../../agent/dag/templates.js";
 import { config } from "../../config/index.js";
 import { createLogger } from "../../logger.js";
 import { getRequestContext } from "../../context/request-context.js";
@@ -34,6 +35,16 @@ const graphSchema = z.object({
   nodes: z.array(planNodeSchema).min(1).max(config.agent.plan.maxNodes),
 });
 
+const researchTemplateSchema = z.object({
+  template: z.literal("research_paper"),
+  goal: z.string(),
+  projectId: z.string().optional(),
+  workspaceId: z.string().optional(),
+  deliverable: z.string().optional(),
+});
+
+const planInputSchema = z.union([researchTemplateSchema, graphSchema]);
+
 /**
  * plan_and_run: main-agent-only planner tool. The model defines a DAG and
  * custom ReAct agents; PlanRunner executes it topologically. Validation errors
@@ -46,15 +57,23 @@ export function createPlanAndRunTool(runner: PlanRunner, builtinAgents: string[]
       "为复杂任务创建 DAG 计划并执行。你可以定义自定义 agent（role/system_prompt/tools），" +
       "节点通过 deps 形成有向无环图，系统按拓扑排序执行、同层并行、上游结果注入下游。" +
       "每个自定义 agent 内部是 ReAct。简单任务不要使用本工具。" +
+      "科研论文可传 template=research_paper + goal，自动生成选题/文献/设计/实验/分析/写作/审查 DAG。" +
       "\n可用工具：" + allowedTools.join(", ") +
       "\n复杂计划请同时设置 timeoutMs（例如 1800000），否则默认工具超时可能截断计划。",
-    inputSchema: graphSchema,
+    inputSchema: planInputSchema,
     defaultTimeoutMs: 1_800_000,
     async execute(args, ctx, signal) {
       if (!config.agent.plan.enabled) {
         return "DAG 计划执行未启用，请直接使用现有工具/委托完成。";
       }
-      const graph = { version: 1, ...args } as PlanGraph;
+      const graph = "template" in args
+        ? buildResearchPaperGraph({
+            goal: args.goal,
+            ...(args.projectId ? { projectId: args.projectId } : {}),
+            ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+            ...(args.deliverable ? { deliverable: args.deliverable } : {}),
+          })
+        : ({ version: 1, ...args } as PlanGraph);
       const errors = validatePlan(graph, {
         builtinAgents,
         allowedTools,
@@ -68,6 +87,7 @@ export function createPlanAndRunTool(runner: PlanRunner, builtinAgents: string[]
         graph,
         sessionId: ctx.chatSessionId ?? "anonymous",
         uid: ctx.uid,
+        ...(ctx.academicProjectId ? { academicProjectId: ctx.academicProjectId } : {}),
         scope: ctx.scope,
         ...(ctx.model ? { model: ctx.model } : {}),
         ...(signal ? { signal } : {}),
