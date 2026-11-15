@@ -55,10 +55,8 @@ etcd/minio/certbot/nginx 缓存卷通过 external name 复用旧数据，**不�
 ```bash
 # server2 上：<repo>/deploy/docker/ 放本目录全部文件
 scp -r manager:/MindBase/.env                    <repo>/
-scp -r manager:/MindBase/secrets                 <repo>/
-scp -r manager:/MindBase/app-pay/certs           <repo>/app-pay/
-scp -r manager:/MindBase/app-board/certs         <repo>/app-board/   # app-content board 域 TLS（目录名沿用历史）
-scp -r manager:/MindBase/app-go/app-content-mcp/certs <repo>/app-go/app-content-mcp/   # 可选
+scp -r manager:/MindBase/secrets                 <repo>/          # 含 certs/（nginx + app-content + app-content-mcp）
+scp -r manager:/MindBase/app-pay/certs           <repo>/app-pay/  # 例外：app-pay 自持证书
 scp -r manager:/MindBase/data/higress            <repo>/data/                 # 本机 higress 时
 ```
 
@@ -127,10 +125,10 @@ project、分属两台主机），所以**没有任何一份文件能声明跨�
 - SAN 覆盖：MB_CERT_HOST（域名或 IP）+ localhost / 127.0.0.1 / ::1 / app-pay / app-pay-test + MB_CERT_EXTRA_SAN。
 - **Subject 填得再完整也不会消除自签证书的浏览器警告**——警告来自信任链，不是字段缺失。
   消除警告的两条正路：
-  1. 导入信任：把 nginx/certs/dev-ca.crt 导入访问端的
+  1. 导入信任：把 secrets/certs/nginx/dev-ca.crt 导入访问端的
      Windows：certmgr.msc → 受信任的根证书颁发机构；macOS：钥匙串→系统→始终信任；
      Firefox 有独立证书库（设置→隐私与安全→证书→导入）。
-     之后 https://<MB_CERT_HOST> 全绿；curl 加 --cacert nginx/certs/dev-ca.crt。
+     之后 https://<MB_CERT_HOST> 全绿；curl 加 --cacert secrets/certs/nginx/dev-ca.crt。
   2. 真 CA（推荐，有 mindbase.top 后所有人零警告）：
      ```bash
      # 前提：DNS A 记录 mindbase.top -> server1 公网IP；80/443 对公网开放
@@ -139,18 +137,18 @@ project、分属两台主机），所以**没有任何一份文件能声明跨�
        -v /MindBase/data/letsencrypt:/etc/letsencrypt certbot/certbot \
        certonly --webroot -w /var/www/certbot -d mindbase.top \
        --email you@example.com --agree-tos --no-eff-email
-     cp /MindBase/data/letsencrypt/live/mindbase.top/{fullchain,privkey}.pem /MindBase/nginx/certs/ 2>/dev/null || \
-       (cp /MindBase/data/letsencrypt/live/mindbase.top/fullchain.pem /MindBase/nginx/certs/ && \
-        cp /MindBase/data/letsencrypt/live/mindbase.top/privkey.pem /MindBase/nginx/certs/)
-     chmod 600 /MindBase/nginx/certs/privkey.pem
+     cp /MindBase/data/letsencrypt/live/mindbase.top/{fullchain,privkey}.pem /MindBase/secrets/certs/nginx/ 2>/dev/null || \
+       (cp /MindBase/data/letsencrypt/live/mindbase.top/fullchain.pem /MindBase/secrets/certs/nginx/ && \
+        cp /MindBase/data/letsencrypt/live/mindbase.top/privkey.pem /MindBase/secrets/certs/nginx/)
+     chmod 600 /MindBase/secrets/certs/nginx/privkey.pem
      # .env 设 MB_CERT_KEEP=1（cert-gen 不再覆盖真证书），然后
      docker compose --env-file ../../.env -f 14-nginx.yml restart nginx
      # 续期（90 天，放 crontab）：
-     # 0 3 * * 1 docker run --rm -v mindbase_certbot_www:/var/www/certbot -v /MindBase/data/letsencrypt:/etc/letsencrypt certbot/certbot renew --webroot -w /var/www/certbot && cp /MindBase/data/letsencrypt/live/mindbase.top/*.pem /MindBase/nginx/certs/ && docker exec mind-base-nginx nginx -s reload
+     # 0 3 * * 1 docker run --rm -v mindbase_certbot_www:/var/www/certbot -v /MindBase/data/letsencrypt:/etc/letsencrypt certbot/certbot renew --webroot -w /var/www/certbot && cp /MindBase/data/letsencrypt/live/mindbase.top/*.pem /MindBase/secrets/certs/nginx/ && docker exec mind-base-nginx nginx -s reload
      ```
 - 重新生成：改 MB_CERT_HOST/EXTRA_SAN 后重跑 docker compose --env-file ../../.env -f 00-certs.yml up cert-gen
   （相关叶子自动按新 SAN 重签）；全量重签 MB_CERT_FORCE=1。
-- server2 的 app-pay/app-content（board 域，证书目录沿用 app-board/certs）必须用 server1 拷来的**同一套**证书（apisix 信任的就是这套 dev-CA）。
+- server2 的 app-pay/app-content（board 域，证书目录 `secrets/certs/app-content`）必须用 server1 拷来的**同一套**证书（apisix 信任的就是这套 dev-CA）。
 
 ## 八、验证
 
@@ -177,6 +175,6 @@ docker run --rm --network mind-base-overlay curlimages/curl:8.11.1 -sk https://a
 | server2 起容器报 network not found | server2 未加入 swarm 或 overlay 没建 |
 | apisix 502 | 对应后端容器没起/不健康：getent hosts <服务名> |
 | app-pay 拒启 | ../../app-pay/certs 缺失（未从 server1 拷） |
-| app-content board TLS 握手失败 | server2 的 app-board/certs（app-content 挂载的证书目录）不是 server1 那套 dev-CA |
+| app-content board TLS 握手失败 | server2 的 secrets/certs/app-content（app-content 挂载的证书目录）不是 server1 那套 dev-CA |
 | minio 事件不触发向量化 | redis 密码不一致；docker restart mind-base-minio |
 | 镜像拉取失败 | server2 无本地镜像且 Hub 不可达：docker pull 手动补 |

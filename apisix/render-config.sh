@@ -54,7 +54,33 @@ sed \
   -e "s|__PAY_OPS_KEY__|$(escape_sed "$pay_ops")|g" \
   "$tpl" > "$out"
 
-if grep -q '__APISIX_CONSUMER_KEY__\|__PAY_READONLY_KEY__\|__PAY_OPS_KEY__' "$out"; then
+# ---- Internal TLS termination certificate (9443 listener) ----
+# The APISIX yaml provider needs the SSL resource declared with PEM bodies
+# (apisix.ssl.cert/key alone is only the SNI-less fallback). Render the leaf
+# issued by cert-gen into the declarative ssls block; drop the block when no
+# certificate is mounted so APISIX still boots HTTP-only.
+tls_cert_file=${APISIX_TLS_CERT_FILE:-/usr/local/apisix/conf/certs/apisix/server.crt}
+tls_key_file=${APISIX_TLS_KEY_FILE:-/usr/local/apisix/conf/certs/apisix/server.key}
+if grep -q '__APISIX_TLS_CERT_PEM__' "$out"; then
+  if [ -s "$tls_cert_file" ] && [ -s "$tls_key_file" ]; then
+    awk -v certfile="$tls_cert_file" -v keyfile="$tls_key_file" '
+      /__APISIX_TLS_CERT_PEM__/ {
+        while ((getline line < certfile) > 0) print "      " line
+        close(certfile); next
+      }
+      /__APISIX_TLS_KEY_PEM__/ {
+        while ((getline line < keyfile) > 0) print "      " line
+        close(keyfile); next
+      }
+      { print }
+    ' "$out" > "$out.tls.tmp" && mv "$out.tls.tmp" "$out"
+  else
+    awk '/^# BEGIN-INTERNAL-TLS$/ {skip=1; next} /^# END-INTERNAL-TLS$/ {skip=0; next} !skip {print}'       "$out" > "$out.tls.tmp" && mv "$out.tls.tmp" "$out"
+    echo "[apisix-config] WARNING: internal TLS cert missing ($tls_cert_file); 9443 SNI cert disabled" >&2
+  fi
+fi
+
+if grep -q '__APISIX_CONSUMER_KEY__\|__PAY_READONLY_KEY__\|__PAY_OPS_KEY__\|__APISIX_TLS_' "$out"; then
   echo "[apisix-config] placeholder left after render; check template" >&2
   exit 1
 fi

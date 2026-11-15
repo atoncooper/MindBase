@@ -61,15 +61,15 @@ services:
     container_name: mind-base-cert-gen
     environment:
       MB_CERT_NGINX_DIR: /out/nginx
-      # board 面域名证书目录名沿用 app-board（cert-gen 脚本输出路径，勿改）
-      MB_CERT_APPBOARD_DIR: /out/app-board
+      # board 面（app-content）证书目录；产物统一落在宿主 secrets/certs/
+      MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
-      - ./nginx/certs:/out/nginx
-      - ./app-board/certs:/out/app-board
-      - ./app-go/app-content-mcp/certs:/out/mcp
+      - ./secrets/certs/nginx:/out/nginx
+      - ./secrets/certs/app-content:/out/app-content
+      - ./secrets/certs/app-content-mcp:/out/mcp
       - ./app-pay/certs:/out/pay
     mem_limit: 128m
     logging: *default-logging
@@ -89,7 +89,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/locations.conf:/etc/nginx/locations.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./secrets/certs/nginx:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video
     depends_on:
@@ -345,7 +345,7 @@ services:
       - ./apisix/config.client.yaml:/usr/local/apisix/conf/config.yaml:ro
       - ./apisix/apisix.yaml.template:/usr/local/apisix/conf/apisix.yaml.template:ro
       - ./apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
-      - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
+      - ./secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
     entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy;if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
       - HTTP_PROXY=
@@ -511,7 +511,7 @@ services:
       - app_user_logs:/app/logs
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
       # 可选 TLS 证书目录（启用时把 APP_USER_TLS_* 指向 /certs/...）
-      - ./nginx/certs:/certs:ro
+      - ./secrets/certs/nginx:/certs:ro
     # 三域合并后的单进程上限（原 128m + 384m + 128m 三容器），取 512m。
     mem_limit: 512m
     logging: *default-logging
@@ -607,7 +607,7 @@ services:
     volumes:
       - app_content_logs:/app/logs
       # board TLS 证书目录（cert-gen 生成/轮换）
-      - ./app-board/certs:/app/certs
+      - ./secrets/certs/app-content:/app/certs
     # 三域合并后的单进程上限（原 128m + 128m + 128m 三容器），取 384m。
     mem_limit: 384m
     logging: *default-logging
@@ -650,7 +650,7 @@ services:
       - "127.0.0.1:${APP_CONTENT_MCP_PORT:-8019}:8019"
     volumes:
       - app_content_mcp_logs:/app/logs
-      - ./app-go/app-content-mcp/certs:/app/certs
+      - ./secrets/certs/app-content-mcp:/app/certs
     # 三域合并后的单进程上限（原 board/note/quiz 各 64m）。
     mem_limit: 128m
     logging: *default-logging

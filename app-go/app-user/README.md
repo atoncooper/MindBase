@@ -78,7 +78,7 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 默认单监听口是 **明文 HTTP**（TLS 由 nginx 终止）。如需 nginx/APISIX → app-user 这一段也加密：
 
 1. 生成/挂载覆盖 `app-user` 主机名的证书（dev 可用 `scripts/gen-certs.sh` + `MB_CERT_EXTRA_SAN=app-user`）；
-2. 设置 `APP_USER_TLS_CERT_FILE=/certs/fullchain.pem`、`APP_USER_TLS_KEY_FILE=/certs/privkey.pem`（compose 已挂载 `./nginx/certs` → `/certs`）；
+2. 设置 `APP_USER_TLS_CERT_FILE=/certs/fullchain.pem`、`APP_USER_TLS_KEY_FILE=/certs/privkey.pem`（compose 已挂载 `./secrets/certs/nginx` → `/certs`）；
 3. 同步调用方：APISIX upstream 改 `scheme: https`（自签阶段 `tls.verify: false`，正式 CA 后开启校验 + 健康检查 `type: https`）；nginx `$appauth_upstream` 改 `https://app-user:8006` 并配置 `proxy_ssl_verify`；app-ts `appAuth.baseUrl`/`appBili.baseUrl` 改 https 并挂 CA（`NODE_EXTRA_CA_CERTS`）。
 
 未设置时行为完全不变（HTTP）；设置后 `main` 对三个 `http.Server` 调 `ListenAndServeTLS`。

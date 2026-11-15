@@ -196,6 +196,28 @@ func TestApplyPayEnvOverrides(t *testing.T) {
 	}
 }
 
+// Phase 2 HTTPS listener: APPADMIN__SERVER__TLS__* maps onto server.tls, and
+// enabling TLS without both PEM paths fails validation (fail loud at startup).
+func TestApplyServerTLSEnvOverrides(t *testing.T) {
+	t.Setenv("APPADMIN__SERVER__TLS__ENABLED", "true")
+	t.Setenv("APPADMIN__SERVER__TLS__CERT", "/app/certs/server.crt")
+	t.Setenv("APPADMIN__SERVER__TLS__KEY", "/app/certs/server.key")
+
+	var cfg Config
+	applyEnvOverrides(&cfg)
+	if !cfg.Server.TLS.Enabled || cfg.Server.TLS.Cert != "/app/certs/server.crt" ||
+		cfg.Server.TLS.Key != "/app/certs/server.key" {
+		t.Fatalf("server.tls override lost: %+v", cfg.Server.TLS)
+	}
+
+	cfg.RDBMS = RDBMSConfig{URL: "x"}
+	cfg.Seed = SeedConfig{Username: "a", Password: "b"}
+	cfg.Server.TLS.Cert = ""
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("tls.enabled without cert must be rejected")
+	}
+}
+
 // Session device / IP binding and the login throttle budgets map onto
 // APPADMIN__SESSION__* / APPADMIN__SECURITY__LOGIN__* env vars.
 func TestApplySessionSecurityEnvOverrides(t *testing.T) {

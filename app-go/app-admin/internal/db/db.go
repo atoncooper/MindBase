@@ -25,6 +25,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"os"
 )
 
 var (
@@ -236,6 +237,10 @@ func schemaDDL() []string {
 // loc=Local keeps DATETIME wall-clock semantics aligned with the rest of the
 // Go fleet (Asia/Shanghai pinned via time.Local in main.go).
 func toGormDSN(sqlalchemyURL string) string {
+	tlsParam := ""
+	if v := os.Getenv("MYSQL_TLS_MODE"); v != "" {
+		tlsParam = "&tls=" + v
+	}
 	s := sqlalchemyURL
 	for _, p := range []string{"mysql+aiomysql://", "mysql+pymysql://", "mysql://"} {
 		s = strings.TrimPrefix(s, p)
@@ -243,7 +248,7 @@ func toGormDSN(sqlalchemyURL string) string {
 	// s = user:pass@host:port/db[?params]
 	atIdx := strings.LastIndex(s, "@")
 	if atIdx < 0 {
-		return s + "?charset=utf8mb4&parseTime=True&loc=Local"
+		return s + "?charset=utf8mb4&parseTime=True&loc=Local" + tlsParam
 	}
 	userPass := s[:atIdx]
 	hostDB := s[atIdx+1:]
@@ -251,7 +256,7 @@ func toGormDSN(sqlalchemyURL string) string {
 	slashIdx := strings.Index(hostDB, "/")
 	if slashIdx < 0 {
 		// no db specified
-		return userPass + "@tcp(" + hostDB + ")/?charset=utf8mb4&parseTime=True&loc=Local"
+		return userPass + "@tcp(" + hostDB + ")/?charset=utf8mb4&parseTime=True&loc=Local" + tlsParam
 	}
 	hostPort := hostDB[:slashIdx]
 	rest := hostDB[slashIdx+1:] // db[?params]
@@ -259,5 +264,5 @@ func toGormDSN(sqlalchemyURL string) string {
 	if qIdx := strings.Index(rest, "?"); qIdx >= 0 {
 		rest = rest[:qIdx]
 	}
-	return userPass + "@tcp(" + hostPort + ")/" + rest + "?charset=utf8mb4&parseTime=True&loc=Local"
+	return userPass + "@tcp(" + hostPort + ")/" + rest + "?charset=utf8mb4&parseTime=True&loc=Local" + tlsParam
 }

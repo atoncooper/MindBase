@@ -8,18 +8,18 @@ import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
 import { ChatInput, type SelectedSkill } from "./chat-input";
-import { ChatSessionFiles } from "./chat-session-files";
 import { QueuedMessages, type QueuedMessage } from "./queued-messages";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
 import { QuizFromSummaryDialog } from "./quiz-from-summary-dialog";
-import { academicApi, chatApi, quotaApi, type AcademicProjectSummary, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
+import { academicApi, chatApi, quotaApi, type AcademicProjectSummary, type ChatModel, type ChatSession, type ChatMessage as ApiChatMessage, type SessionDocument, type QuotaSummary } from "@/lib/api";
 import { STAGE_LABELS } from "@/components/research/research-ui";
 
 import { streamChat, artifactKey, type ChatSource, type ChatArtifact, type ChatPlan, type StreamStep, type QueueStatus, type DelegateStatus, type ChatInteraction } from "@/lib/chat-stream";
 import type { ChatMessageData, ChatSessionSummary } from "./types";
 
-const PLAN_RUN_STORAGE_PREFIX = "chat_plan_run:";
+// 用户自选的聊天模型（GET /chat/models 的 id）；"" / 无值 = 服务端默认模型。
+const CHAT_MODEL_STORAGE_KEY = "mindbase.chat.model";
 
 // Stable empty array so `messages` doesn't change identity on every render
 // (which would re-trigger the auto-scroll effect needlessly).
@@ -139,6 +139,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- best-effort usage badge fetch; setState happens after the awaited request
     void refreshQuota();
   }, [refreshQuota]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
@@ -148,6 +149,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   const [selectedSkills, setSelectedSkills] = useState<SelectedSkill[]>([]);
   // Chat-dialog selection from the user's Coding Plan model catalog (code agent).
   const [codingPlanModel, setCodingPlanModel] = useState<string | undefined>();
+  // 聊天模型目录与用户选择（GET /chat/models）；空目录 = 不传 model，后端用默认模型。
+  const [chatModels, setChatModels] = useState<ChatModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
   // Which user message is currently being edited inline (at most one).
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -176,6 +180,48 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // ---- 聊天模型目录（GET /chat/models）----
+  // 挂载时拉一次；失败静默（不阻塞聊天：请求不带 model，后端用默认模型）。
+  // 本地记住的选择若不在目录里则回退 default（default 不在目录时按「默认模型」处理）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let stored: string | null = null;
+      try {
+        stored = window.localStorage.getItem(CHAT_MODEL_STORAGE_KEY);
+      } catch {
+        // 存储不可用：仅本次会话按默认模型
+      }
+      try {
+        const catalog = await chatApi.listModels();
+        if (cancelled) return;
+        const models = catalog.models ?? [];
+        setChatModels(models);
+        const hasModel = (id: string) => models.some((m) => m.id === id);
+        let next = "";
+        if (stored && hasModel(stored)) next = stored;
+        else if (catalog.default && hasModel(catalog.default)) next = catalog.default;
+        setSelectedModel(next);
+      } catch {
+        // 目录不可用：选择器隐藏，发送不带 model（后端默认）
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 选择模型：记住到 localStorage（"" = 默认模型，清除记录）。
+  const handleModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    try {
+      if (modelId) window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, modelId);
+      else window.localStorage.removeItem(CHAT_MODEL_STORAGE_KEY);
+    } catch {
+      // 存储不可用：仅本次会话生效
+    }
   }, []);
 
   // Track which sessions have had their history fetched, so the load effect can
@@ -463,6 +509,8 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
             ...(codingPlanModel ? { coding_plan_model: codingPlanModel } : {}),
             ...(images && images.length > 0 ? { images } : {}),
+            // 用户选择的模型（模型目录 id）；不传 = 后端默认模型。
+            ...(selectedModel ? { model: selectedModel } : {}),
             // 科研项目上下文：会话绑定优先（新建会话时选定），URL 入口参数兜底。
             ...(effectiveAcademicProjectId
               ? { academic_project_id: effectiveAcademicProjectId }
@@ -670,7 +718,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         void refreshQuota();
       }
     },
-    [updateSession, refreshSessions, backfillMessageIds, effectiveAcademicProjectId, uploadUuid, codingPlanModel]
+    [updateSession, refreshSessions, backfillMessageIds, effectiveAcademicProjectId, uploadUuid, codingPlanModel, selectedModel]
   );
 
   // ---- Send a message (skillIds: forced-inject skills for this turn only) ----
@@ -678,6 +726,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   // 科研项目绑定），之后所有更新都按 sessionId 定向。
   const creatingSessionRef = useRef(false);
   const handleSend = useCallback(
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization -- pre-existing async send callback; React Compiler cannot preserve this manual memoization (behavior unchanged)
     async (userMessage: string, skillIds?: string[], images?: string[]) => {
       let sessionId = activeSessionId;
       if (!sessionId) {
@@ -725,6 +774,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       // Skills are per-turn (Claude-Code-style): consumed by this message.
       if (skillIds && skillIds.length > 0) setSelectedSkills([]);
     },
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization -- see handleSend comment above
     [activeSessionId, updateSession, streamQuestion, effectiveAcademicProjectId]
   );
 
@@ -954,11 +1004,14 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     }
   }, []);
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- refresh the session-file list when the active session changes; request-driven async loader */
     if (activeSessionId) void refreshSessionFiles(activeSessionId);
     else setSessionFiles([]);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [activeSessionId, refreshSessionFiles]);
 
   const handleAttachDocuments = useCallback(
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization -- pre-existing async upload callback; React Compiler cannot preserve this manual memoization (behavior unchanged)
     async (files: File[]) => {
       // 无会话时先建一个（对齐 handleNewChat），否则上传没有归属
       let sessionId = activeSessionId;
@@ -989,6 +1042,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       }
       void refreshSessionFiles(sessionId);
     },
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization -- see handleAttachDocuments comment above
     [activeSessionId, refreshSessionFiles, effectiveAcademicProjectId]
   );
 
@@ -1308,7 +1362,6 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
                 </a>
               </div>
             )}
-            <ChatSessionFiles files={sessionFiles} onDelete={handleDeleteSessionFile} />
             <QueuedMessages items={queuedMessages} onCancel={cancelQueued} />
             <ChatInput
               onSend={handleSubmit}
@@ -1321,6 +1374,12 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               onToggleSkill={handleToggleSkill}
               onOpenQuizWizard={() => setQuizDialogOpen(true)}
               onAttachDocuments={handleAttachDocuments}
+              sessionFiles={sessionFiles}
+              onDeleteSessionFile={handleDeleteSessionFile}
+              onPreviewImage={setLightboxSrc}
+              models={chatModels}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
             />
           </div>
         </div>

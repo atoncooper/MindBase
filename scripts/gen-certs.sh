@@ -5,16 +5,23 @@
 # fresh clone (local Docker Desktop or a remote Linux server) gets a working
 # TLS posture with zero manual steps:
 #
-#   nginx/certs/dev-ca.crt|key       shared dev CA (ECDSA P-256, 10 years)
-#   nginx/certs/fullchain.pem        nginx 443 leaf (RSA-2048) + CA chain
-#   nginx/certs/privkey.pem          nginx leaf key
-#   app-board/certs/dev-ca.crt       shared CA copy (APISIX upstream trust)
-#   app-board/certs/server.crt|key   app-content board 域 leaf (ECDSA P-256)
-#                                    目录名沿用历史：board TLS 证书卷/secret 保留不变
-#   app-go/app-content-mcp/certs/dev-ca.crt       shared CA copy
-#   app-go/app-content-mcp/certs/server.crt|key   app-content-mcp leaf (ECDSA P-256)
+#   secrets/certs/nginx/dev-ca.crt|key   shared dev CA (ECDSA P-256, 10 years)
+#   secrets/certs/nginx/fullchain.pem    nginx 443 leaf (RSA-2048) + CA chain
+#   secrets/certs/nginx/privkey.pem      nginx leaf key
+#   secrets/certs/app-content/dev-ca.crt      shared CA copy (APISIX upstream trust)
+#   secrets/certs/app-content/server.crt|key  app-content board 域 leaf (ECDSA P-256)
+#   secrets/certs/app-content-mcp/*           app-content-mcp leaf
+#   secrets/certs/{apisix,app-user,app-ts,app-cloud,app-admin,app-kg,frontend,
+#                  sandbox,higress,minio,mysql,mongo,redis,milvus,neo4j}/*
+#                                             per-service / per-datastore leaves
+#   secrets/certs/ca-bundle.crt               system roots + dev CA (mounted as the
+#                                             trust bundle for Go/Node clients)
 #   app-pay/certs/ca.crt             shared CA copy (app-task executor trust)
 #   app-pay/certs/pay.crt|key        app-pay leaf (RSA-2048, PKCS#8 key)
+#
+# 所有自动生成的证书统一落在仓库根 secrets/certs/（secrets/ 整体 gitignored），
+# 不再散落到各项目根目录；唯一例外是 app-pay/certs/（app-pay 独立的
+# PAY_TLS_CERT/KEY 相对路径契约，见 app-pay/scripts/gen-dev-cert.*）。
 #
 # SANs always cover the deployment-facing alias "mindbase" (map it in DNS or
 # the client hosts file to the server IP) plus localhost/loopback, every
@@ -35,7 +42,8 @@
 #   MB_CERT_DAYS       leaf validity in days         (default: 825)
 #   MB_CERT_KEEP       1 = never touch existing files (real-CA production)
 #   MB_CERT_FORCE      1 = re-sign everything, even if valid
-#   MB_CERT_NGINX_DIR / MB_CERT_APPBOARD_DIR / MB_CERT_MCP_DIR / MB_CERT_PAY_DIR  output dirs
+#   MB_CERT_NGINX_DIR / MB_CERT_APPCONTENT_DIR / MB_CERT_MCP_DIR / MB_CERT_PAY_DIR  output dirs
+#   （MB_CERT_APPBOARD_DIR 仍作为 APPCONTENT 的旧别名兼容）
 #   OPENSSL            openssl binary                (default: openssl)
 #
 # Renewal: re-runs automatically on every `docker compose up` (the cert-gen
@@ -64,10 +72,16 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # place. Env overrides must therefore be repo-root-relative too (or native
 # Windows paths); inside the Linux cert-gen container both forms work.
 cd -- "$SCRIPT_DIR/.." || { printf '[cert-gen] ERROR: cannot cd to repo root\n' >&2; exit 1; }
-NGINX_DIR="${MB_CERT_NGINX_DIR:-nginx/certs}"
-APPBOARD_DIR="${MB_CERT_APPBOARD_DIR:-app-board/certs}"   # board 域（现 app-content:8004）证书目录
-MCP_DIR="${MB_CERT_MCP_DIR:-app-go/app-content-mcp/certs}"
+NGINX_DIR="${MB_CERT_NGINX_DIR:-secrets/certs/nginx}"
+# board 域 = 现 app-content:8004；旧 env 名 MB_CERT_APPBOARD_DIR 继续兼容。
+APPCONTENT_DIR="${MB_CERT_APPCONTENT_DIR:-${MB_CERT_APPBOARD_DIR:-secrets/certs/app-content}}"
+MCP_DIR="${MB_CERT_MCP_DIR:-secrets/certs/app-content-mcp}"
+# app-pay 例外：证书留在 app-pay/certs（其 PAY_TLS_CERT/KEY 相对路径契约）。
 PAY_DIR="${MB_CERT_PAY_DIR:-app-pay/certs}"
+# 信任 bundle（系统 CA + dev CA）输出目录；容器内需单独挂载。
+BUNDLE_DIR="${MB_CERT_BUNDLE_DIR:-secrets/certs}"
+# 每服务/数据面叶子根目录（容器内需挂载到 /out/bundle 之类可写路径）。
+SERVICES_DIR="${MB_CERT_SERVICES_DIR:-secrets/certs}"
 
 # Single standard subject for everything MindBase signs. The CN is a product
 # name (never "localhost", never "dev"); hostname coverage lives in the SANs.
@@ -157,6 +171,23 @@ ensure_ca() {
 	atomic_install "$_tmpk" "$CA_KEY" 0600
 }
 
+# ensure_ca_bundle — system roots + the shared dev CA, in one PEM. Containers
+# mount this over their CA file (Go: SSL_CERT_FILE / default path, Node:
+# NODE_EXTRA_CA_CERTS) so internal TLS and public HTTPS are both trusted.
+ensure_ca_bundle() {
+	_out="$BUNDLE_DIR/ca-bundle.crt"
+	_sys="/etc/ssl/certs/ca-certificates.crt"
+	mkdir -p "$(dirname "$_out")"
+	if [ -s "$_sys" ]; then
+		cat "$_sys" "$CA_CERT" > "$_out.tmp"
+	else
+		warn "system CA bundle missing ($_sys); ca-bundle.crt holds the dev CA only"
+		cat "$CA_CERT" > "$_out.tmp"
+	fi
+	atomic_install "$_out.tmp" "$_out" 0644
+	log "trust bundle: $_out (system roots + dev CA)"
+}
+
 # ensure_service_leaf DIR NAME — ECDSA leaf signed by the shared CA
 # (distroless containers read these in explicit mode; 0644 for nonroot).
 ensure_service_leaf() {
@@ -199,6 +230,11 @@ ensure_service_leaf() {
 		elif ! cert_covers_host "$_cert" "$HOST"; then
 			log "$_name leaf SAN does not cover '$HOST' — re-signing"
 			_regen=1
+		elif ! cert_covers_host "$_cert" "app-ts"; then
+			# Internal-alias SAN refresh: every leaf carries the full service
+			# alias set so any client can verify by compose DNS name.
+			log "$_name leaf missing internal aliases — re-signing"
+			_regen=1
 		fi
 	fi
 	if [ "$_regen" != "1" ]; then
@@ -211,7 +247,9 @@ ensure_service_leaf() {
 		printf '[leaf]\n'
 		printf 'basicConstraints=CA:FALSE\n'
 		printf 'keyUsage=digitalSignature,keyEncipherment\n'
-		printf 'extendedKeyUsage=serverAuth\n'
+		# clientAuth too: these leaves also act as mTLS clients (etcd
+		# client-cert-auth, and any future MySQL/Mongo client-cert setups).
+		printf 'extendedKeyUsage=serverAuth,clientAuth\n'
 	} > "$_ext"
 	san_file="$_dir/.san-list.cnf.tmp"
 	build_san_list "$san_file"
@@ -371,7 +409,13 @@ ensure_pay_leaf() {
 # verify_and_report — chain verification + trust instructions
 verify_and_report() {
 	_ok=0
-	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-content(board):$APPBOARD_DIR/server.crt" "app-content-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt"; do
+	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-content(board):$APPCONTENT_DIR/server.crt" "app-content-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt" \
+		"apisix:secrets/certs/apisix/server.crt" "app-user:secrets/certs/app-user/server.crt" \
+		"app-ts:secrets/certs/app-ts/server.crt" "app-cloud:secrets/certs/app-cloud/server.crt" \
+		"app-admin:secrets/certs/app-admin/server.crt" "app-kg:secrets/certs/app-kg/server.crt" \
+		"minio:secrets/certs/minio/server.crt" "mysql:secrets/certs/mysql/server.crt" \
+		"mongo:secrets/certs/mongo/server.crt" "redis:secrets/certs/redis/server.crt" \
+		"milvus:secrets/certs/milvus/server.crt" "neo4j:secrets/certs/neo4j/server.crt"; do
 		_label=${pair%%:*}
 		_file=${pair#*:}
 		[ -s "$_file" ] || continue
@@ -398,15 +442,23 @@ verify_and_report() {
 build_san_list() {
 	_out=$1
 	{
-		n=1
+		# All fixed entries use the DNS.X / IP.X placeholder form so the awk
+		# pass below numbers EVERY entry exactly once. Pre-numbering the first
+		# rows (DNS.1=…) made the placeholder renumbering restart at 1 and
+		# collide with them — OpenSSL kept the last duplicate key, silently
+		# dropping $HOST from the SAN so the leaf never covered the main host.
 		case "$HOST" in
-			*[!0-9.]*) printf 'DNS.%d=%s\n' "$n" "$HOST"; n=$((n+1)) ;;
-			*) printf 'IP.%d=%s\n' "$n" "$HOST"; n=$((n+1)) ;;
+			*[!0-9.]*) printf 'DNS.X=%s\n' "$HOST" ;;
+			*) printf 'IP.X=%s\n' "$HOST" ;;
 		esac
-		printf 'DNS.%d=localhost\n' "$n"; n=$((n+1))
-		# Internal service aliases so any caller can verify any leaf.
-		printf 'DNS.%d=app-pay\n' "$n"; n=$((n+1))
-		printf 'DNS.%d=app-pay-test\n' "$n"; n=$((n+1))
+		printf 'DNS.X=localhost\n'
+		# Internal service/datastore aliases: every leaf is verifiable by any
+		# compose DNS name (one dev CA, SAN-based identity, no per-service CA).
+		for _alias in app-user app-ts app-cloud app-admin app-kg app-content \
+			app-content-mcp app-pay app-pay-test app-task apisix nginx frontend \
+			higress sandbox minio mysql mongo redis milvus neo4j etcd; do
+			printf 'DNS.X=%s\n' "$_alias"
+		done
 		if [ "$EXTRA_SAN" != "" ]; then
 			printf '%s\n' "$EXTRA_SAN" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while IFS= read -r entry; do
 				[ -n "$entry" ] || continue
@@ -435,9 +487,14 @@ case "$MODE" in
 	all)
 		ensure_ca
 		ensure_nginx_leaf
-		ensure_service_leaf "$APPBOARD_DIR" "app-content"
+		ensure_service_leaf "$APPCONTENT_DIR" "app-content"
 		ensure_service_leaf "$MCP_DIR" "app-content-mcp"
+		for _svc in apisix app-user app-ts app-cloud app-admin app-kg frontend \
+			sandbox higress minio mysql mongo redis milvus neo4j etcd; do
+			ensure_service_leaf "$SERVICES_DIR/$_svc" "$_svc"
+		done
 		ensure_pay_leaf
+		ensure_ca_bundle
 		verify_and_report
 		;;
 	nginx)
@@ -447,9 +504,14 @@ case "$MODE" in
 		;;
 	services)
 		[ -s "$CA_CERT" ] || die "shared CA not found at $CA_CERT — run 'gen-certs.sh all' first"
-		ensure_service_leaf "$APPBOARD_DIR" "app-content"
+		ensure_service_leaf "$APPCONTENT_DIR" "app-content"
 		ensure_service_leaf "$MCP_DIR" "app-content-mcp"
+		for _svc in apisix app-user app-ts app-cloud app-admin app-kg frontend \
+			sandbox higress minio mysql mongo redis milvus neo4j etcd; do
+			ensure_service_leaf "$SERVICES_DIR/$_svc" "$_svc"
+		done
 		ensure_pay_leaf
+		ensure_ca_bundle
 		verify_and_report
 		;;
 	*)

@@ -5,20 +5,20 @@
 #   kubectl -n mind-base create secret generic api-key-encryption-key \
 #     --from-file=api_key_encryption_key=secrets/api_key_encryption_key
 #   kubectl -n mind-base create secret generic nginx-tls \
-#     --from-file=fullchain.pem=nginx/certs/fullchain.pem \
-#     --from-file=privkey.pem=nginx/certs/privkey.pem
+#     --from-file=fullchain.pem=secrets/certs/nginx/fullchain.pem \
+#     --from-file=privkey.pem=secrets/certs/nginx/privkey.pem
 #   kubectl -n mind-base create secret generic app-pay-tls \
 #     --from-file=pay.crt=app-pay/certs/pay.crt --from-file=pay.key=app-pay/certs/pay.key \
 #     --from-file=ca.crt=app-pay/certs/ca.crt
 #   kubectl -n mind-base create secret generic app-board-certs \
-#     --from-file=dev-ca.crt=app-board/certs/dev-ca.crt \
-#     --from-file=server.crt=app-board/certs/server.crt \
-#     --from-file=server.key=app-board/certs/server.key
+#     --from-file=dev-ca.crt=secrets/certs/app-content/dev-ca.crt \
+#     --from-file=server.crt=secrets/certs/app-content/server.crt \
+#     --from-file=server.key=secrets/certs/app-content/server.key
 #   # Optional (TLS for app-content-mcp; the pod mounts it as an OPTIONAL Secret):
 #   kubectl -n mind-base create secret generic app-content-mcp-certs \
-#     --from-file=dev-ca.crt=app-go/app-content-mcp/certs/dev-ca.crt \
-#     --from-file=server.crt=app-go/app-content-mcp/certs/server.crt \
-#     --from-file=server.key=app-go/app-content-mcp/certs/server.key
+#     --from-file=dev-ca.crt=secrets/certs/app-content-mcp/dev-ca.crt \
+#     --from-file=server.crt=secrets/certs/app-content-mcp/server.crt \
+#     --from-file=server.key=secrets/certs/app-content-mcp/server.key
 # See README.md for the full manual.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

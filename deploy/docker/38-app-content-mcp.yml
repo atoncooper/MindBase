@@ -25,7 +25,7 @@ services:
       - "127.0.0.1:${APP_CONTENT_MCP_PORT:-8019}:8019"
     volumes:
       - app_content_mcp_logs:/app/logs
-      - ../../app-go/app-content-mcp/certs:/app/certs
+      - ../../secrets/certs/app-content-mcp:/app/certs
     restart: unless-stopped
     networks:
       - mind-base-overlay

@@ -2,12 +2,15 @@
 # Generate the self-signed dev certificate for the nginx HTTPS entry
 # (Option A: https://localhost works, browser shows a one-time warning).
 #
-# Output: nginx/certs/fullchain.pem + privkey.pem (gitignored), matching the
-# paths in nginx/nginx.conf's 443 server block.
+# Output: secrets/certs/nginx/fullchain.pem + privkey.pem (under the gitignored
+# secrets/ tree), matching the paths mounted into nginx/nginx.conf's 443 block.
 # Runs in Git Bash / any shell with openssl. To get rid of the browser
 # warning entirely, trust this cert in the OS store or switch to mkcert.
 set -euo pipefail
-cd "$(dirname "$0")/../nginx/certs"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CERT_DIR="$SCRIPT_DIR/../secrets/certs/nginx"
+mkdir -p "$CERT_DIR"
+cd "$CERT_DIR"
 
 # MSYS2/Git Bash rewrites "/CN=..." into a Windows path; exclude all args.
 export MSYS2_ARG_CONV_EXCL="*"

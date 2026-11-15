@@ -3,9 +3,10 @@
 # workload, ONE Service, ONE HTTPS listener (8004). All domains share the port:
 # /board, /notes, /quiz, /tasks and /internal/*; external path semantics unchanged.
 # Board TLS certs come from the app-board-certs Secret (generated once by
-# scripts/gen-certs.sh locally; the directory/secret keep their historical
-# "app-board" name — the cert volume/secret is preserved across the cutover);
-# apisix mounts dev-ca.crt from the same Secret as its upstream TLS trust anchor.
+# scripts/gen-certs.sh under secrets/certs/app-content locally; the Secret keeps
+# its historical "app-board-certs" name — the certificate Secret is preserved
+# across the cutover); apisix mounts dev-ca.crt from the same Secret as its
+# upstream TLS trust anchor.
 # Cluster-internal only: reached via APISIX forward-auth, never exposed.
 # Env parity with docker-compose.yml service 'app-content' (union of the three
 # old services' env); shared secrets come from the mindbase-env Secret.

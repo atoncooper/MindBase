@@ -28,7 +28,7 @@ Prompts（`organize_into_board` / `review_board` / `board_to_outline`）。
 - 防护：Origin 白名单（DNS rebinding 防御）+ 令牌桶限流（10 rps / burst 20）+ 并发上限（8，503）
   + body 上限（10MB，413）+ request-id 贯穿 + 结构化访问日志。
 - TLS 可选（`CONTENTMCP__SERVER__TLS__ENABLED`，默认关 = 回环 http）：证书由 cert-gen 签发到
-  `app-go/app-content-mcp/certs`（explicit 模式加载，rotator 每日巡检）。
+  `secrets/certs/app-content-mcp`（仓库根 secrets/，gitignored；explicit 模式加载，rotator 每日巡检）。
 
 ## 链路
 

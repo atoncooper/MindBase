@@ -73,7 +73,8 @@ export class GatewayVisionOcr implements OcrClient {
     private readonly capabilities?: ModelCapabilityRegistry,
     private readonly generate: (system: string, dataUrl: string) => Promise<string> = async (system, dataUrl) => {
       const result = await generateText({
-        model: createGatewayModel("ocr", { model: config.ocr.model, apiKey: config.ocr.apiKey || undefined }),
+        // All model calls share the single gateway credential (AI_GATEWAY__API_KEY).
+        model: createGatewayModel("ocr", { model: config.ocr.model }),
         ...aiTelemetry("ocr.recognize"),
         messages: [
           {

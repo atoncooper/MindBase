@@ -27,6 +27,8 @@ MindBase 的能力围绕三条主线：
 - **流式 SSE**：`route` / `reasoning` / `chunk` / `step` / `sources` / `plan` / `artifact` / `interact` / `usage` / `done` / `error`，前端由 `frontendv2/lib/chat-stream.ts` 解析。
 - **富内容渲染**：前端原生渲染回答中的 `mermaid` 代码块（时序图 / 状态机 / 类图 / ER 图等）；可缩放拖拽的复杂交互图（架构图 / 链路图）走 `render_diagram`，统计数据对比 / 趋势 / 占比走 `render_chart`（柱状 / 折线 / 饼图），2-4 个方案选型走 `render_comparison`（优缺点 + 属性 + 推荐结论），函数图像走 `render_plot`；产物均可全屏、可查看模型原始数据，刷新后仍保留。
 - **生成文件卡片**：对话中生成/导出的文件（沙箱产物、Word 回存云盘等）以文件卡展示——文件类型品牌色图标、文件名、动作与说明、`+N/−N` 改动量、图片 HoverCard 预览，以及打开 / 下载 / 复制菜单；旧历史文件产物也统一成同一张卡片。
+- **附件抽屉**：上传的会话文件与待发送图片不再常驻输入框上方，收进输入栏「附件 N」按钮打开的右侧抽屉；抽屉内可分「本次消息图片 / 会话文件」查看、预览、下载、移除，附件多时也不挤压输入区。
+- **模型选择**：输入栏「模型 ▾」读取 `app-ts/config/model.json` 提供的 11 个 2026 年发布模型（含 OpenAI GPT-6.1、Claude Sonnet 5.5、Gemini 4、DeepSeek V4.1 等；默认 GLM-5.3 Flash），选择后按轮次随聊天请求发送并记住在本机；服务端保留 `config.llm.model` 作为基础默认，所有模型仍只经 AI 网关 `AI_GATEWAY__API_KEY`。详见 [chat-models.md](chat-models.md)。
 - **思考与工具调用 UI**：思考过程与工具调用采用 AI 风格折叠组件（shadcn/Radix `Collapsible`，交互模式参考 Vercel AI Elements Reasoning/Tool）：流式 shimmer、耗时汇总、工具卡实时状态 / 参数 / 结果 / 来源分区，运行中的工具默认展开。
 - **生成中排队**：AI 生成过程中输入框仍可继续输入，Enter（或排队按钮）把消息加入 FIFO 队列（最多 5 条、可取消），当前轮 done / error / stop 后自动发送队首；切换会话或新建对话会清空队列。
 - **工具面**：`vector_search`、`kg_search`、`list_videos`、`get_video_summaries`、`run_code`、`run_skill_code`、`web_search`、`fetch_webpage`、`plan`、`save_memory`、`academic_*` 等（以工具注册表为准）；`kg_search` 仅在 Neo4j 可用时注册。
@@ -66,7 +68,8 @@ MindBase 的能力围绕三条主线：
 
 **入口**：导航「科研」（`/research`）
 
-- **三段式工作台**：左侧项目列表（本地搜索、新建、阶段徽标、文献/稿件计数）；右侧项目详情（标题/类型/领域/目标期刊/截止日期 + 六阶段步骤条）；Tabs：
+- **全屏两栏工作台**（Google / Material 3 风格，基于第三方 MUI）：页面铺满视口（类似聊天页），左侧固定项目栏（品牌 + 搜索 + 项目列表），右侧项目详情（标题/元信息/阶段步骤条/Tabs）+ 独立滚动内容区；移动端项目栏收进 Drawer。原生输入框（`.field`/input/textarea/select）在科研子树内统一为 Material 描边 + 蓝色聚焦环，搜索框/新建项目表单使用 MUI TextField。
+- **三段式工作台**（Google / Material 3 风格，基于第三方 MUI）：左侧项目列表（本地搜索、新建、阶段徽标、文献/稿件计数）；右侧项目详情（标题/类型/领域/目标期刊/截止日期 + 六阶段步骤条）；Tabs：
   - **概览**：阶段推进与状态切换（二次确认）、执行计划勾选、阶段建议编辑；
   - **文献库**：Crossref / OpenAlex / arXiv 在线检索 → 加入项目、手动添加、分页、DOI 核验、删除、BibTeX 导出；
   - **写作**：文档列表与新建（后端默认六章）、章节正文编辑保存、Markdown/LaTeX 导出、Word 导入/导出与版式细节（docx_inspect）；

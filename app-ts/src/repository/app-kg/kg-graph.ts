@@ -73,6 +73,7 @@ export class GrpcKgGraphRepository implements KgGraphRepository {
       protoPath: config.kgGrpc.protoPath,
       serviceFqn: KG_SERVICE_FQN,
       timeoutMs: config.kgGrpc.timeoutMs,
+      tls: config.kgGrpc.tls,
     });
     return new GrpcKgGraphRepository(rpc);
   }

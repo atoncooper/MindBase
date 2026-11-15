@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	_ "embed" // embed default.yaml via //go:embed below
 	"fmt"
 	"log/slog"
@@ -42,6 +43,7 @@ import (
 	transporthttp "app-kg/internal/transport/http"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
@@ -77,7 +79,7 @@ func main() {
 		},
 	})
 	slog.Info("app-kg starting", "grpc_port", cfg.Server.GrpcPort,
-		"health_port", cfg.Server.HealthPort, "tz", cfg.Timezone)
+		"health_port", cfg.Server.HealthPort, "tls", cfg.Server.TLS.Enabled, "tz", cfg.Timezone)
 
 	if err := config.Validate(cfg); err != nil {
 		slog.Error("config validation failed", "err", err)
@@ -119,15 +121,26 @@ func main() {
 	kgService := service.NewKG(pages, graphRepo)
 	cloudDocService := service.NewCloudDoc(graphRepo)
 
+	// ── TLS (both listeners share one parsed certificate) ──────────
+	tlsCfg, err := buildServerTLS(cfg)
+	if err != nil {
+		slog.Error("load server tls certificate failed", "err", err)
+		os.Exit(1)
+	}
+
 	// ── gRPC transport (app-ts face) ────────────────────────────────
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.GrpcPort))
 	if err != nil {
 		slog.Error("listen failed", "err", err)
 		os.Exit(1)
 	}
-	grpcServer := grpc.NewServer(
+	grpcOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(transportgrpc.Interceptor()),
-	)
+	}
+	if tlsCfg != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	}
+	grpcServer := grpc.NewServer(grpcOpts...)
 	kgpb.RegisterKgGraphServer(grpcServer, transportgrpc.New(transportgrpc.Deps{
 		KG: kgService,
 	}))
@@ -151,8 +164,9 @@ func main() {
 		Neo4j:         neo4jStore,
 		CloudDoc:      cloudDocService,
 		InternalToken: cfg.Server.InternalToken,
+		TLS:           tlsCfg,
 	})
-	slog.Info("app-kg health endpoint", "addr", healthAddr)
+	slog.Info("app-kg health endpoint", "addr", healthAddr, "tls", tlsCfg != nil)
 
 	// ── graceful shutdown ───────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
@@ -174,4 +188,23 @@ func main() {
 		grpcServer.Stop()
 	}
 	slog.Info("app-kg stopped")
+}
+
+// buildServerTLS loads the serving certificate when server.tls.enabled is on.
+// A nil config means plaintext (the previous posture); when TLS is enabled but
+// the certificate cannot be loaded the process must not start (fail loud — a
+// half-TLS service would be silently unreachable to its HTTPS peers).
+func buildServerTLS(cfg *config.Config) (*tls.Config, error) {
+	if !cfg.Server.TLS.Enabled {
+		return nil, nil
+	}
+	pair, err := tls.LoadX509KeyPair(cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
+	if err != nil {
+		return nil, fmt.Errorf("load cert/key %q + %q: %w",
+			cfg.Server.TLS.Cert, cfg.Server.TLS.Key, err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{pair},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }

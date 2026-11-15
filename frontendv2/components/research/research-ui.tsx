@@ -2,15 +2,38 @@
 
 /**
  * 科研工作台共享 UI 片段：阶段/状态/类型的中文文案映射，以及卡片、徽标、
- * 错误条、空态、加载态和 Apple 风格弹窗。
+ * 错误条、空态、加载态和弹窗。
  *
- * 文案集中在此，避免四个 Tab 各自维护一份中文标签而漂移；样式沿用现有
- * Apple 语义色（bg-surface / border-border / text-secondary / accent）。
+ * 文案集中在此，避免各 Tab 各自维护一份中文标签而漂移。视觉改用 MUI
+ * （@mui/material）+ GoogleResearchTheme 的 Google Workspace 风格：浅灰
+ * #f8f9fa 背景、白色描边卡片、语义色 tonal chip / alert、pill 按钮。
+ *
+ * 这里只替换共享原语的实现，导出名 / Props / 行为保持不变，因此所有 Tab
+ * （overview / literature / writing / experiments / evidence / validation /
+ * analysis / workspace / plans / approvals / events）无需改动即可自动获得
+ * Google 风格。调用方仍然会传旧的 Tailwind 语义色 className（如
+ * "bg-success/10 text-success"），Pill 会识别其中的语义色并映射成 Google
+ * tonal chip，避免个性化配色丢失。
  */
-import { useEffect, type ReactNode } from "react";
-import { createPortal } from "react-dom";
-import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, Loader2, X, type LucideIcon } from "lucide-react";
+import { type ReactNode } from "react";
+import {
+    Alert,
+    Box,
+    Button,
+    Card,
+    Chip,
+    CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    IconButton,
+    Stack,
+    Typography,
+    alpha,
+} from "@mui/material";
+import type { Theme } from "@mui/material/styles";
+import { X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
     AcademicDocumentKind,
@@ -55,7 +78,7 @@ export const STAGE_STATUS_LABELS: Record<AcademicStageStatus, string> = {
     frozen: "已冻结",
 };
 
-/** 状态徽标配色：进行中=强调色、待确认=橙、已确认=绿、冻结/未开始=灰。 */
+/** 状态徽标配色（遗留 Tailwind 语义映射，保留导出以兼容旧引用）。 */
 export const STAGE_STATUS_STYLES: Record<AcademicStageStatus, string> = {
     locked: "bg-border-subtle text-tertiary",
     active: "bg-accent-soft text-accent",
@@ -168,61 +191,144 @@ export function downloadText(filename: string, text: string, mime = "text/plain;
     URL.revokeObjectURL(url);
 }
 
+// ---- MUI / Google tonal chips ----------------------------------------------
+
+type Tone = "neutral" | "muted" | "info" | "success" | "warning" | "error";
+
+/** 从旧 Tailwind 语义色 className 推断 tonal chip 的语义（兼容各 Tab 的调用）。 */
+function toneFromClassName(className?: string): Tone {
+    if (!className) return "neutral";
+    if (/\btext-success\b/.test(className)) return "success";
+    if (/\btext-danger\b/.test(className)) return "error";
+    if (/\btext-warning\b/.test(className)) return "warning";
+    if (/\btext-accent\b/.test(className)) return "info";
+    if (/\btext-(secondary|tertiary)\b/.test(className)) return "muted";
+    return "neutral";
+}
+
+const CHIP_BASE_SX = {
+    height: 20,
+    borderRadius: "8px",
+    fontSize: 11,
+    fontWeight: 500,
+    "& .MuiChip-label": {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "3px",
+        px: 1,
+        py: 0,
+        lineHeight: 1.5,
+    },
+};
+
+function toneSx(tone: Tone) {
+    return (theme: Theme) => {
+        switch (tone) {
+            case "info":
+                return {
+                    bgcolor: alpha(theme.palette.primary.main, 0.1),
+                    color: theme.palette.primary.dark,
+                };
+            case "success":
+                return {
+                    bgcolor: alpha(theme.palette.success.main, 0.12),
+                    color: theme.palette.success.dark,
+                };
+            case "warning":
+                return {
+                    bgcolor: alpha(theme.palette.warning.main, 0.14),
+                    color: theme.palette.warning.dark,
+                };
+            case "error":
+                return {
+                    bgcolor: alpha(theme.palette.error.main, 0.1),
+                    color: theme.palette.error.dark,
+                };
+            case "muted":
+                return { bgcolor: theme.palette.grey[100], color: theme.palette.text.secondary };
+            default:
+                return { bgcolor: theme.palette.grey[100], color: theme.palette.text.secondary };
+        }
+    };
+}
+
+const STAGE_STATUS_TONES: Record<AcademicStageStatus, Tone> = {
+    locked: "neutral",
+    active: "info",
+    submitted: "warning",
+    approved: "success",
+    frozen: "muted",
+};
+
 /** 小号状态徽标。 */
 export function StatusBadge({ status, className }: { status: AcademicStageStatus; className?: string }) {
     return (
-        <span
-            className={cn(
-                "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
-                STAGE_STATUS_STYLES[status],
-                className,
-            )}
-        >
-            {STAGE_STATUS_LABELS[status]}
-        </span>
+        <Chip
+            size="small"
+            label={STAGE_STATUS_LABELS[status]}
+            className={className}
+            sx={[CHIP_BASE_SX, toneSx(STAGE_STATUS_TONES[status])]}
+        />
     );
 }
 
 /** 通用浅色标签（类型、来源等）。 */
 export function Pill({ children, className }: { children: ReactNode; className?: string }) {
     return (
-        <span
-            className={cn(
-                "inline-flex items-center gap-1 rounded-full bg-border-subtle px-2 py-0.5 text-[11px] text-secondary",
-                className,
-            )}
-        >
-            {children}
-        </span>
+        <Chip
+            size="small"
+            label={children}
+            className={className}
+            sx={[CHIP_BASE_SX, toneSx(toneFromClassName(className))]}
+        />
     );
 }
 
 /** 内联错误条：统一展示后端 { detail }（client 已 sanitize）。 */
 export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
     return (
-        <div className="flex items-start gap-2 rounded-lg border-l-2 border-danger bg-danger/5 px-3 py-2.5 text-[12px] text-danger">
-            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 break-words">{message}</span>
-            {onRetry && (
-                <button
-                    type="button"
-                    onClick={onRetry}
-                    className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
-                >
-                    重试
-                </button>
-            )}
-        </div>
+        <Alert
+            severity="error"
+            sx={{
+                alignItems: "center",
+                borderRadius: "8px",
+                py: 0.25,
+                "& .MuiAlert-icon": { mr: 1, fontSize: 18 },
+                "& .MuiAlert-message": {
+                    minWidth: 0,
+                    py: 0.5,
+                    wordBreak: "break-word",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                },
+            }}
+            action={
+                onRetry ? (
+                    <Button
+                        color="inherit"
+                        size="small"
+                        onClick={onRetry}
+                        sx={{ minWidth: 0, px: 1, fontSize: 12, fontWeight: 500 }}
+                    >
+                        重试
+                    </Button>
+                ) : undefined
+            }
+        >
+            {message}
+        </Alert>
     );
 }
 
 /** 居中加载态。 */
 export function LoadingBlock({ label = "加载中…" }: { label?: string }) {
     return (
-        <div className="flex items-center justify-center gap-2 py-16 text-[13px] text-tertiary">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {label}
-        </div>
+        <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", justifyContent: "center", py: 8 }}>
+            <CircularProgress size={16} thickness={5} />
+            <Typography variant="body2" color="text.secondary">
+                {label}
+            </Typography>
+        </Stack>
     );
 }
 
@@ -239,25 +345,53 @@ export function EmptyState({
     action?: ReactNode;
 }) {
     return (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="grid h-11 w-11 place-items-center rounded-full bg-border-subtle text-tertiary">
-                <Icon className="h-5 w-5" />
-            </div>
-            <p className="mt-3 text-[14px] font-medium text-foreground">{title}</p>
-            {description && <p className="mt-1 max-w-[360px] text-[12px] leading-relaxed text-secondary">{description}</p>}
-            {action && <div className="mt-4">{action}</div>}
-        </div>
+        <Stack spacing={1.25} sx={{ alignItems: "center", justifyContent: "center", py: 8, textAlign: "center" }}>
+            <Box
+                sx={{
+                    display: "grid",
+                    placeItems: "center",
+                    width: 48,
+                    height: 48,
+                    borderRadius: "50%",
+                    bgcolor: "grey.100",
+                    color: "text.secondary",
+                }}
+            >
+                <Icon size={22} aria-hidden="true" />
+            </Box>
+            <Typography variant="h3" sx={{ fontSize: 14, fontWeight: 500, color: "text.primary" }}>
+                {title}
+            </Typography>
+            {description && (
+                <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ maxWidth: 360, lineHeight: 1.6, px: 2 }}
+                >
+                    {description}
+                </Typography>
+            )}
+            {action && <Box sx={{ pt: 1 }}>{action}</Box>}
+        </Stack>
     );
 }
 
-/** 浅色卡片容器。 */
+/** 浅色卡片容器（MUI Card：白底 + #dadce0 描边 + 16px 圆角，由 theme 提供）。 */
 export function SurfaceCard({ children, className }: { children: ReactNode; className?: string }) {
     return (
-        <div className={cn("rounded-xl border border-border-subtle bg-surface p-4", className)}>{children}</div>
+        <Card variant="outlined" className={cn("p-4", className)} sx={{ boxShadow: "none" }}>
+            {children}
+        </Card>
     );
 }
 
-/** 弹窗：portal + 淡入淡出；body 在 open 时才挂载以重置表单状态。 */
+/** 弹窗默认宽度（沿用旧的 Tailwind max-w-[Npx] 契约）。 */
+function dialogMaxWidth(width?: string): number {
+    const match = width?.match(/(\d+)\s*px/);
+    return match ? Number(match[1]) : 480;
+}
+
+/** 弹窗：MUI Dialog（Esc / 遮罩关闭由 MUI 处理）；body 在 open 时才挂载以重置表单状态。 */
 export function Modal({
     open,
     title,
@@ -275,62 +409,57 @@ export function Modal({
     width?: string;
     footer?: ReactNode;
 }) {
-    useEffect(() => {
-        if (!open) return;
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, [open, onClose]);
-
-    if (typeof document === "undefined") return null;
-
-    return createPortal(
-        <AnimatePresence>
-            {open && (
-                <motion.div
-                    className="fixed inset-0 z-[100] flex items-center justify-center p-4"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                >
-                    <div className="absolute inset-0 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
-                    <motion.div
-                        initial={{ opacity: 0, y: 16, scale: 0.97 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 16, scale: 0.97 }}
-                        transition={{ duration: 0.22, ease: [0.28, 0.11, 0.32, 1] }}
-                        className={cn(
-                            "relative flex max-h-[88vh] w-full flex-col overflow-hidden rounded-[20px] border border-border bg-surface shadow-[0_10px_40px_rgba(0,0,0,0.14),0_2px_8px_rgba(0,0,0,0.06)]",
-                            width,
-                        )}
-                        role="dialog"
-                        aria-modal="true"
-                        aria-label={title}
+    return (
+        <Dialog
+            open={open}
+            onClose={onClose}
+            fullWidth
+            maxWidth={false}
+            aria-label={title}
+            slotProps={{
+                paper: {
+                    sx: {
+                        display: "flex",
+                        flexDirection: "column",
+                        width: "100%",
+                        maxWidth: dialogMaxWidth(width),
+                        maxHeight: "88vh",
+                        m: 2,
+                        borderRadius: "8px",
+                    },
+                },
+            }}
+        >
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1.5, pr: 1, py: 2 }}>
+                {Icon && (
+                    <Box
+                        sx={{
+                            display: "grid",
+                            placeItems: "center",
+                            width: 32,
+                            height: 32,
+                            flexShrink: 0,
+                            borderRadius: "8px",
+                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1),
+                            color: "primary.main",
+                        }}
                     >
-                        <div className="flex items-center gap-2.5 border-b border-border-subtle px-6 py-4">
-                            {Icon && (
-                                <div className="grid h-8 w-8 place-items-center rounded-lg bg-accent-soft text-accent">
-                                    <Icon className="h-4 w-4" />
-                                </div>
-                            )}
-                            <h2 className="flex-1 text-[16px] font-semibold tracking-tight text-foreground">{title}</h2>
-                            <button
-                                type="button"
-                                onClick={onClose}
-                                aria-label="关闭"
-                                className="grid h-7 w-7 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground"
-                            >
-                                <X className="h-4 w-4" />
-                            </button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
-                        {footer && <div className="border-t border-border-subtle px-6 py-3">{footer}</div>}
-                    </motion.div>
-                </motion.div>
-            )}
-        </AnimatePresence>,
-        document.body,
+                        <Icon size={16} aria-hidden="true" />
+                    </Box>
+                )}
+                <Typography
+                    variant="h2"
+                    component="h2"
+                    sx={{ flex: 1, minWidth: 0, fontSize: 17, fontWeight: 500 }}
+                >
+                    {title}
+                </Typography>
+                <IconButton aria-label="关闭" size="small" onClick={onClose} sx={{ color: "text.secondary" }}>
+                    <X size={18} aria-hidden="true" />
+                </IconButton>
+            </DialogTitle>
+            <DialogContent sx={{ px: 3, py: 2.5, overflowY: "auto" }}>{children}</DialogContent>
+            {footer && <DialogActions sx={{ display: "block", px: 3, pb: 2.5, pt: 0 }}>{footer}</DialogActions>}
+        </Dialog>
     );
 }

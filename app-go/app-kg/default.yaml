@@ -35,6 +35,15 @@ server:
   # mux — consumed by app-cloud. Empty = allow (network-internal only); set a
   # shared token to require X-Internal-Token on those endpoints.
   internal_token: ""
+  # TLS for BOTH listeners (gRPC :8013 and HTTP :8014); the ports do not change.
+  # cert/key are PEM paths inside the container (compose mounts the per-service
+  # leaf from secrets/certs/app-kg/ to /app/certs:ro). Default off = plaintext
+  # (previous posture); the internal-service HTTPS contract turns it on via env:
+  #   APPKG__SERVER__TLS__ENABLED=true APPKG__SERVER__TLS__CERT=... APPKG__SERVER__TLS__KEY=...
+  tls:
+    enabled: false
+    cert: /app/certs/server.crt
+    key: /app/certs/server.key
 
 timezone: Asia/Shanghai
 

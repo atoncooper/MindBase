@@ -21,6 +21,12 @@ import { readCachedBase, resolveApiBase, writeCachedBase } from "./deployment";
 // "nginx:80"; local dev falls back to "localhost:9080" (apisix on host/VM).
 const INTERNAL_API_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "localhost:9080";
 
+// Server-side (SSR/RSC) base URL. INTERNAL_API_URL lets the container call the
+// gateway over HTTPS (e.g. https://nginx:443 with the dev CA via
+// NODE_EXTRA_CA_CERTS) without leaking that URL to the browser bundle; it falls
+// back to the legacy http://NEXT_PUBLIC_APISIX_HOST (nginx:80) for local dev.
+const INTERNAL_API_URL = process.env.INTERNAL_API_URL || `http://${INTERNAL_API_HOST}`;
+
 // Browser base URL: 运行时按部署链解析（域名 SHARE_DOMAIN → 公网 IP → 本机
 // 地址）。初始值为构建期 NEXT_PUBLIC_API_URL（保持与旧版一致的行为），模块
 // 加载后由 resolveApiBase 异步覆盖；请求都在调用时读取该变量，解析完成前的
@@ -30,7 +36,7 @@ const INTERNAL_API_HOST = process.env.NEXT_PUBLIC_APISIX_HOST || "localhost:9080
 export let API_BASE_URL =
     typeof window !== "undefined"
         ? process.env.NEXT_PUBLIC_API_URL || ""
-        : `http://${INTERNAL_API_HOST}`;
+        : INTERNAL_API_URL;
 
 if (typeof window !== "undefined") {
     // 上一轮解析结果立即生效（避免每次首屏请求打旧地址），后台再校准。

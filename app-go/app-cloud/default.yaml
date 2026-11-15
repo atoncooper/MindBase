@@ -22,6 +22,16 @@ app:
 server:
   host: 0.0.0.0
   port: 8007
+  tls:
+    # HTTPS listener (phase 2). Disabled keeps plain HTTP for local runs.
+    # serve with http.Server.TLSConfig + ListenAndServeTLS (TLS 1.2+).
+    # cert/key are PEM paths mounted read-only from secrets/certs/app-cloud
+    # (compose mounts /app/certs:ro); outbound trust comes from SSL_CERT_FILE
+    # (secrets/certs/ca-bundle.crt), not from this section.
+    # env: APPCLOUD__SERVER__TLS__{ENABLED,CERT,KEY}
+    enabled: false
+    cert: /app/certs/server.crt
+    key: /app/certs/server.key
 
 timezone: Asia/Shanghai
 
@@ -40,10 +50,10 @@ mongo:
 
 minio:
   enabled: true
-  endpoint: http://minio:9000
+  endpoint: https://minio:9000
   region: us-east-1
   bucket: drive-videos       # same bucket as the Python backend — zero data migration
-  secure: false
+  secure: true
   presign_expire: 3600       # seconds; upload/preview presigned URL lifetime
   access_key: ""             # inject via MINIO__ACCESS_KEY (.env)
   secret_key: ""             # inject via MINIO__SECRET_KEY (.env)
@@ -106,7 +116,9 @@ quota:
   free: 10737418240          # 10 GiB
   vip: 107374182400          # 100 GiB
   svip: 1099511627776        # 1 TiB
-  membership_base_url: http://apisix:9080/internal/pay  # key-auth protected
+  # HTTPS: APISIX service-to-service TLS listener (9443); the leaf SAN covers
+  # the apisix alias and SSL_CERT_FILE trusts the dev CA.
+  membership_base_url: https://apisix:9443/internal/pay  # key-auth protected
   membership_api_key: ""     # inject via APISIX_CONSUMER_KEY (.env)
   membership_cache_ttl: 60   # seconds
 
@@ -126,7 +138,7 @@ pipeline:
     max_per_uid: 3           # max in-flight vectorize tasks per user
     max_queue_depth: 50000   # global pending+processing hard cap (429 beyond)
   embedding:
-    base_url: http://higress:8080/v1  # override via AI_GATEWAY__BASE_URL (OpenAI-compatible)
+    base_url: https://higress:8443/v1  # override via AI_GATEWAY__BASE_URL (OpenAI-compatible HTTPS; trust via SSL_CERT_FILE)
     api_key: ""              # inject via AI_GATEWAY__API_KEY (.env)
     model: text-embedding-v4 # RED LINE: change = Milvus cloud_drive full rebuild
     dimension: 1024          # must match the existing cloud_drive collection
@@ -167,7 +179,7 @@ kg:
   # writes). Empty base URL disables graph writes — summaries still land in
   # Mongo and L1 degrades to Mongo matching. Token must match app-kg's
   # server.internal_token (compose passes the same APP_KG_INTERNAL_TOKEN).
-  base_url: "http://app-kg:8014"
+  base_url: "https://app-kg:8014"  # HTTPS (phase 2); SAN app-kg + SSL_CERT_FILE trust
   token: ""                  # env APPCLOUD__KG__TOKEN
 
 ws_bridge:

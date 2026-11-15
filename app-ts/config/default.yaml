@@ -10,6 +10,13 @@ server:
   host: 0.0.0.0
   # 8000 = the port the retired Python backend owned; app-ts inherits it
   port: 8000
+  # 内部全链路 HTTPS（阶段二）：enabled=true 时 Fastify 以 TLS 直服同一端口
+  # （证书由 compose 挂载 secrets/certs/app-ts → /app/certs:ro）。
+  # 环境变量覆盖：SERVER__TLS__ENABLED / SERVER__TLS__CERT / SERVER__TLS__KEY
+  tls:
+    enabled: false
+    cert: /app/certs/server.crt
+    key: /app/certs/server.key
 
 redis:
   # 事件订阅（bili:page_ready → 视频分P向量化）。留空 = 不订阅（离线运行）。
@@ -17,34 +24,39 @@ redis:
 
 appBili:
   # 获取域服务（Go）：ASR 委派 + 用户收藏夹 scope 只读（internal M2M）
-  baseUrl: http://app-user:8006
+  # 内部全链路 HTTPS：app-user:8006 为 TLS 监听，按 compose DNS 名校验证书
+  baseUrl: https://app-user:8006
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 30000
   cacheTtlMs: 30000
 
 appTask:
   # app-task 调度服务（任务注册 /internal/task 回调 /internal/email/send；经 APISIX key-auth）
-  baseUrl: http://apisix:9080
+  # 内部全链路 HTTPS：APISIX 9443 TLS 监听（9080 明文口不再使用）
+  baseUrl: https://apisix:9443
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 15000
 
 appAuth:
   # 认证服务内部用户查询（/internal/auth/user/{uid}，apikey 守卫）
-  baseUrl: http://app-user:8006
+  # 内部全链路 HTTPS：app-user:8006 为 TLS 监听
+  baseUrl: https://app-user:8006
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 5000
 
 appUserSettings:
   # app-user settings 监听口（8015）：Coding Plan 内部 M2M
   # GET /internal/settings/coding-plan/{uid}（apikey 守卫；Coding Plan 属设置域）
-  baseUrl: http://app-user:8006
+  # 内部全链路 HTTPS：app-user:8006 为 TLS 监听
+  baseUrl: https://app-user:8006
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 5000
 
 appCloud:
   # 云盘文档智能读取（/internal/cloud/summary，apikey 守卫）；uid 只经 X-Uid
   # 与查询参数下发，永不出现在 LLM 可写参数里
-  baseUrl: http://app-cloud:8007
+  # 内部全链路 HTTPS：app-cloud:8007 本身为 TLS 监听（阶段二）
+  baseUrl: https://app-cloud:8007
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 8000
 
@@ -54,7 +66,8 @@ taskQuiz:
   enabled: true
   sourceDatabase: mind_base          # 共享 Mongo 库（app-content quiz 面读取同一集合）
   docCollection: task_quiz_questions
-  executorUrl: http://apisix:9080/internal/quiz/generate-llm
+  # 内部全链路 HTTPS：经 APISIX 9443 TLS 监听
+  executorUrl: https://apisix:9443/internal/quiz/generate-llm
   genRetries: 3
 
 minio:
@@ -83,7 +96,9 @@ vectorize:
 
 aiGateway:
   # OpenAI 兼容面（LLM / embedding）；nativeBaseURL 由 baseUrl 派生（去尾 /v1 加 /api/v1）
-  baseUrl: http://higress:8080/v1
+  # 内部全链路 HTTPS：higress 8443 TLS（阶段二 TLS 前置/自身 TLS）。保留环境变量
+  # 占位逻辑：AI_GATEWAY__BASE_URL 覆盖（loader 亦按同名 env 覆盖该叶子）
+  baseUrl: ${AI_GATEWAY__BASE_URL:https://higress:8443/v1}
   apiKey: ${AI_GATEWAY__API_KEY}
 
 llm:
@@ -124,6 +139,12 @@ milvus:
   nlist: 1024
   nprobe: 16
   useMonthlyPartitions: false
+  # Milvus gRPC over TLS (server-side TLS enforced; certs issued by the shared dev CA)
+  ssl: ${MILVUS__SSL:-false}
+  # dev CA path for verifying the Milvus server cert (docker: /app/certs/dev-ca.crt)
+  tlsRootCert: ${MILVUS__TLS__ROOT_CERT:-}
+  # SNI / cert SAN to verify against (cert SANs carry the docker service alias)
+  tlsServerName: ${MILVUS__TLS__SERVER_NAME:-milvus}
 
 mongo:
   uri: ${MONGO__URI}
@@ -167,14 +188,16 @@ toolsStub:
 appPay:
   # 会员档位查询（app-pay 经 APISIX key-auth 内部路由 /internal/pay/*；
   # 对齐 app-cloud quota.go 的消费模式：TTL 缓存 + fail-open free）
-  baseUrl: http://apisix:9080/internal/pay
+  # 内部全链路 HTTPS：经 APISIX 9443 TLS 监听
+  baseUrl: https://apisix:9443/internal/pay
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 2000
   cacheTtlMs: 60000
 
 appQuiz:
   # app-content（quiz 面）存储写面（经 APISIX key-auth 内部路由 /internal/quiz/*）
-  baseUrl: http://apisix:9080/internal/quiz
+  # 内部全链路 HTTPS：经 APISIX 9443 TLS 监听
+  baseUrl: https://apisix:9443/internal/quiz
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 15000
 
@@ -186,6 +209,12 @@ kgGrpc:
   # 共享 proto 契约（运行时加载，无代码生成）
   protoPath: proto/kg/v1/kg.proto
   timeoutMs: 15000
+  # 出站 gRPC TLS（阶段二）：enabled=true → credentials.createSsl(caFile) 校验证书；
+  # false → createInsecure()（本地明文开发默认）。
+  # 环境变量覆盖：KG_GRPC__TLS__ENABLED / KG_GRPC__TLS__CA_FILE
+  tls:
+    enabled: false
+    caFile: /etc/ssl/certs/ca-certificates.crt
 
 contentMcp:
   # 内容域 MCP 合并服务 app-content-mcp（plan/1.0.20）：board 6 + note 4 + quiz 2
@@ -194,8 +223,8 @@ contentMcp:
   # quiz 落库、board 工具均不可用；无直连回落）。
   enabled: true
   # app-content-mcp streamable-http 端点（容器内由 CONTENT_MCP__URL 覆盖为
-  # http://app-content-mcp:8019/mcp）
-  url: http://app-content-mcp:8019/mcp
+  # https://app-content-mcp:8019/mcp；该服务已开 TLS）
+  url: https://app-content-mcp:8019/mcp
   # 服务模式 apikey（uid 走请求头 X-Uid，永不进 LLM 参数）
   apiKey: ${CONTENT_MCP__API_KEY}
   # 外部宿主模式（与 apiKey 二选一）
@@ -214,7 +243,8 @@ sandbox:
   enabled: false
   # app-sandbox 控制层基址：经 APISIX key-auth 内部路由 /internal/sandbox/*（网关重写
   # 为 /* 后到达 app-sandbox:8017，见 plan §四）
-  baseUrl: http://apisix:9080/internal/sandbox
+  # 内部全链路 HTTPS：经 APISIX 9443 TLS 监听
+  baseUrl: https://apisix:9443/internal/sandbox
   # M2M 共享 key：apikey 供 APISIX key-auth、X-API-Key 供 app-sandbox 自校验
   apiKey: ${APISIX_CONSUMER_KEY}
   # 本地总预算（创建 + 轮询）；单次执行预算由 run_code 的 timeoutMs 传给沙箱
@@ -469,8 +499,6 @@ ocr:
   enabled: true
   # 视觉转写模型（网关 chat + 图片 part）；GLM-5.3-flash 支持视觉，与全局统一
   model: z-ai/glm-5.3-flash
-  # 可选独立 key；默认复用 aiGateway.apiKey
-  apiKey: ${OCR__API_KEY}
   prompt: 请提取图片中的全部文字内容，按原始阅读顺序输出，不要添加任何解释或评论。
   maxImageBytes: 10485760
   timeoutMs: 60000

@@ -94,7 +94,7 @@ profile 汇总：
 
 ### nginx（`nginx/nginx.conf` + `locations.conf`）
 
-- 80 / 443 两个 server 共用 `locations.conf`；443 用 `nginx/certs/` 自签开发证书（`scripts/gen-nginx-dev-cert.sh` 生成）。
+- 80 / 443 两个 server 共用 `locations.conf`；443 用 `secrets/certs/nginx/` 自签开发证书（`scripts/gen-certs.sh` / `scripts/gen-nginx-dev-cert.sh` 生成，仓库根 `secrets/` 整体 gitignore）。
 - **页面路由（→ frontend）**：`/`、`/chat`、`/research`、`/notes`、`/quiz`、`/favorites`、`/tasks`、`/skills`、`/settings`、`/blindspot` 等精确路径返回 SPA。
 - **双用途分发**：既是前端页面又是 API 前缀的路径（如 `/tasks`、`/notes`），通过 `X-Requested-With: XMLHttpRequest` 请求头区分——API 请求内部改写转 APISIX，页面请求转 frontend 并走缓存。
 - **API 转发（→ apisix）**：`/auth` `/chat`（SSE 关缓冲）`/knowledge` `/asr` `/vec` `/notes` `/quiz` `/board/` `/task-quiz/` `/tasks` `/skills` `/blindspot` `/preferences` `/avatar` `/workspaces` 等。
@@ -154,7 +154,7 @@ forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify`
 
 ## 配置体系
 
-没有中心配置；各服务独立配置，均读项目根 `.env`（密钥/连接串，见 [.env.example](../.env.example)），普通配置在各自 YAML：
+没有中心配置；各服务独立配置。多数服务读项目根 `.env`（密钥/连接串，见 [.env.example](../.env.example)），**app-ts 本地默认读 `app-ts/.env`**（容器仍由 compose `env_file` 注入根 `.env`）；普通配置在各自 YAML：
 
 | 服务 | 配置入口 | 环境前缀 | 文档 |
 |------|---------|---------|------|

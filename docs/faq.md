@@ -20,7 +20,7 @@ Docker（Compose v2）、Node.js ≥ 22.17（app-ts 与前端）、Go 1.24+（Go
 
 **Q：改了 `.env` 为什么不生效？**
 
-compose 的 `env_file` 只在容器创建时注入，需要 `docker compose up -d --force-recreate <服务>`；本地直跑的服务从工作目录向上读项目根 `.env`，重启进程即可。
+compose 的 `env_file` 只在容器创建时注入，需要 `docker compose up -d --force-recreate <服务>`；本地直跑 **app-ts** 默认读 `app-ts/.env`（不读项目根 `.env`，可用 `APP_TS_ENV_FILE` 覆盖），改完重启进程即可。
 
 ---
 

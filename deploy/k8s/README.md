@@ -33,10 +33,10 @@ Secret 一律从本地文件生成，**清单里没有任何真实密钥**：
 # ① 应用全部环境变量（= compose 的 env_file: .env，逐字等价）
 kubectl -n mind-base create secret generic mindbase-env --from-env-file=.env
 
-# ② nginx TLS（nginx/certs/ 已有开发证书；生产换正式证书后重跑）
+# ② nginx TLS（secrets/certs/nginx/ 已有开发证书；生产换正式证书后重跑）
 kubectl -n mind-base create secret generic nginx-tls \
-  --from-file=fullchain.pem=nginx/certs/fullchain.pem \
-  --from-file=privkey.pem=nginx/certs/privkey.pem
+  --from-file=fullchain.pem=secrets/certs/nginx/fullchain.pem \
+  --from-file=privkey.pem=secrets/certs/nginx/privkey.pem
 
 # ③ app-pay TLS（服务端 HTTPS-only + app-task 委托回调 CA）
 kubectl -n mind-base create secret generic app-pay-tls \
@@ -45,11 +45,11 @@ kubectl -n mind-base create secret generic app-pay-tls \
   --from-file=ca.crt=app-pay/certs/ca.crt
 
 # ④ app-content board 域 TLS + APISIX 信任锚（dev-ca.crt 进 apisix 的 ca-bundle；
-#    证书目录与 Secret 名沿用历史 app-board* —— board TLS 证书卷/secret 保留不变）
+#    宿主证书在 secrets/certs/app-content；Secret 名沿用历史 app-board-certs）
 kubectl -n mind-base create secret generic app-board-certs \
-  --from-file=dev-ca.crt=app-board/certs/dev-ca.crt \
-  --from-file=server.crt=app-board/certs/server.crt \
-  --from-file=server.key=app-board/certs/server.key
+  --from-file=dev-ca.crt=secrets/certs/app-content/dev-ca.crt \
+  --from-file=server.crt=secrets/certs/app-content/server.crt \
+  --from-file=server.key=secrets/certs/app-content/server.key
 
 # ⑤ 主加密密钥（SESSDATA 解密;app-user 经 _FILE 约定读
 #    /run/secrets/api_key_encryption_key——.env 里的 *_FILE 宿主相对路径
@@ -151,7 +151,7 @@ nginx 等上游…；apisix 是 standalone data_plane 不依赖 etcd，无 initC
 |----|---------|-----|
 | app-pay-test / 测试 MySQL | `--profile pay-test` | **未移植**（测试实例与生产隔离的诉求在 k8s 下应另起 namespace） |
 | redis-commander / mongo-express | `--profile tools` | **未移植**（用 port-forward + 本地工具替代） |
-| app-content 证书共享 | 宿主目录 `./app-board/certs` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-content（board 域），dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
+| app-content 证书共享 | 宿主目录 `./secrets/certs/app-content` 双挂载 | **Secret `app-board-certs`**：server.crt/server.key 给 app-content（board 域），dev-ca.crt 给 apisix——确定性高于自动生成；证书轮换 = 更新 Secret + 重启两服务 |
 | app-pay TLS | 宿主目录 `./app-pay/certs` | Secret `app-pay-tls`（ca.crt 同时供 app-task 委托回调校验） |
 | MySQL 建表脚本 | 宿主 `db/system.sql` | ConfigMap `mysql-init-sql`（§1b kubectl 创建，改 SQL 后重建 + restart mysql） |
 | APISIX 路由 | 宿主 `apisix/*.yaml` | ConfigMap `apisix-config`（subPath 挂载；改路由后重建 ConfigMap + `rollout restart deploy/apisix`） |

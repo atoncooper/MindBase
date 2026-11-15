@@ -191,6 +191,56 @@ body {
   box-shadow: 0 0 0 4px var(--color-accent-soft);
 }
 
+/* Google / Material 3 inputs inside the research workbench only (scoped;
+   the rest of the app keeps the Apple-style .field). MUI TextField/Select have
+   their own outlined styles, so exclude their inner input elements. */
+/* .field already carries its own padding + Tailwind size utilities (h-9/py-0/
+   pl-8…), so only repaint it here; bare controls get the Material padding. */
+.research-app .field,
+.research-app input:not(.field):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.MuiInputBase-input),
+.research-app select:not(.field):not(.MuiInputBase-input),
+.research-app textarea:not(.field):not(.MuiInputBase-input) {
+  width: 100%;
+  background: #ffffff;
+  border: 1px solid #dadce0;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: #202124;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.research-app input:not(.field):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.MuiInputBase-input),
+.research-app select:not(.field):not(.MuiInputBase-input),
+.research-app textarea:not(.field):not(.MuiInputBase-input) {
+  padding: 0.58rem 0.8rem;
+}
+.research-app .field:hover,
+.research-app input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.MuiInputBase-input):hover,
+.research-app select:not(.MuiInputBase-input):hover,
+.research-app textarea:not(.MuiInputBase-input):hover {
+  border-color: #bdc1c6;
+}
+.research-app .field::placeholder,
+.research-app input::placeholder,
+.research-app textarea::placeholder { color: #9aa0a6; }
+.research-app .field:focus,
+.research-app input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.MuiInputBase-input):focus,
+.research-app select:not(.MuiInputBase-input):focus,
+.research-app textarea:not(.MuiInputBase-input):focus {
+  outline: none;
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.18);
+}
+.research-app textarea.field { line-height: 1.55; }
+
+/* Compact corners inside the research workbench: Google colors/typography stay,
+   but the oversized Material pill/card rounding is intentionally toned down. */
+.research-app .rounded-3xl,
+.research-app .rounded-2xl,
+.research-app .rounded-xl { border-radius: 8px; }
+.research-app button.rounded-full,
+.research-app a.rounded-full { border-radius: 8px; }
+
 /* Nav link underline-on-hover (Apple style) */
 .nav-link {
   position: relative;

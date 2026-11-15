@@ -35,7 +35,7 @@ app-sandbox 控制层是沙箱资源的唯一真相；本服务只做**鉴权 + 
 配置（两者必须同时提供，半配置会被清空并告警）：
 
 ```bash
-APPADMIN__SANDBOX_ADMIN__BASE_URL=http://app-sandbox:8017
+APPADMIN__SANDBOX_ADMIN__BASE_URL=https://app-sandbox:8443
 APPADMIN__SANDBOX_ADMIN__TOKEN=<openssl rand -hex 32>   # 与 app-sandbox SANDBOX__ADMIN__TOKEN 同一共享密钥，不下发浏览器
 ```
 
@@ -70,8 +70,8 @@ APPADMIN__SANDBOX_ADMIN__TOKEN=<openssl rand -hex 32>   # 与 app-sandbox SANDBO
 # Docker：完整管理后台入口（UI + API + 数据库/schema 依赖）
 docker compose up -d --build app-admin  # http://127.0.0.1:3001，种子 admin / app-admin，首登强制改密
 
-# 仅 API 调试
-docker compose up -d --build app-admin-api  # http://127.0.0.1:8016
+# 仅 API 调试（compose 已开启 TLS，dev CA 签发的叶子；信任见 SSL_CERT_FILE）
+docker compose up -d --build app-admin-api  # https://127.0.0.1:8016
 
 # 本地（模块模式；连宿主 MySQL）
 cd app-go/app-admin
@@ -82,8 +82,14 @@ APPADMIN__RDBMS__URL='mysql+aiomysql://mind_base:mind-base@127.0.0.1:3306/mind_b
 
 ```bash
 APPADMIN__RDBMS__URL=...           # 必填（compose 由 RDBMS__URL 注入）
+# HTTPS 监听（阶段二）：server.tls，默认 false（本地 go run 明文）。
+# compose 开启并把 secrets/certs/app-admin 挂到 /app/certs:ro；出站信任由
+# SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt（ca-bundle.crt）提供。
+APPADMIN__SERVER__TLS__ENABLED=true
+APPADMIN__SERVER__TLS__CERT=/app/certs/server.crt
+APPADMIN__SERVER__TLS__KEY=/app/certs/server.key
 APPADMIN__PAY_RDBMS__URL=...       # 可选；app_pay 第二连接（compose 由 PAY_MYSQL_* 注入），空=支付运营 503
-APPADMIN__PAY__OPS__BASE_URL=http://apisix:9080  # 退款复核上游（与 key 同时配置才启用）
+APPADMIN__PAY__OPS__BASE_URL=https://apisix:9443  # 退款复核上游（APISIX TLS 监听；与 key 同时配置才启用）
 APPADMIN__PAY__OPS__KEY=...        # PAY_OPS_KEY（pay-ops consumer）；空=退款复核 404 隐身
 APPADMIN__PAY__GRANT__DAILY_MAX_COUNT=50         # 补偿开通日额度（0=不限，对齐 app-pay）
 APPADMIN__PAY__GRANT__DAILY_MAX_DAYS=1000

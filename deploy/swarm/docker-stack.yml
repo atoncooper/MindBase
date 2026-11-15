@@ -88,20 +88,20 @@ services:
 
   # ==============================================================
   # 证书一次性生成（幂等；每次 deploy 都会重跑，有效证书直接复用）
-  # 多节点：与 nginx/app-content/app-pay 钉到同一节点（certs 目录 bind mount 需同节点）
+  # 多节点：与 nginx/app-content/app-pay 钉到同一节点（secrets/certs 目录 bind mount 需同节点）
   # ==============================================================
   cert-gen:
     image: atoncooper/mind-base-certgen:latest
     environment:
       MB_CERT_NGINX_DIR: /out/nginx
-      MB_CERT_APPBOARD_DIR: /out/app-board
+      MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
-      - ${MB_ROOT:-/srv/mindbase}/nginx/certs:/out/nginx
-      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/out/app-board
-      - ${MB_ROOT:-/srv/mindbase}/app-go/app-content-mcp/certs:/out/mcp
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/nginx:/out/nginx
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content:/out/app-content
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content-mcp:/out/mcp
       - ${MB_ROOT:-/srv/mindbase}/app-pay/certs:/out/pay
     deploy:
       replicas: 1
@@ -125,7 +125,7 @@ services:
       - source: nginx_locations
         target: /etc/nginx/locations.conf
     volumes:
-      - ${MB_ROOT:-/srv/mindbase}/nginx/certs:/etc/nginx/certs:ro
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/nginx:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video
     # swarm 加载器只认服务级 ports（长语法），不支持 deploy.ports；
@@ -490,8 +490,8 @@ services:
         target: /usr/local/apisix/conf/render-config.sh
     volumes:
       # app-content board 域 dev-CA：apisix 信任 app-content:8004 的 HTTPS upstream；
-      # ⚠️ 与 app-content 必须同节点（见文件头；证书目录名沿用历史 app-board/certs）
-      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/usr/local/apisix/conf/certs/board:ro
+      # ⚠️ 与 app-content 必须同节点（见文件头；宿主证书在 secrets/certs/app-content）
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
     # 容器内清掉代理变量，防宿主 ~/.docker/config.json 注入劫持内网流量（同单机 compose）
     entrypoint: ["/bin/sh","-c","sh /usr/local/apisix/conf/render-config.sh /usr/local/apisix/conf/apisix.yaml.template /usr/local/apisix/conf/apisix.yaml || exit 1; unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy; if [ -f /usr/local/apisix/conf/certs/board/dev-ca.crt ]; then cat /etc/ssl/certs/ca-certificates.crt /usr/local/apisix/conf/certs/board/dev-ca.crt > /tmp/ca-bundle.crt; else cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt; fi; exec /docker-entrypoint.sh docker-start"]
     environment:
@@ -630,7 +630,7 @@ services:
       - mind-base-net
 
   # app-content —— 内容域（note 8008 + quiz 8011 + board 8004 合并为单服务；
-  #   board 为 HTTPS-only，证书走 cert-gen 签发的 app-board/certs（目录名沿用历史））
+  #   board 为 HTTPS-only，证书走 cert-gen 签发到 secrets/certs/app-content）
   app-content:
     image: atoncooper/mind-base-app-content:latest
     environment:
@@ -651,7 +651,7 @@ services:
       - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:-}
     volumes:
       - app_content_logs:/app/logs
-      - ${MB_ROOT:-/srv/mindbase}/app-board/certs:/app/certs
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content:/app/certs
     deploy:
       replicas: 1
       restart_policy:
@@ -726,7 +726,6 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - SEARXNG_URL=${SEARXNG_URL:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - OCR__API_KEY=${OCR__API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
       interval: 15s
@@ -928,7 +927,7 @@ services:
       - CONTENTMCP__LOG__FILE=/app/logs/app-content-mcp.log
     volumes:
       - app_content_mcp_logs:/app/logs
-      - ${MB_ROOT:-/srv/mindbase}/app-go/app-content-mcp/certs:/app/certs
+      - ${MB_ROOT:-/srv/mindbase}/secrets/certs/app-content-mcp:/app/certs
     deploy:
       replicas: 1
       restart_policy:

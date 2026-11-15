@@ -15,7 +15,9 @@
 
 set -euo pipefail
 
-CERT_DIR="$(cd "$(dirname "$0")" && pwd)/certs"
+# Generated certs live under the repo-root secrets/ tree (gitignored),
+# never inside a project root. app-pay keeps its own app-pay/certs/.
+CERT_DIR="$(cd "$(dirname "$0")/.." && pwd)/secrets/certs/nginx"
 mkdir -p "$CERT_DIR"
 
 MODE="${1:-selfsigned}"

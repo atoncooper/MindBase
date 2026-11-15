@@ -1,12 +1,17 @@
 "use client";
 
 /**
- * 科研工作台视图：左侧项目列表 + 右侧项目详情（阶段步骤条 + 十一个 Tab）。
+ * 科研工作台视图（改版）：Google Workspace / Material 风格外壳，左侧项目列表 +
+ * 右侧项目详情（MUI 阶段步骤条 + 十一个 MUI Tab）。
  *
- * 数据流：项目列表 / 详情分别来自 GET /academic/projects 与
+ * 数据流保持不变：项目列表 / 详情分别来自 GET /academic/projects 与
  * GET /academic/projects/:id；所有写操作由各 Tab 直接调用 academicApi，成功后
  * 通过 onChanged 回调静默刷新「详情 + 项目摘要计数」，不打断当前 Tab 的本地状态。
  * 阶段推进由概览 Tab 里的用户二次确认触发（PATCH 仅在确认后发出）。
+ *
+ * 视觉：根节点包一层 <GoogleResearchTheme>（MUI theme + ScopedCssBaseline），
+ * 外壳用 MUI 组件；各 Tab 内部不改代码，通过 research-ui 共享原语自动获得
+ * Google 风格。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -21,15 +26,28 @@ import {
     FlaskConical,
     FolderTree,
     ListChecks,
-    Loader2,
+    Menu,
     MessageCircle,
     PenLine,
+    Plus,
     RefreshCw,
     Table2,
     Tag,
     Workflow,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import {
+    Box,
+    Button,
+    CircularProgress,
+    Drawer,
+    IconButton,
+    Stack,
+    Tab,
+    Tabs,
+    Tooltip,
+    Typography,
+    alpha,
+} from "@mui/material";
 import {
     academicApi,
     type AcademicProjectDetail,
@@ -55,7 +73,9 @@ import {
     LoadingBlock,
     PAPER_TYPE_LABELS,
     formatDate,
+    SurfaceCard,
 } from "./research-ui";
+import { GoogleResearchTheme } from "./google-theme";
 
 type Tab =
     | "overview"
@@ -97,6 +117,7 @@ export function ResearchView() {
 
     const [tab, setTab] = useState<Tab>("overview");
     const [createOpen, setCreateOpen] = useState(false);
+    const [mobileProjectsOpen, setMobileProjectsOpen] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
 
     // 只接受「当前选中项目」的最新响应，避免快速切换时旧响应覆盖新详情。
@@ -137,10 +158,13 @@ export function ResearchView() {
     }, []);
 
     useEffect(() => {
+        // 首次加载项目列表（沿用原有 effect 数据流；状态在 fetch 后落定）。
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- initial list bootstrap, pre-existing pattern
         void loadProjects();
     }, [loadProjects]);
 
     useEffect(() => {
+        /* eslint-disable react-hooks/set-state-in-effect -- reset per-project view state when the selection changes (pre-existing pattern) */
         selectedRef.current = selectedId;
         setDetail(null);
         setDetailError(null);
@@ -148,6 +172,7 @@ export function ResearchView() {
             setTab("overview");
             void loadDetail(selectedId);
         }
+        /* eslint-enable react-hooks/set-state-in-effect */
     }, [selectedId, loadDetail]);
 
     /** 写操作后的静默刷新：详情 + 项目摘要（文献/稿件计数）。 */
@@ -168,152 +193,318 @@ export function ResearchView() {
 
     const project = detail?.project ?? projects.find((item) => item.id === selectedId) ?? null;
 
-    return (
-        <div className="mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-[1240px] flex-1 flex-col px-4 py-6 sm:px-8">
-            <header className="flex items-center justify-between">
-                <div>
-                    <h1 className="flex items-center gap-2 text-[22px] font-semibold tracking-tight text-foreground">
-                        <FlaskConical className="h-5 w-5 text-accent" />
+    // Full-screen shell: rail (brand + project list + search) on the left, project
+    // detail + tabs + scrollable content on the right. Mirrors the chat layout.
+    const projectRail = (
+        <Box
+            sx={{
+                display: "flex",
+                flexDirection: "column",
+                height: "100%",
+                minHeight: 0,
+                bgcolor: "#fff",
+            }}
+        >
+            <Stack
+                direction="row"
+                spacing={1.25}
+                sx={{ alignItems: "center", px: 2, py: 1.5, flexShrink: 0 }}
+            >
+                <Box
+                    sx={{
+                        display: "grid",
+                        placeItems: "center",
+                        width: 34,
+                        height: 34,
+                        flexShrink: 0,
+                        borderRadius: "8px",
+                        bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1),
+                        color: "primary.main",
+                    }}
+                >
+                    <FlaskConical size={18} aria-hidden="true" />
+                </Box>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Typography sx={{ fontSize: 14, fontWeight: 600, lineHeight: 1.3 }}>
                         科研工作台
-                    </h1>
-                    <p className="mt-1 text-[12px] text-secondary">
-                        管理研究项目、文献库与论文稿件；也可以直接在对话中交给学术智能体处理。
-                    </p>
-                </div>
-            </header>
-
-            <div className="mt-5 flex min-h-0 flex-1 flex-col items-stretch gap-4 lg:flex-row">
-                <div className="flex min-h-0 flex-col lg:w-[280px] lg:flex-none">
-                    <ProjectList
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap>
+                        Research Workspace
+                    </Typography>
+                </Box>
+            </Stack>
+            <Box sx={{ flex: 1, minHeight: 0, px: 1.5, pb: 1.5 }}>
+                <ProjectList
                     projects={projects}
                     loading={projectsLoading}
                     error={projectsError}
                     selectedId={selectedId}
-                    onSelect={setSelectedId}
+                    onSelect={(id) => {
+                        setSelectedId(id);
+                        setMobileProjectsOpen(false);
+                    }}
                     onRetry={() => void loadProjects()}
-                        onCreate={() => setCreateOpen(true)}
-                    />
-                </div>
+                    onCreate={() => setCreateOpen(true)}
+                    embedded
+                />
+            </Box>
+        </Box>
+    );
 
-                <section className="flex min-w-0 flex-1 flex-col">
-                    {!selectedId ? (
-                        <div className="rounded-xl border border-border-subtle bg-surface">
-                            <EmptyState
-                                icon={FlaskConical}
-                                title="选择或新建一个研究项目"
-                                description="科研项目把文献库、阶段计划、写作稿件和动态关联在一起。"
-                                action={
-                                    <button
-                                        type="button"
-                                        onClick={() => setCreateOpen(true)}
-                                        className="rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+    return (
+        <GoogleResearchTheme>
+            <Box
+                className="research-app"
+                sx={{
+                    display: "flex",
+                    height: "100%",
+                    minHeight: 0,
+                    overflow: "hidden",
+                    bgcolor: "background.default",
+                }}
+            >
+                {/* Desktop project rail */}
+                <Box
+                    sx={{
+                        display: { xs: "none", md: "flex" },
+                        flexDirection: "column",
+                        width: 340,
+                        flexShrink: 0,
+                        minHeight: 0,
+                        borderRight: 1,
+                        borderColor: "divider",
+                    }}
+                >
+                    {projectRail}
+                </Box>
+
+                {/* Mobile project rail */}
+                <Drawer
+                    anchor="left"
+                    open={mobileProjectsOpen}
+                    onClose={() => setMobileProjectsOpen(false)}
+                    sx={{
+                        display: { xs: "block", md: "none" },
+                        "& .MuiDrawer-paper": {
+                            width: 330,
+                            maxWidth: "88vw",
+                            borderRight: 1,
+                            borderColor: "divider",
+                            boxSizing: "border-box",
+                        },
+                    }}
+                >
+                    {projectRail}
+                </Drawer>
+
+                {/* Main detail pane */}
+                <Box
+                    component="section"
+                    sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        flex: 1,
+                        minWidth: 0,
+                        minHeight: 0,
+                    }}
+                >
+                    <Box
+                        sx={{
+                            flexShrink: 0,
+                            bgcolor: "#fff",
+                            borderBottom: 1,
+                            borderColor: "divider",
+                            px: { xs: 2, md: 3 },
+                            pt: { xs: 1.25, md: 2 },
+                        }}
+                    >
+                        <Stack
+                            direction="row"
+                            spacing={1.5}
+                            sx={{ alignItems: "flex-start", minWidth: 0 }}
+                        >
+                            <IconButton
+                                aria-label="打开项目列表"
+                                onClick={() => setMobileProjectsOpen(true)}
+                                sx={{ display: { md: "none" }, mt: 0.25 }}
+                            >
+                                <Menu size={20} aria-hidden="true" />
+                            </IconButton>
+                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                                <Typography
+                                    variant="h2"
+                                    sx={{ fontSize: 20, lineHeight: 1.3, wordBreak: "break-word" }}
+                                >
+                                    {project?.title ?? "科研工作台"}
+                                </Typography>
+                                {project ? (
+                                    <Stack
+                                        direction="row"
+                                        spacing={{ xs: 1, sm: 2 }}
+                                        useFlexGap
+                                        sx={{
+                                            mt: 0.75,
+                                            flexWrap: "wrap",
+                                            color: "text.secondary",
+                                            fontSize: 12,
+                                        }}
                                     >
-                                        新建项目
-                                    </button>
-                                }
-                            />
-                        </div>
-                    ) : detailLoading && !detail ? (
-                        <div className="rounded-xl border border-border-subtle bg-surface">
-                            <LoadingBlock label="加载项目详情…" />
-                        </div>
-                    ) : detailError && !detail ? (
-                        <div className="rounded-xl border border-border-subtle bg-surface p-4">
-                            <ErrorBanner message={detailError} onRetry={() => void loadDetail(selectedId)} />
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            {/* 详情头 */}
-                            <div className="rounded-xl border border-border-subtle bg-surface p-4">
-                                <div className="flex flex-wrap items-start justify-between gap-2">
-                                    <div className="min-w-0">
-                                        <h2 className="truncate text-[17px] font-semibold tracking-tight text-foreground">
-                                            {project?.title ?? "…"}
-                                        </h2>
-                                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-secondary">
-                                            <span className="inline-flex items-center gap-1">
-                                                <Tag className="h-3 w-3" />
-                                                {project ? PAPER_TYPE_LABELS[project.paperType] : "—"}
-                                            </span>
-                                            <span>领域：{project?.field || "未填写"}</span>
-                                            <span>目标期刊：{project?.targetJournal || "未填写"}</span>
-                                            <span className="inline-flex items-center gap-1">
-                                                <CalendarDays className="h-3 w-3" />
-                                                截止：
-                                                {project?.deadline
-                                                    ? formatDate(new Date(project.deadline).getTime())
-                                                    : "未设置"}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    <div className="flex shrink-0 items-center gap-1.5">
-                                        {/* 新建一个绑定当前项目的会话：/chat 读取 ?academic_project= 并在建会话时持久化绑定 */}
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                if (!project) return;
-                                                router.push(
-                                                    `/chat?academic_project=${encodeURIComponent(project.id)}&new=1`,
-                                                );
-                                            }}
-                                            disabled={!project}
-                                            className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-surface transition-opacity hover:opacity-90 disabled:opacity-40"
+                                        <Box
+                                            component="span"
+                                            sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
                                         >
-                                            <MessageCircle className="h-3 w-3" />
-                                            在对话中继续
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => void manualRefresh()}
-                                            disabled={refreshing}
-                                            className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-40"
+                                            <Tag size={13} aria-hidden="true" />
+                                            {PAPER_TYPE_LABELS[project.paperType]}
+                                        </Box>
+                                        <Box component="span">领域：{project.field || "未填写"}</Box>
+                                        <Box component="span">
+                                            目标期刊：{project.targetJournal || "未填写"}
+                                        </Box>
+                                        <Box
+                                            component="span"
+                                            sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
                                         >
-                                            <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
-                                            刷新
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {project && (
-                                    <div className="mt-3 border-t border-border-subtle pt-3">
-                                        <StageStepper
-                                            stages={project.stages}
-                                            current={project.stage}
-                                        />
-                                    </div>
+                                            <CalendarDays size={13} aria-hidden="true" />
+                                            截止：
+                                            {project.deadline
+                                                ? formatDate(new Date(project.deadline).getTime())
+                                                : "未设置"}
+                                        </Box>
+                                    </Stack>
+                                ) : (
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                                        从左侧选择或新建研究项目。
+                                    </Typography>
                                 )}
-                            </div>
+                            </Box>
+                            <Stack
+                                direction="row"
+                                spacing={1}
+                                sx={{ alignItems: "center", flexShrink: 0 }}
+                            >
+                                <Tooltip title="刷新">
+                                    <span>
+                                        <IconButton
+                                            aria-label="刷新"
+                                            onClick={() => void manualRefresh()}
+                                            disabled={!selectedId || refreshing}
+                                            sx={{
+                                                border: 1,
+                                                borderColor: "divider",
+                                                borderRadius: "8px",
+                                                color: "text.secondary",
+                                            }}
+                                        >
+                                            {refreshing ? (
+                                                <CircularProgress size={16} thickness={5} />
+                                            ) : (
+                                                <RefreshCw size={16} aria-hidden="true" />
+                                            )}
+                                        </IconButton>
+                                    </span>
+                                </Tooltip>
+                                {project && (
+                                    <Button
+                                        variant="contained"
+                                        size="small"
+                                        startIcon={<MessageCircle size={14} aria-hidden="true" />}
+                                        onClick={() => {
+                                            if (!project) return;
+                                            router.push(
+                                                `/chat?academic_project=${encodeURIComponent(project.id)}&new=1`,
+                                            );
+                                        }}
+                                        sx={{ display: { xs: "none", sm: "inline-flex" } }}
+                                    >
+                                        在对话中继续
+                                    </Button>
+                                )}
+                                <Button
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<Plus size={14} aria-hidden="true" />}
+                                    onClick={() => setCreateOpen(true)}
+                                    sx={{ display: { xs: "none", sm: "inline-flex" } }}
+                                >
+                                    新建项目
+                                </Button>
+                            </Stack>
+                        </Stack>
 
-                            {/* Tab 切换 */}
-                            <div className="flex flex-wrap items-center gap-0.5 rounded-[10px] bg-border-subtle/70 p-0.5">
+                        {project && (
+                            <Box sx={{ mt: 1.5, minWidth: 0 }}>
+                                <StageStepper stages={project.stages} current={project.stage} />
+                            </Box>
+                        )}
+
+                        {selectedId && (
+                            <Tabs
+                                value={tab}
+                                onChange={(event, value) => setTab(value as Tab)}
+                                variant="scrollable"
+                                allowScrollButtonsMobile
+                                aria-label="科研项目标签页"
+                                sx={{ mt: 1, minHeight: 42 }}
+                            >
                                 {TABS.map((item) => {
                                     const Icon = item.icon;
-                                    const active = tab === item.id;
                                     return (
-                                        <button
+                                        <Tab
                                             key={item.id}
-                                            type="button"
-                                            onClick={() => setTab(item.id)}
-                                            className={cn(
-                                                "inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-[12px] font-medium transition-colors",
-                                                active
-                                                    ? "bg-surface text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.10),0_0_0_0.5px_rgba(0,0,0,0.05)]"
-                                                    : "text-secondary hover:text-foreground",
-                                            )}
-                                        >
-                                            <Icon className="h-3.5 w-3.5" />
-                                            {item.label}
-                                        </button>
+                                            value={item.id}
+                                            label={item.label}
+                                            icon={<Icon size={16} aria-hidden="true" />}
+                                            iconPosition="start"
+                                        />
                                     );
                                 })}
-                                {refreshing && <Loader2 className="ml-2 h-3 w-3 animate-spin text-tertiary" />}
-                            </div>
+                            </Tabs>
+                        )}
+                    </Box>
 
-                            {/* Tab 内容 */}
-                            {!detail ? (
-                                <div className="rounded-xl border border-border-subtle bg-surface">
+                    {/* Scrollable detail / tab content */}
+                    <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+                        <Box
+                            sx={{
+                                width: "100%",
+                                maxWidth: 1280,
+                                mx: "auto",
+                                px: { xs: 2, md: 3 },
+                                py: { xs: 2, md: 2.5 },
+                            }}
+                        >
+                            {!selectedId ? (
+                                <Box sx={{ py: { xs: 6, md: 10 } }}>
+                                    <EmptyState
+                                        icon={FlaskConical}
+                                        title="选择或新建一个研究项目"
+                                        description="科研项目把文献库、阶段计划、写作稿件和动态关联在一起。"
+                                        action={
+                                            <Button
+                                                variant="contained"
+                                                startIcon={<Plus size={14} aria-hidden="true" />}
+                                                onClick={() => setCreateOpen(true)}
+                                            >
+                                                新建项目
+                                            </Button>
+                                        }
+                                    />
+                                </Box>
+                            ) : detailLoading && !detail ? (
+                                <SurfaceCard>
                                     <LoadingBlock label="加载项目详情…" />
-                                </div>
+                                </SurfaceCard>
+                            ) : detailError && !detail ? (
+                                <SurfaceCard>
+                                    <ErrorBanner
+                                        message={detailError}
+                                        onRetry={() => void loadDetail(selectedId)}
+                                    />
+                                </SurfaceCard>
+                            ) : !detail ? (
+                                <SurfaceCard>
+                                    <LoadingBlock label="加载项目详情…" />
+                                </SurfaceCard>
                             ) : tab === "overview" ? (
                                 <OverviewTab detail={detail} onChanged={onChanged} />
                             ) : tab === "literature" ? (
@@ -321,7 +512,10 @@ export function ResearchView() {
                             ) : tab === "writing" ? (
                                 <WritingTab projectId={detail.project.id} />
                             ) : tab === "experiments" ? (
-                                <ExperimentsTab projectId={detail.project.id} onChanged={() => void onChanged()} />
+                                <ExperimentsTab
+                                    projectId={detail.project.id}
+                                    onChanged={() => void onChanged()}
+                                />
                             ) : tab === "evidence" ? (
                                 <EvidenceTab projectId={detail.project.id} />
                             ) : tab === "validation" ? (
@@ -329,29 +523,35 @@ export function ResearchView() {
                             ) : tab === "analysis" ? (
                                 <AnalysisTab projectId={detail.project.id} />
                             ) : tab === "workspace" ? (
-                                <WorkspaceTab projectId={detail.project.id} onChanged={() => void onChanged()} />
+                                <WorkspaceTab
+                                    projectId={detail.project.id}
+                                    onChanged={() => void onChanged()}
+                                />
                             ) : tab === "plans" ? (
                                 <PlansTab projectId={detail.project.id} />
                             ) : tab === "approvals" ? (
-                                <ApprovalTab projectId={detail.project.id} onChanged={() => void onChanged()} />
+                                <ApprovalTab
+                                    projectId={detail.project.id}
+                                    onChanged={() => void onChanged()}
+                                />
                             ) : (
                                 <EventsTab projectId={detail.project.id} />
                             )}
-                        </div>
-                    )}
-                </section>
-            </div>
+                        </Box>
+                    </Box>
+                </Box>
 
-            <NewProjectDialog
-                open={createOpen}
-                onClose={() => setCreateOpen(false)}
-                onCreated={(created) => {
-                    void loadProjects(true);
-                    setSelectedId(created.project.id);
-                    setDetail(created);
-                    setTab("overview");
-                }}
-            />
-        </div>
+                <NewProjectDialog
+                    open={createOpen}
+                    onClose={() => setCreateOpen(false)}
+                    onCreated={(created) => {
+                        void loadProjects(true);
+                        setSelectedId(created.project.id);
+                        setDetail(created);
+                        setTab("overview");
+                    }}
+                />
+            </Box>
+        </GoogleResearchTheme>
     );
 }

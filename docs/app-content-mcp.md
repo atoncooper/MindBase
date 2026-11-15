@@ -192,7 +192,7 @@ env 双下划线嵌套；godotenv 自工作目录向上找项目根 `.env`（进
 ```bash
 # 1. .env 置 CONTENT_MCP_TLS_ENABLED=true 后
 docker compose up -d --force-recreate app-content-mcp
-# 2. CA 自动生成在 ./app-go/app-content-mcp/certs/dev-ca.crt（cert-gen 统一签发）
+# 2. CA 自动生成在 ./secrets/certs/app-content-mcp/dev-ca.crt（cert-gen 统一签发）
 # 3. MCP 宿主侧信任 CA：
 #    - Node 系宿主（默认不读系统证书库）：环境变量 NODE_EXTRA_CA_CERTS=<dev-ca.crt 绝对路径>
 #    - 系统库宿主：把 dev-ca.crt 装入系统"受信任的根证书颁发机构"
@@ -231,7 +231,7 @@ docker compose up -d --force-recreate app-content-mcp
 | MCP 端点 | `/mcp`（streamable-http，默认） |
 | 健康 | `/health`（免认证，200） |
 | 日志 | `/app/logs/app-content-mcp.log`（卷 `app_content_mcp_logs`） |
-| 证书目录 | `./app-go/app-content-mcp/certs` → 容器 `/app/certs`（cert-gen 签发，TLS 默认关） |
+| 证书目录 | `./secrets/certs/app-content-mcp` → 容器 `/app/certs`（cert-gen 签发，TLS 默认关） |
 | compose profile | `["", "content-mcp", "full"]`（默认栈启动——board/note/quiz agent 是主栈功能） |
 
 ```yaml
@@ -257,7 +257,7 @@ app-content-mcp:
   ports: ["127.0.0.1:${APP_CONTENT_MCP_PORT:-8019}:8019"]
   volumes:
     - app_content_mcp_logs:/app/logs
-    - ./app-go/app-content-mcp/certs:/app/certs
+    - ./secrets/certs/app-content-mcp:/app/certs
   restart: unless-stopped
   networks: [mind-base-net]
 ```
@@ -325,7 +325,7 @@ stdio 传输的宿主（本地直跑二进制时）：
 | `app-note-mcp`（8009，env `NOTEMCP__`） | 同上（同一进程，note 工具面） |
 | `app-quiz-mcp`（8012，env `QUIZMCP__`） | 同上（同一进程，quiz 工具面） |
 | 三个日志卷 `app_board_mcp_logs` / `app_note_mcp_logs` / `app_quiz_mcp_logs` | 一个卷 `app_content_mcp_logs` |
-| 证书目录 `mcp/app-board-mcp/certs` | `app-go/app-content-mcp/certs` |
+| 证书目录 `mcp/app-board-mcp/certs` | `secrets/certs/app-content-mcp`（仓库根 secrets/） |
 | app-ts 配置 `boardMcp` / `noteMcp` / `quizMcp` 三段 | 一段 `contentMcp`（`CONTENT_MCP__URL=http://app-content-mcp:8019/mcp`、`CONTENT_MCP__API_KEY=${APISIX_CONSUMER_KEY}`） |
 | `.env` `BOARD_MCP_UID` / `BOARD_MCP_AUTH_TOKEN` / `NOTE_MCP_*` / `QUIZ_MCP_*` | `CONTENT_MCP_UID` / `CONTENT_MCP_AUTH_TOKEN` |
 

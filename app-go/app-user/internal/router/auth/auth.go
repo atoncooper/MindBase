@@ -19,13 +19,15 @@ import (
 // Python backend exactly so the frontend's authApi is untouched).
 func registerAuth(e *gin.Engine, d Deps) {
 	g := e.Group("/auth")
-	// Per-IP fixed-window guard on the whole /auth surface (approximation of
-	// the Python 1rps/burst5 token bucket): 5 requests per second per IP,
-	// fail-open when Redis is down.
+	// Per-IP fixed-window guard on the whole /auth surface (fail-open when
+	// Redis is down). Credential endpoints have their own rlIP/rlKey guards;
+	// this coarse bucket only needs to stop scripted floods. 20/s is the
+	// normal page-load budget (profile + security + features + auth provider),
+	// while the old 5/s produced false 429s on /auth/profile.
 	g.Use(func(c *gin.Context) {
 		ip := utils.ClientIP(c.Request.Header.Get("X-Forwarded-For"),
 			c.Request.Header.Get("X-Real-IP"), c.Request.RemoteAddr)
-		if !d.IPGuard.Allow(c.Request.Context(), "ip:"+ip, 5, time.Second) {
+		if !d.IPGuard.Allow(c.Request.Context(), "ip:"+ip, 20, time.Second) {
 			retry := d.IPGuard.RetryAfter(c.Request.Context(), "ip:"+ip)
 			c.Header("Retry-After", strconv.Itoa(retry))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"detail": "请求过于频繁，请稍后再试"})

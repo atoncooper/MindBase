@@ -1,4 +1,5 @@
 import { MilvusClient, DataType, type FieldType } from "@zilliz/milvus2-sdk-node";
+import { createMilvusClient } from "../clients/milvus-client.js";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
 import type { EmbeddingsClient } from "../llm/embeddings.js";
@@ -49,12 +50,8 @@ export class KgEntityIndex {
     const index = new KgEntityIndex(config.kg.collectionName);
     try {
       index.dimension = await embeddings.probeDimension();
-      const client = new MilvusClient({
-        address: config.milvus.address,
-        token: config.milvus.token || undefined,
-        database: config.milvus.database,
-        timeout: 10_000,
-      });
+      // Shared factory: TLS trust/SNI must match the chunk store exactly.
+      const client = createMilvusClient();
       await client.createDatabase({ db_name: config.milvus.database }).catch(() => undefined);
       await client.useDatabase({ db_name: config.milvus.database }).catch(() => undefined);
       index.client = client;

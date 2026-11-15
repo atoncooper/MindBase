@@ -17,6 +17,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"os"
 )
 
 var DB *gorm.DB
@@ -96,13 +97,17 @@ func Ping() error {
 // ToGormDSN converts mysql+aiomysql://user:pass@host:port/db
 // to user:pass@tcp(host:port)/db?charset=utf8mb4&parseTime=True&loc=UTC.
 func ToGormDSN(sqlalchemyURL string) string {
+	tlsParam := ""
+	if v := os.Getenv("MYSQL_TLS_MODE"); v != "" {
+		tlsParam = "&tls=" + v
+	}
 	s := sqlalchemyURL
 	for _, p := range []string{"mysql+aiomysql://", "mysql+pymysql://", "mysql://"} {
 		s = strings.TrimPrefix(s, p)
 	}
 	atIdx := strings.LastIndex(s, "@")
 	if atIdx < 0 {
-		return s + "?charset=utf8mb4&parseTime=True&loc=UTC"
+		return s + "?charset=utf8mb4&parseTime=True&loc=UTC" + tlsParam
 	}
 	userPass := s[:atIdx]
 	hostDB := s[atIdx+1:]
@@ -111,16 +116,16 @@ func ToGormDSN(sqlalchemyURL string) string {
 		if strings.Contains(hostDB, "?") {
 			return s
 		}
-		return s + "?charset=utf8mb4&parseTime=True&loc=UTC"
+		return s + "?charset=utf8mb4&parseTime=True&loc=UTC" + tlsParam
 	}
 	slashIdx := strings.Index(hostDB, "/")
 	if slashIdx < 0 {
-		return userPass + "@tcp(" + hostDB + ")/?charset=utf8mb4&parseTime=True&loc=UTC"
+		return userPass + "@tcp(" + hostDB + ")/?charset=utf8mb4&parseTime=True&loc=UTC" + tlsParam
 	}
 	hostPort := hostDB[:slashIdx]
 	rest := hostDB[slashIdx+1:]
 	if qIdx := strings.Index(rest, "?"); qIdx >= 0 {
 		rest = rest[:qIdx]
 	}
-	return userPass + "@tcp(" + hostPort + ")/" + rest + "?charset=utf8mb4&parseTime=True&loc=UTC"
+	return userPass + "@tcp(" + hostPort + ")/" + rest + "?charset=utf8mb4&parseTime=True&loc=UTC" + tlsParam
 }

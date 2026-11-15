@@ -29,6 +29,14 @@ apisix:
   # its CA yet (cold start ordering), the entrypoint falls back to the system pool
   # and `docker compose restart apisix` after first app-content boot reloads it.
   ssl:
+    # Service-to-service HTTPS listener (nginx -> https://apisix:9443).
+    # Encryption only for upstreams (APISIX 3.11 cannot verify non-kafka
+    # upstream certs), but nginx verifies this listener's leaf.
+    enable: true
+    listen:
+      - port: 9443
+    cert: /usr/local/apisix/conf/certs/apisix/server.crt
+    key: /usr/local/apisix/conf/certs/apisix/server.key
     ssl_trusted_certificate: /tmp/ca-bundle.crt
 
 # Custom nginx directives.

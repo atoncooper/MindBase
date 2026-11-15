@@ -1,11 +1,18 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { ArrowUp, Square, X, ImagePlus, Paperclip } from "lucide-react";
+import { ArrowUp, Square, X, FileUp, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
 import { CodingPlanModelPicker } from "./coding-plan-model-picker";
+import { ChatModelPicker } from "./chat-model-picker";
+import { ChatAttachmentsDrawer } from "./chat-attachments-drawer";
 import { StreamElapsed } from "./streaming-elapsed";
-import { skillsApi, type InstalledSkill } from "@/lib/api";
+import {
+  skillsApi,
+  type ChatModel,
+  type InstalledSkill,
+  type SessionDocument,
+} from "@/lib/api";
 
 export interface SelectedSkill {
   skill_id: string;
@@ -28,6 +35,15 @@ interface ChatInputProps {
   onOpenQuizWizard?: () => void;
   // 会话文档上传（pdf/docx/pptx/txt/md/html）— 由视图上传到 /chat/documents
   onAttachDocuments?: (files: File[]) => void;
+  // 当前会话已上传的文档 + 删除入口：统一在「附件」抽屉里展示（不再常驻 chips）
+  sessionFiles?: SessionDocument[];
+  onDeleteSessionFile?: (doc: SessionDocument) => void;
+  // 待发送图片点击预览（复用视图的图片灯箱）
+  onPreviewImage?: (src: string) => void;
+  // 聊天模型目录与选择（目录为空/加载失败 = 选择器隐藏，请求不带 model 用默认）
+  models?: ChatModel[];
+  selectedModel?: string;
+  onModelChange?: (modelId: string) => void;
   // Coding Plan 模型（聊天对话框按需选择，随本轮请求发送）
   codingPlanModel?: string;
   onCodingPlanModelChange?: (model: string | undefined) => void;
@@ -105,6 +121,12 @@ export function ChatInput({
   onToggleSkill,
   onOpenQuizWizard,
   onAttachDocuments,
+  sessionFiles = [],
+  onDeleteSessionFile,
+  onPreviewImage,
+  models = [],
+  selectedModel = "",
+  onModelChange,
   codingPlanModel,
   onCodingPlanModelChange,
   queuedCount = 0,
@@ -112,6 +134,8 @@ export function ChatInput({
   const [input, setInput] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [imageError, setImageError] = useState("");
+  // 附件抽屉：待发送图片 + 会话文件（输入框上方不再常驻缩略图/chips）
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
   const [skills, setSkills] = useState<InstalledSkill[] | null>(null);
@@ -149,11 +173,13 @@ export function ChatInput({
 
   // Keep the keyboard cursor inside the visible item range.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp the cursor when the filtered slash list shrinks; one derived reset, no cascading renders
     if (activeIndex >= items.length) setActiveIndex(0);
   }, [items.length, activeIndex]);
 
   // Reset dismissal whenever the raw input changes, so "/" reopens the menu.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- derived reset on user input (single extra render); no external system involved
     setMenuDismissed(false);
   }, [input]);
 
@@ -168,6 +194,7 @@ export function ChatInput({
   }, [input]);
 
   const canSend = (input.trim().length > 0 || images.length > 0) && !disabled;
+  const attachmentCount = images.length + sessionFiles.length;
 
   const handlePickCommand = useCallback(
     (id: string) => {
@@ -318,23 +345,6 @@ export function ChatInput({
         </div>
       )}
 
-      {images.length > 0 && (
-        <div className="mb-1.5 flex flex-wrap gap-2">
-          {images.map((src, i) => (
-            <div key={i} className="relative">
-              <img src={src} alt={`附件 ${i + 1}`} className="h-16 w-16 rounded-lg border border-border object-cover" />
-              <button
-                type="button"
-                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
-                className="absolute -right-1.5 -top-1.5 grid h-5 w-5 place-items-center rounded-full border border-border bg-surface text-tertiary transition-colors hover:text-foreground"
-                aria-label={`移除图片 ${i + 1}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
       {imageError && (
         <div className="mb-1.5 text-[12px] text-danger" role="alert">
           {imageError}
@@ -376,7 +386,7 @@ export function ChatInput({
           aria-label="上传文档到当前会话"
           title="上传文档到当前会话（pdf/docx/pptx/txt/md/html）"
         >
-          <Paperclip className="h-4 w-4" />
+          <FileUp className="h-4 w-4" />
         </button>
         <button
           type="button"
@@ -386,6 +396,22 @@ export function ChatInput({
           aria-label="添加图片"
         >
           <ImagePlus className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setAttachmentsOpen(true)}
+          className={`relative grid h-8 w-8 shrink-0 place-items-center rounded-full transition-colors hover:bg-border-subtle ${
+            attachmentCount > 0 ? "text-accent" : "text-tertiary hover:text-foreground"
+          }`}
+          aria-label={`查看附件（${attachmentCount}）`}
+          title="查看附件（待发送图片 / 会话文件）"
+        >
+          <Paperclip className="h-4 w-4" aria-hidden="true" />
+          {attachmentCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] font-medium leading-none text-white">
+              {attachmentCount}
+            </span>
+          )}
         </button>
         <textarea
           ref={textareaRef}
@@ -407,6 +433,15 @@ export function ChatInput({
           aria-label="聊天消息输入"
           aria-disabled={disabled}
         />
+
+        {onModelChange && (
+          <ChatModelPicker
+            models={models}
+            value={selectedModel}
+            onChange={onModelChange}
+            disabled={disabled}
+          />
+        )}
 
         {onCodingPlanModelChange && (
           <CodingPlanModelPicker
@@ -478,6 +513,16 @@ export function ChatInput({
           <span>输入 / 使用命令与技能 · AI 可能出错，重要信息请核实</span>
         </div>
       )}
+
+      <ChatAttachmentsDrawer
+        open={attachmentsOpen}
+        onClose={() => setAttachmentsOpen(false)}
+        images={images}
+        onRemoveImage={(index) => setImages((prev) => prev.filter((_, i) => i !== index))}
+        sessionFiles={sessionFiles}
+        onDeleteSessionFile={onDeleteSessionFile}
+        onPreviewImage={onPreviewImage}
+      />
     </div>
   );
 }
