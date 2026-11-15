@@ -6,6 +6,7 @@ import {
   type FunctionObject,
   type SearchResultData,
 } from "@zilliz/milvus2-sdk-node";
+import { createMilvusClient } from "../clients/milvus-client.js";
 import { config } from "../config/index.js";
 import { createLogger } from "../logger.js";
 import { partitionNameForMonth } from "../utils/datetime.js";
@@ -92,12 +93,7 @@ export class MilvusStore {
 
   private async doInitialize(): Promise<void> {
     try {
-      const client = new MilvusClient({
-        address: config.milvus.address,
-        token: config.milvus.token || undefined,
-        database: config.milvus.database,
-        timeout: 10_000,
-      });
+      const client = createMilvusClient();
       await client.createDatabase({ db_name: config.milvus.database }).catch(() => undefined);
       await client.useDatabase({ db_name: config.milvus.database }).catch(() => undefined);
       this.client = client;

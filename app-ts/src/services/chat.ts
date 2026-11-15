@@ -24,6 +24,7 @@ import type { PromptRegistry } from "../agent/prompts/loader.js";
 import { buildBoardSystemSection, type BoardContextParams } from "./board-context.js";
 import type { TempWorkspaceManager } from "../context/temp-workspace.js";
 import { getRequestContext } from "../context/request-context.js";
+import { createGatewayModel } from "../llm/provider.js";
 import type { LanguageModel } from "ai";
 
 /**
@@ -48,6 +49,13 @@ export interface AskStreamRequest {
   skillIds?: string[];
   /** chat-dialog selected model id (Coding Plan catalog); resolved once per turn. */
   model?: string;
+  /**
+   * chat-dialog selected model id from the general chat catalog (config/model.json;
+   * GET /chat/models). Already validated by the HTTP layer against that catalog.
+   * Takes precedence over the Coding Plan pick; absent = service default
+   * (config.llm.model) via the agent's own provider.
+   */
+  chatModel?: string;
   /**
    * Board (mindmap/whiteboard) chat context parsed at the HTTP layer: the user
    * asked from inside a board node. Rendered into the agent's system prompt as a
@@ -259,6 +267,10 @@ export class ChatService {
       if (req.signal.aborted) turnAbort.abort();
       else req.signal.addEventListener("abort", onClientAbort, { once: true });
     }
+    // Effective model id of this turn for quota/ledger bookkeeping (prices lookup):
+    // explicit chat-catalog pick > Coding Plan pick > service default. Undefined
+    // until the model is resolved below; falls back to config.llm.model.
+    let turnModelId: string | undefined;
     let deadlineHit = false;
     const turnTimer = setTimeout(() => {
       deadlineHit = true;
@@ -273,9 +285,18 @@ export class ChatService {
       }
 
       let resolvedModel: LanguageModel | undefined;
-      if (req.model && this.resolveModel) {
+      // Per-turn model resolution. Exactly ONE LanguageModel may reach the harness
+      // (`model` there is a LanguageModel, not an id — a string would be treated as
+      // a model object). Precedence: explicit chat-catalog pick (config/model.json)
+      // > Coding Plan pick > service default (no model passed; the agent's own
+      // gateway provider uses config.llm.model).
+      if (req.chatModel) {
+        resolvedModel = createGatewayModel("chat", { model: req.chatModel, uid: req.uid });
+        turnModelId = req.chatModel;
+      } else if (req.model && this.resolveModel) {
         try {
           resolvedModel = await this.resolveModel({ uid: req.uid, model: req.model });
+          if (resolvedModel) turnModelId = req.model;
         } catch (err) {
           log.warn("[CHAT] resolve selected model failed, fallback gateway: " + (err instanceof Error ? err.message : String(err)));
         }
@@ -293,8 +314,9 @@ export class ChatService {
         })),
         agentName: req.agentName,
         skillIds: req.skillIds,
+        // Only the resolved LanguageModel goes down; passing the raw id string as
+        // `model` used to overwrite this and hand react.ts a non-model value.
         ...(resolvedModel ? { model: resolvedModel } : {}),
-        ...(req.model ? { model: req.model } : {}),
         ...(extraSystem ? { extraSystem } : {}),
         ...(academicProjectId ? { academicProjectId } : {}),
         signal: turnAbort.signal,
@@ -338,13 +360,24 @@ export class ChatService {
         yield { type: "done" };
         return;
       }
+      // Bookkeeping uses the model that actually ran, not the service default:
+      // a catalog/Coding-Plan pick must show up in quota cost + ai_usage_daily.
+      // Price fallback: an unpriced model is billed at the default model's price
+      // (never undefined → cost stays 0 only when the default is unpriced too).
+      const billedModel = turnModelId ?? config.llm.model;
+      const priceModel = config.quota.prices[billedModel] ? billedModel : config.llm.model;
+      const prices = config.quota.prices[priceModel];
       if (usage && (usage.totalTokens || usage.outputTokens)) {
-        log.info(`[CHAT] turn usage session=${sessionId} in=${usage.inputTokens ?? "?"} out=${usage.outputTokens ?? "?"} total=${usage.totalTokens ?? "?"}`);
+        log.info(
+          `[CHAT] turn usage session=${sessionId} model=${billedModel} in=${usage.inputTokens ?? "?"} out=${usage.outputTokens ?? "?"} total=${usage.totalTokens ?? "?"}`,
+        );
       }
       // consume-on-success — turn count + day cost + ledger row.
       // Failed/retried turns never consume (they short-circuit above via hadError).
       if (this.quota && !hadError) {
-        await this.quota.completeChatTurn(req.uid, req.clientKey, usage, config.llm.model).catch((err: unknown) => {
+        // completeChatTurn only prices the turn (it does not persist the model id),
+        // so hand it the priced id while the ledger below records the real one.
+        await this.quota.completeChatTurn(req.uid, req.clientKey, usage, priceModel).catch((err: unknown) => {
           log.warn(`[CHAT] quota consume failed (ignored): ${err instanceof Error ? err.message : err}`);
         });
       }
@@ -354,10 +387,10 @@ export class ChatService {
             day: today(),
             uid: req.uid ?? "0",
             purpose: "chat",
-            model: config.llm.model,
+            model: billedModel,
             inputTokens: usage?.inputTokens ?? 0,
             outputTokens: usage?.outputTokens ?? 0,
-            costMicroYuan: costMicroYuan(usage?.inputTokens ?? 0, usage?.outputTokens ?? 0, config.quota.prices[config.llm.model]),
+            costMicroYuan: costMicroYuan(usage?.inputTokens ?? 0, usage?.outputTokens ?? 0, prices),
           })
           .catch((err: unknown) => log.warn(`[CHAT] usage ledger write failed: ${err instanceof Error ? err.message : err}`));
       }

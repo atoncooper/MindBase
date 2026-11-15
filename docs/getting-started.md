@@ -61,7 +61,7 @@ openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_ke
 |----|------|
 | `secrets/api_key_encryption_key` | app-user（auth/bili 域）/ app-cloud 共用的用户凭证加密主密钥（一行 base64）。**不是**环境变量文件内容，而是独立密钥文件；compose 把它挂到 `/run/secrets/`。文件缺失时容器会反复重启（Docker 会把缺失的绑定源建成目录），日志报读取失败。**部署后不可更换**，否则已加密数据无法解密。 |
 | `APISIX_CONSUMER_KEY` | 服务间 key-auth 共享密钥。compose 强制要求（未设置直接报错 `err_APISIX_CONSUMER_KEY_not_set_in_.env`）。**唯一来源是 `.env`**：APISIX 容器启动时由 `apisix/render-config.sh` 把它渲染进 `apisix.yaml`（模板 `apisix/apisix.yaml.template` 只含占位符，standalone 模式不读 env 由渲染补齐）。轮换 = 改 `.env` 后重启 apisix。 |
-| `AI_GATEWAY__API_KEY` | 平台 AI 出网凭证（LLM / embedding / OCR）。用 `--profile ai` 的 Higress 时填 Higress consumer `mindbase-backend` 的 key（在网关控制台 `http://127.0.0.1:18081` 配置，详见 configuration.md）；不用 Higress 时可直接填供应商 key，并把 `AI_GATEWAY__BASE_URL` 指向供应商的 OpenAI 兼容口。**留空时 app-user（bili 路由）会启动失败**（`asr.api_key` 必填），app-ts 的 AI 调用也会在调用时报错。 |
+| `AI_GATEWAY__API_KEY` | **唯一模型凭证**（LLM / embedding / rerank / OCR 全走 AI 网关，不需要也不允许再配各模型 provider key）。用 `--profile ai` 的 Higress 时填 Higress consumer `mindbase-backend` 的 key（在网关控制台 `http://127.0.0.1:18081` 配置，详见 configuration.md）；不用 Higress 时可直接填供应商 key，并把 `AI_GATEWAY__BASE_URL` 指向供应商的 OpenAI 兼容口。**留空时 app-user（bili 路由）会启动失败**（`asr.api_key` 必填），app-ts 的 AI 调用也会在调用时报错。 |
 
 ### 2.4 按需开启的可选项
 
@@ -72,7 +72,7 @@ openssl rand -base64 32 | Out-File -Encoding ascii secrets/api_key_encryption_ke
 | `SANDBOX_ADMIN_TOKEN` | app-admin 的沙箱管理代理令牌（与 app-sandbox `SANDBOX__ADMIN__TOKEN` 同值） |
 | `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 管理后台「分享内容受控预览」（app-admin ↔ app-cloud 同值） |
 | `TAVILY_API_KEY` / `SEARXNG_URL` | `web_search` 的优质搜索源（不配只剩爬虫兜底） |
-| `DEEPSEEK_API_KEY` | DeepSeek 官方网页搜索/抓取 |
+| `DEEPSEEK_API_KEY` | 可选：DeepSeek 官方网页搜索/抓取（**不是模型 key**，模型统一走 AI_GATEWAY__API_KEY） |
 | `LANGSMITH_API_KEY` 等 | LLM 链路追踪（SDK 直接读 env，全组设置才生效） |
 | `CONTENT_MCP_UID` / `CONTENT_MCP_AUTH_TOKEN` | 外部 MCP 宿主连接 app-content-mcp（8019）用（app-ts 服务模式不需要） |
 
@@ -117,27 +117,20 @@ docker compose up -d apisix minio
 
 ### 3.3 本地跑 app-ts
 
-app-ts **不会自己读 `.env`**（compose 里是 `env_file` 注入），本地启动前要把变量导入当前 shell：
+app-ts **默认读取 `app-ts/.env`**（不再读项目根 `.env`）；真实环境变量优先于文件，compose 容器仍由根 `.env` 的 `env_file` 注入。本地开发：
 
 ```bash
 cd app-ts
+cp .env.example .env       # app-ts 专用样例：填连接串/密钥；也可只放本机需要的变量
 npm ci
-
-# 连接串 / 密钥（值取自 compose 内置默认值与 .env）
-export MONGO__URI='mongodb://admin:mind-base@127.0.0.1:27017/?authSource=admin'
-export REDIS__URL='redis://:mind-base@127.0.0.1:6379/1'
-export MINIO__ENDPOINT='http://127.0.0.1:9000'
-export MINIO__ACCESS_KEY=minioadmin
-export MINIO__SECRET_KEY=minioadmin
-export MINIO__BUCKET=drive-videos
-export APISIX_CONSUMER_KEY='<与 .env 同一 key；APISIX 启动时渲染进 apisix.yaml>'
-export AI_GATEWAY__BASE_URL='http://127.0.0.1:18080/v1'   # 用 --profile ai 起的 Higress；或供应商兼容口
-export AI_GATEWAY__API_KEY='<key>'
-
-npm run dev    # tsx watch，监听 127.0.0.1:8000
+npm run dev                # tsx watch，监听 127.0.0.1:8000
 ```
 
-PowerShell 里把 `export KEY='value'` 换成 `$env:KEY='value'`（逐条执行），其余步骤相同。
+- 文件路径固定为 app-ts 包目录下的 `.env`，与启动时 cwd 无关；`APP_TS_ENV_FILE=/abs/path` 可覆盖，`APP_TS_ENV_DISABLED=1` 可关闭。
+- 文件里已有变量不会覆盖 shell 里已经 export 的同名真实环境变量（dotenv `override=false`），因此 CI/compose 注入永远优先。
+- `npm test`/vitest 下不会自动加载本地 `app-ts/.env`，避免测试被本机密钥污染。
+
+PowerShell 里把 `export KEY='value'` 换成 `$env:KEY='value'`（逐条执行），或直接写进 `app-ts/.env`。
 
 - `MILVUS__ADDRESS` 默认就是 `127.0.0.1:19530`（`app-ts/config/default.yaml`），正好命中容器映射，通常不用设。
 - `KG_GRPC__TARGET` 默认 `127.0.0.1:8013`，app-kg 容器也映射了 8013，本地 app-ts 可直接用 KG。
@@ -288,7 +281,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **app-user / app-cloud 反复重启。** 多半是 `secrets/api_key_encryption_key` 没建：compose 会把缺失的绑定源建成**目录**，服务读取失败退出。补上文件后 `docker compose up -d app-user app-cloud`。
 
-**改了 `.env` 不生效。** 各服务只在启动时读取：容器要 `docker compose up -d <服务>` 重建；本地 app-ts 要重启 `npm run dev`（且注意它**不会**自动加载 `.env`，见 §3.3）。
+**改了 `.env` 不生效。** 各服务只在启动时读取：容器要 `docker compose up -d <服务>` 重建；本地 app-ts 默认读 `app-ts/.env`，改完重启 `npm run dev` 即可（见 §3.3）。
 
 **Mongo / Milvus 没起。** app-ts 仍能启动但降级：启动日志出现 `memory fallback`（会话落内存、重启即丢），向量检索返回空、`/health` 里 `milvus.available=false`。补 `docker compose up -d mongo milvus` 后重启 app-ts。
 
@@ -302,7 +295,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **`go run ./app-go/app-content` 报 `cannot find main module`。** 每个 Go 服务是独立 module，必须 `cd app-go/app-content && go run ./cmd/app-content`。
 
-**`https://localhost` 证书不受信。** 用的是开发 CA（`nginx/certs/dev-ca.crt`），把它导入系统/浏览器信任库即可；也可以先用 `http://localhost`。
+**`https://localhost` 证书不受信。** 用的是开发 CA（`secrets/certs/nginx/dev-ca.crt`），把它导入系统/浏览器信任库即可；也可以先用 `http://localhost`。
 
 ---
 

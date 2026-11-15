@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { createLogger } from "../logger.js";
@@ -28,8 +29,29 @@ export interface GrpcClientOptions {
   serviceFqn: string;
   /** per-call deadline applied by call() */
   timeoutMs: number;
+  /**
+   * Internal TLS (stage 2): enabled → credentials.createSsl(caFile) so the server
+   * certificate is verified against the trust bundle; false/absent → insecure
+   * channel (local plaintext development default).
+   */
+  tls?: {
+    enabled: boolean;
+    /** trust-anchor bundle (PEM) used to verify the server certificate */
+    caFile: string;
+  };
   /** extra grpc channel options */
   channelOptions?: Record<string, unknown>;
+}
+
+/** Build channel credentials for an optional TLS block (throws on a bad CA file). */
+function buildCredentials(tls?: GrpcClientOptions["tls"]): grpc.ChannelCredentials {
+  if (!tls?.enabled) return grpc.credentials.createInsecure();
+  if (!tls.caFile) throw new Error("[GRPC] tls.enabled=true requires tls.caFile");
+  try {
+    return grpc.credentials.createSsl(readFileSync(tls.caFile));
+  } catch (err) {
+    throw new Error(`[GRPC] failed to read CA file ${tls.caFile}: ${(err as Error).message}`);
+  }
 }
 
 type UnaryCallback = (err: grpc.ServiceError | null, response: Record<string, unknown>) => void;
@@ -74,12 +96,13 @@ export class GrpcClient {
       credentials: grpc.ChannelCredentials,
       options?: Record<string, unknown>,
     ) => grpc.Client;
-    const client = new ServiceCtor(opts.target, grpc.credentials.createInsecure(), {
+    const tlsEnabled = opts.tls?.enabled === true;
+    const client = new ServiceCtor(opts.target, buildCredentials(opts.tls), {
       "grpc.keepalive_time_ms": 30_000,
       ...opts.channelOptions,
     });
     const methods = (client as unknown as Record<string, unknown>) as Record<string, UnaryCall>;
-    log.info(`[GRPC] channel open target=${opts.target} service=${opts.serviceFqn}`);
+    log.info(`[GRPC] channel open target=${opts.target} service=${opts.serviceFqn} tls=${tlsEnabled}`);
     return new GrpcClient(client, opts.timeoutMs, methods);
   }
 

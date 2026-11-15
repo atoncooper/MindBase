@@ -54,8 +54,8 @@ chmod 600 secrets/api_key_encryption_key
 |---|---|---|
 | `secrets/api_key_encryption_key`（文件） | 必填 | 用户凭证加密主密钥；`openssl rand -base64 32`。**部署后不可更换**（更换=已存数据无法解密） |
 | `APISIX_CONSUMER_KEY` | 硬必填 | 服务间 key-auth；compose 多处 `:?` 校验，缺失直接起不来。`python3 -c "import secrets; print(secrets.token_urlsafe(36))"` |
-| `AI_GATEWAY__API_KEY` | 必填 | Higress 消费者（BEARER）key；供应商真实 key 只在网关控制台配置，不进 `.env` |
-| `DEEPSEEK_API_KEY` | AI 联网时必填 | DeepSeek 官方网页搜索/抓取（`web_search` 首选引擎、`fetch_webpage` 官方代抓）。**AI 相关只需 `AI_GATEWAY__API_KEY` 与 `DEEPSEEK_API_KEY` 两个 key**；Tavily/SearXNG/OCR/LangSmith 均为可选项 |
+| `AI_GATEWAY__API_KEY` | 必填 | **唯一模型凭证**：所有 LLM / embedding / rerank / OCR 统一走 AI 网关；供应商真实 key 只在网关控制台配置，不进 `.env`。不要再配 OPENAI/GLM/DeepSeek/OCR 等模型 key |
+| `DEEPSEEK_API_KEY` | 可选（联网工具） | **不是模型 key**：仅 `web_search` / `fetch_webpage` 官方联网接口；不填则回退 Tavily/SearXNG/百度/Bing |
 | `MYSQL_ROOT_PASSWORD` / `MYSQL_USER` / `MYSQL_PASSWORD` | 生产必填 | 主库 `mind_base`；不填则用 compose 开发默认值 |
 | `MONGO_USER` / `MONGO_PASSWORD`；`REDIS_PASSWORD`；`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | 生产必填 | Mongo / 缓存 / 对象存储 |
 | `NEO4J_PASSWORD` | 启用 KG 时必填 | app-kg 与 neo4j 共用（默认 `mind-base`，生产必须改） |
@@ -68,7 +68,7 @@ chmod 600 secrets/api_key_encryption_key
 | `PAY_OPS_KEY` | 启用退款复核时可选 | app-admin 退款复核经 APISIX pay-ops consumer 调 app-pay internal 端点；留空 = 复核页 404 隐藏 |
 | `APP_CLOUD_ATTEST_SECRET` | 多副本时必填 | 分享设备证明 HMAC，各副本同值（`openssl rand -hex 32`） |
 | `APP_CLOUD_ADMIN_REVIEW_TOKEN` | 启用审核预览时 | app-admin ↔ app-cloud 共享令牌，两边同值 |
-| `APP_KG_INTERNAL_TOKEN`、`SHARE_DOMAIN`、`OCR__API_KEY`、LangSmith 三项 | 可选 | 内网 token、分享域名、OCR/tracing |
+| `APP_KG_INTERNAL_TOKEN`、`SHARE_DOMAIN`、LangSmith 三项 | 可选 | 内网 token、分享域名、tracing（模型 key 不在此列） |
 | `SESSION__SECRET` | **无需配置** | 现行根 compose 与各服务均不读取（仅 `deploy/china` 旧变体引用） |
 | `LLM__API_KEY` | **无需配置** | 平台 AI 统一经 Higress 出网，只用 `AI_GATEWAY__API_KEY` |
 
@@ -116,13 +116,13 @@ chmod 600 secrets/api_key_encryption_key
 
 ## 5. HTTPS / TLS
 
-- **入口 nginx**：cert-gen 在每次 `up` 前自动签发开发证书（共享 dev CA + nginx/app-content/app-pay/MCP 叶子）到 `nginx/certs/` 等目录，幂等且过期/缺失自动重签；自签会告警，仅适合内网验证。
-- **生产替换**：正式 `fullchain.pem`/`privkey.pem` 放 `nginx/certs/`（或 `MB_CERT_KEEP=1` 让 cert-gen 不覆盖；正式证书需覆盖域名 SAN），然后 `docker compose restart nginx`。本地自签用 `bash scripts/gen-nginx-dev-cert.sh`；Let's Encrypt 用 `bash nginx/setup-ssl.sh letsencrypt <domain> <email>`（临时停 nginx 用 80 端口验证）。
+- **入口 nginx**：cert-gen 在每次 `up` 前自动签发开发证书（共享 dev CA + nginx/app-content/app-pay/MCP 叶子）到仓库根 `secrets/certs/`（`nginx` / `app-content` / `app-content-mcp` 子目录；app-pay 例外仍写 `app-pay/certs/`），幂等且过期/缺失自动重签；自签会告警，仅适合内网验证。
+- **生产替换**：正式 `fullchain.pem`/`privkey.pem` 放 `secrets/certs/nginx/`（或 `MB_CERT_KEEP=1` 让 cert-gen 不覆盖；正式证书需覆盖域名 SAN），然后 `docker compose restart nginx`。本地自签用 `bash scripts/gen-nginx-dev-cert.sh`；Let's Encrypt 用 `bash nginx/setup-ssl.sh letsencrypt <domain> <email>`（临时停 nginx 用 80 端口验证）。
 - `nginx/nginx.conf` 的 443 server 默认启用（证书路径 `/etc/nginx/certs/fullchain.pem` 与 `privkey.pem`）；80 保留 ACME challenge；两者共用 `locations.conf`。
 - 反向代理注意：`/chat` 等 SSE 必须关 buffering；`/cloud/` 上传上限 5g 且绕过 APISIX；`/minio-proxy/` 由 nginx 直连 MinIO。改路由只改 `nginx/locations.conf`。
 - **app-pay**：`server.ssl` 默认启用，证书默认 `certs/pay.crt` 与 `certs/pay.key`，生产用 `PAY_TLS_CERT`/`PAY_TLS_KEY` 覆盖；证书缺失启动自检拒绝启动；APISIX 的 `upstream-app-pay` 走 HTTPS（当前仅加密不校验证书）。
 - **app-content（board 面）**：默认 HTTPS-only；显式证书用 `CONTENT__SERVER__TLS__CERT`/`...__KEY`；APISIX 只读挂其 `dev-ca.crt`，首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
-- **MCP（app-content-mcp）**：默认回环 HTTP（8019）；跨机设 `CONTENT_MCP_TLS_ENABLED=true` 并让客户端信任 dev CA（`app-go/app-content-mcp/certs/dev-ca.crt`）。
+- **MCP（app-content-mcp）**：默认回环 HTTP（8019）；跨机设 `CONTENT_MCP_TLS_ENABLED=true` 并让客户端信任 dev CA（`secrets/certs/app-content-mcp/dev-ca.crt`）。
 
 ## 6. 监控与日志
 
@@ -162,7 +162,7 @@ docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" m
 
 - **MongoDB**：官方 `mongo:7` 镜像不保证自带 `mongodump`，推荐**停写后备份数据卷**：`docker compose stop mongo` → 确认卷 `docker volume ls -q | grep -E '(^|_)mongo_data$'` → `docker run --rm -v <volume>:/data -v "$PWD/backup":/backup alpine tar czf /backup/mongo_data.tgz -C /data .` → `docker compose start mongo`；恢复=停 mongo、解包回卷、启动。若环境已有 `mongodump`，也可对 `mind_base` 与 `mind_base_ts` 分别 `--archive --gzip`。
 - **MinIO / Milvus / Neo4j（命名卷）**：同理先停写再拷卷。MinIO 用 `minio_data`；Milvus 依赖 `milvus_data`+`etcd_data`+`minio_data` 需一并停/备份（或先在 Milvus 侧 flush 再停）；Neo4j 用 `neo4j_data`。恢复统一为：`docker compose stop <svc>` → `docker run --rm -v <volume>:/data -v "$PWD/backup":/backup alpine sh -c 'cd /data && tar xzf /backup/<file>.tgz'` → `docker compose start <svc>`。
-- **证书与密钥**：`.env`、`secrets/api_key_encryption_key`、`nginx/certs`、`app-pay/certs`、app-content board TLS 证书目录（宿主沿用 `app-board/certs`）、`app-go/app-content-mcp/certs` 必须随备份保存（丢主密钥=用户凭证不可恢复）。
+- **证书与密钥**：`.env`、`secrets/`（`api_key_encryption_key` + `certs/`：`nginx` / `app-content` / `app-content-mcp`）、`app-pay/certs`（例外）必须随备份保存（丢主密钥=用户凭证不可恢复）。
 - **顺序**：升级/迁移前先备份 MySQL+Mongo；app-pay 由 Flyway 前向迁移（不可逆），回滚代码前先恢复对应库备份。
 - `docker compose down` 保留卷；`docker compose down -v` 删除全部数据卷（生产严禁）。
 
@@ -204,7 +204,7 @@ docker compose --profile sandbox up -d       # 再追加沙箱；单独 --profil
 ```bash
 # ① Secret/ConfigMap（仓库根执行；完整清单见 README §1/§1b）
 kubectl -n mind-base create secret generic mindbase-env --from-env-file=.env
-kubectl -n mind-base create secret generic nginx-tls --from-file=fullchain.pem=nginx/certs/fullchain.pem --from-file=privkey.pem=nginx/certs/privkey.pem
+kubectl -n mind-base create secret generic nginx-tls --from-file=fullchain.pem=secrets/certs/nginx/fullchain.pem --from-file=privkey.pem=secrets/certs/nginx/privkey.pem
 kubectl -n mind-base create secret generic api-key-encryption-key --from-file=api_key_encryption_key=secrets/api_key_encryption_key
 kubectl -n mind-base create configmap mysql-init-sql --from-file=system.sql=db/system.sql
 kubectl -n mind-base create configmap apisix-config --from-file=config.yaml=apisix/config.yaml --from-file=apisix.yaml.template=apisix/apisix.yaml.template --from-file=render-config.sh=apisix/render-config.sh

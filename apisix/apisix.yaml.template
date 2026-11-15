@@ -51,7 +51,7 @@ upstreams:
   - id: upstream-app-user-auth
     name: app-user
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -66,8 +66,9 @@ upstreams:
       "app-user:8006": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -91,7 +92,7 @@ upstreams:
   - id: upstream-app-cloud
     name: app-cloud
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -106,8 +107,9 @@ upstreams:
       "app-cloud:8007": 1
     checks:
       active:
-        type: http
+        type: https
         http_path: /health
+        https_verify_certificate: false
         timeout: 1
         interval: 5
         healthy:
@@ -218,7 +220,7 @@ upstreams:
   - id: upstream-app-ts
     name: app-ts
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -251,7 +253,7 @@ upstreams:
   - id: upstream-app-user-settings
     name: app-user
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -284,7 +286,7 @@ upstreams:
   - id: upstream-app-sandbox
     name: app-sandbox
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -296,7 +298,7 @@ upstreams:
       idle_timeout: 60
       requests: 100
     nodes:
-      "app-sandbox:8017": 1
+      "app-sandbox:8443": 1
     checks:
       active:
         type: https
@@ -318,7 +320,7 @@ upstreams:
   - id: upstream-app-user-bili
     name: app-user
     type: roundrobin
-    scheme: http
+    scheme: https
     pass_host: pass
     retries: 2
     timeout:
@@ -515,7 +517,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -532,7 +534,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -621,7 +623,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -648,7 +650,7 @@ routes:
           set:
             X-API-Key: "__APISIX_CONSUMER_KEY__"
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -667,7 +669,7 @@ routes:
           set:
             X-API-Key: "__APISIX_CONSUMER_KEY__"
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -686,7 +688,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -704,7 +706,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -816,7 +818,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -927,7 +929,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -940,7 +942,7 @@ routes:
   # （Python 面已退役）
   # （AI 域）。回滚：删除本路由对应 uri 即回落 Python。
   - id: chat_ts
-    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
+    uris: [/chat/ask/agent/stream, /chat/ask/stream, /chat/models, /chat/sessions, /chat/sessions/*, /chat/history, /chat/history/*, /chat/board/complete, /chat/documents, /chat/plans, /chat/plans/*, /chat/sandbox/executions, /chat/sandbox/executions/*, /quota/summary]
     priority: 60
     upstream_id: upstream-app-ts
     plugins:
@@ -949,7 +951,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -968,7 +970,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -991,7 +993,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1011,7 +1013,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1030,7 +1032,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1049,7 +1051,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1068,7 +1070,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 30000
@@ -1086,7 +1088,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1107,7 +1109,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1130,7 +1132,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1149,7 +1151,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1168,7 +1170,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1187,7 +1189,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1220,7 +1222,7 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
@@ -1240,12 +1242,25 @@ routes:
         headers:
           remove: [X-Uid, X-Roles]
       forward-auth:
-        uri: "http://app-user:8006/internal/auth/verify"
+        uri: "https://app-user:8006/internal/auth/verify"
         request_headers: [Authorization]
         upstream_headers: [X-Uid, X-Roles]
         timeout: 5000
         status_code: 401
 
+
+# ============================================================
+# Internal TLS termination (9443 listener, rendered by render-config.sh)
+# ============================================================
+# BEGIN-INTERNAL-TLS
+ssls:
+  - id: internal-9443
+    cert: |
+__APISIX_TLS_CERT_PEM__
+    key: |
+__APISIX_TLS_KEY_PEM__
+    snis: [apisix, mindbase, localhost]
+# END-INTERNAL-TLS
 
 # ============================================================
 # Consumers

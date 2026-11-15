@@ -2,7 +2,7 @@
  * Chat API - 问答 / 流式 / 会话管理 / 历史消息.
  */
 import { request, getAuthHeaders, API_BASE_URL } from "./client";
-import type { ChatArtifact, ChatPlan } from "@/lib/chat-stream";
+import type { ChatArtifact } from "@/lib/chat-stream";
 
 // 工作区页面（用户选中的已向量化分P）
 export interface WorkspacePage {
@@ -72,6 +72,21 @@ export interface ChatSessionUpdatePayload {
     title: string;
 }
 
+// 聊天模型目录（app-ts/config/model.json → GET /chat/models）：models 是服务端
+// 允许用户在聊天里显式选择的模型；default 是未显式选择时使用的模型。
+export interface ChatModel {
+    id: string;
+    label: string;
+    description?: string;
+    /** 是否支持图片输入（vision）；前端仅作展示，不强制校验 */
+    vision?: boolean;
+}
+
+export interface ChatModelsResponse {
+    default: string;
+    models: ChatModel[];
+}
+
 // 会话文档（app-ts /chat/documents）：pdf/docx/pptx/txt/md/html，解析切块后
 // 只在当前会话内检索（不进全局向量库）。
 export interface SessionDocument {
@@ -107,6 +122,9 @@ export interface ChatRequestPayload {
     board_uuid?: string;  // 板聊：请求限定在某块板子上（后端直路由 board agent）
     board_anchor_text?: string;  // 板聊：画布当前选中节点纯文本（作为建议锚点上下文）
     academic_project_id?: string;  // 科研项目上下文：后端解析项目并注入受控项目 section（/research → /chat）
+    // 用户选择的模型 id（来自 GET /chat/models 的 models[].id）；不传 = 服务端默认模型。
+    // 前端只传目录里的 id，后端另行校验。
+    model?: string;
     // 检索范围：uploadUuids 非空时后端只在这些云盘文件内检索/回答
     //（/chat?upload_uuid=<uuid> 进入文件级问答）。
     scope?: { uploadUuids?: string[] };
@@ -162,6 +180,12 @@ export const chatApi = {
         }
         return res.body;
     },
+
+    /** 聊天可选模型目录（GET /chat/models）；失败时调用方退化为服务端默认模型。 */
+    listModels: () =>
+        request<ChatModelsResponse>("/chat/models", {
+            headers: getAuthHeaders(),
+        }),
 
     // === 会话管理 ===
     /**

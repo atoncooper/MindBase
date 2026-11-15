@@ -54,8 +54,20 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host string    `yaml:"host"`
+	Port int       `yaml:"port"`
+	TLS  TLSConfig `yaml:"tls"`
+}
+
+// TLSConfig — optional HTTPS listener for the Gin server. enabled=false keeps
+// the plain-HTTP listener (phase 1 deployment); when enabled, cert/key are PEM
+// paths mounted read-only from secrets/certs/app-cloud (compose mounts them at
+// /app/certs:ro). Outbound trust is handled by SSL_CERT_FILE (ca-bundle.crt),
+// not here.
+type TLSConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Cert    string `yaml:"cert"`
+	Key     string `yaml:"key"`
 }
 
 type RDBMSConfig struct {
@@ -368,6 +380,17 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Redis.URL = v
 	}
 	atoi("APPCLOUD__SERVER__PORT", &cfg.Server.Port)
+	// HTTPS listener (phase 2): enabled + PEM paths, mounted from
+	// secrets/certs/app-cloud at /app/certs (compose). Disabled keeps plain HTTP.
+	if b, ok := getBool("APPCLOUD__SERVER__TLS__ENABLED"); ok {
+		cfg.Server.TLS.Enabled = b
+	}
+	if v := get("APPCLOUD__SERVER__TLS__CERT"); v != "" {
+		cfg.Server.TLS.Cert = v
+	}
+	if v := get("APPCLOUD__SERVER__TLS__KEY"); v != "" {
+		cfg.Server.TLS.Key = v
+	}
 	if b, ok := getBool("APPCLOUD__APP__DEBUG"); ok {
 		cfg.App.Debug = b
 	}
@@ -453,6 +476,10 @@ func Validate(cfg *Config) error {
 	}
 	if _, err := cfg.Attest.KeyBytes(); err != nil {
 		return err
+	}
+	if cfg.Server.TLS.Enabled && (cfg.Server.TLS.Cert == "" || cfg.Server.TLS.Key == "") {
+		return fmt.Errorf("server.tls.enabled requires both cert and key " +
+			"(APPCLOUD__SERVER__TLS__CERT / APPCLOUD__SERVER__TLS__KEY)")
 	}
 	if cfg.Pipeline.Enabled && cfg.Pipeline.Embedding.Dimension <= 0 {
 		return fmt.Errorf("pipeline.embedding.dimension must be positive when pipeline enabled")

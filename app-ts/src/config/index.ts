@@ -1,4 +1,5 @@
 import { loadConfigFiles } from "./loader.js";
+import { loadAppTsEnvFile } from "../bootstrap/env.js";
 
 /**
  * Typed application config. The single source of truth for VALUES is the layered
@@ -8,7 +9,18 @@ import { loadConfigFiles } from "./loader.js";
  */
 
 export interface AppConfig {
-  server: { host: string; port: number };
+  server: {
+    host: string;
+    port: number;
+    /** internal TLS (stage 2): when enabled, Fastify serves HTTPS on the same port */
+    tls: {
+      enabled: boolean;
+      /** PEM leaf certificate path (mounted at /app/certs in containers) */
+      cert: string;
+      /** PEM private key path */
+      key: string;
+    };
+  };
   redis: {
     /** pub/sub for bili:page_ready (per-page vectorization trigger); empty = no subscriber */
     url: string;
@@ -111,6 +123,12 @@ export interface AppConfig {
     nlist: number;
     nprobe: number;
     useMonthlyPartitions: boolean;
+    /** Milvus gRPC over TLS (one-way: server cert verified against the dev CA) */
+    ssl: boolean;
+    /** dev CA bundle used to verify the Milvus server cert (empty = system roots) */
+    tlsRootCert: string;
+    /** SNI / SAN name to verify (docker alias; the cert carries service SANs) */
+    tlsServerName: string;
   };
   mongo: {
     uri: string;
@@ -168,6 +186,12 @@ export interface AppConfig {
     /** path to the shared proto/kg/v1/kg.proto (loaded at runtime, no codegen) */
     protoPath: string;
     timeoutMs: number;
+    /** outbound gRPC TLS: enabled → createSsl(caFile); false → createInsecure */
+    tls: {
+      enabled: boolean;
+      /** trust anchor bundle used to verify the app-kg server certificate */
+      caFile: string;
+    };
   };
   contentMcp: {
     /**
@@ -403,7 +427,6 @@ export interface AppConfig {
   ocr: {
     enabled: boolean;
     model: string;
-    apiKey: string;
     prompt: string;
     maxImageBytes: number;
     timeoutMs: number;
@@ -430,6 +453,13 @@ function applyTempFilesEnvAlias(tempFiles: AppConfig["tempFiles"]): void {
       values[key] = alias;
     }
   }
+}
+
+// Local runtime: app-ts/.env, not the repo-root .env. Compose keeps injecting
+// env_file at container level, and real env vars still win (dotenv override=false).
+// Tests are isolated from a developer's local .env.
+if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
+  loadAppTsEnvFile();
 }
 
 const loaded = loadConfigFiles();

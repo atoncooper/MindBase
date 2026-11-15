@@ -2,8 +2,9 @@
 # Env parity with docker-compose.yml service 'app-content-mcp'; secrets come from the
 # mindbase-env Secret (created once via kubectl create secret from .env).
 # TLS is OFF by default (in-cluster plain HTTP). The cert volume is an OPTIONAL
-# Secret (scripts/gen-certs.sh output for the app-content-mcp leaf); create it and
-# flip CONTENTMCP__SERVER__TLS__ENABLED=true for cross-host MCP clients.
+# Secret (scripts/gen-certs.sh output for the app-content-mcp leaf under
+# secrets/certs/app-content-mcp); create it and flip
+# CONTENTMCP__SERVER__TLS__ENABLED=true for cross-host MCP clients.
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,4 +1,5 @@
 import { config, configSources } from "../config/index.js";
+import { CHAT_MODELS_FILE, loadChatModels } from "../config/chat-models.js";
 import { setupTracing, shutdownTracing } from "../llm/tracing.js";
 import { createRAGService } from "../rag/bootstrap.js";
 import { ModelCapabilityRegistry } from "../llm/model-capabilities.js";
@@ -852,6 +853,13 @@ export async function bootstrap() {
   //          OCR client for image documents, disabled unless OCR__ENABLED=true)
   const capabilities = new ModelCapabilityRegistry();
   capabilities.startBackgroundRefresh();
+  // User-selectable chat models (config/model.json): loaded once here — the
+  // picker (GET /chat/models) and per-turn validation share this exact catalog.
+  // A broken/missing file degrades to the config.llm.model single entry.
+  const chatModels = loadChatModels(config.llm.model);
+  log.info(
+    `[BOOT] chat models: default=${chatModels.default} count=${chatModels.models.length} file=${CHAT_MODELS_FILE}`,
+  );
   const ocr: OcrClient = config.ocr.enabled
     ? new GatewayVisionOcr(config.ocr.model, capabilities)
     : new DisabledOcr();
@@ -965,7 +973,7 @@ export async function bootstrap() {
   }
 
   const app = await buildServer({
-    chat, harness, rag, sessionDocs, capabilities, ocr, kg: kgService,
+    chat, harness, rag, sessionDocs, capabilities, chatModels, ocr, kg: kgService,
     chatStores: { sessions, messages },
     chatImages,
     quota,
@@ -1020,7 +1028,12 @@ export async function bootstrap() {
 
   await app.listen({ host: config.server.host, port: config.server.port });
   log.info(`[BOOT] config layers: ${configSources.join(" -> ")}`);
-  log.info(`[BOOT] app-ts listening on http://${config.server.host}:${config.server.port}`);
+  // scheme mirrors server.tls.enabled (internal TLS, stage 2)
+  const scheme = config.server.tls.enabled ? "https" : "http";
+  log.info(`[BOOT] app-ts listening on ${scheme}://${config.server.host}:${config.server.port}`);
+  if (config.server.tls.enabled) {
+    log.info(`[BOOT] internal TLS enabled cert=${config.server.tls.cert}`);
+  }
   log.info(`[BOOT] gateway=${config.aiGateway.baseUrl} milvus=${config.milvus.address}/${config.milvus.database}`);
 
   const shutdown = async (signal: string) => {

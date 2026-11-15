@@ -20,6 +20,11 @@ import { config } from "../../../config/index.js";
 import { hashClientKey } from "../../../services/quota.js";
 import { parseBoardContext } from "../../../services/board-context.js";
 import { parseAcademicContext } from "../../../services/academic-context.js";
+import {
+  CHAT_MODEL_ID_MAX_CHARS,
+  loadChatModels,
+  type ChatModelCatalog,
+} from "../../../config/chat-models.js";
 
 const log = createLogger("HTTP");
 
@@ -42,9 +47,16 @@ export function registerChatRoutes(
     resolveFolderScope?: (uid: string, folderIds: number[]) => Promise<string[]>;
     /** RAG search for POST /chat/search; absent = route returns 503 */
     rag?: Pick<RAGService, "search">;
+    /** Chat model catalog (config/model.json); absent = loaded from the default file once */
+    chatModels?: ChatModelCatalog;
   },
 ): void {
-  // ---- Session document upload: parse → chunk → store (strictly scoped to the current session) ----
+  // User-selectable chat models (config/model.json). Loaded once per app instance
+  // when the composition root does not inject it (tests); GET /chat/models serves
+  // it and every ask turn validates the requested id against it.
+  const chatModels = deps.chatModels ?? loadChatModels(config.llm.model);
+
+  // ---- Session documents: upload / list / delete (strictly scoped to the session) ----
   app.post("/chat/documents", async (req: FastifyRequest, reply: FastifyReply) => {
     let file;
     try {
@@ -150,6 +162,14 @@ export function registerChatRoutes(
     return { success: true, deleted };
   });
 
+  // ---- Chat model catalog: source of truth for the picker. Same auth boundary
+  //      as the other /chat/* routes (APISIX forward-auth); the payload carries
+  //      no credentials, only selectable model metadata. ----
+  app.get("/chat/models", async () => ({
+    default: chatModels.default,
+    models: chatModels.models,
+  }));
+
   // ---- Chat SSE (rate-limit preHandler: LLM endpoints are expensive) ----
   // /chat/ask/agent/stream is the frontend's path (Python contract); /chat/ask/stream
   // is app-ts's native name — same handler, one registration each.
@@ -171,6 +191,8 @@ export function registerChatRoutes(
         skill_ids?: string[];
         /** chat-dialog Coding Plan model picker selection (code agent only) */
         coding_plan_model?: string;
+        /** chat-dialog general model catalog selection (config/model.json; all agents) */
+        model?: string;
         /** board (mindmap/whiteboard) chat context — user input, sanitized below */
         board_uuid?: string;
         board_anchor_text?: string;
@@ -194,10 +216,33 @@ export function registerChatRoutes(
           return reply.status(400).send({ detail: `单张图片过大（data URL 上限 ${Math.floor(MAX_IMAGE_DATA_URL_CHARS / 1024)}KB）` });
         }
       }
-      if (images.length > 0 && isVisionBlocked(deps.capabilities.get(config.llm.model))) {
+      // Chat model selection (config/model.json): trim + length, then the id must be
+      // in the catalog — never silently fall back to the default (the user picked
+      // something; pretending would hide a stale frontend/deploy).
+      const requestedModel = typeof body.model === "string" ? body.model.trim() : "";
+      if (requestedModel.length > CHAT_MODEL_ID_MAX_CHARS) {
+        return reply.status(400).send({ detail: `model 过长（上限 ${CHAT_MODEL_ID_MAX_CHARS} 字符）` });
+      }
+      const selectedModel = requestedModel || chatModels.default;
+      const selectedEntry = chatModels.models.find((entry) => entry.id === selectedModel);
+      if (requestedModel && !selectedEntry) {
         return reply.status(400).send({
-          detail: `当前模型 ${config.llm.model} 不支持视觉，无法识别图片。请切换支持视觉的模型（如 z-ai/glm-5.3-flash、qwen-vl 系列）后再发送图片。`,
+          detail: `不支持的聊天模型「${requestedModel}」（可选：${chatModels.models.map((entry) => entry.id).join(" / ")}）`,
         });
+      }
+      if (images.length > 0) {
+        // Catalog knowledge wins: an explicit vision:false is a product fact.
+        if (selectedEntry?.vision === false) {
+          return reply.status(400).send({
+            detail: `所选模型 ${selectedModel} 不支持图片（vision=false），请切换支持图片的模型后再发送图片。`,
+          });
+        }
+        // Capability still unknown for this id → the registry gates it (unchanged policy).
+        if (isVisionBlocked(deps.capabilities.get(selectedModel))) {
+          return reply.status(400).send({
+            detail: `当前模型 ${selectedModel} 不支持视觉，无法识别图片。请切换支持视觉的模型（如 z-ai/glm-5.3-flash、qwen-vl 系列）后再发送图片。`,
+          });
+        }
       }
 
       // Board chat params: BoardChatPanel attaches the board uuid + node label it was
@@ -267,6 +312,7 @@ export function registerChatRoutes(
           model: typeof body.coding_plan_model === "string" && body.coding_plan_model.trim()
             ? body.coding_plan_model.trim().slice(0, 200)
             : undefined,
+          ...(requestedModel ? { chatModel: requestedModel } : {}),
           ...(board ? { board } : {}),
           ...(academic ? { academicProjectId: academic.projectId } : {}),
           signal: cancel.signal,

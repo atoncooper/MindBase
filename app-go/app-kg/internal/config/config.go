@@ -49,6 +49,17 @@ type ServerConfig struct {
 	// mux (/internal/kg/cloud-doc/*). Empty = allow (network-internal posture,
 	// same as the probe itself); set to require X-Internal-Token.
 	InternalToken string `yaml:"internal_token"`
+	// TLS covers BOTH listeners (gRPC + HTTP); the listen ports are unchanged.
+	// Cert/Key are PEM paths inside the container (/app/certs, read-only mount).
+	TLS TLSConfig `yaml:"tls"`
+}
+
+// TLSConfig enables TLS on the gRPC (:8013) and HTTP (:8014) listeners.
+// Enabled=false keeps the previous plaintext posture.
+type TLSConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Cert    string `yaml:"cert"`
+	Key     string `yaml:"key"`
 }
 
 type LogConfig struct {
@@ -132,6 +143,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPKG__SERVER__INTERNAL_TOKEN"); v != "" {
 		cfg.Server.InternalToken = v
 	}
+	// TLS for both listeners — compose injects the leaf paths under /app/certs.
+	if b, ok := getBool("APPKG__SERVER__TLS__ENABLED"); ok {
+		cfg.Server.TLS.Enabled = b
+	}
+	if v := get("APPKG__SERVER__TLS__CERT"); v != "" {
+		cfg.Server.TLS.Cert = v
+	}
+	if v := get("APPKG__SERVER__TLS__KEY"); v != "" {
+		cfg.Server.TLS.Key = v
+	}
 	if b, ok := getBool("APPKG__APP__DEBUG"); ok {
 		cfg.App.Debug = b
 	}
@@ -154,6 +175,13 @@ func applyEnvOverrides(cfg *Config) {
 // MySQL is required for page bookkeeping and scope resolution. The per-infra
 // validation rules live with the connection code they protect.
 func Validate(cfg *Config) error {
+	if cfg.Server.TLS.Enabled {
+		// Both PEM paths are mandatory when TLS is on; a missing one would
+		// otherwise surface as a fatal certificate load much later in main.
+		if cfg.Server.TLS.Cert == "" || cfg.Server.TLS.Key == "" {
+			return fmt.Errorf("server.tls.cert and server.tls.key are required when server.tls.enabled=true (env APPKG__SERVER__TLS__CERT/KEY)")
+		}
+	}
 	if err := cfg.Neo4j.Validate(); err != nil {
 		return err
 	}

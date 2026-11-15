@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import Fastify, { type FastifyReply, type FastifyRequest, type FastifyError } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
@@ -6,6 +7,7 @@ import type { AgentHarness } from "../../harness/app.js";
 import type { RAGService } from "../../rag/service.js";
 import type { SessionDocumentRepository } from "../../repository/session-docs.js";
 import type { ModelCapabilityRegistry } from "../../llm/model-capabilities.js";
+import type { ChatModelCatalog } from "../../config/chat-models.js";
 import type { ChatSessionRepository, MessageRepository } from "../../repository/persistence.js";
 import { registerChatSessionRoutes } from "././routes/chat-sessions.js";
 import type { OcrClient } from "../../doc-parser/ocr.js";
@@ -65,12 +67,33 @@ import type { QuizGradingService } from "../../services/quiz-grading.js";
 
 const log = createLogger("HTTP");
 
+/**
+ * Internal TLS (stage 2): when config.server.tls.enabled, Fastify serves HTTPS on
+ * the usual port using the mounted leaf certificate (compose mounts
+ * secrets/certs/app-ts → /app/certs:ro). Files are read once at assembly time; an
+ * unreadable cert/key fails the boot loudly instead of silently downgrading to
+ * plaintext. Disabled (default) keeps plain HTTP for local/offline development.
+ */
+function loadTlsOptions(): { key: Buffer; cert: Buffer } | undefined {
+  const tls = config.server.tls;
+  if (!tls?.enabled) return undefined;
+  try {
+    return { key: readFileSync(tls.key), cert: readFileSync(tls.cert) };
+  } catch (err) {
+    throw new Error(
+      `[HTTP] TLS enabled but certificate files are unreadable (cert=${tls.cert}, key=${tls.key}): ${(err as Error).message}`,
+    );
+  }
+}
+
 export interface BuildServerOptions {
   chat: ChatService;
   harness: AgentHarness;
   rag: RAGService;
   sessionDocs: SessionDocumentRepository;
   capabilities: ModelCapabilityRegistry;
+  /** chat model catalog (config/model.json); absent = routes load the default file */
+  chatModels?: ChatModelCatalog;
   ocr: OcrClient;
   /** cloud file records (repository layer; Mongo preferred, memory fallback) */
   /** KG facade (service + retriever); absent = kg routes/tool not registered */
@@ -134,10 +157,13 @@ export interface BuildServerOptions {
 }
 
 export async function buildServer(opts: BuildServerOptions) {
+  const tls = loadTlsOptions();
   const app = Fastify({
     logger: false, // Access logs are emitted uniformly by the hook below (with requestId/duration); disable Fastify's built-in duplicate
     // multimodal chat payloads carry base64 images inside JSON — 4×2MB + envelope
     bodyLimit: 16 * 1024 * 1024, // Access logs are emitted uniformly by the hook below (with requestId/duration); disable Fastify's built-in duplicate
+    // internal TLS (stage 2): enabled → HTTPS on the same port, else plain HTTP
+    ...(tls ? { https: tls } : {}),
   });
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES } });
@@ -250,7 +276,7 @@ export async function buildServer(opts: BuildServerOptions) {
   if (opts.quota) {
     registerQuotaRoutes(app, { quota: opts.quota });
   }
-  registerChatRoutes(app, { chat: opts.chat, sessionDocs: opts.sessionDocs, chatImages: opts.chatImages, ocr: opts.ocr, limiter, capabilities: opts.capabilities, resolveFolderScope: opts.resolveFolderScope, rag: opts.rag });
+  registerChatRoutes(app, { chat: opts.chat, sessionDocs: opts.sessionDocs, chatImages: opts.chatImages, ocr: opts.ocr, limiter, capabilities: opts.capabilities, resolveFolderScope: opts.resolveFolderScope, rag: opts.rag, chatModels: opts.chatModels });
   if (opts.plans) registerPlanRoutes(app, opts.plans);
   if (opts.vectorizer && opts.appBili) {
     registerVectorPageRoutes(app, { vectorizer: opts.vectorizer });

@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	_ "embed" // embed default.yaml via //go:embed below
 	"flag"
 	"fmt"
@@ -79,7 +80,11 @@ func main() {
 	if overlayPath != "" {
 		slog.Info("[CONFIG] overlay loaded", "file", overlayPath)
 	}
-	slog.Info("app-admin starting", "port", cfg.Server.Port, "tz", cfg.Timezone)
+	scheme := "http"
+	if cfg.Server.TLS.Enabled {
+		scheme = "https"
+	}
+	slog.Info("app-admin starting", "port", cfg.Server.Port, "scheme", scheme, "tz", cfg.Timezone)
 
 	// Validate critical config: fail loud instead of silently broken.
 	if err := config.Validate(cfg); err != nil {
@@ -216,10 +221,23 @@ func main() {
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}
+	if cfg.Server.TLS.Enabled {
+		// HTTPS listener (phase 2): PEM cert/key from secrets/certs/app-admin.
+		// Outbound calls (app-cloud preview, app-pay via APISIX, sandbox) trust
+		// the dev CA via SSL_CERT_FILE, not this listener config.
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 
 	go func() {
-		slog.Info("app-admin listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Info("app-admin listening", "addr", addr, "scheme", scheme,
+			"cert", cfg.Server.TLS.Cert)
+		var err error
+		if cfg.Server.TLS.Enabled {
+			err = srv.ListenAndServeTLS(cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			slog.Error("server stopped", "err", err)
 			os.Exit(1)
 		}

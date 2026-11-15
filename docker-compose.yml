@@ -63,6 +63,11 @@ services:
       # 分享链接对外地址（/api/share-base 运行时读取；空 = 公网IP探测 → 回退当前访问地址）
       - SHARE_DOMAIN=${SHARE_DOMAIN:-}
       - SHARE_PUBLIC_IP=${SHARE_PUBLIC_IP:-}
+      # SSR 内部调用网关走 HTTPS（nginx:443，dev CA 校验）
+      - INTERNAL_API_URL=https://nginx:443
+      - NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+    volumes:
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -86,17 +91,21 @@ services:
     container_name: mind-base-cert-gen
     environment:
       MB_CERT_NGINX_DIR: /out/nginx
-      MB_CERT_APPBOARD_DIR: /out/app-board
+      MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
+      MB_CERT_BUNDLE_DIR: /out/bundle
+      MB_CERT_SERVICES_DIR: /out/bundle
       # 分享域名（.env SHARE_DOMAIN）纳入 nginx 叶子证书 SAN，浏览器直开
       # https://<域名> 不再报证书域名不匹配
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
-      - ./nginx/certs:/out/nginx
-      - ./app-board/certs:/out/app-board
-      - ./app-go/app-content-mcp/certs:/out/mcp
+      - ./secrets/certs/nginx:/out/nginx
+      - ./secrets/certs/app-content:/out/app-content
+      - ./secrets/certs/app-content-mcp:/out/mcp
       - ./app-pay/certs:/out/pay
+      # 信任 bundle（系统 CA + dev CA）写到宿主 secrets/certs/ca-bundle.crt
+      - ./secrets/certs:/out/bundle
     restart: "no"
 
   # ==============================================================
@@ -113,7 +122,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/locations.conf:/etc/nginx/locations.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./secrets/certs/nginx:/etc/nginx/certs:ro
       - certbot_www:/var/www/certbot
       - nginx_video_cache:/var/cache/nginx/video   # Plan 0021
     depends_on:
@@ -135,12 +144,74 @@ services:
       - mind-base-net
 
   # ==============================================================
+  # TLS fronts + JVM truststore (internal HTTPS, phase 2)
+  # ==============================================================
+  # frontend / app-sandbox / higress images cannot serve TLS themselves, so a
+  # sidecar shares their network namespace and terminates TLS on 8443
+  # (clients call <service>:8443 over HTTPS; the last hop is loopback).
+  frontend-tls:
+    image: nginx:alpine
+    container_name: mind-base-frontend-tls
+    profiles: ["", "standalone", "storage", "full", "task"]
+    network_mode: "service:frontend"
+    depends_on:
+      frontend:
+        condition: service_started
+    volumes:
+      - ./nginx/tls-front/frontend.conf:/etc/nginx/nginx.conf:ro
+      - ./secrets/certs/frontend:/certs:ro
+    restart: unless-stopped
+
+  sandbox-tls:
+    image: nginx:alpine
+    container_name: mind-base-sandbox-tls
+    profiles: ["sandbox", "full"]
+    network_mode: "service:app-sandbox"
+    depends_on:
+      app-sandbox:
+        condition: service_started
+    volumes:
+      - ./nginx/tls-front/sandbox.conf:/etc/nginx/nginx.conf:ro
+      - ./secrets/certs/sandbox:/certs:ro
+    restart: unless-stopped
+
+  higress-tls:
+    image: nginx:alpine
+    container_name: mind-base-higress-tls
+    profiles: ["ai", "full"]
+    network_mode: "service:higress"
+    depends_on:
+      higress:
+        condition: service_started
+    volumes:
+      - ./nginx/tls-front/higress.conf:/etc/nginx/nginx.conf:ro
+      - ./secrets/certs/higress:/certs:ro
+    restart: unless-stopped
+
+  # One-shot JVM truststore for app-pay (dev CA -> PKCS12); idempotent.
+  cert-truststore:
+    image: atoncooper/mind-base-app-pay:latest
+    container_name: mind-base-cert-truststore
+    profiles: ["", "pay", "full"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        keytool -delete -alias mindbase-dev-ca -keystore /certs/truststore.p12 -storetype PKCS12 -storepass changeit >/dev/null 2>&1 || true
+        keytool -importcert -noprompt -alias mindbase-dev-ca -file /certs/ca.crt -keystore /certs/truststore.p12 -storetype PKCS12 -storepass changeit
+    volumes:
+      - ./app-pay/certs:/certs
+    restart: "no"
+
+  # ==============================================================
   # Infrastructure
   # ==============================================================
 
   mysql:
     image: mysql:8.4
     container_name: mind-base-mysql
+    # Service-to-service MySQL is TLS-only (official image auto-generates certs
+    # on first init; Go clients use tls=skip-verify, app-pay JDBC sslMode=REQUIRED).
+    command: ["--require-secure-transport=ON"]
     ports:
       - "${MYSQL_PORT:-3306}:3306"
     environment:
@@ -199,6 +270,7 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --require-secure-transport=ON
     ports:
       # 仅回环暴露供本地 IDE 调试；生产不暴露
       - "127.0.0.1:${PAY_MYSQL_PORT:-3307}:3306"
@@ -220,6 +292,12 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     command: >
       redis-server
+      --port 6380
+      --tls-port 6379
+      --tls-cert-file /certs/server.crt
+      --tls-key-file /certs/server.key
+      --tls-ca-cert-file /certs/dev-ca.crt
+      --tls-auth-clients no
       --requirepass ${REDIS_PASSWORD:-mind-base}
       --notify-keyspace-events Ex
       --maxmemory 256mb
@@ -228,9 +306,10 @@ services:
       --save 300 10
     volumes:
       - redis_data:/data
+      - ./secrets/certs/redis:/certs:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-mind-base}", "ping"]
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/certs/dev-ca.crt", "-a", "${REDIS_PASSWORD:-mind-base}", "-p", "6379", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -245,11 +324,20 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-mind-base}
+    command: >
+      mongod
+      --auth
+      --bind_ip_all
+      --tlsMode requireTLS
+      --tlsCertificateKeyFile /tls/server.pem
+      --tlsCAFile /tls/ca.crt
+      --tlsAllowConnectionsWithoutCertificates
     volumes:
       - mongo_data:/data/db
+      - ./secrets/certs/mongo:/tls:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--quiet", "--tls", "--tlsAllowInvalidCertificates", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -271,6 +359,14 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
     volumes:
       - milvus_data:/var/lib/milvus
+      # MinIO is TLS-only → the Milvus server config must enable useSSL + trust
+      # the dev CA (full copy of the image default + TLS/etcd overrides).
+      # Lives with the docker deployment assets; deploy/k8s/20-data/milvus.yaml
+      # is the K8s StatefulSet manifest (kustomize resource), not this file.
+      - ./deploy/docker/milvus-config.yaml:/milvus/configs/milvus.yaml:ro
+      - ./secrets/certs/milvus:/certs:ro
+      # etcd client certs (etcd requires mTLS on its client port now)
+      - ./secrets/certs/etcd:/etcd-certs:ro
     restart: unless-stopped
     depends_on:
       etcd:
@@ -292,9 +388,18 @@ services:
       - "${NEO4J_BOLT_PORT:-7687}:7687"   # Bolt protocol (app connects here)
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-mind-base}
+      # Bolt TLS (server-auth; certs issued by the shared dev CA).
+      # Neo4j 5: dbms.ssl.policy.bolt.* + server.bolt.tls_level.
+      - NEO4J_dbms_ssl_policy_bolt_enabled=true
+      - NEO4J_dbms_ssl_policy_bolt_base__directory=/certs/bolt
+      - NEO4J_dbms_ssl_policy_bolt_private__key=private.key
+      - NEO4J_dbms_ssl_policy_bolt_public__certificate=public.crt
+      - NEO4J_dbms_ssl_policy_bolt_client__auth=NONE
+      - NEO4J_server_bolt_tls__level=REQUIRED
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+      - ./secrets/certs/neo4j:/certs:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
@@ -348,7 +453,7 @@ services:
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # AI 网关基址：默认本地 Higress；本地 data/higress 未配置 Provider 时，
       # .env 可指向共享远端 Higress（本地覆盖，勿提交）。
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-https://higress:9443/v1}
       # LLM 统一 GLM-5.3-flash（2026-10-12 qwen3-max 被上游 OpenRouter 下线 404，
       # 出题全批次失败「有效题目数量为 0」）。镜像内 baked default.yaml 仍是旧值，
       # 先用 env 覆盖；镜像重建包含新 default.yaml 后可移除这两行。
@@ -373,6 +478,32 @@ services:
       # (named volume app_ts_logs; size/interval/retention in default.yaml log.*,
       # docs/logging.md). The image pre-creates /app/logs owned by node.
       - LOG__DIR=/app/logs
+      # ── internal TLS: trust dev CA + https service endpoints ──
+      - NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+      - APP_AUTH__BASE_URL=https://app-user:8006
+      - APP_BILI__BASE_URL=https://app-user:8006
+      - APP_USER_SETTINGS__BASE_URL=https://app-user:8006
+      - APP_TASK__BASE_URL=https://apisix:9443
+      - TASK_QUIZ__EXECUTOR_URL=https://apisix:9443/internal/quiz/generate-llm
+      - APP_PAY__BASE_URL=https://apisix:9443/internal/pay
+      - APP_QUIZ__BASE_URL=https://apisix:9443/internal/quiz
+      - SANDBOX__BASE_URL=https://apisix:9443/internal/sandbox
+      - CONTENT_MCP__URL=https://app-content-mcp:8019/mcp
+      # ── app-ts 自身 HTTPS + gRPC→app-kg TLS ──
+      - SERVER__TLS__ENABLED=true
+      - SERVER__TLS__CERT=/app/certs/server.crt
+      - SERVER__TLS__KEY=/app/certs/server.key
+      - KG_GRPC__TLS__ENABLED=true
+      - KG_GRPC__TLS__CA_FILE=/etc/ssl/certs/ca-certificates.crt
+      # app-ts/.env 里可能是宿主调试用的 127.0.0.1；容器内必须走 compose DNS
+      - MILVUS__ADDRESS=milvus:19530
+      # Milvus proxy gRPC is TLS-only (server cert from the shared dev CA)
+      - MILVUS__SSL=true
+      - MILVUS__TLS__ROOT_CERT=/app/certs/dev-ca.crt
+      - MILVUS__TLS__SERVER_NAME=milvus
+      # MinIO is TLS-only now
+      - MINIO__ENDPOINT=https://minio:9000
+      - MINIO__SECURE=true
     # FD budget: SSE streams + gRPC + Mongo/Redis/Milvus pools + bounded agent
     # temp files (docs/temp-files.md keeps at most 32 files / 8 concurrent writes).
     # Docker's default nofile (1024) is tight for a long-lived SSE service.
@@ -382,12 +513,14 @@ services:
         hard: 8192
     volumes:
       - app_ts_logs:/app/logs
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+      - ./secrets/certs/app-ts:/app/certs:ro
     ports:
       # 8000 = the port the retired Python backend owned; app-ts inherits it.
       # (app-content note 面 keeps host 8018 — avoids the app-cloud 8007-8009 pool.)
       - "127.0.0.1:${APP_TS_PORT:-8000}:8000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1:8000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -446,12 +579,17 @@ services:
       # Snowflake worker id 2 (1 was the retired Python backend)
       - APPAUTH__WORKER_ID=2
       - APPAUTH__LOG__OUTPUT=both
+      # ── internal TLS: HTTPS on all app-user listeners (8006/8010/8015) ──
+      # outbound: membership lookup via APISIX (https) + dev CA trust
+      - APPAUTH__APP_PAY__BASE_URL=https://apisix:9443
+      - APPSETTINGS__APP_CLOUD__BASE_URL=https://app-cloud:8007
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       # ===== bili 域（原 B 站获取服务，前缀 APPBILI__）=====
       - APPBILI__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
       - MONGO__URI=${MONGO__URI:-mongodb://admin:mind-base@mongo:27017/?authSource=admin}
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # ASR 原生透传基址（/api/v1）：默认本地 Higress，可被 .env 指向远端。
-      - APPBILI__ASR__BASE_URL=${APPBILI__ASR__BASE_URL:-http://higress:8080/api/v1}
+      - APPBILI__ASR__BASE_URL=${APPBILI__ASR__BASE_URL:-https://higress:9443/api/v1}
       # ASR 走 Higress 原生透传（/api/v1 → DashScope，真实密钥在网关侧）；
       # AI_GATEWAY__API_KEY 即 Higress 消费者密钥。BaseURL 直连 DashScope 需要
       # sk- 密钥（网关消费者 key 会被 DashScope 判 InvalidApiKey）。
@@ -477,8 +615,8 @@ services:
       # Redis: captcha store / login throttle / rate limits / wechat state
       - REDIS__URL=${REDIS__URL:-redis://:mind-base@redis:6379/1}
       # 可选 TLS：留空 = HTTP（默认）；设置后三个监听口切换为 HTTPS
-      - TLS__CERT_FILE=${APP_USER_TLS_CERT_FILE:-}
-      - TLS__KEY_FILE=${APP_USER_TLS_KEY_FILE:-}
+      - TLS__CERT_FILE=${APP_USER_TLS_CERT_FILE:-/certs/server.crt}
+      - TLS__KEY_FILE=${APP_USER_TLS_KEY_FILE:-/certs/server.key}
     ports:
       # 三监听口语义不变：8006=auth / 8010=bili / 8015=settings（仅回环调试用）
       - "127.0.0.1:${APP_USER_AUTH_PORT:-8006}:8006"
@@ -487,7 +625,8 @@ services:
       # 主密钥：auth 解密 user_oauth（B 站 SESSDATA）用；保持只读挂载
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
       # 可选 TLS 证书目录（启用时把 APP_USER_TLS_* 指向 /certs/...）
-      - ./nginx/certs:/certs:ro
+      - ./secrets/certs/app-user:/certs:ro
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     # 三域合并后的单进程上限：auth 128m + bili 384m（含 ffmpeg 子进程）
     # + settings 128m 原为独立容器；合并后共用堆与页缓存，取 512m。
     mem_limit: 512m
@@ -573,7 +712,7 @@ services:
       # Keep the client-dev floor low; production overrides via .env.
       - SANDBOX__RUNTIME__RESOURCES__CPU=${SANDBOX_SANDBOX_CPU:-250m}
       - SANDBOX__RUNTIME__RESOURCES__MEMORY=${SANDBOX_SANDBOX_MEMORY:-256Mi}
-      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-http://minio:9000}
+      - MINIO__ENDPOINT=${MINIO__ENDPOINT:-https://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - SANDBOX__ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
@@ -621,17 +760,24 @@ services:
       - .env
     environment:
       - APPKG__RDBMS__URL=${RDBMS__URL:-mysql+aiomysql://mind_base:mind-base@mysql:3306/mind_base}
-      - KG__URI=${KG__URI:-bolt://neo4j:7687}
+      - KG__URI=${KG__URI:-bolt+s://neo4j:7687}
       - KG__PASSWORD=${NEO4J_PASSWORD:-mind-base}
       - APPKG__LOG__OUTPUT=both
       # HTTP cloud-doc 路由端点（/internal/kg/cloud-doc/*，app-cloud 调用）令牌：
       # 与 app-cloud 的 APPCLOUD__KG__TOKEN 共用同一值；留空 = 仅内网可达
       - APPKG__SERVER__INTERNAL_TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+      # ── gRPC/HTTP HTTPS ──
+      - APPKG__SERVER__TLS__ENABLED=true
+      - APPKG__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPKG__SERVER__TLS__KEY=/app/certs/server.key
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     ports:
       - "127.0.0.1:${APP_KG_GRPC_PORT:-8013}:8013"
       - "127.0.0.1:${APP_KG_HEALTH_PORT:-8014}:8014"
     volumes:
       - app_kg_logs:/app/logs
+      - ./secrets/certs/app-kg:/app/certs:ro
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -648,16 +794,24 @@ services:
       - ETCD_AUTO_COMPACTION_RETENTION=1000
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
+    # Client TLS (mTLS): certs from the shared dev CA. Only Milvus talks to
+    # etcd today (APISIX standalone runs role=data_plane and never initializes
+    # etcd), so the client cert is the etcd leaf itself.
     command: >
       etcd
-      -advertise-client-urls=http://etcd:2379
-      -listen-client-urls=http://0.0.0.0:2379
+      -advertise-client-urls=https://etcd:2379
+      -listen-client-urls=https://0.0.0.0:2379
       -data-dir=/etcd
+      -cert-file=/certs/server.crt
+      -key-file=/certs/server.key
+      -trusted-ca-file=/certs/dev-ca.crt
+      -client-cert-auth
     volumes:
       - etcd_data:/etcd
+      - ./secrets/certs/etcd:/certs:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
+      test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/certs/dev-ca.crt", "--cert=/certs/server.crt", "--key=/certs/server.key", "endpoint", "health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -688,7 +842,8 @@ services:
       # Plan 0021: Redis event notification + abandoned upload cleanup
       - MINIO_NOTIFY_REDIS_ENABLE_clouddrive=on
       - MINIO_NOTIFY_REDIS_FORMAT_clouddrive=access
-      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6379
+      - MINIO_NOTIFY_REDIS_ADDRESS_clouddrive=redis:6380
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       - MINIO_NOTIFY_REDIS_PASSWORD_clouddrive=${REDIS_PASSWORD:-mind-base}
       - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
       - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
@@ -696,9 +851,11 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+      - ./secrets/certs/minio:/root/.minio/certs:ro
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-fk", "https://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -767,7 +924,9 @@ services:
       - ./apisix/render-config.sh:/usr/local/apisix/conf/render-config.sh:ro
       # app-content board 面 dev-CA（自动模式首次启动生成）：只读挂入，
       # entrypoint 将其与系统 CA 池拼成 ssl_trusted_certificate 的 ca-bundle.crt
-      - ./app-board/certs:/usr/local/apisix/conf/certs/board:ro
+      - ./secrets/certs/app-content:/usr/local/apisix/conf/certs/board:ro
+      # apisix 自身 9443 TLS 监听口证书（nginx 以 dev CA 校验）
+      - ./secrets/certs/apisix:/usr/local/apisix/conf/certs/apisix:ro
     # APISIX's lua-http client honors HTTP_PROXY. The host's
     # ~/.docker/config.json injects HTTP_PROXY at runtime with higher priority
     # than compose environment, which misroutes internal etcd traffic to the
@@ -837,9 +996,14 @@ services:
       # Vector pipeline (Higress AI gateway; model/dim RED LINE = Milvus rebuild)
       - AI_GATEWAY__API_KEY=${AI_GATEWAY__API_KEY:-}
       # AI 网关基址（OpenAI 兼容 /v1）：默认本地 Higress，可被 .env 指向远端。
-      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-http://higress:8080/v1}
+      - AI_GATEWAY__BASE_URL=${AI_GATEWAY__BASE_URL:-https://higress:9443/v1}
       - MILVUS__URI=${MILVUS__URI:-http://milvus:19530}
       - APPCLOUD__LOG__OUTPUT=both
+      # ── HTTPS listener + dev CA trust ──
+      - APPCLOUD__SERVER__TLS__ENABLED=true
+      - APPCLOUD__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPCLOUD__SERVER__TLS__KEY=/app/certs/server.key
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       # 提取码静态加密密钥（与 app-user 共用同一 secrets 文件；密钥不进数据库）
       - SECURITY__API_KEY_ENCRYPTION_KEY_FILE=/run/secrets/api_key_encryption_key
       # Public-share device-attestation HMAC key — MUST be identical across all
@@ -859,6 +1023,8 @@ services:
     volumes:
       - app_cloud_logs:/app/logs
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
+      - ./secrets/certs/app-cloud:/app/certs:ro
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -911,13 +1077,15 @@ services:
       - CONTENT__SERVER__TLS__KEY=/app/certs/server.key
       # 服务间 M2M 共享密钥（/internal/* 二次校验；与 APISIX consumer key 同值）
       - CONTENT__INTERNAL_API_KEY=${APISIX_CONSUMER_KEY:-}
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     ports:
       # 单端口（TLS）仅回环调试；业务流量一律经 APISIX/nginx，不直连本服务。
       - "127.0.0.1:${APP_CONTENT_PORT:-8004}:8004"
     volumes:
       - app_content_logs:/app/logs
       # board TLS 证书目录（cert-gen 生成/轮换；apisix 只读挂其中的 dev-ca.crt）
-      - ./app-board/certs:/app/certs
+      - ./secrets/certs/app-content:/app/certs
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -938,16 +1106,17 @@ services:
       # Own database: independent MySQL instance (schema created by db.Migrate)
       - APPTASK__RDBMS__URL=mysql+aiomysql://${APPTASK_MYSQL_USER:-app_task}:${APPTASK_MYSQL_PASSWORD:-app-task}@app-task-mysql:3306/app_task
       # Main app via APISIX gateway
-      - APPTASK__APP__BASE_URL=http://apisix:9080
+      - APPTASK__APP__BASE_URL=https://apisix:9443
       - APPTASK__APP__CONSUMER_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # 网关作用域执行器鉴权：派发到 apisix 的任务（如定时出题
       # /internal/quiz/generate-llm 回调）自动附 apikey 头通过 key-auth；
       # 其他 executor_url 不携带密钥
-      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9080
+      - APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS=apisix:9443
       - APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       # app-pay 超时委托回调（executor_url=https://app-pay:8002/...）的证书校验 CA：
       # executor 惰性加载，纯调度栈（无 app-pay）不受影响；可用 PAY_EXECUTOR_CA_FILE 覆盖
       - APPTASK__HTTP_EXECUTOR__CA_FILE=${PAY_EXECUTOR_CA_FILE:-/app/pay-certs/ca.crt}
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       # Email
       - APPTASK__EMAIL__API_KEY=${APPTASK_EMAIL_API_KEY:-}
       # Timezone
@@ -967,6 +1136,7 @@ services:
       # app-pay 开发 CA（app-pay/certs/ 由 scripts/gen-dev-cert.* 生成；缺失时目录为空，
       # 只有 https 委托回调会报错并由兜底轮询接管，不影响 app-task 启动）
       - ./app-pay/certs:/app/pay-certs:ro
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
       # 容器内 HTTPS（.env 设 APPTASK__SERVER__TLS__ENABLED=true 即可）：不配 cert/key 时
       # 启动自动生成自签证书写入 /app/certs（挂卷持久化，重建容器不再换证书）；
       # 显式指定文件用 APPTASK__SERVER__TLS__CERT/KEY
@@ -992,12 +1162,23 @@ services:
         condition: service_completed_successfully
       app-pay-mysql:
         condition: service_healthy
+      cert-truststore:
+        condition: service_completed_successfully
     env_file:
       - .env
+    environment:
+      # outbound to APISIX over TLS; JVM trusts the dev CA via the PKCS12
+      # truststore generated by the one-shot cert-truststore init container.
+      - APPTASK_BASE_URL=https://apisix:9443
+      - JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai -Djavax.net.ssl.trustStore=/app/certs/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12
     # 配置唯一入口 = app-pay 的 application.yaml（+ profile 变体）：
     # docker profile = 容器生产形态（容器内 DB 地址 / MOCK 关闭 / 正式网关）；
     # 密钥/口令经 yaml 占位符从 env_file 读取（.env 的 PAY_MYSQL_* / ALIPAY_*），不进 git
-    command: ["--spring.profiles.active=docker"]
+    # CLI overrides beat the baked application-docker.yaml (image not rebuilt):
+    # MySQL is TLS-only, so the JDBC URL must request SSL.
+    command:
+      - --spring.profiles.active=docker
+      - --pay.rdbms.url=jdbc:mysql://app-pay-mysql:3306/app_pay?sslMode=REQUIRED&useSSL=true&requireSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=true
     ports:
       # 仅回环：app-pay 不允许绕过 APISIX 鉴权直达
       - "127.0.0.1:${APP_PAY_PORT:-8002}:8002"
@@ -1030,7 +1211,7 @@ services:
       cert-gen:
         condition: service_completed_successfully
     environment:
-      - CONTENTMCP__UPSTREAM__BASE_URL=http://apisix:9080
+      - CONTENTMCP__UPSTREAM__BASE_URL=https://apisix:9443
       - CONTENTMCP__UPSTREAM__API_KEY=${APISIX_CONSUMER_KEY:?err_APISIX_CONSUMER_KEY_not_set_in_.env}
       - CONTENTMCP__UPSTREAM__UID=${CONTENT_MCP_UID:-}
       - CONTENTMCP__SERVER__AUTH_TOKEN=${CONTENT_MCP_AUTH_TOKEN:-}
@@ -1039,12 +1220,13 @@ services:
       # TLS（默认关）：跨机 MCP 宿主或放宽回环绑定时置 true。证书由 cert-gen
       # 统一签发（shared dev CA 叶子），此处 explicit 模式直接加载；
       # auto 模式会试图在 root 属主的 bind mount 里重建 dev CA（EACCES 崩溃）
-      - CONTENTMCP__SERVER__TLS__ENABLED=${CONTENT_MCP_TLS_ENABLED:-false}
+      - CONTENTMCP__SERVER__TLS__ENABLED=true
       # 外部 Bearer 宿主的工具白名单（逗号分隔；空=全部 12 个工具；服务模式不受限）
       - CONTENTMCP__SERVER__BEARER_ALLOWED_TOOLS=${CONTENT_MCP_BEARER_ALLOWED_TOOLS:-}
       - CONTENTMCP__SERVER__TLS__CERT_DIR=/app/certs
       - CONTENTMCP__SERVER__TLS__CERT_FILE=/app/certs/server.crt
       - CONTENTMCP__SERVER__TLS__KEY_FILE=/app/certs/server.key
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       # Logging: stdout + /app/logs/app-content-mcp.log（lumberjack 轮转；
       # 镜像已预建 nonroot 属主的 /app/logs，卷首次挂载继承该属主）
       - CONTENTMCP__LOG__OUTPUT=both
@@ -1054,7 +1236,8 @@ services:
     volumes:
       - app_content_mcp_logs:/app/logs
       # TLS 证书目录：cert-gen 统一签发叶子（explicit 模式加载，不自动生成）
-      - ./app-go/app-content-mcp/certs:/app/certs
+      - ./secrets/certs/app-content-mcp:/app/certs
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -1172,20 +1355,25 @@ services:
       # Share-content review preview via app-cloud (Issue #154): base URL
       # defaults to the compose-internal app-cloud; token must equal
       # APP_CLOUD_ADMIN_REVIEW_TOKEN. Both empty = preview disabled.
-      - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-http://app-cloud:8007}
+      - APPADMIN__CLOUD_REVIEW__BASE_URL=${APPADMIN__CLOUD_REVIEW__BASE_URL:-https://app-cloud:8007}
       - APPADMIN__CLOUD_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
       # Sandbox control plane admin proxy (app-sandbox /internal/admin/*).
       # base_url defaults to the compose-internal service; token must equal
       # SANDBOX_ADMIN_TOKEN. Both empty = sandbox admin disabled (503).
-      - APPADMIN__SANDBOX_ADMIN__BASE_URL=${APPADMIN__SANDBOX_ADMIN__BASE_URL:-http://app-sandbox:8017}
+      - APPADMIN__SANDBOX_ADMIN__BASE_URL=${APPADMIN__SANDBOX_ADMIN__BASE_URL:-https://app-sandbox:8443}
       - APPADMIN__SANDBOX_ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
       # 支付运营（原 app-pay-admin 能力并入）：第二 GORM 连接直连 app_pay 库。
       # 留空 = 支付管理未配置（/api/pay/* 503），不影响分享审核/账户/沙箱。
       - APPADMIN__PAY_RDBMS__URL=${PAY_ADMIN_RDBMS_URL:-mysql+aiomysql://${PAY_MYSQL_USER:-app_pay}:${PAY_MYSQL_PASSWORD:-app-pay}@app-pay-mysql:3306/app_pay}
       # 退款复核：经 APISIX pay-ops consumer 调 app-pay internal 端点（不直写库）。
       # 未配置 key 时退款复核整组 404 隐藏；其余支付查询不受影响。
-      - APPADMIN__PAY__OPS__BASE_URL=${APPADMIN__PAY__OPS__BASE_URL:-http://apisix:9080}
+      - APPADMIN__PAY__OPS__BASE_URL=${APPADMIN__PAY__OPS__BASE_URL:-https://apisix:9443}
       - APPADMIN__PAY__OPS__KEY=${PAY_OPS_KEY:-}
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      # ── HTTPS listener ──
+      - APPADMIN__SERVER__TLS__ENABLED=true
+      - APPADMIN__SERVER__TLS__CERT=/app/certs/server.crt
+      - APPADMIN__SERVER__TLS__KEY=/app/certs/server.key
       # 资金审计 JSONL（补偿开通/退款确认哈希链，365 天），落 app_admin_logs 卷
       - APPADMIN__PAY__AUDIT_FILE=/app/logs/pay-audit.jsonl
       - APPADMIN__LOG__OUTPUT=both
@@ -1194,6 +1382,8 @@ services:
       - "127.0.0.1:${APP_ADMIN_PORT:-8016}:8016"
     volumes:
       - app_admin_logs:/app/logs
+      - ./secrets/certs/app-admin:/app/certs:ro
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -1215,6 +1405,9 @@ services:
         condition: service_started
     ports:
       - "127.0.0.1:${APP_ADMIN_WEB_PORT:-3001}:80"
+    volumes:
+      # trust bundle so the /api proxy can verify app-admin-api's dev-CA cert
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net

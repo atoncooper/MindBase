@@ -87,7 +87,7 @@ docker compose --profile full up -d
 
 ### 本地开发
 
-需要 Docker、Node.js ≥ 22.17、Go 1.25+（按需）。日常改 AI 域或前端时：容器跑全栈，本地热重载 `app-ts` 与 `frontendv2` 两个进程，并导出连接串与密钥（app-ts 不读 `.env`）；还需一个本地 `docker-compose.override.yml` 把 APISIX `9080` 映射到宿主，供前端 dev 代理与 app-ts 出站调用。
+需要 Docker、Node.js ≥ 22.17、Go 1.25+（按需）。日常改 AI 域或前端时：容器跑全栈，本地热重载 `app-ts` 与 `frontendv2` 两个进程；app-ts 默认读取 `app-ts/.env`（不读项目根 `.env`），连接串/密钥写在该文件即可；还需一个本地 `docker-compose.override.yml` 把 APISIX `9080` 映射到宿主，供前端 dev 代理与 app-ts 出站调用。
 
 完整命令、override 示例、逐服务本地启动方式、测试与排错见 [docs/getting-started.md](docs/getting-started.md)。
 

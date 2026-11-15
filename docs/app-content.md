@@ -40,7 +40,7 @@ docker compose up -d app-content         # 容器形态
 
 > 切流注意：旧 `app-note` / `app-quiz` / `app-board` 容器会占用 8008 / 8011 / 8004，必须先删除（`docker compose up -d --remove-orphans app-content` 或先 stop/rm 旧容器）；新服务只监听一个 8004。
 
-> compose（server）：`profiles: ["", "content", "note", "quiz", "board", "full"]`；`depends_on` = cert-gen + mysql + mongo + redis；日志卷 `app_content_logs`；board TLS 证书挂载 `./app-board/certs:/app/certs`（`CONTENT__SERVER__TLS__CERT_DIR=/app/certs`、`CERT=/app/certs/server.crt`、`KEY=/app/certs/server.key`）。client compose 核心服务无 profiles，宿主调试口统一 `APP_CONTENT_PORT`（默认 8004）。
+> compose（server）：`profiles: ["", "content", "note", "quiz", "board", "full"]`；`depends_on` = cert-gen + mysql + mongo + redis；日志卷 `app_content_logs`；board TLS 证书挂载 `./secrets/certs/app-content:/app/certs`（`CONTENT__SERVER__TLS__CERT_DIR=/app/certs`、`CERT=/app/certs/server.crt`、`KEY=/app/certs/server.key`）。client compose 核心服务无 profiles，宿主调试口统一 `APP_CONTENT_PORT`（默认 8004）。
 
 > 说明：`router` 只做路由注册 + DTO 绑定/映射；校验规则在 `dto/*` 的 binding tags，安全链在 `internal/middleware`（由组合根**统一 Apply 一次**，各域不再各自建 engine）。`internal/bootstrap` 是**唯一的组合根**——`Run(ctx, cfg)` 创建唯一 `gin.New()` engine，初始化三域后让它们在同一 engine 上注册路由（`/board/*`、`/notes/*`、`/quiz/*`、`/tasks/*`、`/internal/*`），再由同一个 `*http.Server` 在单一端口提供；per-domain body limit 由 middleware 按路径前缀选取。全模块只有一个 `main`；`tests/architecture_test.go` 守护“唯一 http.Server / 唯一 ListenAndServe / 唯一 gin.New() / 无 ServeMux”。三域之间目前没有任何直接调用；未来若需跨域能力，只能经对方 **service 接口**注入，不得跨域取 repo/router，也不得在进程内用 HTTP 回环调用自己。所有 Go 测试必须在 `tests/` 包（`internal/**` 下不允许 `_test.go`）。
 
@@ -99,7 +99,7 @@ cache-aside，只缓存读：`board:detail:{uid}:{uuid}` 与 `board:list:{uid}:{
 - **自动（默认）**：cert/key 留空 → 自动生成持久化开发 CA（`dev-ca.crt/key`，10 年）+ 叶子证书（`server.crt/key`，SAN 覆盖 localhost 等，825 天）。Rotator 每日巡检：余量 <30 天或文件丢失自动重签并经 `GetCertificate` 热切换。
 - **显式**：`CONTENT__SERVER__TLS__CERT/KEY` 指定文件（正式 CA 上线后用）；`client_auth` 开启时用 `CONTENT__SERVER__TLS__CLIENT_CA_FILE` 指定客户端 CA bundle。
 
-compose 将证书目录挂到容器 `/app/certs`（宿主沿用 `./app-board/certs`，cert-gen 仍写这里）；APISIX 只读挂其中的 `dev-ca.crt` 到信任锚 bundle（`apisix.ssl.ssl_trusted_certificate`，**替换**默认池所以同时并入系统 CA）。首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
+compose 将证书目录挂到容器 `/app/certs`（宿主为 `./secrets/certs/app-content`，cert-gen 签发到这里）；APISIX 只读挂其中的 `dev-ca.crt` 到信任锚 bundle（`apisix.ssl.ssl_trusted_certificate`，**替换**默认池所以同时并入系统 CA）。首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
 
 > APISIX 3.11 限制：HTTP 上游无法做证书校验（`tls.verify` 仅支持 kafka），因此健康检查 `https_verify_certificate: false`（只加密不验身份）；upstream 节点名 `app-content` 充当 SNI 命中叶子证书 SAN。
 
@@ -182,7 +182,7 @@ MCP server = **`app-content-mcp`**（8019 单端口单端点，12 工具合并�
 
 ## 八、迁移与回滚
 
-- 旧 `app-go/app-note/`、`app-go/app-quiz/`、根 `app-board/` 源码目录与 `app-note`/`app-quiz`/`app-board` compose 服务已删除（宿主 `app-board/certs` 证书目录刻意保留，见 §5.3）；历史实施记录见 [archive/app-note-migration.md](archive/app-note-migration.md)、[archive/app-quiz-migration.md](archive/app-quiz-migration.md)。
+- 旧 `app-go/app-note/`、`app-go/app-quiz/`、根 `app-board/` 源码目录与 `app-note`/`app-quiz`/`app-board` compose 服务已删除（宿主证书目录统一迁到 `secrets/certs/app-content`，见 §5.3）；历史实施记录见 [archive/app-note-migration.md](archive/app-note-migration.md)、[archive/app-quiz-migration.md](archive/app-quiz-migration.md)。
 - 回滚 = 回退对应 commit 恢复旧三服务目录 / compose / APISIX 条目；数据库 schema 未变（无新增表），无需数据迁移。
 - 共享 DB 既有迁移照常执行（三域 DDL 仍 CREATE-only）。
 

@@ -52,6 +52,24 @@ func (t *LoginThrottle) Check(ctx context.Context, identifier, ip string) (bool,
 	return true, 0
 }
 
+// loginFailScript is INCR + EXPIRE in one atomic step (same lost-TTL hazard as
+// fixedWindowScript below: a separate EXPIRE can be dropped/reordered, and
+// since only the first failure used to arm the TTL, a poisoned lockout key
+// never expires — Check would then keep answering 429 for that
+// identifier+IP until someone deleted the key by hand).
+var loginFailScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+local ttl = redis.call('PTTL', KEYS[1])
+if n == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+elseif n >= tonumber(ARGV[2]) then
+  redis.call('PEXPIRE', KEYS[1], ARGV[3])
+elseif ttl < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return n
+`)
+
 // RecordFailed increments the counter; sets the rolling TTL on first failure
 // and extends to the hard-lockout TTL when the threshold is crossed.
 func (t *LoginThrottle) RecordFailed(ctx context.Context, identifier, ip string) {
@@ -59,16 +77,10 @@ func (t *LoginThrottle) RecordFailed(ctx context.Context, identifier, ip string)
 		return
 	}
 	key := loginFailNS + loginThrottleKey(identifier, ip)
-	current, err := t.rdb.Incr(ctx, key).Result()
+	_, err := loginFailScript.Run(ctx, t.rdb, []string{key},
+		loginWindowSeconds*1000, loginMaxFailed, loginLockoutSeconds*1000).Int64()
 	if err != nil {
 		slog.Debug("[LOGIN_THROTTLE] incr failed", "err", err)
-		return
-	}
-	switch {
-	case current == 1:
-		t.rdb.Expire(ctx, key, loginWindowSeconds*time.Second)
-	case int(current) >= loginMaxFailed:
-		t.rdb.Expire(ctx, key, loginLockoutSeconds*time.Second)
 	}
 }
 
@@ -90,9 +102,32 @@ func normalizeIdentifier(id string) string {
 	return strings.ToLower(strings.TrimSpace(id))
 }
 
-// FixedWindowLimiter — generic per-key fixed-window counter (Redis INCR +
-// EXPIRE), used for the /auth per-IP guard and per-uid change-password cap.
-// Redis unavailable → allow (fail-open, parity with rate_limit_service).
+// fixedWindowScript is the whole fixed-window check in ONE atomic Redis step:
+// INCR the counter and (re)install the window TTL together.
+//
+// Why a script instead of INCR followed by EXPIRE: the two commands were sent
+// as separate pool commands, and go-redis may hand them to different
+// connections — they are therefore not ordered. EXPIRE could reach Redis
+// before INCR (a no-op on a missing key), leaving the counter created without
+// any TTL. Since only the first increment armed the TTL, such a key never
+// expired: every later request incremented it, always exceeded the limit, and
+// that client IP got 429 "请求过于频繁，请稍后再试" with Retry-After: 0
+// *forever* (only a manual DEL or a Redis restart recovered it — observed in
+// production on /account, where the poisoned key for the host gateway IP made
+// every /auth/* request look rate-limited). The ttl < 0 branch also repairs
+// keys already poisoned before this fix, so an upgrade needs no Redis surgery.
+var fixedWindowScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 or redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return n
+`)
+
+// FixedWindowLimiter — generic per-key fixed-window counter (Redis, atomic
+// INCR+PEXPIRE script), used for the /auth per-IP guard and per-uid
+// change-password cap. Redis unavailable → allow (fail-open, parity with
+// rate_limit_service).
 type FixedWindowLimiter struct {
 	rdb redis.UniversalClient
 	ns  string
@@ -107,26 +142,33 @@ func (l *FixedWindowLimiter) Allow(ctx context.Context, key string, limit int, w
 	if l.rdb == nil {
 		return true
 	}
-	full := l.ns + key
-	n, err := l.rdb.Incr(ctx, full).Result()
-	if err != nil {
-		return true
+	ms := window.Milliseconds()
+	if ms <= 0 {
+		ms = 1
 	}
-	if n == 1 {
-		l.rdb.Expire(ctx, full, window)
+	n, err := fixedWindowScript.Run(ctx, l.rdb, []string{l.ns + key}, ms).Int64()
+	if err != nil {
+		// Fail open: the limiter is a safety net, never a request-path dependency.
+		return true
 	}
 	return n <= int64(limit)
 }
 
-// RetryAfter returns the remaining TTL of the window key (seconds), for
-// Rate-After headers; 0 when the key is absent or redis is down.
+// RetryAfter returns the remaining TTL of the window key (seconds, rounded up
+// so a sub-second remainder still yields a usable Retry-After header); 0 when
+// the key is absent, has no expiry, or redis is down.
 func (l *FixedWindowLimiter) RetryAfter(ctx context.Context, key string) int {
 	if l.rdb == nil {
 		return 0
 	}
 	ttl, err := l.rdb.TTL(ctx, l.ns+key).Result()
-	if err != nil || ttl <= 0 {
+	if err != nil {
 		return 0
 	}
-	return int(ttl.Seconds())
+	if ttl <= 0 {
+		// Defensive: a blocked key should always carry a TTL after the atomic
+		// script above, but never tell the client "retry after 0s".
+		return 1
+	}
+	return int((ttl + time.Second - 1) / time.Second)
 }

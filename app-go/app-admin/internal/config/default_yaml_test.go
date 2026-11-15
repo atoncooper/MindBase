@@ -33,9 +33,24 @@ func TestDefaultYAMLParsesAndCarriesPayDefaults(t *testing.T) {
 	if cfg.Pay.Grant.DailyMaxCount != 50 || cfg.Pay.Grant.DailyMaxDays != 1000 {
 		t.Fatalf("pay.grant defaults: %+v", cfg.Pay.Grant)
 	}
-	if cfg.Pay.Ops.BaseURL != "" || cfg.Pay.Ops.Key != "" || !cfg.Pay.Ops.RefundReviewEnabled ||
-		cfg.Pay.Ops.TimeoutSeconds != 5 {
+	// Phase 2: the upstream planes default to HTTPS endpoints (APISIX 9443,
+	// app-cloud 8007, sandbox TLS front 8443). Tokens/keys still default empty,
+	// so a lone default URL is normalized away by Normalize* until the secret
+	// is injected (fail closed).
+	if cfg.Pay.Ops.BaseURL != "https://apisix:9443" || cfg.Pay.Ops.Key != "" ||
+		!cfg.Pay.Ops.RefundReviewEnabled || cfg.Pay.Ops.TimeoutSeconds != 5 {
 		t.Fatalf("pay.ops defaults: %+v", cfg.Pay.Ops)
+	}
+	if cfg.CloudReview.BaseURL != "https://app-cloud:8007" || cfg.CloudReview.Token != "" {
+		t.Fatalf("cloud_review defaults: %+v", cfg.CloudReview)
+	}
+	if cfg.SandboxAdmin.BaseURL != "https://app-sandbox:8443" || cfg.SandboxAdmin.Token != "" {
+		t.Fatalf("sandbox_admin defaults: %+v", cfg.SandboxAdmin)
+	}
+	// Server TLS stays off by default but ships the mounted-cert paths.
+	if cfg.Server.TLS.Enabled || cfg.Server.TLS.Cert != "/app/certs/server.crt" ||
+		cfg.Server.TLS.Key != "/app/certs/server.key" {
+		t.Fatalf("server.tls defaults: %+v", cfg.Server.TLS)
 	}
 	if cfg.Pay.AuditFile != "/app/logs/pay-audit.jsonl" {
 		t.Fatalf("pay.audit_file default: %q", cfg.Pay.AuditFile)

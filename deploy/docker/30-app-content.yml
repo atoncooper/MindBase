@@ -36,8 +36,8 @@ services:
     volumes:
       - app_content_logs:/app/logs
       # board TLS 证书目录（cert-gen 产物，与 server1 apisix 信任的是同一套证书；
-      # 目录名沿用历史 app-board/certs —— 即“保留 board TLS 证书卷/secret”）
-      - ../../app-board/certs:/app/certs
+      # 宿主已统一到 secrets/certs/app-content，容器内仍挂 /app/certs）
+      - ../../secrets/certs/app-content:/app/certs
     restart: unless-stopped
     networks:
       - mind-base-overlay

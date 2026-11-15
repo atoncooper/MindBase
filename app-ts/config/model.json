@@ -1,0 +1,71 @@
+{
+  "default": "z-ai/glm-5.3-flash",
+  "models": [
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "label": "GLM-5.3 Flash",
+      "description": "默认 · 智谱 2026-08-26 发布 · 1M 上下文 · 支持图片/视频",
+      "vision": true
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "label": "GLM-5.3",
+      "description": "智谱 2026-08-18 发布 · 1M 上下文 · 纯文本",
+      "vision": false
+    },
+    {
+      "id": "openai/gpt-6.1-terra",
+      "label": "GPT-6.1 Terra",
+      "description": "OpenAI 2026-10-26 发布 · 1.05M 上下文 · 文件/图片",
+      "vision": true
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "label": "GPT-6.1 Sol",
+      "description": "OpenAI 2026-09-29 发布 · 1.05M 上下文 · 文件/图片",
+      "vision": true
+    },
+    {
+      "id": "openai/gpt-6.1-terra-pro",
+      "label": "GPT-6.1 Terra Pro",
+      "description": "OpenAI 2026-10-26 发布 · 旗舰推理 · 文件/图片",
+      "vision": true
+    },
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "label": "Claude Sonnet 5.5",
+      "description": "Anthropic 2026-09-28 发布 · 1M 上下文 · 图片/文件",
+      "vision": true
+    },
+    {
+      "id": "google/gemini-4-carbon",
+      "label": "Gemini 4 Carbon",
+      "description": "Google 2026-11-10 发布 · 1M 上下文 · 音视频/图片/文件",
+      "vision": true
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "label": "DeepSeek V4.1 Flash",
+      "description": "DeepSeek 2026-09-10 发布 · 1M 上下文 · 支持图片",
+      "vision": true
+    },
+    {
+      "id": "qwen/qwen3.8-max-prime",
+      "label": "Qwen3.8 Max Prime",
+      "description": "阿里云 Qwen 2026-09-23 发布 · 1M 上下文 · 图片/视频",
+      "vision": true
+    },
+    {
+      "id": "moonshotai/kimi-k3.1-pro",
+      "label": "Kimi K3.1 Pro",
+      "description": "月之暗面 2026-10-23 发布 · 1M 上下文 · 图片/视频",
+      "vision": true
+    },
+    {
+      "id": "x-ai/grok-4.7",
+      "label": "Grok 4.7",
+      "description": "xAI 2026-09-21 发布 · 500K 上下文 · 图片/视频",
+      "vision": true
+    }
+  ]
+}

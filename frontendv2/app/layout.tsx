@@ -4,6 +4,7 @@ import "katex/dist/katex.min.css";
 import { AuthProvider } from "@/lib/auth";
 import { AppToastProvider } from "@/lib/app-toast";
 import { RouteGuard } from "@/components/route-guard";
+import { AppRouterCacheProvider } from "@mui/material-nextjs/v16-appRouter";
 
 export const metadata: Metadata = {
   title: "MindBase - 让收藏变成知识",
@@ -27,11 +28,13 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
+        <AppRouterCacheProvider options={{ key: "mui" }}>
         <AuthProvider>
           <AppToastProvider>
             <RouteGuard>{children}</RouteGuard>
           </AppToastProvider>
         </AuthProvider>
+        </AppRouterCacheProvider>
       </body>
     </html>
   );

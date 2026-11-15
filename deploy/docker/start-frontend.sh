@@ -61,6 +61,6 @@ up 14-nginx.yml nginx;               wait_ready mind-base-nginx 60
 
 echo
 echo "✅ server1 边缘层完成。"
-echo "   浏览器不弹警告：把 nginx/certs/dev-ca.crt 导入系统/浏览器『受信任的根证书颁发机构』"
+echo "   浏览器不弹警告：把 secrets/certs/nginx/dev-ca.crt 导入系统/浏览器『受信任的根证书颁发机构』"
 echo "   （Subject/SAN 由 .env 的 MB_CERT_HOST / MB_CERT_EXTRA_SAN 控制）"
 docker ps --format 'table {{.Names}}	{{.Status}}	{{.Ports}}'

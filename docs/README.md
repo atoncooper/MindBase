@@ -36,6 +36,7 @@
 | [code-execution.md](code-execution.md) | 代码执行（run_code）：沙箱边界、控制层调用链、结果与持久化、失败降级 |
 | [temp-files.md](temp-files.md) | agent 解析临时文件：下载→本地→解析→整轮结束程序删除、uid/轮次隔离、预算与 fd 上限、崩溃 sweep、配置与运维 |
 | [mikro-orm.md](mikro-orm.md) | app-ts MongoDB 的 MikroORM 采用说明与分阶段迁移计划 |
+| [chat-models.md](chat-models.md) | 聊天模型选择：`config/model.json` 目录格式、GET /chat/models、网关路由/默认模型/计价与前端行为 |
 
 ### 2.3 业务服务（app-*）
 

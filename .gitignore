@@ -65,16 +65,12 @@ logs/
 # Node
 node_modules/
 
-# Nginx SSL certs (sensitive)
-nginx/certs/*
-!nginx/certs/.gitkeep
+# 生成证书统一在仓库根 secrets/certs/（nginx / app-content / app-content-mcp；
+# secrets/ 整体已忽略），app-pay/certs/ 是唯一例外（app-pay 自持证书目录）。
 certbot_www/
 
 # app-pay TLS certs（scripts/gen-dev-cert.* 生成的开发证书与私钥，敏感）
 app-pay/certs/
-
-# app-board TLS certs（自动生成的 dev-CA + 叶子证书与私钥，敏感）
-app-board/certs/
 
 # app-task TLS certs（server.tls 自动生成的自签证书与私钥，敏感）
 app-task/certs/
@@ -135,6 +131,8 @@ NVIDIA Corporation/
 
 # 本地测试临时产物
 tmp-gotest/
+# 本地临时产物（派生镜像构建上下文 binary/conf 注入、验证截图等，见 docs/tls.md）
+tmp/
 # gh CLI 本地配置（hosts.yml 可能含 OAuth token）
 .config/
 

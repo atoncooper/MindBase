@@ -2,7 +2,7 @@
 # alpine lacks. Built once and cached; no network access at run time.
 FROM alpine:3.20
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl ca-certificates
 
 COPY gen-certs.sh /opt/gen-certs.sh
 # Defense against CRLF working trees (git autocrlf on Windows): `` makes

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ================================================================
 # server2（数据层 + 后端）一键启动：数据层 -> milvus -> Go服务/MCP -> 支付/任务/AI
-# 前提：../../ 下已有 .env、secrets/、app-pay/certs/、app-board/certs/（从 server1 拷贝）
+# 前提：../../ 下已有 .env、secrets/（含 certs/）、app-pay/certs/（从 server1 拷贝）
 #       swarm worker 已加入；overlay 可见（docker network ls | grep mind-base-overlay）
 # 可选：90-higress（.env 未指向外部网关时）、96-app-admin（统一后台，含支付运营）
 #
@@ -47,7 +47,7 @@ wait_https() { # url [超时秒] —— 自签 dev-CA 的 HTTPS 服务（-k 与 
 docker network inspect mind-base-overlay >/dev/null 2>&1 \
   || echo "⚠️  overlay 网络 mind-base-overlay 不存在（server1: docker network create -d overlay --attachable mind-base-overlay）"
 
-for p in ../../.env ../../secrets/api_key_encryption_key ../../app-pay/certs ../../app-board/certs; do
+for p in ../../.env ../../secrets/api_key_encryption_key ../../secrets/certs ../../app-pay/certs; do
   [ -e "$p" ] || echo "⚠️  缺少 $p —— 请从 server1 拷贝（app-pay/app-content board 域缺证书会拒启）"
 done
 

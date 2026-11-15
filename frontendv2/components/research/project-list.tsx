@@ -1,20 +1,47 @@
 "use client";
 
 /**
- * 左侧项目列表：搜索（标题/领域/目标期刊，本地过滤已加载的数据）、阶段徽标、
- * 文献/稿件计数摘要，以及「新建项目」入口。选中项高亮，点击切换右侧详情。
+ * 左侧项目列表（MUI Paper + List，Google Workspace 风格）：搜索（标题/领域/
+ * 目标期刊，本地过滤已加载的数据）、阶段徽标、文献/稿件计数 chip，以及
+ * 「新建项目」入口。选中项使用 MUI selected 态（蓝色 tonal 背景）高亮。
  */
 import { useMemo, useState } from "react";
-import { FlaskConical, Loader2, Plus, Search, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import {
+    Avatar,
+    Box,
+    Button,
+    Chip,
+    IconButton,
+    InputAdornment,
+    LinearProgress,
+    List,
+    ListItem,
+    ListItemButton,
+    Paper,
+    Stack,
+    TextField,
+    Tooltip,
+    Typography,
+} from "@mui/material";
+import { FlaskConical, Plus, Search, X } from "lucide-react";
 import type { AcademicProjectSummary } from "@/lib/api";
 import {
+    EmptyState,
     ErrorBanner,
     PAPER_TYPE_LABELS,
     STAGE_LABELS,
     StatusBadge,
     formatDate,
 } from "./research-ui";
+
+const COUNT_CHIP_SX = {
+    height: 18,
+    fontSize: 10.5,
+    fontWeight: 500,
+    bgcolor: "grey.100",
+    color: "text.secondary",
+    "& .MuiChip-label": { px: 0.75, lineHeight: 1.4 },
+} as const;
 
 export function ProjectList({
     projects,
@@ -24,6 +51,7 @@ export function ProjectList({
     onSelect,
     onRetry,
     onCreate,
+    embedded = false,
 }: {
     projects: AcademicProjectSummary[];
     loading: boolean;
@@ -32,6 +60,8 @@ export function ProjectList({
     onSelect: (projectId: string) => void;
     onRetry: () => void;
     onCreate: () => void;
+    /** Full-height rail mode (research full-screen shell): no outer card chrome. */
+    embedded?: boolean;
 }) {
     const [keyword, setKeyword] = useState("");
 
@@ -47,120 +77,219 @@ export function ProjectList({
     }, [projects, keyword]);
 
     return (
-        <aside className="flex min-h-0 flex-1 flex-col rounded-xl border border-border-subtle bg-surface">
-            <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-                <h2 className="text-[13px] font-semibold text-foreground">我的研究项目</h2>
-                <button
-                    type="button"
-                    onClick={onCreate}
-                    title="新建项目"
-                    aria-label="新建项目"
-                    className="grid h-7 w-7 place-items-center rounded-full bg-foreground text-surface transition-opacity hover:opacity-90"
-                >
-                    <Plus className="h-3.5 w-3.5" />
-                </button>
-            </div>
+        <Paper
+            variant={embedded ? "elevation" : "outlined"}
+            elevation={0}
+            sx={{
+                display: "flex",
+                flexDirection: "column",
+                flex: 1,
+                minHeight: 0,
+                borderRadius: embedded ? 0 : "8px",
+                border: embedded ? 0 : 1,
+                overflow: "hidden",
+            }}
+        >
+            <Stack
+                direction="row"
+                sx={{
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    px: 2,
+                    py: 1.5,
+                    borderBottom: 1,
+                    borderColor: "divider",
+                }}
+            >
+                <Typography variant="h3" sx={{ fontSize: 14, fontWeight: 500 }}>
+                    我的研究项目
+                </Typography>
+                <Tooltip title="新建项目">
+                    <IconButton
+                        size="small"
+                        aria-label="新建项目"
+                        onClick={onCreate}
+                        sx={{
+                            width: 30,
+                            height: 30,
+                            bgcolor: "primary.main",
+                            color: "primary.contrastText",
+                            "&:hover": { bgcolor: "primary.dark" },
+                        }}
+                    >
+                        <Plus size={16} aria-hidden="true" />
+                    </IconButton>
+                </Tooltip>
+            </Stack>
 
-            <div className="px-3 pt-3">
-                <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
-                    <input
-                        value={keyword}
-                        onChange={(e) => setKeyword(e.target.value)}
-                        placeholder="搜索项目"
-                        className="h-8 w-full rounded-full border border-transparent bg-border-subtle pl-8 pr-8 text-[12px] text-foreground outline-none transition-colors placeholder:text-tertiary focus:border-border focus:bg-surface"
-                    />
-                    {keyword && (
-                        <button
-                            type="button"
-                            onClick={() => setKeyword("")}
-                            aria-label="清除搜索"
-                            className="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded-full text-tertiary hover:bg-border hover:text-foreground"
-                        >
-                            <X className="h-3 w-3" />
-                        </button>
-                    )}
-                </div>
-            </div>
+            <Box sx={{ px: 1.5, pt: 1.5 }}>
+                <TextField
+                    size="small"
+                    fullWidth
+                    value={keyword}
+                    onChange={(e) => setKeyword(e.target.value)}
+                    placeholder="搜索项目"
+                    aria-label="搜索项目"
+                    slotProps={{
+                        input: {
+                            startAdornment: (
+                                <InputAdornment position="start">
+                                    <Search size={15} aria-hidden="true" />
+                                </InputAdornment>
+                            ),
+                            endAdornment: keyword ? (
+                                <InputAdornment position="end">
+                                    <IconButton
+                                        size="small"
+                                        edge="end"
+                                        aria-label="清除搜索"
+                                        onClick={() => setKeyword("")}
+                                    >
+                                        <X size={14} aria-hidden="true" />
+                                    </IconButton>
+                                </InputAdornment>
+                            ) : undefined,
+                            sx: {
+                                borderRadius: "8px",
+                                bgcolor: "grey.100",
+                                "& fieldset": { borderColor: "transparent" },
+                                "&:hover fieldset": { borderColor: "divider" },
+                                "&.Mui-focused fieldset": { borderColor: "primary.main" },
+                            },
+                        },
+                    }}
+                />
+            </Box>
 
             {error && (
-                <div className="px-3 pt-3">
+                <Box sx={{ px: 1.5, pt: 1.5 }}>
                     <ErrorBanner message={error} onRetry={onRetry} />
-                </div>
+                </Box>
             )}
 
-            <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-                {loading ? (
-                    <div className="flex items-center justify-center gap-2 py-10 text-[12px] text-tertiary">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        加载中…
-                    </div>
-                ) : filtered.length === 0 ? (
-                    <div className="px-2 py-10 text-center">
-                        <FlaskConical className="mx-auto h-6 w-6 text-tertiary" />
-                        <p className="mt-2 text-[12px] text-secondary">
-                            {projects.length === 0 ? "还没有研究项目" : "没有匹配的项目"}
-                        </p>
-                        {projects.length === 0 && (
-                            <button
-                                type="button"
-                                onClick={onCreate}
-                                className="mt-3 inline-flex items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
-                            >
-                                <Plus className="h-3 w-3" />
-                                新建项目
-                            </button>
-                        )}
-                    </div>
+            {loading && <LinearProgress sx={{ mx: 1.5, mt: 1.5, borderRadius: "2px" }} />}
+
+            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", py: 1 }}>
+                {!loading && filtered.length === 0 ? (
+                    <EmptyState
+                        icon={FlaskConical}
+                        title={projects.length === 0 ? "还没有研究项目" : "没有匹配的项目"}
+                        description={
+                            projects.length === 0
+                                ? "新建项目后，文献、写作与实验记录会关联在这里。"
+                                : "换个关键词再试试。"
+                        }
+                        action={
+                            projects.length === 0 ? (
+                                <Button
+                                    size="small"
+                                    variant="contained"
+                                    startIcon={<Plus size={14} aria-hidden="true" />}
+                                    onClick={onCreate}
+                                >
+                                    新建项目
+                                </Button>
+                            ) : undefined
+                        }
+                    />
                 ) : (
-                    <ul className="space-y-1">
+                    <List dense disablePadding sx={{ px: 1 }}>
                         {filtered.map((project) => {
                             const active = project.id === selectedId;
+                            const status = project.stages[project.stage]?.status ?? "locked";
+                            const initial = project.title.trim().slice(0, 1) || "研";
                             return (
-                                <li key={project.id}>
-                                    <button
-                                        type="button"
+                                <ListItem key={project.id} disablePadding sx={{ mb: 0.5 }}>
+                                    <ListItemButton
+                                        selected={active}
                                         onClick={() => onSelect(project.id)}
-                                        className={cn(
-                                            "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
-                                            active ? "bg-accent-soft" : "hover:bg-border-subtle",
-                                        )}
+                                        sx={{ alignItems: "flex-start", gap: 1.25, borderRadius: "8px", px: 1.25, py: 1 }}
                                     >
-                                        <div className="flex items-start justify-between gap-2">
-                                            <span
-                                                className={cn(
-                                                    "min-w-0 flex-1 truncate text-[13px] font-medium",
-                                                    active ? "text-accent" : "text-foreground",
-                                                )}
+                                        <Avatar
+                                            sx={{
+                                                width: 30,
+                                                height: 30,
+                                                mt: 0.25,
+                                                fontSize: 13,
+                                                fontWeight: 600,
+                                                bgcolor: active ? "primary.main" : "grey.100",
+                                                color: active ? "primary.contrastText" : "text.secondary",
+                                            }}
+                                        >
+                                            {initial}
+                                        </Avatar>
+                                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                                            <Stack
+                                                direction="row"
+                                                spacing={0.75}
+                                                sx={{
+                                                    alignItems: "flex-start",
+                                                    justifyContent: "space-between",
+                                                }}
                                             >
-                                                {project.title}
-                                            </span>
-                                            <StatusBadge
-                                                status={project.stages[project.stage]?.status ?? "locked"}
-                                                className="shrink-0"
-                                            />
-                                        </div>
-                                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-tertiary">
-                                            <span>{PAPER_TYPE_LABELS[project.paperType]}</span>
-                                            <span className="text-border">|</span>
-                                            <span>阶段：{STAGE_LABELS[project.stage]}</span>
-                                            <span className="text-border">|</span>
-                                            <span>
-                                                文献 {project.literatureCount} / 稿件 {project.documentCount}
-                                            </span>
-                                        </div>
-                                        <div className="mt-0.5 text-[11px] text-tertiary">
-                                            截止 {formatDate(project.deadline ? new Date(project.deadline).getTime() : undefined)}
-                                            {" · "}
-                                            更新 {formatDate(project.updatedAt)}
-                                        </div>
-                                    </button>
-                                </li>
+                                                <Typography
+                                                    component="span"
+                                                    sx={{
+                                                        fontSize: 13,
+                                                        fontWeight: active ? 600 : 500,
+                                                        lineHeight: 1.4,
+                                                        color: active ? "primary.dark" : "text.primary",
+                                                        wordBreak: "break-word",
+                                                    }}
+                                                >
+                                                    {project.title}
+                                                </Typography>
+                                                <Box sx={{ flexShrink: 0 }}>
+                                                    <StatusBadge status={status} />
+                                                </Box>
+                                            </Stack>
+                                            <Typography
+                                                component="div"
+                                                variant="caption"
+                                                sx={{ mt: 0.5, color: "text.secondary", lineHeight: 1.4 }}
+                                            >
+                                                {PAPER_TYPE_LABELS[project.paperType]} · 阶段：
+                                                {STAGE_LABELS[project.stage]}
+                                            </Typography>
+                                            <Stack
+                                                direction="row"
+                                                spacing={0.5}
+                                                useFlexGap
+                                                sx={{ mt: 0.5, flexWrap: "wrap" }}
+                                            >
+                                                <Chip
+                                                    size="small"
+                                                    label={`文献 ${project.literatureCount}`}
+                                                    sx={COUNT_CHIP_SX}
+                                                />
+                                                <Chip
+                                                    size="small"
+                                                    label={`稿件 ${project.documentCount}`}
+                                                    sx={COUNT_CHIP_SX}
+                                                />
+                                            </Stack>
+                                            <Typography
+                                                component="div"
+                                                variant="caption"
+                                                sx={{ mt: 0.5, color: "text.secondary", lineHeight: 1.4 }}
+                                            >
+                                                截止{" "}
+                                                {formatDate(
+                                                    project.deadline
+                                                        ? new Date(project.deadline).getTime()
+                                                        : undefined,
+                                                )}
+                                                {" · "}
+                                                更新 {formatDate(project.updatedAt)}
+                                            </Typography>
+                                        </Box>
+                                    </ListItemButton>
+                                </ListItem>
                             );
                         })}
-                    </ul>
+                    </List>
                 )}
-            </div>
-        </aside>
+            </Box>
+        </Paper>
     );
 }

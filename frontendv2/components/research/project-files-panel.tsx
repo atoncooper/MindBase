@@ -1,32 +1,57 @@
 "use client";
 
 /**
- * 项目文件面板：聚合展示一个科研项目在云盘/写作里的文件（契约 docs/project-files.md §2.2）。
+ * 项目文件面板（Google / Material 3 外观，MUI 重做；数据与交互逻辑不变）。
  *
  * 数据来自 GET /academic/projects/:projectId/files：学术空间 7 个目录的文件 +
  * 写作文档的原始上传稿/回存稿（origin=document-*）。按目录或来源分组，点击文件
  * 打开预览弹层：
  *  - 文本类 / Word/Office 文档 -> cloudApi.getDocumentPreview 提取文本（可加载更多）
- *  - 图片 -> cloudApi.getRawFile 的 presigned URL 渲染 <img>
- *  - PDF -> presigned URL 用 <iframe> / 新窗口打开
+ *  - 图片 -> cloudApi.getRawFile 的 presigned URL 渲染图片
+ *  - PDF -> presigned URL 用 iframe / 新窗口打开
  *  - 其他或提取失败 -> 元信息 + 下载
  * 弹层底部与每行都可「下载原文件」。组件禁止直接 fetch（统一走 cloudApi / academicApi）。
  *
  * readOnly=true 时供云盘「科研项目文件」入口复用：隐藏「创建学术空间」等写操作，
  * 保留刷新/预览/下载，空态文案改为只读说明（默认 false，科研工作台内行为不变）。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
     Download,
     FileCode2,
     FileImage,
     FileText,
     FolderTree,
-    Loader2,
     Plus,
     RefreshCw,
+    X,
     type LucideIcon,
 } from "lucide-react";
+import Alert from "@mui/material/Alert";
+import Avatar from "@mui/material/Avatar";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Card from "@mui/material/Card";
+import CardHeader from "@mui/material/CardHeader";
+import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
+import IconButton from "@mui/material/IconButton";
+import LinearProgress from "@mui/material/LinearProgress";
+import Link from "@mui/material/Link";
+import List from "@mui/material/List";
+import ListItem from "@mui/material/ListItem";
+import ListItemButton from "@mui/material/ListItemButton";
+import ListItemIcon from "@mui/material/ListItemIcon";
+import ListItemText from "@mui/material/ListItemText";
+import ListSubheader from "@mui/material/ListSubheader";
+import Skeleton from "@mui/material/Skeleton";
+import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
 import {
     academicApi,
     cloudApi,
@@ -34,14 +59,6 @@ import {
     type AcademicProjectFileOrigin,
     type AcademicProjectFiles,
 } from "@/lib/api";
-import {
-    EmptyState,
-    ErrorBanner,
-    LoadingBlock,
-    Modal,
-    formatDateTime,
-} from "./research-ui";
-
 /** 预览形态：文本提取 / 图片 / PDF / 仅元信息。 */
 type PreviewKind = "text" | "image" | "pdf" | "meta";
 
@@ -82,6 +99,13 @@ const ORIGIN_LABELS: Record<AcademicProjectFileOrigin, string> = {
     workspace: "学术空间目录",
     "document-source": "写作文档 · 原始上传稿",
     "document-export": "写作文档 · 回存稿",
+};
+
+/** 行内来源 Chip 的短文案（完整来源在元信息与分组标题里）。 */
+const ORIGIN_SHORT_LABELS: Record<AcademicProjectFileOrigin, string> = {
+    workspace: "空间目录",
+    "document-source": "上传稿",
+    "document-export": "回存稿",
 };
 
 function extensionOf(name: string): string {
@@ -135,10 +159,13 @@ function formatBytes(bytes?: number): string {
     return `${index === 0 ? Math.round(value) : value.toFixed(1)} ${units[index]}`;
 }
 
-/** app-cloud 的 createdAt 可能是毫秒或秒级时间戳，统一按毫秒渲染。 */
+/** app-cloud 的 createdAt 可能是毫秒或秒级时间戳，统一按毫秒渲染（YYYY-MM-DD HH:mm）。 */
 function formatFileTime(value?: number): string {
     if (value === undefined || !Number.isFinite(value) || value <= 0) return "—";
-    return formatDateTime(value < 1e12 ? value * 1000 : value);
+    const date = new Date(value < 1e12 ? value * 1000 : value);
+    if (Number.isNaN(date.getTime())) return "—";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 interface FileGroup {
@@ -174,6 +201,7 @@ function groupFiles(files: AcademicProjectFile[]): FileGroup[] {
     return [...groups.values()];
 }
 
+/** 文件元信息表（无法内嵌预览时展示）。 */
 function FileMeta({ file }: { file: AcademicProjectFile }) {
     const rows: { label: string; value: string }[] = [
         { label: "名称", value: file.name || file.uploadUuid },
@@ -185,14 +213,66 @@ function FileMeta({ file }: { file: AcademicProjectFile }) {
     if (file.folderLabel) rows.push({ label: "目录", value: file.folderLabel });
     if (file.documentTitle) rows.push({ label: "文档", value: file.documentTitle });
     return (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-lg border border-border-subtle bg-border-subtle/20 p-3 text-[12px]">
+        <Box
+            component="dl"
+            sx={{
+                display: "grid",
+                gridTemplateColumns: "auto minmax(0, 1fr)",
+                gap: "8px 16px",
+                m: 0,
+                p: 2,
+                bgcolor: "#f8f9fa",
+                border: 1,
+                borderColor: "divider",
+                borderRadius: "8px",
+            }}
+        >
             {rows.map((row) => (
-                <div key={row.label} className="contents">
-                    <dt className="text-tertiary">{row.label}</dt>
-                    <dd className="min-w-0 break-all text-foreground">{row.value}</dd>
-                </div>
+                <Fragment key={row.label}>
+                    <Typography component="dt" variant="caption" sx={{ color: "text.secondary" }}>
+                        {row.label}
+                    </Typography>
+                    <Typography component="dd" variant="body2" sx={{ m: 0, wordBreak: "break-all" }}>
+                        {row.value}
+                    </Typography>
+                </Fragment>
             ))}
-        </dl>
+        </Box>
+    );
+}
+
+/** Google 风格空态：圆形浅灰图标块 + 标题 + 说明。 */
+function GoogleEmptyState({
+    icon: Icon,
+    title,
+    description,
+}: {
+    icon: LucideIcon;
+    title: string;
+    description: string;
+}) {
+    return (
+        <Box
+            sx={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+                px: 3,
+                py: 6,
+            }}
+        >
+            <Avatar sx={{ width: 56, height: 56, bgcolor: "#f1f3f4", color: "#5f6368" }}>
+                <Icon size={26} />
+            </Avatar>
+            <Typography variant="h3" component="p" sx={{ mt: 2 }}>
+                {title}
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5, maxWidth: 380, color: "text.secondary" }}>
+                {description}
+            </Typography>
+        </Box>
     );
 }
 
@@ -385,69 +465,135 @@ export function ProjectFilesPanel({
     const workspaceMissing = !loading && data !== null && !data.workspace.exists;
 
     return (
-        <section className="rounded-xl border border-border-subtle bg-surface">
-            <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-4 py-2.5">
-                <div className="flex min-w-0 items-center gap-2">
-                    <FolderTree className="h-3.5 w-3.5 shrink-0 text-tertiary" />
-                    <h3 className="truncate text-[13px] font-medium text-foreground">{title}</h3>
-                    <span className="shrink-0 text-[11px] text-tertiary">{files.length} 个</span>
-                </div>
-                <button
-                    type="button"
-                    onClick={() => {
-                        setRefreshing(true);
-                        void load();
-                    }}
-                    disabled={loading || refreshing}
-                    className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-40"
-                >
-                    <RefreshCw className={`h-3 w-3 ${loading || refreshing ? "animate-spin" : ""}`} />
-                    刷新
-                </button>
-            </div>
+        <Card variant="outlined" sx={{ borderRadius: "8px", overflow: "hidden" }}>
+            <CardHeader
+                avatar={
+                    <Avatar
+                        variant="rounded"
+                        sx={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: "8px",
+                            bgcolor: "primary.main",
+                            color: "primary.contrastText",
+                        }}
+                    >
+                        <FolderTree size={18} strokeWidth={2} />
+                    </Avatar>
+                }
+                title={
+                    <Typography variant="h3" component="h3" noWrap sx={{ color: "text.primary" }}>
+                        {title}
+                    </Typography>
+                }
+                action={
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                        <Chip
+                            size="small"
+                            label={`${files.length} 个`}
+                            sx={{ bgcolor: "#f1f3f4", color: "text.secondary" }}
+                        />
+                        <Tooltip title="刷新">
+                            <span>
+                                <IconButton
+                                    size="small"
+                                    aria-label="刷新项目文件"
+                                    onClick={() => {
+                                        setRefreshing(true);
+                                        void load();
+                                    }}
+                                    disabled={loading || refreshing}
+                                    sx={{ color: "text.secondary" }}
+                                >
+                                    {loading || refreshing ? (
+                                        <CircularProgress size={16} />
+                                    ) : (
+                                        <RefreshCw size={16} />
+                                    )}
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                    </Stack>
+                }
+                sx={{
+                    px: 2,
+                    py: 1.5,
+                    borderBottom: 1,
+                    borderColor: "divider",
+                    "& .MuiCardHeader-content": { minWidth: 0 },
+                    "& .MuiCardHeader-action": { alignSelf: "center", m: 0 },
+                }}
+            />
+
+            {(loading || refreshing) && <LinearProgress />}
 
             {error && (
-                <div className="px-4 pt-3">
-                    <ErrorBanner message={error} onRetry={retry} />
-                </div>
+                <Alert
+                    severity="error"
+                    sx={{ m: 2, borderRadius: "8px" }}
+                    action={
+                        <Button color="inherit" size="small" onClick={retry}>
+                            重试
+                        </Button>
+                    }
+                >
+                    {error}
+                </Alert>
             )}
 
             {actionError && (
-                <div className="px-4 pt-3">
-                    <ErrorBanner message={actionError} />
-                </div>
+                <Alert severity="warning" sx={{ m: 2, borderRadius: "8px" }}>
+                    {actionError}
+                </Alert>
             )}
 
             {workspaceMissing && (
-                <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-warning/5 px-4 py-2.5 text-[12px] text-warning">
-                    <FolderTree className="h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0 flex-1">
-                        {readOnly
-                            ? "本项目还没有学术空间目录；学术空间由科研工作台创建，创建后 AI 生成的文件会归档到这里。"
-                            : "本项目还没有学术空间目录（AI 生成文件会存到 05_论文/04_结果 等目录）"}
-                    </span>
-                    {!readOnly && (
-                        <button
-                            type="button"
-                            onClick={() => void createWorkspace()}
-                            disabled={creating}
-                            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent px-3 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                        >
-                            {creating ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                                <Plus className="h-3 w-3" />
-                            )}
-                            创建学术空间
-                        </button>
-                    )}
-                </div>
+                <Alert
+                    severity={readOnly ? "info" : "warning"}
+                    icon={<FolderTree size={18} />}
+                    sx={{ m: 2, borderRadius: "8px", alignItems: "center" }}
+                    action={
+                        !readOnly ? (
+                            <Button
+                                size="small"
+                                variant="contained"
+                                onClick={() => void createWorkspace()}
+                                disabled={creating}
+                                startIcon={
+                                    creating ? (
+                                        <CircularProgress size={14} color="inherit" />
+                                    ) : (
+                                        <Plus size={16} />
+                                    )
+                                }
+                                sx={{ whiteSpace: "nowrap" }}
+                            >
+                                创建学术空间
+                            </Button>
+                        ) : undefined
+                    }
+                >
+                    {readOnly
+                        ? "本项目还没有学术空间目录；学术空间由科研工作台创建，创建后 AI 生成的文件会归档到这里。"
+                        : "本项目还没有学术空间目录（AI 生成文件会存到 05_论文/04_结果 等目录）"}
+                </Alert>
             )}
 
             {loading ? (
-                <LoadingBlock label="加载项目文件…" />
+                <Box sx={{ px: 2, py: 2 }}>
+                    <Stack spacing={1}>
+                        {[0, 1, 2, 3].map((row) => (
+                            <Skeleton
+                                key={row}
+                                variant="rounded"
+                                height={48}
+                                sx={{ borderRadius: "8px" }}
+                            />
+                        ))}
+                    </Stack>
+                </Box>
             ) : !data ? null : files.length === 0 ? (
-                <EmptyState
+                <GoogleEmptyState
                     icon={FolderTree}
                     title={filter === "manuscript" ? "还没有论文相关文件" : "项目还没有文件"}
                     description={
@@ -461,188 +607,385 @@ export function ProjectFilesPanel({
                     }
                 />
             ) : (
-                <div>
+                <List disablePadding>
                     {groups.map((group) => (
-                        <div key={group.key}>
-                            <div className="flex items-center justify-between border-b border-border-subtle bg-border-subtle/30 px-4 py-1.5">
-                                <span className="truncate text-[11px] font-medium text-secondary">
+                        <Fragment key={group.key}>
+                            <ListSubheader
+                                disableSticky
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 1,
+                                    lineHeight: "32px",
+                                    px: 2,
+                                    bgcolor: "#f8f9fa",
+                                    borderBottom: 1,
+                                    borderColor: "divider",
+                                }}
+                            >
+                                <Typography
+                                    variant="caption"
+                                    noWrap
+                                    sx={{ fontWeight: 500, color: "text.secondary" }}
+                                >
                                     {group.label}
-                                </span>
-                                <span className="shrink-0 text-[10px] text-tertiary">
-                                    {group.files.length} 个
-                                </span>
-                            </div>
-                            <ul className="divide-y divide-border-subtle">
-                                {group.files.map((file) => {
-                                    const Icon = fileIcon(file);
-                                    const active = previewFile?.uploadUuid === file.uploadUuid;
-                                    return (
-                                        <li
-                                            key={`${file.origin}:${file.uploadUuid}`}
-                                            className="flex items-center gap-2 px-4 py-2"
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: "text.disabled" }}>
+                                    {`${group.files.length} 个`}
+                                </Typography>
+                            </ListSubheader>
+                            {group.files.map((file) => {
+                                const Icon = fileIcon(file);
+                                const active = previewFile?.uploadUuid === file.uploadUuid;
+                                const displayName = file.name || file.uploadUuid;
+                                return (
+                                    <ListItem
+                                        key={`${file.origin}:${file.uploadUuid}`}
+                                        disablePadding
+                                        sx={{
+                                            borderBottom: 1,
+                                            borderColor: "divider",
+                                            bgcolor: active ? "#e8f0fe" : "transparent",
+                                            transition: "background-color 120ms",
+                                            "&:hover": {
+                                                bgcolor: active ? "#d2e3fc" : "#f1f3f4",
+                                            },
+                                        }}
+                                    >
+                                        <ListItemButton
+                                            onClick={() => void openPreview(file)}
+                                            title="点击预览"
+                                            aria-current={active ? "true" : undefined}
+                                            sx={{
+                                                flex: 1,
+                                                minWidth: 0,
+                                                gap: 1.5,
+                                                px: 2,
+                                                py: 1,
+                                                bgcolor: "transparent",
+                                                "&:hover": { bgcolor: "transparent" },
+                                            }}
                                         >
-                                            <button
-                                                type="button"
-                                                onClick={() => void openPreview(file)}
-                                                className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-border-subtle/50 ${
-                                                    active ? "bg-accent-soft" : ""
-                                                }`}
-                                                title="点击预览"
-                                            >
-                                                <Icon className="h-3.5 w-3.5 shrink-0 text-tertiary" />
-                                                <span className="min-w-0 flex-1">
-                                                    <span className="block truncate text-[12px] text-foreground">
-                                                        {file.name || file.uploadUuid}
-                                                    </span>
-                                                    {file.documentTitle && (
-                                                        <span className="block truncate text-[10px] text-tertiary">
+                                            <ListItemIcon sx={{ minWidth: 0 }}>
+                                                <Avatar
+                                                    variant="rounded"
+                                                    sx={{
+                                                        width: 36,
+                                                        height: 36,
+                                                        borderRadius: "8px",
+                                                        bgcolor: active ? "#d2e3fc" : "#f1f3f4",
+                                                        color: active ? "#174ea6" : "text.secondary",
+                                                    }}
+                                                >
+                                                    <Icon size={17} strokeWidth={2} />
+                                                </Avatar>
+                                            </ListItemIcon>
+                                            <ListItemText
+                                                disableTypography
+                                                sx={{ my: 0, minWidth: 0 }}
+                                                primary={
+                                                    <Typography
+                                                        variant="body2"
+                                                        noWrap
+                                                        sx={{ fontWeight: 500, color: "text.primary" }}
+                                                    >
+                                                        {displayName}
+                                                    </Typography>
+                                                }
+                                                secondary={
+                                                    file.documentTitle ? (
+                                                        <Typography
+                                                            variant="caption"
+                                                            noWrap
+                                                            sx={{ display: "block", color: "text.secondary" }}
+                                                        >
                                                             《{file.documentTitle}》
-                                                        </span>
-                                                    )}
-                                                </span>
-                                            </button>
-                                            <span className="shrink-0 text-[11px] text-tertiary">
-                                                {formatBytes(file.size)}
-                                            </span>
-                                            <span className="hidden shrink-0 text-[11px] text-tertiary sm:inline">
-                                                {formatFileTime(file.createdAt)}
-                                            </span>
-                                            <button
-                                                type="button"
-                                                onClick={() => void openRaw(file)}
-                                                disabled={downloadingUuid !== null}
-                                                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-1 text-[11px] font-medium text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-40"
-                                                title="下载原文件"
+                                                        </Typography>
+                                                    ) : undefined
+                                                }
+                                            />
+                                            <Chip
+                                                size="small"
+                                                label={ORIGIN_SHORT_LABELS[file.origin]}
+                                                sx={{
+                                                    flexShrink: 0,
+                                                    display: { xs: "none", sm: "inline-flex" },
+                                                    bgcolor: active ? "rgba(26,115,232,0.12)" : "#f1f3f4",
+                                                    color: active ? "#174ea6" : "text.secondary",
+                                                    "& .MuiChip-label": { px: 1 },
+                                                }}
+                                            />
+                                            <Typography
+                                                variant="caption"
+                                                sx={{
+                                                    flexShrink: 0,
+                                                    width: 64,
+                                                    textAlign: "right",
+                                                    color: "text.secondary",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                }}
                                             >
-                                                {downloadingUuid === file.uploadUuid ? (
-                                                    <Loader2 className="h-3 w-3 animate-spin" />
-                                                ) : (
-                                                    <Download className="h-3 w-3" />
-                                                )}
-                                            </button>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        </div>
+                                                {formatBytes(file.size)}
+                                            </Typography>
+                                            <Typography
+                                                variant="caption"
+                                                sx={{
+                                                    flexShrink: 0,
+                                                    display: { xs: "none", md: "block" },
+                                                    color: "text.disabled",
+                                                    fontVariantNumeric: "tabular-nums",
+                                                }}
+                                            >
+                                                {formatFileTime(file.createdAt)}
+                                            </Typography>
+                                        </ListItemButton>
+                                        <Box sx={{ flexShrink: 0, pr: 1 }}>
+                                            <Tooltip title="下载原文件">
+                                                <span>
+                                                    <IconButton
+                                                        size="small"
+                                                        aria-label={`下载原文件 ${displayName}`}
+                                                        onClick={() => void openRaw(file)}
+                                                        disabled={downloadingUuid !== null}
+                                                        sx={{ color: "text.secondary" }}
+                                                    >
+                                                        {downloadingUuid === file.uploadUuid ? (
+                                                            <CircularProgress size={15} />
+                                                        ) : (
+                                                            <Download size={16} />
+                                                        )}
+                                                    </IconButton>
+                                                </span>
+                                            </Tooltip>
+                                        </Box>
+                                    </ListItem>
+                                );
+                            })}
+                        </Fragment>
                     ))}
-                </div>
+                </List>
             )}
 
-            <Modal
+            <Dialog
                 open={previewFile !== null}
-                title={previewFile?.name || "文件预览"}
-                icon={FileText}
                 onClose={closePreview}
-                width="max-w-[860px]"
-                footer={
-                    <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate text-[11px] text-tertiary">
-                            {previewFile?.name}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    if (previewFile) void openRaw(previewFile);
-                                }}
-                                disabled={downloadingUuid !== null}
-                                className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-border-subtle disabled:opacity-40"
-                            >
-                                {downloadingUuid !== null ? (
-                                    <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                    <Download className="h-3 w-3" />
-                                )}
-                                下载原文件
-                            </button>
-                            <button
-                                type="button"
-                                onClick={closePreview}
-                                className="rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
-                            >
-                                关闭
-                            </button>
-                        </div>
-                    </div>
-                }
+                maxWidth="md"
+                fullWidth
+                slotProps={{ paper: { sx: { borderRadius: "8px" } } }}
             >
-                {previewFile && (
-                    <div className="space-y-3">
-                        {previewError && <ErrorBanner message={previewError} />}
-                        {actionError && <ErrorBanner message={actionError} />}
-                        {previewLoading ? (
-                            <LoadingBlock label="加载预览…" />
-                        ) : (
-                            <>
-                                {previewKind === "text" && !previewError && (
-                                    <>
-                                        <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-border-subtle/20 p-3 font-mono text-[11px] leading-relaxed text-foreground">
-                                            {previewText || "（文档没有可提取的文本内容）"}
-                                        </pre>
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <span className="text-[11px] text-tertiary">
-                                                已提取 {previewText.length}
-                                                {previewTotalChars > 0
-                                                    ? ` / ${previewTotalChars}`
-                                                    : ""}{" "}
-                                                字
-                                            </span>
-                                            {previewNextOffset !== null && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => void loadMorePreview()}
-                                                    disabled={previewLoadingMore}
-                                                    className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-border-subtle disabled:opacity-40"
-                                                >
-                                                    {previewLoadingMore && (
-                                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                                    )}
-                                                    加载更多
-                                                </button>
-                                            )}
-                                        </div>
-                                    </>
-                                )}
-                                {previewKind === "image" && previewRawUrl && (
-                                    <div className="flex justify-center">
-                                        <img
-                                            src={previewRawUrl}
-                                            alt={previewFile.name}
-                                            className="max-h-[60vh] max-w-full rounded-lg border border-border-subtle object-contain"
-                                        />
-                                    </div>
-                                )}
-                                {previewKind === "pdf" && previewRawUrl && (
-                                    <div className="space-y-2">
-                                        <iframe
-                                            src={previewRawUrl}
-                                            title={previewFile.name}
-                                            className="h-[60vh] w-full rounded-lg border border-border-subtle"
-                                        />
-                                        <a
-                                            href={previewRawUrl}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="inline-flex items-center gap-1 text-[11px] font-medium text-accent underline underline-offset-2 hover:no-underline"
-                                        >
-                                            新窗口打开
-                                        </a>
-                                    </div>
-                                )}
-                                {(previewError || previewKind === "meta") && (
-                                    <>
-                                        <FileMeta file={previewFile} />
-                                        <p className="text-[11px] text-tertiary">
-                                            无法内嵌预览该文件（格式不支持或服务暂不可用），可下载原文件查看。
-                                        </p>
-                                    </>
-                                )}
-                            </>
+                <DialogTitle
+                    sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1.5,
+                        pr: 2,
+                        borderBottom: 1,
+                        borderColor: "divider",
+                    }}
+                >
+                    <Avatar
+                        variant="rounded"
+                        sx={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: "8px",
+                            bgcolor: "primary.main",
+                            color: "primary.contrastText",
+                        }}
+                    >
+                        <FileText size={18} />
+                    </Avatar>
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="h3" component="h2" noWrap>
+                            {previewFile?.name || "文件预览"}
+                        </Typography>
+                        {previewFile?.documentTitle && (
+                            <Typography
+                                variant="caption"
+                                noWrap
+                                sx={{ display: "block", color: "text.secondary" }}
+                            >
+                                《{previewFile.documentTitle}》
+                            </Typography>
                         )}
-                    </div>
-                )}
-            </Modal>
-        </section>
+                    </Box>
+                    <IconButton
+                        size="small"
+                        aria-label="关闭预览"
+                        onClick={closePreview}
+                        sx={{ color: "text.secondary" }}
+                    >
+                        <X size={18} />
+                    </IconButton>
+                </DialogTitle>
+                <DialogContent dividers sx={{ py: 2 }}>
+                    {previewFile && (
+                        <Stack spacing={2}>
+                            {previewError && (
+                                <Alert severity="error" sx={{ borderRadius: "8px" }}>
+                                    {previewError}
+                                </Alert>
+                            )}
+                            {actionError && (
+                                <Alert severity="warning" sx={{ borderRadius: "8px" }}>
+                                    {actionError}
+                                </Alert>
+                            )}
+                            {previewLoading ? (
+                                <Box>
+                                    <LinearProgress />
+                                    <Stack spacing={1} sx={{ mt: 2 }}>
+                                        {[0, 1, 2, 3, 4].map((row) => (
+                                            <Skeleton key={row} variant="text" height={22} />
+                                        ))}
+                                    </Stack>
+                                </Box>
+                            ) : (
+                                <>
+                                    {previewKind === "text" && !previewError && (
+                                        <>
+                                            <Box
+                                                component="pre"
+                                                sx={{
+                                                    m: 0,
+                                                    p: 2,
+                                                    maxHeight: "55vh",
+                                                    overflow: "auto",
+                                                    bgcolor: "#f8f9fa",
+                                                    border: 1,
+                                                    borderColor: "divider",
+                                                    borderRadius: "8px",
+                                                    fontFamily:
+                                                        'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+                                                    fontSize: 12.5,
+                                                    lineHeight: 1.6,
+                                                    whiteSpace: "pre-wrap",
+                                                    wordBreak: "break-word",
+                                                    color: "text.primary",
+                                                }}
+                                            >
+                                                {previewText || "（文档没有可提取的文本内容）"}
+                                            </Box>
+                                            <Stack
+                                                direction="row"
+                                                spacing={1}
+                                                sx={{
+                                                    flexWrap: "wrap",
+                                                    alignItems: "center",
+                                                    justifyContent: "space-between",
+                                                }}
+                                            >
+                                                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                    已提取 {previewText.length}
+                                                    {previewTotalChars > 0
+                                                        ? ` / ${previewTotalChars}`
+                                                        : ""}{" "}
+                                                    字
+                                                </Typography>
+                                                {previewNextOffset !== null && (
+                                                    <Button
+                                                        size="small"
+                                                        variant="outlined"
+                                                        onClick={() => void loadMorePreview()}
+                                                        disabled={previewLoadingMore}
+                                                    >
+                                                        {previewLoadingMore && (
+                                                            <CircularProgress size={14} sx={{ mr: 1 }} />
+                                                        )}
+                                                        加载更多
+                                                    </Button>
+                                                )}
+                                            </Stack>
+                                        </>
+                                    )}
+                                    {previewKind === "image" && previewRawUrl && (
+                                        <Box sx={{ display: "flex", justifyContent: "center" }}>
+                                            <Box
+                                                component="img"
+                                                src={previewRawUrl}
+                                                alt={previewFile.name}
+                                                sx={{
+                                                    maxHeight: "60vh",
+                                                    maxWidth: "100%",
+                                                    borderRadius: "8px",
+                                                    border: 1,
+                                                    borderColor: "divider",
+                                                    objectFit: "contain",
+                                                }}
+                                            />
+                                        </Box>
+                                    )}
+                                    {previewKind === "pdf" && previewRawUrl && (
+                                        <Stack spacing={1}>
+                                            <Box
+                                                component="iframe"
+                                                src={previewRawUrl}
+                                                title={previewFile.name}
+                                                sx={{
+                                                    width: "100%",
+                                                    height: "60vh",
+                                                    border: 1,
+                                                    borderColor: "divider",
+                                                    borderRadius: "8px",
+                                                }}
+                                            />
+                                            <Link
+                                                href={previewRawUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                variant="caption"
+                                                sx={{ fontWeight: 500 }}
+                                            >
+                                                新窗口打开
+                                            </Link>
+                                        </Stack>
+                                    )}
+                                    {(previewError || previewKind === "meta") && (
+                                        <>
+                                            <FileMeta file={previewFile} />
+                                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                                无法内嵌预览该文件（格式不支持或服务暂不可用），可下载原文件查看。
+                                            </Typography>
+                                        </>
+                                    )}
+                                </>
+                            )}
+                        </Stack>
+                    )}
+                </DialogContent>
+                <DialogActions sx={{ px: 3, py: 1.5, gap: 1, justifyContent: "space-between" }}>
+                    <Typography
+                        variant="caption"
+                        noWrap
+                        sx={{ minWidth: 0, flex: 1, color: "text.secondary" }}
+                    >
+                        {previewFile?.name}
+                    </Typography>
+                    <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+                        <Button
+                            variant="outlined"
+                            size="small"
+                            onClick={() => {
+                                if (previewFile) void openRaw(previewFile);
+                            }}
+                            disabled={downloadingUuid !== null}
+                            startIcon={
+                                downloadingUuid !== null ? (
+                                    <CircularProgress size={14} />
+                                ) : (
+                                    <Download size={16} />
+                                )
+                            }
+                        >
+                            下载原文件
+                        </Button>
+                        <Button variant="contained" size="small" onClick={closePreview}>
+                            关闭
+                        </Button>
+                    </Stack>
+                </DialogActions>
+            </Dialog>
+        </Card>
     );
 }

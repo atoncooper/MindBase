@@ -45,6 +45,9 @@ func clearOCRTestEnv(t *testing.T) {
 		"APPCLOUD__PIPELINE__OCR__MAX_IMAGES", "APPCLOUD__PIPELINE__OCR__TIMEOUT_SECONDS",
 		"APPCLOUD__PIPELINE__SUMMARY__MODEL", "APPCLOUD__INTERNAL__API_KEY",
 		"APPCLOUD__PIPELINE__SUMMARY__ENABLED",
+		// Outbound URL defaults pinned by the shipped-YAML guard test must not
+		// be shadowed by a host .env / shell export.
+		"AI_GATEWAY__BASE_URL", "APPCLOUD__KG__BASE_URL",
 	} {
 		t.Setenv(key, "")
 	}
@@ -106,6 +109,44 @@ func TestValidateRejectsNonPositiveOCRLimits(t *testing.T) {
 	}
 }
 
+// Phase 2 HTTPS listener: APPCLOUD__SERVER__TLS__* maps onto server.tls, and
+// enabling TLS without both PEM paths fails validation (fail loud at startup).
+func TestServerTLSDefaultsAndEnvOverrides(t *testing.T) {
+	for _, key := range []string{
+		"APPCLOUD__SERVER__TLS__ENABLED", "APPCLOUD__SERVER__TLS__CERT", "APPCLOUD__SERVER__TLS__KEY",
+	} {
+		t.Setenv(key, "")
+	}
+	cfg, err := Load([]byte("app:\n  name: test\n"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Server.TLS.Enabled {
+		t.Fatal("server.tls.enabled must default to false")
+	}
+
+	t.Setenv("APPCLOUD__SERVER__TLS__ENABLED", "true")
+	t.Setenv("APPCLOUD__SERVER__TLS__CERT", "/app/certs/server.crt")
+	t.Setenv("APPCLOUD__SERVER__TLS__KEY", "/app/certs/server.key")
+	cfg, err = Load([]byte("app:\n  name: test\n"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Server.TLS.Enabled || cfg.Server.TLS.Cert != "/app/certs/server.crt" ||
+		cfg.Server.TLS.Key != "/app/certs/server.key" {
+		t.Fatalf("server.tls overrides not applied: %+v", cfg.Server.TLS)
+	}
+
+	cfg.RDBMS.URL = "dsn"
+	cfg.Minio.Enabled = true
+	cfg.Minio.AccessKey, cfg.Minio.SecretKey = "a", "b"
+	cfg.Upload.ChunkSize, cfg.Upload.MaxFileSize = 1, 1
+	cfg.Server.TLS.Key = ""
+	if err := Validate(cfg); err == nil {
+		t.Fatal("tls.enabled without key must be rejected")
+	}
+}
+
 // TestShippedDefaultYAMLCarriesContractDefaults pins the values the rest of
 // the stack relies on: the summary stage must run with the routed model, and
 // OCR must be on with bounded limits.
@@ -131,5 +172,17 @@ func TestShippedDefaultYAMLCarriesContractDefaults(t *testing.T) {
 	}
 	if cfg.Internal.APIKey != "" {
 		t.Fatalf("internal api key must default empty (fail closed), got %q", cfg.Internal.APIKey)
+	}
+	// Phase 2: HTTPS listener off by default, mounted-cert paths shipped.
+	if cfg.Server.TLS.Enabled || cfg.Server.TLS.Cert != "/app/certs/server.crt" ||
+		cfg.Server.TLS.Key != "/app/certs/server.key" {
+		t.Fatalf("server.tls defaults = %+v", cfg.Server.TLS)
+	}
+	// Outbound defaults are HTTPS (APISIX 9443 / app-kg 8014 / Higress 8443).
+	if cfg.Quota.MembershipBaseURL != "https://apisix:9443/internal/pay" ||
+		cfg.Kg.BaseURL != "https://app-kg:8014" ||
+		cfg.Pipeline.Embedding.BaseURL != "https://higress:8443/v1" {
+		t.Fatalf("outbound https defaults: quota=%q kg=%q embedding=%q",
+			cfg.Quota.MembershipBaseURL, cfg.Kg.BaseURL, cfg.Pipeline.Embedding.BaseURL)
 	}
 }

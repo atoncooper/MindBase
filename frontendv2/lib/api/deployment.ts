@@ -117,13 +117,13 @@ export async function resolveApiBase(fallback: string): Promise<string> {
     }
     // 0) 当前访问地址本身就是部署地址之一 → 同源相对路径（零跨域，最稳）
     if (candidates.includes(window.location.origin)) return "";
-    // 0.5) 同源 API 探测：页面源上 /auth/profile 可达（401/200 均算，
+    // 0.5) 同源 API 探测：页面源上 /auth/features 可达（200 即算；
     //      404 = 该源上没有 API，如本地 dev 无 rewrite）→ 同源直连。
-    //      修复：localhost 访问者原会被解析到域名候选（跨域），每个请求带 CORS
-    //      预检，且 nginx auth 区（1r/s burst=3）把预检 429 掉 → Failed to fetch
-    //      风暴。页面源上 API 可达时同源永远优先于跨域候选。
+    //      用公开的 /auth/features 而不是受保护的 /auth/profile：旧实现会让
+    //      每个页面在启动时打一次 profile，和 AuthProvider 的资料请求叠加，
+    //      撞上 nginx /auth 区（1r/s burst=3）→ 正常用户 429。
     try {
-        const probe = await fetch(window.location.origin + "/auth/profile", {
+        const probe = await fetch(window.location.origin + "/auth/features", {
             method: "GET",
             cache: "no-store",
             headers: { "X-Requested-With": "XMLHttpRequest" },

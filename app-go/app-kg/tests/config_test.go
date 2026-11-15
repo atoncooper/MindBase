@@ -52,6 +52,48 @@ func TestDefaultsParse(t *testing.T) {
 	}
 }
 
+// TestServerTLSConfig pins the TLS contract: disabled by default with the
+// container-side /app/certs leaf paths, APPKG__SERVER__TLS__* env overrides,
+// and validation refusing enabled-without-cert/key.
+func TestServerTLSConfig(t *testing.T) {
+	raw, err := os.ReadFile("../default.yaml")
+	if err != nil {
+		t.Fatalf("read default.yaml: %v", err)
+	}
+	t.Setenv("APPKG__NEO4J__URI", "bolt://localhost:7687")
+	t.Setenv("APPKG__RDBMS__URL", "mysql+aiomysql://u:p@localhost:3306/bilirag")
+
+	cfg, err := config.Load(raw)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Server.TLS.Enabled {
+		t.Errorf("server.tls.enabled default = true, want false (plaintext posture)")
+	}
+	if cfg.Server.TLS.Cert != "/app/certs/server.crt" || cfg.Server.TLS.Key != "/app/certs/server.key" {
+		t.Errorf("server.tls paths = %q/%q, want /app/certs/server.{crt,key}", cfg.Server.TLS.Cert, cfg.Server.TLS.Key)
+	}
+
+	t.Setenv("APPKG__SERVER__TLS__ENABLED", "true")
+	t.Setenv("APPKG__SERVER__TLS__CERT", "/tmp/kg.crt")
+	t.Setenv("APPKG__SERVER__TLS__KEY", "/tmp/kg.key")
+	cfg, err = config.Load(raw)
+	if err != nil {
+		t.Fatalf("load (tls env): %v", err)
+	}
+	if !cfg.Server.TLS.Enabled || cfg.Server.TLS.Cert != "/tmp/kg.crt" || cfg.Server.TLS.Key != "/tmp/kg.key" {
+		t.Errorf("tls env overrides not applied: %+v", cfg.Server.TLS)
+	}
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("validate (tls enabled): %v", err)
+	}
+
+	cfg.Server.TLS.Key = ""
+	if err := config.Validate(cfg); err == nil || !strings.Contains(err.Error(), "server.tls.key") {
+		t.Fatalf("tls enabled without key: err = %v", err)
+	}
+}
+
 // TestValidateFailsLoud: both stores are required; the error names the env var
 // an operator must set.
 func TestValidateFailsLoud(t *testing.T) {

@@ -7,8 +7,10 @@ package http
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -30,6 +32,10 @@ type Deps struct {
 	// (network-internal posture, same as the probe itself); set to require a
 	// matching X-Internal-Token header.
 	InternalToken string
+	// TLS is the server certificate config. Nil = plaintext HTTP (previous
+	// posture); non-nil = HTTPS on the same port with the certificate already
+	// loaded by the composition root (main), so a bad cert fails at startup.
+	TLS *tls.Config
 }
 
 // StartHealth runs the HTTP endpoint on addr until the process exits.
@@ -55,9 +61,25 @@ func StartHealth(ctx context.Context, addr string, d Deps) *http.Server {
 		writeJSON(w, code, body)
 	})
 	registerCloudDocRoutes(mux, d)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig:         d.TLS,
+	}
 	go func() {
-		_ = srv.ListenAndServe()
+		// Empty cert/key paths are correct here: the certificate is already in
+		// srv.TLSConfig.Certificates (loaded once in main and shared with gRPC),
+		// so ListenAndServeTLS uses it instead of reading files again.
+		var err error
+		if srv.TLSConfig != nil {
+			err = srv.ListenAndServeTLS("", "")
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("http server stopped", "addr", addr, "err", err)
+		}
 	}()
 	return srv
 }

@@ -48,8 +48,20 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host string    `yaml:"host"`
+	Port int       `yaml:"port"`
+	TLS  TLSConfig `yaml:"tls"`
+}
+
+// TLSConfig — optional HTTPS listener for the admin API. enabled=false keeps
+// the plain-HTTP listener (phase 1: loopback behind the admin SPA proxy); when
+// enabled, cert/key are PEM paths mounted read-only from
+// secrets/certs/app-admin at /app/certs:ro. Outbound trust is handled by
+// SSL_CERT_FILE (ca-bundle.crt), not here.
+type TLSConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Cert    string `yaml:"cert"`
+	Key     string `yaml:"key"`
 }
 
 type RDBMSConfig struct {
@@ -172,7 +184,7 @@ type PayGrantConfig struct {
 // (pay-ops consumer) plus the logged-in operator identity. key empty = the
 // whole refund-review group stays hidden (404).
 type PayOpsConfig struct {
-	BaseURL             string `yaml:"base_url"`              // default http://apisix:9080 (compose injects)
+	BaseURL             string `yaml:"base_url"`              // default https://apisix:9443 (APISIX TLS listener)
 	Key                 string `yaml:"key"`                   // PAY_OPS_KEY (pay-ops consumer)
 	TimeoutSeconds      int    `yaml:"timeout_seconds"`       // default 5
 	RefundReviewEnabled bool   `yaml:"refund_review_enabled"` // master switch
@@ -278,6 +290,15 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Server.Host = v
 	}
 	atoi("APPADMIN__SERVER__PORT", &cfg.Server.Port)
+	// HTTPS listener (phase 2): enabled + PEM paths mounted from
+	// secrets/certs/app-admin at /app/certs; disabled keeps plain HTTP.
+	boolVar("APPADMIN__SERVER__TLS__ENABLED", &cfg.Server.TLS.Enabled)
+	if v := get("APPADMIN__SERVER__TLS__CERT"); v != "" {
+		cfg.Server.TLS.Cert = v
+	}
+	if v := get("APPADMIN__SERVER__TLS__KEY"); v != "" {
+		cfg.Server.TLS.Key = v
+	}
 	atoi("APPADMIN__SESSION__TTL_MINUTES", &cfg.Session.TTLMinutes)
 	if v := get("APPADMIN__SESSION__DEVICE_BINDING"); v != "" {
 		cfg.Session.DeviceBinding = v
@@ -387,6 +408,10 @@ func Validate(cfg *Config) error {
 	}
 	if err := validateSessionPolicy(cfg); err != nil {
 		return err
+	}
+	if cfg.Server.TLS.Enabled && (cfg.Server.TLS.Cert == "" || cfg.Server.TLS.Key == "") {
+		return fmt.Errorf("server.tls.enabled requires both cert and key " +
+			"(APPADMIN__SERVER__TLS__CERT / APPADMIN__SERVER__TLS__KEY)")
 	}
 	// The optional upstream planes (cloud review preview, sandbox console proxy)
 	// are NOT validated here: a lone base URL or token would silently half-enable
