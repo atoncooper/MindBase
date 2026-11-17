@@ -7,3 +7,7 @@ apisix/*.yaml text eol=lf
 # Shell scripts run inside Linux containers — CRLF breaks them at runtime
 # (e.g. `set -eu` -> "illegal option"). Enforce LF for the whole class.
 *.sh text eol=lf
+
+# OpenResty edge configs / Lua are bind-mounted into the Linux container too;
+# CRLF leaks trailing \r into directives and Lua strings. Keep them LF.
+openresty/** text eol=lf

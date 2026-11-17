@@ -14,6 +14,8 @@
  *     客户端自动落到公网 IP），全部不可达再落 fallback。
  */
 
+import { API_PREFIX } from "./prefix";
+
 const ROUTE_URL = "/api/share-base";
 const CACHE_KEY = "mb.deployment.base.v1";
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -123,7 +125,7 @@ export async function resolveApiBase(fallback: string): Promise<string> {
     //      每个页面在启动时打一次 profile，和 AuthProvider 的资料请求叠加，
     //      撞上 nginx /auth 区（1r/s burst=3）→ 正常用户 429。
     try {
-        const probe = await fetch(window.location.origin + "/auth/features", {
+        const probe = await fetch(window.location.origin + API_PREFIX + "/auth/features", {
             method: "GET",
             cache: "no-store",
             headers: { "X-Requested-With": "XMLHttpRequest" },

@@ -35,7 +35,7 @@ MindBase 是一套**自托管的个人知识库与 AI 研究工作台**：把 B 
 浏览器 / 桌面端
    │
    ▼
-nginx（TLS + 静态页 + 缓存）
+OpenResty（TLS + 负载均衡 + 缓存）
    │
    ▼
 APISIX（统一鉴权 / 路由 / 限流）

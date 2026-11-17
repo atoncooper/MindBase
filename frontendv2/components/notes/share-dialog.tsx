@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Copy, Check, Link2, Loader2, Trash2, X, Globe } from "lucide-react";
 import { notesApi, type NoteShareInfo } from "@/lib/api/notes";
 import { buildShareUrl } from "@/lib/api/share";
+import { SHARE_PATHS } from "@/lib/api/prefix";
 
 interface ShareDialogProps {
     open: boolean;
@@ -70,7 +71,7 @@ export function ShareDialog({
             return;
         }
         let cancelled = false;
-        void buildShareUrl(`/notes/shared/${shareToken}`).then((u) => {
+        void buildShareUrl(`${SHARE_PATHS.notes}/${shareToken}`).then((u) => {
             if (!cancelled) setFullUrl(u);
         });
         return () => {

@@ -100,6 +100,11 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("[MINIO] init OK", "bucket", cfg.Minio.Bucket)
+	if err := mc.EnsureBucketNotification(ctx); err != nil {
+		slog.Warn("[MINIO] bucket notification rule not installed (webhook settlement disabled)", "err", err)
+	} else if cfg.Minio.WebhookARN != "" {
+		slog.Info("[MINIO] upload settlement webhook rule installed", "arn", cfg.Minio.WebhookARN)
+	}
 
 	// Redis (upload sessions/heartbeats, pending-quota ledger, and the
 	// background-job lease — see internal/joblock).
@@ -129,6 +134,9 @@ func main() {
 	pending := service.NewPendingUploads(rdb, cfg.Upload.UploadMetaTTL)
 	quotaSvc := service.NewQuotaService(cfg, db.DB, pending)
 	uploadSvc := service.NewUploadService(cfg, db.DB, mc, rdb, quotaSvc, pending)
+	// Sharded upload-deadline sweeper: claims due uploads and auto-cleans
+	// A-type orphans (MinIO has object, DB has no row) in batches.
+	go service.RunDeadlineSweeper(ctx, cfg, rdb, uploadSvc)
 	reconciler := service.NewReconciler(db.DB, mc)
 	// L1 routing: summary generator + graph writer. Both best-effort — the
 	// pipeline tolerates either being absent.
@@ -215,7 +223,7 @@ func main() {
 	// bucket-wide scan); runs on the same stop channel.
 	sweeperStop := make(chan struct{})
 	go runTrashSweeper(cfg, purgeSvc, rdb, sweeperStop, jobLeaseTTL(cfg))
-	go runDailyReconciler(reconciler, rdb, sweeperStop, jobLeaseTTL(cfg))
+	go runDailyReconciler(cfg, reconciler, rdb, sweeperStop, jobLeaseTTL(cfg))
 	defer pipe.StopWorkers(8 * time.Second)
 	defer close(sweeperStop)
 
@@ -289,7 +297,7 @@ func jobLeaseTTL(cfg *config.Config) time.Duration {
 	return time.Duration(cfg.Joblock.LeaseTTLSecs) * time.Second
 }
 
-func runDailyReconciler(rec *service.Reconciler, rdb redis.UniversalClient, stop chan struct{}, leaseTTL time.Duration) {
+func runDailyReconciler(cfg *config.Config, rec *service.Reconciler, rdb redis.UniversalClient, stop chan struct{}, leaseTTL time.Duration) {
 	run := func() {
 		lockCtx, lockCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		release, ok := joblock.TryAcquire(lockCtx, rdb, jobReconciler, leaseTTL)
@@ -302,8 +310,19 @@ func runDailyReconciler(rec *service.Reconciler, rdb redis.UniversalClient, stop
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		n := rec.ReconcileActiveUsers(ctx, 7, 50)
-		if n > 0 {
-			slog.Info("[RECONCILE] daily sweep done", "users", n)
+		// Orphan pass: completed objects with no ledger row. REPORT-ONLY unless
+		// APPCLOUD__ORPHAN__AUTO_DELETE=true; administrators review via
+		// GET /internal/cloud/orphans and delete explicitly.
+		grace := time.Duration(cfg.Orphan.GraceHours) * time.Hour
+		orphans, deleted, oerr := rec.ReconcileOrphanObjects(
+			ctx, time.Now().Add(-grace), 5000, cfg.Orphan.AutoDelete)
+		if oerr != nil {
+			slog.Warn("[RECONCILE] orphan sweep failed", "err", oerr)
+		}
+		if n > 0 || orphans > 0 || deleted > 0 {
+			slog.Info("[RECONCILE] daily sweep done", "users", n,
+				"orphan_objects_found", orphans, "orphan_objects_deleted", deleted,
+				"auto_delete", cfg.Orphan.AutoDelete, "grace_hours", cfg.Orphan.GraceHours)
 		}
 	}
 	run() // catch up at boot

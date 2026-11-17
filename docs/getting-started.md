@@ -94,7 +94,7 @@ docker compose stop app-ts frontend
 
 ### 3.2 让宿主能访问 APISIX(:9080) 与 MinIO(:9000)
 
-默认 compose **不把 APISIX 和 MinIO 的 API 端口映射到宿主**（只走容器网络与 nginx）。但本地 app-ts 的出站调用（app-task / app-pay / app-content / 沙箱）走 `127.0.0.1:9080`，frontendv2 的 dev 代理也指向 `localhost:9080`，所以本地开发要加一个 override：
+默认 compose **不把 APISIX 和 MinIO 的 API 端口映射到宿主**（只走容器网络与 OpenResty）。但本地 app-ts 的出站调用（app-task / app-pay / app-content / 沙箱）走 `127.0.0.1:9080`，frontendv2 的 dev 代理也指向 `localhost:9080`，所以本地开发要加一个 override：
 
 ```yaml
 # docker-compose.override.yml —— 本地开发用，不要提交
@@ -146,7 +146,7 @@ npm ci
 npm run dev     # http://localhost:3000
 ```
 
-开发模式由 `next.config.ts` 的 rewrites 把 API 请求转发到 `NEXT_PUBLIC_APISIX_HOST`（默认 `localhost:9080`），所以需要 §3.2 的 9080 映射且 apisix 在跑；`/minio-proxy/` 媒体代理默认指向 `http://localhost`（即 compose nginx :80）。需要换目标时：
+开发模式由 `next.config.ts` 的 rewrites 把 API 请求转发到 `NEXT_PUBLIC_APISIX_HOST`（默认 `localhost:9080`），所以需要 §3.2 的 9080 映射且 apisix 在跑；`/minio-proxy/` 媒体代理默认指向 `http://localhost`（即 compose OpenResty :80）。需要换目标时：
 
 ```bash
 NEXT_PUBLIC_APISIX_HOST=127.0.0.1:9080 npm run dev
@@ -191,7 +191,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-首次会构建 frontend / app-ts / 各 Go 服务 / app-content-mcp / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 nginx / app-content / app-content-mcp / app-pay 的开发证书，无需手工准备 TLS。
+首次会构建 frontend / app-ts / 各 Go 服务 / app-content-mcp / certgen / minio 等镜像，需要几分钟；`cert-gen` 会一次性生成 openresty / app-content / app-content-mcp / app-pay 的开发证书，无需手工准备 TLS。
 
 ### 4.1 profile 的真实语义
 
@@ -199,7 +199,7 @@ docker compose ps
 
 | 命令 | 实际启动 |
 |------|----------|
-| `docker compose up -d` | **23 个服务 = 全栈**：frontend / nginx / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / app-content-mcp / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
+| `docker compose up -d` | **23 个服务 = 全栈**：frontend / openresty / apisix / etcd / mysql / mongo / redis / milvus / neo4j / minio / app-ts / app-user / app-cloud / app-content / app-kg / app-admin(+api) / app-content-mcp / app-task(+独立 MySQL) / app-pay(+独立 MySQL) |
 | `docker compose --profile full up -d` | **30 个服务**：全栈 + higress + app-sandbox + opensandbox-server + app-pay-test(+MySQL) + redis-commander / mongo-express（管理台默认已含支付运营） |
 | `docker compose --profile ai up -d` | 只有 5 个：higress + mysql/mongo/redis + cert-gen |
 | `docker compose --profile sandbox up -d` | 只有 6 个：app-sandbox + opensandbox-server + mysql/mongo/redis + cert-gen |
@@ -218,7 +218,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 
 | 入口 | 地址 | 说明 |
 |------|------|------|
-| 用户端（nginx） | http://localhost ／ https://localhost | 统一入口；443 用开发 CA 自签证书 |
+| 用户端（OpenResty） | http://localhost ／ https://localhost | 统一入口；443 用开发 CA 自签证书 |
 | 用户端（frontend 容器直连） | http://localhost:3000 | compose `frontend` 服务 |
 | 管理后台 UI | http://127.0.0.1:3001 | app-admin 静态站（分享审核 / 用户 / 沙箱 / 支付运营 / 账户 / 审计），同源代理 `/api` 到 8016 |
 | 管理后台 API | http://127.0.0.1:8016 | 仅回环，不经 APISIX |
@@ -227,7 +227,7 @@ docker compose --profile sandbox up -d            # 再追加沙箱控制层
 | MinIO 控制台 | http://127.0.0.1:9001 | 默认 `minioadmin` / `minioadmin` |
 | Neo4j Browser | http://127.0.0.1:7474 | 密码取 `NEO4J_PASSWORD`（默认 `mind-base`） |
 
-其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、app-content-mcp 8019）；**APISIX 不映射宿主端口**，业务流量一律经 nginx 进入。
+其余服务只在 `127.0.0.1` 暴露调试端口（app-ts 8000、app-user 8006、app-cloud 8007、app-content 8004（单端口 HTTPS）、app-kg 8013/8014、app-sandbox 8017、app-pay 8002 HTTPS、app-content-mcp 8019）；**APISIX 不映射宿主端口**，业务流量一律经 OpenResty 进入。
 
 ---
 
@@ -242,7 +242,7 @@ for p in 8006 8007 8004 8010 8015 8016; do
 done
 curl -s  http://127.0.0.1:8014/health    # app-kg：MySQL/Neo4j 不可用 → 503
 curl -sk https://127.0.0.1:8002/health   # app-pay：HTTPS-only，-k 跳过自签校验
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端页面
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # OpenResty → 前端页面
 ```
 
 注意：app-ts 的 `/health` **只要进程活着就返回 200**，向量库是否就绪看响应里的 `milvus.available`；`/health` 不是 APISIX 路由，别用 `http://localhost/health` 验后端，直接打回环端口。
@@ -273,7 +273,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 ## 7. 常见问题
 
-**端口被占用。** 常见冲突：3000（compose `frontend` 与本地 `npm run dev` 二选一，或用 `FRONTEND_PORT` 改容器端口）、8000（compose `app-ts` 与本地 dev，可用 `APP_TS_PORT` 改）、80/443（nginx；根 compose 固定映射，Windows 上常被 IIS/其他服务占用，需先停占用进程或改 `docker-compose.yml`；`docker-compose.client.yml` 支持 `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT`）、3001（compose app-admin UI 与 frontend-admin `pnpm dev`）、8016、3306。先 `docker compose stop <服务>` 再用本地进程。
+**端口被占用。** 常见冲突：3000（compose `frontend` 与本地 `npm run dev` 二选一，或用 `FRONTEND_PORT` 改容器端口）、8000（compose `app-ts` 与本地 dev，可用 `APP_TS_PORT` 改）、80/443（OpenResty；根 compose 固定映射，Windows 上常被 IIS/其他服务占用，需先停占用进程或改 `docker-compose.yml`；`docker-compose.client.yml` 支持 `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT`）、3001（compose app-admin UI 与 frontend-admin `pnpm dev`）、8016、3306。先 `docker compose stop <服务>` 再用本地进程。
 
 **`docker compose` 启动直接报 `err_APISIX_CONSUMER_KEY_not_set_in_.env`。** 这是 compose 的强制校验，按 §2.3 / §2.4 填 `.env`。`PAY_OPS_KEY` 自 2026-11-03 起为**可选**（仅 app-admin「退款复核」用；留空则该页 404 隐藏，不再触发 compose 校验）。
 
@@ -291,11 +291,11 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # nginx → 前端�
 
 **只用 `--profile ai` 结果全栈没起来。** profile 语义见 §4.1：单 profile 不含默认服务。先裸 `up -d`，再追加 profile；或一次 `--profile full up -d`。
 
-**前端本地 dev 数据全挂 / 图片 404。** dev 代理的目标 `localhost:9080`（APISIX）或 `http://localhost`（nginx）在宿主不可达：确认 apisix / nginx 在跑，且按 §3.2 映射了 9080。
+**前端本地 dev 数据全挂 / 图片 404。** dev 代理的目标 `localhost:9080`（APISIX）或 `http://localhost`（OpenResty）在宿主不可达：确认 apisix / nginx 在跑，且按 §3.2 映射了 9080。
 
 **`go run ./app-go/app-content` 报 `cannot find main module`。** 每个 Go 服务是独立 module，必须 `cd app-go/app-content && go run ./cmd/app-content`。
 
-**`https://localhost` 证书不受信。** 用的是开发 CA（`secrets/certs/nginx/dev-ca.crt`），把它导入系统/浏览器信任库即可；也可以先用 `http://localhost`。
+**`https://localhost` 证书不受信。** 用的是开发 CA（`secrets/certs/openresty/dev-ca.crt`），把它导入系统/浏览器信任库即可；也可以先用 `http://localhost`。
 
 ---
 

@@ -30,6 +30,7 @@ type Config struct {
 	Attest      AttestConfig      `yaml:"attest"`
 	AdminReview AdminReviewConfig `yaml:"admin_review"`
 	Joblock     JoblockConfig     `yaml:"joblock"`
+	Orphan      OrphanConfig      `yaml:"orphan"`
 	Quota       QuotaConfig       `yaml:"quota"`
 	Trash       TrashConfig       `yaml:"trash"`
 	Pipeline    PipelineConfig    `yaml:"pipeline"`
@@ -97,6 +98,14 @@ type MinioConfig struct {
 	SecretKey      string `yaml:"secret_key"`
 	PublicEndpoint string `yaml:"public_endpoint"`
 	PublicHost     string `yaml:"public_host"`
+	// EventToken authenticates MinIO bucket-notification webhooks. MinIO sends
+	// it as `Authorization: Bearer <token>`; empty disables the settlement
+	// endpoint (fail closed). Env: APPCLOUD__MINIO__EVENT_TOKEN.
+	EventToken string `yaml:"event_token"`
+	// WebhookARN is the MinIO notification target ARN installed on the bucket
+	// at boot (s3:ObjectCreated:CompleteMultipartUpload -> settlement webhook).
+	// Empty disables installing the rule. Env: APPCLOUD__MINIO__WEBHOOK_ARN.
+	WebhookARN string `yaml:"webhook_arn"`
 }
 
 type UploadConfig struct {
@@ -104,6 +113,11 @@ type UploadConfig struct {
 	MaxFileSize   int64 `yaml:"max_file_size"`
 	HeartbeatTTL  int   `yaml:"heartbeat_ttl"`
 	UploadMetaTTL int   `yaml:"upload_meta_ttl"`
+	// Deadline sweeper (sharded ZSET queue) tuning.
+	SweepIntervalSeconds    int `yaml:"sweep_interval_seconds"`
+	SweepBatch              int `yaml:"sweep_batch"`
+	SweepVisibilitySeconds  int `yaml:"sweep_visibility_seconds"`
+	SweepRecentGuardSeconds int `yaml:"sweep_recent_guard_seconds"`
 }
 
 // JoblockConfig — Redis-lease tuning for the background jobs (trash sweeper,
@@ -117,6 +131,18 @@ type JoblockConfig struct {
 
 // DefaultJoblockLeaseTTLSecs applies when the value is unset or non-positive.
 const DefaultJoblockLeaseTTLSecs = 900
+
+// OrphanConfig controls the daily orphan sweep. AutoDelete defaults to false:
+// the sweep only REPORTS orphan objects (no DB row) for an administrator to
+// review; deleting is an explicit, audited operation via /internal/cloud/orphans.
+// GraceHours is the minimum object age before it is even reported (default 48h).
+type OrphanConfig struct {
+	AutoDelete bool `yaml:"auto_delete"`
+	GraceHours int  `yaml:"grace_hours"`
+}
+
+// DefaultOrphanGraceHours applies when the value is unset or non-positive.
+const DefaultOrphanGraceHours = 48
 
 // AttestConfig — public-share device-attestation HMAC key. MUST be identical
 // across all replicas of a multi-instance deployment: challenges/tickets are
@@ -288,6 +314,21 @@ func Load(yamlBytes []byte) (*Config, error) {
 	if cfg.Joblock.LeaseTTLSecs <= 0 {
 		cfg.Joblock.LeaseTTLSecs = DefaultJoblockLeaseTTLSecs
 	}
+	if cfg.Orphan.GraceHours <= 0 {
+		cfg.Orphan.GraceHours = DefaultOrphanGraceHours
+	}
+	if cfg.Upload.SweepIntervalSeconds <= 0 {
+		cfg.Upload.SweepIntervalSeconds = 5
+	}
+	if cfg.Upload.SweepBatch <= 0 {
+		cfg.Upload.SweepBatch = 200
+	}
+	if cfg.Upload.SweepVisibilitySeconds <= 0 {
+		cfg.Upload.SweepVisibilitySeconds = 60
+	}
+	if cfg.Upload.SweepRecentGuardSeconds <= 0 {
+		cfg.Upload.SweepRecentGuardSeconds = 300
+	}
 	normalizeOCR(&cfg.Pipeline.OCR)
 	return &cfg, nil
 }
@@ -356,6 +397,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("MINIO__PUBLIC_HOST"); v != "" {
 		cfg.Minio.PublicHost = v
 	}
+	if v := get("MINIO__EVENT_TOKEN"); v != "" {
+		cfg.Minio.EventToken = v
+	}
+	if v := get("MINIO__WEBHOOK_ARN"); v != "" {
+		cfg.Minio.WebhookARN = v
+	}
 	if v := get("APISIX_CONSUMER_KEY"); v != "" {
 		cfg.Quota.MembershipAPIKey = v
 	}
@@ -380,6 +427,14 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Redis.URL = v
 	}
 	atoi("APPCLOUD__SERVER__PORT", &cfg.Server.Port)
+	atoi("APPCLOUD__ORPHAN__GRACE_HOURS", &cfg.Orphan.GraceHours)
+	atoi("APPCLOUD__UPLOAD__SWEEP_INTERVAL_SECONDS", &cfg.Upload.SweepIntervalSeconds)
+	atoi("APPCLOUD__UPLOAD__SWEEP_BATCH", &cfg.Upload.SweepBatch)
+	atoi("APPCLOUD__UPLOAD__SWEEP_VISIBILITY_SECONDS", &cfg.Upload.SweepVisibilitySeconds)
+	atoi("APPCLOUD__UPLOAD__SWEEP_RECENT_GUARD_SECONDS", &cfg.Upload.SweepRecentGuardSeconds)
+	if b, ok := getBool("APPCLOUD__ORPHAN__AUTO_DELETE"); ok {
+		cfg.Orphan.AutoDelete = b
+	}
 	// HTTPS listener (phase 2): enabled + PEM paths, mounted from
 	// secrets/certs/app-cloud at /app/certs (compose). Disabled keeps plain HTTP.
 	if b, ok := getBool("APPCLOUD__SERVER__TLS__ENABLED"); ok {

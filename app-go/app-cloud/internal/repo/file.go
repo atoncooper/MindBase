@@ -60,6 +60,62 @@ func (r *FileRepo) Create(db *gorm.DB, f *model.CloudFile) error {
 	})
 }
 
+// CreateIfAbsentAndBump inserts the cloud_files row and, ONLY when this call
+// actually inserted it, bumps cloud_quota in the same transaction. It is the
+// idempotent settlement primitive shared by the client complete endpoint and
+// the MinIO bucket-notification webhook: both may race or retry (MinIO
+// delivers notifications at-least-once), and the unique upload_uuid index
+// guarantees quota is charged exactly once.
+func (r *FileRepo) CreateIfAbsentAndBump(db *gorm.DB, f *model.CloudFile) (bool, error) {
+	now := time.Now()
+	if f.CreatedAt == nil {
+		f.CreatedAt = &now
+	}
+	if f.UpdatedAt == nil {
+		f.UpdatedAt = &now
+	}
+	inserted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(f)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Already settled by the other path (complete vs webhook retry).
+			return nil
+		}
+		inserted = true
+		return r.applyUsageDelta(tx, f.UID, f.FileSize)
+	})
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
+}
+
+// ExistsByUploadUUID reports whether any cloud_files row (including trashed /
+// soft-deleted) references the upload UUID. Includes soft-deleted rows so a
+// recently trashed file is not mistaken for an orphan object.
+func (r *FileRepo) ExistsByUploadUUID(db *gorm.DB, uploadUUID string) (bool, error) {
+	var n int64
+	if err := db.Unscoped().Model(&model.CloudFile{}).
+		Where("upload_uuid = ?", uploadUUID).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ExistsByObjectKey reports whether any cloud_files row references the object
+// key (used by the orphan reconciler).
+func (r *FileRepo) ExistsByObjectKey(db *gorm.DB, objectKey string) (bool, error) {
+	var n int64
+	if err := db.Unscoped().Model(&model.CloudFile{}).
+		Where("object_key = ?", objectKey).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // ClaimVectorPending atomically moves a file to vector_status=pending unless
 // it is already pending/processing. Returns false when another request owns
 // the in-flight run, which is the cheap idempotency guard against repeated

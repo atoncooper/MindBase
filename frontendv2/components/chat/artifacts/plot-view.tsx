@@ -231,6 +231,8 @@ export function PlotView({ spec, height = 300 }: { spec: PlotSpec; height?: numb
   }, []);
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    // Stop text-selection drags while panning the plot.
+    event.preventDefault();
     dragRef.current = { px: event.clientX, py: event.clientY, box: view };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -275,7 +277,7 @@ export function PlotView({ spec, height = 300 }: { spec: PlotSpec; height?: numb
 
       <div
         ref={containerRef}
-        className="relative w-full overflow-hidden rounded-xl border border-border-subtle bg-white"
+        className="relative w-full select-none overflow-hidden rounded-xl border border-border-subtle bg-white"
         style={{ height }}
       >
         <canvas

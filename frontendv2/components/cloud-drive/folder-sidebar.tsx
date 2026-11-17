@@ -378,7 +378,7 @@ function InlineCreateInput({
 
     return (
         <div
-            className="mt-0.5 flex items-center gap-2 rounded-[10px] bg-accent-soft px-2.5 py-1.5"
+            className="my-1.5 flex min-w-0 items-center gap-2 rounded-[10px] bg-accent-soft px-2.5 py-1.5"
             style={{ marginLeft: depth * 14 + 4 }}
         >
             <Folder className="h-4 w-4 shrink-0 text-accent" />
@@ -453,7 +453,7 @@ function FolderNode({
                 data-folder-id={folder.id}
                 className={cn(
                     // relative + 右侧预留操作区（见名称按钮 pr-[88px]）：操作按钮绝对定位，不挤压名称
-                    "group relative flex items-center gap-1 rounded-[10px] pr-1 transition-colors",
+                    "group relative my-0.5 flex items-center gap-1 rounded-[10px] pr-1 transition-colors",
                     active ? "bg-accent-soft" : "hover:bg-border-subtle/70"
                 )}
                 style={{ paddingLeft: depth * 14 + 4 }}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +34,48 @@ const (
 // (k("cloud","upload",uuid) → "mind-base:cloud:upload:{uuid}").
 const uploadKeyPrefix = "mind-base:cloud:upload:"
 const heartbeatKeyPrefix = "mind-base:cloud:heartbeat:"
+
+// Upload deadline queue: SHARDED Redis ZSETs (durable, no keyspace pub/sub).
+// init schedules <uid>:<upload_uuid> with score = deadline ms; heartbeat/resume
+// renew the score; a successful settlement (complete or MinIO webhook) removes
+// the member. A periodic sweeper (RunDeadlineSweeper) atomically claims due
+// members (Lua: deadline -> processing with visibility timeout), reconciles
+// MinIO vs DB for that single upload, and batch-deletes A-type orphans.
+const (
+	uploadDeadlinePrefix   = "mind-base:cloud:upload:deadline:"
+	uploadProcessingPrefix = "mind-base:cloud:upload:processing:"
+	uploadDeadlineShards   = 64
+)
+
+func uploadShard(uid int64) int {
+	return int(uint64(uid) % uploadDeadlineShards)
+}
+
+func uploadDeadlineKey(shard int) string {
+	return uploadDeadlinePrefix + strconv.Itoa(shard)
+}
+
+func uploadProcessingKey(shard int) string {
+	return uploadProcessingPrefix + strconv.Itoa(shard)
+}
+
+func deadlineMember(uid int64, uploadUUID string) string {
+	return strconv.FormatInt(uid, 10) + ":" + uploadUUID
+}
+
+// ParseDeadlineMember extracts (uid, uploadUUID) from a deadline member.
+// Exported for tests.
+func ParseDeadlineMember(member string) (int64, string, bool) {
+	parts := strings.SplitN(member, ":", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return 0, "", false
+	}
+	uid, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || uid <= 0 {
+		return 0, "", false
+	}
+	return uid, parts[1], true
+}
 
 var allowedMimePrefixes = []string{
 	"video/", "text/plain", "text/markdown", "text/x-markdown", "text/csv",
@@ -151,6 +195,9 @@ type UploadService struct {
 	files   *repo.FileRepo
 	quota   *QuotaService
 	pending *PendingUploads
+	// sweepRecentGuard: objects modified within this window are never swept
+	// (complete-vs-expiry race guard); the upload is rescheduled instead.
+	sweepRecentGuard time.Duration
 }
 
 func NewUploadService(cfg *config.Config, db *gorm.DB, mc *minio.Client,
@@ -158,6 +205,7 @@ func NewUploadService(cfg *config.Config, db *gorm.DB, mc *minio.Client,
 	return &UploadService{
 		cfg: cfg, db: db, minio: mc, rdb: rdb,
 		files: repo.NewFileRepo(), quota: quota, pending: pending,
+		sweepRecentGuard: time.Duration(cfg.Upload.SweepRecentGuardSeconds) * time.Second,
 	}
 }
 
@@ -239,6 +287,10 @@ func (s *UploadService) InitUpload(ctx context.Context, uid int64, filename stri
 		return nil, fmt.Errorf("redis upload meta write: %w", err)
 	}
 	s.SetHeartbeat(ctx, sessionUUID, uploadUUID, uid)
+	// Deadline queue: if neither complete nor the MinIO webhook settles this
+	// upload within the session window, the sweeper reclaims it.
+	s.ScheduleUploadDeadline(ctx, uid, uploadUUID,
+		time.Now().Add(time.Duration(uploadMetaTTL)*time.Second))
 
 	slog.Info("[CLOUD_UPLOAD] init_upload complete", "uid", uid,
 		"filename", filename, "size", fileSize, "chunks", chunkCount,
@@ -259,6 +311,19 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 	parts []UploadPart, uid int64) (*UploadCompleteResult, error) {
 	raw, err := s.rdb.Get(ctx, uploadKeyPrefix+uploadUUID).Result()
 	if err != nil {
+		// The MinIO webhook may have settled this upload and dropped the
+		// session before the client's complete call landed (the two settlement
+		// paths race by design). If the DB row exists the upload is already
+		// finalised — report success instead of "session expired".
+		if row, gerr := s.files.GetByUUID(s.db, uploadUUID, uid); gerr == nil && row != nil {
+			etag := ""
+			if row.ETag != nil {
+				etag = *row.ETag
+			}
+			metrics.UploadComplete.WithLabelValues("already_settled").Inc()
+			s.CancelUploadDeadline(ctx, uid, uploadUUID)
+			return &UploadCompleteResult{UploadUUID: uploadUUID, ETag: etag, Status: "completed"}, nil
+		}
 		return nil, fmt.Errorf("Upload session expired or not found: %s", uploadUUID)
 	}
 	var meta uploadMeta
@@ -301,6 +366,54 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 		return nil, fmt.Errorf("Uploaded size mismatch: declared %d bytes, actual %d bytes — upload rejected", meta.FileSize, actualSize)
 	}
 
+	created, ferr := s.finalizeUpload(ctx, uploadUUID, meta, etag)
+	if ferr != nil {
+		return nil, ferr
+	}
+	if created {
+		slog.Info("[CLOUD_UPLOAD] complete_upload done", "upload_uuid", uploadUUID, "etag", etag)
+		metrics.UploadComplete.WithLabelValues("ok").Inc()
+	} else {
+		// The webhook settled it first: same row, quota charged exactly once.
+		slog.Info("[CLOUD_UPLOAD] complete_upload already settled (webhook won)", "upload_uuid", uploadUUID)
+		metrics.UploadComplete.WithLabelValues("duplicate").Inc()
+	}
+
+	// Vectorization is user-triggered (process / reprocess endpoints) — an
+	// upload completion never enqueues pipeline tasks by itself.
+
+	return &UploadCompleteResult{
+		UploadUUID: uploadUUID,
+		ETag:       etag,
+		Status:     "completed",
+	}, nil
+}
+
+// uploadObjectKeyRE matches cloud upload object keys:
+// "<uid>/<uploadUUID>/file<ext>" (same shape the Python backend produced).
+var uploadObjectKeyRE = regexp.MustCompile(
+	`^(\d{1,20})/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/`)
+
+// ParseUploadObjectKey extracts (uid, uploadUUID) from a cloud object key.
+// Exported for tests and for the orphan reconciler.
+func ParseUploadObjectKey(key string) (int64, string, bool) {
+	m := uploadObjectKeyRE.FindStringSubmatch(key)
+	if len(m) != 3 {
+		return 0, "", false
+	}
+	uid, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || uid <= 0 {
+		return 0, "", false
+	}
+	return uid, strings.ToLower(m[2]), true
+}
+
+// finalizeUpload is the single idempotent settlement primitive: insert the
+// cloud_files row + bump cloud_quota exactly once, then drop the Redis upload
+// session and the in-flight quota reservation. It is called by BOTH the client
+// complete endpoint and the MinIO bucket-notification webhook, which race by
+// design (unique upload_uuid index + ON DUPLICATE KEY ensures one charge).
+func (s *UploadService) finalizeUpload(ctx context.Context, uploadUUID string, meta uploadMeta, etag string) (bool, error) {
 	uploadStatus := "completed"
 	// ASR only ever applies to video/audio. Every other file is marked
 	// not_supported up front so the UI does not wait forever on a pending
@@ -310,7 +423,7 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 	now := time.Now()
 	row := &model.CloudFile{
 		UploadUUID:   uploadUUID,
-		UID:          uid,
+		UID:          meta.UID,
 		FolderID:     meta.FolderID,
 		OriginalName: meta.OriginalName,
 		FileSize:     meta.FileSize,
@@ -325,26 +438,284 @@ func (s *UploadService) CompleteUpload(ctx context.Context, uploadUUID string,
 		CreatedAt:    &now,
 		UpdatedAt:    &now,
 	}
-	if err := s.files.Create(s.db, row); err != nil {
-		slog.Error("[CLOUD_UPLOAD] DB create failed after MinIO complete — manual fix required!",
-			"upload_uuid", uploadUUID, "etag", etag, "err", err)
+	created, err := s.files.CreateIfAbsentAndBump(s.db, row)
+	if err != nil {
+		slog.Error("[CLOUD_UPLOAD] DB settlement failed",
+			"upload_uuid", uploadUUID, "uid", meta.UID, "err", err)
 		metrics.UploadComplete.WithLabelValues("db_error").Inc()
-		return nil, err
+		return false, err
 	}
 	_ = s.rdb.Del(ctx, uploadKeyPrefix+uploadUUID).Err()
+	// Settlement succeeded: cancel the watchdog so its expiry event is never
+	// emitted (complete AND MinIO-webhook paths both land here).
+	s.CancelUploadDeadline(ctx, meta.UID, uploadUUID)
+	s.pending.Remove(ctx, meta.UID, uploadUUID)
+	return created, nil
+}
+
+// FinalizeFromEvent settles an upload from a MinIO bucket-notification event
+// (s3:ObjectCreated:CompleteMultipartUpload). This is the safety net for the
+// window where the client never calls complete (crash/offline) or where MinIO
+// completed but the DB write failed. Idempotent: duplicates and the client
+// complete path converge on the same row/quota bump. Objects whose Redis
+// session is already gone are left for the orphan reconciler.
+func (s *UploadService) FinalizeFromEvent(ctx context.Context, objectKey, eventETag string) error {
+	uid, uploadUUID, ok := ParseUploadObjectKey(objectKey)
+	if !ok {
+		return nil // not a cloud-upload object (other bucket traffic)
+	}
+	// Fast idempotency check: already settled by the client complete path.
+	if exists, err := s.files.ExistsByUploadUUID(s.db, uploadUUID); err != nil {
+		return err
+	} else if exists {
+		s.CancelUploadDeadline(ctx, uid, uploadUUID)
+		metrics.UploadComplete.WithLabelValues("event_duplicate").Inc()
+		return nil
+	}
+
+	raw, err := s.rdb.Get(ctx, uploadKeyPrefix+uploadUUID).Result()
+	if err != nil {
+		slog.Warn("[CLOUD_EVENT] orphan object: upload session gone (left for reconciler)",
+			"object_key", objectKey, "uid", uid, "upload_uuid", uploadUUID)
+		metrics.UploadComplete.WithLabelValues("event_orphan").Inc()
+		return nil
+	}
+	var meta uploadMeta
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		slog.Warn("[CLOUD_EVENT] corrupt upload session — skipping", "upload_uuid", uploadUUID, "err", err)
+		metrics.UploadComplete.WithLabelValues("event_corrupt").Inc()
+		return nil
+	}
+	if meta.UID != uid || meta.ObjectKey != objectKey {
+		slog.Warn("[CLOUD_EVENT] event/session mismatch — skipping",
+			"upload_uuid", uploadUUID, "event_uid", uid, "session_uid", meta.UID,
+			"event_key", objectKey, "session_key", meta.ObjectKey)
+		metrics.UploadComplete.WithLabelValues("event_mismatch").Inc()
+		return nil
+	}
+
+	actualSize, serr := s.minio.ObjectSize(ctx, objectKey)
+	if serr != nil {
+		return serr // transient: let MinIO retry the webhook
+	}
+	if actualSize != meta.FileSize {
+		slog.Error("[CLOUD_EVENT] size mismatch — rejecting upload and removing object",
+			"upload_uuid", uploadUUID, "declared", meta.FileSize, "actual", actualSize)
+		_ = s.minio.DeleteObject(ctx, objectKey)
+		_ = s.rdb.Del(ctx, uploadKeyPrefix+uploadUUID).Err()
+		s.pending.Remove(ctx, uid, uploadUUID)
+		metrics.UploadComplete.WithLabelValues("event_size_mismatch").Inc()
+		return nil
+	}
+
+	created, err := s.finalizeUpload(ctx, uploadUUID, meta, eventETag)
+	if err != nil {
+		return err
+	}
+	if created {
+		slog.Info("[CLOUD_EVENT] settled upload from MinIO event",
+			"upload_uuid", uploadUUID, "uid", uid, "object_key", objectKey)
+		metrics.UploadComplete.WithLabelValues("event_ok").Inc()
+	} else {
+		metrics.UploadComplete.WithLabelValues("event_duplicate").Inc()
+	}
+	return nil
+}
+
+// ScheduleUploadDeadline registers/refreshes this upload's deadline in the
+// sharded ZSET queue (score = unix ms). Called on init and renewed on
+// heartbeat/resume; settlement calls CancelUploadDeadline.
+func (s *UploadService) ScheduleUploadDeadline(ctx context.Context, uid int64, uploadUUID string, deadline time.Time) {
+	if s.rdb == nil {
+		return
+	}
+	member := deadlineMember(uid, uploadUUID)
+	key := uploadDeadlineKey(uploadShard(uid))
+	if err := s.rdb.ZAdd(ctx, key, redis.Z{
+		Score:  float64(deadline.UnixMilli()),
+		Member: member,
+	}).Err(); err != nil {
+		slog.Warn("[CLOUD_UPLOAD] deadline schedule failed",
+			"upload_uuid", uploadUUID, "err", err)
+	}
+}
+
+// CancelUploadDeadline removes the upload from the deadline + processing
+// queues (settlement succeeded — complete or MinIO webhook, both paths).
+func (s *UploadService) CancelUploadDeadline(ctx context.Context, uid int64, uploadUUID string) {
+	if s.rdb == nil {
+		return
+	}
+	member := deadlineMember(uid, uploadUUID)
+	shard := uploadShard(uid)
+	_ = s.rdb.ZRem(ctx, uploadDeadlineKey(shard), member).Err()
+	_ = s.rdb.ZRem(ctx, uploadProcessingKey(shard), member).Err()
+}
+
+// claimDeadlineScript atomically moves due members from deadline -> processing
+// with a visibility timeout (KEYS: deadline, processing; ARGV: now_ms, batch,
+// visibility_until_ms). Multiple replicas may sweep concurrently: the Lua
+// script is the single-winner claim, so no member is handled twice.
+var claimDeadlineScript = redis.NewScript(
+	"local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])\n" +
+		"for i, m in ipairs(due) do\n" +
+		"  redis.call('ZREM', KEYS[1], m)\n" +
+		"  redis.call('ZADD', KEYS[2], ARGV[3], m)\n" +
+		"end\n" +
+		"return due")
+
+// requeueStaleScript puts members stuck in processing past their visibility
+// timeout back into the deadline queue (crash recovery, ARGV: now_ms, batch).
+var requeueStaleScript = redis.NewScript(
+	"local stale = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])\n" +
+		"for i, m in ipairs(stale) do\n" +
+		"  redis.call('ZREM', KEYS[2], m)\n" +
+		"  redis.call('ZADD', KEYS[1], ARGV[1], m)\n" +
+		"end\n" +
+		"return stale")
+
+// RunDeadlineSweeper periodically claims due upload deadlines and reconciles
+// MinIO vs DB for each upload (see HandleWatchdogExpired). Durable (AOF),
+// sharded (64 ZSETs), batch-claimed and retried via the processing set — this
+// replaces the old TTL-key + keyspace-pub/sub watchdog.
+func RunDeadlineSweeper(ctx context.Context, cfg *config.Config, rdb redis.UniversalClient, svc *UploadService) {
+	if rdb == nil || svc == nil {
+		slog.Warn("[UPLOAD_SWEEPER] disabled (redis or upload service unavailable)")
+		return
+	}
+	interval := time.Duration(cfg.Upload.SweepIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	batch := cfg.Upload.SweepBatch
+	if batch <= 0 {
+		batch = 200
+	}
+	visibility := time.Duration(cfg.Upload.SweepVisibilitySeconds) * time.Second
+	if visibility <= 0 {
+		visibility = time.Minute
+	}
+	slog.Info("[UPLOAD_SWEEPER] started",
+		"interval", interval, "batch", batch, "visibility", visibility,
+		"shards", uploadDeadlineShards)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			svc.sweepOnce(ctx, batch, visibility)
+		}
+	}
+}
+
+// sweepOnce processes one pass over all deadline shards: requeue stale claims,
+// claim due members, clean each upload, then acknowledge (ZREM processing).
+func (s *UploadService) sweepOnce(ctx context.Context, batch int, visibility time.Duration) {
+	now := time.Now()
+	nowMs := now.UnixMilli()
+	visMs := now.Add(visibility).UnixMilli()
+	var dueTotal int64
+	for shard := 0; shard < uploadDeadlineShards; shard++ {
+		dk := uploadDeadlineKey(shard)
+		pk := uploadProcessingKey(shard)
+		if _, err := requeueStaleScript.Run(ctx, s.rdb, []string{dk, pk}, nowMs, batch).Result(); err != nil {
+			slog.Warn("[UPLOAD_SWEEPER] requeue stale failed", "shard", shard, "err", err)
+			continue
+		}
+		res, err := claimDeadlineScript.Run(ctx, s.rdb, []string{dk, pk}, nowMs, batch, visMs).Result()
+		if err != nil {
+			slog.Warn("[UPLOAD_SWEEPER] claim failed", "shard", shard, "err", err)
+			continue
+		}
+		members, _ := res.([]interface{})
+		for _, raw := range members {
+			member, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			uid, uploadUUID, ok := ParseDeadlineMember(member)
+			if !ok {
+				_ = s.rdb.ZRem(ctx, pk, member).Err()
+				continue
+			}
+			if err := s.HandleWatchdogExpired(ctx, uid, uploadUUID); err != nil {
+				metrics.UploadSweep.WithLabelValues("error").Inc()
+				slog.Warn("[UPLOAD_SWEEPER] cleanup failed (retry after visibility timeout)",
+					"uid", uid, "upload_uuid", uploadUUID, "err", err)
+				continue
+			}
+			_ = s.rdb.ZRem(ctx, pk, member).Err()
+		}
+		if n, err := s.rdb.ZCard(ctx, dk).Result(); err == nil {
+			dueTotal += n
+		}
+	}
+	metrics.UploadDeadlineDue.Set(float64(dueTotal))
+}
+
+// HandleWatchdogExpired reconciles MinIO vs DB for ONE upload whose deadline
+// elapsed without settlement:
+//   - DB row exists (late complete/webhook) -> clean session, no delete
+//   - objects exist + no DB row             -> batch-delete them (A-type)
+//   - no completed object (multipart only)  -> release session + reservation
+//
+// Objects modified within the recent-guard window are left alone and the
+// upload is rescheduled, closing the complete-vs-expiry race.
+func (s *UploadService) HandleWatchdogExpired(ctx context.Context, uid int64, uploadUUID string) error {
+	if exists, err := s.files.ExistsByUploadUUID(s.db, uploadUUID); err != nil {
+		return err
+	} else if exists {
+		_ = s.rdb.Del(ctx, uploadKeyPrefix+uploadUUID).Err()
+		metrics.UploadSweep.WithLabelValues("already_settled").Inc()
+		slog.Info("[UPLOAD_SWEEPER] upload already settled, cleaned up",
+			"uid", uid, "upload_uuid", uploadUUID)
+		return nil
+	}
+
+	guard := s.sweepRecentGuard
+	if guard <= 0 {
+		guard = 5 * time.Minute
+	}
+	cutoff := time.Now().Add(-guard)
+	prefix := fmt.Sprintf("%d/%s/", uid, uploadUUID)
+	toDelete := make([]string, 0, 1)
+	recent := false
+	for obj := range s.minio.ListPrefix(ctx, prefix) {
+		if !obj.LastModified.IsZero() && obj.LastModified.After(cutoff) {
+			recent = true
+			continue
+		}
+		toDelete = append(toDelete, obj.Key)
+	}
+	if recent {
+		// The upload may still be finalising (complete just merged the object).
+		// Postpone instead of deleting; the DB re-check above runs again then.
+		s.ScheduleUploadDeadline(ctx, uid, uploadUUID, time.Now().Add(guard))
+		metrics.UploadSweep.WithLabelValues("rescheduled").Inc()
+		slog.Info("[UPLOAD_SWEEPER] recent object detected, cleanup postponed",
+			"uid", uid, "upload_uuid", uploadUUID, "guard", guard)
+		return nil
+	}
+
+	if len(toDelete) > 0 {
+		if err := s.minio.RemoveObjects(ctx, toDelete); err != nil {
+			return err
+		}
+		metrics.UploadSweep.WithLabelValues("deleted").Inc()
+		metrics.UploadSweepObjectsDeleted.Add(float64(len(toDelete)))
+		slog.Warn("[UPLOAD_SWEEPER] orphan objects deleted (MinIO has them, DB has no row)",
+			"uid", uid, "upload_uuid", uploadUUID, "objects_deleted", len(toDelete))
+	} else {
+		metrics.UploadSweep.WithLabelValues("no_object").Inc()
+		slog.Info("[UPLOAD_SWEEPER] expired upload had no completed object",
+			"uid", uid, "upload_uuid", uploadUUID)
+	}
+
+	_ = s.rdb.Del(ctx, uploadKeyPrefix+uploadUUID).Err()
 	s.pending.Remove(ctx, uid, uploadUUID)
-
-	slog.Info("[CLOUD_UPLOAD] complete_upload done", "upload_uuid", uploadUUID, "etag", etag)
-	metrics.UploadComplete.WithLabelValues("ok").Inc()
-
-	// Vectorization is user-triggered (process / reprocess endpoints) — an
-	// upload completion never enqueues pipeline tasks by itself.
-
-	return &UploadCompleteResult{
-		UploadUUID: uploadUUID,
-		ETag:       etag,
-		Status:     "completed",
-	}, nil
+	return nil
 }
 
 // heartbeatSession — value stored under the heartbeat key: the reverse
@@ -401,6 +772,9 @@ func (s *UploadService) Heartbeat(ctx context.Context, sessionUUID string, uid i
 		slog.Warn("[CLOUD_UPLOAD] upload meta renew failed", "upload_uuid", hs.UploadUUID, "err", err)
 	}
 	s.pending.Touch(ctx, uid, hs.UploadUUID)
+	// Keep the deadline alive while the client is actively uploading.
+	s.ScheduleUploadDeadline(ctx, uid, hs.UploadUUID,
+		time.Now().Add(time.Duration(uploadMetaTTL)*time.Second))
 	return true
 }
 
@@ -425,6 +799,8 @@ func (s *UploadService) ResumeUpload(ctx context.Context, uploadUUID string, uid
 		}
 		pending = append(pending, UploadResumeChunk{ChunkIndex: p - 1, ChunkSize: meta.ChunkSize, URL: u})
 	}
+	s.ScheduleUploadDeadline(ctx, meta.UID, uploadUUID,
+		time.Now().Add(time.Duration(uploadMetaTTL)*time.Second))
 	slog.Info("[CLOUD_UPLOAD] resume_upload", "upload_uuid", uploadUUID, "chunks", len(pending))
 	return &UploadResumeResult{
 		UploadUUID:    uploadUUID,

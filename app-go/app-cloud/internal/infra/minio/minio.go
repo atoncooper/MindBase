@@ -16,6 +16,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/notification"
 )
 
 type Client struct {
@@ -106,6 +107,27 @@ func (c *Client) publicURL(internal string) string {
 // CreateMultipartUpload starts a multipart session for object_key.
 func (c *Client) CreateMultipartUpload(ctx context.Context, objectKey string) (string, error) {
 	return c.core.NewMultipartUpload(ctx, c.cfg.Bucket, objectKey, minio.PutObjectOptions{})
+}
+
+// EnsureBucketNotification installs the bucket notification rule that routes
+// multipart-completion events to the app-cloud settlement webhook. Idempotent:
+// MinIO replaces the bucket notification configuration on each call, so every
+// boot converges on exactly one rule.
+func (c *Client) EnsureBucketNotification(ctx context.Context) error {
+	raw := strings.TrimSpace(c.cfg.WebhookARN)
+	if raw == "" {
+		return nil
+	}
+	arn, err := notification.NewArnFromString(raw)
+	if err != nil {
+		return fmt.Errorf("invalid webhook arn %q: %w", raw, err)
+	}
+	qc := notification.NewConfig(arn)
+	qc.ID = "app-cloud-upload-settlement"
+	qc.AddEvents(notification.ObjectCreatedCompleteMultipartUpload)
+	var conf notification.Configuration
+	conf.AddQueue(qc)
+	return c.sdk.SetBucketNotification(ctx, c.cfg.Bucket, conf)
 }
 
 // PresignUploadPart returns a browser-usable presigned PUT URL for one part.
@@ -202,8 +224,9 @@ func (c *Client) GetObject(ctx context.Context, objectKey string) ([]byte, error
 
 // ObjectInfo is the listing projection used by reconciliation.
 type ObjectInfo struct {
-	Key  string
-	Size int64
+	Key          string
+	Size         int64
+	LastModified time.Time
 }
 
 // ListPrefix streams objects under a prefix (server-side efficient; bounded
@@ -216,7 +239,7 @@ func (c *Client) ListPrefix(ctx context.Context, prefix string) <-chan ObjectInf
 			Prefix:    prefix,
 			Recursive: true,
 		}) {
-			ch <- ObjectInfo{Key: obj.Key, Size: obj.Size}
+			ch <- ObjectInfo{Key: obj.Key, Size: obj.Size, LastModified: obj.LastModified}
 		}
 	}()
 	return ch
@@ -237,6 +260,28 @@ func (c *Client) ObjectSize(ctx context.Context, objectKey string) (int64, error
 		return 0, err
 	}
 	return info.Size, nil
+}
+
+// RemoveObjects batch-deletes keys (MinIO supports up to 1000 per request).
+func (c *Client) RemoveObjects(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	objects := make(chan minio.ObjectInfo)
+	errCh := c.sdk.RemoveObjects(ctx, c.cfg.Bucket, objects, minio.RemoveObjectsOptions{})
+	go func() {
+		defer close(objects)
+		for _, k := range keys {
+			objects <- minio.ObjectInfo{Key: k}
+		}
+	}()
+	var firstErr error
+	for e := range errCh {
+		if e.Err != nil && firstErr == nil {
+			firstErr = e.Err
+		}
+	}
+	return firstErr
 }
 
 // DeleteObject removes one object (purge path).

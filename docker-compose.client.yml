@@ -60,14 +60,14 @@ services:
       dockerfile: certgen.Dockerfile
     container_name: mind-base-cert-gen
     environment:
-      MB_CERT_NGINX_DIR: /out/nginx
+      MB_CERT_OPENRESTY_DIR: /out/openresty
       # board 面（app-content）证书目录；产物统一落在宿主 secrets/certs/
       MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
-      - ./secrets/certs/nginx:/out/nginx
+      - ./secrets/certs/openresty:/out/openresty
       - ./secrets/certs/app-content:/out/app-content
       - ./secrets/certs/app-content-mcp:/out/mcp
       - ./app-pay/certs:/out/pay
@@ -76,22 +76,31 @@ services:
     restart: "no"
 
   # ==============================================================
-  # Reverse Proxy (Nginx) — SSL termination + routing
+  # Edge: OpenResty — TLS termination + load balancing + cache
   # ==============================================================
 
-  nginx:
-    image: nginx:alpine
-    container_name: mind-base-nginx
+  openresty:
+    image: openresty/openresty:1.27.1.2-alpine
+    container_name: mind-base-openresty
     ports:
       # 客户端对外入口仅这两个端口；宿主 80/443 被占用时在 .env 改端口
       - "${NGINX_HTTP_PORT:-80}:80"
       - "${NGINX_HTTPS_PORT:-443}:443"
+    environment:
+      - PURGE_TOKEN=${PURGE_TOKEN:-dev-purge-token}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /var/cache/openresty && chmod 0777 /var/cache/openresty && exec /usr/local/openresty/bin/openresty -g 'daemon off;'
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/locations.conf:/etc/nginx/locations.conf:ro
-      - ./secrets/certs/nginx:/etc/nginx/certs:ro
+      - ./openresty/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./openresty/locations.conf:/etc/openresty/locations.conf:ro
+      - ./openresty/public-page-cache.conf:/etc/openresty/public-page-cache.conf:ro
+      - ./openresty/lua:/etc/openresty/lua:ro
+      - ./secrets/certs/openresty:/etc/openresty/certs:ro
       - certbot_www:/var/www/certbot
-      - nginx_video_cache:/var/cache/nginx/video
+      - openresty_cache:/var/cache/openresty
     depends_on:
       cert-gen:
         condition: service_completed_successfully
@@ -99,13 +108,16 @@ services:
         condition: service_started
       apisix:
         condition: service_healthy
-      # MinIO belongs to the app-cloud domain: not a startup dependency (nginx
-      # resolves /minio-proxy/ at request time). Start it explicitly when needed.
-    mem_limit: 64m
+      # MinIO belongs to the app-cloud domain: not a startup dependency
+      # (the edge resolves /minio-proxy/ at request time).
+    mem_limit: 96m
     logging: *default-logging
     restart: unless-stopped
     networks:
-      - mind-base-net
+      mind-base-net:
+        aliases:
+          # Legacy alias: the prebuilt frontend image bakes http://nginx:80.
+          - nginx
 
   frontend:
     image: atoncooper/mind-base-frontend:latest
@@ -511,7 +523,7 @@ services:
       - app_user_logs:/app/logs
       - ./secrets/api_key_encryption_key:/run/secrets/api_key_encryption_key:ro
       # 可选 TLS 证书目录（启用时把 APP_USER_TLS_* 指向 /certs/...）
-      - ./secrets/certs/nginx:/certs:ro
+      - ./secrets/certs/openresty:/certs:ro
     # 三域合并后的单进程上限（原 128m + 384m + 128m 三容器），取 512m。
     mem_limit: 512m
     logging: *default-logging
@@ -950,7 +962,7 @@ volumes:
   neo4j_logs:
   minio_data:
   certbot_www:
-  nginx_video_cache:
+  openresty_cache:
 
 networks:
   mind-base-net:

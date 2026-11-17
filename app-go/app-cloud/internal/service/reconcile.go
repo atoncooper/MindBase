@@ -160,6 +160,101 @@ func (r *Reconciler) ReconcileActiveUsers(ctx context.Context, days int, maxUser
 	return len(uids)
 }
 
+// OrphanObject — one completed object with no cloud_files row (report shape
+// for the administrator endpoint).
+type OrphanObject struct {
+	UID          int64     `json:"uid"`
+	UploadUUID   string    `json:"upload_uuid"`
+	Key          string    `json:"key"`
+	Size         int64     `json:"size"`
+	LastModified time.Time `json:"last_modified"`
+}
+
+// scanOrphans walks the bucket (bounded), collects completed cloud-upload
+// objects with no DB row older than olderThan, and optionally deletes them.
+// Keys that do not match the cloud-upload shape are never touched.
+func (r *Reconciler) scanOrphans(ctx context.Context, olderThan time.Time, maxScan, limit int, doDelete bool) ([]OrphanObject, int, error) {
+	found := make([]OrphanObject, 0)
+	deleted := 0
+	scanned := 0
+	for obj := range r.minio.ListPrefix(ctx, "") {
+		if ctx.Err() != nil {
+			return found, deleted, ctx.Err()
+		}
+		if maxScan > 0 && scanned >= maxScan {
+			break
+		}
+		scanned++
+		if obj.LastModified.IsZero() || obj.LastModified.After(olderThan) {
+			continue
+		}
+		uid, uploadUUID, ok := ParseUploadObjectKey(obj.Key)
+		if !ok {
+			continue
+		}
+		exists, err := r.files.ExistsByObjectKey(r.db, obj.Key)
+		if err != nil {
+			return found, deleted, err
+		}
+		if exists {
+			continue
+		}
+		found = append(found, OrphanObject{
+			UID: uid, UploadUUID: uploadUUID, Key: obj.Key,
+			Size: obj.Size, LastModified: obj.LastModified,
+		})
+		if limit > 0 && len(found) >= limit && !doDelete {
+			break
+		}
+		if doDelete {
+			if err := r.minio.DeleteObject(ctx, obj.Key); err != nil {
+				slog.Warn("[RECONCILE] orphan delete failed", "key", obj.Key, "err", err)
+				continue
+			}
+			deleted++
+			slog.Warn("[RECONCILE] orphan object deleted", "key", obj.Key, "size", obj.Size)
+		}
+	}
+	return found, deleted, nil
+}
+
+// ListOrphans returns orphans for administrator review (read-only).
+func (r *Reconciler) ListOrphans(ctx context.Context, olderThan time.Time, maxScan, limit int) ([]OrphanObject, error) {
+	found, _, err := r.scanOrphans(ctx, olderThan, maxScan, limit, false)
+	return found, err
+}
+
+// ReconcileOrphanObjects runs the daily sweep. It only REPORTS by default
+// (autoDelete=false): deleting is an explicit administrator action via the
+// /internal/cloud/orphans/delete endpoint. Returns (found, deleted).
+func (r *Reconciler) ReconcileOrphanObjects(ctx context.Context, olderThan time.Time, maxScan int, autoDelete bool) (int, int, error) {
+	found, deleted, err := r.scanOrphans(ctx, olderThan, maxScan, 0, autoDelete)
+	return len(found), deleted, err
+}
+
+// DeleteOrphan deletes one object after re-verifying it is still an orphan
+// (key shape + no DB row + object exists). Returns true when deleted.
+func (r *Reconciler) DeleteOrphan(ctx context.Context, key string) (bool, error) {
+	if _, _, ok := ParseUploadObjectKey(key); !ok {
+		return false, nil
+	}
+	exists, err := r.files.ExistsByObjectKey(r.db, key)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	if !r.minio.Exists(ctx, key) {
+		return false, nil
+	}
+	if err := r.minio.DeleteObject(ctx, key); err != nil {
+		return false, err
+	}
+	slog.Warn("[RECONCILE] orphan object deleted by administrator", "key", key)
+	return true, nil
+}
+
 func itoa64(v int64) string {
 	if v == 0 {
 		return "0"

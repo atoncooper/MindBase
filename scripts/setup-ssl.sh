@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================
-# SSL Certificate Setup — self-signed (dev) or Let's Encrypt
+# SSL Certificate Setup (OpenResty edge) — self-signed (dev) or Let's Encrypt
 # ============================================================
 #
 # Usage:
-#   ./nginx/setup-ssl.sh              → generate self-signed (testing)
-#   ./nginx/setup-ssl.sh letsencrypt  → interactive Let's Encrypt
+#   ./scripts/setup-ssl.sh              → generate self-signed (testing)
+#   ./scripts/setup-ssl.sh letsencrypt  → interactive Let's Encrypt
 #
 # Prerequisites for Let's Encrypt:
 #   - A public domain name pointing to this server
@@ -17,7 +17,7 @@ set -euo pipefail
 
 # Generated certs live under the repo-root secrets/ tree (gitignored),
 # never inside a project root. app-pay keeps its own app-pay/certs/.
-CERT_DIR="$(cd "$(dirname "$0")/.." && pwd)/secrets/certs/nginx"
+CERT_DIR="$(cd "$(dirname "$0")/.." && pwd)/secrets/certs/openresty"
 mkdir -p "$CERT_DIR"
 
 MODE="${1:-selfsigned}"
@@ -53,11 +53,11 @@ elif [ "$MODE" = "letsencrypt" ]; then
     echo "[SSL] Requesting Let's Encrypt cert for $DOMAIN ..."
 
     # Stop nginx temporarily (certbot needs port 80)
-    docker compose stop nginx 2>/dev/null || true
+    docker compose stop openresty 2>/dev/null || true
 
     docker run --rm \
         -v "$CERT_DIR:/etc/letsencrypt/live/$DOMAIN" \
-        -v "$(pwd)/nginx/certbot-www:/var/www/certbot" \
+        -v "/var/lib/docker/volumes/mindbase_certbot_www/_data:/var/www/certbot" \
         certbot/certbot \
         certonly --standalone \
         --non-interactive --agree-tos \
@@ -75,11 +75,11 @@ elif [ "$MODE" = "letsencrypt" ]; then
     fi
 
     echo "[SSL] Starting nginx..."
-    docker compose up -d nginx
+    docker compose up -d openresty
 
     echo "[SSL] Done.  HTTPS is now active for https://$DOMAIN"
     echo "[SSL] Certbot auto-renewal: add this to crontab:"
-    echo "  0 3 * * * docker run --rm -v ... certbot/certbot renew --quiet && docker compose exec nginx nginx -s reload"
+    echo "  0 3 * * * docker run --rm -v ... certbot/certbot renew --quiet && docker compose exec openresty openresty -s reload"
 
 else
     echo "Usage: $0 [selfsigned|letsencrypt] [domain] [email]"

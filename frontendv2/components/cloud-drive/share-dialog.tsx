@@ -27,6 +27,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, Check, Copy, Link2, Loader2, Lock, Scale, ShieldAlert, X } from "lucide-react";
 import { cloudApi, type CloudShareView } from "@/lib/api/cloud";
 import { getShareBaseUrl } from "@/lib/api/share";
+import { SHARE_PATHS } from "@/lib/api/prefix";
 import { Select } from "@/components/ui/select";
 
 export type ShareDialogTarget =
@@ -168,7 +169,7 @@ function ShareDialogBody({
         });
     }, []);
 
-    const fullUrlFor = (token: string) => `${shareBase}/cloud/s/${token}`;
+    const fullUrlFor = (token: string) => `${shareBase}${SHARE_PATHS.cloud}/${token}`;
 
     const refresh = useCallback(async () => {
         setLoading(true);

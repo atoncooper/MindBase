@@ -47,6 +47,8 @@ services:
       # no effect on them). Source lives in frontendv2/ (first-gen frontend/ removed).
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        # Unified public namespace (edge strips it -> APISIX bare paths)
+        NEXT_PUBLIC_API_PREFIX: /mindbase/api/v1
         NEXT_PUBLIC_APISIX_HOST: nginx:80
         # rewrites 构建时固化，MinIO 同源代理目标必须是 build arg（非运行时 env）
         MINIO_PROXY_DEST: http://nginx:80
@@ -57,6 +59,7 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+      - NEXT_PUBLIC_API_PREFIX=/mindbase/api/v1
       - NEXT_PUBLIC_APISIX_HOST=nginx:80
       # MinIO 同源代理目标（rewrites 在服务端运行时读取，非 NEXT_PUBLIC）
       - MINIO_PROXY_DEST=http://nginx:80
@@ -64,7 +67,7 @@ services:
       - SHARE_DOMAIN=${SHARE_DOMAIN:-}
       - SHARE_PUBLIC_IP=${SHARE_PUBLIC_IP:-}
       # SSR 内部调用网关走 HTTPS（nginx:443，dev CA 校验）
-      - INTERNAL_API_URL=https://nginx:443
+      - INTERNAL_API_URL=https://openresty:443
       - NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
     volumes:
       - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
@@ -90,7 +93,7 @@ services:
       dockerfile: certgen.Dockerfile
     container_name: mind-base-cert-gen
     environment:
-      MB_CERT_NGINX_DIR: /out/nginx
+      MB_CERT_OPENRESTY_DIR: /out/openresty
       MB_CERT_APPCONTENT_DIR: /out/app-content
       MB_CERT_MCP_DIR: /out/mcp
       MB_CERT_PAY_DIR: /out/pay
@@ -100,7 +103,7 @@ services:
       # https://<域名> 不再报证书域名不匹配
       MB_CERT_EXTRA_SAN: ${SHARE_DOMAIN:-}
     volumes:
-      - ./secrets/certs/nginx:/out/nginx
+      - ./secrets/certs/openresty:/out/openresty
       - ./secrets/certs/app-content:/out/app-content
       - ./secrets/certs/app-content-mcp:/out/mcp
       - ./app-pay/certs:/out/pay
@@ -109,39 +112,61 @@ services:
     restart: "no"
 
   # ==============================================================
-  # Reverse Proxy (Nginx) — SSL termination + routing
+  # Edge: OpenResty — TLS termination + load balancing + cache
   # ==============================================================
-
-  nginx:
+  # Replaces nginx. OpenResty owns the public edge (80/443), terminates TLS,
+  # keeps an APISIX upstream (keepalive + passive health + retries) and serves
+  # the cache tiers (static/video/pages/public-api with soft purge).
+  # Business APIs still go to APISIX (the API gateway); media, static assets
+  # and SSR pages are served/cached here. See docs/openresty-edge.md.
+  openresty:
     profiles: ["", "standalone", "storage", "full"]
-    image: nginx:alpine
-    container_name: mind-base-nginx
+    image: openresty/openresty:1.27.1.2-alpine
+    container_name: mind-base-openresty
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # Required by the soft-purge endpoint (POST /_purge). Change in prod.
+      - PURGE_TOKEN=${PURGE_TOKEN:-dev-purge-token}
+    # Workers run unprivileged (nobody); the version file is written by Lua,
+    # so the cache volume root must be writable by the worker user.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /var/cache/openresty && chmod 0777 /var/cache/openresty && exec /usr/local/openresty/bin/openresty -g 'daemon off;'
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/locations.conf:/etc/nginx/locations.conf:ro
-      - ./secrets/certs/nginx:/etc/nginx/certs:ro
+      - ./openresty/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./openresty/locations.conf:/etc/openresty/locations.conf:ro
+      - ./openresty/public-page-cache.conf:/etc/openresty/public-page-cache.conf:ro
+      - ./openresty/lua:/etc/openresty/lua:ro
+      - ./secrets/certs/openresty:/etc/openresty/certs:ro
       - certbot_www:/var/www/certbot
-      - nginx_video_cache:/var/cache/nginx/video   # Plan 0021
+      - openresty_cache:/var/cache/openresty
     depends_on:
       cert-gen:
         condition: service_completed_successfully
       frontend:
         condition: service_started
-      # nginx proxies apisix + minio (direct proxy_pass in locations.conf).
-      # Upstream hostnames resolve at request time (resolver + variable
-      # proxy_pass), so nginx starts even when minio is not up yet.
-      # MinIO belongs to the app-cloud (drive) domain: it is NOT a startup
-      # dependency here — start/bring it up with the cloud stack, or explicitly
-      # with `docker compose up -d minio`. Only the /minio-proxy/ location
-      # needs it at request time.
+      # APISIX uses a static upstream block (keepalive/retries). The other
+      # upstreams (frontend/minio/app-cloud) resolve dynamically at request
+      # time, so a missing minio only affects /minio-proxy/ requests.
       apisix:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/_edge/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
     networks:
-      - mind-base-net
+      mind-base-net:
+        aliases:
+          # Legacy alias: the prebuilt frontend image bakes http://nginx:80 as
+          # its internal SSR base. Drop after the next frontend image rebuild.
+          - nginx
 
   # ==============================================================
   # TLS fronts + JVM truststore (internal HTTPS, phase 2)
@@ -150,7 +175,7 @@ services:
   # sidecar shares their network namespace and terminates TLS on 8443
   # (clients call <service>:8443 over HTTPS; the last hop is loopback).
   frontend-tls:
-    image: nginx:alpine
+    image: openresty/openresty:1.27.1.2-alpine
     container_name: mind-base-frontend-tls
     profiles: ["", "standalone", "storage", "full", "task"]
     network_mode: "service:frontend"
@@ -158,12 +183,12 @@ services:
       frontend:
         condition: service_started
     volumes:
-      - ./nginx/tls-front/frontend.conf:/etc/nginx/nginx.conf:ro
+      - ./openresty/tls-front/frontend.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./secrets/certs/frontend:/certs:ro
     restart: unless-stopped
 
   sandbox-tls:
-    image: nginx:alpine
+    image: openresty/openresty:1.27.1.2-alpine
     container_name: mind-base-sandbox-tls
     profiles: ["sandbox", "full"]
     network_mode: "service:app-sandbox"
@@ -171,12 +196,12 @@ services:
       app-sandbox:
         condition: service_started
     volumes:
-      - ./nginx/tls-front/sandbox.conf:/etc/nginx/nginx.conf:ro
+      - ./openresty/tls-front/sandbox.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./secrets/certs/sandbox:/certs:ro
     restart: unless-stopped
 
   higress-tls:
-    image: nginx:alpine
+    image: openresty/openresty:1.27.1.2-alpine
     container_name: mind-base-higress-tls
     profiles: ["ai", "full"]
     network_mode: "service:higress"
@@ -184,7 +209,7 @@ services:
       higress:
         condition: service_started
     volumes:
-      - ./nginx/tls-front/higress.conf:/etc/nginx/nginx.conf:ro
+      - ./openresty/tls-front/higress.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./secrets/certs/higress:/certs:ro
     restart: unless-stopped
 
@@ -290,6 +315,9 @@ services:
     container_name: mind-base-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    # Durability: upload sessions + the pending-quota ledger live here. AOF
+    # keeps them across restarts; noeviction prevents silent eviction under
+    # memory pressure (OOM surfaces as an error instead of lost sessions).
     command: >
       redis-server
       --port 6380
@@ -300,8 +328,10 @@ services:
       --tls-auth-clients no
       --requirepass ${REDIS_PASSWORD:-mind-base}
       --notify-keyspace-events Ex
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 1gb
+      --maxmemory-policy noeviction
       --save 900 1
       --save 300 10
     volumes:
@@ -848,6 +878,14 @@ services:
       - MINIO_NOTIFY_REDIS_KEY_clouddrive=minio:events:clouddrive
       - MINIO_NOTIFY_REDIS_EVENTS_clouddrive=put,delete,completemultipartupload
       - MINIO_API_ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1
+      # Bucket notification -> app-cloud settlement webhook (HTTPS; MinIO trusts
+      # the dev CA via the ca-bundle mount below). This is the server-side
+      # safety net: quota/file row are settled even when the client never calls
+      # complete. Auth token must equal app-cloud's MINIO__EVENT_TOKEN.
+      - MINIO_NOTIFY_WEBHOOK_ENABLE_clouddrive=on
+      - MINIO_NOTIFY_WEBHOOK_ENDPOINT_clouddrive=https://app-cloud:8007/internal/cloud/minio/events
+      - MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_clouddrive=${MINIO_EVENT_TOKEN:-dev-minio-event-token}
+      - MINIO_NOTIFY_WEBHOOK_QUEUE_LIMIT_clouddrive=10000
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
@@ -1014,6 +1052,20 @@ services:
       # L1 doc-routing graph writes (app-kg health-mux internal endpoints;
       # empty base URL disables graph writes — L1 degrades to Mongo matching)
       - APPCLOUD__KG__TOKEN=${APP_KG_INTERNAL_TOKEN:-}
+      # Browser-reachable presigned object base (edge proxies /mindbase/api/v1/media -> MinIO)
+      - MINIO__PUBLIC_ENDPOINT=${CLOUD_PUBLIC_ENDPOINT:-https://localhost/mindbase/api/v1/media}
+      # MinIO bucket-notification settlement token (must equal MinIO's
+      # MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_clouddrive). Empty disables the endpoint.
+      - MINIO__EVENT_TOKEN=${MINIO_EVENT_TOKEN:-dev-minio-event-token}
+      # Orphan governance: delete completed objects with no DB row after the
+      # grace window (audited). Set false for report-only review.
+      - APPCLOUD__ORPHAN__AUTO_DELETE=${CLOUD_ORPHAN_AUTO_DELETE:-true}
+      - APPCLOUD__ORPHAN__GRACE_HOURS=${CLOUD_ORPHAN_GRACE_HOURS:-48}
+      # Upload deadline sweeper (sharded ZSET queue) tuning.
+      - APPCLOUD__UPLOAD__SWEEP_INTERVAL_SECONDS=${CLOUD_SWEEP_INTERVAL:-5}
+      - APPCLOUD__UPLOAD__SWEEP_BATCH=${CLOUD_SWEEP_BATCH:-200}
+      - APPCLOUD__UPLOAD__SWEEP_VISIBILITY_SECONDS=${CLOUD_SWEEP_VISIBILITY:-60}
+      - APPCLOUD__UPLOAD__SWEEP_RECENT_GUARD_SECONDS=${CLOUD_SWEEP_RECENT_GUARD:-300}
       # app-admin-only share-content review preview (Issue #154). Generate:
       # openssl rand -hex 32; empty = review preview disabled (fail closed)
       - APPCLOUD__ADMIN_REVIEW__TOKEN=${APP_CLOUD_ADMIN_REVIEW_TOKEN:-}
@@ -1496,7 +1548,7 @@ volumes:
   neo4j_logs:
   minio_data:
   certbot_www:
-  nginx_video_cache:
+  openresty_cache:
 
 networks:
   mind-base-net:

@@ -11,7 +11,7 @@
 浏览器
   │
   ▼
-nginx :80 / :443（TLS 终止 + 静态页 + 缓存）
+OpenResty :80 / :443（TLS 终止 + 负载均衡 + 缓存）
   │
   ├── /cloud/ ── auth_request ──► app-cloud（大文件上传，绕网关）
   ├── /minio-proxy/ ────────────► MinIO（同源预签名 URL）
@@ -29,7 +29,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | 场景 | 入口 |
 |------|------|
 | 本地开发 | `frontendv2` dev server :3000，`next.config.ts` rewrites 把 API 转发到 APISIX :9080 |
-| Docker 全栈 | nginx :3000（或 80 / 443），页面与 API 同源 |
+| Docker 全栈 | OpenResty :80 / :443，页面与 API 同源 |
 | 管理台 | 统一后台（分享审核 / 支付运营 / 沙箱 / 账户 / 审计）：回环 `http://127.0.0.1:3001`，UI 的 `/api` 同源代理到 app-admin-api :8016（不经主站 nginx / APISIX） |
 | 沙箱管理 | app-admin → app-sandbox `/internal/admin/*`（服务间共享令牌） |
 
@@ -63,12 +63,12 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 | `/board/*` | app-content:8004（board 面，HTTPS） | 板 CRUD（`If-Match` 乐观锁）/ 置顶 |
 | `/quiz/*`、`/tasks/*` | app-content:8004（quiz 面）+ app-ts | 题目存储 / 判题 / 错题 / 分享；生成与批改走 app-ts |
 | `/task-quiz/*` | app-ts + app-task | 对话定义任务；调度与答题入口 |
-| `/cloud/*`、`/workspaces/*` | app-cloud | 分片上传 / 文件夹 / 配额 / 回收站 / 分享 / 处理状态 / AI 摘要 / 语义检索 / 相似文件（nginx 直连） |
+| `/cloud/*`、`/workspaces/*` | app-cloud | 分片上传 / 文件夹 / 配额 / 回收站 / 分享 / 处理状态 / AI 摘要 / 语义检索 / 相似文件（经 APISIX） |
 | `/skills/*` | app-ts | 技能安装 / 卸载 / 商店 |
 | `/pay/*` | app-pay | SKU / 订单 / 会员（HTTPS） |
 | `/preferences/*`、`/avatar/*` | app-user（8015 settings 路由） | 偏好 KV 与头像 |
 | `/academic/*` | app-ts | 科研项目 / 文献 / 文档章节 / BibTeX 与 Markdown/LaTeX 导出 / 项目事件 |
-| `/internal/*` | 各服务 | 服务间端点（key-auth）；不暴露到 nginx |
+| `/internal/*` | 各服务 | 服务间端点（key-auth）；不暴露到 OpenResty |
 | `/internal/sandbox/*` | app-sandbox | 沙箱执行面（app-ts 调）；管理面仅 app-admin 可调 |
 | `/api/*` | app-admin-api | 管理台 API（分享审核 / 用户只读 / 审计 / 沙箱代理 / 支付运营 `/api/pay/*` / 账户管理 `/api/console/users`），仅回环 |
 
@@ -110,7 +110,7 @@ APISIX :9080（forward-auth / key-auth / 路由 / 限流）
 - 仓库**没有**统一在线 Swagger：app-ts 是 Fastify + tsx 直跑，未暴露 OpenAPI 文档端点。
 - `api/openapi.yaml` 是 Python 时代的历史规格（已退役），仅作存档，不代表当前服务；请勿据此联调。
 - 当前契约以「各服务路由源码 + 本文 + 各服务 README / 专项文档」为准。
-- 变更流程：改路由 → 同步 APISIX（`apisix.yaml` 与 `apisix.dev.yaml`）→（如需）nginx 分发 → 同步前端 `lib/api/` 模块与类型 → 同步文档。
+- 变更流程：改路由 → 同步 APISIX（`apisix.yaml` 与 `apisix.dev.yaml`）→（如需）OpenResty 分发 → 同步前端 `lib/api/` 模块与类型 → 同步文档。
 
 ---
 
