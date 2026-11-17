@@ -53,6 +53,20 @@ var (
 		Help: "L1 routing-graph writes to app-kg by outcome (best-effort — drift self-heals on the next upsert).",
 	}, []string{"result"}) // ok | error | skipped
 
+	// Upload deadline sweeper (sharded ZSET queue; replaces keyspace pub/sub).
+	UploadSweep = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "appcloud_upload_sweep_total",
+		Help: "Upload deadline sweeper outcomes (deleted/no_object/already_settled/rescheduled/error).",
+	}, []string{"result"})
+	UploadSweepObjectsDeleted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "appcloud_upload_sweep_objects_deleted_total",
+		Help: "Orphan objects deleted by the upload deadline sweeper.",
+	})
+	UploadDeadlineDue = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "appcloud_upload_deadline_due",
+		Help: "Members currently waiting in the upload deadline ZSETs (backlog).",
+	})
+
 	QuotaReserve = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "appcloud_quota_reserve_total",
 		Help: "Upload-init quota reservations by outcome.",

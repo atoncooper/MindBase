@@ -22,7 +22,7 @@ import { formatBytes } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
 import { FileAiPanel } from "./file-ai-panel";
 import { AsrStatusBadge, VectorStatusBadge } from "./status-badges";
-import { formatDuration, formatRelativeTime } from "./helpers";
+import { describeMimeType, formatDuration, formatRelativeTime } from "./helpers";
 
 interface FileInspectorProps {
     detail: CloudVideoDetailResponse;
@@ -179,13 +179,13 @@ export function FileInspector({
                         </Row>
                     ) : null}
                     <Row label="类型">
-                        <span className="max-w-[60%] truncate text-[12px] text-foreground">
-                            {detail.mimeType}
+                        <span className="truncate text-[12px] text-foreground" title={detail.mimeType}>
+                            {describeMimeType(detail.mimeType)}
                         </span>
                     </Row>
                     {detail.folderName && (
                         <Row label="文件夹">
-                            <span className="truncate text-[12px] text-foreground">
+                            <span className="truncate text-[12px] text-foreground" title={detail.folderName}>
                                 {detail.folderName}
                             </span>
                         </Row>
@@ -217,8 +217,10 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function Row({ label, children }: { label: string; children: ReactNode }) {
     return (
         <div className="flex items-center justify-between gap-3 py-2">
-            <span className="text-[12px] text-secondary">{label}</span>
-            <span className="min-w-0 text-right">{children}</span>
+            <span className="shrink-0 whitespace-nowrap text-[12px] text-secondary">{label}</span>
+            {/* Flex item => blockified, so `truncate` really clips long MIME / folder
+                values instead of spilling out of the info card. */}
+            <span className="min-w-0 flex-1 truncate text-right">{children}</span>
         </div>
     );
 }

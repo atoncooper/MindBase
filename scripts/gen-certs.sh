@@ -5,9 +5,9 @@
 # fresh clone (local Docker Desktop or a remote Linux server) gets a working
 # TLS posture with zero manual steps:
 #
-#   secrets/certs/nginx/dev-ca.crt|key   shared dev CA (ECDSA P-256, 10 years)
-#   secrets/certs/nginx/fullchain.pem    nginx 443 leaf (RSA-2048) + CA chain
-#   secrets/certs/nginx/privkey.pem      nginx leaf key
+#   secrets/certs/openresty/dev-ca.crt|key   shared dev CA (ECDSA P-256, 10 years)
+#   secrets/certs/openresty/fullchain.pem    openresty 443 leaf (RSA-2048) + CA chain
+#   secrets/certs/openresty/privkey.pem      openresty edge leaf key
 #   secrets/certs/app-content/dev-ca.crt      shared CA copy (APISIX upstream trust)
 #   secrets/certs/app-content/server.crt|key  app-content board 域 leaf (ECDSA P-256)
 #   secrets/certs/app-content-mcp/*           app-content-mcp leaf
@@ -27,11 +27,11 @@
 # the client hosts file to the server IP) plus localhost/loopback, every
 # detected LAN IPv4 and $MB_CERT_EXTRA_SAN.
 #
-# Modes:  all (default) | nginx (nginx leaf + CA only) | services (leaves only)
+# Modes:  all (default) | edge (openresty edge leaf + CA only) | services (leaves only)
 #
 # Idempotency: the CA is reused while valid; a leaf is re-signed only when
 # missing, expiring within 30 days, or its SAN no longer covers $MB_CERT_HOST.
-# Files are replaced atomically (tmp+rename). Keys for the nginx leaf and the
+# Files are replaced atomically (tmp+rename). Keys for the openresty edge leaf and the
 # shared CA are 0600; the service leaves/keys are 0644 so the distroless
 # nonroot containers can read them through the bind mounts — dev posture only,
 # production should point explicit cert/key env at externally managed files.
@@ -42,7 +42,7 @@
 #   MB_CERT_DAYS       leaf validity in days         (default: 825)
 #   MB_CERT_KEEP       1 = never touch existing files (real-CA production)
 #   MB_CERT_FORCE      1 = re-sign everything, even if valid
-#   MB_CERT_NGINX_DIR / MB_CERT_APPCONTENT_DIR / MB_CERT_MCP_DIR / MB_CERT_PAY_DIR  output dirs
+#   MB_CERT_OPENRESTY_DIR / MB_CERT_APPCONTENT_DIR / MB_CERT_MCP_DIR / MB_CERT_PAY_DIR  output dirs
 #   （MB_CERT_APPBOARD_DIR 仍作为 APPCONTENT 的旧别名兼容）
 #   OPENSSL            openssl binary                (default: openssl)
 #
@@ -72,7 +72,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # place. Env overrides must therefore be repo-root-relative too (or native
 # Windows paths); inside the Linux cert-gen container both forms work.
 cd -- "$SCRIPT_DIR/.." || { printf '[cert-gen] ERROR: cannot cd to repo root\n' >&2; exit 1; }
-NGINX_DIR="${MB_CERT_NGINX_DIR:-secrets/certs/nginx}"
+EDGE_DIR="${MB_CERT_OPENRESTY_DIR:-secrets/certs/openresty}"
 # board 域 = 现 app-content:8004；旧 env 名 MB_CERT_APPBOARD_DIR 继续兼容。
 APPCONTENT_DIR="${MB_CERT_APPCONTENT_DIR:-${MB_CERT_APPBOARD_DIR:-secrets/certs/app-content}}"
 MCP_DIR="${MB_CERT_MCP_DIR:-secrets/certs/app-content-mcp}"
@@ -89,8 +89,8 @@ SUBJECT_BASE="/C=CN/ST=Sichuan/L=Chengdu/O=MindBase/OU=MindBase Platform"
 CA_SUBJ="$SUBJECT_BASE/CN=MindBase Root CA"
 leaf_subj() { printf '%s/CN=%s' "$SUBJECT_BASE" "$1"; }
 
-CA_CERT="$NGINX_DIR/dev-ca.crt"
-CA_KEY="$NGINX_DIR/dev-ca.key"
+CA_CERT="$EDGE_DIR/dev-ca.crt"
+CA_KEY="$EDGE_DIR/dev-ca.key"
 CA_VALIDITY_DAYS=3650
 ROTATE_WITHIN_DAYS=30
 
@@ -141,11 +141,11 @@ collect_lan_ips() {
 }
 
 # ---------------------------------------------------------------------------
-# Shared dev CA (lives in the nginx dir; other dirs get signed leaves + copy)
+# Shared dev CA (lives in the edge/openresty dir; other dirs get signed leaves + copy)
 # ---------------------------------------------------------------------------
 
 ensure_ca() {
-	mkdir -p "$NGINX_DIR"
+	mkdir -p "$EDGE_DIR"
 	if [ "$KEEP" = "1" ] && [ -s "$CA_CERT" ]; then
 		log "CA kept as-is (MB_CERT_KEEP=1): $CA_CERT"
 		return 0
@@ -270,15 +270,15 @@ ensure_service_leaf() {
 	log "$_name leaf signed: $_cert (SAN covers $HOST)"
 }
 
-# ensure_nginx_leaf — RSA-2048 leaf; fullchain.pem = leaf + CA chain
-ensure_nginx_leaf() {
-	mkdir -p "$NGINX_DIR"
-	_cert="$NGINX_DIR/fullchain.pem"
-	_key="$NGINX_DIR/privkey.pem"
+# ensure_edge_leaf — RSA-2048 leaf; fullchain.pem = leaf + CA chain
+ensure_edge_leaf() {
+	mkdir -p "$EDGE_DIR"
+	_cert="$EDGE_DIR/fullchain.pem"
+	_key="$EDGE_DIR/privkey.pem"
 	_chain="$CA_CERT"
 
 	if [ "$KEEP" = "1" ] && [ -s "$_cert" ]; then
-		log "nginx leaf kept as-is (MB_CERT_KEEP=1): $_cert"
+		log "openresty edge leaf kept as-is (MB_CERT_KEEP=1): $_cert"
 		return 0
 	fi
 
@@ -289,32 +289,32 @@ ensure_nginx_leaf() {
 		_regen=1
 	else
 		if cert_expires_within_days "$_cert" "$ROTATE_WITHIN_DAYS"; then
-			log "nginx leaf expiring — re-signing"
+			log "openresty edge leaf expiring — re-signing"
 			_regen=1
 		elif ! cert_covers_host "$_cert" "$HOST"; then
-			log "nginx leaf SAN does not cover '$HOST' — re-signing"
+			log "openresty edge leaf SAN does not cover '$HOST' — re-signing"
 			_regen=1
 		fi
 	fi
 	if [ "$_regen" != "1" ]; then
-		log "nginx leaf up-to-date: $_cert"
+		log "openresty edge leaf up-to-date: $_cert"
 		return 0
 	fi
 
-	_ext="$NGINX_DIR/.san-ext.cnf.tmp"
+	_ext="$EDGE_DIR/.san-ext.cnf.tmp"
 	{
 		printf '[leaf]\n'
 		printf 'basicConstraints=CA:FALSE\n'
 		printf 'keyUsage=digitalSignature,keyEncipherment\n'
 		printf 'extendedKeyUsage=serverAuth\n'
 	} > "$_ext"
-	san_file="$NGINX_DIR/.san-list.cnf.tmp"
+	san_file="$EDGE_DIR/.san-list.cnf.tmp"
 	build_san_list "$san_file"
 	printf 'subjectAltName=@san\n\n[san]\n' >> "$_ext"
 	cat "$san_file" >> "$_ext"
 	_keytmp="$_key.tmp"
-	_csr="$NGINX_DIR/.nginx.csr.tmp"
-	_leaftmp="$NGINX_DIR/.leaf.tmp"
+	_csr="$EDGE_DIR/.nginx.csr.tmp"
+	_leaftmp="$EDGE_DIR/.leaf.tmp"
 
 	$OPENSSL genrsa -out "$_keytmp" 2048 2>/dev/null
 	$OPENSSL req -new -key "$_keytmp" -subj "$(leaf_subj "$HOST")" -out "$_csr" 2>/dev/null
@@ -328,7 +328,7 @@ ensure_nginx_leaf() {
 	cat "$_leaftmp" "$_chain" > "$_cert.tmp"
 	atomic_install "$_cert.tmp" "$_cert" 0644
 	rm -f "$_csr" "$_leaftmp" "$_ext" "$san_file"
-	log "nginx leaf signed: $_cert (SAN covers $HOST)"
+	log "openresty edge leaf signed: $_cert (SAN covers $HOST)"
 }
 
 # ensure_pay_leaf — RSA-2048 leaf for app-pay (Java server.ssl, PKCS#8 key
@@ -409,7 +409,7 @@ ensure_pay_leaf() {
 # verify_and_report — chain verification + trust instructions
 verify_and_report() {
 	_ok=0
-	for pair in "nginx:$NGINX_DIR/fullchain.pem" "app-content(board):$APPCONTENT_DIR/server.crt" "app-content-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt" \
+	for pair in "openresty:$EDGE_DIR/fullchain.pem" "app-content(board):$APPCONTENT_DIR/server.crt" "app-content-mcp:$MCP_DIR/server.crt" "app-pay:$PAY_DIR/pay.crt" \
 		"apisix:secrets/certs/apisix/server.crt" "app-user:secrets/certs/app-user/server.crt" \
 		"app-ts:secrets/certs/app-ts/server.crt" "app-cloud:secrets/certs/app-cloud/server.crt" \
 		"app-admin:secrets/certs/app-admin/server.crt" "app-kg:secrets/certs/app-kg/server.crt" \
@@ -455,7 +455,7 @@ build_san_list() {
 		# Internal service/datastore aliases: every leaf is verifiable by any
 		# compose DNS name (one dev CA, SAN-based identity, no per-service CA).
 		for _alias in app-user app-ts app-cloud app-admin app-kg app-content \
-			app-content-mcp app-pay app-pay-test app-task apisix nginx frontend \
+			app-content-mcp app-pay app-pay-test app-task apisix openresty frontend \
 			higress sandbox minio mysql mongo redis milvus neo4j etcd; do
 			printf 'DNS.X=%s\n' "$_alias"
 		done
@@ -486,7 +486,7 @@ build_san_list() {
 case "$MODE" in
 	all)
 		ensure_ca
-		ensure_nginx_leaf
+		ensure_edge_leaf
 		ensure_service_leaf "$APPCONTENT_DIR" "app-content"
 		ensure_service_leaf "$MCP_DIR" "app-content-mcp"
 		for _svc in apisix app-user app-ts app-cloud app-admin app-kg frontend \
@@ -497,9 +497,9 @@ case "$MODE" in
 		ensure_ca_bundle
 		verify_and_report
 		;;
-	nginx)
+	edge)
 		ensure_ca
-		ensure_nginx_leaf
+		ensure_edge_leaf
 		verify_and_report
 		;;
 	services)
@@ -515,6 +515,6 @@ case "$MODE" in
 		verify_and_report
 		;;
 	*)
-		die "unknown mode '$MODE' (expected: all | nginx | services)"
+		die "unknown mode '$MODE' (expected: all | edge | services)"
 		;;
 esac

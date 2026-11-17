@@ -15,7 +15,7 @@ RUN pnpm build
 # compose network, keeping the browser on one same-origin, loopback-only URL.
 FROM nginx:stable-alpine
 
-COPY nginx/app-admin.conf /etc/nginx/conf.d/default.conf
+COPY frontend-admin/app-admin.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /src/dist /usr/share/nginx/html
 
 EXPOSE 80

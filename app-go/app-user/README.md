@@ -43,7 +43,7 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 
 | 层 | 机制 | 位置 |
 |----|------|------|
-| 边缘（nginx） | `/auth` 限流 1r/s burst3 + 每 IP 并发 5；通用/接口 10-20r/s；`auth_request` 校验并注入 X-Uid/X-Roles | `nginx/nginx.conf` + `nginx/locations.conf` |
+| 边缘（OpenResty） | `/auth` 限流 1r/s burst3 + 每 IP 并发 5；通用/接口 10-20r/s；身份由 APISIX forward-auth 注入 X-Uid/X-Roles | `openresty/nginx.conf` + `openresty/locations.conf` |
 | 网关（APISIX） | `auth_user` 限流 10r/s burst20；23 处 forward-auth；proxy-rewrite **剥离客户端伪造的 X-Uid/X-Roles**；consumer key-auth 保护 internal 面 | `apisix/apisix.yaml.template`（启动渲染） |
 | app-user HTTP | 共享 `middleware`：Recovery / RequestID / AccessLog / SecurityHeaders(`nosniff`,`DENY`,`no-store`) / CORS 白名单 / **constant-time apikey guard**；`/auth` 全局限流 5r/s/IP；16 条 per-endpoint 限流（per-IP/per-identifier/per-uid） | `internal/router/middleware` + `service/auth/rate_limits.go` |
 | 业务（auth） | 登录节流（按 identifier+IP 计 1h 内 5 次失败锁 15min，避免被用来锁死他人账号）、图形验证码、设备证明 attest、密码 bcrypt（不存在账号也走一次 dummy bcrypt）、token 可撤销/设备绑定、AES-256-GCM 存储、雪花 ID | `internal/service/auth/*` |
@@ -78,7 +78,7 @@ logger 为全局包（`slog.SetDefault`），不向各层传递。
 默认单监听口是 **明文 HTTP**（TLS 由 nginx 终止）。如需 nginx/APISIX → app-user 这一段也加密：
 
 1. 生成/挂载覆盖 `app-user` 主机名的证书（dev 可用 `scripts/gen-certs.sh` + `MB_CERT_EXTRA_SAN=app-user`）；
-2. 设置 `APP_USER_TLS_CERT_FILE=/certs/fullchain.pem`、`APP_USER_TLS_KEY_FILE=/certs/privkey.pem`（compose 已挂载 `./secrets/certs/nginx` → `/certs`）；
+2. 设置 `APP_USER_TLS_CERT_FILE=/certs/fullchain.pem`、`APP_USER_TLS_KEY_FILE=/certs/privkey.pem`（compose 已挂载 `./secrets/certs/app-user` → `/certs`）；
 3. 同步调用方：APISIX upstream 改 `scheme: https`（自签阶段 `tls.verify: false`，正式 CA 后开启校验 + 健康检查 `type: https`）；nginx `$appauth_upstream` 改 `https://app-user:8006` 并配置 `proxy_ssl_verify`；app-ts `appAuth.baseUrl`/`appBili.baseUrl` 改 https 并挂 CA（`NODE_EXTRA_CA_CERTS`）。
 
 未设置时行为完全不变（HTTP）；设置后 `main` 对三个 `http.Server` 调 `ListenAndServeTLS`。

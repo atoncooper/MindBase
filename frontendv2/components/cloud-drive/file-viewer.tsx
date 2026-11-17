@@ -24,6 +24,7 @@ import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-reac
 import { cloudApi, formatBytes, type CloudRawFileResponse } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
 import { FileAiPanel } from "./file-ai-panel";
+import { describeMimeType } from "./helpers";
 
 /**
  * Normalize the presigned MinIO URL to a same-origin path when it goes
@@ -38,7 +39,7 @@ import { FileAiPanel } from "./file-ai-panel";
 export function toSameOriginUrl(url: string): string {
     try {
         const u = new URL(url, window.location.origin);
-        if (u.pathname.startsWith("/minio-proxy/")) return u.pathname + u.search;
+        if (u.pathname.startsWith("/minio-proxy/") || u.pathname.startsWith("/mindbase/api/v1/media/")) return u.pathname + u.search;
         return url;
     } catch {
         return url;
@@ -135,10 +136,10 @@ export function FileViewer() {
                     <p className="truncate text-[14px] font-medium text-foreground" title={raw.fileName}>
                         {raw.fileName}
                     </p>
-                    <p className="mt-0.5 text-[11px] text-secondary">
+                    <p className="mt-0.5 truncate text-[11px] text-secondary">
                         {formatBytes(raw.fileSize)}
                         <span className="mx-1.5 text-tertiary">·</span>
-                        <span className="truncate">{raw.mimeType}</span>
+                        <span title={raw.mimeType}>{describeMimeType(raw.mimeType)}</span>
                     </p>
                 </div>
                 <a
@@ -278,7 +279,7 @@ function UnsupportedState({ raw }: { raw: CloudRawFileResponse }) {
             </span>
             <p className="mt-4 text-[15px] font-medium text-foreground">暂不支持在线查看</p>
             <p className="mt-1.5 max-w-xs text-[13px] text-secondary">
-                该文件类型（{raw.mimeType}）暂无在线预览，可下载后查看。
+                该文件类型（<span title={raw.mimeType}>{describeMimeType(raw.mimeType)}</span>）暂无在线预览，可下载后查看。
             </p>
             <a href={raw.url} download={raw.fileName} className="btn-pill btn-primary mt-5 h-9 px-5 text-[13px]">
                 <Download className="h-4 w-4" />

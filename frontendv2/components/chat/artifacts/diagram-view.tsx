@@ -169,6 +169,8 @@ export function DiagramView({ spec, height = 320 }: { spec: DiagramSpec; height?
   }, []);
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    // Stop the browser from starting a text selection while panning.
+    event.preventDefault();
     dragRef.current = { px: event.clientX, py: event.clientY, start: tf };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -206,7 +208,7 @@ export function DiagramView({ spec, height = 320 }: { spec: DiagramSpec; height?
       <div className="relative">
         <div
           ref={containerRef}
-          className="relative w-full cursor-grab touch-none overflow-hidden rounded-xl border border-border-subtle bg-[#fbfbfd] active:cursor-grabbing"
+          className="relative w-full select-none cursor-grab touch-none overflow-hidden rounded-xl border border-border-subtle bg-[#fbfbfd] active:cursor-grabbing"
           style={{ height }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}

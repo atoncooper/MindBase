@@ -12,7 +12,7 @@ import { ArrowLeft, Eye, Trash2, Ban } from "lucide-react";
 import type { RefItem } from "@/lib/api/cloud";
 import { formatBytes } from "@/lib/api/cloud";
 import { FileIconTile } from "./file-icon";
-import { formatRelativeTime } from "./helpers";
+import { describeMimeType, formatRelativeTime } from "./helpers";
 import { cn } from "@/lib/utils";
 
 interface RefInspectorProps {
@@ -97,13 +97,13 @@ export function RefInspector({ refItem, onPreview, onDelete, onBack }: RefInspec
                         </span>
                     </Row>
                     <Row label="类型">
-                        <span className="max-w-[60%] truncate text-[12px] text-foreground">
-                            {refItem.mimeType}
+                        <span className="truncate text-[12px] text-foreground" title={refItem.mimeType}>
+                            {describeMimeType(refItem.mimeType)}
                         </span>
                     </Row>
                     {refItem.sourceName && refItem.sourceName !== refItem.name && (
                         <Row label="原文件名">
-                            <span className="max-w-[60%] truncate text-[12px] text-foreground" title={refItem.sourceName}>
+                            <span className="truncate text-[12px] text-foreground" title={refItem.sourceName}>
                                 {refItem.sourceName}
                             </span>
                         </Row>
@@ -140,8 +140,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function Row({ label, children }: { label: string; children: ReactNode }) {
     return (
         <div className="flex items-center justify-between gap-3 py-2">
-            <span className="text-[12px] text-secondary">{label}</span>
-            <span className="min-w-0 text-right">{children}</span>
+            <span className="shrink-0 whitespace-nowrap text-[12px] text-secondary">{label}</span>
+            <span className="min-w-0 flex-1 truncate text-right">{children}</span>
         </div>
     );
 }

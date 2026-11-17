@@ -1,6 +1,6 @@
 # 系统架构总览
 
-> 本文是全系统的架构地图：服务清单、端口、请求路由、数据归属。改动了 compose / APISIX / nginx 后请同步更新本文。
+> 本文是全系统的架构地图：服务清单、端口、请求路由、数据归属。改动了 compose / APISIX / OpenResty 后请同步更新本文。
 
 MindBase 是多服务系统：**app-ts**（Node 22/Fastify，AI 域：chat/agent/RAG/KG AI/向量化/quiz AI/task-quiz/blindspot/skills/学术 agent 与科研 REST）、一组 **app-go** Go 微服务（**app-user**〔原 auth/bili/settings 三域合并〕、**app-content**〔原 note/quiz/board 三域合并〕、app-cloud、app-kg、app-admin、app-sandbox 各域权威）、**app-pay**（Java Spring Boot 交易/会员）、一个 Next.js 前端（`frontendv2/`）、分享审核与沙箱运维入口 **app-admin**（Nginx UI，:3001 回环）+ **app-admin-api**（Go API，:8016 回环）、沙箱执行链 **app-sandbox**（Go 控制层，:8017）+ **opensandbox-server**（OpenSandbox lifecycle），以及一组基础设施容器。
 
@@ -10,7 +10,7 @@ MindBase 是多服务系统：**app-ts**（Node 22/Fastify，AI 域：chat/agent
 浏览器
   │
   ▼
-nginx :80 / :443（TLS 终止 + 静态页 + 缓存）
+OpenResty :80 / :443（TLS 终止 + 负载均衡 + 静态页/页面/媒体缓存）
   │
   ├── /minio-proxy/ ────────────────────────────► minio :9000（同源代理预签名 URL）
   ├── /cloud/（5GB 上传绕网关）─ auth_request ──► app-cloud :8007
@@ -33,7 +33,7 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 
 **管理台（不经主站 nginx/APISIX）**：UI `app-admin :3001` 与 API `app-admin-api :8016` 都仅回环；浏览器访问 UI，UI Nginx 同源代理 `/api`。API 直连共享 MySQL 读用户/分享元数据、只写 `cloud_shares` 审核 4 列；受控内容预览（Issue #154）经 app-cloud `GET /internal/cloud/admin-review/*`（Bearer 共享令牌）换取短时效内联授权，每次查看落 `admin_audit`。`app-cloud` 同时负责审核列 schema migration，但不代理 admin 查询。
 
-开发模式（不跑 compose）下没有 nginx/APISIX：前端 dev server :3000 经 `next.config.ts` 的 rewrites 把 API 转发到 APISIX :9080（dev 网关），见 [getting-started.md](getting-started.md)。
+开发模式（不跑 compose）下没有 OpenResty/APISIX：前端 dev server :3000 经 `next.config.ts` 的 rewrites 把 API 转发到 APISIX :9080（dev 网关），见 [getting-started.md](getting-started.md)。
 
 ---
 
@@ -52,13 +52,13 @@ APISIX :9080（容器内；鉴权 + 路由 + 限流）
 | app-task | Go + Gin（独立仓库 [atoncooper/app-task](https://github.com/atoncooper/app-task)，镜像 `atoncooper/app-task`） | 8001 | `${APP_TASK_PORT:-8001}` | 默认（task） | 定时任务执行器 + 邮件投递 + WebUI |
 | app-pay | Java 21 / Spring Boot 3（`app-pay/`） | 8002 | 127.0.0.1:8002 | pay | 交易/会员（HTTPS-only） |
 | app-pay-test | 同 app-pay 镜像 | 8002 | 127.0.0.1:18002 | pay-test | 测试实例（强制 MOCK 渠道，整库隔离） |
-| app-admin | Nginx（静态 SPA；配置 `nginx/app-admin.conf`） | 80 | 127.0.0.1:3001 | 默认 / admin | 分享审核 UI；同源 `/api` 代理至 app-admin-api |
+| app-admin | Nginx 静态 SPA（配置 `frontend-admin/app-admin.conf`） | 80 | 127.0.0.1:3001 | 默认 / admin | 分享审核 UI；同源 `/api` 代理至 app-admin-api |
 | app-admin-api | Go + Gin（`app-go/app-admin/`） | 8016 | 127.0.0.1:8016 | 默认 / admin | 直连共享 MySQL（只读用户/分享元数据 + 审核 4 列）+ 第二连接 app_pay（支付运营只读 + 补偿开通/退款复核）；代理沙箱管理面；不经 APISIX（详见 [app-admin.md](app-admin.md)） |
 | app-sandbox | Go + Gin（`app-go/app-sandbox/`） | 8017 | 127.0.0.1:${APP_SANDBOX_PORT:-8017} | sandbox / full | 沙箱控制层：租约复用、档位配额、审计、产物、准入与 sweeper；app-ts 经 APISIX `sandbox_internal` 调用，管理面仅 app-admin 可调 |
 | opensandbox-server | OpenSandbox lifecycle server（Docker runtime） | 8080 | 127.0.0.1:${OPEN_SANDBOX_PORT:-8080} | sandbox / full | 负责沙箱创建/执行/删除，挂载 Docker socket（单机可信环境）；生产 K8s 见 [deploy/k8s/40-sandbox](../deploy/k8s/40-sandbox/README.md) |
 | higress | Higress all-in-one | 8080 gw / 18081 console | 127.0.0.1:18080 / :18081 | ai | AI 网关：平台 LLM/embedding/rerank/ASR 出网统一入口 + 计量 |
 | frontend | Next.js 16（`frontendv2/`） | 3000 | `${FRONTEND_PORT:-3000}` | 默认（standalone） | 用户端 SPA（standalone 构建） |
-| nginx | nginx:alpine | 80 / 443 | 80 / 443 | 默认（standalone） | 统一入口：TLS、页面/接口分发、缓存 |
+| openresty | openresty/openresty:1.27.1.2-alpine | 80 / 443 | 80 / 443 | 默认（standalone） | 统一入口：TLS、负载均衡（APISIX upstream）、页面/接口分发、多级缓存 + 软 purge；业务 API → APISIX |
 | apisix | apache/apisix:3.11 | 9080 | 无宿主端口 | 默认（standalone） | API 网关：forward-auth / key-auth / 路由 / 限流 |
 | mysql | mysql:8.4 | 3306 | `${MYSQL_PORT:-3306}` | 始终 | 主库 `mind_base`（`db/system.sql` 初始化） |
 | mongo | mongo:7 | 27017 | `${MONGO_PORT:-27017}` | 始终 | 库 `mind_base`（Go 服务 + 共享集合）与 `mind_base_ts`（app-ts 自有） |
@@ -76,7 +76,7 @@ profile 汇总：
 
 | 命令 | 启动范围 |
 |------|---------|
-| `docker compose up -d` | 全栈（frontend/nginx/apisix/全部存储/app-ts/app-user/app-cloud/app-content/app-kg/app-admin(+api)/app-content-mcp/app-task(+独立 MySQL)/app-pay(+独立 MySQL)） |
+| `docker compose up -d` | 全栈（frontend/openresty/apisix/全部存储/app-ts/app-user/app-cloud/app-content/app-kg/app-admin(+api)/app-content-mcp/app-task(+独立 MySQL)/app-pay(+独立 MySQL)） |
 | `--profile ai` | + higress（AI 出网网关；平台 AI 流量强依赖，生产必开） |
 | `--profile pay` | + app-pay |
 | `--profile pay-test` | + app-pay-test（测试实例） |
@@ -90,11 +90,11 @@ profile 汇总：
 
 ---
 
-## 请求路由（nginx → APISIX → 服务）
+## 请求路由（OpenResty → APISIX → 服务）
 
-### nginx（`nginx/nginx.conf` + `locations.conf`）
+### OpenResty（`openresty/nginx.conf` + `locations.conf`；详见 [openresty-edge.md](openresty-edge.md)）
 
-- 80 / 443 两个 server 共用 `locations.conf`；443 用 `secrets/certs/nginx/` 自签开发证书（`scripts/gen-certs.sh` / `scripts/gen-nginx-dev-cert.sh` 生成，仓库根 `secrets/` 整体 gitignore）。
+- 80 / 443 两个 server 共用 `locations.conf`；443 用 `secrets/certs/openresty/` 自签开发证书（`scripts/gen-certs.sh` 的 `edge` 模式生成，仓库根 `secrets/` 整体 gitignore）。
 - **页面路由（→ frontend）**：`/`、`/chat`、`/research`、`/notes`、`/quiz`、`/favorites`、`/tasks`、`/skills`、`/settings`、`/blindspot` 等精确路径返回 SPA。
 - **双用途分发**：既是前端页面又是 API 前缀的路径（如 `/tasks`、`/notes`），通过 `X-Requested-With: XMLHttpRequest` 请求头区分——API 请求内部改写转 APISIX，页面请求转 frontend 并走缓存。
 - **API 转发（→ apisix）**：`/auth` `/chat`（SSE 关缓冲）`/knowledge` `/asr` `/vec` `/notes` `/quiz` `/board/` `/task-quiz/` `/tasks` `/skills` `/blindspot` `/preferences` `/avatar` `/workspaces` 等。
@@ -125,7 +125,7 @@ profile 汇总：
 | `/academic` `/academic/*` | app-ts（`academic_ts`，priority 55） | forward-auth（科研工作台 REST；uid 由网关注入） |
 | `/internal/sandbox/*` | app-sandbox | key-auth（app-ts 执行面；管理面 `/internal/admin/*` 不经网关） |
 
-forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify` 宽验证 `Authorization: Bearer <bili_session>`：无凭证放行（公有端点），无效 401，有效则经 proxy-rewrite **剥离客户端伪造的头**后注入 `X-Uid`/`X-Roles`。**下游服务信任网关注入的头，不自验会话；nginx `/cloud/` 的 auth_request 语义相同。**
+forward-auth 统一调 app-user（auth 路由）的 `POST /internal/auth/verify` 宽验证 `Authorization: Bearer <bili_session>`：无凭证放行（公有端点），无效 401，有效则经 proxy-rewrite **剥离客户端伪造的头**后注入 `X-Uid`/`X-Roles`。**下游服务信任网关注入的头，不自验会话；`/cloud/*` 也已改为经 APISIX forward-auth（不再由 edge 做 auth_request）。**
 
 ---
 

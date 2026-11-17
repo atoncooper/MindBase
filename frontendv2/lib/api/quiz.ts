@@ -2,6 +2,7 @@
  * Quiz API - 题目训练系统：出题 / 答题 / 历史 / 错题 / 导出 / 分享.
  */
 import { request, getAuthHeaders, API_BASE_URL } from "./client";
+import { API_PREFIX } from "./prefix";
 
 export interface QuizGenerateParams {
     folder_ids?: number[];
@@ -408,7 +409,7 @@ export const quizApi = {
         // 同源相对路径：request() 的 API_BASE_URL 是构建期固化的部署地址，
         // 远程访客会打到自己的 localhost。X-Requested-With 让 nginx 分发。
         // 带密码时走 POST（口令不进 URL/query，避免落访问日志）。
-        const res = await fetch(`/quiz/shared/${encodeURIComponent(shareToken)}`, {
+        const res = await fetch(`${API_PREFIX}/quiz/shared/${encodeURIComponent(shareToken)}`, {
             method: password ? "POST" : "GET",
             headers: {
                 "X-Requested-With": "XMLHttpRequest",

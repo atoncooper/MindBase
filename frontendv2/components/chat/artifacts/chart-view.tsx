@@ -193,7 +193,7 @@ export function ChartView({ spec, height = 320 }: { spec: ChartSpec; height?: nu
 
       <div
         ref={containerRef}
-        className="relative w-full overflow-hidden rounded-xl border border-border-subtle bg-white"
+        className="relative w-full select-none overflow-hidden rounded-xl border border-border-subtle bg-white"
         style={{ height }}
       >
         {width > 0 && (

@@ -12,6 +12,7 @@
 import { sanitizeError } from "@/lib/error-utils";
 import { emitAppToast } from "@/lib/app-toast";
 import { readCachedBase, resolveApiBase, writeCachedBase } from "./deployment";
+import { API_PREFIX } from "./prefix";
 
 // SSR base URL: Next.js server-side fetches (SSR/RSC) have no origin, so they
 // always need an absolute internal URL. Route them through nginx (never a
@@ -33,17 +34,20 @@ const INTERNAL_API_URL = process.env.INTERNAL_API_URL || `http://${INTERNAL_API_
 // 请求沿用旧值（与历史行为相同，无回归）。缓存见 lib/api/deployment.ts。
 // It must NOT be used for SSR: inside the frontend container "localhost" is
 // the Next server itself, not the gateway - SSR 请求永远走内网 nginx。
+// All requests are namespaced under API_PREFIX (e.g. /mindbase/api/v1).
+// Keep API_BASE_URL = origin + prefix so every `fetch(\`\${API_BASE_URL}\${path}\`)`
+// call site picks the unified namespace up automatically.
 export let API_BASE_URL =
     typeof window !== "undefined"
-        ? process.env.NEXT_PUBLIC_API_URL || ""
-        : INTERNAL_API_URL;
+        ? (process.env.NEXT_PUBLIC_API_URL || "") + API_PREFIX
+        : INTERNAL_API_URL + API_PREFIX;
 
 if (typeof window !== "undefined") {
     // 上一轮解析结果立即生效（避免每次首屏请求打旧地址），后台再校准。
     const cached = readCachedBase();
-    if (cached !== null) API_BASE_URL = cached;
+    if (cached !== null) API_BASE_URL = cached + API_PREFIX;
     void resolveApiBase(process.env.NEXT_PUBLIC_API_URL || "").then((base) => {
-        API_BASE_URL = base;
+        API_BASE_URL = base + API_PREFIX;
         writeCachedBase(base);
     });
 }

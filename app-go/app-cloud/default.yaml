@@ -62,8 +62,33 @@ minio:
   public_endpoint: ""        # full URL, e.g. https://mindbase.example.com/minio-proxy
   public_host: ""            # host only; auto-prefixed {scheme}://{host}/minio-proxy
                              # neither set → http://localhost/minio-proxy
+  # MinIO bucket-notification webhook token (Authorization: Bearer). Empty
+  # disables the /internal/cloud/minio/events settlement endpoint. Env:
+  # APPCLOUD__MINIO__EVENT_TOKEN (compose passes MINIO_EVENT_TOKEN).
+  event_token: ""
+  # Notification target ARN installed on the bucket at boot (routes
+  # s3:ObjectCreated:CompleteMultipartUpload to the settlement webhook).
+  # Empty disables installing the rule. Env: APPCLOUD__MINIO__WEBHOOK_ARN.
+  webhook_arn: "arn:minio:sqs::clouddrive:webhook"
+
+orphan:
+  # Daily orphan sweep: objects with no cloud_files row older than
+  # grace_hours are DELETED (audited). Set auto_delete=false to switch to
+  # report-only (administrator reviews GET /internal/cloud/orphans and deletes
+  # explicitly via POST /internal/cloud/orphans/delete).
+  auto_delete: true       # env: APPCLOUD__ORPHAN__AUTO_DELETE
+  grace_hours: 48         # env: APPCLOUD__ORPHAN__GRACE_HOURS
 
 upload:
+  # Upload deadline sweeper (sharded ZSET queue): init schedules a deadline,
+  # heartbeat/resume renews it, settlement removes it. Due members are
+  # claimed in batches and reconciled MinIO vs DB.
+  sweep_interval_seconds: 5
+  sweep_batch: 200
+  sweep_visibility_seconds: 60
+  # Objects modified within this window are never deleted (complete-vs-expiry
+  # race guard); the upload is rescheduled instead.
+  sweep_recent_guard_seconds: 300
   chunk_size: 10485760       # 10 MB (must match the Python CHUNK_SIZE clients rely on)
   max_file_size: 5368709120  # 5 GB
   heartbeat_ttl: 300         # seconds; each beat ALSO renews the session window below

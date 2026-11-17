@@ -11,7 +11,8 @@
 |---|---|---|
 | [setup-guide.md](setup-guide.md) | 普通用户 / 运维 | ⭐ 用 Docker 直接跑起来：装 Docker → 拉代码 → 申请 API Key → 配 .env → 启动 → 验证 |
 | [getting-started.md](getting-started.md) | 开发者 | 本地开发：前置依赖、克隆/安装、最小 .env、起后端与前端、验证全链路 |
-| [architecture.md](architecture.md) | 所有人 | 系统架构总览：服务清单/端口、nginx → APISIX 路由、数据归属、配置体系、CI |
+| [architecture.md](architecture.md) | 所有人 | 系统架构总览：服务清单/端口、OpenResty → APISIX 路由、数据归属、配置体系、CI |
+| [openresty-edge.md](openresty-edge.md) | 运维/后端 | OpenResty 边缘层：TLS/负载均衡/多级缓存、软 purge、APISIX 上游与扩容、运维速查 |
 | [configuration.md](configuration.md) | 所有人 | 配置体系：各服务 YAML 入口、共享 `env`、Higress AI 网关、密钥清单 |
 | [deployment.md](deployment.md) | DevOps / SRE | 生产部署：Docker、HTTPS、监控、备份与升级 |
 

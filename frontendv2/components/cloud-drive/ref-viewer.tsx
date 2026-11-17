@@ -17,6 +17,7 @@ import { ArrowLeft, Loader2, AlertCircle, Download, FileText } from "lucide-reac
 import { cloudApi, formatBytes, type CloudRefRawResponse } from "@/lib/api/cloud";
 import { toSameOriginUrl } from "./file-viewer";
 import { FileIconTile } from "./file-icon";
+import { describeMimeType } from "./helpers";
 
 /**
  * 文本类预览的体积上限：超过则引导下载（与公开分享页同策略，
@@ -121,11 +122,13 @@ export function RefViewer() {
                     <p className="truncate text-[14px] font-medium text-foreground" title={raw.fileName}>
                         {raw.fileName}
                     </p>
-                    <p className="mt-0.5 text-[11px] text-secondary">
-                        {formatBytes(raw.fileSize)}
-                        <span className="mx-1.5 text-tertiary">·</span>
-                        <span className="truncate">{raw.mimeType}</span>
-                        <span className="mx-1.5 text-tertiary">·</span>
+                    <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-secondary">
+                        <span className="shrink-0">{formatBytes(raw.fileSize)}</span>
+                        <span className="mx-0.5 shrink-0 text-tertiary">·</span>
+                        <span className="min-w-0 truncate" title={raw.mimeType}>
+                            {describeMimeType(raw.mimeType)}
+                        </span>
+                        <span className="mx-0.5 shrink-0 text-tertiary">·</span>
                         <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
                             引用
                         </span>
@@ -289,7 +292,7 @@ function UnsupportedState({ raw }: { raw: CloudRefRawResponse }) {
             </span>
             <p className="mt-4 text-[15px] font-medium text-foreground">暂不支持在线查看</p>
             <p className="mt-1.5 max-w-xs text-[13px] text-secondary">
-                该文件类型（{raw.mimeType}）暂无在线预览，可下载后查看。
+                该文件类型（<span title={raw.mimeType}>{describeMimeType(raw.mimeType)}</span>）暂无在线预览，可下载后查看。
             </p>
             <a href={raw.url} download={raw.fileName} className="btn-pill btn-primary mt-5 h-9 px-5 text-[13px]">
                 <Download className="h-4 w-4" />

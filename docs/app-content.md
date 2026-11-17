@@ -200,13 +200,13 @@ MCP server = **`app-content-mcp`**（8019 单端口单端点，12 工具合并�
 
 - 用户身份唯一来源是 APISIX forward-auth 注入的 `X-Uid`；app-content **不自验 bili_session**。APISIX 的 forward-auth 是“宽验证”：无凭证请求放行且不带 X-Uid，由各 handler 自己 401。因此**新增端点必须在 handler 首行取 `currentUID`**（board 在路由组级 `requireXUid`），否则会变成匿名可写端点。
 - `/internal/{note,quiz,board}/*` 由 APISIX key-auth 保护；服务端对三面都再校验 `X-Internal-Key`（APISIX 注入，fail-closed），未配置或错误即 401/503，容器内可达调用方无法仅凭伪造 X-Uid 读写。board 现在有真实的 `/internal/board/*` 路由组（`InternalAuth` + `RequireUID`），APISIX 只做 key-auth 注入而不再 rewrite 到 `/board/*`。用户路由只信任 APISIX 注入的 X-Uid，因此**不要把 8004 暴露到公网**；k8s 建议为 app-content 加 NetworkPolicy（仅放行 APISIX/MCP/探针）。
-- TLS：**服务只有一个 HTTPS listener（8004，TLS 1.2+）**，三域全部走 HTTPS；启动强制 `CONTENT__SERVER__TLS__ENABLED=true`（仅本地调试可用 `CONTENT__ALLOW_INSECURE_HTTP=true` 临时绕过）；`client_auth=request|require` 时必须提供 `server.tls.client_ca_file`，否则拒绝启动。APISIX 三个 upstream 均 `scheme: https`；nginx 终止外部 TLS 后经 APISIX 再用 HTTPS 访问本服务。生产证书私钥建议 0600 + 正式 CA/ cert-manager 替换 dev-CA。
+- TLS：**服务只有一个 HTTPS listener（8004，TLS 1.2+）**，三域全部走 HTTPS；启动强制 `CONTENT__SERVER__TLS__ENABLED=true`（仅本地调试可用 `CONTENT__ALLOW_INSECURE_HTTP=true` 临时绕过）；`client_auth=request|require` 时必须提供 `server.tls.client_ca_file`，否则拒绝启动。APISIX 三个 upstream 均 `scheme: https`；OpenResty 终止外部 TLS 后经 APISIX 再用 HTTPS 访问本服务。生产证书私钥建议 0600 + 正式 CA/ cert-manager 替换 dev-CA。
 
 **已实施的防护基线**
 
 - 请求体上限：note 2 MiB、quiz 4 MiB、board 9 MiB（`http.MaxBytesReader`，字段级 256/512 KiB 内容上限之外的第一道闸）。
 - HTTP server 超时：单端口统一 `ReadHeaderTimeout 10s / ReadTimeout 60s / WriteTimeout 120s / IdleTimeout 120s / MaxHeaderBytes 1 MiB`（防 slowloris）。
-- 安全响应头：三面统一 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Cache-Control: no-store`（nginx 边缘另有 HSTS 等）。
+- 安全响应头：三面统一 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Cache-Control: no-store`（OpenResty 边缘另有 HSTS 等）。
 - CORS：allowlist 反射 + `Allow-Credentials: true`；`APPBOARD|APPNOTE|APPQUIZ__...CORS__ALLOW_ORIGINS` 为**替换**语义（可收窄），`*` 在启动校验直接拒绝。
 - 错误不泄漏：note 面 500 统一返回「内部错误」/503「存储暂不可用」，驱动/Mongo 错误只进日志（带 request_id）；board 500 返回 `{"detail","request_id"}`。
 - 认证失败统一 401（原 board 为 400）；`X-Request-Id` 入站截断 64 字符并注入日志上下文（request_id 贯穿）。

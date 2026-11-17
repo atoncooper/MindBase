@@ -7,7 +7,7 @@
 ## 1. 架构与入口
 
 ```text
-浏览器 ──80/443──► nginx（TLS/SPA/缓存/限流）
+浏览器 ──80/443──► OpenResty（TLS/负载均衡/缓存/限流）──► APISIX（业务网关）
   ├─ /cloud/（大文件上传，绕过网关，auth_request 注入 X-Uid）→ app-cloud
   ├─ /minio-proxy/（预签名对象同源代理）→ minio
   └─ 其余 API → APISIX:9080（容器内）
@@ -18,8 +18,8 @@
 
 | 端口 | 服务 | 默认可达性 | 说明 |
 |---|---|---|---|
-| 80 / 443 | nginx | **公网** | 唯一生产入口；443 需证书（第 5 节） |
-| 3000 | frontend | 0.0.0.0 | 生产可只经 nginx；防火墙限制 |
+| 80 / 443 | openresty | **公网** | 唯一生产入口（TLS/负载均衡/缓存）；443 需证书（第 5 节） |
+| 3000 | frontend | 0.0.0.0 | 生产可只经 OpenResty；防火墙限制 |
 | 9080 | APISIX | 无宿主端口 | 仅容器网络；调试 `docker compose exec apisix` |
 | 8000 / 8001-8016 | app-ts、app-user（8006）、app-content（8004 单端口）、其他 app-go 服务、app-task | 127.0.0.1 | 回环调试口，对外走网关 |
 | 3001 / 8016 | app-admin UI / API | 127.0.0.1 | 管理台仅回环，远程用 SSH 隧道 |
@@ -78,7 +78,7 @@ chmod 600 secrets/api_key_encryption_key
 
 | 命令 | 启动内容 | 说明 |
 |---|---|---|
-| `docker compose up -d --build` | 默认全栈（实测 23 个服务）：frontend/nginx/APISIX/app-ts/app-go 各服务/app-content/app-content-mcp/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
+| `docker compose up -d --build` | 默认全栈（实测 23 个服务）：frontend/openresty/APISIX/app-ts/app-go 各服务/app-content/app-content-mcp/app-task/app-pay/app-admin/存储/cert-gen | 首次必须 `--build` |
 | `--profile ai` | 追加 Higress AI 网关（追加后用于平台 LLM/embedding 出网） | 单独执行只起 5 个服务（higress+mysql/mongo/redis+cert-gen），**不含**主栈 |
 | `--profile sandbox` | 追加 opensandbox-server / app-sandbox | 单独执行只起 6 个服务；配合 `SANDBOX_ENABLED=true` |
 | `--profile pay-test` | 追加 app-pay-test（回环 18002）与测试库（回环 18306） | 仅测试，不用于生产 |
@@ -98,8 +98,8 @@ chmod 600 secrets/api_key_encryption_key
 >
 > 或一次到底：`docker compose --profile full up -d`。单独 `--profile ai` 只会起 5 个服务，**不会**拉起主栈。
 
-- 只起部分服务：`docker compose up -d --build app-ts nginx apisix`（依赖按 `depends_on` 自动拉起）。
-- **依赖按域划分**：`depends_on` 只声明真实启动依赖。**app-ts 只依赖自己的数据面 Mongo + Redis**（app-ts 不使用 MySQL；MySQL 属于 app-user/app-content/app-cloud 等 Go 服务，Milvus 按需可选）；**MinIO 属于 app-cloud 云盘域**，不是 app-ts / nginx 的启动依赖——`docker compose up -d --build app-ts frontend` 不会再构建或启动 minio。minio 缺失时 app-ts 按能力降级（聊天图片内存兜底、会话文档原件不落对象存储、技能 zip 不可写），核心 chat/RAG 不受影响；需要对象存储时显式 `docker compose up -d minio` 或随 cloud 栈启动。
+- 只起部分服务：`docker compose up -d --build app-ts openresty apisix`（依赖按 `depends_on` 自动拉起）。
+- **依赖按域划分**：`depends_on` 只声明真实启动依赖。**app-ts 只依赖自己的数据面 Mongo + Redis**（app-ts 不使用 MySQL；MySQL 属于 app-user/app-content/app-cloud 等 Go 服务，Milvus 按需可选）；**MinIO 属于 app-cloud 云盘域**，不是 app-ts / OpenResty 的启动依赖——`docker compose up -d --build app-ts frontend` 不会再构建或启动 minio。minio 缺失时 app-ts 按能力降级（聊天图片内存兜底、会话文档原件不落对象存储、技能 zip 不可写），核心 chat/RAG 不受影响；需要对象存储时显式 `docker compose up -d minio` 或随 cloud 栈启动。
 - 若 Mongo/Redis/网关等已由外部提供：`docker compose up -d --no-deps app-ts frontend` 只启动这两个容器（需自行保证 endpoint/网络可达）。
 - **镜像策略**：第一方镜像（`atoncooper/mind-base-*`）大多 `pull_policy: never`（app-ts / minio 为 `missing`）——`never` 的必须本地构建（`docker compose build` / `up --build`）或 `docker load` 预导入；`docker compose pull` 只对基础设施镜像与 `missing` 策略的服务有效。
 - **`--build` 的语义**：`docker compose up -d --build` 会重建**所有**带 `build:` 的第一方镜像（cert-gen / app-ts / frontend / Go 服务…），**不会**因为容器已在运行而跳过；重建镜像也不等于重建容器（数据卷不受影响）。只想更新代码/配置时：`docker compose build <变更的服务>` 后 `docker compose up -d --no-build`，或直接 `up -d --no-build`（完全不构建，镜像缺失会报错）。
@@ -116,10 +116,10 @@ chmod 600 secrets/api_key_encryption_key
 
 ## 5. HTTPS / TLS
 
-- **入口 nginx**：cert-gen 在每次 `up` 前自动签发开发证书（共享 dev CA + nginx/app-content/app-pay/MCP 叶子）到仓库根 `secrets/certs/`（`nginx` / `app-content` / `app-content-mcp` 子目录；app-pay 例外仍写 `app-pay/certs/`），幂等且过期/缺失自动重签；自签会告警，仅适合内网验证。
-- **生产替换**：正式 `fullchain.pem`/`privkey.pem` 放 `secrets/certs/nginx/`（或 `MB_CERT_KEEP=1` 让 cert-gen 不覆盖；正式证书需覆盖域名 SAN），然后 `docker compose restart nginx`。本地自签用 `bash scripts/gen-nginx-dev-cert.sh`；Let's Encrypt 用 `bash nginx/setup-ssl.sh letsencrypt <domain> <email>`（临时停 nginx 用 80 端口验证）。
-- `nginx/nginx.conf` 的 443 server 默认启用（证书路径 `/etc/nginx/certs/fullchain.pem` 与 `privkey.pem`）；80 保留 ACME challenge；两者共用 `locations.conf`。
-- 反向代理注意：`/chat` 等 SSE 必须关 buffering；`/cloud/` 上传上限 5g 且绕过 APISIX；`/minio-proxy/` 由 nginx 直连 MinIO。改路由只改 `nginx/locations.conf`。
+- **入口 OpenResty**：cert-gen 在每次 `up` 前自动签发开发证书（共享 dev CA + openresty/app-content/app-pay/MCP 叶子）到仓库根 `secrets/certs/`（`openresty` / `app-content` / `app-content-mcp` 子目录；app-pay 例外仍写 `app-pay/certs/`），幂等且过期/缺失自动重签；自签会告警，仅适合内网验证。
+- **生产替换**：正式 `fullchain.pem`/`privkey.pem` 放 `secrets/certs/openresty/`（或 `MB_CERT_KEEP=1` 让 cert-gen 不覆盖；正式证书需覆盖域名 SAN），然后 `docker compose restart openresty`。Let's Encrypt 用 `bash scripts/setup-ssl.sh letsencrypt <domain> <email>`（临时停 openresty 用 80 端口验证）。
+- `openresty/nginx.conf` 的 443 server 默认启用（证书路径 `/etc/openresty/certs/fullchain.pem` 与 `privkey.pem`）；80 保留 ACME challenge；两者共用 `locations.conf`。
+- 反向代理注意：`/chat` 等 SSE 必须关 buffering；`/cloud/` 上传上限 5g 并**经 APISIX forward-auth**；`/cloud/s/`、`/cloud-stream/`、`/minio-proxy/` 由 edge 直连并缓存。业务 API 路由在 APISIX，页面/静态/媒体分发在 `openresty/locations.conf`。
 - **app-pay**：`server.ssl` 默认启用，证书默认 `certs/pay.crt` 与 `certs/pay.key`，生产用 `PAY_TLS_CERT`/`PAY_TLS_KEY` 覆盖；证书缺失启动自检拒绝启动；APISIX 的 `upstream-app-pay` 走 HTTPS（当前仅加密不校验证书）。
 - **app-content（board 面）**：默认 HTTPS-only；显式证书用 `CONTENT__SERVER__TLS__CERT`/`...__KEY`；APISIX 只读挂其 `dev-ca.crt`，首次起栈后 `/board/*` 报证书/502 时 `docker compose restart apisix` 刷新信任锚。
 - **MCP（app-content-mcp）**：默认回环 HTTP（8019）；跨机设 `CONTENT_MCP_TLS_ENABLED=true` 并让客户端信任 dev CA（`secrets/certs/app-content-mcp/dev-ca.crt`）。
@@ -139,9 +139,9 @@ chmod 600 secrets/api_key_encryption_key
 | opensandbox-server | `:8080/health` | |
 | 基础设施 | compose healthcheck / 依赖链（mysql、mongo、redis、minio、etcd 等） | `docker compose ps` 看 healthy |
 
-> 入口 nginx 的 `/health` 会转发到 APISIX，而 APISIX 未声明该路由——**不要把入口 `/health` 当健康判据**；用容器 healthcheck、直连回环端口或 `docker compose exec` 检查。
+> 入口 OpenResty 的 `/health` 会转发到 APISIX，而 APISIX 未声明该路由——**不要把入口 `/health` 当健康判据**；用容器 healthcheck、直连回环端口或 `docker compose exec` 检查。
 
-- 日志：`docker compose logs -f <service>`；app-go/app-pay/MCP 同时写 `/app/logs`（lumberjack 轮转，命名卷 `*_logs`；app-content 用 `app_content_logs`）；**app-ts 同时写 `/app/logs`（rotating-file-stream 按大小/时间轮转 + gzip，保留 14 个，命名卷 `app_ts_logs`，字段/脱敏/运维命令见 [logging.md](logging.md)）**；nginx 在容器 stdout/stderr。
+- 日志：`docker compose logs -f <service>`；app-go/app-pay/MCP 同时写 `/app/logs`（lumberjack 轮转，命名卷 `*_logs`；app-content 用 `app_content_logs`）；**app-ts 同时写 `/app/logs`（rotating-file-stream 按大小/时间轮转 + gzip，保留 14 个，命名卷 `app_ts_logs`，字段/脱敏/运维命令见 [logging.md](logging.md)）**；OpenResty 在容器 stdout/stderr。
 - **app-ts 本地临时文件（文档解析）**：解析时把原件下载到容器内 `os.tmpdir()`（默认 `/tmp/mindbase-agent`，目录含 uid 哈希 + 轮次 id，回合结束由程序删除），**容器 `/tmp` 必须可写**（`read_only: true` 时给 `/tmp` 挂 tmpfs 或用 `TEMP_FILES__DIR` 指到可写卷）；建议宿主机/容器 `ulimit -n ≥ 8192`（全局临时文件上限 32、并发写 8，见 [temp-files.md](temp-files.md)）。
 - 审计：`pay-audit.jsonl`（app-pay 卷 `/app/logs`，365 天哈希链；**app-admin 的资金审计同名同格式，落 `app_admin_logs` 卷**）、`admin_audit`（MySQL mind_base，app-admin 全部后台操作）、`sandbox_audit`（MySQL mind_base，app-sandbox）；学术证据在 Mongo `academic_runs`。
 - 建议外部监控：入口 `GET /` + 各服务回环 health；Prometheus 抓取 app-cloud/app-sandbox/app-pay 指标；日志集中采集容器 stdout。
@@ -162,7 +162,7 @@ docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" m
 
 - **MongoDB**：官方 `mongo:7` 镜像不保证自带 `mongodump`，推荐**停写后备份数据卷**：`docker compose stop mongo` → 确认卷 `docker volume ls -q | grep -E '(^|_)mongo_data$'` → `docker run --rm -v <volume>:/data -v "$PWD/backup":/backup alpine tar czf /backup/mongo_data.tgz -C /data .` → `docker compose start mongo`；恢复=停 mongo、解包回卷、启动。若环境已有 `mongodump`，也可对 `mind_base` 与 `mind_base_ts` 分别 `--archive --gzip`。
 - **MinIO / Milvus / Neo4j（命名卷）**：同理先停写再拷卷。MinIO 用 `minio_data`；Milvus 依赖 `milvus_data`+`etcd_data`+`minio_data` 需一并停/备份（或先在 Milvus 侧 flush 再停）；Neo4j 用 `neo4j_data`。恢复统一为：`docker compose stop <svc>` → `docker run --rm -v <volume>:/data -v "$PWD/backup":/backup alpine sh -c 'cd /data && tar xzf /backup/<file>.tgz'` → `docker compose start <svc>`。
-- **证书与密钥**：`.env`、`secrets/`（`api_key_encryption_key` + `certs/`：`nginx` / `app-content` / `app-content-mcp`）、`app-pay/certs`（例外）必须随备份保存（丢主密钥=用户凭证不可恢复）。
+- **证书与密钥**：`.env`、`secrets/`（`api_key_encryption_key` + `certs/`：`openresty` / `app-content` / `app-content-mcp`）、`app-pay/certs`（例外）必须随备份保存（丢主密钥=用户凭证不可恢复）。
 - **顺序**：升级/迁移前先备份 MySQL+Mongo；app-pay 由 Flyway 前向迁移（不可逆），回滚代码前先恢复对应库备份。
 - `docker compose down` 保留卷；`docker compose down -v` 删除全部数据卷（生产严禁）。
 
@@ -170,9 +170,9 @@ docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" m
 
 | 服务 | 多实例能力 | 说明 |
 |---|---|---|
-| nginx / frontend / APISIX | 无状态，可扩 | 单机 compose 受宿主端口限制；多副本应上 K8s/Swarm |
-| app-go 服务 | 无状态，可扩 | APISIX upstream 当前每服务单 node，扩容需同步改 upstream 或走 nginx 变量解析 |
-| app-cloud | **支持** `docker compose up -d --scale app-cloud=2` | 宿主端口池 8007-8009；nginx `resolver 127.0.0.11 valid=10s` 自动纳用；后台任务租约锁 + Mongo outbox 认领；多副本必须同 `APP_CLOUD_ATTEST_SECRET`；APISIX upstream 仍单 node（仅 workspaces 兜底） |
+| openresty / frontend / APISIX | 无状态，可扩 | 单机 compose 受宿主端口限制；多副本应上 K8s/Swarm |
+| app-go 服务 | 无状态，可扩 | APISIX upstream 当前每服务单 node，扩容需同步改 upstream 或走 OpenResty 变量解析 |
+| app-cloud | **支持** `docker compose up -d --scale app-cloud=2` | 宿主端口池 8007-8009；OpenResty `resolver 127.0.0.11 valid=10s` 自动纳用（APISIX upstream 为静态块，扩容/换 IP 需 reload）；后台任务租约锁 + Mongo outbox 认领；多副本必须同 `APP_CLOUD_ATTEST_SECRET`；APISIX upstream 仍单 node（仅 workspaces 兜底） |
 | app-ts | 当前按单副本运行 | 进程内 admission/计划/限流/缓存，扩副本前需外置 |
 | app-pay | 单实例语义（JobLease 防 job 翻倍） | 订单状态机/回调幂等依赖条件更新；多实例前评估内存态闸门 |
 | app-sandbox | 单副本 | 进程内幂等缓存 + 单 sweeper；扩副本需 leader election/幂等落库 |
@@ -204,11 +204,12 @@ docker compose --profile sandbox up -d       # 再追加沙箱；单独 --profil
 ```bash
 # ① Secret/ConfigMap（仓库根执行；完整清单见 README §1/§1b）
 kubectl -n mind-base create secret generic mindbase-env --from-env-file=.env
-kubectl -n mind-base create secret generic nginx-tls --from-file=fullchain.pem=secrets/certs/nginx/fullchain.pem --from-file=privkey.pem=secrets/certs/nginx/privkey.pem
+# ⚠️ deploy/k8s 清单仍是 nginx 版（待同步 OpenResty）；以下命令按现有清单保留，迁移后改为 openresty-tls / openresty-conf
+kubectl -n mind-base create secret generic nginx-tls --from-file=fullchain.pem=secrets/certs/openresty/fullchain.pem --from-file=privkey.pem=secrets/certs/openresty/privkey.pem
 kubectl -n mind-base create secret generic api-key-encryption-key --from-file=api_key_encryption_key=secrets/api_key_encryption_key
 kubectl -n mind-base create configmap mysql-init-sql --from-file=system.sql=db/system.sql
 kubectl -n mind-base create configmap apisix-config --from-file=config.yaml=apisix/config.yaml --from-file=apisix.yaml.template=apisix/apisix.yaml.template --from-file=render-config.sh=apisix/render-config.sh
-kubectl -n mind-base create configmap nginx-conf --from-file=nginx.conf=nginx/nginx.conf --from-file=locations.conf=nginx/locations.conf
+kubectl -n mind-base create configmap nginx-conf --from-file=nginx.conf=openresty/nginx.conf --from-file=locations.conf=openresty/locations.conf
 
 # ② 沙箱（可选，先于主栈）；③ 主栈（namespace: mind-base）
 bash deploy/k8s/40-sandbox/install.sh
@@ -242,7 +243,7 @@ git checkout <last-good-commit> && docker compose build && docker compose up -d
 
 | 现象 | 常见原因与处理 |
 |---|---|
-| 502 Bad Gateway | 上游未就绪：`docker compose ps` 看 apisix/frontend/app-ts；`docker compose logs nginx`；APISIX 依赖 etcd，查 `logs apisix etcd` |
+| 502 Bad Gateway | 上游未就绪：`docker compose ps` 看 apisix/frontend/app-ts；`docker compose logs openresty`；APISIX 依赖 etcd，查 `logs apisix etcd` |
 | 401 / 403 | 会话过期（app-user auth 路由 forward-auth 401）；服务间 `/internal/*` 需 `APISIX_CONSUMER_KEY`（key-auth）；直连应用端口绕过网关也会 401（只信任网关注入的 X-Uid） |
 | app-pay 起不来 | 证书缺失（`PAY_TLS_CERT` 路径错/未生成 → 启动自检拒绝）；Flyway 迁移失败；`app-pay-mysql` 未 healthy |
 | app-ts 功能降级 | Mongo/Milvus/Redis 不可用时启动日志出现 `memory fallback` / `[RAG] ... degraded`；服务仍可用但数据不落/检索受限，修复依赖后重启 |

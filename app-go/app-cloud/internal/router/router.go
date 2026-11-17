@@ -71,6 +71,8 @@ func New(d Deps) *gin.Engine {
 	registerCloud(e, d)
 	registerWorkspaces(e, d)
 	registerInternalCloudAI(e, d)
+	registerMinioEvents(e, d)
+	registerOrphanAdmin(e, d)
 	return e
 }
 

@@ -2,6 +2,7 @@
  * Notes API - 笔记 CRUD / 锚点 / 修订 / 分享（camelCase 响应）.
  */
 import { request, requestCamel, getAuthHeaders, API_BASE_URL, snakeToCamel } from "./client";
+import { API_PREFIX } from "./prefix";
 import { sanitizeError } from "@/lib/error-utils";
 
 export interface NoteMeta {
@@ -173,7 +174,7 @@ export const notesApi = {
         // 必须同源相对路径：request() 的 API_BASE_URL 是构建期固化的部署地址
         // （如 https://localhost），远程访客会打到访客自己的 localhost。
         // X-Requested-With 让 nginx 把 XHR 分发到网关而非页面路由。
-        const response = await fetch(`/notes/shared/${encodeURIComponent(token)}`, {
+        const response = await fetch(`${API_PREFIX}/notes/shared/${encodeURIComponent(token)}`, {
             headers: { "X-Requested-With": "XMLHttpRequest" },
         });
         if (!response.ok) {

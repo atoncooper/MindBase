@@ -21,8 +21,13 @@ ARG NEXT_PUBLIC_APISIX_HOST=""
 # env 不再参与求值），所以 MinIO 同源代理目标必须作为 build arg 注入。
 # compose 传 http://nginx:80；宿主机本地构建缺省走 http://localhost。
 ARG MINIO_PROXY_DEST=""
+# Unified API namespace (/mindbase/api/v1). NEXT_PUBLIC_* are inlined into the
+# browser bundle at build time — without this ARG the browser would call the
+# bare (legacy) paths, which the edge no longer routes to APISIX.
+ARG NEXT_PUBLIC_API_PREFIX=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_APISIX_HOST=$NEXT_PUBLIC_APISIX_HOST \
+    NEXT_PUBLIC_API_PREFIX=$NEXT_PUBLIC_API_PREFIX \
     MINIO_PROXY_DEST=$MINIO_PROXY_DEST
 
 # Install dependencies first to leverage Docker's layer cache.

@@ -2,6 +2,7 @@
  * Cloud drive API - 文件夹 / 视频 / 分块上传 / 处理 / 文档预览.
  */
 import { request, getAuthHeaders, snakeToCamel } from "./client";
+import { API_PREFIX } from "./prefix";
 
 export interface CloudFolderTreeItem {
     id: number;
@@ -701,7 +702,7 @@ export const cloudApi = {
     // request() 的 API_BASE_URL 是构建期固化的部署地址，远程访客会打到自己
     // 的 localhost。X-Requested-With 让 nginx 把 XHR 分发到 app-cloud。
     getSharedInfo: async (token: string) => {
-        const res = await fetch(`/cloud/s/${encodeURIComponent(token)}`, {
+        const res = await fetch(`${API_PREFIX}/cloud/s/${encodeURIComponent(token)}`, {
             headers: { "X-Requested-With": "XMLHttpRequest" },
         });
         if (!res.ok) {
@@ -711,7 +712,7 @@ export const cloudApi = {
     },
 
     attestShared: async (token: string, body: { challenge: string; fingerprint: string }) => {
-        const res = await fetch(`/cloud/s/${encodeURIComponent(token)}/attest`, {
+        const res = await fetch(`${API_PREFIX}/cloud/s/${encodeURIComponent(token)}/attest`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -730,7 +731,7 @@ export const cloudApi = {
         body: { code?: string; download?: boolean },
         attest?: CloudAttestation,
     ) => {
-        const res = await fetch(`/cloud/s/${encodeURIComponent(token)}/access`, {
+        const res = await fetch(`${API_PREFIX}/cloud/s/${encodeURIComponent(token)}/access`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -777,6 +778,12 @@ export const cloudApi = {
                 await new Promise<void>((resolve, reject) => {
                     const xhr = new XMLHttpRequest();
                     xhr.open("PUT", chunk.url);
+                    // Edge Lua upload guard validates the session before proxying
+                    // the bytes to MinIO (presigned URL still authorizes MinIO).
+                    const authHeader = getAuthHeaders();
+                    if (authHeader.Authorization) {
+                        xhr.setRequestHeader("Authorization", authHeader.Authorization);
+                    }
                     // Track real-time bytes uploaded within this chunk
                     xhr.upload.onprogress = (e) => {
                         if (e.lengthComputable) {

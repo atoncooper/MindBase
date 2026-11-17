@@ -39,3 +39,50 @@ export function formatRelativeTime(iso: string | null | undefined): string {
     if (day < 7) return `${day} 天前`;
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+
+/**
+ * Friendly Chinese label for a MIME type — raw values such as
+ * "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+ * are far wider than the detail panel and used to overflow it. Keep the raw
+ * MIME string in a `title` tooltip where the full value still matters.
+ */
+export function describeMimeType(mimeType: string | null | undefined): string {
+    const mime = (mimeType || "").split(";")[0].trim().toLowerCase();
+    if (!mime) return "未知类型";
+
+    if (mime === "application/pdf") return "PDF 文档";
+    if (mime.includes("wordprocessingml") || mime.includes("msword") || mime.includes("word"))
+        return "Word 文档";
+    if (mime.includes("spreadsheetml") || mime.includes("ms-excel") || mime.includes("sheet"))
+        return "Excel 表格";
+    if (mime.includes("presentationml") || mime.includes("ms-powerpoint") || mime.includes("presentation"))
+        return "PowerPoint 演示文稿";
+    if (mime.includes("markdown")) return "Markdown 文档";
+    if (mime === "text/plain") return "纯文本";
+    if (mime === "text/html") return "网页";
+    if (mime === "application/json") return "JSON 数据";
+    if (mime.includes("json")) return "JSON 数据";
+    if (mime.includes("xml")) return "XML 数据";
+    if (mime.includes("zip") || mime.includes("rar") || mime.includes("7z") || mime.includes("tar") || mime.includes("compressed"))
+        return "压缩包";
+
+    const [top, ...rest] = mime.split("/");
+    const subtype = formatMimeSubtype(rest.join("/"));
+    if (top === "image") return subtype ? `${subtype} 图片` : "图片";
+    if (top === "video") return subtype ? `${subtype} 视频` : "视频";
+    if (top === "audio") return subtype ? `${subtype} 音频` : "音频";
+    if (top === "text") return "文本文件";
+    // Unknown vendor type: keep it short enough to never overflow the panel.
+    return subtype && subtype.length <= 24 ? subtype : mime.length > 28 ? `${mime.slice(0, 27)}…` : mime;
+}
+
+/** "vnd.openxmlformats-officedocument..."/"x-matroska" -> short upper label. */
+function formatMimeSubtype(subtype: string): string {
+    const cleaned = subtype
+        .split("+")[0]
+        .replace(/^x-/, "")
+        .replace(/^vnd\./, "")
+        .trim();
+    if (!cleaned) return "";
+    return cleaned.toUpperCase();
+}

@@ -9,10 +9,10 @@
 ## 一、架构与数据面
 
 ```
-浏览器 ── /cloud/*（nginx auth_request → app-user（auth 路由）验 token 注入 X-Uid）──► app-cloud :8007
+浏览器 ── /cloud/*（OpenResty → APISIX forward-auth 注入 X-Uid）──► app-cloud :8007
    │ 5GB 上传绕 APISIX（避免网关 body-limit + buffering）
-   ├─ 分块字节流：presigned URL ──► nginx /minio-proxy ──► MinIO drive-videos（app 层不在字节路径上）
-   ├─ 预览/下载流：/cloud-stream（内部重写）→ MinIO，nginx video_cache 24h + Range
+   ├─ 分块字节流：presigned URL ──► OpenResty /minio-proxy ──► MinIO drive-videos（app 层不在字节路径上）
+   ├─ 预览/下载流：/cloud-stream（内部重写）→ MinIO，OpenResty video_cache 24h + Range
    └─ 状态通知：Redis `cloud:status` Pub/Sub → backend WS bridge → 前端
 
 APISIX：/cloud/* 兜底路由 + /workspaces/*（直连 app-cloud，upstream 单 node）
@@ -118,7 +118,7 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 | ③a 配额原子预留 | 见 §三；Redis 不可用降级 legacy 检查 |
 | ③b 计数表 | 每请求 SUM → O(1) 计数；对账自愈 |
 | ④ 下载上限原子化 | 见 §四 |
-| 部署 | compose 无 container_name + 宿主端口池 8007-8009（`--scale app-cloud=N`）；nginx 变量 proxy_pass + resolver 10s 自动纳用；k8s 可直接调大 replicas；APISIX upstream 仍单 node（仅 /workspaces 兜底） |
+| 部署 | compose 无 container_name + 宿主端口池 8007-8009（`--scale app-cloud=N`）；OpenResty 变量 proxy_pass + resolver 10s 自动纳用；k8s 可直接调大 replicas；APISIX upstream 仍单 node（仅 /workspaces 兜底） |
 
 ## 七、配置与运行
 
@@ -135,3 +135,66 @@ PUT 分块（浏览器直传 MinIO） → complete（POST /cloud/upload/{uuid}/c
 - ❌ backend（Python，已删）/其他服务只读 cloud 表；MinIO 云盘对象唯一写者 = app-cloud
 - ❌ 提取码不得明文入库；分享访问 URL 必须短时效
 - ❌ 新增 cloud_files 变更路径必须走 `repo.FileRepo` 事务方法（cloud_quota 计数一致性）
+## 配额结算与 MinIO 回调（2026-11-16）
+
+| 阶段 | 行为 | `cloud_quota.used_bytes` |
+|---|---|---|
+| `init` | Redis Lua 原子校验 `used + pending + fileSize ≤ quota` 并登记 pending 预留（**不是扣费**；`/cloud/quota` 的 `pending` 可见） | 不变 |
+| 分块 PUT | 预签名直传 edge（OpenResty Lua 校验会话）→ MinIO，字节流不经过 app-cloud/APISIX | 不变 |
+| `complete`（前端回调） | MinIO `CompleteMultipartUpload` + `StatObject` 实际大小校验 → 幂等结算：`cloud_files` 行 + `cloud_quota` 同事务 +1 次、删会话/预留 | +fileSize（仅一次） |
+| MinIO Webhook（`s3:ObjectCreated:CompleteMultipartUpload`） | app-cloud 启动时给桶安装通知规则（`APPCLOUD__MINIO__WEBHOOK_ARN`）；客户端漏调 complete / MinIO 成功但 DB 写失败时由事件兜底结算，与 `complete` 共用同一个幂等事务（唯一 `upload_uuid`） | +fileSize（仅一次） |
+| 失败/abort/会话过期 | 删除预留；未完成分片由 MinIO `ABORT_INCOMPLETE_MULTIPART_UPLOAD_DAYS=1` 清理 | 不变 |
+| 每日对账 | 修复 `cloud_quota` 计数漂移；A 类孤儿（对象有、DB 无行）超过 `grace_hours`（默认 48h）→ **自动删除并审计**（`auto_delete=true` 默认）；可设 false 改报告-only | 自愈 |
+
+- Webhook 端点：`POST /internal/cloud/minio/events`，`Authorization: Bearer <MINIO_EVENT_TOKEN>`，空 token 即 503（fail closed）；MinIO 通过 ca-bundle 信任 app-cloud 的 dev CA。
+- 幂等性：`cloud_files.upload_uuid` 唯一索引 + `INSERT … ON DUPLICATE KEY DO NOTHING`；重复事件/重复 complete 不再加配额（`appcloud_upload_complete_total{result=duplicate|already_settled|event_duplicate}` 可观测）。
+- 已知取舍：事件兜底依赖 Redis 上传会话（1h TTL）取 `mime/folder/文件名`；会话已过期的事件只记 orphan，由每日对账在宽限期后删除对象（不扣费）。
+## 孤儿对象治理：分片 ZSET 截止队列 + sweeper（2026-11-16）
+
+### 主机制：每个上传一个 deadline，分 64 个 ZSET 分片
+
+| 时机 | 行为 |
+|---|---|
+| `init` | `ZADD upload:deadline:<shard> score=<deadline_ms> member=<uid>:<upload_uuid>`（shard = uid % 64，默认 deadline = now + 1h） |
+| `heartbeat` / `resume` | 更新同一 member 的 score（续期；活跃上传不会被回收） |
+| `complete` 成功 / MinIO Webhook 结算成功 | `ZREM` 该 member（结算后不再被回收） |
+| 每 5s（sweeper，每个副本都跑） | 每分片：Lua 原子 claim（`deadline -> processing`，processing 带 60s 可见性超时）+ 批量处理 + ack；处理失败的留在 processing，超时后自动 requeue |
+
+单上传到期核对（只处理该 uid+uuid 前缀）：
+
+1. `cloud_files` 已有行（迟到结算）→ 只清理 Redis 会话，不删对象；
+2. 无行 + MinIO 有对象：
+   - 对象 `LastModified` 在 recent-guard（默认 300s）内 → **不删**，把 deadline 延后（避免与正在进行的 complete 竞态）；
+   - 对象较旧 → **批量 `RemoveObjects` 删除**（A 类孤儿：MinIO 有、DB 无）；
+3. 无行 + 无已完成对象（只传了分片）→ 释放 Redis 会话与 `pending` 配额预留。
+
+多副本安全：claim 是 Lua 原子脚本（单赢家），处理失败/进程崩溃由 processing 可见性超时 requeue；Durable：ZSET 在 Redis AOF 里，重启不丢。
+
+日志/指标：
+
+    [UPLOAD_SWEEPER] started interval=5s batch=200 visibility=1m0s shards=64
+    [UPLOAD_SWEEPER] recent object detected, cleanup postponed uid=… guard=5m0s
+    [UPLOAD_SWEEPER] orphan objects deleted (MinIO has them, DB has no row) uid=… objects_deleted=1
+    [UPLOAD_SWEEPER] expired upload had no completed object uid=… upload_uuid=…
+
+- `appcloud_upload_sweep_total{result=deleted|no_object|already_settled|rescheduled|error}`
+- `appcloud_upload_sweep_objects_deleted_total`、`appcloud_upload_deadline_due`（积压量）
+
+### 配置（`upload.sweep_*` / `APPCLOUD__UPLOAD__SWEEP_*`）
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `sweep_interval_seconds` | 5 | sweeper 周期 |
+| `sweep_batch` | 200 | 每次每分片最多领取的到期 member 数 |
+| `sweep_visibility_seconds` | 60 | processing 可见性超时（崩溃/失败后 requeue 延迟） |
+| `sweep_recent_guard_seconds` | 300 | 该窗口内修改过的对象不删，改为延后（防 complete 竞态） |
+
+### 兜底
+
+- 每日对账仍保留（默认 `auto_delete=true`、`grace_hours=48`），用于 Redis 数据丢失等极端场景；
+- 管理端点/脚本（`GET/POST /internal/cloud/orphans*`、`scripts/cloud-orphans.sh`）用于排查与提前清理；
+- B 类（DB 有行、对象无）仍只报告，人工核查。
+
+### Redis 持久化
+
+- `--appendonly yes --appendfsync everysec` + `--maxmemory 1gb --maxmemory-policy noeviction`：deadline 队列、上传会话、pending 台账重启不丢（实测 set→restart→get 保持）。

@@ -13,6 +13,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Check, Copy, Link2, Loader2, Trash2, X, Globe } from "lucide-react";
 import { quizApi, type QuizShareStatus } from "@/lib/api";
 import { getShareBaseUrl } from "@/lib/api/share";
+import { SHARE_PATHS } from "@/lib/api/prefix";
 import { Select } from "@/components/ui/select";
 
 interface ShareDialogProps {
@@ -70,7 +71,7 @@ export function QuizShareDialog({ open, quizUuid, onChanged, onClose }: ShareDia
     }, [open, onClose]);
 
     const active = status?.shared && status.share_token ? status : null;
-    const fullUrl = active?.share_token ? `${shareBase}/quiz/shared/${active.share_token}` : "";
+    const fullUrl = active?.share_token ? `${shareBase}${SHARE_PATHS.quiz}/${active.share_token}` : "";
 
     const handleCreate = async () => {
         setBusy(true);
