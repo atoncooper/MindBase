@@ -8,6 +8,7 @@ import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
 import { ChatInput, type SelectedSkill } from "./chat-input";
+import type { ChatModelSelection } from "./chat-model-picker";
 import { QueuedMessages, type QueuedMessage } from "./queued-messages";
 import { ChatEmpty } from "./chat-empty";
 import { SummaryModal } from "./summary-modal";
@@ -200,10 +201,9 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         const models = catalog.models ?? [];
         setChatModels(models);
         const hasModel = (id: string) => models.some((m) => m.id === id);
-        let next = "";
-        if (stored && hasModel(stored)) next = stored;
-        else if (catalog.default && hasModel(catalog.default)) next = catalog.default;
-        setSelectedModel(next);
+        // 默认「默认模型」：不传 model，由后端 config.llm.model 决定；
+        // 只有用户上次显式选过的系统模型才恢复。
+        setSelectedModel(stored && hasModel(stored) ? stored : "");
       } catch {
         // 目录不可用：选择器隐藏，发送不带 model（后端默认）
       }
@@ -213,8 +213,21 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     };
   }, []);
 
-  // 选择模型：记住到 localStorage（"" = 默认模型，清除记录）。
-  const handleModelChange = useCallback((modelId: string) => {
+  // 统一模型选择：默认 / 系统目录模型 / Coding Plan 模型三选一，互斥。
+  const handleModelChange = useCallback((selection: ChatModelSelection) => {
+    if (selection.kind === "coding-plan") {
+      // Coding Plan 模型由 coding_plan_model 携带，系统模型清空。
+      setCodingPlanModel(selection.model);
+      setSelectedModel("");
+      try {
+        window.localStorage.removeItem(CHAT_MODEL_STORAGE_KEY);
+      } catch {
+        // 存储不可用：仅本次会话生效
+      }
+      return;
+    }
+    setCodingPlanModel(undefined);
+    const modelId = selection.kind === "system" ? selection.id : "";
     setSelectedModel(modelId);
     try {
       if (modelId) window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, modelId);
@@ -372,12 +385,26 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     };
   }, [activeSessionId]);
 
+  // The chat route is a full-viewport app shell: lock the document scroll so
+  // a long conversation can never turn the page (and the composer) into the
+  // scroll container. The message viewport below owns all scrolling.
+  useEffect(() => {
+    const body = document.body;
+    const prevOverflow = body.style.overflow;
+    const prevOverscroll = body.style.overscrollBehavior;
+    body.style.overflow = "hidden";
+    body.style.overscrollBehavior = "none";
+    return () => {
+      body.style.overflow = prevOverflow;
+      body.style.overscrollBehavior = prevOverscroll;
+    };
+  }, []);
+
   // ---- Auto-scroll with stick-to-bottom (rAF-throttled) ----
   // Follow the stream only while the user is already near the bottom; once
   // they scroll up to read, stop yanking the viewport and offer a jump-back
   // button instead.
   const scrollRef = useRef<HTMLDivElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const scrollRafRef = useRef<number | null>(null);
@@ -386,9 +413,11 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
       if (!stickToBottomRef.current) return;
-      messagesEndRef.current?.scrollIntoView({
-        behavior: isStreaming ? "auto" : "smooth",
-      });
+      const el = scrollRef.current;
+      if (!el) return;
+      // Scroll the message viewport itself; never scrollIntoView() — that can
+      // walk up to the page and drag the composer into the middle of the screen.
+      el.scrollTop = el.scrollHeight;
     });
     return () => {
       if (scrollRafRef.current != null) {
@@ -406,10 +435,24 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     setShowJumpToBottom(distance > 240);
   }, []);
 
+  // The composer grows/shrinks (attachments, quota banner, mobile keyboard).
+  // Keep the last message pinned when the viewport height changes.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const scrollToBottom = useCallback((smooth = true) => {
     stickToBottomRef.current = true;
     setShowJumpToBottom(false);
-    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
   }, []);
 
   // ---- Backfill real backend msg_ids after a streamed turn ----
@@ -507,10 +550,14 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
             question,
             chat_session_id: sessionId,
             ...(skillIds && skillIds.length > 0 ? { skill_ids: skillIds } : {}),
-            ...(codingPlanModel ? { coding_plan_model: codingPlanModel } : {}),
+            // 模型三选一：Coding Plan 模型优先走用户套餐；否则系统模型；
+            // 都不选则两个字段都不传，由后端 config.llm.model 决定。
+            ...(codingPlanModel
+              ? { coding_plan_model: codingPlanModel }
+              : selectedModel
+                ? { model: selectedModel }
+                : {}),
             ...(images && images.length > 0 ? { images } : {}),
-            // 用户选择的模型（模型目录 id）；不传 = 后端默认模型。
-            ...(selectedModel ? { model: selectedModel } : {}),
             // 科研项目上下文：会话绑定优先（新建会话时选定），URL 入口参数兜底。
             ...(effectiveAcademicProjectId
               ? { academic_project_id: effectiveAcademicProjectId }
@@ -1178,7 +1225,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
       }));
 
   return (
-    <div className="relative flex h-[100dvh] w-full overflow-hidden">
+    <div className="relative flex h-[100dvh] max-h-[100dvh] w-full overflow-hidden overscroll-none">
       <ChatSidebar
         sessions={sidebarSessions}
         activeSessionId={activeSessionId ?? undefined}
@@ -1191,7 +1238,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         onClose={() => setSidebarOpen(false)}
       />
 
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <ChatHeader
           title={activeSession?.title ?? "MindBase"}
           hasMessages={messages.length > 0}
@@ -1229,8 +1276,12 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         )}
 
         {/* Messages scroll area */}
-        <div className="relative min-h-0 flex-1">
-          <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto">
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="h-full overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
+          >
             {messages.length === 0 ? (
               <ChatEmpty onSuggestionClick={handleSend} />
             ) : (
@@ -1288,7 +1339,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
                     />
                   );
                 })}
-                <div ref={messagesEndRef} />
+
               </div>
             )}
           </div>
@@ -1307,7 +1358,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
         </div>
 
         {/* Input area - bottom padding keeps clear of the iOS home indicator */}
-        <div className="shrink-0 px-5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="relative z-10 shrink-0 px-5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto max-w-[768px]">
             {/* 文件级问答提示：/chat?upload_uuid= 进入时只基于该文件回答 */}
             {uploadUuid && (
@@ -1379,6 +1430,7 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
               onPreviewImage={setLightboxSrc}
               models={chatModels}
               selectedModel={selectedModel}
+              codingPlanModel={codingPlanModel}
               onModelChange={handleModelChange}
             />
           </div>

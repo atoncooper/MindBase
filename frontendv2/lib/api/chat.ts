@@ -122,9 +122,12 @@ export interface ChatRequestPayload {
     board_uuid?: string;  // 板聊：请求限定在某块板子上（后端直路由 board agent）
     board_anchor_text?: string;  // 板聊：画布当前选中节点纯文本（作为建议锚点上下文）
     academic_project_id?: string;  // 科研项目上下文：后端解析项目并注入受控项目 section（/research → /chat）
-    // 用户选择的模型 id（来自 GET /chat/models 的 models[].id）；不传 = 服务端默认模型。
+    // 用户选择的系统模型 id（来自 GET /chat/models 的 models[].id）；不传 = 服务端默认模型。
     // 前端只传目录里的 id，后端另行校验。
     model?: string;
+    // 用户选择的 Coding Plan 模型（来自 /settings/coding-plans/{id}/models）。
+    // 与 model 互斥：传这个时不传 model，后端用用户自己的套餐额度。
+    coding_plan_model?: string;
     // 检索范围：uploadUuids 非空时后端只在这些云盘文件内检索/回答
     //（/chat?upload_uuid=<uuid> 进入文件级问答）。
     scope?: { uploadUuids?: string[] };

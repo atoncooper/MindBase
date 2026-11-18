@@ -4,8 +4,9 @@ import { createCodingPlanModel, type CodingPlan } from "../../llm/coding-plan.js
 import type { QuotaKind } from "../../services/quota.js";
 
 /**
- * Code agent model resolution: a VIP/SVIP user's Coding Plan wins when it is
- * available and within the daily "coding_plan" quota; every other outcome
+ * Chat-turn model resolution: when the caller explicitly selected a Coding
+ * Plan model, a VIP/SVIP user's plan wins if it is available and within the
+ * daily "coding_plan" quota; every other outcome
  * (no uid, no plan, non-VIP/403, membership outage/503, invalid plan, quota
  * exhausted, counter store error) falls OPEN to the platform gateway so a
  * third-party outage never blocks chat.
@@ -36,7 +37,12 @@ export interface CodingPlanResolverDeps {
 }
 
 /** Resolver signature consumed by ReactAgentOptions.resolveModel. */
-export type CodingPlanResolver = (input: { uid?: string; model?: string }) => Promise<LanguageModel | undefined>;
+export type CodingPlanResolver = (input: {
+  uid?: string;
+  model?: string;
+  /** stable chat session id → x-opencode-session for OpenCode plans */
+  sessionId?: string;
+}) => Promise<LanguageModel | undefined>;
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -72,7 +78,9 @@ export function createCodingPlanResolver(deps: CodingPlanResolverDeps): CodingPl
 
     let model: LanguageModel;
     try {
-      model = createCodingPlanModel(selectedModel ? { ...plan, model: selectedModel } : plan);
+      model = createCodingPlanModel(selectedModel ? { ...plan, model: selectedModel } : plan, {
+        sessionId: input.sessionId,
+      });
     } catch (err) {
       // Invalid/misconfigured plan: don't consume quota, don't break the turn.
       log.warn(`[CODING_PLAN] invalid plan uid=${uid} plan_id=${planId}: ${errText(err)} — fallback gateway`);

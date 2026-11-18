@@ -75,7 +75,10 @@ func registerCodingPlans(e *gin.Engine, d Deps) {
 			codingPlanErr(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, settingsdto.CodingPlans{Plans: plans})
+		c.JSON(http.StatusOK, settingsdto.CodingPlans{
+			Plans:     plans,
+			Providers: d.CodingPlans.Providers(),
+		})
 	})
 
 	// POST /settings/coding-plans.

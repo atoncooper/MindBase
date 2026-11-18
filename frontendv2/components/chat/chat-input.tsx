@@ -3,8 +3,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { ArrowUp, Square, X, FileUp, ImagePlus, Paperclip } from "lucide-react";
 import { SlashMenu, buildSlashItems } from "./slash-menu";
-import { CodingPlanModelPicker } from "./coding-plan-model-picker";
-import { ChatModelPicker } from "./chat-model-picker";
+import { ChatModelPicker, type ChatModelSelection } from "./chat-model-picker";
 import { ChatAttachmentsDrawer } from "./chat-attachments-drawer";
 import { StreamElapsed } from "./streaming-elapsed";
 import {
@@ -40,13 +39,11 @@ interface ChatInputProps {
   onDeleteSessionFile?: (doc: SessionDocument) => void;
   // 待发送图片点击预览（复用视图的图片灯箱）
   onPreviewImage?: (src: string) => void;
-  // 聊天模型目录与选择（目录为空/加载失败 = 选择器隐藏，请求不带 model 用默认）
+  // 聊天模型选择：系统目录模型 / 默认模型 / Coding Plan 模型三选一
   models?: ChatModel[];
   selectedModel?: string;
-  onModelChange?: (modelId: string) => void;
-  // Coding Plan 模型（聊天对话框按需选择，随本轮请求发送）
   codingPlanModel?: string;
-  onCodingPlanModelChange?: (model: string | undefined) => void;
+  onModelChange?: (selection: ChatModelSelection) => void;
   // 生成中已排队、等待本轮结束后自动发送的消息数量（仅用于提示文案）
   queuedCount?: number;
 }
@@ -126,9 +123,8 @@ export function ChatInput({
   onPreviewImage,
   models = [],
   selectedModel = "",
-  onModelChange,
   codingPlanModel,
-  onCodingPlanModelChange,
+  onModelChange,
   queuedCount = 0,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
@@ -438,15 +434,9 @@ export function ChatInput({
           <ChatModelPicker
             models={models}
             value={selectedModel}
+            codingPlanValue={codingPlanModel}
             onChange={onModelChange}
             disabled={disabled}
-          />
-        )}
-
-        {onCodingPlanModelChange && (
-          <CodingPlanModelPicker
-            value={codingPlanModel}
-            onChange={onCodingPlanModelChange}
           />
         )}
 

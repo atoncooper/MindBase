@@ -350,6 +350,74 @@ settings:
     api_key: ""
     timeout_ms: 30000
 
+  # ============================================================
+  # Coding Plan 厂商目录（地址唯一来源）
+  # ============================================================
+  # 账户页下拉、默认 Base URL、测试连接、聊天模型列表都读这一份目录；
+  # Go/前端不再硬编码厂商地址。legacy_base_urls 中的旧地址在读取时自动
+  # 映射到当前 openai/anthropic_base_url。
+  coding_plan:
+    providers:
+      - name: opencode_zen
+        label: OpenCode Zen
+        openai_base_url: https://opencode.ai/inference/openai/v1
+        anthropic_base_url: https://opencode.ai/inference/anthropic/v1
+        models_url: https://opencode.ai/inference/v1/models
+        model_hint: 例如 glm-5.3 / claude-sonnet-4-5
+        legacy_base_urls:
+          - https://opencode.ai/zen/v1
+          - https://opencode.ai/zen
+          - https://opencode.ai/inference/v1
+          - https://opencode.ai/inference
+      - name: opencode_go
+        label: OpenCode Go
+        openai_base_url: https://opencode.ai/inference/go/openai/v1
+        anthropic_base_url: https://opencode.ai/inference/go/anthropic/v1
+        models_url: https://opencode.ai/inference/go/v1/models
+        model_hint: 例如 kimi-k3 / glm-5.3
+        legacy_base_urls:
+          - https://opencode.ai/zen/go/v1
+          - https://opencode.ai/zen/go
+          - https://opencode.ai/inference/go/v1
+          - https://opencode.ai/inference/go
+      - name: opencode
+        label: OpenCode（通用）
+        openai_base_url: https://opencode.ai/inference/openai/v1
+        anthropic_base_url: https://opencode.ai/inference/anthropic/v1
+        models_url: https://opencode.ai/inference/v1/models
+        model_hint: 例如 glm-5.3 / claude-sonnet-4-5
+        legacy_base_urls:
+          - https://opencode.ai/zen/v1
+          - https://opencode.ai/zen
+      - name: kimi
+        label: Kimi Coding
+        openai_base_url: https://api.kimi.com/coding/v1
+        anthropic_base_url: https://api.kimi.com/coding/v1
+        model_hint: 例如 kimi-k2.5 / kimi-k3.1-pro
+      - name: glm
+        label: GLM Coding Plan
+        openai_base_url: https://open.bigmodel.cn/api/coding/paas/v4
+        anthropic_base_url: https://open.bigmodel.cn/api/anthropic/v1
+        model_hint: 例如 glm-5.3
+      - name: minimax
+        label: MiniMax M Plan
+        openai_base_url: https://api.minimax.cn/v1
+        anthropic_base_url: https://api.minimax.cn/anthropic/v1
+        model_hint: 例如 MiniMax-M3.1-Flash
+      - name: qwen
+        label: Qwen Coding Plan
+        openai_base_url: https://coding.dashscope.aliyuncs.com/v1
+        anthropic_base_url: https://coding.dashscope.aliyuncs.com/apps/anthropic/v1
+        model_hint: 例如 qwen3.8-max
+      - name: deepseek
+        label: DeepSeek
+        openai_base_url: https://api.deepseek.com
+        anthropic_base_url: https://api.deepseek.com/anthropic/v1
+        model_hint: 例如 deepseek-v4-pro / deepseek-flash
+      - name: custom
+        label: 自定义端点
+        model_hint: 例如 gpt-4o
+
 # 可选：三个监听口启用 TLS（空 = 明文 HTTP，默认）。部署时可用
 # TLS__CERT_FILE / TLS__KEY_FILE 覆盖；生产建议用挂载的正式证书。
 tls:

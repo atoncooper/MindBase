@@ -269,7 +269,7 @@ func main() {
 	// Coding Plan (user configuration, settings domain): the app_pay membership
 	// config is still defined in the auth config section and the AES cipher is
 	// the shared one injected here.
-	codingPlans := settingsservice.NewCodingPlanService(gdb, cfgAuth.AppPay, cipher)
+	codingPlans := settingsservice.NewCodingPlanService(gdb, cfgAuth.AppPay, cipher, cfgSettings.CodingPlan.Providers)
 	settingsEngine := settingsrouter.New(settingsrouter.Deps{
 		Cfg:            cfgSettings,
 		Svc:            settingsSvc,

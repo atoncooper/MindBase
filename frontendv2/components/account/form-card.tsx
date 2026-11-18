@@ -3,9 +3,8 @@
 import { Loader2 } from "lucide-react";
 
 /**
- * FormCard - OpenAI-style settings card: header (title + description + optional
- * action) on top, body below, optional footer (action buttons). Body is
- * unpadded; callers manage their own padding so rows can bleed to card edges.
+ * FormCard - Google Account 风格设置卡：顶部标题 / 说明 / 操作，主体不设内边距
+ * 以便列表行贴边，底部可选操作栏。视觉 token 由 .g-account 作用域提供。
  */
 export function FormCard({
     title,
@@ -21,14 +20,16 @@ export function FormCard({
     footer?: React.ReactNode;
 }) {
     return (
-        <section className="overflow-hidden rounded-lg border border-border-subtle bg-surface">
+        <section className="overflow-hidden rounded-lg border border-border bg-surface">
             <div className="flex items-start justify-between gap-3 border-b border-border-subtle px-5 py-4">
                 <div className="min-w-0">
-                    <h2 className="text-[15px] font-semibold tracking-tight text-foreground">
+                    <h2 className="text-[16px] font-medium text-foreground">
                         {title}
                     </h2>
                     {description && (
-                        <p className="mt-0.5 text-[12px] text-secondary">{description}</p>
+                        <p className="mt-1 max-w-[560px] text-[12px] leading-relaxed text-secondary">
+                            {description}
+                        </p>
                     )}
                 </div>
                 {action && <div className="shrink-0">{action}</div>}
@@ -43,7 +44,7 @@ export function FormCard({
     );
 }
 
-/** Ghost text button used in card headers to enter edit mode. */
+/** Card header 文本按钮（进入编辑态）。 */
 export function EditButton({
     icon,
     label,
@@ -57,7 +58,7 @@ export function EditButton({
         <button
             type="button"
             onClick={onClick}
-            className="inline-flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium text-secondary transition-colors hover:bg-border-subtle hover:text-foreground"
+            className="inline-flex h-8 items-center rounded-lg px-2.5 text-[12px] font-medium text-accent transition-colors hover:bg-[#f1f3f4]"
         >
             {icon && <span className="mr-1 flex items-center">{icon}</span>}
             {label}
@@ -65,7 +66,7 @@ export function EditButton({
     );
 }
 
-/** Secondary outline button (cancel). */
+/** 描边次按钮（取消）。 */
 export function CancelButton({
     children,
     onClick,
@@ -80,14 +81,14 @@ export function CancelButton({
             type="button"
             onClick={onClick}
             disabled={disabled}
-            className="inline-flex h-8 items-center rounded-md border border-border px-3.5 text-[12px] text-secondary transition-colors hover:bg-border-subtle disabled:opacity-40"
+            className="inline-flex h-9 items-center rounded-lg border border-border bg-surface px-4 text-[12px] font-medium text-accent transition-colors hover:bg-[#f8f9fa] disabled:opacity-40"
         >
             {children}
         </button>
     );
 }
 
-/** Primary solid button (OpenAI black). */
+/** Google 填充主按钮。 */
 export function PrimaryButton({
     children,
     onClick,
@@ -106,7 +107,7 @@ export function PrimaryButton({
             type="button"
             onClick={onClick}
             disabled={disabled || loading}
-            className="inline-flex h-8 items-center rounded-md bg-foreground px-3.5 text-[12px] font-medium text-surface transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="inline-flex h-9 items-center rounded-lg bg-accent px-4 text-[12px] font-medium text-white shadow-[0_1px_2px_rgba(60,64,67,0.28)] transition-colors hover:bg-accent-hover disabled:opacity-40"
         >
             {loading ? (
                 <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />

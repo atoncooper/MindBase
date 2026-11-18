@@ -1,46 +1,31 @@
 "use client";
 
 /**
- * AccountView - 个人中心（Apple 账户页式主从结构）。
+ * AccountView - 个人中心（Google Workspace Admin 式主从结构）。
  *
- * 结构参考 appleid.apple.com / iOS 设置：
- *   主视图 —— 居中 Hero（大头像 / 昵称 + 会员徽章 / UID）+ 会员卡 +
- *            iOS 式分组列表（行 = 着色图标 + 标签 + 当前值 + Chevron）；
- *   详情视图 —— 点击行右侧推入：蓝色「‹ 返回」+ 大标题 + 对应设置卡。
+ *   左侧 264px 导航：账户摘要 + 账户 / 登录与安全 / 服务与权益三组入口 +
+ *                     技能商店 / 设置快捷入口 + 退出登录；
+ *   右侧内容区：flex-1 自适应铺满剩余宽度；面包屑 + 页面标题 + 分区详情。
  *
- * 编辑业务全部复用现有设置卡组件（profile / email / phone / password），
- * 本次仅重构页面结构与导航方式，卡片内部逻辑零改动。
+ * 视觉采用 Google Account 配色（#f8f9fa 页面底、#dadce0 描边、#0b57d0 主色、
+ * #202124 正文），通过 globals.css 的 .g-account 作用域覆盖语义 token，
+ * 现有资料/邮箱/手机/密码/Coding Plan 卡片的业务逻辑保持不变。
  */
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
+import { AlertCircle, ChevronRight, ExternalLink, UserRound } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { useAppToast } from "@/lib/app-toast";
 import {
-    AlertCircle,
-    ChevronLeft,
-    ChevronRight,
-    Copy,
-    Crown,
-    Gauge,
-    KeyRound,
-    Loader2,
-    Mail,
-    ShieldCheck,
-    Smartphone,
-    Sparkles,
-    Terminal,
-    Tv,
-    User,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-    userApi,
     payApi,
     quotaApi,
-    type ProfileData,
-    type SecurityOverview,
+    userApi,
     type PayMembership,
     type PayTierInfo,
+    type ProfileData,
     type QuotaSummary,
+    type SecurityOverview,
 } from "@/lib/api";
 import { ProfileCard } from "./profile-card";
 import { EmailCard } from "./email-card";
@@ -48,52 +33,49 @@ import { PhoneCard } from "./phone-card";
 import { PasswordCard } from "./password-card";
 import { BilibiliBindModal } from "./bilibili-bind-modal";
 import { CodingPlanCard } from "./coding-plan-card";
-import { Tag } from "./form-card";
-
-type Toast = { message: string; type: "success" | "error" };
-/** 详情页键：profile=个人资料；email/phone/password/bilibili=登录与安全 */
-type DetailKey = "profile" | "email" | "phone" | "password" | "bilibili" | "coding-plan";
-
-const EASE: [number, number, number, number] = [0.28, 0.11, 0.32, 1];
-
-const DETAIL_TITLES: Record<DetailKey, string> = {
-    profile: "个人资料",
-    email: "邮箱",
-    phone: "手机号",
-    password: "密码",
-    bilibili: "B 站账号",
-    "coding-plan": "Coding Plan",
-};
-
-async function fetchAccount(): Promise<[ProfileData, SecurityOverview]> {
-    return Promise.all([userApi.getProfile(), userApi.getSecurity()]);
-}
-
-/** Placeholder used while the slow security overview is still loading. */
-const EMPTY_SECURITY: SecurityOverview = {
-    email: null,
-    email_verified: false,
-    phone: null,
-    phone_verified: false,
-    has_password: false,
-    oauth_bindings: [],
-    bilibili: { bound: false, valid: false, mid: null, nickname: null, avatar: null, message: "" },
-};
+import { AccountOverview, OverviewMeta } from "./account-overview";
+import {
+    BilibiliSection,
+    MembershipSection,
+    QuotaSection,
+    SecurityPending,
+    SecurityUnavailable,
+} from "./account-sections";
+import { AccountSidebar } from "./account-sidebar";
+import { isSectionKey, SECTION_META, type SectionKey } from "./account-config";
+import { AccountCard, GoogleButton, GoogleLinkButton } from "./account-ui";
 
 export function AccountView() {
     const router = useRouter();
+    const { logout } = useAuth();
+    const { show } = useAppToast();
+
     const [profile, setProfile] = useState<ProfileData | null>(null);
     const [security, setSecurity] = useState<SecurityOverview | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [toast, setToast] = useState<Toast | null>(null);
-    const [bindOpen, setBindOpen] = useState(false);
-    const [detail, setDetail] = useState<DetailKey | null>(null);
+    const [securityLoading, setSecurityLoading] = useState(true);
+    const [securityError, setSecurityError] = useState<string | null>(null);
     // 会员态（app-pay）。拉取失败静默降级为「免费用户」，不阻塞个人中心。
     const [membership, setMembership] = useState<PayMembership | null>(null);
     const [tiers, setTiers] = useState<PayTierInfo[]>([]);
-    // 用量摘要（/quota/summary）：仅用于入口行的迷你展示，失败静默。
+    // 用量摘要（/quota/summary）：概览与用量分区共用，失败静默。
     const [quotaSummary, setQuotaSummary] = useState<QuotaSummary | null>(null);
+
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    // 允许 #email / #quota 等深链；初始渲染仍是骨架，不会造成 hydration 差异。
+    const [active, setActive] = useState<SectionKey>(() => {
+        if (typeof window === "undefined") return "overview";
+        const hash = window.location.hash.replace("#", "");
+        return isSectionKey(hash) ? hash : "overview";
+    });
+    const [bindOpen, setBindOpen] = useState(false);
+
+    const flash = useCallback(
+        (message: string, type: "success" | "error") => {
+            show(type, message);
+        },
+        [show],
+    );
 
     const loadMembership = useCallback(() => {
         payApi
@@ -110,603 +92,347 @@ export function AccountView() {
             .catch(() => setQuotaSummary(null));
     }, []);
 
-    const flash = useCallback((message: string, type: "success" | "error") => {
-        setToast({ message, type });
-        setTimeout(() => setToast(null), type === "error" ? 6000 : 3000);
+    const loadSecurity = useCallback(async () => {
+        setSecurityLoading(true);
+        try {
+            const s = await userApi.getSecurity();
+            setSecurity(s);
+            setSecurityError(null);
+        } catch (e) {
+            setSecurityError(e instanceof Error ? e.message : "安全信息加载失败");
+        } finally {
+            setSecurityLoading(false);
+        }
     }, []);
 
-    async function copyUid(uid: number) {
-        try {
-            await navigator.clipboard.writeText(String(uid));
-            flash("UID 已复制", "success");
-        } catch {
-            flash("复制失败", "error");
-        }
-    }
-
-    // Reload after an edit (no full-page spinner).
-    const load = useCallback(async () => {
-        loadMembership();
-        try {
-            const [p, s] = await fetchAccount();
-            setProfile(p);
-            setSecurity(s);
-            setError(null);
-        } catch (e) {
-            setError(e instanceof Error ? e.message : "加载失败");
-        }
-    }, [loadMembership]);
-
-    // Initial load: profile first (fast) so the page paints immediately.
-    // GET /auth/security performs a **live** B站 API check (observed 2–8s on some
-    // networks) — blocking the whole page on it was why the account page sat on
-    // a spinner. Load it in the background; rows show placeholders until ready.
+    // 首屏：资料优先（快），安全概览在后台跑（B 站实时校验可能 2–8s）。
     useEffect(() => {
         let cancelled = false;
         loadMembership();
         (async () => {
-            setLoading(true);
             try {
                 const p = await userApi.getProfile();
                 if (cancelled) return;
                 setProfile(p);
-                setError(null);
                 setLoading(false);
-                userApi
-                    .getSecurity()
-                    .then((s) => {
-                        if (!cancelled) setSecurity(s);
-                    })
-                    .catch(() => {
-                        /* non-fatal: security rows keep their placeholders */
-                    });
+                void loadSecurity();
             } catch (e) {
-                if (!cancelled) {
-                    setError(e instanceof Error ? e.message : "加载失败");
-                    setLoading(false);
-                }
+                if (cancelled) return;
+                setError(e instanceof Error ? e.message : "加载失败");
+                setLoading(false);
             }
         })();
         return () => {
             cancelled = true;
         };
-    }, [loadMembership]);
+    }, [loadMembership, loadSecurity]);
 
-    // 详情视图：进入滚动到顶 + ESC 返回。
-    useEffect(() => {
-        if (detail === null) return;
-        window.scrollTo({ top: 0 });
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setDetail(null);
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, [detail]);
+    const retryProfile = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        loadMembership();
+        try {
+            const p = await userApi.getProfile();
+            setProfile(p);
+            setLoading(false);
+            void loadSecurity();
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "加载失败");
+            setLoading(false);
+        }
+    }, [loadMembership, loadSecurity]);
 
-    if (loading) {
-        return (
-            <div className="flex h-[calc(100dvh-3rem)] items-center justify-center">
-                <Loader2 className="h-5 w-5 animate-spin text-tertiary" />
-            </div>
-        );
+    // 编辑成功后的后台刷新：不闪整页 loading，只更新资料并重查安全态。
+    const reloadAfterEdit = useCallback(async () => {
+        loadMembership();
+        try {
+            const p = await userApi.getProfile();
+            setProfile(p);
+            void loadSecurity();
+        } catch (e) {
+            flash(e instanceof Error ? e.message : "资料刷新失败", "error");
+        }
+    }, [flash, loadMembership, loadSecurity]);
+
+    const selectSection = useCallback((key: SectionKey) => {
+        setActive(key);
+        if (typeof window !== "undefined") {
+            window.history.replaceState(null, "", `#${key}`);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+    }, []);
+
+    const handleLogout = useCallback(async () => {
+        try {
+            await logout();
+        } finally {
+            router.replace("/");
+        }
+    }, [logout, router]);
+
+    if (loading) return <AccountSkeleton />;
+    if (error || !profile) {
+        return <AccountError message={error ?? "加载失败"} onRetry={() => void retryProfile()} />;
     }
 
-    if (error) {
-        return (
-            <div className="px-6 py-8 sm:px-10">
-                <div className="flex items-center gap-2 rounded-lg border-l-2 border-foreground bg-border-subtle px-4 py-3 text-[13px] text-foreground">
-                    <AlertCircle className="h-4 w-4 shrink-0" />
-                    {error}
-                </div>
-            </div>
-        );
-    }
+    const securityRequired =
+        active === "email" ||
+        active === "phone" ||
+        active === "password" ||
+        active === "bilibili";
 
-    if (!profile) return null;
-    // security may still be loading (background B站 check): render placeholders
-    const sec = security ?? EMPTY_SECURITY;
-    const tierName = (membership?.tier ?? "").toUpperCase();
-    const isVip = Boolean(membership?.active) && (tierName === "VIP" || tierName === "SVIP");
+    const headerMeta =
+        active === "overview" ? (
+            <OverviewMeta profile={profile} onToast={flash} />
+        ) : undefined;
+
+    const headerAction =
+        active === "overview" ? (
+            <GoogleButton
+                variant="outlined"
+                className="h-8 px-3.5 text-[12px]"
+                onClick={() => selectSection("profile")}
+            >
+                <UserRound className="h-3.5 w-3.5" />
+                编辑资料
+            </GoogleButton>
+        ) : active === "membership" ? (
+            <GoogleLinkButton href="/membership" variant="outlined" className="h-8 px-3.5 text-[12px]">
+                <ExternalLink className="h-3.5 w-3.5" />
+                会员中心
+            </GoogleLinkButton>
+        ) : active === "quota" ? (
+            <GoogleLinkButton href="/quota" variant="outlined" className="h-8 px-3.5 text-[12px]">
+                <ExternalLink className="h-3.5 w-3.5" />
+                完整用量
+            </GoogleLinkButton>
+        ) : undefined;
+
+    function renderSection() {
+        if (securityRequired && !security) {
+            return securityLoading ? (
+                <SecurityPending />
+            ) : (
+                <SecurityUnavailable
+                    error={securityError}
+                    onRetry={() => void loadSecurity()}
+                />
+            );
+        }
+
+        switch (active) {
+            case "overview":
+                return (
+                    <AccountOverview
+                        profile={profile!}
+                        security={security}
+                        securityError={securityError}
+                        membership={membership}
+                        tiers={tiers}
+                        quota={quotaSummary}
+                        onNavigate={selectSection}
+                        onRetrySecurity={() => void loadSecurity()}
+                    />
+                );
+            case "profile":
+                return (
+                    <div className="w-full">
+                        <ProfileCard
+                            profile={profile!}
+                            onUpdated={setProfile}
+                            onToast={flash}
+                        />
+                    </div>
+                );
+            case "email":
+                return (
+                    <div className="w-full">
+                        <EmailCard
+                            profile={profile!}
+                            security={security!}
+                            onReload={() => void reloadAfterEdit()}
+                            onToast={flash}
+                        />
+                    </div>
+                );
+            case "phone":
+                return (
+                    <div className="w-full">
+                        <PhoneCard
+                            profile={profile!}
+                            security={security!}
+                            onReload={() => void reloadAfterEdit()}
+                            onToast={flash}
+                        />
+                    </div>
+                );
+            case "password":
+                return (
+                    <div className="w-full">
+                        <PasswordCard
+                            profile={profile!}
+                            security={security!}
+                            onReload={() => void reloadAfterEdit()}
+                            onToast={flash}
+                        />
+                    </div>
+                );
+            case "bilibili":
+                return (
+                    <BilibiliSection
+                        security={security!}
+                        onBind={() => setBindOpen(true)}
+                    />
+                );
+            case "membership":
+                return <MembershipSection membership={membership} tiers={tiers} />;
+            case "quota":
+                return <QuotaSection quota={quotaSummary} />;
+            case "coding-plan":
+                return <CodingPlanCard membership={membership} onToast={flash} />;
+            default:
+                return null;
+        }
+    }
 
     return (
-        <div
-                className={cn(
-                    "mx-auto w-full px-6 py-10 sm:px-8",
-                    detail === "coding-plan" ? "max-w-[900px]" : "max-w-[620px]",
-                )}
-            >
-            {toast && (
-                <div
-                    className={cn(
-                        "fixed right-6 top-20 z-50 rounded-md border px-4 py-2.5 text-[13px] font-medium shadow-sm",
-                        toast.type === "success"
-                            ? "border-success/20 bg-surface text-success"
-                            : "border-danger/20 bg-surface text-danger",
-                    )}
-                >
-                    {toast.message}
-                </div>
-            )}
+        <div className="g-account min-h-[calc(100dvh-3rem)]">
+            <div className="w-full px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:px-10">
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+                    <AccountSidebar
+                        profile={profile}
+                        security={security}
+                        membership={membership}
+                        active={active}
+                        onSelect={selectSection}
+                        onLogout={() => void handleLogout()}
+                    />
 
-            <AnimatePresence mode="wait" initial={false}>
-                {detail === null ? (
-                    /* ── 主视图 ─────────────────────────────────── */
-                    <motion.div
-                        key="master"
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        transition={{ duration: 0.24, ease: EASE }}
-                    >
-                        {/* Hero —— appleid.apple.com 式居中头像 */}
-                        <div className="flex flex-col items-center pb-8 pt-2 text-center">
-                            <Avatar url={profile.avatar} name={profile.nickname} uid={profile.uid} />
-                            <h1 className="mt-4 flex items-center gap-2.5 text-[24px] font-semibold tracking-tight text-foreground">
-                                <span className="max-w-[320px] truncate">
-                                    {profile.nickname || "用户 " + profile.uid}
-                                </span>
-                                <TierBadge membership={membership} />
-                            </h1>
-                            {profile.bio && (
-                                <p className="mt-1 max-w-[420px] text-[13px] leading-relaxed text-secondary">
-                                    {profile.bio}
-                                </p>
-                            )}
-                            <div className="mt-1.5 flex items-center text-[12px] text-tertiary">
-                                <span>UID {profile.uid}</span>
-                                <button
-                                    type="button"
-                                    onClick={() => copyUid(profile.uid)}
-                                    aria-label="复制 UID"
-                                    className="mx-0.5 inline-flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-border-subtle hover:text-foreground"
-                                >
-                                    <Copy className="h-3 w-3" />
-                                </button>
-                                {profile.created_at && (
-                                    <span>· 注册于 {fmtDate(profile.created_at)}</span>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* 会员卡（实色深底，无渐变无模糊） */}
-                        <MembershipCard
-                            membership={membership}
-                            tiers={tiers}
-                            onOpen={() => router.push("/membership")}
+                    <div className="min-w-0 flex-1">
+                        <SectionHeader
+                            active={active}
+                            onSelect={selectSection}
+                            action={headerAction}
+                            metaLine={headerMeta}
                         />
-
-                        {/* 个人资料 */}
-                        <Group title="个人资料">
-                            <ListRow
-                                icon={<User className="h-4 w-4" />}
-                                tint="bg-accent-soft text-accent"
-                                label="昵称、简介、地区与语言"
-                                value={profile.nickname || "未设置"}
-                                onClick={() => setDetail("profile")}
-                            />
-                        </Group>
-
-                        {/* 登录与安全 */}
-                        <Group title="登录与安全">
-                            <ListRow
-                                icon={<Mail className="h-4 w-4" />}
-                                tint="bg-sky-500/10 text-sky-600"
-                                label="邮箱"
-                                value={profile.email || "未绑定"}
-                                tag={
-                                    profile.email ? (
-                                        <Tag tone={profile.email_verified ? "ok" : "warn"}>
-                                            {profile.email_verified ? "已验证" : "未验证"}
-                                        </Tag>
-                                    ) : undefined
-                                }
-                                onClick={() => setDetail("email")}
-                            />
-                            <ListRow
-                                icon={<Smartphone className="h-4 w-4" />}
-                                tint="bg-emerald-500/10 text-emerald-600"
-                                label="手机号"
-                                value={profile.phone || "未绑定"}
-                                tag={
-                                    profile.phone ? (
-                                        <Tag tone={profile.phone_verified ? "ok" : "warn"}>
-                                            {profile.phone_verified ? "已验证" : "未验证"}
-                                        </Tag>
-                                    ) : undefined
-                                }
-                                onClick={() => setDetail("phone")}
-                            />
-                            <ListRow
-                                icon={<KeyRound className="h-4 w-4" />}
-                                tint="bg-orange-500/10 text-orange-600"
-                                label="密码"
-                                value={sec.has_password ? "••••••••" : "未设置"}
-                                onClick={() => setDetail("password")}
-                            />
-                            <ListRow
-                                icon={<Tv className="h-4 w-4" />}
-                                tint="bg-pink-500/10 text-pink-600"
-                                label="B 站账号"
-                                value={sec.bilibili.nickname || "未绑定"}
-                                tag={
-                                    <Tag
-                                        tone={
-                                            sec.bilibili.valid
-                                                ? "ok"
-                                                : sec.bilibili.bound
-                                                  ? "warn"
-                                                  : "neutral"
-                                        }
-                                    >
-                                        {sec.bilibili.valid
-                                            ? "可用"
-                                            : sec.bilibili.bound
-                                              ? "已失效"
-                                              : "未绑定"}
-                                    </Tag>
-                                }
-                                onClick={() => setDetail("bilibili")}
-                            />
-                        </Group>
-
-                        {/* 更多 */}
-                        <Group title="更多">
-                            <ListRow
-                                icon={<Gauge className="h-4 w-4" />}
-                                tint="bg-teal-500/10 text-teal-600"
-                                label="用量与额度"
-                                value={
-                                    quotaSummary?.enabled
-                                        ? `AI 用量 ${quotaSummary.kinds.find((k) => k.kind === "chat")?.usedPercent ?? 0}%`
-                                        : "每日用量"
-                                }
-                                tag={
-                                    quotaSummary?.tierSource === "fallback" ? (
-                                        <Tag tone="warn">权益同步失败</Tag>
-                                    ) : undefined
-                                }
-                                onClick={() => router.push("/quota")}
-                            />
-                            <ListRow
-                                icon={<Crown className="h-4 w-4" />}
-                                tint="bg-amber-500/10 text-amber-600"
-                                label="会员中心"
-                                value="等级 · 开通 · 续费"
-                                onClick={() => router.push("/membership")}
-                            />
-                            <ListRow
-                                icon={<Terminal className="h-4 w-4" />}
-                                tint="bg-indigo-500/10 text-indigo-600"
-                                label="Coding Plan"
-                                value={isVip ? "第三方编程套餐" : "VIP/SVIP 专属"}
-                                onClick={() => setDetail("coding-plan")}
-                            />
-                            <ListRow
-                                icon={<Sparkles className="h-4 w-4" />}
-                                tint="bg-violet-500/10 text-violet-600"
-                                label="技能商店"
-                                onClick={() => router.push("/skills")}
-                            />
-                            <ListRow
-                                icon={<ShieldCheck className="h-4 w-4" />}
-                                tint="bg-zinc-500/10 text-zinc-600"
-                                label="凭证管理"
-                                onClick={() => router.push("/settings")}
-                            />
-                        </Group>
-                    </motion.div>
-                ) : (
-                    /* ── 详情视图（iOS push）────────────────────── */
-                    <motion.div
-                        key={detail}
-                        initial={{ opacity: 0, x: 24 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 24 }}
-                        transition={{ duration: 0.24, ease: EASE }}
-                    >
-                        <DetailHeader title={DETAIL_TITLES[detail]} onBack={() => setDetail(null)} />
-                        {detail === "profile" && (
-                            <ProfileCard profile={profile} onUpdated={setProfile} onToast={flash} />
-                        )}
-                        {detail === "email" && (
-                            <EmailCard
-                                profile={profile}
-                                security={sec}
-                                onReload={load}
-                                onToast={flash}
-                            />
-                        )}
-                        {detail === "phone" && (
-                            <PhoneCard
-                                profile={profile}
-                                security={sec}
-                                onReload={load}
-                                onToast={flash}
-                            />
-                        )}
-                        {detail === "password" && (
-                            <PasswordCard
-                                profile={profile}
-                                security={sec}
-                                onReload={load}
-                                onToast={flash}
-                            />
-                        )}
-                        {detail === "bilibili" && (
-                            <BilibiliDetail security={sec} onBind={() => setBindOpen(true)} />
-                        )}
-                        {detail === "coding-plan" && (
-                            <CodingPlanCard membership={membership} onToast={flash} />
-                        )}
-                    </motion.div>
-                )}
-            </AnimatePresence>
+                        <AnimatePresence mode="wait" initial={false}>
+                            <motion.div
+                                key={active}
+                                initial={{ opacity: 0, y: 6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -4 }}
+                                transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                            >
+                                {renderSection()}
+                            </motion.div>
+                        </AnimatePresence>
+                    </div>
+                </div>
+            </div>
 
             <BilibiliBindModal
+                variant="google"
                 isOpen={bindOpen}
                 onClose={() => setBindOpen(false)}
                 onBound={() => {
                     setBindOpen(false);
                     flash("B 站账号绑定成功", "success");
-                    void load();
+                    void reloadAfterEdit();
                 }}
             />
         </div>
     );
 }
 
-/* ── 布局原语 ───────────────────────────────────────────────────── */
+/* ── 页面头部 ────────────────────────────────────────────────────── */
 
-/** iOS 式分组列表：13px 灰标题 + 18px 圆角白卡 + 发丝分隔。 */
-function Group({ title, children }: { title?: string; children: React.ReactNode }) {
+function SectionHeader({
+    active,
+    onSelect,
+    action,
+    metaLine,
+}: {
+    active: SectionKey;
+    onSelect: (key: SectionKey) => void;
+    action?: React.ReactNode;
+    /** 概览页的账户元信息（UID / 注册时间等），由调用方传入。 */
+    metaLine?: React.ReactNode;
+}) {
+    const meta = SECTION_META[active];
     return (
-        <section className="mt-8">
-            {title && (
-                <h2 className="mb-2 px-1 text-[13px] font-medium text-secondary">{title}</h2>
-            )}
-            <div className="overflow-hidden rounded-[18px] border border-border-subtle bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-                {children}
+        <header className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+            <div className="min-w-0">
+                <nav className="flex items-center gap-1.5 text-[12px] text-secondary" aria-label="面包屑">
+                    {active === "overview" ? (
+                        <span>MindBase</span>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => onSelect("overview")}
+                            className="rounded px-1 py-0.5 transition-colors hover:bg-[#f1f3f4] hover:text-accent"
+                        >
+                            个人中心
+                        </button>
+                    )}
+                    <ChevronRight className="h-3 w-3 shrink-0 text-tertiary" />
+                    <span className="truncate text-foreground">{meta.title}</span>
+                </nav>
+                <h1 className="mt-2 text-[26px] font-medium leading-8 text-foreground">
+                    {meta.title}
+                </h1>
+                <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-secondary">
+                    {meta.description}
+                </p>
+                {metaLine && <div className="mt-3">{metaLine}</div>}
             </div>
-        </section>
+            {action && <div className="pt-7 max-sm:mt-1 max-sm:pt-0">{action}</div>}
+        </header>
     );
 }
 
-/** 设置行：着色图标方块 + 标签 + 徽章 + 当前值 + Chevron，整行可点。 */
-function ListRow({
-    icon,
-    tint,
-    label,
-    value,
-    tag,
-    onClick,
-}: {
-    icon: React.ReactNode;
-    /** 图标方块底色/字色，iOS 设置风格 */
-    tint: string;
-    label: string;
-    value?: string;
-    tag?: React.ReactNode;
-    onClick?: () => void;
-}) {
-    const content = (
-        <>
-            <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-[8px]", tint)}>
-                {icon}
-            </span>
-            <span className="flex-1 truncate text-[14px] font-medium text-foreground">{label}</span>
-            {value !== undefined && (
-                <span className="max-w-[40%] truncate text-[13px] text-tertiary">{value}</span>
-            )}
-            {tag}
-            {onClick && <ChevronRight className="h-4 w-4 shrink-0 text-tertiary" />}
-        </>
-    );
-    const className = cn(
-        "flex w-full items-center gap-3 border-b border-border-subtle px-4 py-3 text-left transition-colors last:border-b-0",
-        onClick && "cursor-pointer hover:bg-border-subtle/60",
-    );
-    if (onClick) {
-        return (
-            <button type="button" onClick={onClick} className={className}>
-                {content}
-            </button>
-        );
-    }
-    return <div className={className}>{content}</div>;
-}
-
-/** 详情页顶栏：iOS 式蓝色返回键 + 大标题。 */
-function DetailHeader({ title, onBack }: { title: string; onBack: () => void }) {
+function AccountSkeleton() {
     return (
-        <div className="mb-5">
-            <button
-                type="button"
-                onClick={onBack}
-                className="inline-flex items-center gap-0.5 text-[14px] font-medium text-accent transition-opacity hover:opacity-70"
-            >
-                <ChevronLeft className="h-4 w-4" />
-                返回
-            </button>
-            <h1 className="mt-2 text-[26px] font-semibold tracking-tight text-foreground">
-                {title}
-            </h1>
-        </div>
-    );
-}
-
-/* ── 业务块 ─────────────────────────────────────────────────────── */
-
-/** B 站账号详情：授权状态行 + 说明 + 绑定按钮（扫码弹窗由父级持有）。 */
-function BilibiliDetail({
-    security: sec,
-    onBind,
-}: {
-    security: SecurityOverview;
-    onBind: () => void;
-}) {
-    const tone = sec.bilibili.valid
-        ? "ok"
-        : sec.bilibili.bound
-          ? "warn"
-          : "neutral";
-    const status = sec.bilibili.valid
-        ? "可用"
-        : sec.bilibili.bound
-          ? "已失效"
-          : "未绑定";
-    return (
-        <Group>
-            <div className="flex items-center gap-3 border-b border-border-subtle px-5 py-3.5">
-                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] bg-pink-500/10 text-pink-600">
-                    <Tv className="h-4 w-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                    <div className="text-[14px] font-medium text-foreground">B 站账号</div>
-                    <div className="truncate text-[12px] text-tertiary">
-                        {sec.bilibili.nickname || "未绑定"}
+        <div className="g-account min-h-[calc(100dvh-3rem)]" aria-busy="true">
+            <div className="w-full px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:px-10">
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+                    <div className="h-[220px] animate-pulse rounded-[12px] border border-border bg-surface lg:h-[430px] lg:w-[264px] lg:shrink-0" />
+                    <div className="min-w-0 flex-1">
+                        <div className="h-3 w-24 animate-pulse rounded bg-[#e8eaed]" />
+                        <div className="mt-3 h-8 w-52 animate-pulse rounded bg-[#e8eaed]" />
+                        <div className="mt-2 h-4 w-80 max-w-full animate-pulse rounded bg-[#f1f3f4]" />
+                        <div className="mt-6 h-[280px] animate-pulse rounded-[12px] border border-border bg-surface" />
+                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                            <div className="h-56 animate-pulse rounded-[12px] border border-border bg-surface" />
+                            <div className="h-56 animate-pulse rounded-[12px] border border-border bg-surface" />
+                        </div>
                     </div>
                 </div>
-                <Tag tone={tone}>{status}</Tag>
             </div>
-            <div className="px-5 py-4">
-                <p className="text-[12px] leading-relaxed text-secondary">
-                    B 站授权用于同步收藏夹内容并构建知识库。
-                    {sec.bilibili.bound && !sec.bilibili.valid &&
-                        " 当前授权已失效，同步不可用，请重新绑定。"}
-                    {!sec.bilibili.bound && " 尚未绑定 B 站账号，绑定后即可同步收藏夹。"}
-                </p>
-                {!sec.bilibili.valid && (
-                    <button
-                        type="button"
-                        onClick={onBind}
-                        className="btn-pill btn-primary mt-4 h-9 px-5 text-[13px]"
-                    >
-                        {sec.bilibili.bound ? "重新绑定" : "扫码绑定"}
-                    </button>
-                )}
-            </div>
-        </Group>
-    );
-}
-
-function Avatar({
-    url,
-    name,
-    uid,
-}: {
-    url: string | null;
-    name: string | null;
-    uid: number;
-}) {
-    const [failed, setFailed] = useState(false);
-    const initial = name?.[0] || String(uid).slice(0, 1);
-    // URL 加载失败（外链头像被墙/防盗链/混合内容等）→ 回退首字母，不留破图
-    if (url && !failed) {
-        return (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-                src={url}
-                alt=""
-                onError={() => setFailed(true)}
-                className="h-[88px] w-[88px] shrink-0 rounded-full object-cover ring-1 ring-border"
-            />
-        );
-    }
-    return (
-        <div className="grid h-[88px] w-[88px] shrink-0 place-items-center rounded-full bg-foreground text-[30px] font-semibold text-surface">
-            {initial}
         </div>
     );
 }
 
-function fmtDate(iso: string | null): string {
-    if (!iso) return "";
-    try {
-        return new Date(iso).toLocaleDateString("zh-CN", {
-            year: "numeric",
-            month: "long",
-        });
-    } catch {
-        return iso;
-    }
-}
-
-/** 会员卡：实色深底（无渐变/模糊），点击进入会员中心。 */
-function MembershipCard({
-    membership,
-    tiers,
-    onOpen,
-}: {
-    membership: PayMembership | null;
-    tiers: PayTierInfo[];
-    onOpen: () => void;
-}) {
-    const tier = membership?.active ? (membership.tier ?? "").toUpperCase() : "FREE";
-    const info =
-        tiers.find((t) => t.tier.toUpperCase() === tier) ??
-        tiers.find((t) => t.tier.toUpperCase() === "FREE");
-    const isPaid = tier === "VIP" || tier === "SVIP";
-    const expire =
-        membership?.active && membership.expireAt
-            ? new Date(membership.expireAt).toLocaleDateString("zh-CN")
-            : null;
+function AccountError({ message, onRetry }: { message: string; onRetry: () => void }) {
     return (
-        <button
-            type="button"
-            onClick={onOpen}
-            className="group flex w-full items-center gap-4 rounded-[18px] bg-zinc-900 px-5 py-4 text-left transition-opacity hover:opacity-95"
-        >
-            <span
-                className={cn(
-                    "grid h-10 w-10 shrink-0 place-items-center rounded-[10px]",
-                    isPaid ? "bg-amber-400/15" : "bg-zinc-800",
-                )}
-            >
-                <Crown className={cn("h-5 w-5", isPaid ? "text-amber-400" : "text-zinc-500")} />
-            </span>
-            <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2">
-                    <span
-                        className={cn(
-                            "text-[15px] font-semibold",
-                            isPaid ? "text-amber-400" : "text-zinc-100",
-                        )}
-                    >
-                        {info?.name ?? (isPaid ? tier : "免费用户")}
-                    </span>
-                    {expire && <span className="text-[11px] text-zinc-500">{expire} 到期</span>}
-                </span>
-                <span className="mt-0.5 block truncate text-[12px] text-zinc-400">
-                    {info?.tagline ?? "升级会员解锁更高配额与优先调度"}
-                </span>
-            </span>
-            <ChevronRight className="h-4 w-4 shrink-0 text-zinc-600 transition-transform group-hover:translate-x-0.5" />
-        </button>
-    );
-}
-
-/** 会员等级徽章：app-pay tier（VIP|SVIP|null）+ active；免费/失效展示「免费用户」。 */
-function TierBadge({ membership }: { membership: PayMembership | null }) {
-    const tier = membership?.active ? (membership.tier ?? "").toUpperCase() : "";
-    if (tier === "SVIP") {
-        return (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-400 px-2 py-0.5 text-[11px] font-semibold text-zinc-900">
-                <Crown className="h-3 w-3" />
-                SVIP
-            </span>
-        );
-    }
-    if (tier === "VIP") {
-        return (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-300">
-                <Crown className="h-3 w-3" />
-                VIP
-            </span>
-        );
-    }
-    return (
-        <span className="inline-flex shrink-0 items-center rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[11px] text-tertiary">
-            免费用户
-        </span>
+        <div className="g-account min-h-[calc(100dvh-3rem)]">
+            <div className="mx-auto w-full max-w-[560px] px-5 py-16">
+                <AccountCard>
+                    <div className="flex flex-col items-center px-6 py-8 text-center">
+                        <span className="grid h-12 w-12 place-items-center rounded-full bg-danger/10 text-danger">
+                            <AlertCircle className="h-6 w-6" />
+                        </span>
+                        <h1 className="mt-4 text-[18px] font-medium text-foreground">
+                            个人中心加载失败
+                        </h1>
+                        <p className="mt-1 break-words text-[13px] leading-relaxed text-secondary">
+                            {message}
+                        </p>
+                        <GoogleButton onClick={onRetry} className="mt-5">
+                            重试
+                        </GoogleButton>
+                    </div>
+                </AccountCard>
+            </div>
+        </div>
     );
 }

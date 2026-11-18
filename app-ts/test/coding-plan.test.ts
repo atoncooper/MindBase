@@ -2,8 +2,10 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { simulateReadableStream, type LanguageModelV2StreamPart } from "ai";
 import { MockLanguageModelV2 } from "ai/test";
 import {
+  codingPlanRequestHeaders,
   createCodingPlanModel,
   normalizeCodingPlan,
+  opencodeSessionId,
   type CodingPlan,
 } from "../src/llm/coding-plan.js";
 import { createCodingPlanResolver, type CodingPlanResolverDeps } from "../src/agent/code/coding-plan-resolver.js";
@@ -73,6 +75,26 @@ describe("Coding Plan model factory", () => {
     }) as unknown as { modelId: string; provider: string };
     expect(model.modelId).toBe("kimi-k2-0905-preview");
     expect(String(model.provider)).toContain("anthropic");
+  });
+
+  it("adds x-opencode-session and a product UA only for OpenCode plans", () => {
+    const headers = codingPlanRequestHeaders(
+      {
+        ...basePlan,
+        provider: "opencode_go",
+        base_url: "https://opencode.ai/inference/go/openai/v1",
+      },
+      "chat-session-42",
+    );
+    expect(headers?.["x-opencode-session"]).toBe(opencodeSessionId("chat-session-42"));
+    expect(headers?.["x-opencode-session"]).toMatch(/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    expect(headers?.["User-Agent"]).toBe("MindBase/1.0 (coding-plan)");
+    expect(
+      codingPlanRequestHeaders(
+        { ...basePlan, provider: "kimi", base_url: "https://api.kimi.com/coding/v1" },
+        "chat-session-42",
+      ),
+    ).toBeUndefined();
   });
 
   it("rejects non-http(s) / invalid base_url and empty model (key-free error messages)", () => {

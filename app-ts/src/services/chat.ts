@@ -47,13 +47,14 @@ export interface AskStreamRequest {
   clientKey?: string;
   /** user-selected installed skills forced into the system prompt */
   skillIds?: string[];
-  /** chat-dialog selected model id (Coding Plan catalog); resolved once per turn. */
+  /** chat-dialog selected Coding Plan model id; resolved once per turn (mutually exclusive with chatModel). */
   model?: string;
   /**
    * chat-dialog selected model id from the general chat catalog (config/model.json;
    * GET /chat/models). Already validated by the HTTP layer against that catalog.
-   * Takes precedence over the Coding Plan pick; absent = service default
-   * (config.llm.model) via the agent's own provider.
+   * The UI enforces mutual exclusivity with the Coding Plan pick. When present
+   * it takes precedence; absent = service default (config.llm.model) via the
+   * agent's own provider.
    */
   chatModel?: string;
   /**
@@ -142,8 +143,12 @@ export class ChatService {
       uid: string | undefined,
       projectId: string,
     ) => Promise<string | undefined>,
-    /** resolve the chat-dialog selected model (Coding Plan) once per turn; all agents share it */
-    private readonly resolveModel?: (input: { uid?: string; model?: string }) => Promise<LanguageModel | undefined>,
+    /** resolve the chat-dialog selected Coding Plan model once per turn; all agents share it */
+    private readonly resolveModel?: (input: {
+      uid?: string;
+      model?: string;
+      sessionId?: string;
+    }) => Promise<LanguageModel | undefined>,
     /**
      * Turn-scoped scratch files (docs/temp-files.md). Only disposeRequest is
      * needed here: the program deletes the turn's directory when the whole
@@ -268,8 +273,9 @@ export class ChatService {
       else req.signal.addEventListener("abort", onClientAbort, { once: true });
     }
     // Effective model id of this turn for quota/ledger bookkeeping (prices lookup):
-    // explicit chat-catalog pick > Coding Plan pick > service default. Undefined
-    // until the model is resolved below; falls back to config.llm.model.
+    // explicit chat-catalog pick > Coding Plan pick > service default (the UI
+    // sends at most one of the two). Undefined until resolved below; falls back
+    // to config.llm.model.
     let turnModelId: string | undefined;
     let deadlineHit = false;
     const turnTimer = setTimeout(() => {
@@ -295,7 +301,12 @@ export class ChatService {
         turnModelId = req.chatModel;
       } else if (req.model && this.resolveModel) {
         try {
-          resolvedModel = await this.resolveModel({ uid: req.uid, model: req.model });
+          resolvedModel = await this.resolveModel({
+            uid: req.uid,
+            model: req.model,
+            // stable per-conversation id for OpenCode's x-opencode-session
+            sessionId: session.id,
+          });
           if (resolvedModel) turnModelId = req.model;
         } catch (err) {
           log.warn("[CHAT] resolve selected model failed, fallback gateway: " + (err instanceof Error ? err.message : String(err)));

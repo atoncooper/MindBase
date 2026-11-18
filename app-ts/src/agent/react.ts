@@ -65,7 +65,7 @@ export interface ReactAgentOptions {
   /** optional ReAct step override (custom plan agents); defaults to the per-agent config */
   maxSteps ?: number;
   /**
-   * Per-run model resolver (e.g. the code agent's Coding Plan). Awaited once at
+   * Per-run model resolver (e.g. the user's Coding Plan). Awaited once at
    * run start; undefined / a thrown error falls back to the gateway model.
    * An explicit `model` (test injection) wins and skips the resolver entirely.
    */

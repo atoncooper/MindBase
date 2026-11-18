@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,8 @@ import (
 	"app-user/internal/infra/security"
 	"app-user/internal/model/settings"
 	settingsservice "app-user/internal/service/settings"
+
+	"github.com/gin-gonic/gin/binding"
 )
 
 func TestMaskCodingPlanKey(t *testing.T) {
@@ -34,6 +37,24 @@ func TestMaskCodingPlanKey(t *testing.T) {
 	full := "sk-very-secret-value-9876"
 	if strings.Contains(settingsdto.MaskCodingPlanKey(full), "secret") {
 		t.Fatal("mask leaked the middle of the key")
+	}
+}
+
+// 422 regression guard: the create DTO used to mark model as required, while
+// the account form sends model="" (the concrete model is chosen per chat turn).
+func TestCodingPlanCreateBindingAllowsEmptyModel(t *testing.T) {
+	body := `{"provider":"opencode_zen","protocol":"openai","base_url":"https://opencode.ai/zen/v1","api_key":"sk-test"}`
+	req := httptest.NewRequest(http.MethodPost, "/settings/coding-plans", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	var dto settingsdto.CodingPlanCreateRequest
+	if err := binding.JSON.Bind(req, &dto); err != nil {
+		t.Fatalf("create binding rejected an empty optional model: %v", err)
+	}
+	if dto.Provider != "opencode_zen" || dto.BaseURL != "https://opencode.ai/zen/v1" {
+		t.Fatalf("unexpected bound DTO: %+v", dto)
+	}
+	if dto.Model != "" {
+		t.Fatalf("model = %q, want empty", dto.Model)
 	}
 }
 
@@ -107,6 +128,31 @@ func TestCodingPlanProbeOpenAIModels(t *testing.T) {
 	}
 	if authHeader != "Bearer sk-test" {
 		t.Fatalf("authorization = %q", authHeader)
+	}
+}
+
+func TestCodingPlanProbeOpenCodeSessionHeader(t *testing.T) {
+	var session, userAgent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session = r.Header.Get("x-opencode-session")
+		userAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"kimi-k3"}]}`))
+	}))
+	defer srv.Close()
+
+	res := settingsservice.ProbeCodingPlanWithProvider(
+		context.Background(), srv.Client(), "opencode_go", "openai",
+		srv.URL+"/v1", "kimi-k3", "sk-test", "chat-session-42",
+	)
+	if !res.OK {
+		t.Fatalf("probe failed: %+v", res)
+	}
+	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(session) {
+		t.Fatalf("x-opencode-session = %q, want ses_+12hex+14base62", session)
+	}
+	if !strings.Contains(userAgent, "MindBase") {
+		t.Fatalf("user-agent = %q, want a MindBase product UA", userAgent)
 	}
 }
 

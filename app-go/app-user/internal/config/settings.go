@@ -13,12 +13,30 @@ import (
 )
 
 type SettingsConfig struct {
-	App      AppConfig      `yaml:"app"`
-	Server   ServerConfig   `yaml:"server"`
-	Log      LogConfig      `yaml:"log"`
-	Timezone string         `yaml:"timezone"`
-	RDBMS    RDBMSConfig    `yaml:"rdbms"`
-	AppCloud AppCloudConfig `yaml:"app_cloud"`
+	App        AppConfig        `yaml:"app"`
+	Server     ServerConfig     `yaml:"server"`
+	Log        LogConfig        `yaml:"log"`
+	Timezone   string           `yaml:"timezone"`
+	RDBMS      RDBMSConfig      `yaml:"rdbms"`
+	AppCloud   AppCloudConfig   `yaml:"app_cloud"`
+	CodingPlan CodingPlanConfig `yaml:"coding_plan"`
+}
+
+// CodingPlanConfig is the operator-owned provider catalog for Coding Plans.
+// All provider base URLs live here (default.yaml) instead of being hardcoded in
+// Go or the frontend; the account editor and probe/list/test paths share it.
+type CodingPlanConfig struct {
+	Providers []CodingPlanProviderConfig `yaml:"providers"`
+}
+
+type CodingPlanProviderConfig struct {
+	Name             string   `yaml:"name"`
+	Label            string   `yaml:"label"`
+	OpenAIBaseURL    string   `yaml:"openai_base_url"`
+	AnthropicBaseURL string   `yaml:"anthropic_base_url"`
+	ModelsURL        string   `yaml:"models_url"`
+	ModelHint        string   `yaml:"model_hint"`
+	LegacyBaseURLs   []string `yaml:"legacy_base_urls"`
 }
 
 // AppCloudConfig — app-cloud M2M face that owns object storage. app-user only
@@ -104,6 +122,19 @@ func applySettingsEnv(cfg *SettingsConfig) {
 func validateSettings(cfg *SettingsConfig) error {
 	if strings.TrimSpace(cfg.RDBMS.URL) == "" {
 		return fmt.Errorf("rdbms.url is required (APPSETTINGS__RDBMS__URL)")
+	}
+	// Provider names are the stable keys stored in coding_plans; duplicates or
+	// empty names would make the YAML catalog ambiguous.
+	seen := make(map[string]bool, len(cfg.CodingPlan.Providers))
+	for i, p := range cfg.CodingPlan.Providers {
+		name := strings.ToLower(strings.TrimSpace(p.Name))
+		if name == "" {
+			return fmt.Errorf("settings.coding_plan.providers[%d].name is required", i)
+		}
+		if seen[name] {
+			return fmt.Errorf("settings.coding_plan.providers has duplicate name %q", name)
+		}
+		seen[name] = true
 	}
 	return nil
 }
