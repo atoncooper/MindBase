@@ -227,7 +227,7 @@ export function PhoneCard({ profile, security, onReload, onToast }: Props) {
                                     type="button"
                                     onClick={sendCode}
                                     disabled={sending || cooldown > 0 || !val.trim()}
-                                    className="inline-flex h-12 shrink-0 items-center rounded-[var(--radius)] border border-border px-3 text-[12px] text-secondary transition-colors hover:bg-border-subtle disabled:opacity-40"
+                                    className="inline-flex h-10 shrink-0 items-center rounded-[var(--radius)] border border-border px-3 text-[12px] font-medium text-accent transition-colors hover:bg-[#f8f9fa] disabled:opacity-40"
                                 >
                                     {cooldown > 0 ? `${cooldown}s` : sending ? "发送中…" : "发送验证码"}
                                 </button>

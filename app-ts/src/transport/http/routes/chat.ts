@@ -189,7 +189,7 @@ export function registerChatRoutes(
         folder_ids?: number[];
         images?: string[];
         skill_ids?: string[];
-        /** chat-dialog Coding Plan model picker selection (code agent only) */
+        /** chat-dialog Coding Plan model picker selection (mutually exclusive with model) */
         coding_plan_model?: string;
         /** chat-dialog general model catalog selection (config/model.json; all agents) */
         model?: string;

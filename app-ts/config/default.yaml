@@ -425,7 +425,7 @@ quota:
     vectorize:   { free: 50,  vip: 300, svip: 1000 }  # 视频向量化（分P/日；向量化管线 peek+consume）
     ocr:         { free: 10,  vip: 50,  svip: 200 }   # 错题图片/文件出题 OCR（次/日；quiz-generation 图片流）
     board:       { free: 20,  vip: 100, svip: 300 }   # Board AI 补全（次/日；/chat/board/complete peek+consume）
-    coding_plan: { free: 0,   vip: 100, svip: 300 }   # 站内 code agent 走用户自带 Coding Plan（次/日；free 无 plan，超限回退网关）
+    coding_plan: { free: 0,   vip: 100, svip: 300 }   # 对话/Code Agent 显式选用用户自带 Coding Plan（次/日；free 无 plan，超限回退网关）
     task_quiz_active: { free: 2, vip: 10, svip: 30 }  # 定时出题活跃任务数（存量口径，注册时校验，非日计数）
     academic_analysis: { free: 10, vip: 50, svip: 200 }   # 科研结果表/对比（次/日）
     academic_validation: { free: 30, vip: 100, svip: 300 } # 学术校验（次/日）

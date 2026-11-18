@@ -34,9 +34,23 @@ type CodingPlan struct {
 	UpdatedAt    *time.Time `json:"updated_at"`
 }
 
-// CodingPlans is GET /settings/coding-plans.
+// CodingPlanProvider is one entry in the operator-owned provider catalog
+// (default.yaml settings.coding_plan.providers). URLs are served to the account
+// editor so they are not hardcoded in the frontend.
+type CodingPlanProvider struct {
+	Name             string `json:"name"`
+	Label            string `json:"label"`
+	OpenAIBaseURL    string `json:"openai_base_url"`
+	AnthropicBaseURL string `json:"anthropic_base_url"`
+	ModelsURL        string `json:"models_url,omitempty"`
+	ModelHint        string `json:"model_hint,omitempty"`
+}
+
+// CodingPlans is GET /settings/coding-plans. Providers is the YAML catalog
+// (VIP/SVIP only, same gate as the plans themselves).
 type CodingPlans struct {
-	Plans []CodingPlan `json:"plans"`
+	Plans     []CodingPlan         `json:"plans"`
+	Providers []CodingPlanProvider `json:"providers"`
 }
 
 // CodingPlanEnvelope is the POST/PATCH response ({plan:{...}}).

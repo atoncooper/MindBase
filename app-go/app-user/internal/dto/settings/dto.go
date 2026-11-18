@@ -14,12 +14,14 @@ type PreferencesPatchRequest struct {
 
 // CodingPlanCreateRequest is POST /settings/coding-plans. provider is
 // opencode|kimi|custom; protocol is openai|anthropic; enabled defaults true.
+// model is optional: the concrete model is selected per chat turn from the
+// provider model list, so an empty default must not fail request binding.
 type CodingPlanCreateRequest struct {
 	Provider string `json:"provider" binding:"required"`
 	Protocol string `json:"protocol" binding:"required"`
 	Label    string `json:"label"`
 	BaseURL  string `json:"base_url" binding:"required"`
-	Model    string `json:"model" binding:"required"`
+	Model    string `json:"model"`
 	APIKey   string `json:"api_key" binding:"required"`
 	Enabled  *bool  `json:"enabled"`
 }

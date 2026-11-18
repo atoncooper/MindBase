@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
@@ -31,19 +32,22 @@ export type CodingPlanProtocol = "openai" | "anthropic";
 /**
  * Validate/normalize the internal plan before it becomes a model.
  * Throws a key-free message so the caller can fall back to the platform gateway.
+ *
+ * Provider base URLs are owned by app-user's YAML catalog; the internal M2M
+ * face already returns the effective (current) base for legacy rows.
  */
 export function normalizeCodingPlan(plan: CodingPlan): CodingPlan {
   const label =
     (typeof plan?.label === "string" && plan.label.trim()) ||
     (typeof plan?.id === "string" && plan.id) ||
     "coding-plan";
-  const baseUrl = typeof plan?.base_url === "string" ? plan.base_url.trim().replace(/\/+$/, "") : "";
-  if (!baseUrl) {
+  const rawBaseUrl = typeof plan?.base_url === "string" ? plan.base_url.trim().replace(/\/+$/, "") : "";
+  if (!rawBaseUrl) {
     throw new Error(`coding plan "${label}" has an empty base_url`);
   }
   let parsed: URL;
   try {
-    parsed = new URL(baseUrl);
+    parsed = new URL(rawBaseUrl);
   } catch {
     throw new Error(`coding plan "${label}" has an invalid base_url`);
   }
@@ -53,19 +57,64 @@ export function normalizeCodingPlan(plan: CodingPlan): CodingPlan {
   if (parsed.username || parsed.password) {
     throw new Error(`coding plan "${label}" base_url must not embed credentials`);
   }
-  const model = typeof plan?.model === "string" ? plan.model.trim() : "";
-  if (!model) {
-    throw new Error(`coding plan "${label}" has an empty model`);
-  }
   const protocol = typeof plan?.protocol === "string" ? plan.protocol.trim().toLowerCase() : "";
   if (protocol !== "openai" && protocol !== "anthropic") {
     throw new Error(`coding plan "${label}" has an unsupported protocol`);
+  }
+  const model = typeof plan?.model === "string" ? plan.model.trim() : "";
+  if (!model) {
+    throw new Error(`coding plan "${label}" has an empty model`);
   }
   const apiKey = typeof plan?.api_key === "string" ? plan.api_key.trim() : "";
   if (!apiKey) {
     throw new Error(`coding plan "${label}" has an empty api_key`);
   }
-  return { ...plan, protocol, base_url: baseUrl, model, api_key: apiKey };
+  return { ...plan, protocol, base_url: rawBaseUrl, model, api_key: apiKey };
+}
+
+/**
+ * OpenCode requires a stable per-conversation session header and asks clients
+ * to identify themselves with their own User-Agent. Only OpenCode plans get
+ * these headers; other providers never see them.
+ *
+ * The session id is the chat session (passed from ChatService) or, for paths
+ * without a chat session, a stable plan-scoped fallback.
+ */
+const OPENCODE_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/**
+ * OpenCode validates x-opencode-session as `ses_` + 12 hex + 14 base62.
+ * Derive that shape deterministically from the (stable) chat session id so
+ * every turn in one conversation reuses the same routing/cache key.
+ */
+export function opencodeSessionId(seed: string): string {
+  const digest = createHash("sha256").update(seed).digest();
+  const hex = digest.subarray(0, 6).toString("hex");
+  const base62 = Array.from(digest.subarray(6, 20))
+    .map((b) => OPENCODE_BASE62[b % 62])
+    .join("");
+  return `ses_${hex}${base62}`;
+}
+
+export function codingPlanRequestHeaders(
+  plan: CodingPlan,
+  sessionId?: string,
+): Record<string, string> | undefined {
+  const provider = String(plan?.provider ?? "").toLowerCase();
+  let isOpenCode = provider.startsWith("opencode");
+  if (!isOpenCode) {
+    try {
+      isOpenCode = new URL(String(plan?.base_url ?? "")).hostname === "opencode.ai";
+    } catch {
+      isOpenCode = false;
+    }
+  }
+  if (!isOpenCode) return undefined;
+  const seed = (sessionId ?? "").trim() || `coding-plan-${String(plan?.id ?? "session")}`;
+  return {
+    "x-opencode-session": opencodeSessionId(seed),
+    "User-Agent": "MindBase/1.0 (coding-plan)",
+  };
 }
 
 /**
@@ -77,18 +126,24 @@ export function normalizeCodingPlan(plan: CodingPlan): CodingPlan {
  * base_url must be http(s), model non-empty; invalid input throws and the
  * caller falls back to the gateway model.
  */
-export function createCodingPlanModel(plan: CodingPlan): LanguageModel {
+export function createCodingPlanModel(
+  plan: CodingPlan,
+  options: { sessionId?: string } = {},
+): LanguageModel {
   const normalized = normalizeCodingPlan(plan);
+  const headers = codingPlanRequestHeaders(normalized, options.sessionId);
   if (normalized.protocol === "anthropic") {
     // Anthropic's baseURL convention includes /v1 (the SDK appends /messages).
     return createAnthropic({
       baseURL: normalized.base_url,
       apiKey: normalized.api_key,
+      ...(headers ? { headers } : {}),
     })(normalized.model);
   }
   return createOpenAICompatible({
     name: "coding-plan",
     baseURL: normalized.base_url,
     apiKey: normalized.api_key,
+    ...(headers ? { headers } : {}),
   }).chatModel(normalized.model);
 }

@@ -566,6 +566,101 @@ body {
   100% { background-position: -200% 0; }
 }
 
+/* ==================== 个人中心 - Google Workspace ==================== */
+/*
+ * /account 个人中心按 Google Account / Workspace Admin 视觉重构：
+ *   页面底 #f8f9fa、白卡 + #dadce0 描边 + 12px 圆角、主色 #0b57d0、
+ *   正文 #202124 / 次要 #5f6368、状态 tonal chip、实色按钮（无渐变/模糊）。
+ *
+ * 通过 .g-account 作用域重定义语义 token 与基础控件，现有资料 / 邮箱 /
+ * 手机 / 密码 / Coding Plan 卡片无需改结构即可继承 Google 配色；其余
+ * 站点页面仍保持 Apple 风格，不受影响。
+ */
+.g-account {
+  --color-background: #f8f9fa;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-foreground: #202124;
+  --color-secondary: #5f6368;
+  --color-tertiary: #80868b;
+  --color-border: #dadce0;
+  --color-border-subtle: #e8eaed;
+  --color-accent: #0b57d0;
+  --color-accent-hover: #0a4cb5;
+  --color-accent-soft: #e8f0fe;
+  --color-accent-foreground: #ffffff;
+  --color-success: #188038;
+  --color-warning: #b06000;
+  --color-danger: #d93025;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+
+  background: #f8f9fa;
+  color: #202124;
+  font-family: Roboto, "Google Sans", "Helvetica Neue", Arial, "Noto Sans SC",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0;
+}
+
+/* 账户卡片里的输入控件统一为 Google outlined 样式（8px 圆角 / 40px 高）。 */
+.g-account .field,
+.g-account [role="combobox"] {
+  background-color: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: #202124;
+  font-size: 14px;
+}
+.g-account .field {
+  min-height: 40px;
+  padding: 0.55rem 0.8rem;
+}
+.g-account [role="combobox"] {
+  height: 40px;
+}
+.g-account .field:hover,
+.g-account [role="combobox"]:hover {
+  border-color: #bdc1c6;
+}
+.g-account .field:focus {
+  outline: none;
+  border-color: #0b57d0;
+  box-shadow: 0 0 0 2px rgba(11, 87, 208, 0.18);
+}
+.g-account .field::placeholder {
+  color: #80868b;
+}
+
+/* Google 按钮为 8px 圆角，不使用 Apple pill。 */
+.g-account .btn-pill {
+  border-radius: 8px;
+}
+.g-account .tracking-tight {
+  letter-spacing: 0;
+}
+
+/* 侧边导航滚动容器：保留滚动能力，隐藏原生滚动条。
+   覆盖移动端横向导航 + 桌面端侧栏纵向溢出两种情况。 */
+.g-account .no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.g-account .no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* iOS 聚焦输入不缩放：移动端控件保持 16px。 */
+@media (max-width: 767.98px) {
+  .g-account .field,
+  .g-account [role="combobox"] {
+    font-size: 16px;
+  }
+}
+
 /* Animated gradient text accent (used sparingly) */
 .text-gradient-ink {
   background: linear-gradient(120deg, #1d1d1f 0%, #6e6e73 50%, #1d1d1f 100%);

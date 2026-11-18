@@ -105,8 +105,8 @@ export function ProfileCard({ profile, onUpdated, onToast }: Props) {
 
     return (
         <FormCard
-            title="个人资料"
-            description="管理你的公开身份信息。"
+            title="基本资料"
+            description="昵称、头像与公开资料会展示在个人中心。"
             action={
                 editing ? undefined : (
                     <EditButton

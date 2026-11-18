@@ -1069,10 +1069,11 @@ export async function bootstrap() {
       : undefined,
   );
   const noteAgent = createNoteAgent(runtime, prompts, contextBinding);
-  // Code agent only: route to the user's own Coding Plan when app-user has one
-  // (VIP/SVIP, enabled) and the daily coding_plan quota allows it. Every
-  // unavailable path (no plan / non-VIP / 404 / 403 / 503 / quota exhausted)
-  // resolves undefined → the platform gateway model (fail-open).
+  // Chat turns: when the user explicitly selects a Coding Plan model in the
+  // model picker, route to their own plan if app-user has one (VIP/SVIP,
+  // enabled) and the daily coding_plan quota allows it. Every unavailable path
+  // (no plan / non-VIP / 404 / 403 / 503 / quota exhausted) resolves undefined
+  // → the platform gateway model (fail-open).
   const codingPlanResolver = createCodingPlanResolver({ plans: appAuth, quota });
   const codeAgent = createCodeAgent(runtime, prompts, contextBinding);
   const quizAgent = createQuizAgent(runtime, prompts, contextBinding);

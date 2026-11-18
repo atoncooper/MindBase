@@ -55,6 +55,22 @@ export interface CodingPlanTestResult {
     models?: string[];
 }
 
+/** Operator-owned provider catalog entry (default.yaml settings.coding_plan). */
+export interface CodingPlanProviderInfo {
+    name: string;
+    label: string;
+    openai_base_url: string;
+    anthropic_base_url: string;
+    models_url?: string;
+    model_hint?: string;
+}
+
+/** GET /settings/coding-plans response: plans + the YAML provider catalog. */
+export interface CodingPlanListResponse {
+    plans: CodingPlan[];
+    providers: CodingPlanProviderInfo[];
+}
+
 /** Settings-domain base path (migrated from /auth/coding-plans). */
 const BASE = "/settings/coding-plans";
 
@@ -63,11 +79,14 @@ function planPath(id: number): string {
 }
 
 export const codingPlanApi = {
-    async list(): Promise<CodingPlan[]> {
-        const res = await request<{ plans: CodingPlan[] }>(BASE, {
+    async list(): Promise<CodingPlanListResponse> {
+        const res = await request<CodingPlanListResponse>(BASE, {
             headers: getAuthHeaders(),
         });
-        return res.plans ?? [];
+        return {
+            plans: res.plans ?? [],
+            providers: res.providers ?? [],
+        };
     },
 
     async create(body: CodingPlanInput): Promise<CodingPlan> {

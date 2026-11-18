@@ -20,7 +20,7 @@ export type QuotaKind =
   | "vectorize"   // per-page vectorization (per page)
   | "ocr"         // cloud OCR parsing
   | "board"       // board AI completions
-  | "coding_plan" // code agent turns routed to the user's own Coding Plan (VIP/SVIP only; free = 0)
+  | "coding_plan" // chat turns routed to the user's own Coding Plan (VIP/SVIP only; free = 0)
   | "task_quiz_active" // scheduled-quiz active-task cap (stock, not a daily counter)
   | "academic_analysis" // research result-table generation
   | "academic_validation" // manuscript integrity checks
