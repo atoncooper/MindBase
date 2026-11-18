@@ -3,7 +3,7 @@ import { z } from "zod";
 import { simulateReadableStream, tool } from "ai";
 import { MockLanguageModelV2 } from "ai/test";
 import { createReactAgent } from "../src/agent/react.js";
-import type { AgentRuntime } from "../src/tools/runtime.js";
+import type { AgentRuntime } from "../src/agent/runtime.js";
 import type { SseFrame } from "../src/transport/sse.js";
 
 /**

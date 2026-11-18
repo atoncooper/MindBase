@@ -4,12 +4,14 @@ import type { ToolRunContext } from "../../context/types.js";
 import {
   ACADEMIC_STAGES,
   ACADEMIC_STAGE_LABELS,
+  academicAutoModeOf,
   nextStage,
   stageIndex,
   type AcademicDocumentRepository,
   type AcademicEventRepository,
   type AcademicLiteratureRepository,
   type AcademicPlanTask,
+  type AcademicAutoMode,
   type AcademicProject,
   type AcademicProjectPatch,
   type AcademicProjectRepository,
@@ -17,6 +19,8 @@ import {
   type AcademicStageState,
   type AcademicStageStatus,
 } from "../../repository/academic.js";
+import type { ResearchStageGateService, StageGateApplyResult } from "../../services/research/research-stage-gates.js";
+import type { ResearchAdvisorService } from "../../services/research/research-advisor.js";
 
 /**
  * academic_project: research project workspace (desktop parity:
@@ -34,14 +38,14 @@ import {
  * project event.
  *
  * Invariants:
- *  - Multi-tenant: uid comes from ToolRunContext and never appears in the
- *    schema; every repository call is uid-scoped, so a project id owned by
- *    another tenant resolves to "not found" instead of leaking data.
- *  - Every action except list/create requires projectId; a missing or foreign
- *    project comes back as plain guidance text (never a thrown error) so the
- *    ReAct loop keeps going.
- *  - All user/LLM-facing copy in this file is Chinese product text and must
- *    not be translated; comments are English.
+ * - Multi-tenant: uid comes from ToolRunContext and never appears in the
+ * schema; every repository call is uid-scoped, so a project id owned by
+ * another tenant resolves to "not found" instead of leaking data.
+ * - Every action except list/create requires projectId; a missing or foreign
+ * project comes back as plain guidance text (never a thrown error) so the
+ * ReAct loop keeps going.
+ * - All user/LLM-facing copy in this file is Chinese product text and must
+ * not be translated; comments are English.
  */
 
 /**
@@ -54,6 +58,14 @@ export interface AcademicProjectToolDeps {
   events: AcademicEventRepository;
   literature: AcademicLiteratureRepository;
   documents: AcademicDocumentRepository;
+  /**
+   * Optional stage-gate service : powers action=gate_status and
+   * the best-effort plan auto-tick in action=brief. Absent on deployments where
+   * the research evidence/validation stack was not assembled.
+   */
+  gates?: ResearchStageGateService;
+  /** Optional deterministic next-action advisor; brief appends its suggestions. */
+  advisor?: ResearchAdvisorService;
 }
 
 /**
@@ -69,6 +81,13 @@ const STAGE_STATUS_LABELS: Record<AcademicStageStatus, string> = {
   frozen: "已冻结",
 };
 
+/** Chinese labels for the project automation mode (product strings). */
+const AUTO_MODE_LABELS: Record<AcademicAutoMode, string> = {
+  off: "关闭",
+  assist: "建议",
+  auto: "自动",
+};
+
 /** Chinese labels for paper types, rendered by renderProject and action=list. */
 const PAPER_TYPE_LABELS: Record<string, string> = {
   journal: "期刊论文",
@@ -82,11 +101,15 @@ const EVENT_LABELS: Record<string, string> = {
   "stage.updated": "阶段更新",
   "advice.saved": "保存阶段建议",
   "plan.updated": "更新阶段计划",
+  "plan.auto_completed": "自动完成计划任务",
   "literature.imported": "导入文献",
   "literature.verified": "核验文献",
   "manuscript.document_created": "新建写作文档",
   "manuscript.section_saved": "保存章节",
   "manuscript.outline_updated": "调整章节结构",
+  "project.updated": "更新项目信息",
+  "literature.updated": "更新文献信息",
+  "literature.removed": "移除文献",
 };
 
 /**
@@ -145,7 +168,9 @@ function renderProject(project: AcademicProject): string {
       "｜目标期刊：" +
       (project.targetJournal || "未填写") +
       "｜截止：" +
-      (project.deadline || "未设置"),
+      (project.deadline || "未设置") +
+      "｜自动模式：" +
+      AUTO_MODE_LABELS[academicAutoModeOf(project)],
     "当前阶段：" + ACADEMIC_STAGE_LABELS[project.stage] + "（" + statusText(project, project.stage) + "）",
     "阶段进展（→ 为当前阶段）：",
     ...renderStages(project),
@@ -169,6 +194,58 @@ function renderPlan(stage: AcademicStage, tasks: AcademicPlanTask[] | undefined)
     const note = task.note ? "（" + task.note + "）" : "";
     lines.push((index + 1) + ". [" + (task.done ? "x" : " ") + "] " + task.title + note);
   });
+  return lines.join("\n");
+}
+
+/**
+ * Chinese report for action=gate_status: per-stage ready/missing checklist, the
+ * plan tasks auto-ticked by this pass, and the auto-advance outcome. The final
+ * line restates the hard rule that approved is always human — the LLM must not
+ * narrate an auto-approval.
+ */
+function renderGateStatus(project: AcademicProject, result: StageGateApplyResult): string {
+  const autoMode = academicAutoModeOf(project);
+  const lines = [
+    "项目「" +
+      project.title +
+      "」阶段门禁（当前阶段：" +
+      ACADEMIC_STAGE_LABELS[project.stage] +
+      "；自动模式：" +
+      AUTO_MODE_LABELS[autoMode] +
+      "）",
+    "",
+    "阶段门禁：",
+  ];
+  for (const entry of result.report) {
+    const label = ACADEMIC_STAGE_LABELS[entry.stage];
+    const progress = entry.doneCount + "/" + entry.taskCount + " 项计划完成";
+    if (entry.ready) {
+      lines.push("- [就绪] " + label + "（" + progress + "）");
+    } else {
+      lines.push("- [未就绪] " + label + "（" + progress + "）");
+      for (const missing of entry.missing) lines.push("    · " + missing);
+    }
+  }
+  lines.push("", "本次自动完成计划任务：" + (result.sync.length === 0 ? "无" : result.sync.length + " 项"));
+  for (const change of result.sync) {
+    lines.push("- 「" + ACADEMIC_STAGE_LABELS[change.stage] + "」" + change.title);
+  }
+  lines.push("");
+  if (result.advanced.advanced && result.advanced.from && result.advanced.to) {
+    lines.push(
+      "自动推进：已从「" +
+        ACADEMIC_STAGE_LABELS[result.advanced.from] +
+        "」推进到「" +
+        ACADEMIC_STAGE_LABELS[result.advanced.to] +
+        "」；原阶段状态置为「待确认」，需用户确认后才会 approved。",
+    );
+  } else {
+    lines.push("未自动推进：" + (result.advanced.reason ?? "当前不满足自动推进条件。"));
+  }
+  lines.push(
+    "",
+    "说明：自动模式只会把阶段置为「待确认」（submitted）；approved（已确认）永远需要用户人工操作。",
+  );
   return lines.join("\n");
 }
 
@@ -302,9 +379,9 @@ async function projectBrief(
  */
 const projectInputSchema = z.object({
   action: z
-    .enum(["list", "create", "brief", "stage_update", "save_advice", "plan_get", "plan_set"])
+    .enum(["list", "create", "update", "brief", "stage_update", "save_advice", "plan_get", "plan_set", "gate_status"])
     .describe(
-      "list=列出研究项目；create=新建项目；brief=项目简报；stage_update=推进/回退阶段；save_advice=保存阶段建议；plan_get=读取执行计划（不传 stage 返回全部阶段摘要）；plan_set=写入执行计划（单阶段 stage+tasks，多阶段 stages 批量）",
+      "list=列出研究项目；create=新建项目；update=更新项目元数据（研究问题/目标/关键词/贡献/方法/伦理/期刊要求/语言/引用风格）；brief=项目简报（会先尽量自动打勾计划任务，并附下一步建议）；stage_update=推进/回退阶段；save_advice=保存阶段建议；plan_get=读取执行计划（不传 stage 返回全部阶段摘要）；plan_set=写入执行计划（单阶段 stage+tasks，多阶段 stages 批量）；gate_status=查看阶段交付物门禁（每阶段 ready/缺失、本次自动完成的计划任务、是否自动推进）",
     ),
   projectId: z.string().min(1).optional().describe("项目 id（create/list 之外必填，来自 action=list 或 create 的输出）"),
   title: z.string().min(1).max(120).optional().describe("项目标题（create 必填）"),
@@ -316,6 +393,18 @@ const projectInputSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "格式应为 YYYY-MM-DD")
     .optional()
     .describe("截止日期 YYYY-MM-DD（create 可选）"),
+  researchQuestion: z.string().max(2000).optional().describe("核心研究问题（create/update 可选）"),
+  objectives: z.array(z.string().max(500)).max(10).optional().describe("研究目标/假设 1-10 条（create/update 可选）"),
+  keywords: z.array(z.string().max(50)).max(20).optional().describe("关键词 1-20 个（create/update 可选）"),
+  contributions: z.array(z.string().max(500)).max(10).optional().describe("贡献点 1-10 条（create/update 可选）"),
+  methodology: z.string().max(4000).optional().describe("研究方法/设计摘要（create/update 可选）"),
+  ethicsNote: z.string().max(4000).optional().describe("伦理/合规注意事项（create/update 可选）"),
+  venueRequirements: z.string().max(4000).optional().describe("目标期刊/会议要求摘要（create/update 可选）"),
+  language: z.enum(["zh", "en"]).optional().describe("写作语言（create/update 可选，缺省 zh）"),
+  citationStyle: z
+    .enum(["plain", "apa", "ieee", "gb7714"])
+    .optional()
+    .describe("引用风格（create/update 可选，缺省 plain）"),
   stage: z
     .enum(ACADEMIC_STAGES)
     .optional()
@@ -370,9 +459,11 @@ export function createAcademicProjectTool(deps: AcademicProjectToolDeps) {
       "action=stage_update：推进或回退项目阶段（回退必须给 reason；阶段推进需用户确认后才能调用）；" +
       "action=save_advice：保存某阶段的指导建议；" +
       "action=plan_get：读取执行计划（不传 stage 返回全部已有阶段的摘要）；" +
-      "action=plan_set：写入执行计划（单阶段用 stage+tasks；多阶段用 stages 一次批量写入，用于「生成科研计划/研究计划/开题计划」；同名任务保留完成状态与备注）。" +
+      "action=plan_set：写入执行计划（单阶段用 stage+tasks；多阶段用 stages 一次批量写入，用于「生成科研计划/研究计划/开题计划」；同名任务保留完成状态与备注）；" +
+      "action=gate_status：查看阶段门禁（每阶段交付物是否就绪、缺什么、本次自动完成了哪些计划任务、project.autoMode=auto 时是否自动推进）。" +
       "阶段顺序：topic 选题 → design 研究设计 → advise 指导 → experiment 实验 → writing 写作 → submission 投稿。" +
-      "除 list/create 外的 action 都需要 projectId。文献与稿件请配合 academic_literature / academic_manuscript；不要编造项目内容。",
+      "除 list/create 外的 action 都需要 projectId。文献与稿件请配合 academic_literature / academic_manuscript；不要编造项目内容。" +
+      "approved（已确认）永远需要用户人工确认，任何 action 都不会自动置 approved。",
     inputSchema: projectInputSchema,
     async execute(args, ctx) {
       // Identity is supplied by the runtime, never by the model (see the schema note above).
@@ -419,6 +510,15 @@ export function createAcademicProjectTool(deps: AcademicProjectToolDeps) {
             field: args.field?.trim() || undefined,
             targetJournal: args.targetJournal?.trim() || undefined,
             deadline: args.deadline?.trim() || undefined,
+            ...(args.researchQuestion?.trim() ? { researchQuestion: args.researchQuestion.trim() } : {}),
+            ...(args.objectives && args.objectives.length > 0 ? { objectives: args.objectives } : {}),
+            ...(args.keywords && args.keywords.length > 0 ? { keywords: args.keywords } : {}),
+            ...(args.contributions && args.contributions.length > 0 ? { contributions: args.contributions } : {}),
+            ...(args.methodology?.trim() ? { methodology: args.methodology.trim() } : {}),
+            ...(args.ethicsNote?.trim() ? { ethicsNote: args.ethicsNote.trim() } : {}),
+            ...(args.venueRequirements?.trim() ? { venueRequirements: args.venueRequirements.trim() } : {}),
+            ...(args.language ? { language: args.language } : {}),
+            ...(args.citationStyle ? { citationStyle: args.citationStyle } : {}),
           });
           await deps.events.append(
             uid,
@@ -439,15 +539,85 @@ export function createAcademicProjectTool(deps: AcademicProjectToolDeps) {
           return lines.join("\n");
         }
 
+        case "update": {
+          if (!projectId) return MISSING_PROJECT_TEXT;
+          const patch: AcademicProjectPatch = {};
+          if (args.title !== undefined) patch.title = args.title.trim();
+          if (args.paperType !== undefined) patch.paperType = args.paperType;
+          if (args.field !== undefined) patch.field = args.field.trim();
+          if (args.targetJournal !== undefined) patch.targetJournal = args.targetJournal.trim();
+          if (args.deadline !== undefined) patch.deadline = args.deadline.trim();
+          if (args.researchQuestion !== undefined) patch.researchQuestion = args.researchQuestion.trim();
+          if (args.objectives !== undefined) patch.objectives = args.objectives;
+          if (args.keywords !== undefined) patch.keywords = args.keywords;
+          if (args.contributions !== undefined) patch.contributions = args.contributions;
+          if (args.methodology !== undefined) patch.methodology = args.methodology.trim();
+          if (args.ethicsNote !== undefined) patch.ethicsNote = args.ethicsNote.trim();
+          if (args.venueRequirements !== undefined) patch.venueRequirements = args.venueRequirements.trim();
+          if (args.language !== undefined) patch.language = args.language;
+          if (args.citationStyle !== undefined) patch.citationStyle = args.citationStyle;
+          if (Object.keys(patch).length === 0) {
+            return "update 需要至少一项要修改的字段：title / paperType / field / targetJournal / deadline / researchQuestion / objectives / keywords / contributions / methodology / ethicsNote / venueRequirements / language / citationStyle。";
+          }
+          const updated = await deps.projects.update(uid, projectId, patch);
+          if (!updated) return NO_PROJECT_TEXT;
+          await deps.events.append(uid, projectId, "project.updated", { fields: Object.keys(patch) }, "agent");
+          pushProjectArtifact(ctx, "update", updated);
+          return "已更新项目「" + updated.title + "」的信息（" + Object.keys(patch).join("、") + "）。\n下一步可 action=brief 查看更新后的简报与建议。";
+        }
+
         case "brief": {
           if (!projectId) return MISSING_PROJECT_TEXT;
-          const text = await projectBrief(deps, uid, projectId);
+          // Best-effort plan auto-tick before rendering, so the brief reflects
+          // event-driven progress. A failed sync (gates not assembled / storage
+          // hiccup) must not break the read-only brief.
+          if (deps.gates) {
+            try {
+              await deps.gates.syncPlanTasks(uid, projectId);
+            } catch {
+            // best-effort: ignore, the brief still renders the stored state
+            }
+          }
+          let text = await projectBrief(deps, uid, projectId);
           if (text !== NO_PROJECT_TEXT) {
+            // Deterministic next-action advisor : rule-based, evidence-derived.
+            if (deps.advisor) {
+              try {
+                const advice = await deps.advisor.suggest(uid, projectId);
+                if (advice.suggestions.length > 0) {
+                  text +=
+                    "\n\n下一步建议：\n" +
+                    advice.suggestions
+                      .map((item) => "- [" + item.severity + "] " + item.title + "（" + item.reason + "）")
+                      .join("\n");
+                }
+              } catch {
+              // advisory extra: brief must stay readable when the advisor fails
+              }
+            }
             // projectBrief only returns text; re-read the project to attach the typed artifact.
             const project = await deps.projects.get(uid, projectId);
             if (project) pushProjectArtifact(ctx, "brief", project);
           }
           return text;
+        }
+
+        case "gate_status": {
+          if (!projectId) return MISSING_PROJECT_TEXT;
+          if (!deps.gates) return "阶段门禁服务未启用（当前部署未注入门禁服务）。";
+          let result: StageGateApplyResult;
+          try {
+            // apply = sync autoRule tasks -> evaluate gates -> advance if autoMode=auto.
+            result = await deps.gates.apply(uid, projectId);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (message.includes("不存在或无权访问")) return NO_PROJECT_TEXT;
+            return "阶段门禁评估失败：" + message;
+          }
+          const project = await deps.projects.get(uid, projectId);
+          if (!project) return NO_PROJECT_TEXT;
+          pushProjectArtifact(ctx, "gate_status", project);
+          return renderGateStatus(project, result);
         }
 
         case "stage_update": {
@@ -664,7 +834,7 @@ export function createAcademicProjectTool(deps: AcademicProjectToolDeps) {
           return (
             "未知 action：" +
             action +
-            "（可用：list / create / brief / stage_update / save_advice / plan_get / plan_set）"
+            "（可用：list / create / brief / stage_update / save_advice / plan_get / plan_set / gate_status）"
           );
         }
       }

@@ -2,7 +2,7 @@ import { createReactAgent } from "../react.js";
 import { agentEntry } from "../manifest.js";
 import type { PromptRegistry } from "../prompts/loader.js";
 import type { AgentContextBinding } from "../react.js";
-import type { AgentRuntime } from "../../tools/runtime.js";
+import type { AgentRuntime } from "../runtime.js";
 
 /** Board agent: manipulates mind maps/whiteboards (sub-agent invoked via delegate_to_agent; mirrors the Python §2.12 red lines). */
 export function createBoardAgent(runtime: AgentRuntime, prompts: PromptRegistry, context?: AgentContextBinding) {

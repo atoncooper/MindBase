@@ -1,6 +1,6 @@
 import { createReactAgent } from "../react.js";
 import type { Agent } from "../types.js";
-import type { AgentRuntime } from "../../tools/runtime.js";
+import type { AgentRuntime } from "../runtime.js";
 import type { PromptRegistry } from "../prompts/loader.js";
 import type { CustomAgentSpec, PlanNode } from "../dag/types.js";
 import { config } from "../../config/index.js";

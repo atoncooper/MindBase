@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { AppCloudClient } from "../clients/app-cloud-client.js";
-import type { ResearchWorkspace, ResearchWorkspaceRepository } from "../repository/research-workspaces.js";
+import type { AppCloudClient } from "../../clients/app-cloud-client.js";
+import type { ResearchWorkspace, ResearchWorkspaceRepository } from "../../repository/research-workspaces.js";
 
 export type ResearchFolderKind = "plan" | "literature" | "data" | "code" | "results" | "manuscript" | "submission";
 export const PERMANENT_FOLDER_KINDS: ResearchFolderKind[] = ["plan", "literature", "manuscript", "submission"];
@@ -112,7 +112,7 @@ export class ResearchWorkspaceService {
                 await this.cloud.deleteFile(workspace.uid, file.upload_uuid);
                 deleted += 1;
               } catch {
-                // Best-effort sweeper: next run retries.
+              // Best-effort sweeper: next run retries.
               }
             }
           }

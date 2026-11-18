@@ -47,4 +47,14 @@ export class MemoryPlanRunRepository implements PlanRunRepository {
     }
     this.runs.set(run.runId, clone(run));
   }
+
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    let removed = 0;
+    for (const [runId, run] of [...this.runs]) {
+      if (run.uid !== uid || run.projectId !== projectId) continue;
+      this.runs.delete(runId);
+      removed += 1;
+    }
+    return removed;
+  }
 }

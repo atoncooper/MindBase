@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineTool } from "../base.js";
 import type { CodeExecutionPort } from "./code-execution.js";
+import type { ResearchExecutionGuard } from "./execution-guard.js";
 
 const MAX_OUTPUT = 12_000;
 type ShellLanguage = "bash" | "sh" | "pwsh";
@@ -27,7 +28,7 @@ async function runShell(
 }
 
 /** sandbox_bash: AI-authored bash command, executed inside app-sandbox. */
-export function createSandboxBashTool(execution: CodeExecutionPort) {
+export function createSandboxBashTool(execution: CodeExecutionPort, guard?: ResearchExecutionGuard) {
   return defineTool({
     name: "sandbox_bash",
     description:
@@ -38,14 +39,18 @@ export function createSandboxBashTool(execution: CodeExecutionPort) {
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     }),
     defaultTimeoutMs: 180_000,
-    async execute(args, _ctx, signal) {
+    async execute(args, ctx, signal) {
+      if (guard) {
+        const blocked = await guard(ctx);
+        if (blocked) return blocked;
+      }
       return runShell(execution, "bash", args.command, args.timeoutMs ?? 120_000, signal);
     },
   });
 }
 
 /** sandbox_pwsh: same sandbox, PowerShell 7 must exist in the image. */
-export function createSandboxPwshTool(execution: CodeExecutionPort) {
+export function createSandboxPwshTool(execution: CodeExecutionPort, guard?: ResearchExecutionGuard) {
   return defineTool({
     name: "sandbox_pwsh",
     description:
@@ -56,7 +61,11 @@ export function createSandboxPwshTool(execution: CodeExecutionPort) {
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     }),
     defaultTimeoutMs: 180_000,
-    async execute(args, _ctx, signal) {
+    async execute(args, ctx, signal) {
+      if (guard) {
+        const blocked = await guard(ctx);
+        if (blocked) return blocked;
+      }
       return runShell(execution, "pwsh", args.command, args.timeoutMs ?? 120_000, signal);
     },
   });

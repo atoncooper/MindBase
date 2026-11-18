@@ -1,21 +1,23 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { getRequestContext } from "../../../context/request-context.js";
-import { AcademicError, type AcademicService } from "../../../services/academic.js";
-import type { ResearchExperimentRunner } from "../../../services/research-experiment.js";
+import { AcademicError, type AcademicService } from "../../../services/research/academic.js";
+import type { ResearchExperimentRunner } from "../../../services/research/research-experiment.js";
 import type { ResearchExperiment } from "../../../repository/research-experiments.js";
 import type {
   AcademicDataset,
   AcademicEvidenceRepository,
   AcademicRun,
 } from "../../../repository/academic-evidence.js";
-import type { ResearchValidationService } from "../../../services/research-validation.js";
-import type { ResearchAnalysisService } from "../../../services/research-analysis.js";
+import type { ResearchValidationService } from "../../../services/research/research-validation.js";
+import type { ResearchAnalysisService } from "../../../services/research/research-analysis.js";
 import {
   ResearchWorkspaceError,
   type ResearchFolderKind,
   type ResearchWorkspaceService,
-} from "../../../services/research-workspace.js";
+} from "../../../services/research/research-workspace.js";
 import type { ResearchProjectWorkspace, ResearchWorkspace } from "../../../repository/research-workspaces.js";
+import type { QuotaService } from "../../../services/quota.js";
+import type { ResearchMetrics } from "../../../services/research/metrics.js";
 
 /**
  * /academic/*科研工作台 REST extension (docs/research-ui-api.md §1–§5):
@@ -35,6 +37,10 @@ export interface ResearchRouteDeps {
   validation: ResearchValidationService;
   analysis: ResearchAnalysisService;
   workspace: ResearchWorkspaceService;
+  /** Optional member quota for research actions. */
+  quota?: Pick<QuotaService, "consumeKind">;
+  /** Optional in-process research metrics. */
+  metrics?: ResearchMetrics;
 }
 
 const FOLDER_KINDS: readonly ResearchFolderKind[] = [
@@ -53,6 +59,10 @@ const MAX_LIST_LIMIT = 100;
 
 /** Evidence list default per contract §2 (limit=50). */
 const DEFAULT_EVIDENCE_LIMIT = 50;
+
+/** Analysis modes accepted by POST analysis/results (an absent body.mode means summary). */
+const ANALYSIS_MODES = ["summary", "compare"] as const;
+type AnalysisMode = (typeof ANALYSIS_MODES)[number];
 
 /** Error messages that mean "missing or foreign resource" (contract 404). */
 const NOT_FOUND_HINT = /不存在|无权访问|还没有/;
@@ -169,8 +179,12 @@ export function registerResearchRoutes(app: FastifyInstance, deps: ResearchRoute
     if (documentId === INVALID) {
       return reply.status(422).send({ detail: "documentId 必须是字符串" });
     }
+    if (deps.quota && !(await deps.quota.consumeKind(uid, "academic_validation"))) {
+      return reply.status(429).send({ detail: "今日学术校验次数已用完，请明天再试或升级会员。" });
+    }
     return run(reply, async () => {
       const report = await deps.validation.validate(uid, projectId, documentId);
+      deps.metrics?.inc(report.pass ? "validation_pass" : "validation_fail");
       return { report };
     });
   });
@@ -181,9 +195,33 @@ export function registerResearchRoutes(app: FastifyInstance, deps: ResearchRoute
     const uid = requireUid(reply);
     if (!uid) return reply;
     const { projectId } = req.params as { projectId: string };
+    const mode = analysisMode(req.body);
+    if (mode === INVALID_MODE) {
+      return reply.status(422).send({ detail: "mode 不合法（可选：summary / compare）" });
+    }
     const documentId = optionalDocumentId(req.body);
     if (documentId === INVALID) {
       return reply.status(422).send({ detail: "documentId 必须是字符串" });
+    }
+    const runIds = optionalRunIds(req.body);
+    if (runIds === INVALID_RUN_IDS) {
+      return reply.status(422).send({ detail: "runIds 必须是字符串数组" });
+    }
+    if (deps.quota && !(await deps.quota.consumeKind(uid, "academic_analysis"))) {
+      return reply.status(429).send({ detail: "今日结果分析次数已用完，请明天再试或升级会员。" });
+    }
+    deps.metrics?.inc(mode === "compare" ? "analysis_compare" : "analysis_summary");
+    if (mode === "compare") {
+      return run(reply, async () => {
+        const result = await deps.analysis.compareRuns(uid, projectId, runIds);
+        return {
+          markdown: result.markdown,
+          chart: result.chart,
+          ...(result.uploadUuid !== undefined
+            ? { uploadUuid: result.uploadUuid, folderId: result.folderId }
+            : {}),
+        };
+      });
     }
     return run(reply, () => deps.analysis.generateResultsTable(uid, projectId, documentId));
   });
@@ -299,6 +337,7 @@ function runPayload(run: AcademicRun) {
     ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
     ...(run.stdoutPreview !== undefined ? { stdoutPreview: run.stdoutPreview } : {}),
     ...(run.stderrPreview !== undefined ? { stderrPreview: run.stderrPreview } : {}),
+    ...(run.metrics !== undefined && run.metrics.length > 0 ? { metrics: run.metrics } : {}),
     artifacts: run.artifacts,
     ...(run.cpuMillis !== undefined ? { cpuMillis: run.cpuMillis } : {}),
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
@@ -354,8 +393,10 @@ function listOffset(raw: unknown): number {
   return Math.max(Math.trunc(value), 0);
 }
 
-/** Sentinel for a non-string documentId (route answers 422 before calling the service). */
+/** Sentinels for body values the route rejects before calling the service (422). */
 const INVALID = Symbol("invalid-document-id");
+const INVALID_MODE = Symbol("invalid-analysis-mode");
+const INVALID_RUN_IDS = Symbol("invalid-run-ids");
 
 /**
  * documentId is optional; a blank value means "all documents" (contract §3/§4),
@@ -368,6 +409,31 @@ function optionalDocumentId(body: unknown): string | undefined | typeof INVALID 
   if (typeof raw !== "string") return INVALID;
   const trimmed = raw.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+/** body.mode is optional and defaults to summary; anything outside the enum is a client error. */
+function analysisMode(body: unknown): AnalysisMode | typeof INVALID_MODE {
+  if (body === null || typeof body !== "object") return "summary";
+  const raw = (body as { mode?: unknown }).mode;
+  if (raw === undefined || raw === null || raw === "") return "summary";
+  if (typeof raw !== "string") return INVALID_MODE;
+  const mode = raw.trim().toLowerCase();
+  return (ANALYSIS_MODES as readonly string[]).includes(mode) ? (mode as AnalysisMode) : INVALID_MODE;
+}
+
+/** runIds is optional; absent/blank means "recent runs", non-array/non-string entries are client errors. */
+function optionalRunIds(body: unknown): string[] | undefined | typeof INVALID_RUN_IDS {
+  if (body === null || typeof body !== "object") return undefined;
+  const raw = (body as { runIds?: unknown }).runIds;
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) return INVALID_RUN_IDS;
+  const runIds: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") return INVALID_RUN_IDS;
+    const trimmed = item.trim();
+    if (trimmed) runIds.push(trimmed);
+  }
+  return runIds.length > 0 ? runIds : undefined;
 }
 
 function findProject(workspace: ResearchWorkspace, projectId: string): ResearchProjectWorkspace | undefined {

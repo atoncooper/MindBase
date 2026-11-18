@@ -11,7 +11,7 @@ import { config } from "../config/index.js";
  * (immediate reject, no enqueue).
  *
  * Layering note: this gates *turns* (one slot per chat turn). The tool-level
- * fan-out gate (`tools/concurrency.ts` Semaphore, `tools.maxConcurrent`)
+ * fan-out gate (`utils/concurrency.ts` Semaphore, `tools.maxConcurrent`)
  * sits underneath it and is unaffected.
  *
  * In-memory by design: the service runs as a single process; the queue and

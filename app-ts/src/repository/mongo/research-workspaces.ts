@@ -59,6 +59,30 @@ export class MongoResearchWorkspaceRepository implements ResearchWorkspaceReposi
     await this.workspaces.updateOne({ workspaceId: workspace.workspaceId }, { $set: workspace }, { upsert: true });
   }
 
+  /**
+   * Pulls the project's folder mapping out of its workspace and deletes the
+   * workspace row when no projects remain. Cloud-drive files are untouched.
+   * Returns the number of project mappings removed.
+   */
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    const affected = await this.workspaces.find({ uid, "projects.projectId": projectId }).toArray();
+    if (affected.length === 0) return 0;
+    let removed = 0;
+    const emptied: string[] = [];
+    for (const workspace of affected) {
+      const count = workspace.projects.filter((project) => project.projectId === projectId).length;
+      if (count === 0) continue;
+      removed += count;
+      if (workspace.projects.length === count) emptied.push(workspace.workspaceId);
+    }
+    await this.workspaces.updateMany(
+      { uid, "projects.projectId": projectId },
+      { $pull: { projects: { projectId } }, $set: { updatedAt: Date.now() } },
+    );
+    if (emptied.length > 0) await this.workspaces.deleteMany({ uid, workspaceId: { $in: emptied } });
+    return removed;
+  }
+
   async close(): Promise<void> {
     await this.client.close();
   }

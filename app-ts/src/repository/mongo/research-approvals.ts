@@ -5,6 +5,12 @@ import type { ResearchApproval, ResearchApprovalRepository } from "../research-a
 
 const log = createLogger("MONGO");
 
+/**
+ * MongoDB `mind_base_ts.research_approvals` adapter. Approval v2 fields are
+ * optional and written only when present (`$set` of the whole small row), so
+ * pre-v2 documents keep reading as legacy rows: no expiresAt = never expires,
+ * no consumedAt = not consumed, no scope = project-level approval.
+ */
 export class MongoResearchApprovalRepository implements ResearchApprovalRepository {
   private constructor(
     private readonly client: MongoClient,
@@ -23,6 +29,10 @@ export class MongoResearchApprovalRepository implements ResearchApprovalReposito
       await items.createIndex({ id: 1 }, { unique: true });
       await items.createIndex({ uid: 1, projectId: 1, requestedAt: -1 });
       await items.createIndex({ status: 1, requestedAt: 1 });
+      // Approval v2 lookups: newest active decision per project/kind plus the
+      // scope/consumption checks run by ResearchApprovalService.
+      await items.createIndex({ uid: 1, projectId: 1, kind: 1, status: 1, requestedAt: -1 });
+      await items.createIndex({ status: 1, expiresAt: 1 });
       return new MongoResearchApprovalRepository(client, db, items);
     } catch (err) {
       log.warn("[APPROVAL] Mongo research_approvals connect failed: " + (err instanceof Error ? err.message : err));
@@ -45,6 +55,11 @@ export class MongoResearchApprovalRepository implements ResearchApprovalReposito
 
   async save(approval: ResearchApproval): Promise<void> {
     await this.items.updateOne({ id: approval.id }, { $set: approval }, { upsert: true });
+  }
+
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    const result = await this.items.deleteMany({ uid, projectId });
+    return result.deletedCount;
   }
 
   async close(): Promise<void> {

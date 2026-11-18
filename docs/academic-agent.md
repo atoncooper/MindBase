@@ -1,6 +1,8 @@
 # 网页端学术 Agent（academic）
 
 > 状态：**Phase 1 + 1.5 + 2 已落地**（2026-11-01）；Phase 3 评估见 §十三；沙箱控制层见 §十五。
+>
+> ⚠️ **2026-11-17 现状修订**：academic 子 agent 已并入 main agent（manifest 无 academic，主 agent 直接持有 academic_* 工具），§1.2/§2.2 中「academic 子 agent」的描述已过时；`prompts/agents/academic.md` 已删除，其引用纪律/诚信红线已合并到 `prompts/agents/main.md`。本轮的 P0 修复与后续智能化计划见 [plan/1.0.21-AcademicResearch](../plan/1.0.21-AcademicResearch/1.0.21-AcademicResearch.md)。
 > 设计文档：`plan/1.0.17-WebAcademicAgent`、`plan/1.0.12-AcademicAgent`（本地维护，不入 git）
 > 契约唯一来源：`app-ts/src/repository/academic.ts`
 
@@ -680,7 +682,7 @@ cd app-ts && npx vitest run test/academic-repository.test.ts
 
 ## 十一、REST API（Phase 2 后端）
 
-> 实现：`app-ts/src/transport/http/routes/academic.ts`（路由）+ `src/services/academic.ts`（编排）+ `src/bootstrap/container.ts`（装配）。鉴权：APISIX `academic_ts` 路由 forward-auth 注入 `X-Uid`；缺少身份返回 401。所有 JSON 为 camelCase，错误体 `{ detail: string }`。
+> 实现：`app-ts/src/transport/http/routes/academic.ts`（路由）+ `src/services/research/academic.ts`（编排）+ `src/bootstrap/container.ts`（装配）。鉴权：APISIX `academic_ts` 路由 forward-auth 注入 `X-Uid`；缺少身份返回 401。所有 JSON 为 camelCase，错误体 `{ detail: string }`。
 
 | 方法与路径 | 说明 |
 |---|---|

@@ -59,6 +59,11 @@ export class MongoResearchExperimentRepository implements ResearchExperimentRepo
     await this.runs.updateOne({ id: exp.id }, { $set: exp }, { upsert: true });
   }
 
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    const result = await this.runs.deleteMany({ uid, projectId });
+    return result.deletedCount;
+  }
+
   async close(): Promise<void> {
     await this.client.close();
   }

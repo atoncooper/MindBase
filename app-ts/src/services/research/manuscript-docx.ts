@@ -1,19 +1,22 @@
-import type { AppCloudClient } from "../clients/app-cloud-client.js";
-import { AppCloudError } from "../clients/app-cloud-client.js";
-import { createLogger } from "../logger.js";
+import type { AppCloudClient } from "../../clients/app-cloud-client.js";
+import { AppCloudError } from "../../clients/app-cloud-client.js";
+import { createLogger } from "../../logger.js";
 import {
   ACADEMIC_DOCUMENT_KINDS,
   type AcademicDocument,
+  type AcademicLiteratureRepository,
   type AcademicDocumentExport,
   type AcademicDocumentKind,
   type AcademicDocumentRepository,
   type AcademicDocumentSource,
   type AcademicProjectRepository,
   type AcademicSectionInput,
-} from "../repository/academic.js";
+} from "../../repository/academic.js";
 import { AcademicError } from "./academic.js";
-import { buildDocxBuffer } from "./docx-writer.js";
-import { DOCX_MIME, isDocxFile, parseDocxSections } from "../doc-parser/docx.js";
+import { describeValidationFailures, type ResearchValidationService } from "./research-validation.js";
+import { buildDocxBuffer } from "../docx-writer.js";
+import { DOCX_MIME, isDocxFile, parseDocxSections } from "../../doc-parser/docx.js";
+import { referencesDocxSection } from "./bibliography.js";
 import type { ResearchFolderKind, ResearchWorkspaceService } from "./research-workspace.js";
 
 const log = createLogger("MANUSCRIPT-DOCX");
@@ -123,6 +126,14 @@ export interface ManuscriptDocxServiceDeps {
   workspace: ResearchWorkspaceService;
   /** app-cloud M2M client (upload/download of the manuscript files). */
   cloud: AppCloudClient;
+  /**
+   * Optional academic integrity gate (services/research/research-validation.ts): when
+   * injected, saving a Word back into the cloud drive validates the manuscript
+   * first. Absent = legacy ungated behavior (academic-only or test boots).
+   */
+  validation?: Pick<ResearchValidationService, "validate">;
+  /** Optional literature library: appends the 参考文献 section on export. */
+  literature?: Pick<AcademicLiteratureRepository, "list">;
 }
 
 /** Browser-sent file names may carry a path; keep a plain, safe file name. */
@@ -194,14 +205,14 @@ function parseDocumentKind(value: string | undefined): AcademicDocumentKind {
  * storage stays behind the repository contract.
  *
  * Invariants:
- *  - uid first on every call; a foreign project/document is 404 (never a 403 that
- *    leaks existence);
- *  - the cloud drive is the storage owner: every failure to reach it (or to
- *    ensure the project folder tree) surfaces as 503 with one fixed message, so
- *    the UI can offer a retry without string matching;
- *  - the uploaded original is recorded as document.source and re-downloaded as
- *    the export template, so a user-provided Word layout is preserved across the
- *    agent/human editing round-trip.
+ * - uid first on every call; a foreign project/document is 404 (never a 403 that
+ * leaks existence);
+ * - the cloud drive is the storage owner: every failure to reach it (or to
+ * ensure the project folder tree) surfaces as 503 with one fixed message, so
+ * the UI can offer a retry without string matching;
+ * - the uploaded original is recorded as document.source and re-downloaded as
+ * the export template, so a user-provided Word layout is preserved across the
+ * agent/human editing round-trip.
  */
 export class ManuscriptDocxService {
   constructor(private readonly deps: ManuscriptDocxServiceDeps) {}
@@ -386,12 +397,17 @@ export class ManuscriptDocxService {
   async exportDocxBuffer(
     uid: string,
     documentId: string,
+    options: { force?: boolean } = {},
   ): Promise<{ buffer: Buffer; title: string; fileName: string }> {
     const document = await this.requireDocument(uid, documentId);
+    // Integrity gate applies to the download path too: a manuscript that fails
+    // validation must not be handed out as a Word deliverable unless forced.
+    await this.assertExportValid(uid, document.projectId, documentId, options.force === true);
     const template = await this.templateFor(uid, document, false);
+    const sections = await this.sectionsWithReferences(uid, document);
     const buffer = await buildDocxBuffer({
       title: document.title,
-      sections: document.sections.map((section) => ({ title: section.title, content: section.content })),
+      sections,
       ...(template ? { template } : {}),
     });
     return { buffer, title: document.title, fileName: sanitizeTitlePart(document.title) + ".docx" };
@@ -402,19 +418,27 @@ export class ManuscriptDocxService {
    * (§2.3), then records lastExport. The file name is
    * title_yyyyMMddHHmm.docx with a numeric suffix on collision.
    */
-  async exportDocxToCloud(uid: string, documentId: string): Promise<ManuscriptDocxSaveResult> {
+  async exportDocxToCloud(
+    uid: string,
+    documentId: string,
+    options: { force?: boolean } = {},
+  ): Promise<ManuscriptDocxSaveResult> {
     const document = await this.requireDocument(uid, documentId);
     const project = await this.deps.projects.get(uid, document.projectId);
     if (!project) throw new AcademicError(404, "项目不存在或无权访问");
+    // Gate before any Word bytes are authored or stored: an invalid manuscript
+    // must not reach the project cloud drive unless the caller explicitly forces.
+    await this.assertExportValid(uid, document.projectId, documentId, options.force === true);
     if (!this.deps.cloud.configured) throw this.cloudUnavailable();
 
     // Write path: the template must be available, otherwise the saved file would
     // silently drop the user layout. A deleted (404) source is the one case
     // where re-authoring from scratch is the right answer.
     const template = await this.templateFor(uid, document, true);
+    const sections = await this.sectionsWithReferences(uid, document);
     const buffer = await buildDocxBuffer({
       title: document.title,
-      sections: document.sections.map((section) => ({ title: section.title, content: section.content })),
+      sections,
       ...(template ? { template } : {}),
     });
 
@@ -564,7 +588,48 @@ export class ManuscriptDocxService {
     return { workspace: workspaceInfo, files };
   }
 
+  /** 文档章节 + 按项目引用风格追加的参考文献章节。 */
+  private async sectionsWithReferences(
+    uid: string,
+    document: AcademicDocument,
+  ): Promise<Array<{ title: string; content: string }>> {
+    const sections = document.sections.map((section) => ({ title: section.title, content: section.content }));
+    if (!this.deps.literature) return sections;
+    try {
+      const [entries, project] = await Promise.all([
+        this.deps.literature.list(uid, document.projectId),
+        this.deps.projects.get(uid, document.projectId),
+      ]);
+      const reference = referencesDocxSection(entries, project?.citationStyle, sections.map((section) => section.title));
+      return reference ? [...sections, reference] : sections;
+    } catch {
+      return sections;
+    }
+  }
+
   // ---- internals ----------------------------------------------------------
+
+  /**
+   * Integrity gate for the cloud save path: an injected validation service must
+   * pass, otherwise the save is a 409 carrying the Chinese failure list. force
+   * is the explicit override (the mutation is logged so forced saves stay
+   * visible; the agent tool additionally records an export.forced event).
+   */
+  private async assertExportValid(uid: string, projectId: string, documentId: string, force: boolean): Promise<void> {
+    const validation = this.deps.validation;
+    if (!validation) return;
+    const report = await validation.validate(uid, projectId, documentId);
+    if (report.pass) return;
+    if (!force) {
+      throw new AcademicError(
+        409,
+        "Word 导出被拒绝：学术校验未通过，未生成 Word 文件。\n" +
+          describeValidationFailures(report) +
+          "\n请先修正以上问题；如确需强制导出，请传 force=true。",
+      );
+    }
+    log.warn("[MANUSCRIPT-DOCX] forced Word export document_id=%s", documentId);
+  }
 
   /**
    * Locates one project upload by uuid across the seven folders. Best-effort:

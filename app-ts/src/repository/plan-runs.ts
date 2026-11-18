@@ -23,7 +23,7 @@ export interface PlanRunNode {
   endedAt?: number;
 }
 
-export type PlanRunStatus = "pending" | "running" | "completed" | "failed" | "partial";
+export type PlanRunStatus = "pending" | "running" | "paused" | "cancelled" | "completed" | "failed" | "partial";
 
 export interface PlanRunRecord {
   runId: string;
@@ -64,4 +64,6 @@ export interface PlanRunRepository {
   listByUid(uid: string, limit?: number, chatSessionId?: string, projectId?: string): Promise<PlanRunRecord[]>;
   /** Optimistic write: rejects when an equal/newer version already exists. */
   save(run: PlanRunRecord): Promise<void>;
+  /** 永久删除项目下的计划运行记录（级联清理），返回删除条数。 */
+  removeByProject(uid: string, projectId: string): Promise<number>;
 }

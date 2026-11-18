@@ -18,6 +18,7 @@ import {
   runListWindow,
   type AcademicDataset,
   type AcademicDatasetInput,
+  type AcademicEvidencePurgeCounts,
   type AcademicEvidenceRepository,
   type AcademicRun,
   type AcademicRunInput,
@@ -119,6 +120,16 @@ export class MikroAcademicEvidenceStore implements AcademicEvidenceRepository {
     return record ? toRun(record) : null;
   }
 
+  /** Deletes the project's datasets and runs; returns both removed counts. */
+  async removeByProject(uid: string, projectId: string): Promise<AcademicEvidencePurgeCounts> {
+    const em = this.orm.em.fork();
+    const deleteKind = async (kind: "dataset" | "run"): Promise<number> =>
+      em.nativeDelete<AcademicEvidenceRecordEntity>(ENTITY as EntityName as never, { uid, projectId, kind });
+    const datasets = await deleteKind(KIND_DATASET);
+    const runs = await deleteKind(KIND_RUN);
+    return { datasets, runs };
+  }
+
   /** createdAt source: strictly increasing (+1ms fallback) so list order is stable. */
   private nextCreatedAt(): number {
     const now = Date.now();
@@ -157,6 +168,7 @@ function toRun(record: AcademicEvidenceRecordEntity): AcademicRun {
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.stdoutPreview !== undefined ? { stdoutPreview: record.stdoutPreview } : {}),
     ...(record.stderrPreview !== undefined ? { stderrPreview: record.stderrPreview } : {}),
+    ...(record.metrics !== undefined && record.metrics.length > 0 ? { metrics: record.metrics } : {}),
     artifacts: record.artifacts ?? [],
     ...(record.cpuMillis !== undefined ? { cpuMillis: record.cpuMillis } : {}),
     ...(record.startedAt !== undefined ? { startedAt: record.startedAt } : {}),

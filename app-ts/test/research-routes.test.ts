@@ -9,11 +9,11 @@ import { MemoryResearchExperimentRepository } from "../src/repository/memory/res
 import { MemoryResearchWorkspaceRepository } from "../src/repository/memory/research-workspaces.js";
 import { MemoryPlanRunRepository } from "../src/repository/memory/plan-runs.js";
 import { PlanRunEngine } from "../src/agent/dag/state.js";
-import { AcademicService } from "../src/services/academic.js";
-import { ResearchExperimentRunner } from "../src/services/research-experiment.js";
-import { ResearchValidationService } from "../src/services/research-validation.js";
-import { ResearchAnalysisService } from "../src/services/research-analysis.js";
-import { ResearchWorkspaceService } from "../src/services/research-workspace.js";
+import { AcademicService } from "../src/services/research/academic.js";
+import { ResearchExperimentRunner } from "../src/services/research/research-experiment.js";
+import { ResearchValidationService } from "../src/services/research/research-validation.js";
+import { ResearchAnalysisService } from "../src/services/research/research-analysis.js";
+import { ResearchWorkspaceService } from "../src/services/research/research-workspace.js";
 import type { PlanRunRecord } from "../src/repository/plan-runs.js";
 import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/clients/literature-client.js";
 import type { CodeExecutionPort } from "../src/tools/code/code-execution.js";
@@ -122,7 +122,7 @@ async function seedExperiment(
 }
 
 describe("research routes", () => {
-  it("requires the gateway uid", async () => {
+ it("requires the gateway uid", async () => {
     const { app } = buildApp();
     const res = await app.inject({ method: "GET", url: "/academic/projects/p1/experiments" });
     expect(res.statusCode).toBe(401);
@@ -130,7 +130,7 @@ describe("research routes", () => {
     await app.close();
   });
 
-  it("lists experiments newest-first and hides uid", async () => {
+ it("lists experiments newest-first and hides uid", async () => {
     const { app, academic, experimentRepo } = buildApp();
     const projectId = await createProject(academic, "1", "实验项目");
     await seedExperiment(experimentRepo, { id: "exp-old", projectId, createdAt: 100 });
@@ -157,7 +157,7 @@ describe("research routes", () => {
     await app.close();
   });
 
-  it("cancels an experiment for its owner and no-ops on terminal rows", async () => {
+ it("cancels an experiment for its owner and no-ops on terminal rows", async () => {
     const { app, academic, experimentRepo } = buildApp();
     const projectId = await createProject(academic, "1", "取消项目");
     await seedExperiment(experimentRepo, { id: "exp-done", projectId, status: "succeeded" });
@@ -186,7 +186,7 @@ describe("research routes", () => {
     await app.close();
   });
 
-  it("lists datasets and runs with limit/offset and serves one run detail", async () => {
+ it("lists datasets and runs with limit/offset and serves one run detail", async () => {
     const { app, academic, evidence } = buildApp();
     const projectId = await createProject(academic, "1", "证据项目");
     await evidence.addDataset("1", projectId, {
@@ -245,7 +245,7 @@ describe("research routes", () => {
     await app.close();
   });
 
-  it("validates a manuscript and rejects a non-string documentId", async () => {
+ it("validates a manuscript and rejects a non-string documentId", async () => {
     const { app, academic } = buildApp();
     const projectId = await createProject(academic, "1", "校验项目");
 
@@ -259,7 +259,7 @@ describe("research routes", () => {
     const report = res.json().report;
     expect(report.pass).toBe(true);
     expect(report.citations).toEqual({ total: 0, missing: [], unverified: [] });
-    expect(report.runs).toEqual({ total: 0, unreproducible: [] });
+    expect(report.runs).toEqual({ total: 0, unreproducible: [], invalidRefs: [] });
 
     const invalid = await app.inject({
       method: "POST",
@@ -271,7 +271,7 @@ describe("research routes", () => {
     await app.close();
   });
 
-  it("generates the results table from the evidence ledger", async () => {
+ it("generates the results table from the evidence ledger", async () => {
     const { app, academic, evidence } = buildApp();
     const projectId = await createProject(academic, "1", "分析项目");
     const run = await evidence.recordRun("1", projectId, {
@@ -306,7 +306,7 @@ describe("research routes", () => {
     await app.close();
   });
 
-  it("ensures, reads and lists the academic-workspace tree", async () => {
+ it("ensures, reads and lists the academic-workspace tree", async () => {
     const { app, academic, cloud } = buildApp();
     const projectId = await createProject(academic, "1", "空间项目");
 
@@ -419,14 +419,14 @@ function buildPlanApp() {
 }
 
 describe("plan history routes", () => {
-  it("requires the gateway uid", async () => {
+ it("requires the gateway uid", async () => {
     const { app } = buildPlanApp();
     const res = await app.inject({ method: "GET", url: "/chat/plans" });
     expect(res.statusCode).toBe(401);
     await app.close();
   });
 
-  it("lists the caller's runs newest-first with node counts", async () => {
+ it("lists the caller's runs newest-first with node counts", async () => {
     const { app, repo } = buildPlanApp();
     await repo.create(planRecord("run-old", "1", "s1", 100, ["done", "failed", "in_progress", "pending", "skipped"]));
     await repo.create(planRecord("run-new", "1", "s2", 200, ["done", "done"]));
@@ -452,7 +452,7 @@ describe("plan history routes", () => {
     await app.close();
   });
 
-  it("filters by project_id and echoes it (research workbench scoping)", async () => {
+ it("filters by project_id and echoes it (research workbench scoping)", async () => {
     const { app, repo } = buildPlanApp();
     await repo.create(planRecord("run-p1", "1", "s1", 100, ["done"], "proj-1"));
     await repo.create(planRecord("run-p2", "1", "s2", 200, ["done"], "proj-2"));

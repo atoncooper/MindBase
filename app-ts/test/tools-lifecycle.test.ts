@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { AgentRuntime } from "../src/tools/runtime.js";
+import { AgentRuntime } from "../src/agent/runtime.js";
 import { defineTool } from "../src/tools/base.js";
 import { ResultCollector } from "../src/context/types.js";
 import { AgentLifecycleManager } from "../src/agent/lifecycle.js";

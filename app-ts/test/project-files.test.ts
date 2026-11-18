@@ -1,9 +1,9 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { runWithRequestContext } from "../src/context/request-context.js";
-import { AcademicService } from "../src/services/academic.js";
-import { ManuscriptDocxService } from "../src/services/manuscript-docx.js";
-import { ResearchWorkspaceService } from "../src/services/research-workspace.js";
+import { AcademicService } from "../src/services/research/academic.js";
+import { ManuscriptDocxService } from "../src/services/research/manuscript-docx.js";
+import { ResearchWorkspaceService } from "../src/services/research/research-workspace.js";
 import { DOCX_MIME } from "../src/doc-parser/docx.js";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
 import { MemoryResearchWorkspaceRepository } from "../src/repository/memory/research-workspaces.js";
@@ -152,7 +152,7 @@ async function ensureWorkspace(
 }
 
 describe("GET /academic/projects/:projectId/files", () => {
-  it("requires the gateway uid", async () => {
+ it("requires the gateway uid", async () => {
     const { app } = await buildApp();
     const projectId = await createProject(app);
     const res = await app.inject({ method: "GET", url: "/academic/projects/" + projectId + "/files" });
@@ -161,7 +161,7 @@ describe("GET /academic/projects/:projectId/files", () => {
     await app.close();
   });
 
-  it("lists document source/lastExport entries when the project has no workspace", async () => {
+ it("lists document source/lastExport entries when the project has no workspace", async () => {
     const { app, store } = await buildApp();
     const projectId = await createProject(app);
     const document = await store.createDocument("1", projectId, {
@@ -200,7 +200,7 @@ describe("GET /academic/projects/:projectId/files", () => {
     await app.close();
   });
 
-  it("aggregates the seven workspace folders in order, newest first, and dedupes document uploads", async () => {
+ it("aggregates the seven workspace folders in order, newest first, and dedupes document uploads", async () => {
     const { app, store, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     const { workspaceId, folders } = await ensureWorkspace(workspace, projectId);
@@ -278,7 +278,7 @@ describe("GET /academic/projects/:projectId/files", () => {
     await app.close();
   });
 
-  it("stays 200 when one folder listing fails and keeps the other folders", async () => {
+ it("stays 200 when one folder listing fails and keeps the other folders", async () => {
     const { app, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     const { folders } = await ensureWorkspace(workspace, projectId);
@@ -300,7 +300,7 @@ describe("GET /academic/projects/:projectId/files", () => {
     await app.close();
   });
 
-  it("answers 503 when every workspace folder listing fails (cloud drive down)", async () => {
+ it("answers 503 when every workspace folder listing fails (cloud drive down)", async () => {
     const { app, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     await ensureWorkspace(workspace, projectId);
@@ -316,7 +316,7 @@ describe("GET /academic/projects/:projectId/files", () => {
     await app.close();
   });
 
-  it("answers 503 when the cloud drive is not configured but the project has a workspace", async () => {
+ it("answers 503 when the cloud drive is not configured but the project has a workspace", async () => {
     const { app, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     await ensureWorkspace(workspace, projectId);
@@ -332,7 +332,7 @@ describe("GET /academic/projects/:projectId/files", () => {
     await app.close();
   });
 
-  it("answers 404 for a missing or foreign project", async () => {
+ it("answers 404 for a missing or foreign project", async () => {
     const { app } = await buildApp();
     const missing = await app.inject({
       method: "GET",

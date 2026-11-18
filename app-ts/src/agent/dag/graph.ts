@@ -82,6 +82,9 @@ export function validatePlan(graph: PlanGraph, opts: PlanValidationOptions): Pla
     }
     if (!node.task || !node.task.trim()) fail("node_task", "节点 " + node.id + " 缺少 task");
     if (!Array.isArray(node.deps)) fail("node_deps", "节点 " + node.id + " deps 必须是数组");
+    if (node.requiresApproval !== undefined && typeof node.requiresApproval !== "boolean") {
+      fail("node_approval", "节点 " + node.id + " requiresApproval 必须是布尔值");
+    }
   }
   for (const node of graph.nodes) {
     for (const dep of node.deps ?? []) {

@@ -38,8 +38,8 @@ export function buildResearchPaperGraph(input: {
         id: "experiment",
         name: "实验",
         role: "代码/训练/数据分析",
-        system_prompt: "你是实验节点。仅在 CS/SE/AI 的代码、训练、数据分析范围内执行；用 run_code 得到真实输出，并把数据/结果写入课题目录。禁止编造数字。",
-        tools: ["run_code", "research_workspace", "academic_evidence"],
+        system_prompt: "你是实验节点。仅在 CS/SE/AI 的代码、训练、数据分析范围内执行；实验执行已经过人工审批，用 academic_experiment 提交后台实验，或读取已完成的 run 证据并写入课题目录。禁止编造数字。",
+        tools: ["academic_experiment", "research_workspace", "academic_evidence", "academic_analysis"],
         max_steps: 10,
       },
       {
@@ -47,7 +47,7 @@ export function buildResearchPaperGraph(input: {
         name: "分析",
         role: "结果表/图/统计",
         system_prompt: "你是分析节点。只根据实验真实输出生成表/图/统计摘要；每个结果必须带 [[run:<id>]] 证据引用。",
-        tools: ["academic_evidence", "research_workspace", "run_code"],
+        tools: ["academic_analysis", "academic_evidence", "research_workspace"],
         max_steps: 8,
       },
       {
@@ -71,7 +71,17 @@ export function buildResearchPaperGraph(input: {
       { id: "topic", title: "明确研究问题", agent: "topic", deps: [], task: "为以下目标写研究问题、贡献点、论文类型：" + context, acceptance: "包含研究问题、贡献点、论文类型" },
       { id: "literature", title: "检索与核验文献", agent: "literature", deps: ["topic"], task: "检索并核验与课题相关文献，写入项目文献库：" + context, acceptance: "至少 5 条真实文献且 citeKey 可引用" },
       { id: "design", title: "研究设计与实验方案", agent: "topic", deps: ["topic", "literature"], task: "基于研究问题和文献写方法、变量、指标、实验方案：" + context, acceptance: "包含方法、指标、实验步骤" },
-      { id: "experiment", title: "执行实验", agent: "experiment", deps: ["design"], task: "按方案执行代码/训练/数据分析，保存真实输出和 evidence：" + context, acceptance: "存在真实 run 输出与 evidence" },
+      {
+        id: "experiment",
+        title: "执行实验",
+        agent: "experiment",
+        deps: ["design"],
+        // D1: running experiments inside a research project is a human-gated
+        // action. The runner pauses here until the user approves in the workbench.
+        requiresApproval: true,
+        task: "按方案执行代码/训练/数据分析，保存真实输出和 evidence：" + context,
+        acceptance: "存在真实 run 输出与 evidence",
+      },
       { id: "analysis", title: "结果分析", agent: "analysis", deps: ["experiment"], task: "基于 evidence 生成结果表/图/统计摘要：" + context, acceptance: "每项结果带 run 证据引用" },
       { id: "writing", title: "撰写论文", agent: "writing", deps: ["literature", "analysis"], task: "写论文各章节，引用文献和结果：" + context, acceptance: "章节完整，引用与数字可回链" },
       { id: "review", title: "论文校验", agent: "review", deps: ["writing"], task: "运行 academic_validation 并修复问题：" + context, acceptance: "校验通过" },

@@ -4,9 +4,9 @@ import { runWithRequestContext } from "../src/context/request-context.js";
 import { ResultCollector, type ToolRunContext } from "../src/context/types.js";
 import { buildDocxBuffer } from "../src/services/docx-writer.js";
 import { DOCX_MIME, parseDocxSections } from "../src/doc-parser/docx.js";
-import { ManuscriptDocxService } from "../src/services/manuscript-docx.js";
-import { ResearchWorkspaceService } from "../src/services/research-workspace.js";
-import { AcademicService } from "../src/services/academic.js";
+import { ManuscriptDocxService } from "../src/services/research/manuscript-docx.js";
+import { ResearchWorkspaceService } from "../src/services/research/research-workspace.js";
+import { AcademicService } from "../src/services/research/academic.js";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
 import { MemoryResearchWorkspaceRepository } from "../src/repository/memory/research-workspaces.js";
 import { registerAcademicRoutes } from "../src/transport/http/routes/academic.js";
@@ -20,10 +20,10 @@ import { createMemoryChatImageStorage } from "../src/repository/memory/chat-imag
 /**
  * Import-from-cloud + parser enhancement + agent tool tests (task: template
  * import / workspace read_file):
- *  - POST /academic/projects/:projectId/documents/import-from-cloud
- *  - parseDocxSections plain-text (Chinese/numbered) heading boundaries
- *  - academic_manuscript(action=import_docx)
- *  - research_workspace(action=read_file)
+ * - POST /academic/projects/:projectId/documents/import-from-cloud
+ * - parseDocxSections plain-text (Chinese/numbered) heading boundaries
+ * - academic_manuscript(action=import_docx)
+ * - research_workspace(action=read_file)
  *
  * Everything runs offline over memory repositories with a fake app-cloud.
  */
@@ -166,7 +166,7 @@ async function ensureWorkspace(
 }
 
 describe("POST /academic/projects/:projectId/documents/import-from-cloud", () => {
-  it("imports an existing project cloud .docx without re-uploading it", async () => {
+ it("imports an existing project cloud .docx without re-uploading it", async () => {
     const { app, store, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     const folders = await ensureWorkspace(workspace, projectId);
@@ -202,7 +202,7 @@ describe("POST /academic/projects/:projectId/documents/import-from-cloud", () =>
     await app.close();
   });
 
-  it("accepts an explicit title override", async () => {
+ it("accepts an explicit title override", async () => {
     const { app, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     const folders = await ensureWorkspace(workspace, projectId);
@@ -220,7 +220,7 @@ describe("POST /academic/projects/:projectId/documents/import-from-cloud", () =>
     await app.close();
   });
 
-  it("rejects a missing uploadUuid with 422", async () => {
+ it("rejects a missing uploadUuid with 422", async () => {
     const { app } = await buildApp();
     const projectId = await createProject(app);
     const res = await app.inject({
@@ -234,7 +234,7 @@ describe("POST /academic/projects/:projectId/documents/import-from-cloud", () =>
     await app.close();
   });
 
-  it("answers 404 for a missing project and for a missing cloud file", async () => {
+ it("answers 404 for a missing project and for a missing cloud file", async () => {
     const { app, workspace } = await buildApp();
     const missingProject = await app.inject({
       method: "POST",
@@ -258,7 +258,7 @@ describe("POST /academic/projects/:projectId/documents/import-from-cloud", () =>
     await app.close();
   });
 
-  it("answers 503 when the cloud drive is not configured", async () => {
+ it("answers 503 when the cloud drive is not configured", async () => {
     const { app } = await buildApp({ cloudConfigured: false });
     const projectId = await createProject(app);
     const res = await app.inject({
@@ -272,7 +272,7 @@ describe("POST /academic/projects/:projectId/documents/import-from-cloud", () =>
     await app.close();
   });
 
-  it("rejects a non-docx cloud file and an unparsable .docx with 422", async () => {
+ it("rejects a non-docx cloud file and an unparsable .docx with 422", async () => {
     const { app, cloud, workspace } = await buildApp();
     const projectId = await createProject(app);
     const folders = await ensureWorkspace(workspace, projectId);
@@ -305,7 +305,7 @@ describe("POST /academic/projects/:projectId/documents/import-from-cloud", () =>
 // ---------------------------------------------------------------------------
 
 describe("parseDocxSections plain-text headings", () => {
-  it("treats Chinese/numbered paragraphs as level-2 section boundaries", async () => {
+ it("treats Chinese/numbered paragraphs as level-2 section boundaries", async () => {
     const buffer = await buildDocxBuffer({
       title: "增强解析稿",
       sections: [
@@ -333,7 +333,7 @@ describe("parseDocxSections plain-text headings", () => {
     expect(parsed.sections[4].content).toBe("目标正文。");
   });
 
-  it("does not split prose that only looks like a heading", async () => {
+ it("does not split prose that only looks like a heading", async () => {
     const longLine = "第一章 " + "这是一段很长的正文内容".repeat(6);
     expect(longLine.length).toBeGreaterThan(40);
     const buffer = await buildDocxBuffer({
@@ -357,7 +357,7 @@ function toolCtx(): ToolRunContext {
 }
 
 describe("academic_manuscript import_docx", () => {
-  it("delegates the cloud import to the injected Word service and reports the document", async () => {
+ it("delegates the cloud import to the injected Word service and reports the document", async () => {
     const store = new MemoryAcademicStore();
     const project = await store.create("1", { title: "导入工具项目" });
     const document = await store.createDocument("1", project.id, {
@@ -400,7 +400,7 @@ describe("academic_manuscript import_docx", () => {
     expect((artifact?.data as { source?: { uploadUuid?: string } }).source?.uploadUuid).toBe("cloud-1");
   });
 
-  it("asks for uploadUuid and degrades when the Word service is absent", async () => {
+ it("asks for uploadUuid and degrades when the Word service is absent", async () => {
     const store = new MemoryAcademicStore();
     const project = await store.create("1", { title: "导入工具项目" });
     const tool = createAcademicManuscriptTool({ documents: store, projects: store, events: store });
@@ -443,7 +443,7 @@ describe("academic_manuscript import_docx from a conversation upload", () => {
     return { ...built, projectId, folders, chatFiles, sessionDocs, tool, ctx };
   }
 
-  it("imports the .docx uploaded in chat and copies its original into the project cloud drive", async () => {
+ it("imports the .docx uploaded in chat and copies its original into the project cloud drive", async () => {
     const { app, store, cloud, projectId, folders, chatFiles, sessionDocs, tool, ctx } = await buildTool();
     const docx = await buildDocxBuffer({
       title: "开题报告",
@@ -469,7 +469,7 @@ describe("academic_manuscript import_docx from a conversation upload", () => {
     await app.close();
   });
 
-  it("resolves by filename and explains missing original, non-docx and unknown documents", async () => {
+ it("resolves by filename and explains missing original, non-docx and unknown documents", async () => {
     const { app, chatFiles, sessionDocs, tool, projectId, ctx } = await buildTool();
     const docx = await buildDocxBuffer({ title: "模板", sections: [{ title: "摘要", content: "x" }] });
     const stored = await chatFiles.putFile("sess-1", "有原件.docx", docx, DOCX_MIME);
@@ -493,7 +493,7 @@ describe("academic_manuscript import_docx from a conversation upload", () => {
     await app.close();
   });
 
-  it("lists the conversation Word uploads when no source is given", async () => {
+ it("lists the conversation Word uploads when no source is given", async () => {
     const { app, sessionDocs, tool, projectId, ctx } = await buildTool();
     const docx = await buildDocxBuffer({ title: "模板", sections: [{ title: "摘要", content: "x" }] });
     await sessionDocs.save("sess-1", "开题报告.docx", ["片段"], docx.byteLength);
@@ -521,7 +521,7 @@ describe("research_workspace read_file", () => {
     return { tool, cloud, folders: project.folders };
   }
 
-  it("extracts docx text (title + sections) by upload_uuid", async () => {
+ it("extracts docx text (title + sections) by upload_uuid", async () => {
     const { tool, cloud, folders } = await buildTool();
     const docx = await buildDocxBuffer({
       title: "模板标题",
@@ -539,7 +539,7 @@ describe("research_workspace read_file", () => {
     expect(output).toContain("摘要正文");
   });
 
-  it("reads md/txt by name and truncates long text to 8000 chars", async () => {
+ it("reads md/txt by name and truncates long text to 8000 chars", async () => {
     const { tool, cloud, folders } = await buildTool();
     cloud.addFile(folders.literature, "md-1", "说明.md", Buffer.from("# 说明\n正文内容", "utf8"), "text/markdown");
     const longText = "字".repeat(10_000);
@@ -555,7 +555,7 @@ describe("research_workspace read_file", () => {
     expect(txt).toContain("仅显示前 8000 字");
   });
 
-  it("answers guidance for unsupported types and missing files", async () => {
+ it("answers guidance for unsupported types and missing files", async () => {
     const { tool, cloud, folders } = await buildTool();
     cloud.addFile(folders.results, "png-1", "图.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png");
 

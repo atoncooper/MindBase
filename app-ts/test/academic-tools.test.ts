@@ -30,6 +30,9 @@ import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from ".
 import { createAcademicProjectTool } from "../src/tools/academic/project.js";
 import { createAcademicLiteratureTool } from "../src/tools/academic/literature.js";
 import { createAcademicManuscriptTool } from "../src/tools/academic/manuscript.js";
+import { MemoryAcademicEvidenceStore } from "../src/repository/memory/academic-evidence.js";
+import { ResearchStageGateService } from "../src/services/research/research-stage-gates.js";
+import type { ResearchValidationReport } from "../src/services/research/research-validation.js";
 
 /**
  * Academic tools (plan/1.0.17 Phase 1): local fakes only — no Mongo, no network.
@@ -417,6 +420,55 @@ function setup() {
 
 type TestTools = ReturnType<typeof setup>;
 
+/** Passing integrity report for the gate service double (submission gate). */
+function passingValidationReport(): ResearchValidationReport {
+  return {
+    pass: true,
+    citations: { total: 0, missing: [], unverified: [] },
+    runs: { total: 0, unreproducible: [], invalidRefs: [] },
+    results: { sections: [], withoutEvidenceRef: [] },
+    sectionsWithNumbers: [],
+    sectionsMissingRunRef: [],
+  };
+}
+
+/**
+ * Same fakes as setup() plus a real ResearchStageGateService over them, so the
+ * project tool can exercise action=gate_status and the brief auto-tick path.
+ */
+function setupWithGates() {
+  const base = setup();
+  const evidence = new MemoryAcademicEvidenceStore();
+  const gates = new ResearchStageGateService({
+    projects: base.projects,
+    documents: base.documents,
+    literature: base.literature,
+    events: base.events,
+    evidence,
+    validation: { validate: async () => passingValidationReport() },
+  });
+  return {
+    ...base,
+    evidence,
+    gates,
+    projectTool: createAcademicProjectTool({
+      projects: base.projects,
+      events: base.events,
+      literature: base.literature,
+      documents: base.documents,
+      gates,
+    }),
+  };
+}
+
+type GatedTools = ReturnType<typeof setupWithGates>;
+
+/** Test-only project mutation: the fake create() has no autoMode parameter. */
+function setAutoMode(tools: GatedTools, projectId: string, mode: "off" | "assist" | "auto"): void {
+  const project = tools.projects.projects.get("u1/" + projectId);
+  if (project) project.autoMode = mode;
+}
+
 async function seedProject(tools: TestTools, ctx: ToolRunContext, title = "图神经网络推荐研究"): Promise<string> {
   const out = await tools.projectTool.execute({ action: "create", title, field: "计算机科学", paperType: "journal" }, ctx);
   const match = /project_id: (p\d+)/.exec(contentOf(out));
@@ -444,7 +496,7 @@ const BIBTEX_SAMPLE = [
 // ---------------------------------------------------------------------------
 
 describe("academic tools: identity boundary", () => {
-  it("refuses every action when ctx.uid is missing and never writes", async () => {
+ it("refuses every action when ctx.uid is missing and never writes", async () => {
     const tools = setup();
     const anon = makeCtx(undefined);
 
@@ -464,7 +516,7 @@ describe("academic tools: identity boundary", () => {
 });
 
 describe("academic_project", () => {
-  it("creates a project, records the event and pushes an artifact", async () => {
+ it("creates a project, records the event and pushes an artifact", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -486,7 +538,7 @@ describe("academic_project", () => {
     expect(listText).toContain(projectId);
   });
 
-  it("brief reports stages, plans, advice and recent events", async () => {
+ it("brief reports stages, plans, advice and recent events", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -509,7 +561,7 @@ describe("academic_project", () => {
     expect(text).toContain("最近事件");
   });
 
-  it("brief counts literature and documents without loading their contents", async () => {
+ it("brief counts literature and documents without loading their contents", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -535,7 +587,7 @@ describe("academic_project", () => {
     expect(documentsListed).toBe(false);
   });
 
-  it("validates stage_update: forward ok, backward requires a reason", async () => {
+ it("validates stage_update: forward ok, backward requires a reason", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -572,7 +624,7 @@ describe("academic_project", () => {
     expect(rewindEvent?.payload.reason).toContain("审稿意见");
   });
 
-  it("rejects missing and foreign project ids without throwing", async () => {
+ it("rejects missing and foreign project ids without throwing", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -588,7 +640,7 @@ describe("academic_project", () => {
     ).toContain("项目不存在或无权访问");
   });
 
-  it("writes and reads a stage plan without losing done state", async () => {
+ it("writes and reads a stage plan without losing done state", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -617,8 +669,98 @@ describe("academic_project", () => {
   });
 });
 
+describe("academic_project: stage gates", () => {
+ it("returns guidance instead of throwing when the gate service is not assembled", async () => {
+    const tools = setup();
+    const ctx = makeCtx("u1");
+    const projectId = await seedProject(tools, ctx);
+    const artifactsBefore = ctx.collector.artifacts.length;
+    const text = contentOf(await tools.projectTool.execute({ action: "gate_status", projectId }, ctx));
+    expect(text).toContain("门禁服务未启用");
+    // The non-action must not push a fresh project artifact (create already did).
+    expect(ctx.collector.artifacts.length).toBe(artifactsBefore);
+  });
+
+ it("gate_status reports ready/missing stages and artifacts the project", async () => {
+    const tools = setupWithGates();
+    const ctx = makeCtx("u1");
+    const projectId = await seedProject(tools as unknown as TestTools, ctx);
+    await tools.projectTool.execute(
+      { action: "plan_set", projectId, stage: "topic", tasks: ["确定研究问题", "检索综述文献"] },
+      ctx,
+    );
+
+    const text = contentOf(await tools.projectTool.execute({ action: "gate_status", projectId }, ctx));
+    expect(text).toContain("阶段门禁");
+    expect(text).toContain("[未就绪] 选题");
+    expect(text).toContain("执行计划未全部完成（已完成 0/2）");
+    expect(text).toContain("先用 plan_set 生成「研究设计」阶段的执行计划");
+    expect(text).toContain("本次自动完成计划任务：无");
+    expect(text).toContain("未自动推进");
+    const artifacts = ctx.collector.artifacts.filter((artifact) => artifact.kind === "academic_project");
+    expect(artifacts.length).toBeGreaterThan(0);
+  });
+
+ it("gate_status autoMode=auto advances a ready stage to submitted and says so", async () => {
+    const tools = setupWithGates();
+    const ctx = makeCtx("u1");
+    const projectId = await seedProject(tools as unknown as TestTools, ctx);
+    await tools.projects.update("u1", projectId, {
+      plans: {
+        topic: [
+          { id: "t1", title: "确定研究问题", done: true },
+          { id: "t2", title: "检索综述文献", done: true },
+        ],
+      },
+    });
+    setAutoMode(tools, projectId, "auto");
+
+    const text = contentOf(await tools.projectTool.execute({ action: "gate_status", projectId }, ctx));
+    expect(text).toContain("自动模式：自动");
+    expect(text).toContain("自动推进");
+    expect(text).toContain("研究设计");
+    const project = await tools.projects.get("u1", projectId);
+    expect(project?.stage).toBe("design");
+    expect(project?.stages.topic.status).toBe("submitted");
+    expect(project?.stages.design.status).toBe("active");
+    // approved must never be written by the tool.
+    expect(Object.values(project?.stages ?? {}).some((state) => state.status === "approved")).toBe(false);
+  });
+
+ it("brief best-effort syncs autoRule tasks before rendering", async () => {
+    const tools = setupWithGates();
+    const ctx = makeCtx("u1");
+    const projectId = await seedProject(tools as unknown as TestTools, ctx);
+    await tools.projects.update("u1", projectId, {
+      plans: {
+        topic: [
+          {
+            id: "t1",
+            title: "写引言",
+            done: false,
+            autoRule: { event: "manuscript.section_saved", match: { sectionKey: "introduction" } },
+          },
+        ],
+      },
+    });
+    const createText = contentOf(
+      await tools.manuscriptTool.execute({ action: "create_document", projectId, title: "初稿", kind: "draft" }, ctx),
+    );
+    const documentId = /document_id: (d\d+)/.exec(createText)?.[1] ?? "";
+    await tools.manuscriptTool.execute(
+      { action: "save", projectId, documentId, title: "引言", content: "引言正文。" },
+      ctx,
+    );
+
+    const text = contentOf(await tools.projectTool.execute({ action: "brief", projectId }, ctx));
+    expect(text).toContain("1/1 完成");
+    const project = await tools.projects.get("u1", projectId);
+    expect(project?.plans.topic?.[0]).toMatchObject({ done: true, doneSource: "event" });
+  });
+});
+
 describe("academic_literature", () => {
-  it("formats search hits as unverified candidates (no project needed)", async () => {
+ it("formats search hits as unverified candidates (no project needed)", async () => {
     const tools = setup();
     tools.client.hits = [
       {
@@ -645,7 +787,7 @@ describe("academic_literature", () => {
     expect((ctx.collector.artifacts[0]?.data as { action: string }).action).toBe("search");
   });
 
-  it("degrades a search failure to guidance text", async () => {
+ it("degrades a search failure to guidance text", async () => {
     const tools = setup();
     tools.client.fail = true;
     const text = contentOf(
@@ -655,7 +797,7 @@ describe("academic_literature", () => {
     expect(text).toContain("network down");
   });
 
-  it("adds a confirmed candidate to the library and dedupes a repeat add", async () => {
+ it("adds a confirmed candidate to the library and dedupes a repeat add", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -693,7 +835,7 @@ describe("academic_literature", () => {
     expect(await tools.literature.list("u1", projectId)).toHaveLength(1);
   });
 
-  it("imports BibTeX, dedupes a second import and records the event", async () => {
+ it("imports BibTeX, dedupes a second import and records the event", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -724,7 +866,7 @@ describe("academic_literature", () => {
     expect(listText).toContain("Deep Learning for Graphs");
   });
 
-  it("imports CSL-JSON arrays", async () => {
+ it("imports CSL-JSON arrays", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -748,7 +890,7 @@ describe("academic_literature", () => {
     expect(entries[0]?.source).toBe("csl");
   });
 
-  it("pages the library list with a total count and a limit annotation", async () => {
+ it("pages the library list with a total count and a limit annotation", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -771,7 +913,7 @@ describe("academic_literature", () => {
     expect((artifact?.data as { total?: number }).total).toBe(3);
   });
 
-  it("imports a batch with one addMany call and no pre-read of the library", async () => {
+ it("imports a batch with one addMany call and no pre-read of the library", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -803,7 +945,7 @@ describe("academic_literature", () => {
     expect(importedEvents[1]?.payload).toMatchObject({ parsed: 2, added: 0, duplicates: 2 });
   });
 
-  it("verify: Crossref hit flips verified, unknown DOI stays unverified", async () => {
+ it("verify: Crossref hit flips verified, unknown DOI stays unverified", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -850,7 +992,7 @@ describe("academic_literature", () => {
     expect(missing).toContain("文献库中没有");
   });
 
-  it("verify: network failure is reported, never thrown", async () => {
+ it("verify: network failure is reported, never thrown", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -863,7 +1005,7 @@ describe("academic_literature", () => {
     expect(text).toContain("仍未核验");
   });
 
-  it("exports BibTeX with author joined by 'and'", async () => {
+ it("exports BibTeX with author joined by 'and'", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -880,7 +1022,7 @@ describe("academic_literature", () => {
 });
 
 describe("academic_manuscript", () => {
-  it("creates a document with the default six sections and an artifact", async () => {
+ it("creates a document with the default six sections and an artifact", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -905,7 +1047,7 @@ describe("academic_manuscript", () => {
     expect(tools.events.events.some((event) => event.type === "manuscript.document_created")).toBe(true);
   });
 
-  it("saves a section, reads it back and lists documents", async () => {
+ it("saves a section, reads it back and lists documents", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -941,7 +1083,7 @@ describe("academic_manuscript", () => {
     expect(docsText).toContain("章节 6");
   });
 
-  it("exports markdown and an escaped LaTeX article", async () => {
+ it("exports markdown and an escaped LaTeX article", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -975,7 +1117,7 @@ describe("academic_manuscript", () => {
     expect(ctx.collector.artifacts.some((artifact) => artifact.kind === "academic_manuscript")).toBe(true);
   });
 
-  it("outline_update reorders without overwriting section content", async () => {
+ it("outline_update reorders without overwriting section content", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);
@@ -1014,7 +1156,7 @@ describe("academic_manuscript", () => {
     expect(tools.events.events.some((event) => event.type === "manuscript.outline_updated")).toBe(true);
   });
 
-  it("enforces project and document ownership", async () => {
+ it("enforces project and document ownership", async () => {
     const tools = setup();
     const ctx = makeCtx("u1");
     const projectId = await seedProject(tools, ctx);

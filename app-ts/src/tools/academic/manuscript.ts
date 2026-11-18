@@ -1,11 +1,22 @@
 import { z } from "zod";
 import { defineTool } from "../base.js";
 import type { ToolRunContext } from "../../context/types.js";
-import { AcademicError } from "../../services/academic.js";
-import type { ManuscriptDocxService } from "../../services/manuscript-docx.js";
+import { AcademicError } from "../../services/research/academic.js";
+import type { ManuscriptDocxService } from "../../services/research/manuscript-docx.js";
+import type { ResearchApprovalService } from "../../services/research/research-approval.js";
 import type { SessionDocumentMeta, SessionDocumentRepository } from "../../repository/session-docs.js";
 import type { ChatImageStorage } from "../../repository/chat-images.js";
+import {
+  describeValidationFailures,
+  type ResearchValidationService,
+  type ResearchValidationReport,
+} from "../../services/research/research-validation.js";
 import { DOCX_MIME, isDocxFile } from "../../doc-parser/docx.js";
+import { defaultSectionsForKind } from "../../services/research/manuscript-templates.js";
+import { DocumentVersionService, type DocumentVersionDiff } from "../../services/research/document-versions.js";
+import type { DocumentRevision } from "../../repository/research-document-revisions.js";
+import { ReviewResponseService } from "../../services/research/review-response.js";
+import { appendLatexReferences, appendMarkdownReferences } from "../../services/research/bibliography.js";
 import { buildFileArtifact } from "../../artifacts/file.js";
 import {
   ACADEMIC_DOCUMENT_KINDS,
@@ -16,9 +27,9 @@ import {
   type AcademicDocumentKind,
   type AcademicDocumentRepository,
   type AcademicEventRepository,
+  type AcademicLiteratureRepository,
   type AcademicProjectRepository,
   type AcademicSection,
-  defaultManuscriptSections,
   type AcademicSectionInput,
 } from "../../repository/academic.js";
 
@@ -64,6 +75,11 @@ export interface AcademicManuscriptToolDeps {
    */
   docx?: Pick<ManuscriptDocxService, "exportDocxToCloud" | "importDocxFromCloud" | "importDocx">;
   /**
+   * Submission gate: submitting a manuscript is a one-shot human-approved action.
+   * Absent = submit action answers with guidance (academic-only boot / tests).
+   */
+  approvals?: Pick<ResearchApprovalService, "consume">;
+  /**
    * Conversation uploads: the session-document list plus attachment-storage byte
    * reads. Together they let import_docx reuse a Word the user uploaded in this
    * chat (its original binary lives in object storage, chat-files/*) instead of
@@ -71,6 +87,20 @@ export interface AcademicManuscriptToolDeps {
    */
   sessionDocs?: SessionDocumentRepository;
   sessionFiles?: Pick<ChatImageStorage, "getBytes">;
+  /**
+   * Pre-export integrity gate (services/research/research-validation.ts). Optional: an
+   * academic-only boot without the validation service still exports, and the
+   * composition root is expected to inject the same instance the
+   * academic_validation tool uses.
+   */
+  validation?: Pick<ResearchValidationService, "validate">;
+  /** Optional literature library: text/Word exports append a 参考文献 section. */
+  literature?: Pick<AcademicLiteratureRepository, "list">;
+  /**
+   * 文档版本服务（services/research/document-versions.ts）：versions/diff/restore
+   * 三个 action 使用；缺失时返回中文指引（未装配的离线启动）。
+   */
+  versions?: DocumentVersionService;
 }
 
 /**
@@ -83,6 +113,8 @@ const NO_PROJECT_TEXT = "项目不存在或无权访问。";
 const NO_DOCUMENT_TEXT = "文档不存在或无权访问。";
 const MISSING_PROJECT_TEXT =
   "缺少 project_id：请先用 academic_project(action=list) 查看研究项目，或 action=create 新建项目。";
+const VERSIONS_UNAVAILABLE_TEXT =
+  "版本服务未启用（未装配 DocumentVersionService），暂时无法查看/对比/回滚文档版本。";
 
 
 /** LaTeX special characters and their replacements; applied in one pass by escapeLatex. */
@@ -143,6 +175,65 @@ function renderSections(doc: AcademicDocument): string {
         " 字）",
     );
   });
+  return lines.join("\n");
+}
+
+/** 历史版本列表文本（最新在前）。 */
+function renderVersions(doc: AcademicDocument, revisions: DocumentRevision[]): string {
+  const ordered = [...revisions].sort((left, right) => right.version - left.version);
+  const lines = ["文档《" + doc.title + "》共有 " + ordered.length + " 个历史版本（最新在前）："];
+  for (const revision of ordered) {
+    lines.push(
+      "- v" +
+        revision.version +
+        " · " +
+        dateOf(revision.createdAt) +
+        " · 章节 " +
+        revision.sections.length +
+        (revision.reason ? " · 原因：" + revision.reason : ""),
+    );
+  }
+  lines.push("用 action=diff 对比版本（version=起始版本，toVersion=目标版本，缺省为当前文档），用 action=restore 回滚到某个版本。");
+  return lines.join("\n");
+}
+
+/** 单行 diff 预览：去掉首尾空白并截断过长内容。 */
+function clipDiffLine(line: string): string {
+  const trimmed = line.trim();
+  return trimmed.length <= 80 ? trimmed : trimmed.slice(0, 80) + "…";
+}
+
+/** 版本对比结果的中文文本。 */
+function renderDiff(diff: DocumentVersionDiff): string {
+  const target = diff.to.current ? "当前文档" : "v" + diff.to.version;
+  const lines = [
+    diff.summary,
+    "对比：v" + diff.from.version + "（" + diff.from.title + "） → " + target + "（" + diff.to.title + "）",
+  ];
+  const changed = diff.sections.filter((section) => section.status !== "unchanged");
+  if (changed.length === 0) {
+    lines.push("两个版本内容一致。");
+    return lines.join("\n");
+  }
+  for (const section of changed) {
+    const title = section.toTitle ?? section.fromTitle ?? section.key;
+    const label = section.status === "added" ? "新增章节" : section.status === "removed" ? "删除章节" : "修改";
+    lines.push("- " + title + " [" + section.key + "] " + label + "：+" + section.addedLines + " / -" + section.removedLines);
+    if (section.added.length > 0) {
+      lines.push(
+        "  新增：" +
+          section.added.slice(0, 3).map(clipDiffLine).join(" | ") +
+          (section.addedLines > 3 ? " …" : ""),
+      );
+    }
+    if (section.removed.length > 0) {
+      lines.push(
+        "  删除：" +
+          section.removed.slice(0, 3).map(clipDiffLine).join(" | ") +
+          (section.removedLines > 3 ? " …" : ""),
+      );
+    }
+  }
   return lines.join("\n");
 }
 
@@ -208,6 +299,13 @@ const outlineSectionSchema = z.object({
   order: z.number().int().min(0).optional().describe("显示顺序（升序，缺省按数组顺序）"),
 });
 
+/** 审稿意见条目：只接收调用方原文，不生成、不补全内容。 */
+const reviewItemSchema = z.object({
+  comment: z.string().min(1).max(5000).describe("审稿意见原文（逐条粘贴，不编造）"),
+  response: z.string().min(1).max(10000).describe("针对该条意见的回复/说明"),
+  change: z.string().max(5000).optional().describe("对应的修改说明（改了什么、在哪个章节；没有可省略）"),
+});
+
 /** Tool input schema. uid is intentionally absent: identity comes from ToolRunContext. */
 const manuscriptInputSchema = z.object({
   action: z
@@ -221,10 +319,15 @@ const manuscriptInputSchema = z.object({
       "export_markdown",
       "export_latex",
       "export_docx",
+      "submit",
       "import_docx",
+      "versions",
+      "diff",
+      "restore",
+      "review_response",
     ])
     .describe(
-      "create_document=新建写作文档；documents=列出项目文档；list=列章节；read=读章节正文；save=写入/更新章节；outline_update=重排/改名/新增章节；export_markdown/export_latex=拼接导出文本；export_docx=生成 Word 并回存到项目云盘 05_论文（可在写作页下载）；import_docx=把已有 .docx 导入为写作文档并作为导出模板（uploadUuid=项目云盘文件，或 sessionDocument=本会话上传的 Word 文件名/id，后者原件已在对象存储中，无需让用户重新上传）",
+      "create_document=新建写作文档；documents=列出项目文档；list=列章节；read=读章节正文；save=写入/更新章节；outline_update=重排/改名/新增章节；export_markdown/export_latex=拼接导出文本；export_docx=生成 Word 并回存到项目云盘 05_论文（可在写作页下载）；submit=提交稿件（要求校验通过 + 消耗一次已批准的 submission 审批，生成投稿 Word 并写审计事件）；import_docx=把已有 .docx 导入为写作文档并作为导出模板（uploadUuid=项目云盘文件，或 sessionDocument=本会话上传的 Word 文件名/id，后者原件已在对象存储中，无需让用户重新上传）；versions=查看文档历史版本；diff=按章节对比两个版本（version 起始版本 + toVersion 可选，缺省对比当前文档）；restore=回滚到历史版本（回滚前自动快照当前状态，可再次回滚）；review_response=按审稿意见创建回复信文档（逐条回复 + 修改清单，只使用入参内容、不编造）",
     ),
   projectId: z.string().min(1).optional().describe("项目 id（所有 action 必填）"),
   documentId: z.string().min(1).optional().describe("文档 id（documents 之外必填，来自 action=documents）"),
@@ -237,7 +340,7 @@ const manuscriptInputSchema = z.object({
     .min(1)
     .max(200)
     .optional()
-    .describe("文档标题（create_document 必填）或章节标题（save 必填）"),
+    .describe("文档标题（create_document 必填；review_response 可作原稿标题）或章节标题（save 必填）"),
   sections: z
     .array(outlineSectionSchema)
     .min(1)
@@ -263,6 +366,21 @@ const manuscriptInputSchema = z.object({
     .max(300)
     .optional()
     .describe("本会话上传的 Word：文件名或会话文档 id（import_docx；与 uploadUuid 二选一）。用户随对话上传的文档无需再传到云盘，原件可直接作为模板导入"),
+  force: z
+    .boolean()
+    .optional()
+    .describe(
+      "导出校验未通过时是否强制导出（仅 export_markdown / export_latex / export_docx）。默认 false：校验未通过则不生成导出并返回缺失清单；仅在征得用户明确确认后传 true，会写入 export.forced 审计事件",
+    ),
+  version: z.number().int().min(1).optional().describe("历史版本号：diff 的起始版本 / restore 的目标版本（来自 action=versions）"),
+  toVersion: z.number().int().min(1).optional().describe("diff 的目标版本号；省略时与当前文档比较"),
+  reason: z.string().max(200).optional().describe("快照/回滚原因（可选）"),
+  items: z
+    .array(reviewItemSchema)
+    .min(1)
+    .max(30)
+    .optional()
+    .describe("审稿意见条目（review_response 必填，最多 30 条）：comment 意见原文、response 回复、change 修改说明（可选）"),
 }).superRefine((args, ctx) => {
   // Every action operates on a project, but keeping projectId optional lets the
   // tool return Chinese guidance in direct calls; schema-level validation gives
@@ -291,6 +409,9 @@ const manuscriptInputSchema = z.object({
  * guidance text instead of thrown, so a bad argument does not abort the loop.
  */
 export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
+  // 回复信复用同一份文档仓储；生成内容只来自入参（见 services/research/review-response.ts）。
+  const reviewResponses = new ReviewResponseService({ documents: deps.documents, events: deps.events });
+
   /**
    * Load a document and enforce double scoping: the repository already filters
    * by uid, and the projectId check prevents a valid document id from another
@@ -304,6 +425,61 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
     const doc = await deps.documents.getDocument(uid, documentId);
     if (!doc || doc.projectId !== projectId) return null;
     return doc;
+  }
+
+  /** One audit record for a forced export; all three export actions share the payload shape. */
+  async function appendForcedEvent(
+    uid: string,
+    projectId: string,
+    documentId: string,
+    format: string,
+    report: ResearchValidationReport | { error: string },
+  ): Promise<void> {
+    const payload: Record<string, unknown> = { documentId, format };
+    if ("error" in report) {
+      payload.error = report.error;
+    } else {
+      payload.missing = report.citations.missing;
+      payload.unverified = report.citations.unverified;
+      payload.invalidRefs = report.runs.invalidRefs;
+      payload.withoutEvidenceRef = report.results.withoutEvidenceRef;
+      payload.unreproducible = report.runs.unreproducible;
+    }
+    await deps.events.append(uid, projectId, "export.forced", payload, "agent");
+  }
+
+  /** 导出前校验；未通过且未 force 时返回缺失清单，force 放行并写审计事件。 */
+  async function checkExportGate(
+    uid: string,
+    projectId: string,
+    documentId: string,
+    format: string,
+    force: boolean,
+  ): Promise<string | null> {
+    const validation = deps.validation;
+    if (!validation) return null;
+    let report: ResearchValidationReport;
+    try {
+      report = await validation.validate(uid, projectId, documentId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      if (!force) {
+        return "导出前校验失败：" + detail + "。请稍后重试；如确认要强制导出，可传 force=true。";
+      }
+      await appendForcedEvent(uid, projectId, documentId, format, { error: detail });
+      return null;
+    }
+    if (report.pass) return null;
+    if (force) {
+      await appendForcedEvent(uid, projectId, documentId, format, report);
+      return null;
+    }
+    return (
+      "导出已拒绝：学术校验未通过，未生成导出内容。\n" +
+      describeValidationFailures(report) +
+      "\n请先修正以上问题（补全并核验引用、为带数字的结果章节补充 [[run:<id>]] 证据引用），" +
+      "或征得用户明确确认后传 force=true 强制导出（会写入 export.forced 审计事件）。"
+    );
   }
 
   /** Conversation-uploaded documents of the current turn (empty outside a chat session). */
@@ -383,10 +559,14 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
       "action=list：列出文档章节；action=read：读取某章节正文（需要 key）；" +
       "action=save：写入或更新章节（title + content，key 省略时按标题生成/匹配）；" +
       "action=outline_update：重排/改名/新增章节（不覆盖已有正文）；" +
-      "action=export_markdown / export_latex：拼接导出全文文本（不落盘）；" +
+      "action=export_markdown / export_latex：拼接导出全文文本（不落盘；导出前自动执行学术校验，未通过则返回缺失清单且不生成导出，force=true 可强制导出并写审计事件）；" +
       "action=export_docx：生成 Word（有原始上传稿时保留其样式/页面设置）并回存到项目云盘 05_论文，返回文件名与 uploadUuid（用户可在写作页下载）；" +
       "action=import_docx：把已有 .docx 导入为写作文档，该文件同时作为后续导出的样式模板；uploadUuid 指项目云盘文件（不重复上传），sessionDocument 指本会话上传的 Word（文件名或会话文档 id，原件在附件存储里，" +
       "用户无需再上传一次；只有该会话文档原件未留存时才需要重新上传）；" +
+      "action=versions：列出文档历史版本；action=diff：按章节对比两个版本（version 必填，toVersion 缺省对比当前文档），输出每节新增/删除行数与摘要；" +
+      "action=restore：回滚到历史版本（回滚前自动为当前状态创建快照，因此可再次回滚）；" +
+      "action=review_response：按 items 里的审稿意见逐条生成回复信文档（kind=revision，章节：审稿意见汇总/逐条回复/修改清单），" +
+      "只重排入参内容，不得编造审稿意见、回复或修改说明；" +
       "纪律：正文内容必须基于用户提供的材料与真实检索结果；不得编造实验数据、统计结果或审稿意见。",
     inputSchema: manuscriptInputSchema,
     async execute(args, ctx) {
@@ -416,8 +596,9 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
               return input;
             });
           } else {
-            // Clone the defaults; each document owns its own sections array.
-            sectionInputs = defaultManuscriptSections();
+            // Per-kind outline : reports get their own deliverable sections;
+            // paper drafts keep the standard six-section structure.
+            sectionInputs = defaultSectionsForKind(kind);
           }
           const doc = await deps.documents.createDocument(uid, projectId, {
             kind,
@@ -655,7 +836,11 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
           if (!documentId) return "export_markdown 需要 documentId：先 action=documents 查看文档 id。";
           const doc = await loadDocument(uid, projectId, documentId);
           if (!doc) return NO_DOCUMENT_TEXT;
-          const markdown = toMarkdown(doc);
+          const rejection = await checkExportGate(uid, projectId, documentId, "markdown", args.force === true);
+          if (rejection) return rejection;
+          const project = await deps.projects.get(uid, projectId);
+          const entries = deps.literature ? await deps.literature.list(uid, projectId) : [];
+          const markdown = appendMarkdownReferences(toMarkdown(doc), entries, project?.citationStyle);
           pushManuscriptArtifact(ctx, {
             action: "export_markdown",
             projectId,
@@ -670,7 +855,11 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
           if (!documentId) return "export_latex 需要 documentId：先 action=documents 查看文档 id。";
           const doc = await loadDocument(uid, projectId, documentId);
           if (!doc) return NO_DOCUMENT_TEXT;
-          const latex = toLatex(doc);
+          const rejection = await checkExportGate(uid, projectId, documentId, "latex", args.force === true);
+          if (rejection) return rejection;
+          const project = await deps.projects.get(uid, projectId);
+          const entries = deps.literature ? await deps.literature.list(uid, projectId) : [];
+          const latex = appendLatexReferences(toLatex(doc), entries, project?.citationStyle, escapeLatex);
           pushManuscriptArtifact(ctx, {
             action: "export_latex",
             projectId,
@@ -688,8 +877,10 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
           if (!deps.docx) {
             return "Word 导出服务未启用（云盘未配置），暂时无法回存 Word；可先用 action=export_markdown / export_latex 导出文本。";
           }
+          const rejection = await checkExportGate(uid, projectId, documentId, "docx", args.force === true);
+          if (rejection) return rejection;
           try {
-            const exported = await deps.docx.exportDocxToCloud(uid, documentId);
+            const exported = await deps.docx.exportDocxToCloud(uid, documentId, { force: args.force === true });
             pushManuscriptArtifact(ctx, {
               action: "export_docx",
               projectId,
@@ -720,6 +911,71 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
             // Expected domain failures (404/503) become guidance text so the ReAct
             // loop can recover instead of aborting the whole turn.
             if (err instanceof AcademicError) return "Word 导出失败：" + err.message;
+            throw err;
+          }
+        }
+
+        case "submit": {
+          if (!documentId) return "submit 需要 documentId：先 action=documents 查看文档 id。";
+          const doc = await loadDocument(uid, projectId, documentId);
+          if (!doc) return NO_DOCUMENT_TEXT;
+          if (!deps.docx) {
+            return "提交需要 Word 服务（云盘未配置），暂时无法生成投稿文件。";
+          }
+          if (!deps.approvals) {
+            return "提交需要审批服务（当前未启用）；请确认学术能力已启用。";
+          }
+          const rejection = await checkExportGate(uid, projectId, documentId, "submission", false);
+          if (rejection) return "提交被拒绝：" + rejection;
+          let approval: Awaited<ReturnType<ResearchApprovalService["consume"]>>;
+          try {
+            approval = await deps.approvals.consume(uid, projectId, "submission");
+          } catch (err) {
+            return (
+              "提交被拒绝：" +
+              (err instanceof Error ? err.message : String(err)) +
+              "\n请先在科研工作台「审批」Tab 发起并等待「论文提交」审批通过（一次一用）。"
+            );
+          }
+          try {
+            const exported = await deps.docx.exportDocxToCloud(uid, documentId, { force: false });
+            await deps.events.append(
+              uid,
+              projectId,
+              "manuscript.submitted",
+              { documentId, fileName: exported.fileName, approvalId: approval.id },
+              "agent",
+            );
+            pushManuscriptArtifact(ctx, {
+              action: "submit",
+              projectId,
+              documentId,
+              title: doc.title,
+              export: exported,
+              approvalId: approval.id,
+            });
+            const fileArtifact = buildFileArtifact({
+              name: exported.fileName,
+              description: "投稿 Word（已通过提交审批）",
+              action: "exported",
+              uploadUuid: exported.uploadUuid,
+              mime: DOCX_MIME,
+            });
+            const content =
+              "已提交稿件《" +
+              doc.title +
+              "》（approval_id: " +
+              approval.id +
+              "），投稿 Word 已回存到项目云盘 05_论文：" +
+              exported.fileName +
+              "（uploadUuid: " +
+              exported.uploadUuid +
+              "）。";
+            return fileArtifact.ok ? { content, artifacts: [fileArtifact.artifact] } : content;
+          } catch (err) {
+            if (err instanceof AcademicError) {
+              return "提交失败（审批已消耗，需要重新申请）：" + err.message;
+            }
             throw err;
           }
         }
@@ -807,13 +1063,136 @@ export function createAcademicManuscriptTool(deps: AcademicManuscriptToolDeps) {
           }
         }
 
+        case "versions": {
+          if (!documentId) return "versions 需要 documentId：先 action=documents 查看文档 id。";
+          const doc = await loadDocument(uid, projectId, documentId);
+          if (!doc) return NO_DOCUMENT_TEXT;
+          const versions = deps.versions;
+          if (!versions) return VERSIONS_UNAVAILABLE_TEXT;
+          const revisions = await versions.list(uid, projectId, documentId);
+          pushManuscriptArtifact(ctx, {
+            action: "versions",
+            projectId,
+            documentId,
+            title: doc.title,
+            versions: revisions.map((revision) => ({
+              id: revision.id,
+              version: revision.version,
+              title: revision.title,
+              reason: revision.reason,
+              createdAt: revision.createdAt,
+              sectionCount: revision.sections.length,
+            })),
+          });
+          if (revisions.length === 0) {
+            return "文档《" + doc.title + "》还没有历史版本。回滚（action=restore）前会自动为当前状态创建快照。";
+          }
+          return renderVersions(doc, revisions);
+        }
+
+        case "diff": {
+          if (!documentId) return "diff 需要 documentId：先 action=documents 查看文档 id。";
+          const doc = await loadDocument(uid, projectId, documentId);
+          if (!doc) return NO_DOCUMENT_TEXT;
+          const versions = deps.versions;
+          if (!versions) return VERSIONS_UNAVAILABLE_TEXT;
+          if (!args.version) return "diff 需要 version：要对比的起始历史版本号（先用 action=versions 查看）。";
+          try {
+            const diff = await versions.diff(uid, projectId, documentId, args.version, args.toVersion);
+            pushManuscriptArtifact(ctx, { action: "diff", projectId, documentId, diff });
+            return renderDiff(diff);
+          } catch (err) {
+            if (err instanceof AcademicError) return "版本对比失败：" + err.message;
+            throw err;
+          }
+        }
+
+        case "restore": {
+          if (!documentId) return "restore 需要 documentId：先 action=documents 查看文档 id。";
+          const doc = await loadDocument(uid, projectId, documentId);
+          if (!doc) return NO_DOCUMENT_TEXT;
+          const versions = deps.versions;
+          if (!versions) return VERSIONS_UNAVAILABLE_TEXT;
+          if (!args.version) return "restore 需要 version：要回滚到的历史版本号（先用 action=versions 查看）。";
+          const version = args.version;
+          try {
+            const restored = await versions.restore(uid, projectId, documentId, version);
+            await deps.events.append(
+              uid,
+              projectId,
+              "manuscript.version_restored",
+              { documentId, restoredVersion: version, snapshotVersion: restored.snapshot.version },
+              "agent",
+            );
+            pushManuscriptArtifact(ctx, {
+              action: "restore",
+              projectId,
+              documentId,
+              restoredVersion: version,
+              snapshot: restored.snapshot,
+              document: restored.document,
+            });
+            return (
+              "已把文档《" +
+              restored.document.title +
+              "》回滚到 v" +
+              version +
+              "（回滚前当前状态已自动保存为 v" +
+              restored.snapshot.version +
+              "，可再次回滚）。\n" +
+              renderSections(restored.document) +
+              "\n提示：可 action=export_markdown / export_latex 检查恢复后的内容。"
+            );
+          } catch (err) {
+            if (err instanceof AcademicError) return "版本回滚失败：" + err.message;
+            throw err;
+          }
+        }
+
+        case "review_response": {
+          const items = args.items ?? [];
+          if (items.length === 0) {
+            return "review_response 需要 items：逐条给出审稿意见（comment）、回复（response）与可选的修改说明（change）。";
+          }
+          try {
+            const created = await reviewResponses.create(uid, projectId, {
+              documentTitle: args.title?.trim() || "未命名稿件",
+              items,
+              actor: "agent",
+            });
+            pushManuscriptArtifact(ctx, {
+              action: "review_response",
+              projectId,
+              documentId: created.document.id,
+              document: created.document,
+              itemCount: items.length,
+            });
+            return (
+              "已创建审稿回复信文档《" +
+              created.document.title +
+              "》（document_id: " +
+              created.document.id +
+              "，类型：" +
+              (ACADEMIC_DOCUMENT_KIND_LABELS[created.document.kind] ?? created.document.kind) +
+              "，章节 " +
+              created.document.sections.length +
+              " 个：审稿意见汇总 / 逐条回复 / 修改清单）。\n" +
+              renderSections(created.document) +
+              "\n\n下一步：可 action=save 修订章节，或 action=export_markdown / export_latex 导出回复信。"
+            );
+          } catch (err) {
+            if (err instanceof AcademicError) return "生成审稿回复信失败：" + err.message;
+            throw err;
+          }
+        }
+
         // Unreachable through zod validation, but older/unknown clients still get guidance instead of a throw.
         default: {
           const action = String((args as { action?: unknown }).action ?? "");
           return (
             "未知 action：" +
             action +
-            "（可用：create_document / documents / list / read / save / outline_update / export_markdown / export_latex / export_docx / import_docx）"
+            "（可用：create_document / documents / list / read / save / outline_update / export_markdown / export_latex / export_docx / import_docx / versions / diff / restore / review_response）"
           );
         }
       }

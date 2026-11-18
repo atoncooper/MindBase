@@ -20,6 +20,7 @@ import {
   runListWindow,
   type AcademicDataset,
   type AcademicDatasetInput,
+  type AcademicEvidencePurgeCounts,
   type AcademicEvidenceRepository,
   type AcademicRun,
   type AcademicRunInput,
@@ -94,6 +95,23 @@ export class MemoryAcademicEvidenceStore implements AcademicEvidenceRepository {
   async getRun(uid: string, projectId: string, runId: string): Promise<AcademicRun | null> {
     const run = this.runs.get(runId);
     return run && run.uid === uid && run.projectId === projectId ? copy(run) : null;
+  }
+
+  /** Deletes the project's datasets and runs; returns both removed counts. */
+  async removeByProject(uid: string, projectId: string): Promise<AcademicEvidencePurgeCounts> {
+    let datasets = 0;
+    let runs = 0;
+    for (const [id, dataset] of [...this.datasets]) {
+      if (dataset.uid !== uid || dataset.projectId !== projectId) continue;
+      this.datasets.delete(id);
+      datasets += 1;
+    }
+    for (const [id, run] of [...this.runs]) {
+      if (run.uid !== uid || run.projectId !== projectId) continue;
+      this.runs.delete(id);
+      runs += 1;
+    }
+    return { datasets, runs };
   }
 
   /** createdAt source: strictly increasing (+1ms fallback) so list order is stable. */

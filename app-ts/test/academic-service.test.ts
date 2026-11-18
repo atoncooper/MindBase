@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
-import { AcademicService } from "../src/services/academic.js";
+import { AcademicService } from "../src/services/research/academic.js";
 import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/clients/literature-client.js";
 
 /**
@@ -43,7 +43,7 @@ function setup() {
 const UID = "u1";
 
 describe("academic service: projects", () => {
-  it("creates a project with default stage state, zero counters and a created event", async () => {
+ it("creates a project with default stage state, zero counters and a created event", async () => {
     const { service } = setup();
     const detail = await service.createProject(UID, { title: "联邦学习隐私预算", field: "机器学习" });
     expect(detail.project.title).toBe("联邦学习隐私预算");
@@ -56,7 +56,7 @@ describe("academic service: projects", () => {
     expect(detail.project).not.toHaveProperty("uid");
   });
 
-  it("lists projects newest-first with counters", async () => {
+ it("lists projects newest-first with counters", async () => {
     // Pin the clock: two projects created in the same millisecond would tie on
     // updatedAt/createdAt, making the newest-first assertion depend on UUID order.
     let clock = 1_700_000_000_000;
@@ -75,7 +75,7 @@ describe("academic service: projects", () => {
     }
   });
 
-  it("updates stage/plans/advice with key-merge semantics and clears on empty values", async () => {
+ it("updates stage/plans/advice with key-merge semantics and clears on empty values", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const patched = await service.updateProject(UID, project.id, {
@@ -94,7 +94,7 @@ describe("academic service: projects", () => {
     expect(cleared.advice.topic).toBe("");
   });
 
-  it("rejects invalid input and treats foreign/missing projects as 404", async () => {
+ it("rejects invalid input and treats foreign/missing projects as 404", async () => {
     const { service } = setup();
     await expect(service.createProject(UID, { title: "   " })).rejects.toMatchObject({ status: 400 });
     await expect(service.createProject(UID, { title: "A", paperType: "blog" })).rejects.toMatchObject({ status: 400 });
@@ -105,16 +105,71 @@ describe("academic service: projects", () => {
     await expect(service.updateProject(UID, project.id, { stage: "bogus" })).rejects.toMatchObject({ status: 400 });
   });
 
-  it("deletes an owned project", async () => {
+ it("persists autoMode on create/patch, rejects invalid values and exposes it in summaries", async () => {
+    const { service } = setup();
+    const created = await service.createProject(UID, { title: "A" });
+    // Legacy/default behavior: omitted autoMode reads as "off".
+    expect(created.project.autoMode).toBe("off");
+    const assisted = await service.createProject(UID, { title: "B", autoMode: "assist" });
+    expect(assisted.project.autoMode).toBe("assist");
+    await expect(service.createProject(UID, { title: "C", autoMode: "turbo" })).rejects.toMatchObject({ status: 400 });
+
+    const patched = await service.updateProject(UID, created.project.id, { autoMode: "auto" });
+    expect(patched.project.autoMode).toBe("auto");
+    const { projects } = await service.listProjects(UID);
+    expect(projects.find((project) => project.id === created.project.id)?.autoMode).toBe("auto");
+    await expect(service.updateProject(UID, created.project.id, { autoMode: "bogus" })).rejects.toMatchObject({ status: 400 });
+  });
+
+ it("round-trips plan autoRule/doneSource through PATCH and rejects malformed rules", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
-    expect(await service.deleteProject(UID, project.id)).toEqual({ deleted: true });
-    await expect(service.getProject(UID, project.id)).rejects.toMatchObject({ status: 404 });
+    const rule = { event: "manuscript.section_saved", match: { sectionKey: "introduction" } };
+    const patched = await service.updateProject(UID, project.id, {
+      plans: { topic: [{ id: "t1", title: "写引言", done: false, autoRule: rule, doneSource: "event" }] },
+    });
+    expect(patched.plans.topic?.[0].autoRule).toEqual(rule);
+    expect(patched.plans.topic?.[0].doneSource).toBe("event");
+
+    // The UI re-sends the whole plan array when ticking a checkbox: the rule must survive.
+    const toggled = await service.updateProject(UID, project.id, {
+      plans: { topic: [{ ...patched.plans.topic![0], done: true }] },
+    });
+    expect(toggled.plans.topic?.[0].autoRule).toEqual(rule);
+    expect(toggled.plans.topic?.[0].done).toBe(true);
+
+    await expect(
+      service.updateProject(UID, project.id, {
+        plans: { topic: [{ id: "x", title: "x", done: false, autoRule: { event: "bogus" } }] },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      service.updateProject(UID, project.id, {
+        plans: {
+          topic: [
+            { id: "x", title: "x", done: false, autoRule: { event: "academic.run_recorded", match: { minRuns: 0 } } },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+ it("moves an owned project to the recycle bin and restores it", async () => {
+    const { service } = setup();
+    const { project } = await service.createProject(UID, { title: "A" });
+    const archived = await service.deleteProject(UID, project.id);
+    expect(archived).toMatchObject({ deleted: true, archived: true });
+    expect(archived.archivedAt).toBeGreaterThan(0);
+    expect((await service.listProjects(UID)).projects).toHaveLength(0);
+    expect((await service.listProjects(UID, { archived: "only" })).projects).toHaveLength(1);
+    const restored = await service.restoreProject(UID, project.id);
+    expect(restored.project.id).toBe(project.id);
+    expect((await service.listProjects(UID)).projects).toHaveLength(1);
   });
 });
 
 describe("academic service: literature", () => {
-  it("adds, dedupes, paginates and totals", async () => {
+ it("adds, dedupes, paginates and totals", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const first = await service.addLiterature(UID, project.id, { title: "Paper One", year: 2024, doi: "10.1/a" });
@@ -131,7 +186,7 @@ describe("academic service: literature", () => {
     expect(page.entries[0].importedAt).toBeGreaterThanOrEqual(page.entries[1].importedAt);
   });
 
-  it("verifies a DOI only when Crossref returns the same title", async () => {
+ it("verifies a DOI only when Crossref returns the same title", async () => {
     const { service, client } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const { entry } = await service.addLiterature(UID, project.id, { title: "Attention Is All You Need", year: 2017, doi: "10.1/attn" });
@@ -143,7 +198,7 @@ describe("academic service: literature", () => {
     expect(list.entries[0].verified).toBe(true);
   });
 
-  it("keeps unverified when Crossref misses, titles differ or the service fails", async () => {
+ it("keeps unverified when Crossref misses, titles differ or the service fails", async () => {
     const { service, client } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const { entry } = await service.addLiterature(UID, project.id, { title: "Some Paper", doi: "10.1/missing" });
@@ -162,7 +217,7 @@ describe("academic service: literature", () => {
     expect(failed.message).toContain("不可用");
   });
 
-  it("explains why a DOI-less paper cannot be verified and 404s unknown refs", async () => {
+ it("explains why a DOI-less paper cannot be verified and 404s unknown refs", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const { entry } = await service.addLiterature(UID, project.id, { title: "No DOI paper" });
@@ -172,7 +227,7 @@ describe("academic service: literature", () => {
     await expect(service.verifyLiterature(UID, project.id, "10.9/unknown")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("exports BibTeX, removes entries and searches via the client", async () => {
+ it("exports BibTeX, removes entries and searches via the client", async () => {
     const { service, client } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     await service.addLiterature(UID, project.id, { title: "Paper", authors: ["San Zhang"], year: 2024, doi: "10.1/x" });
@@ -191,7 +246,7 @@ describe("academic service: literature", () => {
 });
 
 describe("academic service: documents", () => {
-  it("creates the default six-section outline and reports word counts", async () => {
+ it("creates the default six-section outline and reports word counts", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const { document } = await service.createDocument(UID, project.id, { kind: "draft", title: "初稿" });
@@ -207,7 +262,7 @@ describe("academic service: documents", () => {
     expect(documents[0].wordCount).toBeGreaterThan(10);
   });
 
-  it("upserts by key, deletes sections and exports markdown/latex", async () => {
+ it("upserts by key, deletes sections and exports markdown/latex", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const { document } = await service.createDocument(UID, project.id, { kind: "draft", title: "初稿" });
@@ -227,7 +282,7 @@ describe("academic service: documents", () => {
     await expect(service.exportDocument(UID, document.id, "pdf")).rejects.toMatchObject({ status: 400 });
   });
 
-  it("hides documents owned by another user", async () => {
+ it("hides documents owned by another user", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     const { document } = await service.createDocument(UID, project.id, { kind: "draft", title: "初稿" });
@@ -237,7 +292,7 @@ describe("academic service: documents", () => {
 });
 
 describe("academic service: events", () => {
-  it("records user mutations and honors the read limit", async () => {
+ it("records user mutations and honors the read limit", async () => {
     const { service } = setup();
     const { project } = await service.createProject(UID, { title: "A" });
     await service.updateProject(UID, project.id, { stage: "design" });

@@ -86,6 +86,17 @@ export const ACADEMIC_RUN_STATUS_LABELS: Record<AcademicRunStatus, string> = {
 };
 
 /**
+ * One number extracted from a run's output (accuracy, loss, latency, ...).
+ * `name` is the series key used by multi-run comparison; `unit` is display-only
+ * (e.g. "%" or "ms") and never part of the key.
+ */
+export interface AcademicRunMetric {
+  name: string;
+  value: number;
+  unit?: string;
+}
+
+/**
  * One recorded experiment run. The script body holds at most
  * ACADEMIC_MAX_SCRIPT_CHARS characters (the full text is identified by
  * scriptSha256), previews are bounded, and artifacts are metadata only — the
@@ -110,6 +121,8 @@ export interface AcademicRun {
   /** bounded stdout/stderr previews (<= ACADEMIC_MAX_PREVIEW_CHARS) */
   stdoutPreview?: string;
   stderrPreview?: string;
+  /** metrics extracted from the output (<= ACADEMIC_MAX_RUN_METRICS), empty omitted */
+  metrics?: AcademicRunMetric[];
   artifacts: AcademicEvidenceFile[];
   cpuMillis?: number;
   startedAt?: number;
@@ -134,6 +147,8 @@ export interface AcademicRunInput {
   exitCode?: number;
   stdoutPreview?: string;
   stderrPreview?: string;
+  /** explicit metric override; when omitted the builder extracts them from stdoutPreview */
+  metrics?: AcademicRunMetric[];
   artifacts?: AcademicEvidenceFile[];
   cpuMillis?: number;
   startedAt?: number;
@@ -164,6 +179,14 @@ export interface AcademicEvidenceRepository {
   listRuns(uid: string, projectId: string, options?: AcademicRunListOptions): Promise<AcademicRun[]>;
   /** Run by id, scoped by uid AND projectId; null when missing or foreign. */
   getRun(uid: string, projectId: string, runId: string): Promise<AcademicRun | null>;
+  /** 永久删除项目下所有数据集与运行记录（级联清理），返回各自删除条数。 */
+  removeByProject(uid: string, projectId: string): Promise<AcademicEvidencePurgeCounts>;
+}
+
+/** Cascade-delete result of one project's evidence. */
+export interface AcademicEvidencePurgeCounts {
+  datasets: number;
+  runs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +197,8 @@ export interface AcademicEvidenceRepository {
 export const ACADEMIC_MAX_SCRIPT_CHARS = 20_000;
 /** stdout/stderr preview stored per run (sandbox previews may be longer). */
 export const ACADEMIC_MAX_PREVIEW_CHARS = 4_000;
+/** Metrics persisted per run (keeps the results table / chart payload bounded). */
+export const ACADEMIC_MAX_RUN_METRICS = 50;
 /** SSE artifact kind emitted by the academic_evidence tool. */
 export const ACADEMIC_EVIDENCE_ARTIFACT_KIND = "academic_evidence";
 
@@ -194,6 +219,74 @@ export function sha256Hex(text: string): string {
 export function clipPreview(text: string | undefined, maxChars: number = ACADEMIC_MAX_PREVIEW_CHARS): string | undefined {
   if (text === undefined || !text.trim()) return undefined;
   return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+// ---------------------------------------------------------------------------
+// Run metrics (stdout extraction)
+// ---------------------------------------------------------------------------
+
+/** Text metric line: "METRIC acc=0.91", "[METRIC] loss=0.12", "metric: f1=0.8". */
+const METRIC_LINE_PATTERN =
+  /^\s*\[?\s*metric\s*\]?\s*[:=]?\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$/i;
+
+/** Parse one output line (JSON metric object or METRIC line); undefined for anything else. */
+function parseMetricLine(line: string): AcademicRunMetric | undefined {
+  const text = line.trim();
+  if (!text) return undefined;
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        const rawName = record.metric ?? record.name;
+        const name = typeof rawName === "string" ? rawName.trim() : "";
+        if (name && typeof record.value === "number" && Number.isFinite(record.value)) {
+          const unit = typeof record.unit === "string" ? record.unit.trim() : "";
+          return { name, value: record.value, ...(unit ? { unit } : {}) };
+        }
+      }
+    } catch {
+      // not JSON: fall through to the text form
+    }
+  }
+  const match = METRIC_LINE_PATTERN.exec(text);
+  if (!match) return undefined;
+  const value = Number(match[2]);
+  return Number.isFinite(value) ? { name: match[1], value } : undefined;
+}
+
+/**
+ * Extract metrics from a run's stdout preview. Recognizes `METRIC name=value`
+ * lines (also `[METRIC] ...` and `metric: ...`, case-insensitive) and JSON
+ * lines such as `{"metric":"acc","value":0.91,"unit":"%"}`. Invalid lines are
+ * ignored, a later value for the same name replaces the earlier one, and at most
+ * ACADEMIC_MAX_RUN_METRICS distinct metrics are kept.
+ */
+export function extractRunMetrics(stdout: string | undefined): AcademicRunMetric[] {
+  if (!stdout) return [];
+  const metrics = new Map<string, AcademicRunMetric>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const metric = parseMetricLine(line);
+    if (!metric) continue;
+    // Cap distinct names but still let a later duplicate update an existing one.
+    if (!metrics.has(metric.name) && metrics.size >= ACADEMIC_MAX_RUN_METRICS) continue;
+    metrics.set(metric.name, metric);
+  }
+  return [...metrics.values()];
+}
+
+/** Normalize explicit metrics: finite values only, last value per name wins, max 50. */
+export function normalizeRunMetrics(metrics: readonly AcademicRunMetric[] | undefined): AcademicRunMetric[] {
+  const out = new Map<string, AcademicRunMetric>();
+  for (const metric of metrics ?? []) {
+    const name = (metric?.name ?? "").trim();
+    if (!name) continue;
+    const value = metric?.value;
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const unit = metric?.unit?.trim();
+    out.set(name, { name, value, ...(unit ? { unit } : {}) });
+  }
+  return [...out.values()].slice(0, ACADEMIC_MAX_RUN_METRICS);
 }
 
 /** Persisted script identity: truncated body + sha256 of the ORIGINAL text. */
@@ -277,8 +370,10 @@ export function buildAcademicDataset(input: {
 /**
  * Build a persisted run. This is the single place bounding script/preview/artifact
  * data: script body <= ACADEMIC_MAX_SCRIPT_CHARS (hash covers the full text),
- * previews <= ACADEMIC_MAX_PREVIEW_CHARS, artifacts metadata only. Optional fields
- * are omitted rather than set to undefined so the Mongo document stays compact.
+ * previews <= ACADEMIC_MAX_PREVIEW_CHARS, artifacts metadata only, and metrics are
+ * extracted from stdoutPreview when the caller does not pass them explicitly.
+ * Optional fields are omitted rather than set to undefined so the Mongo document
+ * stays compact.
  */
 export function buildAcademicRun(input: {
   id: string;
@@ -291,6 +386,8 @@ export function buildAcademicRun(input: {
   const script = scriptRecord(run.script);
   const stdoutPreview = clipPreview(run.stdoutPreview);
   const stderrPreview = clipPreview(run.stderrPreview);
+  const metrics =
+    run.metrics !== undefined ? normalizeRunMetrics(run.metrics) : extractRunMetrics(run.stdoutPreview);
   const datasetId = run.datasetId?.trim();
   const executionId = run.executionId?.trim();
   const exitCode =
@@ -312,6 +409,7 @@ export function buildAcademicRun(input: {
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(stdoutPreview !== undefined ? { stdoutPreview } : {}),
     ...(stderrPreview !== undefined ? { stderrPreview } : {}),
+    ...(metrics.length > 0 ? { metrics } : {}),
     artifacts: normalizeEvidenceFiles(run.artifacts),
     ...(cpuMillis !== undefined ? { cpuMillis } : {}),
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),

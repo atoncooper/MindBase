@@ -4,17 +4,17 @@
  * Mermaid fenced-code-block renderer for the shared <Markdown> renderer.
  *
  * - The mermaid bundle is heavy and DOM-only, so it is imported lazily inside
- *   an effect (never during SSR) and cached in a module-level promise: every
- *   diagram on the page shares one chunk download + one initialize() call.
+ * an effect (never during SSR) and cached in a module-level promise: every
+ * diagram on the page shares one chunk download + one initialize() call.
  * - Streaming assistant messages rewrite the code fence on almost every token,
- *   so rendering is debounced (250ms) and guarded by a monotonic token: a slow
- *   render that finishes after the code changed is dropped instead of painting
- *   a stale diagram.
+ * so rendering is debounced (250ms) and guarded by a monotonic token: a slow
+ * render that finishes after the code changed is dropped instead of painting
+ * a stale diagram.
  * - The theme is the app's light palette expressed as plain hex values. Mermaid
- *   inlines these into the SVG <style>, where CSS custom properties from
- *   globals.css would not resolve, so every value must stay a literal color.
+ * inlines these into the SVG <style>, where CSS custom properties from
+ * globals.css would not resolve, so every value must stay a literal color.
  * - Parse/render failures degrade to a card with the original source, copy and
- *   retry. Nothing here ever throws into React.
+ * retry. Nothing here ever throws into React.
  */
 
 import { useEffect, useId, useRef, useState } from "react";
@@ -29,22 +29,22 @@ type MermaidApi = MermaidModule["default"];
 // #d2d2d7, secondary #86868b. Keep every value a literal color.
 const MERMAID_THEME_VARIABLES = {
   background: "#fbfbfd",
-  primaryColor: "#ffffff",
+  primaryColor: "#e8f1ff",
   primaryTextColor: "#1d1d1f",
-  primaryBorderColor: "#d2d2d7",
-  secondaryColor: "#ffffff",
-  secondaryTextColor: "#86868b",
-  secondaryBorderColor: "#d2d2d7",
-  tertiaryColor: "#fbfbfd",
-  tertiaryTextColor: "#1d1d1f",
-  tertiaryBorderColor: "#d2d2d7",
+  primaryBorderColor: "#0071e3",
+  secondaryColor: "#fff4e5",
+  secondaryTextColor: "#7a4a00",
+  secondaryBorderColor: "#f5a623",
+  tertiaryColor: "#e8f7ee",
+  tertiaryTextColor: "#0b5d2a",
+  tertiaryBorderColor: "#34c759",
   lineColor: "#86868b",
   textColor: "#1d1d1f",
-  mainBkg: "#ffffff",
-  nodeBorder: "#d2d2d7",
+  mainBkg: "#e8f1ff",
+  nodeBorder: "#0071e3",
   nodeTextColor: "#1d1d1f",
-  clusterBkg: "#fbfbfd",
-  clusterBorder: "#d2d2d7",
+  clusterBkg: "#f5f9ff",
+  clusterBorder: "#9ec5ff",
   titleColor: "#1d1d1f",
   edgeLabelBackground: "#ffffff",
   // Sequence diagrams
@@ -79,7 +79,16 @@ const MERMAID_THEME_VARIABLES = {
   altSectionBkgColor: "#ffffff",
   gridColor: "#d2d2d7",
   git0: "#0071e3",
+  git1: "#f5a623",
+  git2: "#34c759",
+  git3: "#ff3b30",
+  git4: "#af52de",
   pie1: "#0071e3",
+  pie2: "#f5a623",
+  pie3: "#34c759",
+  pie4: "#ff3b30",
+  pie5: "#af52de",
+  pie6: "#5ac8fa",
 };
 
 const MERMAID_CONFIG: MermaidConfig = {
@@ -139,6 +148,58 @@ function removeMermaidArtifacts(id: string): void {
   document.getElementById(`i${id}`)?.remove();
 }
 
+type MermaidNodePalette = { fill: string; stroke: string; text: string };
+
+/** Semantic palettes used when the generated diagram carries no explicit classDef/style. */
+const NODE_PALETTES: Record<string, MermaidNodePalette> = {
+  start: { fill: "#e8f1ff", stroke: "#0071e3", text: "#0b3d91" },
+  decision: { fill: "#fff4e5", stroke: "#f5a623", text: "#7a4a00" },
+  success: { fill: "#e8f7ee", stroke: "#34c759", text: "#0b5d2a" },
+  danger: { fill: "#fdecea", stroke: "#ff3b30", text: "#8a1f18" },
+  info: { fill: "#f5f5f7", stroke: "#8e8e93", text: "#1d1d1f" },
+};
+
+const ACTOR_PALETTES = [
+  NODE_PALETTES.start,
+  NODE_PALETTES.decision,
+  NODE_PALETTES.success,
+  NODE_PALETTES.danger,
+];
+
+/** Classify a node label by its role so flow/state/class diagrams get distinct colors. */
+function classifyMermaidNode(label: string): MermaidNodePalette {
+  const text = label.toLowerCase();
+  if (/[?？]|是否|判断|决策|条件|分支|选择/.test(text)) return NODE_PALETTES.decision;
+  if (/失败|错误|异常|拒绝|超时|告警|警告|未通过|缺少|风险/.test(text)) return NODE_PALETTES.danger;
+  if (/完成|成功|通过|结果|输出|结束|返回|就绪|已确认/.test(text)) return NODE_PALETTES.success;
+  if (/开始|入口|用户|请求|输入|触发|发起/.test(text)) return NODE_PALETTES.start;
+  return NODE_PALETTES.info;
+}
+
+/** 模型未写 classDef/style 时，按节点语义自动上色；显式样式优先。 */
+function colorizeMermaidDom(root: HTMLElement, source: string): void {
+  if (/\bclassDef\b/.test(source) || /\bstyle\s+[A-Za-z0-9_]/.test(source)) return;
+  const isSequence = /^\s*sequenceDiagram\b/m.test(source);
+  const nodes = root.querySelectorAll("g.node, g.actor");
+  nodes.forEach((node, index) => {
+    const el = node as SVGGElement;
+    const label = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    const palette = isSequence ? ACTOR_PALETTES[index % ACTOR_PALETTES.length] : classifyMermaidNode(label);
+    el.querySelectorAll("rect, polygon, circle, ellipse, path").forEach((shape) => {
+      const element = shape as SVGElement;
+      element.style.fill = palette.fill;
+      element.style.stroke = palette.stroke;
+      element.style.strokeWidth = "1.5";
+    });
+    el.querySelectorAll("text, tspan").forEach((text) => {
+      (text as SVGElement).style.fill = palette.text;
+    });
+    el.querySelectorAll("foreignObject div").forEach((div) => {
+      (div as HTMLElement).style.color = palette.text;
+    });
+  });
+}
+
 function toErrorMessage(error: unknown): string {
   if (typeof error === "string" && error.trim()) return error;
   if (error && typeof error === "object") {
@@ -173,6 +234,7 @@ export function MermaidDiagram({ code }: { code: string }) {
   const tokenRef = useRef(0);
   const attemptCodeRef = useRef<string | null>(null);
   const copyTimerRef = useRef<number | null>(null);
+  const diagramRef = useRef<HTMLDivElement | null>(null);
 
   // Drop the trailing newline react-markdown adds to the fence body; it only
   // shows up in the copied source otherwise.
@@ -238,15 +300,22 @@ export function MermaidDiagram({ code }: { code: string }) {
       if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
       copyTimerRef.current = window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* clipboard may be unavailable (insecure context); ignore */
+    /* clipboard may be unavailable (insecure context); ignore */
     }
   };
 
   const error = current?.phase === "error" ? current.message : null;
   const svg = current?.phase === "ready" ? current.svg : null;
 
+  // After the fresh SVG is inserted, tint nodes when the model omitted classDef
+  // (see colorizeMermaidDom). Runs per render result/source change only.
+  useEffect(() => {
+    if (!svg || !diagramRef.current) return;
+    colorizeMermaidDom(diagramRef.current, source);
+  }, [svg, source]);
+
   return (
-    <div className="md-code my-3 overflow-hidden rounded-xl border border-border bg-surface">
+    <div className="md-code my-3 overflow-hidden rounded-[7px] border border-border bg-surface">
       <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5">
         <span className="flex min-w-0 items-center gap-1.5 truncate font-mono text-[11px] uppercase tracking-wide text-tertiary">
           {error ? (
@@ -328,6 +397,7 @@ export function MermaidDiagram({ code }: { code: string }) {
                 returned string is safe. width="100%" plus an inline max-width
                 cap from mermaid keeps the diagram responsive in the column. */}
             <div
+              ref={diagramRef}
               className="mx-auto flex justify-center [&_svg]:block [&_svg]:h-auto [&_svg]:max-w-full"
               dangerouslySetInnerHTML={{ __html: svg }}
             />

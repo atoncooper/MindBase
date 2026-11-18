@@ -1,7 +1,7 @@
 import type { SearchScope } from "../context/types.js";
 import type { AgentOrchestrator } from "../agent/orchestrator.js";
 import type { AgentLifecycleManager } from "../agent/lifecycle.js";
-import type { AgentRuntime } from "../tools/runtime.js";
+import type { AgentRuntime } from "../agent/runtime.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { SseFrame } from "../transport/sse.js";
 

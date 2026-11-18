@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { AgentHarness } from "../../../harness/app.js";
 import type { RAGService } from "../../../rag/service.js";
 import type { ModelCapabilityRegistry } from "../../../llm/model-capabilities.js";
-import { timeoutManager } from "../../../tools/timeout-manager.js";
+import { timeoutManager } from "../../../agent/timeout-manager.js";
 import { admissionStatus } from "../../../services/admission.js";
 import { mcpClientStats } from "../../../mcp/index.js";
 import { config } from "../../../config/index.js";

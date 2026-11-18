@@ -35,4 +35,23 @@ export class MemoryResearchWorkspaceRepository implements ResearchWorkspaceRepos
   async save(workspace: ResearchWorkspace): Promise<void> {
     this.workspaces.set(workspace.workspaceId, structuredClone(workspace));
   }
+
+  /**
+   * Removes the project's folder mapping (cloud-drive files are not deleted here)
+   * and drops the workspace row once it has no projects left. Returns the number
+   * of project mappings removed.
+   */
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    let removed = 0;
+    for (const [workspaceId, workspace] of [...this.workspaces]) {
+      if (workspace.uid !== uid) continue;
+      const remaining = workspace.projects.filter((project) => project.projectId !== projectId);
+      const count = workspace.projects.length - remaining.length;
+      if (count === 0) continue;
+      removed += count;
+      if (remaining.length === 0) this.workspaces.delete(workspaceId);
+      else this.workspaces.set(workspaceId, structuredClone({ ...workspace, projects: remaining, updatedAt: Date.now() }));
+    }
+    return removed;
+  }
 }

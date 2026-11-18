@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineTool } from "../base.js";
 import type { ToolRunContext } from "../../context/types.js";
 import { isDocxFile, parseDocxSections } from "../../doc-parser/docx.js";
-import type { ResearchFolderKind, ResearchWorkspaceService } from "../../services/research-workspace.js";
+import type { ResearchFolderKind, ResearchWorkspaceService } from "../../services/research/research-workspace.js";
 
 /**
  * research_workspace: 学术研究空间 → 论文题目/课题的云盘目录树 + 文件读取。

@@ -4,7 +4,7 @@ import { MockLanguageModelV2 } from "ai/test";
 import { z } from "zod";
 import { createReactAgent, isContextLengthError } from "../src/agent/react.js";
 import { defineTool } from "../src/tools/base.js";
-import type { AgentRuntime } from "../src/tools/runtime.js";
+import type { AgentRuntime } from "../src/agent/runtime.js";
 import type { SseFrame } from "../src/transport/sse.js";
 
 /**

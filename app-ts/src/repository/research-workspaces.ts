@@ -36,4 +36,9 @@ export interface ResearchWorkspaceRepository {
   /** All workspaces (retention sweeper). */
   listAll(): Promise<ResearchWorkspace[]>;
   save(workspace: ResearchWorkspace): Promise<void>;
+  /**
+   * 移除项目的工作区目录映射并返回移除的项目数（云盘文件不删，由云盘域负责）；
+   * 工作区不再包含任何项目时删除该工作区行。
+   */
+  removeByProject(uid: string, projectId: string): Promise<number>;
 }

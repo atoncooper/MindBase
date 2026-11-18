@@ -2,7 +2,7 @@ import { createReactAgent } from "../react.js";
 import { agentEntry } from "../manifest.js";
 import type { PromptRegistry } from "../prompts/loader.js";
 import type { AgentContextBinding } from "../react.js";
-import type { AgentRuntime } from "../../tools/runtime.js";
+import type { AgentRuntime } from "../runtime.js";
 
 /**
  * Code agent: writes code and tries sandbox verification via run_code

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { rrfMerge } from "../src/rag/rrf.js";
 import { isRetryableError } from "../src/agent/react.js";
-import { AgentRuntime } from "../src/tools/runtime.js";
+import { AgentRuntime } from "../src/agent/runtime.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { defineTool } from "../src/tools/base.js";
 import { createDelegateTool } from "../src/tools/harness/delegate.js";

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { runWithRequestContext } from "../src/context/request-context.js";
 import { registerAcademicRoutes } from "../src/transport/http/routes/academic.js";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
-import { AcademicService } from "../src/services/academic.js";
+import { AcademicService } from "../src/services/research/academic.js";
 import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../src/clients/literature-client.js";
 
 /**
@@ -25,10 +25,17 @@ class FakeLiteratureClient implements LiteratureClient {
   }
 }
 
-function buildApp() {
+function buildApp(options: { purge?: import("../src/services/research/academic.js").ProjectPurger } = {}) {
   const store = new MemoryAcademicStore();
   const client = new FakeLiteratureClient();
-  const service = new AcademicService({ projects: store, literature: store, documents: store, events: store, client });
+  const service = new AcademicService({
+    projects: store,
+    literature: store,
+    documents: store,
+    events: store,
+    client,
+    ...(options.purge ? { purge: options.purge } : {}),
+  });
   const app = Fastify();
   app.addHook("onRequest", (req, _reply, done) => {
     const raw = req.headers["x-uid"];
@@ -44,14 +51,14 @@ function buildApp() {
 const asUid = (uid: string) => ({ "x-uid": uid, "content-type": "application/json" });
 
 describe("academic routes", () => {
-  it("requires the gateway uid", async () => {
+ it("requires the gateway uid", async () => {
     const { app } = buildApp();
     const res = await app.inject({ method: "GET", url: "/academic/projects" });
     expect(res.statusCode).toBe(401);
     await app.close();
   });
 
-  it("creates, lists and reads a project", async () => {
+ it("creates, lists and reads a project", async () => {
     const { app } = buildApp();
     const created = await app.inject({
       method: "POST",
@@ -78,7 +85,7 @@ describe("academic routes", () => {
     await app.close();
   });
 
-  it("patches stages/plans/advice and rejects invalid input with detail", async () => {
+ it("patches stages/plans/advice and rejects invalid input with detail", async () => {
     const { app } = buildApp();
     const detail = (
       await app.inject({ method: "POST", url: "/academic/projects", headers: asUid("1"), payload: { title: "A" } })
@@ -104,7 +111,7 @@ describe("academic routes", () => {
     await app.close();
   });
 
-  it("handles the literature workflow (add, list, verify, export, delete)", async () => {
+ it("handles the literature workflow (add, list, verify, export, delete)", async () => {
     const { app, client } = buildApp();
     const detail = (
       await app.inject({ method: "POST", url: "/academic/projects", headers: asUid("1"), payload: { title: "A" } })
@@ -156,7 +163,7 @@ describe("academic routes", () => {
     await app.close();
   });
 
-  it("searches literature through the injected client", async () => {
+ it("searches literature through the injected client", async () => {
     const { app, client } = buildApp();
     client.hits = [{ source: "crossref", title: "Hit", authors: ["A"], year: 2020, doi: "10.1/h" }];
     const res = await app.inject({ method: "GET", url: "/academic/literature/search?q=graph", headers: asUid("1") });
@@ -167,7 +174,7 @@ describe("academic routes", () => {
     await app.close();
   });
 
-  it("manages documents, sections and exports", async () => {
+ it("manages documents, sections and exports", async () => {
     const { app } = buildApp();
     const detail = (
       await app.inject({ method: "POST", url: "/academic/projects", headers: asUid("1"), payload: { title: "A" } })
@@ -213,6 +220,82 @@ describe("academic routes", () => {
       headers: asUid("1"),
     });
     expect(events.json().events.length).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it("purges an archived project through the injected purger", async () => {
+    const purged: string[] = [];
+    const { app } = buildApp({
+      purge: {
+        purge: async (_uid, projectId) => {
+          purged.push(projectId);
+          return { deleted: true, counts: { documents: 2, literature: 1, project: 1 } };
+        },
+      },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/academic/projects",
+      headers: asUid("1"),
+      payload: { title: "待永久删除" },
+    });
+    const projectId = created.json().project.id;
+    const purge = await app.inject({
+      method: "DELETE",
+      url: "/academic/projects/" + projectId + "/purge",
+      headers: { "x-uid": "1" },
+    });
+    expect(purge.statusCode).toBe(200);
+    expect(purge.json()).toMatchObject({ deleted: true, counts: { documents: 2, literature: 1 } });
+    expect(purged).toEqual([projectId]);
+    await app.close();
+  });
+
+  it("moves a project to the recycle bin, restores it, and 503s purge without a purger", async () => {
+    const { app } = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/academic/projects",
+      headers: asUid("1"),
+      payload: { title: "回收站测试" },
+    });
+    const projectId = created.json().project.id;
+
+    const archived = await app.inject({
+      method: "DELETE",
+      url: "/academic/projects/" + projectId,
+      headers: { "x-uid": "1" },
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toMatchObject({ deleted: true, archived: true });
+    expect(archived.json().archivedAt).toBeGreaterThan(0);
+
+    const normalList = await app.inject({ method: "GET", url: "/academic/projects", headers: asUid("1") });
+    expect(normalList.json().projects).toHaveLength(0);
+    const archivedList = await app.inject({
+      method: "GET",
+      url: "/academic/projects?archived=only",
+      headers: asUid("1"),
+    });
+    expect(archivedList.json().projects).toHaveLength(1);
+    expect(archivedList.json().projects[0].archivedAt).toBeGreaterThan(0);
+
+    const restore = await app.inject({
+      method: "POST",
+      url: "/academic/projects/" + projectId + "/restore",
+      headers: { "x-uid": "1" },
+    });
+    expect(restore.statusCode).toBe(200);
+    expect(restore.json().project.id).toBe(projectId);
+    const restoredList = await app.inject({ method: "GET", url: "/academic/projects", headers: asUid("1") });
+    expect(restoredList.json().projects).toHaveLength(1);
+
+    const purge = await app.inject({
+      method: "DELETE",
+      url: "/academic/projects/" + projectId + "/purge",
+      headers: { "x-uid": "1" },
+    });
+    expect(purge.statusCode).toBe(503);
     await app.close();
   });
 });

@@ -33,6 +33,13 @@ export interface PlanNode {
   deps: string[];
   task: string;
   acceptance: string;
+  /**
+   * Human approval gate before this node executes (research).
+   * When the gate reports "not approved" the runner pauses the whole run with
+   * status "paused" instead of executing the node; /chat/plans/:runId/resume
+   * continues after the user approves in the research workbench.
+   */
+  requiresApproval?: boolean;
 }
 
 export interface PlanGraph {
@@ -54,6 +61,12 @@ export interface PlanRunNodeView {
 export interface PlanRunResult {
   runId?: string;
   ok: boolean;
+  /** true when the run stopped at a requiresApproval node and awaits the user. */
+  paused?: boolean;
+  /** true when the run was cancelled by the user before finishing. */
+  cancelled?: boolean;
+  /** approval_id created/observed at the pause point (when available). */
+  approvalId?: string;
   outputs: Record<string, string>;
   failed: string[];
   skipped: string[];

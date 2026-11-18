@@ -79,7 +79,7 @@ export function CodeBlock({ children }: CodeBlockProps) {
   }
 
   return (
-    <div className="md-code my-3 overflow-hidden rounded-xl border border-border bg-[#f5f5f7]">
+    <div className="md-code my-3 overflow-hidden rounded-[7px] border border-border bg-[#f5f5f7]">
       <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5">
         <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-wide text-tertiary">
           {language || "code"}

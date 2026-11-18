@@ -7,23 +7,24 @@
  * MongoAcademicStore.
  *
  * Invariants:
- *  - process-local and non-durable: state dies with the process, so this store
- *    is for tests and for degraded boot when Mongo is unreachable;
- *  - every lookup is uid-scoped (project ids are random UUIDs, but uid still
- *    gates every read/write — a guessed id must never cross users);
- *  - reads and writes deep-copy (structuredClone), so caller-owned objects never
- *    alias stored state;
- *  - event/import timestamps are strictly monotonic, so newest-first feeds stay
- *    deterministic within a single millisecond;
- *  - write-time indexes (dedupe key / per-project ids + citeKeys) are the fast
- *    path for add/addMany/count/lookups; they store ids only, never row bodies,
- *    so the structuredClone-on-read contract above still holds;
- *  - one class object satisfies all four repository interfaces (the shared
- *    method names list/get/remove dispatch by arity, see below).
+ * - process-local and non-durable: state dies with the process, so this store
+ * is for tests and for degraded boot when Mongo is unreachable;
+ * - every lookup is uid-scoped (project ids are random UUIDs, but uid still
+ * gates every read/write — a guessed id must never cross users);
+ * - reads and writes deep-copy (structuredClone), so caller-owned objects never
+ * alias stored state;
+ * - event/import timestamps are strictly monotonic, so newest-first feeds stay
+ * deterministic within a single millisecond;
+ * - write-time indexes (dedupe key / per-project ids + citeKeys) are the fast
+ * path for add/addMany/count/lookups; they store ids only, never row bodies,
+ * so the structuredClone-on-read contract above still holds;
+ * - one class object satisfies all four repository interfaces (the shared
+ * method names list/get/remove dispatch by arity, see below).
  */
 import { randomUUID } from "node:crypto";
 import {
   ACADEMIC_STAGES,
+  DEFAULT_ACADEMIC_AUTO_MODE,
   citeKeyBase,
   uniqueCiteKey,
   initialStageStates,
@@ -38,6 +39,7 @@ import {
   type AcademicEvent,
   type AcademicEventRepository,
   type AcademicLiteratureAddResult,
+  type AcademicLiteraturePatch,
   type AcademicLiteratureEntry,
   type AcademicLiteratureInput,
   type AcademicLiteratureRepository,
@@ -85,6 +87,18 @@ function newProject(uid: string, input: AcademicProjectCreate, at: number): Acad
     field: input.field ?? "",
     ...(input.targetJournal !== undefined ? { targetJournal: input.targetJournal } : {}),
     ...(input.deadline !== undefined ? { deadline: input.deadline } : {}),
+    ...(input.researchQuestion !== undefined ? { researchQuestion: input.researchQuestion } : {}),
+    ...(input.objectives !== undefined ? { objectives: [...input.objectives] } : {}),
+    ...(input.keywords !== undefined ? { keywords: [...input.keywords] } : {}),
+    ...(input.contributions !== undefined ? { contributions: [...input.contributions] } : {}),
+    ...(input.methodology !== undefined ? { methodology: input.methodology } : {}),
+    ...(input.ethicsNote !== undefined ? { ethicsNote: input.ethicsNote } : {}),
+    ...(input.venueRequirements !== undefined ? { venueRequirements: input.venueRequirements } : {}),
+    ...(input.language !== undefined ? { language: input.language } : {}),
+    ...(input.citationStyle !== undefined ? { citationStyle: input.citationStyle } : {}),
+    // Materialize the default here (not only in readers) so every in-memory row
+    // carries the same shape regardless of when the field was introduced.
+    autoMode: input.autoMode ?? DEFAULT_ACADEMIC_AUTO_MODE,
     stage: "topic",
     stages: initialStageStates(at),
     plans: {},
@@ -107,6 +121,16 @@ function applyProjectPatch(base: AcademicProject, patch: AcademicProjectPatch, a
   if (patch.field !== undefined) next.field = patch.field;
   if (patch.targetJournal !== undefined) next.targetJournal = patch.targetJournal;
   if (patch.deadline !== undefined) next.deadline = patch.deadline;
+  if (patch.researchQuestion !== undefined) next.researchQuestion = patch.researchQuestion;
+  if (patch.objectives !== undefined) next.objectives = [...patch.objectives];
+  if (patch.keywords !== undefined) next.keywords = [...patch.keywords];
+  if (patch.contributions !== undefined) next.contributions = [...patch.contributions];
+  if (patch.methodology !== undefined) next.methodology = patch.methodology;
+  if (patch.ethicsNote !== undefined) next.ethicsNote = patch.ethicsNote;
+  if (patch.venueRequirements !== undefined) next.venueRequirements = patch.venueRequirements;
+  if (patch.language !== undefined) next.language = patch.language;
+  if (patch.citationStyle !== undefined) next.citationStyle = patch.citationStyle;
+  if (patch.autoMode !== undefined) next.autoMode = patch.autoMode;
   if (patch.stage !== undefined) next.stage = patch.stage;
   if (patch.stages) next.stages = mergeStages(next.stages, patch.stages);
   if (patch.plans) next.plans = mergePlans(next.plans, patch.plans);
@@ -196,6 +220,10 @@ function newLiteratureEntry(
     ...(doi ? { doi } : {}),
     ...(input.url !== undefined ? { url: input.url } : {}),
     ...(input.abstract !== undefined ? { abstract: input.abstract } : {}),
+    ...(input.tags !== undefined ? { tags: [...input.tags] } : {}),
+    ...(input.notes !== undefined ? { notes: input.notes } : {}),
+    ...(input.readingStatus !== undefined ? { readingStatus: input.readingStatus } : {}),
+    ...(input.keywords !== undefined ? { keywords: [...input.keywords] } : {}),
     source: input.source ?? "manual",
     verified: false,
     importedAt: at,
@@ -375,8 +403,24 @@ export class MemoryAcademicStore
    * The limit is sanitized: non-finite -> default, negative -> empty result. Each
    * event is a deep copy so callers cannot mutate the feed.
    */
-  async listEvents(uid: string, projectId: string, limit = DEFAULT_EVENT_LIMIT): Promise<AcademicEvent[]> {
-    return this.listEventsInternal(uid, projectId, limit);
+  async listEvents(
+    uid: string,
+    projectId: string,
+    limit = DEFAULT_EVENT_LIMIT,
+    offset = 0,
+  ): Promise<AcademicEvent[]> {
+    return this.listEventsInternal(uid, projectId, limit, offset);
+  }
+
+  async removeEventsByProject(uid: string, projectId: string): Promise<number> {
+    let removed = 0;
+    for (let i = this.events.length - 1; i >= 0; i -= 1) {
+      const event = this.events[i];
+      if (event.uid !== uid || event.projectId !== projectId) continue;
+      this.events.splice(i, 1);
+      removed += 1;
+    }
+    return removed;
   }
 
   /**
@@ -403,10 +447,39 @@ export class MemoryAcademicStore
     uid: string,
     projectId: string,
     patch: AcademicProjectPatch,
+  ): Promise<AcademicProject | null>;
+  async update(
+    uid: string,
+    projectId: string,
+    ref: string,
+    patch: AcademicLiteraturePatch,
+  ): Promise<AcademicLiteratureEntry | null>;
+  async update(
+    uid: string,
+    projectId: string,
+    patchOrRef: AcademicProjectPatch | string,
+    literaturePatch?: AcademicLiteraturePatch,
+  ): Promise<AcademicProject | AcademicLiteratureEntry | null> {
+    if (typeof patchOrRef === "string") {
+      return this.updateLiteratureMetadata(uid, projectId, patchOrRef, literaturePatch ?? {});
+    }
+    const project = this.projects.get(projectId);
+    if (!project || project.uid !== uid) return null;
+    const next = applyProjectPatch(project, patchOrRef, Date.now());
+    this.projects.set(projectId, next);
+    return copy(next);
+  }
+
+  async setArchived(
+    uid: string,
+    projectId: string,
+    archivedAt: number | null,
   ): Promise<AcademicProject | null> {
     const project = this.projects.get(projectId);
     if (!project || project.uid !== uid) return null;
-    const next = applyProjectPatch(project, patch, Date.now());
+    const { archivedAt: _ignored, ...rest } = project;
+    const next: AcademicProject =
+      archivedAt === null ? { ...rest, updatedAt: Date.now() } : { ...project, archivedAt, updatedAt: Date.now() };
     this.projects.set(projectId, next);
     return copy(next);
   }
@@ -535,6 +608,24 @@ export class MemoryAcademicStore
     return copy(next);
   }
 
+  /** Patch user-editable metadata; identity fields stay immutable (dedupe/citation invariants). */
+  private updateLiteratureMetadata(
+    uid: string,
+    projectId: string,
+    ref: string,
+    patch: AcademicLiteraturePatch,
+  ): AcademicLiteratureEntry | null {
+    const entry = this.findLiterature(uid, projectId, ref);
+    if (!entry) return null;
+    const next = copy(entry);
+    if (patch.tags !== undefined) next.tags = [...patch.tags];
+    if (patch.notes !== undefined) next.notes = patch.notes;
+    if (patch.readingStatus !== undefined) next.readingStatus = patch.readingStatus;
+    if (patch.keywords !== undefined) next.keywords = [...patch.keywords];
+    this.literature.set(entry.id, next);
+    return copy(next);
+  }
+
   // ---- documents ----------------------------------------------------------
 
   /**
@@ -601,6 +692,21 @@ export class MemoryAcademicStore
    */
   async countDocuments(uid: string, projectId: string): Promise<number> {
     return this.documentProjects.get(scopeKey(uid, projectId))?.size ?? 0;
+  }
+
+  async removeDocumentsByProject(uid: string, projectId: string): Promise<number> {
+    const key = scopeKey(uid, projectId);
+    const ids = this.documentProjects.get(key);
+    if (!ids) return 0;
+    let removed = 0;
+    for (const id of ids) {
+      const document = this.documents.get(id);
+      if (!document || document.uid !== uid || document.projectId !== projectId) continue;
+      this.documents.delete(id);
+      removed += 1;
+    }
+    this.documentProjects.delete(key);
+    return removed;
   }
 
   /** Returns (creating on first write) the per-project document id set. */
@@ -799,12 +905,18 @@ export class MemoryAcademicStore
    * Shared feed query: caps the limit before slicing, so a caller passing
    * Infinity/NaN/negative cannot scan or mis-slice the whole array.
    */
-  private listEventsInternal(uid: string, projectId: string, limit: number): AcademicEvent[] {
+  private listEventsInternal(
+    uid: string,
+    projectId: string,
+    limit: number,
+    offset: number,
+  ): AcademicEvent[] {
     const capped = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : DEFAULT_EVENT_LIMIT;
+    const skip = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
     return this.events
       .filter((event) => event.uid === uid && event.projectId === projectId)
       .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, capped)
+      .slice(skip, skip + capped)
       .map(copy);
   }
 
