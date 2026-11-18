@@ -106,6 +106,10 @@ func (s *ExecutionService) run(exec *model.SandboxExecution, req CreateRequest, 
 	detail := ""
 	var exitCode *int
 	var stdout, stderr string
+	// Preserve partial output captured before a timeout/cancel/error.
+	if result != nil {
+		stdout, stderr = result.Stdout, result.Stderr
+	}
 	switch {
 	case execErr != nil:
 		timedOut := errors.Is(execErr, context.DeadlineExceeded) ||
@@ -125,7 +129,6 @@ func (s *ExecutionService) run(exec *model.SandboxExecution, req CreateRequest, 
 		}
 	case result != nil:
 		exitCode = &result.ExitCode
-		stdout, stderr = result.Stdout, result.Stderr
 		if result.TimedOut {
 			status, errorCode = model.ExecStatusTimeout, "execution_timeout"
 		} else if result.ExitCode != 0 {
@@ -161,6 +164,8 @@ func (s *ExecutionService) run(exec *model.SandboxExecution, req CreateRequest, 
 		StderrBytes:    stderrBytes,
 		StdoutPreview:  truncateText(stdout, preview),
 		StderrPreview:  truncateText(stderr, preview),
+		StdoutFull:     stdout,
+		StderrFull:     stderr,
 		ArtifactPrefix: exec.ArtifactPrefix,
 		ErrorCode:      errorCode,
 		FinishedAt:     finished,
@@ -169,13 +174,20 @@ func (s *ExecutionService) run(exec *model.SandboxExecution, req CreateRequest, 
 	if finishErr != nil {
 		slog.Error("[EXEC] persist terminal state failed", "execution", exec.ID, "err", finishErr)
 	}
+	// A user cancel / timeout sweeper may have moved the row to terminal first;
+	// still persist captured output so the paged output API can serve it.
+	if !accepted && result != nil {
+		if err := s.executions.UpdateOutput(dbCtx, exec.ID, fin); err != nil {
+			slog.Warn("[EXEC] persist output after terminal race failed", "execution", exec.ID, "err", err)
+		}
+	}
 
 	// Lease bookkeeping: a vanished runtime resource must be reclaimed, a healthy
 	// one goes back to idle with a renewed TTL for the next execution.
 	if errorCode == "runtime_missing" {
 		_, _ = s.leases.Release(dbCtx, lease.ID, "runtime_missing", req.RequestID)
 	} else {
-		if err := s.leases.Renew(dbCtx, lease.ID); err != nil {
+		if err := s.leases.Renew(dbCtx, lease.ID, lease.RuntimeID); err != nil {
 			slog.Warn("[EXEC] lease renew failed", "lease", lease.ID, "err", err)
 		}
 	}

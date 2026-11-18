@@ -26,6 +26,8 @@ type ArtifactStore interface {
 	Collect(ctx context.Context, sandboxID string, globs []string) ([]ArtifactCandidate, error)
 	// Presign returns a short-lived download URL for a stored object key.
 	Presign(ctx context.Context, objectKey string, ttl time.Duration) (string, error)
+	// Read returns up to maxBytes of a stored object (artifact content tools).
+	Read(ctx context.Context, objectKey string, maxBytes int64) ([]byte, error)
 }
 
 // FakeArtifactStore returns canned candidates and fake:// presigned URLs.
@@ -58,4 +60,9 @@ func (f *FakeArtifactStore) Collect(_ context.Context, _ string, _ []string) ([]
 // Presign implements ArtifactStore.
 func (f *FakeArtifactStore) Presign(_ context.Context, objectKey string, _ time.Duration) (string, error) {
 	return fmt.Sprintf("fake://sandbox-artifacts/%s", objectKey), nil
+}
+
+// Read implements ArtifactStore (fake store has no object bytes).
+func (f *FakeArtifactStore) Read(_ context.Context, _ string, _ int64) ([]byte, error) {
+	return nil, fmt.Errorf("fake artifact store: object bytes are unavailable")
 }

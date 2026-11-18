@@ -193,7 +193,7 @@ export class AgentRuntime {
     const callKey = `${def.name}:${stableKey(args)}`;
     const seen = (ledger.get(callKey) ?? 0) + 1;
     ledger.set(callKey, seen);
-    if (seen > config.agent.toolRepeatLimit) {
+    if (seen > (def.maxRepeats ?? config.agent.toolRepeatLimit)) {
       log.warn(`[TOOL] ${def.name} repeat call #${seen} rejected (limit=${config.agent.toolRepeatLimit})`);
       return {
         content: `工具 ${def.name} 以完全相同的参数已调用 ${seen - 1} 次，结果不会变化。请停止重复调用，基于已有结果继续回答或换个思路。`,
@@ -219,7 +219,7 @@ export class AgentRuntime {
       // on expiry; the turn-level signal is merged in so a disconnect cancels the tool too.
       const outcome = await timeoutManager.run(
         def.name,
-        timeoutMs,
+        timeoutMs ?? def.defaultTimeoutMs,
         (signal) => Promise.resolve(def.execute(args, ctx, signal)),
         ctx.signal,
       );

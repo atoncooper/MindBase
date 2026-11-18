@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRunCodeTool } from "../src/tools/code/index.js";
+import { createSandboxGrepTool } from "../src/tools/code/shell.js";
 import type { CodeExecutionPort, CodeExecutionResult } from "../src/tools/code/code-execution.js";
 
 function okPort(called: { value: boolean }): CodeExecutionPort {
@@ -18,6 +19,14 @@ describe("research execution guard (D1)", () => {
     const called = { value: false };
     const tool = createRunCodeTool(okPort(called), async () => "需要人工审批");
     const result = await tool.execute({ language: "python", code: "print(1)" }, ctx);
+    expect(result).toBe("需要人工审批");
+    expect(called.value).toBe(false);
+  });
+
+ it("blocks sandbox_grep in a project chat until an experiment is approved", async () => {
+    const called = { value: false };
+    const tool = createSandboxGrepTool(okPort(called), async () => "需要人工审批");
+    const result = await tool.execute({ pattern: "TODO" }, ctx);
     expect(result).toBe("需要人工审批");
     expect(called.value).toBe(false);
   });

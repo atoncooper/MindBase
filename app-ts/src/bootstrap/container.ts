@@ -75,6 +75,7 @@ import { SubmissionPackageService } from "../services/research/submission-packag
 import { ResearchAutopilotService } from "../services/research/autopilot.js";
 import { ResearchMetrics } from "../services/research/metrics.js";
 import { ProjectPurgeService } from "../services/research/project-purge.js";
+import { SandboxLeaseReleaser } from "../services/research/sandbox-leases.js";
 import { DocumentVersionService } from "../services/research/document-versions.js";
 import { ReviewResponseService } from "../services/research/review-response.js";
 import type { ResearchDocumentRevisionRepository } from "../repository/research-document-revisions.js";
@@ -136,9 +137,20 @@ import { MemoryVideoMetaRepository, defaultSeed } from "../repository/memory/vid
 import { MemoryMemoryStore } from "../repository/memory/memory-store.js";
 import { MongoMemoryStore } from "../repository/mongo/memory-store.js";
 import type { MemoryRepository } from "../repository/memory-store.js";
-import { NoopCodeExecution } from "../tools/code/code-execution.js";
+import {
+  NoopCodeExecution,
+  type CodeArtifactPort,
+  type CodeFilePort,
+  type CodeInfoPort,
+  type CodeOutputPort,
+} from "../tools/code/code-execution.js";
 import { HttpCodeExecution } from "../tools/code/http-execution.js";
 import { createSandboxBashTool, createSandboxGrepTool, createSandboxPwshTool } from "../tools/code/shell.js";
+import { createSandboxReadFileTool, createSandboxWriteFileTool } from "../tools/code/files.js";
+import { createSandboxExecutionOutputTool } from "../tools/code/output.js";
+import { createSandboxInfoTool } from "../tools/code/info.js";
+import { createSandboxReadArtifactTool } from "../tools/code/artifacts.js";
+import { createSandboxImportCloudFilesTool } from "../tools/code/import-cloud.js";
 import { MemorySessionDocumentStore } from "../repository/memory/session-docs.js";
 import { GrpcKgGraphRepository } from "../repository/app-kg/kg-graph.js";
 import { MemoryKgGraphRepository } from "../repository/memory/kg-graph.js";
@@ -557,6 +569,8 @@ export async function bootstrap() {
         apiKey: config.sandbox.apiKey,
         timeoutMs: config.sandbox.timeoutMs,
         pollIntervalMs: config.sandbox.pollIntervalMs,
+        extendForRequestTimeout: true,
+        adaptivePolling: true,
       })
     : new NoopCodeExecution();
   // 项目会话内执行代码需先通过实验审批；
@@ -568,7 +582,33 @@ export async function bootstrap() {
   registry.register(createRunCodeTool(codeExec, executionGuard));
   registry.register(createSandboxBashTool(codeExec, executionGuard));
   registry.register(createSandboxPwshTool(codeExec, executionGuard));
-  registry.register(createSandboxGrepTool(codeExec));
+  registry.register(createSandboxGrepTool(codeExec, executionGuard));
+  // File tools exist only on the remote port; the Noop stub has no workspace.
+  const fileExec = codeExec as Partial<CodeFilePort>;
+  const infoExec = codeExec as Partial<CodeInfoPort>;
+  if (typeof infoExec.getInfo === "function") {
+    registry.register(createSandboxInfoTool(infoExec as CodeInfoPort));
+    log.info("[BOOT] sandbox_info tool registered");
+  }
+  const outputExec = codeExec as Partial<CodeOutputPort>;
+  if (typeof outputExec.readOutput === "function") {
+    registry.register(createSandboxExecutionOutputTool(outputExec as CodeOutputPort, executionGuard));
+    log.info("[BOOT] sandbox execution output tool registered (read full stdout/stderr)");
+  }
+  const artifactExec = codeExec as Partial<CodeArtifactPort>;
+  if (typeof artifactExec.readArtifact === "function") {
+    registry.register(createSandboxReadArtifactTool(artifactExec as CodeArtifactPort, executionGuard));
+    log.info("[BOOT] sandbox artifact read tool registered");
+  }
+  if (typeof fileExec.readFile === "function" && typeof fileExec.writeFile === "function") {
+    registry.register(createSandboxReadFileTool(fileExec as CodeFilePort, executionGuard));
+    registry.register(createSandboxWriteFileTool(fileExec as CodeFilePort, executionGuard));
+    if (appCloud) {
+      registry.register(createSandboxImportCloudFilesTool(fileExec as CodeFilePort, appCloud, executionGuard));
+      log.info("[BOOT] sandbox cloud import tool registered (import_cloud_files)");
+    }
+    log.info("[BOOT] sandbox file tools registered (read_file/write_file)");
+  }
   log.info(`[BOOT] run_code tool registered (store=${config.sandbox.enabled ? "remote" : "stub"})`);
   // Quiz generation: the quiz agent authors questions; persistence goes through
   // app-content-mcp (save_quiz / save_grading) — never the quiz tables directly.
@@ -919,6 +959,12 @@ export async function bootstrap() {
       planRuns: {
         removeByProject: (uid, projectId) => planRuns.removeByProject(uid, projectId),
       },
+      sandboxLeases: new SandboxLeaseReleaser({
+        enabled: config.sandbox.enabled,
+        baseUrl: config.sandbox.baseUrl,
+        apiKey: config.sandbox.apiKey,
+        timeoutMs: Math.min(config.sandbox.timeoutMs, 10_000),
+      }),
     });
     academicService = new AcademicService({
       projects: academic,

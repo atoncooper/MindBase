@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -94,6 +95,21 @@ func (o *OpenSandbox) Create(ctx context.Context, spec CreateSpec) (*Sandbox, er
 	}
 	if spec.Timeout > 0 {
 		payload["timeout"] = int(spec.Timeout.Seconds())
+	}
+	if spec.NetworkPolicy != nil {
+		egress := make([]map[string]string, 0, len(spec.NetworkPolicy.Egress))
+		for _, rule := range spec.NetworkPolicy.Egress {
+			if rule.Target == "" || (rule.Action != "allow" && rule.Action != "deny") {
+				continue
+			}
+			egress = append(egress, map[string]string{"action": rule.Action, "target": rule.Target})
+		}
+		// This OpenSandbox release rejects require_full_isolation; only the
+		// published egress/defaultAction shape is sent.
+		payload["network_policy"] = map[string]any{
+			"egress":        egress,
+			"defaultAction": spec.NetworkPolicy.DefaultAction,
+		}
 	}
 	if len(spec.Env) > 0 {
 		payload["env"] = spec.Env
@@ -205,6 +221,74 @@ func (o *OpenSandbox) forgetEndpoint(sandboxID string) {
 
 // ── execution ────────────────────────────────────────────────────────
 
+// WriteFile implements Runtime by uploading one file through execd.
+func (o *OpenSandbox) WriteFile(ctx context.Context, sandboxID string, file File) error {
+	ep, err := o.execdEndpoint(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
+	return o.uploadFiles(ctx, ep, []File{file})
+}
+
+// Renew implements Runtime: POST /v1/sandboxes/{id}/renew-expiration. The
+// lifecycle server owns the absolute expiration; callers pass lease TTL + grace.
+func (o *OpenSandbox) Renew(ctx context.Context, sandboxID string, expiresAt time.Time) error {
+	if sandboxID == "" {
+		return ErrNotFound
+	}
+	payload := map[string]string{"expiresAt": expiresAt.UTC().Format(time.RFC3339)}
+	path := "/sandboxes/" + url.PathEscape(sandboxID) + "/renew-expiration"
+	if err := o.doJSON(ctx, o.lifecycle, http.MethodPost, o.lifecycleURL(path), payload, nil, o.lifecycleHeaders()); err != nil {
+		return fmt.Errorf("opensandbox renew: %w", err)
+	}
+	return nil
+}
+
+// DownloadFile implements Runtime: streams one file through execd's native file
+// API, capped at maxBytes so a huge output cannot exhaust the control plane.
+func (o *OpenSandbox) DownloadFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+	ep, err := o.execdEndpoint(ctx, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("download: empty path")
+	}
+	target := joinURL(ep.base, "/files/download") + "?path=" + url.QueryEscape(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	o.applyExecHeaders(req, ep)
+	resp, err := o.execd.Do(req)
+	if err != nil {
+		if req.Context().Err() != nil {
+			return nil, ErrTimeout
+		}
+		return nil, fmt.Errorf("execd download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<14))
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("execd download http %d: %.300s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if maxBytes <= 0 {
+		maxBytes = 20 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("artifact exceeds %d bytes", maxBytes)
+	}
+	return data, nil
+}
+
 // Exec implements Runtime: materialize the code + input files through execd's
 // file upload API, then run the interpreter command and consume its SSE stream.
 // Cancellation interrupts the remote session best-effort before returning.
@@ -241,11 +325,17 @@ func (o *OpenSandbox) Exec(ctx context.Context, req ExecRequest) (*ExecResult, e
 	if req.Timeout <= 0 {
 		delete(payload, "timeout")
 	}
-	result, sessionID, err := o.runCommand(ctx, ep, payload)
+	result, sessionID, err := o.runCommandWithRetry(ctx, ep, payload)
 	if err != nil {
 		if isTimeout(err) {
 			o.interrupt(ep, sessionID)
-			return nil, ErrTimeout
+			if result != nil {
+				result.TimedOut = true
+			}
+			return result, ErrTimeout
+		}
+		if result != nil {
+			return result, fmt.Errorf("opensandbox exec: %w", err)
 		}
 		return nil, fmt.Errorf("opensandbox exec: %w", err)
 	}
@@ -285,11 +375,11 @@ func shellExecCommand(language, command string) (string, error) {
 	quoted := shellQuote(command)
 	switch strings.ToLower(language) {
 	case "bash":
-		return "if command -v bash >/dev/null 2>&1; then bash -lc " + quoted + "; else sh -lc " + quoted + "; fi", nil
+		return "if command -v bash >/dev/null 2>&1; then bash --noprofile --norc -lc " + quoted + "; else sh -lc " + quoted + "; fi", nil
 	case "sh":
 		return "sh -lc " + quoted, nil
 	case "pwsh":
-		return "pwsh -NoProfile -NonInteractive -Command " + quoted, nil
+		return "pwsh -NoLogo -NoProfile -NonInteractive -Command " + quoted, nil
 	default:
 		return "", fmt.Errorf("opensandbox: unsupported shell %q", language)
 	}
@@ -303,20 +393,32 @@ func (o *OpenSandbox) execShell(ctx context.Context, ep cachedEndpoint, req Exec
 	if err != nil {
 		return nil, err
 	}
+	envs := map[string]string{"PYTHONUNBUFFERED": "1"}
+	if strings.EqualFold(req.Language, "pwsh") {
+		envs["POWERSHELL_TELEMETRY_OPTOUT"] = "1"
+		envs["POWERSHELL_UPDATECHECK"] = "Off"
+		envs["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+	}
 	payload := map[string]any{
 		"command": "mkdir -p /workspace && cd /workspace && " + command,
 		"cwd":     "/tmp",
 		"timeout": req.Timeout.Milliseconds(),
-		"envs":    map[string]string{"PYTHONUNBUFFERED": "1"},
+		"envs":    envs,
 	}
 	if req.Timeout <= 0 {
 		delete(payload, "timeout")
 	}
-	result, sessionID, err := o.runCommand(ctx, ep, payload)
+	result, sessionID, err := o.runCommandWithRetry(ctx, ep, payload)
 	if err != nil {
 		if isTimeout(err) {
 			o.interrupt(ep, sessionID)
-			return nil, ErrTimeout
+			if result != nil {
+				result.TimedOut = true
+			}
+			return result, ErrTimeout
+		}
+		if result != nil {
+			return result, fmt.Errorf("opensandbox shell: %w", err)
 		}
 		return nil, fmt.Errorf("opensandbox shell: %w", err)
 	}
@@ -337,6 +439,30 @@ func interpreterCommand(language, codePath string) (string, error) {
 // uploadFiles posts one metadata+content multipart pair per file (execd reads
 // form parts sequentially).
 func (o *OpenSandbox) uploadFiles(ctx context.Context, ep cachedEndpoint, files []File) error {
+	// A freshly created sandbox's execd can race its listener: the first upload
+	// may get a spurious EOF. Retry once; the request is idempotent by path.
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctxError(ctx)
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		err := o.uploadFilesOnce(ctx, ep, files)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isTransientExecdError(err) {
+			break
+		}
+	}
+	return lastErr
+}
+
+func (o *OpenSandbox) uploadFilesOnce(ctx context.Context, ep cachedEndpoint, files []File) error {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 	for _, file := range files {
@@ -371,6 +497,40 @@ func (o *OpenSandbox) uploadFiles(ctx context.Context, ep cachedEndpoint, files 
 	return o.do(req, o.execd, nil)
 }
 
+func isTransientExecdError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return errors.Is(err, io.EOF) || strings.Contains(msg, "eof") || strings.Contains(msg, "connection reset")
+}
+
+// runCommandWithRetry retries the command stream once on a transient execd EOF
+// (a just-created sandbox may accept the connection before execd is ready).
+func (o *OpenSandbox) runCommandWithRetry(ctx context.Context, ep cachedEndpoint, payload map[string]any) (*ExecResult, string, error) {
+	var lastErr error
+	var lastResult *ExecResult
+	var lastSession string
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return lastResult, lastSession, ctxError(ctx)
+			case <-time.After(300 * time.Millisecond):
+			}
+		}
+		result, sessionID, err := o.runCommand(ctx, ep, payload)
+		if err == nil {
+			return result, sessionID, nil
+		}
+		lastErr, lastResult, lastSession = err, result, sessionID
+		if !isTransientExecdError(err) {
+			return result, sessionID, err
+		}
+	}
+	return lastResult, lastSession, lastErr
+}
+
 // runCommand posts a foreground command and folds the SSE stream into ExecResult.
 // It returns the session id carried by the init event so cancellation can target
 // the exact run.
@@ -403,12 +563,12 @@ func (o *OpenSandbox) runCommand(ctx context.Context, ep cachedEndpoint, payload
 		return nil, "", fmt.Errorf("http %d: %.300s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
-	const maxCapture = 256 * 1024
+	const maxCapture = 1 << 20
 	result := &ExecResult{}
 	sessionID := ""
 	completed := false
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	event := ""
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -473,17 +633,17 @@ func (o *OpenSandbox) runCommand(ctx context.Context, ep cachedEndpoint, payload
 	}
 	if err := scanner.Err(); err != nil {
 		if ctx.Err() != nil {
-			return nil, sessionID, ctxError(ctx)
+			return result, sessionID, ctxError(ctx)
 		}
-		return nil, sessionID, err
+		return result, sessionID, err
 	}
 	if ctx.Err() != nil {
-		return nil, sessionID, ctxError(ctx)
+		return result, sessionID, ctxError(ctx)
 	}
 	if !completed {
 		// A stream that ends without execution_complete has no reliable exit
 		// status; defaulting to 0 would report a false success.
-		return nil, sessionID, fmt.Errorf("execd stream ended without execution_complete")
+		return result, sessionID, fmt.Errorf("execd stream ended without execution_complete")
 	}
 	return result, sessionID, nil
 }

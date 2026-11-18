@@ -58,6 +58,8 @@ type Finish struct {
 	StderrBytes    int64
 	StdoutPreview  string
 	StderrPreview  string
+	StdoutFull     string
+	StderrFull     string
 	ArtifactPrefix string
 	ErrorCode      string
 	FinishedAt     time.Time
@@ -72,6 +74,9 @@ type ExecutionRepo interface {
 	MarkRunning(ctx context.Context, id string, startedAt, deadlineAt time.Time) (bool, error)
 	// Finish writes the terminal state; false when it was already terminal.
 	Finish(ctx context.Context, id string, fin Finish) (bool, error)
+	// UpdateOutput persists captured streams even when a cancel/sweeper already
+	// moved the row to a terminal state.
+	UpdateOutput(ctx context.Context, id string, fin Finish) error
 	// Cancel marks a queued/running execution canceled (idempotent).
 	Cancel(ctx context.Context, id, errorCode string, finishedAt time.Time) (bool, error)
 	// ListTimedOut returns running executions whose deadline passed.

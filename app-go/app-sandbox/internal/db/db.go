@@ -7,6 +7,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,9 +35,13 @@ var OwnedModels = []any{
 
 // Init opens MySQL. dsn may be SQLAlchemy-style (mysql+aiomysql://...).
 // loc=UTC keeps timestamps comparable to the other Go services.
-func Init(dsn string, maxOpen, maxIdle, maxLife int, debug bool) error {
+func Init(dsn string, maxOpen, maxIdle, maxLife, maxIdleTime, slowThresholdMS int, prepareStmt, skipDefaultTx, debug bool) error {
 	gormDSN := ToGormDSN(dsn)
-	d, err := gorm.Open(mysql.Open(gormDSN), &gorm.Config{Logger: logger.NewGORMLogger(debug)})
+	d, err := gorm.Open(mysql.Open(gormDSN), &gorm.Config{
+		Logger:                 logger.NewGORMLogger(debug, slowThresholdMS),
+		PrepareStmt:            prepareStmt,
+		SkipDefaultTransaction: skipDefaultTx,
+	})
 	if err != nil {
 		return fmt.Errorf("open mysql: %w", err)
 	}
@@ -44,9 +49,18 @@ func Init(dsn string, maxOpen, maxIdle, maxLife int, debug bool) error {
 	if err != nil {
 		return fmt.Errorf("get *sql.DB: %w", err)
 	}
-	sqlDB.SetMaxOpenConns(maxOpen)
-	sqlDB.SetMaxIdleConns(maxIdle)
-	sqlDB.SetConnMaxLifetime(time.Duration(maxLife) * time.Second)
+	if maxOpen > 0 {
+		sqlDB.SetMaxOpenConns(maxOpen)
+	}
+	if maxIdle > 0 {
+		sqlDB.SetMaxIdleConns(maxIdle)
+	}
+	if maxLife > 0 {
+		sqlDB.SetConnMaxLifetime(time.Duration(maxLife) * time.Second)
+	}
+	if maxIdleTime > 0 {
+		sqlDB.SetConnMaxIdleTime(time.Duration(maxIdleTime) * time.Second)
+	}
 	DB = d
 	return nil
 }
@@ -84,6 +98,18 @@ func Migrate() error {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
 	return nil
+}
+
+// Stats returns the live *sql.DB pool counters.
+func Stats() sql.DBStats {
+	if DB == nil {
+		return sql.DBStats{}
+	}
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return sql.DBStats{}
+	}
+	return sqlDB.Stats()
 }
 
 // Ping reports database reachability for /health and /ready.

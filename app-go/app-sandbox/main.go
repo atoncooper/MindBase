@@ -34,6 +34,13 @@ import (
 //go:embed default.yaml
 var defaultYAML []byte
 
+func durationOr(ms int, fallback time.Duration) time.Duration {
+	if ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return fallback
+}
+
 func main() {
 	cfg, err := config.Load(defaultYAML)
 	if err != nil {
@@ -48,9 +55,10 @@ func main() {
 		level = "debug"
 	}
 	logger.Init(logger.Options{
-		Level:  level,
-		Format: cfg.Log.Format,
-		Output: cfg.Log.Output,
+		Level:     level,
+		Format:    cfg.Log.Format,
+		Output:    cfg.Log.Output,
+		AddSource: cfg.Log.AddSource,
 		File: logger.FileOptions{
 			Path:       cfg.Log.File.Path,
 			MaxSize:    cfg.Log.File.MaxSize,
@@ -70,7 +78,9 @@ func main() {
 	}
 
 	if err := db.Init(cfg.Database.DSN, cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns,
-		cfg.Database.ConnMaxLifetime, cfg.App.Debug); err != nil {
+		cfg.Database.ConnMaxLifetime, cfg.Database.ConnMaxIdleTime,
+		cfg.Database.SlowThresholdMS, cfg.Database.PrepareStmt,
+		cfg.Database.SkipDefaultTx, cfg.App.Debug); err != nil {
 		slog.Error("init mysql failed", "err", err)
 		os.Exit(1)
 	}
@@ -88,6 +98,12 @@ func main() {
 
 	store := repo.NewMySQL(db.DB)
 	m := metrics.New()
+	// Live DB pool gauges for /metrics and alerting.
+	m.AddGauge("sandbox_db_open_connections", nil, func() int64 { return int64(db.Stats().OpenConnections) })
+	m.AddGauge("sandbox_db_in_use", nil, func() int64 { return int64(db.Stats().InUse) })
+	m.AddGauge("sandbox_db_idle", nil, func() int64 { return int64(db.Stats().Idle) })
+	m.AddGauge("sandbox_db_wait_count", nil, func() int64 { return db.Stats().WaitCount })
+	m.AddGauge("sandbox_db_wait_duration_ms", nil, func() int64 { return db.Stats().WaitDuration.Milliseconds() })
 
 	var rt runtime.Runtime
 	switch cfg.Runtime.Type {
@@ -102,9 +118,26 @@ func main() {
 	quota := service.NewQuotaService(cfg, store, m)
 	leases := service.NewLeaseManager(cfg, rt, store, store, store, quota, m)
 	admission := service.NewAdmission(cfg, m)
-	// Artifact storage is not wired yet: the fake store reports no files. Replace it
-	// with the execd file API + MinIO presigned URLs when object storage is enabled.
-	artifactStore := service.NewFakeArtifactStore()
+	m.AddGauge("sandbox_admission_memory_in_use", nil, func() int64 {
+		inUse, _ := admission.MemoryStats()
+		return inUse
+	})
+	m.AddGauge("sandbox_admission_memory_limit", nil, func() int64 {
+		_, limit := admission.MemoryStats()
+		return limit
+	})
+	var artifactStore service.ArtifactStore
+	if cfg.Artifacts.Store == "minio" {
+		minioStore, err := service.NewMinioArtifactStore(cfg, rt)
+		if err != nil {
+			slog.Error("init minio artifact store failed", "err", err)
+			os.Exit(1)
+		}
+		artifactStore = minioStore
+	} else {
+		slog.Warn("[ARTIFACTS] fake store enabled: collected files will not be uploaded")
+		artifactStore = service.NewFakeArtifactStore()
+	}
 	executions := service.NewExecutionService(service.ExecutionDeps{
 		Config:        cfg,
 		Executions:    store,
@@ -119,6 +152,7 @@ func main() {
 		Metrics:       m,
 	})
 	leases.SetCanceler(executions)
+	files := service.NewFileService(leases, rt)
 	sweeper := service.NewSweeper(cfg, store, leases, executions, store, rt, m)
 	// Internal admin API: read-only queries over the sandbox_* tables
 	// plus cancel/release delegating to the live services.
@@ -139,6 +173,7 @@ func main() {
 		Cfg:         cfg,
 		Executions:  executions,
 		Leases:      leases,
+		Files:       files,
 		Admin:       admin,
 		Metrics:     m,
 		RuntimeName: rt.Name(),
@@ -153,7 +188,28 @@ func main() {
 		},
 	})
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	srv := &http.Server{Addr: addr, Handler: engine, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           engine,
+		ReadHeaderTimeout: durationOr(cfg.Server.ReadHeaderTimeoutMS, 10*time.Second),
+		ReadTimeout:       durationOr(cfg.Server.ReadTimeoutMS, 30*time.Second),
+		// 0 keeps SSE (/v1/executions/{id}/events) open; it is explicitly
+		// configurable for non-streaming deployments.
+		WriteTimeout: time.Duration(cfg.Server.WriteTimeoutMS) * time.Millisecond,
+		IdleTimeout:  durationOr(cfg.Server.IdleTimeoutMS, 120*time.Second),
+	}
+	if cfg.Server.MaxHeaderBytes > 0 {
+		srv.MaxHeaderBytes = cfg.Server.MaxHeaderBytes
+	}
+	slog.Info("http server configured",
+		"addr", addr,
+		"read_header_timeout_ms", cfg.Server.ReadHeaderTimeoutMS,
+		"read_timeout_ms", cfg.Server.ReadTimeoutMS,
+		"write_timeout_ms", cfg.Server.WriteTimeoutMS,
+		"idle_timeout_ms", cfg.Server.IdleTimeoutMS,
+		"max_header_bytes", srv.MaxHeaderBytes,
+		"max_body_bytes", cfg.Server.MaxBodyBytes,
+	)
 
 	sweepCtx, stopSweeper := context.WithCancel(context.Background())
 	defer stopSweeper()
@@ -172,8 +228,10 @@ func main() {
 	<-quit
 	slog.Info("shutting down")
 	stopSweeper()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(),
+		durationOr(cfg.Server.ShutdownTimeoutMS, 15*time.Second))
 	defer cancel()
+	srv.SetKeepAlivesEnabled(false)
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("http shutdown error", "err", err)
 	}

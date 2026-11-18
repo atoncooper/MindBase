@@ -52,6 +52,8 @@ func registerOps(e *gin.Engine, d Deps) {
 func registerInternal(g *gin.RouterGroup, d Deps) {
 	g.GET("/leases", func(c *gin.Context) { listLeases(c, d) })
 	g.DELETE("/leases/:id", func(c *gin.Context) { releaseLease(c, d) })
+	// Project cascade: release every active lease of one user's project.
+	g.DELETE("/leases", func(c *gin.Context) { releaseProjectLeases(c, d) })
 }
 
 func listLeases(c *gin.Context, d Deps) {
@@ -90,6 +92,70 @@ func releaseLease(c *gin.Context, d Deps) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// releaseMyProjectLeases is the /v1 variant: uid comes from X-Uid, projectId
+// from the query, so app-ts can clean up a project without admin credentials.
+func releaseMyProjectLeases(c *gin.Context, d Deps) {
+	uid := currentUID(c)
+	if uid <= 0 {
+		apiErr(c, http.StatusUnauthorized, "缺少 X-Uid")
+		return
+	}
+	projectID := strings.TrimSpace(c.Query("projectId"))
+	if projectID == "" {
+		apiErr(c, http.StatusBadRequest, "projectId 不能为空")
+		return
+	}
+	released, failed, err := releaseLeasesForProject(c.Request.Context(), d, uid, projectID, currentRequestID(c))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"released": released, "failed": failed})
+}
+
+// releaseProjectLeases releases all leases owned by (uid, projectId). The
+// app-ts project purge calls it before deleting the project row so a deleted
+// project cannot keep a warm /workspace until the lease TTL expires.
+func releaseProjectLeases(c *gin.Context, d Deps) {
+	uid, err := strconv.ParseInt(strings.TrimSpace(c.Query("uid")), 10, 64)
+	if err != nil || uid <= 0 {
+		apiErr(c, http.StatusBadRequest, "uid 无效")
+		return
+	}
+	projectID := strings.TrimSpace(c.Query("projectId"))
+	if projectID == "" {
+		apiErr(c, http.StatusBadRequest, "projectId 不能为空")
+		return
+	}
+	released, failed, err := releaseLeasesForProject(c.Request.Context(), d, uid, projectID, currentRequestID(c))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"released": released, "failed": failed})
+}
+
+func releaseLeasesForProject(ctx context.Context, d Deps, uid int64, projectID, requestID string) (int, []string, error) {
+	leases, err := d.Leases.ListByUID(ctx, uid, 100)
+	if err != nil {
+		return 0, nil, err
+	}
+	released := 0
+	failed := make([]string, 0)
+	for i := range leases {
+		lease := &leases[i]
+		if lease.ProjectID != projectID {
+			continue
+		}
+		if _, rerr := d.Leases.Release(ctx, lease.ID, "project_deleted", requestID); rerr != nil {
+			failed = append(failed, lease.ID)
+			continue
+		}
+		released++
+	}
+	return released, failed, nil
 }
 
 func parseLimit(raw string) int {

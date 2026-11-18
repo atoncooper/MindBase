@@ -11,6 +11,7 @@ async function runShell(
   shell: ShellLanguage,
   command: string,
   timeoutMs: number,
+  ctx: { uid?: string; academicProjectId?: string },
   signal?: AbortSignal,
 ): Promise<string> {
   // Native app-sandbox command mode: the sandbox holds a lease per
@@ -20,11 +21,24 @@ async function runShell(
       language: shell,
       code: command,
       timeoutMs,
+      ...(ctx.uid !== undefined ? { uid: ctx.uid } : {}),
+      ...(ctx.academicProjectId
+        ? { projectId: ctx.academicProjectId, purpose: "chat" }
+        : {}),
     },
     signal,
   );
   const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-  return (output || result.error || "命令没有输出").slice(0, MAX_OUTPUT);
+  const notices: string[] = [];
+  if (result.stdoutTruncated || result.stderrTruncated) {
+    notices.push(
+      "output_truncated: true (use sandbox_execution_output execution_id=" +
+        (result.executionId ?? "?") +
+        " with offset/next_offset to read the full stream)",
+    );
+  }
+  const text = [output, ...notices].filter(Boolean).join("\n");
+  return (text || result.error || "命令没有输出").slice(0, MAX_OUTPUT);
 }
 
 /** sandbox_bash: AI-authored bash command, executed inside app-sandbox. */
@@ -32,8 +46,9 @@ export function createSandboxBashTool(execution: CodeExecutionPort, guard?: Rese
   return defineTool({
     name: "sandbox_bash",
     description:
-      "在 app-sandbox 隔离沙箱内执行 bash 命令（AI 自己填写 command）。同一 uid/project 的沙箱 lease 会复用 /workspace，" +
-      "所以 grep/find/git/pytest 能看到之前生成的文件。不能访问宿主机。PowerShell 用 sandbox_pwsh。",
+      "在 app-sandbox 隔离沙箱内执行 shell 命令。优先 bash；镜像没有 bash 时自动回退 POSIX sh。" +
+      "当前部署的 sandbox-pwsh 镜像包含 bash 5.2，可用数组/[[ ]]/函数等 bash 语法；" +
+      "同一 uid/project 的 lease 会复用 /workspace。不能访问宿主机。PowerShell 用 sandbox_pwsh。",
     inputSchema: z.object({
       command: z.string().min(1).max(20_000).describe("完整 bash 命令"),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
@@ -44,7 +59,7 @@ export function createSandboxBashTool(execution: CodeExecutionPort, guard?: Rese
         const blocked = await guard(ctx);
         if (blocked) return blocked;
       }
-      return runShell(execution, "bash", args.command, args.timeoutMs ?? 120_000, signal);
+      return runShell(execution, "bash", args.command, args.timeoutMs ?? 120_000, ctx, signal);
     },
   });
 }
@@ -54,8 +69,8 @@ export function createSandboxPwshTool(execution: CodeExecutionPort, guard?: Rese
   return defineTool({
     name: "sandbox_pwsh",
     description:
-      "在 app-sandbox 隔离沙箱内执行 PowerShell 命令（AI 自己填写 command）。仅当沙箱镜像提供 pwsh 时可用；" +
-      "不可用会明确返回，不会回落到宿主机 PowerShell。",
+      "在 app-sandbox 隔离沙箱内执行 PowerShell 命令。当前部署的 sandbox-pwsh 镜像包含 PowerShell 7.4；" +
+      "其他镜像没有 pwsh 时会明确返回不可用，不会回落到宿主机 PowerShell。",
     inputSchema: z.object({
       command: z.string().min(1).max(20_000).describe("完整 PowerShell 命令"),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
@@ -66,13 +81,13 @@ export function createSandboxPwshTool(execution: CodeExecutionPort, guard?: Rese
         const blocked = await guard(ctx);
         if (blocked) return blocked;
       }
-      return runShell(execution, "pwsh", args.command, args.timeoutMs ?? 120_000, signal);
+      return runShell(execution, "pwsh", args.command, args.timeoutMs ?? 120_000, ctx, signal);
     },
   });
 }
 
 /** sandbox_grep: structured grep/rg over the persistent sandbox workspace. */
-export function createSandboxGrepTool(execution: CodeExecutionPort) {
+export function createSandboxGrepTool(execution: CodeExecutionPort, guard?: ResearchExecutionGuard) {
   return defineTool({
     name: "sandbox_grep",
     description:
@@ -85,7 +100,11 @@ export function createSandboxGrepTool(execution: CodeExecutionPort) {
       timeoutMs: z.number().int().positive().max(120_000).optional(),
     }),
     defaultTimeoutMs: 60_000,
-    async execute(args, _ctx, signal) {
+    async execute(args, ctx, signal) {
+      if (guard) {
+        const blocked = await guard(ctx);
+        if (blocked) return blocked;
+      }
       const limit = args.maxResults ?? 200;
       const path = args.path ?? "/workspace";
       const quotedPattern = args.pattern.replace(/'/g, "'\\''");
@@ -98,7 +117,7 @@ export function createSandboxGrepTool(execution: CodeExecutionPort) {
         " '" + quotedPattern + "' '" + quotedPath + "') || grep -R -n --exclude-dir=.git -m " +
         limit +
         " '" + quotedPattern + "' '" + quotedPath + "' | head -n " + limit;
-      return runShell(execution, "bash", command, args.timeoutMs ?? 30_000, signal);
+      return runShell(execution, "bash", command, args.timeoutMs ?? 30_000, ctx, signal);
     },
   });
 }

@@ -720,8 +720,7 @@ services:
       mysql:
         condition: service_healthy
       minio:
-        condition: service_healthy
-        required: false   # artifact store is still Fake; minio is not required for exec
+        condition: service_healthy   # artifacts.store=minio uploads executed outputs here
       opensandbox-server:
         condition: service_healthy
         required: false   # SANDBOX_RUNTIME_TYPE=fake 时可单独调试控制层
@@ -745,6 +744,9 @@ services:
       - MINIO__ENDPOINT=${MINIO__ENDPOINT:-https://minio:9000}
       - MINIO__ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO__SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - SANDBOX__ARTIFACTS__STORE=${SANDBOX_ARTIFACTS_STORE:-minio}
+      - SANDBOX__MINIO__BUCKET=${SANDBOX_ARTIFACTS_BUCKET:-sandbox-artifacts}
+      - SANDBOX__MINIO__PUBLIC_ENDPOINT=/minio-proxy
       - SANDBOX__ADMIN__TOKEN=${SANDBOX_ADMIN_TOKEN:-}
       - SANDBOX__LOG__OUTPUT=both
     # Control-plane floor: Go service + small in-process caches.
@@ -765,6 +767,7 @@ services:
       - "127.0.0.1:${APP_SANDBOX_PORT:-8017}:8017"
     volumes:
       - app_sandbox_logs:/app/logs
+      - ./secrets/certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     restart: unless-stopped
     networks:
       - mind-base-net
@@ -863,7 +866,7 @@ services:
     container_name: mind-base-minio
     # nginx (proxy_pass) and Milvus both depend on minio; add standalone so
     # nginx's standalone profile doesn't break the dependency graph.
-    profiles: ["", "standalone", "storage", "full"]
+    profiles: ["", "standalone", "storage", "sandbox", "full"]
     ports:
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:

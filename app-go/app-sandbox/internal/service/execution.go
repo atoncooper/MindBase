@@ -173,7 +173,11 @@ func (s *ExecutionService) Create(ctx context.Context, req CreateRequest) (*mode
 		}
 		return nil, err
 	}
-	release, err := s.admission.Acquire(ctx, req.UID)
+	weight := 1.0
+	if s.quota != nil {
+		weight = s.admission.WeightForTier(string(s.quota.TierFor(ctx, req.UID)))
+	}
+	release, err := s.admission.Acquire(ctx, req.UID, weight)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -135,6 +137,21 @@ func (f *Fake) Delete(_ context.Context, sandboxID string) error {
 	delete(f.sandboxes, sandboxID)
 	f.deletes++
 	return nil
+}
+
+// WriteFile implements Runtime: fake sandboxes have no real filesystem.
+func (f *Fake) WriteFile(_ context.Context, _ string, _ File) error {
+	return fmt.Errorf("fake runtime: file writes are not supported")
+}
+
+// Renew implements Runtime: fake sandboxes do not expire independently.
+func (f *Fake) Renew(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
+// DownloadFile implements Runtime: the fake backend has no real filesystem.
+func (f *Fake) DownloadFile(_ context.Context, _, _ string, _ int64) ([]byte, error) {
+	return nil, errors.New("fake runtime: file download not supported")
 }
 
 // Exec implements Runtime.

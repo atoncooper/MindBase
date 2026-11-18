@@ -13,6 +13,7 @@ import type { ResearchDocumentRevisionRepository } from "../../repository/resear
 import type { ResearchExperimentRepository } from "../../repository/research-experiments.js";
 import type { ResearchWorkspaceRepository } from "../../repository/research-workspaces.js";
 import { AcademicError } from "./academic.js";
+import type { SandboxLeaseReleaser } from "./sandbox-leases.js";
 
 /**
  * 项目永久删除（级联清理）服务。
@@ -80,6 +81,8 @@ export interface ProjectPurgeDeps {
   autopilot: Pick<ResearchAutopilotRepository, "removeByProject">;
   planRuns: Pick<PlanRunRepository, "removeByProject">;
   workspaces: Pick<ResearchWorkspaceRepository, "removeByProject">;
+  /** Optional: release warm sandbox leases before the project row disappears. */
+  sandboxLeases?: Pick<SandboxLeaseReleaser, "releaseProject">;
 }
 
 /** Fresh counters (evidence is nested because its contract reports two counts). */
@@ -134,6 +137,8 @@ export class ProjectPurgeService {
       counts.workspaces = await this.deps.workspaces.removeByProject(uid, projectId);
       counts.autopilot = await this.deps.autopilot.removeByProject(uid, projectId);
       counts.planRuns = await this.deps.planRuns.removeByProject(uid, projectId);
+      // Best effort: a deleted project must not keep a warm /workspace until TTL.
+      await this.deps.sandboxLeases?.releaseProject(uid, projectId);
       counts.project = (await this.deps.projects.remove(uid, projectId)) ? 1 : 0;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);

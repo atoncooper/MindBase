@@ -79,20 +79,24 @@ func (SandboxLease) TableName() string { return "sandbox_lease" }
 // stored: code_sha256 plus the truncated stdout/stderr previews are enough for
 // audit and for polling clients.
 type SandboxExecution struct {
-	ID             string     `gorm:"column:id;type:varchar(36);primaryKey" json:"id"`
-	LeaseID        string     `gorm:"column:lease_id;type:varchar(36);not null;default:'';index:idx_execution_lease" json:"leaseId"`
-	UID            int64      `gorm:"column:uid;index:idx_execution_uid_created,priority:1" json:"uid"`
-	ProjectID      string     `gorm:"column:project_id;type:varchar(64);not null;default:''" json:"projectId"`
-	Purpose        string     `gorm:"column:purpose;type:varchar(32);not null;default:''" json:"purpose"`
-	Language       string     `gorm:"column:language;type:varchar(16);not null;default:''" json:"language"`
-	CodeSHA256     string     `gorm:"column:code_sha256;type:char(64);not null;default:''" json:"codeSha256"`
-	Status         string     `gorm:"column:status;type:varchar(16);not null;default:'queued';index:idx_execution_status,priority:1" json:"status"`
-	ExitCode       *int       `gorm:"column:exit_code" json:"exitCode,omitempty"`
-	TimeoutMS      int        `gorm:"column:timeout_ms;not null;default:0" json:"timeoutMs"`
-	StdoutBytes    int64      `gorm:"column:stdout_bytes;not null;default:0" json:"stdoutBytes"`
-	StderrBytes    int64      `gorm:"column:stderr_bytes;not null;default:0" json:"stderrBytes"`
-	StdoutPreview  string     `gorm:"column:stdout_preview;type:text" json:"stdoutPreview,omitempty"`
-	StderrPreview  string     `gorm:"column:stderr_preview;type:text" json:"stderrPreview,omitempty"`
+	ID            string `gorm:"column:id;type:varchar(36);primaryKey" json:"id"`
+	LeaseID       string `gorm:"column:lease_id;type:varchar(36);not null;default:'';index:idx_execution_lease" json:"leaseId"`
+	UID           int64  `gorm:"column:uid;index:idx_execution_uid_created,priority:1" json:"uid"`
+	ProjectID     string `gorm:"column:project_id;type:varchar(64);not null;default:''" json:"projectId"`
+	Purpose       string `gorm:"column:purpose;type:varchar(32);not null;default:''" json:"purpose"`
+	Language      string `gorm:"column:language;type:varchar(16);not null;default:''" json:"language"`
+	CodeSHA256    string `gorm:"column:code_sha256;type:char(64);not null;default:''" json:"codeSha256"`
+	Status        string `gorm:"column:status;type:varchar(16);not null;default:'queued';index:idx_execution_status,priority:1" json:"status"`
+	ExitCode      *int   `gorm:"column:exit_code" json:"exitCode,omitempty"`
+	TimeoutMS     int    `gorm:"column:timeout_ms;not null;default:0" json:"timeoutMs"`
+	StdoutBytes   int64  `gorm:"column:stdout_bytes;not null;default:0" json:"stdoutBytes"`
+	StderrBytes   int64  `gorm:"column:stderr_bytes;not null;default:0" json:"stderrBytes"`
+	StdoutPreview string `gorm:"column:stdout_preview;type:text" json:"stdoutPreview,omitempty"`
+	StderrPreview string `gorm:"column:stderr_preview;type:text" json:"stderrPreview,omitempty"`
+	// Full captured streams (bounded at capture time); served by the paged
+	// /v1/executions/{id}/output endpoint. Preview columns stay for list views.
+	StdoutFull     string     `gorm:"column:stdout_full;type:longtext" json:"-"`
+	StderrFull     string     `gorm:"column:stderr_full;type:longtext" json:"-"`
 	ArtifactPrefix string     `gorm:"column:artifact_prefix;type:varchar(255);not null;default:''" json:"artifactPrefix"`
 	ErrorCode      string     `gorm:"column:error_code;type:varchar(64);not null;default:''" json:"errorCode,omitempty"`
 	StartedAt      *time.Time `gorm:"column:started_at" json:"startedAt,omitempty"`

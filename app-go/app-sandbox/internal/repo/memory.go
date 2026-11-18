@@ -366,12 +366,31 @@ func (m *Memory) Finish(_ context.Context, id string, fin Finish) (bool, error) 
 	e.StderrBytes = fin.StderrBytes
 	e.StdoutPreview = fin.StdoutPreview
 	e.StderrPreview = fin.StderrPreview
+	e.StdoutFull = fin.StdoutFull
+	e.StderrFull = fin.StderrFull
 	e.ArtifactPrefix = fin.ArtifactPrefix
 	e.ErrorCode = fin.ErrorCode
 	finished := fin.FinishedAt
 	e.FinishedAt = timePtrCopy(&finished)
 	m.executions[id] = e
 	return true, nil
+}
+
+func (m *Memory) UpdateOutput(_ context.Context, id string, fin Finish) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.executions[id]
+	if !ok {
+		return ErrNotFound
+	}
+	e.StdoutBytes = fin.StdoutBytes
+	e.StderrBytes = fin.StderrBytes
+	e.StdoutPreview = fin.StdoutPreview
+	e.StderrPreview = fin.StderrPreview
+	e.StdoutFull = fin.StdoutFull
+	e.StderrFull = fin.StderrFull
+	m.executions[id] = e
+	return nil
 }
 
 func (m *Memory) Cancel(_ context.Context, id, errorCode string, finishedAt time.Time) (bool, error) {

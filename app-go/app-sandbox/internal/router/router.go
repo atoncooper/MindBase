@@ -5,8 +5,11 @@
 //	GET    /v1/executions/:id        poll status/result
 //	GET    /v1/executions/:id/events SSE stream
 //	POST   /v1/executions/:id/cancel cancel (204, idempotent)
+//	GET    /v1/files/read            offset-addressed text file read
+//	POST   /v1/files/write           write one text file into /workspace
 //	GET    /internal/leases          list leases (admin)
 //	DELETE /internal/leases/:id      force release
+//	DELETE /v1/leases?projectId=     release a project's leases (app-ts purge)
 //	GET    /health /ready /metrics
 //
 // Auth: /v1 and /internal require the shared gateway consumer key (X-API-Key or
@@ -23,6 +26,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"app-sandbox/internal/config"
 	"app-sandbox/internal/dto"
@@ -39,6 +43,7 @@ type Deps struct {
 	Cfg         *config.Config
 	Executions  *service.ExecutionService
 	Leases      *service.LeaseManager
+	Files       *service.FileService
 	Metrics     *metrics.Metrics
 	RuntimeName string
 	// Admin serves the internal admin API (/internal/admin/*, X-Admin-Token).
@@ -54,7 +59,11 @@ func New(d Deps) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	e := gin.New()
 	e.SetTrustedProxies(nil)
-	e.Use(logger.GinRecovery(), requestID(), logger.GinLogger(), securityHeaders())
+	e.Use(logger.GinRecovery(), requestID(), logger.GinLogger(logger.GinLoggerOptions{
+		Enabled:   d.Cfg.Server.AccessLog.Enabled,
+		Slow:      time.Duration(d.Cfg.Server.AccessLog.SlowMS) * time.Millisecond,
+		SkipPaths: d.Cfg.Server.AccessLog.SkipPaths,
+	}), bodyLimit(d.Cfg.Server.MaxBodyBytes), securityHeaders())
 	e.HandleMethodNotAllowed = true
 
 	registerOps(e, d)
@@ -68,6 +77,23 @@ func New(d Deps) *gin.Engine {
 }
 
 // ── middleware ───────────────────────────────────────────────────────
+
+// bodyLimit rejects oversized JSON requests before they reach a handler.
+func bodyLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes <= 0 {
+			c.Next()
+			return
+		}
+		if c.Request.ContentLength > maxBytes {
+			apiErr(c, http.StatusRequestEntityTooLarge, "请求体过大")
+			c.Abort()
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
+}
 
 func requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
