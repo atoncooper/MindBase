@@ -6,7 +6,7 @@
  * adapter so both implementations can share the same collection during migration.
  */
 import { EntitySchema } from "@mikro-orm/mongodb";
-import type { AcademicEvidenceFile, AcademicRunStatus } from "../../academic-evidence.js";
+import type { AcademicEvidenceFile, AcademicRunMetric, AcademicRunStatus } from "../../academic-evidence.js";
 
 /** Stored shape: dataset and run rows share one collection, discriminated by kind. */
 export interface AcademicEvidenceRecordEntity {
@@ -28,6 +28,7 @@ export interface AcademicEvidenceRecordEntity {
   exitCode?: number;
   stdoutPreview?: string;
   stderrPreview?: string;
+  metrics?: AcademicRunMetric[];
   artifacts?: AcademicEvidenceFile[];
   cpuMillis?: number;
   startedAt?: number;
@@ -57,6 +58,7 @@ export const AcademicEvidenceRecord = new EntitySchema<AcademicEvidenceRecordEnt
     exitCode: { type: "number", nullable: true },
     stdoutPreview: { type: "string", nullable: true },
     stderrPreview: { type: "string", nullable: true },
+    metrics: { type: "json", nullable: true },
     artifacts: { type: "json", nullable: true },
     cpuMillis: { type: "number", nullable: true },
     startedAt: { type: "number", nullable: true },

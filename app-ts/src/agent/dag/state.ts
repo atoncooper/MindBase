@@ -79,7 +79,12 @@ export class PlanRunEngine {
     run.version += 1;
     run.updatedAt = now();
     if (status) run.status = status;
-    if (run.status === "completed" || run.status === "failed" || run.status === "partial") {
+    if (
+      run.status === "completed" ||
+      run.status === "failed" ||
+      run.status === "partial" ||
+      run.status === "cancelled"
+    ) {
       run.endedAt = run.endedAt ?? now();
     }
     await this.repo.save(run);
@@ -99,6 +104,9 @@ export class PlanRunEngine {
         node.note = node.note ?? "恢复执行";
         node.error = undefined;
       }
+      // A paused run keeps the gated node as pending with the approval note; the
+      // runner re-checks the gate on resume and replaces the note once approved.
+      if (node.status === "pending" && node.note?.startsWith("等待人工审批")) node.note = undefined;
     }
     run.status = "running";
     return this.commit(run);

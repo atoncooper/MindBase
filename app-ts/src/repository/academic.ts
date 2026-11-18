@@ -3,20 +3,20 @@
  * library, manuscript documents and the project event stream.
  *
  * Layer rules (app-ts/AGENTS.md §3):
- *  - this file = contract + pure helpers, NO I/O;
- *  - memory implementation: repository/memory/academic.ts
- *  - Mongo adapter:        repository/mongo/academic.ts
- *  - tools/services/http import ONLY this contract (never a concrete adapter).
+ * - this file = contract + pure helpers, NO I/O;
+ * - memory implementation: repository/memory/academic.ts
+ * - Mongo adapter: repository/mongo/academic.ts
+ * - tools/services/http import ONLY this contract (never a concrete adapter).
  *
  * Multi-tenant: every read/write takes uid as its first argument. A query that
  * omits uid is a bug — uid must never appear in an LLM-facing tool schema.
  *
  * Identity / dedupe invariants both implementations must honour:
- *  - DOIs are stored normalized (normalizeDoi) so lookups and the Mongo index agree;
- *  - a literature entry is "the same paper" iff literatureDedupeKey matches:
- *    normalized DOI first, otherwise normalized title + year;
- *  - citeKeys are unique per project (case-insensitively, a/b/c suffixes);
- *  - section keys are stable and derived from the title when the caller omits one.
+ * - DOIs are stored normalized (normalizeDoi) so lookups and the Mongo index agree;
+ * - a literature entry is "the same paper" iff literatureDedupeKey matches:
+ * normalized DOI first, otherwise normalized title + year;
+ * - citeKeys are unique per project (case-insensitively, a/b/c suffixes);
+ * - section keys are stable and derived from the title when the caller omits one.
  *
  * The pure helpers at the bottom are the single source of truth for those rules;
  * implementations call them rather than re-deriving the semantics locally.
@@ -45,6 +45,23 @@ export const ACADEMIC_STAGE_LABELS: Record<AcademicStage, string> = {
   submission: "投稿",
 };
 
+/** 自动化模式：off 全手动；assist 自动打勾计划；auto 门禁就绪时自动 submitted（approved 永远人工）。 */
+export const ACADEMIC_AUTO_MODES = ["off", "assist", "auto"] as const;
+/** One project automation mode (see ACADEMIC_AUTO_MODES). */
+export type AcademicAutoMode = (typeof ACADEMIC_AUTO_MODES)[number];
+/** Automation mode assumed when the persisted project row omits autoMode (legacy rows). */
+export const DEFAULT_ACADEMIC_AUTO_MODE: AcademicAutoMode = "off";
+
+/** 参考文献渲染风格。 */
+export const ACADEMIC_CITATION_STYLES = ["plain", "apa", "ieee", "gb7714"] as const;
+/** One citation style (see ACADEMIC_CITATION_STYLES). */
+export type AcademicCitationStyle = (typeof ACADEMIC_CITATION_STYLES)[number];
+
+/** Project language; omitted/legacy rows are treated as "zh". */
+export const ACADEMIC_LANGUAGES = ["zh", "en"] as const;
+/** One project working language (see ACADEMIC_LANGUAGES). */
+export type AcademicLanguage = (typeof ACADEMIC_LANGUAGES)[number];
+
 /**
  * Stage lifecycle: locked → active → submitted → approved → frozen; rework goes
  * back to active. The contract only carries the status — the gate enforcing
@@ -68,12 +85,58 @@ export interface AcademicStageState {
 /** Deliverable shape: journal article, degree thesis or grant proposal. */
 export type AcademicPaperType = "journal" | "thesis" | "fund";
 
+/**
+ * Events a plan task can wait on . The names are the persisted
+ * project-event types emitted by the tools/services; the gate service evaluates
+ * the underlying deliverable rather than replaying the stream, so a rule still
+ * holds when the event happened before the task existed.
+ */
+export const ACADEMIC_AUTO_RULE_EVENTS = [
+  "manuscript.section_saved",
+  "academic.run_recorded",
+  "literature.verified",
+  "validation.passed",
+] as const;
+/** One trigger event of a plan-task autoRule (see ACADEMIC_AUTO_RULE_EVENTS). */
+export type AcademicAutoRuleEvent = (typeof ACADEMIC_AUTO_RULE_EVENTS)[number];
+
+/**
+ * Optional narrowing for an autoRule: a section_saved rule may target one
+ * section key, and the counting rules (runs / verified literature) may require
+ * more than one matching row. Omitted fields mean "any section" / minRuns=1.
+ */
+export interface AcademicAutoRuleMatch {
+  sectionKey?: string;
+  minRuns?: number;
+}
+
+/**
+ * Declarative trigger attached to one plan task: when the gate service finds the
+ * referenced deliverable in place it ticks the task (doneSource="event"). The
+ * user's own tick always wins — a done task is never re-evaluated.
+ */
+export interface AcademicAutoRule {
+  event: AcademicAutoRuleEvent;
+  match?: AcademicAutoRuleMatch;
+}
+
+/**
+ * Who ticked a task: the user, an event (autoRule), or the agent. Optional so
+ * rows written before the field existed keep their shape; a user tick is not
+ * rewritten when the same task is later evaluated by an autoRule.
+ */
+export type AcademicPlanTaskDoneSource = "user" | "event" | "agent";
+
 /** One execution task in a stage plan (the AI proposes it; the user ticks it). */
 export interface AcademicPlanTask {
   id: string;
   title: string;
   done: boolean;
   note?: string;
+  /** optional event trigger that ticks the task automatically */
+  autoRule?: AcademicAutoRule;
+  /** provenance of the tick (absent on legacy rows / plain user toggles) */
+  doneSource?: AcademicPlanTaskDoneSource;
 }
 
 /**
@@ -91,6 +154,24 @@ export interface AcademicProject {
   targetJournal?: string;
   /** ISO date (YYYY-MM-DD) */
   deadline?: string;
+  /** Core research question the project answers . */
+  researchQuestion?: string;
+  /** 1-10 concrete objectives / hypotheses. */
+  objectives?: string[];
+  /** 1-20 free-form keywords. */
+  keywords?: string[];
+  /** Claimed contributions, one line each. */
+  contributions?: string[];
+  /** Methodology / study design summary. */
+  methodology?: string;
+  /** Ethics / compliance notes the user wants preserved. */
+  ethicsNote?: string;
+  /** Target journal/conference requirements summary (word limit, format...). */
+  venueRequirements?: string;
+  /** Working language of the manuscript (default "zh"). */
+  language?: AcademicLanguage;
+  /** Citation style used by bibliography generation / export. */
+  citationStyle?: AcademicCitationStyle;
   /** the stage currently in focus */
   stage: AcademicStage;
   stages: Record<AcademicStage, AcademicStageState>;
@@ -98,6 +179,14 @@ export interface AcademicProject {
   plans: Partial<Record<AcademicStage, AcademicPlanTask[]>>;
   /** per-stage saved guidance */
   advice: Partial<Record<AcademicStage, string>>;
+  /**
+   * Automation policy (see ACADEMIC_AUTO_MODES). Optional so rows persisted
+   * before the field existed keep working; readers must default it to "off"
+   * through academicAutoModeOf().
+   */
+  autoMode?: AcademicAutoMode;
+  /** 回收站时间戳；存在时项目对常规读写不可见，需先恢复。 */
+  archivedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -113,6 +202,17 @@ export interface AcademicProjectCreate {
   field?: string;
   targetJournal?: string;
   deadline?: string;
+  researchQuestion?: string;
+  objectives?: string[];
+  keywords?: string[];
+  contributions?: string[];
+  methodology?: string;
+  ethicsNote?: string;
+  venueRequirements?: string;
+  language?: AcademicLanguage;
+  citationStyle?: AcademicCitationStyle;
+  /** automation policy; omitted = "off" (DEFAULT_ACADEMIC_AUTO_MODE) */
+  autoMode?: AcademicAutoMode;
 }
 
 /**
@@ -130,10 +230,21 @@ export interface AcademicProjectPatch {
   field?: string;
   targetJournal?: string;
   deadline?: string;
+  researchQuestion?: string;
+  objectives?: string[];
+  keywords?: string[];
+  contributions?: string[];
+  methodology?: string;
+  ethicsNote?: string;
+  venueRequirements?: string;
+  language?: AcademicLanguage;
+  citationStyle?: AcademicCitationStyle;
   stage?: AcademicStage;
   stages?: Partial<Record<AcademicStage, AcademicStageState>>;
   plans?: Partial<Record<AcademicStage, AcademicPlanTask[]>>;
   advice?: Partial<Record<AcademicStage, string>>;
+  /** automation policy; omitted = keep the stored value */
+  autoMode?: AcademicAutoMode;
 }
 
 /**
@@ -147,6 +258,8 @@ export interface AcademicProjectRepository {
   list(uid: string): Promise<AcademicProject[]>;
   get(uid: string, projectId: string): Promise<AcademicProject | null>;
   update(uid: string, projectId: string, patch: AcademicProjectPatch): Promise<AcademicProject | null>;
+  /** 移入/移出回收站；null = 恢复（清除 archivedAt），返回 null 表示项目不存在。 */
+  setArchived(uid: string, projectId: string, archivedAt: number | null): Promise<AcademicProject | null>;
   remove(uid: string, projectId: string): Promise<boolean>;
 }
 
@@ -170,6 +283,11 @@ export const ACADEMIC_LITERATURE_SOURCES = [
 /** One import origin of the literature library (see ACADEMIC_LITERATURE_SOURCES). */
 export type AcademicLiteratureSource = (typeof ACADEMIC_LITERATURE_SOURCES)[number];
 
+/** Reading progress of one library entry . */
+export const ACADEMIC_READING_STATUSES = ["unread", "reading", "read"] as const;
+/** One reading status (see ACADEMIC_READING_STATUSES). */
+export type AcademicReadingStatus = (typeof ACADEMIC_READING_STATUSES)[number];
+
 /**
  * One paper in a project's bibliography. `doi` is stored normalized (see
  * normalizeDoi) so exact-match lookup matches the Mongo index; `verified` is true
@@ -189,6 +307,14 @@ export interface AcademicLiteratureEntry {
   doi?: string;
   url?: string;
   abstract?: string;
+  /** 0-20 user tags (reading map / matrix grouping). */
+  tags?: string[];
+  /** Free-form reading notes (bounded by the service). */
+  notes?: string;
+  /** Reading progress; absent = unread (legacy rows). */
+  readingStatus?: AcademicReadingStatus;
+  /** Keywords parsed from the import source, when available. */
+  keywords?: string[];
   source: AcademicLiteratureSource;
   /** true only after a DOI/Crossref verification (or explicit user import review) */
   verified: boolean;
@@ -210,9 +336,25 @@ export interface AcademicLiteratureInput {
   doi?: string;
   url?: string;
   abstract?: string;
+  tags?: string[];
+  notes?: string;
+  readingStatus?: AcademicReadingStatus;
+  keywords?: string[];
   /** caller-suggested key; implementations uniquify against the project library */
   citeKey?: string;
   source?: AcademicLiteratureSource;
+}
+
+/**
+ * User-editable fields of a library entry . Identity fields
+ * (title/doi/citeKey) are deliberately NOT editable through this patch: changing
+ * them would invalidate dedupe/citation invariants; re-import instead.
+ */
+export interface AcademicLiteraturePatch {
+  tags?: string[];
+  notes?: string;
+  readingStatus?: AcademicReadingStatus;
+  keywords?: string[];
 }
 
 /**
@@ -255,6 +397,8 @@ export interface AcademicLiteratureRepository {
   findByDoi(uid: string, projectId: string, doi: string): Promise<AcademicLiteratureEntry | null>;
   setVerified(uid: string, projectId: string, ref: string, verified: boolean): Promise<AcademicLiteratureEntry | null>;
   remove(uid: string, projectId: string, ref: string): Promise<boolean>;
+  /** Patch user-editable metadata (tags/notes/readingStatus/keywords); null when unknown/foreign. */
+  update(uid: string, projectId: string, ref: string, patch: AcademicLiteraturePatch): Promise<AcademicLiteratureEntry | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +414,11 @@ export const ACADEMIC_DOCUMENT_KINDS = [
   "plan",
   "draft",
   "revision",
+  "response_letter",
   "cover_letter",
+  "stage_report",
+  "midterm_report",
+  "final_report",
   "custom",
 ] as const;
 /** One manuscript document kind (see ACADEMIC_DOCUMENT_KINDS). */
@@ -282,7 +430,11 @@ export const ACADEMIC_DOCUMENT_KIND_LABELS: Record<AcademicDocumentKind, string>
   plan: "研究计划",
   draft: "初稿",
   revision: "修改稿",
+  response_letter: "审稿回复信",
   cover_letter: "投稿信",
+  stage_report: "阶段报告",
+  midterm_report: "中期报告",
+  final_report: "结题报告",
   custom: "自定义",
 };
 
@@ -397,6 +549,8 @@ export interface AcademicDocumentRepository {
   /** upsert by section key (existing key keeps its order unless order is provided) */
   upsertSection(uid: string, documentId: string, input: AcademicSectionInput): Promise<AcademicDocument | null>;
   deleteSection(uid: string, documentId: string, sectionKey: string): Promise<AcademicDocument | null>;
+  /** 永久删除项目下所有文档（级联清理），返回删除条数。 */
+  removeDocumentsByProject(uid: string, projectId: string): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,8 +592,10 @@ export interface AcademicEventRepository {
     actor?: AcademicActor,
   ): Promise<AcademicEvent>;
   /** Newest-first project events. Distinct name from the other repos' list() so an
-   *  accidental 2-arg call cannot resolve to the literature list at runtime. */
-  listEvents(uid: string, projectId: string, limit?: number): Promise<AcademicEvent[]>;
+   * accidental 2-arg call cannot resolve to the literature list at runtime. */
+  listEvents(uid: string, projectId: string, limit?: number, offset?: number): Promise<AcademicEvent[]>;
+  /** 永久删除项目下所有事件（级联清理），返回删除条数。 */
+  removeEventsByProject(uid: string, projectId: string): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +613,15 @@ export function initialStageStates(at: number): Record<AcademicStage, AcademicSt
     out[stage] = { status: stage === "topic" ? "active" : "locked", updatedAt: at };
   }
   return out;
+}
+
+/**
+ * Effective automation mode of a project: the persisted field when present,
+ * otherwise the legacy default ("off"). Single source of truth for the
+ * "optional field means off" rule.
+ */
+export function academicAutoModeOf(project: Pick<AcademicProject, "autoMode">): AcademicAutoMode {
+  return project.autoMode ?? DEFAULT_ACADEMIC_AUTO_MODE;
 }
 
 /** Position of a stage in ACADEMIC_STAGES (progression checks / stage gates). */

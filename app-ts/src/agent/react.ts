@@ -4,7 +4,7 @@ import { config } from "../config/index.js";
 import { maxOutputTokensFor } from "../utils/degrade.js";
 import { createGatewayModel } from "../llm/provider.js";
 import { ResultCollector, type TokenUsage } from "../context/types.js";
-import type { AgentRuntime } from "../tools/runtime.js";
+import type { AgentRuntime } from "./runtime.js";
 import type { SseFrame } from "../transport/sse.js";
 import type { Agent, AgentInvokeInput } from "./types.js";
 import { createLogger } from "../logger.js";

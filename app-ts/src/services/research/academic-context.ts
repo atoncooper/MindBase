@@ -1,5 +1,5 @@
-import type { PromptRegistry } from "../agent/prompts/loader.js";
-import { ACADEMIC_STAGE_LABELS, type AcademicStage } from "../repository/academic.js";
+import type { PromptRegistry } from "../../agent/prompts/loader.js";
+import { ACADEMIC_STAGE_LABELS, type AcademicStage } from "../../repository/academic.js";
 
 /**
  * Academic-project chat context: the research workbench sends

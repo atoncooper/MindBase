@@ -13,8 +13,8 @@
  * 外壳用 MUI 组件；各 Tab 内部不改代码，通过 research-ui 共享原语自动获得
  * Google 风格。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
     Activity,
     Beaker,
@@ -33,6 +33,7 @@ import {
     RefreshCw,
     Table2,
     Tag,
+    Trash2,
     Workflow,
 } from "lucide-react";
 import {
@@ -52,6 +53,7 @@ import {
     academicApi,
     type AcademicProjectDetail,
     type AcademicProjectSummary,
+    type AcademicStage,
 } from "@/lib/api";
 import { ProjectList } from "./project-list";
 import { StageStepper } from "./stage-stepper";
@@ -67,6 +69,8 @@ import { PlansTab } from "./plans-tab";
 import { EventsTab } from "./events-tab";
 import { ApprovalTab } from "./approval-tab";
 import { NewProjectDialog } from "./new-project-dialog";
+import { NotificationCenter } from "./notification-center";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
     EmptyState,
     ErrorBanner,
@@ -104,8 +108,31 @@ const TABS: { id: Tab; label: string; icon: typeof ListChecks }[] = [
     { id: "events", label: "动态", icon: Activity },
 ];
 
+const TAB_IDS = new Set<string>(TABS.map((item) => item.id));
+
+/** 解析 ?tab= 参数：只接受已知 Tab id，非法值忽略。 */
+function parseTabParam(value: string | null): Tab | null {
+    return value && TAB_IDS.has(value) ? (value as Tab) : null;
+}
+
 export function ResearchView() {
+    // useSearchParams（?project=&tab= 深链）需要 Suspense 边界。
+    return (
+        <Suspense
+            fallback={
+                <Box sx={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
+                    <LoadingBlock label="加载科研工作台…" />
+                </Box>
+            }
+        >
+            <ResearchViewContent />
+        </Suspense>
+    );
+}
+
+function ResearchViewContent() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [projects, setProjects] = useState<AcademicProjectSummary[]>([]);
     const [projectsLoading, setProjectsLoading] = useState(true);
     const [projectsError, setProjectsError] = useState<string | null>(null);
@@ -119,10 +146,17 @@ export function ResearchView() {
     const [createOpen, setCreateOpen] = useState(false);
     const [mobileProjectsOpen, setMobileProjectsOpen] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
+    const [archiveOpen, setArchiveOpen] = useState(false);
+    const [stageView, setStageView] = useState<AcademicStage | null>(null);
 
     // 只接受「当前选中项目」的最新响应，避免快速切换时旧响应覆盖新详情。
     // 仅在 effect 中同步 ref（渲染期写 ref 违反 react-hooks/refs）。
     const selectedRef = useRef<string | null>(null);
+    // 深链（?project=<id>&tab=<tabId>，通知/外链跳转）：只按 URL 查询串定向，
+    // 用户手动切 Tab 不改 URL，因此不会被覆盖。
+    const deepLinkQuery = searchParams.toString();
+    const lastDeepLinkRef = useRef<string | null>(null);
+    const pendingTabRef = useRef<{ projectId: string; tab: Tab } | null>(null);
 
     const loadProjects = useCallback(async (silent = false) => {
         if (!silent) setProjectsLoading(true);
@@ -163,17 +197,51 @@ export function ResearchView() {
         void loadProjects();
     }, [loadProjects]);
 
+    // ?project=<id>&tab=<tabId> 定向：项目在列表中才生效，非法/不存在的项目忽略。
+    useEffect(() => {
+        /* eslint-disable react-hooks/set-state-in-effect -- 深链定向（URL 查询串变化时切换项目/Tab） */
+        if (projectsLoading) return;
+        if (lastDeepLinkRef.current === deepLinkQuery) return;
+        const projectId = searchParams.get("project");
+        if (!projectId) {
+            lastDeepLinkRef.current = deepLinkQuery;
+            return;
+        }
+        // 列表不可用（加载失败/为空）时先不消费 URL，待列表重试成功后再生效。
+        if (projects.length === 0) return;
+        lastDeepLinkRef.current = deepLinkQuery;
+        if (!projects.some((item) => item.id === projectId)) return;
+        const targetTab = parseTabParam(searchParams.get("tab")) ?? "overview";
+        pendingTabRef.current = { projectId, tab: targetTab };
+        if (projectId === selectedId) {
+            setTab(targetTab);
+        } else {
+            setSelectedId(projectId);
+        }
+        /* eslint-enable react-hooks/set-state-in-effect */
+    }, [deepLinkQuery, projects, projectsLoading, searchParams, selectedId]);
+
     useEffect(() => {
         /* eslint-disable react-hooks/set-state-in-effect -- reset per-project view state when the selection changes (pre-existing pattern) */
         selectedRef.current = selectedId;
         setDetail(null);
         setDetailError(null);
+        setStageView(null);
         if (selectedId) {
-            setTab("overview");
+            // 深链带来的 Tab 只在本次切换中生效，其余切换仍回到概览。
+            const pending = pendingTabRef.current;
+            pendingTabRef.current = null;
+            setTab(pending && pending.projectId === selectedId ? pending.tab : "overview");
             void loadDetail(selectedId);
         }
-        /* eslint-enable react-hooks/set-state-in-effect */
+    /* eslint-enable react-hooks/set-state-in-effect */
     }, [selectedId, loadDetail]);
+
+    // 项目阶段变化（推进/回滚）后回到“当前阶段”，避免继续展示旧阶段的计划/建议。
+    useEffect(() => {
+        /* eslint-disable-next-line react-hooks/set-state-in-effect -- reset view-stage when the project/stage changes */
+        setStageView(null);
+    }, [detail?.project.id, detail?.project.stage]);
 
     /** 写操作后的静默刷新：详情 + 项目摘要（文献/稿件计数）。 */
     const onChanged = useCallback(async () => {
@@ -190,6 +258,20 @@ export function ResearchView() {
             setRefreshing(false);
         }
     }, [selectedId, loadDetail, loadProjects]);
+
+    const archiveSelected = useCallback(async () => {
+        if (!selectedId) return;
+        setRefreshing(true);
+        try {
+            await academicApi.deleteProject(selectedId);
+            setSelectedId(null);
+            await loadProjects(true);
+        } catch (e) {
+            setDetailError(e instanceof Error ? e.message : "移入回收站失败");
+        } finally {
+            setRefreshing(false);
+        }
+    }, [selectedId, loadProjects]);
 
     const project = detail?.project ?? projects.find((item) => item.id === selectedId) ?? null;
 
@@ -404,6 +486,25 @@ export function ResearchView() {
                                     </span>
                                 </Tooltip>
                                 {project && (
+                                    <Tooltip title="移入回收站">
+                                        <span>
+                                            <IconButton
+                                                aria-label="移入回收站"
+                                                onClick={() => setArchiveOpen(true)}
+                                                disabled={refreshing}
+                                                sx={{
+                                                    border: 1,
+                                                    borderColor: "divider",
+                                                    borderRadius: "8px",
+                                                    color: "text.secondary",
+                                                }}
+                                            >
+                                                <Trash2 size={16} aria-hidden="true" />
+                                            </IconButton>
+                                        </span>
+                                    </Tooltip>
+                                )}
+                                {project && (
                                     <Button
                                         variant="contained"
                                         size="small"
@@ -428,12 +529,22 @@ export function ResearchView() {
                                 >
                                     新建项目
                                 </Button>
+                                {/* 账号维度通知中心：projectId 仅用于标记「本项目」通知，不过滤 */}
+                                <NotificationCenter projectId={project?.id} />
                             </Stack>
                         </Stack>
 
                         {project && (
                             <Box sx={{ mt: 1.5, minWidth: 0 }}>
-                                <StageStepper stages={project.stages} current={project.stage} />
+                                <StageStepper
+                                    stages={project.stages}
+                                    current={project.stage}
+                                    selected={stageView ?? project.stage}
+                                    onSelect={(next) => {
+                                        setStageView(next);
+                                        setTab("overview");
+                                    }}
+                                />
                             </Box>
                         )}
 
@@ -506,7 +617,12 @@ export function ResearchView() {
                                     <LoadingBlock label="加载项目详情…" />
                                 </SurfaceCard>
                             ) : tab === "overview" ? (
-                                <OverviewTab detail={detail} onChanged={onChanged} />
+                                <OverviewTab
+                                    detail={detail}
+                                    onChanged={onChanged}
+                                    selectedStage={stageView ?? undefined}
+                                    onSelectStage={setStageView}
+                                />
                             ) : tab === "literature" ? (
                                 <LiteratureTab projectId={detail.project.id} onChanged={onChanged} />
                             ) : tab === "writing" ? (
@@ -540,6 +656,20 @@ export function ResearchView() {
                         </Box>
                     </Box>
                 </Box>
+
+                <ConfirmDialog
+                    open={archiveOpen}
+                    title="移入回收站？"
+                    message={`「${project?.title ?? "当前项目"}」会移到回收站，可随时恢复。`}
+                    confirmLabel="移入回收站"
+                    danger
+                    busy={refreshing}
+                    onCancel={() => setArchiveOpen(false)}
+                    onConfirm={() => {
+                        setArchiveOpen(false);
+                        void archiveSelected();
+                    }}
+                />
 
                 <NewProjectDialog
                     open={createOpen}

@@ -1,12 +1,12 @@
 import { jsonSchema, tool, type Tool } from "ai";
 import { z, ZodObject, ZodType } from "zod";
 import type { ToolRunContext } from "../context/types.js";
-import type { ToolDefinition, ToolOutput } from "./base.js";
+import type { ToolDefinition, ToolOutput } from "../tools/base.js";
 import { createLogger } from "../logger.js";
 import { config } from "../config/index.js";
 import { timeoutManager } from "./timeout-manager.js";
-import { Semaphore } from "./concurrency.js";
-import { CircuitBreaker } from "../agent/circuit.js";
+import { Semaphore } from "../utils/concurrency.js";
+import { CircuitBreaker } from "./circuit.js";
 
 /**
  * AgentRuntime: the unified execution layer after the LLM emits tool_calls.

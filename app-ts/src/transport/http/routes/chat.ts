@@ -19,7 +19,7 @@ import { isVisionBlocked, type ModelCapabilityRegistry } from "../../../llm/mode
 import { config } from "../../../config/index.js";
 import { hashClientKey } from "../../../services/quota.js";
 import { parseBoardContext } from "../../../services/board-context.js";
-import { parseAcademicContext } from "../../../services/academic-context.js";
+import { parseAcademicContext } from "../../../services/research/academic-context.js";
 import {
   CHAT_MODEL_ID_MAX_CHARS,
   loadChatModels,
@@ -122,8 +122,8 @@ export function registerChatRoutes(
   });
 
   // ---- Session document list / delete (per-session files panel in the chat UI).
-  //      Same uri as the upload route (already covered by the APISIX chat_ts uri);
-  //      sessionId scoping makes a guessed id cross-session-proof. ----
+  // Same uri as the upload route (already covered by the APISIX chat_ts uri);
+  // sessionId scoping makes a guessed id cross-session-proof. ----
   app.get("/chat/documents", async (req: FastifyRequest, reply: FastifyReply) => {
     const query = (req.query ?? {}) as { session_id?: string };
     const sessionId = query.session_id?.trim();
@@ -163,8 +163,8 @@ export function registerChatRoutes(
   });
 
   // ---- Chat model catalog: source of truth for the picker. Same auth boundary
-  //      as the other /chat/* routes (APISIX forward-auth); the payload carries
-  //      no credentials, only selectable model metadata. ----
+  // as the other /chat/* routes (APISIX forward-auth); the payload carries
+  // no credentials, only selectable model metadata. ----
   app.get("/chat/models", async () => ({
     default: chatModels.default,
     models: chatModels.models,
@@ -343,7 +343,7 @@ export function registerChatRoutes(
     }
 
   // ---- Vector search (POST /chat/search) — mirrors the Python chat router's
-  //      search contract: global video search, per-bvid dedup, preview cap ----
+  // search contract: global video search, per-bvid dedup, preview cap ----
   app.post("/chat/search", async (req: FastifyRequest, reply: FastifyReply) => {
     const uid = getRequestContext()?.uid;
     // uid 已迁移为字符串（server.ts onRequest 钩子），只判存在性

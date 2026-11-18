@@ -9,7 +9,7 @@ import type {
   TokenUsage,
 } from "../../context/types.js";
 import type { AgentLifecycleManager } from "../lifecycle.js";
-import type { AgentRuntime } from "../../tools/runtime.js";
+import type { AgentRuntime } from "../runtime.js";
 import type { PromptRegistry } from "../prompts/loader.js";
 import type { AgentInvokeInput } from "../types.js";
 import { createCustomAgent, renderUpstream, type UpstreamResult } from "../custom/factory.js";
@@ -19,10 +19,19 @@ import { validatePlan, topoLayers } from "./graph.js";
 import { ReflectService } from "./reflect.js";
 import type { CustomAgentSpec, PlanGraph, PlanNode, PlanRunResult } from "./types.js";
 import { config } from "../../config/index.js";
+import { resolvePlanAllowedTools } from "./allowed-tools.js";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { createLogger } from "../../logger.js";
 
 const log = createLogger("PLAN");
+
+/** Outcome of the pre-node human-approval gate (research). */
+export interface PlanApprovalDecision {
+  approved: boolean;
+  /** existing approval row the caller should surface in the pause snapshot */
+  approvalId?: string;
+  reason?: string;
+}
 
 export interface PlanRunnerDeps {
   lifecycle: AgentLifecycleManager;
@@ -31,6 +40,16 @@ export interface PlanRunnerDeps {
   reflect?: ReflectService;
   /** durable plan-run state; absent = legacy in-memory execution */
   engine?: PlanRunEngine;
+  /**
+   * Human-approval gate for nodes flagged requiresApproval. Absent = gates are
+   * not enforced (plain non-research chats, unit tests).
+   */
+  approvalGate?: (node: PlanNode, input: PlanRunInput) => Promise<PlanApprovalDecision>;
+  /**
+   * Create (or reuse) a pending approval when the gate pauses a run; returns the
+   * approval id surfaced to the user in the workbench.
+   */
+  requestApproval?: (node: PlanNode, input: PlanRunInput) => Promise<string | undefined>;
 }
 
 export interface PlanRunInput {
@@ -57,6 +76,8 @@ export interface PlanRuntimeStats {
   completed: number;
   failed: number;
   partial: number;
+  /** runs that stopped at an approval gate and are waiting for the user */
+  paused: number;
   active: number;
   nodes: number;
   nodeFailed: number;
@@ -117,11 +138,14 @@ function sumUsage(parts: TokenUsage[]): TokenUsage | undefined {
  * identical to normal delegation.
  */
 export class PlanRunner {
+  /** runId → abort controller, so POST /chat/plans/:runId/cancel can stop a live run. */
+  private readonly controllers = new Map<string, AbortController>();
   private readonly metrics: PlanRuntimeStats = {
     runs: 0,
     completed: 0,
     failed: 0,
     partial: 0,
+    paused: 0,
     active: 0,
     nodes: 0,
     nodeFailed: 0,
@@ -148,10 +172,12 @@ export class PlanRunner {
       this.metrics.active = Math.max(0, this.metrics.active - 1);
       this.metrics.lastRunAt = new Date().toISOString();
       if (result.runId) runSpan.setAttribute("plan.run_id", result.runId);
-      if (result.ok) this.metrics.completed += 1;
+      if (result.paused) this.metrics.paused += 1;
+      else if (result.ok) this.metrics.completed += 1;
       else if (result.skipped.length > 0 && result.failed.length === 0) this.metrics.partial += 1;
       else this.metrics.failed += 1;
       runSpan.setAttribute("plan.ok", result.ok);
+      if (result.paused) runSpan.setAttribute("plan.paused", true);
       runSpan.setAttribute("plan.duration_ms", elapsed);
       runSpan.setStatus({ code: result.ok ? SpanStatusCode.OK : SpanStatusCode.ERROR });
       runSpan.end();
@@ -170,8 +196,10 @@ export class PlanRunner {
   private async runInner(input: PlanRunInput): Promise<PlanRunResult> {
     const planCfg = config.agent.plan;
     const graph = input.graph;
-    const runtimeTools = new Set(this.deps.runtime.listToolDefs().map((tool) => tool.name));
-    const allowedTools = planCfg.allowedTools.filter((name) => runtimeTools.has(name));
+    // The academic pack is merged into the planner allow-list by the shared
+    // resolver; keep this identical to the plan_and_run tool's list so a graph
+    // accepted at call time cannot fail the runner's second validation pass.
+    const allowedTools = resolvePlanAllowedTools(this.deps.runtime.listToolDefs().map((tool) => tool.name));
     const errors = validatePlan(graph, {
       builtinAgents: this.deps.lifecycle
         .registeredAgents()
@@ -211,7 +239,13 @@ export class PlanRunner {
     let run: PlanRunRecord | undefined;
     if (engine) {
       run = input.runId ? await engine.get(input.runId) : undefined;
-      if (run && (run.status === "completed" || run.status === "failed" || run.status === "partial")) {
+      if (
+        run &&
+        (run.status === "completed" ||
+          run.status === "failed" ||
+          run.status === "partial" ||
+          run.status === "cancelled")
+      ) {
         return resultFromRun(run);
       }
       if (run) run = await engine.normalizeForResume(run);
@@ -228,6 +262,10 @@ export class PlanRunner {
         await engine.commit(run);
       }
     }
+
+    const runId = run?.runId ?? input.runId;
+    const controller = new AbortController();
+    if (runId) this.controllers.set(runId, controller);
 
     const states = new Map<string, NodeState>();
     for (const node of graph.nodes) {
@@ -250,6 +288,9 @@ export class PlanRunner {
     const artifacts: Artifact[] = [];
     const interactions: InteractionPayload[] = [];
     let version = 1;
+    /** Set when a requiresApproval node stops scheduling; the run is persisted as "paused". */
+    let paused = false;
+    let pausedApprovalId: string | undefined;
     const syncRun = () => {
       if (!run) return;
       for (const saved of run.nodes) {
@@ -338,6 +379,42 @@ export class PlanRunner {
         releaseChildren(id);
         return;
       }
+      // Human gate (): a research experiment node must never run
+      // before the user approves it in the workbench. Pausing persists the run
+      // and leaves the gated node pending; resume re-checks the gate.
+      if (node.requiresApproval && this.deps.approvalGate) {
+        let decision: PlanApprovalDecision;
+        try {
+          decision = await this.deps.approvalGate(node, input);
+        } catch (err) {
+          decision = {
+            approved: false,
+            reason: "审批检查失败：" + (err instanceof Error ? err.message : String(err)),
+          };
+        }
+        if (!decision.approved) {
+          let approvalId = decision.approvalId;
+          if (!approvalId && this.deps.requestApproval) {
+            try {
+              approvalId = await this.deps.requestApproval(node, input);
+            } catch {
+            // Pause without an id; the user can still open the approval tab.
+            }
+          }
+          paused = true;
+          pausedApprovalId = approvalId;
+          states.set(id, {
+            status: "pending",
+            note:
+              "等待人工审批" +
+              (approvalId ? " approval_id=" + approvalId : "") +
+              (decision.reason ? "（" + decision.reason + "）" : ""),
+          });
+          await persist("paused");
+          publish();
+          return;
+        }
+      }
       states.set(id, { status: "in_progress" });
       this.metrics.nodes += 1;
       const nodeStartedAt = Date.now();
@@ -351,7 +428,7 @@ export class PlanRunner {
       await persist();
       publish();
       try {
-        const result = await this.runNode(node, specById.get(node.agent), input, upstreamFor(node));
+        const result = await this.runNode(node, specById.get(node.agent), input, upstreamFor(node), controller.signal);
         if (result.usage) usageParts.push(result.usage);
         sources.push(...result.sources);
         artifacts.push(...result.artifacts);
@@ -385,12 +462,22 @@ export class PlanRunner {
     };
 
     const schedule = () => {
+      if (controller.signal.aborted) {
+        if (completed + running === 0) resolveDone?.();
+        return;
+      }
+      if (paused) {
+        // Stop starting new nodes; wait for in-flight ones to settle and then
+        // resolve so the run can be persisted as paused.
+        if (completed + running === 0) resolveDone?.();
+        return;
+      }
       while (running < planCfg.maxConcurrency && ready.length > 0) {
         const id = ready.shift()!;
         running += 1;
         void executeNode(id).finally(() => {
           running -= 1;
-          completed += 1;
+          if (!paused) completed += 1;
           if (completed >= graph.nodes.length) {
             resolveDone?.();
           } else {
@@ -405,8 +492,48 @@ export class PlanRunner {
     if (completed >= graph.nodes.length) resolveDone?.();
     else schedule();
     await done;
+    if (runId) this.controllers.delete(runId);
 
     const usage = sumUsage(usageParts);
+    if (controller.signal.aborted) {
+      if (run && engine) {
+        await engine.commit(run, "cancelled");
+        publish();
+      }
+      return {
+        ok: false,
+        cancelled: true,
+        ...(run ? { runId: run.runId } : {}),
+        outputs,
+        failed,
+        skipped,
+        error: "计划已被用户取消",
+        ...(usage ? { usage } : {}),
+        sources,
+        artifacts,
+        interactions,
+      };
+    }
+    if (paused) {
+      if (run && engine) {
+        await engine.commit(run, "paused");
+        publish();
+      }
+      return {
+        ok: false,
+        paused: true,
+        ...(pausedApprovalId ? { approvalId: pausedApprovalId } : {}),
+        ...(run ? { runId: run.runId } : {}),
+        outputs,
+        failed,
+        skipped,
+        error: "计划已暂停：等待人工审批",
+        ...(usage ? { usage } : {}),
+        sources,
+        artifacts,
+        interactions,
+      };
+    }
     const ok = failed.length === 0 && skipped.length === 0;
     if (run && engine) {
       run.status = ok ? "completed" : failed.length > 0 ? "failed" : "partial";
@@ -426,6 +553,28 @@ export class PlanRunner {
     };
   }
 
+  /**
+   * Cancel a live or persisted non-terminal run. A live run is aborted (its
+   * in-flight node receives the abort signal); a paused/pending run is marked
+   * cancelled in the store immediately.
+   */
+  async cancel(runId: string): Promise<boolean> {
+    const controller = this.controllers.get(runId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+      return true;
+    }
+    const engine = this.deps.engine;
+    if (!engine) return false;
+    const run = await engine.get(runId);
+    if (!run) return false;
+    if (run.status !== "pending" && run.status !== "running" && run.status !== "paused") return false;
+    run.status = "cancelled";
+    run.endedAt = run.endedAt ?? Date.now();
+    await engine.commit(run, "cancelled");
+    return true;
+  }
+
   /** Resume a durable run by id; graph/session come from the persisted record. */
   async resume(runId: string, input: Partial<Omit<PlanRunInput, "graph" | "runId" | "sessionId">> = {}): Promise<PlanRunResult> {
     if (!this.deps.engine) throw new Error("plan resume requires a durable PlanRunEngine");
@@ -438,6 +587,7 @@ export class PlanRunner {
       sessionId: run.chatSessionId,
       scope: input.scope ?? {},
       ...(run.uid ? { uid: run.uid } : {}),
+      ...(run.projectId ? { academicProjectId: run.projectId } : {}),
     });
   }
 
@@ -446,6 +596,7 @@ export class PlanRunner {
     spec: CustomAgentSpec | undefined,
     run: PlanRunInput,
     upstream: UpstreamResult[],
+    runSignal?: AbortSignal,
   ): Promise<NodeRunResult> {
     const attempts = Math.max(0, config.agent.plan.reflectAttempts);
     let task = node.task;
@@ -459,11 +610,13 @@ export class PlanRunner {
 
     for (let attempt = 0; attempt <= attempts; attempt += 1) {
       const timeoutSignal = AbortSignal.timeout(config.agent.plan.nodeTimeoutMs);
-      const nodeSignal = run.signal ? AbortSignal.any([run.signal, timeoutSignal]) : timeoutSignal;
+      const signals = [timeoutSignal, ...(runSignal ? [runSignal] : []), ...(run.signal ? [run.signal] : [])];
+      const nodeSignal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
       const agentInput: AgentInvokeInput = {
         query: spec ? task : renderTask(node, task, upstream),
         uid: run.uid,
         chatSessionId: run.sessionId,
+        ...(run.academicProjectId ? { academicProjectId: run.academicProjectId } : {}),
         scope: {},
         history: [],
         ...(run.model ? { model: run.model } : {}),

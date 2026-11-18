@@ -46,6 +46,7 @@ import {
   type AcademicLiteratureAddResult,
   type AcademicLiteratureEntry,
   type AcademicLiteratureInput,
+  type AcademicLiteraturePatch,
   type AcademicLiteratureRepository,
   type AcademicProject,
   type AcademicProjectCreate,
@@ -83,10 +84,23 @@ interface ProjectDoc extends MongoDoc {
   field: string;
   targetJournal?: string;
   deadline?: string;
+  researchQuestion?: AcademicProject["researchQuestion"];
+  objectives?: AcademicProject["objectives"];
+  keywords?: AcademicProject["keywords"];
+  contributions?: AcademicProject["contributions"];
+  methodology?: AcademicProject["methodology"];
+  ethicsNote?: AcademicProject["ethicsNote"];
+  venueRequirements?: AcademicProject["venueRequirements"];
+  language?: AcademicProject["language"];
+  citationStyle?: AcademicProject["citationStyle"];
   stage: AcademicStage;
   stages: Record<AcademicStage, AcademicStageState>;
   plans: AcademicProject["plans"];
   advice: AcademicProject["advice"];
+  /** automation policy; absent on rows written before the field existed (= "off") */
+  autoMode?: AcademicProject["autoMode"];
+  /** 回收站时间戳；缺失 = 正常项目。 */
+  archivedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -105,6 +119,10 @@ interface LiteratureDoc extends MongoDoc {
   doi?: string;
   url?: string;
   abstract?: string;
+  tags?: string[];
+  notes?: string;
+  readingStatus?: AcademicLiteratureEntry["readingStatus"];
+  keywords?: string[];
   source: AcademicLiteratureEntry["source"];
   verified: boolean;
   verifiedAt?: number;
@@ -160,10 +178,21 @@ function toProjectDoc(project: AcademicProject): ProjectDoc {
     field: project.field,
     ...(project.targetJournal !== undefined ? { targetJournal: project.targetJournal } : {}),
     ...(project.deadline !== undefined ? { deadline: project.deadline } : {}),
+    ...(project.researchQuestion !== undefined ? { researchQuestion: project.researchQuestion } : {}),
+    ...(project.objectives !== undefined ? { objectives: project.objectives } : {}),
+    ...(project.keywords !== undefined ? { keywords: project.keywords } : {}),
+    ...(project.contributions !== undefined ? { contributions: project.contributions } : {}),
+    ...(project.methodology !== undefined ? { methodology: project.methodology } : {}),
+    ...(project.ethicsNote !== undefined ? { ethicsNote: project.ethicsNote } : {}),
+    ...(project.venueRequirements !== undefined ? { venueRequirements: project.venueRequirements } : {}),
+    ...(project.language !== undefined ? { language: project.language } : {}),
+    ...(project.citationStyle !== undefined ? { citationStyle: project.citationStyle } : {}),
     stage: project.stage,
     stages: project.stages,
     plans: project.plans,
     advice: project.advice,
+    ...(project.autoMode !== undefined ? { autoMode: project.autoMode } : {}),
+    ...(project.archivedAt !== undefined ? { archivedAt: project.archivedAt } : {}),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
@@ -183,10 +212,21 @@ function toProject(doc: ProjectDoc): AcademicProject {
     field: doc.field,
     ...(doc.targetJournal !== undefined ? { targetJournal: doc.targetJournal } : {}),
     ...(doc.deadline !== undefined ? { deadline: doc.deadline } : {}),
+    ...(doc.researchQuestion !== undefined ? { researchQuestion: doc.researchQuestion } : {}),
+    ...(doc.objectives !== undefined ? { objectives: doc.objectives } : {}),
+    ...(doc.keywords !== undefined ? { keywords: doc.keywords } : {}),
+    ...(doc.contributions !== undefined ? { contributions: doc.contributions } : {}),
+    ...(doc.methodology !== undefined ? { methodology: doc.methodology } : {}),
+    ...(doc.ethicsNote !== undefined ? { ethicsNote: doc.ethicsNote } : {}),
+    ...(doc.venueRequirements !== undefined ? { venueRequirements: doc.venueRequirements } : {}),
+    ...(doc.language !== undefined ? { language: doc.language } : {}),
+    ...(doc.citationStyle !== undefined ? { citationStyle: doc.citationStyle } : {}),
     stage: doc.stage,
     stages: doc.stages ?? initialStageStates(doc.createdAt),
     plans: doc.plans ?? {},
     advice: doc.advice ?? {},
+    ...(doc.autoMode !== undefined ? { autoMode: doc.autoMode } : {}),
+    ...(doc.archivedAt !== undefined ? { archivedAt: doc.archivedAt } : {}),
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
   };
@@ -206,6 +246,10 @@ function toLiteratureDoc(entry: AcademicLiteratureEntry): LiteratureDoc {
     ...(entry.doi !== undefined ? { doi: entry.doi } : {}),
     ...(entry.url !== undefined ? { url: entry.url } : {}),
     ...(entry.abstract !== undefined ? { abstract: entry.abstract } : {}),
+    ...(entry.tags !== undefined ? { tags: entry.tags } : {}),
+    ...(entry.notes !== undefined ? { notes: entry.notes } : {}),
+    ...(entry.readingStatus !== undefined ? { readingStatus: entry.readingStatus } : {}),
+    ...(entry.keywords !== undefined ? { keywords: entry.keywords } : {}),
     source: entry.source,
     verified: entry.verified,
     ...(entry.verifiedAt !== undefined ? { verifiedAt: entry.verifiedAt } : {}),
@@ -230,6 +274,10 @@ function toLiterature(doc: LiteratureDoc): AcademicLiteratureEntry {
     ...(doc.doi !== undefined ? { doi: doc.doi } : {}),
     ...(doc.url !== undefined ? { url: doc.url } : {}),
     ...(doc.abstract !== undefined ? { abstract: doc.abstract } : {}),
+    ...(doc.tags !== undefined ? { tags: doc.tags } : {}),
+    ...(doc.notes !== undefined ? { notes: doc.notes } : {}),
+    ...(doc.readingStatus !== undefined ? { readingStatus: doc.readingStatus } : {}),
+    ...(doc.keywords !== undefined ? { keywords: doc.keywords } : {}),
     source: doc.source,
     verified: doc.verified ?? false,
     ...(doc.verifiedAt !== undefined ? { verifiedAt: doc.verifiedAt } : {}),
@@ -302,6 +350,19 @@ function newProject(uid: string, input: AcademicProjectCreate, at: number): Acad
     field: input.field ?? "",
     ...(input.targetJournal !== undefined ? { targetJournal: input.targetJournal } : {}),
     ...(input.deadline !== undefined ? { deadline: input.deadline } : {}),
+    ...(input.researchQuestion !== undefined ? { researchQuestion: input.researchQuestion } : {}),
+    ...(input.objectives !== undefined ? { objectives: [...input.objectives] } : {}),
+    ...(input.keywords !== undefined ? { keywords: [...input.keywords] } : {}),
+    ...(input.contributions !== undefined ? { contributions: [...input.contributions] } : {}),
+    ...(input.methodology !== undefined ? { methodology: input.methodology } : {}),
+    ...(input.ethicsNote !== undefined ? { ethicsNote: input.ethicsNote } : {}),
+    ...(input.venueRequirements !== undefined ? { venueRequirements: input.venueRequirements } : {}),
+    ...(input.language !== undefined ? { language: input.language } : {}),
+    ...(input.citationStyle !== undefined ? { citationStyle: input.citationStyle } : {}),
+    // Only written when the caller chose a mode: rows created without one keep
+    // the legacy document shape (absent field = "off"), so old rows and new rows
+    // read identically through academicAutoModeOf().
+    ...(input.autoMode !== undefined ? { autoMode: input.autoMode } : {}),
     stage: "topic",
     stages: initialStageStates(at),
     plans: {},
@@ -328,6 +389,16 @@ function projectPatchSet(patch: AcademicProjectPatch, at: number): Record<string
   if (patch.field !== undefined) set.field = patch.field;
   if (patch.targetJournal !== undefined) set.targetJournal = patch.targetJournal;
   if (patch.deadline !== undefined) set.deadline = patch.deadline;
+  if (patch.researchQuestion !== undefined) set.researchQuestion = patch.researchQuestion;
+  if (patch.objectives !== undefined) set.objectives = structuredClone(patch.objectives);
+  if (patch.keywords !== undefined) set.keywords = structuredClone(patch.keywords);
+  if (patch.contributions !== undefined) set.contributions = structuredClone(patch.contributions);
+  if (patch.methodology !== undefined) set.methodology = patch.methodology;
+  if (patch.ethicsNote !== undefined) set.ethicsNote = patch.ethicsNote;
+  if (patch.venueRequirements !== undefined) set.venueRequirements = patch.venueRequirements;
+  if (patch.language !== undefined) set.language = patch.language;
+  if (patch.citationStyle !== undefined) set.citationStyle = patch.citationStyle;
+  if (patch.autoMode !== undefined) set.autoMode = patch.autoMode;
   if (patch.stage !== undefined) set.stage = patch.stage;
   if (patch.stages) {
     for (const stage of ACADEMIC_STAGES) {
@@ -382,6 +453,10 @@ function newLiteratureEntry(
     ...(doi ? { doi } : {}),
     ...(input.url !== undefined ? { url: input.url } : {}),
     ...(input.abstract !== undefined ? { abstract: input.abstract } : {}),
+    ...(input.tags !== undefined ? { tags: [...input.tags] } : {}),
+    ...(input.notes !== undefined ? { notes: input.notes } : {}),
+    ...(input.readingStatus !== undefined ? { readingStatus: input.readingStatus } : {}),
+    ...(input.keywords !== undefined ? { keywords: [...input.keywords] } : {}),
     source: input.source ?? "manual",
     verified: false,
     importedAt: at,
@@ -582,8 +657,18 @@ export class MongoAcademicStore
    * zero cap short-circuits without querying Mongo. Ordering uses the
    * {uid, projectId, createdAt} index with _id as a deterministic tie-break.
    */
-  async listEvents(uid: string, projectId: string, limit = DEFAULT_EVENT_LIMIT): Promise<AcademicEvent[]> {
-    return this.listEventsInternal(uid, projectId, limit);
+  async listEvents(
+    uid: string,
+    projectId: string,
+    limit = DEFAULT_EVENT_LIMIT,
+    offset = 0,
+  ): Promise<AcademicEvent[]> {
+    return this.listEventsInternal(uid, projectId, limit, offset);
+  }
+
+  async removeEventsByProject(uid: string, projectId: string): Promise<number> {
+    const result = await this.events.deleteMany({ uid, projectId });
+    return result.deletedCount;
   }
 
   /**
@@ -613,13 +698,46 @@ export class MongoAcademicStore
     uid: string,
     projectId: string,
     patch: AcademicProjectPatch,
-  ): Promise<AcademicProject | null> {
+  ): Promise<AcademicProject | null>;
+  async update(
+    uid: string,
+    projectId: string,
+    ref: string,
+    patch: AcademicLiteraturePatch,
+  ): Promise<AcademicLiteratureEntry | null>;
+  async update(
+    uid: string,
+    projectId: string,
+    patchOrRef: AcademicProjectPatch | string,
+    literaturePatch?: AcademicLiteraturePatch,
+  ): Promise<AcademicProject | AcademicLiteratureEntry | null> {
+    if (typeof patchOrRef === "string") {
+      return this.updateLiteratureMetadata(uid, projectId, patchOrRef, literaturePatch ?? {});
+    }
     const updated = await this.projects.findOneAndUpdate(
       { _id: projectId, uid },
-      { $set: projectPatchSet(patch, Date.now()) },
+      { $set: projectPatchSet(patchOrRef, Date.now()) },
       { returnDocument: "after" },
     );
     return updated ? toProject(updated) : null;
+  }
+
+  async setArchived(
+    uid: string,
+    projectId: string,
+    archivedAt: number | null,
+  ): Promise<AcademicProject | null> {
+    const now = Date.now();
+    const update =
+      archivedAt === null
+        ? { $unset: { archivedAt: "" }, $set: { updatedAt: now } }
+        : { $set: { archivedAt, updatedAt: now } };
+    const doc = await this.projects.findOneAndUpdate(
+      { _id: projectId, uid },
+      update,
+      { returnDocument: "after" },
+    );
+    return doc ? toProject(doc) : null;
   }
 
   /**
@@ -782,6 +900,29 @@ export class MongoAcademicStore
     return updated ? toLiterature(updated) : null;
   }
 
+  /** Patch user-editable metadata; identity fields stay immutable (dedupe/citation invariants). */
+  private async updateLiteratureMetadata(
+    uid: string,
+    projectId: string,
+    ref: string,
+    patch: AcademicLiteraturePatch,
+  ): Promise<AcademicLiteratureEntry | null> {
+    const doc = await this.findLiterature(uid, projectId, ref);
+    if (!doc) return null;
+    const set: Record<string, unknown> = {};
+    if (patch.tags !== undefined) set.tags = [...patch.tags];
+    if (patch.notes !== undefined) set.notes = patch.notes;
+    if (patch.readingStatus !== undefined) set.readingStatus = patch.readingStatus;
+    if (patch.keywords !== undefined) set.keywords = [...patch.keywords];
+    if (Object.keys(set).length === 0) return toLiterature(doc);
+    const updated = await this.literature.findOneAndUpdate(
+      { _id: doc._id, uid, projectId },
+      { $set: set },
+      { returnDocument: "after" },
+    );
+    return updated ? toLiterature(updated) : null;
+  }
+
   // ---- documents ----------------------------------------------------------
 
   /**
@@ -838,6 +979,11 @@ export class MongoAcademicStore
    */
   async countDocuments(uid: string, projectId: string): Promise<number> {
     return this.documents.countDocuments({ uid, projectId });
+  }
+
+  async removeDocumentsByProject(uid: string, projectId: string): Promise<number> {
+    const result = await this.documents.deleteMany({ uid, projectId });
+    return result.deletedCount;
   }
 
   /** Loads a document by id with uid in the filter; null when missing or foreign. */
@@ -1028,11 +1174,13 @@ export class MongoAcademicStore
     uid: string,
     projectId: string,
     limit: number,
+    offset: number,
   ): Promise<AcademicEvent[]> {
     const capped = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : DEFAULT_EVENT_LIMIT;
     if (capped === 0) return [];
+    const skip = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
     const docs = await this.events
-      .find({ uid, projectId }, { sort: { createdAt: -1, _id: 1 }, limit: capped })
+      .find({ uid, projectId }, { sort: { createdAt: -1, _id: 1 }, limit: capped, skip })
       .toArray();
     return docs.map(toEvent);
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ResearchWorkspaceService } from "../src/services/research-workspace.js";
+import { ResearchWorkspaceService } from "../src/services/research/research-workspace.js";
 import { MemoryResearchWorkspaceRepository } from "../src/repository/memory/research-workspaces.js";
 
 class FakeCloud {
@@ -13,7 +13,7 @@ class FakeCloud {
 }
 
 describe("ResearchWorkspaceService", () => {
-  it("creates a workspace and the full project folder tree", async () => {
+ it("creates a workspace and the full project folder tree", async () => {
     const repo = new MemoryResearchWorkspaceRepository();
     const cloud = new FakeCloud();
     const service = new ResearchWorkspaceService(repo, cloud as never);
@@ -47,7 +47,7 @@ describe("ResearchWorkspaceService", () => {
     ]);
   });
 
-  it("is idempotent for the same project id", async () => {
+ it("is idempotent for the same project id", async () => {
     const repo = new MemoryResearchWorkspaceRepository();
     const cloud = new FakeCloud();
     const service = new ResearchWorkspaceService(repo, cloud as never);

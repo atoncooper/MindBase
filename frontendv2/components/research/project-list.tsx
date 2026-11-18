@@ -11,6 +11,12 @@ import {
     Box,
     Button,
     Chip,
+    CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogContentText,
+    DialogTitle,
     IconButton,
     InputAdornment,
     LinearProgress,
@@ -23,8 +29,8 @@ import {
     Tooltip,
     Typography,
 } from "@mui/material";
-import { FlaskConical, Plus, Search, X } from "lucide-react";
-import type { AcademicProjectSummary } from "@/lib/api";
+import { FlaskConical, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
+import { academicApi, type AcademicProjectSummary } from "@/lib/api";
 import {
     EmptyState,
     ErrorBanner,
@@ -64,6 +70,60 @@ export function ProjectList({
     embedded?: boolean;
 }) {
     const [keyword, setKeyword] = useState("");
+    const [recycleOpen, setRecycleOpen] = useState(false);
+    const [archived, setArchived] = useState<AcademicProjectSummary[]>([]);
+    const [recycleBusy, setRecycleBusy] = useState(false);
+    const [recycleError, setRecycleError] = useState<string | null>(null);
+    const [purgeTarget, setPurgeTarget] = useState<AcademicProjectSummary | null>(null);
+
+    const openRecycleBin = async () => {
+        setRecycleOpen(true);
+        setRecycleBusy(true);
+        setRecycleError(null);
+        try {
+            const result = await academicApi.listProjects({ archived: "only" });
+            setArchived(result.projects);
+        } catch (e) {
+            setRecycleError(e instanceof Error ? e.message : "加载回收站失败");
+        } finally {
+            setRecycleBusy(false);
+        }
+    };
+
+    const reloadArchived = async () => {
+        const result = await academicApi.listProjects({ archived: "only" });
+        setArchived(result.projects);
+        onRetry();
+    };
+
+    const restoreArchived = async (projectId: string) => {
+        setRecycleBusy(true);
+        setRecycleError(null);
+        try {
+            await academicApi.restoreProject(projectId);
+            await reloadArchived();
+        } catch (e) {
+            setRecycleError(e instanceof Error ? e.message : "恢复项目失败");
+        } finally {
+            setRecycleBusy(false);
+        }
+    };
+
+    const confirmPurge = async () => {
+        const project = purgeTarget;
+        if (!project) return;
+        setPurgeTarget(null);
+        setRecycleBusy(true);
+        setRecycleError(null);
+        try {
+            await academicApi.purgeProject(project.id);
+            await reloadArchived();
+        } catch (e) {
+            setRecycleError(e instanceof Error ? e.message : "永久删除失败");
+        } finally {
+            setRecycleBusy(false);
+        }
+    };
 
     const filtered = useMemo(() => {
         const q = keyword.trim().toLowerCase();
@@ -104,23 +164,119 @@ export function ProjectList({
                 <Typography variant="h3" sx={{ fontSize: 14, fontWeight: 500 }}>
                     我的研究项目
                 </Typography>
-                <Tooltip title="新建项目">
-                    <IconButton
-                        size="small"
-                        aria-label="新建项目"
-                        onClick={onCreate}
-                        sx={{
-                            width: 30,
-                            height: 30,
-                            bgcolor: "primary.main",
-                            color: "primary.contrastText",
-                            "&:hover": { bgcolor: "primary.dark" },
-                        }}
-                    >
-                        <Plus size={16} aria-hidden="true" />
-                    </IconButton>
-                </Tooltip>
+                <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+                    <Tooltip title="回收站">
+                        <IconButton
+                            size="small"
+                            aria-label="回收站"
+                            onClick={() => void openRecycleBin()}
+                            sx={{ width: 30, height: 30, color: "text.secondary" }}
+                        >
+                            <Trash2 size={16} aria-hidden="true" />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="新建项目">
+                        <IconButton
+                            size="small"
+                            aria-label="新建项目"
+                            onClick={onCreate}
+                            sx={{
+                                width: 30,
+                                height: 30,
+                                bgcolor: "primary.main",
+                                color: "primary.contrastText",
+                                "&:hover": { bgcolor: "primary.dark" },
+                            }}
+                        >
+                            <Plus size={16} aria-hidden="true" />
+                        </IconButton>
+                    </Tooltip>
+                </Stack>
             </Stack>
+
+            <Dialog open={recycleOpen} onClose={() => setRecycleOpen(false)} fullWidth maxWidth="sm">
+                <DialogTitle sx={{ fontSize: 16 }}>回收站</DialogTitle>
+                <DialogContent dividers>
+                    {recycleError && <ErrorBanner message={recycleError} onRetry={() => void openRecycleBin()} />}
+                    {recycleBusy && (
+                        <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+                            <CircularProgress size={20} />
+                        </Box>
+                    )}
+                    {!recycleBusy && archived.length === 0 && (
+                        <Typography variant="body2" color="text.secondary">
+                            回收站为空。删除的项目会先移入这里，可恢复或永久删除。
+                        </Typography>
+                    )}
+                    <List dense disablePadding>
+                        {archived.map((project) => (
+                            <ListItem
+                                key={project.id}
+                                divider
+                                secondaryAction={
+                                    <Stack direction="row" spacing={0.5}>
+                                        <Button
+                                            size="small"
+                                            startIcon={<RotateCcw size={13} aria-hidden="true" />}
+                                            onClick={() => void restoreArchived(project.id)}
+                                            disabled={recycleBusy}
+                                        >
+                                            恢复
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            color="error"
+                                            startIcon={<Trash2 size={13} aria-hidden="true" />}
+                                            onClick={() => setPurgeTarget(project)}
+                                            disabled={recycleBusy}
+                                        >
+                                            永久删除
+                                        </Button>
+                                    </Stack>
+                                }
+                            >
+                                <Box sx={{ minWidth: 0 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+                                        {project.title}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        {project.archivedAt
+                                            ? `归档于 ${new Date(project.archivedAt).toLocaleString()}`
+                                            : "已归档"}
+                                    </Typography>
+                                </Box>
+                            </ListItem>
+                        ))}
+                    </List>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setRecycleOpen(false)}>关闭</Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog
+                open={purgeTarget !== null}
+                onClose={() => {
+                    if (!recycleBusy) setPurgeTarget(null);
+                }}
+                maxWidth="xs"
+                fullWidth
+            >
+                <DialogTitle>永久删除项目？</DialogTitle>
+                <DialogContent>
+                    <DialogContentText>
+                        「{purgeTarget?.title}」将被永久删除，文献、稿件、事件、审批、实验记录等子数据会一并清理，且不可恢复。
+                    </DialogContentText>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setPurgeTarget(null)} disabled={recycleBusy}>
+                        取消
+                    </Button>
+                    <Button color="error" variant="contained" onClick={() => void confirmPurge()} disabled={recycleBusy}>
+                        永久删除
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             <Box sx={{ px: 1.5, pt: 1.5 }}>
                 <TextField

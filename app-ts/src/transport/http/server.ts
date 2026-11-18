@@ -37,6 +37,8 @@ import { registerTaskQuizRoutes } from "././routes/task-quiz.js";
 import { registerBlindspotRoutes } from "././routes/blindspot.js";
 import { registerSkillsRoutes } from "././routes/skills.js";
 import { registerAcademicRoutes } from "././routes/academic.js";
+import { registerNotificationRoutes } from "././routes/notifications.js";
+import { registerAutopilotRoutes } from "././routes/autopilot.js";
 import { registerResearchRoutes } from "././routes/research.js";
 import { registerSandboxRoutes } from "././routes/sandbox.js";
 import type { ResearchRouteDeps } from "././routes/research.js";
@@ -128,10 +130,26 @@ export interface BuildServerOptions {
   /** skills subsystem; absent = routes not registered */
   skills?: { manager: SkillManager; store: SkillStoreClient };
   /** academic workspace; absent = /academic/* not registered */
-  academic?: import("../../services/academic.js").AcademicService;
+  academic?: import("../../services/research/academic.js").AcademicService;
   /** Word import/export (docs/manuscript-docx.md); absent = those routes are not registered */
-  manuscriptDocx?: import("../../services/manuscript-docx.js").ManuscriptDocxService;
-  approvals?: import("../../services/research-approval.js").ResearchApprovalService;
+  manuscriptDocx?: import("../../services/research/manuscript-docx.js").ManuscriptDocxService;
+  approvals?: import("../../services/research/research-approval.js").ResearchApprovalService;
+  /** stage gates + controlled autoMode; absent = gates endpoints return 503 */
+  gates?: import("../../services/research/research-stage-gates.js").ResearchStageGateService;
+  /** deterministic next-action advisor; absent = /next-actions 503 */
+  advisor?: import("../../services/research/research-advisor.js").ResearchAdvisorService;
+  /** in-app notification center; absent = /academic/notifications not registered */
+  notifications?: import("../../services/research/notifications.js").ResearchNotificationService;
+  /** submission package builder; absent = /academic/documents/:id/package 503 */
+  submissionPackage?: import("../../services/research/submission-package.js").SubmissionPackageService;
+  /** project autopilot service; absent = autopilot routes not registered */
+  autopilot?: import("../../services/research/autopilot.js").ResearchAutopilotService;
+  /** in-process research counters for /agent/runtime */
+  researchMetrics?: import("../../services/research/metrics.js").ResearchMetrics;
+  /** document version snapshots (diff/restore); absent = version routes 503 */
+  versions?: import("../../services/research/document-versions.js").DocumentVersionService;
+  /** reviewer response letter service; absent = review-response route 503 */
+  reviewResponse?: import("../../services/research/review-response.js").ReviewResponseService;
   /**
    * research workbench REST extension (experiments/evidence/validation/analysis/
    * workspace; docs/research-ui-api.md §1–§5). Needs `academic` for project
@@ -299,8 +317,30 @@ export async function buildServer(opts: BuildServerOptions) {
       academic: opts.academic,
       approvals: opts.approvals,
       manuscriptDocx: opts.manuscriptDocx,
+      // export/submission integrity gate shares the research validation service.
+      validation: opts.research?.validation,
+      gates: opts.gates,
+      advisor: opts.advisor,
+      notifications: opts.notifications,
+      submissionPackage: opts.submissionPackage,
+      versions: opts.versions,
+      reviewResponse: opts.reviewResponse,
+      quota: opts.quota,
+      metrics: opts.researchMetrics,
     });
-    if (opts.research) registerResearchRoutes(app, { ...opts.research, academic: opts.academic });
+    if (opts.research)
+      registerResearchRoutes(app, {
+        ...opts.research,
+        academic: opts.academic,
+        quota: opts.quota,
+        metrics: opts.researchMetrics,
+      });
+    if (opts.notifications) registerNotificationRoutes(app, { notifications: opts.notifications });
+    if (opts.autopilot)
+      registerAutopilotRoutes(app, {
+        autopilot: opts.autopilot,
+        metrics: opts.researchMetrics,
+      });
   }
   if (opts.sandbox) {
     registerSandboxRoutes(app, opts.sandbox);

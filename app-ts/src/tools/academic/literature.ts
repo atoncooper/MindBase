@@ -2,10 +2,12 @@ import { z } from "zod";
 import { defineTool } from "../base.js";
 import type { ToolRunContext } from "../../context/types.js";
 import {
+  ACADEMIC_READING_STATUSES,
   normalizeDoi,
   type AcademicEventRepository,
   type AcademicLiteratureEntry,
   type AcademicLiteratureInput,
+  type AcademicLiteraturePatch,
   type AcademicLiteratureRepository,
   type AcademicLiteratureSource,
   type AcademicProjectRepository,
@@ -15,6 +17,12 @@ import type {
   LiteratureHit,
   LiteratureSearchOptions,
 } from "../../clients/literature-client.js";
+import {
+  buildLiteratureMatrix,
+  readingStatusLabel,
+  sortLiteratureEntries,
+  truncateText,
+} from "../../services/research/literature-synthesis.js";
 
 /**
  * academic_literature: the project literature library.
@@ -24,14 +32,14 @@ import type {
  * AcademicLiteratureRepository. No client or adapter is constructed here.
  *
  * Evidence discipline (red lines):
- *  - metadata only comes from the search API or user-provided BibTeX/CSL - the
- *    model never invents DOI/authors/year;
- *  - every search hit is UNVERIFIED by construction; only verify (DOI resolved
- *    by Crossref AND a title match) flips that state, so "database says it
- *    exists" is never confused with "the citation is proven";
- *  - imports are deduplicated by DOI first and by normalized title+year
- *    otherwise; the rule lives in the repository so both adapters agree;
- *  - network failures degrade to guidance text, never throw through the loop.
+ * - metadata only comes from the search API or user-provided BibTeX/CSL - the
+ * model never invents DOI/authors/year;
+ * - every search hit is UNVERIFIED by construction; only verify (DOI resolved
+ * by Crossref AND a title match) flips that state, so "database says it
+ * exists" is never confused with "the citation is proven";
+ * - imports are deduplicated by DOI first and by normalized title+year
+ * otherwise; the rule lives in the repository so both adapters agree;
+ * - network failures degrade to guidance text, never throw through the loop.
  *
  * Multi-tenant: uid from ToolRunContext, never in the schema. search is the only
  * action that does not need project_id.
@@ -337,7 +345,7 @@ function detectFormat(text: string): "bibtex" | "csl" | null {
       JSON.parse(trimmed);
       return "csl";
     } catch {
-      // not JSON — fall through to the BibTeX probe
+    // not JSON — fall through to the BibTeX probe
     }
   }
   if (/@[a-zA-Z]+\s*\{/.test(trimmed)) return "bibtex";
@@ -373,6 +381,79 @@ function renderEntry(entry: AcademicLiteratureEntry, index: number): string {
       (SOURCE_LABELS[entry.source] ?? entry.source),
   );
   return lines.join("\n");
+}
+
+/** Detail-view budgets: longer than the matrix cells, short enough not to flood the prompt. */
+const DETAIL_ABSTRACT_CHARS = 300;
+const DETAIL_NOTES_CHARS = 500;
+
+/** Chinese labels of the user-editable literature fields (confirmation text for update). */
+const LITERATURE_PATCH_LABELS: Record<keyof AcademicLiteraturePatch, string> = {
+  tags: "标签",
+  notes: "笔记",
+  readingStatus: "阅读状态",
+  keywords: "关键词",
+};
+
+/**
+ * Detail rendering for action=get: identity metadata first, then the reading
+ * annotations and verification state. Verification state is always printed (the
+ * same red line as list), and abstract/notes are truncated so a single entry
+ * cannot flood the prompt.
+ */
+function renderEntryDetail(entry: AcademicLiteratureEntry): string {
+  const tags = (entry.tags ?? []).map((tag) => tag.trim()).filter(Boolean);
+  const keywords = (entry.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean);
+  const notes = (entry.notes ?? "").trim();
+  const abstract = (entry.abstract ?? "").trim();
+  const lines = [
+    "【文献详情】[" + entry.citeKey + "] 《" + entry.title + "》",
+    "作者：" + authorLine(entry.authors),
+    "年份：" + (entry.year ? String(entry.year) : "未知"),
+    "期刊/会议：" + ((entry.venue ?? "").trim() || "未提供"),
+    "DOI：" + (entry.doi || "未提供"),
+    "标签：" + (tags.length > 0 ? tags.join("、") : "无"),
+    "阅读状态：" + readingStatusLabel(entry.readingStatus),
+    "关键词：" + (keywords.length > 0 ? keywords.join("、") : "无"),
+    "核验：" +
+      (entry.verified ? "已核验" : "未核验") +
+      "｜来源：" +
+      (SOURCE_LABELS[entry.source] ?? entry.source),
+  ];
+  if (entry.url) lines.push("链接：" + entry.url);
+  lines.push("笔记：" + (notes ? truncateText(notes, DETAIL_NOTES_CHARS) : "无"));
+  lines.push("摘要：" + (abstract ? truncateText(abstract, DETAIL_ABSTRACT_CHARS) : "未提供"));
+  lines.push(
+    "",
+    "可用 action=update 修改标签/笔记/阅读状态/关键词；action=synthesize 生成项目文献对比矩阵。",
+  );
+  return lines.join("\n");
+}
+
+/** Guidance text when get/update/remove cannot resolve the ref inside the project library. */
+function missingEntryText(ref: string): string {
+  return (
+    "文献库中没有「" +
+    ref +
+    "」。可用 action=list 查看已导入文献（ref 支持文献 id / citeKey / DOI）。"
+  );
+}
+
+/**
+ * Resolve the ref accepted by get/update/remove: library id or citeKey first
+ * (repository get), then a canonical DOI lookup (normalizeDoi also strips
+ * doi.org URL prefixes). Returns null when nothing matches in this project.
+ */
+async function resolveLiteratureRef(
+  literature: AcademicLiteratureRepository,
+  uid: string,
+  projectId: string,
+  ref: string,
+): Promise<AcademicLiteratureEntry | null> {
+  const direct = await literature.get(uid, projectId, ref);
+  if (direct) return direct;
+  const doi = normalizeDoi(ref);
+  return doi ? literature.findByDoi(uid, projectId, doi) : null;
 }
 
 /**
@@ -414,9 +495,9 @@ function pushLiteratureArtifact(ctx: ToolRunContext, data: Record<string, unknow
 /** Tool input schema. uid is intentionally absent: identity comes from ToolRunContext. */
 const literatureInputSchema = z.object({
   action: z
-    .enum(["search", "list", "import", "add", "verify", "export_bibtex"])
+    .enum(["search", "list", "import", "add", "verify", "get", "update", "remove", "synthesize", "export_bibtex"])
     .describe(
-      "search=检索候选文献（Crossref/OpenAlex/arXiv，不需要项目）；list=列出项目已导入文献；import=导入 BibTeX/CSL-JSON 文本；verify=按 DOI 核验文献真实性；export_bibtex=导出项目文献库 BibTeX",
+      "search=检索候选文献（Crossref/OpenAlex/arXiv，不需要项目）；list=列出项目已导入文献；import=导入 BibTeX/CSL-JSON 文本；verify=按 DOI 核验文献真实性；get=查看单篇文献详情（含标签/笔记/阅读状态）；update=更新文献标签/笔记/阅读状态/关键词；remove=从项目文献库删除文献；synthesize=生成项目文献综述对比矩阵；export_bibtex=导出项目文献库 BibTeX",
     ),
   query: z.string().min(1).max(300).optional().describe("检索词（search 必填）：标题、作者或关键词，英文检索命中率更高"),
   limit: z
@@ -432,27 +513,42 @@ const literatureInputSchema = z.object({
     .describe("检索源（search 可选，默认 auto = Crossref 优先、OpenAlex 兜底）"),
   projectId: z.string().min(1).optional().describe("项目 id（search 之外必填）"),
   text: z.string().min(3).optional().describe("待导入的 BibTeX 或 CSL-JSON 原文（import 必填）"),
-  ref: z.string().min(1).optional().describe("文献 id、citeKey 或 DOI（verify 必填）"),
+  ref: z.string().min(1).optional().describe("文献 id、citeKey 或 DOI（verify / get / update / remove 必填）"),
   title: z.string().min(1).max(500).optional().describe("文献标题（add 必填）"),
   authors: z.array(z.string().min(1)).max(50).optional().describe("作者列表（add 可选，如 [\"San Zhang\"]）"),
   year: z.number().int().min(1500).max(2100).optional().describe("出版年份（add 可选）"),
   venue: z.string().max(300).optional().describe("期刊/会议名（add 可选）"),
   doi: z.string().max(300).optional().describe("DOI（add 可选，只能用检索结果或用户提供的值）"),
   url: z.string().max(1000).optional().describe("链接（add 可选）"),
+  tags: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe("文献标签（update 可选，最多 20 个；传空数组表示清空）"),
+  notes: z.string().max(20_000).optional().describe("阅读笔记（update 可选；传空字符串表示清空）"),
+  readingStatus: z
+    .enum(ACADEMIC_READING_STATUSES)
+    .optional()
+    .describe("阅读状态（update 可选）：unread=未读 / reading=在读 / read=已读"),
+  keywords: z
+    .array(z.string().min(1).max(50))
+    .max(20)
+    .optional()
+    .describe("关键词（update 可选，最多 20 个；传空数组表示清空）"),
 });
 
 /**
  * Build the academic_literature tool.
  *
- * Actions: search / list / import / add / verify / export_bibtex. Returns
- * Chinese text for the ReAct loop plus an academic_literature artifact
- * describing what happened (search hits, imported entries, verification
- * result, exported BibTeX).
+ * Actions: search / list / import / add / verify / get / update / remove /
+ * synthesize / export_bibtex. Returns Chinese text for the ReAct loop plus an
+ * academic_literature artifact describing what happened (search hits, imported
+ * entries, verification result, exported BibTeX, synthesized review matrix).
  *
  * Side effects: library writes, project event appends, and outbound calls to
  * the literature client for search/verify. Expected failures (no results,
- * unresolvable DOI, network outage) are returned as guidance text so the agent
- * can adapt; operational failures never throw.
+ * unresolvable DOI, network outage, missing/foreign entry) are returned as
+ * guidance text so the agent can adapt; operational failures never throw.
  */
 export function createAcademicLiteratureTool(deps: AcademicLiteratureToolDeps) {
   return defineTool({
@@ -464,6 +560,10 @@ export function createAcademicLiteratureTool(deps: AcademicLiteratureToolDeps) {
       "action=import：导入 BibTeX 或 CSL-JSON 文本（自动去重，重复项跳过，写项目事件），需要 project_id；" +
       "action=add：把一条已确认的检索候选或用户给出的文献元数据加入项目库（标题必填，其余字段可选；不编造字段），需要 project_id；" +
       "action=verify：按文献 id / citeKey / DOI 核验（DOI 命中 Crossref 才标记已核验）；" +
+      "action=get：查看单篇文献详情（ref 支持 id/citeKey/DOI，含作者/年份/期刊/DOI/标签/阅读状态/核验状态/摘要）；" +
+      "action=update：更新文献标签/笔记/阅读状态/关键词（至少给一个字段，传空数组/空字符串可清空）；" +
+      "action=remove：从项目文献库删除文献（ref 支持 id/citeKey/DOI，不可撤销）；" +
+      "action=synthesize：生成项目文献综述对比矩阵（Markdown 表格，含 citeKey/年份/期刊/核验/阅读状态/标签/摘要要点）；" +
       "action=export_bibtex：导出项目全部文献的 BibTeX 文本。" +
       "纪律：检索结果是未核验候选，未导入项目库不能引用；正文只允许引用库内 citeKey；" +
       "不得编造 DOI、作者、年份，Crossref 未收录时必须如实说明未核验。",
@@ -799,6 +899,142 @@ export function createAcademicLiteratureTool(deps: AcademicLiteratureToolDeps) {
           );
         }
 
+        case "get": {
+          if (!projectId) return MISSING_PROJECT_TEXT;
+          const ref = (args.ref ?? "").trim();
+          if (!ref) return "get 需要 ref：文献 id、citeKey 或 DOI。";
+          const project = await deps.projects.get(uid, projectId);
+          if (!project) return NO_PROJECT_TEXT;
+          const entry = await resolveLiteratureRef(deps.literature, uid, projectId, ref);
+          if (!entry) return missingEntryText(ref);
+          return renderEntryDetail(entry);
+        }
+
+        case "update": {
+          if (!projectId) return MISSING_PROJECT_TEXT;
+          const ref = (args.ref ?? "").trim();
+          if (!ref) return "update 需要 ref：文献 id、citeKey 或 DOI。";
+          // Only provided fields are patched: an omitted field keeps its stored
+          // value, while an explicitly empty tags/keywords array or empty notes
+          // string clears that field (the repository replaces, not merges).
+          const patch: AcademicLiteraturePatch = {};
+          if (args.tags !== undefined) {
+            patch.tags = args.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0);
+          }
+          if (args.notes !== undefined) patch.notes = args.notes;
+          if (args.readingStatus !== undefined) patch.readingStatus = args.readingStatus;
+          if (args.keywords !== undefined) {
+            patch.keywords = args.keywords
+              .map((keyword) => keyword.trim())
+              .filter((keyword) => keyword.length > 0);
+          }
+          const fields = Object.keys(patch);
+          if (fields.length === 0) {
+            return (
+              "update 需要至少一个字段：tags（标签）/ notes（笔记）/ readingStatus（阅读状态）/ keywords（关键词）。"
+            );
+          }
+          const project = await deps.projects.get(uid, projectId);
+          if (!project) return NO_PROJECT_TEXT;
+          const entry = await resolveLiteratureRef(deps.literature, uid, projectId, ref);
+          if (!entry) return missingEntryText(ref);
+          const updated = await deps.literature.update(uid, projectId, entry.id, patch);
+          if (!updated) return missingEntryText(ref);
+          await deps.events.append(
+            uid,
+            projectId,
+            "literature.updated",
+            { citeKey: updated.citeKey, fields },
+            "agent",
+          );
+          const labels = fields.map(
+            (field) => LITERATURE_PATCH_LABELS[field as keyof AcademicLiteraturePatch] ?? field,
+          );
+          const lines = [
+            "已更新文献 [" + updated.citeKey + "]《" + updated.title + "》：字段 " + labels.join("、") + "。",
+          ];
+          if (patch.readingStatus !== undefined) {
+            lines.push("阅读状态：" + readingStatusLabel(updated.readingStatus));
+          }
+          if (patch.tags !== undefined) {
+            const tags = (updated.tags ?? []).map((tag) => tag.trim()).filter(Boolean);
+            lines.push("标签：" + (tags.length > 0 ? tags.join("、") : "已清空"));
+          }
+          if (patch.keywords !== undefined) {
+            const keywords = (updated.keywords ?? []).map((keyword) => keyword.trim()).filter(Boolean);
+            lines.push("关键词：" + (keywords.length > 0 ? keywords.join("、") : "已清空"));
+          }
+          if (patch.notes !== undefined) {
+            const notes = (updated.notes ?? "").trim();
+            lines.push("笔记：" + (notes ? "已保存（" + truncateText(notes, 80) + "）" : "已清空"));
+          }
+          lines.push("", "可用 action=get 查看完整详情。");
+          return lines.join("\n");
+        }
+
+        case "remove": {
+          if (!projectId) return MISSING_PROJECT_TEXT;
+          const ref = (args.ref ?? "").trim();
+          if (!ref) return "remove 需要 ref：文献 id、citeKey 或 DOI。";
+          const project = await deps.projects.get(uid, projectId);
+          if (!project) return NO_PROJECT_TEXT;
+          // The repository remove() only resolves id/citeKey, so a DOI ref is
+          // mapped to its entry first; deleting by entry.id then hits the same row.
+          const entry = await resolveLiteratureRef(deps.literature, uid, projectId, ref);
+          if (!entry) return missingEntryText(ref);
+          const deleted = await deps.literature.remove(uid, projectId, entry.id);
+          if (!deleted) return missingEntryText(ref);
+          await deps.events.append(uid, projectId, "literature.removed", { citeKey: entry.citeKey }, "agent");
+          return (
+            "已从项目文献库删除：[" +
+            entry.citeKey +
+            "]《" +
+            entry.title +
+            "》（原状态：" +
+            (entry.verified ? "已核验" : "未核验") +
+            "）。此操作不可撤销；如误删可用 action=import 或 action=add 重新加入。"
+          );
+        }
+
+        case "synthesize": {
+          if (!projectId) return MISSING_PROJECT_TEXT;
+          const project = await deps.projects.get(uid, projectId);
+          if (!project) return NO_PROJECT_TEXT;
+          const entries = await deps.literature.list(uid, projectId);
+          if (entries.length === 0) {
+            return (
+              "项目文献库为空，无法生成综述矩阵。可先用 action=import 导入 BibTeX/CSL，" +
+              "或 action=search 检索候选文献后用 action=add 入库。"
+            );
+          }
+          const ordered = sortLiteratureEntries(entries);
+          const markdown = buildLiteratureMatrix(entries);
+          const verified = entries.filter((entry) => entry.verified).length;
+          const read = entries.filter((entry) => entry.readingStatus === "read").length;
+          pushLiteratureArtifact(ctx, {
+            action: "synthesize",
+            projectId,
+            entries: ordered,
+            total: entries.length,
+            markdown,
+          });
+          const lines = [
+            "项目文献对比矩阵（共 " +
+              entries.length +
+              " 篇，已核验 " +
+              verified +
+              " 篇，已读 " +
+              read +
+              " 篇）：",
+            "",
+            markdown,
+            "",
+            "矩阵按年份升序（无年份排最后）、同年按导入时间排序；可直接粘贴到综述/相关工作草稿。" +
+              "未核验文献引用前需先用 action=verify 核验，并在正文标注未核验。",
+          ];
+          return lines.join("\n");
+        }
+
         case "export_bibtex": {
           if (!projectId) return MISSING_PROJECT_TEXT;
           const project = await deps.projects.get(uid, projectId);
@@ -831,7 +1067,7 @@ export function createAcademicLiteratureTool(deps: AcademicLiteratureToolDeps) {
           return (
             "未知 action：" +
             action +
-            "（可用：search / list / import / verify / export_bibtex）"
+            "（可用：search / list / import / add / verify / get / update / remove / synthesize / export_bibtex）"
           );
         }
       }

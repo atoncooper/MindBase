@@ -1,6 +1,6 @@
 import { createReactAgent } from "../react.js";
 import { agentEntry } from "../manifest.js";
-import type { AgentRuntime } from "../../tools/runtime.js";
+import type { AgentRuntime } from "../runtime.js";
 import type { PromptRegistry } from "../prompts/loader.js";
 import { buildMemorySection } from "../../context/memory.js";
 import { buildSessionDocSection } from "../../context/session-docs.js";
@@ -64,6 +64,10 @@ export function createMainAgent(
       "sandbox_bash",
       "sandbox_pwsh",
       "sandbox_grep",
+      // Prompt line 44 tells the model to use run_code for real execution; the
+      // tool exists for every agent, and research project chats are gated by the
+      // injected execution guard (approved experiment required).
+      "run_code",
       ...(config.academic.enabled
         ? ["academic_project", "academic_literature", "academic_manuscript", "academic_evidence", "academic_experiment", "academic_validation", "academic_analysis", "research_approval", "research_workspace"]
         : []),

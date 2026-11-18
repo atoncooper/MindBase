@@ -139,6 +139,11 @@ export function ValidationTab({ projectId }: { projectId: string }) {
                                 items={report.runs.unreproducible}
                                 emptyText="记录运行均可复现。"
                             />
+                            <RefList
+                                label="无效证据引用"
+                                items={report.runs.invalidRefs}
+                                emptyText="所有 [[run:id]] 都能对应到已成功运行。"
+                            />
                         </SurfaceCard>
 
                         <SurfaceCard>
@@ -153,6 +158,47 @@ export function ValidationTab({ projectId }: { projectId: string }) {
                             />
                         </SurfaceCard>
                     </div>
+
+                    {(report.numbers.unmatched.length > 0 || report.tables.withoutEvidence.length > 0) && (
+                        <SurfaceCard>
+                            <h3 className="text-[13px] font-medium text-foreground">数字/表格证据提示（不参与通过判定）</h3>
+                            {report.numbers.unmatched.length > 0 && (
+                                <p className="mt-1 text-[11px] leading-relaxed text-tertiary">
+                                    未在 succeeded run 输出/指标中找到的数字：
+                                    {report.numbers.unmatched
+                                        .slice(0, 8)
+                                        .map((item) => item.section + "=" + item.value)
+                                        .join("、")}
+                                </p>
+                            )}
+                            {report.tables.withoutEvidence.length > 0 && (
+                                <p className="mt-1 text-[11px] leading-relaxed text-tertiary">
+                                    含表格但无 [[run:id]] 证据的章节：{report.tables.withoutEvidence.join("、")}
+                                </p>
+                            )}
+                        </SurfaceCard>
+                    )}
+
+                    {report.sectionsMissingRunRef.length > 0 && (
+                        <SurfaceCard>
+                            <h3 className="text-[13px] font-medium text-foreground">
+                                数字提示（仅提示，不参与通过判定）
+                            </h3>
+                            <p className="mt-1 text-[11px] leading-relaxed text-tertiary">
+                                以下章节包含数字但没有 [[run:id]] 证据引用，建议补充；该提示不会阻断导出。
+                            </p>
+                            <ul className="mt-2 space-y-1">
+                                {report.sectionsMissingRunRef.map((title) => (
+                                    <li
+                                        key={title}
+                                        className="rounded bg-warning/10 px-2 py-1 text-[11px] text-secondary"
+                                    >
+                                        {title}
+                                    </li>
+                                ))}
+                            </ul>
+                        </SurfaceCard>
+                    )}
                 </>
             )}
         </div>

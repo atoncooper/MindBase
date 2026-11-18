@@ -1,5 +1,10 @@
 import {
+  ACADEMIC_AUTO_MODES,
+  ACADEMIC_AUTO_RULE_EVENTS,
+  ACADEMIC_CITATION_STYLES,
   ACADEMIC_DOCUMENT_KINDS,
+  ACADEMIC_LANGUAGES,
+  ACADEMIC_READING_STATUSES,
   ACADEMIC_STAGES,
   ACADEMIC_STAGE_LABELS,
   defaultManuscriptSections,
@@ -10,12 +15,19 @@ import {
   type AcademicDocumentKind,
   type AcademicDocumentRepository,
   type AcademicDocumentSource,
+  type AcademicAutoMode,
+  type AcademicAutoRule,
+  type AcademicCitationStyle,
+  type AcademicLanguage,
   type AcademicEvent,
   type AcademicEventRepository,
   type AcademicLiteratureEntry,
   type AcademicLiteratureInput,
+  type AcademicLiteraturePatch,
   type AcademicLiteratureRepository,
+  type AcademicReadingStatus,
   type AcademicPlanTask,
+  type AcademicPlanTaskDoneSource,
   type AcademicProject,
   type AcademicProjectCreate,
   type AcademicProjectPatch,
@@ -24,9 +36,13 @@ import {
   type AcademicStage,
   type AcademicStageState,
   type AcademicStageStatus,
-} from "../repository/academic.js";
-import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../clients/literature-client.js";
-import { createLogger } from "../logger.js";
+} from "../../repository/academic.js";
+import type { LiteratureClient, LiteratureHit, LiteratureSearchOptions } from "../../clients/literature-client.js";
+import { createLogger } from "../../logger.js";
+import { describeValidationFailures, type ResearchValidationService } from "./research-validation.js";
+import type { ResearchStageGateService } from "./research-stage-gates.js";
+import { defaultSectionsForKind } from "./manuscript-templates.js";
+import { appendLatexReferences, appendMarkdownReferences } from "./bibliography.js";
 
 const log = createLogger("ACADEMIC");
 
@@ -39,12 +55,12 @@ const log = createLogger("ACADEMIC");
  * access; the literature network client is injected.
  *
  * Invariants:
- *  - every method takes uid first and treats a foreign row as "not found" (404),
- *    never as a permission error that leaks existence;
- *  - verification semantics match the academic_literature tool: verified=true
- *    only after a Crossref hit whose title matches the stored one;
- *  - events are appended for user-visible mutations so the activity feed (and a
- *    future cross-device view) can reconstruct what happened.
+ * - every method takes uid first and treats a foreign row as "not found" (404),
+ * never as a permission error that leaks existence;
+ * - verification semantics match the academic_literature tool: verified=true
+ * only after a Crossref hit whose title matches the stored one;
+ * - events are appended for user-visible mutations so the activity feed (and a
+ * future cross-device view) can reconstruct what happened.
  */
 
 /** Domain error mapped directly onto an HTTP status by the route layer. */
@@ -66,10 +82,23 @@ export interface AcademicProjectSummary {
   field: string;
   targetJournal?: string;
   deadline?: string;
+  researchQuestion?: string;
+  objectives?: string[];
+  keywords?: string[];
+  contributions?: string[];
+  methodology?: string;
+  ethicsNote?: string;
+  venueRequirements?: string;
+  language: AcademicLanguage;
+  citationStyle: AcademicCitationStyle;
   stage: AcademicStage;
   stages: Record<AcademicStage, AcademicStageState>;
+  /** automation policy; always materialized (legacy rows read as "off") */
+  autoMode: AcademicAutoMode;
   literatureCount: number;
   documentCount: number;
+  /** 回收站时间戳；存在表示已在回收站。 */
+  archivedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -106,12 +135,32 @@ export interface AcademicVerifyResult {
   message: string;
 }
 
+/** 永久删除项目时的级联清理接口（ProjectPurgeService 提供）。 */
+export interface ProjectPurger {
+  purge(uid: string, projectId: string): Promise<{ deleted: true; counts: Record<string, unknown> }>;
+}
+
 export interface AcademicServiceDeps {
   projects: AcademicProjectRepository;
   literature: AcademicLiteratureRepository;
   documents: AcademicDocumentRepository;
   events: AcademicEventRepository;
   client: LiteratureClient;
+  /**
+   * Optional academic integrity gate (services/research/research-validation.ts). When the
+   * composition root injects it, Markdown/LaTeX exports refuse to run on a
+   * failed report unless the caller explicitly forces the export.
+   */
+  validation?: Pick<ResearchValidationService, "validate">;
+  /**
+   * Optional stage-gate service (services/research/research-stage-gates.ts). The REST
+   * routes hold their own reference for the /gates endpoints; the service keeps
+   * the dependency so a future orchestration path can evaluate gates without
+   * importing the concrete class.
+   */
+  gates?: ResearchStageGateService;
+  /** Optional cascade purge service; absent = purgeProject returns 503. */
+  purge?: ProjectPurger;
 }
 
 const MAX_TITLE = 200;
@@ -162,6 +211,49 @@ function parseStatus(value: unknown): AcademicStageStatus {
   return value as AcademicStageStatus;
 }
 
+/** Bounded string array for project keywords/objectives/contributions and literature tags. */
+function optionalStringArray(value: unknown, field: string, maxItems: number, maxLen: number): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new AcademicError(400, field + " 必须是数组");
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") throw new AcademicError(400, field + " 的元素必须是字符串");
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > maxLen) throw new AcademicError(400, field + " 的单个元素过长（上限 " + maxLen + " 字符）");
+    if (result.length >= maxItems) break;
+    result.push(trimmed);
+  }
+  return result;
+}
+
+/** Project working language: zh / en. */
+function parseLanguage(value: unknown): AcademicLanguage | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !(ACADEMIC_LANGUAGES as readonly string[]).includes(value)) {
+    throw new AcademicError(400, "language 不合法（可选：" + ACADEMIC_LANGUAGES.join(" / ") + "）");
+  }
+  return value as AcademicLanguage;
+}
+
+/** Citation style used by bibliography generation: plain / apa / ieee / gb7714. */
+function parseCitationStyle(value: unknown): AcademicCitationStyle | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !(ACADEMIC_CITATION_STYLES as readonly string[]).includes(value)) {
+    throw new AcademicError(400, "citationStyle 不合法（可选：" + ACADEMIC_CITATION_STYLES.join(" / ") + "）");
+  }
+  return value as AcademicCitationStyle;
+}
+
+/** Library reading status: unread / reading / read. */
+function parseReadingStatus(value: unknown): AcademicReadingStatus | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !(ACADEMIC_READING_STATUSES as readonly string[]).includes(value)) {
+    throw new AcademicError(400, "readingStatus 不合法（可选：" + ACADEMIC_READING_STATUSES.join(" / ") + "）");
+  }
+  return value as AcademicReadingStatus;
+}
+
 function parsePaperType(value: unknown): AcademicProject["paperType"] | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const types = ["journal", "thesis", "fund"] as const;
@@ -169,6 +261,66 @@ function parsePaperType(value: unknown): AcademicProject["paperType"] | undefine
     throw new AcademicError(400, "paperType 不合法（可选：journal / thesis / fund）");
   }
   return value as (typeof types)[number];
+}
+
+/** Project automation mode: off / assist / auto (anything else is a 400). */
+function parseAutoMode(value: unknown): AcademicAutoMode | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !(ACADEMIC_AUTO_MODES as readonly string[]).includes(value)) {
+    throw new AcademicError(400, "autoMode 不合法（可选：" + ACADEMIC_AUTO_MODES.join(" / ") + "）");
+  }
+  return value as AcademicAutoMode;
+}
+
+/**
+ * autoRule attached to a plan task. Only the documented event names are
+ * accepted, and match.sectionKey/minRuns are bounded and type-checked, so a
+ * malformed rule can never reach the gate evaluator.
+ */
+function parseAutoRule(value: unknown, field: string): AcademicAutoRule | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new AcademicError(400, field + " 必须是对象");
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.event !== "string" ||
+    !(ACADEMIC_AUTO_RULE_EVENTS as readonly string[]).includes(raw.event)
+  ) {
+    throw new AcademicError(
+      400,
+      field + ".event 不合法（可选：" + ACADEMIC_AUTO_RULE_EVENTS.join(" / ") + "）",
+    );
+  }
+  const rule: AcademicAutoRule = { event: raw.event as AcademicAutoRule["event"] };
+  if (raw.match !== undefined) {
+    if (typeof raw.match !== "object" || raw.match === null || Array.isArray(raw.match)) {
+      throw new AcademicError(400, field + ".match 必须是对象");
+    }
+    const matchRaw = raw.match as Record<string, unknown>;
+    const match: { sectionKey?: string; minRuns?: number } = {};
+    if (matchRaw.sectionKey !== undefined) {
+      if (typeof matchRaw.sectionKey !== "string" || matchRaw.sectionKey.trim() === "") {
+        throw new AcademicError(400, field + ".match.sectionKey 必须是非空字符串");
+      }
+      match.sectionKey = matchRaw.sectionKey.trim().slice(0, 80);
+    }
+    if (matchRaw.minRuns !== undefined) {
+      const n = Number(matchRaw.minRuns);
+      if (!Number.isInteger(n) || n < 1) throw new AcademicError(400, field + ".match.minRuns 必须是正整数");
+      match.minRuns = n;
+    }
+    if (match.sectionKey !== undefined || match.minRuns !== undefined) rule.match = match;
+  }
+  return rule;
+}
+
+/** Provenance of a task tick (user / event / agent); absent stays absent. */
+function parseDoneSource(value: unknown, field: string): AcademicPlanTaskDoneSource | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const sources: AcademicPlanTaskDoneSource[] = ["user", "event", "agent"];
+  if (typeof value !== "string" || !sources.includes(value as AcademicPlanTaskDoneSource)) {
+    throw new AcademicError(400, field + " 不合法（可选：" + sources.join(" / ") + "）");
+  }
+  return value as AcademicPlanTaskDoneSource;
 }
 
 function parseDocumentKind(value: unknown): AcademicDocumentKind {
@@ -246,9 +398,20 @@ export class AcademicService {
 
   // ---- projects -----------------------------------------------------------
 
-  async listProjects(uid: string): Promise<{ projects: AcademicProjectSummary[] }> {
+  async listProjects(
+    uid: string,
+    query?: unknown,
+  ): Promise<{ projects: AcademicProjectSummary[] }> {
+    const q = (query ?? {}) as { archived?: unknown };
+    const archivedMode =
+      typeof q.archived === "string" ? q.archived.toLowerCase() : q.archived === true ? "only" : "none";
     const projects = await this.deps.projects.list(uid);
-    const summaries = await Promise.all(projects.map((project) => this.summarize(uid, project)));
+    const visible = projects.filter((project) => {
+      if (archivedMode === "all") return true;
+      if (archivedMode === "only") return project.archivedAt !== undefined;
+      return project.archivedAt === undefined;
+    });
+    const summaries = await Promise.all(visible.map((project) => this.summarize(uid, project)));
     return { projects: summaries.sort((a, b) => b.updatedAt - a.updatedAt) };
   }
 
@@ -260,11 +423,19 @@ export class AcademicService {
   }
 
   async getProject(uid: string, projectId: string): Promise<AcademicProjectDetail> {
-    return this.projectDetail(uid, projectId);
+    return this.projectDetail(uid, projectId, true);
   }
 
-  async updateProject(uid: string, projectId: string, body: unknown): Promise<AcademicProjectDetail> {
+  async updateProject(
+    uid: string,
+    projectId: string,
+    body: unknown,
+    expectedUpdatedAt?: number,
+  ): Promise<AcademicProjectDetail> {
     const project = await this.requireProject(uid, projectId);
+    if (expectedUpdatedAt !== undefined && project.updatedAt !== expectedUpdatedAt) {
+      throw new AcademicError(409, "项目已被其他修改更新，请刷新后重试");
+    }
     const patch = this.parseProjectPatch(body);
     const updated = await this.deps.projects.update(uid, projectId, patch);
     if (!updated) throw new AcademicError(404, "项目不存在或无权访问");
@@ -280,12 +451,40 @@ export class AcademicService {
     return this.projectDetail(uid, projectId);
   }
 
-  async deleteProject(uid: string, projectId: string): Promise<{ deleted: true }> {
-    await this.requireProject(uid, projectId);
-    const removed = await this.deps.projects.remove(uid, projectId);
-    if (!removed) throw new AcademicError(404, "项目不存在或无权访问");
-    log.info("[ACADEMIC] project deleted project_id=%s", projectId);
-    return { deleted: true };
+  /** 移入回收站（软删除）；列表默认不再返回，可 restore 恢复。 */
+  async deleteProject(
+    uid: string,
+    projectId: string,
+  ): Promise<{ deleted: true; archived: true; archivedAt: number }> {
+    const project = await this.requireProject(uid, projectId, true);
+    const archivedAt = project.archivedAt ?? Date.now();
+    if (project.archivedAt === undefined) {
+      await this.deps.projects.setArchived(uid, projectId, archivedAt);
+      await this.appendEvent(uid, projectId, "project.archived", { archivedAt });
+    }
+    log.info("[ACADEMIC] project archived project_id=%s", projectId);
+    return { deleted: true, archived: true, archivedAt };
+  }
+
+  async restoreProject(uid: string, projectId: string): Promise<AcademicProjectDetail> {
+    const project = await this.requireProject(uid, projectId, true);
+    if (project.archivedAt !== undefined) {
+      await this.deps.projects.setArchived(uid, projectId, null);
+      await this.appendEvent(uid, projectId, "project.restored", {});
+    }
+    return this.projectDetail(uid, projectId);
+  }
+
+  /** 永久删除：先级联清理子数据，再删除项目行；未装配 purge 服务时 503。 */
+  async purgeProject(
+    uid: string,
+    projectId: string,
+  ): Promise<{ deleted: true; counts: Record<string, unknown> }> {
+    await this.requireProject(uid, projectId, true);
+    if (!this.deps.purge) throw new AcademicError(503, "项目永久删除服务未启用");
+    const result = await this.deps.purge.purge(uid, projectId);
+    log.info("[ACADEMIC] project purged project_id=%s", projectId);
+    return result;
   }
 
   // ---- literature ---------------------------------------------------------
@@ -406,7 +605,11 @@ export class AcademicService {
     const b = (body ?? {}) as { kind?: unknown; title?: unknown };
     const kind = parseDocumentKind(b.kind);
     const title = requireString(b.title, "title");
-    const document = await this.deps.documents.createDocument(uid, projectId, { kind, title, sections: defaultManuscriptSections() });
+    const document = await this.deps.documents.createDocument(uid, projectId, {
+      kind,
+      title,
+      sections: defaultSectionsForKind(kind),
+    });
     await this.appendEvent(uid, projectId, "manuscript.document_created", { documentId: document.id, kind, title });
     return { document };
   }
@@ -417,16 +620,24 @@ export class AcademicService {
     return { document };
   }
 
-  async saveSection(uid: string, documentId: string, body: unknown): Promise<{ document: AcademicDocument }> {
+  async saveSection(
+    uid: string,
+    documentId: string,
+    body: unknown,
+    expectedUpdatedAt?: number,
+  ): Promise<{ document: AcademicDocument }> {
     const b = (body ?? {}) as { key?: unknown; title?: unknown; content?: unknown; order?: unknown };
     const title = requireString(b.title, "title");
     const input: AcademicSectionInput = { title };
+    const existing = await this.deps.documents.getDocument(uid, documentId);
+    if (!existing) throw new AcademicError(404, "文档不存在或无权访问");
+    if (expectedUpdatedAt !== undefined && existing.updatedAt !== expectedUpdatedAt) {
+      throw new AcademicError(409, "文档已被其他修改更新，请刷新后重试");
+    }
     let sectionKey = typeof b.key === "string" && b.key.trim() ? b.key.trim().slice(0, 80) : undefined;
     if (!sectionKey) {
       // Match an existing heading by title so renaming keeps the same section
       // instead of creating a slug/hash twin (the tool's save semantics).
-      const existing = await this.deps.documents.getDocument(uid, documentId);
-      if (!existing) throw new AcademicError(404, "文档不存在或无权访问");
       sectionKey = existing.sections.find((section) => section.title.trim() === title)?.key;
     }
     if (sectionKey) input.key = sectionKey;
@@ -455,42 +666,155 @@ export class AcademicService {
     return { document };
   }
 
-  async exportDocument(uid: string, documentId: string, format: string | undefined): Promise<{ text: string; title: string }> {
+  /**
+   * Markdown/LaTeX export. The optional options.force is the explicit override
+   * for the integrity gate: an injected validation service must pass (or the
+   * caller must force) before any export text is produced.
+   */
+  /**
+   * Audit a submission (called by the /submit endpoint and the manuscript
+   * submit tool after the submission approval has been consumed).
+   */
+  async recordSubmission(
+    uid: string,
+    projectId: string,
+    documentId: string,
+    fileName: string,
+    approvalId?: string,
+  ): Promise<void> {
+    await this.requireProject(uid, projectId);
+    await this.appendEvent(uid, projectId, "manuscript.submitted", {
+      documentId,
+      fileName,
+      ...(approvalId ? { approvalId } : {}),
+    });
+  }
+
+  /** 项目备份：项目、文献、稿件、事件（审计导出）。 */
+  async exportProject(
+    uid: string,
+    projectId: string,
+  ): Promise<{
+    version: 1;
+    exportedAt: string;
+    project: AcademicProject;
+    literature: AcademicLiteratureEntry[];
+    documents: AcademicDocument[];
+    events: AcademicEvent[];
+  }> {
+    const project = await this.requireProject(uid, projectId);
+    const [literature, documents, events] = await Promise.all([
+      this.deps.literature.list(uid, projectId),
+      this.deps.documents.listDocuments(uid, projectId),
+      this.deps.events.listEvents(uid, projectId, 500),
+    ]);
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project,
+      literature,
+      documents,
+      events,
+    };
+  }
+
+  async exportDocument(
+    uid: string,
+    documentId: string,
+    format: string | undefined,
+    options: { force?: boolean } = {},
+  ): Promise<{ text: string; title: string }> {
     const { document } = await this.getDocument(uid, documentId);
     const kind = format ?? "markdown";
+    // Format check first: an unknown format is a 400 regardless of gate state.
+    if (kind !== "markdown" && kind !== "latex") throw new AcademicError(400, "format 仅支持 markdown / latex");
+    await this.assertExportValid(uid, document.projectId, documentId, kind, options.force === true);
     const sections = [...document.sections].sort((a, b) => a.order - b.order || a.key.localeCompare(b.key));
+    const project = await this.deps.projects.get(uid, document.projectId);
+    const entries = await this.deps.literature.list(uid, document.projectId);
+    const citationStyle = project?.citationStyle;
     if (kind === "latex") {
       const body = sections
         .map((section) => "\\section{" + escapeLatex(section.title) + "}\n" + escapeLatex(section.content) + "\n")
         .join("\n");
       const text = "\\documentclass[12pt]{article}\n\\usepackage{ctex}\n\\title{" + escapeLatex(document.title) + "}\n\\begin{document}\n\\maketitle\n" + body + "\\end{document}\n";
-      return { text, title: document.title };
+      return { text: appendLatexReferences(text, entries, citationStyle, escapeLatex), title: document.title };
     }
-    if (kind !== "markdown") throw new AcademicError(400, "format 仅支持 markdown / latex");
     const body = sections.map((section) => "## " + section.title + "\n\n" + (section.content.trim() || "（暂无正文）")).join("\n\n");
-    return { text: "# " + document.title + "\n\n" + body + "\n", title: document.title };
+    const markdown = "# " + document.title + "\n\n" + body + "\n";
+    return { text: appendMarkdownReferences(markdown, entries, citationStyle), title: document.title };
+  }
+
+  // ---- exports ------------------------------------------------------------
+
+  /**
+   * Integrity gate for text exports: an injected validation service must pass,
+   * otherwise the export is a 409 carrying the Chinese failure list. force is
+   * the explicit override and leaves an export.forced audit event behind, so a
+   * forced export can always be told apart from a clean one.
+   */
+  private async assertExportValid(
+    uid: string,
+    projectId: string,
+    documentId: string,
+    format: string,
+    force: boolean,
+  ): Promise<void> {
+    const validation = this.deps.validation;
+    if (!validation) return;
+    const report = await validation.validate(uid, projectId, documentId);
+    if (report.pass) return;
+    if (!force) {
+      throw new AcademicError(
+        409,
+        "导出被拒绝：学术校验未通过，未生成导出内容。\n" +
+          describeValidationFailures(report) +
+          "\n请先修正以上问题；如确需强制导出，请传 force=true（会写入 export.forced 审计事件）。",
+      );
+    }
+    await this.appendEvent(uid, projectId, "export.forced", {
+      documentId,
+      format,
+      missing: report.citations.missing,
+      unverified: report.citations.unverified,
+      invalidRefs: report.runs.invalidRefs,
+      withoutEvidenceRef: report.results.withoutEvidenceRef,
+      unreproducible: report.runs.unreproducible,
+    });
   }
 
   // ---- events -------------------------------------------------------------
 
   async listEvents(uid: string, projectId: string, query: unknown): Promise<{ events: AcademicEvent[] }> {
     await this.requireProject(uid, projectId);
-    const q = (query ?? {}) as { limit?: unknown };
+    const q = (query ?? {}) as { limit?: unknown; offset?: unknown };
     const limit = parseLimit(q.limit, DEFAULT_EVENT_LIMIT, 50);
-    return { events: await this.deps.events.listEvents(uid, projectId, limit) };
+    const offset = parseOffset(q.offset);
+    return { events: await this.deps.events.listEvents(uid, projectId, limit, offset) };
   }
 
   // ---- internals ----------------------------------------------------------
 
-  private async requireProject(uid: string, projectId: string): Promise<AcademicProject> {
+  private async requireProject(
+    uid: string,
+    projectId: string,
+    allowArchived = false,
+  ): Promise<AcademicProject> {
     const id = requireString(projectId, "projectId", 64);
     const project = await this.deps.projects.get(uid, id);
     if (!project) throw new AcademicError(404, "项目不存在或无权访问");
+    if (!allowArchived && project.archivedAt !== undefined) {
+      throw new AcademicError(404, "项目已在回收站，请先恢复后再操作");
+    }
     return project;
   }
 
-  private async projectDetail(uid: string, projectId: string): Promise<AcademicProjectDetail> {
-    const project = await this.requireProject(uid, projectId);
+  private async projectDetail(
+    uid: string,
+    projectId: string,
+    allowArchived = false,
+  ): Promise<AcademicProjectDetail> {
+    const project = await this.requireProject(uid, projectId, allowArchived);
     const [literatureCount, documentCount, events] = await Promise.all([
       this.deps.literature.count(uid, projectId),
       this.deps.documents.countDocuments(uid, projectId),
@@ -520,13 +844,24 @@ export class AcademicService {
       field: project.field,
       stage: project.stage,
       stages: project.stages,
+      autoMode: project.autoMode ?? "off",
+      language: project.language ?? "zh",
+      citationStyle: project.citationStyle ?? "plain",
       literatureCount,
       documentCount,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     };
+    if (project.archivedAt !== undefined) summary.archivedAt = project.archivedAt;
     if (project.targetJournal) summary.targetJournal = project.targetJournal;
     if (project.deadline) summary.deadline = project.deadline;
+    if (project.researchQuestion) summary.researchQuestion = project.researchQuestion;
+    if (project.objectives && project.objectives.length > 0) summary.objectives = project.objectives;
+    if (project.keywords && project.keywords.length > 0) summary.keywords = project.keywords;
+    if (project.contributions && project.contributions.length > 0) summary.contributions = project.contributions;
+    if (project.methodology) summary.methodology = project.methodology;
+    if (project.ethicsNote) summary.ethicsNote = project.ethicsNote;
+    if (project.venueRequirements) summary.venueRequirements = project.venueRequirements;
     return summary;
   }
 
@@ -541,6 +876,26 @@ export class AcademicService {
     if (journal) input.targetJournal = journal;
     const deadline = parseDeadline(b.deadline);
     if (deadline) input.deadline = deadline;
+    const autoMode = parseAutoMode(b.autoMode);
+    if (autoMode) input.autoMode = autoMode;
+    const researchQuestion = optionalString(b.researchQuestion, "researchQuestion", 2000);
+    if (researchQuestion) input.researchQuestion = researchQuestion;
+    const objectives = optionalStringArray(b.objectives, "objectives", 10, 500);
+    if (objectives && objectives.length > 0) input.objectives = objectives;
+    const keywords = optionalStringArray(b.keywords, "keywords", 20, 50);
+    if (keywords && keywords.length > 0) input.keywords = keywords;
+    const contributions = optionalStringArray(b.contributions, "contributions", 10, 500);
+    if (contributions && contributions.length > 0) input.contributions = contributions;
+    const methodology = optionalString(b.methodology, "methodology", 4000);
+    if (methodology) input.methodology = methodology;
+    const ethicsNote = optionalString(b.ethicsNote, "ethicsNote", 4000);
+    if (ethicsNote) input.ethicsNote = ethicsNote;
+    const venueRequirements = optionalString(b.venueRequirements, "venueRequirements", 4000);
+    if (venueRequirements) input.venueRequirements = venueRequirements;
+    const language = parseLanguage(b.language);
+    if (language) input.language = language;
+    const citationStyle = parseCitationStyle(b.citationStyle);
+    if (citationStyle) input.citationStyle = citationStyle;
     return input;
   }
 
@@ -554,6 +909,19 @@ export class AcademicService {
     if (b.targetJournal !== undefined) patch.targetJournal = optionalString(b.targetJournal, "targetJournal", 120) ?? "";
     const deadline = parseDeadline(b.deadline);
     if (deadline) patch.deadline = deadline;
+    const autoMode = parseAutoMode(b.autoMode);
+    if (autoMode) patch.autoMode = autoMode;
+    if (b.researchQuestion !== undefined) patch.researchQuestion = optionalString(b.researchQuestion, "researchQuestion", 2000) ?? "";
+    if (b.objectives !== undefined) patch.objectives = optionalStringArray(b.objectives, "objectives", 10, 500) ?? [];
+    if (b.keywords !== undefined) patch.keywords = optionalStringArray(b.keywords, "keywords", 20, 50) ?? [];
+    if (b.contributions !== undefined) patch.contributions = optionalStringArray(b.contributions, "contributions", 10, 500) ?? [];
+    if (b.methodology !== undefined) patch.methodology = optionalString(b.methodology, "methodology", 4000) ?? "";
+    if (b.ethicsNote !== undefined) patch.ethicsNote = optionalString(b.ethicsNote, "ethicsNote", 4000) ?? "";
+    if (b.venueRequirements !== undefined) patch.venueRequirements = optionalString(b.venueRequirements, "venueRequirements", 4000) ?? "";
+    const language = parseLanguage(b.language);
+    if (language) patch.language = language;
+    const citationStyle = parseCitationStyle(b.citationStyle);
+    if (citationStyle) patch.citationStyle = citationStyle;
     if (b.stage !== undefined) patch.stage = parseStage(b.stage);
 
     if (b.stages !== undefined) {
@@ -579,11 +947,19 @@ export class AcademicService {
         if (!Array.isArray(raw)) throw new AcademicError(400, "plans." + key + " 必须是数组");
         plans[stage] = raw.map((item, index) => {
           const task = (item ?? {}) as Record<string, unknown>;
+          const field = "plans." + key + "[" + index + "]";
+          // autoRule/doneSource round-trip through PATCH (the UI re-sends whole
+          // plan arrays when ticking a checkbox), so the evaluator never loses a
+          // configured rule just because a task was toggled.
+          const autoRule = parseAutoRule(task.autoRule, field + ".autoRule");
+          const doneSource = parseDoneSource(task.doneSource, field + ".doneSource");
           return {
             id: typeof task.id === "string" && task.id ? task.id : stage + "-" + (index + 1) + "-" + Date.now().toString(36),
-            title: requireString(task.title, "plans." + key + "[" + index + "].title", 200),
+            title: requireString(task.title, field + ".title", 200),
             done: task.done === true,
             ...(typeof task.note === "string" && task.note.trim() ? { note: task.note.trim().slice(0, 500) } : {}),
+            ...(autoRule !== undefined ? { autoRule } : {}),
+            ...(doneSource !== undefined ? { doneSource } : {}),
           };
         });
       }
@@ -622,8 +998,56 @@ export class AcademicService {
     if (url) input.url = url;
     const abstract = optionalString(b.abstract, "abstract", 20_000);
     if (abstract) input.abstract = abstract;
+    const tags = optionalStringArray(b.tags, "tags", 20, 40);
+    if (tags && tags.length > 0) input.tags = tags;
+    const notes = optionalString(b.notes, "notes", 20_000);
+    if (notes) input.notes = notes;
+    const readingStatus = parseReadingStatus(b.readingStatus);
+    if (readingStatus) input.readingStatus = readingStatus;
+    const keywords = optionalStringArray(b.keywords, "keywords", 20, 50);
+    if (keywords && keywords.length > 0) input.keywords = keywords;
     input.source = "manual";
     return input;
+  }
+
+  /** PATCH literature metadata (tags/notes/readingStatus/keywords). */
+  async updateLiterature(
+    uid: string,
+    projectId: string,
+    ref: string,
+    body: unknown,
+  ): Promise<{ entry: AcademicLiteratureEntry }> {
+    await this.requireProject(uid, projectId);
+    const trimmed = requireString(ref, "ref", 300);
+    const entry =
+      (await this.deps.literature.get(uid, projectId, trimmed)) ??
+      (await this.deps.literature.findByDoi(uid, projectId, trimmed));
+    if (!entry) throw new AcademicError(404, "文献不存在或无权访问");
+    const patch = this.parseLiteraturePatch(body);
+    const updated = await this.deps.literature.update(uid, projectId, entry.id, patch);
+    if (!updated) throw new AcademicError(404, "文献不存在或无权访问");
+    await this.appendEvent(uid, projectId, "literature.updated", {
+      citeKey: updated.citeKey,
+      fields: Object.keys(patch),
+    });
+    return { entry: updated };
+  }
+
+  private parseLiteraturePatch(body: unknown): AcademicLiteraturePatch {
+    const b = (body ?? {}) as Record<string, unknown>;
+    const patch: AcademicLiteraturePatch = {};
+    if (b.tags !== undefined) patch.tags = optionalStringArray(b.tags, "tags", 20, 40) ?? [];
+    if (b.notes !== undefined) patch.notes = optionalString(b.notes, "notes", 20_000) ?? "";
+    if (b.readingStatus !== undefined) {
+      const status = parseReadingStatus(b.readingStatus);
+      if (!status) throw new AcademicError(400, "readingStatus 不合法（可选：" + ACADEMIC_READING_STATUSES.join(" / ") + "）");
+      patch.readingStatus = status;
+    }
+    if (b.keywords !== undefined) patch.keywords = optionalStringArray(b.keywords, "keywords", 20, 50) ?? [];
+    if (Object.keys(patch).length === 0) {
+      throw new AcademicError(400, "没有可更新的字段（支持 tags / notes / readingStatus / keywords）");
+    }
+    return patch;
   }
 
   private async appendEvent(

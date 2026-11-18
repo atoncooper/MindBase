@@ -26,6 +26,12 @@ export type AcademicStage =
 /** 阶段状态机：locked → active → submitted → approved → frozen（rework 回 active）。 */
 export type AcademicStageStatus = "locked" | "active" | "submitted" | "approved" | "frozen";
 
+/**
+ * 项目自动模式：off=全手动；assist=带 autoRule 的计划任务可自动打勾但不自动推进；
+ * auto=门禁就绪时自动把当前阶段置为「待确认」并推进下一阶段。approved 永远人工。
+ */
+export type AcademicAutoMode = "off" | "assist" | "auto";
+
 /** 成果类型：期刊论文 / 学位论文 / 基金申请。 */
 export type AcademicPaperType = "journal" | "thesis" | "fund";
 
@@ -69,16 +75,39 @@ export interface AcademicStageState {
     note?: string;
 }
 
-/** 每个阶段的执行计划任务（agent 起草、用户勾选）。 */
+/** 计划任务的自动打勾规则事件（后端 gate 服务按交付物求值）。 */
+export type AcademicAutoRuleEvent =
+    | "manuscript.section_saved"
+    | "academic.run_recorded"
+    | "literature.verified"
+    | "validation.passed";
+
+/** 自动打勾规则：sectionKey 限定章节；minRuns 限定运行/文献核验数量。 */
+export interface AcademicAutoRule {
+    event: AcademicAutoRuleEvent;
+    match?: { sectionKey?: string; minRuns?: number };
+}
+
+/** 计划任务完成来源：用户 / 事件（autoRule）/ agent。 */
+export type AcademicPlanTaskDoneSource = "user" | "event" | "agent";
+
+/** 每个阶段的执行计划任务（agent 起草、用户勾选；可带 autoRule 自动打勾）。 */
 export interface AcademicPlanTask {
     id: string;
     title: string;
     done: boolean;
     note?: string;
+    autoRule?: AcademicAutoRule;
+    doneSource?: AcademicPlanTaskDoneSource;
 }
+
+/** 引用风格。 */
+export type AcademicCitationStyle = "plain" | "apa" | "ieee" | "gb7714";
 
 /** 项目列表项 / 详情中的项目摘要。 */
 export interface AcademicProjectSummary {
+    /** 回收站时间戳；存在表示项目已在回收站。 */
+    archivedAt?: number;
     id: string;
     title: string;
     paperType: AcademicPaperType;
@@ -86,8 +115,20 @@ export interface AcademicProjectSummary {
     targetJournal?: string;
     /** YYYY-MM-DD */
     deadline?: string;
+    /** 项目元数据 */
+    researchQuestion?: string;
+    objectives?: string[];
+    keywords?: string[];
+    contributions?: string[];
+    methodology?: string;
+    ethicsNote?: string;
+    venueRequirements?: string;
+    language?: "zh" | "en";
+    citationStyle?: AcademicCitationStyle;
     stage: AcademicStage;
     stages: Record<AcademicStage, AcademicStageState>;
+    /** 自动模式；旧后端/旧项目缺省按 off 处理 */
+    autoMode?: AcademicAutoMode;
     literatureCount: number;
     documentCount: number;
     createdAt: number;
@@ -112,6 +153,49 @@ export interface AcademicProjectDetail {
 }
 
 // ---------------------------------------------------------------------------
+// 阶段门禁 + 自动语义
+// ---------------------------------------------------------------------------
+
+/** 单个阶段的交付物门禁结果：ready=false 时 missing 是中文缺口清单。 */
+export interface AcademicStageGate {
+    stage: AcademicStage;
+    status: AcademicStageStatus;
+    ready: boolean;
+    missing: string[];
+    doneCount: number;
+    taskCount: number;
+}
+
+/** GET /academic/projects/:id/gates 响应（只读，不写库）。 */
+export interface AcademicStageGateReport {
+    /** 当前阶段 */
+    stage: AcademicStage;
+    report: AcademicStageGate[];
+}
+
+/** 一次自动同步中被打勾的计划任务。 */
+export interface AcademicGatePlanChange {
+    stage: AcademicStage;
+    id: string;
+    title: string;
+}
+
+/** 自动推进结果：advanced=false 时 reason 说明原因。 */
+export interface AcademicGateAdvance {
+    advanced: boolean;
+    from?: AcademicStage;
+    to?: AcademicStage;
+    reason?: string;
+}
+
+/** POST /academic/projects/:id/gates/sync 响应（自动打勾 + 可能的自动推进）。 */
+export interface AcademicGateSyncResult {
+    sync: AcademicGatePlanChange[];
+    advanced: AcademicGateAdvance;
+    report: AcademicStageGate[];
+}
+
+// ---------------------------------------------------------------------------
 // 文献库
 // ---------------------------------------------------------------------------
 
@@ -126,6 +210,10 @@ export interface AcademicLiteratureEntry {
     doi?: string;
     url?: string;
     abstract?: string;
+    tags?: string[];
+    notes?: string;
+    readingStatus?: "unread" | "reading" | "read";
+    keywords?: string[];
     source: string;
     verified: boolean;
     verifiedAt?: number;
@@ -322,8 +410,29 @@ export interface AcademicEvidencePage {
 export interface AcademicValidationReport {
     pass: boolean;
     citations: { total: number; missing: string[]; unverified: string[] };
-    runs: { total: number; unreproducible: string[] };
+    /** invalidRefs = 正文 [[run:id]] 指向不存在或未成功的运行（会阻断导出）。 */
+    runs: { total: number; unreproducible: string[]; invalidRefs: string[] };
     results: { sections: string[]; withoutEvidenceRef: string[] };
+    /** 仅提示字段：正文含数字的章节 / 其中未带 run 证据的章节（不参与 pass）。 */
+    sectionsWithNumbers: string[];
+    sectionsMissingRunRef: string[];
+    /** 数字-证据匹配（仅结果章节，不参与 pass）。 */
+    numbers: {
+        total: number;
+        matched: number;
+        unmatched: Array<{ section: string; value: string }>;
+    };
+    /** 表格证据（不参与 pass）。 */
+    tables: {
+        sections: string[];
+        withoutEvidence: string[];
+    };
+}
+
+/** 多 run 对比的图表数据（按指标名做系列）。 */
+export interface AcademicAnalysisChart {
+    categories: string[];
+    series: Array<{ name: string; values: number[] }>;
 }
 
 /** 生成结果表的返回：Markdown 正文 + 尽力上传的云盘位置。 */
@@ -331,6 +440,8 @@ export interface AcademicAnalysisResult {
     markdown: string;
     uploadUuid?: string;
     folderId?: number;
+    /** mode=compare 时返回的图表数据。 */
+    chart?: AcademicAnalysisChart;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +551,14 @@ export interface AcademicProjectFiles {
 // DAG 计划历史（plan_and_run）
 // ---------------------------------------------------------------------------
 
-export type AcademicPlanRunStatus = "pending" | "running" | "completed" | "failed" | "partial";
+export type AcademicPlanRunStatus =
+    | "pending"
+    | "running"
+    | "paused"
+    | "cancelled"
+    | "completed"
+    | "failed"
+    | "partial";
 
 export interface AcademicPlanRunNodeCounts {
     total: number;
@@ -510,6 +628,15 @@ export interface AcademicProjectCreateInput {
     targetJournal?: string;
     /** YYYY-MM-DD */
     deadline?: string;
+    researchQuestion?: string;
+    objectives?: string[];
+    keywords?: string[];
+    contributions?: string[];
+    methodology?: string;
+    ethicsNote?: string;
+    venueRequirements?: string;
+    language?: "zh" | "en";
+    citationStyle?: AcademicCitationStyle;
 }
 
 /** 阶段状态补丁：只传要改的字段（updatedAt 由后端补）。 */
@@ -526,10 +653,21 @@ export interface AcademicProjectPatchInput {
     field?: string;
     targetJournal?: string;
     deadline?: string;
+    researchQuestion?: string;
+    objectives?: string[];
+    keywords?: string[];
+    contributions?: string[];
+    methodology?: string;
+    ethicsNote?: string;
+    venueRequirements?: string;
+    language?: "zh" | "en";
+    citationStyle?: AcademicCitationStyle;
     stage?: AcademicStage;
     stages?: Partial<Record<AcademicStage, AcademicStageStatePatch>>;
     plans?: Partial<Record<AcademicStage, AcademicPlanTask[]>>;
     advice?: Partial<Record<AcademicStage, string>>;
+    /** 自动模式（off/assist/auto） */
+    autoMode?: AcademicAutoMode;
 }
 
 /** 手工入库载荷（元数据只能来自检索结果或用户输入）。 */
@@ -541,6 +679,59 @@ export interface AcademicLiteratureInput {
     doi?: string;
     url?: string;
     abstract?: string;
+    tags?: string[];
+    notes?: string;
+    readingStatus?: "unread" | "reading" | "read";
+    keywords?: string[];
+}
+
+/** PATCH 文献元数据载荷（身份字段不可改）。 */
+export interface AcademicLiteraturePatchInput {
+    tags?: string[];
+    notes?: string;
+    readingStatus?: "unread" | "reading" | "read";
+    keywords?: string[];
+}
+
+/** 研究顾问的下一步建议。 */
+export interface AcademicResearchSuggestion {
+    id: string;
+    title: string;
+    reason: string;
+    action: string;
+    severity: "blocker" | "warning" | "info";
+}
+
+export interface AcademicResearchAdvice {
+    stage: AcademicStage;
+    suggestions: AcademicResearchSuggestion[];
+}
+
+/** 项目自动推进（Autopilot）。 */
+export type AcademicAutopilotMode = "off" | "assist" | "auto";
+
+export interface AcademicAutopilotSetting {
+    projectId: string;
+    mode: AcademicAutopilotMode;
+    maxActionsPerDay: number;
+    actionsToday: number;
+    day: string;
+    stoppedAt?: number;
+    lastTickAt?: number;
+    lastResult?: string;
+    updatedAt: number;
+}
+
+/** 站内通知。 */
+export interface AcademicNotification {
+    id: string;
+    projectId: string;
+    type: "approval" | "experiment" | "validation" | "plan" | "system";
+    title: string;
+    body?: string;
+    link?: string;
+    readAt?: number;
+    createdAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -573,6 +764,39 @@ function documentPath(documentId: string, suffix = ""): string {
     return `/academic/documents/${seg(documentId)}${suffix}`;
 }
 
+/** 章节保存（POST .../sections）：body { key?, title, content? }。 */
+function saveSectionRequest(documentId: string, input: AcademicSectionInput) {
+    return request<{ document: AcademicDocument }>(documentPath(documentId, "/sections"), {
+        method: "POST",
+        headers: { ...getAuthHeaders(), ...JSON_HEADERS },
+        body: JSON.stringify(input),
+    });
+}
+
+/**
+ * 下载二进制响应（Word / 投稿包）：带鉴权头，非 2xx 解析后端 { detail } 抛出；
+ * 网关 HTML 错误页回落到兜底文案。
+ */
+async function downloadBlob(
+    endpoint: string,
+    fallback: { notFound: string; message: string },
+): Promise<Blob> {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        headers: { ...getAuthHeaders(), "X-Requested-With": "XMLHttpRequest" },
+    });
+    if (!response.ok) {
+        let detail = "";
+        try {
+            const parsed = (await response.json()) as { detail?: unknown };
+            if (typeof parsed.detail === "string" && parsed.detail) detail = parsed.detail;
+        } catch {
+            // 非 JSON（网关 HTML 错误页）→ 走通用提示
+        }
+        throw new Error(detail || (response.status === 404 ? fallback.notFound : fallback.message));
+    }
+    return response.blob();
+}
+
 // ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
@@ -601,10 +825,11 @@ export const academicApi = {
         }),
 
     // ---- 项目 ----
-    listProjects: () =>
-        request<{ projects: AcademicProjectSummary[] }>("/academic/projects", {
-            headers: getAuthHeaders(),
-        }),
+    listProjects: (options: { archived?: "only" | "all" } = {}) =>
+        request<{ projects: AcademicProjectSummary[] }>(
+            `/academic/projects${options.archived ? `?archived=${options.archived}` : ""}`,
+            { headers: getAuthHeaders() },
+        ),
 
     createProject: (body: AcademicProjectCreateInput) =>
         request<AcademicProjectDetail>("/academic/projects", {
@@ -625,9 +850,45 @@ export const academicApi = {
             body: JSON.stringify(patch),
         }),
 
+    /** 移入回收站（软删除）。 */
     deleteProject: (projectId: string) =>
-        request<{ deleted: boolean }>(projectPath(projectId), {
+        request<{ deleted: boolean; archived: boolean; archivedAt: number }>(projectPath(projectId), {
             method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    restoreProject: (projectId: string) =>
+        request<import("./academic").AcademicProjectDetail>(projectPath(projectId, "/restore"), {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    /** 永久删除：级联清理子数据（回收站内操作）。 */
+    purgeProject: (projectId: string) =>
+        request<{ deleted: boolean; counts: Record<string, unknown> }>(projectPath(projectId, "/purge"), {
+            method: "DELETE",
+            headers: getAuthHeaders(),
+        }),
+
+    /** 阶段门禁 checklist（只读，不会写库；门禁服务未启用时后端 503）。 */
+    getProjectGates: (projectId: string) =>
+        request<AcademicStageGateReport>(projectPath(projectId, "/gates"), {
+            headers: getAuthHeaders(),
+        }),
+
+    /**
+     * 同步进度：按 autoRule 自动打勾计划任务；autoMode=auto 且当前阶段门禁就绪时
+     * 自动推进一个阶段（当前→待确认、下一阶段→进行中）。approved 仍需人工。
+     */
+    syncProjectGates: (projectId: string) =>
+        request<AcademicGateSyncResult>(projectPath(projectId, "/gates/sync"), {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    /** 研究顾问：规则化「下一步建议」（不调用 LLM，不编造）。 */
+    getNextActions: (projectId: string) =>
+        request<AcademicResearchAdvice>(projectPath(projectId, "/next-actions"), {
             headers: getAuthHeaders(),
         }),
 
@@ -651,6 +912,14 @@ export const academicApi = {
             method: "POST",
             headers: { ...getAuthHeaders(), ...JSON_HEADERS },
             body: JSON.stringify({}),
+        }),
+
+    /** 更新文献元数据（tags/notes/readingStatus/keywords；身份字段不可改）。 */
+    updateLiterature: (projectId: string, ref: string, patch: AcademicLiteraturePatchInput) =>
+        request<{ entry: AcademicLiteratureEntry }>(projectPath(projectId, `/literature/${seg(ref)}`), {
+            method: "PATCH",
+            headers: { ...getAuthHeaders(), ...JSON_HEADERS },
+            body: JSON.stringify(patch),
         }),
 
     /** ref = 文献 id / citeKey / DOI */
@@ -693,13 +962,10 @@ export const academicApi = {
             headers: getAuthHeaders(),
         }),
 
-    /** 按 key 或标题 upsert 章节（key 省略时后端按标题派生）。 */
-    upsertSection: (documentId: string, input: AcademicSectionInput) =>
-        request<{ document: AcademicDocument }>(documentPath(documentId, "/sections"), {
-            method: "POST",
-            headers: { ...getAuthHeaders(), ...JSON_HEADERS },
-            body: JSON.stringify(input),
-        }),
+    /** 保存/更新章节（body { key, title, content }；key 省略时后端按标题匹配）。 */
+    saveSection: saveSectionRequest,
+    /** 旧名，与 saveSection 等价（保留兼容）。 */
+    upsertSection: saveSectionRequest,
 
     deleteSection: (documentId: string, sectionKey: string) =>
         request<{ document: AcademicDocument }>(
@@ -752,24 +1018,28 @@ export const academicApi = {
         ),
 
     /** 导出 Word 二进制（直接下载，不落云盘）；失败时解析后端 { detail }。 */
-    downloadDocumentDocx: async (documentId: string): Promise<Blob> => {
-        const response = await fetch(`${API_BASE_URL}${documentPath(documentId, "/export/docx")}`, {
-            headers: { ...getAuthHeaders(), "X-Requested-With": "XMLHttpRequest" },
-        });
-        if (!response.ok) {
-            let detail = "";
-            try {
-                const parsed = (await response.json()) as { detail?: unknown };
-                if (typeof parsed.detail === "string" && parsed.detail) detail = parsed.detail;
-            } catch {
-                // 非 JSON（网关 HTML 错误页）→ 走通用提示
-            }
-            throw new Error(
-                detail || (response.status === 404 ? "文档不存在或无权访问" : "导出 Word 失败"),
-            );
-        }
-        return response.blob();
-    },
+    downloadDocumentDocx: (documentId: string): Promise<Blob> =>
+        downloadBlob(documentPath(documentId, "/export/docx"), {
+            notFound: "文档不存在或无权访问",
+            message: "导出 Word 失败",
+        }),
+
+    /**
+     * 下载投稿包（zip）：后端先校验稿件并通过投稿审批，未通过返回 409/422，
+     * 服务未启用返回 503；错误体 { detail } 原样交给调用方展示。
+     */
+    /** 项目备份（项目/文献/稿件/事件审计导出）。 */
+    downloadProjectBackup: (projectId: string): Promise<Blob> =>
+        downloadBlob(projectPath(projectId, "/export"), {
+            notFound: "项目不存在或无权访问",
+            message: "导出项目备份失败",
+        }),
+
+    downloadSubmissionPackage: (documentId: string): Promise<Blob> =>
+        downloadBlob(documentPath(documentId, "/package"), {
+            notFound: "文档不存在或无权访问",
+            message: "下载投稿包失败",
+        }),
 
     /** 生成 Word 并回存到项目云盘 05_论文，返回云盘文件信息（同时更新 lastExport）。 */
     saveDocumentDocx: (documentId: string) =>
@@ -814,8 +1084,11 @@ export const academicApi = {
         }),
 
     // ---- 分析 ----
-    /** 生成结果表 Markdown；会尽力上传到 04_结果/results_summary.md。 */
-    generateResults: (projectId: string, body: { documentId?: string } = {}) =>
+    /** 生成结果表/多 run 对比；summary 写 results_summary.md，compare 写 results_comparison.md。 */
+    generateResults: (
+        projectId: string,
+        body: { documentId?: string; mode?: "summary" | "compare"; runIds?: string[] } = {},
+    ) =>
         request<AcademicAnalysisResult>(projectPath(projectId, "/analysis/results"), {
             method: "POST",
             headers: { ...getAuthHeaders(), ...JSON_HEADERS },
@@ -860,10 +1133,91 @@ export const academicApi = {
             headers: getAuthHeaders(),
         }),
 
+    /** 提交稿件：要求校验通过且消耗一次已批准的 submission 审批（一次一用）。 */
+    submitDocument: (documentId: string) =>
+        request<{
+            submitted: boolean;
+            documentId: string;
+            approvalId: string;
+            file: { uploadUuid: string; fileName: string; folderId: number; createdAt: number };
+        }>(`/academic/documents/${seg(documentId)}/submit`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    /** 取消 running/paused 的计划运行。 */
+    cancelPlanRun: (runId: string) =>
+        request<{ runId: string; cancelled: boolean }>(`/chat/plans/${seg(runId)}/cancel`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    /** 恢复 paused/failed 的计划运行；仍在审批门禁时返回 paused=true。 */
+    resumePlanRun: (runId: string) =>
+        request<{
+            runId: string;
+            ok: boolean;
+            paused?: boolean;
+            approvalId?: string;
+            failed: string[];
+            skipped: string[];
+            outputs: Record<string, string>;
+        }>(`/chat/plans/${seg(runId)}/resume`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
     // ---- 动态 ----
-    listEvents: (projectId: string, limit = 50) =>
+    /** SSE 事件流地址（EventSource 使用；同源 cookie 认证）。 */
+    eventsStreamUrl: (projectId: string): string =>
+        `${API_BASE_URL}/academic/projects/${seg(projectId)}/events/stream`,
+
+    listEvents: (projectId: string, limit = 50, offset = 0) =>
         request<{ events: AcademicEventRecord[] }>(
-            projectPath(projectId, `/events${query({ limit })}`),
+            projectPath(projectId, `/events${query({ limit, offset })}`),
             { headers: getAuthHeaders() },
         ),
+
+    // ---- 项目自动推进（Autopilot） ----
+    getAutopilot: (projectId: string) =>
+        request<AcademicAutopilotSetting>(projectPath(projectId, "/autopilot"), {
+            headers: getAuthHeaders(),
+        }),
+    patchAutopilot: (
+        projectId: string,
+        patch: { mode?: AcademicAutopilotMode; maxActionsPerDay?: number; stopped?: boolean },
+    ) =>
+        request<AcademicAutopilotSetting>(projectPath(projectId, "/autopilot"), {
+            method: "PATCH",
+            headers: { ...getAuthHeaders(), ...JSON_HEADERS },
+            body: JSON.stringify(patch),
+        }),
+    tickAutopilot: (projectId: string) =>
+        request<Record<string, unknown>>(projectPath(projectId, "/autopilot/tick"), {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+    stopAutopilot: (projectId: string) =>
+        request<AcademicAutopilotSetting>(projectPath(projectId, "/autopilot/stop"), {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+    resumeAutopilot: (projectId: string) =>
+        request<AcademicAutopilotSetting>(projectPath(projectId, "/autopilot/resume"), {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
+
+    // ---- 站内通知 ----
+    listNotifications: (limit = 20, unreadOnly = false) =>
+        request<{ notifications: AcademicNotification[]; unreadCount: number }>(
+            `/academic/notifications${query({ limit, ...(unreadOnly ? { unread: 1 } : {}) })}`,
+            { headers: getAuthHeaders() },
+        ),
+
+    markNotificationRead: (id: string) =>
+        request<{ read: boolean }>(`/academic/notifications/${seg(id)}/read`, {
+            method: "POST",
+            headers: getAuthHeaders(),
+        }),
 };

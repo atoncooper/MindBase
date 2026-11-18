@@ -2,7 +2,7 @@ import { createReactAgent } from "../react.js";
 import { agentEntry } from "../manifest.js";
 import type { PromptRegistry } from "../prompts/loader.js";
 import type { AgentContextBinding } from "../react.js";
-import type { AgentRuntime } from "../../tools/runtime.js";
+import type { AgentRuntime } from "../runtime.js";
 
 /** Note agent: organizes markdown notes and persists them via save_note (sub-agent invoked via delegate_to_agent). */
 export function createNoteAgent(runtime: AgentRuntime, prompts: PromptRegistry, context?: AgentContextBinding) {

@@ -3,7 +3,7 @@ import type { ChatSessionRepository, MessageRepository } from "../../../reposito
 import type { ChatImageStorage } from "../../../repository/chat-images.js";
 import type { SessionDocumentRepository } from "../../../repository/session-docs.js";
 import { ChatSessionsService, ChatSessionsError } from "../../../services/chat-sessions.js";
-import { parseAcademicContext } from "../../../services/academic-context.js";
+import { parseAcademicContext } from "../../../services/research/academic-context.js";
 import { getRequestContext } from "../../../context/request-context.js";
 
 /**

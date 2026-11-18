@@ -4,6 +4,7 @@ import type { Artifact } from "../../context/types.js";
 import { buildFileArtifact } from "../../artifacts/file.js";
 import { DOCX_MIME } from "../../doc-parser/docx.js";
 import type { CodeExecutionPort, CodeExecutionResult } from "./code-execution.js";
+import type { ResearchExecutionGuard } from "./execution-guard.js";
 
 /**
  * run_code: executes code in the sandbox .
@@ -80,7 +81,7 @@ function fileArtifactsOf(res: CodeExecutionResult): Artifact[] {
   return artifacts;
 }
 
-export function createRunCodeTool(exec: CodeExecutionPort) {
+export function createRunCodeTool(exec: CodeExecutionPort, guard?: ResearchExecutionGuard) {
   return defineTool({
     name: "run_code",
     description:
@@ -91,6 +92,11 @@ export function createRunCodeTool(exec: CodeExecutionPort) {
       timeoutMs: z.number().int().positive().optional().describe("超时毫秒，默认 10000"),
     }),
     async execute(args, ctx, signal) {
+      // Research project chats require an approved experiment first ().
+      if (guard) {
+        const blocked = await guard(ctx);
+        if (blocked) return blocked;
+      }
       const res = await exec.run(
         {
           language: args.language,

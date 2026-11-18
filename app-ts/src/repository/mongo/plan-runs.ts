@@ -73,4 +73,9 @@ export class MongoPlanRunRepository implements PlanRunRepository {
     // (one PlanRunner per run) writes, so a plain replace is sufficient here.
     await this.runs.updateOne({ runId: run.runId }, { $set: run }, { upsert: true });
   }
+
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    const result = await this.runs.deleteMany({ uid, projectId });
+    return result.deletedCount;
+  }
 }

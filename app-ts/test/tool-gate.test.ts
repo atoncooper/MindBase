@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { Semaphore } from "../src/tools/concurrency.js";
-import { AgentRuntime } from "../src/tools/runtime.js";
+import { Semaphore } from "../src/utils/concurrency.js";
+import { AgentRuntime } from "../src/agent/runtime.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { defineTool } from "../src/tools/base.js";
 import { ResultCollector } from "../src/context/types.js";

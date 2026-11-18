@@ -313,13 +313,12 @@ tools:
 agent:
   maxSteps: 10
   # 按 agent 覆盖 ReAct 步数（未列出的用 maxSteps）；对齐桌面端：note 5 / code 4 /
-  # quiz 12 / board 6 / academic 12（写作与批量导入需要更多轮次）
+  # quiz 12 / board 6。学术能力已并入 main agent，不再有 academic 子 agent。
   maxStepsByAgent:
     note: 5
     code: 4
     quiz: 12
     board: 6
-    academic: 12
   routingTimeoutMs: 3000
   circuitFailureThreshold: 3
   circuitCooldownMs: 30000
@@ -428,6 +427,10 @@ quota:
     board:       { free: 20,  vip: 100, svip: 300 }   # Board AI 补全（次/日；/chat/board/complete peek+consume）
     coding_plan: { free: 0,   vip: 100, svip: 300 }   # 站内 code agent 走用户自带 Coding Plan（次/日；free 无 plan，超限回退网关）
     task_quiz_active: { free: 2, vip: 10, svip: 30 }  # 定时出题活跃任务数（存量口径，注册时校验，非日计数）
+    academic_analysis: { free: 10, vip: 50, svip: 200 }   # 科研结果表/对比（次/日）
+    academic_validation: { free: 30, vip: 100, svip: 300 } # 学术校验（次/日）
+    academic_export: { free: 20, vip: 100, svip: 300 }     # 导出/投稿包（次/日）
+    academic_experiment: { free: 3, vip: 20, svip: 60 }     # 后台实验提交（次/日）
   # Free 聊天阶梯：前 l0Turns 条全量（L0），其后 L1 省流，硬停于 limits.chat.free
   freeLadder: { l0Turns: 15 }
   # L1 省流的单轮输出 token 预算（截断思考与长答；0 = 不设限）
@@ -455,6 +458,18 @@ academic:
   # 临时实验数据/代码/结果保留天数；论文/文献永久保留
   retentionTempDays: 180
   retentionSweepMs: 21600000
+  # 后台科研实验执行器（plan/1.0.21 W6）：并发/排队/去重/自动回调上限。
+  # 项目自动推进：仅做门禁同步/自动推进/建议通知，不调用 LLM。
+  autopilot:
+    enabled: true
+    intervalMs: 900000
+  experiments:
+    maxConcurrent: 2
+    maxQueued: 20
+    # 同项目 + 同语言 + 同代码 hash 在该窗口内视为重复提交
+    dedupeWindowMs: 600000
+    # 每用户每日自动回调 AI 次数上限（0 = 不限）
+    callbackDailyLimit: 30
   literature:
     # 文献检索外部源；Crossref 优先、OpenAlex 兜底、arXiv 供预印本检索
     crossrefBaseUrl: https://api.crossref.org

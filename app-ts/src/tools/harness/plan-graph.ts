@@ -27,6 +27,10 @@ const planNodeSchema = z.object({
   deps: z.array(z.string()).describe("依赖节点 id；无依赖填空数组"),
   task: z.string().describe("交给该节点的完整任务"),
   acceptance: z.string().describe("可检查的验收标准"),
+  requiresApproval: z
+    .boolean()
+    .optional()
+    .describe("true = 执行前需要用户在科研工作台人工批准（科研实验节点必须为 true）"),
 });
 
 const graphSchema = z.object({
@@ -96,6 +100,20 @@ export function createPlanAndRunTool(runner: PlanRunner, builtinAgents: string[]
           getRequestContext()?.emit?.({ type: "plan", plan: snapshot });
         },
       });
+      if (result.paused) {
+        const lines = [
+          "【计划已暂停，等待人工审批】",
+          ...(result.approvalId ? ["approval_id=" + result.approvalId] : []),
+          ...(result.runId ? ["run_id=" + result.runId] : []),
+          "请在科研工作台「审批」Tab 批准后，回到本对话或计划运行列表点击恢复。",
+          "",
+          "已完成节点：",
+        ];
+        for (const [id, output] of Object.entries(result.outputs)) {
+          lines.push("### " + id + "\n" + output.slice(0, 1500));
+        }
+        return lines.join("\n");
+      }
       if (result.error) return "计划执行失败：" + result.error;
       if (result.usage) ctx.collector.addDelegatedUsage(result.usage);
       if (result.sources.length > 0) ctx.collector.pushSources(result.sources);

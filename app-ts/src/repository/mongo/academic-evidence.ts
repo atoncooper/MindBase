@@ -28,10 +28,12 @@ import {
   type AcademicDataset,
   type AcademicDatasetInput,
   type AcademicEvidenceFile,
+  type AcademicEvidencePurgeCounts,
   type AcademicEvidenceRepository,
   type AcademicRun,
   type AcademicRunInput,
   type AcademicRunListOptions,
+  type AcademicRunMetric,
   type AcademicRunStatus,
 } from "../academic-evidence.js";
 
@@ -68,6 +70,7 @@ interface EvidenceDoc extends MongoDoc {
   exitCode?: number;
   stdoutPreview?: string;
   stderrPreview?: string;
+  metrics?: AcademicRunMetric[];
   artifacts?: AcademicEvidenceFile[];
   cpuMillis?: number;
   startedAt?: number;
@@ -104,6 +107,7 @@ function toRun(doc: EvidenceDoc): AcademicRun {
     ...(doc.exitCode !== undefined ? { exitCode: doc.exitCode } : {}),
     ...(doc.stdoutPreview !== undefined ? { stdoutPreview: doc.stdoutPreview } : {}),
     ...(doc.stderrPreview !== undefined ? { stderrPreview: doc.stderrPreview } : {}),
+    ...(doc.metrics !== undefined && doc.metrics.length > 0 ? { metrics: doc.metrics } : {}),
     artifacts: doc.artifacts ?? [],
     ...(doc.cpuMillis !== undefined ? { cpuMillis: doc.cpuMillis } : {}),
     ...(doc.startedAt !== undefined ? { startedAt: doc.startedAt } : {}),
@@ -145,6 +149,7 @@ function toRunDoc(run: AcademicRun): EvidenceDoc {
     ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
     ...(run.stdoutPreview !== undefined ? { stdoutPreview: run.stdoutPreview } : {}),
     ...(run.stderrPreview !== undefined ? { stderrPreview: run.stderrPreview } : {}),
+    ...(run.metrics !== undefined && run.metrics.length > 0 ? { metrics: run.metrics } : {}),
     artifacts: run.artifacts,
     ...(run.cpuMillis !== undefined ? { cpuMillis: run.cpuMillis } : {}),
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
@@ -259,6 +264,15 @@ export class MongoAcademicEvidenceStore implements AcademicEvidenceRepository {
   async getRun(uid: string, projectId: string, runId: string): Promise<AcademicRun | null> {
     const doc = await this.collection.findOne({ _id: runId, uid, projectId, kind: KIND_RUN });
     return doc ? toRun(doc) : null;
+  }
+
+  /** Deletes the project's datasets and runs; returns both removed counts. */
+  async removeByProject(uid: string, projectId: string): Promise<AcademicEvidencePurgeCounts> {
+    const [datasets, runs] = await Promise.all([
+      this.collection.deleteMany({ uid, projectId, kind: KIND_DATASET }),
+      this.collection.deleteMany({ uid, projectId, kind: KIND_RUN }),
+    ]);
+    return { datasets: datasets.deletedCount, runs: runs.deletedCount };
   }
 
   /** createdAt source: strictly increasing (+1ms fallback) so list order is stable. */

@@ -29,4 +29,14 @@ export class MemoryResearchExperimentRepository implements ResearchExperimentRep
   async save(exp: ResearchExperiment): Promise<void> {
     this.runs.set(exp.id, structuredClone(exp));
   }
+
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    let removed = 0;
+    for (const [id, run] of [...this.runs]) {
+      if (run.uid !== uid || run.projectId !== projectId) continue;
+      this.runs.delete(id);
+      removed += 1;
+    }
+    return removed;
+  }
 }

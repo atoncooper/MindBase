@@ -307,21 +307,22 @@ export function LiteratureTab({
                         e.preventDefault();
                         void search();
                     }}
-                    className="mt-2 flex flex-col gap-2 sm:flex-row"
+                    className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center"
                 >
-                    <div className="relative flex-1">
+                    <div className="relative min-w-0 flex-1">
                         <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary" />
                         <input
                             value={keyword}
                             onChange={(e) => setKeyword(e.target.value)}
                             placeholder="标题、作者或关键词（英文命中率更高）"
-                            className="field h-9 py-0 pl-8 text-[12px]"
+                            className="field h-9 w-full py-0 pl-8 text-[12px]"
                         />
                     </div>
                     <select
                         value={source}
                         onChange={(e) => setSource(e.target.value as AcademicLiteratureSearchSource)}
-                        className="h-9 rounded-lg border border-border bg-surface px-2 text-[12px] text-foreground outline-none"
+                        aria-label="检索来源"
+                        className="h-9 w-full shrink-0 rounded-lg border border-border bg-surface px-2.5 text-[12px] text-foreground outline-none sm:w-[190px]"
                     >
                         {SEARCH_SOURCES.map((item) => (
                             <option key={item.value} value={item.value}>
@@ -332,10 +333,10 @@ export function LiteratureTab({
                     <button
                         type="submit"
                         disabled={searching || !keyword.trim()}
-                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-foreground px-4 text-[12px] font-medium text-surface transition-opacity hover:opacity-90 disabled:opacity-40"
+                        className="inline-flex h-9 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-foreground px-4 text-[12px] font-medium text-surface transition-opacity hover:opacity-90 disabled:opacity-40 sm:w-auto"
                     >
                         {searching && <Loader2 className="h-3 w-3 animate-spin" />}
-                        检索
+                        {searching ? "检索中…" : "检索"}
                     </button>
                 </form>
 

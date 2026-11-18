@@ -1,5 +1,11 @@
 import type { ResearchApproval, ResearchApprovalRepository } from "../research-approvals.js";
 
+/**
+ * In-process approval store (tests + Mongo-unreachable fallback). Rows are
+ * stored verbatim, so approval v2 fields (scope/experimentId/expiresAt/
+ * consumedAt/payloadHash/requestedBy) persist without extra code; rows that
+ * never set them keep the legacy semantics.
+ */
 export class MemoryResearchApprovalRepository implements ResearchApprovalRepository {
   private readonly items = new Map<string, ResearchApproval>();
 
@@ -21,5 +27,15 @@ export class MemoryResearchApprovalRepository implements ResearchApprovalReposit
 
   async save(approval: ResearchApproval): Promise<void> {
     this.items.set(approval.id, structuredClone(approval));
+  }
+
+  async removeByProject(uid: string, projectId: string): Promise<number> {
+    let removed = 0;
+    for (const [id, approval] of [...this.items]) {
+      if (approval.uid !== uid || approval.projectId !== projectId) continue;
+      this.items.delete(id);
+      removed += 1;
+    }
+    return removed;
   }
 }

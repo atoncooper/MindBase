@@ -409,6 +409,22 @@ export interface AppConfig {
     retentionTempDays: number;
     /** Retention sweeper interval (ms). */
     retentionSweepMs: number;
+    /** Project autopilot scheduler: deterministic gate sync/advance only. */
+    autopilot: {
+      enabled: boolean;
+      intervalMs: number;
+    };
+    /** Background research experiment runner limits. */
+    experiments: {
+      /** simultaneously executing experiments */
+      maxConcurrent: number;
+      /** queued + running experiments before submit is rejected */
+      maxQueued: number;
+      /** identical code/language/project submissions inside this window are deduped */
+      dedupeWindowMs: number;
+      /** automatic AI callback turns per user per day (0 = unlimited) */
+      callbackDailyLimit: number;
+    };
     literature: {
       /** Crossref REST base URL — primary search source, and the only authority used for DOI verification. */
       crossrefBaseUrl: string;

@@ -4,12 +4,12 @@
  * 计划 Tab：两个区块（互不依赖，各自加载/重试）。
  *
  * 1) 阶段执行计划（只读，顶部）：agent 用 academic_project(plan_set) 保存、或在概览 Tab
- *    手动编辑的阶段任务/建议，来自 GET /academic/projects/:projectId（detail.plans/advice）。
- *    此前只在概览 Tab 可见，用户容易误以为"生成计划没保存"。
+ * 手动编辑的阶段任务/建议，来自 GET /academic/projects/:projectId（detail.plans/advice）。
+ * 此前只在概览 Tab 可见，用户容易误以为"生成计划没保存"。
  * 2) 计划运行（底部）：本项目最近的 DAG 计划运行，来自 GET /chat/plans?project_id=<projectId>
- *    （goal / status / 更新时间 / 节点进度）；run 的 projectId 由对话回合的
- *    academic_project_id（科研工作台上下文）自动打标；点击展开调用 GET /chat/plans/:runId
- *    渲染节点列表（标题 / 状态 / 输出 / 错误）。
+ * （goal / status / 更新时间 / 节点进度）；run 的 projectId 由对话回合的
+ * academic_project_id（科研工作台上下文）自动打标；点击展开调用 GET /chat/plans/:runId
+ * 渲染节点列表（标题 / 状态 / 输出 / 错误）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, ListChecks, Workflow } from "lucide-react";
@@ -36,6 +36,8 @@ import {
 const RUN_STATUS_LABELS: Record<AcademicPlanRunStatus, string> = {
     pending: "待执行",
     running: "执行中",
+    paused: "等待审批",
+    cancelled: "已取消",
     completed: "已完成",
     failed: "失败",
     partial: "部分完成",
@@ -44,6 +46,8 @@ const RUN_STATUS_LABELS: Record<AcademicPlanRunStatus, string> = {
 const RUN_STATUS_STYLES: Record<AcademicPlanRunStatus, string> = {
     pending: "bg-border-subtle text-secondary",
     running: "bg-accent-soft text-accent",
+    paused: "bg-warning/10 text-warning",
+    cancelled: "bg-border text-tertiary",
     completed: "bg-success/10 text-success",
     failed: "bg-danger/10 text-danger",
     partial: "bg-warning/10 text-warning",
@@ -139,6 +143,11 @@ export function PlansTab({ projectId }: { projectId: string }) {
     const [details, setDetails] = useState<Record<string, AcademicPlanRunDetail>>({});
     const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
     const [detailError, setDetailError] = useState<string | null>(null);
+    // 计划因人工审批暂停后，用户批准即可在这里恢复执行。
+    const [resumeBusyId, setResumeBusyId] = useState<string | null>(null);
+    const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
+    const [resumeError, setResumeError] = useState<string | null>(null);
+    const [resumeNotice, setResumeNotice] = useState<string | null>(null);
 
     // 阶段执行计划（agent plan_set / 概览 Tab 保存）：独立于 DAG 运行列表的
     // loading/error，projectId 变化时重新拉取。
@@ -218,6 +227,44 @@ export function PlansTab({ projectId }: { projectId: string }) {
         setExpandedRunId(run.runId);
         setDetailError(null);
         if (!details[run.runId]) void loadDetail(run.runId);
+    };
+
+    const cancelRun = async (runId: string) => {
+        setCancelBusyId(runId);
+        setResumeError(null);
+        setResumeNotice(null);
+        try {
+            await academicApi.cancelPlanRun(runId);
+            setResumeNotice("计划已取消。");
+            await load();
+            await loadDetail(runId);
+        } catch (e) {
+            setResumeError(e instanceof Error ? e.message : "取消计划失败");
+        } finally {
+            setCancelBusyId(null);
+        }
+    };
+
+    const resumeRun = async (runId: string) => {
+        setResumeBusyId(runId);
+        setResumeError(null);
+        setResumeNotice(null);
+        try {
+            const result = await academicApi.resumePlanRun(runId);
+            if (result.paused) {
+                setResumeNotice("计划仍在等待人工审批：请先到「审批」Tab 批准实验，再点击恢复。");
+            } else if (result.ok) {
+                setResumeNotice("计划已恢复并执行完成。");
+            } else {
+                setResumeNotice("计划已恢复执行，但仍有节点失败或被跳过，请展开查看。");
+            }
+            await load();
+            await loadDetail(runId);
+        } catch (e) {
+            setResumeError(e instanceof Error ? e.message : "恢复计划失败");
+        } finally {
+            setResumeBusyId(null);
+        }
     };
 
     return (
@@ -342,6 +389,40 @@ export function PlansTab({ projectId }: { projectId: string }) {
                                             )}
                                             {detail && (
                                                 <PlanDetail detail={detail} />
+                                            )}
+                                            {(run.status === "running" || run.status === "paused") && (
+                                                <div className="mt-3 flex flex-wrap items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        disabled={cancelBusyId === run.runId}
+                                                        onClick={() => void cancelRun(run.runId)}
+                                                        className="rounded-md border border-danger/40 px-3 py-1.5 text-[12px] font-medium text-danger disabled:opacity-50"
+                                                    >
+                                                        {cancelBusyId === run.runId ? "取消中…" : "取消计划"}
+                                                    </button>
+                                                    <span className="text-[11px] text-tertiary">运行中/等待审批的计划可以取消。</span>
+                                                </div>
+                                            )}
+                                            {detail?.status === "paused" && (
+                                                <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-2.5 py-2">
+                                                    <p className="text-[12px] leading-relaxed text-secondary">
+                                                        计划因人工审批暂停。到「审批」Tab 批准实验后，点击下方按钮继续执行剩余节点。
+                                                    </p>
+                                                    <button
+                                                        type="button"
+                                                        disabled={resumeBusyId === run.runId}
+                                                        onClick={() => void resumeRun(run.runId)}
+                                                        className="mt-2 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
+                                                    >
+                                                        {resumeBusyId === run.runId ? "恢复中…" : "恢复执行"}
+                                                    </button>
+                                                </div>
+                                            )}
+                                            {expandedRunId === run.runId && resumeError && (
+                                                <ErrorBanner message={resumeError} />
+                                            )}
+                                            {expandedRunId === run.runId && resumeNotice && (
+                                                <p className="mt-2 text-[12px] text-secondary">{resumeNotice}</p>
                                             )}
                                         </div>
                                     )}

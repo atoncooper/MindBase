@@ -68,6 +68,19 @@ export function registerPlanRoutes(app: FastifyInstance, deps: PlanRouteDeps): v
     };
   });
 
+  app.post("/chat/plans/:runId/cancel", async (req: FastifyRequest, reply: FastifyReply) => {
+    const { runId } = req.params as { runId: string };
+    const run = await deps.engine.get(runId);
+    if (!run) return reply.code(404).send({ detail: "plan run not found" });
+    const uid = headerUID(req);
+    if (run.uid && uid && run.uid !== uid) return reply.code(403).send({ detail: "plan run belongs to another user" });
+    const cancelled = await deps.runner.cancel(runId);
+    if (!cancelled) {
+      return reply.code(409).send({ detail: "计划已结束或不在可取消状态" });
+    }
+    return { runId, cancelled: true };
+  });
+
   app.post("/chat/plans/:runId/resume", async (req: FastifyRequest, reply: FastifyReply) => {
     const { runId } = req.params as { runId: string };
     const run = await deps.engine.get(runId);
@@ -80,6 +93,8 @@ export function registerPlanRoutes(app: FastifyInstance, deps: PlanRouteDeps): v
     return {
       runId,
       ok: result.ok,
+      paused: result.paused ?? false,
+      ...(result.approvalId ? { approvalId: result.approvalId } : {}),
       failed: result.failed,
       skipped: result.skipped,
       outputs: result.outputs,

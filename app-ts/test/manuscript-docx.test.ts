@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 import { runWithRequestContext } from "../src/context/request-context.js";
 import { buildDocxBuffer } from "../src/services/docx-writer.js";
 import { DOCX_MIME, parseDocxSections } from "../src/doc-parser/docx.js";
-import { ManuscriptDocxService } from "../src/services/manuscript-docx.js";
-import { AcademicService } from "../src/services/academic.js";
-import { ResearchWorkspaceService } from "../src/services/research-workspace.js";
+import { ManuscriptDocxService } from "../src/services/research/manuscript-docx.js";
+import { AcademicService } from "../src/services/research/academic.js";
+import { ResearchWorkspaceService } from "../src/services/research/research-workspace.js";
 import { MemoryAcademicStore } from "../src/repository/memory/academic.js";
 import { MemoryResearchWorkspaceRepository } from "../src/repository/memory/research-workspaces.js";
 import { registerAcademicRoutes } from "../src/transport/http/routes/academic.js";
@@ -160,7 +160,7 @@ async function createProject(app: ReturnType<typeof Fastify>) {
 }
 
 describe("docx generation", () => {
-  it("authors a complete package with title, sections and the four styles", async () => {
+ it("authors a complete package with title, sections and the four styles", async () => {
     const buffer = await buildDocxBuffer({
       title: "论文标题",
       sections: [
@@ -195,7 +195,7 @@ describe("docx generation", () => {
     expect(stylesXml).toContain("w:name w:val=\"heading 1\"");
   });
 
-  it("escapes XML metacharacters instead of emitting broken markup", async () => {
+ it("escapes XML metacharacters instead of emitting broken markup", async () => {
     const buffer = await buildDocxBuffer({
       title: "A & B <C>",
       sections: [{ title: "x & y", content: "1 < 2 > 0" }],
@@ -206,7 +206,7 @@ describe("docx generation", () => {
     expect(documentXml).not.toContain("<C>");
   });
 
-  it("reuses the template package: styles.xml untouched and page setup preserved", async () => {
+ it("reuses the template package: styles.xml untouched and page setup preserved", async () => {
     const templateZip = await JSZip.loadAsync(
       await buildDocxBuffer({ title: "旧标题", sections: [{ title: "旧章节", content: "旧正文" }] }),
     );
@@ -242,7 +242,7 @@ describe("docx generation", () => {
 });
 
 describe("docx parsing", () => {
-  it("round-trips title, section titles and multi-line content", async () => {
+ it("round-trips title, section titles and multi-line content", async () => {
     const buffer = await buildDocxBuffer({
       title: "Round Trip 论文",
       sections: [
@@ -257,7 +257,7 @@ describe("docx parsing", () => {
     expect(parsed.sections[1].content).toBe("实验正文");
   });
 
-  it("collapses a heading-less document into one body section", async () => {
+ it("collapses a heading-less document into one body section", async () => {
     const source = await buildDocxBuffer({
       title: "无标题文档",
       sections: [{ title: "第一章", content: "正文一" }],
@@ -279,7 +279,7 @@ describe("docx parsing", () => {
 });
 
 describe("Word routes", () => {
-  it("rejects an import without a file (400) and a non-docx file (422)", async () => {
+ it("rejects an import without a file (400) and a non-docx file (422)", async () => {
     const { app } = await buildApp();
     const projectId = await createProject(app);
 
@@ -305,7 +305,7 @@ describe("Word routes", () => {
     await app.close();
   });
 
-  it("imports an existing Word manuscript (document + source recorded)", async () => {
+ it("imports an existing Word manuscript (document + source recorded)", async () => {
     const { app, store, cloud } = await buildApp();
     const projectId = await createProject(app);
 
@@ -364,7 +364,7 @@ describe("Word routes", () => {
     await app.close();
   });
 
-  it("downloads the document as a .docx binary and 404s on unknown ids", async () => {
+ it("downloads the document as a .docx binary and 404s on unknown ids", async () => {
     const { app } = await buildApp();
     const projectId = await createProject(app);
     const created = await app.inject({
@@ -395,7 +395,7 @@ describe("Word routes", () => {
     await app.close();
   });
 
-  it("saves the generated Word back to the cloud drive and records lastExport", async () => {
+ it("saves the generated Word back to the cloud drive and records lastExport", async () => {
     const { app, store, cloud } = await buildApp();
     const projectId = await createProject(app);
     const created = await app.inject({
@@ -440,7 +440,7 @@ describe("Word routes", () => {
     await app.close();
   });
 
-  it("answers 503 when the cloud drive is not configured", async () => {
+ it("answers 503 when the cloud drive is not configured", async () => {
     const { app } = await buildApp({ cloudConfigured: false });
     const projectId = await createProject(app);
     const created = await app.inject({
@@ -484,7 +484,7 @@ function contentOf(output: unknown): string {
 }
 
 describe("academic_manuscript export_docx", () => {
-  it("delegates the Word export to the injected service and reports the cloud file", async () => {
+ it("delegates the Word export to the injected service and reports the cloud file", async () => {
     const store = new MemoryAcademicStore();
     const project = await store.create("1", { title: "工具项目" });
     const document = await store.createDocument("1", project.id, {
@@ -515,7 +515,7 @@ describe("academic_manuscript export_docx", () => {
     expect((artifact?.data as { action?: string }).action).toBe("export_docx");
   });
 
-  it("degrades to guidance text when the Word service is not injected", async () => {
+ it("degrades to guidance text when the Word service is not injected", async () => {
     const store = new MemoryAcademicStore();
     const project = await store.create("1", { title: "工具项目" });
     const document = await store.createDocument("1", project.id, { kind: "draft", title: "工具稿" });

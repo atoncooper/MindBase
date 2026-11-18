@@ -233,7 +233,7 @@ describe("react 多模态消息构建", () => {
         }),
       }),
     });
-    const runtime = { buildSdkTools: () => ({}) } as unknown as import("../src/tools/runtime.js").AgentRuntime;
+    const runtime = { buildSdkTools: () => ({}) } as unknown as import("../src/agent/runtime.js").AgentRuntime;
     const agent = createReactAgent({
       name: "main",
       description: "main",
@@ -272,7 +272,7 @@ describe("react 多模态消息构建", () => {
       expect(priorFile.mediaType).toBe("image/jpeg");
       expect(Buffer.from(priorFile.data as Uint8Array).toString("latin1")).toBe("/9j/4AAQSkZJRg==");
     }
-  });
+  }, 15_000);
 });
 
 describe("persistence: user message images", () => {

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ResearchApprovalService } from "../src/services/research-approval.js";
+import { ResearchApprovalService } from "../src/services/research/research-approval.js";
 import { MemoryResearchApprovalRepository } from "../src/repository/memory/research-approvals.js";
-import { ResearchWorkspaceService } from "../src/services/research-workspace.js";
+import { ResearchWorkspaceService } from "../src/services/research/research-workspace.js";
 import { MemoryResearchWorkspaceRepository } from "../src/repository/memory/research-workspaces.js";
 
 describe("ResearchApprovalService", () => {
-  it("AI requests, user approves, gate becomes true", async () => {
+ it("AI requests, user approves, gate becomes true", async () => {
     const service = new ResearchApprovalService(new MemoryResearchApprovalRepository());
     const approval = await service.request("1", "p1", "experiment", "run training");
     expect(approval.status).toBe("pending");
@@ -15,7 +15,7 @@ describe("ResearchApprovalService", () => {
     expect(await service.isApproved("1", "p1", "experiment")).toBe(true);
   });
 
-  it("cannot decide someone else's approval", async () => {
+ it("cannot decide someone else's approval", async () => {
     const service = new ResearchApprovalService(new MemoryResearchApprovalRepository());
     const approval = await service.request("1", "p1", "submission");
     await expect(service.decide("2", approval.id, true)).rejects.toThrow();
@@ -23,7 +23,7 @@ describe("ResearchApprovalService", () => {
 });
 
 describe("ResearchWorkspace retention", () => {
-  it("deletes only expired temporary files, never permanent folders", async () => {
+ it("deletes only expired temporary files, never permanent folders", async () => {
     const now = Date.now();
     const deleted: string[] = [];
     const cloud = {
