@@ -19,12 +19,26 @@
  * Fetch/clock/sleep are injectable so unit tests are fully offline and can drive
  * polling and the timeout deterministically.
  */
+import { randomUUID } from "node:crypto";
 import { createLogger } from "../../logger.js";
 import type {
   CodeExecutionArtifact,
   CodeExecutionPort,
   CodeExecutionRequest,
   CodeExecutionResult,
+  CodeArtifactPort,
+  CodeFilePort,
+  CodeInfoPort,
+  SandboxArtifactReadRequest,
+  SandboxArtifactReadResult,
+  CodeOutputPort,
+  SandboxRuntimeInfo,
+  SandboxOutputRequest,
+  SandboxOutputResult,
+  SandboxFileReadRequest,
+  SandboxFileReadResult,
+  SandboxFileWriteRequest,
+  SandboxFileWriteResult,
 } from "./code-execution.js";
 
 const log = createLogger("SANDBOX");
@@ -48,6 +62,10 @@ export interface HttpCodeExecutionOptions {
   sleepImpl?: (ms: number) => Promise<void>;
   /** test seam; defaults to Date.now */
   nowImpl?: () => number;
+  /** production: let an explicit/long request budget extend the local poll deadline */
+  extendForRequestTimeout?: boolean;
+  /** production: back off status polling for long runs (500ms → 3s) */
+  adaptivePolling?: boolean;
 }
 
 /** Terminal execution states reported by the control plane. */
@@ -164,7 +182,7 @@ function statusReason(status: string, errorCode: string | undefined): string {
   }
 }
 
-export class HttpCodeExecution implements CodeExecutionPort {
+export class HttpCodeExecution implements CodeExecutionPort, CodeFilePort, CodeOutputPort, CodeInfoPort {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
@@ -172,6 +190,8 @@ export class HttpCodeExecution implements CodeExecutionPort {
   private readonly fetchImpl: SandboxFetch;
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly nowImpl: () => number;
+  private readonly extendForRequestTimeout: boolean;
+  private readonly adaptivePolling: boolean;
 
   constructor(options: HttpCodeExecutionOptions) {
     this.baseUrl = options.baseUrl.trim().replace(/\/+$/, "");
@@ -186,6 +206,8 @@ export class HttpCodeExecution implements CodeExecutionPort {
     this.sleepImpl =
       options.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.nowImpl = options.nowImpl ?? Date.now;
+    this.extendForRequestTimeout = options.extendForRequestTimeout === true;
+    this.adaptivePolling = options.adaptivePolling === true;
   }
 
   /**
@@ -196,7 +218,14 @@ export class HttpCodeExecution implements CodeExecutionPort {
     if (!request.code || request.code.trim() === "") {
       return this.unavailable("没有可执行的代码（code 为空）");
     }
-    const deadline = this.nowImpl() + this.timeoutMs;
+    // The sandbox default budget is 120s; when the caller omits timeoutMs, do not
+    // cut the local wait at 60s before the remote run can finish. Explicit
+    // timeouts get a small HTTP/polling margin.
+    const requested = request.timeoutMs && request.timeoutMs > 0 ? request.timeoutMs : 120_000;
+    const localBudget = this.extendForRequestTimeout
+      ? Math.min(Math.max(this.timeoutMs, requested + 15_000), 620_000)
+      : this.timeoutMs;
+    const deadline = this.nowImpl() + localBudget;
 
     // 1) Create the execution. The per-call timeoutMs is the sandbox's own
     //    execution budget; this.timeoutMs bounds the whole local round-trip.
@@ -207,8 +236,20 @@ export class HttpCodeExecution implements CodeExecutionPort {
         code: request.code,
       };
       if (request.timeoutMs !== undefined) body.timeoutMs = request.timeoutMs;
+      if (request.projectId) body.projectId = request.projectId;
+      if (request.purpose) body.purpose = request.purpose;
+      if (request.files && request.files.length > 0) body.files = request.files;
+      if (request.artifactGlobs && request.artifactGlobs.length > 0) body.artifacts = request.artifactGlobs;
       created = asRecord(
-        await this.call("POST", "/v1/executions", body, request.uid, deadline - this.nowImpl(), signal),
+        await this.call(
+          "POST",
+          "/v1/executions",
+          body,
+          request.uid,
+          deadline - this.nowImpl(),
+          signal,
+          { "Idempotency-Key": randomUUID() },
+        ),
       ) as CreateResponse;
     } catch (error) {
       return this.failure(error);
@@ -221,8 +262,11 @@ export class HttpCodeExecution implements CodeExecutionPort {
 
     // 2) Poll until terminal or the deadline. Unknown non-terminal states keep
     //    polling: the control plane owns the state machine (creating→ready→busy…).
+    //    Production backs off (500ms → 3s) so a long run does not hammer the DB.
+    let pollDelay = this.pollIntervalMs;
     while (true) {
       if (signal?.aborted) {
+        await this.cancelRemote(executionId, request.uid);
         return this.unavailable(`代码执行已取消（execution_id=${executionId}）`, executionId);
       }
       const remaining = deadline - this.nowImpl();
@@ -241,6 +285,9 @@ export class HttpCodeExecution implements CodeExecutionPort {
           ),
         ) as ExecutionState;
       } catch (error) {
+        if (error instanceof SandboxCallError && (error.kind === "timeout" || error.kind === "canceled")) {
+          await this.cancelRemote(executionId, request.uid);
+        }
         return this.failure(error, executionId);
       }
 
@@ -251,14 +298,143 @@ export class HttpCodeExecution implements CodeExecutionPort {
 
       const afterPoll = deadline - this.nowImpl();
       if (afterPoll <= 0) break;
-      await this.sleepImpl(Math.min(this.pollIntervalMs, afterPoll));
+      await this.sleepImpl(Math.min(pollDelay, afterPoll));
+      if (this.adaptivePolling) {
+        pollDelay = Math.min(Math.round(pollDelay * 1.5), 3000);
+      }
     }
 
-    log.warn("[SANDBOX] execution poll timed out execution_id=%s timeout_ms=%d", executionId, this.timeoutMs);
+    await this.cancelRemote(executionId, request.uid);
+    log.warn("[SANDBOX] execution poll timed out execution_id=%s timeout_ms=%d", executionId, localBudget);
     return this.unavailable(
-      `代码沙箱执行超时：${this.timeoutMs}ms 内未完成（execution_id=${executionId}）`,
+      `代码沙箱执行超时：${localBudget}ms 内未完成，已请求取消（execution_id=${executionId}）`,
       executionId,
     );
+  }
+
+  /** Read one file slice; throws on transport/server errors (tools render them). */
+  async readFile(request: SandboxFileReadRequest, signal?: AbortSignal): Promise<SandboxFileReadResult> {
+    const query = new URLSearchParams({ path: request.path });
+    if (request.offset !== undefined) query.set("offset", String(request.offset));
+    if (request.limit !== undefined) query.set("limit", String(request.limit));
+    if (request.projectId) query.set("projectId", request.projectId);
+    if (request.purpose) query.set("purpose", request.purpose);
+    const raw = await this.call(
+      "GET",
+      "/v1/files/read?" + query.toString(),
+      undefined,
+      request.uid,
+      Math.max(this.timeoutMs, 30_000),
+      signal,
+    );
+    const record = asRecord(raw);
+    const hasMore = record.hasMore === true;
+    const offset = asNumber(record.offset) ?? 0;
+    const bytes = asNumber(record.bytes) ?? 0;
+    const nextOffset = asNumber(record.nextOffset) ?? offset + bytes;
+    return {
+      path: asString(record.path) ?? request.path,
+      content: typeof record.content === "string" ? record.content : "",
+      offset,
+      bytes,
+      totalBytes: asNumber(record.totalBytes) ?? bytes,
+      hasMore,
+      nextOffset,
+    };
+  }
+
+  /** Write (replace) one text file; throws on transport/server errors. */
+  async writeFile(request: SandboxFileWriteRequest, signal?: AbortSignal): Promise<SandboxFileWriteResult> {
+    const body: Record<string, unknown> = { path: request.path, content: request.content };
+    if (request.encoding) body.encoding = request.encoding;
+    if (request.projectId) body.projectId = request.projectId;
+    if (request.purpose) body.purpose = request.purpose;
+    const raw = await this.call("POST", "/v1/files/write", body, request.uid, Math.max(this.timeoutMs, 30_000), signal);
+    const record = asRecord(raw);
+    return {
+      path: asString(record.path) ?? request.path,
+      bytes: asNumber(record.bytes) ?? Buffer.byteLength(request.content, "utf8"),
+    };
+  }
+
+  /** Read one page of a stored artifact (text utf8 / binary base64). */
+  async readArtifact(request: SandboxArtifactReadRequest, signal?: AbortSignal): Promise<SandboxArtifactReadResult> {
+    const query = new URLSearchParams({ name: request.name });
+    if (request.offset !== undefined) query.set("offset", String(request.offset));
+    if (request.limit !== undefined) query.set("limit", String(request.limit));
+    const raw = await this.call(
+      "GET",
+      "/v1/executions/" + encodeURIComponent(request.executionId) + "/artifacts/read?" + query.toString(),
+      undefined,
+      request.uid,
+      Math.max(this.timeoutMs, 30_000),
+      signal,
+    );
+    const record = asRecord(raw);
+    const offset = asNumber(record.offset) ?? 0;
+    const bytes = asNumber(record.bytes) ?? 0;
+    return {
+      executionId: asString(record.executionId) ?? request.executionId,
+      name: asString(record.name) ?? request.name,
+      contentType: asString(record.contentType) ?? "",
+      encoding: record.encoding === "base64" ? "base64" : "utf8",
+      binary: record.binary === true,
+      content: typeof record.content === "string" ? record.content : "",
+      offset,
+      bytes,
+      totalBytes: asNumber(record.totalBytes) ?? bytes,
+      hasMore: record.hasMore === true,
+      nextOffset: asNumber(record.nextOffset) ?? offset + bytes,
+    };
+  }
+
+  /** Read the static sandbox runtime contract (image, limits, egress). */
+  async getInfo(signal?: AbortSignal): Promise<SandboxRuntimeInfo> {
+    const raw = await this.call("GET", "/v1/runtime", undefined, undefined, 10_000, signal);
+    const record = asRecord(raw);
+    const strings = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    return {
+      runtime: asString(record.runtime) ?? "",
+      image: asString(record.image) ?? "",
+      cpu: asString(record.cpu) ?? "",
+      memory: asString(record.memory) ?? "",
+      networkDefaultAction: asString(record.networkDefaultAction) ?? "unknown",
+      egressAllow: strings(record.egressAllow),
+      acceptedLanguages: strings(record.acceptedLanguages),
+      notes: strings(record.notes),
+    };
+  }
+
+  /** Read one page of a terminal execution's full stdout/stderr. */
+  async readOutput(request: SandboxOutputRequest, signal?: AbortSignal): Promise<SandboxOutputResult> {
+    const query = new URLSearchParams({ stream: request.stream ?? "stdout" });
+    if (request.offset !== undefined) query.set("offset", String(request.offset));
+    if (request.limit !== undefined) query.set("limit", String(request.limit));
+    const raw = await this.call(
+      "GET",
+      "/v1/executions/" + encodeURIComponent(request.executionId) + "/output?" + query.toString(),
+      undefined,
+      request.uid,
+      Math.max(this.timeoutMs, 30_000),
+      signal,
+    );
+    const record = asRecord(raw);
+    const hasMore = record.hasMore === true;
+    const offset = asNumber(record.offset) ?? 0;
+    const bytes = asNumber(record.bytes) ?? 0;
+    return {
+      executionId: asString(record.executionId) ?? request.executionId,
+      stream: record.stream === "stderr" ? "stderr" : "stdout",
+      content: typeof record.content === "string" ? record.content : "",
+      offset,
+      bytes,
+      totalBytes: asNumber(record.totalBytes) ?? bytes,
+      sourceBytes: asNumber(record.sourceBytes) ?? bytes,
+      truncated: record.truncated === true,
+      hasMore,
+      nextOffset: asNumber(record.nextOffset) ?? offset + bytes,
+    };
   }
 
   /** Map a terminal control-plane state onto the port result. */
@@ -282,6 +458,16 @@ export class HttpCodeExecution implements CodeExecutionPort {
       sandboxAvailable: true,
       executionId,
     };
+    const stdoutBytes = asNumber((state as Record<string, unknown>).stdoutBytes);
+    const stderrBytes = asNumber((state as Record<string, unknown>).stderrBytes);
+    if (stdoutBytes !== undefined) {
+      result.stdoutBytes = stdoutBytes;
+      result.stdoutTruncated = stdoutBytes > Buffer.byteLength(stdout, "utf8");
+    }
+    if (stderrBytes !== undefined) {
+      result.stderrBytes = stderrBytes;
+      result.stderrTruncated = stderrBytes > Buffer.byteLength(stderr, "utf8");
+    }
     if (exitCode !== undefined) result.exitCode = exitCode;
     if (artifacts.length > 0) result.artifacts = artifacts;
     const durationMs = asNumber((state as Record<string, unknown>).durationMs);
@@ -332,6 +518,21 @@ export class HttpCodeExecution implements CodeExecutionPort {
     return this.unavailable(`代码沙箱调用失败：${errorText(error)}${suffix}`, executionId);
   }
 
+  /** Best-effort remote cancel so a local timeout does not leave the sandbox busy. */
+  private async cancelRemote(executionId: string, uid: string | undefined): Promise<void> {
+    try {
+      await this.call(
+        "POST",
+        "/v1/executions/" + encodeURIComponent(executionId) + "/cancel",
+        undefined,
+        uid,
+        5_000,
+      );
+    } catch (error) {
+      log.warn("[SANDBOX] remote cancel failed execution_id=%s err=%s", executionId, errorText(error));
+    }
+  }
+
   /** Headers for both the gateway (apikey) and app-sandbox (X-API-Key + X-Uid). */
   private headers(uid: string | undefined, withBody: boolean): Record<string, string> {
     return {
@@ -355,6 +556,7 @@ export class HttpCodeExecution implements CodeExecutionPort {
     uid: string | undefined,
     budgetMs: number,
     signal?: AbortSignal,
+    extraHeaders?: Record<string, string>,
   ): Promise<unknown> {
     const controller = new AbortController();
     let timedOut = false;
@@ -372,7 +574,7 @@ export class HttpCodeExecution implements CodeExecutionPort {
     try {
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers: this.headers(uid, body !== undefined),
+        headers: { ...this.headers(uid, body !== undefined), ...(extraHeaders ?? {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,
       });

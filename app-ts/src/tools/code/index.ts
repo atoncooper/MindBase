@@ -5,6 +5,7 @@ import { buildFileArtifact } from "../../artifacts/file.js";
 import { DOCX_MIME } from "../../doc-parser/docx.js";
 import type { CodeExecutionPort, CodeExecutionResult } from "./code-execution.js";
 import type { ResearchExecutionGuard } from "./execution-guard.js";
+import { CodeRetryBudget } from "./retry-budget.js";
 
 /**
  * run_code: executes code in the sandbox .
@@ -82,14 +83,41 @@ function fileArtifactsOf(res: CodeExecutionResult): Artifact[] {
 }
 
 export function createRunCodeTool(exec: CodeExecutionPort, guard?: ResearchExecutionGuard) {
+  const retryBudget = new CodeRetryBudget();
   return defineTool({
     name: "run_code",
     description:
-      "在隔离沙箱中运行一段代码并返回 stdout/stderr，附带 execution_id 与产物列表（如有）。用于验证代码正确性。",
+      "在隔离沙箱中运行一段代码并返回 stdout/stderr，附带 execution_id 与产物列表（如有）。" +
+      "python 始终可用；javascript 需要镜像包含 node（默认镜像没有）。" +
+      "长任务必须显式传 timeoutMs（默认 130000ms，上限 1 小时）；输出被截断时用 sandbox_execution_output 续读。" +
+      "同一份完整代码版本（language+code+files 都未变）最多执行 6 次（首次 + 5 次重试）；改代码会重新获得重试预算。",
+    maxRepeats: 6,
+    defaultTimeoutMs: 130_000,
     inputSchema: z.object({
       language: z.enum(["javascript", "python"]).describe("语言"),
       code: z.string().min(1).max(20_000).describe("完整代码"),
-      timeoutMs: z.number().int().positive().optional().describe("超时毫秒，默认 10000"),
+      timeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .max(3_600_000)
+        .optional()
+        .describe("本次执行超时毫秒，默认 130000；长任务请显式加大（最长 1 小时）"),
+      files: z
+        .array(
+          z.object({
+            path: z.string().min(1).max(512).describe("沙箱内的绝对路径，必须在 /workspace 下"),
+            content: z.string().max(1_000_000).describe("文件文本内容"),
+          }),
+        )
+        .max(20)
+        .optional()
+        .describe("执行前写入 /workspace 的文本输入文件（最多 20 个，单个 ≤1MB）"),
+      artifactGlobs: z
+        .array(z.string().min(1).max(512))
+        .max(10)
+        .optional()
+        .describe("额外产物 glob，必须在 /workspace/analysis/outputs 下"),
     }),
     async execute(args, ctx, signal) {
       // Research project chats require an approved experiment first ().
@@ -97,20 +125,49 @@ export function createRunCodeTool(exec: CodeExecutionPort, guard?: ResearchExecu
         const blocked = await guard(ctx);
         if (blocked) return blocked;
       }
+      const retry = retryBudget.begin({
+        ...(ctx.uid !== undefined ? { uid: ctx.uid } : {}),
+        ...(ctx.chatSessionId !== undefined ? { sessionId: ctx.chatSessionId } : {}),
+        language: args.language,
+        code: args.code,
+        ...(args.files ? { files: args.files } : {}),
+      });
+      if (!retry.allowed) {
+        return (
+          "同一份代码版本（language+code+files 均未变化）已执行 " +
+          retry.maxAttempts +
+          " 次（首次 + 5 次重试），达到上限，未再执行。\n" +
+          "请修改代码/输入文件后再试，或改用 sandbox_bash 分步排查。\n" +
+          "code_version: " + retry.version
+        );
+      }
       const res = await exec.run(
         {
           language: args.language,
           code: args.code,
           ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
           ...(ctx.uid !== undefined ? { uid: ctx.uid } : {}),
+          ...(ctx.academicProjectId
+            ? { projectId: ctx.academicProjectId, purpose: "chat" }
+            : {}),
+          ...(args.files && args.files.length > 0 ? { files: args.files } : {}),
+          ...(args.artifactGlobs && args.artifactGlobs.length > 0
+            ? { artifactGlobs: args.artifactGlobs }
+            : {}),
         },
         signal,
       );
 
       if (!res.sandboxAvailable) {
+        // No execution id = transport/quota refusal, not a real attempt: refund.
+        if (!res.executionId) retryBudget.refund(retry.key);
         const reason = res.error?.trim() || res.stderr.trim() || "沙箱未配置";
-        return `沙箱不可用：${reason}。\n无法运行代码，请直接给出代码与讲解，并注明未经实际运行验证。`;
+        const retryInfo = res.executionId
+          ? `\nretry_budget: attempt ${retry.attempt}/${retry.maxAttempts}, remaining_retries=${retry.remainingRetries}, code_version=${retry.version}`
+          : "";
+        return `沙箱不可用：${reason}。\n无法运行代码，请直接给出代码与讲解，并注明未经实际运行验证。${retryInfo}`;
       }
+      if (res.ok) retryBudget.success(retry.key);
 
       const lines = [`exit: ${res.ok ? "ok" : "failed"}`];
       if (res.exitCode !== undefined) lines.push(`exit_code: ${res.exitCode}`);
@@ -123,9 +180,40 @@ export function createRunCodeTool(exec: CodeExecutionPort, guard?: ResearchExecu
           lines.push(`- ${artifact.name}${size}${url}`);
         }
       }
+      if (res.stdoutTruncated || res.stderrTruncated) {
+        const total = (res.stdoutTruncated ? res.stdoutBytes : res.stderrBytes) ?? 0;
+        lines.push(
+          "output_truncated: true (total " +
+            total +
+            " bytes; use sandbox_execution_output execution_id=" +
+            (res.executionId ?? "?") +
+            " with offset/next_offset to read the full stream)",
+        );
+      }
       lines.push(res.stdout ? `stdout:\n${res.stdout.slice(0, 4000)}` : "stdout: (空)");
       if (res.stderr) lines.push(`stderr:\n${res.stderr.slice(0, 2000)}`);
       if (!res.ok && res.error) lines.push(`error: ${res.error}`);
+      if (!res.ok) {
+        lines.push(
+          "retry_budget: attempt " +
+            retry.attempt +
+            "/" +
+            retry.maxAttempts +
+            ", remaining_retries=" +
+            retry.remainingRetries +
+            ", code_version=" +
+            retry.version,
+        );
+        if (retry.remainingRetries > 0) {
+          lines.push(
+            "提示：若确认是超时/瞬时问题，可用相同代码和更大 timeoutMs 重试；剩余 " +
+              retry.remainingRetries +
+              " 次。修改代码会重置预算。",
+          );
+        } else {
+          lines.push("提示：本代码版本重试预算已用尽，请修改代码或改用其他排查方式。");
+        }
+      }
 
       const content = lines.join("\n");
       // File cards ride the SSE artifact frame; when the run produced none the

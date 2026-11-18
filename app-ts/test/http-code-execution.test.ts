@@ -143,6 +143,78 @@ describe("HttpCodeExecution: 成功路径", () => {
     expect(sleeps).toEqual([100]); // exactly one wait between the two polls
   });
 
+  it("把 files/artifactGlobs 传给沙箱", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_call, index) => {
+      if (index === 0) return jsonResponse({ executionId: "exec-1" }, 202);
+      return jsonResponse({ status: "succeeded", exitCode: 0, stdoutPreview: "ok" });
+    });
+    const exec = makeExec({ fetchImpl });
+    await exec.run({
+      language: "python",
+      code: "print(open('/workspace/in.txt').read())",
+      uid: "7",
+      files: [{ path: "/workspace/in.txt", content: "abc" }],
+      artifactGlobs: ["/workspace/analysis/outputs/**"],
+      timeoutMs: 1000,
+    });
+    expect(calls[0]?.body).toMatchObject({
+      files: [{ path: "/workspace/in.txt", content: "abc" }],
+      artifacts: ["/workspace/analysis/outputs/**"],
+    });
+  });
+
+  it("把 projectId/purpose 传给沙箱（项目级 lease 隔离）", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_call, index) => {
+      if (index === 0) return jsonResponse({ executionId: "exec-1", state: "queued" }, 202);
+      return jsonResponse({ status: "succeeded", exitCode: 0, stdoutPreview: "ok" });
+    });
+    const exec = makeExec({ fetchImpl });
+    await exec.run({
+      language: "python",
+      code: "print(1)",
+      uid: "42",
+      projectId: "proj-7",
+      purpose: "experiment",
+    });
+    expect(calls[0]?.body).toMatchObject({
+      projectId: "proj-7",
+      purpose: "experiment",
+    });
+  });
+
+  it("创建请求带 Idempotency-Key，避免网络重试产生重复执行", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_call, index) => {
+      if (index === 0) return jsonResponse({ executionId: "exec-1" }, 202);
+      return jsonResponse({ status: "succeeded", exitCode: 0, stdoutPreview: "ok" });
+    });
+    const exec = makeExec({ fetchImpl });
+    await exec.run({ language: "python", code: "print(1)", timeoutMs: 1000 });
+    expect(headersOf(calls[0])["Idempotency-Key"]).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("本地超时后向远端发送 cancel", async () => {
+    let now = 0;
+    const { fetchImpl, calls } = scriptedFetch((call, index) => {
+      if (index === 0) return jsonResponse({ executionId: "exec-cancel" }, 202);
+      if (call.url.includes("/cancel")) return new Response(null, { status: 204 });
+      return jsonResponse({ status: "running" });
+    });
+    const exec = makeExec({
+      fetchImpl,
+      timeoutMs: 80,
+      pollIntervalMs: 20,
+      nowImpl: () => now,
+      sleepImpl: async (ms) => {
+        now += ms;
+      },
+    });
+    await exec.run({ language: "python", code: "print(1)", timeoutMs: 60_000, uid: "7" });
+    const cancelled = calls.some(
+      (call) => call.url.endsWith("/executions/exec-cancel/cancel") && call.init?.method === "POST",
+    );
+    expect(cancelled).toBe(true);
+  });
+
   it("缺少 uid 时不发送 X-Uid；兼容响应里的 id 别名", async () => {
     const { fetchImpl, calls } = scriptedFetch((_call, index) => {
       if (index === 0) return jsonResponse({ id: "exec-alias", state: "creating" }, 202);
@@ -154,6 +226,91 @@ describe("HttpCodeExecution: 成功路径", () => {
     expect(result.ok).toBe(true);
     expect(result.executionId).toBe("exec-alias");
     expect(headersOf(calls[0])["X-Uid"]).toBeUndefined();
+  });
+});
+
+describe("HttpCodeExecution: 文件读取", () => {
+  it("透传 path/offset/limit 与身份并映射 has_more/next_offset", async () => {
+    const { fetchImpl, calls } = scriptedFetch(() =>
+      jsonResponse({
+        path: "/workspace/out.txt",
+        content: "hello",
+        offset: 5,
+        bytes: 5,
+        totalBytes: 20,
+        hasMore: true,
+        nextOffset: 10,
+      }),
+    );
+    const exec = makeExec({ fetchImpl });
+    const result = await exec.readFile({
+      path: "/workspace/out.txt",
+      offset: 5,
+      limit: 10,
+      uid: "7",
+      projectId: "p1",
+      purpose: "chat",
+    });
+    expect(result).toEqual({
+      path: "/workspace/out.txt",
+      content: "hello",
+      offset: 5,
+      bytes: 5,
+      totalBytes: 20,
+      hasMore: true,
+      nextOffset: 10,
+    });
+    expect(calls[0]?.init?.method).toBe("GET");
+    expect(calls[0]?.url).toContain("/v1/files/read?");
+    expect(calls[0]?.url).toContain("path=%2Fworkspace%2Fout.txt");
+    expect(calls[0]?.url).toContain("offset=5");
+    expect(calls[0]?.url).toContain("limit=10");
+    expect(calls[0]?.url).toContain("projectId=p1");
+    expect(headersOf(calls[0])["X-Uid"]).toBe("7");
+  });
+});
+
+describe("HttpCodeExecution: 执行输出", () => {
+  it("readOutput 透传 stream/offset/limit 并映射分页字段", async () => {
+    const { fetchImpl, calls } = scriptedFetch(() =>
+      jsonResponse({
+        executionId: "exec-1",
+        stream: "stdout",
+        content: "chunk",
+        offset: 10,
+        bytes: 5,
+        totalBytes: 100,
+        sourceBytes: 200,
+        truncated: true,
+        hasMore: true,
+        nextOffset: 15,
+      }),
+    );
+    const exec = makeExec({ fetchImpl });
+    const result = await exec.readOutput({
+      executionId: "exec-1",
+      stream: "stdout",
+      offset: 10,
+      limit: 5,
+      uid: "7",
+    });
+    expect(result).toEqual({
+      executionId: "exec-1",
+      stream: "stdout",
+      content: "chunk",
+      offset: 10,
+      bytes: 5,
+      totalBytes: 100,
+      sourceBytes: 200,
+      truncated: true,
+      hasMore: true,
+      nextOffset: 15,
+    });
+    expect(calls[0]?.url).toContain("/v1/executions/exec-1/output?");
+    expect(calls[0]?.url).toContain("stream=stdout");
+    expect(calls[0]?.url).toContain("offset=10");
+    expect(calls[0]?.url).toContain("limit=5");
+    expect(headersOf(calls[0])["X-Uid"]).toBe("7");
   });
 });
 

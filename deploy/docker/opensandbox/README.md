@@ -37,7 +37,7 @@ root compose 的 `opensandbox-server` 与 `app-sandbox` 同属 `sandbox` profile
 - app-sandbox 设置 `extra_hosts: host.docker.internal:host-gateway`，用于访问
   server 发布在宿主上的 sandbox execd 端口；
 - sandbox 镜像默认 `python:3.12`，可用 `OPEN_SANDBOX_SANDBOX_IMAGE` 覆盖；
-- 产物仍为 Fake artifact store（MinIO 未接入），执行/配额/审计正常。
+- app-sandbox 的 artifact store 走 MinIO（`SANDBOX__ARTIFACTS__STORE=minio`），产物可下载；执行/配额/审计正常。
 
 ## 资源限制（客户端开发最小档）
 

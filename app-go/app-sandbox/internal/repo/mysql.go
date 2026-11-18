@@ -204,11 +204,26 @@ func (m *MySQL) Finish(ctx context.Context, id string, fin Finish) (bool, error)
 			"stderr_bytes":    fin.StderrBytes,
 			"stdout_preview":  fin.StdoutPreview,
 			"stderr_preview":  fin.StderrPreview,
+			"stdout_full":     fin.StdoutFull,
+			"stderr_full":     fin.StderrFull,
 			"artifact_prefix": fin.ArtifactPrefix,
 			"error_code":      fin.ErrorCode,
 			"finished_at":     fin.FinishedAt,
 		})
 	return res.RowsAffected > 0, res.Error
+}
+
+func (m *MySQL) UpdateOutput(ctx context.Context, id string, fin Finish) error {
+	return m.db.WithContext(ctx).Model(&model.SandboxExecution{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"stdout_bytes":   fin.StdoutBytes,
+			"stderr_bytes":   fin.StderrBytes,
+			"stdout_preview": fin.StdoutPreview,
+			"stderr_preview": fin.StderrPreview,
+			"stdout_full":    fin.StdoutFull,
+			"stderr_full":    fin.StderrFull,
+		}).Error
 }
 
 func (m *MySQL) Cancel(ctx context.Context, id, errorCode string, finishedAt time.Time) (bool, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -27,9 +28,26 @@ type ExecutionCanceler interface {
 
 // SpecHash is the deterministic sandbox identity component of the lease key:
 // only same-image/same-resource requests may reuse a sandbox.
-func SpecHash(image, cpu, memory string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{image, cpu, memory}, "|")))
+func SpecHash(image, cpu, memory, networkPolicy string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{image, cpu, memory, networkPolicy}, "|")))
 	return hex.EncodeToString(sum[:])
+}
+
+// networkPolicyOf builds the request policy from config; the hash includes the
+// allowlist so a policy change never reuses an old sandbox.
+func networkPolicyOf(cfg *config.Config) (*runtime.NetworkPolicy, string) {
+	rules := make([]runtime.EgressRule, 0, len(cfg.Network.EgressAllow))
+	for _, target := range cfg.Network.EgressAllow {
+		if target = strings.TrimSpace(target); target != "" {
+			rules = append(rules, runtime.EgressRule{Action: "allow", Target: target})
+		}
+	}
+	action := cfg.Network.EgressDefaultAction
+	if action == "" {
+		action = "deny"
+	}
+	hash := action + "|" + strings.Join(cfg.Network.EgressAllow, ",")
+	return &runtime.NetworkPolicy{Egress: rules, DefaultAction: action}, hash
 }
 
 // LeaseRequest is one acquisition attempt for the (uid, project, purpose, spec)
@@ -89,7 +107,8 @@ func (m *LeaseManager) ListByUID(ctx context.Context, uid int64, limit int) ([]m
 // with kind sandbox_concurrent.
 func (m *LeaseManager) Acquire(ctx context.Context, req LeaseRequest) (*model.SandboxLease, error) {
 	now := m.Now()
-	specHash := SpecHash(m.cfg.Runtime.Image, m.cfg.Runtime.Resources.CPU, m.cfg.Runtime.Resources.Memory)
+	policy, policyHash := networkPolicyOf(m.cfg)
+	specHash := SpecHash(m.cfg.Runtime.Image, m.cfg.Runtime.Resources.CPU, m.cfg.Runtime.Resources.Memory, policyHash)
 	ttl := m.cfg.LeaseTTL()
 
 	// 1) Reuse: the cheapest path (no runtime create, no cold start).
@@ -99,6 +118,13 @@ func (m *LeaseManager) Acquire(ctx context.Context, req LeaseRequest) (*model.Sa
 		if rerr == nil && renewed {
 			leased.LastUsedAt = now
 			leased.ExpiresAt = now.Add(ttl)
+			// Extend the runtime sandbox too: its creation-time expiration is fixed,
+			// while the DB lease is renewed on every reuse.
+			if leased.RuntimeID != "" {
+				if rerr := m.rt.Renew(ctx, leased.RuntimeID, now.Add(ttl+5*time.Minute)); rerr != nil {
+					slog.Warn("[LEASE] runtime renew on reuse failed", "lease", leased.ID, "err", rerr)
+				}
+			}
 			m.metrics.Inc("sandbox_lease_operations_total", map[string]string{"action": "reuse"})
 			m.auditLease(ctx, "agent", model.AuditLeaseReuse, leased, req, "reused", "")
 			return leased, nil
@@ -156,7 +182,8 @@ func (m *LeaseManager) Acquire(ctx context.Context, req LeaseRequest) (*model.Sa
 		Memory:    m.cfg.Runtime.Resources.Memory,
 		// Ask the backend for a lifetime slightly longer than the lease so a
 		// reclaim race never kills a busy sandbox before the sweeper releases it.
-		Timeout: ttl + 5*time.Minute,
+		Timeout:       ttl + 5*time.Minute,
+		NetworkPolicy: policy,
 	})
 	if err != nil {
 		_, _ = m.leases.SetState(context.WithoutCancel(ctx), lease.ID, []string{model.LeaseStateCreating}, model.LeaseStateFailed)
@@ -283,16 +310,42 @@ func (m *LeaseManager) RetryRelease(ctx context.Context, leaseID, reason, reques
 	return lease, nil
 }
 
+// ResolveSandbox returns the reusable runtime sandbox id for (uid, project,
+// purpose). File tools use it to read/write a workspace without creating one.
+func (m *LeaseManager) ResolveSandbox(ctx context.Context, uid int64, projectID, purpose string) (string, error) {
+	_, policyHash := networkPolicyOf(m.cfg)
+	specHash := SpecHash(m.cfg.Runtime.Image, m.cfg.Runtime.Resources.CPU, m.cfg.Runtime.Resources.Memory, policyHash)
+	lease, err := m.leases.FindReusable(ctx, uid, projectID, purpose, specHash, m.Now())
+	if err != nil {
+		return "", err
+	}
+	if lease.RuntimeID == "" {
+		return "", repo.ErrNotFound
+	}
+	return lease.RuntimeID, nil
+}
+
 // ListByStates lists leases in the given states (internal admin endpoint).
 func (m *LeaseManager) ListByStates(ctx context.Context, states []string, limit int) ([]model.SandboxLease, error) {
 	return m.leases.ListLeasesByState(ctx, states, limit)
 }
 
-// Renew extends a lease TTL after a successful execution.
-func (m *LeaseManager) Renew(ctx context.Context, leaseID string) error {
+// Renew extends a lease TTL after a successful execution and renews the
+// runtime sandbox expiration so a warm sandbox never dies while its DB lease
+// is still valid.
+func (m *LeaseManager) Renew(ctx context.Context, leaseID, sandboxID string) error {
 	now := m.Now()
-	_, err := m.leases.MarkIdle(ctx, leaseID, now, now.Add(m.cfg.LeaseTTL()))
-	return err
+	ttl := m.cfg.LeaseTTL()
+	_, err := m.leases.MarkIdle(ctx, leaseID, now, now.Add(ttl))
+	if err != nil {
+		return err
+	}
+	if sandboxID != "" {
+		if rerr := m.rt.Renew(ctx, sandboxID, now.Add(ttl+5*time.Minute)); rerr != nil {
+			slog.Warn("[LEASE] runtime renew failed", "lease", leaseID, "err", rerr)
+		}
+	}
+	return nil
 }
 
 // MarkBusy claims a lease for one execution (ready/idle -> busy).

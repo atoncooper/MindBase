@@ -51,6 +51,8 @@ type Config struct {
 	Admission AdmissionConfig `yaml:"admission"`
 	Quota     QuotaConfig     `yaml:"quota"`
 	Artifacts ArtifactsConfig `yaml:"artifacts"`
+	Minio     MinioConfig     `yaml:"minio"`
+	Network   NetworkConfig   `yaml:"network"`
 	Sweeper   SweeperConfig   `yaml:"sweeper"`
 }
 
@@ -62,6 +64,22 @@ type AppConfig struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	// HTTP timeouts; 0 = Go default (writeTimeout 0 is required for SSE).
+	ReadHeaderTimeoutMS int             `yaml:"readHeaderTimeoutMs"`
+	ReadTimeoutMS       int             `yaml:"readTimeoutMs"`
+	WriteTimeoutMS      int             `yaml:"writeTimeoutMs"`
+	IdleTimeoutMS       int             `yaml:"idleTimeoutMs"`
+	MaxHeaderBytes      int             `yaml:"maxHeaderBytes"`
+	ShutdownTimeoutMS   int             `yaml:"shutdownTimeoutMs"`
+	MaxBodyBytes        int64           `yaml:"maxBodyBytes"`
+	AccessLog           AccessLogConfig `yaml:"accessLog"`
+}
+
+// AccessLogConfig controls the structured Gin access log.
+type AccessLogConfig struct {
+	Enabled   bool     `yaml:"enabled"`
+	SlowMS    int      `yaml:"slowMs"`
+	SkipPaths []string `yaml:"skipPaths"`
 }
 
 type DatabaseConfig struct {
@@ -69,6 +87,10 @@ type DatabaseConfig struct {
 	MaxOpenConns    int    `yaml:"max_open_conns"`
 	MaxIdleConns    int    `yaml:"max_idle_conns"`
 	ConnMaxLifetime int    `yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime int    `yaml:"conn_max_idle_time"`
+	SlowThresholdMS int    `yaml:"slow_threshold_ms"`
+	PrepareStmt     bool   `yaml:"prepare_stmt"`
+	SkipDefaultTx   bool   `yaml:"skip_default_transaction"`
 }
 
 // AdminConfig configures the internal admin API. The token is
@@ -124,6 +146,13 @@ type AdmissionConfig struct {
 	MaxPerUID      int `yaml:"maxPerUid"`
 	QueueSize      int `yaml:"queueSize"`
 	QueueTimeoutMS int `yaml:"queueTimeoutMs"`
+	// MaxMemoryBytes caps the sum of reserved sandbox memory limits (0 = off).
+	MaxMemoryBytes int64 `yaml:"maxMemoryBytes"`
+	// MemoryPerExecutionBytes reserves this much per running execution
+	// (0 = parse runtime.resources.memory).
+	MemoryPerExecutionBytes int64 `yaml:"memoryPerExecutionBytes"`
+	// Weights are WFQ service weights by membership tier.
+	Weights map[string]float64 `yaml:"weights"`
 }
 
 type QuotaConfig struct {
@@ -148,10 +177,32 @@ type TierLimit struct {
 }
 
 type ArtifactsConfig struct {
+	// Store selects the artifact backend: "fake" (tests/demos) or "minio".
+	Store             string   `yaml:"store"`
 	PresignTTLSeconds int      `yaml:"presignTtlSeconds"`
 	MaxFileBytes      int64    `yaml:"maxFileBytes"`
 	MaxTotalBytes     int64    `yaml:"maxTotalBytes"`
 	DefaultGlobs      []string `yaml:"defaultGlobs"`
+}
+
+// NetworkConfig is the default sandbox egress policy (OpenSandbox network_policy).
+// EgressAllow empty + defaultAction=deny means no external network access.
+type NetworkConfig struct {
+	EgressDefaultAction string   `yaml:"egressDefaultAction"`
+	EgressAllow         []string `yaml:"egressAllow"`
+}
+
+// MinioConfig is the object store used for real artifact bytes and presigned
+// downloads. PublicEndpoint is browser-reachable; empty falls back to the
+// same-origin /minio-proxy prefix.
+type MinioConfig struct {
+	Endpoint       string `yaml:"endpoint"`
+	AccessKey      string `yaml:"accessKey"`
+	SecretKey      string `yaml:"secretKey"`
+	Bucket         string `yaml:"bucket"`
+	Secure         bool   `yaml:"secure"`
+	Region         string `yaml:"region"`
+	PublicEndpoint string `yaml:"publicEndpoint"`
 }
 
 type SweeperConfig struct {
@@ -161,10 +212,11 @@ type SweeperConfig struct {
 }
 
 type LogConfig struct {
-	Level  string        `yaml:"level"`
-	Format string        `yaml:"format"`
-	Output string        `yaml:"output"`
-	File   LogFileConfig `yaml:"file"`
+	Level     string        `yaml:"level"`
+	Format    string        `yaml:"format"`
+	Output    string        `yaml:"output"`
+	AddSource bool          `yaml:"addSource"`
+	File      LogFileConfig `yaml:"file"`
 }
 
 type LogFileConfig struct {
@@ -229,6 +281,26 @@ func applyEnvOverrides(cfg *Config) {
 	// ── SANDBOX__-prefixed overrides (highest priority) ──
 	setStr("SANDBOX__DATABASE__DSN", &cfg.Database.DSN)
 	setStr("SANDBOX__SERVER__HOST", &cfg.Server.Host)
+	setInt("SANDBOX__SERVER__READ_HEADER_TIMEOUT_MS", &cfg.Server.ReadHeaderTimeoutMS)
+	setInt("SANDBOX__SERVER__READ_TIMEOUT_MS", &cfg.Server.ReadTimeoutMS)
+	setInt("SANDBOX__SERVER__WRITE_TIMEOUT_MS", &cfg.Server.WriteTimeoutMS)
+	setInt("SANDBOX__SERVER__IDLE_TIMEOUT_MS", &cfg.Server.IdleTimeoutMS)
+	setInt("SANDBOX__SERVER__MAX_HEADER_BYTES", &cfg.Server.MaxHeaderBytes)
+	setInt("SANDBOX__SERVER__SHUTDOWN_TIMEOUT_MS", &cfg.Server.ShutdownTimeoutMS)
+	setInt64("SANDBOX__SERVER__MAX_BODY_BYTES", &cfg.Server.MaxBodyBytes)
+	setBool("SANDBOX__SERVER__ACCESS_LOG__ENABLED", &cfg.Server.AccessLog.Enabled)
+	setInt("SANDBOX__SERVER__ACCESS_LOG__SLOW_MS", &cfg.Server.AccessLog.SlowMS)
+	if raw := strings.TrimSpace(os.Getenv("SANDBOX__SERVER__ACCESS_LOG__SKIP_PATHS")); raw != "" {
+		parts := strings.Split(raw, ",")
+		skip := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if part = strings.TrimSpace(part); part != "" {
+				skip = append(skip, part)
+			}
+		}
+		cfg.Server.AccessLog.SkipPaths = skip
+	}
+	setInt("SANDBOX__DATABASE__CONN_MAX_IDLE_TIME", &cfg.Database.ConnMaxIdleTime)
 	setInt("SANDBOX__SERVER__PORT", &cfg.Server.Port)
 	setStr("SANDBOX__AUTH__API_KEY", &cfg.Auth.APIKey)
 	setStr("SANDBOX__ADMIN__TOKEN", &cfg.Admin.Token)
@@ -260,6 +332,8 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("SANDBOX__ADMISSION__MAX_PER_UID", &cfg.Admission.MaxPerUID)
 	setInt("SANDBOX__ADMISSION__QUEUE_SIZE", &cfg.Admission.QueueSize)
 	setInt("SANDBOX__ADMISSION__QUEUE_TIMEOUT_MS", &cfg.Admission.QueueTimeoutMS)
+	setInt64("SANDBOX__ADMISSION__MAX_MEMORY_BYTES", &cfg.Admission.MaxMemoryBytes)
+	setInt64("SANDBOX__ADMISSION__MEMORY_PER_EXECUTION_BYTES", &cfg.Admission.MemoryPerExecutionBytes)
 
 	setBool("SANDBOX__QUOTA__ENABLED", &cfg.Quota.Enabled)
 	setStr("SANDBOX__QUOTA__APP_PAY__BASE_URL", &cfg.Quota.AppPay.BaseURL)
@@ -278,14 +352,45 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 
+	setStr("SANDBOX__NETWORK__EGRESS_DEFAULT_ACTION", &cfg.Network.EgressDefaultAction)
+	if raw := strings.TrimSpace(os.Getenv("SANDBOX__NETWORK__EGRESS_ALLOW")); raw != "" {
+		parts := strings.Split(raw, ",")
+		allow := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if part = strings.TrimSpace(part); part != "" {
+				allow = append(allow, part)
+			}
+		}
+		cfg.Network.EgressAllow = allow
+	}
+	setStr("SANDBOX__ARTIFACTS__STORE", &cfg.Artifacts.Store)
 	setInt("SANDBOX__ARTIFACTS__PRESIGN_TTL_SECONDS", &cfg.Artifacts.PresignTTLSeconds)
 	setInt64("SANDBOX__ARTIFACTS__MAX_FILE_BYTES", &cfg.Artifacts.MaxFileBytes)
 	setInt64("SANDBOX__ARTIFACTS__MAX_TOTAL_BYTES", &cfg.Artifacts.MaxTotalBytes)
+
+	// MinIO is shared with app-cloud (MINIO__* names); SANDBOX__MINIO__* wins.
+	setStr("SANDBOX__MINIO__ENDPOINT", &cfg.Minio.Endpoint)
+	setStr("MINIO__ENDPOINT", &cfg.Minio.Endpoint)
+	setStr("SANDBOX__MINIO__ACCESS_KEY", &cfg.Minio.AccessKey)
+	setStr("MINIO__ACCESS_KEY", &cfg.Minio.AccessKey)
+	setStr("SANDBOX__MINIO__SECRET_KEY", &cfg.Minio.SecretKey)
+	setStr("MINIO__SECRET_KEY", &cfg.Minio.SecretKey)
+	setStr("SANDBOX__MINIO__BUCKET", &cfg.Minio.Bucket)
+	setStr("MINIO__BUCKET", &cfg.Minio.Bucket)
+	setBool("SANDBOX__MINIO__SECURE", &cfg.Minio.Secure)
+	setBool("MINIO__SECURE", &cfg.Minio.Secure)
+	setStr("SANDBOX__MINIO__REGION", &cfg.Minio.Region)
+	setStr("SANDBOX__MINIO__PUBLIC_ENDPOINT", &cfg.Minio.PublicEndpoint)
 
 	setInt("SANDBOX__SWEEPER__INTERVAL_MS", &cfg.Sweeper.IntervalMS)
 	setBool("SANDBOX__SWEEPER__ORPHAN_DRY_RUN", &cfg.Sweeper.OrphanDryRun)
 	setInt("SANDBOX__SWEEPER__CREATE_TIMEOUT_MS", &cfg.Sweeper.CreateTimeoutMS)
 
+	setBool("SANDBOX__LOG__ADD_SOURCE", &cfg.Log.AddSource)
+	setInt("SANDBOX__LOG__FILE__MAX_SIZE", &cfg.Log.File.MaxSize)
+	setInt("SANDBOX__LOG__FILE__MAX_BACKUPS", &cfg.Log.File.MaxBackups)
+	setInt("SANDBOX__LOG__FILE__MAX_AGE", &cfg.Log.File.MaxAge)
+	setBool("SANDBOX__LOG__FILE__COMPRESS", &cfg.Log.File.Compress)
 	setStr("SANDBOX__LOG__LEVEL", &cfg.Log.Level)
 	setStr("SANDBOX__LOG__FORMAT", &cfg.Log.Format)
 	setStr("SANDBOX__LOG__OUTPUT", &cfg.Log.Output)
@@ -299,6 +404,41 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Server.Port <= 0 || cfg.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be within 1..65535")
+	}
+	if cfg.Admission.MaxMemoryBytes > 0 && cfg.Admission.MemoryPerExecutionBytes > 0 &&
+		cfg.Admission.MaxMemoryBytes < cfg.Admission.MemoryPerExecutionBytes {
+		return fmt.Errorf("admission.maxMemoryBytes must be >= memoryPerExecutionBytes")
+	}
+	if cfg.Server.MaxBodyBytes < 0 {
+		return fmt.Errorf("server.maxBodyBytes must be >= 0")
+	}
+	if cfg.Database.MaxOpenConns < 0 || cfg.Database.MaxIdleConns < 0 {
+		return fmt.Errorf("database pool sizes must be >= 0")
+	}
+	if cfg.Database.MaxIdleConns > cfg.Database.MaxOpenConns && cfg.Database.MaxOpenConns > 0 {
+		return fmt.Errorf("database.max_idle_conns must be <= max_open_conns")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Network.EgressDefaultAction)) {
+	case "", "deny":
+		cfg.Network.EgressDefaultAction = "deny"
+	case "allow":
+		cfg.Network.EgressDefaultAction = "allow"
+	default:
+		return fmt.Errorf("network.egressDefaultAction must be allow or deny")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Artifacts.Store)) {
+	case "", "fake":
+		cfg.Artifacts.Store = "fake"
+	case "minio":
+		cfg.Artifacts.Store = "minio"
+		if strings.TrimSpace(cfg.Minio.Endpoint) == "" {
+			return fmt.Errorf("artifacts.store=minio requires MINIO__ENDPOINT")
+		}
+		if strings.TrimSpace(cfg.Minio.Bucket) == "" {
+			return fmt.Errorf("artifacts.store=minio requires MINIO__BUCKET")
+		}
+	default:
+		return fmt.Errorf("artifacts.store must be fake or minio, got %q", cfg.Artifacts.Store)
 	}
 	switch cfg.Runtime.Type {
 	case RuntimeFake:

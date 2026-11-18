@@ -193,6 +193,8 @@ export class ResearchExperimentRunner {
           code: exp.code,
           timeoutMs: exp.timeoutMs,
           uid: exp.uid,
+          projectId: exp.projectId,
+          purpose: "experiment",
         },
         controller.signal,
       );

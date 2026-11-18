@@ -50,6 +50,17 @@ func TestOpenSandboxLifecycleContract(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sandboxes/sbx-1/endpoints/44772":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"endpoint":"` + execd.URL + `","headers":{"X-Sandbox-Token":"t"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/sandboxes/sbx-1/renew-expiration":
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Errorf("renew body: %v", err)
+			}
+			if _, ok := payload["expiresAt"].(string); !ok {
+				t.Errorf("renew expiresAt = %v", payload["expiresAt"])
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"expiresAt":"2026-01-02T04:04:05Z"}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/sandboxes/sbx-1":
 			mu.Lock()
 			deleted = true
@@ -73,6 +84,10 @@ func TestOpenSandboxLifecycleContract(t *testing.T) {
 		UID: 7, ProjectID: "p1", Purpose: "academic", SpecHash: "h1",
 		Image: "python:3.12", CPU: "500m", Memory: "512Mi",
 		Timeout: 30 * time.Minute,
+		NetworkPolicy: &runtime.NetworkPolicy{
+			Egress:        []runtime.EgressRule{{Action: "allow", Target: "pypi.org"}},
+			DefaultAction: "deny",
+		},
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -95,6 +110,17 @@ func TestOpenSandboxLifecycleContract(t *testing.T) {
 	if metadata, _ := payload["metadata"].(map[string]any); metadata["uid"] != "7" || metadata["projectId"] != "p1" {
 		t.Errorf("metadata = %v", payload["metadata"])
 	}
+	policy, _ := payload["network_policy"].(map[string]any)
+	if policy["defaultAction"] != "deny" {
+		t.Errorf("network_policy.defaultAction = %v", policy["defaultAction"])
+	}
+	egress, _ := policy["egress"].([]any)
+	if len(egress) != 1 {
+		t.Fatalf("network_policy.egress = %v", policy["egress"])
+	}
+	if rule, _ := egress[0].(map[string]any); rule["target"] != "pypi.org" || rule["action"] != "allow" {
+		t.Errorf("egress rule = %v", egress[0])
+	}
 
 	got, err := adapter.Get(ctx, "sbx-1")
 	if err != nil {
@@ -110,6 +136,10 @@ func TestOpenSandboxLifecycleContract(t *testing.T) {
 	}
 	if endpoint != execd.URL {
 		t.Fatalf("endpoint = %q", endpoint)
+	}
+
+	if err := adapter.Renew(ctx, "sbx-1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
 
 	if err := adapter.Delete(ctx, "sbx-1"); err != nil {
@@ -262,5 +292,52 @@ func TestOpenSandboxExecCancellationInterruptsSession(t *testing.T) {
 	mu.Unlock()
 	if got != "sess-9" {
 		t.Fatalf("interrupted session = %q, want sess-9", got)
+	}
+}
+
+func TestOpenSandboxDownloadFile(t *testing.T) {
+	execd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/files/download":
+			if got := r.URL.Query().Get("path"); got != "/workspace/analysis/outputs/result.txt" {
+				t.Errorf("download path = %q", got)
+			}
+			if got := r.Header.Get("X-Sandbox-Token"); got != "t" {
+				t.Errorf("execd token header = %q", got)
+			}
+			_, _ = w.Write([]byte("artifact-ok"))
+		default:
+			t.Errorf("unexpected execd request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer execd.Close()
+
+	lifecycle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sandboxes/sbx-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"sbx-1","status":{"state":"Running"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sandboxes/sbx-1/endpoints/44772":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"endpoint":"` + execd.URL + `","headers":{"X-Sandbox-Token":"t"}}`))
+		default:
+			t.Errorf("unexpected lifecycle request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer lifecycle.Close()
+
+	adapter := runtime.NewOpenSandbox(config.OpenSandboxConfig{
+		LifecycleBaseURL: lifecycle.URL + "/v1",
+		APIKey:           "test-key",
+		ExecdPort:        44772,
+	})
+	data, err := adapter.DownloadFile(context.Background(), "sbx-1", "/workspace/analysis/outputs/result.txt", 1024)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if string(data) != "artifact-ok" {
+		t.Fatalf("download body = %q", data)
 	}
 }

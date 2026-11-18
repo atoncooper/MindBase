@@ -39,6 +39,7 @@ function setup() {
   const autopilot = new MemoryResearchAutopilotRepository();
   const planRuns = new MemoryPlanRunRepository();
   const workspaces = new MemoryResearchWorkspaceRepository();
+  const released: Array<{ uid: string; projectId: string }> = [];
   const deps: ProjectPurgeDeps = {
     projects: store,
     literature: store,
@@ -52,6 +53,12 @@ function setup() {
     autopilot,
     planRuns,
     workspaces,
+    sandboxLeases: {
+      releaseProject: async (uid, projectId) => {
+        released.push({ uid, projectId });
+        return 1;
+      },
+    },
   };
   return {
     store,
@@ -63,6 +70,7 @@ function setup() {
     autopilot,
     planRuns,
     workspaces,
+    released,
     service: new ProjectPurgeService(deps),
   };
 }

@@ -45,6 +45,12 @@ export interface CodeExecutionResult {
   error?: string;
   /** wall-clock duration reported by the control plane (ms) */
   durationMs?: number;
+  /** total bytes written to stdout/stderr (may exceed the returned preview) */
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  /** true when stdout/stderr was truncated in this result */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
 }
 
 /**
@@ -59,6 +65,128 @@ export interface CodeExecutionRequest {
   timeoutMs?: number;
   /** tenant id from ToolRunContext */
   uid?: string;
+  /** research project scope (lease reuse/isolation) from ToolRunContext */
+  projectId?: string;
+  /** calling surface: chat | experiment | ... */
+  purpose?: string;
+  /** text files materialized before execution (path must stay under /workspace) */
+  files?: Array<{ path: string; content: string }>;
+  /** extra output globs under the configured artifact root */
+  artifactGlobs?: string[];
+}
+
+/** One offset-addressed read of a text file in the sandbox workspace. */
+export interface SandboxFileReadRequest {
+  path: string;
+  /** UTF-8 byte offset; pass nextOffset from the previous read to continue. */
+  offset?: number;
+  /** max bytes to return; server clamps to 128 KiB */
+  limit?: number;
+  uid?: string;
+  projectId?: string;
+  purpose?: string;
+}
+
+export interface SandboxFileReadResult {
+  path: string;
+  content: string;
+  offset: number;
+  bytes: number;
+  totalBytes: number;
+  /** true when the file has bytes after nextOffset */
+  hasMore: boolean;
+  nextOffset: number;
+}
+
+export interface SandboxFileWriteRequest {
+  path: string;
+  content: string;
+  encoding?: "utf8" | "base64";
+  uid?: string;
+  projectId?: string;
+  purpose?: string;
+}
+
+export interface SandboxFileWriteResult {
+  path: string;
+  bytes: number;
+}
+
+/** File I/O capabilities exposed by the remote sandbox (not the Noop stub). */
+export interface CodeFilePort {
+  readFile(request: SandboxFileReadRequest, signal?: AbortSignal): Promise<SandboxFileReadResult>;
+  writeFile(request: SandboxFileWriteRequest, signal?: AbortSignal): Promise<SandboxFileWriteResult>;
+}
+
+/** One offset-addressed read of a terminal execution's stdout/stderr. */
+export interface SandboxOutputRequest {
+  executionId: string;
+  stream?: "stdout" | "stderr";
+  offset?: number;
+  limit?: number;
+  uid?: string;
+}
+
+export interface SandboxOutputResult {
+  executionId: string;
+  stream: "stdout" | "stderr";
+  content: string;
+  offset: number;
+  bytes: number;
+  totalBytes: number;
+  sourceBytes: number;
+  truncated: boolean;
+  hasMore: boolean;
+  nextOffset: number;
+}
+
+/** One paged read of a stored artifact. */
+export interface SandboxArtifactReadRequest {
+  executionId: string;
+  name: string;
+  offset?: number;
+  limit?: number;
+  uid?: string;
+}
+
+export interface SandboxArtifactReadResult {
+  executionId: string;
+  name: string;
+  contentType: string;
+  encoding: "utf8" | "base64";
+  binary: boolean;
+  content: string;
+  offset: number;
+  bytes: number;
+  totalBytes: number;
+  hasMore: boolean;
+  nextOffset: number;
+}
+
+export interface CodeArtifactPort {
+  readArtifact(request: SandboxArtifactReadRequest, signal?: AbortSignal): Promise<SandboxArtifactReadResult>;
+}
+
+/** Static runtime contract exposed by app-sandbox. */
+export interface SandboxRuntimeInfo {
+  runtime: string;
+  image: string;
+  cpu: string;
+  memory: string;
+  networkDefaultAction: string;
+  egressAllow: string[];
+  acceptedLanguages: string[];
+  notes: string[];
+}
+
+/** Runtime capability discovery (image/limits/network). */
+export interface CodeInfoPort {
+  getInfo(signal?: AbortSignal): Promise<SandboxRuntimeInfo>;
+}
+
+/** Paged output capability exposed by the remote sandbox. */
+export interface CodeOutputPort {
+  readOutput(request: SandboxOutputRequest, signal?: AbortSignal): Promise<SandboxOutputResult>;
 }
 
 /** Port consumed by run_code; implementations must never reject. */

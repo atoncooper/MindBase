@@ -22,6 +22,18 @@ type File struct {
 	Content string `json:"content"`
 }
 
+// EgressRule is one FQDN/IP allow/deny rule (OpenSandbox network_policy).
+type EgressRule struct {
+	Action string
+	Target string
+}
+
+// NetworkPolicy is the sandbox egress policy passed to the runtime.
+type NetworkPolicy struct {
+	Egress        []EgressRule
+	DefaultAction string
+}
+
 // CreateSpec describes one sandbox creation request.
 type CreateSpec struct {
 	UID       int64
@@ -35,6 +47,8 @@ type CreateSpec struct {
 	// Timeout is the sandbox lifetime requested from the backend (absolute TTL).
 	// Zero means the backend default. The control plane sets it from the lease TTL.
 	Timeout time.Duration
+	// NetworkPolicy enforces FQDN egress rules when the runtime supports it.
+	NetworkPolicy *NetworkPolicy
 }
 
 // Sandbox is the runtime view of one sandbox instance.
@@ -84,5 +98,11 @@ type Runtime interface {
 	// Delete is idempotent: deleting a missing sandbox returns nil.
 	Delete(ctx context.Context, sandboxID string) error
 	Exec(ctx context.Context, req ExecRequest) (*ExecResult, error)
+	// DownloadFile reads one sandbox file through the native file API (artifacts).
+	DownloadFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error)
+	// WriteFile materializes one text file inside the sandbox (file tools).
+	WriteFile(ctx context.Context, sandboxID string, file File) error
+	// Renew extends the backend sandbox expiration to expiresAt.
+	Renew(ctx context.Context, sandboxID string, expiresAt time.Time) error
 	Endpoint(ctx context.Context, sandboxID string) (string, error)
 }
