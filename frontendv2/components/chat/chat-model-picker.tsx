@@ -144,7 +144,7 @@ export function ChatModelPicker({
     const activeTab: Tab = forbidden ? "system" : tab;
 
     return (
-        <div ref={rootRef} className="relative shrink-0">
+        <div ref={rootRef} className="relative min-w-0 shrink">
             <button
                 type="button"
                 onClick={toggle}
@@ -153,7 +153,7 @@ export function ChatModelPicker({
                 aria-haspopup="true"
                 aria-label={`选择聊天模型（当前：${label}）`}
                 title="选择聊天模型：系统默认模型或 Coding Plan 模型"
-                className="flex h-8 max-w-[150px] items-center gap-1 rounded-md px-2 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 sm:max-w-[220px]"
+                className="flex h-8 w-full min-w-0 max-w-[150px] items-center gap-1 rounded-md px-2 text-[11px] text-secondary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50 sm:max-w-[220px]"
             >
                 {codingPlanValue && (
                     <Boxes className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />

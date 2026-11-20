@@ -168,10 +168,9 @@ export class ChatSessionsService {
   async history(uid: string, sessionId: string, page: number, pageSize: number): Promise<HistoryPage> {
     const session = await this.sessions.get(sessionId, uid);
     if (!session) throw new ChatSessionsError(404, "会话不存在");
-    const all = await this.messages.listBySession(sessionId);
-    const total = all.length;
+    const total = await this.messages.countBySession(sessionId);
     const start = (page - 1) * pageSize;
-    const slice = all.slice(start, start + pageSize);
+    const slice = await this.messages.listBySessionPage(sessionId, start, pageSize);
     return {
       messages: await Promise.all(slice.map((m) => this.toWire(m, sessionId))),
       total,

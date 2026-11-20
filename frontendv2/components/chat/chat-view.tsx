@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { memo, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, FileText, FlaskConical, X } from "lucide-react";
+import { ChevronDown, FileText, FlaskConical, Loader2, X } from "lucide-react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatHeader } from "./chat-header";
 import ChatMessage from "./chat-message";
@@ -22,6 +23,9 @@ import type { ChatMessageData, ChatSessionSummary } from "./types";
 // 用户自选的聊天模型（GET /chat/models 的 id）；"" / 无值 = 服务端默认模型。
 const CHAT_MODEL_STORAGE_KEY = "mindbase.chat.model";
 
+/** /chat/history 单页条数（后端 page_size 上限 100，50 兼顾首屏与 DOM 体积）。 */
+const HISTORY_PAGE_SIZE = 50;
+
 // Stable empty array so `messages` doesn't change identity on every render
 // (which would re-trigger the auto-scroll effect needlessly).
 const EMPTY_MESSAGES: ChatMessageData[] = [];
@@ -35,6 +39,10 @@ interface UISession {
   academicProjectId?: string;
   messages: ChatMessageData[];
   historyLoaded: boolean;
+  /** 已加载的最早一页（1-based）；>1 时顶部可继续加载更早消息。 */
+  historyPage?: number;
+  /** 服务端会话总消息数（仅用于「加载更早」状态）。 */
+  historyTotal?: number;
 }
 
 function toUIMessage(m: ApiChatMessage): ChatMessageData {
@@ -63,6 +71,52 @@ function toUIMessage(m: ApiChatMessage): ChatMessageData {
     error: m.error,
     timestamp: m.created_at,
   };
+}
+
+/**
+ * Load the latest slice of a session. The history API is offset-paged from the
+ * oldest message, so a long session must first discover total, then fetch the
+ * last page (plus the previous page so the first screen has ~50-100 messages,
+ * not a 1-message tail). Prepending earlier pages happens in loadEarlier().
+ */
+async function fetchLatestMessages(
+  sessionId: string,
+  pageSize: number
+): Promise<{ messages: ApiChatMessage[]; page: number; total: number }> {
+  const first = await chatApi.getHistory(sessionId, 1, pageSize);
+  if (first.total <= pageSize) {
+    return { messages: first.messages, page: 1, total: first.total };
+  }
+
+  const lastPage = Math.ceil(first.total / pageSize);
+  const latest = await chatApi.getHistory(sessionId, lastPage, pageSize);
+  const previous =
+    lastPage > 1
+      ? await chatApi.getHistory(sessionId, lastPage - 1, pageSize)
+      : null;
+
+  const seen = new Set<string>();
+  const merged: ApiChatMessage[] = [];
+  for (const m of [...(previous?.messages ?? []), ...latest.messages]) {
+    if (!seen.has(m.msg_id)) {
+      seen.add(m.msg_id);
+      merged.push(m);
+    }
+  }
+  return {
+    messages: merged,
+    page: lastPage > 1 ? lastPage - 1 : 1,
+    total: latest.total,
+  };
+}
+
+async function fetchLatestHistory(sessionId: string): Promise<{
+  messages: ChatMessageData[];
+  page: number;
+  total: number;
+}> {
+  const res = await fetchLatestMessages(sessionId, HISTORY_PAGE_SIZE);
+  return { ...res, messages: res.messages.map(toUIMessage) };
 }
 
 function toUISession(s: ChatSession): UISession {
@@ -97,6 +151,88 @@ interface QuotaBlockInfo {
   resetAt?: number;
   upgradeSku?: string;
 }
+
+interface MessageRowProps {
+  message: ChatMessageData;
+  prev?: ChatMessageData;
+  isStreaming: boolean;
+  streamStartedAt?: number;
+  editingMessageId: string | null;
+  onRegenerate: (messageId: string) => void;
+  onEdit: (messageId: string) => void;
+  onEditSubmit: (messageId: string, content: string) => void;
+  onEditCancel: () => void;
+  onInteractionAnswer: (messageId: string, answer: string) => void;
+  onImageOpen: (src: string) => void;
+}
+
+/**
+ * One message row. Extracted + memoized so a streaming token only re-renders
+ * the live assistant row: all callbacks below are stable wrappers owned by
+ * ChatView, and historical message objects keep their identity.
+ */
+const MessageRow = memo(function MessageRow({
+  message,
+  prev,
+  isStreaming,
+  streamStartedAt,
+  editingMessageId,
+  onRegenerate,
+  onEdit,
+  onEditSubmit,
+  onEditCancel,
+  onInteractionAnswer,
+  onImageOpen,
+}: MessageRowProps) {
+  const regenAnchor = prev && prev.role === "user" ? anchorIdOf(prev) : undefined;
+  const canRegenerate =
+    message.role === "assistant" &&
+    (message.status === "completed" || message.status === "failed") &&
+    !!regenAnchor;
+  const editAnchor = message.role === "user" ? anchorIdOf(message) : undefined;
+  const canEdit = !isStreaming && !!editAnchor;
+  const showInteractionAnswer =
+    message.interaction && !message.interactionAnswered && !isStreaming;
+
+  return (
+    <div
+      className="mx-auto w-full max-w-[768px] px-5 pb-5"
+      data-message-id={message.id}
+    >
+      <ChatMessage
+        role={message.role}
+        content={message.content}
+        images={message.images}
+        onImageOpen={onImageOpen}
+        sources={message.sources}
+        artifacts={message.artifacts}
+        reasoningSteps={message.reasoningSteps}
+        reasoning={message.reasoning}
+        queuePosition={message.queuePosition}
+        subAgent={message.subAgent}
+        interaction={message.interaction}
+        interactionAnswered={message.interactionAnswered}
+        plan={message.plan}
+        onInteractionAnswer={
+          showInteractionAnswer
+            ? (answer: string) => onInteractionAnswer(message.id, answer)
+            : undefined
+        }
+        status={message.status}
+        error={message.error}
+        timestamp={message.timestamp}
+        streamStartedAt={streamStartedAt}
+        onRegenerate={
+          canRegenerate ? () => onRegenerate(message.id) : undefined
+        }
+        onEdit={canEdit ? () => onEdit(message.id) : undefined}
+        isEditing={editingMessageId === message.id}
+        onEditSubmit={(content) => onEditSubmit(message.id, content)}
+        onEditCancel={onEditCancel}
+      />
+    </div>
+  );
+});
 
 interface ChatViewProps {
   /**
@@ -155,9 +291,25 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
   const [selectedModel, setSelectedModel] = useState<string>("");
   // Which user message is currently being edited inline (at most one).
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  // Stable wrappers for MessageRow: the underlying handlers change whenever
+  // sessions/quota state changes, but memoized historical rows must not.
+  const actionsRef = useRef<{
+    regenerate: (messageId: string) => void;
+    editSubmit: (messageId: string, content: string) => void;
+    interactionAnswer: (messageId: string, answer: string) => void;
+  } | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const messages = activeSession?.messages ?? EMPTY_MESSAGES;
+  // Previous-message map for MessageRow (Virtuoso's item index includes
+  // firstItemIndex, so index-1 is not a reliable data index after prepends).
+  const prevMessageById = useMemo(() => {
+    const map = new Map<string, ChatMessageData>();
+    for (let i = 1; i < messages.length; i++) {
+      map.set(messages[i].id, messages[i - 1]);
+    }
+    return map;
+  }, [messages]);
   // 草稿态（还没创建会话）选中的科研项目：第一条消息创建会话时写入绑定。
   const [draftAcademicProjectId, setDraftAcademicProjectId] = useState<string | undefined>(academicProjectId);
   // 已选会话以自身绑定为准；草稿态用选择器/入口参数。
@@ -346,12 +498,18 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     let cancelled = false;
     (async () => {
       try {
-        const res = await chatApi.getHistory(activeSessionId);
+        const res = await fetchLatestHistory(activeSessionId);
         if (cancelled) return;
         setSessions((prev) =>
           prev.map((s) =>
             s.id === activeSessionId
-              ? { ...s, messages: res.messages.map(toUIMessage), historyLoaded: true }
+              ? {
+                  ...s,
+                  messages: res.messages,
+                  historyLoaded: true,
+                  historyPage: res.page,
+                  historyTotal: res.total,
+                }
               : s
           )
         );
@@ -400,60 +558,119 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     };
   }, []);
 
-  // ---- Auto-scroll with stick-to-bottom (rAF-throttled) ----
-  // Follow the stream only while the user is already near the bottom; once
-  // they scroll up to read, stop yanking the viewport and offer a jump-back
-  // button instead.
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // ---- Virtualized chat list / stick-to-bottom ----
+  // Virtuoso owns the scroll container; followOutput keeps the live turn
+  // pinned only while the user is already at the bottom.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const listWrapRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
-  const scrollRafRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (scrollRafRef.current != null) return;
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = null;
-      if (!stickToBottomRef.current) return;
-      const el = scrollRef.current;
-      if (!el) return;
-      // Scroll the message viewport itself; never scrollIntoView() — that can
-      // walk up to the page and drag the composer into the middle of the screen.
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => {
-      if (scrollRafRef.current != null) {
-        cancelAnimationFrame(scrollRafRef.current);
-        scrollRafRef.current = null;
-      }
-    };
-  }, [messages, isStreaming]);
+  // Prepending a page must move the virtual index down so Virtuoso keeps the
+  // current reading position instead of jumping to the new top.
+  const [firstItemIndex, setFirstItemIndex] = useState(0);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
 
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottomRef.current = distance < 80;
-    setShowJumpToBottom(distance > 240);
+  const scrollToBottom = useCallback((smooth = true) => {
+    stickToBottomRef.current = true;
+    setShowJumpToBottom(false);
+    const el = scrollerRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      return;
+    }
+    virtuosoRef.current?.scrollToIndex({
+      index: "LAST",
+      align: "end",
+      behavior: smooth ? "smooth" : "auto",
+    });
   }, []);
 
-  // The composer grows/shrinks (attachments, quota banner, mobile keyboard).
-  // Keep the last message pinned when the viewport height changes.
+  // FIRST render of a session: initialTopMostItemIndex is not enough when the
+  // last message is taller than the viewport (it can land at the item's top and
+  // leave the tail clipped). Force one bottom alignment after data arrives.
+  const initialBottomSessionRef = useRef<string | null>(null);
   useEffect(() => {
-    const el = scrollRef.current;
+    if (!activeSessionId || messages.length === 0) return;
+    if (initialBottomSessionRef.current === activeSessionId) return;
+    initialBottomSessionRef.current = activeSessionId;
+    stickToBottomRef.current = true;
+    // The first measurement pass can land at the top of a tall last message;
+    // keep pinning for a few frames until Virtuoso has measured the real height.
+    let cancelled = false;
+    let frames = 0;
+    const pin = () => {
+      if (cancelled) return;
+      const el = scrollerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      } else {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+      }
+      frames += 1;
+      if (frames < 20) requestAnimationFrame(pin);
+    };
+    const raf = requestAnimationFrame(pin);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [activeSessionId, messages.length]);
+
+  const handleAtBottom = useCallback((atBottom: boolean) => {
+    stickToBottomRef.current = atBottom;
+    setShowJumpToBottom(!atBottom && messages.length > 0);
+  }, [messages.length]);
+
+  // Composer growth / mobile keyboard changes the viewport height; keep the
+  // last message pinned when the user was at the bottom.
+  useEffect(() => {
+    const el = listWrapRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+      if (stickToBottomRef.current) {
+        const scroller = scrollerRef.current;
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const scrollToBottom = useCallback((smooth = true) => {
-    stickToBottomRef.current = true;
-    setShowJumpToBottom(false);
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
-  }, []);
+  // Load the previous server page and prepend it. firstItemIndex+scroll
+  // preservation are Virtuoso's documented "prepend" recipe.
+  const loadEarlier = useCallback(async () => {
+    const sessionId = activeSessionId;
+    const sess = sessions.find((s) => s.id === sessionId);
+    const page = sess?.historyPage;
+    if (!sessionId || !sess || !page || page <= 1 || loadingEarlier) return;
+    setLoadingEarlier(true);
+    try {
+      const res = await chatApi.getHistory(sessionId, page - 1, HISTORY_PAGE_SIZE);
+      const incoming = res.messages.map(toUIMessage);
+      const existing = new Set(sess.messages.map((m) => m.id));
+      const older = incoming.filter((m) => !existing.has(m.id));
+      if (older.length > 0) {
+        setFirstItemIndex((idx) => idx - older.length);
+      }
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                messages: older.length > 0 ? [...older, ...s.messages] : s.messages,
+                historyPage: page - 1,
+                historyTotal: res.total,
+              }
+            : s
+        )
+      );
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "加载更早消息失败");
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [activeSessionId, sessions, loadingEarlier]);
 
   // ---- Backfill real backend msg_ids after a streamed turn ----
   // The SSE protocol carries no msg_ids, so freshly-streamed messages only
@@ -465,12 +682,10 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     const sessionId = targetSessionId ?? activeSessionId;
     if (!sessionId) return;
     try {
-      let res = await chatApi.getHistory(sessionId, 1, 100);
-      if (res.total > res.messages.length && res.messages.length === 100) {
-        // Long session: the fresh turns sit on the last page.
-        res = await chatApi.getHistory(sessionId, Math.ceil(res.total / 100), 100);
-      }
-      const server = res.messages;
+      // Same window as the initial load: latest ~50 messages. Compare only when
+      // the UI still holds exactly that window (otherwise leave ids as-is).
+      const latest = await fetchLatestMessages(sessionId, HISTORY_PAGE_SIZE);
+      const server = latest.messages;
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId || server.length !== s.messages.length) return s;
@@ -1011,6 +1226,30 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
     [activeSessionId, isStreaming, sessions, updateActiveSession, streamQuestion]
   );
 
+  // Latest implementation ref: MessageRow gets these stable callbacks forever,
+  // so memo can skip every historical row while a live row streams. Updating
+  // the ref in an effect (not during render) keeps React's refs rule.
+  useEffect(() => {
+    actionsRef.current = {
+      regenerate: (messageId) => void handleRegenerate(messageId),
+      editSubmit: (messageId, content) => void handleEditUserMessage(messageId, content),
+      interactionAnswer: (messageId, answer) => handleInteractionAnswer(messageId, answer),
+    };
+  }, [handleRegenerate, handleEditUserMessage, handleInteractionAnswer]);
+  const onRegenerateMessage = useCallback((messageId: string) => {
+    actionsRef.current?.regenerate(messageId);
+  }, []);
+  const onEditSubmitMessage = useCallback((messageId: string, content: string) => {
+    actionsRef.current?.editSubmit(messageId, content);
+  }, []);
+  const onInteractionAnswerMessage = useCallback((messageId: string, answer: string) => {
+    actionsRef.current?.interactionAnswer(messageId, answer);
+  }, []);
+  const onEditMessage = useCallback((messageId: string) => {
+    setEditingMessageId(messageId);
+  }, []);
+  const onEditCancel = useCallback(() => setEditingMessageId(null), []);
+
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
     setIsStreaming(false);
@@ -1275,74 +1514,73 @@ export function ChatView({ academicProjectId, uploadUuid, startNew }: ChatViewPr
           </div>
         )}
 
-        {/* Messages scroll area */}
-        <div className="relative min-h-0 flex-1 overflow-hidden">
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="h-full overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
-          >
-            {messages.length === 0 ? (
-              <ChatEmpty onSuggestionClick={handleSend} />
-            ) : (
-              <div className="mx-auto max-w-[768px] space-y-5 px-5 py-6">
-                {messages.map((message, i) => {
-                  const prev = messages[i - 1];
-                  const regenAnchor =
-                    prev && prev.role === "user" ? anchorIdOf(prev) : undefined;
-                  const canRegenerate =
-                    message.role === "assistant" &&
-                    (message.status === "completed" || message.status === "failed") &&
-                    !!regenAnchor;
-                  const editAnchor =
-                    message.role === "user" ? anchorIdOf(message) : undefined;
-                  const canEdit = !isStreaming && !!editAnchor;
-                  return (
-                    <ChatMessage
-                      key={message.id}
-                      role={message.role}
-                      content={message.content}
-                      images={message.images}
-                      onImageOpen={setLightboxSrc}
-                      sources={message.sources}
-                      artifacts={message.artifacts}
-                      reasoningSteps={message.reasoningSteps}
-                      reasoning={message.reasoning}
-                      queuePosition={message.queuePosition}
-                      subAgent={message.subAgent}
-                      interaction={message.interaction}
-                      interactionAnswered={message.interactionAnswered}
-                      plan={message.plan}
-                      onInteractionAnswer={
-                        message.interaction && !message.interactionAnswered && !isStreaming
-                          ? (answer: string) => handleInteractionAnswer(message.id, answer)
-                          : undefined
-                      }
-                      status={message.status}
-                      error={message.error}
-                      timestamp={message.timestamp}
-                      streamStartedAt={
-                        message.status === "pending" ? streamStartedAt ?? undefined : undefined
-                      }
-                      onRegenerate={
-                        canRegenerate
-                          ? () => void handleRegenerate(message.id)
-                          : undefined
-                      }
-                      onEdit={canEdit ? () => setEditingMessageId(message.id) : undefined}
-                      isEditing={editingMessageId === message.id}
-                      onEditSubmit={(content) => {
-                        setEditingMessageId(null);
-                        void handleEditUserMessage(message.id, content);
-                      }}
-                      onEditCancel={() => setEditingMessageId(null)}
-                    />
-                  );
-                })}
-
-              </div>
-            )}
-          </div>
+        {/* Messages scroll area — virtualized; only the viewport (+overscan) is
+            in the DOM. This replaces a content-visibility stopgap: layering
+            content-visibility on top would fight Virtuoso's dynamic height
+            measurement for no extra gain (offscreen rows are not mounted). */}
+        <div ref={listWrapRef} className="relative min-h-0 flex-1 overflow-hidden">
+          {messages.length === 0 ? (
+            <ChatEmpty onSuggestionClick={handleSend} />
+          ) : (
+            <Virtuoso
+              key={activeSessionId ?? "draft"}
+              ref={virtuosoRef}
+              scrollerRef={(ref) => {
+                scrollerRef.current = ref instanceof HTMLElement ? ref : null;
+              }}
+              className="h-full [scrollbar-gutter:stable]"
+              style={{ height: "100%" }}
+              data={messages}
+              firstItemIndex={firstItemIndex}
+              initialTopMostItemIndex={messages.length - 1}
+              computeItemKey={(_, message) => message.id}
+              followOutput={(atBottom) =>
+                atBottom ? (isStreaming ? "auto" : "smooth") : false
+              }
+              atBottomStateChange={handleAtBottom}
+              atBottomThreshold={80}
+              increaseViewportBy={{ top: 600, bottom: 600 }}
+              alignToBottom
+              components={{
+                Header: () => (
+                  <div className="mx-auto w-full max-w-[768px] px-5 pt-6">
+                    {(activeSession?.historyPage ?? 1) > 1 && (
+                      <div className="mb-5 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => void loadEarlier()}
+                          disabled={loadingEarlier}
+                          className="btn-pill btn-ghost inline-flex h-8 items-center gap-1.5 px-3 text-[11px] disabled:opacity-60"
+                        >
+                          {loadingEarlier && (
+                            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                          )}
+                          {loadingEarlier ? "加载中…" : "加载更早消息"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ),
+              }}
+              itemContent={(_, message) => (
+                <MessageRow
+                  message={message}
+                  prev={prevMessageById.get(message.id)}
+                  isStreaming={isStreaming}
+                  streamStartedAt={
+                    message.status === "pending" ? streamStartedAt ?? undefined : undefined
+                  }
+                  editingMessageId={editingMessageId}
+                  onRegenerate={onRegenerateMessage}
+                  onEdit={onEditMessage}
+                  onEditSubmit={onEditSubmitMessage}
+                  onEditCancel={onEditCancel}
+                  onInteractionAnswer={onInteractionAnswerMessage}
+                  onImageOpen={setLightboxSrc}
+                />
+              )}
+            />
+          )}
 
           {/* Jump back to the live bottom when the user scrolled up */}
           {showJumpToBottom && (

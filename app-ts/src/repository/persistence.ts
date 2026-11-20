@@ -108,6 +108,8 @@ export interface MessageRepository {
   listDone(sessionId: string, skip: number, limit: number): Promise<ChatMessage[]>;
   /** ALL messages of the session (any status) in createdAt order — history reads */
   listBySession(sessionId: string): Promise<ChatMessage[]>;
+  /** one history page in createdAt order (DB-level skip/limit; no full-session read) */
+  listBySessionPage(sessionId: string, skip: number, limit: number): Promise<ChatMessage[]>;
   /** total message count of the session (any status) */
   countBySession(sessionId: string): Promise<number>;
   /** hard-delete every message of the session; returns the deleted count */

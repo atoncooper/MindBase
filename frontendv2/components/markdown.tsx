@@ -11,7 +11,7 @@
  * Use `inline` to render paragraphs as <span> (for buttons, list items, and
  * other inline contexts where a block <p> would break layout).
  */
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -41,7 +41,7 @@ const BLOCK_COMPONENTS: Components = {
 
 const INLINE_BLOCK_COMPONENTS: Components = { ...INLINE_COMPONENTS, ...BLOCK_COMPONENTS };
 
-export function Markdown({ children, inline }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ children, inline }: MarkdownProps) {
     return (
         <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkMath]}
@@ -51,4 +51,4 @@ export function Markdown({ children, inline }: MarkdownProps) {
             {children}
         </ReactMarkdown>
     );
-}
+});
