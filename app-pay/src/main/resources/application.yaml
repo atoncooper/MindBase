@@ -1,10 +1,12 @@
 server:
   port: 8002
+  # 优雅停机：发布/重启时先停止接新请求并等在途请求完成，避免支付回调/退款半途被切断
+  shutdown: graceful
   tomcat:
     threads:
       # 显式声明（默认 200 保留）：出网 HTTP（支付宝/app-task）都在这些线程上发生，
       # 与 Hikari pool-size 的关系见 pay.rdbms.pool-size 注释
-      max: 200
+      max: 400
       min-spare: 20
     accept-count: 100
   # 安全边界（本文件=本地开发形态）：显式只绑回环，「测试入口+MOCK 渠道」绝不可被局域网直连。
@@ -25,6 +27,9 @@ server:
 spring:
   application:
     name: app-pay
+  lifecycle:
+    # 与 server.shutdown=graceful 配套：最多等在途请求 20s
+    timeout-per-shutdown-phase: 20s
   http:
     client:
       # Global fail-fast for outbound HTTP (timeout delegation registration runs in the request thread's afterCommit, so it must be bounded in time)
@@ -50,6 +55,8 @@ mybatis-plus:
   configuration:
     # automatic mapping between entity camelCase and table snake_case (order_no <-> orderNo)
     map-underscore-to-camel-case: true
+    # 单语句超时（秒）：锁等待/慢查询不会把 Tomcat 线程永久占住
+    default-statement-timeout: 10
   # handwritten SQL is centralized in XML (resources/mapper/*.xml), matching Mapper interface method ids one-to-one
   mapper-locations: classpath*:/mapper/**/*.xml
 
@@ -58,7 +65,8 @@ pay:
     # [this file = local development shape] connects directly to host-mapped port 3307 (app-pay-mysql container);
     # the Docker container shape is in application-docker.yaml (compose command activates the docker profile)
     # connection params: PreparedStatement client-side cache (clearly beneficial for repeated MyBatis statements)
-    url: jdbc:mysql://127.0.0.1:3307/app_pay?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
+    # connectTimeout/socketTimeout：数据库网络半开或慢查询时请求线程不能无限挂起（默认 0 = 永不超时）
+    url: jdbc:mysql://127.0.0.1:3307/app_pay?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&connectTimeout=3000&socketTimeout=15000&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=false
     # the password placeholder references .env (shares the same variable name with the MySQL container); defaults match compose, works out of the box
     username: ${PAY_MYSQL_USER:app_pay}
     password: ${PAY_MYSQL_PASSWORD:app-pay}
@@ -98,6 +106,9 @@ pay:
     # executor callback token: when non-empty, /internal/pay/timeout/execute enforces the query token;
     # the token is delivered via the registered executor_url query string (app-task POSTs it as-is, no change needed).
     executor-token: ${PAY_EXECUTOR_TOKEN:}
+    # /internal/pay/* 服务端二次校验（X-Internal-Key）：APISIX 在 key-auth 之后注入；
+    # 默认回落到共享内部 key；docker profile 启动自检要求非空（fail-closed）。
+    api-key: ${PAY_INTERNAL_KEY:${APISIX_CONSUMER_KEY:}}
   refund:
     # M4 refund reversal: controlled by the internal endpoint (key-auth); maxDaysBack limits the refund window
     enabled: true
@@ -168,6 +179,10 @@ management:
   health:
     db:
       enabled: true
+    # L2 cache is optional (pay.cache.redis-enabled=false by default); a missing
+    # Redis must not turn the payment service health endpoint DOWN.
+    redis:
+      enabled: false
   metrics:
     tags:
       application: app-pay

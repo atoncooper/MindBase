@@ -11,21 +11,53 @@ groups:
         annotations:
           summary: "app-pay 对账发现差异（1h 内 {{ $value }} 笔）"
 
-      # 回调金额不符/缺失（已 ack 停止重试，需人工退款）
+      # 回调金额不符/缺失（已 ack 停止重试，需人工退款）——独立指标（原规则错用了 rejected 指标，永不触发）
       - alert: AppPayAmountMismatch
-        expr: increase(pay_callback_rejected_total[1h]) > 0
+        expr: increase(pay_callback_amount_mismatch_total[1h]) > 0
         for: 0m
         labels: { severity: critical }
         annotations:
-          summary: "app-pay 回调被拒/金额不符（1h 内 {{ $value }}）"
+          summary: "app-pay 回调金额不符/缺失（1h 内 {{ $value }}），需人工对账/退款"
 
-      # 档位墙自动退款失败（订单冻结 REFUND_HOLD，需人工）
-      - alert: AppPayAutoRefundFailed
+      # 回调验签失败/未知订单（伪造或配置错，突增需排查）
+      - alert: AppPayCallbackRejected
+        expr: increase(pay_callback_rejected_total[1h]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay 回调验签失败（1h 内 {{ $value }}），疑似伪造或公钥配置错误"
+
+      # 交付失败（订单停留 PAID 等待补偿）
+      - alert: AppPayDeliveryFailed
         expr: increase(pay_delivery_failed_total[30m]) > 0
         for: 0m
         labels: { severity: warning }
         annotations:
           summary: "app-pay 交付失败（30m 内 {{ $value }}），订单停留 PAID 等待补偿"
+
+      # 档位墙自动退款失败（订单冻结 REFUND_HOLD，需人工）
+      - alert: AppPayAutoRefundFailed
+        expr: increase(pay_order_auto_refund_failed_total[30m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "app-pay 重复购买自动退款失败（30m 内 {{ $value }}），订单冻结 REFUND_HOLD 需人工退款"
+
+      # 交付补偿达到尝试上限（毒丸订单，需人工）
+      - alert: AppPayDeliveryExhausted
+        expr: increase(pay_delivery_exhausted_total[1h]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay 交付补偿达到尝试上限（1h 内 {{ $value }}），需人工处理"
+
+      # 内部端点鉴权失败（缺/错 X-Internal-Key）：安全事件
+      - alert: AppPayInternalAuthRejected
+        expr: increase(pay_internal_auth_rejected_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "app-pay 内部端点鉴权失败（5m 内 {{ $value }}），检查网关注入/直连调用"
 
       # 渠道配额水位（P2-4）：query/create 速率逼近告警线
       - alert: AppPayChannelQueryRate
@@ -67,10 +99,18 @@ groups:
         annotations:
           summary: "app-pay 出现获取连接超时（5m 内 {{ $value }}）—— 池太小或慢查询"
 
-      # 定时任务停滞（JobLease/调度异常）
-      - alert: AppPayJobStalled
-        expr: time() - app_pay_job_last_run_timestamp_seconds > 600
+      # 渠道出网并发闸门拒绝（渠道变慢/被刷，保护线程与配额）
+      - alert: AppPayChannelThrottled
+        expr: increase(pay_channel_throttled_total[5m]) > 50
         for: 0m
         labels: { severity: warning }
         annotations:
-          summary: "app-pay 兜底 job 超过 10 分钟未运行"
+          summary: "app-pay 渠道出网闸门拒绝激增（5m 内 {{ $value }}）"
+
+      # 定时任务停滞（P0 修复后指标真实存在：pay_job_last_run{job=...} 为 epoch 秒）
+      - alert: AppPayJobStalled
+        expr: time() - max by (job) (pay_job_last_run) > 600
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "app-pay 兜底 job {{ $labels.job }} 超过 10 分钟未运行"

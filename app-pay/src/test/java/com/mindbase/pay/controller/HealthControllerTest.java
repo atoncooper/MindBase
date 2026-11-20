@@ -75,6 +75,17 @@ class HealthControllerTest {
     }
 
     @Test
+    void livenessDoesNotTouchDatabase() throws Exception {
+        // DB 不可用也必须返回 200：网关探活不能因连接池/DB 抖动把实例整站摘除
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
+                new HealthController(props(false), unreachable())).build();
+
+        mockMvc.perform(get("/health/live"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
     void healthDownWhenDbUnreachable() throws Exception {
         MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
                 new HealthController(props(false), unreachable())).build();

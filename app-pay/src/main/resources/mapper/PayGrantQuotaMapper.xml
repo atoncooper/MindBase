@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- ADMIN_GRANT 日额度原子计数（P0/P2 加固，见 V7 迁移）。 -->
+<mapper namespace="com.mindbase.pay.mapper.PayGrantQuotaMapper">
+
+    <!-- 并发首次调用：唯一主键收敛为一行；已存在时仅触碰 updated_at（不改变计数） -->
+    <insert id="ensureDay">
+        INSERT INTO pay_grant_quota (day, cnt, days, updated_at)
+        VALUES (#{day}, 0, 0, #{now})
+        ON DUPLICATE KEY UPDATE updated_at = updated_at
+    </insert>
+
+    <!-- 锁住当天行：同一天的补偿开通串行化，直到事务提交/回滚 -->
+    <select id="lockDay" resultType="com.mindbase.pay.model.PayGrantQuota">
+        SELECT day, cnt, days, updated_at
+        FROM pay_grant_quota
+        WHERE day = #{day}
+        FOR UPDATE
+    </select>
+
+    <update id="consume">
+        UPDATE pay_grant_quota
+        SET cnt        = cnt + 1,
+            days       = days + #{addDays},
+            updated_at = #{now}
+        WHERE day = #{day}
+    </update>
+</mapper>

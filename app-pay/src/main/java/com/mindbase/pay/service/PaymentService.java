@@ -3,6 +3,7 @@ package com.mindbase.pay.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.mindbase.pay.common.ApiException;
+import com.mindbase.pay.common.LogSanitizer;
 import com.mindbase.pay.common.PayAuditLogger;
 import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.mapper.PayCallbackLogMapper;
@@ -20,24 +21,30 @@ import java.time.LocalDateTime;
 /**
  * Unified entry point for channel payment notifications (shared by M1 mock / M2 Alipay callbacks and query polling).
  *
- * Idempotency design (plan/1.0.7-Pay §4):
+ * <p>Idempotency design (plan/1.0.7-Pay §4):
  * (1) the markPaid conditional update (WHERE status='CREATED') guarantees at the database layer that only one of
  *     several concurrent callbacks takes effect;
  * (2) every callback is written to the callback log (including idempotent hits / re-open after close branches);
  * (3) delivery goes through DeliveryService (PAID is the received-payment fact and is not rolled back when delivery
  *     fails).
- * All money events are written synchronously to PayAuditLogger (the JSONL audit file).
+ *
+ * <p><b>第二道墙已下沉到 DeliveryService（唯一交付入口）</b>：此前只在本类首次接受路径做重复购买判定，
+ * 造成“并发自愈/补偿路径可绕过”的竞态；现在本类只负责“把 PAID 交给交付”，若交付返回 TIER_BLOCKED
+ * （违规订单已被冻结为 REFUND_HOLD），统一在此触发原路自动退款。所有路径（首次回调、重复回调自愈、
+ * 补偿 Job）行为一致。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PaymentService {
 
+    /** 重复购买自动退款原因（审计与客服对账共用同一文案）。 */
+    public static final String DUPLICATE_PURCHASE_REASON = "重复购买自动退款（仅允许向上升级）";
+
     private final PayOrderMapper orderMapper;
     private final PayCallbackLogMapper callbackLogMapper;
     private final DeliveryService deliveryService;
     private final RefundService refundService;
-    private final MembershipService membershipService;
     private final PayAuditLogger audit;
     private final PayMetrics metrics;
     private final Clock clock;
@@ -67,6 +74,7 @@ public class PaymentService {
             // still marked the order PAID.
             if (paidAmountCents == null) {
                 log.error("[PAY] amount_missing channel={} order_no={}", channel, orderNo);
+                metrics.callbackAmountMismatch();
                 audit.audit("AMOUNT_MISSING", "order_no", orderNo, "channel", channel.name());
                 logCallback(orderNo, channel, payloadMasked, signatureResult,
                         PayCallbackLog.HandleResult.ERROR, "amount missing");
@@ -83,6 +91,7 @@ public class PaymentService {
                 log.error("[PAY] amount_mismatch expect={} actual={}", order.getAmountCents(), paidAmountCents);
                 audit.audit("AMOUNT_MISMATCH", "order_no", orderNo, "channel", channel.name(),
                         "expect_cents", order.getAmountCents(), "actual_cents", paidAmountCents);
+                metrics.callbackAmountMismatch();
                 logCallback(orderNo, channel, payloadMasked, signatureResult,
                         PayCallbackLog.HandleResult.ERROR, "amount mismatch");
                 throw ApiException.badRequest("AMOUNT_MISMATCH", "Callback amount does not match the order");
@@ -106,47 +115,51 @@ public class PaymentService {
             audit.audit("ORDER_PAID", "order_no", orderNo, "uid", order.getUid(),
                     "channel", channel.name(), "amount_cents", order.getAmountCents(),
                     "trade_no", channelTradeNo);
-
-            // ── 第二道墙（安全纵深）：PAID 落库后复核档位 ——
-            // 即使恶意脚本绕过下单拦截（并发窗口/伪造请求），付款确认时也会复核：
-            // 违规单（档位不高于现有生效会员）不交付权益，自动原路退款（本单未交付，
-            // 不撤销任何天数）。退款失败则保持 PAID 禁止交付并告警，人工介入。
-            // tier 快照为空（历史/异常单）不拦截 —— 与 applyTier 的 normalize 语义一致。
-            String paidTier = order.getTier();
-            // 升级换购单豁免第二道墙：同档升级单的档位 == 现有档位，按设计应交付
-            // （差价已在建单时按基准单折算）；第二道墙只拦“未升级语义”的重复购买。
-            if (paidTier != null && !paidTier.isBlank() && order.getUpgradeFromOrderNo() == null) {
-                int activeRank = membershipService.activeTierRank(order.getUid());
-                int orderRank = MembershipService.tierRank(paidTier);
-                if (orderRank <= activeRank) {
-                    log.warn("[PAY] duplicate_order_auto_refund order_no={} order_tier={} active_rank={}",
-                            orderNo, paidTier, activeRank);
-                    audit.audit("DUPLICATE_ORDER_AUTO_REFUND", "order_no", orderNo, "uid", order.getUid(),
-                            "tier", paidTier, "active_rank", activeRank,
-                            "amount_cents", order.getAmountCents());
-                    try {
-                        refundService.refund(orderNo, "重复购买自动退款（仅允许向上升级）", false);
-                    } catch (Exception e) {
-                        // 冻结为 REFUND_HOLD：交付补偿任务（DeliveryRetryJob / 重复回调自愈）只认 PAID，
-                        // 因此冻结是真实的；人工经退款端点重放续走（未交付过，退款不回收会员）
-                        int frozen = orderMapper.markRefundHold(orderNo, LocalDateTime.now(clock));
-                        log.error("[PAY] duplicate_order_refund_failed order_no={} frozen={} -- 禁止交付，需人工退款",
-                                orderNo, frozen == 1, e);
-                        audit.audit("DUPLICATE_ORDER_REFUND_FAILED", "order_no", orderNo, "uid", order.getUid(),
-                                "frozen", frozen == 1);
-                        throw ApiException.internalServerError("AUTO_REFUND_FAILED",
-                                "Duplicate order detected; delivery frozen pending manual refund");
-                    }
-                    return selectByOrderNo(orderNo);
-                }
-            }
-
-            deliveryService.deliverOrder(order);
-            order.setStatus(PayOrder.OrderStatus.DELIVERED);
-            return order;
+            return deliverAccepted(order);
         } finally {
             MDC.remove("orderNo");
         }
+    }
+
+    /**
+     * 把已 PAID 的订单交给唯一交付入口；违规订单（TIER_BLOCKED）触发原路自动退款。
+     * 所有“已收到钱”的路径共用，避免第二道墙被绕过。
+     */
+    private PayOrder deliverAccepted(PayOrder order) {
+        DeliveryService.DeliveryResult result = deliveryService.deliverOrder(order);
+        if (result == DeliveryService.DeliveryResult.TIER_BLOCKED) {
+            return autoRefundTierBlocked(order);
+        }
+        if (result == DeliveryService.DeliveryResult.DELIVERED) {
+            order.setStatus(PayOrder.OrderStatus.DELIVERED);
+            return order;
+        }
+        // SKIPPED = 并发方已交付/退款，返回数据库最新状态
+        return selectByOrderNo(order.getOrderNo());
+    }
+
+    /**
+     * 重复购买订单的原路退款。订单已被 DeliveryService 冻结为 REFUND_HOLD（不会交付），
+     * 退款失败时保持冻结（DeliveryRetryJob/重复回调只认 PAID，因此冻结是真实的），需人工重放退款端点。
+     */
+    private PayOrder autoRefundTierBlocked(PayOrder order) {
+        String orderNo = order.getOrderNo();
+        log.warn("[PAY] duplicate_order_auto_refund order_no={} order_tier={}",
+                orderNo, order.getTier());
+        audit.audit("DUPLICATE_ORDER_AUTO_REFUND", "order_no", orderNo, "uid", order.getUid(),
+                "tier", order.getTier(), "amount_cents", order.getAmountCents());
+        try {
+            refundService.refund(orderNo, DUPLICATE_PURCHASE_REASON, false);
+        } catch (Exception e) {
+            metrics.autoRefundFailed();
+            audit.audit("DUPLICATE_ORDER_REFUND_FAILED", "order_no", orderNo, "uid", order.getUid());
+            log.error("[PAY] duplicate_order_refund_failed order_no={} -- frozen as REFUND_HOLD, manual refund required",
+                    orderNo, e);
+            throw ApiException.internalServerError("AUTO_REFUND_FAILED",
+                    "Duplicate order detected; delivery frozen pending manual refund");
+        }
+        metrics.autoRefund();
+        return selectByOrderNo(orderNo);
     }
 
     /** markPaid missed: the order was advanced by a concurrent notification (idempotent) or is already closed (re-open after the channel confirms receipt). */
@@ -166,9 +179,8 @@ public class PaymentService {
             if (status == PayOrder.OrderStatus.PAID) {
                 // An idempotent hit doubles as a self-healing trigger: if the previous delivery was interrupted
                 // (the process crashed after PAID), this redelivered callback immediately completes it; concurrent
-                // races are handled by the markDelivered conditional update
-                deliveryService.deliverOrder(current);
-                current = selectByOrderNo(orderNo);
+                // races are handled by the markDelivered conditional update. 违规订单同样经唯一交付入口冻结+退款。
+                return deliverAccepted(current);
             }
             return current;
         }
@@ -185,10 +197,7 @@ public class PaymentService {
                     PayCallbackLog.HandleResult.ACCEPTED, "status=CLOSED reopened");
             audit.audit("ORDER_REOPENED", "order_no", orderNo, "channel", channel.name(),
                     "trade_no", channelTradeNo);
-            PayOrder reopenedOrder = selectByOrderNo(orderNo);
-            deliveryService.deliverOrder(reopenedOrder);
-            reopenedOrder.setStatus(PayOrder.OrderStatus.DELIVERED);
-            return reopenedOrder;
+            return deliverAccepted(selectByOrderNo(orderNo));
         }
         if (status == PayOrder.OrderStatus.REFUNDING || status == PayOrder.OrderStatus.REFUNDED
                 || status == PayOrder.OrderStatus.REFUND_HOLD) {
@@ -224,7 +233,7 @@ public class PaymentService {
         record.setSignatureResult(signatureResult != null
                 ? signatureResult : PayCallbackLog.SignatureResult.SKIPPED);
         record.setHandleResult(handleResult);
-        record.setMessage(message);
+        record.setMessage(LogSanitizer.safe(message, 200));
         callbackLogMapper.insert(record);
     }
 }

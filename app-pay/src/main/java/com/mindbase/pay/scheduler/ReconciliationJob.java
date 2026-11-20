@@ -17,7 +17,12 @@ import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Reconciliation (M4): proactively re-checks with the channel the locally paid orders (PAID/DELIVERED) within the recent
@@ -26,6 +31,10 @@ import java.util.UUID;
  *
  * <p>Read-only reconciliation, no automatic order changes (to avoid collateral damage); window/batch limit controlled by pay.job.recon-*.
  * Multiple instances are mutually excluded via {@link JobLease}.
+ *
+ * <p>P1 加固：本任务原先在调度线程里串行处理 200 单 × 5s 渠道超时 ≈ 最长 16 分钟（超过 lease TTL 15 分钟），
+ * 会长时间占用调度线程并可能被其他实例抢租约重复执行。现在改为与查单/关单任务共用 payJobQueryExecutor
+ * 并行执行，并按 last_checked_at 轮转，避免永远只对账最新 200 单。
  */
 @Slf4j
 @Component
@@ -41,6 +50,7 @@ public class ReconciliationJob implements AdaptiveJob {
     private final PayMetrics metrics;
     private final PayProperties props;
     private final Clock clock;
+    private final ExecutorService queryExecutor;
     private volatile boolean lastHadWork;
 
     @Override
@@ -57,40 +67,60 @@ public class ReconciliationJob implements AdaptiveJob {
                     .in(PayOrder::getStatus, PayOrder.OrderStatus.PAID, PayOrder.OrderStatus.DELIVERED)
                     .ne(PayOrder::getChannel, PayOrder.PayChannel.MOCK)
                     .ge(PayOrder::getPaidAt, now.minusHours(windowHours))
-                    .orderByDesc(PayOrder::getPaidAt)
+                    .orderByAsc(PayOrder::getLastCheckedAt)
+                    .orderByAsc(PayOrder::getPaidAt)
                     .last("LIMIT " + BATCH_LIMIT));
-            int mismatches = 0;
+            AtomicInteger mismatches = new AtomicInteger();
+            List<CompletableFuture<Void>> futures = new ArrayList<>(candidates.size());
             for (PayOrder order : candidates) {
-                try {
-                    PayChannelAdapter adapter = channelRouter.requireAdapter(order.getChannel());
-                    ChannelQueryResult result = adapter.queryOrder(order);
-                    if (result.status() != ChannelQueryResult.Status.PAID) {
-                        mismatches++;
-                        metrics.reconMismatch();
-                        audit.audit("RECON_MISMATCH", "order_no", order.getOrderNo(),
-                                "uid", order.getUid(), "channel", order.getChannel().name(),
-                                "local_status", order.getStatus().name(),
-                                "channel_status", result.status().name());
-                        log.warn("[PAY] recon_mismatch order_no={} local={} channel={}",
-                                order.getOrderNo(), order.getStatus(), result.status());
-                    } else if (result.paidAmountCents() != null
-                            && result.paidAmountCents() != order.getAmountCents()) {
-                        mismatches++;
-                        metrics.reconMismatch();
-                        audit.audit("RECON_AMOUNT_MISMATCH", "order_no", order.getOrderNo(),
-                                "expected_cents", order.getAmountCents(),
-                                "channel_cents", result.paidAmountCents());
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        if (reconcileOne(order)) {
+                            mismatches.incrementAndGet();
+                        }
+                    } finally {
+                        orderMapper.touchChecked(order.getOrderNo(), LocalDateTime.now(clock));
                     }
-                } catch (Exception e) {
-                    log.error("[PAY] recon_query_failed order_no={}", order.getOrderNo(), e);
-                }
+                }, queryExecutor));
             }
-            lastHadWork = mismatches > 0;
-            if (mismatches > 0) {
-                log.warn("[PAY] recon_finished checked={} mismatches={}", candidates.size(), mismatches);
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            lastHadWork = mismatches.get() > 0;
+            if (mismatches.get() > 0) {
+                log.warn("[PAY] recon_finished checked={} mismatches={}", candidates.size(), mismatches.get());
             }
         } finally {
+            metrics.jobRan("reconciliation");
             MDC.clear();
+        }
+    }
+
+    /** @return true when a mismatch was found (amount mismatch / channel no longer paid) */
+    private boolean reconcileOne(PayOrder order) {
+        try {
+            PayChannelAdapter adapter = channelRouter.requireAdapter(order.getChannel());
+            ChannelQueryResult result = adapter.queryOrder(order);
+            if (result.status() != ChannelQueryResult.Status.PAID) {
+                metrics.reconMismatch();
+                audit.audit("RECON_MISMATCH", "order_no", order.getOrderNo(),
+                        "uid", order.getUid(), "channel", order.getChannel().name(),
+                        "local_status", order.getStatus().name(),
+                        "channel_status", result.status().name());
+                log.warn("[PAY] recon_mismatch order_no={} local={} channel={}",
+                        order.getOrderNo(), order.getStatus(), result.status());
+                return true;
+            }
+            if (result.paidAmountCents() != null
+                    && result.paidAmountCents() != order.getAmountCents()) {
+                metrics.reconMismatch();
+                audit.audit("RECON_AMOUNT_MISMATCH", "order_no", order.getOrderNo(),
+                        "expected_cents", order.getAmountCents(),
+                        "channel_cents", result.paidAmountCents());
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            log.error("[PAY] recon_query_failed order_no={}", order.getOrderNo(), e);
+            return false;
         }
     }
 

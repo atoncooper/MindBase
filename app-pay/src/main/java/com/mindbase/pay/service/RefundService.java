@@ -1,7 +1,9 @@
 package com.mindbase.pay.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.mindbase.pay.common.ApiException;
+import com.mindbase.pay.common.LogSanitizer;
 import com.mindbase.pay.common.PayAuditLogger;
 import com.mindbase.pay.common.PayMetrics;
 import com.mindbase.pay.config.PayProperties;
@@ -15,6 +17,7 @@ import com.mindbase.pay.service.channel.RefundResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -108,22 +111,23 @@ public class RefundService {
                         "Channel refund failed, order reverted for retry");
             }
 
-            // ---- inside the transaction: mark refund complete + revoke membership ----
+            // ---- inside the transaction: revoke membership + mark refund complete ----
             String finalRefundNo = result.refundNo() != null ? result.refundNo() : refundNo;
-            // On resume (REFUNDING) the status has already been overwritten, so the pre-refund status must be used
-            // to decide whether membership was delivered; otherwise a crash replay would "refund the money without
-            // revoking membership"
-            String prevStatus = order.getStatus() == PayOrder.OrderStatus.REFUNDING
-                    ? order.getRefundPrevStatus()
-                    : order.getStatus().name();
+            // 关键：是否“已交付过”必须以数据库当前的 refund_prev_status 为准。入口读到的实体可能已过期
+            // （并发交付把 PAID 推进成 DELIVERED），用旧快照判断会“退款成功但不回收会员”。
+            PayOrder current = selectByOrderNo(orderNo);
+            String prevStatus = current != null && current.getRefundPrevStatus() != null
+                    ? current.getRefundPrevStatus()
+                    : (current != null ? current.getStatus().name() : order.getStatus().name());
             boolean wasDelivered = PayOrder.OrderStatus.DELIVERED.name().equals(prevStatus);
             txTemplate.execute(status -> {
+                // 锁顺序与 DeliveryService 一致：先会员行、再订单行，避免 ABBA 死锁
+                if (revokeMembership && wasDelivered) {
+                    membershipService.revoke(order.getUid(), order.getDurationDays(), orderNo, reason);
+                }
                 int done = orderMapper.markRefunded(orderNo, finalRefundNo, now);
                 if (done == 0) {
                     throw ApiException.conflict("REFUND_STATE_INVALID", "Order is no longer REFUNDING");
-                }
-                if (revokeMembership && wasDelivered) {
-                    membershipService.revoke(order.getUid(), order.getDurationDays(), orderNo, reason);
                 }
                 return null;
             });
@@ -188,9 +192,19 @@ public class RefundService {
                 request.setMakerReason(reason);
                 request.setStatus(PayRefundApproval.ApprovalStatus.PENDING);
                 request.setCreatedAt(LocalDateTime.now(clock));
-                approvalMapper.insert(request);
-                audit.audit("REFUND_REQUESTED", "order_no", orderNo, "maker", operatorSafe, "reason", reason);
-                log.info("[PAY] refund_requested order_no={} maker={}", orderNo, operatorSafe);
+                try {
+                    approvalMapper.insert(request);
+                } catch (DuplicateKeyException e) {
+                    // 并发首次调用：唯一键 (order_no,status) 保证只有一条 PENDING；另一条请求已登记，等待复核即可
+                    log.warn("[PAY] refund_request_duplicate order_no={} operator={}",
+                            orderNo, LogSanitizer.safe(operatorSafe));
+                    audit.audit("REFUND_REQUEST_DUPLICATE", "order_no", orderNo,
+                            "operator", LogSanitizer.safe(operatorSafe));
+                    return order;
+                }
+                audit.audit("REFUND_REQUESTED", "order_no", orderNo, "maker", LogSanitizer.safe(operatorSafe),
+                        "reason", LogSanitizer.safe(reason, 200));
+                log.info("[PAY] refund_requested order_no={} maker={}", orderNo, LogSanitizer.safe(operatorSafe));
                 return order;
             }
             if (!confirm) {
@@ -205,15 +219,25 @@ public class RefundService {
                 throw ApiException.conflict("REFUND_CHECKER_EQUALS_MAKER",
                         "The confirming operator must differ from the requesting maker");
             }
-            pending.setStatus(PayRefundApproval.ApprovalStatus.APPROVED);
-            pending.setChecker(operatorSafe);
-            pending.setCheckReason(reason);
-            pending.setDecidedAt(LocalDateTime.now(clock));
-            approvalMapper.updateById(pending);
+            // 使用列名字符串（内部常量，无用户输入）而不是 lambda：单测无 MyBatis TableInfo 时
+            // LambdaUpdateWrapper 会在构造期解析 lambda 缓存而报错；条件更新语义不变。
+            int approved = approvalMapper.update(null, new UpdateWrapper<PayRefundApproval>()
+                    .eq("id", pending.getId())
+                    .eq("status", PayRefundApproval.ApprovalStatus.PENDING.name())
+                    .set("status", PayRefundApproval.ApprovalStatus.APPROVED.name())
+                    .set("checker", operatorSafe)
+                    .set("check_reason", reason)
+                    .set("decided_at", LocalDateTime.now(clock)));
+            if (approved == 0) {
+                // 并发复核：另一人已批准/驳回；不得重复触发渠道退款
+                throw ApiException.conflict("REFUND_REQUEST_NOT_PENDING",
+                        "Refund request was already decided, please refresh");
+            }
             audit.audit("REFUND_APPROVED", "order_no", orderNo,
-                    "maker", pending.getMaker(), "checker", operatorSafe, "reason", reason);
+                    "maker", LogSanitizer.safe(pending.getMaker()), "checker", LogSanitizer.safe(operatorSafe),
+                    "reason", LogSanitizer.safe(reason, 200));
             log.info("[PAY] refund_approved order_no={} maker={} checker={}",
-                    orderNo, pending.getMaker(), operatorSafe);
+                    orderNo, LogSanitizer.safe(pending.getMaker()), LogSanitizer.safe(operatorSafe));
             return refund(orderNo, reason, revokeMembership);
         } finally {
             MDC.remove("orderNo");
@@ -238,13 +262,19 @@ public class RefundService {
                 throw ApiException.conflict("REFUND_CHECKER_EQUALS_MAKER",
                         "The rejecting operator must differ from the requesting maker");
             }
-            pending.setStatus(PayRefundApproval.ApprovalStatus.REJECTED);
-            pending.setChecker(operatorSafe);
-            pending.setCheckReason("rejected");
-            pending.setDecidedAt(LocalDateTime.now(clock));
-            approvalMapper.updateById(pending);
+            int rejected = approvalMapper.update(null, new UpdateWrapper<PayRefundApproval>()
+                    .eq("id", pending.getId())
+                    .eq("status", PayRefundApproval.ApprovalStatus.PENDING.name())
+                    .set("status", PayRefundApproval.ApprovalStatus.REJECTED.name())
+                    .set("checker", operatorSafe)
+                    .set("check_reason", "rejected")
+                    .set("decided_at", LocalDateTime.now(clock)));
+            if (rejected == 0) {
+                throw ApiException.conflict("REFUND_REQUEST_NOT_PENDING",
+                        "Refund request was already decided, please refresh");
+            }
             audit.audit("REFUND_REQUEST_REJECTED", "order_no", orderNo,
-                    "maker", pending.getMaker(), "checker", operatorSafe);
+                    "maker", LogSanitizer.safe(pending.getMaker()), "checker", LogSanitizer.safe(operatorSafe));
             log.info("[PAY] refund_request_rejected order_no={} maker={} checker={}",
                     orderNo, pending.getMaker(), operatorSafe);
             return selectByOrderNo(orderNo);

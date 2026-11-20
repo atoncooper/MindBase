@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
@@ -43,6 +44,46 @@ public record EnvSummaryRunner(PayProperties props, Environment env) implements 
         if (tlsEnabled) {
             requireTlsMaterial(cert, "server.ssl.certificate", "PAY_TLS_CERT");
             requireTlsMaterial(key, "server.ssl.certificate-private-key", "PAY_TLS_KEY");
+        }
+
+        // ── 生产形态（docker profile）强制项（P0/P2）──────────────────────────────
+        // 资金服务“配置错了就拒绝启动”，而不是带着弱配置上线。
+        if (env.acceptsProfiles(Profiles.of("docker"))) {
+            if (!tlsEnabled) {
+                log.error("[PAY] unsafe_config: docker profile requires TLS -- refusing to start in plaintext");
+                throw new IllegalStateException(
+                        "[PAY] unsafe_config: docker profile requires server.ssl.enabled=true "
+                                + "(PAY_TLS_ENABLED=false is local troubleshooting only)");
+            }
+            String internalKey = props.internal() == null ? null : props.internal().apiKey();
+            if (internalKey == null || internalKey.isBlank()) {
+                log.error("[PAY] unsafe_config: /internal/pay/* X-Internal-Key is blank -- refusing to start");
+                throw new IllegalStateException(
+                        "[PAY] unsafe_config: pay.internal.api-key (PAY_INTERNAL_KEY / APISIX_CONSUMER_KEY) "
+                                + "must be non-blank in docker profile: internal fund endpoints would otherwise "
+                                + "accept any container on the network");
+            }
+            String executorToken = props.internal() == null ? null : props.internal().executorToken();
+            if (executorToken == null || executorToken.isBlank()) {
+                log.error("[PAY] unsafe_config: PAY_EXECUTOR_TOKEN is blank -- refusing to start");
+                throw new IllegalStateException(
+                        "[PAY] unsafe_config: pay.internal.executor-token (PAY_EXECUTOR_TOKEN) must be non-blank "
+                                + "in docker profile; the timeout executor is directly reachable inside the network");
+            }
+            String dbPassword = props.rdbms() == null ? null : props.rdbms().password();
+            if (dbPassword == null || dbPassword.isBlank()
+                    || "app-pay".equals(dbPassword) || "root123".equals(dbPassword)
+                    || "app-pay-test".equals(dbPassword)) {
+                // 本地/内网 dev 形态允许默认口令（DB 仅回环 + TLS），但生产必须替换：
+                // 这里告警而不阻断，避免把本地栈锁死；上线检查清单要求强随机口令。
+                log.warn("[PAY] weak_db_password: docker profile is using a default/blank PAY_MYSQL_PASSWORD "
+                        + "-- replace it with a strong secret before production deployment");
+            }
+            if (alipayEnabled && (props.alipay().notifyUrl() == null || props.alipay().notifyUrl().isBlank())) {
+                // 纯查单模式是允许的（本地/无公网回调），但生产应为回调主路径：只告警不阻断
+                log.warn("[PAY] alipay notify_url is empty -- payment detection relies on query polling "
+                        + "(ChannelQueryJob + order-read sync); configure ALIPAY_NOTIFY_URL in production");
+            }
         }
 
         // Test entry enabled + token required but blank = degraded to no authentication: refuse to start

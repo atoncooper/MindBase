@@ -29,7 +29,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * Order creation/query/cancellation. State transitions are not in this class (see the conditional updates in
@@ -40,6 +43,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * timeout must not hold a pool connection / extend lock duration. Also, splitting a transactional method into a
  * private method of the same class lets self-invocation bypass the @Transactional proxy, which programmatic
  * transactions avoid.
+ *
+ * <p><b>P0/P1 加固（2026-11）</b>：
+ * <ul>
+ *   <li>未支付订单上限改由数据库唯一槽位（pay_order.open_slot）保证，并发建单不能再用
+ *       “先 count 再 insert”的竞态绕过 max-open-per-user；</li>
+ *   <li>渠道出网并发闸门（信号量）：渠道变慢时保护 Tomcat 线程与支付宝配额，超时 429 快速失败；</li>
+ *   <li>precreate 结果按订单短缓存（5 分钟）：/pay/orders/{no}/qr 不再每次请求都打渠道；</li>
+ *   <li>内存冷却表清理从 O(n) 扫描改为整体清空（避免 10 万条目时在请求线程做全表扫描）。</li>
+ * </ul>
  */
 @Slf4j
 @Service
@@ -68,13 +80,30 @@ public class OrderService {
     /** 条目只在节流窗口内有意义，超界即清理，防长期运行慢泄漏。 */
     private static final int CHANNEL_QUERY_MAX_ENTRIES = 4096;
 
-    /** 同 uid 上次成功建单时间（冷却检查用；有界清理）。 */
+    /** 同 uid 上次成功建单时间（冷却检查用；整体清空，不做请求线程 O(n) 扫描）。 */
     private static final ConcurrentHashMap<Long, Long> LAST_CREATE_BY_UID = new ConcurrentHashMap<>();
+
+    /** 用户面渠道出网并发上限：Tomcat 200 线程共享，渠道 5s 超时下防止线程与渠道配额被单个接口打满。 */
+    private static final int CHANNEL_PERMITS = 32;
+    private static final long CHANNEL_ACQUIRE_TIMEOUT_MS = 2_000L;
+
+    /** precreate 结果缓存：同一订单号在渠道侧幂等，5 分钟内刷新二维码无需重复出网。 */
+    private static final long PAY_PARAMS_TTL_MS = 5 * 60_000L;
+    private static final int PAY_PARAMS_MAX_ENTRIES = 4096;
 
     /** 全局下单闸门的固定窗口状态（单实例内有效；多实例各自计数，见 docs/app-pay.md）。 */
     private final AtomicInteger gateCount = new AtomicInteger();
     private volatile long gateWindowStart;
     private final Object gateLock = new Object();
+
+    /** 渠道出网许可（用户面：建单/取二维码/读单实时查单）。 */
+    private final Semaphore channelPermits = new Semaphore(CHANNEL_PERMITS);
+
+    /** orderNo -> precreate 参数（短 TTL，仅非 MOCK 渠道）。 */
+    private final ConcurrentHashMap<String, CachedPayParams> payParamsCache = new ConcurrentHashMap<>();
+
+    private record CachedPayParams(Map<String, Object> params, long expiresAt) {
+    }
 
     /** 退避基值与封顶：3s→6s→12s→24s。 */
     private static final long THROTTLE_BASE_MS = 3000L;
@@ -93,21 +122,29 @@ public class OrderService {
         // create orders that could never be paid.
         PayChannelAdapter adapter = channelRouter.requireAdapter(channel);
 
-        PayOrder order;
+        // 渠道出网并发闸门：许可覆盖“事务 + precreate”，避免渠道慢/被刷时 Tomcat 线程被同步 HTTP 吃满
+        acquireChannelPermit();
         try {
-            order = txTemplate.execute(status -> createOrderTx(uid, skuCode, channel, idempotencyKey));
-        } catch (DuplicateKeyException e) {
-            // Unique-key backstop (concurrent race on the same idempotency key / negligible-probability order-number collision), see recoverAfterDuplicateKey
-            order = recoverAfterDuplicateKey(uid, idempotencyKey);
+            PayOrder order;
+            try {
+                order = txTemplate.execute(status -> createOrderTx(uid, skuCode, channel, idempotencyKey));
+            } catch (DuplicateKeyException e) {
+                // Unique-key backstop (concurrent race on the same idempotency key / negligible-probability order-number collision), see recoverAfterDuplicateKey
+                order = recoverAfterDuplicateKey(uid, idempotencyKey);
+            }
+            // Channel code acquisition (HTTP) runs after the transaction commits: if it fails for a persisted order,
+            // the order stays CREATED and a retry hits the idempotency key to fetch the code again (precreate returns
+            // the same QR for the same order number); orders without a code are closed by the fallback timeout --
+            // a created order is never rolled back
+            Map<String, Object> payParams = adapter.createPayment(order);
+            cachePayParams(order, payParams);
+            return new CreatedOrder(order, payParams);
+        } finally {
+            channelPermits.release();
         }
-        // Channel code acquisition (HTTP) runs after the transaction commits: if it fails for a persisted order,
-        // the order stays CREATED and a retry hits the idempotency key to fetch the code again (precreate returns
-        // the same QR for the same order number); orders without a code are closed by the fallback timeout --
-        // a created order is never rolled back
-        return new CreatedOrder(order, adapter.createPayment(order));
     }
 
-    /** Transaction core: idempotency check + unpaid order cap + product snapshot insert + post-commit timeout registration. */
+    /** Transaction core: idempotency check + atomic open-order slot + product snapshot insert + post-commit timeout registration. */
     private PayOrder createOrderTx(long uid, String skuCode, PayOrder.PayChannel channel,
                                    String idempotencyKey) {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
@@ -127,7 +164,6 @@ public class OrderService {
         LocalDateTime now = LocalDateTime.now(clock);
 
         // 与档位锁无关的限额先查：缩短下面 FOR UPDATE 的持锁窗口
-        enforceOpenOrderLimit(uid, now);
         enforcePaidVelocityLimit(uid, now);
 
         // 档位墙 + 升级换购：
@@ -135,8 +171,8 @@ public class OrderService {
         //   productRank > currentRank → 跨档升级，全价购买（交付顺延，原剩余时长保留）；
         //   productRank == currentRank → 同档「补差价升级」：基于会员 last_order_no 的
         //     DELIVERED 订单，且新 SKU 时长/价格严格更高：金额 = 新 SKU 价 − 旧单价，
-        //     交付天数 = 新 SKU 天数 − 旧单天数（交付顺延 → 总时长 = 原购买日起的新套餐
-        //     全长，已用天数不浪费）；
+        //     交付天数 = 新 SKU 天数 − 旧单天数（交付顺延 → 总时长 = 原购买日起的新套餐全长，
+        //     已用天数不浪费）；
         //   productRank < currentRank → 降档，拒绝。
         // FOR UPDATE 锁窗口 = 档位判定 + 升级解析 + 冷却 O(1) + insert。
         PayMembership locked = membershipService.lockActiveMembershipForUpdate(uid);
@@ -188,7 +224,8 @@ public class OrderService {
         order.setExpiresAt(productService.expireAtFrom(now));
         order.setIdempotencyKey(idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey.trim());
         order.setCreatedAt(now);
-        orderMapper.insert(order);
+        // 未支付订单上限：数据库唯一槽位原子占位（并发无法绕过）
+        insertOrderWithOpenSlot(order);
 
         // Register the timeout delegation with app-task (runs after commit; failures only warn and fallback polling takes over, plan/1.0.8)
         timerClient.registerOrderTimeoutAfterCommit(uid, order.getOrderNo(),
@@ -196,8 +233,8 @@ public class OrderService {
 
         metrics.orderCreated();
         LAST_CREATE_BY_UID.put(uid, clock.millis());
-        log.info("[PAY] order_created uid={} sku={} amount_cents={} expires_at={}",
-                uid, order.getSkuCode(), order.getAmountCents(), order.getExpiresAt());
+        log.info("[PAY] order_created uid={} sku={} amount_cents={} expires_at={} open_slot={}",
+                uid, order.getSkuCode(), order.getAmountCents(), order.getExpiresAt(), order.getOpenSlot());
         audit.audit("ORDER_CREATED", "uid", uid, "order_no", order.getOrderNo(),
                 "sku", order.getSkuCode(), "amount_cents", order.getAmountCents(),
                 "channel", channel.name(),
@@ -205,6 +242,40 @@ public class OrderService {
                 "discount_cents", upgradeFrom != null
                         ? product.getPriceCents() - amountCents : 0);
         return order;
+    }
+
+    /**
+     * 用 (uid, open_slot) 唯一索引原子占用一个未支付订单槽位（1..maxOpenPerUser）。
+     * 任一槽位插入成功即返回；全部冲突 = 该用户未支付订单已达上限 → 429。
+     * 非槽位冲突（订单号/幂等键唯一键）原样抛出，交给外层 recoverAfterDuplicateKey。
+     */
+    private void insertOrderWithOpenSlot(PayOrder order) {
+        int max = payProperties.order() == null ? 0 : payProperties.order().maxOpenPerUser();
+        if (max <= 0) {
+            orderMapper.insert(order);
+            return;
+        }
+        for (int slot = 1; slot <= max; slot++) {
+            order.setId(null);
+            order.setOpenSlot(slot);
+            try {
+                orderMapper.insert(order);
+                return;
+            } catch (DuplicateKeyException e) {
+                if (!isOpenSlotConflict(e)) {
+                    throw e;
+                }
+                // 该槽位被同 uid 的另一张未支付订单占用：尝试下一个槽位
+            }
+        }
+        log.warn("[PAY] open_order_limit_hit uid={} max={}", order.getUid(), max);
+        throw ApiException.tooManyRequests("TOO_MANY_OPEN_ORDERS",
+                "Too many unpaid orders, please pay or cancel before creating a new one");
+    }
+
+    private static boolean isOpenSlotConflict(DuplicateKeyException e) {
+        String message = String.valueOf(e.getMessage());
+        return message.contains("uk_pay_order_uid_slot");
     }
 
     /**
@@ -320,11 +391,12 @@ public class OrderService {
             throw ApiException.tooManyRequests("ORDER_COOLDOWN",
                     "Please wait " + cooldown + "s between order attempts");
         }
-        // 有界清理：冷却表防慢泄漏
+        // 有界清理：超过阈值直接整体清空（冷却豁免一次可接受），避免在请求线程做 O(n) 扫描
         if (LAST_CREATE_BY_UID.size() > 100_000) {
-            LAST_CREATE_BY_UID.entrySet().removeIf(e -> nowMs - e.getValue() > Math.max(cooldown * 4_000L, 600_000L));
+            LAST_CREATE_BY_UID.clear();
         }
     }
+
     /**
      * 支付频次风控：单 uid 滚动 24h 的成功支付笔数/金额上限，在下单时拦截 ——
      * 防盗刷与异常购买速度（重复购买拦截只看档位，不看频次）。0 = 不限该维度。
@@ -356,23 +428,6 @@ public class OrderService {
         }
     }
 
-    /** Unpaid order cap: prevents order-spam from filling the DB (over the limit returns 429; callers back off and retry or pay/cancel first). */
-    private void enforceOpenOrderLimit(long uid, LocalDateTime now) {
-        int max = payProperties.order().maxOpenPerUser();
-        if (max <= 0) {
-            return;
-        }
-        Long open = orderMapper.selectCount(new LambdaQueryWrapper<PayOrder>()
-                .eq(PayOrder::getUid, uid)
-                .eq(PayOrder::getStatus, PayOrder.OrderStatus.CREATED)
-                .gt(PayOrder::getExpiresAt, now));
-        if (open != null && open >= max) {
-            log.warn("[PAY] open_order_limit_hit uid={} open={} max={}", uid, open, max);
-            throw ApiException.tooManyRequests("TOO_MANY_OPEN_ORDERS",
-                    "Too many unpaid orders, please pay or cancel before creating a new one");
-        }
-    }
-
     /** Fallback for a concurrent race on the same idempotency key: a re-read hit is reused (same semantics as an idempotent hit); another user's key / pure collision -> 409. */
     private PayOrder recoverAfterDuplicateKey(long uid, String idempotencyKey) {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
@@ -393,9 +448,27 @@ public class OrderService {
     /**
      * Re-fetches the order's payment params (M2 Alipay: scan QR). precreate is idempotent (same order number,
      * same QR) and backs both refreshing the payment code of a pending order and the frontend QR image endpoint.
+     * 结果按订单短缓存 5 分钟：二维码刷新不再放大渠道调用（渠道配额保护）。
      */
     public Map<String, Object> paymentParams(PayOrder order) {
-        return channelRouter.requireAdapter(order.getChannel()).createPayment(order);
+        if (order.getChannel() == PayOrder.PayChannel.MOCK) {
+            return channelRouter.requireAdapter(order.getChannel()).createPayment(order);
+        }
+        String key = order.getOrderNo();
+        long now = clock.millis();
+        CachedPayParams cached = payParamsCache.get(key);
+        if (cached != null && cached.expiresAt() > now) {
+            return cached.params();
+        }
+        acquireChannelPermit();
+        try {
+            Map<String, Object> params = channelRouter.requireAdapter(order.getChannel())
+                    .createPayment(order);
+            cachePayParams(order, params);
+            return params;
+        } finally {
+            channelPermits.release();
+        }
     }
 
     /** User cancels an unpaid order (CREATED only; the conditional update arbitrates concurrency). */
@@ -454,7 +527,7 @@ public class OrderService {
         }
         try {
             PayChannelAdapter adapter = channelRouter.requireAdapter(order.getChannel());
-            ChannelQueryResult result = adapter.queryOrder(order);
+            ChannelQueryResult result = withChannelPermit(() -> adapter.queryOrder(order));
             if (result.status() == ChannelQueryResult.Status.PAID) {
                 paymentService.handleChannelPaid(order.getOrderNo(), order.getChannel(),
                         result.tradeNo(), result.paidAmountCents(),
@@ -488,5 +561,45 @@ public class OrderService {
     /** A 128-bit UUID collision is negligible, with the uk_pay_order_no unique key as the backstop (-> recoverAfterDuplicateKey). */
     private String generateOrderNo() {
         return "PO" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /** 缓存 precreate 结果（同一订单号渠道侧幂等）；有界 + 过期清理，防长期运行慢泄漏。 */
+    private void cachePayParams(PayOrder order, Map<String, Object> params) {
+        if (params == null || order.getChannel() == PayOrder.PayChannel.MOCK) {
+            return;
+        }
+        long now = clock.millis();
+        if (payParamsCache.size() >= PAY_PARAMS_MAX_ENTRIES) {
+            payParamsCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
+            if (payParamsCache.size() >= PAY_PARAMS_MAX_ENTRIES) {
+                payParamsCache.clear();
+            }
+        }
+        payParamsCache.put(order.getOrderNo(), new CachedPayParams(params, now + PAY_PARAMS_TTL_MS));
+    }
+
+    /** 渠道出网并发许可：拿不到直接 429 快速失败（不排队占线程）。 */
+    private void acquireChannelPermit() {
+        boolean acquired;
+        try {
+            acquired = channelPermits.tryAcquire(CHANNEL_ACQUIRE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw ApiException.serviceUnavailable("CHANNEL_BUSY", "Payment channel is busy, please retry later");
+        }
+        if (!acquired) {
+            metrics.channelThrottled();
+            log.warn("[PAY] channel_permit_rejected -- channel concurrency saturated");
+            throw ApiException.tooManyRequests("CHANNEL_BUSY", "Payment channel is busy, please retry later");
+        }
+    }
+
+    private <T> T withChannelPermit(Supplier<T> call) {
+        acquireChannelPermit();
+        try {
+            return call.get();
+        } finally {
+            channelPermits.release();
+        }
     }
 }

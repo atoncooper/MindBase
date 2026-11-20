@@ -11,6 +11,10 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -79,6 +83,27 @@ class PayAuditLoggerTest {
             assertThat(second.get("hash").asText()).isNotEqualTo(second.get("prev").asText());
         } catch (Exception e) {
             throw new IllegalStateException(e);
+        } finally {
+            payAudit.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void auditPersistsChainHeadForRotationSafeResume() throws Exception {
+        // logback 转动会把 pay-audit.jsonl 改名；链头旁路文件保证重启后从最后一条 hash 续链而不是 GENESIS
+        Logger payAudit = (Logger) LoggerFactory.getLogger("PAY_AUDIT");
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        payAudit.addAppender(appender);
+        try {
+            auditLogger.audit("TEST_HEAD", "order_no", "PO1");
+
+            String line = appender.list.get(appender.list.size() - 1).getFormattedMessage();
+            JsonNode node = new ObjectMapper().readTree(line);
+            String head = Files.readString(Path.of("logs/pay-audit.head"), StandardCharsets.UTF_8).trim();
+
+            assertThat(head).matches("[0-9a-f]{64}");
+            assertThat(head).isEqualTo(node.get("hash").asText());
         } finally {
             payAudit.detachAppender(appender);
         }

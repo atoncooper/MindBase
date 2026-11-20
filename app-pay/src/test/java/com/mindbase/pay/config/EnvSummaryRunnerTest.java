@@ -127,4 +127,54 @@ class EnvSummaryRunnerTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("require-token");
     }
+
+    // ── docker profile（生产形态）启动自检 ──
+
+    private static MockEnvironment dockerEnv(String tlsEnabled) {
+        MockEnvironment env = new MockEnvironment();
+        env.setActiveProfiles("docker");
+        env.setProperty("server.ssl.enabled", tlsEnabled);
+        return env;
+    }
+
+    @Test
+    void dockerProfileWithoutTlsRefusesToStart() {
+        var runner = new EnvSummaryRunner(
+                TestPayProperties.builder().build(), dockerEnv("false"));
+        assertThatThrownBy(() -> runner.run(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires server.ssl.enabled");
+    }
+
+    @Test
+    void dockerProfileWithoutInternalKeyRefusesToStart() {
+        PayProperties props = TestPayProperties.builder()
+                .internal(new PayProperties.Internal("executor-token", ""))
+                .build();
+        var runner = new EnvSummaryRunner(props, dockerEnv("true"));
+        assertThatThrownBy(() -> runner.run(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("internal");
+    }
+
+    @Test
+    void dockerProfileWithoutExecutorTokenRefusesToStart() {
+        PayProperties props = TestPayProperties.builder()
+                .internal(new PayProperties.Internal("", "internal-key"))
+                .build();
+        var runner = new EnvSummaryRunner(props, dockerEnv("true"));
+        assertThatThrownBy(() -> runner.run(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("executor-token");
+    }
+
+    @Test
+    void dockerProfileWithRequiredSecretsPasses() {
+        // 证书路径未配置时只警告（交 Spring 处理），这里只验证 docker 必填项齐全即可启动
+        PayProperties props = TestPayProperties.builder()
+                .internal(new PayProperties.Internal("executor-token", "internal-key"))
+                .build();
+        var runner = new EnvSummaryRunner(props, dockerEnv("true"));
+        assertThatCode(() -> runner.run(null)).doesNotThrowAnyException();
+    }
 }

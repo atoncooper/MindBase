@@ -1,6 +1,7 @@
 package com.mindbase.pay.service;
 
 import com.mindbase.pay.common.PayAuditLogger;
+import com.mindbase.pay.common.TwoLevelCache;
 import com.mindbase.pay.mapper.PayMembershipEventMapper;
 import com.mindbase.pay.mapper.PayMembershipMapper;
 import com.mindbase.pay.model.PayMembership;
@@ -34,13 +35,15 @@ class MembershipServiceTest {
     private PayMembershipEventMapper eventMapper;
     @Mock
     private PayAuditLogger audit;
+    @Mock
+    private TwoLevelCache cache;
 
     private MembershipService service;
 
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(Instant.parse("2026-09-06T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
-        service = new MembershipService(membershipMapper, eventMapper, audit, clock);
+        service = new MembershipService(membershipMapper, eventMapper, audit, cache, clock);
     }
 
     @Test

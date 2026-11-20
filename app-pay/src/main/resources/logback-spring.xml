@@ -42,6 +42,18 @@
         </encoder>
     </appender>
 
+    <!-- Runtime logs are written asynchronously: at high order throughput, blocking the
+         request thread on console/file appenders adds latency to the payment path.
+         discardingThreshold=0 + neverBlock=false means the queue never drops INFO/WARN
+         and applies backpressure instead of silently losing events. -->
+    <appender name="ASYNC_APP" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>8192</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>false</neverBlock>
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="APP_FILE"/>
+    </appender>
+
     <logger name="PAY_AUDIT" level="INFO" additivity="false">
         <appender-ref ref="AUDIT_FILE"/>
     </logger>
@@ -57,7 +69,6 @@
     <logger name="sdk.comm.err" level="off"/>
 
     <root level="INFO">
-        <appender-ref ref="CONSOLE"/>
-        <appender-ref ref="APP_FILE"/>
+        <appender-ref ref="ASYNC_APP"/>
     </root>
 </configuration>

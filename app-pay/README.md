@@ -3,6 +3,17 @@
 MindBase membership activation: product (SKU) -> order -> payment (M1 mock / M2 WeChat & Alipay) -> membership activation/renewal extension.
 Design and implementation plan: [plan/1.0.7-Pay/1.0.7-Pay.md](../plan/1.0.7-Pay/1.0.7-Pay.md)
 
+> **Standalone test environment**: just two files — [docker-compose.test.yml](docker-compose.test.yml)
+> and [config-test.yaml](config-test.yaml). They run **app-pay + an isolated MySQL (`app_pay_test`) + Redis L2** with
+> their own Compose project/ports/volumes (test-only; production still uses the repository root
+> `docker-compose.yml` and K8s). Start with `mvn -DskipTests package` then
+> `docker compose -f docker-compose.test.yml up -d --build` (uses the host-built jar via Dockerfile.local).
+> Java black-box tests are split by responsibility under `src/test/java/com/mindbase/pay/e2e/`:
+> `e2e.security.PaySecurityTest`, `e2e.flow.PayPurchaseFlowTest` and
+> `e2e.performance.PayPerformanceTest` (p50/p99/p99.9 load, progress/error logs via
+> `src/test/resources/logback-test.xml`).
+> Client knobs: `src/test/resources/pay-test.properties`; server knobs: `config-test.yaml`.
+
 ## Scope and Boundaries
 
 - Standalone service (Java 21 + Spring Boot 3.5), modeled after `app-task/`: dedicated MySQL (`app-pay-mysql`, database `app_pay`), unified APISIX authentication, **single configuration entry point = application.yaml (+ docker/test profile variants; sensitive values reference .env via placeholders)**.

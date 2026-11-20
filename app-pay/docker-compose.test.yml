@@ -1,0 +1,129 @@
+# app-pay standalone test environment (app-pay + isolated MySQL + Redis L2 cache)
+# ============================================================
+# Fully isolated from the repository root docker-compose.yml / K8s:
+# separate Compose project, database app_pay_test, volumes, and ports.
+# For local testing/load testing only; not a production deployment.
+#
+# No environment variable placeholders: ports/accounts/passwords/tokens
+# are written directly in this file. Edit them here if needed.
+# Server-side tuning: config-test.yaml
+# Test client tuning: src/test/resources/pay-test.properties
+#
+# Start (uses the host-built jar by default to avoid slow Maven downloads):
+#   cd app-pay
+#   mvn -DskipTests package
+#   docker compose -f docker-compose.test.yml up -d --build
+#
+# For a fully self-contained build (CI/clean machine; first build downloads
+# Maven dependencies), change build.dockerfile to Dockerfile and rerun:
+#   docker compose -f docker-compose.test.yml up -d --build
+#
+# Access: https://127.0.0.1:18002 (/test/pay/* requires X-Test-Token)
+# Stop: docker compose -f docker-compose.test.yml down
+#       (add -v to remove the isolated data volume as well)
+name: mindbase-pay-test
+
+services:
+  # isolated test database: app_pay_test (separate volume; unrelated to prod)
+  app-pay-test-mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: app_pay_test
+      MYSQL_USER: app_pay_test
+      MYSQL_PASSWORD: app-pay-test
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=300
+      - --innodb-lock-wait-timeout=10
+      # slow-query diagnosis for load tests: inspect /var/lib/mysql/slow.log
+      - --slow-query-log=1
+      - --long-query-time=0.2
+      - --slow-query-log-file=/var/lib/mysql/slow.log
+      # ---- test-only capacity tuning (NOT production durability) ----
+      # MySQL defaults were: buffer_pool=128MB, log_bin=ON, sync_binlog=1,
+      # innodb_flush_log_at_trx_commit=1. That is durable but the write
+      # benchmark was limited by InnoDB/binlog fsync and 128MB buffer pool
+      # (377% MySQL CPU during the 50-120 thread ramp). These options make
+      # the test DB fast enough to measure application capacity; production
+      # must keep the durable defaults.
+      - --innodb-buffer-pool-size=2G
+      - --innodb-log-buffer-size=128M
+      - --innodb-redo-log-capacity=1G
+      - --innodb-write-io-threads=8
+      - --innodb-purge-threads=4
+      - --thread-cache-size=64
+      - --innodb-flush-log-at-trx-commit=2
+      - --sync-binlog=0
+      - --skip-log-bin
+      # Test-only: no crash-recovery guarantee needed for disposable load-test data.
+      # Production MUST keep doublewrite=ON.
+      - --innodb-doublewrite=OFF
+      - --performance-schema=OFF
+    ports:
+      # loopback only, for host-side debugging/DB access (test only)
+      - "127.0.0.1:13307:3306"
+    volumes:
+      - pay_test_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -proot123 --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  # Shared L2 cache for the test environment (L1 is in the app JVM).
+  # Test-only, no persistence: cache is allowed to be lost on restart.
+  app-pay-test-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app-pay-test:
+    image: mindbase-pay-test-app-pay:local
+    build:
+      context: .
+      # reuse the host-built target/app-pay-*.jar by default;
+      # change to Dockerfile for a self-contained container build
+      dockerfile: Dockerfile.local
+    depends_on:
+      app-pay-test-mysql:
+        condition: service_healthy
+      app-pay-test-redis:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
+    command:
+      # config-test.yaml is layered on application.yaml (isolated DB/MOCK/
+      # test endpoints/risk controls disabled)
+      - --spring.config.additional-location=file:/app/config-test.yaml
+    ports:
+      - "127.0.0.1:18002:8002"
+    volumes:
+      - ./config-test.yaml:/app/config-test.yaml:ro
+      # reuse app-pay/certs (generate with scripts/gen-dev-cert.ps1|sh if missing)
+      - ./certs:/certs:ro
+      - pay_test_logs:/app/logs
+    # liveness probe: check the port only; business dependency check is /health
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8002'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  pay_test_mysql_data:
+  pay_test_logs:

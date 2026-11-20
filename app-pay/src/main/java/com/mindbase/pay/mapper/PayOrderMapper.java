@@ -37,6 +37,14 @@ public interface PayOrderMapper extends BaseMapper<PayOrder> {
                             @Param("version") int version,
                             @Param("now") LocalDateTime now);
 
+    /**
+     * Lock one order row for the delivery transaction. Concurrent callbacks for the SAME order
+     * must serialize here: after the winner commits DELIVERED, the loser sees DELIVERED and
+     * returns SKIPPED instead of evaluating the duplicate-purchase tier wall against its own
+     * just-extended membership (which would wrongly freeze/refund a legitimately paid order).
+     */
+    PayOrder selectByOrderNoForUpdate(@Param("orderNo") String orderNo);
+
     /** PAID -> DELIVERED. */
     int markDelivered(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
@@ -75,6 +83,15 @@ public interface PayOrderMapper extends BaseMapper<PayOrder> {
 
     /** REFUNDING -> previous status (rollback when the channel refund fails; does not wrongly trigger delivery compensation). */
     int revertRefunding(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    /**
+     * 兜底任务公平调度：记录该订单最近一次被任务处理的时间。
+     * 任务按 last_checked_at 升序取（NULL 优先），处理过的订单自动排到队尾，避免最老 200 条被反复处理、新单饿死。
+     */
+    int touchChecked(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    /** 交付补偿失败计数 + 记录检查时间；达到上限的订单由任务跳过（不再占用扫描窗口）。 */
+    int incrementDeliveryAttempts(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
     /**
      * 支付频次风控投影：单 uid 滚动 24h 的成功支付笔数与金额合计。

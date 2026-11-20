@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
@@ -58,10 +59,18 @@ public class DataSourceConfig {
         return ds;
     }
 
-    /** Programmatic transaction template for OrderService (explicitly declared, not relying on autoconfiguration). */
+    /**
+     * Programmatic transaction template for OrderService (explicitly declared, not relying on autoconfiguration).
+     *
+     * <p>READ_COMMITTED：与 DeliveryService 一致，避免 RR 的间隙锁（免费用户无会员行时
+     * SELECT ... FOR UPDATE 会给唯一索引间隙加锁，与首购交付的 INSERT 相互阻塞），
+     * 同时让“锁之后再 count”类检查读到最新已提交数据而不是事务开始时的旧快照。
+     */
     @Bean
     public TransactionTemplate transactionTemplate(PlatformTransactionManager txManager) {
-        return new TransactionTemplate(txManager);
+        TransactionTemplate template = new TransactionTemplate(txManager);
+        template.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        return template;
     }
 
     /**

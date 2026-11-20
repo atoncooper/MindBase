@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -149,6 +150,24 @@ class RefundServiceTest {
     }
 
     @Test
+    void concurrentDeliveryAfterAcceptStillRevokesFromDbPrevStatus() {
+        // 入口读到 PAID，受理后并发交付把它推进成 DELIVERED：退款必须按 DB 的 refund_prev_status
+        // 判断“确实交付过”，否则会退款成功但不回收会员（资金/权益双重损失）
+        PayOrder paid = order(PayOrder.OrderStatus.PAID);
+        PayOrder refunding = order(PayOrder.OrderStatus.REFUNDING);
+        refunding.setRefundPrevStatus("DELIVERED");
+        when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(paid, refunding);
+        when(orderMapper.markRefunding(eq("PO1"), anyString(), anyString(), any())).thenReturn(1);
+        when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
+        when(mockAdapter.refund(any(PayOrder.class), anyString())).thenReturn(RefundResult.success("REF-1"));
+        when(orderMapper.markRefunded(eq("PO1"), eq("REF-1"), any())).thenReturn(1);
+
+        service.refund("PO1", "refund", true);
+
+        verify(membershipService).revoke(10086L, 30, "PO1", "refund");
+    }
+
+    @Test
     void refundHoldOrderIsRefundableWithoutRevocation() {
         // Tier-violation freeze order (auto-refund failed, PAID changed to REFUND_HOLD): replaying the refund can resume progress;
         // nothing was ever delivered, so the membership is not revoked
@@ -219,10 +238,11 @@ class RefundServiceTest {
         when(channelRouter.requireAdapter(PayOrder.PayChannel.MOCK)).thenReturn(mockAdapter);
         when(mockAdapter.refund(any(PayOrder.class), anyString())).thenReturn(RefundResult.success("REF-1"));
         when(orderMapper.markRefunded(eq("PO1"), eq("REF-1"), any())).thenReturn(1);
+        when(approvalMapper.update(any(), any())).thenReturn(1);
 
         service(approvalOn()).refundByOps("PO1", "customer complaint", true, "ops-b", true);
 
-        verify(approvalMapper).updateById(any(PayRefundApproval.class));
+        verify(approvalMapper).update(any(), any());
         verify(membershipService).revoke(10086L, 30, "PO1", "customer complaint");
     }
 
@@ -255,10 +275,11 @@ class RefundServiceTest {
         when(approvalMapper.selectOne(any(Wrapper.class))).thenReturn(pending("ops-a"));
         when(orderMapper.selectOne(any(Wrapper.class)))
                 .thenReturn(order(PayOrder.OrderStatus.DELIVERED));
+        when(approvalMapper.update(any(), any())).thenReturn(1);
 
         service(approvalOn()).rejectRefundRequest("PO1", "ops-b");
 
-        verify(approvalMapper).updateById(any(PayRefundApproval.class));
+        verify(approvalMapper).update(any(), any());
     }
 
     @Test
@@ -284,6 +305,50 @@ class RefundServiceTest {
         pending.setMakerReason("customer complaint");
         pending.setStatus(PayRefundApproval.ApprovalStatus.PENDING);
         return pending;
+    }
+
+    @Test
+    void duplicatePendingCreationIsSwallowedAsPending() {
+        // 并发首次调用：唯一键 (order_no,status) 冲突说明另一条 PENDING 已登记，按“等待复核”处理而不是 500
+        when(orderMapper.selectOne(any(Wrapper.class)))
+                .thenReturn(order(PayOrder.OrderStatus.DELIVERED));
+        when(approvalMapper.insert(any(PayRefundApproval.class)))
+                .thenThrow(new DuplicateKeyException(
+                        "Duplicate entry 'PO1-PENDING' for key 'pay_refund_approval.uk_pay_refund_approval_order_status'"));
+
+        PayOrder result = service(approvalOn()).refundByOps("PO1", "customer complaint",
+                true, "ops-a", false);
+
+        assertThat(result.getStatus()).isEqualTo(PayOrder.OrderStatus.DELIVERED);
+        verify(channelRouter, never()).requireAdapter(any());
+    }
+
+    @Test
+    void approvalLostRaceReturnsConflictWithoutSecondRefund() {
+        // 两个复核人同时 approve：条件更新只允许一个成功，另一个必须 409 且绝不二次触发渠道退款
+        when(approvalMapper.selectOne(any(Wrapper.class))).thenReturn(pending("ops-a"));
+        when(approvalMapper.update(any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service(approvalOn())
+                .refundByOps("PO1", "customer complaint", true, "ops-b", true))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(409);
+
+        verify(orderMapper, never()).markRefunding(anyString(), anyString(), anyString(), any());
+        verify(channelRouter, never()).requireAdapter(any());
+        verify(membershipService, never()).revoke(anyLong(), anyInt(), anyString(), anyString());
+    }
+
+    @Test
+    void rejectLostRaceReturnsConflict() {
+        when(approvalMapper.selectOne(any(Wrapper.class))).thenReturn(pending("ops-a"));
+        when(approvalMapper.update(any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service(approvalOn()).rejectRefundRequest("PO1", "ops-b"))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).getStatus())
+                .isEqualTo(409);
     }
 
     @Test
