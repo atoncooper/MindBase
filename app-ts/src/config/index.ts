@@ -148,7 +148,10 @@ export interface AppConfig {
     baseUrl: string;
     apiKey: string;
     timeoutMs: number;
+    /** 成功档位结果的本地缓存 TTL（实际 TTL 会做 ±15% 抖动错峰） */
     cacheTtlMs: number;
+    /** 回源失败（网络/鉴权/未配置 key）的短缓存 TTL：支付恢复后最长这么久即可回到权威档位 */
+    failureCacheTtlMs: number;
   };
   appQuiz: {
     /** app-quiz storage writes via the APISIX key-auth internal route (/internal/quiz/*) */

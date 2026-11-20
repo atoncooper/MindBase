@@ -192,7 +192,11 @@ appPay:
   baseUrl: https://apisix:9443/internal/pay
   apiKey: ${APISIX_CONSUMER_KEY}
   timeoutMs: 2000
+  # 成功档位缓存 TTL（实际按 ±15% 抖动过期，错峰回源避免缓存雪崩）
   cacheTtlMs: 60000
+  # 回源失败（网络/非 200/未配置 key）的短缓存 TTL：支付服务恢复后最多 10s
+  # 即回到权威档位；不能沿用 60s，否则支付成功后 60s 内仍按 free 档可见/限额。
+  failureCacheTtlMs: 10000
 
 appQuiz:
   # app-content（quiz 面）存储写面（经 APISIX key-auth 内部路由 /internal/quiz/*）
