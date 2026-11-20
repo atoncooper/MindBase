@@ -165,6 +165,13 @@ export class MemoryMessageRepository implements MessageRepository {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
+  async listBySessionPage(sessionId: string, skip: number, limit: number): Promise<ChatMessage[]> {
+    return [...this.messages.values()]
+      .filter((m) => m.sessionId === sessionId)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(Math.max(0, skip), Math.max(0, skip) + Math.max(0, limit));
+  }
+
   async countBySession(sessionId: string): Promise<number> {
     return [...this.messages.values()].filter((m) => m.sessionId === sessionId).length;
   }

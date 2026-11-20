@@ -87,23 +87,38 @@ export function requestErrorStatus(e: unknown): number | undefined {
     return undefined;
 }
 
+/**
+ * Options accepted by request(). Extends RequestInit with an escape hatch for
+ * endpoints that legitimately use 401 as a domain error.
+ */
+export interface RequestOptions extends RequestInit {
+    /**
+     * Do NOT clear the local session / dispatch auth:unauthorized when the
+     * endpoint returns 401. Required for endpoints where 401 means something
+     * else — e.g. POST /cloud/refs uses 401 for "分享需要提取码" (a domain
+     * error, not an expired login). The caller handles the status itself.
+     */
+    preserveAuthOn401?: boolean;
+}
+
 // Generic request helper. Injects JSON content-type + auth headers, normalizes
 // 401 (clears local auth + dispatches auth:unauthorized) and sanitizes errors.
 export async function request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestOptions = {}
 ): Promise<T> {
     const url = `${API_BASE_URL}${endpoint}`;
+    const { preserveAuthOn401 = false, ...init } = options;
 
     const response = await fetch(url, {
-        ...options,
+        ...init,
         headers: {
             // Content-Type only with an actual body: Fastify rejects bodiless
             // requests that declare application/json ("Body cannot be empty when
             // content-type is set") — that 400 surfaced as「请求参数有误」and broke
             // the bodiless DELETE /chat/history/from/{id} (per-turn regenerate).
             // FormData bodies are excluded so fetch can set its multipart boundary.
-            ...(options.body !== undefined && !(options.body instanceof FormData)
+            ...(init.body !== undefined && !(init.body instanceof FormData)
                 ? { "Content-Type": "application/json" }
                 : {}),
             // Marks the request as AJAX so dev-proxy beforeFiles rewrites can
@@ -111,12 +126,13 @@ export async function request<T>(
             // matching page route. Page navigation never sends this header.
             "X-Requested-With": "XMLHttpRequest",
             ...getAuthHeaders(),
-            ...options.headers,
+            ...init.headers,
         },
     });
 
     // 会话失效时清除登录状态并全局弹窗提示（RouteGuard 统一跳转到首页）。
-    if (response.status === 401) {
+    // Domain endpoints that overload 401 must opt out via preserveAuthOn401.
+    if (response.status === 401 && !preserveAuthOn401) {
         if (typeof window !== "undefined") {
             const token = localStorage.getItem("bili_session");
             if (token) {
@@ -171,7 +187,7 @@ export async function request<T>(
 // field names (notes, etc.) so callers can consume camelCase directly.
 export async function requestCamel<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestOptions = {}
 ): Promise<T> {
     const raw = await request<T>(endpoint, options);
     return snakeToCamel<T>(raw);

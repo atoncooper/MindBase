@@ -20,7 +20,7 @@ import { computeDeviceFingerprint, isAutomationEnv } from "@/lib/device-attest";
 import { useAuth } from "@/lib/auth";
 import { emitAppToast } from "@/lib/app-toast";
 import { LoginModal } from "@/components/login-modal";
-import type { UserInfo } from "@/lib/api";
+import { requestErrorStatus, type UserInfo } from "@/lib/api";
 import { Markdown } from "@/components/markdown";
 import {
     AlertCircle,
@@ -87,6 +87,7 @@ export default function CloudSharePage() {
     // ── 保存到我的云盘（引用）──
     const [saving, setSaving] = useState(false);
     const [savedOk, setSavedOk] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [loginOpen, setLoginOpen] = useState(false);
     // 登录成功后自动续做「保存」
     const pendingSaveRef = useRef(false);
@@ -220,28 +221,70 @@ export default function CloudSharePage() {
         [token, code, doAccess]
     );
 
+    /** 输入提取码时清掉保存错误（避免旧错误一直挂在保存按钮下） */
+    const updateCode = useCallback((value: string) => {
+        setCode(value);
+        setSaveError(null);
+    }, []);
+
     // ── 保存到我的云盘（引用，非复制） ──
-    const saveToDrive = useCallback(async () => {
-        if (!info || saving) return;
-        if (auth.status !== "authenticated") {
-            pendingSaveRef.current = true;
-            setLoginOpen(true);
-            return;
-        }
-        setSaving(true);
-        try {
-            const res = await cloudApi.saveShareToDrive({
-                token,
-                ...(info.requiresCode && code.trim() ? { code: code.trim() } : {}),
-            });
-            setSavedOk(true);
-            emitAppToast("success", `已保存为引用（不占空间）${res.saved > 1 ? `，共 ${res.saved} 项` : ""}`);
-        } catch (e) {
-            emitAppToast("error", e instanceof Error ? e.message : "保存失败，请重试");
-        } finally {
-            setSaving(false);
-        }
-    }, [info, saving, auth.status, token, code]);
+    const saveToDrive = useCallback(
+        async (force = false) => {
+            if (!info || saving) return;
+            // 分享有提取码时，没填码就调 POST /cloud/refs 会得到 401
+            // （后端用 401 表示“需要提取码”，不是登录过期）。这里先拦下，
+            // 避免任何 401 处理链路影响登录态。
+            if (info.requiresCode && !code.trim()) {
+                setSaveError("请先输入提取码，再保存到云盘");
+                return;
+            }
+            // force: 登录成功回调里 auth.status 的 React state 尚未刷新，
+            // 用旧闭包判断会再次弹登录框；登录后直接信任新写入的 token。
+            if (!force && auth.status !== "authenticated") {
+                pendingSaveRef.current = true;
+                setLoginOpen(true);
+                return;
+            }
+            setSaving(true);
+            setSaveError(null);
+            try {
+                const res = await cloudApi.saveShareToDrive({
+                    token,
+                    ...(info.requiresCode && code.trim() ? { code: code.trim() } : {}),
+                });
+                setSavedOk(true);
+                emitAppToast("success", `已保存为引用（不占空间）${res.saved > 1 ? `，共 ${res.saved} 项` : ""}`);
+            } catch (e) {
+                const status = requestErrorStatus(e);
+                const detail = e instanceof Error ? e.message : "";
+                // 401 在本端点有两种含义：缺少提取码（domain 401）或登录过期。
+                // 已填码时更可能是登录过期；只有后端明确提示“提取码”或当前
+                // 确实没填码，才按提取码问题处理。
+                const codeRequired = detail.includes("提取码") || (info.requiresCode && !code.trim());
+                if (status === 401) {
+                    if (codeRequired) {
+                        setSaveError(
+                            code.trim()
+                                ? "提取码校验失败，请检查后重试"
+                                : "请先输入提取码，再保存到云盘",
+                        );
+                    } else {
+                        // 真正的登录过期：不再让通用 request() 清态，改为引导重新登录
+                        setSaveError("登录状态已失效，请重新登录后保存");
+                        pendingSaveRef.current = true;
+                        setLoginOpen(true);
+                    }
+                } else if (status === 403) {
+                    setSaveError("提取码错误，请检查后重试");
+                } else {
+                    emitAppToast("error", e instanceof Error ? e.message : "保存失败，请重试");
+                }
+            } finally {
+                setSaving(false);
+            }
+        },
+        [info, saving, auth.status, token, code],
+    );
 
     const handleLoginSuccess = useCallback(
         (sessionToken: string, user: UserInfo) => {
@@ -250,7 +293,8 @@ export default function CloudSharePage() {
             setLoginOpen(false);
             if (pendingSaveRef.current) {
                 pendingSaveRef.current = false;
-                void saveToDrive();
+                // 强制走已登录分支：auth.status 要等下一次 render 才更新。
+                void saveToDrive(true);
             }
         },
         [auth, saveToDrive],
@@ -357,10 +401,15 @@ export default function CloudSharePage() {
                             )}
                             {savedOk ? "已保存到我的云盘" : "保存到我的云盘"}
                         </button>
-                        <p className="text-[11px] text-tertiary">
-                            {savedOk
-                                ? "已保存为引用（不占空间）· 可在云盘「全部文件」根目录查看"
-                                : "保存的是引用，不占用云盘空间 · 将存入「全部文件」根目录"}
+                        <p
+                            className={`text-[11px] ${saveError ? "text-danger" : "text-tertiary"}`}
+                            role={saveError ? "alert" : undefined}
+                        >
+                            {saveError
+                                ? saveError
+                                : savedOk
+                                  ? "已保存为引用（不占空间）· 可在云盘「全部文件」根目录查看"
+                                  : "保存的是引用，不占用云盘空间 · 将存入「全部文件」根目录"}
                         </p>
                     </div>
                 )}
@@ -403,7 +452,7 @@ export default function CloudSharePage() {
                             files={files}
                             requiresCode={info.requiresCode}
                             code={code}
-                            onCodeChange={setCode}
+                            onCodeChange={updateCode}
                             onUnlock={() => void unlock()}
                             unlocking={unlocking}
                             unlockingFileId={unlockingFileId}
@@ -516,7 +565,7 @@ export default function CloudSharePage() {
                             <div className="flex gap-2">
                                 <input
                                     value={code}
-                                    onChange={(e) => setCode(e.target.value)}
+                                    onChange={(e) => updateCode(e.target.value)}
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter" && code.trim()) void unlock();
                                     }}

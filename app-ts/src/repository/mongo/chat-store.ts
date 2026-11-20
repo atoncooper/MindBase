@@ -328,6 +328,16 @@ export class MongoChatStore implements ChatSessionRepository, MessageRepository 
     return docs.map(toMessage);
   }
 
+  async listBySessionPage(sessionId: string, skip: number, limit: number): Promise<ChatMessage[]> {
+    // DB-level pagination for /chat/history: never load a long session in full.
+    const docs = await this.messages
+      .find({ sessionId }, { sort: { createdAt: 1 } })
+      .skip(Math.max(0, skip))
+      .limit(Math.max(0, limit))
+      .toArray();
+    return docs.map(toMessage);
+  }
+
   async countBySession(sessionId: string): Promise<number> {
     return this.messages.countDocuments({ sessionId });
   }

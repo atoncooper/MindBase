@@ -49,15 +49,20 @@ interface ChatInputProps {
 }
 
 // Apple-style chat input - a single rounded card that grows with content up to
-// MAX_HEIGHT, then scrolls internally. Send button is a filled accent circle.
-// Typing "/" as the first character opens the slash menu (commands + skills).
+// a responsive cap, then scrolls internally. Send button is a filled accent
+// circle. Typing "/" as the first character opens the slash menu.
 // MIN_HEIGHT = one 24px line (leading-6) + py-1 (4px x 2) = 32px, which equals
 // the send button's h-8: with the flex items-end row, a single-line input is
 // then exactly as tall as the button, so the text sits vertically centered in
 // the card (previously a 24px textarea bottom-aligned against a 32px button
 // left ~4px more space above the text than below -> text looked shifted down).
+// MAX_HEIGHT is only the desktop ceiling; the actual cap is 40% of the
+// viewport (bounded 160–320px) so a pasted multi-line block expands like
+// ChatGPT's composer instead of showing a scrollbar after ~7 lines.
 const MIN_HEIGHT = 32;
-const MAX_HEIGHT = 200;
+const MAX_HEIGHT = 420;
+const MAX_HEIGHT_RATIO = 0.5;
+const MIN_MAX_HEIGHT = 160;
 // input starts with "/" followed by no whitespace → slash menu is active
 const SLASH_RE = /^\/(\S*)$/;
 
@@ -138,6 +143,21 @@ export function ChatInput({
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Responsive composer ceiling (desktop 320px; smaller windows/keyboards get
+  // proportionally less so the message list keeps usable space).
+  const [maxHeight, setMaxHeight] = useState(MAX_HEIGHT);
+  useEffect(() => {
+    const compute = () =>
+      setMaxHeight(
+        Math.max(
+          MIN_MAX_HEIGHT,
+          Math.min(MAX_HEIGHT, Math.round(window.innerHeight * MAX_HEIGHT_RATIO)),
+        ),
+      );
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, []);
 
   const slashMatch = input.match(SLASH_RE);
   const slashOpen =
@@ -185,9 +205,9 @@ export function ChatInput({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const next = Math.max(MIN_HEIGHT, Math.min(el.scrollHeight, MAX_HEIGHT));
+    const next = Math.max(MIN_HEIGHT, Math.min(el.scrollHeight, maxHeight));
     el.style.height = `${next}px`;
-  }, [input]);
+  }, [input, maxHeight]);
 
   const canSend = (input.trim().length > 0 || images.length > 0) && !disabled;
   const attachmentCount = images.length + sessionFiles.length;
@@ -348,7 +368,7 @@ export function ChatInput({
       )}
 
       <div
-        className={`flex items-end gap-2 rounded-[22px] border bg-surface px-3 py-2 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-colors ${
+        className={`rounded-[22px] border bg-surface px-3 pb-1.5 pt-2.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)] transition-colors ${
           canSend ? "border-border" : "border-border-subtle"
         } ${isStreaming ? "border-accent/40" : ""}`}
       >
@@ -374,41 +394,8 @@ export function ChatInput({
             e.target.value = "";
           }}
         />
-        <button
-          type="button"
-          onClick={() => docInputRef.current?.click()}
-          disabled={disabled || isStreaming}
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
-          aria-label="上传文档到当前会话"
-          title="上传文档到当前会话（pdf/docx/pptx/txt/md/html）"
-        >
-          <FileUp className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || isStreaming}
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
-          aria-label="添加图片"
-        >
-          <ImagePlus className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => setAttachmentsOpen(true)}
-          className={`relative grid h-8 w-8 shrink-0 place-items-center rounded-full transition-colors hover:bg-border-subtle ${
-            attachmentCount > 0 ? "text-accent" : "text-tertiary hover:text-foreground"
-          }`}
-          aria-label={`查看附件（${attachmentCount}）`}
-          title="查看附件（待发送图片 / 会话文件）"
-        >
-          <Paperclip className="h-4 w-4" aria-hidden="true" />
-          {attachmentCount > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] font-medium leading-none text-white">
-              {attachmentCount}
-            </span>
-          )}
-        </button>
+
+        {/* Row 1: the input owns the full card width. */}
         <textarea
           ref={textareaRef}
           value={input}
@@ -424,67 +411,110 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none bg-transparent py-1 text-[15px] leading-6 text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50"
-          style={{ minHeight: `${MIN_HEIGHT}px`, maxHeight: `${MAX_HEIGHT}px` }}
+          className="block w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-foreground placeholder:text-tertiary focus:outline-none disabled:opacity-50 [scrollbar-width:thin]"
+          style={{ minHeight: `${MIN_HEIGHT}px`, maxHeight: `${maxHeight}px` }}
           aria-label="聊天消息输入"
           aria-disabled={disabled}
         />
 
-        {onModelChange && (
-          <ChatModelPicker
-            models={models}
-            value={selectedModel}
-            codingPlanValue={codingPlanModel}
-            onChange={onModelChange}
-            disabled={disabled}
-          />
-        )}
+        {/* Row 2: uploads on the left, model picker + send/stop on the right. */}
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <div className="flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => docInputRef.current?.click()}
+              disabled={disabled || isStreaming}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+              aria-label="上传文档到当前会话"
+              title="上传文档到当前会话（pdf/docx/pptx/txt/md/html）"
+            >
+              <FileUp className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled || isStreaming}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-tertiary transition-colors hover:bg-border-subtle hover:text-foreground disabled:opacity-50"
+              aria-label="添加图片"
+            >
+              <ImagePlus className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setAttachmentsOpen(true)}
+              className={`relative grid h-8 w-8 shrink-0 place-items-center rounded-full transition-colors hover:bg-border-subtle ${
+                attachmentCount > 0 ? "text-accent" : "text-tertiary hover:text-foreground"
+              }`}
+              aria-label={`查看附件（${attachmentCount}）`}
+              title="查看附件（待发送图片 / 会话文件）"
+            >
+              <Paperclip className="h-4 w-4" aria-hidden="true" />
+              {attachmentCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-1 text-[9px] font-medium leading-none text-white">
+                  {attachmentCount}
+                </span>
+              )}
+            </button>
+          </div>
 
-        {/* 流式中的轻量计时提示：stop 按钮旁，窄屏隐藏以免输入行溢出 */}
-        {isStreaming && (
-          <span
-            className="hidden shrink-0 items-center pb-2 text-[11px] leading-none text-tertiary sm:inline-flex"
-            aria-hidden="true"
-          >
-            生成中
-            <StreamElapsed key={streamStartedAt ?? "live"} startedAt={streamStartedAt} />
-          </span>
-        )}
+          <div className="flex min-w-0 items-center justify-end gap-1.5">
+            {/* 流式中的轻量计时提示：stop 按钮旁，窄屏隐藏以免输入行溢出 */}
+            {isStreaming && (
+              <span
+                className="hidden shrink-0 items-center text-[11px] leading-none text-tertiary sm:inline-flex"
+                aria-hidden="true"
+              >
+                生成中
+                <StreamElapsed key={streamStartedAt ?? "live"} startedAt={streamStartedAt} />
+              </span>
+            )}
 
-        {isStreaming ? (
-          <span className="flex shrink-0 items-center gap-1">
-            {/* 生成中按 Enter（或点这个按钮）→ 排队，本轮结束后自动发送 */}
-            {canSend && (
+            {onModelChange && (
+              <ChatModelPicker
+                models={models}
+                value={selectedModel}
+                codingPlanValue={codingPlanModel}
+                onChange={onModelChange}
+                disabled={disabled}
+              />
+            )}
+
+            {isStreaming ? (
+              <span className="flex shrink-0 items-center gap-1">
+                {/* 生成中按 Enter（或点这个按钮）→ 排队，本轮结束后自动发送 */}
+                {canSend && (
+                  <button
+                    type="button"
+                    onClick={handleSend}
+                    className="grid h-8 w-8 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover"
+                    aria-label="排队发送（本轮结束后自动发送）"
+                    title="排队发送：本轮生成结束后自动发送"
+                  >
+                    <ArrowUp className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="grid h-8 w-8 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80"
+                  aria-label="停止生成"
+                >
+                  <Square className="h-3 w-3 fill-current" aria-hidden="true" />
+                </button>
+              </span>
+            ) : (
               <button
                 type="button"
                 onClick={handleSend}
-                className="grid h-8 w-8 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover"
-                aria-label="排队发送（本轮结束后自动发送）"
-                title="排队发送：本轮生成结束后自动发送"
+                disabled={!canSend}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-border-subtle disabled:text-tertiary"
+                aria-label="发送消息"
               >
                 <ArrowUp className="h-4 w-4" aria-hidden="true" />
               </button>
             )}
-            <button
-              type="button"
-              onClick={onStop}
-              className="grid h-8 w-8 place-items-center rounded-full bg-foreground text-background transition-opacity hover:opacity-80"
-              aria-label="停止生成"
-            >
-              <Square className="h-3 w-3 fill-current" aria-hidden="true" />
-            </button>
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={!canSend}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-white transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-border-subtle disabled:text-tertiary"
-            aria-label="发送消息"
-          >
-            <ArrowUp className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
+          </div>
+        </div>
       </div>
 
       {isStreaming && (

@@ -670,6 +670,9 @@ export const cloudApi = {
             method: "POST",
             headers: getAuthHeaders(),
             body: JSON.stringify(data),
+            // 该端点用 401 表示「分享需要提取码」（与 public access 语义一致），
+            // 不是登录过期；不能让通用 request() 清掉会话。页面会处理该状态。
+            preserveAuthOn401: true,
         });
         return snakeToCamel<SaveShareToDriveResponse>(raw);
     },
